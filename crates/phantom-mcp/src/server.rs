@@ -86,6 +86,26 @@ pub struct PhantomMcpServer {
     project_dir: PathBuf,
 }
 
+#[cfg(test)]
+type MakeTestVault = fn() -> Box<dyn phantom_vault::VaultBackend>;
+
+#[cfg(test)]
+thread_local! {
+    /// Test-only stand-in for backend selection in `load_config_and_vault`,
+    /// so a test can give the read tools the OS-keychain shape (a non-file
+    /// backend) without a real keychain.
+    static TEST_VAULT: std::cell::Cell<Option<MakeTestVault>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Add the guard's keychain-only note to a JSON reply, as `vault_note`.
+fn with_vault_note(mut report: serde_json::Value, note: Option<String>) -> serde_json::Value {
+    if let (Some(note), Some(object)) = (note, report.as_object_mut()) {
+        object.insert("vault_note".to_string(), note.into());
+    }
+    report
+}
+
 /// Empty-inventory text that stays honest when the secrets live in an
 /// encrypted-file vault this process cannot open (no passphrase in its env).
 fn empty_vault_message(
@@ -251,17 +271,21 @@ impl PhantomMcpServer {
     /// this process cannot open (PHANTOM_VAULT_PASSPHRASE unset here). That
     /// answer would read as "nothing expires", "nothing is due" or "no such
     /// secret". Refuses with the unlock step instead.
+    ///
+    /// When the keychain does hold entries and a file vault also exists, the
+    /// answer is served but covers only the keychain; the returned note says
+    /// so and goes into the reply as `vault_note`.
     fn require_readable_inventory(
         &self,
         config: &PhantomConfig,
         vault: &dyn phantom_vault::VaultBackend,
-    ) -> Result<(), McpError> {
+    ) -> Result<Option<String>, McpError> {
         if vault.backend_name() == "encrypted-file" {
-            return Ok(());
+            return Ok(None);
         }
         let Some(notice) = phantom_vault::locked_file_vault_notice(config.local_project_id())
         else {
-            return Ok(());
+            return Ok(None);
         };
         let names = vault
             .list()
@@ -272,7 +296,11 @@ impl PhantomMcpServer {
                  process cannot open, so an empty answer here would be wrong. {notice}"
             )));
         }
-        Ok(())
+        Ok(Some(format!(
+            "This answer covers only the OS keychain ({} secret(s)); secrets in the \
+             encrypted-file vault are not included. {notice}",
+            names.len()
+        )))
     }
 
     /// Reject a malformed managed dotenv before approval consumption, vault
@@ -299,6 +327,10 @@ impl PhantomMcpServer {
         &self,
     ) -> Result<(PhantomConfig, Box<dyn phantom_vault::VaultBackend>), McpError> {
         let config = self.require_config()?;
+        #[cfg(test)]
+        if let Some(make) = TEST_VAULT.with(std::cell::Cell::get) {
+            return Ok((config, make()));
+        }
         let vault =
             phantom_vault::try_create_vault(config.local_project_id()).map_err(vault_init_err)?;
         Ok((config, vault))
@@ -4333,7 +4365,7 @@ impl PhantomMcpServer {
         Parameters(params): Parameters<RotationDueParams>,
     ) -> Result<CallToolResult, McpError> {
         let (config, vault) = self.load_config_and_vault()?;
-        self.require_readable_inventory(&config, vault.as_ref())?;
+        let vault_note = self.require_readable_inventory(&config, vault.as_ref())?;
 
         let entries = vault
             .list_with_metadata()
@@ -4408,7 +4440,7 @@ impl PhantomMcpServer {
             }
         });
 
-        json_object_result(&out)
+        json_object_result(&with_vault_note(out, vault_note))
     }
 
     /// Pull a team vault into the current project's local vault.
@@ -4506,7 +4538,7 @@ impl PhantomMcpServer {
         Parameters(params): Parameters<ValidateSecretParams>,
     ) -> Result<CallToolResult, McpError> {
         let (config, vault) = self.load_config_and_vault()?;
-        self.require_readable_inventory(&config, vault.as_ref())?;
+        let vault_note = self.require_readable_inventory(&config, vault.as_ref())?;
 
         // Confirm the secret exists.
         let exists = vault
@@ -4536,7 +4568,7 @@ impl PhantomMcpServer {
             "never_checked": meta.never_checked(),
         });
 
-        json_object_result(&out)
+        json_object_result(&with_vault_note(out, vault_note))
     }
 
     /// Run live validation checks for all vault secrets and return a compliance report.
@@ -4818,7 +4850,7 @@ impl PhantomMcpServer {
         Parameters(params): Parameters<ExpiryCheckParams>,
     ) -> Result<CallToolResult, McpError> {
         let (config, vault) = self.load_config_and_vault()?;
-        self.require_readable_inventory(&config, vault.as_ref())?;
+        let vault_note = self.require_readable_inventory(&config, vault.as_ref())?;
 
         let entries = vault
             .list_with_metadata()
@@ -4856,7 +4888,7 @@ impl PhantomMcpServer {
             "secrets": expiring,
         });
 
-        json_object_result(&out)
+        json_object_result(&with_vault_note(out, vault_note))
     }
 
     /// Deprecated compatibility tool that remaps one local Phantom token.
@@ -5016,7 +5048,7 @@ impl PhantomMcpServer {
         use phantom_core::rotation_strategy::next_rotation_after;
 
         let (config, vault) = self.load_config_and_vault()?;
-        self.require_readable_inventory(&config, vault.as_ref())?;
+        let vault_note = self.require_readable_inventory(&config, vault.as_ref())?;
 
         // Confirm secret exists.
         let exists = vault
@@ -5055,7 +5087,7 @@ impl PhantomMcpServer {
             "overdue": overdue,
         });
 
-        json_object_result(&out)
+        json_object_result(&with_vault_note(out, vault_note))
     }
 
     // ── Apply expiry policy (demotion / promotion) ────────────────────────
@@ -8658,6 +8690,141 @@ mod tests {
             .require_readable_inventory(&config, &EmptyKeychain)
             .unwrap_err();
         assert_state_error(error, "Vault locked");
+        assert!(error_message_names_stale_file(&server, &config));
+    }
+
+    fn error_message_names_stale_file(server: &PhantomMcpServer, config: &PhantomConfig) -> bool {
+        server
+            .require_readable_inventory(config, &EmptyKeychain)
+            .unwrap_err()
+            .message
+            .contains("remove the vault file at")
+    }
+
+    /// A keychain holding one secret, beside a locked file vault.
+    struct KeychainWithOne;
+
+    impl phantom_vault::VaultBackend for KeychainWithOne {
+        fn store(&self, _: &str, _: &str) -> phantom_core::error::Result<()> {
+            Ok(())
+        }
+        fn retrieve(&self, name: &str) -> phantom_core::error::Result<zeroize::Zeroizing<String>> {
+            Err(phantom_core::error::PhantomError::SecretNotFound(
+                name.to_string(),
+            ))
+        }
+        fn delete(&self, _: &str) -> phantom_core::error::Result<()> {
+            Ok(())
+        }
+        fn list(&self) -> phantom_core::error::Result<Vec<String>> {
+            Ok(vec!["OPENAI_API_KEY".to_string()])
+        }
+        fn backend_name(&self) -> &str {
+            "keychain"
+        }
+    }
+
+    /// Serves `make` as the vault of `load_config_and_vault` until dropped.
+    struct TestVault;
+
+    impl TestVault {
+        fn serve(make: super::MakeTestVault) -> Self {
+            super::TEST_VAULT.with(|slot| slot.set(Some(make)));
+            Self
+        }
+    }
+
+    impl Drop for TestVault {
+        fn drop(&mut self) {
+            super::TEST_VAULT.with(|slot| slot.set(None));
+        }
+    }
+
+    /// An initialized project whose secrets sit in an encrypted-file vault,
+    /// with PHANTOM_VAULT_PASSPHRASE then unset: the locked state.
+    fn locked_file_vault_project() -> (PhantomMcpServer, TempDir) {
+        let (_server, dir) = setup_test_project();
+        let project = dir.path().canonicalize().unwrap();
+        let config =
+            PhantomConfig::new_with_defaults(PhantomConfig::project_id_from_path(&project));
+        config.save(&project.join(".phantom.toml")).unwrap();
+        let value = format!("stored-{}", PhantomToken::generate().as_str());
+        phantom_vault::try_create_vault(config.local_project_id())
+            .unwrap()
+            .store("OPENAI_API_KEY", &value)
+            .unwrap();
+        // SAFETY: TestEnvironment holds the env lock and restores the value.
+        unsafe { std::env::remove_var("PHANTOM_VAULT_PASSPHRASE") };
+        (PhantomMcpServer::with_dir(project), dir)
+    }
+
+    fn inventory_tool_calls(
+        server: &PhantomMcpServer,
+    ) -> Vec<(&'static str, Result<CallToolResult, McpError>)> {
+        let name = serde_json::json!({ "name": "OPENAI_API_KEY" });
+        vec![
+            (
+                "phantom_secrets_expiry_check",
+                server.phantom_secrets_expiry_check(params(serde_json::json!({}))),
+            ),
+            (
+                "phantom_secret_rotation_due",
+                server.phantom_secret_rotation_due(params(serde_json::json!({}))),
+            ),
+            (
+                "phantom_validate_secret",
+                server.phantom_validate_secret(params(name.clone())),
+            ),
+            (
+                "phantom_rotation_schedule_next",
+                server.phantom_rotation_schedule_next(params(name)),
+            ),
+        ]
+    }
+
+    /// Each inventory tool refuses the locked state itself: dropping the
+    /// guard call from any one of them fails this test for that tool.
+    #[test]
+    fn each_inventory_tool_refuses_a_locked_file_vault() {
+        let _environment = TestEnvironment::new();
+        let _home = TestHome::new();
+        let (server, _dir) = locked_file_vault_project();
+        let _vault = TestVault::serve(|| Box::new(EmptyKeychain));
+        for (tool, result) in inventory_tool_calls(&server) {
+            let error = result.expect_err(tool);
+            assert_eq!(
+                error.code,
+                rmcp::model::ErrorCode::INVALID_REQUEST,
+                "{tool}: {}",
+                error.message
+            );
+            assert!(
+                error.message.contains("Vault locked"),
+                "{tool}: {}",
+                error.message
+            );
+        }
+    }
+
+    /// With keychain entries beside a locked file vault, each inventory tool
+    /// answers but says the answer covers only the keychain.
+    #[test]
+    fn each_inventory_tool_notes_a_keychain_only_answer() {
+        let _environment = TestEnvironment::new();
+        let _home = TestHome::new();
+        let (server, _dir) = locked_file_vault_project();
+        let _vault = TestVault::serve(|| Box::new(KeychainWithOne));
+        for (tool, result) in inventory_tool_calls(&server) {
+            let result = result.unwrap_or_else(|error| panic!("{tool}: {}", error.message));
+            let report = result.structured_content.clone().unwrap_or_default();
+            let note = report["vault_note"]
+                .as_str()
+                .unwrap_or_else(|| panic!("{tool}: no vault_note in {report}"));
+            assert!(
+                note.contains("covers only the OS keychain"),
+                "{tool}: {note}"
+            );
+        }
     }
 
     #[test]

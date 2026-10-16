@@ -12,14 +12,18 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   `phantom_validate_secret` and `phantom_rotation_schedule_next` answered from
   the empty OS keychain: nothing expiring, nothing due, or "secret not found".
   They now refuse with "Vault locked" and the unlock step, as
-  `phantom_list_secrets` already reported.
+  `phantom_list_secrets` already reported; the notice also says to remove the
+  vault file if the secrets have since moved to the OS keychain. When the
+  keychain does hold entries beside such a file vault, they answer with a
+  `vault_note` saying the answer covers only the keychain.
 - Before `phantom init`, with an unloadable `.phantom.toml`, with a wrong
   `PHANTOM_VAULT_PASSPHRASE`, or (for cloud push/pull) before `phantom login`,
   tools returned -32603, which a client shows as a server failure, some with
   no next step ("Project is not initialized", "Decryption failed — wrong
   passphrase or corrupt data"). These are now -32600 errors that name the
-  step: `phantom init`, `phantom_doctor`, the passphrase to set in the server's
-  env config, or `phantom login`.
+  step: `phantom init`, `phantom_doctor`, `phantom login`, or, for a vault
+  that will not decrypt (a wrong passphrase or a corrupt vault file), the
+  passphrase to set in the server's env config and the restore path.
 
 ### Fixed (`phantom init` no longer replaces an existing `.env.example`)
 

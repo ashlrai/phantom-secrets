@@ -42,18 +42,21 @@ pub fn config_invalid_err(error: impl std::fmt::Display) -> McpError {
     ))
 }
 
-/// A vault read failed. A decryption failure means PHANTOM_VAULT_PASSPHRASE
-/// in this server's environment is not the one the vault was written with,
-/// which the user can fix; anything else stays an internal error.
+/// A vault read failed. A decryption failure is a wrong
+/// PHANTOM_VAULT_PASSPHRASE in this server's environment or a corrupt vault
+/// file; the user can act on either, so both next steps are named. Anything
+/// else stays an internal error.
 pub fn vault_read_err(context: &str, error: impl std::fmt::Display) -> McpError {
     let detail = error.to_string();
     if detail.contains("Decryption failed") {
         return state_err(format!(
-            "{context}: the encrypted-file vault could not be decrypted with the \
-             PHANTOM_VAULT_PASSPHRASE set in this MCP server's environment. Next step: set it, \
-             in the server's env config, to the passphrase the secrets were stored with (the \
-             one `phantom` uses in the user's terminal), then restart the MCP server. \
-             `phantom doctor` in a trusted terminal checks the vault."
+            "{context}: the encrypted-file vault could not be decrypted: either a wrong \
+             passphrase or a corrupt vault file. Wrong passphrase: set \
+             PHANTOM_VAULT_PASSPHRASE in the MCP server's env config to the passphrase the \
+             secrets were stored with (the one `phantom` uses in the user's terminal), then \
+             restart the MCP server. Corrupt vault file: ask the user to run `phantom doctor` \
+             in a trusted terminal, then restore the secrets from an encrypted backup \
+             (`phantom import <FILE>`) or a cloud copy (`phantom cloud pull`)."
         ));
     }
     internal_err(format!("{context}: {detail}"))
