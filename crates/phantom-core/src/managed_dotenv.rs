@@ -85,112 +85,24 @@ fn refuse_non_regular(shown: &str) -> anyhow::Error {
     anyhow::anyhow!("Refusing dotenv path that is not a regular, non-symlink file: {shown}")
 }
 
-/// Open `path` read-only without following a final symlink, then confirm on
-/// the opened handle (fstat, not a second path lookup) that it is a regular
-/// file. `Ok(None)` when nothing is there. `shown` is the name used in errors.
+/// Open `path` read-only without following a final symlink, judged on the
+/// opened handle; see [`crate::fs::open_regular_nofollow`], which
+/// `crate::fs::read_regular_file` shares. `Ok(None)` when nothing is there.
+/// `shown` is the name used in errors.
 fn open_regular_file(path: &Path, shown: &str) -> Result<Option<std::fs::File>> {
-    let mut options = std::fs::OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        // O_NONBLOCK: a FIFO swapped in must be refused, not waited on. It has
-        // no effect on reading a regular file. O_NOCTTY: a terminal device
-        // swapped in must not become this process's controlling terminal
-        // before the handle check refuses it.
-        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_NOCTTY);
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt;
-        // Open a reparse point (symlink, junction) itself instead of its
-        // target; the handle check below then refuses it.
-        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
-        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
-    }
-    let file = match options.open(path) {
-        Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        // O_NOFOLLOW on a symlink: ELOOP on Linux and macOS, EMLINK on FreeBSD.
-        #[cfg(unix)]
-        Err(error) if matches!(error.raw_os_error(), Some(libc::ELOOP) | Some(libc::EMLINK)) => {
-            return Err(refuse_non_regular(shown))
+    use crate::fs::RegularOpenError;
+    crate::fs::open_regular_nofollow(path).map_err(|error| match error {
+        RegularOpenError::NotRegular => refuse_non_regular(shown),
+        RegularOpenError::Reopen(detail) => {
+            refuse_non_regular(shown).context(format!("{detail}: {shown}"))
         }
-        Err(error) => return Err(error).with_context(|| format!("Failed to open {shown}")),
-    };
-    let metadata = file
-        .metadata()
-        .with_context(|| format!("Failed to inspect {shown}"))?;
-    // On Windows `is_symlink()` covers every name-surrogate reparse point:
-    // symlinks and junctions.
-    if metadata.file_type().is_symlink() || !metadata.is_file() {
-        return Err(refuse_non_regular(shown));
-    }
-    #[cfg(windows)]
-    if is_reparse_point(&metadata) {
-        return windows_reopen_contents(&file, shown).map(Some);
-    }
-    Ok(Some(file))
-}
-
-#[cfg(windows)]
-fn is_reparse_point(metadata: &std::fs::Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt;
-    use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
-    metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
-}
-
-/// A non-name-surrogate reparse file: a OneDrive/Cloud Files file (hydrated
-/// files keep the tag, so a project under a synced folder is full of them), a
-/// deduplicated file, an app execution alias. Opened with
-/// FILE_FLAG_OPEN_REPARSE_POINT it reads as its stub, which could judge stub
-/// data as clean. ReOpenFile without that flag re-opens the same file object,
-/// with no new path lookup, so the filter serves the real contents. That
-/// handle must still be a regular file; a failed reopen is a refusal.
-#[cfg(windows)]
-fn windows_reopen_contents(file: &std::fs::File, shown: &str) -> Result<std::fs::File> {
-    use std::os::windows::io::{AsRawHandle, FromRawHandle};
-    use windows_sys::Win32::Foundation::{GENERIC_READ, INVALID_HANDLE_VALUE};
-    use windows_sys::Win32::Storage::FileSystem::{
-        ReOpenFile, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
-    };
-
-    let before = crate::fs::anchored::std_file_identity(file)
-        .with_context(|| format!("Failed to inspect {shown}"))?;
-    // SAFETY: the handle is owned by `file` and valid for the call; the
-    // returned handle, when valid, is owned by the File built from it.
-    let handle = unsafe {
-        ReOpenFile(
-            file.as_raw_handle(),
-            GENERIC_READ,
-            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-            0,
-        )
-    };
-    if handle == INVALID_HANDLE_VALUE || handle.is_null() {
-        return Err(refuse_non_regular(shown)).with_context(|| {
-            format!(
-                "Windows could not reopen the reparse point {shown} for its contents: {}",
-                std::io::Error::last_os_error()
-            )
-        });
-    }
-    let reopened = unsafe { std::fs::File::from_raw_handle(handle) };
-    // The reopen must be the same file object the checks judged, as
-    // fs/anchored.rs requires of its own reopens.
-    let after = crate::fs::anchored::std_file_identity(&reopened)
-        .with_context(|| format!("Failed to inspect {shown}"))?;
-    if after != before {
-        return Err(refuse_non_regular(shown))
-            .with_context(|| format!("Windows reopened a different file object for {shown}"));
-    }
-    let metadata = reopened
-        .metadata()
-        .with_context(|| format!("Failed to inspect {shown}"))?;
-    if metadata.file_type().is_symlink() || !metadata.is_file() {
-        return Err(refuse_non_regular(shown));
-    }
-    Ok(reopened)
+        RegularOpenError::Open(error) => {
+            anyhow::Error::new(error).context(format!("Failed to open {shown}"))
+        }
+        RegularOpenError::Inspect(error) => {
+            anyhow::Error::new(error).context(format!("Failed to inspect {shown}"))
+        }
+    })
 }
 
 /// Read and parse an already-checked handle. The plaintext buffer is zeroized.
@@ -511,7 +423,7 @@ mod tests {
         let plain = dir.path().join(".env.local");
         std::fs::write(&plain, "A=1\n").unwrap();
         let plain_meta = std::fs::File::open(&plain).unwrap().metadata().unwrap();
-        assert!(!is_reparse_point(&plain_meta));
+        assert!(!crate::fs::is_reparse_point(&plain_meta));
         assert!(parse_regular_dotenv(dir.path(), ".env.local")
             .unwrap()
             .is_some());
@@ -526,7 +438,7 @@ mod tests {
             .custom_flags(0x0020_0000)
             .open(&plain)
             .unwrap();
-        let mut reopened = windows_reopen_contents(&flagged, ".env.local").unwrap();
+        let mut reopened = crate::fs::windows_reopen_contents(&flagged).unwrap();
         let mut content = String::new();
         reopened.read_to_string(&mut content).unwrap();
         assert_eq!(content, "A=1\n");
@@ -546,7 +458,7 @@ mod tests {
             .unwrap()
             .metadata()
             .unwrap();
-        assert!(is_reparse_point(&link_meta));
+        assert!(crate::fs::is_reparse_point(&link_meta));
         let message = format!(
             "{:#}",
             parse_regular_dotenv(dir.path(), ".env").unwrap_err()
