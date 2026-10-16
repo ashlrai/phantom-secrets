@@ -4,7 +4,176 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
-No additional unreleased changes are recorded after the `0.7.9` release.
+### Fixed (CLI and MCP JSON output)
+
+- `phantom audit stats --json` with an empty audit log now prints the same
+  JSON object as a populated log (`total_events: 0`, `secrets: []`) instead
+  of a human hint; the hint goes to stderr.
+- `phantom audit export --format json` with no matching records now prints
+  `[]` instead of nothing on stdout.
+- `phantom why <KEY> --json` now honors the global `--json` flag and prints
+  the value-free report the MCP `phantom_why` tool returns (`key`,
+  `dotenv_exists`, `found`, `classification`, `protected`, `reason`,
+  `matched_pattern`, `service`, `next_step`), including `found: false` when
+  the key or the `.env` file is missing. Human output is unchanged.
+- The MCP `phantom_audit_analytics` and `phantom_audit_export_report` tools
+  accept `format` as `json` or `csv` in any letter case and reject any other
+  value with an invalid-params (-32602) error. They previously fell back to
+  JSON for unrecognized values, including `CSV`.
+
+### Fixed (MCP)
+
+- `phantom_add_secret_interactive` works out of the box again. It only returns
+  `phantom add NAME` for the user's trusted terminal (no value accepted, nothing
+  stored, no file or network access), yet it required
+  `PHANTOM_MCP_EFFECTS=trusted-terminal` plus an approval token, so the add flow
+  that `phantom init` documents always failed. It now needs neither gate nor
+  `confirm`, keeps strict `[A-Za-z_][A-Za-z0-9_]*` name validation, and no
+  longer advertises `approval_token` (legacy callers that send it are still
+  accepted). Every tool that performs an effect keeps both gates unchanged.
+- Every MCP tool whose schema takes `approval_token` now says so in its
+  description, including how approval is obtained; a unit test walks the tool
+  catalog to keep it that way.
+- The refusal for effectful tools with effects disabled now also says that the
+  operator must approve each call in their own trusted terminal and supply the
+  `approval_token`, and `docs/claude-code.md` documents how to set
+  `PHANTOM_MCP_EFFECTS` outside agent authority.
+- MCP secret-name validation now also rejects names longer than 256 bytes.
+
+### Fixed (upgrade)
+
+- `phantom upgrade` no longer depends on the `zip` 8 line, which crates.io has
+  yanked in full and which failed the `cargo-deny` dependency policy.
+  `self_update` is now built without its zip backend, and Windows `.zip`
+  release assets go through Phantom's own path on `zip` 9.0.3: the same
+  exact-asset selection, writability probe, and `SHA256SUMS` (plus GitHub
+  asset digest) verification before anything is extracted, then a
+  `self-replace` swap of the running executable. Only the root
+  `phantom.exe` regular-file entry is extracted, to a path Phantom chooses;
+  an archive with any absolute, drive-qualified, or `..` entry name, a
+  duplicate or symlinked `phantom.exe`, or an entry over the 256 MiB binary
+  limit is refused. Linux and macOS `.tar.gz` upgrades are unchanged.
+
+### Fixed (proxy)
+
+- Cloudflare tooling now works under `phantom exec`. The built-in
+  `cloudflare` route exported only `CLOUDFLARE_API_TOKEN_BASE_URL`, which no
+  Cloudflare tool reads, so Wrangler and the official SDKs sent the `phm_`
+  token straight to `api.cloudflare.com` and got `401`. `phantom exec` now
+  also exports `CLOUDFLARE_API_BASE_URL` (Wrangler) and `CLOUDFLARE_BASE_URL`
+  (the `cloudflare` TypeScript and Python SDKs), and the route restores the
+  `/client/v4` path those tools expect in their base URL, so
+  `/accounts/...` reaches `https://api.cloudflare.com/client/v4/accounts/...`.
+  Requests that already send `/client/v4/...` are unchanged. Both variables
+  are scrubbed from the inherited environment like the other route
+  overrides. The route definition and its auth handling are unchanged, so
+  agentic validation is unaffected and no config change is needed.
+- The built-in `twilio` route now sends valid HTTP Basic credentials. It
+  previously injected `Authorization: Basic <raw auth token>`, which Twilio
+  rejects on every request. The route now keeps the username from the
+  client's first `Authorization: Basic` header (the Account SID, a non-secret
+  identifier) and replaces the password with the vault value; the client's
+  password is always discarded. A request with no usable username (missing,
+  non-Basic, containing a `phm_` token, over 128 bytes, or outside
+  `[A-Za-z0-9._@+-]`) now gets a local `400` from the proxy naming the fix
+  (`Authorization: Basic base64(<ACCOUNT_SID>:<anything>)`) and never
+  reaches Twilio. This handling applies only to the exact trusted `twilio`
+  route definition, not to custom routes with the same header shape. No
+  config change is needed.
+- The built-in `google_ai` (Gemini) route now owns every slot where Google
+  accepts an API key. The client's `key` and `api_key` query parameters
+  (matched case-insensitively after percent-decoding) are dropped, and an
+  `Authorization` header carrying a `phm_` token is dropped, so
+  `curl ...?key=$GEMINI_API_KEY` and the OpenAI-compatible endpoint
+  (`Authorization: Bearer $GEMINI_API_KEY`) reach Gemini with the injected
+  `x-goog-api-key`. A client's own OAuth bearer (no `phm_` token) is still
+  forwarded. Other routes forward `key` query parameters unchanged.
+- The `phantom_token` query parameter is now stripped with the same
+  percent-decoded, case-insensitive name match.
+- `phantom init` no longer protects a Twilio Account SID (`AC` plus 32
+  lowercase hex characters under a key ending in `ACCOUNT_SID`). It is a
+  public identifier that appears in every Twilio REST path, so replacing it
+  with a `phm_` token broke `/Accounts/{sid}/...` requests. Projects
+  initialized earlier keep the SID protected until it is written back to
+  `.env` as its plain value.
+
+### Changed (MCP, agent-visible)
+
+- `phantom_list_secrets`, `phantom_status`, `phantom_why`, `phantom_sync`, and
+  `phantom_list_with_expiry` now return a human summary, a value-blind JSON
+  report as a second text block, and the same report as MCP
+  `structuredContent`. Agents that read only the first text block see the
+  same summary as before. `phantom_list_with_expiry` reports `expired` and
+  `expiring_soon` as `null` when `show_expiry=false`. `phantom_sync` echoes
+  `token_env` only when it is a valid env var name and otherwise reports
+  `<invalid env var name>`.
+- Tools that already returned a JSON object (`phantom_capability`,
+  `phantom_do`, `phantom_setup_workspace`, and the audit, leak-incident,
+  compliance, validation, expiry, and rotation-schedule tools) keep their
+  JSON text unchanged and now also attach it as `structuredContent`.
+- The compliance export tool's `report` action with `save=true` no longer
+  prefixes the JSON with a `// saved to: <path>` line. It now returns
+  `Compliance report saved to: <path>` as its own first text block, followed
+  by the JSON report as a separate text block and as `structuredContent`.
+- An unknown compliance export `action` now fails with `INVALID_PARAMS`
+  (previously `INTERNAL_ERROR`) and tells the agent to retry with `export` or
+  `report`.
+- Config-load, vault-initialization, and missing-secret errors now name the
+  next step (`phantom_doctor`, `phantom doctor` or `PHANTOM_VAULT_PASSPHRASE`,
+  `phantom_list_secrets`).
+
+### Fixed
+
+- **SDKs under `phantom exec` reach the versioned API.** `phantom exec`
+  exports `OPENAI_BASE_URL=http://127.0.0.1:PORT/openai/_phantom/TOKEN/`, but
+  the official OpenAI SDKs and Codex treat `OPENAI_BASE_URL` as the `/v1` root
+  and request `<base>/models`, `<base>/chat/completions`. The proxy forwarded
+  those to `https://api.openai.com/models` (404). Each built-in route now
+  carries the version path its official SDK keeps in the default base URL:
+  `/v1` for OpenAI, xAI, Mistral, and Replicate. Unversioned requests on those
+  routes get the prefix; requests already starting with a version segment are
+  unchanged. Anthropic, Perplexity, Cohere, Gemini, Hugging Face, and the
+  non-LLM routes keep their paths as sent. Every route also collapses the
+  leading `//` produced when a caller appends `/v1/...` to the slash-terminated
+  base URL.
+- `phantom exec` / `phantom start` proxy: the upstream timeout is now a 600 s
+  idle (per-read) timeout instead of a 30 s total deadline. Previously any SSE
+  stream or slow non-streaming reasoning call longer than 30 s (routine for
+  Claude Code, Codex and the OpenAI/Anthropic SDKs, which allow 600 s) was cut
+  off mid-response.
+- A streaming response that the upstream drops midway now aborts the client
+  connection instead of ending cleanly, so SDKs see a transport error instead
+  of silently accepting a truncated stream.
+- Base-URL overrides are exported only for routes whose credential is loaded
+  in the session. Previously the default config pointed every supported SDK
+  at the proxy, so for example `phantom exec -- claude` with only an OpenAI
+  key protected sent every Claude Code request to a proxy 503.
+- Also export the base-URL variables the official SDKs actually read:
+  `GOOGLE_GEMINI_BASE_URL` (google-genai, Gemini CLI) and `CO_API_URL`
+  (Cohere), alongside the existing names. `REPLICATE_BASE_URL` is not
+  exported: replicate-python 1.x reads it as the host root while 2.x expects
+  it to include `/v1`.
+- `phantom start` prints shell `unset` lines for base-URL variables it no
+  longer exports, so a stale value from an earlier session is cleared.
+- The default global burst guard (`PHANTOM_RATE_LIMIT_BURST`) is now 100
+  requests per 10 s. It was 20, below the 50-per-secret limit, so a single
+  agent session hit proxy 429s before the per-secret limit could ever apply.
+- Upstream responses without a declared `content-length` (close-delimited or
+  otherwise unframed bodies such as NDJSON and JSON-array streams) are now
+  streamed through the byte-level scrubber instead of buffered until the
+  upstream closes and capped at the body limit.
+- When the client disconnects mid-stream, the proxy now closes the upstream
+  connection immediately instead of holding it until the next upstream byte
+  or the idle timeout.
+- The default request (and buffered response) body cap is now 32 MiB,
+  matching Anthropic's request limit; it was 10 MiB, which image-heavy agent
+  turns exceeded. A shared 320 MiB budget (the old 10 MiB x 32-slot worst
+  case) bounds bytes buffered across all in-flight requests; a request that
+  would exceed it gets a 503 with `retry-after`.
+- Proxy-generated error bodies are built with a JSON encoder, and the 429 and
+  503 bodies now carry `"source":"phantom-proxy"`,
+  the service or secret name, and a fix hint, so agents can tell them apart
+  from provider errors.
 
 ## [0.7.9] - 2026-09-06
 

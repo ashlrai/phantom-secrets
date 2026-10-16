@@ -424,7 +424,6 @@ fn effect_summary_for_tool(tool_name: &str) -> std::io::Result<&'static str> {
         }
         "phantom_init" => "Store detected dotenv secrets in the vault and rewrite project setup files, committing the managed dotenv file last.",
         "phantom_add_secret" => "Reject the deprecated plaintext MCP add path without accepting a value.",
-        "phantom_add_secret_interactive" => "Return a terminal-side command for adding a named secret; no value crosses MCP.",
         "phantom_remove_secret" => "Delete the named secret and its lifecycle metadata from the local vault.",
         "phantom_rotate" => "Remap all managed local phm_ placeholders, invalidating the previous mappings.",
         "phantom_rotate_with_expiry" => "Remap managed local phm_ placeholders without changing provider credentials or lifecycle metadata.",
@@ -1574,8 +1573,15 @@ mod tests {
 
             let outcome = approve_nonce(&nonce).unwrap();
 
-            // Tamper with the token.
-            let tampered = format!("{}ff", &outcome.approval_token[..62]);
+            // Tamper with the token: flip the last character so the result
+            // always differs from the original.
+            let token = &outcome.approval_token;
+            let last = token.chars().last().unwrap();
+            let tampered = format!(
+                "{}{}",
+                &token[..token.len() - last.len_utf8()],
+                if last == 'f' { '0' } else { 'f' }
+            );
 
             let result = validate_and_consume_approval(
                 &nonce,
