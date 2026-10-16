@@ -251,4 +251,37 @@ mod tests {
             .unwrap()
             .ends_with(".gemini/settings.json"));
     }
+
+    /// Contract with the phantom (TS) shared client table. The fixture is a
+    /// vendored copy of phantom's `docs/client-table.json`; refresh it when that
+    /// file changes. Claude Code is compared by id only: the Rust side reports
+    /// the project `.mcp.json`, the TS side `~/.claude.json`.
+    #[test]
+    fn matches_phantom_client_table_contract() {
+        let table: serde_json::Value =
+            serde_json::from_str(include_str!("../../tests/fixtures/client-table.json")).unwrap();
+        assert_eq!(table["version"], 1);
+        let clients = table["clients"].as_array().unwrap();
+        let mut table_ids: Vec<&str> = clients.iter().map(|c| c["id"].as_str().unwrap()).collect();
+        let mut rust_ids: Vec<&str> = CLIENTS.iter().map(|c| c.id).collect();
+        table_ids.sort();
+        rust_ids.sort();
+        assert_eq!(rust_ids, table_ids, "client id lists drifted");
+        for spec in CLIENTS.iter().filter(|c| c.id != "claude") {
+            let row = clients.iter().find(|c| c["id"] == spec.id).unwrap();
+            assert_eq!(row["displayName"], spec.label, "{}", spec.id);
+            let segs: Vec<&str> = row["configPath"]["linux"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_str().unwrap())
+                .collect();
+            assert_eq!(segs.join("/"), spec.relative, "{} path", spec.id);
+            let fmt = match spec.format {
+                Format::JsonMcpServers => "json-mcpServers",
+                Format::TomlMcpServers => "toml-mcp_servers",
+            };
+            assert_eq!(row["format"], fmt, "{} format", spec.id);
+        }
+    }
 }
