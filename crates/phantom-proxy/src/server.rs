@@ -3333,6 +3333,79 @@ mod tests {
         mock.shutdown().await;
     }
 
+    #[tokio::test]
+    async fn cloudflare_sdk_and_wrangler_base_urls_reach_client_v4() {
+        // The trusted built-in route, pointed at the mock upstream.
+        let services = std::collections::BTreeMap::from([(
+            "cloudflare".to_string(),
+            phantom_core::config::PhantomConfig::trusted_builtin_proxy_service("cloudflare")
+                .unwrap(),
+        )]);
+        let mut route = ServiceRegistry::from_config(&services)
+            .match_route("/cloudflare")
+            .unwrap()
+            .0
+            .clone();
+        let mock = crate::test_server::MockServer::start().await;
+        route.target_base = format!("http://127.0.0.1:{}", mock.port);
+        let mut registry = ServiceRegistry::new();
+        registry.add_route(route);
+
+        let secret_value = random_hex(20);
+        let interceptor = Interceptor::new_scoped(
+            HashMap::new(),
+            HashMap::from([("CLOUDFLARE_API_TOKEN".to_string(), secret_value.clone())]),
+        );
+        let token = random_hex(16);
+        let proxy = ProxyServer::start(
+            ProxyConfig {
+                port: 0,
+                proxy_token: token.clone(),
+                allow_query_token_auth: true,
+                ..ProxyConfig::default()
+            },
+            registry,
+            interceptor,
+        )
+        .await
+        .unwrap();
+
+        // The value `phantom exec` exports as CLOUDFLARE_BASE_URL and
+        // CLOUDFLARE_API_BASE_URL.
+        let base = format!(
+            "http://127.0.0.1:{}/cloudflare/_phantom/{token}/",
+            proxy.port()
+        );
+        let client = reqwest::Client::new();
+        // Wrangler concatenates `${base}${resource}`; the Stainless SDKs
+        // join without a doubled slash; explicit versioned paths pass as-is.
+        for (requested, expected) in [
+            ("/user/tokens/verify", "/client/v4/user/tokens/verify"),
+            (
+                "accounts/abc/workers/scripts",
+                "/client/v4/accounts/abc/workers/scripts",
+            ),
+            ("client/v4/zones?per_page=5", "/client/v4/zones?per_page=5"),
+        ] {
+            let resp = client
+                .get(format!("{base}{requested}"))
+                .header("authorization", format!("Bearer {}", session_token()))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), 200, "{requested}");
+            let recorded = mock.get_requests().pop().unwrap();
+            assert_eq!(recorded.path, expected);
+            assert_eq!(
+                recorded.headers.get("authorization").unwrap(),
+                &format!("Bearer {secret_value}")
+            );
+        }
+        assert_eq!(mock.get_requests().len(), 3);
+        proxy.shutdown().await;
+        mock.shutdown().await;
+    }
+
     #[test]
     fn filter_query_drops_owned_params_after_decoding() {
         assert_eq!(filter_query(None, &["key"]), "");

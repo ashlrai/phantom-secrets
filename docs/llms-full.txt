@@ -151,7 +151,14 @@ the value-blind effect and exact parameters, and requires a fresh typed
 challenge. A same-user shell or controllable PTY can defeat this ceremony, so
 leave effects disabled unless the approval command and approval storage are
 outside agent authority. The token is never a substitute for explicit user
-consent. Advanced audit, validation, rotation, and expiry tools have
+consent. Approval flow once enabled: the first call without `approval_token`
+prints a nonce on the server's stderr; the operator runs
+`phantom mcp-approve <NONCE>` in a trusted terminal; the agent retries the
+identical call with `approval_token: "<nonce>:<token>"`. Set the variable in the
+environment that launches the server (for example
+`claude mcp add --scope user -e PHANTOM_MCP_EFFECTS=trusted-terminal ...`), not
+in a file the agent can edit. Every tool whose schema takes `approval_token`
+says so in its description. Advanced audit, validation, rotation, and expiry tools have
 distinct schemas and conditional gates; inspect `tools/list` rather than
 extrapolating this selected catalog.
 
@@ -172,7 +179,7 @@ cached by a running process.
 - `phantom_list_secrets` — List secret names with service mappings (never values). Output: summary text, then `{count, secrets: [{name, service}]}` as JSON text and `structuredContent`.
 - `phantom_list_with_expiry` — List secret names with TTL state. Params: show_expiry. Output: summary text, then `{count, show_expiry, expired, expiring_soon, secrets: [{name, service, status?, expires_at?, days_remaining?}]}` as JSON text and `structuredContent`; `status` is `expired`, `expiring_soon`, `ok`, or `no_expiry`.
 - `phantom_status` — Show repository-local status without opening the vault. Output: summary text, then `{initialized, project_id, vault_inspected: false, dotenv: {path, entries, phantom_tokens, unprotected} | null, services: [{name, secret_key, pattern}], next_step}` as JSON text and `structuredContent`.
-- `phantom_add_secret_interactive` — Return a command that prompts for a new value in a trusted terminal, outside MCP. Params: name, confirm, approval_token.
+- `phantom_add_secret_interactive` — Return `phantom add NAME`, which prompts for a new value in a trusted terminal, outside MCP. Effect-free: no value, no storage, no approval; works with `PHANTOM_MCP_EFFECTS` unset. Params: name (`[A-Za-z_][A-Za-z0-9_]*`), confirm (optional, ignored).
 - `phantom_add_secret` — Deprecated compatibility tool; refuses plaintext values passed through MCP. Params: name, confirm, approval_token.
 - `phantom_remove_secret` — Transactionally remove the vault value, lifecycle config, and exact managed-dotenv mapping. Params: name, confirm, approval_token.
 - `phantom_rotate` — Regenerate all phantom tokens in .env. Params: confirm, approval_token.
@@ -185,7 +192,7 @@ The protocol source requires a separately commissioned hosted deployment and ent
 
 **Diagnostics & Cross-Project:**
 - `phantom_doctor` — Health checks: config validity, vault access, .env protection, .gitignore, .env.example, pre-commit hook. Params: fix, confirm, approval_token. `confirm` and `approval_token` are required only when `fix=true`. Output: a short summary text block, then the `phantom doctor --json` report `{ok, issues, fixed, checks: [{status, message, fix?, fixed?}], mcp_clients}` as JSON text and `structuredContent`. Each `fix` hint belongs to its own check; with `fix=true` a repaired check keeps status `warn` and gains `fixed`. `mcp_clients` is always `[]` here (this tool does not inspect global client configs). Config parse errors report only a redacted message plus line/column.
-- `phantom_why` — Explain whether a key is classified as Secret / PublicKey / NotSecret and which heuristic matched. Params: key. Output: summary text, then `{key, dotenv_exists, found, classification, protected, reason, matched_pattern, service, next_step}` as JSON text and `structuredContent`; `classification` is `protected`, `public_key`, `secret_unprotected`, `not_secret`, or null when the key is missing. Never includes the value.
+- `phantom_why` — Explain whether a key is classified as Secret / PublicKey / NotSecret and which heuristic matched. Params: key. Output: summary text, then `{key, dotenv_exists, found, classification, protected, reason, matched_pattern, service, exec, next_step}` as JSON text and `structuredContent`; `classification` is `protected`, `public_key`, `secret_unprotected`, `not_secret`, or null when the key is missing. Never includes the value and never opens the vault; before `phantom init` it classifies `./.env` with `exec: null`.
 - `phantom_check` — Run Phantom's bounded detector. Params: runtime. With `runtime=true`, checks selected environment variables for phantom tokens without a proxy; otherwise it scans supported dotenv files in the working tree. The CLI, separately, supports `phantom check --staged` for index-aware checks. Output: a short summary text block, then the `phantom check --json` report `{mode, clean, findings: [{kind, path?, name?}], warnings}` as JSON text and `structuredContent`; malformed dotenv files add `indeterminate: [{path, reason}]` and keep `clean` false. Names and paths only; never values or phantom tokens.
 - `phantom_env` — Generate a .env.example file from .env. Params: output (default `.env.example`), confirm, approval_token. Secrets become descriptive placeholders; non-secret config values are preserved.
 - `phantom_sync` — Show sync configuration and what secrets would be pushed to deployment platforms (Vercel, Railway). Params: platform (optional), project_id (optional). Informational; it does not execute a sync. Output: summary text, then `{configured, platform_filter, configured_platforms, vault_secret_count, targets: [{platform, project_id, token_env, environments, service_id, environment_id, secrets}], next_step}` as JSON text and `structuredContent`.

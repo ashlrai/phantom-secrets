@@ -1,5 +1,5 @@
 use phantom_core::config::PhantomConfig;
-use phantom_core::dotenv::{classify, is_public_key, DotenvFile, SecretClassification};
+use phantom_core::dotenv::{classify, DotenvFile, SecretClassification};
 use phantom_core::fs::{AnchoredEffect, AnchoredRead, AnchoredTarget, TrustedAnchor};
 use phantom_core::precommit_hook::{self, HookChange};
 use phantom_core::report::{CheckFinding, CheckIndeterminate, CheckReport, DoctorReport};
@@ -83,6 +83,21 @@ pub struct PhantomMcpServer {
     #[allow(dead_code)]
     tool_router: ToolRouter<Self>,
     project_dir: PathBuf,
+}
+
+/// Empty-inventory text that stays honest when the secrets live in an
+/// encrypted-file vault this process cannot open (no passphrase in its env).
+fn empty_vault_message(
+    vault: &dyn phantom_vault::VaultBackend,
+    config: &PhantomConfig,
+    default: &str,
+) -> String {
+    if vault.backend_name() != "encrypted-file" {
+        if let Some(notice) = phantom_vault::locked_file_vault_notice(config.local_project_id()) {
+            return format!("Vault locked, not empty. {notice}");
+        }
+    }
+    default.to_string()
 }
 
 impl PhantomMcpServer {
@@ -586,12 +601,14 @@ impl PhantomMcpServer {
         let report = serde_json::json!({ "count": names.len(), "secrets": secrets });
 
         if names.is_empty() {
-            return report_result(
+            let message = empty_vault_message(
+                vault.as_ref(),
+                &config,
                 "No secrets stored in vault. Next step: ask the user to run \
                  `phantom add <NAME>` in a trusted terminal, or protect an existing .env \
                  with `phantom init`.",
-                &report,
             );
+            return report_result(message, &report);
         }
 
         let mut output = format!("{} secret(s) in vault:\n", names.len());
@@ -629,6 +646,9 @@ impl PhantomMcpServer {
         output.push_str(&format!("Project ID: {}\n", config.portable_project_id()));
         output.push_str("Vault backend: not inspected (read-only status)\n");
         output.push_str("Secrets stored: not inspected (use phantom_list_secrets)\n");
+        if let Some(notice) = phantom_vault::locked_file_vault_notice(config.local_project_id()) {
+            output.push_str(&format!("Warning: {notice}\n"));
+        }
 
         // Resolve only repository-local state. Passing no vault names avoids
         // opening/provisioning any credential backend from this status tool.
@@ -840,7 +860,7 @@ impl PhantomMcpServer {
 
     /// Add a secret to the vault.
     #[tool(
-        description = "Deprecated unsafe plaintext secret entry. This tool refuses values because MCP arguments enter agent context. Use phantom_add_secret_interactive instead."
+        description = "Deprecated unsafe plaintext secret entry. This tool refuses values because MCP arguments enter agent context. Use phantom_add_secret_interactive instead (no approval needed). Retained for compatibility: still requires `confirm: true` plus a one-use out-of-band `approval_token` (the operator enables effects with PHANTOM_MCP_EFFECTS=trusted-terminal; a call without the token prints a nonce on the server's stderr for `phantom mcp-approve <NONCE>` in a trusted terminal), and never stores anything."
     )]
     fn phantom_add_secret(
         &self,
@@ -860,24 +880,24 @@ impl PhantomMcpServer {
         ))
     }
 
-    /// Start an out-of-band flow for adding a secret without exposing the value to MCP.
+    /// Return the out-of-band command for adding a secret without exposing the
+    /// value to MCP.
+    ///
+    /// This tool is deliberately effect-free: it touches no vault, file, or
+    /// network and accepts no value, so it sits outside the
+    /// `PHANTOM_MCP_EFFECTS` gate and the approval ceremony. The effect happens
+    /// only when the user runs `phantom add NAME` in a trusted terminal, which
+    /// reads the value from that terminal's stdin (create-only).
     #[tool(
-        description = "Safely add a secret by name without passing its value through MCP. Requires confirm:true. The returned command prompts for the value directly in the user's terminal, outside agent context."
+        description = "Safely add a secret by name without passing its value through MCP. Effect-free: it never accepts or echoes a value and touches no vault, file, or network, so it needs no approval and works with PHANTOM_MCP_EFFECTS unset. Returns `phantom add NAME`; the user runs it in a trusted terminal and types the value only at that terminal prompt, outside agent context."
     )]
     fn phantom_add_secret_interactive(
         &self,
         Parameters(params): Parameters<AddSecretInteractiveParams>,
     ) -> Result<CallToolResult, McpError> {
-        require_confirm("phantom_add_secret_interactive", params.confirm)?;
-        let params_json = serde_json::to_string(&params).unwrap_or_default();
-        require_approval_token(
-            "phantom_add_secret_interactive",
-            params.approval_token.as_deref(),
-            &params_json,
-            &self.project_id(),
-        )?;
+        validate_mcp_secret_name(&params.name)?;
         text_result(format!(
-            "Run this in a trusted terminal from {}:\n\n  phantom add {}\n\nEnter the real value only at the terminal prompt. Do not paste it into chat or MCP tool arguments.",
+            "Run this in a trusted terminal from {}:\n\n  phantom add {}\n\nEnter the real value only at the terminal prompt. Do not paste it into chat or MCP tool arguments. Nothing was stored by this tool.",
             self.project_dir.display(),
             params.name
         ))
@@ -943,7 +963,7 @@ impl PhantomMcpServer {
 
     /// Rotate all phantom tokens.
     #[tool(
-        description = "Regenerate all phantom tokens in .env. Old tokens become invalid — any running `phantom exec` / dev server that cached them will break until it picks up the new .env. Real secrets in the vault are unchanged. DESTRUCTIVE; requires `confirm: true`; the agent must ask the user for explicit consent before calling."
+        description = "Regenerate all phantom tokens in .env. Old tokens become invalid — any running `phantom exec` / dev server that cached them will break until it picks up the new .env. Real secrets in the vault are unchanged. DESTRUCTIVE; requires `confirm: true` plus a one-use out-of-band `approval_token` (the operator enables effects with PHANTOM_MCP_EFFECTS=trusted-terminal; a call without the token prints a nonce on the server's stderr for `phantom mcp-approve <NONCE>` in a trusted terminal); the agent must ask the user for explicit consent before calling."
     )]
     fn phantom_rotate(
         &self,
@@ -979,7 +999,7 @@ impl PhantomMcpServer {
 
     /// Deprecated compatibility endpoint for the disabled shadow-candidate path.
     #[tool(
-        description = "DEPRECATED hard denial: legacy shadow rotation generated only a local phm_cand_ placeholder, not a provider-issued credential. This tool never creates or stores a candidate and ignores compatibility parameters. Live provider issuance is also hard-denied until compensated recovery exists; rotate at the provider and store the replacement interactively."
+        description = "DEPRECATED hard denial: legacy shadow rotation generated only a local phm_cand_ placeholder, not a provider-issued credential. This tool never creates or stores a candidate and ignores compatibility parameters, including approval_token: no approval can activate it. Live provider issuance is also hard-denied until compensated recovery exists; rotate at the provider and store the replacement interactively."
     )]
     fn phantom_rotate_with_candidate(
         &self,
@@ -993,7 +1013,7 @@ impl PhantomMcpServer {
 
     /// Deprecated compatibility endpoint for the disabled shadow promotion path.
     #[tool(
-        description = "DEPRECATED hard denial: legacy candidates were local phm_cand_ placeholders, not provider-issued credentials. This tool never validates, promotes, or changes a vault value and ignores compatibility parameters. Live provider issuance is also hard-denied until compensated recovery exists; rotate at the provider and store the replacement interactively."
+        description = "DEPRECATED hard denial: legacy candidates were local phm_cand_ placeholders, not provider-issued credentials. This tool never validates, promotes, or changes a vault value and ignores compatibility parameters, including approval_token: no approval can activate it. Live provider issuance is also hard-denied until compensated recovery exists; rotate at the provider and store the replacement interactively."
     )]
     fn phantom_rotate_promote(
         &self,
@@ -1315,7 +1335,7 @@ impl PhantomMcpServer {
 
     /// Push encrypted vault to Phantom Cloud.
     #[tool(
-        description = "Push a client-encrypted local vault to a separately commissioned Phantom Cloud deployment and entitled account; the public hosted service is not currently commissioned for authenticated use. The configured service receives ciphertext rather than decrypted vault values. Requires phantom login first. DESTRUCTIVE — overwrites the existing cloud copy; damage from a prompt-injected push propagates to every machine that later pulls. Requires `confirm: true`; the agent must ask the user for explicit consent before calling."
+        description = "Push a client-encrypted local vault to a separately commissioned Phantom Cloud deployment and entitled account; the public hosted service is not currently commissioned for authenticated use. The configured service receives ciphertext rather than decrypted vault values. Requires phantom login first. DESTRUCTIVE — overwrites the existing cloud copy; damage from a prompt-injected push propagates to every machine that later pulls. Requires `confirm: true` plus a one-use out-of-band `approval_token` (the operator enables effects with PHANTOM_MCP_EFFECTS=trusted-terminal; a call without the token prints a nonce on the server's stderr for `phantom mcp-approve <NONCE>` in a trusted terminal); the agent must ask the user for explicit consent before calling."
     )]
     async fn phantom_cloud_push(
         &self,
@@ -1670,7 +1690,7 @@ impl PhantomMcpServer {
 
     /// Run health checks and optionally auto-fix issues.
     #[tool(
-        description = "Run repository-local Phantom health checks: config validity, .env protection, .gitignore, .env.example, and pre-commit hook. This tool does not open or provision a vault. Set fix=true to apply reviewed repository-local repairs. Returns a human summary plus a value-blind JSON report (also as structuredContent) in the `phantom doctor --json` shape: {ok, issues, fixed, checks: [{status, message, fix?, fixed?}], mcp_clients}. `fix` is the hint for that check only; with fix=true a repaired check keeps its warn status and gains `fixed`. Check messages and hints are this tool's own and differ from the CLI's; mcp_clients is always [] because this tool does not inspect global client configs."
+        description = "Run repository-local Phantom health checks: config validity, .env protection, .gitignore, .env.example, and pre-commit hook. This tool does not open or provision a vault. Set fix=true to apply reviewed repository-local repairs; fix=true requires `confirm: true` plus a one-use out-of-band `approval_token` (the operator enables effects with PHANTOM_MCP_EFFECTS=trusted-terminal; a call without the token prints a nonce on the server's stderr for `phantom mcp-approve <NONCE>` in a trusted terminal), while fix=false is read-only and ungated. Returns a human summary plus a value-blind JSON report (also as structuredContent) in the `phantom doctor --json` shape: {ok, issues, fixed, checks: [{status, message, fix?, fixed?}], mcp_clients}. `fix` is the hint for that check only; with fix=true a repaired check keeps its warn status and gains `fixed`. Check messages and hints are this tool's own and differ from the CLI's; mcp_clients is always [] because this tool does not inspect global client configs."
     )]
     fn phantom_doctor(
         &self,
@@ -2029,64 +2049,97 @@ impl PhantomMcpServer {
 
     /// Explain why a key is or isn't protected by Phantom.
     #[tool(
-        description = "Explain why an environment variable is or isn't protected by Phantom. Shows classification (Secret, PublicKey, NotSecret), whether it has a phantom token, and what heuristic matched. Returns a summary plus value-free JSON {key, dotenv_exists, found, classification, protected, reason, matched_pattern, service, next_step} (also as structuredContent)."
+        description = "Explain why an environment variable is or isn't protected by Phantom. Shows classification (Secret, PublicKey, NotSecret), whether it has a phantom token, and what heuristic matched. Value-blind: it reads .phantom.toml and the dotenv, never the vault, so it answers while the vault is locked and before `phantom init` (it then classifies ./.env, and exec is null). For a protected key it also says how `phantom exec` treats it. exec.delivery judges the key alone: `proxied` (a built-in route injects the real value for exec.upstream), `no_route` (the child gets only a session token that no provider accepts, so calls with it fail), `withheld` (exec never hands the child this provider-management or sync credential), `connection_string_refused` or `custom_route_refused` (exec will not start). exec.blocked_by is non-null when the config stops exec from starting for every key: {service, reason: `custom_route`, `altered_builtin_route` or `connection_string`, key}. next_step explains anything but an unblocked `proxied`. Returns a summary plus value-free JSON {key, dotenv_exists, found, classification, protected, reason, matched_pattern, service, exec: {delivery, service, upstream, blocked_by} | null, next_step} (also as structuredContent)."
     )]
     fn phantom_why(
         &self,
         Parameters(params): Parameters<WhyParams>,
     ) -> Result<CallToolResult, McpError> {
-        let env_path = self.env_path()?;
-        let mut report = serde_json::json!({
-            "key": params.key,
-            "dotenv_exists": env_path.exists(),
-            "found": false,
-            "classification": null,
-            "protected": false,
-            "reason": null,
-            "matched_pattern": null,
-            "service": null,
-            "next_step": null,
+        // Value-blind: read .phantom.toml and the dotenv's key names and token
+        // shapes only, never the vault. Before `phantom init` there is no
+        // config, so classify the project's `.env` exactly as `phantom why`
+        // does; that is when an agent most needs to know what init would do.
+        let config = if self.config_path().exists() {
+            Some(self.load_config().map_err(internal_err)?)
+        } else {
+            None
+        };
+        // Both branches refuse a symlinked or non-regular dotenv before reading
+        // it, so `./.env` pointing outside the project is never read.
+        let (env_path, dotenv) = match config.as_ref() {
+            Some(config) => {
+                let resolved =
+                    phantom_core::managed_dotenv::resolve_dotenv(&self.project_dir, config, &[])
+                        .map_err(|error| {
+                            internal_err(format!("Failed to resolve managed dotenv: {error}"))
+                        })?;
+                (resolved.path, resolved.file)
+            }
+            None => {
+                let path = self.project_dir.join(".env");
+                let file =
+                    phantom_core::managed_dotenv::parse_regular_dotenv(&path).map_err(|error| {
+                        invalid_params_err(format!(
+                            "{error:#}; protection status is indeterminate. Replace it with a \
+                             regular file in the project directory."
+                        ))
+                    })?;
+                (path, file)
+            }
+        };
+        let not_initialized = config.is_none().then_some(
+            "Phantom is not initialized in this project (no .phantom.toml); this \
+             classifies ./.env as `phantom init` would see it.",
+        );
+        // why never opens the vault, so it cannot see secrets stored there
+        // when neither the config nor the dotenv records any.
+        let token_bearing = dotenv.as_ref().is_some_and(|file| {
+            file.entries()
+                .iter()
+                .any(|entry| PhantomToken::is_phantom_token(&entry.value))
         });
-        if !env_path.exists() {
-            report["next_step"] =
-                "Create the managed .env (or set dotenv_path in .phantom.toml), then retry.".into();
-            return report_result(
-                format!(
-                    "No .env file found. '{}' cannot be classified without an .env file.",
-                    params.key
-                ),
-                &report,
+        let vault_drift_hint = config
+            .as_ref()
+            .is_some_and(|cfg| cfg.phantom.secrets.is_empty() && !token_bearing)
+            .then_some(
+                "Note: phantom_why does not read the vault, and neither .phantom.toml nor \
+                 the dotenv records a protected secret here. If you expected some, run \
+                 phantom_doctor or phantom_status to check for vault/dotenv drift.",
             );
-        }
-        let dotenv = DotenvFile::parse_file(&env_path)
-            .map_err(|e| internal_err(format!("Failed to read .env: {e}")))?;
+        let Some(dotenv) = dotenv else {
+            let report = phantom_core::why::why_report(&params.key, None, config.as_ref());
+            let mut lines: Vec<String> = not_initialized.iter().map(|l| l.to_string()).collect();
+            lines.push(format!(
+                "No .env file found ({}). '{}' cannot be classified without an .env file.",
+                env_path.display(),
+                params.key
+            ));
+            lines.extend(vault_drift_hint.map(str::to_string));
+            return report_result(lines.join("\n"), &report);
+        };
         dotenv.validate_for_mutation().map_err(|error| {
             invalid_params_err(format!(
                 "Managed dotenv is malformed; protection status is indeterminate: {error}"
             ))
         })?;
-
-        let entry = dotenv.entries().into_iter().find(|e| e.key == params.key);
-
-        let entry = match entry {
-            Some(e) => e,
-            None => {
-                report["next_step"] =
-                    "Check the exact key spelling (case-sensitive); phantom_status lists dotenv counts.".into();
-                return report_result(format!("'{}' was not found in .env.", params.key), &report);
-            }
-        };
-        report["found"] = true.into();
-
-        let config = self.load_config().ok();
+        // The same value-free report `phantom why --json` prints.
+        let report = phantom_core::why::why_report(&params.key, Some(&dotenv), config.as_ref());
 
         let mut output = String::new();
+        if let Some(line) = not_initialized {
+            output.push_str(line);
+            output.push('\n');
+        }
+        let Some(entry) = dotenv.entries().into_iter().find(|e| e.key == params.key) else {
+            output.push_str(&format!("'{}' was not found in .env.", params.key));
+            if let Some(hint) = vault_drift_hint {
+                output.push('\n');
+                output.push_str(hint);
+            }
+            return report_result(output, &report);
+        };
 
         if entry.is_phantom {
-            report["classification"] = "protected".into();
-            report["protected"] = true.into();
-            report["reason"] = "phantom_token".into();
-            // Already protected with a phantom token
             output.push_str(&format!(
                 "PROTECTED: '{}' has a phantom token.\n",
                 params.key
@@ -2095,17 +2148,12 @@ impl PhantomMcpServer {
                 "The real secret is stored in the vault; only the phantom token appears in .env.\n",
             );
 
-            // Check for service mapping
             if let Some(cfg) = &config {
                 if let Some((svc_name, svc)) = cfg
                     .services
                     .iter()
                     .find(|(_, c)| c.secret_key == params.key)
                 {
-                    report["service"] = serde_json::json!({
-                        "name": svc_name,
-                        "pattern": svc.pattern,
-                    });
                     output.push_str(&format!(
                         "Service mapping: {} -> {} ({})\n",
                         params.key,
@@ -2113,27 +2161,18 @@ impl PhantomMcpServer {
                         svc_name
                     ));
                 }
+                // A protected key works under `phantom exec` only through a
+                // proxy route; say so when there is none.
+                let verdict = phantom_core::why::ExecVerdict::new(&params.key, &dotenv, cfg);
+                output.push_str(&format!("Under phantom exec: {}.\n", verdict.summary()));
+                if let Some(step) = verdict.next_step() {
+                    output.push_str(&format!("Next step: {step}\n"));
+                }
             }
         } else {
-            let classification = classify(entry);
-            match classification {
+            match classify(entry) {
                 SecretClassification::PublicKey => {
-                    // Determine which prefix matched
-                    let public_prefixes = [
-                        "NEXT_PUBLIC_",
-                        "EXPO_PUBLIC_",
-                        "VITE_",
-                        "REACT_APP_",
-                        "NUXT_PUBLIC_",
-                        "GATSBY_",
-                    ];
-                    let matched_prefix = public_prefixes
-                        .iter()
-                        .find(|p| params.key.starts_with(*p))
-                        .unwrap_or(&"unknown");
-                    report["classification"] = "public_key".into();
-                    report["reason"] = "public_prefix".into();
-                    report["matched_pattern"] = (*matched_prefix).into();
+                    let matched_prefix = report["matched_pattern"].as_str().unwrap_or("unknown");
                     output.push_str(&format!(
                         "PUBLIC KEY: '{}' matches the framework prefix '{}'.\n",
                         params.key, matched_prefix
@@ -2144,73 +2183,28 @@ impl PhantomMcpServer {
                     );
                 }
                 SecretClassification::Secret => {
-                    report["classification"] = "secret_unprotected".into();
-                    report["next_step"] =
-                        "Run `phantom init` to protect it with a phantom token.".into();
                     output.push_str(&format!(
                         "UNPROTECTED: '{}' is classified as a secret but does NOT have a phantom token.\n",
                         params.key
                     ));
-                    // Explain why it was detected
-                    let key_upper = params.key.to_uppercase();
-                    let secret_key_patterns = [
-                        "KEY",
-                        "SECRET",
-                        "TOKEN",
-                        "PASSWORD",
-                        "PASSWD",
-                        "CREDENTIAL",
-                        "AUTH",
-                        "PRIVATE",
-                        "API_KEY",
-                        "ACCESS_KEY",
-                        "SIGNING",
-                    ];
-                    let connection_patterns = [
-                        "DATABASE_URL",
-                        "REDIS_URL",
-                        "MONGO_URL",
-                        "POSTGRES_URL",
-                        "MYSQL_URL",
-                        "AMQP_URL",
-                        "RABBITMQ_URL",
-                        "ELASTICSEARCH_URL",
-                        "CONNECTION_STRING",
-                        "DSN",
-                    ];
-
-                    if let Some(pat) = secret_key_patterns.iter().find(|p| key_upper.contains(*p)) {
-                        report["reason"] = "key_name".into();
-                        report["matched_pattern"] = (*pat).into();
-                        output.push_str(&format!(
-                            "Reason: key name contains '{}', which indicates a secret.\n",
-                            pat
-                        ));
-                    } else if let Some(pat) =
-                        connection_patterns.iter().find(|p| key_upper.contains(*p))
-                    {
-                        report["reason"] = "connection_pattern".into();
-                        report["matched_pattern"] = (*pat).into();
-                        output.push_str(&format!(
-                            "Reason: key name matches connection pattern '{}'.\n",
-                            pat
-                        ));
-                    } else if is_public_key(&params.key) {
-                        report["reason"] = "public_prefix_with_secret_value".into();
-                        output.push_str(
+                    let pattern = report["matched_pattern"].as_str().unwrap_or_default();
+                    match report["reason"].as_str() {
+                        Some("key_name") => output.push_str(&format!(
+                            "Reason: key name contains '{pattern}', which indicates a secret.\n"
+                        )),
+                        Some("connection_pattern") => output.push_str(&format!(
+                            "Reason: key name matches connection pattern '{pattern}'.\n"
+                        )),
+                        Some("public_prefix_with_secret_value") => output.push_str(
                             "Reason: has a public-key prefix, but the value matches a known secret pattern.\n",
-                        );
-                    } else {
-                        report["reason"] = "value_pattern".into();
-                        output.push_str(
+                        ),
+                        _ => output.push_str(
                             "Reason: the value matches known secret patterns (prefix, connection string, or high-entropy string).\n",
-                        );
+                        ),
                     }
                     output.push_str("Run `phantom init` to protect it with a phantom token.\n");
                 }
                 SecretClassification::NotSecret => {
-                    report["classification"] = "not_secret".into();
-                    report["reason"] = "no_secret_pattern".into();
                     output.push_str(&format!(
                         "NOT SECRET: '{}' is classified as non-secret configuration.\n",
                         params.key
@@ -2223,13 +2217,16 @@ impl PhantomMcpServer {
                 }
             }
         }
+        if let Some(hint) = vault_drift_hint {
+            output.push_str(hint);
+        }
 
         report_result(output.trim_end().to_string(), &report)
     }
 
     /// Wrap package.json scripts with the installed local `phantom` binary.
     #[tool(
-        description = "Wrap package.json scripts with the installed local `phantom exec --` command so secrets are injected via the proxy at runtime. Saves originals as `script:raw` variants. Uses a heuristic to pick dev/start/build/serve/deploy scripts and skip lint/test/format scripts."
+        description = "Wrap package.json scripts with the installed local `phantom exec --` command so secrets are injected via the proxy at runtime. Saves originals as `script:raw` variants. Uses a heuristic to pick dev/start/build/serve/deploy scripts and skip lint/test/format scripts. Writes package.json: requires `confirm: true` plus a one-use out-of-band `approval_token` (the operator enables effects with PHANTOM_MCP_EFFECTS=trusted-terminal; a call without the token prints a nonce on the server's stderr for `phantom mcp-approve <NONCE>` in a trusted terminal)."
     )]
     fn phantom_wrap(
         &self,
@@ -2271,7 +2268,7 @@ impl PhantomMcpServer {
 
     /// Unwrap package.json scripts, restoring originals from `:raw` variants.
     #[tool(
-        description = "Reverse phantom_wrap: restore original package.json scripts from their `:raw` variants and remove the `:raw` entries."
+        description = "Reverse phantom_wrap: restore original package.json scripts from their `:raw` variants and remove the `:raw` entries. Writes package.json: requires `confirm: true` plus a one-use out-of-band `approval_token` (the operator enables effects with PHANTOM_MCP_EFFECTS=trusted-terminal; a call without the token prints a nonce on the server's stderr for `phantom mcp-approve <NONCE>` in a trusted terminal)."
     )]
     fn phantom_unwrap(
         &self,
@@ -2476,7 +2473,7 @@ impl PhantomMcpServer {
 
     /// Generate a .env.example file from the current .env.
     #[tool(
-        description = "Generate a .env.example file from .env. Secrets are replaced with descriptive placeholders; non-secret config values are preserved. Safe to commit to version control."
+        description = "Generate a .env.example file from .env. Secrets are replaced with descriptive placeholders; non-secret config values are preserved. Safe to commit to version control. Writes a file: requires `confirm: true` plus a one-use out-of-band `approval_token` (the operator enables effects with PHANTOM_MCP_EFFECTS=trusted-terminal; a call without the token prints a nonce on the server's stderr for `phantom mcp-approve <NONCE>` in a trusted terminal)."
     )]
     fn phantom_env(
         &self,
@@ -2883,7 +2880,7 @@ impl PhantomMcpServer {
 
     /// Register the user's X25519 public key on a team.
     #[tool(
-        description = "One-time setup: register this device's public key with the team so you can send and receive encrypted vaults. Requires a separately commissioned hosted service and entitled account; the public hosted service is not currently commissioned. Must be called before phantom_team_vault_push or phantom_team_vault_pull. Idempotent — safe to call again after a key rotation."
+        description = "One-time setup: register this device's public key with the team so you can send and receive encrypted vaults. Requires a separately commissioned hosted service and entitled account; the public hosted service is not currently commissioned. Must be called before phantom_team_vault_push or phantom_team_vault_pull. Idempotent — safe to call again after a key rotation. Mutating provider request: requires `confirm: true` plus a one-use out-of-band `approval_token` (the operator enables effects with PHANTOM_MCP_EFFECTS=trusted-terminal; a call without the token prints a nonce on the server's stderr for `phantom mcp-approve <NONCE>` in a trusted terminal)."
     )]
     async fn phantom_team_key_publish(
         &self,
@@ -2918,7 +2915,7 @@ impl PhantomMcpServer {
 
     /// Push the current project's vault to a team.
     #[tool(
-        description = "Push this project's secrets to the shared team vault so all members can pull them. Requires a separately commissioned hosted service and entitled account; the public hosted service is not currently commissioned. Encrypts client-side for each member who has registered a key (phantom_team_key_publish). Mutating: requires confirm:true."
+        description = "Push this project's secrets to the shared team vault so all members can pull them. Requires a separately commissioned hosted service and entitled account; the public hosted service is not currently commissioned. Encrypts client-side for each member who has registered a key (phantom_team_key_publish). Mutating: requires confirm:true plus a one-use out-of-band `approval_token` (the operator enables effects with PHANTOM_MCP_EFFECTS=trusted-terminal; a call without the token prints a nonce on the server's stderr for `phantom mcp-approve <NONCE>` in a trusted terminal)."
     )]
     async fn phantom_team_vault_push(
         &self,
@@ -3158,7 +3155,9 @@ impl PhantomMcpServer {
             "secrets": secret_reports,
         });
         if entries.is_empty() {
-            return report_result("No secrets stored in vault.", &report);
+            let message =
+                empty_vault_message(vault.as_ref(), &config, "No secrets stored in vault.");
+            return report_result(message, &report);
         }
         report_result(output, &report)
     }
@@ -3584,6 +3583,8 @@ impl PhantomMcpServer {
     ) -> Result<CallToolResult, McpError> {
         use phantom_core::analytics::{compute_analytics, export_records, records_to_csv, Period};
 
+        let format = crate::tools::helpers::parse_audit_format(&params.format)?;
+
         // Convert window_days to a Period.
         let period = match params.window_days {
             0 => Period::All,
@@ -3608,7 +3609,7 @@ impl PhantomMcpServer {
         let records = export_records(period, params.min_anomaly_score)
             .map_err(|e| internal_err(format!("Failed to export records: {e}")))?;
 
-        if params.format == "csv" {
+        if format == crate::tools::helpers::AuditFormat::Csv {
             let csv = records_to_csv(&records);
             return text_result(csv);
         }
@@ -3929,6 +3930,8 @@ impl PhantomMcpServer {
             parse_date_to_ts, parse_date_to_ts_end, AuditExporter, ExportFilter,
         };
 
+        let format = crate::tools::helpers::parse_audit_format(&params.format)?;
+
         if params.save {
             if params.action == "export" {
                 return Err(invalid_params_err(
@@ -3972,7 +3975,7 @@ impl PhantomMcpServer {
                     );
                 }
 
-                if params.format == "csv" {
+                if format == crate::tools::helpers::AuditFormat::Csv {
                     return text_result(AuditExporter::rows_to_csv(&rows));
                 }
 
@@ -4280,7 +4283,7 @@ impl PhantomMcpServer {
 
     /// Pull a team vault into the current project's local vault.
     #[tool(
-        description = "Download and decrypt the team vault for this project into the local vault. Requires a separately commissioned hosted service and entitled account; the public hosted service is not currently commissioned. Use this (not phantom_cloud_pull) when secrets were shared by a teammate via phantom_team_vault_push. Overwrites local secrets: requires confirm:true."
+        description = "Download and decrypt the team vault for this project into the local vault. Requires a separately commissioned hosted service and entitled account; the public hosted service is not currently commissioned. Use this (not phantom_cloud_pull) when secrets were shared by a teammate via phantom_team_vault_push. Overwrites local secrets: requires confirm:true plus a one-use out-of-band `approval_token` (the operator enables effects with PHANTOM_MCP_EFFECTS=trusted-terminal; a call without the token prints a nonce on the server's stderr for `phantom mcp-approve <NONCE>` in a trusted terminal)."
     )]
     async fn phantom_team_vault_pull(
         &self,
@@ -4932,7 +4935,9 @@ impl PhantomMcpServer {
             mapped-secret preflight; it does not recall values already injected or cached. \
             Returns: { demoted: [{ name, expires_at, secs_overdue }], \
             promoted: [{ name }], skipped_count, total_scanned }. \
-            Requires confirm:true because it writes vault metadata."
+            Requires confirm:true \
+            plus a one-use out-of-band `approval_token` \
+            (the operator enables effects with PHANTOM_MCP_EFFECTS=trusted-terminal; a call without the token prints a nonce on the server's stderr for `phantom mcp-approve <NONCE>` in a trusted terminal) because it writes vault metadata."
     )]
     fn phantom_apply_expiry_policy(
         &self,
@@ -5397,7 +5402,15 @@ fn retrieve_optional_secret(
     }
 }
 
+/// Longest secret name MCP accepts, in bytes.
+const MAX_MCP_SECRET_NAME_BYTES: usize = 256;
+
 fn validate_mcp_secret_name(name: &str) -> Result<(), McpError> {
+    if name.len() > MAX_MCP_SECRET_NAME_BYTES {
+        return Err(invalid_params_err(format!(
+            "Secret names must be at most {MAX_MCP_SECRET_NAME_BYTES} bytes"
+        )));
+    }
     let mut bytes = name.bytes();
     if !matches!(bytes.next(), Some(b'A'..=b'Z' | b'a'..=b'z' | b'_'))
         || !bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
@@ -7990,6 +8003,210 @@ mod tests {
     }
 
     #[test]
+    fn why_says_when_exec_cannot_deliver_a_protected_key() {
+        let _environment = TestEnvironment::new();
+        let (server, dir) = setup_initialized_project();
+        let token = phantom_core::token::PhantomToken::generate();
+        let mut env = std::fs::read_to_string(dir.path().join(".env")).unwrap();
+        env.push_str(&format!("GROQ_API_KEY={}\n", token.as_str()));
+        std::fs::write(dir.path().join(".env"), env).unwrap();
+        let why = |key: &str| {
+            server
+                .phantom_why(Parameters(WhyParams {
+                    key: key.to_string(),
+                }))
+                .unwrap()
+        };
+
+        // `phantom init` protected DATABASE_URL too, so exec will not start
+        // at all, even for a key a built-in route would proxy.
+        let blocked = why("OPENAI_API_KEY");
+        let report = structured_report(&blocked);
+        assert_eq!(report["exec"]["delivery"], "proxied");
+        assert_eq!(report["exec"]["blocked_by"]["service"], "database");
+        assert_eq!(report["exec"]["blocked_by"]["reason"], "connection_string");
+        assert_eq!(report["exec"]["blocked_by"]["key"], "DATABASE_URL");
+        let step = report["next_step"].as_str().unwrap();
+        assert!(step.contains("will not start"), "{step}");
+        assert!(extract_content_text(&blocked).contains("exec will not start"));
+
+        // Without the protected connection string, a built-in route needs nothing.
+        let env = std::fs::read_to_string(dir.path().join(".env")).unwrap();
+        let env: String = env
+            .lines()
+            .filter(|line| !line.starts_with("DATABASE_URL="))
+            .map(|line| format!("{line}\n"))
+            .collect();
+        std::fs::write(dir.path().join(".env"), env).unwrap();
+        let routed = why("OPENAI_API_KEY");
+        let report = structured_report(&routed);
+        assert_eq!(report["exec"]["delivery"], "proxied");
+        assert_eq!(report["exec"]["service"], "openai");
+        assert_eq!(report["exec"]["upstream"], "api.openai.com");
+        assert!(report["exec"]["blocked_by"].is_null());
+        assert!(report["next_step"].is_null());
+
+        // Protected, but nothing routes it: the agent is told exec cannot use it.
+        let unrouted = why("GROQ_API_KEY");
+        let report = structured_report(&unrouted);
+        assert_eq!(report["classification"], "protected");
+        assert_eq!(report["exec"]["delivery"], "no_route");
+        assert!(report["exec"]["service"].is_null());
+        let step = report["next_step"].as_str().unwrap();
+        assert!(step.contains("no provider accepts"), "{step}");
+        assert!(extract_content_text(&unrouted).contains("Under phantom exec: no route"));
+        assert_no_value_leak(&unrouted, &[token.as_str(), "phm_"]);
+
+        // The MCP report and `phantom why --json` stay the same shape.
+        let config = PhantomConfig::load(&dir.path().join(".phantom.toml")).unwrap();
+        let dotenv = DotenvFile::parse_file(&dir.path().join(".env")).unwrap();
+        for key in ["OPENAI_API_KEY", "GROQ_API_KEY", "NODE_ENV", "NOPE"] {
+            assert_eq!(
+                structured_report(&why(key)),
+                phantom_core::why::why_report(key, Some(&dotenv), Some(&config)),
+                "{key}"
+            );
+        }
+    }
+
+    #[test]
+    fn why_before_init_classifies_the_project_env() {
+        let _environment = TestEnvironment::new();
+        let (server, dir) = setup_test_project();
+        // A random, non-token value generated at run time.
+        let generated = phantom_core::token::PhantomToken::generate();
+        let value = generated.as_str().trim_start_matches("phm_");
+        std::fs::write(
+            dir.path().join(".env"),
+            format!("STRIPE_SECRET_KEY={value}\nNODE_ENV=production\n"),
+        )
+        .unwrap();
+        let why = |key: &str| {
+            server.phantom_why(Parameters(WhyParams {
+                key: key.to_string(),
+            }))
+        };
+
+        // The first question an agent asks, before anyone has run init.
+        let unprotected = why("STRIPE_SECRET_KEY").expect("why must answer before init");
+        let report = structured_report(&unprotected);
+        assert_eq!(report["classification"], "secret_unprotected");
+        assert_eq!(report["reason"], "key_name");
+        assert!(report["exec"].is_null());
+        assert!(report["next_step"]
+            .as_str()
+            .unwrap()
+            .contains("phantom init"));
+        assert!(extract_content_text(&unprotected).contains("not initialized"));
+        assert_no_value_leak(&unprotected, &[value]);
+
+        // Same report as `phantom why --json` in an uninitialized project.
+        let dotenv = DotenvFile::parse_file(&dir.path().join(".env")).unwrap();
+        for key in ["STRIPE_SECRET_KEY", "NODE_ENV", "NOPE"] {
+            assert_eq!(
+                structured_report(&why(key).unwrap()),
+                phantom_core::why::why_report(key, Some(&dotenv), None),
+                "{key}"
+            );
+        }
+
+        // No .env yet: a next step, not an error.
+        std::fs::remove_file(dir.path().join(".env")).unwrap();
+        let empty = structured_report(&why("STRIPE_SECRET_KEY").unwrap());
+        assert_eq!(empty["dotenv_exists"], false);
+        assert!(empty["next_step"].is_string());
+
+        // Asking is read-only: nothing was initialized on the agent's behalf.
+        assert!(!dir.path().join(".phantom.toml").exists());
+    }
+
+    #[test]
+    fn why_answers_without_opening_the_vault() {
+        let _environment = TestEnvironment::new();
+        let (server, _dir) = setup_initialized_project();
+        // A locked or unavailable vault must not hide a value-free answer:
+        // why reads only .phantom.toml and the dotenv's names and token shapes.
+        let other = phantom_core::token::PhantomToken::generate();
+        // SAFETY: TestEnvironment holds the process env lock and restores it.
+        unsafe { std::env::set_var("PHANTOM_VAULT_PASSPHRASE", other.as_str()) };
+        let result = server
+            .phantom_why(Parameters(WhyParams {
+                key: "OPENAI_API_KEY".to_string(),
+            }))
+            .expect("why must not need the vault");
+        let report = structured_report(&result);
+        assert_eq!(report["classification"], "protected");
+        assert_eq!(report["exec"]["delivery"], "proxied");
+        assert_no_value_leak(&result, &[other.as_str()]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn why_before_init_refuses_a_symlinked_env() {
+        let _environment = TestEnvironment::new();
+        let (server, dir) = setup_test_project();
+        // A dotenv outside the project, reached through a `.env` symlink.
+        let outside = TempDir::new().unwrap();
+        let generated = phantom_core::token::PhantomToken::generate();
+        let value = generated.as_str().trim_start_matches("phm_");
+        let target = outside.path().join("elsewhere.env");
+        std::fs::write(&target, format!("STRIPE_SECRET_KEY={value}\n")).unwrap();
+        std::fs::remove_file(dir.path().join(".env")).unwrap();
+        std::os::unix::fs::symlink(&target, dir.path().join(".env")).unwrap();
+
+        let error = server
+            .phantom_why(Parameters(WhyParams {
+                key: "STRIPE_SECRET_KEY".to_string(),
+            }))
+            .expect_err("a symlinked .env must be refused, not classified");
+        assert!(
+            error.message.contains("not a regular, non-symlink file"),
+            "{}",
+            error.message
+        );
+        assert!(!error.message.contains(value));
+        assert!(!dir.path().join(".phantom.toml").exists());
+    }
+
+    #[test]
+    fn why_hints_at_vault_drift_when_nothing_records_a_secret() {
+        let _environment = TestEnvironment::new();
+        let (server, dir) = setup_initialized_project();
+        let why = |key: &str| {
+            server
+                .phantom_why(Parameters(WhyParams {
+                    key: key.to_string(),
+                }))
+                .unwrap()
+        };
+        // Normal initialized project: the config and dotenv record secrets.
+        assert!(!extract_content_text(&why("NODE_ENV")).contains("drift"));
+
+        // The config lists no secrets and the dotenv holds no tokens, but the
+        // vault may still: why cannot tell, so it says where to look.
+        let config_path = dir.path().join(".phantom.toml");
+        let mut config = PhantomConfig::load(&config_path).unwrap();
+        config.phantom.secrets.clear();
+        config.save(&config_path).unwrap();
+        std::fs::write(dir.path().join(".env"), "NODE_ENV=production\n").unwrap();
+
+        for key in ["NODE_ENV", "NOPE"] {
+            let result = why(key);
+            let text = extract_content_text(&result);
+            assert!(text.contains("vault/dotenv drift"), "{text}");
+            assert!(text.contains("phantom_doctor"), "{text}");
+            // The JSON shape is unchanged.
+            let dotenv = DotenvFile::parse_file(&dir.path().join(".env")).unwrap();
+            let config = PhantomConfig::load(&config_path).unwrap();
+            assert_eq!(
+                structured_report(&result),
+                phantom_core::why::why_report(key, Some(&dotenv), Some(&config)),
+                "{key}"
+            );
+        }
+    }
+
+    #[test]
     fn capability_attaches_structured_content_and_keeps_json_text() {
         let _environment = TestEnvironment::new();
         let (server, _dir) = setup_test_project();
@@ -9286,6 +9503,120 @@ mod tests {
     }
 
     #[test]
+    fn every_approval_gated_tool_says_so_in_its_description() {
+        let tools = PhantomMcpServer::tool_router().list_all();
+        let mut gated = 0;
+        let mut missing = Vec::new();
+        for tool in &tools {
+            let schema = serde_json::to_string(tool.input_schema.as_ref()).unwrap();
+            if !schema.contains("\"approval_token\"") {
+                continue;
+            }
+            gated += 1;
+            let description = tool.description.as_deref().unwrap_or_default();
+            if !description.contains("approval") {
+                missing.push(tool.name.to_string());
+            }
+        }
+        assert!(
+            gated > 10,
+            "expected the approval-gated catalog to be found"
+        );
+        assert!(
+            missing.is_empty(),
+            "tools take approval_token but their descriptions do not mention approval: {missing:?}"
+        );
+    }
+
+    #[test]
+    fn add_secret_interactive_is_effect_free_and_ungated() {
+        let _environment = TestEnvironment::new();
+        let (server, dir) = setup_initialized_project();
+        unsafe {
+            std::env::remove_var("PHANTOM_MCP_EFFECTS");
+            std::env::remove_var("PHANTOM_MCP_SKIP_APPROVAL");
+        }
+        let config_before = std::fs::read(dir.path().join(".phantom.toml")).unwrap();
+
+        for confirm in [true, false] {
+            let result = server
+                .phantom_add_secret_interactive(Parameters(AddSecretInteractiveParams {
+                    name: "FOO".to_string(),
+                    confirm,
+                }))
+                .unwrap();
+            let text = get_result_text(&result);
+            assert!(text.contains("phantom add FOO"));
+        }
+
+        // Legacy callers that still send approval_token are accepted and the
+        // token is ignored; the schema no longer advertises it.
+        let legacy: AddSecretInteractiveParams = serde_json::from_value(serde_json::json!({
+            "name": "FOO",
+            "confirm": true,
+            "approval_token": "ignored"
+        }))
+        .unwrap();
+        assert!(server
+            .phantom_add_secret_interactive(Parameters(legacy))
+            .is_ok());
+        let schema =
+            serde_json::to_string(&schemars::schema_for!(AddSecretInteractiveParams)).unwrap();
+        assert!(!schema.contains("approval_token"));
+        assert!(!schema.contains("\"value\""));
+
+        // Name validation stays: shell metacharacters never reach the command.
+        for bad in ["", "FOO BAR", "FOO;id", "1FOO", "FOO=bar", "$(id)"] {
+            let err = server
+                .phantom_add_secret_interactive(Parameters(AddSecretInteractiveParams {
+                    name: bad.to_string(),
+                    confirm: true,
+                }))
+                .unwrap_err();
+            assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        }
+
+        // Length cap: 256 bytes is the longest accepted name.
+        for (len, ok) in [(256, true), (257, false)] {
+            let result =
+                server.phantom_add_secret_interactive(Parameters(AddSecretInteractiveParams {
+                    name: "A".repeat(len),
+                    confirm: true,
+                }));
+            assert_eq!(result.is_ok(), ok, "name length {len}");
+        }
+
+        // No effect: project config untouched and no approval was queued.
+        assert_eq!(
+            std::fs::read(dir.path().join(".phantom.toml")).unwrap(),
+            config_before
+        );
+        assert!(!dir.path().join(".phantom/mcp-approvals.jsonl").exists());
+    }
+
+    #[test]
+    fn effects_disabled_refusal_names_variable_and_approval_step() {
+        let _environment = TestEnvironment::new();
+        let (server, _dir) = setup_initialized_project();
+        unsafe {
+            std::env::remove_var("PHANTOM_MCP_EFFECTS");
+            std::env::remove_var("PHANTOM_MCP_SKIP_APPROVAL");
+        }
+        let err = server
+            .phantom_rotate(Parameters(RotateParams {
+                confirm: true,
+                approval_token: None,
+            }))
+            .unwrap_err();
+        assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        assert!(err.message.contains("PHANTOM_MCP_EFFECTS=trusted-terminal"));
+        assert!(err.message.contains("own trusted terminal"));
+        assert!(err.message.contains("approval_token"));
+        assert!(err.message.contains("docs/claude-code.md"));
+        assert!(!err.message.contains("<nonce>:<token>"));
+    }
+
+    #[test]
     fn test_add_secret_params_rejects_plaintext_value_field() {
         let _environment = TestEnvironment::new();
         let parsed = serde_json::from_value::<AddSecretParams>(serde_json::json!({
@@ -10370,6 +10701,62 @@ mod tests {
         );
         assert!(text.contains("CSV_KEY"), "CSV must include the secret name");
         assert!(text.contains("vault.retrieve"), "CSV must include the op");
+    }
+
+    #[test]
+    fn test_audit_formats_are_case_insensitive_and_reject_unknown() {
+        let _environment = TestEnvironment::new();
+        let (server, _dir) = setup_initialized_project();
+        let home = canonical_temp_dir();
+        unsafe { std::env::set_var("HOME", home.path()) };
+        let now = 1_700_000_000_u64;
+        write_synthetic_audit_log(
+            home.path(),
+            &[(now - 100, "vault.retrieve", Some("FMT_KEY"))],
+        );
+
+        let analytics = |format: &str| {
+            server.phantom_audit_analytics(Parameters(AuditAnalyticsParams {
+                window_days: 0,
+                min_anomaly_score: None,
+                format: format.to_string(),
+            }))
+        };
+        let export = |format: &str| {
+            server.phantom_audit_export_report(Parameters(AuditExportReportParams {
+                action: "export".to_string(),
+                format: format.to_string(),
+                from: None,
+                to: None,
+                secret_name: None,
+                operation: None,
+                save: false,
+                confirm: false,
+                approval_token: None,
+            }))
+        };
+        let csv_header = "ts,datetime,op,name,process\n";
+
+        let upper_csv = extract_content_text(&analytics("CSV").unwrap());
+        assert!(upper_csv.starts_with(csv_header), "{upper_csv}");
+        let upper_json = parse_result_json(&analytics("Json").unwrap());
+        assert!(upper_json.get("analytics").is_some());
+
+        let rows_csv = extract_content_text(&export("CSV").unwrap());
+        assert!(rows_csv.contains("FMT_KEY"), "{rows_csv}");
+        assert!(!rows_csv.trim_start().starts_with('['), "{rows_csv}");
+        let rows_json: serde_json::Value =
+            serde_json::from_str(&extract_content_text(&export("JSON").unwrap())).unwrap();
+        assert!(rows_json.is_array(), "{rows_json}");
+
+        for format in ["xml", "", "jsonl"] {
+            let err = analytics(format).unwrap_err();
+            assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+            assert!(err.message.contains("Invalid format"), "{}", err.message);
+            let err = export(format).unwrap_err();
+            assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+            assert!(err.message.contains("Invalid format"), "{}", err.message);
+        }
     }
 
     #[test]

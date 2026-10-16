@@ -51,7 +51,7 @@ pub struct ServiceRoute {
 ///   (or `/v1`) itself and the OpenAI-compatible root is `/v1beta/openai`.
 /// - `api-inference.huggingface.co`, `api.stripe.com`, `supabase.co`,
 ///   `api.resend.com`, `api.sendgrid.com`, `api.twilio.com`,
-///   `api.cloudflare.com`, `api.github.com`, `pinecone.io`: their SDKs send
+///   `api.github.com`, `pinecone.io`: their SDKs send
 ///   full paths from an unversioned host root.
 const SDK_BASE_PATHS: &[(&str, &str)] = &[
     // OpenAI SDKs and Codex: default `https://api.openai.com/v1`.
@@ -64,6 +64,11 @@ const SDK_BASE_PATHS: &[(&str, &str)] = &[
     // replicate-javascript defaults to `https://api.replicate.com/v1`; the
     // Python SDK uses the host root and sends `/v1/...`, left unchanged.
     ("api.replicate.com", "/v1"),
+    // Cloudflare's SDKs (`CLOUDFLARE_BASE_URL`) and Wrangler
+    // (`CLOUDFLARE_API_BASE_URL`) default to
+    // `https://api.cloudflare.com/client/v4` and append unversioned paths
+    // such as `/accounts/...`; every documented v4 endpoint lives under it.
+    ("api.cloudflare.com", "/client/v4"),
 ];
 
 /// The SDK base path for an upstream host (no scheme), if it has one.
@@ -347,17 +352,24 @@ impl ServiceRegistry {
             "GEMINI_BASE_URL",
             "GOOGLE_GEMINI_BASE_URL",
             "CO_API_URL",
+            "CLOUDFLARE_BASE_URL",
+            "CLOUDFLARE_API_BASE_URL",
         ]
     }
 }
 
 /// Base-URL variables read by official SDKs whose name does not follow the
-/// `<SECRET_STEM>_BASE_URL` convention. Only upstreams whose SDK treats the
-/// variable as the host root (so `/<service>/` maps onto it exactly) belong
-/// here; SDKs that expect a versioned path such as `/client/v4` do not.
+/// `<SECRET_STEM>_BASE_URL` convention. An upstream belongs here only when
+/// `/<service>/` maps onto the SDK's default base URL exactly: either the
+/// SDK treats the variable as the host root, or its default carries a
+/// version path that the route restores through [`SDK_BASE_PATHS`] while
+/// leaving already-versioned requests unchanged.
 ///
 /// - `google-genai` (Python and JS, Gemini CLI): `GOOGLE_GEMINI_BASE_URL`
 /// - `cohere` (Python v5+): `CO_API_URL`
+/// - `cloudflare` (TypeScript and Python): `CLOUDFLARE_BASE_URL`; Wrangler:
+///   `CLOUDFLARE_API_BASE_URL`. Both default to `.../client/v4`, which the
+///   `cloudflare` route's SDK base path supplies.
 ///
 /// `REPLICATE_BASE_URL` is deliberately absent: replicate-python 1.x treats it
 /// as the host root (`/v1/...` paths) while the 2.x SDK defaults it to
@@ -367,6 +379,7 @@ fn sdk_base_url_env_aliases(target_base: &str) -> &'static [&'static str] {
     match target_base {
         "https://generativelanguage.googleapis.com" => &["GOOGLE_GEMINI_BASE_URL"],
         "https://api.cohere.com" => &["CO_API_URL"],
+        "https://api.cloudflare.com" => &["CLOUDFLARE_BASE_URL", "CLOUDFLARE_API_BASE_URL"],
         _ => &[],
     }
 }
@@ -475,6 +488,7 @@ mod tests {
             ("xai", Some("/v1")),
             ("mistral", Some("/v1")),
             ("replicate", Some("/v1")),
+            ("cloudflare", Some("/client/v4")),
             ("anthropic", None),
             ("perplexity", None),
             ("cohere", None),
@@ -487,7 +501,6 @@ mod tests {
             ("resend", None),
             ("sendgrid", None),
             ("twilio", None),
-            ("cloudflare", None),
             ("github_api", None),
             ("pinecone", None),
         ];
@@ -573,6 +586,24 @@ mod tests {
                 "/google_ai/v1beta/openai/chat/completions",
                 "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
             ),
+            // Cloudflare SDKs and Wrangler append unversioned paths to a
+            // `/client/v4` default; explicit `/client/v4/...` is unchanged.
+            (
+                "/cloudflare/accounts/abc/workers/scripts",
+                "https://api.cloudflare.com/client/v4/accounts/abc/workers/scripts",
+            ),
+            (
+                "/cloudflare//user/tokens/verify",
+                "https://api.cloudflare.com/client/v4/user/tokens/verify",
+            ),
+            (
+                "/cloudflare/client/v4/zones",
+                "https://api.cloudflare.com/client/v4/zones",
+            ),
+            (
+                "/cloudflare/client/v40/zones",
+                "https://api.cloudflare.com/client/v4/client/v40/zones",
+            ),
             ("/stripe/v1/charges", "https://api.stripe.com/v1/charges"),
             ("/github_api/user", "https://api.github.com/user"),
         ];
@@ -616,7 +647,14 @@ mod tests {
 
     #[test]
     fn sdk_specific_base_url_variables_point_at_the_same_route() {
-        let config = phantom_core::config::PhantomConfig::new_with_defaults("p".to_string());
+        let mut config = phantom_core::config::PhantomConfig::new_with_defaults("p".to_string());
+        // `cloudflare` is added by `phantom init` when a token is detected.
+        config.services.insert(
+            "cloudflare".to_string(),
+            phantom_core::config::PhantomConfig::trusted_builtin_proxy_service("cloudflare")
+                .unwrap(),
+        );
+        config.validate_agentic_proxy_routes().unwrap();
         let registry = ServiceRegistry::from_config(&config.services);
         let overrides = registry.base_url_overrides(54321);
         let url_for = |var: &str| {
@@ -631,6 +669,8 @@ mod tests {
         for (alias, conventional) in [
             ("GOOGLE_GEMINI_BASE_URL", "GEMINI_BASE_URL"),
             ("CO_API_URL", "COHERE_BASE_URL"),
+            ("CLOUDFLARE_BASE_URL", "CLOUDFLARE_API_TOKEN_BASE_URL"),
+            ("CLOUDFLARE_API_BASE_URL", "CLOUDFLARE_API_TOKEN_BASE_URL"),
         ] {
             assert!(url_for(alias).is_some(), "{alias} missing");
             assert_eq!(url_for(alias), url_for(conventional), "{alias}");

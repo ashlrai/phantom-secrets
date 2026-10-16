@@ -1066,7 +1066,7 @@ fn run() -> anyhow::Result<()> {
         Commands::Watch { auto, auto_rotate } => {
             commands::watch::run_with_rotate(auto, auto_rotate)
         }
-        Commands::Why { key } => commands::why::run(&key),
+        Commands::Why { key } => commands::why::run(&key, global_json),
         Commands::Wrap { only, skip } => commands::wrap::run(&only, &skip),
         Commands::Unwrap => commands::unwrap::run(),
         Commands::Copy { name, to, rename } => commands::copy::run(&name, &to, &rename),

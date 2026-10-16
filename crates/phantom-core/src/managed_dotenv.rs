@@ -66,7 +66,9 @@ pub fn validate_dotenv_basename(name: &str) -> Result<String> {
     Ok(name.to_string())
 }
 
-fn parse_regular_dotenv(path: &Path) -> Result<Option<DotenvFile>> {
+/// Parse `path` when it is a regular file. `Ok(None)` when it does not exist;
+/// a symlink or any other non-regular file is refused before it is read.
+pub fn parse_regular_dotenv(path: &Path) -> Result<Option<DotenvFile>> {
     let metadata = match std::fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),

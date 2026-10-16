@@ -101,6 +101,46 @@ pub fn try_create_vault(project_id: &str) -> Result<Box<dyn VaultBackend>> {
     }
 }
 
+/// Read-only probe for the encrypted-file vault split.
+///
+/// A project initialized with `PHANTOM_VAULT_PASSPHRASE` keeps its secrets in
+/// the encrypted-file vault. A later process without that variable (for
+/// example an MCP server launched by a GUI client) selects the OS keychain
+/// instead and would otherwise report an empty vault. This returns a
+/// value-blind notice when this process has no passphrase in its environment
+/// but an encrypted-file vault for `project_id` exists on disk. It never
+/// opens, decrypts, locks, or creates anything and never reads a passphrase.
+pub fn locked_file_vault_notice(project_id: &str) -> Option<String> {
+    let passphrase_set =
+        std::env::var_os("PHANTOM_VAULT_PASSPHRASE").is_some_and(|v| !v.is_empty());
+    locked_file_vault_notice_in(&file_vault_dir(), project_id, passphrase_set)
+}
+
+fn locked_file_vault_notice_in(
+    vault_dir: &std::path::Path,
+    project_id: &str,
+    passphrase_set: bool,
+) -> Option<String> {
+    if passphrase_set
+        || project_id.is_empty()
+        || !project_id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    {
+        return None;
+    }
+    let path = vault_dir.join("vaults").join(format!("{project_id}.vault"));
+    let is_file = std::fs::symlink_metadata(&path)
+        .map(|meta| meta.file_type().is_file())
+        .unwrap_or(false);
+    is_file.then(|| {
+        format!(
+            "An encrypted-file vault for this project exists at {} but is locked in this process: PHANTOM_VAULT_PASSPHRASE is not set here, so Phantom cannot open it and selects the OS keychain instead. Set PHANTOM_VAULT_PASSPHRASE to the passphrase used when the secrets were stored (for an MCP client, in the server's env config) and retry.",
+            path.display()
+        )
+    })
+}
+
 /// Directory holding encrypted file vaults.
 fn file_vault_dir() -> std::path::PathBuf {
     directories::ProjectDirs::from("ai", "phantom", "phantom-secrets")
@@ -221,6 +261,27 @@ mod tests {
     use std::collections::VecDeque;
     use std::sync::{Arc, Mutex};
     use tempfile::tempdir;
+
+    #[test]
+    fn locked_file_vault_notice_reports_only_unopened_file_vaults() {
+        let dir = tempdir().unwrap();
+        let id = "abc123";
+        assert!(locked_file_vault_notice_in(dir.path(), id, false).is_none());
+
+        std::fs::create_dir_all(dir.path().join("vaults")).unwrap();
+        std::fs::write(
+            dir.path().join("vaults").join("abc123.vault"),
+            b"ciphertext",
+        )
+        .unwrap();
+        let notice = locked_file_vault_notice_in(dir.path(), id, false).unwrap();
+        assert!(notice.contains("PHANTOM_VAULT_PASSPHRASE"));
+        assert!(notice.contains("abc123.vault"));
+        assert!(!notice.contains("ciphertext"));
+
+        assert!(locked_file_vault_notice_in(dir.path(), id, true).is_none());
+        assert!(locked_file_vault_notice_in(dir.path(), "../vaults/abc123", false).is_none());
+    }
 
     #[test]
     fn public_vault_constructor_is_fallible() {

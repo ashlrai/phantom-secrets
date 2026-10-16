@@ -4,6 +4,84 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (MCP `phantom_why` before init and with a locked vault)
+
+- MCP `phantom_why` failed with an internal error (-32603) in a project where
+  `phantom init` has not run yet, which is exactly when an agent asks why a key
+  is not protected. `phantom why` on the CLI already answered there. It also
+  opened the vault only to list names, so a locked keychain or a wrong
+  `PHANTOM_VAULT_PASSPHRASE` turned a value-free question into an error.
+  - `phantom_why` now reads only `.phantom.toml` and the dotenv, never the
+    vault. Before init it classifies `./.env` as `phantom why` does, says the
+    project is not initialized, and returns `exec: null`; `next_step` for an
+    unprotected secret points at `phantom init`.
+  - Its JSON now comes from the same `why_report` that `phantom why --json`
+    prints, so the two cannot drift. A malformed `.phantom.toml` or dotenv is
+    still an error. Nothing is created or initialized by asking.
+  - Before init, `phantom why` and `phantom_why` refuse a `./.env` that is a
+    symlink or not a regular file, as the managed-dotenv resolver already
+    does after init, so neither reads a file outside the project.
+  - When `.phantom.toml` lists no secrets and the dotenv holds no tokens,
+    the human summary adds that `phantom_why` does not read the vault and
+    points at `phantom_doctor` / `phantom_status` for vault/dotenv drift. The
+    JSON is unchanged.
+
+### Fixed (protected keys with no proxy route)
+
+- A protected key that no proxy route injects (for example `GROQ_API_KEY`,
+  or a signing secret such as `NEXTAUTH_SECRET`) reaches a `phantom exec`
+  child only as a session token that no provider accepts. Nothing said so:
+  `phantom why` and MCP `phantom_why` reported it as `PROTECTED` with no next
+  step, and `phantom exec` counted it as proxied.
+  - `phantom exec` now counts only routed secrets as proxied and warns, on
+    stderr and also under `--quiet`, naming each protected key it hands the
+    child with no route. Names only, never values.
+  - `phantom why`, `phantom why --json` and MCP `phantom_why` add a
+    value-free `exec` object for a protected key: `delivery` (`proxied`,
+    `no_route`, `withheld`, `connection_string_refused` or
+    `custom_route_refused`), `service`, `upstream` and `blocked_by`.
+    `blocked_by` names the service when the config stops exec from starting
+    for every key (a custom or altered route, or a protected connection
+    string), using the same check exec runs. `next_step` explains every
+    answer but an unblocked `proxied`. Routing, injection and the effects
+    gate are unchanged.
+
+### Fixed (CLI and MCP JSON output)
+
+- `phantom audit stats --json` with an empty audit log now prints the same
+  JSON object as a populated log (`total_events: 0`, `secrets: []`) instead
+  of a human hint; the hint goes to stderr.
+- `phantom audit export --format json` with no matching records now prints
+  `[]` instead of nothing on stdout.
+- `phantom why <KEY> --json` now honors the global `--json` flag and prints
+  the value-free report the MCP `phantom_why` tool returns (`key`,
+  `dotenv_exists`, `found`, `classification`, `protected`, `reason`,
+  `matched_pattern`, `service`, `next_step`), including `found: false` when
+  the key or the `.env` file is missing. Human output is unchanged.
+- The MCP `phantom_audit_analytics` and `phantom_audit_export_report` tools
+  accept `format` as `json` or `csv` in any letter case and reject any other
+  value with an invalid-params (-32602) error. They previously fell back to
+  JSON for unrecognized values, including `CSV`.
+
+### Fixed (MCP)
+
+- `phantom_add_secret_interactive` works out of the box again. It only returns
+  `phantom add NAME` for the user's trusted terminal (no value accepted, nothing
+  stored, no file or network access), yet it required
+  `PHANTOM_MCP_EFFECTS=trusted-terminal` plus an approval token, so the add flow
+  that `phantom init` documents always failed. It now needs neither gate nor
+  `confirm`, keeps strict `[A-Za-z_][A-Za-z0-9_]*` name validation, and no
+  longer advertises `approval_token` (legacy callers that send it are still
+  accepted). Every tool that performs an effect keeps both gates unchanged.
+- Every MCP tool whose schema takes `approval_token` now says so in its
+  description, including how approval is obtained; a unit test walks the tool
+  catalog to keep it that way.
+- The refusal for effectful tools with effects disabled now also says that the
+  operator must approve each call in their own trusted terminal and supply the
+  `approval_token`, and `docs/claude-code.md` documents how to set
+  `PHANTOM_MCP_EFFECTS` outside agent authority.
+- MCP secret-name validation now also rejects names longer than 256 bytes.
+
 ### Fixed (upgrade)
 
 - `phantom upgrade` no longer depends on the `zip` 8 line, which crates.io has
@@ -20,6 +98,18 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ### Fixed (proxy)
 
+- Cloudflare tooling now works under `phantom exec`. The built-in
+  `cloudflare` route exported only `CLOUDFLARE_API_TOKEN_BASE_URL`, which no
+  Cloudflare tool reads, so Wrangler and the official SDKs sent the `phm_`
+  token straight to `api.cloudflare.com` and got `401`. `phantom exec` now
+  also exports `CLOUDFLARE_API_BASE_URL` (Wrangler) and `CLOUDFLARE_BASE_URL`
+  (the `cloudflare` TypeScript and Python SDKs), and the route restores the
+  `/client/v4` path those tools expect in their base URL, so
+  `/accounts/...` reaches `https://api.cloudflare.com/client/v4/accounts/...`.
+  Requests that already send `/client/v4/...` are unchanged. Both variables
+  are scrubbed from the inherited environment like the other route
+  overrides. The route definition and its auth handling are unchanged, so
+  agentic validation is unaffected and no config change is needed.
 - The built-in `twilio` route now sends valid HTTP Basic credentials. It
   previously injected `Authorization: Basic <raw auth token>`, which Twilio
   rejects on every request. The route now keeps the username from the
