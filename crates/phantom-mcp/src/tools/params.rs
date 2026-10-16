@@ -532,7 +532,8 @@ pub struct AuditAnalyticsParams {
     /// (range 0.0–1.0). Defaults to 0.0 (return all secrets).
     #[serde(default)]
     pub min_anomaly_score: Option<f64>,
-    /// Output format: "json" (default) or "csv".
+    /// Output format: "json" (default) or "csv", case-insensitive. Other
+    /// values are rejected with an invalid-params error.
     #[serde(default = "default_analytics_format")]
     pub format: String,
 }
@@ -617,7 +618,8 @@ pub struct AuditExportReportParams {
     /// full compliance report. Default: "report".
     #[serde(default = "default_export_action")]
     pub action: String,
-    /// Output format: "csv" or "json". Default: "json".
+    /// Output format: "csv" or "json", case-insensitive. Default: "json".
+    /// Other values are rejected with an invalid-params error.
     #[serde(default = "default_export_format_for_report")]
     pub format: String,
     /// Start date inclusive (YYYY-MM-DD). Omit for no lower bound.
