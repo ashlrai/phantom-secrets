@@ -155,6 +155,8 @@ fn windows_reopen_contents(file: &std::fs::File, shown: &str) -> Result<std::fs:
         ReOpenFile, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
     };
 
+    let before = crate::fs::anchored::std_file_identity(file)
+        .with_context(|| format!("Failed to inspect {shown}"))?;
     // SAFETY: the handle is owned by `file` and valid for the call; the
     // returned handle, when valid, is owned by the File built from it.
     let handle = unsafe {
@@ -174,6 +176,14 @@ fn windows_reopen_contents(file: &std::fs::File, shown: &str) -> Result<std::fs:
         });
     }
     let reopened = unsafe { std::fs::File::from_raw_handle(handle) };
+    // The reopen must be the same file object the checks judged, as
+    // fs/anchored.rs requires of its own reopens.
+    let after = crate::fs::anchored::std_file_identity(&reopened)
+        .with_context(|| format!("Failed to inspect {shown}"))?;
+    if after != before {
+        return Err(refuse_non_regular(shown))
+            .with_context(|| format!("Windows reopened a different file object for {shown}"));
+    }
     let metadata = reopened
         .metadata()
         .with_context(|| format!("Failed to inspect {shown}"))?;
