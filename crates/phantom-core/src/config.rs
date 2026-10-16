@@ -962,6 +962,11 @@ impl PhantomConfig {
         {
             return ExecDelivery::CustomRouteRefused { service: name };
         }
+        // Exec never puts a withheld key in the child's environment, even
+        // when a built-in route exists for it, so this answer beats proxied.
+        if self.exec_withheld_keys().contains(dotenv_key) {
+            return ExecDelivery::Withheld;
+        }
         // Same filter as `ServiceRegistry::from_config`: only an api_key
         // service with a host pattern becomes a proxy route.
         if let Some((name, service)) = mapped()
@@ -971,9 +976,6 @@ impl PhantomConfig {
                 service: name,
                 upstream: service.pattern.as_deref().unwrap_or_default(),
             };
-        }
-        if self.exec_withheld_keys().contains(dotenv_key) {
-            return ExecDelivery::Withheld;
         }
         ExecDelivery::NoRoute
     }

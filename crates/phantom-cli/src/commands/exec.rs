@@ -607,6 +607,15 @@ mod tests {
             )
             .unwrap(),
         );
+        // A rotation credential that also has a built-in route: exec still
+        // never hands it to the child, so `phantom why` must not say proxied.
+        config.phantom.secrets.insert(
+            "CLAUDE_KEY".to_string(),
+            toml::from_str(
+                "[rotation_provider]\nprovider = \"anthropic\"\napi_key_env = \"ANTHROPIC_API_KEY\"\n",
+            )
+            .unwrap(),
+        );
         config.sync.push(
             toml::from_str(
                 "platform = \"vercel\"\ntoken_env = \"VERCEL_TOKEN\"\nproject_id = \"p\"\n",
