@@ -2049,7 +2049,7 @@ impl PhantomMcpServer {
 
     /// Explain why a key is or isn't protected by Phantom.
     #[tool(
-        description = "Explain why an environment variable is or isn't protected by Phantom. Shows classification (Secret, PublicKey, NotSecret), whether it has a phantom token, and what heuristic matched. Returns a summary plus value-free JSON {key, dotenv_exists, found, classification, protected, reason, matched_pattern, service, next_step} (also as structuredContent)."
+        description = "Explain why an environment variable is or isn't protected by Phantom. Shows classification (Secret, PublicKey, NotSecret), whether it has a phantom token, and what heuristic matched. For a protected key it also says how `phantom exec` treats it. exec.delivery judges the key alone: `proxied` (a built-in route injects the real value for exec.upstream), `no_route` (the child gets only a session token that no provider accepts, so calls with it fail), `withheld` (exec never hands the child this provider-management or sync credential), `connection_string_refused` or `custom_route_refused` (exec will not start). exec.blocked_by is non-null when the config stops exec from starting for every key: {service, reason: `custom_route`, `altered_builtin_route` or `connection_string`, key}. next_step explains anything but an unblocked `proxied`. Returns a summary plus value-free JSON {key, dotenv_exists, found, classification, protected, reason, matched_pattern, service, exec: {delivery, service, upstream, blocked_by} | null, next_step} (also as structuredContent)."
     )]
     fn phantom_why(
         &self,
@@ -2065,6 +2065,7 @@ impl PhantomMcpServer {
             "reason": null,
             "matched_pattern": null,
             "service": null,
+            "exec": null,
             "next_step": null,
         });
         if !env_path.exists() {
@@ -2132,6 +2133,15 @@ impl PhantomMcpServer {
                         svc.pattern.as_deref().unwrap_or("n/a"),
                         svc_name
                     ));
+                }
+                // A protected key works under `phantom exec` only through a
+                // proxy route; say so when there is none.
+                let verdict = phantom_core::why::ExecVerdict::new(&params.key, &dotenv, cfg);
+                report["exec"] = verdict.to_json();
+                output.push_str(&format!("Under phantom exec: {}.\n", verdict.summary()));
+                if let Some(step) = verdict.next_step() {
+                    output.push_str(&format!("Next step: {step}\n"));
+                    report["next_step"] = step.into();
                 }
             }
         } else {
@@ -8023,6 +8033,73 @@ mod tests {
             .unwrap()
             .contains("phantom init"));
         assert_no_value_leak(&unprotected, &["_placeholder_value"]);
+    }
+
+    #[test]
+    fn why_says_when_exec_cannot_deliver_a_protected_key() {
+        let _environment = TestEnvironment::new();
+        let (server, dir) = setup_initialized_project();
+        let token = phantom_core::token::PhantomToken::generate();
+        let mut env = std::fs::read_to_string(dir.path().join(".env")).unwrap();
+        env.push_str(&format!("GROQ_API_KEY={}\n", token.as_str()));
+        std::fs::write(dir.path().join(".env"), env).unwrap();
+        let why = |key: &str| {
+            server
+                .phantom_why(Parameters(WhyParams {
+                    key: key.to_string(),
+                }))
+                .unwrap()
+        };
+
+        // `phantom init` protected DATABASE_URL too, so exec will not start
+        // at all, even for a key a built-in route would proxy.
+        let blocked = why("OPENAI_API_KEY");
+        let report = structured_report(&blocked);
+        assert_eq!(report["exec"]["delivery"], "proxied");
+        assert_eq!(report["exec"]["blocked_by"]["service"], "database");
+        assert_eq!(report["exec"]["blocked_by"]["reason"], "connection_string");
+        assert_eq!(report["exec"]["blocked_by"]["key"], "DATABASE_URL");
+        let step = report["next_step"].as_str().unwrap();
+        assert!(step.contains("will not start"), "{step}");
+        assert!(extract_content_text(&blocked).contains("exec will not start"));
+
+        // Without the protected connection string, a built-in route needs nothing.
+        let env = std::fs::read_to_string(dir.path().join(".env")).unwrap();
+        let env: String = env
+            .lines()
+            .filter(|line| !line.starts_with("DATABASE_URL="))
+            .map(|line| format!("{line}\n"))
+            .collect();
+        std::fs::write(dir.path().join(".env"), env).unwrap();
+        let routed = why("OPENAI_API_KEY");
+        let report = structured_report(&routed);
+        assert_eq!(report["exec"]["delivery"], "proxied");
+        assert_eq!(report["exec"]["service"], "openai");
+        assert_eq!(report["exec"]["upstream"], "api.openai.com");
+        assert!(report["exec"]["blocked_by"].is_null());
+        assert!(report["next_step"].is_null());
+
+        // Protected, but nothing routes it: the agent is told exec cannot use it.
+        let unrouted = why("GROQ_API_KEY");
+        let report = structured_report(&unrouted);
+        assert_eq!(report["classification"], "protected");
+        assert_eq!(report["exec"]["delivery"], "no_route");
+        assert!(report["exec"]["service"].is_null());
+        let step = report["next_step"].as_str().unwrap();
+        assert!(step.contains("no provider accepts"), "{step}");
+        assert!(extract_content_text(&unrouted).contains("Under phantom exec: no route"));
+        assert_no_value_leak(&unrouted, &[token.as_str(), "phm_"]);
+
+        // The MCP report and `phantom why --json` stay the same shape.
+        let config = PhantomConfig::load(&dir.path().join(".phantom.toml")).unwrap();
+        let dotenv = DotenvFile::parse_file(&dir.path().join(".env")).unwrap();
+        for key in ["OPENAI_API_KEY", "GROQ_API_KEY", "NODE_ENV", "NOPE"] {
+            assert_eq!(
+                structured_report(&why(key)),
+                phantom_core::why::why_report(key, Some(&dotenv), Some(&config)),
+                "{key}"
+            );
+        }
     }
 
     #[test]
