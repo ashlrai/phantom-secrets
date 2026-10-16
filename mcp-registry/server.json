@@ -136,7 +136,7 @@
         "properties": {
           "format": {
             "default": "json",
-            "description": "Output format: \"json\" (default) or \"csv\".",
+            "description": "Output format: \"json\" (default) or \"csv\", case-insensitive. Other\nvalues are rejected with an invalid-params error.",
             "type": "string"
           },
           "min_anomaly_score": {
@@ -251,7 +251,7 @@
           },
           "format": {
             "default": "json",
-            "description": "Output format: \"csv\" or \"json\". Default: \"json\".",
+            "description": "Output format: \"csv\" or \"json\", case-insensitive. Default: \"json\".\nOther values are rejected with an invalid-params error.",
             "type": "string"
           },
           "from": {
@@ -427,7 +427,7 @@
     },
     {
       "name": "phantom_check",
-      "description": "Check for security issues. With runtime=true, scans current environment for phantom tokens without a proxy (leak detection). Otherwise, scans .env files for unprotected real secrets. Returns a human summary plus a value-blind JSON report (also as structuredContent) shaped like `phantom check --json`: {mode, clean, findings: [{kind, path?, name?}], warnings, indeterminate?}. Reports names and paths only, never values or phantom tokens.",
+      "description": "Check for security issues. With runtime=true, scans current environment for phantom tokens without a proxy (leak detection). Otherwise, scans the same dotenv files as `phantom check` for unprotected real secrets: .env, .env.local, .env.development, .env.development.local, .env.production, .env.production.local, .env.test, .env.test.local, plus the configured dotenv_path; a symlink is not followed and makes the result indeterminate. Returns a human summary plus a value-blind JSON report (also as structuredContent) shaped like `phantom check --json`: {mode, clean, findings: [{kind, path?, name?}], warnings, indeterminate?}. Reports names and paths only, never values or phantom tokens.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
