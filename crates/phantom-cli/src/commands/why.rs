@@ -3,6 +3,49 @@ use colored::Colorize;
 use phantom_core::config::PhantomConfig;
 use phantom_core::dotenv::{classify, is_public_key, DotenvFile, EnvEntry, SecretClassification};
 
+/// Human output for how `phantom exec` treats a protected key. It prints only
+/// fixed labels and sentences: the service and host are already shown on the
+/// `Service:` line, and `phantom why --json` carries the names.
+fn print_exec_verdict(verdict: &phantom_core::why::ExecVerdict<'_>) {
+    use phantom_core::config::{ExecBlocker, ExecDelivery};
+    let delivery: &'static str = match verdict.delivery {
+        ExecDelivery::Proxied { .. } => "proxied (the real value is injected for its provider)",
+        ExecDelivery::NoRoute => "no route (the child gets a session token no provider accepts)",
+        ExecDelivery::Withheld => "withheld (exec never hands this key to the child)",
+        ExecDelivery::ConnectionStringRefused { .. } => {
+            "refused (a connection string needs a protocol-aware broker)"
+        }
+        ExecDelivery::CustomRouteRefused { .. } => {
+            "refused (its service is not Phantom's built-in route)"
+        }
+    };
+    let blocked: Option<&'static str> = verdict.blocked_by.map(|blocker| match blocker {
+        ExecBlocker::ConnectionString { .. } => {
+            "exec will not start for any key while a connection string is protected in the dotenv; run database commands from a trusted terminal outside `phantom exec`"
+        }
+        ExecBlocker::CustomRoute { .. } => {
+            "exec will not start for any key while .phantom.toml has a custom proxy route; removing it is the user's decision in a trusted terminal"
+        }
+        ExecBlocker::AlteredBuiltinRoute { .. } => {
+            "exec will not start for any key until every built-in service in .phantom.toml matches Phantom's route again"
+        }
+    });
+    let ok = blocked.is_none() && matches!(verdict.delivery, ExecDelivery::Proxied { .. });
+    if ok {
+        println!("   Exec:   {}", delivery.green());
+        return;
+    }
+    println!("   Exec:   {}", delivery.yellow());
+    if let Some(blocked) = blocked {
+        println!("   {} {}", "!".yellow().bold(), blocked);
+    }
+    println!(
+        "   {} Run {} for the service and next step.",
+        "->".blue().bold(),
+        "phantom why <KEY> --json".cyan()
+    );
+}
+
 /// Explain why a specific key is or isn't protected by Phantom.
 ///
 /// With `json`, prints the value-free report shared with the MCP `phantom_why`
@@ -70,20 +113,7 @@ pub fn run(key: &str, json: bool) -> Result<()> {
                             break;
                         }
                     }
-                    let delivery = cfg.exec_delivery_for_secret(key);
-                    match delivery.upstream() {
-                        Some(upstream) => println!(
-                            "   Exec:   {} (real value injected for {})",
-                            "proxied".green(),
-                            upstream.cyan()
-                        ),
-                        None => {
-                            println!("   Exec:   {}", delivery.label().replace('_', " ").yellow())
-                        }
-                    }
-                    if let Some(step) = phantom_core::why::exec_next_step(key, &delivery) {
-                        println!("   {} {}", "!".yellow().bold(), step);
-                    }
+                    print_exec_verdict(&phantom_core::why::ExecVerdict::new(key, &dotenv, cfg));
                     println!(
                         "   Vault:  {}",
                         phantom_vault::try_create_vault(cfg.local_project_id())?

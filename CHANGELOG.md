@@ -16,9 +16,13 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
     child with no route. Names only, never values.
   - `phantom why`, `phantom why --json` and MCP `phantom_why` add a
     value-free `exec` object for a protected key: `delivery` (`proxied`,
-    `no_route`, `connection_string_refused` or `custom_route_refused`),
-    `service` and `upstream`. `next_step` explains every delivery but
-    `proxied`. Routing, injection and the effects gate are unchanged.
+    `no_route`, `withheld`, `connection_string_refused` or
+    `custom_route_refused`), `service`, `upstream` and `blocked_by`.
+    `blocked_by` names the service when the config stops exec from starting
+    for every key (a custom or altered route, or a protected connection
+    string), using the same check exec runs. `next_step` explains every
+    answer but an unblocked `proxied`. Routing, injection and the effects
+    gate are unchanged.
 
 ### Fixed (CLI and MCP JSON output)
 

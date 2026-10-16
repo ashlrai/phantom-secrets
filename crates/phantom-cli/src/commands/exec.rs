@@ -100,14 +100,14 @@ async fn run_async(cmd: &[String], env_flag: Option<&str>, quiet: bool) -> Resul
     // protected dotenv/config contract before opening or reading the vault, so
     // a missing entry can never turn this fail-closed decision into a bypass.
     // BTreeSet: configs written by older init runs can map one key twice.
+    // The same check `phantom why` reports as exec.blocked_by, plus the
+    // ambient environment that only exec itself can see.
     let blocked_connection_strings: std::collections::BTreeSet<&str> = config
-        .connection_string_services()
-        .into_iter()
-        .filter_map(|(_, service)| {
-            (preflight_protected_keys.contains(&service.secret_key)
-                || std::env::var_os(&service.secret_key).is_some())
-            .then_some(service.secret_key.as_str())
+        .exec_connection_string_blockers(|key| {
+            preflight_protected_keys.contains(key) || std::env::var_os(key).is_some()
         })
+        .into_iter()
+        .map(|(_, key)| key)
         .collect();
     if !blocked_connection_strings.is_empty() {
         anyhow::bail!(
@@ -481,20 +481,12 @@ fn child_environment_policy(
             .map(|service| service.secret_key.clone()),
     );
 
-    let mut never_reintroduce = HashSet::new();
-    for (_, service) in config.connection_string_services() {
-        never_reintroduce.insert(service.secret_key.clone());
-    }
-    for secret in config.phantom.secrets.values() {
-        if let Some(name) = secret
-            .rotation_provider
-            .as_ref()
-            .and_then(|provider| provider.api_key_env.as_ref())
-        {
-            never_reintroduce.insert(name.clone());
-        }
-    }
-    never_reintroduce.extend(config.sync.iter().map(|target| target.token_env.clone()));
+    // Shared with `phantom why`, which reports these keys as `withheld`.
+    let never_reintroduce: HashSet<String> = config
+        .exec_withheld_keys()
+        .into_iter()
+        .map(str::to_string)
+        .collect();
     scrub.extend(never_reintroduce.iter().cloned());
     (scrub, never_reintroduce)
 }
@@ -606,25 +598,59 @@ mod tests {
 
     #[test]
     fn exec_names_protected_keys_that_no_route_delivers() {
-        let config = PhantomConfig::new_with_defaults("a".repeat(64));
-        let registry = ServiceRegistry::from_config(&config.services);
-        let session_keys = [
-            "OPENAI_API_KEY".to_string(),
-            "NEXTAUTH_SECRET".to_string(),
-            "GROQ_API_KEY".to_string(),
-            "ANTHROPIC_API_KEY".to_string(),
-        ];
-        assert_eq!(
-            unrouted_session_keys(&registry, session_keys.iter()),
-            vec!["GROQ_API_KEY".to_string(), "NEXTAUTH_SECRET".to_string()]
+        use phantom_core::config::ExecDelivery;
+        let mut config = PhantomConfig::new_with_defaults("a".repeat(64));
+        config.phantom.secrets.insert(
+            "STRIPE_SECRET_KEY".to_string(),
+            toml::from_str(
+                "[rotation_provider]\nprovider = \"stripe\"\napi_key_env = \"STRIPE_ROTATION_API_KEY\"\n",
+            )
+            .unwrap(),
         );
-        // Every key the shared helper calls unrouted is one exec warns about.
-        for key in &session_keys {
-            let warned = unrouted_session_keys(&registry, [key]).len() == 1;
-            assert_eq!(
-                warned,
-                config.exec_delivery_for_secret(key) == phantom_core::config::ExecDelivery::NoRoute,
-                "{key}"
+        config.sync.push(
+            toml::from_str(
+                "platform = \"vercel\"\ntoken_env = \"VERCEL_TOKEN\"\nproject_id = \"p\"\n",
+            )
+            .unwrap(),
+        );
+        let registry = ServiceRegistry::from_config(&config.services);
+        let protected: HashSet<String> = [
+            "OPENAI_API_KEY",
+            "NEXTAUTH_SECRET",
+            "GROQ_API_KEY",
+            "ANTHROPIC_API_KEY",
+            "STRIPE_ROTATION_API_KEY",
+            "VERCEL_TOKEN",
+            "DATABASE_URL",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+        let (_, never_reintroduce) = child_environment_policy(&config, &protected);
+        // Exec hands the child a session token for every other protected key.
+        // Plain `assert!`s: nothing here formats key names into output.
+        let handed: Vec<&String> = protected
+            .iter()
+            .filter(|name| !never_reintroduce.contains(*name))
+            .collect();
+        assert!(
+            unrouted_session_keys(&registry, handed.iter().copied())
+                == ["GROQ_API_KEY", "NEXTAUTH_SECRET"]
+        );
+        for name in &protected {
+            let delivery = config.exec_delivery_for_key(name);
+            // Exec warns about exactly the keys `phantom why` calls no_route.
+            let warned = !never_reintroduce.contains(name)
+                && unrouted_session_keys(&registry, [name]).len() == 1;
+            assert!(warned == (delivery == ExecDelivery::NoRoute));
+            // Exec never hands the child exactly the keys `phantom why`
+            // reports as withheld or as connection strings it refuses.
+            assert!(
+                never_reintroduce.contains(name)
+                    == matches!(
+                        delivery,
+                        ExecDelivery::Withheld | ExecDelivery::ConnectionStringRefused { .. }
+                    )
             );
         }
     }

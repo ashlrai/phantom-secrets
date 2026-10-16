@@ -391,7 +391,7 @@ pub struct ServiceConfig {
 }
 
 /// How `phantom exec` hands a protected dotenv key to the child process.
-/// See [`PhantomConfig::exec_delivery_for_secret`].
+/// See [`PhantomConfig::exec_delivery_for_key`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExecDelivery<'a> {
     /// A trusted built-in route injects the real value into requests the
@@ -406,6 +406,49 @@ pub enum ExecDelivery<'a> {
     /// A repository-authored route that is not Phantom's exact built-in
     /// definition: `phantom exec` refuses to launch with it configured.
     CustomRouteRefused { service: &'a str },
+    /// A key `phantom exec` never hands the child, not even as a session
+    /// token: a rotation provider's `api_key_env` or a sync `token_env`.
+    Withheld,
+}
+
+/// A configuration-wide reason `phantom exec` refuses to start at all, so no
+/// protected key reaches a child. See [`PhantomConfig::exec_blocker`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecBlocker<'a> {
+    /// A built-in service whose definition differs from Phantom's.
+    AlteredBuiltinRoute { service: &'a str },
+    /// A repository-authored `api_key` service with a host pattern.
+    CustomRoute { service: &'a str },
+    /// A connection-string service whose key is protected in the dotenv.
+    ConnectionString { service: &'a str, key: &'a str },
+}
+
+impl ExecBlocker<'_> {
+    /// Stable machine-readable reason used in value-free reports.
+    pub fn reason(&self) -> &'static str {
+        match self {
+            Self::AlteredBuiltinRoute { .. } => "altered_builtin_route",
+            Self::CustomRoute { .. } => "custom_route",
+            Self::ConnectionString { .. } => "connection_string",
+        }
+    }
+
+    /// The service that blocks exec.
+    pub fn service(&self) -> &str {
+        match self {
+            Self::AlteredBuiltinRoute { service }
+            | Self::CustomRoute { service }
+            | Self::ConnectionString { service, .. } => service,
+        }
+    }
+
+    /// The dotenv key involved, for a connection-string blocker.
+    pub fn key(&self) -> Option<&str> {
+        match self {
+            Self::ConnectionString { key, .. } => Some(key),
+            _ => None,
+        }
+    }
 }
 
 impl ExecDelivery<'_> {
@@ -416,6 +459,7 @@ impl ExecDelivery<'_> {
             Self::NoRoute => "no_route",
             Self::ConnectionStringRefused { .. } => "connection_string_refused",
             Self::CustomRouteRefused { .. } => "custom_route_refused",
+            Self::Withheld => "withheld",
         }
     }
 
@@ -425,7 +469,7 @@ impl ExecDelivery<'_> {
             Self::Proxied { service, .. }
             | Self::ConnectionStringRefused { service }
             | Self::CustomRouteRefused { service } => Some(service),
-            Self::NoRoute => None,
+            Self::NoRoute | Self::Withheld => None,
         }
     }
 
@@ -824,17 +868,86 @@ impl PhantomConfig {
             .collect()
     }
 
-    /// How `phantom exec` delivers the protected dotenv key `secret_key`.
+    /// The route refusal `phantom exec` applies to one configured service:
+    /// an altered built-in, or a custom `api_key` route with a host pattern.
+    fn exec_route_refusal<'a>(name: &'a str, service: &ServiceConfig) -> Option<ExecBlocker<'a>> {
+        if let Some(expected) = Self::trusted_builtin_proxy_service(name) {
+            return (service != &expected)
+                .then_some(ExecBlocker::AlteredBuiltinRoute { service: name });
+        }
+        (service.pattern.is_some() && service.secret_type == "api_key")
+            .then_some(ExecBlocker::CustomRoute { service: name })
+    }
+
+    /// The first route refusal `phantom exec` hits, in config order. This is
+    /// the check behind [`Self::validate_agentic_proxy_routes`].
+    pub fn exec_route_blocker(&self) -> Option<ExecBlocker<'_>> {
+        self.services
+            .iter()
+            .find_map(|(name, service)| Self::exec_route_refusal(name, service))
+    }
+
+    /// Connection-string services whose key `is_exposed` says would reach
+    /// the child, as `(service, key)` in config order. `phantom exec` passes
+    /// "protected in the dotenv, or set in its own environment" and refuses
+    /// to start when this is non-empty.
+    pub fn exec_connection_string_blockers(
+        &self,
+        is_exposed: impl Fn(&str) -> bool,
+    ) -> Vec<(&str, &str)> {
+        self.connection_string_services()
+            .into_iter()
+            .filter(|(_, service)| is_exposed(&service.secret_key))
+            .map(|(name, service)| (name, service.secret_key.as_str()))
+            .collect()
+    }
+
+    /// The first configuration-wide reason `phantom exec` refuses to start,
+    /// checked in exec's order: routes, then connection strings protected in
+    /// the dotenv (`is_protected`). Value-free. A connection-string key set
+    /// in exec's own shell environment also blocks it; that is not visible
+    /// statically and is not reported here.
+    pub fn exec_blocker(&self, is_protected: impl Fn(&str) -> bool) -> Option<ExecBlocker<'_>> {
+        self.exec_route_blocker().or_else(|| {
+            self.exec_connection_string_blockers(is_protected)
+                .into_iter()
+                .next()
+                .map(|(service, key)| ExecBlocker::ConnectionString { service, key })
+        })
+    }
+
+    /// Keys `phantom exec` never hands the child, not even as a session
+    /// token: connection strings, rotation providers' `api_key_env` and sync
+    /// `token_env` names.
+    pub fn exec_withheld_keys(&self) -> std::collections::BTreeSet<&str> {
+        let mut withheld: std::collections::BTreeSet<&str> = self
+            .connection_string_services()
+            .into_iter()
+            .map(|(_, service)| service.secret_key.as_str())
+            .collect();
+        withheld.extend(self.phantom.secrets.values().filter_map(|secret| {
+            secret
+                .rotation_provider
+                .as_ref()
+                .and_then(|provider| provider.api_key_env.as_deref())
+        }));
+        withheld.extend(self.sync.iter().map(|target| target.token_env.as_str()));
+        withheld
+    }
+
+    /// How `phantom exec` delivers the protected dotenv key `dotenv_key`,
+    /// judged for this key alone. A configuration-wide refusal
+    /// ([`Self::exec_blocker`]) stops exec before any key is delivered.
     ///
     /// The child process only ever receives a per-session `phm_` token for a
     /// protected key. That token works only where a proxy route injects the
     /// real value, so a key with no route reaches no provider. Value-free:
     /// this reads the configuration only.
-    pub fn exec_delivery_for_secret(&self, secret_key: &str) -> ExecDelivery<'_> {
+    pub fn exec_delivery_for_key(&self, dotenv_key: &str) -> ExecDelivery<'_> {
         let mapped = || {
             self.services
                 .iter()
-                .filter(move |(_, service)| service.secret_key == secret_key)
+                .filter(move |(_, service)| service.secret_key == dotenv_key)
         };
         // Exec checks connection strings first and stops before any proxy
         // route is considered, so that answer wins.
@@ -843,20 +956,26 @@ impl PhantomConfig {
         {
             return ExecDelivery::ConnectionStringRefused { service: name };
         }
-        // Same filter as `ServiceRegistry::from_config`: only an api_key
-        // service with a host pattern becomes a proxy route.
-        let Some((name, service)) = mapped()
-            .find(|(_, service)| service.secret_type == "api_key" && service.pattern.is_some())
-        else {
-            return ExecDelivery::NoRoute;
-        };
-        if Self::trusted_builtin_proxy_service(name).as_ref() != Some(service) {
+        // Any service for this key that exec's route check refuses.
+        if let Some((name, _)) =
+            mapped().find(|(name, service)| Self::exec_route_refusal(name, service).is_some())
+        {
             return ExecDelivery::CustomRouteRefused { service: name };
         }
-        ExecDelivery::Proxied {
-            service: name,
-            upstream: service.pattern.as_deref().unwrap_or_default(),
+        // Same filter as `ServiceRegistry::from_config`: only an api_key
+        // service with a host pattern becomes a proxy route.
+        if let Some((name, service)) = mapped()
+            .find(|(_, service)| service.secret_type == "api_key" && service.pattern.is_some())
+        {
+            return ExecDelivery::Proxied {
+                service: name,
+                upstream: service.pattern.as_deref().unwrap_or_default(),
+            };
         }
+        if self.exec_withheld_keys().contains(dotenv_key) {
+            return ExecDelivery::Withheld;
+        }
+        ExecDelivery::NoRoute
     }
 
     /// Reject repository-authored proxy destinations that have not passed a
@@ -865,23 +984,18 @@ impl PhantomConfig {
     /// built-in route definitions. Custom gateways can be added in a future
     /// format only with a value-blind, local approval record.
     pub fn validate_agentic_proxy_routes(&self) -> Result<()> {
-        for (name, service) in &self.services {
-            if let Some(expected) = Self::trusted_builtin_proxy_service(name) {
-                if service != &expected {
-                    return Err(PhantomError::ConfigParseError(format!(
-                        "proxy service `{name}` differs from Phantom's trusted built-in route"
-                    )));
-                }
-                continue;
+        match self.exec_route_blocker() {
+            None => Ok(()),
+            Some(ExecBlocker::AlteredBuiltinRoute { service }) => {
+                Err(PhantomError::ConfigParseError(format!(
+                    "proxy service `{service}` differs from Phantom's trusted built-in route"
+                )))
             }
-
-            if service.pattern.is_some() && service.secret_type == "api_key" {
-                return Err(PhantomError::ConfigParseError(format!(
-                    "custom proxy service `{name}` is not approved for agentic execution"
-                )));
-            }
+            Some(blocker) => Err(PhantomError::ConfigParseError(format!(
+                "custom proxy service `{}` is not approved for agentic execution",
+                blocker.service()
+            ))),
         }
-        Ok(())
     }
 
     /// Advisory risk analysis for service routing.
@@ -1487,19 +1601,19 @@ header = "Authorization"
     fn exec_delivery_names_the_route_or_its_absence() {
         let mut config = PhantomConfig::new_with_defaults("test".to_string());
         assert_eq!(
-            config.exec_delivery_for_secret("OPENAI_API_KEY"),
+            config.exec_delivery_for_key("OPENAI_API_KEY"),
             ExecDelivery::Proxied {
                 service: "openai",
                 upstream: "api.openai.com",
             }
         );
         // A key nothing routes: exec hands the child a session token only.
-        let unrouted = config.exec_delivery_for_secret("GROQ_API_KEY");
+        let unrouted = config.exec_delivery_for_key("GROQ_API_KEY");
         assert_eq!(unrouted, ExecDelivery::NoRoute);
         assert_eq!(unrouted.label(), "no_route");
         assert_eq!(unrouted.service(), None);
         assert_eq!(
-            config.exec_delivery_for_secret("DATABASE_URL"),
+            config.exec_delivery_for_key("DATABASE_URL"),
             ExecDelivery::ConnectionStringRefused {
                 service: "database"
             }
@@ -1517,7 +1631,7 @@ header = "Authorization"
             },
         );
         assert_eq!(
-            config.exec_delivery_for_secret("SIGNING_SECRET"),
+            config.exec_delivery_for_key("SIGNING_SECRET"),
             ExecDelivery::NoRoute
         );
 
@@ -1533,13 +1647,102 @@ header = "Authorization"
             },
         );
         assert_eq!(
-            config.exec_delivery_for_secret("GATEWAY_API_KEY"),
+            config.exec_delivery_for_key("GATEWAY_API_KEY"),
             ExecDelivery::CustomRouteRefused { service: "gateway" }
         );
         config.services.get_mut("openai").unwrap().header = Some("x-api-key".to_string());
         assert_eq!(
-            config.exec_delivery_for_secret("OPENAI_API_KEY"),
+            config.exec_delivery_for_key("OPENAI_API_KEY"),
             ExecDelivery::CustomRouteRefused { service: "openai" }
+        );
+        // An altered built-in with no host pattern is still refused by exec.
+        config.services.get_mut("anthropic").unwrap().pattern = None;
+        assert_eq!(
+            config.exec_delivery_for_key("ANTHROPIC_API_KEY"),
+            ExecDelivery::CustomRouteRefused {
+                service: "anthropic"
+            }
+        );
+    }
+
+    #[test]
+    fn exec_blocker_mirrors_execs_config_wide_refusals() {
+        let mut config = PhantomConfig::new_with_defaults("test".to_string());
+        assert_eq!(config.exec_blocker(|_| false), None);
+        assert_eq!(config.exec_blocker(|key| key == "OPENAI_API_KEY"), None);
+        // A protected connection string stops exec for every key.
+        let blocker = config
+            .exec_blocker(|key| key == "OPENAI_API_KEY" || key == "DATABASE_URL")
+            .unwrap();
+        assert_eq!(
+            blocker,
+            ExecBlocker::ConnectionString {
+                service: "database",
+                key: "DATABASE_URL"
+            }
+        );
+        assert_eq!(blocker.reason(), "connection_string");
+        assert!(config.validate_agentic_proxy_routes().is_ok());
+
+        // Routes are checked first, exactly as exec does.
+        config.services.insert(
+            "gateway".to_string(),
+            ServiceConfig {
+                secret_key: "GATEWAY_API_KEY".to_string(),
+                pattern: Some("gateway.example.com".to_string()),
+                header: Some("Authorization".to_string()),
+                header_format: Some("Bearer {secret}".to_string()),
+                secret_type: "api_key".to_string(),
+            },
+        );
+        let blocker = config.exec_blocker(|key| key == "DATABASE_URL").unwrap();
+        assert_eq!(blocker, ExecBlocker::CustomRoute { service: "gateway" });
+        assert_eq!(blocker.reason(), "custom_route");
+        assert!(config.validate_agentic_proxy_routes().is_err());
+        config.services.remove("gateway");
+
+        // An altered built-in blocks exec even without a host pattern.
+        config.services.get_mut("anthropic").unwrap().pattern = None;
+        assert_eq!(
+            config.exec_blocker(|_| false),
+            Some(ExecBlocker::AlteredBuiltinRoute {
+                service: "anthropic"
+            })
+        );
+        assert!(config.validate_agentic_proxy_routes().is_err());
+    }
+
+    #[test]
+    fn keys_exec_never_hands_the_child_are_withheld() {
+        let mut config = PhantomConfig::new_with_defaults("test".to_string());
+        config.phantom.secrets.insert(
+            "STRIPE_SECRET_KEY".to_string(),
+            toml::from_str(
+                "[rotation_provider]\nprovider = \"stripe\"\napi_key_env = \"STRIPE_ROTATION_API_KEY\"\n",
+            )
+            .unwrap(),
+        );
+        config.sync.push(
+            toml::from_str(
+                "platform = \"vercel\"\ntoken_env = \"VERCEL_TOKEN\"\nproject_id = \"p\"\n",
+            )
+            .unwrap(),
+        );
+        let withheld = config.exec_withheld_keys();
+        assert!(withheld.contains("DATABASE_URL"));
+        assert!(withheld.contains("STRIPE_ROTATION_API_KEY"));
+        assert!(withheld.contains("VERCEL_TOKEN"));
+        assert_eq!(
+            config.exec_delivery_for_key("STRIPE_ROTATION_API_KEY"),
+            ExecDelivery::Withheld
+        );
+        assert_eq!(
+            config.exec_delivery_for_key("VERCEL_TOKEN").label(),
+            "withheld"
+        );
+        assert_eq!(
+            config.exec_delivery_for_key("GROQ_API_KEY"),
+            ExecDelivery::NoRoute
         );
     }
 
