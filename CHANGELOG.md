@@ -56,6 +56,18 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ### Fixed (proxy)
 
+- Cloudflare tooling now works under `phantom exec`. The built-in
+  `cloudflare` route exported only `CLOUDFLARE_API_TOKEN_BASE_URL`, which no
+  Cloudflare tool reads, so Wrangler and the official SDKs sent the `phm_`
+  token straight to `api.cloudflare.com` and got `401`. `phantom exec` now
+  also exports `CLOUDFLARE_API_BASE_URL` (Wrangler) and `CLOUDFLARE_BASE_URL`
+  (the `cloudflare` TypeScript and Python SDKs), and the route restores the
+  `/client/v4` path those tools expect in their base URL, so
+  `/accounts/...` reaches `https://api.cloudflare.com/client/v4/accounts/...`.
+  Requests that already send `/client/v4/...` are unchanged. Both variables
+  are scrubbed from the inherited environment like the other route
+  overrides. The route definition and its auth handling are unchanged, so
+  agentic validation is unaffected and no config change is needed.
 - The built-in `twilio` route now sends valid HTTP Basic credentials. It
   previously injected `Authorization: Basic <raw auth token>`, which Twilio
   rejects on every request. The route now keeps the username from the
