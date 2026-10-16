@@ -26,6 +26,22 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   that will not decrypt (a wrong passphrase or a corrupt vault file), the
   passphrase to set in the server's env config and the restore path.
 
+### Security (dotenv reads check the file they read)
+
+- Reading a dotenv value-blind (`phantom check`, `phantom why`, MCP
+  `phantom_check`, `phantom_why` and compliance `env_clean`, and managed
+  dotenv resolution) looked the path up to refuse a symlink, then opened it in
+  a second step, so a file swapped for a symlink in between was followed. The
+  file is now opened without following a final symlink (`O_NOFOLLOW` on Unix,
+  `FILE_FLAG_OPEN_REPARSE_POINT` on Windows) and judged on the opened handle;
+  a FIFO is refused rather than waited on. On Windows a symlink or junction
+  is refused; any other reparse file (a OneDrive/Cloud Files file, a
+  deduplicated file) is re-opened from the same handle without the reparse
+  flag, so its real contents are read rather than its stub, and refused if
+  that reopen fails. Refusals
+  and the managed-dotenv "does not exist" / "contains no phantom tokens"
+  errors name the file relative to the project instead of by absolute path.
+
 ### Fixed (`phantom init` no longer replaces an existing `.env.example`)
 
 - `phantom init` replaced an existing, often committed and hand-written,
