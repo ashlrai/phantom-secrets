@@ -17,8 +17,13 @@ async fn run(client: &reqwest::Client, url: String, total: usize, conc: usize) -
             let mut v = Vec::with_capacity(per);
             for _ in 0..per {
                 let s = Instant::now();
-                let r = c.post(&u).header("content-type", "application/json")
-                    .body(r#"{"model":"m","messages":[]}"#).send().await.unwrap();
+                let r = c
+                    .post(&u)
+                    .header("content-type", "application/json")
+                    .body(r#"{"model":"m","messages":[]}"#)
+                    .send()
+                    .await
+                    .unwrap();
                 let _ = r.bytes().await.unwrap();
                 v.push(s.elapsed().as_secs_f64());
             }
@@ -26,13 +31,17 @@ async fn run(client: &reqwest::Client, url: String, total: usize, conc: usize) -
         }));
     }
     let mut all = Vec::new();
-    for h in hs { all.extend(h.await.unwrap()); }
+    for h in hs {
+        all.extend(h.await.unwrap());
+    }
     let el = t0.elapsed().as_secs_f64();
     all.sort_by(|a, b| a.partial_cmp(b).unwrap());
     (all, el)
 }
 
-fn pct(v: &[f64], p: f64) -> f64 { v[((v.len() as f64 * p) as usize).min(v.len() - 1)] * 1e6 }
+fn pct(v: &[f64], p: f64) -> f64 {
+    v[((v.len() as f64 * p) as usize).min(v.len() - 1)] * 1e6
+}
 
 #[tokio::main]
 async fn main() {
@@ -45,14 +54,29 @@ async fn main() {
     tm.insert(phantom.to_string(), secret.to_string());
     let mut reg = ServiceRegistry::new();
     reg.add_route(ServiceRoute {
-        name: "openai".into(), target_base: format!("http://127.0.0.1:{}", mock.port),
-        secret_key: "OPENAI_API_KEY".into(), header: "Authorization".into(),
+        name: "openai".into(),
+        target_base: format!("http://127.0.0.1:{}", mock.port),
+        secret_key: "OPENAI_API_KEY".into(),
+        header: "Authorization".into(),
         header_format: "Bearer {secret}".into(),
-        credential_profile: phantom_proxy::services::CredentialProfile::Standard, sdk_base_path: None,
+        credential_profile: phantom_proxy::services::CredentialProfile::Standard,
+        sdk_base_path: None,
     });
-    let proxy = ProxyServer::start(ProxyConfig { port: 0, proxy_token: String::new(), ..ProxyConfig::default() },
-        reg, Interceptor::new_with_named(tm, named)).await.unwrap();
-    let client = reqwest::Client::builder().pool_max_idle_per_host(64).build().unwrap();
+    let proxy = ProxyServer::start(
+        ProxyConfig {
+            port: 0,
+            proxy_token: String::new(),
+            ..ProxyConfig::default()
+        },
+        reg,
+        Interceptor::new_with_named(tm, named),
+    )
+    .await
+    .unwrap();
+    let client = reqwest::Client::builder()
+        .pool_max_idle_per_host(64)
+        .build()
+        .unwrap();
     let direct = format!("http://127.0.0.1:{}/v1/chat", mock.port);
     let via = format!("http://127.0.0.1:{}/openai/v1/chat", proxy.port());
     println!("cores={}", std::thread::available_parallelism().unwrap());
