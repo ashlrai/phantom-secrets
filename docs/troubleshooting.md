@@ -40,22 +40,46 @@ If your API calls fail with authentication errors after setting up Phantom:
 
 ### Proxy hangs or times out
 
-The default upstream timeout is 30 seconds. For long-running API calls:
+The proxy's upstream timeout is an idle timeout of 600 seconds (matching the
+OpenAI and Anthropic SDK defaults): it applies to each wait for upstream bytes,
+not to the whole request, so long SSE streams and slow reasoning calls are not
+cut off. If an upstream drops a streaming response midway, the proxy aborts the
+client connection instead of ending the body cleanly, so SDKs report the
+truncation rather than acting on partial output. If a request still hangs:
 
 - Check your network connection
 - Verify the upstream service is accessible
 - The proxy deliberately does not follow upstream redirects. Inspect a returned
   3xx response and use the reviewed canonical service endpoint instead.
 
-### Request body larger than 10 MB returns HTTP 413
+### HTTP 429 with `"source":"phantom-proxy"`
+
+This 429 comes from Phantom's local burst guard, not from the provider. By
+default it trips above 50 requests per secret or 100 requests in total within
+10 seconds. Busy multi-agent sessions can raise the limits before launching:
+
+```bash
+PHANTOM_RATE_LIMIT_PER_SECRET=20 PHANTOM_RATE_LIMIT_BURST=400 phantom exec -- claude
+```
+
+### HTTP 503 `route credential unavailable`
+
+The request reached a proxy route whose key is not protected in this session.
+`phantom exec` only exports a service's base-URL variable when that service's
+key is loaded, so this usually means a client hardcoded the proxy URL. Protect
+the key (`phantom add` or `phantom init`) and restart `phantom exec`.
+
+### Request body larger than 32 MiB returns HTTP 413
 
 The proxy buffers each request body under a strict size limit before contacting
-the upstream. Bodies over the default 10 MB limit fail closed with HTTP 413, so
+the upstream. Bodies over the default 32 MiB limit (Anthropic's request limit) fail closed with HTTP 413, so
 the upstream receives no truncated prefix. Accepted bodies are forwarded
 byte-for-byte; no client header or body resolves a `phm_` token. Only the
 matched route's fixed authentication header receives its route-owned value.
 
-Split larger requests. The body-limit configuration is not currently exposed
+All in-flight requests also share a 320 MiB buffer budget; when many large
+requests overlap, the proxy answers 503 with `retry-after: 1` instead of
+buffering more. Split larger requests. The body-limit configuration is not currently exposed
 through `.phantom.toml`; track the repository issues for future configuration.
 
 ### Claude Code can't read my .env file
@@ -160,6 +184,23 @@ Store this passphrase securely (e.g., as a CI secret) — you'll need it on ever
 either a proxied or direct child. Commands launched manually from the same shell
 still inherit the export, so do not launch an agent outside `phantom exec` while
 the variable is set.
+
+### Proxy port conflicts ("address already in use")
+
+Phantom does not use a fixed proxy port. `phantom exec` and `phantom start` both
+ask the OS for a free loopback port (`127.0.0.1`, port 0) every time, so another
+program holding a port such as 8080 cannot collide with them. Read the actual
+port from the startup line (`Proxy started on 127.0.0.1:PORT`) or from the
+`PHANTOM_PROXY_PORT` variable that `phantom exec` sets for the child. Do not
+hardcode a port in your app or `.env`.
+
+If you see `Another foreground Phantom proxy session already owns <dir>`, the
+cause is a second `phantom start` for the same project, not a busy port. Stop
+the first one with Ctrl-C in its terminal, or use `phantom exec`, which starts
+its own child-owned proxy.
+
+If a hardcoded port from an older setup is still referenced and requests fail
+with connection refused, replace it with `PHANTOM_PROXY_PORT`.
 
 ### `phantom start --daemon` or `phantom stop` is refused
 

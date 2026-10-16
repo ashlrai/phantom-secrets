@@ -186,6 +186,11 @@ async fn run_async(cmd: &[String], env_flag: Option<&str>, quiet: bool) -> Resul
 
     // Build service registry from config
     let registry = ServiceRegistry::from_config(&config.services);
+    // Export base-URL overrides only for routes this session can serve. An
+    // SDK pointed at a route without a loaded credential would receive a
+    // proxy 503 for every call instead of reaching its provider.
+    let mut exported_routes = registry.clone();
+    exported_routes.retain_routes(|route| secret_name_to_value.contains_key(&route.secret_key));
     let interceptor = Interceptor::new_scoped(session_token_to_secret, secret_name_to_value);
 
     progress!(
@@ -225,9 +230,9 @@ async fn run_async(cmd: &[String], env_flag: Option<&str>, quiet: bool) -> Resul
 
     // Print service routes
     let overrides = if header_auth_only {
-        registry.base_url_overrides(port)
+        exported_routes.base_url_overrides(port)
     } else {
-        registry.base_url_overrides_with_token(port, Some(&proxy_token))
+        exported_routes.base_url_overrides_with_token(port, Some(&proxy_token))
     };
     for (env_var, url) in &overrides {
         progress!(
@@ -235,7 +240,7 @@ async fn run_async(cmd: &[String], env_flag: Option<&str>, quiet: bool) -> Resul
             "   {} {} = {}",
             "->".dimmed(),
             env_var.bold(),
-            url.cyan()
+            redact_session_segment(url).cyan()
         );
     }
     if header_auth_only {
@@ -488,8 +493,35 @@ async fn run_command_directly(cmd: &[String], scrub_env_keys: &HashSet<String>) 
     Ok(())
 }
 
+/// Hide the per-session proxy token in printed `*_BASE_URL` lines. The child
+/// still receives the full URL; only terminal output is redacted.
+fn redact_session_segment(url: &str) -> String {
+    const MARKER: &str = "/_phantom/";
+    let Some(start) = url.find(MARKER).map(|i| i + MARKER.len()) else {
+        return url.to_string();
+    };
+    let end = url[start..]
+        .find('/')
+        .map(|i| start + i)
+        .unwrap_or(url.len());
+    format!("{}<redacted>{}", &url[..start], &url[end..])
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn printed_base_url_hides_session_token() {
+        let token = "ab".repeat(32);
+        let url = format!("http://127.0.0.1:43179/openai/_phantom/{token}/");
+        let shown = redact_session_segment(&url);
+        assert_eq!(shown, "http://127.0.0.1:43179/openai/_phantom/<redacted>/");
+        assert!(!shown.contains(&token));
+        assert_eq!(
+            redact_session_segment("http://127.0.0.1:1/openai"),
+            "http://127.0.0.1:1/openai"
+        );
+    }
+
     use super::*;
     use phantom_core::error::{PhantomError, Result as PhantomResult};
     use zeroize::Zeroizing;

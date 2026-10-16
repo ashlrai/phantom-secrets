@@ -110,6 +110,9 @@ enum Commands {
         /// soon-to-expire secrets
         #[arg(long)]
         expiry: bool,
+        /// Emit one JSON report on stdout instead of the human checklist
+        #[arg(long)]
+        json: bool,
     },
 
     /// Print a shell-completion script to stdout.
@@ -199,6 +202,9 @@ enum Commands {
         /// Check if phantom tokens are in environment without proxy running
         #[arg(long)]
         runtime: bool,
+        /// Emit a names-only JSON report on stdout (exit status unchanged)
+        #[arg(long)]
+        json: bool,
     },
 
     /// List stored secret names (never shows values)
@@ -878,6 +884,8 @@ fn run() -> anyhow::Result<()> {
         .with_env_filter(filter)
         .with_target(false)
         .without_time()
+        // Stdout carries command output, including `--json` reports.
+        .with_writer(std::io::stderr)
         .init();
 
     match cli.command {
@@ -976,7 +984,9 @@ fn run() -> anyhow::Result<()> {
                 }
             }
         },
-        Commands::Doctor { fix, expiry } => commands::doctor::run_doctor(fix, expiry),
+        Commands::Doctor { fix, expiry, json } => {
+            commands::doctor::run_doctor(fix, expiry, json || global_json)
+        }
         Commands::Agent { action } => match action {
             AgentAction::Report { json } => commands::agent::report(json || global_json),
             AgentAction::Doctor => commands::agent::doctor(),
@@ -985,7 +995,11 @@ fn run() -> anyhow::Result<()> {
         Commands::Exec { cmd } => commands::exec::run(&cmd, None, cli.quiet),
         Commands::Start { daemon } => commands::start::run(daemon),
         Commands::Stop => commands::stop::run(),
-        Commands::Check { staged, runtime } => commands::check::run(staged, runtime),
+        Commands::Check {
+            staged,
+            runtime,
+            json,
+        } => commands::check::run(staged, runtime, json || global_json),
         Commands::Pull {
             from,
             project,
@@ -1052,7 +1066,7 @@ fn run() -> anyhow::Result<()> {
         Commands::Watch { auto, auto_rotate } => {
             commands::watch::run_with_rotate(auto, auto_rotate)
         }
-        Commands::Why { key } => commands::why::run(&key),
+        Commands::Why { key } => commands::why::run(&key, global_json),
         Commands::Wrap { only, skip } => commands::wrap::run(&only, &skip),
         Commands::Unwrap => commands::unwrap::run(),
         Commands::Copy { name, to, rename } => commands::copy::run(&name, &to, &rename),

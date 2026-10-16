@@ -137,7 +137,10 @@ pub fn run_with_expiry(json: bool, show_expiry: bool, min_anomaly_score: Option<
                 "!".yellow().bold()
             );
         } else {
-            println!("{} No secrets stored.", "!".yellow().bold());
+            match locked_notice_for(vault.as_ref(), config.local_project_id()) {
+                Some(notice) => println!("{} {}", "!".yellow().bold(), notice),
+                None => println!("{} No secrets stored.", "!".yellow().bold()),
+            }
         }
         return Ok(());
     }
@@ -216,4 +219,14 @@ pub fn run_with_expiry(json: bool, show_expiry: bool, min_anomaly_score: Option<
     );
 
     Ok(())
+}
+
+/// When the opened backend is empty but an encrypted-file vault for this
+/// project exists and this process has no passphrase, say so instead of
+/// reporting an empty vault.
+fn locked_notice_for(vault: &dyn phantom_vault::VaultBackend, project_id: &str) -> Option<String> {
+    if vault.backend_name() == "encrypted-file" {
+        return None;
+    }
+    phantom_vault::locked_file_vault_notice(project_id)
 }

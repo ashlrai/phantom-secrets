@@ -4,7 +4,10 @@ use phantom_core::config::PhantomConfig;
 use phantom_core::dotenv::{classify, is_public_key, DotenvFile, EnvEntry, SecretClassification};
 
 /// Explain why a specific key is or isn't protected by Phantom.
-pub fn run(key: &str) -> Result<()> {
+///
+/// With `json`, prints the value-free report shared with the MCP `phantom_why`
+/// tool instead of the human explanation.
+pub fn run(key: &str, json: bool) -> Result<()> {
     let project_dir = std::env::current_dir()?;
     let config_path = project_dir.join(".phantom.toml");
     let config = PhantomConfig::load(&config_path).ok();
@@ -14,6 +17,12 @@ pub fn run(key: &str) -> Result<()> {
         }
         None => project_dir.join(".env"),
     };
+
+    if json && !env_path.exists() {
+        let report = phantom_core::why::why_report(key, None, config.as_ref());
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
 
     if !env_path.exists() {
         anyhow::bail!(
@@ -26,6 +35,11 @@ pub fn run(key: &str) -> Result<()> {
     dotenv
         .validate_for_mutation()
         .context("Managed dotenv is malformed; protection status is indeterminate")?;
+    if json {
+        let report = phantom_core::why::why_report(key, Some(&dotenv), config.as_ref());
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
     // Find the entry
     let entry = dotenv.entries().into_iter().find(|e| e.key == key);
 

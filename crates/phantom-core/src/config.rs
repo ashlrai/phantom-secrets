@@ -52,6 +52,55 @@ fn alerting_is_default(cfg: &AlertingConfig) -> bool {
 /// Generated IDs are hexadecimal. Legacy IDs may additionally use `-` and
 /// `_`, but separators, URL metacharacters, whitespace, and Unicode are
 /// rejected so repository config cannot alter an endpoint path or query shape.
+/// Describe a TOML parse failure without echoing configuration content.
+///
+/// `toml::de::Error`'s `Display` quotes the offending source line, and serde
+/// messages quote rejected values (`invalid type: string "..."`, `unknown
+/// variant `...``). A pasted credential in `.phantom.toml` must never reach
+/// diagnostics, so only the message with every quoted literal redacted and
+/// the 1-based line/column are reported.
+fn value_blind_toml_error(content: &str, error: &toml::de::Error) -> PhantomError {
+    let message = redact_quoted_literals(error.message());
+    let location = error
+        .span()
+        .map(|span| {
+            let start = span.start.min(content.len());
+            let before = content.as_bytes()[..start].to_vec();
+            let line = before.iter().filter(|&&b| b == b'\n').count() + 1;
+            let line_start = before
+                .iter()
+                .rposition(|&b| b == b'\n')
+                .map_or(0, |index| index + 1);
+            let column = String::from_utf8_lossy(&before[line_start..])
+                .chars()
+                .count()
+                + 1;
+            format!(" at line {line}, column {column}")
+        })
+        .unwrap_or_default();
+    PhantomError::ConfigParseError(format!("TOML parse error{location}: {message}"))
+}
+
+/// Replace every `"..."`, `'...'`, and `` `...` `` literal with `<redacted>`.
+/// An unterminated quote redacts the rest of the message.
+fn redact_quoted_literals(message: &str) -> String {
+    let mut out = String::with_capacity(message.len());
+    let mut chars = message.chars();
+    while let Some(c) = chars.next() {
+        if matches!(c, '"' | '\'' | '`') {
+            out.push_str("<redacted>");
+            for next in chars.by_ref() {
+                if next == c {
+                    break;
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out.trim_end().to_string()
+}
+
 fn validate_portable_project_id(project_id: &str) -> Result<()> {
     let valid = !project_id.is_empty()
         && project_id.len() <= 128
@@ -548,7 +597,7 @@ impl PhantomConfig {
         let content = std::str::from_utf8(content)
             .map_err(|error| PhantomError::ConfigParseError(error.to_string()))?;
         let mut config: Self =
-            toml::from_str(content).map_err(|e| PhantomError::ConfigParseError(e.to_string()))?;
+            toml::from_str(content).map_err(|e| value_blind_toml_error(content, &e))?;
         validate_portable_project_id(&config.phantom.project_id)?;
 
         // `.phantom.toml` is repository-controlled. Its portable project_id is
@@ -894,6 +943,38 @@ fn extract_host_for_risk_check(pattern: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn toml_parse_errors_never_echo_config_values() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".phantom.toml");
+        // Assembled at compile time so source scanners never see a credential-shaped literal.
+        let secret = concat!("sk", "-live-", "MUSTNOTLEAK0123456789");
+        for content in [
+            format!("[phantom]\nproject_id = \"p\"\ntoken = \"{secret}\" oops\n"),
+            format!("[phantom]\nproject_id = \"p\"\n[[sync]]\nplatform = \"{secret}\"\n"),
+            format!("[phantom]\nproject_id = 7\nnote = \"{secret}\"\n"),
+            format!("[phantom]\nproject_id = \"{secret}\n"),
+        ] {
+            let message = PhantomConfig::load_from_bytes(&path, content.as_bytes())
+                .unwrap_err()
+                .to_string();
+            assert!(!message.contains("MUSTNOTLEAK"), "{message}");
+            assert!(message.contains("TOML parse error at line"), "{message}");
+        }
+    }
+
+    #[test]
+    fn redaction_covers_every_quote_style() {
+        assert_eq!(
+            redact_quoted_literals("invalid type: string \"x\", expected `y` or 'z'"),
+            "invalid type: string <redacted>, expected <redacted> or <redacted>"
+        );
+        assert_eq!(
+            redact_quoted_literals("bad \"unterminated"),
+            "bad <redacted>"
+        );
+    }
+
     use super::*;
 
     #[test]
