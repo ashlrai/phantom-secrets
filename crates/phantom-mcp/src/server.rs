@@ -5399,7 +5399,15 @@ fn retrieve_optional_secret(
     }
 }
 
+/// Longest secret name MCP accepts, in bytes.
+const MAX_MCP_SECRET_NAME_BYTES: usize = 256;
+
 fn validate_mcp_secret_name(name: &str) -> Result<(), McpError> {
+    if name.len() > MAX_MCP_SECRET_NAME_BYTES {
+        return Err(invalid_params_err(format!(
+            "Secret names must be at most {MAX_MCP_SECRET_NAME_BYTES} bytes"
+        )));
+    }
     let mut bytes = name.bytes();
     if !matches!(bytes.next(), Some(b'A'..=b'Z' | b'a'..=b'z' | b'_'))
         || !bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
@@ -9361,6 +9369,16 @@ mod tests {
             assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
         }
 
+        // Length cap: 256 bytes is the longest accepted name.
+        for (len, ok) in [(256, true), (257, false)] {
+            let result =
+                server.phantom_add_secret_interactive(Parameters(AddSecretInteractiveParams {
+                    name: "A".repeat(len),
+                    confirm: true,
+                }));
+            assert_eq!(result.is_ok(), ok, "name length {len}");
+        }
+
         // No effect: project config untouched and no approval was queued.
         assert_eq!(
             std::fs::read(dir.path().join(".phantom.toml")).unwrap(),
@@ -9385,8 +9403,10 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
         assert!(err.message.contains("PHANTOM_MCP_EFFECTS=trusted-terminal"));
-        assert!(err.message.contains("phantom mcp-approve"));
+        assert!(err.message.contains("own trusted terminal"));
         assert!(err.message.contains("approval_token"));
+        assert!(err.message.contains("docs/claude-code.md"));
+        assert!(!err.message.contains("<nonce>:<token>"));
     }
 
     #[test]

@@ -17,10 +17,11 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 - Every MCP tool whose schema takes `approval_token` now says so in its
   description, including how approval is obtained; a unit test walks the tool
   catalog to keep it that way.
-- The refusal for effectful tools with effects disabled now also describes the
-  approval step (`phantom mcp-approve <NONCE>`, then retry with
-  `approval_token`), and `docs/claude-code.md` documents how to set
+- The refusal for effectful tools with effects disabled now also says that the
+  operator must approve each call in their own trusted terminal and supply the
+  `approval_token`, and `docs/claude-code.md` documents how to set
   `PHANTOM_MCP_EFFECTS` outside agent authority.
+- MCP secret-name validation now also rejects names longer than 256 bytes.
 
 ### Fixed (proxy)
 
