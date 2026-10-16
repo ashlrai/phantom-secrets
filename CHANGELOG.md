@@ -4,6 +4,25 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (MCP)
+
+- `phantom_add_secret_interactive` works out of the box again. It only returns
+  `phantom add NAME` for the user's trusted terminal (no value accepted, nothing
+  stored, no file or network access), yet it required
+  `PHANTOM_MCP_EFFECTS=trusted-terminal` plus an approval token, so the add flow
+  that `phantom init` documents always failed. It now needs neither gate nor
+  `confirm`, keeps strict `[A-Za-z_][A-Za-z0-9_]*` name validation, and no
+  longer advertises `approval_token` (legacy callers that send it are still
+  accepted). Every tool that performs an effect keeps both gates unchanged.
+- Every MCP tool whose schema takes `approval_token` now says so in its
+  description, including how approval is obtained; a unit test walks the tool
+  catalog to keep it that way.
+- The refusal for effectful tools with effects disabled now also says that the
+  operator must approve each call in their own trusted terminal and supply the
+  `approval_token`, and `docs/claude-code.md` documents how to set
+  `PHANTOM_MCP_EFFECTS` outside agent authority.
+- MCP secret-name validation now also rejects names longer than 256 bytes.
+
 ### Fixed (upgrade)
 
 - `phantom upgrade` no longer depends on the `zip` 8 line, which crates.io has

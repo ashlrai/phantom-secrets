@@ -136,15 +136,15 @@ pub struct AddSecretParams {
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct AddSecretInteractiveParams {
-    /// Name of the secret to add (e.g., OPENAI_API_KEY)
+    /// Name of the secret to add (e.g., OPENAI_API_KEY). Must match
+    /// `[A-Za-z_][A-Za-z0-9_]*`. Never pass the secret value.
     pub name: String,
-    /// Required. Must be true — the calling agent must confirm with the user
-    /// before starting an out-of-band terminal flow.
+    /// Optional, accepted for compatibility. This tool performs no effect: it
+    /// only returns the `phantom add NAME` command for the user to run in a
+    /// trusted terminal, so it needs neither confirmation nor approval. Legacy
+    /// approval fields from older callers are accepted and ignored.
     #[serde(default)]
     pub confirm: bool,
-    /// Out-of-band approval token from `phantom mcp-approve <NONCE>`.
-    #[serde(default)]
-    pub approval_token: Option<String>,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
