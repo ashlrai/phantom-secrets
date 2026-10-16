@@ -134,6 +134,31 @@ pub struct CloudConfig {
     pub reconciliation_remote_version: Option<u64>,
 }
 
+/// Validate an owner scope label: `personal`, `company`, `company:<name>` or
+/// `client:<name>`, where `<name>` is 1-64 ASCII lowercase letters, digits,
+/// `-` or `_`.
+pub fn validate_owner_label(label: &str) -> Result<()> {
+    let valid_name = |name: &str| {
+        !name.is_empty()
+            && name.len() <= 64
+            && name
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_')
+    };
+    let ok = match label.split_once(':') {
+        None => label == "personal" || label == "company",
+        Some(("company", name)) | Some(("client", name)) => valid_name(name),
+        Some(_) => false,
+    };
+    if ok {
+        Ok(())
+    } else {
+        Err(PhantomError::ConfigParseError(format!(
+            "invalid owner label '{label}': expected personal, company, company:<name> or client:<name>"
+        )))
+    }
+}
+
 fn bool_is_false(value: &bool) -> bool {
     !*value
 }
@@ -148,6 +173,10 @@ pub struct PhantomMeta {
     /// Machine-local vault and state namespacing uses
     /// [`PhantomConfig::local_project_id`] instead.
     pub project_id: String,
+    /// Optional owner scope label: `personal`, `company[:<name>]` or
+    /// `client:<name>`. Used to refuse accidental cross-owner secret copies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
     /// Basename of the dotenv file protected by this config. The config is
     /// stored beside the dotenv file, so accepting a path here would let
     /// repository-controlled config redirect security-sensitive rewrites.
@@ -691,6 +720,9 @@ impl PhantomConfig {
         let mut config: Self =
             toml::from_str(content).map_err(|e| value_blind_toml_error(content, &e))?;
         validate_portable_project_id(&config.phantom.project_id)?;
+        if let Some(owner) = config.phantom.owner.as_deref() {
+            validate_owner_label(owner)?;
+        }
 
         // `.phantom.toml` is repository-controlled. Its portable project_id is
         // retained for cloud/team identity, but it must never select
@@ -765,6 +797,7 @@ impl PhantomConfig {
             phantom: PhantomMeta {
                 version: "1".to_string(),
                 project_id: project_id.clone(),
+                owner: None,
                 dotenv_path: None,
                 rotation_policy: None,
                 secrets: BTreeMap::new(),
@@ -2067,5 +2100,30 @@ version = 4
         let cloud = roundtrip.cloud.unwrap();
         assert!(cloud.reconciliation_required);
         assert_eq!(cloud.reconciliation_remote_version, Some(9));
+    }
+
+    #[test]
+    fn owner_labels_accept_known_scopes_only() {
+        for ok in [
+            "personal",
+            "company",
+            "company:ashlr",
+            "client:globex",
+            "client:acme_2",
+        ] {
+            assert!(validate_owner_label(ok).is_ok(), "{ok}");
+        }
+        for bad in [
+            "",
+            "Personal",
+            "client",
+            "client:",
+            "client:Acme",
+            "team:x",
+            "client:a/b",
+            "personal:x",
+        ] {
+            assert!(validate_owner_label(bad).is_err(), "{bad}");
+        }
     }
 }

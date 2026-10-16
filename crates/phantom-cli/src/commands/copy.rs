@@ -20,7 +20,30 @@ struct CopyTargetPlan {
 /// project. Only the target is mutated, so only its canonical project lock is
 /// acquired; avoiding simultaneous source/target locks removes reverse-copy
 /// deadlock risk. The source snapshot remains zeroizing through target commit.
-pub fn run(name: &str, target_dir: &Path, rename: &Option<String>) -> Result<()> {
+/// Refuse copies between projects labelled with different owners unless the
+/// operator explicitly allows it. Unlabelled projects keep legacy behavior.
+pub(crate) fn check_owner_boundary(
+    source_owner: Option<&str>,
+    target_owner: Option<&str>,
+    allow_cross_owner: bool,
+) -> Result<()> {
+    if let (Some(source), Some(target)) = (source_owner, target_owner) {
+        if source != target && !allow_cross_owner {
+            anyhow::bail!(
+                "Refusing to copy across owners: source is '{source}', target is '{target}'. \
+                 Re-run with --allow-cross-owner only if this key may intentionally be shared."
+            );
+        }
+    }
+    Ok(())
+}
+
+pub fn run(
+    name: &str,
+    target_dir: &Path,
+    rename: &Option<String>,
+    allow_cross_owner: bool,
+) -> Result<()> {
     validate_secret_name(name)?;
     let target_name = rename.as_deref().unwrap_or(name);
     validate_secret_name(target_name)?;
@@ -49,6 +72,12 @@ pub fn run(name: &str, target_dir: &Path, rename: &Option<String>) -> Result<()>
                 target_dir.display()
             )
         })?;
+
+    check_owner_boundary(
+        source_config.phantom.owner.as_deref(),
+        target_config.phantom.owner.as_deref(),
+        allow_cross_owner,
+    )?;
 
     let target_preflight =
         phantom_core::managed_dotenv::resolve_dotenv(&target_dir, &target_config, &[])?;
@@ -242,6 +271,17 @@ fn dotenv_has_key(before: Option<&[u8]>, name: &str) -> Result<bool> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn owner_boundary_rules() {
+        use super::check_owner_boundary as c;
+        assert!(c(None, None, false).is_ok());
+        assert!(c(Some("personal"), None, false).is_ok());
+        assert!(c(Some("client:globex"), Some("client:globex"), false).is_ok());
+        assert!(c(Some("client:globex"), Some("personal"), false).is_err());
+        assert!(c(Some("company:ashlr"), Some("client:globex"), false).is_err());
+        assert!(c(Some("company:ashlr"), Some("client:globex"), true).is_ok());
+    }
+
     use super::*;
     use phantom_core::error::PhantomError;
     use phantom_vault::file::FileVault;
