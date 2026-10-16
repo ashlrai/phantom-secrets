@@ -70,8 +70,9 @@ public identifiers.
 Never paste a provider key into a tool argument. The legacy
 `phantom_add_secret` MCP tool is hard-deprecated and refuses plaintext.
 
-Use `phantom_add_secret_interactive` instead. It requests a trusted-terminal
-ceremony so the user enters the value outside the MCP and model context. The
+Use `phantom_add_secret_interactive` instead. It is effect-free (no approval
+needed) and returns `phantom add NAME`, which the user runs in a trusted
+terminal so the value is entered outside the MCP and model context. The
 agent may name the required variable and explain why it is needed; it must not
 ask the user to paste the value into chat.
 
