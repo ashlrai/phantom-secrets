@@ -4,6 +4,26 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (protected keys with no proxy route)
+
+- A protected key that no proxy route injects (for example `GROQ_API_KEY`,
+  or a signing secret such as `NEXTAUTH_SECRET`) reaches a `phantom exec`
+  child only as a session token that no provider accepts. Nothing said so:
+  `phantom why` and MCP `phantom_why` reported it as `PROTECTED` with no next
+  step, and `phantom exec` counted it as proxied.
+  - `phantom exec` now counts only routed secrets as proxied and warns, on
+    stderr and also under `--quiet`, naming each protected key it hands the
+    child with no route. Names only, never values.
+  - `phantom why`, `phantom why --json` and MCP `phantom_why` add a
+    value-free `exec` object for a protected key: `delivery` (`proxied`,
+    `no_route`, `withheld`, `connection_string_refused` or
+    `custom_route_refused`), `service`, `upstream` and `blocked_by`.
+    `blocked_by` names the service when the config stops exec from starting
+    for every key (a custom or altered route, or a protected connection
+    string), using the same check exec runs. `next_step` explains every
+    answer but an unblocked `proxied`. Routing, injection and the effects
+    gate are unchanged.
+
 ### Fixed (CLI and MCP JSON output)
 
 - `phantom audit stats --json` with an empty audit log now prints the same
