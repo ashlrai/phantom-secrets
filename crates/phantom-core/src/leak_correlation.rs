@@ -25,6 +25,11 @@
 //! Incidents with `first_seen_ts` older than 24 h are excluded from
 //! `LeakCorrelationEngine::active_incidents()`.
 //!
+//! The proxy only appends audit events; incidents are persisted by an explicit
+//! backfill. `LeakCorrelationEngine::uncorrelated_incidents()` correlates the
+//! same window in memory, without writing, so read-only queries can report
+//! leak events that no backfill has persisted yet.
+//!
 //! ## Rotation clearing
 //!
 //! When a secret is rotated (a `vault.store` event is appended after a
@@ -558,26 +563,42 @@ impl LeakCorrelationEngine {
         let incidents = self.load_all_incidents()?;
         let active: Vec<LeakIncident> = incidents
             .into_iter()
-            .filter(|inc| {
-                // Must be within 24 h.
-                if !inc.is_within_window(now, window_secs) {
-                    return false;
-                }
-                // Must meet minimum confidence.
-                if inc.confidence < min_confidence {
-                    return false;
-                }
-                // Cleared if there is a vault.store event newer than the incident.
-                if let Some(&rotated_at) = rotation_ts.get(&inc.secret_name) {
-                    if rotated_at > inc.last_seen_ts {
-                        return false; // secret has been rotated
-                    }
-                }
-                true
-            })
+            .filter(|inc| is_active_incident(inc, now, window_secs, min_confidence, &rotation_ts))
             .collect();
 
         Ok(active)
+    }
+
+    /// Correlate the last 24 h of `proxy.response_leak` audit events in
+    /// memory and return the incidents that [`Self::run`] would persist but
+    /// that are not in the incident store yet, filtered exactly like
+    /// [`Self::active_incidents`].
+    ///
+    /// The proxy only appends `proxy.response_leak` audit events; incidents
+    /// are persisted by an explicit, approval-gated backfill. Without this, a
+    /// read-only incident query answers "no active incidents" while fresh leak
+    /// events sit in the audit log. Read-only: it never writes the incident
+    /// store and never prints. An incident already persisted whose hour
+    /// bucket gained more events since is not reported again here.
+    pub fn uncorrelated_incidents(
+        &self,
+        min_confidence: f64,
+    ) -> std::io::Result<Vec<LeakIncident>> {
+        let now = now_unix();
+        let window_secs = 24 * 3600_u64;
+
+        let events = self.read_leak_events(now, window_secs)?;
+        if events.is_empty() {
+            return Ok(Vec::new());
+        }
+        let existing_ids = self.load_existing_incident_ids()?;
+        let rotation_ts = self.load_rotation_timestamps()?;
+
+        Ok(correlate(events, now)
+            .into_iter()
+            .filter(|inc| !existing_ids.contains(&inc.incident_id))
+            .filter(|inc| is_active_incident(inc, now, window_secs, min_confidence, &rotation_ts))
+            .collect())
     }
 
     // ── Private helpers ───────────────────────────────────────────────────────
@@ -735,6 +756,25 @@ impl LeakCorrelationEngine {
 // ──────────────────────────────────────────────────────────────────────────────
 // Correlation logic
 // ──────────────────────────────────────────────────────────────────────────────
+
+/// The filter `active_incidents` applies: first seen within `window_secs`,
+/// at least `min_confidence`, and not cleared by a `vault.store` of the same
+/// secret after the incident's last event.
+fn is_active_incident(
+    inc: &LeakIncident,
+    now: u64,
+    window_secs: u64,
+    min_confidence: f64,
+    rotation_ts: &HashMap<String, u64>,
+) -> bool {
+    if !inc.is_within_window(now, window_secs) || inc.confidence < min_confidence {
+        return false;
+    }
+    match rotation_ts.get(&inc.secret_name) {
+        Some(&rotated_at) => rotated_at <= inc.last_seen_ts,
+        None => true,
+    }
+}
 
 /// Group raw events into incidents.
 ///
@@ -1626,6 +1666,77 @@ mod tests {
             active.is_empty(),
             "after rotation, incident should be cleared"
         );
+    }
+
+    // ── Uncorrelated incidents: leak events not yet persisted ────────────────
+
+    #[test]
+    fn uncorrelated_incidents_reports_unpersisted_events_without_writing() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempdir().unwrap();
+        let now = now_unix();
+        let engine = make_engine(tmp.path());
+        write_audit_log(
+            &engine.audit_log_path,
+            &[
+                (now - 20, "proxy.response_leak", Some("OPENAI_API_KEY")),
+                (now - 10, "proxy.response_leak", Some("OPENAI_API_KEY")),
+            ],
+        );
+
+        // Nothing persisted yet: the read-only query sees no incident...
+        assert!(engine.active_incidents(0.0).unwrap().is_empty());
+        // ...but the uncorrelated view does, and writes nothing.
+        let pending = engine.uncorrelated_incidents(0.0).unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].secret_name, "OPENAI_API_KEY");
+        assert_eq!(pending[0].event_count, 2);
+        assert!(
+            !engine.incidents_path.exists(),
+            "the uncorrelated view must not persist incidents"
+        );
+
+        // The same min_confidence filter as active_incidents applies.
+        assert!(engine.uncorrelated_incidents(0.9).unwrap().is_empty());
+
+        // After a backfill persists it, it is active and no longer pending.
+        engine.run().unwrap();
+        assert_eq!(engine.active_incidents(0.0).unwrap().len(), 1);
+        assert!(engine.uncorrelated_incidents(0.0).unwrap().is_empty());
+    }
+
+    #[test]
+    fn uncorrelated_incidents_honours_window_and_rotation_clearing() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempdir().unwrap();
+        let now = now_unix();
+        let engine = make_engine(tmp.path());
+        write_audit_log(
+            &engine.audit_log_path,
+            &[
+                // Older than the 24 h window: never reported.
+                (now - 30 * 3600, "proxy.response_leak", Some("OLD_KEY")),
+                // Leaked, then stored again afterwards: cleared.
+                (now - 200, "proxy.response_leak", Some("ROTATED_KEY")),
+                (now - 100, "vault.store", Some("ROTATED_KEY")),
+                // Leaked after the last store: still pending.
+                (now - 300, "vault.store", Some("LIVE_KEY")),
+                (now - 50, "proxy.response_leak", Some("LIVE_KEY")),
+            ],
+        );
+
+        let pending = engine.uncorrelated_incidents(0.0).unwrap();
+        let names: Vec<&str> = pending.iter().map(|i| i.secret_name.as_str()).collect();
+        assert_eq!(names, vec!["LIVE_KEY"]);
+    }
+
+    #[test]
+    fn uncorrelated_incidents_without_audit_log_is_empty() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempdir().unwrap();
+        let engine = make_engine(tmp.path());
+        assert!(engine.uncorrelated_incidents(0.0).unwrap().is_empty());
+        assert!(!engine.incidents_path.exists());
     }
 
     // ── Deduplication: re-running does not create duplicate incidents ──────────

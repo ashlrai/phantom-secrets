@@ -1283,30 +1283,67 @@ pub fn run_incidents(min_confidence: f64, json: bool, auto_rotate_on_high: bool)
     let incidents = engine
         .active_incidents(min_confidence)
         .map_err(|e| anyhow::anyhow!("Failed to read leak incidents: {e}"))?;
-
-    if incidents.is_empty() {
-        if json {
-            println!("[]");
-        } else {
-            println!(
-                "{}  No active leak incidents (min_confidence={:.2}). \
-                 Set {} to enable audit logging.",
-                "->".blue().bold(),
-                min_confidence,
-                "PHANTOM_AUDIT=1".cyan()
-            );
-        }
-        return Ok(());
-    }
+    // The proxy only appends leak events; incidents are persisted by the
+    // gated `audit alerts --backfill`. Correlate the same window in memory
+    // (nothing written) so unpersisted leaks are not reported as all clear.
+    let uncorrelated = engine
+        .uncorrelated_incidents(min_confidence)
+        .map_err(|e| anyhow::anyhow!("Failed to read leak events from the audit log: {e}"))?;
 
     if json {
+        // One shape whether or not anything was found.
         let out = serde_json::json!({
             "incidents": incidents,
+            "uncorrelated_incidents": uncorrelated,
             "provider_credentials_rotated": [],
         });
         let s = serde_json::to_string_pretty(&out)
             .map_err(|e| anyhow::anyhow!("Serialisation error: {e}"))?;
         println!("{}", s);
+        return Ok(());
+    }
+
+    if !uncorrelated.is_empty() {
+        println!(
+            "{}  {} leak incident(s) from the last 24 h are in the audit log but not persisted yet:",
+            "!".yellow().bold(),
+            uncorrelated.len().to_string().red().bold(),
+        );
+        for inc in &uncorrelated {
+            println!(
+                "  {:<28}  {:<10}  {} event(s), last seen {}",
+                inc.secret_name.bold(),
+                format!("{:.2}", inc.confidence),
+                inc.event_count,
+                format_unix_ts(inc.last_seen_ts),
+            );
+        }
+        println!(
+            "   Treat each as a possible leak. Persist them and send configured alerts with {}.",
+            "phantom audit alerts --backfill".cyan()
+        );
+        println!();
+    }
+
+    if incidents.is_empty() {
+        let audit_log_present = phantom_core::audit::log_path()
+            .map(|path| path.exists())
+            .unwrap_or(false);
+        if audit_log_present {
+            println!(
+                "{}  No persisted active leak incidents (min_confidence={:.2}).",
+                "->".blue().bold(),
+                min_confidence,
+            );
+        } else {
+            println!(
+                "{}  No active leak incidents (min_confidence={:.2}). \
+                 No audit log exists: set {} to record leak events.",
+                "->".blue().bold(),
+                min_confidence,
+                "PHANTOM_AUDIT=1".cyan()
+            );
+        }
         return Ok(());
     }
 

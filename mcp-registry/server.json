@@ -346,7 +346,7 @@
     },
     {
       "name": "phantom_audit_incidents",
-      "description": "Return active leak incidents derived from proxy.response_leak audit events. Incidents are correlated by (secret_name, location) within a 24-hour window. min_confidence (default 0.7) filters by confidence score: 0.5 = single leak event; 0.95 = same secret leaked >3 times within 1 hour. Each incident includes: incident_id, secret_name (never the value), location_label, first_seen_ts, last_seen_ts, event_count, confidence, remediation. Incidents whose secret was subsequently stored are omitted. Reads only the persisted incident store; it does not run correlation or write state.",
+      "description": "Return active leak incidents derived from proxy.response_leak audit events. Incidents are correlated by (secret_name, location) within a 24-hour window. min_confidence (default 0.7) filters by confidence score: 0.5 = single leak event; 0.95 = same secret leaked >3 times within 1 hour. Each incident includes: incident_id, secret_name (never the value), location_label, first_seen_ts, last_seen_ts, event_count, confidence, remediation. Incidents whose secret was subsequently stored are omitted. incidents lists the persisted incident store. The proxy only appends audit events, so leak events from the last 24 h that no backfill has persisted yet are correlated in memory and listed separately in uncorrelated_incidents (uncorrelated_count), with a next_step; treat them as possible leaks. Always returns JSON {incident_count, min_confidence, incidents, uncorrelated_count, uncorrelated_incidents, audit_log_present, next_step} (also as structuredContent). Read-only: it never writes incident or alert state.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
@@ -834,7 +834,7 @@
     },
     {
       "name": "phantom_leak_incidents_realtime",
-      "description": "Query active leak incidents for a real-time security dashboard. Returns incidents with confidence > 0.5 seen within the last 24 hours, sorted by confidence descending. Each entry contains: secret_name (never the value), location_label, confidence, first_seen (ISO-8601), last_seen (ISO-8601), incident_id. Set min_confidence (default 0.5) to narrow results. Reads only persisted incidents and never rotates, writes correlation state, or exposes secret values. Use a separately approved rotation tool to remediate.",
+      "description": "Query active leak incidents for a real-time security dashboard. Returns incidents with confidence > 0.5 seen within the last 24 hours, sorted by confidence descending. Each entry contains: secret_name (never the value), location_label, confidence, first_seen (ISO-8601), last_seen (ISO-8601), incident_id. Set min_confidence (default 0.5) to narrow results. incidents lists persisted incidents; leak events from the last 24 h that no backfill has persisted yet are correlated in memory and listed in uncorrelated_incidents (uncorrelated_count, same entry shape) with a next_step. Always returns JSON {incident_count, min_confidence, effect, rotation_performed, incidents, uncorrelated_count, uncorrelated_incidents, audit_log_present, next_step}. Never rotates, writes incident or alert state, or exposes secret values. Use a separately approved rotation tool to remediate.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
