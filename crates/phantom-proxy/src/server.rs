@@ -322,11 +322,109 @@ type BoxBody = http_body_util::Either<
     StreamBody<tokio_stream::wrappers::ReceiverStream<Result<Frame<Bytes>, std::io::Error>>>,
 >;
 
+/// Every proxy-generated error body is JSON. Label it so SDK clients parse
+/// the error instead of surfacing an opaque text blob, and never cache it.
 fn error_response(status: StatusCode, body: impl Into<Bytes>) -> Response<BoxBody> {
     Response::builder()
         .status(status)
+        .header(hyper::header::CONTENT_TYPE, "application/json")
+        .header(hyper::header::CACHE_CONTROL, "no-store")
         .body(BoxBody::Left(Full::new(body.into())))
         .unwrap()
+}
+
+/// Why an upstream request failed before any response arrived.
+///
+/// Built only from error kinds and fixed phrases: the raw error chain can name
+/// hosts, addresses, or certificate subjects, so none of it reaches the client.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UpstreamFailure {
+    Timeout,
+    DnsResolution,
+    ConnectionRefused,
+    TlsHandshake,
+    Connect,
+    Other,
+}
+
+impl UpstreamFailure {
+    fn classify(error: &reqwest::Error) -> Self {
+        if error.is_timeout() {
+            return Self::Timeout;
+        }
+        let mut source: Option<&(dyn std::error::Error + 'static)> =
+            std::error::Error::source(error);
+        let mut dns = false;
+        let mut tls = false;
+        while let Some(current) = source {
+            if let Some(io) = current.downcast_ref::<std::io::Error>() {
+                match io.kind() {
+                    std::io::ErrorKind::ConnectionRefused => return Self::ConnectionRefused,
+                    std::io::ErrorKind::TimedOut => return Self::Timeout,
+                    _ => {}
+                }
+            }
+            let text = current.to_string().to_ascii_lowercase();
+            dns |= text.contains("dns error") || text.contains("failed to lookup address");
+            tls |= text.contains("certificate")
+                || text.contains("tls")
+                || text.contains("handshake")
+                || text.contains("invalidcontenttype")
+                || text.contains("corrupt message");
+            source = current.source();
+        }
+        if dns {
+            Self::DnsResolution
+        } else if tls {
+            Self::TlsHandshake
+        } else if error.is_connect() {
+            Self::Connect
+        } else {
+            Self::Other
+        }
+    }
+
+    fn error(self) -> &'static str {
+        match self {
+            Self::Timeout => "upstream request timed out",
+            Self::DnsResolution | Self::ConnectionRefused | Self::TlsHandshake | Self::Connect => {
+                "could not connect to upstream service"
+            }
+            Self::Other => "upstream request failed",
+        }
+    }
+
+    fn reason(self) -> &'static str {
+        match self {
+            Self::Timeout => "timeout",
+            Self::DnsResolution => "dns_resolution_failed",
+            Self::ConnectionRefused => "connection_refused",
+            Self::TlsHandshake => "tls_handshake_failed",
+            Self::Connect => "connect_failed",
+            Self::Other => "request_failed",
+        }
+    }
+
+    fn hint(self) -> &'static str {
+        match self {
+            Self::Timeout => {
+                "the upstream did not respond in time; retry, or check network reachability of the service host"
+            }
+            Self::DnsResolution => {
+                "the service host did not resolve; check network/DNS access and the service host in .phantom.toml"
+            }
+            Self::ConnectionRefused => {
+                "nothing accepted the connection at the service host; check the host and port in .phantom.toml"
+            }
+            Self::TlsHandshake => {
+                "the TLS handshake with the service host failed; check that it is an HTTPS endpoint with a valid certificate and that the system clock is correct"
+            }
+            Self::Connect => {
+                "could not open a connection to the service host; check network access and the service host in .phantom.toml"
+            }
+            Self::Other => "the upstream request failed before a response; retry, then check `phantom doctor`",
+        }
+    }
 }
 
 /// Accept only an absent `Content-Encoding` header or exactly one `identity`
@@ -430,6 +528,12 @@ async fn handle_request(
                 serde_json::json!({
                     "error": format!("no route for path: {path}"),
                     "hint": "check .phantom.toml service configuration",
+                    "routes": state
+                        .registry
+                        .services()
+                        .into_iter()
+                        .map(|(name, _)| format!("/{name}"))
+                        .collect::<Vec<_>>(),
                 })
                 .to_string(),
             ));
@@ -718,17 +822,21 @@ async fn handle_request(
     let response = match outgoing.send().await {
         Ok(resp) => resp,
         Err(e) => {
-            error!("Upstream request failed for service {}", route.name);
-            let user_msg = if e.is_timeout() {
-                "upstream request timed out"
-            } else if e.is_connect() {
-                "could not connect to upstream service"
-            } else {
-                "upstream request failed"
-            };
+            let failure = UpstreamFailure::classify(&e);
+            error!(
+                "Upstream request failed for service {} ({})",
+                route.name,
+                failure.reason()
+            );
             return Ok(error_response(
                 StatusCode::BAD_GATEWAY,
-                serde_json::json!({ "error": user_msg, "service": route.name }).to_string(),
+                serde_json::json!({
+                    "error": failure.error(),
+                    "reason": failure.reason(),
+                    "hint": failure.hint(),
+                    "service": route.name,
+                })
+                .to_string(),
             ));
         }
     };
@@ -1309,6 +1417,150 @@ mod tests {
         assert_eq!(resp.status(), 200);
 
         proxy.shutdown().await;
+    }
+
+    /// Start a header-auth proxy with one `test` route to `target_base`.
+    async fn failure_probe_proxy(
+        target_base: String,
+        max_body_size: usize,
+    ) -> (ProxyServer, String) {
+        let mut registry = ServiceRegistry::new();
+        registry.add_route(ServiceRoute {
+            name: "test".to_string(),
+            target_base,
+            secret_key: "TEST_API_KEY".to_string(),
+            header: "Authorization".to_string(),
+            header_format: "Bearer {secret}".to_string(),
+            credential_profile: crate::services::CredentialProfile::Standard,
+            sdk_base_path: None,
+        });
+        let mut named = HashMap::new();
+        named.insert("TEST_API_KEY".to_string(), route_fixture_value());
+        let proxy_key = ProxyServer::generate_proxy_token();
+        let proxy = ProxyServer::start(
+            ProxyConfig {
+                port: 0,
+                proxy_token: proxy_key.clone(),
+                max_body_size,
+                ..ProxyConfig::default()
+            },
+            registry,
+            Interceptor::new_with_named(HashMap::new(), named),
+        )
+        .await
+        .unwrap();
+        (proxy, proxy_key)
+    }
+
+    /// Runtime-built, credential-free route value.
+    fn route_fixture_value() -> String {
+        format!("route-fixture-{:x}", std::process::id())
+    }
+
+    #[tokio::test]
+    async fn upstream_connect_failures_name_a_value_free_reason() {
+        let mock = crate::test_server::MockServer::start().await;
+        let closed = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let cases = [
+            (format!("http://127.0.0.1:{closed}"), "connection_refused"),
+            // TLS to a plain-HTTP listener: the handshake cannot complete.
+            (
+                format!("https://127.0.0.1:{}", mock.port),
+                "tls_handshake_failed",
+            ),
+            (
+                "http://phantom-unresolvable.invalid".to_string(),
+                "dns_resolution_failed",
+            ),
+        ];
+        for (target_base, reason) in cases {
+            let (proxy, proxy_key) = failure_probe_proxy(target_base.clone(), 1024).await;
+            let response = reqwest::Client::new()
+                .get(format!("http://127.0.0.1:{}/test/v1/models", proxy.port()))
+                .header("x-phantom-proxy-token", &proxy_key)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), 502, "{target_base}");
+            let body = response.text().await.unwrap();
+            let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+            assert_eq!(parsed["reason"], reason, "{target_base}: {body}");
+            assert_eq!(parsed["service"], "test");
+            assert_eq!(parsed["error"], "could not connect to upstream service");
+            assert!(
+                parsed["hint"]
+                    .as_str()
+                    .is_some_and(|hint| hint.contains(".phantom.toml") || hint.contains("HTTPS")),
+                "{body}"
+            );
+            assert!(!body.contains(&route_fixture_value()), "{body}");
+            assert!(!body.contains("127.0.0.1"), "{body}");
+            assert!(!body.contains(".invalid"), "{body}");
+            proxy.shutdown().await;
+        }
+        assert!(mock.get_requests().is_empty());
+        mock.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn proxy_error_bodies_are_labelled_json_and_uncached() {
+        let mock = crate::test_server::MockServer::start().await;
+        let (proxy, proxy_key) =
+            failure_probe_proxy(format!("http://127.0.0.1:{}", mock.port), 16).await;
+        let client = reqwest::Client::new();
+
+        let oversized = client
+            .post(format!("http://127.0.0.1:{}/test/v1/chat", proxy.port()))
+            .header("x-phantom-proxy-token", &proxy_key)
+            .body(vec![b'a'; 64])
+            .send()
+            .await
+            .unwrap();
+        let unauthorized = client
+            .get(format!("http://127.0.0.1:{}/test/v1/models", proxy.port()))
+            .send()
+            .await
+            .unwrap();
+        for (response, status) in [(oversized, 413), (unauthorized, 401)] {
+            assert_eq!(response.status(), status);
+            assert_eq!(
+                response.headers().get("content-type").unwrap(),
+                "application/json"
+            );
+            assert_eq!(response.headers().get("cache-control").unwrap(), "no-store");
+            let body = response.text().await.unwrap();
+            serde_json::from_str::<serde_json::Value>(&body).unwrap();
+        }
+        assert!(mock.get_requests().is_empty());
+        proxy.shutdown().await;
+        mock.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn unknown_route_lists_the_configured_route_prefixes() {
+        let mock = crate::test_server::MockServer::start().await;
+        let (proxy, proxy_key) =
+            failure_probe_proxy(format!("http://127.0.0.1:{}", mock.port), 1024).await;
+
+        let response = reqwest::Client::new()
+            .get(format!(
+                "http://127.0.0.1:{}/openai/v1/models",
+                proxy.port()
+            ))
+            .header("x-phantom-proxy-token", &proxy_key)
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), 404);
+        let parsed: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(parsed["routes"], serde_json::json!(["/test"]));
+        proxy.shutdown().await;
+        mock.shutdown().await;
     }
 
     #[tokio::test]

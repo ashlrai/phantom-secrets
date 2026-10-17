@@ -115,7 +115,7 @@ Options: --json (emit a machine-readable array of `{name, detected_service}` for
 Transactionally create a new secret name in an initialized project. It does not auto-create config, gitignore, or vault state; run `phantom init --empty` first in a new project. Writes a persistent sensitive `phm_` mapping to the managed dotenv file.
 Prompts silently on the controlling terminal, so the value never enters shell history or `ps aux`. Positional secret values are rejected; use `--stdin` only with a trusted pipe. Existing names are denied before prompt/stdin read and are never replaced.
 Example (interactive, hidden input): phantom add STRIPE_SECRET_KEY
-Options: --stdin (read one line for a new name from a trusted piped producer)
+Options: --stdin (read the value for a new name, up to EOF, from a trusted piped producer; trailing newlines dropped, 64 KiB cap; refused when stdin is a terminal). Input with more than one line is refused unless you add --multiline (store every line, e.g. a PEM key) or --first-line (store only line 1, e.g. `pass show` output with metadata after the key); nothing is stored on refusal.
 
 ### phantom remove <KEY>
 From an attached trusted terminal, review and type the exact removal challenge.

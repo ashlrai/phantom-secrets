@@ -41,6 +41,69 @@ pub struct PhantomConfig {
     /// proxy response leak incidents detected by the correlation engine.
     #[serde(default, skip_serializing_if = "alerting_is_default")]
     pub alerting: AlertingConfig,
+    /// Leak response policy (`[leak_response]` section). Default is dry-run
+    /// planning only.
+    #[serde(default, skip_serializing_if = "LeakResponseConfig::is_default")]
+    pub leak_response: LeakResponseConfig,
+}
+
+/// What to do when a leak incident is detected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OnLeak {
+    /// Do nothing beyond existing alerting.
+    Off,
+    /// Show the planned response (dry run). This is the default.
+    #[default]
+    Plan,
+    /// Respond automatically. Requires `allow_revoke = true`. Live revoke is
+    /// disabled in shipped builds, so this still only plans today.
+    Revoke,
+}
+
+impl OnLeak {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            OnLeak::Off => "off",
+            OnLeak::Plan => "plan",
+            OnLeak::Revoke => "revoke",
+        }
+    }
+}
+
+/// `[leak_response]` section of `.phantom.toml`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct LeakResponseConfig {
+    /// `off`, `plan` (default) or `revoke`.
+    pub on_leak: OnLeak,
+    /// Explicit opt-in required for `on_leak = "revoke"`. Default false.
+    pub allow_revoke: bool,
+}
+
+impl LeakResponseConfig {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// Validate the policy. `revoke` without the explicit opt-in key is an
+    /// error (fail closed) rather than silently downgrading.
+    pub fn effective(&self) -> Result<OnLeak> {
+        if self.on_leak == OnLeak::Revoke && !self.allow_revoke {
+            return Err(PhantomError::ConfigParseError(
+                "[leak_response] on_leak = \"revoke\" requires allow_revoke = true. \
+                 Set on_leak = \"plan\" for a dry run."
+                    .to_string(),
+            ));
+        }
+        Ok(self.on_leak)
+    }
+
+    /// Whether this build can perform a live revoke. Always false in shipped
+    /// builds: no provider has a wired authenticated revocation.
+    pub const fn live_revoke_available() -> bool {
+        false
+    }
 }
 
 fn alerting_is_default(cfg: &AlertingConfig) -> bool {
@@ -775,6 +838,7 @@ impl PhantomConfig {
             cloud: None,
             public_keys: Vec::new(),
             alerting: AlertingConfig::default(),
+            leak_response: LeakResponseConfig::default(),
         }
     }
 
@@ -1142,6 +1206,51 @@ fn extract_host_for_risk_check(pattern: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    fn leak_cfg(extra: &str) -> PhantomConfig {
+        let toml = format!("[phantom]\nversion = \"1\"\nproject_id = \"abc123\"\n{extra}");
+        toml::from_str(&toml).expect("parse")
+    }
+
+    #[test]
+    fn leak_response_defaults_to_plan() {
+        let c = leak_cfg("");
+        assert_eq!(c.leak_response.effective().unwrap(), OnLeak::Plan);
+        assert!(!c.leak_response.allow_revoke);
+    }
+
+    #[test]
+    fn leak_response_parses_all_values() {
+        for (v, want) in [("off", OnLeak::Off), ("plan", OnLeak::Plan)] {
+            let c = leak_cfg(&format!("[leak_response]\non_leak = \"{v}\"\n"));
+            assert_eq!(c.leak_response.effective().unwrap(), want);
+        }
+        let c = leak_cfg("[leak_response]\non_leak = \"revoke\"\nallow_revoke = true\n");
+        assert_eq!(c.leak_response.effective().unwrap(), OnLeak::Revoke);
+    }
+
+    #[test]
+    fn leak_response_revoke_requires_opt_in() {
+        let c = leak_cfg("[leak_response]\non_leak = \"revoke\"\n");
+        let err = c.leak_response.effective().unwrap_err().to_string();
+        assert!(err.contains("allow_revoke"));
+    }
+
+    #[test]
+    fn leak_response_rejects_unknown_value_and_key() {
+        let bad = "[phantom]\nversion = \"1\"\nproject_id = \"abc123\"\n[leak_response]\non_leak = \"nuke\"\n";
+        assert!(toml::from_str::<PhantomConfig>(bad).is_err());
+        let bad = "[phantom]\nversion = \"1\"\nproject_id = \"abc123\"\n[leak_response]\nallow_revok = true\n";
+        assert!(toml::from_str::<PhantomConfig>(bad).is_err());
+    }
+
+    #[test]
+    fn leak_response_default_not_serialized_and_live_revoke_off() {
+        let c = leak_cfg("");
+        let out = toml::to_string_pretty(&c).unwrap();
+        assert!(!out.contains("leak_response"));
+        assert!(!LeakResponseConfig::live_revoke_available());
+    }
+
     #[test]
     fn toml_parse_errors_never_echo_config_values() {
         let dir = tempfile::tempdir().unwrap();
