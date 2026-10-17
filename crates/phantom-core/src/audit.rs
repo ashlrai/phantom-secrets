@@ -1393,16 +1393,21 @@ pub fn read_recent_lines(path: &Path, max_bytes: u64) -> std::io::Result<RecentL
     let mut file = File::open(path)?;
     let len = file.metadata()?.len();
     let window_truncated = len > max_bytes;
-    if window_truncated {
-        file.seek(SeekFrom::Start(len - max_bytes))?;
-    }
+    // When cut, read one byte more, from just before the window: if that byte
+    // is a newline, the window starts exactly on a line and keeps it whole.
+    let read_len = if window_truncated {
+        file.seek(SeekFrom::Start(len - max_bytes - 1))?;
+        max_bytes + 1
+    } else {
+        max_bytes
+    };
     let mut window = Vec::new();
-    file.take(max_bytes).read_to_end(&mut window)?;
+    file.take(read_len).read_to_end(&mut window)?;
 
     let mut rest: &[u8] = &window;
     if window_truncated {
-        // The window starts mid-file; whatever precedes the first newline is
-        // the tail of a line that began before it.
+        // Everything through the first newline (possibly the extra byte
+        // itself) belongs to a line that began before the window.
         rest = match rest.iter().position(|b| *b == b'\n') {
             Some(end) => &rest[end + 1..],
             None => &[],
@@ -2050,6 +2055,24 @@ mod tests {
         assert!(recent.window_truncated);
         assert_eq!(recent.lines, lines[97..]);
         assert_eq!(recent.unreadable_lines, 0);
+    }
+
+    #[test]
+    fn recent_lines_keeps_a_line_that_starts_exactly_at_the_window() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audit.log");
+        let lines: Vec<String> = (0..10).map(|i| format!(r#"{{"op":"e{i:03}"}}"#)).collect();
+        std::fs::write(&path, format!("{}\n", lines.join("\n"))).unwrap();
+        let line_len = lines[0].len() as u64 + 1;
+
+        // Exactly three whole lines: the byte before the window is a newline.
+        let recent = read_recent_lines(&path, line_len * 3).unwrap();
+        assert!(recent.window_truncated);
+        assert_eq!(recent.lines, lines[7..]);
+
+        // One byte short of three lines: the first is partial and dropped.
+        let recent = read_recent_lines(&path, line_len * 3 - 1).unwrap();
+        assert_eq!(recent.lines, lines[8..]);
     }
 
     #[test]
