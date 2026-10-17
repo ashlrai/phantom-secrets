@@ -92,7 +92,8 @@ approval gates, and review its target before invocation.
 Important boundaries:
 
 - `phantom_add_secret` is deprecated and refuses plaintext secret values passed
-  over MCP. `phantom_add_secret_interactive` creates a trusted-terminal flow.
+  over MCP. `phantom_add_secret_interactive` returns the `phantom add NAME`
+  command for a trusted terminal and stores nothing.
 - `phantom_do` proposes a closed engineering action and does not execute it.
 - `phantom_setup_workspace` can propose and request trusted-terminal setup; MCP
   does not claim or apply the request.
