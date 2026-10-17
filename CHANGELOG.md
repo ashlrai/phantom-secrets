@@ -4,6 +4,15 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Added (agent status)
+
+- `phantom agent status [--json]` is a read-only, value-free view of MCP
+  approval state (pending, approved-and-unused, expired, and whether the
+  approval key file exists). It takes no lock and creates no file, and never
+  prints nonces, argument hashes, or parameter summaries. Lease state is
+  reported as unavailable because the broker is not wired into the CLI.
+  Revert: remove the `Status` variant of `AgentAction`; nothing else depends on it.
+
 ### Fixed (MCP expiry gate and sync platform; Gemini CLI setup)
 
 - MCP `phantom_expiry_enforce` read TTLs only from `.phantom.toml` overrides,
