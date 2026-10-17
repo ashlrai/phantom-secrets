@@ -62,8 +62,9 @@ jobs:
           docs='^(docs/|[^/]*\.md$|.*/README\.md$|LICENSE|\.github/ISSUE_TEMPLATE/|\.github/PULL_REQUEST_TEMPLATE)'
           web='^(apps/web/|scripts/supabase/|scripts/seo/|\.github/workflows/)'
           # Rust/CLI suites: anything that is neither docs nor web-only nor the video sandbox.
+          # scripts/supabase and scripts/seo are exercised only by the web job.
           rust=false; webc=false
-          if printf '%s\n' "$files" | grep -Ev "$docs" | grep -Ev '^(apps/web/|video/)' | grep -q .; then rust=true; fi
+          if printf '%s\n' "$files" | grep -Ev "$docs" | grep -Ev '^(apps/web/|scripts/supabase/|scripts/seo/|video/)' | grep -q .; then rust=true; fi
           if printf '%s\n' "$files" | grep -Eq '^\.github/workflows/'; then rust=true; fi
           if printf '%s\n' "$files" | grep -Eq "$web"; then webc=true; fi
           echo "rust=$rust" >> "$GITHUB_OUTPUT"; echo "web=$webc" >> "$GITHUB_OUTPUT"
