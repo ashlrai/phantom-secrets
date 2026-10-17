@@ -100,11 +100,21 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
 
+On pull requests, CI classifies the changed paths and skips suites a change
+cannot affect: docs-only changes skip the Rust and web suites, and Rust tests
+run through `cargo nextest` on the touched crates and their dependents. Secret
+scanning and the Rust dependency policy always run. The single `CI Gate` job
+fails if any selected job did not succeed. Pushes to `main` run everything.
+
 Run additional checks for the surface you changed:
 
 ```bash
 # MCP release binary
 cargo build --release --locked -p phantom-secrets-mcp --bin phantom-mcp
+
+# MCP catalog: mcp-registry/server.json must match the runtime tools/list
+cargo build --locked -p phantom-secrets-mcp --bin phantom-mcp
+node scripts/release/mcp-stdio-smoke.mjs target/debug/phantom-mcp 54
 
 # Provider hard-denial and exact cfg(test) transaction-scaffolding tests
 cargo test --locked -p phantom-secrets --test grant_github_app_test
@@ -125,7 +135,10 @@ for test in npm-mcp/test/*.test.js; do node "$test"; done
 
 When an MCP catalog intentionally changes, update the server declarations,
 closed parameter schemas, generated/mirrored registry surfaces, and packaged
-stdio smoke together. Do not hard-code a catalog count in prose unless release
+stdio smoke together. After reviewing the runtime effects, regenerate the
+registry file with
+`node scripts/release/mcp-stdio-smoke.mjs target/debug/phantom-mcp 54 mcp-registry/server.json --write-registry`;
+the Linux CI test job runs the same smoke without `--write-registry`. Do not hard-code a catalog count in prose unless release
 automation enforces it.
 
 Ignored keychain tests touch the host OS keychain. Run them only on a disposable test identity after reviewing the test:

@@ -25,9 +25,9 @@ it has no unpinned network package-runner fallback. Representative tools include
 |------|-------------|------------|
 | `phantom_init` | Protect .env secrets — store in vault, rewrite with phm_ tokens | env_path (optional), confirm, approval_token |
 | `phantom_list_secrets` | List secret names with service mappings (never values) | — |
-| `phantom_status` | Show project ID, dotenv protection counts and service mappings (does not open the vault) | — |
+| `phantom_status` | Show project ID, managed `.env` protection counts, and service mappings without opening the vault | — |
 | `phantom_add_secret` | **Deprecated** — refuses plaintext via MCP. Use `phantom_add_secret_interactive` instead | name, confirm, approval_token |
-| `phantom_add_secret_interactive` | Return a terminal command that prompts the user for the value, then stores it. Value never crosses the MCP wire | name, confirm, approval_token |
+| `phantom_add_secret_interactive` | Return `phantom add NAME` for the user to run in a trusted terminal, where the value is typed. Effect-free: stores nothing and needs no approval | name |
 | `phantom_remove_secret` | Request exact transactional removal through the gated compatibility surface | name, confirm, approval_token |
 | `phantom_rotate` | Request regeneration of project phantom mappings; provider credentials are unchanged | confirm, approval_token |
 | `phantom_cloud_push` | Request a client-encrypted push after separate hosted commissioning and entitlement | confirm, approval_token |

@@ -31,7 +31,13 @@ phantom setup --client cursor     # ~/.cursor/mcp.json
 phantom setup --client windsurf   # ~/.codeium/windsurf/mcp_config.json
 phantom setup --client codex      # ~/.codex/config.toml
 phantom setup --client claude --print   # snippet to stdout for any client
+phantom setup --status                  # read-only: which clients are wired (add --json)
 ```
+
+`phantom setup --status` only reads each client's config and reports `wired`,
+`not_wired`, `no_config`, or `unreadable` for Claude Code, Cursor, Windsurf,
+Codex, and Gemini CLI (`~/.gemini/settings.json`). It writes nothing; Gemini CLI
+is status-only and has no `--client` writer.
 
 Setup uses the bundled MCP server in the installed `phantom` executable. The
 legacy standalone fallback accepts only an executable local `phantom-mcp`
@@ -61,10 +67,10 @@ parameter names match the runtime JSON schema exactly.
 |------|-------------|------------|
 | `phantom_setup_workspace` | Propose setup, persist a trusted-terminal request, or read request status; first-time seal-key provisioning and every request creation activate both gates | phase, plan_id (conditional), pre_state_id (conditional), request_id (conditional), confirm (conditional), approval_token (conditional) |
 | `phantom_init` | Exact-before transaction: store detected values, persist config, then rewrite a safe project-local dotenv last; concurrent drift aborts | env_path (default `.env`), confirm, approval_token |
-| `phantom_list_secrets` | List all protected secret names (never shows values) | — |
-| `phantom_status` | Show project ID, dotenv protection counts and service mappings (does not open the vault) | — |
-| `phantom_doctor` | Diagnose configuration and vault health; `fix=true` mutates files and activates both gates | fix, confirm, approval_token |
-| `phantom_why` | Explain why a key is or is not protected (detection heuristics) | key |
+| `phantom_list_secrets` | List all protected secret names (never shows values). Before init it opens no vault and returns `initialized: false` with a `next_step` | — |
+| `phantom_status` | Show project ID, managed dotenv protection counts, and service mappings without opening the vault | — |
+| `phantom_doctor` | Run repository-local health checks (config, dotenv protection, `.gitignore`, `.env.example`, pre-commit hook) without opening the vault; `fix=true` mutates files and activates both gates | fix, confirm, approval_token |
+| `phantom_why` | Explain why a key is or is not protected and how `phantom exec` delivers it (`exec.delivery`, e.g. `no_route`). Never opens the vault; works before init and with a locked vault | key |
 | `phantom_check` | Scan supported dotenv files, or selected process variables with `runtime=true` | runtime |
 | `phantom_env` | Generate an env example file with secret placeholders | output (default `.env.example`), confirm, approval_token |
 | `phantom_sync` | Preview deployment-platform sync configuration (Vercel, Railway) | platform (optional), project_id (optional) |
@@ -174,6 +180,8 @@ and still requires attached-terminal consent.
 - Use `phantom_list_secrets` to see what secrets are available (never shows values)
 - Use `phantom_add_secret_interactive` to store new keys a user provides — the **deprecated** `phantom_add_secret` refuses plaintext via MCP on purpose, so values never enter AI context
 - Use `phantom_init` to protect an unprotected `.env` file
+- If a tool answers "Vault locked: ..." (MCP error -32600), the project's secrets are in an encrypted-file vault this process cannot open, usually because `PHANTOM_VAULT_PASSPHRASE` is not set in the MCP server's env config. Do not treat it as "no secrets"; pass on the unlock step in the message to the user. `phantom_list_secrets` reports the same state as "Vault locked, not empty."
+- When a call fails with 401 under `phantom exec`, run `phantom_why` on the key: `exec.delivery: no_route` means no built-in proxy route injects it, so the child only has a session token
 
 ## Build and test
 

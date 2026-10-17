@@ -32,8 +32,8 @@ This writes `~/.codeium/windsurf/mcp_config.json` with the `phantom` MCP server 
 {
   "mcpServers": {
     "phantom": {
-      "command": "/absolute/path/to/phantom",
-      "args": ["mcp", "serve"]
+      "command": "phantom-mcp",
+      "args": []
     }
   }
 }
@@ -74,14 +74,14 @@ migration guidance and never kills a process or deletes the record.
 
 ## MCP tools Windsurf can use
 
-Once the `phantom` server is registered, Cascade can call the same runtime
+Once `phantom-secrets-mcp` is registered, Cascade can call the same runtime
 catalog as other MCP clients. See the [core tool examples in the Claude Code
 guide](./claude-code.md#core-mcp-tools-claude-can-use), and use MCP `tools/list`
 for the canonical catalog.
 
 Frequently used tools in Windsurf sessions:
 
-- `phantom_status` — check project ID, `.env` protection counts and service mappings (does not open the vault; use `phantom_list_secrets` for stored names)
+- `phantom_status` — verify `.env` protection state and service mappings (does not open the vault; use `phantom_list_secrets` for stored names)
 - `phantom_list_secrets` — list secret names (values never returned)
 - `phantom_add_secret_interactive` — returns the terminal command to enter a new secret out-of-band
 - `phantom_doctor` — run all health checks; pass `fix=true` to auto-repair safe issues
