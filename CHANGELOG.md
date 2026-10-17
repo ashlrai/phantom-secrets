@@ -20,6 +20,11 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   `~/.gemini/settings.json` (other settings are kept), and `--print` shows the
   snippet.
 
+### Fixed (agent report)
+
+- A malformed dotenv no longer hides a missing managed dotenv in
+  `phantom agent report`/`doctor`.
+
 ### Fixed (locked-vault follow-ups)
 
 - `phantom exec` and `phantom start` said a protected key "has no vault entry"
