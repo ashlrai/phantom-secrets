@@ -59,7 +59,12 @@ fn prepare_section(
     )))
 }
 
-pub fn prepare_guidance(project_dir: &Path) -> anyhow::Result<PreparedGuidance> {
+/// `vault_backend` is the `backend_name()` of the vault init provisions into,
+/// so the CLAUDE.md section describes where the real values actually live.
+pub fn prepare_guidance(
+    project_dir: &Path,
+    vault_backend: Option<&str>,
+) -> anyhow::Result<PreparedGuidance> {
     let mut prepared = PreparedGuidance {
         files: Vec::new(),
         messages: Vec::new(),
@@ -68,7 +73,7 @@ pub fn prepare_guidance(project_dir: &Path) -> anyhow::Result<PreparedGuidance> 
         "CLAUDE.md",
         project_dir,
         &["## Phantom Secrets"],
-        CLAUDE_INSTRUCTIONS,
+        &claude_instructions(vault_backend),
         "Added Phantom instructions to CLAUDE.md",
         true,
     )? {
@@ -90,18 +95,40 @@ pub fn prepare_guidance(project_dir: &Path) -> anyhow::Result<PreparedGuidance> 
     Ok(prepared)
 }
 
-const CLAUDE_INSTRUCTIONS: &str = r#"
+/// Where the real values live, for the vault `backend_name()` init used.
+fn vault_description(backend: Option<&str>) -> &'static str {
+    match backend {
+        Some(name) if name.starts_with("linux-keyutils") => {
+            "Real secrets are in the Linux kernel keyring (linux-keyutils), which is volatile: it is cleared on reboot, so keep a backup"
+        }
+        Some(name) if name.starts_with("linux-secret-service") => {
+            "Real secrets are in the OS keychain (Linux Secret Service)"
+        }
+        Some("os-keychain") => "Real secrets are in the OS keychain",
+        Some("encrypted-file") => {
+            "Real secrets are in a passphrase-encrypted vault file outside the project"
+        }
+        _ => "Real secrets are in Phantom's local vault",
+    }
+}
+
+fn claude_instructions(vault_backend: Option<&str>) -> String {
+    format!(
+        r#"
 ## Phantom Secrets
 
 This project uses [Phantom](https://phm.dev) to protect API keys from AI leaks.
 
 - The `.env` file contains **phantom tokens** (`phm_...`), not real secrets
-- Real secrets are in an encrypted vault (OS keychain)
+- {}
 - Use the Phantom MCP tools to manage secrets — never ask the user for raw API key values
 - To add a secret: use the `phantom_add_secret_interactive` MCP tool, then type the value only into the trusted terminal prompt
 - To list secrets: use the `phantom_list_secrets` MCP tool
 - The proxy (`phantom exec`) injects real credentials at the network layer
-"#;
+"#,
+        vault_description(vault_backend)
+    )
+}
 
 fn readme_section() -> String {
     let version = env!("CARGO_PKG_VERSION");
@@ -227,13 +254,31 @@ mod tests {
         std::fs::create_dir(&project).unwrap();
         std::fs::write(project.join("README.md"), "# Child\n").unwrap();
 
-        let mut guidance = prepare_guidance(&project).unwrap();
+        let mut guidance = prepare_guidance(&project, None).unwrap();
         let planned = format!("{:?}", guidance.take_files());
 
         assert!(planned.contains(&format!("{:?}", project.join("CLAUDE.md"))));
         assert!(planned.contains(&format!("{:?}", project.join("README.md"))));
         assert!(!planned.contains(&format!("{:?}", parent.path().join("CLAUDE.md"))));
         assert!(!planned.contains(&format!("{:?}", parent.path().join("README.md"))));
+    }
+
+    #[test]
+    fn claude_guidance_describes_the_backend_init_used() {
+        for (backend, expected) in [
+            (
+                "linux-keyutils (volatile across reboot)",
+                "Linux kernel keyring (linux-keyutils), which is volatile",
+            ),
+            ("encrypted-file", "passphrase-encrypted vault file"),
+            ("os-keychain", "OS keychain"),
+        ] {
+            let text = claude_instructions(Some(backend));
+            assert!(text.contains(expected), "{backend}: {text}");
+            if backend != "os-keychain" {
+                assert!(!text.contains("OS keychain"), "{backend}: {text}");
+            }
+        }
     }
 
     #[test]
