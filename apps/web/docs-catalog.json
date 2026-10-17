@@ -89,5 +89,47 @@
     "title": "Enterprise adoption",
     "description": "Evaluate Phantom with explicit technical, organizational, commissioning, evidence, and acceptance gates.",
     "modified": "2026-09-29"
+  },
+  {
+    "slug": "workbench",
+    "file": "workbench.md",
+    "title": "Phantom workbench",
+    "description": "Understand the workspaces, resources, review workflow and the boundary between interactive work and an autonomous fleet.",
+    "modified": "2026-10-13"
+  },
+  {
+    "slug": "workbench-setup",
+    "file": "workbench-setup.md",
+    "title": "Install and open Phantom",
+    "description": "Install the workbench CLI, open its local console, check accounts and choose the correct desktop path.",
+    "modified": "2026-10-13"
+  },
+  {
+    "slug": "workbench-agents",
+    "file": "workbench-agents.md",
+    "title": "Agent setup quickstart",
+    "description": "A machine-readable, discovery-first contract for helping users install, inspect and configure Phantom.",
+    "modified": "2026-10-13"
+  },
+  {
+    "slug": "workbench-autonomy",
+    "file": "workbench-autonomy.md",
+    "title": "Fleet and autonomy",
+    "description": "Commission bounded unattended work, inspect its authority and review the evidence required for self-improvement.",
+    "modified": "2026-10-13"
+  },
+  {
+    "slug": "workbench-reference",
+    "file": "workbench-reference.md",
+    "title": "Workbench command reference",
+    "description": "Discover commands, inspect authority and resource evidence, and use exact installed help instead of guessing integrations.",
+    "modified": "2026-10-13"
+  },
+  {
+    "slug": "workbench-troubleshooting",
+    "file": "workbench-troubleshooting.md",
+    "title": "Workbench troubleshooting",
+    "description": "Resolve installation, local console, account, quota and resident-service problems without confusing configuration with readiness.",
+    "modified": "2026-10-13"
   }
 ]

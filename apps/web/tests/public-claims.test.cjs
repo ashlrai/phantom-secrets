@@ -143,7 +143,9 @@ for (const relativePath of ["docs/llms.txt", "docs/llms-full.txt", "docs/sitemap
 }
 
 const machineReadableGuides = Object.entries(machineReadableClaims).filter(
-  ([file]) => /llms(?:-full)?\.txt$/.test(file),
+  // These contracts describe the Secrets executable; workbench references
+  // are covered separately in workbench-docs.test.cjs and remain in allClaims.
+  ([file]) => /llms(?:-full)?\.txt$/.test(file) && !file.startsWith("apps/web/public/workbench/"),
 );
 
 const publicReleaseEvidencePaths = [

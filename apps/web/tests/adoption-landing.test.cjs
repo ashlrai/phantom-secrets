@@ -130,7 +130,8 @@ test("on-site docs hub and machine-readable discovery are indexed", () => {
   assert.match(docs, /\/llms\.txt/);
   assert.match(docs, /\/llms-full\.txt/);
   assert.doesNotMatch(docs, /cli-reference\.md/);
-  assert.match(docs, /The reviewed public release is/);
+  assert.match(docs, /Workbench \{WORKBENCH_RELEASE\?\.version/);
+  assert.match(docs, /Phantom Secrets \{PUBLIC_RELEASE_TAG\}/);
   assert.match(
     read("src/components/landing/DocumentationGateway.tsx"),
     /\/docs#connect-an-agent/,

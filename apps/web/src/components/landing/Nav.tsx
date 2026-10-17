@@ -11,6 +11,7 @@ import { Github } from "./Icons";
 const navigation = [
   { label: "Workbench", href: "/" },
   { label: "Phantom Secrets", href: "/secrets" },
+  { label: "Ecosystem", href: "/ecosystem" },
   { label: "How it works", section: "how" },
   { label: "Pricing", href: "/pricing" },
   { label: "Enterprise", href: "/enterprise" },
@@ -68,8 +69,8 @@ export function Nav() {
     return () => window.removeEventListener("hashchange", preserveSecretsBookmark);
   }, [pathname]);
 
-  const isWorkbenchHome = pathname === "/";
-  const installHref = isWorkbenchHome ? "https://verse.ashlr.ai/#start" : secretsSectionHref(pathname, "install");
+  const isWorkbenchHome = pathname === "/" || pathname === "/docs" || pathname === "/docs/workbench" || pathname.startsWith("/docs/workbench-");
+  const installHref = isWorkbenchHome ? "/docs/workbench-setup" : secretsSectionHref(pathname, "install");
   const githubHref = isWorkbenchHome ? "https://github.com/ashlrai/phantom" : "https://github.com/ashlrai/phantom-secrets";
 
   return (
