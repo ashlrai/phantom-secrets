@@ -4,6 +4,24 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (`phantom_compliance_status`)
+
+- With this project's secrets in an encrypted-file vault the MCP process
+  could not open (`PHANTOM_VAULT_PASSPHRASE` unset there) and an empty OS
+  keychain selected instead, the badge reported `vault_accessible` and
+  `secrets_have_ttl` as passing ("All secrets have an expiry or a rotation
+  policy") and could report `compliant: true` over a vault it never read.
+  With some keychain entries beside the locked file it reported the vault
+  accessible and judged TTLs over the keychain alone. Both checks now fail
+  in both states, with the unlock step in the detail, the same rule
+  `phantom agent doctor` already applies to its vault probe. A secret
+  lifecycle metadata read error now fails `secrets_have_ttl` without
+  marking the vault inaccessible.
+- The `secrets_have_ttl` detail listed every secret name lacking a TTL in
+  one string. It now names at most 20 and always gives the exact count
+  ("and N more"; `phantom_secret_rotation_due` lists every one). Names
+  only, never values.
+
 ### Fixed (`phantom_audit_analytics`, `phantom audit analytics`)
 
 - The analytics window was rounded to a neighbouring preset while the
