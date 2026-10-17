@@ -9,7 +9,9 @@
 //! - `PHANTOM_RATE_LIMIT_PER_SECRET` — max requests/sec for a single secret
 //!   (default 5, measured over the 10-sec window).
 //! - `PHANTOM_RATE_LIMIT_BURST` — max total requests across ALL secrets in any
-//!   10-second window (default 20).
+//!   10-second window (default 100). The default sits above the per-secret
+//!   window limit (5 rps x 10 s = 50) so a single busy agent session is
+//!   classified by its per-secret rate instead of tripping the global guard.
 //!
 //! Every call to [`RateLimiter::record`] returns a [`RateDecision`] that
 //! classifies the request as `Normal`, `Caution`, or `Alert`.
@@ -68,6 +70,9 @@ pub struct RateDecision {
     pub anomaly_score: u8,
 }
 
+/// Default global request budget across every secret in a 10-second window.
+pub const DEFAULT_BURST_TOTAL_10S: u64 = 100;
+
 /// Rate-limit configuration.
 #[derive(Debug, Clone)]
 pub struct RateLimitConfig {
@@ -75,7 +80,7 @@ pub struct RateLimitConfig {
     /// Env var: `PHANTOM_RATE_LIMIT_PER_SECRET` (default 5).
     pub per_secret_rps: u64,
     /// Maximum total requests across all secrets in any 10-second window.
-    /// Env var: `PHANTOM_RATE_LIMIT_BURST` (default 20).
+    /// Env var: `PHANTOM_RATE_LIMIT_BURST` (default 100).
     pub burst_total_10s: u64,
 }
 
@@ -83,7 +88,7 @@ impl Default for RateLimitConfig {
     fn default() -> Self {
         Self {
             per_secret_rps: 5,
-            burst_total_10s: 20,
+            burst_total_10s: DEFAULT_BURST_TOTAL_10S,
         }
     }
 }
@@ -104,7 +109,9 @@ impl RateLimitConfig {
     /// parallel test threads.
     pub fn from_vars(per_secret: Option<String>, burst: Option<String>) -> Self {
         let per_secret_rps = per_secret.and_then(|v| v.parse::<u64>().ok()).unwrap_or(5);
-        let burst_total_10s = burst.and_then(|v| v.parse::<u64>().ok()).unwrap_or(20);
+        let burst_total_10s = burst
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(DEFAULT_BURST_TOTAL_10S);
         Self {
             per_secret_rps,
             burst_total_10s,

@@ -76,3 +76,24 @@ opt-level = 3
 
 [profile.dev.package.rsa]
 opt-level = 3
+
+# Argon2id key derivation (64 MiB, t=3) and the AEAD/hash primitives it feeds
+# are ~50-100x slower at opt-level 0. Every vault test derives real keys with
+# the production parameters, so debug-built crypto dominated `cargo test`
+# wall time (~36 min on CI). Optimizing only these dependency crates keeps the
+# exact same parameters and code paths under test while making each derivation
+# take milliseconds. Like the rsa override above, this only affects dev/test.
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.dev.package.blake2]
+opt-level = 3
+
+[profile.dev.package.chacha20]
+opt-level = 3
+
+[profile.dev.package.chacha20poly1305]
+opt-level = 3
+
+[profile.dev.package.poly1305]
+opt-level = 3

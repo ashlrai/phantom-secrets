@@ -136,15 +136,15 @@ pub struct AddSecretParams {
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct AddSecretInteractiveParams {
-    /// Name of the secret to add (e.g., OPENAI_API_KEY)
+    /// Name of the secret to add (e.g., OPENAI_API_KEY). Must match
+    /// `[A-Za-z_][A-Za-z0-9_]*`. Never pass the secret value.
     pub name: String,
-    /// Required. Must be true — the calling agent must confirm with the user
-    /// before starting an out-of-band terminal flow.
+    /// Optional, accepted for compatibility. This tool performs no effect: it
+    /// only returns the `phantom add NAME` command for the user to run in a
+    /// trusted terminal, so it needs neither confirmation nor approval. Legacy
+    /// approval fields from older callers are accepted and ignored.
     #[serde(default)]
     pub confirm: bool,
-    /// Out-of-band approval token from `phantom mcp-approve <NONCE>`.
-    #[serde(default)]
-    pub approval_token: Option<String>,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
@@ -532,7 +532,8 @@ pub struct AuditAnalyticsParams {
     /// (range 0.0–1.0). Defaults to 0.0 (return all secrets).
     #[serde(default)]
     pub min_anomaly_score: Option<f64>,
-    /// Output format: "json" (default) or "csv".
+    /// Output format: "json" (default) or "csv", case-insensitive. Other
+    /// values are rejected with an invalid-params error.
     #[serde(default = "default_analytics_format")]
     pub format: String,
 }
@@ -617,7 +618,8 @@ pub struct AuditExportReportParams {
     /// full compliance report. Default: "report".
     #[serde(default = "default_export_action")]
     pub action: String,
-    /// Output format: "csv" or "json". Default: "json".
+    /// Output format: "csv" or "json", case-insensitive. Default: "json".
+    /// Other values are rejected with an invalid-params error.
     #[serde(default = "default_export_format_for_report")]
     pub format: String,
     /// Start date inclusive (YYYY-MM-DD). Omit for no lower bound.

@@ -27,8 +27,8 @@ test("current workspace version release notes include the complete candidate tra
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, new RegExp(`^## \\[${version.replaceAll(".", "\\.")}\\]`, "m"));
   assert.match(result.stdout, /^### Breaking changes and migration$/m);
-  assert.match(result.stdout, /`phantom env use\|list\|new\|copy`/);
-  assert.match(result.stdout, /`--allow-cross-owner`/);
+  assert.match(result.stdout, /Vault locked/);
+  assert.match(result.stdout, /`PHANTOM_RATE_LIMIT_BURST`/);
   assert.match(result.stdout, /rmcp 3\.5/);
   assert.doesNotMatch(result.stdout, /^## \\[Unreleased\\]$/m);
   assert.match(result.stdout, /immutable `v0\.7\.9` GitHub release remains/);
