@@ -2209,7 +2209,7 @@ impl PhantomMcpServer {
 
     /// Explain why a key is or isn't protected by Phantom.
     #[tool(
-        description = "Explain why an environment variable is or isn't protected by Phantom. Shows classification (Secret, PublicKey, NotSecret), whether it has a phantom token, and what heuristic matched. Value-blind: it reads .phantom.toml and the dotenv, never the vault, so it answers while the vault is locked and before `phantom init` (it then classifies ./.env, and exec is null). For a protected key it also says how `phantom exec` treats it. exec.delivery judges the key alone: `proxied` (a built-in route injects the real value for exec.upstream), `no_route` (the child gets only a session token that no provider accepts, so calls with it fail), `withheld` (exec never hands the child this provider-management or sync credential), `connection_string_refused` or `custom_route_refused` (exec will not start). exec.blocked_by is non-null when the config stops exec from starting for every key: {service, reason: `custom_route`, `altered_builtin_route` or `connection_string`, key}. next_step explains anything but an unblocked `proxied`. Returns a summary plus value-free JSON {key, dotenv_exists, found, classification, protected, reason, matched_pattern, service, exec: {delivery, service, upstream, blocked_by} | null, next_step} (also as structuredContent)."
+        description = "Explain why an environment variable is or isn't protected by Phantom. classification is `protected` (has a phantom token), `secret_unprotected` (next_step says to run `phantom init`), `public_key` or `not_secret`, and is null when the key is not in the dotenv (found=false). reason names the heuristic: `phantom_token`, `key_name`, `connection_pattern`, `value_pattern`, `public_prefix_with_secret_value`, `public_prefix` or `no_secret_pattern`; matched_pattern is the matched key fragment or prefix. Value-blind: it reads .phantom.toml and the dotenv, never the vault, so it answers while the vault is locked and before `phantom init` (it then classifies ./.env, and exec is null). For a protected key it also says how `phantom exec` treats it. exec.delivery judges the key alone: `proxied` (a built-in route injects the real value for exec.upstream), `no_route` (the child gets only a session token that no provider accepts, so calls with it fail), `withheld` (exec never hands the child this provider-management or sync credential), `connection_string_refused` or `custom_route_refused` (exec will not start). exec.blocked_by is non-null when the config stops exec from starting for every key: {service, reason: `custom_route`, `altered_builtin_route` or `connection_string`, key}. next_step explains anything but an unblocked `proxied`. Returns a summary plus value-free JSON {key, dotenv_exists, found, classification, protected, reason, matched_pattern, service, exec: {delivery, service, upstream, blocked_by} | null, next_step} (also as structuredContent)."
     )]
     fn phantom_why(
         &self,
@@ -2736,36 +2736,40 @@ impl PhantomMcpServer {
 
     /// Show what would be synced to deployment platforms and the current sync configuration.
     #[tool(
-        description = "Show sync configuration and what secrets would be synced to deployment platforms (Vercel, Railway). This is an informational tool — actual sync requires platform API tokens. Use it to understand and explain the sync setup. Returns a summary plus JSON {configured, platform_filter, configured_platforms, vault_secret_count, targets, next_step} (also as structuredContent)."
+        description = "Show sync configuration and what secrets would be synced to deployment platforms (Vercel, Railway). This is an informational tool that never pushes: actual sync requires platform API tokens and `phantom sync` in a terminal. platform must be `vercel` or `railway` (case-insensitive); any other value is refused with invalid params before the vault is opened. Use it to understand and explain the sync setup. Returns a summary plus JSON {configured, platform_filter, configured_platforms, vault_secret_count, targets, next_step} (also as structuredContent)."
     )]
     fn phantom_sync(
         &self,
         Parameters(params): Parameters<SyncParams>,
     ) -> Result<CallToolResult, McpError> {
-        // An unsupported platform is a bad argument, not "nothing configured".
-        let platform_filter = params
-            .platform
-            .as_deref()
-            .filter(|platform| !platform.is_empty())
-            .map(|platform| {
-                platform.parse::<phantom_core::sync::Platform>().map_err(|_| {
-                    invalid_params_err(format!(
-                        "Unknown platform '{platform}'. Supported: vercel, railway (or omit platform for all configured targets)."
-                    ))
-                })
-            })
-            .transpose()?;
+        // An unknown platform used to fall through to "not configured" (or
+        // "no targets match"), echoing the typo back as platform_filter, so an
+        // agent could not tell a misspelling from a missing [[sync]] section.
+        // Refuse it up front, without echoing the input. An empty string
+        // means no filter, as the schema says.
+        let platform_filter = match params.platform.as_deref().map(str::trim) {
+            None | Some("") => None,
+            Some(raw) => Some(
+                raw.parse::<phantom_core::sync::Platform>()
+                    .map_err(|_| {
+                        invalid_params_err(
+                            "Unknown sync platform. Use `vercel` or `railway`, or omit platform to show every configured target.",
+                        )
+                    })?
+                    .to_string(),
+            ),
+        };
         let (config, vault) = self.load_config_and_vault()?;
         let secret_names = vault
             .list()
             .map_err(|e| vault_read_err("Failed to list secrets", e))?;
 
         // Filter sync targets by platform if specified
-        let targets: Vec<_> = if let Some(ref platform_filter) = platform_filter {
+        let targets: Vec<_> = if let Some(ref platform) = platform_filter {
             config
                 .sync
                 .iter()
-                .filter(|t| &t.platform == platform_filter)
+                .filter(|t| &t.platform.to_string() == platform)
                 .collect()
         } else {
             config.sync.iter().collect()
@@ -2793,7 +2797,7 @@ impl PhantomMcpServer {
                 output,
                 &serde_json::json!({
                     "configured": false,
-                    "platform_filter": params.platform,
+                    "platform_filter": platform_filter,
                     "configured_platforms": [],
                     "vault_secret_count": secret_names.len(),
                     "targets": [],
@@ -2820,7 +2824,7 @@ impl PhantomMcpServer {
             .collect();
         let report = serde_json::json!({
             "configured": true,
-            "platform_filter": params.platform,
+            "platform_filter": platform_filter,
             "configured_platforms": configured_platforms,
             "vault_secret_count": secret_names.len(),
             "targets": target_reports,
@@ -2835,7 +2839,7 @@ impl PhantomMcpServer {
             return report_result(
                 format!(
                     "No sync targets match platform '{}'. Configured platforms: {}",
-                    params.platform.as_deref().unwrap_or(""),
+                    platform_filter.as_deref().unwrap_or(""),
                     config
                         .sync
                         .iter()
@@ -8174,9 +8178,9 @@ mod tests {
 
         let error = sync("heroku").unwrap_err();
         assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
-        assert!(error.message.contains("'heroku'"), "{}", error.message);
+        assert!(!error.message.contains("heroku"), "{}", error.message);
         assert!(
-            error.message.contains("vercel, railway"),
+            error.message.contains("`vercel` or `railway`"),
             "{}",
             error.message
         );
@@ -10156,6 +10160,104 @@ mod tests {
         let text = get_result_text(&result);
         assert!(text.contains("Vault backend:"));
         assert!(text.contains("Secrets stored:"));
+    }
+
+    /// phantom_why documented classification as `Secret`, `PublicKey` or
+    /// `NotSecret`, but the report emits snake_case values, so an agent
+    /// branching on the documented names never matched.
+    #[test]
+    fn why_description_lists_the_values_the_report_emits() {
+        let tools = PhantomMcpServer::tool_router().list_all();
+        let why = tools
+            .iter()
+            .find(|tool| tool.name == "phantom_why")
+            .expect("phantom_why is registered");
+        let description = why.description.as_deref().unwrap_or_default();
+        for value in [
+            "`protected`",
+            "`secret_unprotected`",
+            "`public_key`",
+            "`not_secret`",
+            "`phantom_token`",
+            "`key_name`",
+            "`connection_pattern`",
+            "`value_pattern`",
+            "`public_prefix_with_secret_value`",
+            "`public_prefix`",
+            "`no_secret_pattern`",
+        ] {
+            assert!(
+                description.contains(value),
+                "missing {value}: {description}"
+            );
+        }
+        for stale in ["PublicKey", "NotSecret", "(Secret,"] {
+            assert!(!description.contains(stale), "stale {stale}: {description}");
+        }
+
+        let _environment = TestEnvironment::new();
+        let (server, dir) = setup_initialized_project();
+        let env_path = dir.path().join(".env");
+        let mut env = std::fs::read_to_string(&env_path).unwrap();
+        env.push_str("LOG_LEVEL=debug\nNEXT_PUBLIC_SITE_URL=https://example.com\n");
+        std::fs::write(&env_path, env).unwrap();
+        for (key, classification, reason) in [
+            ("LOG_LEVEL", "not_secret", "no_secret_pattern"),
+            ("NEXT_PUBLIC_SITE_URL", "public_key", "public_prefix"),
+        ] {
+            let report = structured_report(
+                &server
+                    .phantom_why(Parameters(WhyParams {
+                        key: key.to_string(),
+                    }))
+                    .unwrap(),
+            );
+            assert_eq!(report["classification"], classification, "{report}");
+            assert_eq!(report["reason"], reason, "{report}");
+            assert!(description.contains(&format!("`{classification}`")));
+            assert!(description.contains(&format!("`{reason}`")));
+        }
+    }
+
+    /// An unknown platform used to fall through to a "not configured" report
+    /// that echoed the typo as platform_filter. It is now refused before the
+    /// vault opens, and the refusal does not echo the input.
+    #[test]
+    fn sync_refuses_an_unknown_platform_without_echoing_it() {
+        let _environment = TestEnvironment::new();
+        let (server, _dir) = setup_initialized_project();
+        let typo = "vercle-typo";
+        let error = server
+            .phantom_sync(Parameters(SyncParams {
+                platform: Some(typo.to_string()),
+                project_id: None,
+            }))
+            .unwrap_err();
+        assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        assert!(
+            error.message.contains("`vercel` or `railway`"),
+            "{}",
+            error.message
+        );
+        assert!(!error.message.contains(typo), "{}", error.message);
+
+        for (platform, filter) in [
+            (Some("VERCEL"), serde_json::json!("vercel")),
+            (Some(" railway "), serde_json::json!("railway")),
+            (Some(""), serde_json::Value::Null),
+            (None, serde_json::Value::Null),
+        ] {
+            let report = structured_report(
+                &server
+                    .phantom_sync(Parameters(SyncParams {
+                        platform: platform.map(str::to_string),
+                        project_id: None,
+                    }))
+                    .unwrap(),
+            );
+            assert_eq!(report["configured"], false);
+            assert_eq!(report["platform_filter"], filter, "{platform:?}");
+        }
     }
 
     #[test]
