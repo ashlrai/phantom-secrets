@@ -4,10 +4,74 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Changed (`phantom add --stdin` input handling)
+
+- `phantom add NAME --stdin` used to store only the first line of piped
+  input and report success, silently truncating PEM keys and JSON
+  documents. Input that still has more than one line after trailing line
+  endings are dropped is now refused before anything is stored, with a
+  message that names the line count but never the input. Pass
+  `--multiline` to store every line, or `--first-line` to keep the old
+  first-line behaviour (for example `pass show svc/api | phantom add
+  API_KEY --stdin --first-line`, since pass and gopass put metadata after
+  the key). Both flags require `--stdin` and are mutually exclusive.
+  Single-line input is stored exactly as before.
+- `--stdin` reads at most 64 KiB; larger or non-UTF-8 input is refused
+  before any write.
+- `--stdin` is refused when stdin is a terminal, where the typed value
+  would echo; omit it for the hidden prompt.
+
+### Added (agent status)
+
+- `phantom agent status [--json]` is a read-only, value-free view of MCP
+  approval state (pending, approved-and-unused, expired, and whether the
+  approval key file exists). It takes no lock and creates no file, and never
+  prints nonces, argument hashes, or parameter summaries. Lease state is
+  reported as unavailable because the broker is not wired into the CLI.
+  Revert: remove the `Status` variant of `AgentAction`; nothing else depends on it.
+
+### Fixed (MCP expiry gate and sync platform; Gemini CLI setup)
+
+- MCP `phantom_expiry_enforce` read TTLs only from `.phantom.toml` overrides,
+  while `phantom expiry set` writes them to vault metadata. It returned
+  `pass: true` for a secret whose TTL had expired, and with `fail_closed: true`
+  it passed secrets with no TTL at all. It now reads vault metadata and gives
+  the same answer as `phantom expiry enforce --json`, and it refuses a locked
+  encrypted-file vault instead of passing over it.
+- MCP `phantom_sync` answered an unsupported `platform` such as `"heroku"` with
+  "No sync targets configured". It now returns invalid params naming the
+  supported platforms (vercel, railway). Platform names match case-insensitively.
+- `phantom setup --status` listed Gemini CLI, but `phantom setup --client
+  gemini` was rejected. It now writes `mcpServers.phantom` into
+  `~/.gemini/settings.json` (other settings are kept), and `--print` shows the
+  snippet.
+
 ### Fixed (agent report)
 
 - A malformed dotenv no longer hides a missing managed dotenv in
   `phantom agent report`/`doctor`.
+
+### Fixed (audit verification and audit inputs)
+
+- `phantom audit verify` printed "No audit log found" and exited 0 when
+  `~/.phantom/audit.log` had been deleted but its signed head checkpoint
+  remained. It now verifies, reports the head mismatch and the missing log,
+  and exits 1, as the docs describe.
+- `phantom audit verify --json` printed human text. It now prints a JSON
+  object (`clean`, `log_present`, counts, `head`, and line numbers; no event
+  names or HMACs) and keeps exit 1 on failure.
+- `phantom audit report`, `phantom audit export-range` and the MCP tool
+  `phantom_audit_export_report` read a malformed date (`notadate`,
+  `2026-13-45`, `2026-02-30`) as "no bound", so a scoped report silently
+  covered the whole history. A malformed date, or `from` after `to`, is now
+  an error (exit 1, or `-32602` over MCP).
+- `phantom audit incidents --min-confidence`, `phantom_audit_incidents` and
+  `phantom_leak_incidents_realtime` accepted scores outside 0.0 to 1.0, so
+  `5` hid every incident and answered "No active leak incidents". They now
+  reject such values.
+- `phantom exec` and `phantom start` refusing a protected key with no vault
+  entry now give the next step: `phantom add KEY` from a trusted terminal,
+  or remove the key from the dotenv (default environment only).
 
 ### Fixed (locked-vault follow-ups)
 

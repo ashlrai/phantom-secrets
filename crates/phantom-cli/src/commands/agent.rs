@@ -20,6 +20,104 @@ pub fn report(json: bool) -> Result<()> {
     Ok(())
 }
 
+/// `phantom agent status`: value-free, read-only view of MCP approval state.
+///
+/// Reads `~/.phantom/mcp-approvals.jsonl` without locking or creating anything.
+/// Never prints nonces, argument hashes, parameter summaries, or key material.
+pub fn status(json: bool) -> Result<()> {
+    use phantom_core::mcp_approval;
+    let entries = mcp_approval::read_approval_status().context("reading MCP approval state")?;
+    let key_present = mcp_approval::approval_key_present().unwrap_or(false);
+    let pending = entries.iter().filter(|e| !e.approved && !e.expired).count();
+    let approved_unused = entries.iter().filter(|e| e.approved && !e.expired).count();
+    let expired = entries.iter().filter(|e| e.expired).count();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    if json {
+        let approvals: Vec<_> = entries
+            .iter()
+            .map(|e| {
+                serde_json::json!({
+                    "tool_name": e.tool_name,
+                    "project_id": e.project_id,
+                    "state": approval_state(e),
+                    "created_at": e.created_at,
+                    "expires_at": e.expires_at,
+                    "remaining_secs": e.expires_at.map(|x| x.saturating_sub(now)),
+                    "approved_at": e.approved_at,
+                })
+            })
+            .collect();
+        let out = serde_json::json!({
+            "approvals": {
+                "pending": pending,
+                "approved_unused": approved_unused,
+                "expired": expired,
+                "key_present": key_present,
+                "records": approvals,
+            },
+            "leases": {
+                "available": false,
+                "reason": "the lease broker is not wired into the CLI; no lease state is read",
+            },
+        });
+        println!("{}", serde_json::to_string_pretty(&out)?);
+        return Ok(());
+    }
+
+    println!("{}", "Phantom Agent Status".bold().underline());
+    println!();
+    println!(
+        "  {} {} pending, {} approved and unused, {} expired",
+        "mcp approvals:".dimmed(),
+        pending,
+        approved_unused,
+        expired
+    );
+    println!(
+        "  {} {}",
+        "approval key:".dimmed(),
+        if key_present {
+            "present"
+        } else {
+            "not created yet"
+        }
+    );
+    for e in &entries {
+        let left = e
+            .expires_at
+            .map(|x| format!("{}s left", x.saturating_sub(now)))
+            .unwrap_or_else(|| "no expiry".to_string());
+        println!(
+            "    {} {} ({}, {})",
+            "-".dimmed(),
+            e.tool_name,
+            approval_state(e),
+            left
+        );
+    }
+    println!(
+        "  {} not available (the lease broker is not wired into the CLI)",
+        "leases:".dimmed()
+    );
+    println!();
+    println!("Approve a pending request yourself with: phantom mcp-approve <NONCE>");
+    Ok(())
+}
+
+fn approval_state(e: &phantom_core::mcp_approval::ApprovalStatusEntry) -> &'static str {
+    if e.expired {
+        "expired"
+    } else if e.approved {
+        "approved_unused"
+    } else {
+        "pending"
+    }
+}
+
 pub fn doctor() -> Result<()> {
     let project_dir = std::env::current_dir()?;
     let report = readiness_report(&project_dir);
