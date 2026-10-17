@@ -49,6 +49,9 @@ function loadRoute(relativePath) {
   const routePath = path.join(webDir, relativePath);
   const route = compileModule(routePath, (specifier) => {
     if (specifier === "@/lib/commissioning") return commissioning;
+    if (specifier === "@/lib/team-key") {
+      return compileModule(path.join(webDir, "src/lib/team-key.ts"), require);
+    }
     if (specifier === "@/lib/device-code") {
       return {
         formatDeviceUserCode: (value) => value,
