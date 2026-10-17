@@ -44,6 +44,17 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   reported as unavailable because the broker is not wired into the CLI.
   Revert: remove the `Status` variant of `AgentAction`; nothing else depends on it.
 
+### Fixed (broken pipe)
+
+- `phantom <cmd> | head` (for `list`, `why`, `doctor`, `status`,
+  `check --json`, `audit` and the rest) panicked with exit 101 and
+  "failed printing to stdout: Broken pipe" when the reader closed early. A
+  write to a closed stdout is now a quiet exit with status 141, as a shell
+  reports SIGPIPE. The SIGPIPE disposition is unchanged, so `phantom exec`
+  children and the in-process proxy behave as before. On Windows only the
+  `println!` case exits 141; a broken-pipe error a command returns stays an
+  error there, since it cannot be tied to stdout.
+
 ### Fixed (MCP expiry gate and sync platform; Gemini CLI setup)
 
 - MCP `phantom_expiry_enforce` read TTLs only from `.phantom.toml` overrides,
