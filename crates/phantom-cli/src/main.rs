@@ -81,7 +81,7 @@ enum Commands {
         empty: bool,
     },
 
-    /// Wire Phantom into an AI client (Claude Code, Cursor, Windsurf, Codex)
+    /// Wire Phantom into an AI client (Claude Code, Cursor, Windsurf, Codex, Gemini CLI)
     #[command(next_help_heading = "Setup")]
     Setup {
         /// AI client to configure. Defaults to Claude Code if omitted.
