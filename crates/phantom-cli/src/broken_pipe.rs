@@ -65,19 +65,29 @@ pub fn is_stdout_broken_pipe_panic(payload: &(dyn Any + Send)) -> bool {
 /// away: a broken-pipe I/O error in the chain, and stdout itself closed. The
 /// second check keeps a broken pipe to anything else a real error.
 pub fn is_stdout_broken_pipe_error(error: &anyhow::Error) -> bool {
-    let broken_pipe = error.chain().any(|cause| {
+    has_broken_pipe(error) && stdout_reader_gone()
+}
+
+/// Whether a broken-pipe I/O error is anywhere in `error`'s chain.
+fn has_broken_pipe(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
         cause
             .downcast_ref::<io::Error>()
             .is_some_and(|io_error| io_error.kind() == io::ErrorKind::BrokenPipe)
-    });
-    broken_pipe && stdout_reader_gone()
+    })
 }
 
 /// Whether nothing reads stdout any more.
 #[cfg(unix)]
 fn stdout_reader_gone() -> bool {
+    reader_gone(libc::STDOUT_FILENO)
+}
+
+/// Whether the read end of the pipe (or socket) `fd` writes to is closed.
+#[cfg(unix)]
+fn reader_gone(fd: libc::c_int) -> bool {
     let mut descriptor = libc::pollfd {
-        fd: libc::STDOUT_FILENO,
+        fd,
         events: libc::POLLOUT,
         revents: 0,
     };
@@ -142,5 +152,34 @@ mod tests {
         assert!(!is_stdout_broken_pipe_error(&error));
         let error = anyhow::anyhow!("plain failure");
         assert!(!is_stdout_broken_pipe_error(&error));
+    }
+
+    #[test]
+    fn finds_a_broken_pipe_returned_through_context() {
+        // What `writeln!(stdout, ...)?` hands back once the reader is gone.
+        let error = anyhow::Error::from(io::Error::from(io::ErrorKind::BrokenPipe))
+            .context("print the secret list");
+        assert!(has_broken_pipe(&error));
+        let error = anyhow::Error::from(io::Error::from(io::ErrorKind::ConnectionReset))
+            .context("forward the request");
+        assert!(!has_broken_pipe(&error));
+    }
+
+    #[test]
+    fn a_broken_pipe_while_stdout_is_still_read_stays_an_error() {
+        // This process's stdout still has a reader (cargo, a terminal or a
+        // file), so the broken pipe came from somewhere else: no quiet exit.
+        let error = anyhow::Error::from(io::Error::from(io::ErrorKind::BrokenPipe));
+        assert!(!is_stdout_broken_pipe_error(&error));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reader_gone_tracks_the_read_end() {
+        use std::os::fd::AsRawFd;
+        let (reader, writer) = std::io::pipe().expect("create a pipe");
+        assert!(!reader_gone(writer.as_raw_fd()));
+        drop(reader);
+        assert!(reader_gone(writer.as_raw_fd()));
     }
 }
