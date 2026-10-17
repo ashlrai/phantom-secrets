@@ -37,7 +37,7 @@ brew trust --formula ashlrai/phantom/phantom
 brew install ashlrai/phantom/phantom
 ```
 
-macOS via Homebrew; installs `phantom` and `phantom-mcp` (reviewed `v0.7.8`). Linux and Windows:
+macOS via Homebrew; installs `phantom` and `phantom-mcp` (reviewed `v0.7.9`). Linux and Windows:
 use the matching [release asset](#exact-v079-github-assets). Then run
 `phantom init` in your project and `phantom setup --client claude` (or
 `cursor`, `windsurf`, `codex`). Full walkthrough: [Quick Start](#quick-start).
@@ -104,8 +104,8 @@ What this does not show: it is a scripted worst case, not an LLM, so it measures
 ## Quick Start
 
 Install both binaries from the reviewed [`v0.7.9` GitHub release](#installation).
-On macOS, the Homebrew formula is the shortest path; it currently installs the
-previous reviewed `v0.7.8` binaries until the tap is bumped to `v0.7.9`:
+On macOS, the Homebrew formula is the shortest path; it installs the reviewed
+`v0.7.9` binaries:
 
 ```bash
 $ brew tap ashlrai/phantom
@@ -505,7 +505,7 @@ fails closed before vendor execution. No single-provider exception exists.
 
 ## Installation
 
-### Homebrew (macOS; formula currently at v0.7.8)
+### Homebrew (macOS; formula at v0.7.9)
 
 Homebrew 6 requires explicit formula trust for third-party taps:
 
@@ -516,8 +516,8 @@ $ brew install ashlrai/phantom/phantom
 ```
 
 This formula installs both `phantom` and `phantom-mcp` from the immutable
-[`v0.7.8` GitHub release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.8).
-It has not yet been bumped to `v0.7.9`. Until it is, a Homebrew install writes
+[`v0.7.9` GitHub release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.9).
+The tap was bumped from `v0.7.8` to `v0.7.9` in ashlrai/homebrew-phantom#7. A `v0.7.8` Homebrew install wrote
 Claude Code MCP registration to the legacy location; see the
 [Claude Code guide](docs/claude-code.md) for the manual `.mcp.json` step, or use
 the `v0.7.9` assets below.
@@ -557,7 +557,7 @@ Do not treat unpinned package-manager commands as `v0.7.9`. In the exact
 exist only under `release-candidate` after failing cross-platform acceptance.
 No npm `0.7.9`, crates.io `0.7.9`, or MCP Registry `0.7.9` publication is
 represented by this GitHub release receipt. Homebrew is separately published
-and verified through its tap, and currently remains at `v0.7.8`.
+and verified through its tap, which now installs `v0.7.9` (requeried 2026-10-12).
 
 ### Release-state snapshot
 
@@ -570,8 +570,8 @@ and verified through its tap, and currently remains at `v0.7.8`.
 > release record by tag-bound workflow
 > [34153902556](https://github.com/ashlrai/phantom-secrets/actions/runs/34153902556).
 > Exact public registry endpoints were requeried on 2026-09-29. The Homebrew
-> formula still installs the previous reviewed `v0.7.8` until its tap is bumped;
-> npm `latest` remains `0.6.0`, and the npm
+> formula now installs `v0.7.9` (requeried 2026-10-12);
+> npm `latest` is `0.7.9` as of 2026-10-12 (it was `0.6.0` at this snapshot), and the npm
 > `0.7.4` wrappers remain quarantined under `release-candidate` after failed
 > npm-channel acceptance. The GitHub receipt alone does not prove the separately
 > verified Homebrew formula, an npm or crates.io package, MCP Registry entry, hosted-service
