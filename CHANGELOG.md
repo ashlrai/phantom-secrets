@@ -4,6 +4,19 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (`phantom check --runtime` and MCP `phantom_check` runtime mode)
+
+- The runtime check looked only at a fixed list of well-known variable
+  names, and the CLI and MCP server used two different lists. A phantom
+  token in any other variable, such as one `phantom init` wrote for a
+  custom key, was reported clean. Both now scan every environment variable
+  through one shared function and report the names (never the values).
+- Inside a `phantom exec` or `phantom start` proxy session
+  (`PHANTOM_PROXY_PORT` and `PHANTOM_PROXY_TOKEN` both set), the session's
+  own tokens are expected. The check used to flag them as "proxy not
+  running"; it now reports clean, and the JSON report carries
+  `proxy_session: true`. Outside a session the report shape is unchanged.
+
 ### Changed (`phantom add --stdin` input handling)
 
 - `phantom add NAME --stdin` used to store only the first line of piped

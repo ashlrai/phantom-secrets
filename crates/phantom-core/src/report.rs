@@ -38,8 +38,9 @@ pub struct CheckIndeterminate {
     pub reason: String,
 }
 
-/// The `check` report. `indeterminate` is omitted when empty, so CLI output
-/// keeps exactly the `{mode, clean, findings, warnings}` shape.
+/// The `check` report. `indeterminate` is omitted when empty and
+/// `proxy_session` when false, so CLI output keeps exactly the
+/// `{mode, clean, findings, warnings}` shape outside a proxy session.
 #[derive(Debug, Serialize)]
 pub struct CheckReport<'a> {
     pub mode: &'a str,
@@ -48,6 +49,69 @@ pub struct CheckReport<'a> {
     pub warnings: &'a [CheckConfigWarning],
     #[serde(skip_serializing_if = "<[_]>::is_empty")]
     pub indeterminate: &'a [CheckIndeterminate],
+    /// Runtime mode only: the scan ran inside a `phantom exec` / `phantom
+    /// start` proxy session, whose own `phm_` values are expected.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub proxy_session: bool,
+}
+
+/// The variables `phantom exec` and `phantom start` set for a proxy session.
+/// With both present, `phm_` values in the environment are that session's
+/// own tokens, served by its proxy, not tokens left without one.
+pub const PROXY_SESSION_VARS: [&str; 2] = ["PHANTOM_PROXY_PORT", "PHANTOM_PROXY_TOKEN"];
+
+/// A runtime scan of an environment for phantom tokens.
+#[derive(Debug, PartialEq, Eq)]
+pub struct RuntimeEnvScan {
+    /// One `runtime_env` finding per variable holding a phantom token, by
+    /// name, sorted. Empty inside a proxy session.
+    pub findings: Vec<CheckFinding>,
+    /// Both [`PROXY_SESSION_VARS`] are set and non-empty.
+    pub proxy_session: bool,
+}
+
+/// Scan every variable of an environment for a phantom token.
+///
+/// `phantom check --runtime` and the MCP `phantom_check` used to look only at
+/// a fixed list of well-known names (and two different lists), so a token in
+/// any other variable, such as one `phantom init` wrote for a custom key,
+/// was reported clean. Names are recorded; values never are.
+pub fn scan_runtime_env<I>(vars: I) -> RuntimeEnvScan
+where
+    I: IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+{
+    let mut names = std::collections::BTreeSet::new();
+    let mut session = [false; PROXY_SESSION_VARS.len()];
+    for (key, raw) in vars {
+        if let Some(slot) = PROXY_SESSION_VARS.iter().position(|var| key == *var) {
+            session[slot] = !raw.is_empty();
+        }
+        if raw
+            .as_encoded_bytes()
+            .starts_with(crate::token::PHANTOM_PREFIX.as_bytes())
+        {
+            names.insert(key.to_string_lossy().into_owned());
+        }
+    }
+    let proxy_session = session.iter().all(|set| *set);
+    let findings = if proxy_session {
+        Vec::new()
+    } else {
+        names
+            .into_iter()
+            .map(|name| CheckFinding {
+                kind: "runtime_env",
+                path: None,
+                name: Some(name),
+                label: None,
+                pattern: None,
+            })
+            .collect()
+    };
+    RuntimeEnvScan {
+        findings,
+        proxy_session,
+    }
 }
 
 /// One doctor line. Messages are the same value-blind text the human report
@@ -129,11 +193,66 @@ mod tests {
             findings: &[],
             warnings: &[],
             indeterminate: &[],
+            proxy_session: false,
         };
         assert_eq!(
             serde_json::to_value(&report).unwrap(),
             serde_json::json!({"mode":"worktree","clean":true,"findings":[],"warnings":[]})
         );
+    }
+
+    fn env(pairs: &[(&str, &str)]) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+        pairs
+            .iter()
+            .map(|(key, raw)| ((*key).into(), (*raw).into()))
+            .collect()
+    }
+
+    fn names(scan: &RuntimeEnvScan) -> Vec<&str> {
+        scan.findings
+            .iter()
+            .map(|finding| finding.name.as_deref().unwrap_or_default())
+            .collect()
+    }
+
+    #[test]
+    fn runtime_scan_finds_a_phantom_token_under_any_name() {
+        let placeholder = crate::token::PhantomToken::generate();
+        let scan = scan_runtime_env(env(&[
+            ("BILLING_SERVICE_KEY", placeholder.as_str()),
+            ("OPENAI_API_KEY", placeholder.as_str()),
+            ("NODE_ENV", "development"),
+        ]));
+        assert_eq!(names(&scan), ["BILLING_SERVICE_KEY", "OPENAI_API_KEY"]);
+        assert!(!scan.proxy_session);
+        assert!(scan.findings.iter().all(|f| f.kind == "runtime_env"));
+    }
+
+    #[test]
+    fn runtime_scan_inside_a_proxy_session_reports_no_stray_tokens() {
+        let placeholder = crate::token::PhantomToken::generate();
+        let scan = scan_runtime_env(env(&[
+            ("OPENAI_API_KEY", placeholder.as_str()),
+            ("PHANTOM_PROXY_PORT", "43123"),
+            ("PHANTOM_PROXY_TOKEN", "session"),
+        ]));
+        assert!(scan.proxy_session);
+        assert!(scan.findings.is_empty());
+    }
+
+    #[test]
+    fn runtime_scan_needs_both_session_variables() {
+        let placeholder = crate::token::PhantomToken::generate();
+        for partial in [
+            &[("PHANTOM_PROXY_PORT", "43123")][..],
+            &[("PHANTOM_PROXY_PORT", "43123"), ("PHANTOM_PROXY_TOKEN", "")][..],
+        ] {
+            let mut pairs = vec![("OPENAI_API_KEY", placeholder.as_str())];
+            pairs.extend_from_slice(partial);
+            let scan = scan_runtime_env(env(&pairs));
+            assert!(!scan.proxy_session);
+            assert_eq!(names(&scan), ["OPENAI_API_KEY"]);
+        }
     }
 
     #[test]

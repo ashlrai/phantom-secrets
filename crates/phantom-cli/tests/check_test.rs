@@ -361,6 +361,8 @@ fn check_runtime_json_names_variable_without_token() {
     let output = phantom(&dir)
         .args(["check", "--runtime", "--json"])
         .env("OPENAI_API_KEY", &token)
+        .env_remove("PHANTOM_PROXY_PORT")
+        .env_remove("PHANTOM_PROXY_TOKEN")
         .assert()
         .failure();
     let stdout = String::from_utf8_lossy(&output.get_output().stdout);
@@ -368,4 +370,46 @@ fn check_runtime_json_names_variable_without_token() {
     assert_eq!(report["mode"], "runtime");
     assert_eq!(report["findings"][0]["name"], "OPENAI_API_KEY");
     assert!(!stdout.contains(&token), "{stdout}");
+}
+
+#[test]
+fn check_runtime_json_names_a_custom_variable() {
+    let dir = common::canonical_tempdir();
+    let placeholder = format!("phm_{}", "cd".repeat(32));
+    let output = phantom(&dir)
+        .args(["check", "--runtime", "--json"])
+        .env("BILLING_SERVICE_KEY", &placeholder)
+        .env_remove("PHANTOM_PROXY_PORT")
+        .env_remove("PHANTOM_PROXY_TOKEN")
+        .assert()
+        .failure();
+    let stdout = String::from_utf8_lossy(&output.get_output().stdout);
+    let report: serde_json::Value = serde_json::from_str(&stdout).expect("json report");
+    assert_eq!(report["clean"], false, "{report}");
+    assert!(
+        report["findings"]
+            .as_array()
+            .expect("findings")
+            .contains(&serde_json::json!({"kind":"runtime_env","name":"BILLING_SERVICE_KEY"})),
+        "{report}"
+    );
+    assert!(!stdout.contains(&placeholder), "{stdout}");
+}
+
+#[test]
+fn check_runtime_inside_a_proxy_session_is_clean() {
+    let dir = common::canonical_tempdir();
+    let placeholder = format!("phm_{}", "ef".repeat(32));
+    let output = phantom(&dir)
+        .args(["check", "--runtime", "--json"])
+        .env("OPENAI_API_KEY", &placeholder)
+        .env("PHANTOM_PROXY_PORT", "43123")
+        .env("PHANTOM_PROXY_TOKEN", "session")
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&output.get_output().stdout);
+    let report: serde_json::Value = serde_json::from_str(&stdout).expect("json report");
+    assert_eq!(report["clean"], true, "{report}");
+    assert_eq!(report["proxy_session"], true, "{report}");
+    assert!(!stdout.contains(&placeholder), "{stdout}");
 }

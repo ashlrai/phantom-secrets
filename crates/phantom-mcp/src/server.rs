@@ -2476,71 +2476,49 @@ impl PhantomMcpServer {
 
     /// Check for leaked secrets or orphaned phantom tokens.
     #[tool(
-        description = "Check for security issues. With runtime=true, scans current environment for phantom tokens without a proxy (leak detection). Otherwise, scans the same dotenv files as `phantom check` for unprotected real secrets: .env, .env.local, .env.development, .env.development.local, .env.production, .env.production.local, .env.test, .env.test.local, plus the configured dotenv_path; a symlink is not followed and makes the result indeterminate. Returns a human summary plus a value-blind JSON report (also as structuredContent) shaped like `phantom check --json`: {mode, clean, findings: [{kind, path?, name?}], warnings, indeterminate?}. Reports names and paths only, never values or phantom tokens."
+        description = "Check for security issues. With runtime=true, scans every environment variable of this server for a phantom token left without a proxy (leak detection); inside a `phantom exec`/`phantom start` session (PHANTOM_PROXY_PORT and PHANTOM_PROXY_TOKEN both set) the session's own tokens are expected, and the report is clean with `proxy_session: true`. Otherwise, scans the same dotenv files as `phantom check` for unprotected real secrets: .env, .env.local, .env.development, .env.development.local, .env.production, .env.production.local, .env.test, .env.test.local, plus the configured dotenv_path; a symlink is not followed and makes the result indeterminate. Returns a human summary plus a value-blind JSON report (also as structuredContent) shaped like `phantom check --json`: {mode, clean, findings: [{kind, path?, name?}], warnings, indeterminate?, proxy_session?}. Reports names and paths only, never values or phantom tokens."
     )]
     fn phantom_check(
         &self,
         Parameters(params): Parameters<CheckParams>,
     ) -> Result<CallToolResult, McpError> {
         if params.runtime {
-            // Scan common API key env vars for phantom tokens in the process environment
-            let api_vars = [
-                "OPENAI_API_KEY",
-                "ANTHROPIC_API_KEY",
-                "STRIPE_SECRET_KEY",
-                "STRIPE_API_KEY",
-                "GITHUB_TOKEN",
-                "AWS_SECRET_ACCESS_KEY",
-                "DATABASE_URL",
-                "REDIS_URL",
-                "SENDGRID_API_KEY",
-                "TWILIO_AUTH_TOKEN",
-                "SLACK_TOKEN",
-                "SLACK_BOT_TOKEN",
-                "DISCORD_TOKEN",
-                "FIREBASE_API_KEY",
-                "SUPABASE_SERVICE_ROLE_KEY",
-                "CLOUDFLARE_API_TOKEN",
-            ];
-
-            let found: Vec<&str> = api_vars
-                .iter()
-                .copied()
-                .filter(|var| {
-                    std::env::var(var).is_ok_and(|val| PhantomToken::is_phantom_token(&val))
-                })
-                .collect();
-            let findings: Vec<CheckFinding> = found
-                .iter()
-                .map(|var| CheckFinding {
-                    kind: "runtime_env",
-                    path: None,
-                    name: Some(var.to_string()),
-                    label: None,
-                    pattern: None,
-                })
-                .collect();
+            // Every variable, not a list of well-known names: a token in any
+            // other variable used to be reported clean.
+            let scan = phantom_core::report::scan_runtime_env(std::env::vars_os());
             let report = CheckReport {
                 mode: "runtime",
-                clean: findings.is_empty(),
-                findings: &findings,
+                clean: scan.findings.is_empty(),
+                findings: &scan.findings,
                 warnings: &[],
                 indeterminate: &[],
+                proxy_session: scan.proxy_session,
             };
 
-            if found.is_empty() {
+            if scan.proxy_session {
                 return report_result(
-                    "No issues found. No phantom tokens detected in environment variables.",
+                    "No stray phantom tokens: this server runs inside a Phantom proxy session \
+                     (PHANTOM_PROXY_PORT and PHANTOM_PROXY_TOKEN are set), so phantom tokens in \
+                     its environment are the session's own.",
+                    &report,
+                );
+            }
+            if scan.findings.is_empty() {
+                return report_result(
+                    "No issues found. No environment variable holds a phantom token.",
                     &report,
                 );
             }
 
             let mut output = format!(
-                "WARNING: {} phantom token(s) found in environment without proxy:\n",
-                found.len()
+                "WARNING: {} environment variable(s) hold a phantom token with no proxy session:\n",
+                scan.findings.len()
             );
-            for var in &found {
-                output.push_str(&format!("  - {}\n", var));
+            for finding in &scan.findings {
+                output.push_str(&format!(
+                    "  - {}\n",
+                    finding.name.as_deref().unwrap_or_default()
+                ));
             }
             output.push_str(
                 "\nClient-supplied headers and bodies never resolve phantom placeholders, even while the proxy is running.\n\
@@ -2640,6 +2618,7 @@ impl PhantomMcpServer {
                 findings: &findings,
                 warnings: &[],
                 indeterminate: &indeterminate,
+                proxy_session: false,
             };
 
             if total_issues == 0 && malformed_files == 0 {
@@ -8977,6 +8956,69 @@ mod tests {
             .unwrap()
             .contains(&serde_json::json!({"kind":"runtime_env","name":var})));
         assert_no_value_leak(&result, &[token.as_str()]);
+    }
+
+    /// Run the runtime check with `vars` set (or removed, for `None`) and
+    /// restore each one afterwards. Callers hold `TestEnvironment`.
+    fn runtime_check_with(vars: &[(&str, Option<&str>)]) -> CallToolResult {
+        let previous: Vec<_> = vars
+            .iter()
+            .map(|(name, _)| (*name, std::env::var_os(name)))
+            .collect();
+        for (name, setting) in vars {
+            // SAFETY: serialized by TestEnvironment's process env lock; restored below.
+            unsafe {
+                match setting {
+                    Some(raw) => std::env::set_var(name, raw),
+                    None => std::env::remove_var(name),
+                }
+            }
+        }
+        let server = PhantomMcpServer::with_dir(TempDir::new().unwrap().path().to_path_buf());
+        let result = server.phantom_check(Parameters(CheckParams { runtime: true }));
+        for (name, before) in previous {
+            // SAFETY: as above.
+            unsafe {
+                match before {
+                    Some(raw) => std::env::set_var(name, raw),
+                    None => std::env::remove_var(name),
+                }
+            }
+        }
+        result.unwrap()
+    }
+
+    #[test]
+    fn check_runtime_finds_a_phantom_token_under_a_custom_name() {
+        let _environment = TestEnvironment::new();
+        let placeholder = PhantomToken::generate();
+        let result = runtime_check_with(&[
+            ("PHANTOM_MCP_TEST_BILLING_KEY", Some(placeholder.as_str())),
+            ("PHANTOM_PROXY_PORT", None),
+            ("PHANTOM_PROXY_TOKEN", None),
+        ]);
+        let report = structured_report(&result);
+        assert_eq!(report["clean"], false, "{report}");
+        assert!(report["findings"].as_array().unwrap().contains(
+            &serde_json::json!({"kind":"runtime_env","name":"PHANTOM_MCP_TEST_BILLING_KEY"})
+        ));
+        assert_no_value_leak(&result, &[placeholder.as_str()]);
+    }
+
+    #[test]
+    fn check_runtime_inside_a_proxy_session_is_not_a_leak() {
+        let _environment = TestEnvironment::new();
+        let placeholder = PhantomToken::generate();
+        let result = runtime_check_with(&[
+            ("OPENAI_API_KEY", Some(placeholder.as_str())),
+            ("PHANTOM_PROXY_PORT", Some("43123")),
+            ("PHANTOM_PROXY_TOKEN", Some("session")),
+        ]);
+        let report = structured_report(&result);
+        assert_eq!(report["clean"], true, "{report}");
+        assert_eq!(report["proxy_session"], true, "{report}");
+        assert_eq!(report["findings"], serde_json::json!([]));
+        assert_no_value_leak(&result, &[placeholder.as_str()]);
     }
 
     #[test]
