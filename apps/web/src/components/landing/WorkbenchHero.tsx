@@ -27,7 +27,7 @@ export function WorkbenchHero() {
           <a className="phantom-workbench__secondary" href="/secrets">
             Protect credentials with Phantom Secrets
           </a>
-          {WORKBENCH_RELEASE?.macDownloadUrl && <a className="phantom-workbench__secondary" href={WORKBENCH_RELEASE.macDownloadUrl}>Download for Mac</a>}
+          {WORKBENCH_RELEASE?.macDownloadUrl && <a className="phantom-workbench__secondary" href={WORKBENCH_RELEASE.macDownloadUrl}>Download for Mac (Apple silicon)</a>}
         </div>
         <p className="phantom-workbench__note">
           The workbench is distributed as <code>{WORKBENCH_RELEASE ? `@ashlr/phantom@${WORKBENCH_RELEASE.version}` : '@ashlr/phantom'}</code> with the <code>phm</code> CLI.

@@ -8,6 +8,8 @@
     "start": "next start",
     "lint": "eslint . --max-warnings=0",
     "test": "node --test tests/*.test.cjs",
+    "preview:check": "node scripts/site-preview.mjs check",
+    "preview:verify": "node scripts/site-preview.mjs verify",
     "test:billing-auth": "node --test tests/billing-auth.test.cjs",
     "test:claims": "node --test tests/public-claims.test.cjs"
   },
