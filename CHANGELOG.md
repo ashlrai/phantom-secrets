@@ -4,6 +4,29 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (`phantom_expiry_enforce`, `phantom expiry enforce --json`)
+
+- With `fail_closed=true` the MCP tool put the secrets that have no expiry
+  into its `expired` array (status `no_expiry_policy`), while
+  `phantom expiry enforce --fail-closed --json`, which the tool claimed to
+  match, kept `expired` to secrets whose expiry has passed and named no
+  one. Both now serialize one report,
+  `phantom_vault::metadata::ExpiryEnforceReport`: `expired` holds only
+  expired secrets, and the new `no_expiry_policy` array names the
+  no-expiry violations under fail-closed (empty otherwise). `pass`,
+  `ok_count` and `no_expiry_count` are unchanged. Names and timestamps
+  only, never values.
+
+### Fixed (`phantom_validate_secret`, `phantom doctor` validation check)
+
+- A read error on a secret's stored validation results was turned into a
+  default record and reported as `never_checked: true, is_valid: false`.
+  `phantom_validate_secret` now returns `metadata_error: true` with a note
+  and null status fields (`metadata_error` is `false` otherwise). The
+  doctor validation check warns that those secrets' state is unknown
+  instead of counting them as never checked, and no longer reports "All
+  secrets passed" over unreadable results.
+
 ### Fixed (`phantom_compliance_status`)
 
 - With this project's secrets in an encrypted-file vault the MCP process

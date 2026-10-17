@@ -4590,6 +4590,8 @@ impl PhantomMcpServer {
             Returns: last_check_ts (Unix epoch, 0 = never checked), is_valid (bool), \
             failure_reason (string or null), validator_name (which validator ran), \
             and is_stale (whether the check is older than 24 h). \
+            If the stored results cannot be read, metadata_error is true, a note says why, \
+            and the other status fields are null rather than reporting never_checked. \
             This tool reads persisted ValidationMetadata — it does NOT make a live \
             HTTP request. Use phantom_validate_all to trigger a fresh check. \
             Read-only; no confirm required. Secret VALUES are never returned."
@@ -4612,22 +4614,35 @@ impl PhantomMcpServer {
             )));
         }
 
-        // Load validation metadata (may not exist yet — return a "never checked" record).
-        let meta = vault
-            .get_validation_metadata(&params.name)
-            .unwrap_or_default();
-
-        let is_stale = meta.is_stale(phantom_core::validator::DEFAULT_STALE_SECS);
-
-        let out = serde_json::json!({
-            "name": params.name,
-            "last_check_ts": meta.last_check_ts,
-            "is_valid": meta.is_valid,
-            "failure_reason": meta.failure_reason,
-            "validator_name": meta.validator_name,
-            "is_stale": is_stale,
-            "never_checked": meta.never_checked(),
-        });
+        // A missing record means "never checked". A record that cannot be
+        // read is not: report the error state instead of a default record
+        // that would read as "never checked, not valid".
+        let out = match vault.get_validation_metadata(&params.name) {
+            Ok(meta) => serde_json::json!({
+                "name": params.name,
+                "last_check_ts": meta.last_check_ts,
+                "is_valid": meta.is_valid,
+                "failure_reason": meta.failure_reason,
+                "validator_name": meta.validator_name,
+                "is_stale": meta.is_stale(phantom_core::validator::DEFAULT_STALE_SECS),
+                "never_checked": meta.never_checked(),
+                "metadata_error": false,
+            }),
+            Err(error) => serde_json::json!({
+                "name": params.name,
+                "last_check_ts": null,
+                "is_valid": null,
+                "failure_reason": null,
+                "validator_name": null,
+                "is_stale": null,
+                "never_checked": null,
+                "metadata_error": true,
+                "note": format!(
+                    "Stored validation results could not be read, so this secret's \
+                     validation state is unknown (not \"never checked\"): {error}"
+                ),
+            }),
+        };
 
         json_object_result(&with_vault_note(out, vault_note))
     }
@@ -5025,9 +5040,11 @@ impl PhantomMcpServer {
             secrets and return a structured list, the same answer as `phantom expiry enforce --json`. \
             Each entry has: name (string), expires_at (Unix u64), secs_overdue (u64), \
             status (human-readable string). \
-            With fail_closed=true, secrets that have no expiry policy set are also included \
-            with status='no_expiry_policy'. \
-            Returns { expired: [...], ok_count, no_expiry_count, fail_closed, pass }. \
+            `expired` holds only secrets whose expiry has passed. With fail_closed=true, \
+            secrets that have no expiry set are violations too and are named in \
+            no_expiry_policy (status='no_expiry_policy'); it is empty otherwise. \
+            Returns { expired: [...], no_expiry_policy: [...], ok_count, no_expiry_count, \
+            fail_closed, pass }. \
             pass=true means no action is needed. Read-only; no confirm required. \
             Secret VALUES are never returned."
     )]
@@ -5035,8 +5052,6 @@ impl PhantomMcpServer {
         &self,
         Parameters(params): Parameters<PhantomExpiryEnforceParams>,
     ) -> Result<CallToolResult, McpError> {
-        use phantom_core::rotation_strategy::{check_expiry, ExpiryStatus};
-
         // TTLs live in vault metadata (`phantom expiry set` writes them there
         // and `phantom expiry enforce` reads them there). This gate must not
         // pass over secrets in a vault this process cannot open.
@@ -5046,56 +5061,11 @@ impl PhantomMcpServer {
             .list_with_metadata()
             .map_err(|e| vault_read_err("Failed to read vault lifecycle metadata", e))?;
         let now = phantom_vault::metadata::now_secs();
-
-        let mut expired: Vec<serde_json::Value> = Vec::new();
-        let mut no_expiry_violations: Vec<serde_json::Value> = Vec::new();
-        let mut ok_count: usize = 0;
-        let mut no_expiry_count: usize = 0;
-
-        for (name, metadata) in &entries {
-            match metadata.as_ref().and_then(|metadata| metadata.expires_at) {
-                None => {
-                    no_expiry_count += 1;
-                    if params.fail_closed {
-                        no_expiry_violations.push(serde_json::json!({
-                            "name": name,
-                            "status": "no_expiry_policy",
-                        }));
-                    }
-                }
-                Some(expires_at) => {
-                    let status = check_expiry(expires_at, 0, now);
-                    if status.is_expired() {
-                        let secs_overdue = match &status {
-                            ExpiryStatus::Expired { secs_overdue } => *secs_overdue,
-                            _ => 0,
-                        };
-                        expired.push(serde_json::json!({
-                            "name": name,
-                            "expires_at": expires_at,
-                            "secs_overdue": secs_overdue,
-                            "status": status.label(),
-                        }));
-                    } else {
-                        ok_count += 1;
-                    }
-                }
-            }
-        }
-
-        // Merge no-expiry violations if fail_closed
-        let mut all_violations = expired.clone();
-        all_violations.extend(no_expiry_violations);
-
-        let pass = all_violations.is_empty();
-
-        let out = serde_json::json!({
-            "expired": all_violations,
-            "ok_count": ok_count,
-            "no_expiry_count": no_expiry_count,
-            "fail_closed": params.fail_closed,
-            "pass": pass,
-        });
+        // One builder for this tool and `phantom expiry enforce --json`.
+        let report =
+            phantom_vault::metadata::expiry_enforce_report(&entries, params.fail_closed, now);
+        let out = serde_json::to_value(&report)
+            .map_err(|error| internal_err(format!("Failed to encode expiry report: {error}")))?;
 
         json_object_result(&with_vault_note(out, vault_note))
     }
@@ -9153,6 +9123,71 @@ mod tests {
         }
     }
 
+    /// A readable vault whose stored validation results cannot be read.
+    struct UnreadableValidationResults;
+
+    impl phantom_vault::VaultBackend for UnreadableValidationResults {
+        fn store(&self, _: &str, _: &str) -> phantom_core::error::Result<()> {
+            Ok(())
+        }
+        fn retrieve(&self, name: &str) -> phantom_core::error::Result<zeroize::Zeroizing<String>> {
+            Err(phantom_core::error::PhantomError::SecretNotFound(
+                name.to_string(),
+            ))
+        }
+        fn delete(&self, _: &str) -> phantom_core::error::Result<()> {
+            Ok(())
+        }
+        fn list(&self) -> phantom_core::error::Result<Vec<String>> {
+            Ok(vec!["OPENAI_API_KEY".to_string()])
+        }
+        fn backend_name(&self) -> &str {
+            "encrypted-file"
+        }
+        fn get_validation_metadata(
+            &self,
+            _: &str,
+        ) -> phantom_core::error::Result<phantom_core::validator::ValidationMetadata> {
+            Err(phantom_core::error::PhantomError::VaultError(
+                "validation sidecar is malformed".to_string(),
+            ))
+        }
+    }
+
+    /// A read error on stored validation results was reported as
+    /// `never_checked: true, is_valid: false`, telling the agent to run a
+    /// first check rather than that the state is unknown.
+    #[test]
+    fn validate_secret_reports_unreadable_results_not_never_checked() {
+        let _environment = TestEnvironment::new();
+        let _home = TestHome::new();
+        let (server, _dir) = setup_initialized_project();
+        let _vault = TestVault::serve(|| Box::new(UnreadableValidationResults));
+
+        let result = server
+            .phantom_validate_secret(params(serde_json::json!({ "name": "OPENAI_API_KEY" })))
+            .unwrap();
+        let report = result.structured_content.clone().unwrap();
+        assert_eq!(report["metadata_error"], true, "{report}");
+        assert!(report["never_checked"].is_null(), "{report}");
+        assert!(report["is_valid"].is_null(), "{report}");
+        assert!(report["last_check_ts"].is_null(), "{report}");
+        let note = report["note"].as_str().unwrap();
+        assert!(note.contains("validation sidecar is malformed"), "{note}");
+    }
+
+    #[test]
+    fn validate_secret_reports_metadata_error_false_when_readable() {
+        let _environment = TestEnvironment::new();
+        let (server, _dir) = setup_initialized_project();
+        let result = server
+            .phantom_validate_secret(params(serde_json::json!({ "name": "OPENAI_API_KEY" })))
+            .unwrap();
+        let report = result.structured_content.clone().unwrap();
+        assert_eq!(report["metadata_error"], false, "{report}");
+        assert_eq!(report["never_checked"], true, "{report}");
+    }
+
     #[test]
     fn check_runtime_reports_names_never_tokens() {
         let _environment = TestEnvironment::new();
@@ -11061,16 +11096,35 @@ mod tests {
         assert_eq!(permissive["ok_count"], 0);
         assert_eq!(permissive["no_expiry_count"], 1, "{permissive}");
 
+        assert_eq!(permissive["no_expiry_policy"], serde_json::json!([]));
+
         let strict = report(true);
         assert_eq!(strict["pass"], false);
-        let names: Vec<&str> = strict["expired"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|entry| entry["name"].as_str().unwrap())
-            .collect();
-        assert_eq!(names, ["OPENAI_API_KEY", "DATABASE_URL"], "{strict}");
-        assert_eq!(strict["expired"][1]["status"], "no_expiry_policy");
+        let names = |field: &str| -> Vec<String> {
+            strict[field]
+                .as_array()
+                .unwrap_or_else(|| panic!("{field} missing: {strict}"))
+                .iter()
+                .map(|entry| entry["name"].as_str().unwrap().to_string())
+                .collect()
+        };
+        // `expired` holds only truly expired secrets, as the CLI's does; the
+        // no-policy violations have their own field.
+        assert_eq!(names("expired"), ["OPENAI_API_KEY"], "{strict}");
+        assert_eq!(names("no_expiry_policy"), ["DATABASE_URL"], "{strict}");
+        assert_eq!(strict["no_expiry_policy"][0]["status"], "no_expiry_policy");
+        assert_eq!(strict["ok_count"], 0);
+        assert_eq!(strict["no_expiry_count"], 1);
+
+        // Same fields as `phantom expiry enforce --json`, which serializes
+        // the same report.
+        let cli_shape =
+            serde_json::to_value(phantom_vault::metadata::expiry_enforce_report(&[], true, 0))
+                .unwrap();
+        let keys = |value: &serde_json::Value| -> Vec<String> {
+            value.as_object().unwrap().keys().cloned().collect()
+        };
+        assert_eq!(keys(&strict), keys(&cli_shape), "{strict}");
     }
 
     #[test]

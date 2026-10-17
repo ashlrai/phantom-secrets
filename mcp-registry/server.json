@@ -798,7 +798,7 @@
     },
     {
       "name": "phantom_expiry_enforce",
-      "description": "Check the vault's TTL metadata (set with `phantom expiry set`) for expired secrets and return a structured list, the same answer as `phantom expiry enforce --json`. Each entry has: name (string), expires_at (Unix u64), secs_overdue (u64), status (human-readable string). With fail_closed=true, secrets that have no expiry policy set are also included with status='no_expiry_policy'. Returns { expired: [...], ok_count, no_expiry_count, fail_closed, pass }. pass=true means no action is needed. Read-only; no confirm required. Secret VALUES are never returned.",
+      "description": "Check the vault's TTL metadata (set with `phantom expiry set`) for expired secrets and return a structured list, the same answer as `phantom expiry enforce --json`. Each entry has: name (string), expires_at (Unix u64), secs_overdue (u64), status (human-readable string). `expired` holds only secrets whose expiry has passed. With fail_closed=true, secrets that have no expiry set are violations too and are named in no_expiry_policy (status='no_expiry_policy'); it is empty otherwise. Returns { expired: [...], no_expiry_policy: [...], ok_count, no_expiry_count, fail_closed, pass }. pass=true means no action is needed. Read-only; no confirm required. Secret VALUES are never returned.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
@@ -1547,7 +1547,7 @@
     },
     {
       "name": "phantom_validate_secret",
-      "description": "Query the last-known validation status for a specific secret. Returns: last_check_ts (Unix epoch, 0 = never checked), is_valid (bool), failure_reason (string or null), validator_name (which validator ran), and is_stale (whether the check is older than 24 h). This tool reads persisted ValidationMetadata — it does NOT make a live HTTP request. Use phantom_validate_all to trigger a fresh check. Read-only; no confirm required. Secret VALUES are never returned.",
+      "description": "Query the last-known validation status for a specific secret. Returns: last_check_ts (Unix epoch, 0 = never checked), is_valid (bool), failure_reason (string or null), validator_name (which validator ran), and is_stale (whether the check is older than 24 h). If the stored results cannot be read, metadata_error is true, a note says why, and the other status fields are null rather than reporting never_checked. This tool reads persisted ValidationMetadata — it does NOT make a live HTTP request. Use phantom_validate_all to trigger a fresh check. Read-only; no confirm required. Secret VALUES are never returned.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
