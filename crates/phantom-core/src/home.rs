@@ -2,7 +2,7 @@
 
 use std::ffi::OsString;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Resolve Phantom's machine-local home without accepting relative or
 /// drive-relative environment overrides.
@@ -29,6 +29,28 @@ fn resolve_home_dir(platform_fallback: Option<PathBuf>) -> io::Result<PathBuf> {
         platform_fallback,
     )
     .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "cannot resolve home directory"))
+}
+
+/// Render `path` as `~/...` when it lies under `home`, joining the
+/// home-relative components with `/` on every platform so user-facing and
+/// JSON output names the same location identically on Windows and Unix.
+/// Returns `None` when `path` is not under `home`.
+pub fn tilde_path(path: &Path, home: &Path) -> Option<String> {
+    let suffix = path.strip_prefix(home).ok()?;
+    let parts: Vec<String> = suffix
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy().into_owned())
+        .collect();
+    Some(format!("~/{}", parts.join("/")))
+}
+
+/// [`tilde_path`] against [`home_dir_with_platform_fallback`], falling back
+/// to the native display of `path` when it is outside the home directory.
+pub fn display_home_relative(path: &Path) -> String {
+    home_dir_with_platform_fallback()
+        .ok()
+        .and_then(|home| tilde_path(path, &home))
+        .unwrap_or_else(|| path.display().to_string())
 }
 
 pub(crate) fn select_home_dir(
@@ -71,6 +93,30 @@ mod tests {
             )
             .unwrap(),
             user_profile.path()
+        );
+    }
+
+    #[test]
+    fn tilde_path_uses_forward_slashes_under_home() {
+        let home = tempdir().unwrap();
+        let nested = home.path().join(".gemini").join("settings.json");
+        assert_eq!(
+            tilde_path(&nested, home.path()).as_deref(),
+            Some("~/.gemini/settings.json")
+        );
+        let deeper = home
+            .path()
+            .join(".codeium")
+            .join("windsurf")
+            .join("mcp_config.json");
+        assert_eq!(
+            tilde_path(&deeper, home.path()).as_deref(),
+            Some("~/.codeium/windsurf/mcp_config.json")
+        );
+        let outside = tempdir().unwrap();
+        assert_eq!(
+            tilde_path(&outside.path().join("x.json"), home.path()),
+            None
         );
     }
 

@@ -22,6 +22,30 @@ pub fn project_dir() -> anyhow::Result<PathBuf> {
     Ok(std::env::current_dir()?)
 }
 
+/// The error for a command that needs `.phantom.toml` in `project_dir`.
+///
+/// Commands work on the current directory only. When an ancestor directory
+/// holds a `.phantom.toml`, the error names it so a run from a project
+/// subdirectory is not told to `phantom init` a second project.
+pub fn missing_config_error(project_dir: &std::path::Path) -> anyhow::Error {
+    let root = project_dir
+        .ancestors()
+        .skip(1)
+        .find(|dir| dir.join(".phantom.toml").is_file());
+    match root {
+        Some(root) => anyhow::anyhow!(
+            "No .phantom.toml in {}. Phantom commands run from the project root; this directory is inside the project at {}. Run {} first.",
+            project_dir.display(),
+            root.display(),
+            format!("cd {}", root.display()).cyan().bold()
+        ),
+        None => anyhow::anyhow!(
+            "No .phantom.toml found. Run {} first.",
+            "phantom init".cyan().bold()
+        ),
+    }
+}
+
 /// Open the vault for `project_id`. Tests install a stub backend with
 /// [`test_seam::TestProject`].
 pub fn open_vault(project_id: &str) -> anyhow::Result<Box<dyn VaultBackend>> {
