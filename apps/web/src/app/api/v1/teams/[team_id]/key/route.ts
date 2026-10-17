@@ -2,6 +2,7 @@ import { requireAuth } from "@/lib/auth";
 import { requireHostedService } from "@/lib/commissioning";
 import { readBoundedJsonObject, requestBodyErrorResponse } from "@/lib/http-body";
 import { createServiceClient } from "@/lib/supabase-server";
+import { algForStoredKey, CLASSIC_ALG, parseTeamKeyRegistration } from "@/lib/team-key";
 
 const MAX_PUBLIC_KEY_BODY_BYTES = 4_096;
 
@@ -50,7 +51,17 @@ export async function GET(
     .select("user_id, public_key")
     .eq("team_id", team_id);
 
-  return Response.json({ members: members ?? [] });
+  // Default response is unchanged for old clients: only classic 32-byte keys
+  // are listed, a hybrid key shows as null (skipped, as for an unregistered
+  // member). Clients that understand hybrid keys pass ?algs=all and also get
+  // each member's `alg`.
+  const all = new URL(req.url).searchParams.get("algs") === "all";
+  const rows = (members ?? []).map((m) => {
+    const alg = algForStoredKey(m.public_key);
+    if (all) return { ...m, alg };
+    return alg === CLASSIC_ALG ? m : { ...m, public_key: null };
+  });
+  return Response.json({ members: rows });
 }
 
 /**
@@ -58,7 +69,8 @@ export async function GET(
  * X25519 public key on this team. Required before they can pull a
  * team vault that's already been pushed.
  *
- * Body: { public_key: string }  // base64-encoded 32 bytes
+ * Body: { public_key: string }  // base64-encoded 32 bytes (classic, default)
+ *       { public_key, v: 2, alg: "xwing-chacha20poly1305" }  // 1216-byte X-Wing key
  */
 export async function POST(
   req: Request,
@@ -71,37 +83,19 @@ export async function POST(
   if (authResult instanceof Response) return authResult;
   const { team_id } = await params;
 
-  let body: { public_key?: string };
+  let body: { public_key?: unknown; v?: unknown; alg?: unknown };
   try {
     body = await readBoundedJsonObject(req, MAX_PUBLIC_KEY_BODY_BYTES);
   } catch (error) {
     return requestBodyErrorResponse(error);
   }
-  const pk = body.public_key;
-  if (!pk || typeof pk !== "string") {
-    return Response.json(
-      { error: "public_key required" },
-      { status: 400 }
-    );
+  // Classic 32-byte X25519 by default; a 1216-byte X-Wing key only when it is
+  // declared with the share format tag (see lib/team-key.ts).
+  const parsed = parseTeamKeyRegistration(body);
+  if (!parsed.ok) {
+    return Response.json({ error: parsed.error }, { status: 400 });
   }
-  // X25519 public keys are exactly 32 bytes encoded as canonical padded base64.
-  // A length-only check lets malformed shares poison future team-vault pushes.
-  let decoded: Buffer;
-  try {
-    decoded = Buffer.from(pk, "base64");
-  } catch {
-    decoded = Buffer.alloc(0);
-  }
-  if (
-    !/^[A-Za-z0-9+/]{43}=$/.test(pk) ||
-    decoded.length !== 32 ||
-    decoded.toString("base64") !== pk
-  ) {
-    return Response.json(
-      { error: "public_key must be base64-encoded 32 bytes" },
-      { status: 400 }
-    );
-  }
+  const pk = body.public_key as string;
 
   const supabase = createServiceClient();
 
