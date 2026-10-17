@@ -781,6 +781,12 @@ enum AgentAction {
     },
     /// Human-readable view of the readiness report
     Doctor,
+    /// Read-only, value-free view of MCP approval state (use --json for JSON)
+    Status {
+        /// Emit stable JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Initialize safe defaults for AI-agent use
     Setup {
         /// Show planned actions without changing files
@@ -1036,6 +1042,7 @@ fn run() -> anyhow::Result<()> {
         Commands::Agent { action } => match action {
             AgentAction::Report { json } => commands::agent::report(json || global_json),
             AgentAction::Doctor => commands::agent::doctor(),
+            AgentAction::Status { json } => commands::agent::status(json || global_json),
             AgentAction::Setup { dry_run, apply } => commands::agent::setup(dry_run, apply),
         },
         Commands::Exec { cmd } => commands::exec::run(&cmd, None, cli.quiet),

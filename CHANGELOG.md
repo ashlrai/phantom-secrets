@@ -21,6 +21,15 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 - `--stdin` is refused when stdin is a terminal, where the typed value
   would echo; omit it for the hidden prompt.
 
+### Added (agent status)
+
+- `phantom agent status [--json]` is a read-only, value-free view of MCP
+  approval state (pending, approved-and-unused, expired, and whether the
+  approval key file exists). It takes no lock and creates no file, and never
+  prints nonces, argument hashes, or parameter summaries. Lease state is
+  reported as unavailable because the broker is not wired into the CLI.
+  Revert: remove the `Status` variant of `AgentAction`; nothing else depends on it.
+
 ### Fixed (agent report)
 
 - A malformed dotenv no longer hides a missing managed dotenv in
