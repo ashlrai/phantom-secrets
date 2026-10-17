@@ -324,7 +324,7 @@ fn default_example_output() -> String {
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct SyncParams {
-    /// Platform to sync to (vercel, railway). If empty, syncs all configured targets.
+    /// Platform to show: `vercel` or `railway` (case-insensitive). Omit it, or pass an empty string, to show every configured target. Any other value is refused.
     #[serde(default)]
     pub platform: Option<String>,
     /// Override project ID for this sync
