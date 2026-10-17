@@ -3,6 +3,7 @@ pub mod analytics;
 pub mod audit;
 pub mod audit_export;
 pub mod auth;
+pub mod blob_format;
 pub mod cloud;
 mod cloud_http;
 pub mod config;
