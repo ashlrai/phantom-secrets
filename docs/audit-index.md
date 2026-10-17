@@ -181,10 +181,10 @@ Reviewers should pay particular attention to these unresolved boundaries:
   archive-specific SPDX SBOMs, GitHub attestations, and all six release-native
   rows are bound to that immutable release by
   [workflow 34153902556](https://github.com/ashlrai/phantom-secrets/actions/runs/34153902556).
-  In the exact 2026-09-29 registry snapshot, Homebrew independently publishes
-  the previous separately reviewed `v0.7.8` (bump to `v0.7.9` pending) binaries. The npm `0.7.4` wrappers remain only under the
-  failed `release-candidate` track, npm `latest` remains `0.6.0`, and no npm,
-  crates.io, or MCP Registry `0.7.9` publication is claimed. Native code
+  Registry endpoints requeried on 2026-10-16 show Homebrew, npm `latest` and
+  the MCP Registry record serving that same release; the npm publication has no
+  provenance attestation or recorded acceptance receipt, older failed candidate
+  wrappers remain under `release-candidate`, and crates.io still serves `0.5.1`. Native code
   signing/notarization, credential-store/ACL/editor acceptance on every host,
   hosted-service commissioning, provider activation, certification, and
   customer acceptance remain separate evidence gates.

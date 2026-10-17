@@ -4,6 +4,22 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (published-version docs and agent report)
+
+- Docs still said npm `latest` was `0.6.0`, that the Homebrew formula was at
+  `v0.7.8`, and that no MCP Registry record existed. On 2026-10-16 all three
+  served the current GitHub release. README, SECURITY, SUPPORT, ROADMAP,
+  AGENTS, the MCP Registry README, `docs/` and the site's `llms.txt` files now
+  state each channel relative to the release, dated by the last requery, and
+  say that the npm publication has no provenance attestation or recorded
+  acceptance receipt. `scripts/release/check-version-parity.mjs` (run in CI)
+  now fails when one of these docs pins npm `latest`, Homebrew or the MCP
+  Registry to a version other than the workspace version.
+- `phantom agent report`/`doctor` skipped the `managed-dotenv-unresolved`
+  finding whenever any dotenv had a parse error, so a malformed `.env.local`
+  hid a missing managed `.env`. It is now skipped only when the parse error is
+  for the managed dotenv's own path.
+
 ### Fixed (locked-vault follow-ups)
 
 - `phantom exec` and `phantom start` said a protected key "has no vault entry"

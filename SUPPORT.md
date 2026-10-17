@@ -33,9 +33,11 @@ Release-state snapshot, verified 2026-09-29: the reviewed immutable GitHub
 release is `v0.7.9` at source commit
 `7a51ce512ec4aee12cc29ff859036af63fbe93db`. Its 19 assets, all six native
 release rows, checksums, archive-specific SPDX SBOMs, and GitHub attestations
-were verified. The Homebrew formula still publishes the previous reviewed `v0.7.8`; npm `latest` remains `0.6.0`, and
-the npm `0.7.4` wrappers remain public only under the failed
-`release-candidate` track. The GitHub release receipt alone is not proof of npm,
+were verified. Registry endpoints requeried on 2026-10-16 show the Homebrew
+formula, npm `latest` for both wrappers and the MCP Registry record serving
+that same release; the npm publication has no provenance attestation or
+recorded acceptance receipt, and older failed candidate wrappers remain under
+the `release-candidate` track. The GitHub release receipt alone is not proof of npm,
 crates.io, MCP Registry, or the independently verified Homebrew publication, a deployed provider integration,
 a commissioned hosted entitlement, certification, or customer acceptance.
 

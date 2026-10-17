@@ -122,6 +122,11 @@ pub fn build_report(project_dir: &Path, options: AgentReadinessOptions) -> Agent
     let env_files = discover_env_files(project_dir);
     files.extend(env_files.iter().map(|p| rel(project_dir, p)));
     let mut unprotected = Vec::new();
+    // Dotenv files reported below as unreadable (the resolver could not read
+    // them either) and as malformed (readable, so the resolver can still pick
+    // one), by name relative to the project.
+    let mut unreadable_dotenvs = Vec::new();
+    let mut malformed_dotenvs = Vec::new();
     for path in &env_files {
         // Listed by a lookup that follows symlinks. The read opens without
         // following one and judges the opened handle, so a linked file is
@@ -131,6 +136,7 @@ pub fn build_report(project_dir: &Path, options: AgentReadinessOptions) -> Agent
             Ok(None) => {}
             Ok(Some(dotenv)) => {
                 if let Err(err) = dotenv.validate_for_mutation() {
+                    malformed_dotenvs.push(rel(project_dir, path));
                     findings.push(ReadinessFinding {
                         id: "env-parse-error".to_string(),
                         severity: FindingSeverity::Critical,
@@ -148,14 +154,17 @@ pub fn build_report(project_dir: &Path, options: AgentReadinessOptions) -> Agent
                     unprotected.push((path.clone(), entry.key.clone()));
                 }
             }
-            Err(err) => findings.push(ReadinessFinding {
-                id: "env-parse-error".to_string(),
-                severity: FindingSeverity::Critical,
-                message: format!("Could not parse {}: {err}", rel(project_dir, path)),
-                file: Some(rel(project_dir, path)),
-                command: None,
-                requires_approval: false,
-            }),
+            Err(err) => {
+                unreadable_dotenvs.push(rel(project_dir, path));
+                findings.push(ReadinessFinding {
+                    id: "env-parse-error".to_string(),
+                    severity: FindingSeverity::Critical,
+                    message: format!("Could not parse {}: {err}", rel(project_dir, path)),
+                    file: Some(rel(project_dir, path)),
+                    command: None,
+                    requires_approval: false,
+                })
+            }
         }
     }
 
@@ -275,10 +284,24 @@ pub fn build_report(project_dir: &Path, options: AgentReadinessOptions) -> Agent
     // The managed dotenv is what `phantom exec` resolves before launching. A
     // configured file that is missing (or cannot be chosen unambiguously)
     // fails every protected launch, so it is a critical finding, as it is a
-    // failed check in `phantom doctor`. A dotenv already reported as
-    // unreadable above is not reported twice.
-    let dotenv_reported = findings.iter().any(|f| f.id == "env-parse-error");
-    if let (Some(config), false) = (&config, dotenv_reported) {
+    // failed check in `phantom doctor`. It is not repeated when the parse
+    // error above is for the managed dotenv's own path: the configured file,
+    // or (without one) a candidate the resolver failed to read. A parse error
+    // in any other dotenv does not hide it.
+    let managed_dotenv_reported =
+        |config: &PhantomConfig| match config.phantom.dotenv_path.as_deref() {
+            Some(name) => unreadable_dotenvs
+                .iter()
+                .chain(&malformed_dotenvs)
+                .any(|reported| reported == name),
+            None => unreadable_dotenvs
+                .iter()
+                .any(|reported| crate::managed_dotenv::is_resolver_candidate(reported)),
+        };
+    if let Some(config) = config
+        .as_ref()
+        .filter(|config| !managed_dotenv_reported(config))
+    {
         if let Err(error) = crate::managed_dotenv::resolve_dotenv(project_dir, config, &[]) {
             push_finding(
                 &mut findings,
@@ -911,6 +934,68 @@ mod tests {
         assert!(finding.message.contains("phantom init --from <file>"));
         assert_eq!(report.status, ReadinessStatus::Unsafe);
         assert_eq!(report.exit_code, 1);
+    }
+
+    fn config_with_managed_dotenv(dir: &Path) {
+        let mut config = PhantomConfig::new_with_defaults(PhantomConfig::project_id_from_path(
+            &std::fs::canonicalize(dir).unwrap(),
+        ));
+        config.phantom.dotenv_path = Some(".env".to_string());
+        std::fs::write(
+            dir.join(".phantom.toml"),
+            toml::to_string_pretty(&config).unwrap(),
+        )
+        .unwrap();
+    }
+
+    /// Any `env-parse-error` used to suppress the finding, so a malformed
+    /// `.env.local` hid that the managed `.env` itself was gone.
+    #[test]
+    fn a_malformed_other_dotenv_does_not_hide_a_missing_managed_one() {
+        let dir = TempDir::new().unwrap();
+        config_with_managed_dotenv(dir.path());
+        std::fs::write(dir.path().join(".env.local"), "PORT=3000\nBROKEN_RECORD\n").unwrap();
+
+        let report = build_report(dir.path(), no_vault());
+
+        assert!(report
+            .findings
+            .iter()
+            .any(|f| f.id == "env-parse-error" && f.file.as_deref() == Some(".env.local")));
+        let unresolved = report
+            .findings
+            .iter()
+            .find(|f| f.id == "managed-dotenv-unresolved")
+            .expect("the missing managed .env is still reported");
+        assert!(
+            unresolved.message.contains("does not exist: .env"),
+            "{}",
+            unresolved.message
+        );
+    }
+
+    /// A parse error for the managed dotenv's own path already says what is
+    /// wrong with it; the resolver failure is not reported a second time.
+    #[cfg(unix)]
+    #[test]
+    fn a_parse_error_for_the_managed_dotenv_is_reported_once() {
+        let dir = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        config_with_managed_dotenv(dir.path());
+        let target = outside.path().join("elsewhere.env");
+        std::fs::write(&target, "PORT=3000\n").unwrap();
+        std::os::unix::fs::symlink(&target, dir.path().join(".env")).unwrap();
+
+        let report = build_report(dir.path(), no_vault());
+
+        assert!(report
+            .findings
+            .iter()
+            .any(|f| f.id == "env-parse-error" && f.file.as_deref() == Some(".env")));
+        assert!(!report
+            .findings
+            .iter()
+            .any(|f| f.id == "managed-dotenv-unresolved"));
     }
 
     #[test]
