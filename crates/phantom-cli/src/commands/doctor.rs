@@ -780,15 +780,7 @@ fn write_project_file_exact_with(
 /// Returns true for a present-but-unsafe or unreadable Phantom configuration.
 fn check_mcp_client(name: &str, path: &std::path::Path, global: bool) -> bool {
     let location = if global {
-        if let Ok(home) = phantom_core::home::home_dir_with_platform_fallback() {
-            if let Ok(suffix) = path.strip_prefix(&home) {
-                format!("~/{}", suffix.display())
-            } else {
-                path.display().to_string()
-            }
-        } else {
-            path.display().to_string()
-        }
+        phantom_core::home::display_home_relative(path)
     } else {
         path.display().to_string()
     };

@@ -1298,12 +1298,7 @@ fn home_dir() -> Result<PathBuf> {
 }
 
 fn display(path: &Path) -> String {
-    if let Ok(home) = home_dir() {
-        if let Ok(suffix) = path.strip_prefix(&home) {
-            return format!("~/{}", suffix.display());
-        }
-    }
-    path.display().to_string()
+    phantom_core::home::display_home_relative(path)
 }
 
 #[cfg(test)]
