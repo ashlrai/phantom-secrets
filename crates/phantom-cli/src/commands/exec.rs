@@ -78,9 +78,7 @@ async fn run_async(cmd: &[String], env_flag: Option<&str>, quiet: bool) -> Resul
     }
 
     let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
-    config
-        .validate_agentic_proxy_routes()
-        .context("Refusing unapproved repository-controlled proxy routing")?;
+    validate_routes_for_launch(&config)?;
 
     let preflight = phantom_core::managed_dotenv::resolve_dotenv(&project_dir, &config, &[])?;
     if let Some(dotenv) = preflight.file.as_ref() {
@@ -366,9 +364,17 @@ async fn run_async(cmd: &[String], env_flag: Option<&str>, quiet: bool) -> Resul
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
-    let mut child = command
-        .spawn()
-        .context(format!("Failed to start command: {}", program))?;
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            // Stop the proxy first: its session tokens must not outlive a
+            // launch that never happened.
+            proxy.shutdown().await;
+            let (code, message) = spawn_failure(program, &error);
+            eprintln!("{} {message}", "error".red().bold());
+            std::process::exit(code);
+        }
+    };
 
     // Wait for the child to exit
     let status = child.wait().await?;
@@ -378,13 +384,16 @@ async fn run_async(cmd: &[String], env_flag: Option<&str>, quiet: bool) -> Resul
     proxy.shutdown().await;
 
     if !status.success() {
-        let code = status.code().unwrap_or(1);
-        progress!(
-            quiet,
-            "{} Command exited with code {}",
-            "!".yellow().bold(),
-            code
-        );
+        let (code, signal_note) = child_exit_code(&status);
+        match signal_note {
+            Some(note) => eprintln!("{} {note}", "!".yellow().bold()),
+            None => progress!(
+                quiet,
+                "{} Command exited with code {}",
+                "!".yellow().bold(),
+                code
+            ),
+        }
         std::process::exit(code);
     }
 
@@ -520,16 +529,27 @@ async fn run_command_directly(cmd: &[String], scrub_env_keys: &HashSet<String>) 
     let args = &cmd[1..];
 
     let mut command = sanitized_child_command(program, args, scrub_env_keys);
-    let status = command
+    let status = match command
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .status()
         .await
-        .context(format!("Failed to start command: {}", program))?;
+    {
+        Ok(status) => status,
+        Err(error) => {
+            let (code, message) = spawn_failure(program, &error);
+            eprintln!("{} {message}", "error".red().bold());
+            std::process::exit(code);
+        }
+    };
 
     if !status.success() {
-        std::process::exit(status.code().unwrap_or(1));
+        let (code, signal_note) = child_exit_code(&status);
+        if let Some(note) = signal_note {
+            eprintln!("{} {note}", "!".yellow().bold());
+        }
+        std::process::exit(code);
     }
 
     Ok(())
@@ -549,8 +569,131 @@ fn redact_session_segment(url: &str) -> String {
     format!("{}<redacted>{}", &url[..start], &url[end..])
 }
 
+/// Refuse repository-controlled proxy routing before launch, naming the
+/// command that shows which route differs and what Phantom expects.
+pub(super) fn validate_routes_for_launch(config: &PhantomConfig) -> Result<()> {
+    config.validate_agentic_proxy_routes().context(
+        "Refusing unapproved repository-controlled proxy routing. Run `phantom doctor` to see which service in .phantom.toml blocks launch and what to restore; proxied launches run only with Phantom's built-in routes",
+    )?;
+    Ok(())
+}
+
+/// Exit code and message for a child that could not be started, following
+/// the shell convention agents already branch on: 127 when the program is not
+/// found, 126 when it exists but cannot be executed.
+fn spawn_failure(program: &str, error: &std::io::Error) -> (i32, String) {
+    match error.kind() {
+        std::io::ErrorKind::NotFound => (
+            127,
+            format!(
+                "Command not found: {program}. Check that it is installed and on PATH, or pass its full path after `--`."
+            ),
+        ),
+        std::io::ErrorKind::PermissionDenied => (
+            126,
+            format!("Command is not executable: {program}. Check its permissions."),
+        ),
+        _ => (1, format!("Failed to start command {program}: {error}")),
+    }
+}
+
+/// Exit code to propagate for a failed child, plus a note when a signal ended
+/// it. A signal death has no exit code; reporting it as 1 hid OOM kills and
+/// timeouts, so use the shell convention 128 + signal number instead.
+fn child_exit_code(status: &std::process::ExitStatus) -> (i32, Option<String>) {
+    if let Some(code) = status.code() {
+        return (code, None);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(signal) = status.signal() {
+            let code = 128 + signal;
+            return (
+                code,
+                Some(format!(
+                    "Command was terminated by signal {signal}{}; exiting with {code}",
+                    signal_name(signal)
+                        .map(|name| format!(" ({name})"))
+                        .unwrap_or_default()
+                )),
+            );
+        }
+    }
+    (1, None)
+}
+
+#[cfg(unix)]
+fn signal_name(signal: i32) -> Option<&'static str> {
+    Some(match signal {
+        1 => "SIGHUP",
+        2 => "SIGINT",
+        3 => "SIGQUIT",
+        6 => "SIGABRT",
+        9 => "SIGKILL",
+        11 => "SIGSEGV",
+        13 => "SIGPIPE",
+        15 => "SIGTERM",
+        _ => return None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn altered_route_refusal_points_at_doctor() {
+        let mut config = PhantomConfig::new_with_defaults("route-test".to_string());
+        let service = config
+            .services
+            .get_mut("openai")
+            .expect("built-in openai route");
+        service.pattern = Some("api.openai.com.example".to_string());
+
+        let error = format!(
+            "{:#}",
+            super::validate_routes_for_launch(&config).unwrap_err()
+        );
+
+        assert!(error.contains("phantom doctor"), "{error}");
+        assert!(error.contains("`openai`"), "{error}");
+    }
+
+    #[test]
+    fn spawn_failure_uses_shell_exit_codes_and_names_the_fix() {
+        let (code, message) = super::spawn_failure(
+            "phantom-missing-tool",
+            &std::io::Error::from(std::io::ErrorKind::NotFound),
+        );
+        assert_eq!(code, 127);
+        assert!(
+            message.contains("Command not found: phantom-missing-tool"),
+            "{message}"
+        );
+        assert!(message.contains("PATH"), "{message}");
+
+        let (code, message) = super::spawn_failure(
+            "./script.sh",
+            &std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+        );
+        assert_eq!(code, 126);
+        assert!(message.contains("not executable"), "{message}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn child_killed_by_signal_exits_128_plus_signal_with_a_note() {
+        use std::os::unix::process::ExitStatusExt;
+
+        let killed = std::process::ExitStatus::from_raw(9);
+        let (code, note) = super::child_exit_code(&killed);
+        assert_eq!(code, 137);
+        let note = note.expect("signal death must be reported");
+        assert!(note.contains("signal 9 (SIGKILL)"), "{note}");
+
+        let exited = std::process::ExitStatus::from_raw(3 << 8);
+        assert_eq!(super::child_exit_code(&exited), (3, None));
+    }
+
     #[test]
     fn printed_base_url_hides_session_token() {
         let token = "ab".repeat(32);
