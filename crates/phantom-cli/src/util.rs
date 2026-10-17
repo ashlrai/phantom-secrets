@@ -152,8 +152,8 @@ pub(crate) mod test_seam {
         fn store(&self, _: &str, _: &str) -> phantom_core::error::Result<()> {
             unreachable!("inventory reads never store")
         }
-        fn retrieve(&self, name: &str) -> phantom_core::error::Result<zeroize::Zeroizing<String>> {
-            panic!("a value was read from a keychain-only view: {name}")
+        fn retrieve(&self, _: &str) -> phantom_core::error::Result<zeroize::Zeroizing<String>> {
+            panic!("a value was read from a keychain-only view")
         }
         fn delete(&self, _: &str) -> phantom_core::error::Result<()> {
             unreachable!("inventory reads never delete")
