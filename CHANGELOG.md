@@ -41,6 +41,20 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 - `--stdin` is refused when stdin is a terminal, where the typed value
   would echo; omit it for the hidden prompt.
 
+### Fixed (CLI consistency)
+
+- `phantom why <KEY>` for a key that is not in the dotenv now exits non-zero
+  instead of 0. Its `--json` report keeps exit 0, and its `next_step` names
+  the `phantom status` command rather than the `phantom_status` MCP tool.
+- `phantom doctor` now checks Gemini CLI's MCP config, the same clients
+  `phantom setup --status` reports.
+- The CLAUDE.md section `phantom init` writes now names the vault backend
+  init used (for example the volatile linux-keyutils keyring or the encrypted
+  file) instead of always saying "OS keychain".
+- `list`, `reveal`, `start`, `expiry`, `rotate`, `export` and `grant` run
+  from a project subdirectory now name the parent `.phantom.toml` and say to
+  run from there, instead of "Run phantom init first."
+
 ### Added (agent status)
 
 - `phantom agent status [--json]` is a read-only, value-free view of MCP
@@ -49,6 +63,17 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   prints nonces, argument hashes, or parameter summaries. Lease state is
   reported as unavailable because the broker is not wired into the CLI.
   Revert: remove the `Status` variant of `AgentAction`; nothing else depends on it.
+
+### Fixed (broken pipe)
+
+- `phantom <cmd> | head` (for `list`, `why`, `doctor`, `status`,
+  `check --json`, `audit` and the rest) panicked with exit 101 and
+  "failed printing to stdout: Broken pipe" when the reader closed early. A
+  write to a closed stdout is now a quiet exit with status 141, as a shell
+  reports SIGPIPE. The SIGPIPE disposition is unchanged, so `phantom exec`
+  children and the in-process proxy behave as before. On Windows only the
+  `println!` case exits 141; a broken-pipe error a command returns stays an
+  error there, since it cannot be tied to stdout.
 
 ### Fixed (MCP expiry gate and sync platform; Gemini CLI setup)
 

@@ -145,10 +145,7 @@ async fn run_async() -> Result<()> {
     let config_path = project_dir.join(".phantom.toml");
 
     if !config_path.exists() {
-        anyhow::bail!(
-            "No .phantom.toml found. Run {} first.",
-            "phantom init".cyan().bold()
-        );
+        return Err(crate::util::missing_config_error(&project_dir));
     }
 
     let config = PhantomConfig::load(&config_path)?;
