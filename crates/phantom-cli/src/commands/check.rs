@@ -139,28 +139,117 @@ fn staged_findings() -> Result<(Vec<Finding>, Vec<ConfigWarning>)> {
     Ok((findings, warnings))
 }
 
-const CODE_PATTERNS: [(&str, &str); 9] = [
-    ("sk-", "OpenAI API key"),
-    ("sk_live_", "Stripe live key"),
-    ("sk_test_", "Stripe test key"),
-    ("ghp_", "GitHub personal token"),
-    ("github_pat_", "GitHub PAT"),
-    ("glpat-", "GitLab PAT"),
-    ("xoxb-", "Slack bot token"),
-    ("xoxp-", "Slack user token"),
-    ("AKIA", "AWS access key"),
+/// Credential shapes looked for in staged code: the prefix, a label for the
+/// report, and the shortest tail that can follow the prefix in a real key.
+/// A bare prefix is not a key: `task-`, `risk-` and `desk-` all contain `sk-`,
+/// so a match must start a token and carry a key-length tail.
+struct CodePattern {
+    prefix: &'static str,
+    label: &'static str,
+    min_tail: usize,
+    /// AWS access key IDs are upper-case alphanumerics only.
+    upper_alnum_only: bool,
+}
+
+const CODE_PATTERNS: [CodePattern; 9] = [
+    CodePattern {
+        prefix: "sk-",
+        label: "OpenAI API key",
+        min_tail: 20,
+        upper_alnum_only: false,
+    },
+    CodePattern {
+        prefix: "sk_live_",
+        label: "Stripe live key",
+        min_tail: 16,
+        upper_alnum_only: false,
+    },
+    CodePattern {
+        prefix: "sk_test_",
+        label: "Stripe test key",
+        min_tail: 16,
+        upper_alnum_only: false,
+    },
+    CodePattern {
+        prefix: "ghp_",
+        label: "GitHub personal token",
+        min_tail: 30,
+        upper_alnum_only: false,
+    },
+    CodePattern {
+        prefix: "github_pat_",
+        label: "GitHub PAT",
+        min_tail: 30,
+        upper_alnum_only: false,
+    },
+    CodePattern {
+        prefix: "glpat-",
+        label: "GitLab PAT",
+        min_tail: 20,
+        upper_alnum_only: false,
+    },
+    CodePattern {
+        prefix: "xoxb-",
+        label: "Slack bot token",
+        min_tail: 20,
+        upper_alnum_only: false,
+    },
+    CodePattern {
+        prefix: "xoxp-",
+        label: "Slack user token",
+        min_tail: 20,
+        upper_alnum_only: false,
+    },
+    CodePattern {
+        prefix: "AKIA",
+        label: "AWS access key",
+        min_tail: 16,
+        upper_alnum_only: true,
+    },
 ];
+
+/// A tail with no digit and no capital is an identifier
+/// (`sk-third-party-rollback-race`), not an issued key: twenty random base62
+/// characters with neither is a one-in-thirty-million draw.
+fn is_identifier_tail(tail: &[u8]) -> bool {
+    !tail
+        .iter()
+        .any(|b| b.is_ascii_digit() || b.is_ascii_uppercase())
+}
+
+/// Whether `text` holds `pattern.prefix` at the start of a token, followed by
+/// at least `min_tail` key characters that do not read as an identifier.
+fn contains_credential(text: &str, pattern: &CodePattern) -> bool {
+    let bytes = text.as_bytes();
+    text.match_indices(pattern.prefix).any(|(start, _)| {
+        if start > 0 && bytes[start - 1].is_ascii_alphanumeric() {
+            return false;
+        }
+        let rest = &bytes[start + pattern.prefix.len()..];
+        let len = rest
+            .iter()
+            .take_while(|b| {
+                if pattern.upper_alnum_only {
+                    b.is_ascii_uppercase() || b.is_ascii_digit()
+                } else {
+                    b.is_ascii_alphanumeric() || **b == b'_' || **b == b'-'
+                }
+            })
+            .count();
+        len >= pattern.min_tail && !is_identifier_tail(&rest[..len])
+    })
+}
 
 fn code_pattern_findings(file: &str, added: &str) -> Vec<Finding> {
     CODE_PATTERNS
         .iter()
-        .filter(|(pattern, _)| added.contains(pattern))
-        .map(|(pattern, label)| Finding {
+        .filter(|pattern| contains_credential(added, pattern))
+        .map(|pattern| Finding {
             kind: "staged_code",
             path: Some(file.to_string()),
             name: None,
-            label: Some(label),
-            pattern: Some(pattern),
+            label: Some(pattern.label),
+            pattern: Some(pattern.prefix),
         })
         .collect()
 }
@@ -488,13 +577,76 @@ mod tests {
 
     #[test]
     fn code_patterns_report_label_and_prefix_only() {
-        let findings =
-            code_pattern_findings("src/app.ts", "const key = \"ghp_abcdefSECRETSUFFIX\";");
+        let line = format!(
+            "const key = \"{}{}\";",
+            "ghp_", "Q7rT2mVx9KpL4wZs8NdY3hBc6FjGu5EaR1oW"
+        );
+        let findings = code_pattern_findings("src/app.ts", &line);
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].label, Some("GitHub personal token"));
         assert_eq!(findings[0].pattern, Some("ghp_"));
         let json = serde_json::to_string(&findings).unwrap();
-        assert!(!json.contains("SECRETSUFFIX"), "{json}");
+        assert!(!json.contains("Q7rT2mVx9K"), "{json}");
+    }
+
+    #[test]
+    fn code_patterns_ignore_prefixes_inside_words_and_short_tails() {
+        // `task-`, `risk-` and `desk-` contain `sk-`; none of these is a key.
+        for text in [
+            "const brief = buildTaskBrief(task-context);",
+            "see docs/task-to-pr and risk-register, desk-layout",
+            "import { x } from './teams/task-brief-helpers-module.js';",
+            "placeholder sk-... or sk-your-key-here",
+            "AKIAEXAMPLE is too short; ghp_short",
+            "mask_test_value_with_long_suffix_here",
+            "fn sk-third-party-rollback-race() and github_pat_grammar_reject_hyphens_identically",
+        ] {
+            assert!(code_pattern_findings("src/a.ts", text).is_empty(), "{text}");
+        }
+    }
+
+    #[test]
+    fn code_patterns_still_catch_documented_placeholders() {
+        // The examples' FAKE_KEY and AWS's documented key must keep failing the
+        // gate: a placeholder with digits or capitals is treated like a key.
+        for text in [
+            format!("{}{}{}", "sk-proj-", "EXAMPLEONLY", "0".repeat(40)),
+            format!("{}{}", "AKIA", "IOSFODNN7EXAMPLE"),
+        ] {
+            assert_eq!(code_pattern_findings("src/a.ts", &text).len(), 1, "{text}");
+        }
+    }
+
+    #[test]
+    fn code_patterns_still_catch_real_key_shapes() {
+        // Random-looking tails, built at runtime so no literal key sits in source.
+        let cases = [
+            (
+                format!("OPENAI={}{}", "sk-", "proj-Hq8vN2cW7rT4kLx9ZpM3sJ6d"),
+                "sk-",
+            ),
+            (
+                format!("key: '{}{}'", "sk_live_", "51HxYzQ7rT2mVx9KpL4w"),
+                "sk_live_",
+            ),
+            (
+                format!("\"{}{}\"", "ghp_", "Q7rT2mVx9KpL4wZs8NdY3hBc6FjGu5EaR1oW"),
+                "ghp_",
+            ),
+            (
+                format!("token={}{}", "xoxb-", "7391046285-5810362947-Hq8vN2cW"),
+                "xoxb-",
+            ),
+            (
+                format!("aws_access_key_id = {}{}", "AKIA", "Q7RT2MVX9KPL4WZS"),
+                "AKIA",
+            ),
+        ];
+        for (text, prefix) in cases {
+            let findings = code_pattern_findings("src/a.ts", &text);
+            assert_eq!(findings.len(), 1, "{text}");
+            assert_eq!(findings[0].pattern, Some(prefix));
+        }
     }
 
     #[test]

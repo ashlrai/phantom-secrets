@@ -4984,12 +4984,13 @@ impl PhantomMcpServer {
         ))
     }
 
-    /// Check `.phantom.toml` for expired secrets — returns the list of expired secrets.
+    /// Check vault TTL metadata for expired secrets — returns the list of expired secrets.
     ///
     /// Designed for AI agents that need to trigger rotation workflows when secrets expire.
     /// Read-only; never returns secret values.
     #[tool(
-        description = "Scan .phantom.toml for expired secrets and return a structured list. \
+        description = "Check the vault's TTL metadata (set with `phantom expiry set`) for expired \
+            secrets and return a structured list, the same answer as `phantom expiry enforce --json`. \
             Each entry has: name (string), expires_at (Unix u64), secs_overdue (u64), \
             status (human-readable string). \
             With fail_closed=true, secrets that have no expiry policy set are also included \
@@ -5004,7 +5005,14 @@ impl PhantomMcpServer {
     ) -> Result<CallToolResult, McpError> {
         use phantom_core::rotation_strategy::{check_expiry, ExpiryStatus};
 
-        let config = self.require_config()?;
+        // TTLs live in vault metadata (`phantom expiry set` writes them there
+        // and `phantom expiry enforce` reads them there). This gate must not
+        // pass over secrets in a vault this process cannot open.
+        let (config, vault) = self.load_config_and_vault()?;
+        let vault_note = self.require_readable_inventory(&config, vault.as_ref())?;
+        let entries = vault
+            .list_with_metadata()
+            .map_err(|e| vault_read_err("Failed to read vault lifecycle metadata", e))?;
         let now = phantom_vault::metadata::now_secs();
 
         let mut expired: Vec<serde_json::Value> = Vec::new();
@@ -5012,8 +5020,8 @@ impl PhantomMcpServer {
         let mut ok_count: usize = 0;
         let mut no_expiry_count: usize = 0;
 
-        for (name, override_cfg) in &config.phantom.secrets {
-            match override_cfg.expires_at {
+        for (name, metadata) in &entries {
+            match metadata.as_ref().and_then(|metadata| metadata.expires_at) {
                 None => {
                     no_expiry_count += 1;
                     if params.fail_closed {
@@ -5057,7 +5065,7 @@ impl PhantomMcpServer {
             "pass": pass,
         });
 
-        json_object_result(&out)
+        json_object_result(&with_vault_note(out, vault_note))
     }
 
     // ── Rotation schedule next ────────────────────────────────────────────
@@ -8157,6 +8165,44 @@ mod tests {
         assert_eq!(display_env_name(""), "<invalid env var name>");
     }
 
+    /// An unsupported platform answered "No sync targets configured" (or "no
+    /// targets match"), so an agent read a typo as a setup gap.
+    #[test]
+    fn sync_rejects_an_unsupported_platform_and_matches_case_insensitively() {
+        let _environment = TestEnvironment::new();
+        let (server, dir) = setup_initialized_project();
+        let sync = |platform: &str| {
+            server.phantom_sync(Parameters(SyncParams {
+                platform: Some(platform.to_string()),
+                project_id: None,
+            }))
+        };
+
+        let error = sync("heroku").unwrap_err();
+        assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        assert!(!error.message.contains("heroku"), "{}", error.message);
+        assert!(
+            error.message.contains("`vercel` or `railway`"),
+            "{}",
+            error.message
+        );
+
+        let config_path = dir.path().join(".phantom.toml");
+        let mut config = PhantomConfig::load(&config_path).unwrap();
+        config.sync.push(
+            toml::from_str(
+                "platform = \"vercel\"\ntoken_env = \"VERCEL_TOKEN\"\nproject_id = \"demo\"\n",
+            )
+            .unwrap(),
+        );
+        config.save(&config_path).unwrap();
+        let report = structured_report(&sync("Vercel").unwrap());
+        assert_eq!(report["targets"][0]["platform"], "vercel", "{report}");
+        let report = structured_report(&sync("").unwrap());
+        assert_eq!(report["targets"][0]["platform"], "vercel", "{report}");
+        assert!(sync("heroku").is_err());
+    }
+
     #[test]
     fn status_before_init_reports_next_step() {
         let _environment = TestEnvironment::new();
@@ -10548,6 +10594,50 @@ mod tests {
             .unwrap();
         let text = get_result_text(&result);
         assert!(text.contains("no expiry"), "secrets without TTL: {text}");
+    }
+
+    /// `phantom expiry set` writes TTLs to vault metadata, and
+    /// `phantom expiry enforce` reads them there. The MCP gate read only
+    /// `.phantom.toml` overrides, so it passed an expired vault TTL and, with
+    /// fail_closed, every secret that had no TTL at all.
+    #[test]
+    fn expiry_enforce_reads_vault_ttl_metadata_like_the_cli() {
+        let _environment = TestEnvironment::new();
+        let (server, _dir) = setup_initialized_project();
+        let (_config, vault) = server.load_config_and_vault().unwrap();
+        vault
+            .set_metadata(
+                "OPENAI_API_KEY",
+                phantom_vault::metadata::SecretMetadata {
+                    expires_at: Some(300),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        let report = |fail_closed: bool| {
+            let result = server
+                .phantom_expiry_enforce(Parameters(PhantomExpiryEnforceParams { fail_closed }))
+                .unwrap();
+            result.structured_content.clone().unwrap()
+        };
+
+        let permissive = report(false);
+        assert_eq!(permissive["pass"], false, "{permissive}");
+        assert_eq!(permissive["expired"][0]["name"], "OPENAI_API_KEY");
+        assert_eq!(permissive["ok_count"], 0);
+        assert_eq!(permissive["no_expiry_count"], 1, "{permissive}");
+
+        let strict = report(true);
+        assert_eq!(strict["pass"], false);
+        let names: Vec<&str> = strict["expired"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, ["OPENAI_API_KEY", "DATABASE_URL"], "{strict}");
+        assert_eq!(strict["expired"][1]["status"], "no_expiry_policy");
     }
 
     #[test]
