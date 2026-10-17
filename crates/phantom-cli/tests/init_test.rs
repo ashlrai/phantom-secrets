@@ -540,3 +540,27 @@ fn init_does_not_warn_about_a_kept_env_example_of_placeholders() {
     assert!(stdout.contains("Left the existing"), "{stdout}");
     assert!(!stdout.contains("look like real secrets"), "{stdout}");
 }
+
+#[test]
+fn init_claude_md_describes_the_vault_backend_it_used() {
+    let dir = common::canonical_tempdir();
+    let output = run_init(&dir).success();
+    let stdout = String::from_utf8_lossy(&output.get_output().stdout).to_string();
+    let backend = stdout
+        .split("Using ")
+        .nth(1)
+        .and_then(|rest| rest.split(" vault backend").next())
+        .unwrap_or_else(|| panic!("no backend line: {stdout}"));
+    let claude = fs::read_to_string(dir.path().join("CLAUDE.md")).unwrap();
+    let expected = if backend == "encrypted-file" {
+        "passphrase-encrypted vault file"
+    } else if backend.starts_with("linux-keyutils") {
+        "Linux kernel keyring (linux-keyutils), which is volatile"
+    } else {
+        "OS keychain"
+    };
+    assert!(claude.contains(expected), "{backend}: {claude}");
+    if expected != "OS keychain" {
+        assert!(!claude.contains("OS keychain"), "{backend}: {claude}");
+    }
+}

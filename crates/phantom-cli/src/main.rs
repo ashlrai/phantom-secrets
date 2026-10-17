@@ -1,3 +1,4 @@
+mod broken_pipe;
 mod commands;
 #[cfg(test)]
 mod doc_facts;
@@ -896,11 +897,21 @@ enum CloudAction {
 const MAIN_STACK_SIZE: usize = 16 * 1024 * 1024;
 
 fn main() -> anyhow::Result<()> {
+    broken_pipe::install_panic_hook();
     let handle = std::thread::Builder::new()
         .name("phantom-main".into())
         .stack_size(MAIN_STACK_SIZE)
         .spawn(run)?;
     match handle.join() {
+        // The reader of stdout went away (`phantom list | head`): a normal
+        // end for a CLI, reported the way a shell reports SIGPIPE, with no
+        // panic text or error line. The worker has already unwound.
+        Ok(Err(error)) if broken_pipe::is_stdout_broken_pipe_error(&error) => {
+            std::process::exit(broken_pipe::BROKEN_PIPE_EXIT)
+        }
+        Err(panic) if broken_pipe::is_stdout_broken_pipe_panic(&*panic) => {
+            std::process::exit(broken_pipe::BROKEN_PIPE_EXIT)
+        }
         Ok(result) => result,
         // Propagate a panic on the worker thread as if it happened here so
         // the process still dies with the standard panic exit status.

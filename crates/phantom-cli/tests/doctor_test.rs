@@ -404,3 +404,40 @@ fn doctor_counts_missing_example_when_dotenv_is_unparseable() {
         "missing .env.example must count as one issue: {without_example} vs {with_example}"
     );
 }
+
+#[test]
+fn doctor_checks_the_same_mcp_clients_as_setup_status() {
+    let dir = common::canonical_tempdir();
+    fs::create_dir_all(dir.path().join(".gemini")).unwrap();
+    fs::write(
+        dir.path().join(".gemini/settings.json"),
+        r#"{"mcpServers":{"phantom":{"command":"npx","args":["-y","phantom-secrets-mcp"]}}}"#,
+    )
+    .unwrap();
+
+    let status = phantom(&dir)
+        .args(["--json", "setup", "--status"])
+        .assert()
+        .success();
+    let status: serde_json::Value = serde_json::from_slice(&status.get_output().stdout).unwrap();
+    let status_ids: Vec<&str> = status
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["id"].as_str().unwrap())
+        .collect();
+
+    let report = doctor_json(&dir, &["doctor", "--json"]);
+    let clients = report["mcp_clients"].as_array().unwrap();
+    let doctor_ids: Vec<&str> = clients
+        .iter()
+        .map(|client| client["client"].as_str().unwrap())
+        .collect();
+    assert_eq!(doctor_ids, status_ids, "{report}");
+    let gemini = clients
+        .iter()
+        .find(|client| client["client"] == "gemini")
+        .unwrap();
+    assert_eq!(gemini["state"], "stale", "{report}");
+    assert_eq!(gemini["path"], "~/.gemini/settings.json", "{report}");
+}

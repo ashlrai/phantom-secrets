@@ -44,10 +44,7 @@ pub fn run(warn_days: u64, auto_rotate: bool, sync_after: bool, json: bool) -> R
     let config_path = project_dir.join(".phantom.toml");
 
     if !config_path.exists() {
-        anyhow::bail!(
-            "No .phantom.toml found. Run {} first.",
-            "phantom init".cyan().bold()
-        );
+        return Err(crate::util::missing_config_error(&project_dir));
     }
 
     let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
@@ -227,10 +224,7 @@ pub fn run_set(key: &str, days: u64) -> Result<()> {
     let config_path = project_dir.join(".phantom.toml");
 
     if !config_path.exists() {
-        anyhow::bail!(
-            "No .phantom.toml found. Run {} first.",
-            "phantom init".cyan().bold()
-        );
+        return Err(crate::util::missing_config_error(&project_dir));
     }
 
     let config_before =
@@ -350,10 +344,7 @@ pub fn run_enforce(fail_closed: bool, json: bool) -> Result<()> {
     let config_path = project_dir.join(".phantom.toml");
 
     if !config_path.exists() {
-        anyhow::bail!(
-            "No .phantom.toml found. Run {} first.",
-            "phantom init".cyan().bold()
-        );
+        return Err(crate::util::missing_config_error(&project_dir));
     }
 
     let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
@@ -470,10 +461,7 @@ pub fn run_rotate(key: &str) -> Result<()> {
     let config_path = project_dir.join(".phantom.toml");
 
     if !config_path.exists() {
-        anyhow::bail!(
-            "No .phantom.toml found. Run {} first.",
-            "phantom init".cyan().bold()
-        );
+        return Err(crate::util::missing_config_error(&project_dir));
     }
 
     let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
