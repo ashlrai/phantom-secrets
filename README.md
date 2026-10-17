@@ -4,7 +4,9 @@
 
 <h1>Phantom</h1>
 
-**Delegate more to AI without putting real keys in agent context.**
+**Your agent can use the key. It never sees it.**
+
+Delegate more to AI without putting real keys in agent context.
 
 Phantom replaces project secrets with scoped `phm_` placeholders. Applications use those placeholders through an authenticated local proxy, while agents use value-blind MCP tools for inventory, diagnostics, and governed requests.
 
@@ -85,6 +87,19 @@ Phantom's implemented user-facing surfaces are the CLI, vault, authenticated loc
 See the [documentation map](docs/README.md), [architecture](docs/architecture.md),
 [security policy](SECURITY.md), and [threat model](THREAT_MODEL.md) for the
 evidence behind those boundaries.
+
+## Measured: leak rate on a scripted adversary
+
+Reproduce with `python3 eval/leak-rate/harness.py 5` (about 3 minutes, Linux, phantom 0.7.9; fake canary keys only, no paid keys). Method and limits: [eval/leak-rate/README.md](eval/leak-rate/README.md).
+
+| setup | in-boundary attacks that exposed a canary key |
+| --- | --- |
+| plain `.env`, no protection | 210 of 450 |
+| after `phantom init` | **0 of 450** |
+
+450 = 30 attack techniques x 3 secrets x 5 runs (`cat .env`, `printenv`, `/proc/self/environ`, base64 and hex dumps, `git add -f`, `ps eww`, `phantom reveal`/`export`/`exec`, every MCP tool called with `confirm=true`, and a README prompt injection the scripted agent obeys). Per-technique table: [eval/leak-rate/table.md](eval/leak-rate/table.md).
+
+What this does not show: it is a scripted worst case, not an LLM, so it measures where a key can appear, not how often a model goes looking. One out-of-scope case is reported separately: an unmanaged key file the developer never put in `.env` stays readable (15 of 15 in both setups). Same-user access to the OS keychain is outside the documented boundary and is not tested. Proxy use of a key on an allowed route is by design. One machine, no external audit.
 
 ## Quick Start
 
@@ -412,6 +427,7 @@ dashboard is designed to show team memberships and member lists.
 | `phantom audit tail` | Follow the audit log live (`--op`, `--name` filters) |
 | `phantom audit path` | Print the absolute path to the audit log file |
 | `phantom audit verify` | Verify HMAC-SHA256 chain integrity; exits 1 if tampering detected |
+| `phantom leaks plan` | Read-only dry run of what leak response would do for active incidents (`--min-confidence`, `--json`). Writes nothing, makes no network calls, prints names only |
 | `phantom login` | From an attached trusted terminal, approve an exact network plan, then separately approve browser opening/polling and keychain persistence |
 | `phantom logout` | From an attached trusted terminal, approve deletion of persistent cloud authorization from the OS keychain |
 | `phantom cloud push` | After exact trusted-terminal confirmation, push a client-encrypted vault. A remote success followed by local reconciliation failure is partial success and must not be retried automatically. |

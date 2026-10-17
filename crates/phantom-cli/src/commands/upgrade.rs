@@ -2,7 +2,7 @@ use colored::Colorize;
 use rand::RngCore;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use std::io::{BufRead, IsTerminal, Read, Write};
+use std::io::{BufRead, IsTerminal, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 
 const INSTALL_SOURCE_RECEIPT: &str = ".phantom-install-source.json";
@@ -33,6 +33,20 @@ fn release_archive_name(target: &str) -> String {
         "tar.gz"
     };
     format!("phantom-{target}.{extension}")
+}
+
+fn is_zip_archive(archive_name: &str) -> bool {
+    archive_name.ends_with(".zip")
+}
+
+/// The executable's entry name at the root of a release archive. Derived from
+/// the target triple (not the host) so the Windows path is testable anywhere.
+fn release_binary_name(target: &str) -> String {
+    if target.contains("windows") {
+        "phantom.exe".to_string()
+    } else {
+        "phantom".to_string()
+    }
 }
 
 fn select_release_asset(
@@ -420,7 +434,23 @@ pub fn run(force: bool, check_only: bool) -> anyhow::Result<()> {
         .no_confirm(true)
         .build()?;
 
-    match pinned_update.update() {
+    // self_update is built without its zip backend (self_update 1.x pins the
+    // fully yanked zip 8 line), so Windows .zip assets take Phantom's own
+    // verify-then-extract path. Its errors use the same self_update error
+    // type, so permission handling below stays identical for both paths.
+    let outcome = if is_zip_archive(&expected_archive) {
+        install_zip_release(
+            &pinned_update,
+            &format!("v{latest_version}"),
+            &expected_archive,
+            &release_binary_name(target),
+            &install_path,
+        )
+    } else {
+        pinned_update.update()
+    };
+
+    match outcome {
         Ok(status) => match status {
             self_update::VersionStatus::UpToDate(v) => {
                 println!(
@@ -705,6 +735,301 @@ fn report_failed_upgrade_state(plan: &UpgradePlan) {
     eprintln!("Replacement state: {}", failed_upgrade_state(plan));
 }
 
+const RELEASE_SUMS_ASSET: &str = "SHA256SUMS";
+const MAX_RELEASE_SUMS_BYTES: u64 = 64 * 1024;
+// A release .zip carries phantom.exe and phantom-mcp.exe, each bounded by
+// MAX_INSTALL_BINARY_BYTES when extracted.
+const MAX_RELEASE_ARCHIVE_BYTES: u64 = 2 * MAX_INSTALL_BINARY_BYTES;
+
+fn release_archive_error(message: impl Into<String>) -> self_update::errors::Error {
+    self_update::errors::Error::Io(std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        message.into(),
+    ))
+}
+
+/// Install a Windows `.zip` release asset with the same gates self_update
+/// applies to `.tar.gz` assets: exact asset selection, a writability probe,
+/// `SHA256SUMS` (and any GitHub asset digest) verified before a single byte is
+/// extracted, then a `self_replace` swap of the running executable.
+fn install_zip_release(
+    update: &dyn self_update::update::ReleaseUpdate,
+    tag: &str,
+    expected_archive: &str,
+    binary_name: &str,
+    install_path: &Path,
+) -> self_update::errors::Result<self_update::VersionStatus> {
+    println!("Looking for tag: {tag}");
+    let release = update.get_release_version(tag)?;
+    let archive_asset =
+        select_release_asset(release.assets(), expected_archive).ok_or_else(|| {
+            release_archive_error(format!(
+                "Release {tag} has no exact {expected_archive} asset"
+            ))
+        })?;
+    let sums_asset =
+        select_release_asset(release.assets(), RELEASE_SUMS_ASSET).ok_or_else(|| {
+            release_archive_error(format!("Release {tag} has no {RELEASE_SUMS_ASSET} asset"))
+        })?;
+    probe_install_path_writable(install_path)?;
+
+    let mut sums = Vec::new();
+    release_download(&sums_asset, false, MAX_RELEASE_SUMS_BYTES).download_to(&mut sums)?;
+
+    let staging = tempfile::TempDir::new()?;
+    let archive_path = staging.path().join(expected_archive);
+    {
+        let mut archive = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&archive_path)?;
+        println!("Downloading...");
+        release_download(&archive_asset, true, MAX_RELEASE_ARCHIVE_BYTES)
+            .download_to(&mut archive)?;
+        archive.sync_all()?;
+    }
+
+    print!("Extracting archive... ");
+    std::io::stdout().flush()?;
+    let extract_dir = staging.path().join("extract");
+    std::fs::create_dir(&extract_dir)?;
+    let new_exe = stage_verified_zip_binary(
+        &archive_path,
+        &sums,
+        archive_asset.name(),
+        archive_asset.digest(),
+        binary_name,
+        &extract_dir,
+    )?;
+    println!("Done");
+
+    print!("Replacing binary file... ");
+    std::io::stdout().flush()?;
+    replace_running_executable(&new_exe, install_path)?;
+    println!("Done");
+
+    Ok(self_update::VersionStatus::Updated(
+        release.version().to_string(),
+    ))
+}
+
+fn release_download(
+    asset: &self_update::ReleaseAsset,
+    show_progress: bool,
+    max_bytes: u64,
+) -> self_update::Download {
+    let mut download = self_update::Download::from_url(asset.download_url());
+    download
+        .request_header(
+            self_update::http_client::header::ACCEPT,
+            "application/octet-stream",
+        )
+        .show_download_progress(show_progress)
+        .max_download_size(max_bytes);
+    download
+}
+
+/// Same conservative preflight as self_update's `check_install_path_writable`:
+/// only a definite permission failure stops the upgrade before any download.
+/// The parent directory is probed too: `self_replace` stages the new binary
+/// beside the target, so a read-only directory must fail before any download.
+fn probe_install_path_writable(install_path: &Path) -> self_update::errors::Result<()> {
+    let denied = |error: std::io::Error| {
+        if error.kind() == std::io::ErrorKind::PermissionDenied {
+            Err(self_update::errors::Error::Io(error))
+        } else {
+            Ok(())
+        }
+    };
+    if let Err(error) = std::fs::OpenOptions::new().append(true).open(install_path) {
+        denied(error)?;
+    }
+    let parent = match install_path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    };
+    match tempfile::Builder::new()
+        .prefix(".phantom-upgrade-writecheck")
+        .tempfile_in(parent)
+    {
+        Ok(probe) => {
+            drop(probe);
+            Ok(())
+        }
+        Err(error) => denied(error),
+    }
+}
+
+/// Verify the downloaded archive against the release's `SHA256SUMS` entry
+/// and the forge digest (when present), then extract only `binary_name` into
+/// `extract_dir`. Returns the staged executable path, which is always
+/// `extract_dir/binary_name` and never derived from the archive.
+fn stage_verified_zip_binary(
+    archive_path: &Path,
+    sums: &[u8],
+    asset_name: &str,
+    asset_digest: Option<&str>,
+    binary_name: &str,
+    extract_dir: &Path,
+) -> self_update::errors::Result<PathBuf> {
+    let sums = std::str::from_utf8(sums).map_err(|_| {
+        release_archive_error(format!("{RELEASE_SUMS_ASSET} is not valid UTF-8 text"))
+    })?;
+    let expected = self_update::Checksum::from_sums_file(sums, asset_name)?;
+    // One handle serves every digest and the extraction, so the bytes that
+    // were verified are the bytes that are extracted; nothing reopens the
+    // archive by path in between.
+    let mut archive = std::fs::File::open(archive_path)?;
+    verify_file_checksum(&expected, &mut archive)?;
+    if let Some(digest) = asset_digest {
+        verify_file_checksum(&self_update::Checksum::parse_digest(digest)?, &mut archive)?;
+    }
+    archive.rewind()?;
+    let staged = extract_dir.join(binary_name);
+    extract_release_binary(archive, binary_name, &staged)?;
+    Ok(staged)
+}
+
+fn verify_file_checksum(
+    expected: &self_update::Checksum,
+    file: &mut std::fs::File,
+) -> self_update::errors::Result<()> {
+    fn hash_file<D: Digest>(file: &mut std::fs::File) -> std::io::Result<String> {
+        file.rewind()?;
+        let mut hasher = D::new();
+        let mut buffer = [0_u8; 64 * 1024];
+        loop {
+            let read = file.read(&mut buffer)?;
+            if read == 0 {
+                break;
+            }
+            hasher.update(&buffer[..read]);
+        }
+        Ok(hex::encode(hasher.finalize()))
+    }
+
+    let (expected, actual) = match expected {
+        self_update::Checksum::Sha256(hex) => (hex, hash_file::<Sha256>(file)?),
+        self_update::Checksum::Sha512(hex) => (hex, hash_file::<sha2::Sha512>(file)?),
+        _ => {
+            return Err(release_archive_error(
+                "Unsupported release checksum algorithm",
+            ))
+        }
+    };
+    if actual.eq_ignore_ascii_case(expected.trim()) {
+        Ok(())
+    } else {
+        Err(release_archive_error(format!(
+            "Release archive checksum mismatch (expected {}, computed {actual}); nothing was extracted",
+            expected.trim().to_ascii_lowercase()
+        )))
+    }
+}
+
+/// Lexical safety check over an archive entry name, independent of the host
+/// separator so a Windows-style `..\` entry is caught on every platform.
+fn archive_entry_name_is_safe(name: &str) -> bool {
+    !name.is_empty()
+        && !name.contains('\0')
+        && !name.contains(':')
+        && !name.starts_with(['/', '\\'])
+        && !name.split(['/', '\\']).any(|component| component == "..")
+}
+
+/// Extract exactly one regular-file entry named `binary_name` at the archive
+/// root into `dest`. Entry paths are only compared, never used to build a
+/// filesystem path, and any traversal-shaped entry rejects the whole archive.
+fn extract_release_binary(
+    archive: std::fs::File,
+    binary_name: &str,
+    dest: &Path,
+) -> self_update::errors::Result<()> {
+    let zip_error = |error: zip::result::ZipError| {
+        release_archive_error(format!("Release archive is not a readable zip: {error}"))
+    };
+    let mut archive = zip::ZipArchive::new(archive).map_err(zip_error)?;
+
+    let mut matched = None;
+    for index in 0..archive.len() {
+        let entry = archive.by_index(index).map_err(zip_error)?;
+        let name = std::str::from_utf8(entry.name_raw()).map_err(|_| {
+            release_archive_error("Release archive has a non-UTF-8 entry name; refusing it")
+        })?;
+        if !archive_entry_name_is_safe(name) {
+            return Err(release_archive_error(format!(
+                "Release archive entry {name:?} is an absolute or traversal path; refusing the archive"
+            )));
+        }
+        if name == binary_name && matched.replace(index).is_some() {
+            return Err(release_archive_error(format!(
+                "Release archive has more than one {binary_name} entry; refusing it"
+            )));
+        }
+    }
+    let index = matched.ok_or_else(|| {
+        release_archive_error(format!(
+            "Release archive has no {binary_name} entry at its root"
+        ))
+    })?;
+
+    let entry = archive.by_index(index).map_err(zip_error)?;
+    if !entry.is_file() || entry.encrypted() {
+        return Err(release_archive_error(format!(
+            "Release archive entry {binary_name} is not a plain regular file"
+        )));
+    }
+    let declared = entry.size();
+    if declared > MAX_INSTALL_BINARY_BYTES {
+        return Err(release_archive_error(format!(
+            "Release archive entry {binary_name} declares {declared} bytes; the limit is {MAX_INSTALL_BINARY_BYTES}"
+        )));
+    }
+
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o755);
+    }
+    let mut out = options.open(dest)?;
+    let copied = std::io::copy(&mut entry.take(MAX_INSTALL_BINARY_BYTES + 1), &mut out);
+    let complete = match copied {
+        Ok(bytes) if bytes == declared => out.sync_all().map_err(Into::into),
+        Ok(bytes) => Err(release_archive_error(format!(
+            "Release archive entry {binary_name} produced {bytes} bytes but declared {declared}"
+        ))),
+        Err(error) => Err(release_archive_error(format!(
+            "Release archive entry {binary_name} failed to decompress: {error}"
+        ))),
+    };
+    if complete.is_err() {
+        drop(out);
+        let _ = std::fs::remove_file(dest);
+    }
+    complete
+}
+
+/// The upgrade target is always the canonical running executable, so the
+/// staged binary is swapped in with `self_replace`, as self_update does for
+/// that case. Anything else fails closed rather than writing elsewhere.
+fn replace_running_executable(
+    new_exe: &Path,
+    install_path: &Path,
+) -> self_update::errors::Result<()> {
+    let running = std::env::current_exe()?.canonicalize()?;
+    if install_path.canonicalize()? != running {
+        return Err(release_archive_error(
+            "Install target is not the running Phantom executable; refusing replacement",
+        ));
+    }
+    // self_replace resolves current_exe() again internally. That is harmless:
+    // the check above just proved the validated, canonical install target is
+    // the running executable, which is the only file self_replace replaces.
+    self_replace::self_replace(new_exe).map_err(self_update::errors::Error::Io)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -731,6 +1056,256 @@ mod tests {
         let selected = select_release_asset(&assets, &expected).unwrap();
         assert_eq!(selected.name(), expected);
         assert_eq!(selected.download_url(), "https://example/archive");
+    }
+
+    const WINDOWS_TARGET: &str = "x86_64-pc-windows-msvc";
+
+    fn zip_archive(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        for (name, contents) in entries {
+            writer.start_file(*name, options).unwrap();
+            writer.write_all(contents).unwrap();
+        }
+        writer.finish().unwrap().into_inner()
+    }
+
+    fn sums_for(archive: &[u8], name: &str) -> Vec<u8> {
+        format!("{}  {name}\n", hex::encode(Sha256::digest(archive))).into_bytes()
+    }
+
+    /// Writes `archive` as the expected Windows asset inside a fresh staging
+    /// directory and returns (staging, archive path, extraction directory).
+    fn stage_archive(archive: &[u8]) -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let staging = tempfile::tempdir().unwrap();
+        let archive_path = staging.path().join(release_archive_name(WINDOWS_TARGET));
+        std::fs::write(&archive_path, archive).unwrap();
+        let extract_dir = staging.path().join("extract");
+        std::fs::create_dir(&extract_dir).unwrap();
+        (staging, archive_path, extract_dir)
+    }
+
+    fn directory_names(path: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(path)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn windows_targets_route_to_zip_install_with_exe_entry() {
+        let windows = release_archive_name(WINDOWS_TARGET);
+        assert!(is_zip_archive(&windows));
+        assert_eq!(release_binary_name(WINDOWS_TARGET), "phantom.exe");
+        assert_eq!(
+            release_binary_name("aarch64-pc-windows-msvc"),
+            "phantom.exe"
+        );
+
+        let linux = release_archive_name("x86_64-unknown-linux-gnu");
+        assert!(!is_zip_archive(&linux));
+        assert_eq!(release_binary_name("x86_64-unknown-linux-gnu"), "phantom");
+    }
+
+    #[test]
+    fn windows_zip_and_sums_asset_selection_is_exact() {
+        let expected = release_archive_name(WINDOWS_TARGET);
+        let assets = vec![
+            self_update::ReleaseAsset::new(format!("{expected}.spdx.json"), "https://example/sbom"),
+            self_update::ReleaseAsset::new(format!("{expected}.sha256"), "https://example/sum"),
+            self_update::ReleaseAsset::new(
+                release_archive_name("aarch64-pc-windows-msvc"),
+                "https://example/other-arch",
+            ),
+            self_update::ReleaseAsset::new(
+                format!("{RELEASE_SUMS_ASSET}.sig"),
+                "https://example/sums-sig",
+            ),
+            self_update::ReleaseAsset::new(RELEASE_SUMS_ASSET, "https://example/sums"),
+            self_update::ReleaseAsset::new(&expected, "https://example/archive"),
+        ];
+        let archive = select_release_asset(&assets, &expected).unwrap();
+        assert_eq!(archive.download_url(), "https://example/archive");
+        let sums = select_release_asset(&assets, RELEASE_SUMS_ASSET).unwrap();
+        assert_eq!(sums.download_url(), "https://example/sums");
+        assert!(select_release_asset(&assets[..4], RELEASE_SUMS_ASSET).is_none());
+    }
+
+    #[test]
+    fn verified_zip_extracts_only_the_expected_binary() {
+        let binary = b"new phantom binary".repeat(64);
+        let archive = zip_archive(&[
+            ("phantom-mcp.exe", b"companion binary"),
+            ("docs/README.txt", b"notes"),
+            ("phantom.exe", &binary),
+        ]);
+        let asset = release_archive_name(WINDOWS_TARGET);
+        let digest = format!("sha256:{}", hex::encode(Sha256::digest(&archive)));
+        let (_staging, archive_path, extract_dir) = stage_archive(&archive);
+
+        let staged = stage_verified_zip_binary(
+            &archive_path,
+            &sums_for(&archive, &asset),
+            &asset,
+            Some(&digest),
+            "phantom.exe",
+            &extract_dir,
+        )
+        .unwrap();
+
+        assert_eq!(staged, extract_dir.join("phantom.exe"));
+        assert_eq!(std::fs::read(&staged).unwrap(), binary);
+        assert_eq!(directory_names(&extract_dir), vec!["phantom.exe"]);
+    }
+
+    #[test]
+    fn zip_checksum_or_digest_mismatch_extracts_nothing() {
+        let archive = zip_archive(&[("phantom.exe", b"new phantom binary")]);
+        let other = zip_archive(&[("phantom.exe", b"substituted binary")]);
+        let asset = release_archive_name(WINDOWS_TARGET);
+        let (_staging, archive_path, extract_dir) = stage_archive(&archive);
+
+        let cases: [(Vec<u8>, Option<String>); 4] = [
+            (sums_for(&other, &asset), None),
+            (sums_for(&archive, "phantom-other.zip"), None),
+            (vec![0xff, 0xfe], None),
+            (
+                sums_for(&archive, &asset),
+                Some(format!("sha256:{}", hex::encode(Sha256::digest(&other)))),
+            ),
+        ];
+        for (sums, digest) in cases {
+            assert!(stage_verified_zip_binary(
+                &archive_path,
+                &sums,
+                &asset,
+                digest.as_deref(),
+                "phantom.exe",
+                &extract_dir,
+            )
+            .is_err());
+            assert!(directory_names(&extract_dir).is_empty());
+        }
+    }
+
+    #[test]
+    fn zip_traversal_entries_reject_the_whole_archive() {
+        for hostile in [
+            "../phantom.exe",
+            "..\\phantom.exe",
+            "nested/../../phantom.exe",
+            "/phantom.exe",
+            "\\phantom.exe",
+            "C:/Windows/phantom.exe",
+            "phantom.exe:stream",
+        ] {
+            let archive = zip_archive(&[("phantom.exe", b"expected"), (hostile, b"hostile")]);
+            let asset = release_archive_name(WINDOWS_TARGET);
+            let (staging, archive_path, extract_dir) = stage_archive(&archive);
+
+            let error = stage_verified_zip_binary(
+                &archive_path,
+                &sums_for(&archive, &asset),
+                &asset,
+                None,
+                "phantom.exe",
+                &extract_dir,
+            )
+            .unwrap_err();
+            assert!(
+                error.to_string().contains("traversal"),
+                "{hostile:?}: {error}"
+            );
+            assert!(directory_names(&extract_dir).is_empty(), "{hostile:?}");
+            assert_eq!(
+                directory_names(staging.path()),
+                vec!["extract".to_string(), asset.clone()],
+                "{hostile:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn zip_binary_must_be_a_single_root_regular_file() {
+        let asset = release_archive_name(WINDOWS_TARGET);
+
+        let nested = zip_archive(&[("bin/phantom.exe", b"nested")]);
+        let (_staging, archive_path, extract_dir) = stage_archive(&nested);
+        assert!(stage_verified_zip_binary(
+            &archive_path,
+            &sums_for(&nested, &asset),
+            &asset,
+            None,
+            "phantom.exe",
+            &extract_dir,
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("no phantom.exe entry"));
+        assert!(directory_names(&extract_dir).is_empty());
+
+        let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        writer
+            .add_symlink(
+                "phantom.exe",
+                "elsewhere",
+                zip::write::SimpleFileOptions::default(),
+            )
+            .unwrap();
+        let symlink = writer.finish().unwrap().into_inner();
+        let (_staging, archive_path, extract_dir) = stage_archive(&symlink);
+        assert!(stage_verified_zip_binary(
+            &archive_path,
+            &sums_for(&symlink, &asset),
+            &asset,
+            None,
+            "phantom.exe",
+            &extract_dir,
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("not a plain regular file"));
+        assert!(directory_names(&extract_dir).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn writability_probe_rejects_read_only_install_directory() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let binary = directory.path().join("phantom");
+        std::fs::write(&binary, b"installed binary").unwrap();
+        probe_install_path_writable(&binary).unwrap();
+
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
+        // Root bypasses directory permissions; only assert when the
+        // restriction is actually enforced for this user.
+        let enforced = tempfile::tempfile_in(directory.path()).is_err();
+        let result = probe_install_path_writable(&binary);
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        if enforced {
+            match result {
+                Err(self_update::errors::Error::Io(error)) => {
+                    assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied)
+                }
+                other => panic!("expected a permission failure, got {other:?}"),
+            }
+        }
+        assert_eq!(directory_names(directory.path()), vec!["phantom"]);
+    }
+
+    #[test]
+    fn zip_release_path_never_uses_self_update_extraction() {
+        let source = include_str!("upgrade.rs");
+        let route = source.find("if is_zip_archive(&expected_archive)").unwrap();
+        let self_update_call = source.find("pinned_update.update()").unwrap();
+        assert!(route < self_update_call);
+        assert!(!source.contains(concat!("Extract::", "from_source")));
+        assert!(!source.contains(concat!(".extract", "(")));
     }
 
     #[test]

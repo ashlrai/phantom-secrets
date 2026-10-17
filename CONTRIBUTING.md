@@ -4,16 +4,12 @@ Thanks for helping make safe agentic development practical. Phantom accepts focu
 
 Please read the [Code of Conduct](CODE_OF_CONDUCT.md), [security policy](SECURITY.md), and [threat model](THREAT_MODEL.md) before changing a trust boundary. Report vulnerabilities privately; do not open a public issue for them.
 
-Release-state snapshot, verified 2026-09-03: the reviewed immutable GitHub
-release is `v0.7.5` at source commit
-`d2969e73995cc139e6253e0c8a70f1d683f88e20`; its 19 assets, all six native
-release rows, and GitHub provenance and SPDX attestations were verified in
-workflow 33709338577. Homebrew publishes the same reviewed `v0.7.5`; both npm `0.7.4` wrappers
-remain public only under the failed `release-candidate` track, while npm
-`latest` remains `0.6.0`. The GitHub receipt alone does not establish a `0.7.5`
-npm, crates.io, MCP Registry, or the independently verified Homebrew publication, deployment, provider integration,
-hosted entitlement, certification, or customer acceptance. See the
-[roadmap](ROADMAP.md) for the evidence gates.
+Current release state changes with every release, so this file does not pin
+it. See the [latest GitHub release](https://github.com/ashlrai/phantom-secrets/releases/latest),
+the [changelog](CHANGELOG.md), and the [roadmap](ROADMAP.md) for the evidence
+gates. A GitHub release receipt alone does not establish an npm, crates.io,
+MCP Registry, or Homebrew publication, deployment, provider integration,
+hosted entitlement, certification, or customer acceptance.
 
 ## Before you start
 

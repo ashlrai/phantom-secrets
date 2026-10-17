@@ -18,6 +18,7 @@ pub mod managed_dotenv;
 pub mod mcp_approval;
 pub mod precommit_hook;
 mod provider_http;
+pub mod report;
 pub mod rotation_provider;
 pub mod rotation_strategy;
 pub mod sync;
@@ -27,6 +28,7 @@ pub mod teams_vault;
 pub mod token;
 pub mod validation_scheduler;
 pub mod validator;
+pub mod why;
 pub mod workspace_request;
 
 thread_local! {

@@ -48,7 +48,8 @@ check that deliberately avoids those probes, run the
 
 `init` is a local mutation: it stores detected secret values in the selected
 vault backend, atomically rewrites the managed dotenv file with `phm_`
-placeholders, writes Phantom configuration, generates `.env.example`, and
+placeholders, writes Phantom configuration, generates `.env.example` when the
+project has none (an existing one is left byte-for-byte unchanged), and
 attempts to install the repository pre-commit check.
 
 Install the reviewed `v0.7.9` GitHub release using the platform-specific path in
@@ -155,10 +156,10 @@ your trusted terminal and enter the value at the hidden prompt. Do not put the
 value in a command-line argument or an agent-controlled terminal.
 
 The compatibility tool `phantom_add_secret_interactive` only returns that
-terminal command; it does not open a prompt or receive the value. It requires
-MCP effects to be enabled outside agent authority, `confirm: true`, and a fresh
-out-of-band `approval_token`. Leave effects disabled for this basic workflow;
-the direct trusted-terminal command does not require enabling MCP effects.
+terminal command; it does not open a prompt, receive the value, or store
+anything. Because it is effect-free it works with MCP effects disabled and needs
+neither `confirm` nor an `approval_token`. Leave effects disabled for this basic
+workflow.
 
 ## 7. Close the task with evidence
 
