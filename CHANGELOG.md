@@ -4,6 +4,30 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (`phantom check --runtime` and MCP `phantom_check` runtime mode)
+
+- The runtime check looked only at a fixed list of well-known variable
+  names, and the CLI and MCP server used two different lists. A phantom
+  token in any other variable, such as one `phantom init` wrote for a
+  custom key, was reported clean. Both now scan every environment variable
+  through one shared function and report the names (never the values).
+- A phantom token is now excused only when it belongs to a live proxy
+  session. `PHANTOM_PROXY_PORT` and `PHANTOM_PROXY_TOKEN` must lead to a
+  proxy whose health endpoint answers 200 with a body that identifies the
+  Phantom proxy (a loopback request with a short timeout and a bounded
+  read), and the variable must be named in `PHANTOM_SESSION_KEYS`.
+  `phantom exec` now sets that for its child, listing only keys a route
+  serves; `phantom start` prints it with its other exports, listing every
+  dotenv key holding a phantom token (names only). Excused names are listed in the
+  JSON report's `excused` field with `proxy_session: true`. Session
+  variables with no live proxy behind them, such as exports left over from
+  a stopped `phantom start`, excuse nothing and add a value-free
+  `session_warning`. Before this, the check flagged a running session's
+  own tokens as "proxy not running". Outside a session the report shape is
+  unchanged.
+- Variable names in the runtime check's text output have control
+  characters escaped.
+
 ### Fixed (exec signals and `why` input)
 
 - A SIGTERM, SIGHUP or SIGINT sent to `phantom exec` killed Phantom and left

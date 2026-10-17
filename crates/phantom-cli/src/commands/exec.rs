@@ -154,11 +154,17 @@ async fn run_async(cmd: &[String], env_flag: Option<&str>, quiet: bool) -> Resul
     let mut session_token_to_secret: HashMap<String, (String, String)> = HashMap::new();
     let mut secret_name_to_value: HashMap<String, String> = HashMap::new();
     let mut env_key_to_session_token: HashMap<String, String> = HashMap::new();
+    // Names the session hands its child, collected from the dotenv keys
+    // before any vault read, so nothing value-bearing feeds the exported list.
+    let mut session_names: Vec<String> = Vec::new();
     let mut secret_count = 0;
 
     if let Some(dotenv) = dotenv.as_ref() {
         for entry in dotenv.entries() {
             if PhantomToken::is_phantom_token(&entry.value) {
+                if !never_reintroduce.contains(&entry.key) {
+                    session_names.push(entry.key.clone());
+                }
                 // Build the vault key for this env: try namespaced first, then bare (legacy).
                 // Backend errors are distinct from a missing key and must abort
                 // before a partially mapped proxy session can start.
@@ -357,6 +363,14 @@ async fn run_async(cmd: &[String], env_flag: Option<&str>, quiet: bool) -> Resul
         )
         .env("PHANTOM_PROXY_PORT", port.to_string())
         .env("PHANTOM_PROXY_TOKEN", &proxy_token)
+        // Names only: lets `phantom check --runtime` excuse exactly the
+        // variables this session filled and a route serves, and nothing it
+        // inherited. An unrouted key's session token reaches no provider, so
+        // it stays a finding (the warning above names it too).
+        .env(
+            phantom_core::report::SESSION_KEYS_VAR,
+            routed_session_variable_list(session_names.iter(), &unrouted),
+        )
         // A protected dotenv key may itself have this reserved name. Never
         // reintroduce either the real vault passphrase or a confusing session
         // token under Phantom's internal decryption-key variable.
@@ -477,6 +491,23 @@ fn sanitized_child_command(
     command
 }
 
+/// The comma-separated, sorted variable names a session fills with its own
+/// phantom tokens, for [`phantom_core::report::SESSION_KEYS_VAR`].
+pub(crate) fn session_variable_list<'a>(names: impl Iterator<Item = &'a String>) -> String {
+    let mut names: Vec<&str> = names.map(String::as_str).collect();
+    names.sort_unstable();
+    names.dedup();
+    names.join(",")
+}
+
+/// [`session_variable_list`] without the keys no route serves.
+fn routed_session_variable_list<'a>(
+    names: impl Iterator<Item = &'a String>,
+    unrouted: &[String],
+) -> String {
+    session_variable_list(names.filter(|name| !unrouted.contains(name)))
+}
+
 fn child_environment_policy(
     config: &PhantomConfig,
     protected_env_keys: &HashSet<String>,
@@ -486,6 +517,7 @@ fn child_environment_policy(
         VAULT_PASSPHRASE_ENV.to_string(),
         "PHANTOM_PROXY_TOKEN".to_string(),
         "PHANTOM_PROXY_PORT".to_string(),
+        phantom_core::report::SESSION_KEYS_VAR.to_string(),
     ]);
     scrub.extend(
         ServiceRegistry::known_override_env_names()
@@ -830,6 +862,37 @@ mod tests {
     }
 
     #[test]
+    fn session_variable_list_is_sorted_and_unique() {
+        let names = ["OPENAI_API_KEY", "DATABASE_URL", "OPENAI_API_KEY"].map(String::from);
+        assert_eq!(
+            session_variable_list(names.iter()),
+            "DATABASE_URL,OPENAI_API_KEY"
+        );
+        assert_eq!(session_variable_list(std::iter::empty()), "");
+    }
+
+    #[test]
+    fn session_variable_list_leaves_out_unrouted_names() {
+        let mut registry = ServiceRegistry::new();
+        registry.add_route(phantom_proxy::ServiceRoute {
+            name: "openai".to_string(),
+            target_base: "https://api.openai.com".to_string(),
+            secret_key: "OPENAI_API_KEY".to_string(),
+            header: "Authorization".to_string(),
+            header_format: "Bearer {secret}".to_string(),
+            credential_profile: phantom_proxy::CredentialProfile::Standard,
+            sdk_base_path: None,
+        });
+        let keys = ["OPENAI_API_KEY", "LEGACY_SERVICE_KEY"].map(String::from);
+        let unrouted = unrouted_session_keys(&registry, keys.iter());
+        assert_eq!(unrouted, ["LEGACY_SERVICE_KEY"]);
+        assert_eq!(
+            routed_session_variable_list(keys.iter(), &unrouted),
+            "OPENAI_API_KEY"
+        );
+    }
+
+    #[test]
     fn altered_route_refusal_points_at_doctor() {
         let mut config = PhantomConfig::new_with_defaults("route-test".to_string());
         let service = config
@@ -1139,6 +1202,7 @@ mod tests {
         for name in [
             "PHANTOM_PROXY_TOKEN",
             "PHANTOM_PROXY_PORT",
+            "PHANTOM_SESSION_KEYS",
             "OPENAI_BASE_URL",
             "OPENAI_API_KEY",
             "ROTATION_ADMIN_TOKEN",
