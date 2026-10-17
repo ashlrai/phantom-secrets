@@ -158,13 +158,13 @@ fn locked_file_vault_notice_in(
         "If this project's secrets now live in the OS keychain instead, that file may be stale: back it up or move it aside (do not delete it until you have confirmed nothing in it is still needed): {path}."
     );
     if require_keychain {
-        let passphrase = if passphrase_set {
+        let env_override_note = if passphrase_set {
             "; PHANTOM_VAULT_PASSPHRASE is set but does not override it"
         } else {
             ""
         };
         return Some(format!(
-            "An encrypted-file vault for this project exists at {path} but is not opened in this process: PHANTOM_REQUIRE_KEYCHAIN is set, so Phantom uses only the OS keychain{passphrase}. To read that file, run without PHANTOM_REQUIRE_KEYCHAIN and with PHANTOM_VAULT_PASSPHRASE set to its passphrase, then store its secrets in the OS keychain if the keychain-only policy should hold. {stale}"
+            "An encrypted-file vault for this project exists at {path} but is not opened in this process: PHANTOM_REQUIRE_KEYCHAIN is set, so Phantom uses only the OS keychain{env_override_note}. To read that file, run without PHANTOM_REQUIRE_KEYCHAIN and with PHANTOM_VAULT_PASSPHRASE set to its passphrase, then store its secrets in the OS keychain if the keychain-only policy should hold. {stale}"
         ));
     }
     // The file cannot say which way it was created, so both are described.
