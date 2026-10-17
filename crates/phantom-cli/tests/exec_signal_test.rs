@@ -17,7 +17,10 @@ fn phantom_binary() -> PathBuf {
 }
 
 fn phantom_command(project: &Path, home: &Path) -> Command {
-    let mut command = Command::new(phantom_binary());
+    with_test_env(Command::new(phantom_binary()), project, home)
+}
+
+fn with_test_env(mut command: Command, project: &Path, home: &Path) -> Command {
     command
         .current_dir(project)
         .env("HOME", home)
@@ -47,7 +50,7 @@ fn initialized_project() -> (tempfile::TempDir, tempfile::TempDir) {
     (project, home)
 }
 
-/// What happened after SIGTERM was sent to phantom alone.
+/// What happened after a signal was sent to phantom.
 struct Outcome {
     /// phantom's exit code; `None` if a signal killed it.
     code: Option<i32>,
@@ -55,17 +58,50 @@ struct Outcome {
     child_saw_term: bool,
 }
 
-/// Start `phantom exec -- sh -c <script>`, wait for the child to write its
-/// pid to `$READY`, send SIGTERM to phantom only, and wait (bounded) for
-/// phantom to exit. The child is killed afterwards if it outlived phantom,
-/// so a regression fails the test instead of leaking an orphan.
+/// How the test starts phantom and whom it signals.
+struct Run<'a> {
+    /// The child's `sh -c` script; it must write `$$` to `$READY`.
+    script: &'a str,
+    signal: libc::c_int,
+    /// Start phantom with SIGHUP already ignored, as `nohup` does.
+    inherit_ignored_hangup: bool,
+    /// Also send the signal to the child directly.
+    signal_child_too: bool,
+}
+
+/// Send SIGTERM to phantom only.
 fn exec_and_terminate_phantom(script: &str) -> Outcome {
+    exec_and_signal(Run {
+        script,
+        signal: libc::SIGTERM,
+        inherit_ignored_hangup: false,
+        signal_child_too: false,
+    })
+}
+
+/// Start `phantom exec -- sh -c <script>`, wait for the child to write its
+/// pid to `$READY`, send the signal, and wait (bounded) for phantom to exit.
+/// The child is killed afterwards if it outlived phantom, so a regression
+/// fails the test instead of leaking an orphan.
+fn exec_and_signal(run: Run<'_>) -> Outcome {
     let (project, home) = initialized_project();
     let ready = project.path().join("ready");
     let marker = project.path().join("child-saw-term");
     let stderr_path = project.path().join("phantom-stderr");
-    let mut phantom = phantom_command(project.path(), home.path())
-        .args(["exec", "--", "sh", "-c", script])
+    let mut command = if run.inherit_ignored_hangup {
+        // `exec` keeps the pid, so the process the test signals is phantom,
+        // started with SIGHUP ignored.
+        let mut wrapper = Command::new("sh");
+        wrapper
+            .arg("-c")
+            .arg(r#"trap '' HUP; exec "$0" "$@""#)
+            .arg(phantom_binary());
+        with_test_env(wrapper, project.path(), home.path())
+    } else {
+        phantom_command(project.path(), home.path())
+    };
+    command.args(["exec", "--", "sh", "-c", run.script]);
+    let mut phantom = command
         .env("READY", &ready)
         .env("MARKER", &marker)
         .stdin(Stdio::null())
@@ -85,8 +121,11 @@ fn exec_and_terminate_phantom(script: &str) -> Outcome {
         std::thread::sleep(Duration::from_millis(20));
     };
     let phantom_pid = libc::pid_t::try_from(phantom.id()).unwrap();
-    // SAFETY: signal the phantom process this test spawned.
-    assert_eq!(unsafe { libc::kill(phantom_pid, libc::SIGTERM) }, 0);
+    // SAFETY: signal the phantom process (and its child) this test spawned.
+    assert_eq!(unsafe { libc::kill(phantom_pid, run.signal) }, 0);
+    if run.signal_child_too {
+        assert_eq!(unsafe { libc::kill(child_pid, run.signal) }, 0);
+    }
 
     let deadline = Instant::now() + Duration::from_secs(30);
     let status = loop {
@@ -138,6 +177,27 @@ fn child_killed_by_forwarded_sigterm_exits_143() {
     assert!(
         outcome.stderr.contains("Shutting down proxy"),
         "stderr:\n{}",
+        outcome.stderr
+    );
+}
+
+/// `nohup phantom exec ...` (or a script's `&` job) starts phantom with
+/// SIGHUP ignored. Installing a handler for it would reset the child's
+/// disposition to the default on exec, so a hangup would kill the child.
+/// Phantom must leave an inherited ignore alone: the child survives SIGHUP
+/// (sent to both) and its own exit code comes through.
+#[test]
+fn inherited_ignored_sighup_stays_ignored_for_the_child() {
+    let outcome = exec_and_signal(Run {
+        script: r#"echo $$ > "$READY"; i=0; while [ $i -lt 30 ]; do sleep 0.05; i=$((i+1)); done; exit 7"#,
+        signal: libc::SIGHUP,
+        inherit_ignored_hangup: true,
+        signal_child_too: true,
+    });
+    assert_eq!(
+        outcome.code,
+        Some(7),
+        "the child must survive SIGHUP it inherited as ignored\nstderr:\n{}",
         outcome.stderr
     );
 }

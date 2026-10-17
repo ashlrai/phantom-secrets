@@ -575,19 +575,47 @@ fn child_exit_code(status: &std::process::ExitStatus) -> i32 {
 /// down and exits with the child's status.
 #[cfg(unix)]
 struct SignalForwarder {
-    interrupt: tokio::signal::unix::Signal,
-    terminate: tokio::signal::unix::Signal,
-    hangup: tokio::signal::unix::Signal,
+    // `None` when phantom inherited the signal as ignored (nohup, a
+    // non-interactive `&` job): installing a handler would reset it to the
+    // default in the child on exec and let the signal kill it.
+    interrupt: Option<tokio::signal::unix::Signal>,
+    terminate: Option<tokio::signal::unix::Signal>,
+    hangup: Option<tokio::signal::unix::Signal>,
+}
+
+#[cfg(unix)]
+fn inherited_as_ignored(signal: libc::c_int) -> bool {
+    // SAFETY: a null `act` only queries the current disposition.
+    unsafe {
+        let mut current: libc::sigaction = std::mem::zeroed();
+        libc::sigaction(signal, std::ptr::null(), &mut current) == 0
+            && current.sa_sigaction == libc::SIG_IGN
+    }
+}
+
+#[cfg(unix)]
+async fn next_signal(signal: &mut Option<tokio::signal::unix::Signal>) -> Option<()> {
+    match signal {
+        Some(signal) => signal.recv().await,
+        None => std::future::pending().await,
+    }
 }
 
 #[cfg(unix)]
 impl SignalForwarder {
     fn install() -> std::io::Result<Self> {
         use tokio::signal::unix::{signal, SignalKind};
+        let catch = |number: libc::c_int, kind: SignalKind| -> std::io::Result<_> {
+            if inherited_as_ignored(number) {
+                Ok(None)
+            } else {
+                signal(kind).map(Some)
+            }
+        };
         Ok(Self {
-            interrupt: signal(SignalKind::interrupt())?,
-            terminate: signal(SignalKind::terminate())?,
-            hangup: signal(SignalKind::hangup())?,
+            interrupt: catch(libc::SIGINT, SignalKind::interrupt())?,
+            terminate: catch(libc::SIGTERM, SignalKind::terminate())?,
+            hangup: catch(libc::SIGHUP, SignalKind::hangup())?,
         })
     }
 
@@ -598,14 +626,18 @@ impl SignalForwarder {
         loop {
             let signal = tokio::select! {
                 status = child.wait() => return status,
-                Some(()) = self.interrupt.recv() => libc::SIGINT,
-                Some(()) = self.terminate.recv() => libc::SIGTERM,
-                Some(()) = self.hangup.recv() => libc::SIGHUP,
+                Some(()) = next_signal(&mut self.interrupt) => libc::SIGINT,
+                Some(()) = next_signal(&mut self.terminate) => libc::SIGTERM,
+                Some(()) = next_signal(&mut self.hangup) => libc::SIGHUP,
             };
             if signal == libc::SIGINT && foreground_of_terminal() {
                 // Ctrl-C at a terminal already reached the child: the tty
                 // signals the whole foreground process group. Sending it again
                 // would read as a second Ctrl-C to tools that force-quit on one.
+                // Limitation: a SIGINT sent by another process (`kill -INT`)
+                // while phantom is the terminal's foreground group is not
+                // forwarded either; it cannot be told apart from a terminal
+                // Ctrl-C here. Phantom then keeps waiting for the child.
                 continue;
             }
             // exec does not give the child its own process group, so signal
@@ -620,14 +652,19 @@ impl SignalForwarder {
     }
 }
 
-/// Whether phantom's process group is the foreground group of the terminal
-/// on stdin, i.e. a terminal-generated SIGINT was delivered to the child too.
+/// Whether phantom's process group is the foreground group of its
+/// controlling terminal, i.e. a terminal-generated SIGINT reached the child
+/// too. Checks stdin, stdout and stderr so `cmd | phantom exec ...` at a
+/// terminal still counts.
 #[cfg(unix)]
 fn foreground_of_terminal() -> bool {
     // SAFETY: tcgetpgrp and getpgrp only read process state.
     unsafe {
-        let foreground = libc::tcgetpgrp(libc::STDIN_FILENO);
-        foreground != -1 && foreground == libc::getpgrp()
+        [libc::STDIN_FILENO, libc::STDOUT_FILENO, libc::STDERR_FILENO]
+            .into_iter()
+            .map(|fd| libc::tcgetpgrp(fd))
+            .find(|&group| group != -1)
+            .is_some_and(|group| group == libc::getpgrp())
     }
 }
 
