@@ -4,6 +4,43 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (`phantom_audit_analytics`, `phantom audit analytics`)
+
+- The analytics window was rounded to a neighbouring preset while the
+  report still echoed the requested value. MCP `window_days` 1 to 29
+  covered 30 days and 31 or more covered all history; CLI `--window` 1 to
+  7 covered 7 days and 8 or more covered 30 days, so `--window 90`
+  silently dropped days 31 to 90. Both now cover exactly the last N days
+  (`0` is still all history), through one shared
+  `phantom_core::analytics::Period::from_window_days`, so the MCP tool and
+  the CLI agree. Analytics, records, time series and CSV all follow the
+  window. Names and counts only, never values.
+- `phantom_audit_analytics` returned every access record in the window
+  inline, however many there were. It now returns only the newest
+  `max_records` (new parameter: default 1000, at most 10000) within a
+  1 MiB response, and reports `records_total`, `records_returned`,
+  `records_truncated` and the effective `max_records`. `analytics` and
+  `time_series` still cover the whole window. With `format: "csv"` the CSV
+  stays the first text block, and the same counts come back in
+  `structuredContent` and in a second JSON text block. The CLI keeps
+  writing the full export to `--export FILE` or stdout.
+- Anomaly-score thresholds now follow one rule everywhere: they are clamped
+  to 0.0..=1.0 and NaN is refused with an invalid-params (MCP) or argument
+  (CLI) error. The rule covers `min_anomaly_score` on
+  `phantom_audit_stats` and `phantom_audit_analytics`, `min_score` on
+  `phantom_audit_anomalies`, `threshold` on
+  `phantom_audit_anomalies_realtime`, and the CLI's `--min-anomaly-score`
+  on `audit stats`, `audit export` and `audit analytics` plus
+  `--threshold` on `audit anomalies`. Before, NaN was accepted and
+  silently matched nothing, and `phantom_audit_anomalies` echoed an
+  out-of-range `min_score` back unchanged.
+- The analytics summary and the access records used to come from two
+  separate reads of the audit log, each with its own clock reading, so they
+  could disagree about an event at the window edge or one appended between
+  the reads. `phantom_audit_analytics` and `phantom audit analytics` now
+  read once against one `now` (`phantom_core::analytics::export_analytics`),
+  and `generated_at` is that same instant.
+
 ### Fixed (`phantom_secrets_expiry_check`, `phantom_secret_rotation_due`, `phantom_compliance_status`, `phantom secrets-expiring-soon`)
 
 - `days_remaining` truncated toward zero, so a secret that expired less

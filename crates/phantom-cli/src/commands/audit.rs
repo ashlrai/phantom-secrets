@@ -71,8 +71,8 @@ pub enum AuditAction {
         /// Include anomaly detection scores in the output (implies --json adds extra fields)
         #[arg(long)]
         analytics: bool,
-        /// Only show secrets whose anomaly score is at or above this threshold (0.0–1.0)
-        #[arg(long, value_name = "SCORE")]
+        /// Only show secrets whose anomaly score is at or above this threshold (0.0–1.0; clamped)
+        #[arg(long, value_name = "SCORE", value_parser = parse_score_threshold)]
         min_anomaly_score: Option<f64>,
     },
     /// Export timestamped access records for compliance reports
@@ -83,17 +83,17 @@ pub enum AuditAction {
         /// Time period: 7d, 30d, or all
         #[arg(long, default_value = "30d")]
         period: String,
-        /// Only export records for secrets whose anomaly score is at or above this threshold
-        #[arg(long, value_name = "SCORE")]
+        /// Only export records for secrets whose anomaly score is at or above this threshold (0.0–1.0; clamped)
+        #[arg(long, value_name = "SCORE", value_parser = parse_score_threshold)]
         min_anomaly_score: Option<f64>,
     },
     /// Export full audit analytics for external dashboards (Datadog, Grafana, CloudWatch)
     Analytics {
-        /// Time window in days (default: 30; 0 = all history)
+        /// Time window in days: exactly the last N days (default: 30; 0 = all history)
         #[arg(long, default_value_t = 30)]
         window: u32,
-        /// Only include secrets with anomaly score at or above this threshold (0.0–1.0)
-        #[arg(long, value_name = "SCORE")]
+        /// Only include secrets with anomaly score at or above this threshold (0.0–1.0; clamped)
+        #[arg(long, value_name = "SCORE", value_parser = parse_score_threshold)]
         min_anomaly_score: Option<f64>,
         /// Output format: json (default) or csv
         #[arg(long, default_value = "json")]
@@ -110,8 +110,8 @@ pub enum AuditAction {
         /// Tail the audit log and emit alerts as new events are written (Ctrl-C to stop)
         #[arg(long)]
         realtime: bool,
-        /// Minimum anomaly score (0.0–1.0) at which an alert is emitted (default: 0.5)
-        #[arg(long, default_value_t = 0.5, value_name = "SCORE")]
+        /// Minimum anomaly score (0.0–1.0; clamped) at which an alert is emitted (default: 0.5)
+        #[arg(long, default_value_t = 0.5, value_name = "SCORE", value_parser = parse_score_threshold)]
         threshold: f64,
         /// Only check this specific secret (omit to check all secrets)
         #[arg(long, value_name = "NAME")]
@@ -345,6 +345,16 @@ pub fn run_path() -> Result<()> {
     let path = resolve_path()?;
     println!("{}", path.display());
     Ok(())
+}
+
+/// Clap parser for `--min-anomaly-score` and `--threshold`: the shared
+/// anomaly-score rule (clamped to 0.0..=1.0, NaN refused), the same one the
+/// MCP audit tools apply.
+fn parse_score_threshold(raw: &str) -> std::result::Result<f64, String> {
+    let value: f64 = raw
+        .parse()
+        .map_err(|_| format!("'{raw}' is not a number"))?;
+    phantom_core::analytics::score_threshold(value)
 }
 
 /// Clap parser for `--min-confidence`: a score in 0.0..=1.0.
@@ -913,7 +923,7 @@ pub fn run_analytics(
     export: Option<&str>,
     auto_alert_on_anomaly: bool,
 ) -> Result<()> {
-    use phantom_core::analytics::{compute_analytics, export_records, records_to_csv, Period};
+    use phantom_core::analytics::{export_analytics, records_to_csv, Period};
 
     if !matches!(format, "json" | "csv") {
         return Err(anyhow::anyhow!(
@@ -927,23 +937,23 @@ pub fn run_analytics(
     // exact-before publication below instead of being overwritten.
     let export_plan = export.map(prepare_analytics_export).transpose()?;
 
-    let period = match window {
-        0 => Period::All,
-        1..=7 => Period::Days7,
-        _ => Period::Days30,
-    };
+    let period = Period::from_window_days(window);
 
-    let report = compute_analytics(period)
-        .map_err(|e| anyhow::anyhow!("Failed to compute analytics: {e}"))?;
+    // One read of the log against one clock reading, so the summary and the
+    // records describe the same events.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let phantom_core::analytics::AnalyticsExport { report, records } =
+        export_analytics(period, min_anomaly_score, now)
+            .map_err(|e| anyhow::anyhow!("Failed to compute analytics: {e}"))?;
 
     let analytics: Vec<&phantom_core::analytics::SecretAnalytics> = report
         .secrets
         .iter()
         .filter(|s| min_anomaly_score.is_none_or(|min| s.anomaly_score >= min))
         .collect();
-
-    let records = export_records(period, min_anomaly_score)
-        .map_err(|e| anyhow::anyhow!("Failed to export records: {e}"))?;
 
     // Build the output string.
     let output = if format == "csv" {
