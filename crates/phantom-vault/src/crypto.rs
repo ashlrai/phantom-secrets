@@ -6,7 +6,6 @@ use chacha20poly1305::{
 };
 use phantom_core::blob_format::{self, Tag, WriteFormat};
 use phantom_core::error::{PhantomError, Result};
-use rand::RngCore;
 use zeroize::Zeroize;
 
 const SALT_LEN: usize = 32;
@@ -73,10 +72,8 @@ pub fn encrypt_with_format(
     passphrase: &str,
     format: WriteFormat,
 ) -> Result<Vec<u8>> {
-    let mut salt = [0u8; SALT_LEN];
-    let mut nonce_bytes = [0u8; NONCE_LEN];
-    rand::thread_rng().fill_bytes(&mut salt);
-    rand::thread_rng().fill_bytes(&mut nonce_bytes);
+    let salt: [u8; SALT_LEN] = rand::random();
+    let nonce_bytes: [u8; NONCE_LEN] = rand::random();
 
     let mut key = derive_key(passphrase, &salt)?;
     let cipher = ChaCha20Poly1305::new_from_slice(&key)
@@ -194,6 +191,7 @@ fn try_decrypt_with(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rand::RngCore;
 
     #[test]
     fn test_encrypt_decrypt_roundtrip() {
