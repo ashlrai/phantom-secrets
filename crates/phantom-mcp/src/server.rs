@@ -303,6 +303,37 @@ impl PhantomMcpServer {
         )))
     }
 
+    /// [`Self::require_readable_inventory`] for a push that replaces a remote
+    /// copy with the local inventory: beside a locked encrypted-file vault the
+    /// keychain-only listing would drop every secret in that file from the
+    /// remote, so it is refused whether or not the keychain holds entries.
+    /// `what` names the push, e.g. "push to Phantom Cloud".
+    fn require_complete_inventory(
+        &self,
+        config: &PhantomConfig,
+        vault: &dyn phantom_vault::VaultBackend,
+        what: &str,
+    ) -> Result<(), McpError> {
+        if let Some(note) = self.require_readable_inventory(config, vault)? {
+            return Err(state_err(format!(
+                "Vault locked: refusing to {what} from a partial inventory. {note}"
+            )));
+        }
+        Ok(())
+    }
+
+    /// The vault for `config`'s project. Tests serve a stub with `TestVault`.
+    fn open_project_vault(
+        &self,
+        config: &PhantomConfig,
+    ) -> Result<Box<dyn phantom_vault::VaultBackend>, McpError> {
+        #[cfg(test)]
+        if let Some(make) = TEST_VAULT.with(std::cell::Cell::get) {
+            return Ok(make());
+        }
+        phantom_vault::try_create_vault(config.local_project_id()).map_err(vault_init_err)
+    }
+
     /// Reject a malformed managed dotenv before approval consumption, vault
     /// construction, or any other effectful compatibility-tool preflight.
     /// Effectful callers still re-read under their transaction lock before
@@ -327,12 +358,7 @@ impl PhantomMcpServer {
         &self,
     ) -> Result<(PhantomConfig, Box<dyn phantom_vault::VaultBackend>), McpError> {
         let config = self.require_config()?;
-        #[cfg(test)]
-        if let Some(make) = TEST_VAULT.with(std::cell::Cell::get) {
-            return Ok((config, make()));
-        }
-        let vault =
-            phantom_vault::try_create_vault(config.local_project_id()).map_err(vault_init_err)?;
+        let vault = self.open_project_vault(&config)?;
         Ok((config, vault))
     }
 
@@ -1507,9 +1533,11 @@ impl PhantomMcpServer {
 
         let config_path = self.config_path();
         let (config, config_before) = load_mcp_config_exact(&config_path)?;
-        let vault =
-            phantom_vault::try_create_vault(config.local_project_id()).map_err(vault_init_err)?;
+        let vault = self.open_project_vault(&config)?;
         ensure_cloud_push_allowed_mcp(&config)?;
+        // The push replaces the remote snapshot: it must not be built from a
+        // keychain-only view that leaves out a locked encrypted-file vault.
+        self.require_complete_inventory(&config, vault.as_ref(), "push to Phantom Cloud")?;
         let mut names = vault
             .list()
             .map_err(|e| vault_read_err("Failed to list secrets", e))?;
@@ -3124,8 +3152,10 @@ impl PhantomMcpServer {
         }
         let config_path = self.config_path();
         let (config, config_before) = load_mcp_config_exact(&config_path)?;
-        let vault =
-            phantom_vault::try_create_vault(config.local_project_id()).map_err(vault_init_err)?;
+        let vault = self.open_project_vault(&config)?;
+        // As for cloud push: the team copy must not be replaced from a
+        // keychain-only view beside a locked encrypted-file vault.
+        self.require_complete_inventory(&config, vault.as_ref(), "push the team vault")?;
         let project_id = config.portable_project_id().to_string();
         let mut names = vault
             .list()
@@ -8881,6 +8911,52 @@ mod tests {
                 note.contains("covers only the OS keychain"),
                 "{tool}: {note}"
             );
+        }
+    }
+
+    /// `phantom_cloud_push` and `phantom_team_vault_push` replace the remote
+    /// copy with the local inventory. Beside a locked encrypted-file vault a
+    /// keychain-only listing would drop that file's secrets from the remote
+    /// (or answer "No secrets to push"), so both refuse before approval, as
+    /// `phantom cloud push` and `phantom team vault-push` do in the CLI.
+    #[test]
+    fn pushes_refuse_a_partial_inventory_beside_a_locked_file_vault() {
+        let _environment = TestEnvironment::new();
+        let _home = TestHome::new();
+        let (server, _dir) = locked_file_vault_project();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let makes: [super::MakeTestVault; 2] =
+            [|| Box::new(EmptyKeychain), || Box::new(KeychainWithOne)];
+        for make in makes {
+            let _vault = TestVault::serve(make);
+            let cloud = runtime
+                .block_on(server.phantom_cloud_push(params(serde_json::json!({ "confirm": true }))))
+                .expect_err("cloud push from a partial inventory");
+            let team = runtime
+                .block_on(server.phantom_team_vault_push(params(serde_json::json!({
+                    "team_id": "team-fixture",
+                    "confirm": true,
+                }))))
+                .expect_err("team push from a partial inventory");
+            for (tool, error) in [
+                ("phantom_cloud_push", cloud),
+                ("phantom_team_vault_push", team),
+            ] {
+                assert_eq!(
+                    error.code,
+                    rmcp::model::ErrorCode::INVALID_REQUEST,
+                    "{tool}: {}",
+                    error.message
+                );
+                assert!(
+                    error.message.starts_with("Vault locked:"),
+                    "{tool}: {}",
+                    error.message
+                );
+            }
         }
     }
 

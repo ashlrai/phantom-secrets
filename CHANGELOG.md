@@ -4,6 +4,22 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (locked-vault paths missed by #220/#221)
+
+- MCP `phantom_cloud_push` and `phantom_team_vault_push` built the pushed
+  snapshot from the OS keychain beside an encrypted-file vault this process
+  could not open: an empty keychain answered "No secrets to push", and a
+  non-empty one requested approval for a push that would replace the remote
+  copy without the file vault's secrets. Both now refuse with "Vault locked"
+  and the unlock step, as `phantom cloud push` and `phantom team vault-push`
+  do.
+- `phantom rotate --batch` answered "No secrets in vault." (or nothing due)
+  with exit 0 in that state; it now refuses like `phantom
+  secrets-expiring-soon`, and notes a keychain-only answer.
+- `phantom export` prepared a backup from that keychain-only view; it now
+  refuses before review instead of writing a backup that leaves out the
+  file vault's secrets.
+
 ### Fixed (agent report)
 
 - A malformed dotenv no longer hides a missing managed dotenv in
