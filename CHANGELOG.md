@@ -12,6 +12,7 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   prints nonces, argument hashes, or parameter summaries. Lease state is
   reported as unavailable because the broker is not wired into the CLI.
   Revert: remove the `Status` variant of `AgentAction`; nothing else depends on it.
+
 ### Fixed (locked-vault paths missed by #220/#221)
 
 - MCP `phantom_cloud_push` and `phantom_team_vault_push` built the pushed
