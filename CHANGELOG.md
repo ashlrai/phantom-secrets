@@ -4,6 +4,23 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Changed (`phantom add --stdin` input handling)
+
+- `phantom add NAME --stdin` used to store only the first line of piped
+  input and report success, silently truncating PEM keys and JSON
+  documents. Input that still has more than one line after trailing line
+  endings are dropped is now refused before anything is stored, with a
+  message that names the line count but never the input. Pass
+  `--multiline` to store every line, or `--first-line` to keep the old
+  first-line behaviour (for example `pass show svc/api | phantom add
+  API_KEY --stdin --first-line`, since pass and gopass put metadata after
+  the key). Both flags require `--stdin` and are mutually exclusive.
+  Single-line input is stored exactly as before.
+- `--stdin` reads at most 64 KiB; larger or non-UTF-8 input is refused
+  before any write.
+- `--stdin` is refused when stdin is a terminal, where the typed value
+  would echo; omit it for the hidden prompt.
+
 ### Fixed (CLI consistency)
 
 - `phantom why <KEY>` for a key that is not in the dotenv now exits non-zero
