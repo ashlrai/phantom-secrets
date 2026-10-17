@@ -1026,6 +1026,10 @@ impl PhantomMcpServer {
         &self,
         Parameters(params): Parameters<AddSecretParams>,
     ) -> Result<CallToolResult, McpError> {
+        // Validate before the confirm and approval gates so an invalid name is
+        // never echoed back, never minted into an approval nonce, and never
+        // printed to the operator's stderr.
+        validate_mcp_secret_name(&params.name)?;
         require_confirm("phantom_add_secret", params.confirm)?;
         let params_json = serde_json::to_string(&params).unwrap_or_default();
         require_approval_token(
@@ -10234,6 +10238,39 @@ mod tests {
         assert!(schema_json.contains("\"name\""));
         assert!(schema_json.contains("\"confirm\""));
         assert!(!schema_json.contains("\"value\""));
+    }
+
+    #[test]
+    fn deprecated_add_secret_refuses_invalid_names_without_echoing_them() {
+        let _environment = TestEnvironment::new();
+        let (server, _dir) = setup_initialized_project();
+        let marker = format!("zz{:x}", std::process::id());
+        for name in [
+            format!("{marker}\nINJECTED"),
+            format!("9{marker}"),
+            format!("{marker}-dash"),
+            format!("{marker}{}", "A".repeat(300)),
+            String::new(),
+        ] {
+            for confirm in [false, true] {
+                let error = server
+                    .phantom_add_secret(Parameters(AddSecretParams {
+                        name: name.clone(),
+                        confirm,
+                        approval_token: None,
+                    }))
+                    .unwrap_err();
+                assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+                assert!(
+                    error.message.contains("Secret names must"),
+                    "{}",
+                    error.message
+                );
+                if !name.is_empty() {
+                    assert!(!error.message.contains(&marker), "name was echoed back");
+                }
+            }
+        }
     }
 
     #[test]
