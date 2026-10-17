@@ -167,8 +167,9 @@ Generate .env.example with secret values masked and non-secrets preserved.
 Options: --output <filename>
 
 ### phantom setup
-Configure Claude Code MCP server and permissions automatically.
-Writes to .claude/settings.local.json.
+Configure an MCP client automatically. For Claude Code, writes the phantom MCP server to the project .mcp.json
+and removes legacy Phantom grants from .claude/settings.local.json. Cursor: ~/.cursor/mcp.json;
+Windsurf: ~/.codeium/windsurf/mcp_config.json; Codex: ~/.codex/config.toml.
 
 ### phantom login
 After a hosted deployment and account entitlement are independently
@@ -307,7 +308,8 @@ phantom_list_secrets
   Returns: count and names, with service mappings if configured.
 
 phantom_status
-  Show project ID, vault backend, secret count, service mappings, .env state.
+  Show project ID, managed .env protection counts and service mappings. Does not open the vault;
+  use phantom_list_secrets for stored names.
   Returns: formatted status report.
 
 phantom_cloud_status
@@ -417,7 +419,7 @@ phantom_apply_expiry_policy
   secret preflight instead of injecting an expired value. A later verified
   lifecycle promotion restores access. Demotion does not recall a value already
   injected into or cached by a running process.
-  Params: promote_rotated, confirm (bool, must be true), approval_token (string)
+  Params: also_promote_rotated (bool, default true), confirm (bool, must be true), approval_token (string)
 
 ### Team tools (planned Pro pilot, multi-developer fixed-membership shared vaults)
 
@@ -585,7 +587,7 @@ Cloud tokens stored hashed (SHA-256) in database — never plaintext.
 
 The vault, package, cloud, and team mutation tools documented above require explicit consent, `confirm=true`, and the out-of-band `approval_token` challenge as guards against unintended mutation. Advanced tools have distinct runtime schemas and conditional gates; inspect `tools/list` instead of extrapolating. These gates are not prompt-injection immunity; an agent or user can still authorize a harmful request.
 
-phantom_reveal blocked in non-interactive contexts by default to prevent AI agents from reading real values.
+There is no MCP reveal tool. CLI `phantom reveal` always requires attached terminals and exact typed confirmation; there is no non-interactive bypass.
 
 Opt-in audit log: PHANTOM_AUDIT=1 writes vault events as JSONL to ~/.phantom/audit.log (secret name only).
 Each entry is chained with HMAC-SHA256 and checked against a signed head checkpoint; phantom audit verify detects tampering, sequence gaps, prefix deletion, and tail/head mismatches. Full log and checkpoint deletion still requires external evidence.
