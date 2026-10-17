@@ -258,7 +258,23 @@ pub fn run_show(
         op
     };
 
-    let lines = read_matching_lines(&path, effective_op, name);
+    let matched = read_matching_lines(&path, effective_op, name);
+    if matched.unparsable > 0 {
+        eprintln!(
+            "{} Skipped {} line(s) that are not valid audit JSON; run {} to check the chain.",
+            "warn".yellow().bold(),
+            matched.unparsable,
+            "phantom audit verify".cyan()
+        );
+    }
+    if matched.window_truncated && matched.lines.len() < last {
+        eprintln!(
+            "{}  Only the newest {} MiB of the audit log were read; older events were not examined.",
+            "->".blue().bold(),
+            phantom_core::audit::RECENT_WINDOW_BYTES / (1024 * 1024)
+        );
+    }
+    let lines = matched.lines;
 
     if lines.is_empty() {
         println!("{}  No matching audit events.", "->".blue().bold());
@@ -1747,53 +1763,59 @@ fn resolve_path() -> Result<PathBuf> {
         .map_err(|e| anyhow::anyhow!("Could not resolve home directory to locate audit log: {e}"))
 }
 
-/// Read all lines from the file, skip malformed JSON with a stderr warning,
-/// and return only lines that match the given filters.
-fn read_matching_lines(path: &PathBuf, op: Option<&str>, name: Option<&str>) -> Vec<String> {
-    let file = match std::fs::File::open(path) {
-        Ok(f) => f,
+/// Audit lines that passed the filters, from a bounded window of the log.
+struct MatchedLines {
+    lines: Vec<String>,
+    /// Lines in the window that were not UTF-8 or not JSON, skipped.
+    unparsable: usize,
+    /// The log is larger than the window; older lines were not examined.
+    window_truncated: bool,
+}
+
+/// The matching lines among the newest [`phantom_core::audit::RECENT_WINDOW_BYTES`]
+/// of the log. The log is append-only and never rotated, so this no longer
+/// reads it whole; chain verification (`phantom audit verify`) still does.
+fn read_matching_lines(
+    path: &std::path::Path,
+    op: Option<&str>,
+    name: Option<&str>,
+) -> MatchedLines {
+    read_matching_lines_within(path, op, name, phantom_core::audit::RECENT_WINDOW_BYTES)
+}
+
+fn read_matching_lines_within(
+    path: &std::path::Path,
+    op: Option<&str>,
+    name: Option<&str>,
+    max_bytes: u64,
+) -> MatchedLines {
+    let recent = match phantom_core::audit::read_recent_lines(path, max_bytes) {
+        Ok(recent) => recent,
         Err(e) => {
             eprintln!("{} Failed to open audit log: {}", "warn".yellow().bold(), e);
-            return vec![];
+            return MatchedLines {
+                lines: Vec::new(),
+                unparsable: 0,
+                window_truncated: false,
+            };
         }
     };
-    let reader = BufReader::new(file);
-    let mut out = Vec::new();
-    for (i, line_result) in reader.lines().enumerate() {
-        let line = match line_result {
-            Ok(l) => l,
-            Err(e) => {
-                eprintln!(
-                    "{} Skipping unreadable line {}: {}",
-                    "warn".yellow().bold(),
-                    i + 1,
-                    e
-                );
-                continue;
-            }
-        };
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
+    let mut matched = MatchedLines {
+        lines: Vec::new(),
+        unparsable: recent.unreadable_lines,
+        window_truncated: recent.window_truncated,
+    };
+    for line in recent.lines {
+        // Validate JSON; a malformed line is counted, never echoed.
+        if serde_json::from_str::<Value>(&line).is_err() {
+            matched.unparsable += 1;
             continue;
         }
-        // Validate JSON — skip malformed lines
-        match serde_json::from_str::<Value>(trimmed) {
-            Ok(_) => {}
-            Err(e) => {
-                eprintln!(
-                    "{} Skipping malformed JSON on line {}: {}",
-                    "warn".yellow().bold(),
-                    i + 1,
-                    e
-                );
-                continue;
-            }
-        }
-        if matches_filters(trimmed, op, name) {
-            out.push(trimmed.to_string());
+        if matches_filters(&line, op, name) {
+            matched.lines.push(line);
         }
     }
-    out
+    matched
 }
 
 /// Returns true if the raw JSON line passes both op and name filters.
@@ -1979,7 +2001,7 @@ mod tests {
             tmp.path(),
             &[LINE_STORE, LINE_RETRIEVE, LINE_PUSH, LINE_STRIPE],
         );
-        let results = read_matching_lines(&path, Some("vault.store"), None);
+        let results = read_matching_lines(&path, Some("vault.store"), None).lines;
         assert_eq!(results.len(), 2);
         assert!(results[0].contains("vault.store"));
         assert!(results[1].contains("STRIPE_KEY"));
@@ -1992,7 +2014,7 @@ mod tests {
             tmp.path(),
             &[LINE_STORE, LINE_RETRIEVE, LINE_PUSH, LINE_STRIPE],
         );
-        let results = read_matching_lines(&path, None, Some("OPENAI_API_KEY"));
+        let results = read_matching_lines(&path, None, Some("OPENAI_API_KEY")).lines;
         assert_eq!(results.len(), 2);
         assert!(results[0].contains("vault.store"));
         assert!(results[1].contains("vault.retrieve"));
@@ -2005,7 +2027,7 @@ mod tests {
             tmp.path(),
             &[LINE_STORE, LINE_RETRIEVE, LINE_PUSH, LINE_STRIPE],
         );
-        let results = read_matching_lines(&path, Some("vault.store"), Some("OPENAI_API_KEY"));
+        let results = read_matching_lines(&path, Some("vault.store"), Some("OPENAI_API_KEY")).lines;
         assert_eq!(results.len(), 1);
         assert!(results[0].contains("vault.store"));
         assert!(results[0].contains("OPENAI_API_KEY"));
@@ -2036,9 +2058,11 @@ mod tests {
     fn malformed_line_is_skipped_not_panicked() {
         let tmp = tempdir().unwrap();
         let path = write_fixture(tmp.path(), &[LINE_STORE, LINE_MALFORMED, LINE_PUSH]);
-        // Should return 2 valid lines, not crash
+        // Should return 2 valid lines, not crash, and count the bad one
         let results = read_matching_lines(&path, None, None);
-        assert_eq!(results.len(), 2);
+        assert_eq!(results.lines.len(), 2);
+        assert_eq!(results.unparsable, 1);
+        assert!(!results.window_truncated);
     }
 
     #[test]
@@ -2046,7 +2070,22 @@ mod tests {
         let tmp = tempdir().unwrap();
         let path = write_fixture(tmp.path(), &[]);
         let results = read_matching_lines(&path, None, None);
-        assert!(results.is_empty());
+        assert!(results.lines.is_empty());
+    }
+
+    #[test]
+    fn matching_lines_come_from_the_newest_window_only() {
+        let tmp = tempdir().unwrap();
+        let path = write_fixture(
+            tmp.path(),
+            &[LINE_STORE, LINE_RETRIEVE, LINE_PUSH, LINE_STRIPE],
+        );
+        // The last line plus a fragment of the one before it.
+        let window = LINE_STRIPE.len() as u64 + 1 + 5;
+        let results = read_matching_lines_within(&path, None, None, window);
+        assert!(results.window_truncated);
+        assert_eq!(results.lines, [LINE_STRIPE]);
+        assert_eq!(results.unparsable, 0);
     }
 
     #[test]

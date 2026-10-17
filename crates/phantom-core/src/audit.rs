@@ -1365,6 +1365,65 @@ pub fn verify_log_with_context() -> std::io::Result<(VerifyReport, Vec<VerifiedE
 // Shared helpers
 // ──────────────────────────────────────────────────────────────────────────────
 
+/// Most bytes of the audit log a "recent events" read examines: the newest
+/// ones. The log is append-only and never rotated, so reading it whole to
+/// show the last few events grows without bound. Chain verification
+/// (`verify_log`) still reads the whole log; this window is for listings.
+pub const RECENT_WINDOW_BYTES: u64 = 8 * 1024 * 1024;
+
+/// The newest complete lines of the audit log, from a bounded window.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct RecentLines {
+    /// Non-empty lines in file order, without line endings.
+    pub lines: Vec<String>,
+    /// The log is larger than the window, so older lines were not read.
+    pub window_truncated: bool,
+    /// Lines in the window that were not UTF-8 and so were skipped.
+    pub unreadable_lines: usize,
+}
+
+/// Read the newest `max_bytes` of `path` and split them into lines.
+///
+/// When the file is larger than the window, the read starts `max_bytes`
+/// before the end and the first (partial) line is dropped. Memory stays
+/// bounded by `max_bytes` whatever the log's size.
+pub fn read_recent_lines(path: &Path, max_bytes: u64) -> std::io::Result<RecentLines> {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let mut file = File::open(path)?;
+    let len = file.metadata()?.len();
+    let window_truncated = len > max_bytes;
+    if window_truncated {
+        file.seek(SeekFrom::Start(len - max_bytes))?;
+    }
+    let mut window = Vec::new();
+    file.take(max_bytes).read_to_end(&mut window)?;
+
+    let mut rest: &[u8] = &window;
+    if window_truncated {
+        // The window starts mid-file; whatever precedes the first newline is
+        // the tail of a line that began before it.
+        rest = match rest.iter().position(|b| *b == b'\n') {
+            Some(end) => &rest[end + 1..],
+            None => &[],
+        };
+    }
+
+    let mut recent = RecentLines {
+        window_truncated,
+        ..RecentLines::default()
+    };
+    for raw in rest.split(|b| *b == b'\n') {
+        let raw = raw.strip_suffix(b"\r").unwrap_or(raw);
+        match std::str::from_utf8(raw) {
+            Ok(line) if line.trim().is_empty() => {}
+            Ok(line) => recent.lines.push(line.trim().to_string()),
+            Err(_) => recent.unreadable_lines += 1,
+        }
+    }
+    Ok(recent)
+}
+
 pub fn log_path() -> std::io::Result<PathBuf> {
     if let Some(home) = dirs_home_dir() {
         Ok(home.join(".phantom").join("audit.log"))
@@ -1966,6 +2025,42 @@ mod tests {
     }
 
     // ── existing tests (must still pass) ────────────────────────────────────
+
+    #[test]
+    fn recent_lines_reads_a_small_log_whole() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audit.log");
+        std::fs::write(&path, b"{\"op\":\"a\"}\r\n\n{\"op\":\"b\"}\n").unwrap();
+        let recent = read_recent_lines(&path, RECENT_WINDOW_BYTES).unwrap();
+        assert_eq!(recent.lines, [r#"{"op":"a"}"#, r#"{"op":"b"}"#]);
+        assert!(!recent.window_truncated);
+        assert_eq!(recent.unreadable_lines, 0);
+    }
+
+    #[test]
+    fn recent_lines_reads_only_the_newest_window_and_drops_the_partial_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audit.log");
+        let lines: Vec<String> = (0..100).map(|i| format!(r#"{{"op":"e{i:03}"}}"#)).collect();
+        std::fs::write(&path, format!("{}\n", lines.join("\n"))).unwrap();
+        let line_len = lines[0].len() as u64 + 1;
+
+        // Three whole lines plus part of a fourth.
+        let recent = read_recent_lines(&path, line_len * 3 + 4).unwrap();
+        assert!(recent.window_truncated);
+        assert_eq!(recent.lines, lines[97..]);
+        assert_eq!(recent.unreadable_lines, 0);
+    }
+
+    #[test]
+    fn recent_lines_counts_non_utf8_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audit.log");
+        std::fs::write(&path, b"{\"op\":\"a\"}\n\xff\xfe\n{\"op\":\"b\"}\n").unwrap();
+        let recent = read_recent_lines(&path, RECENT_WINDOW_BYTES).unwrap();
+        assert_eq!(recent.lines.len(), 2);
+        assert_eq!(recent.unreadable_lines, 1);
+    }
 
     #[test]
     fn disabled_by_default() {
