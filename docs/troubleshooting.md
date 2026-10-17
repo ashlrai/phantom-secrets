@@ -37,6 +37,7 @@ If your API calls fail with authentication errors after setting up Phantom:
    `phantom reveal <KEY>` and complete the exact typed confirmation, or use
    `--clipboard` to avoid printing it on screen
 4. **Check BASE_URL is set**: The proxy only works when `OPENAI_BASE_URL` (or equivalent) points to the local proxy. Use `phantom exec -- <cmd>` which sets these automatically.
+5. **Check the key has a proxy route**: `phantom why <KEY>` (or MCP `phantom_why`) reports how `phantom exec` delivers a protected key. `no_route` means no built-in route injects it (for example `GROQ_API_KEY` or `JWT_SECRET`), so the child gets only a session token that no provider accepts. `phantom exec` names these keys at launch with `warn No proxy route for ...`.
 
 ### Proxy hangs or times out
 
@@ -184,6 +185,28 @@ Store this passphrase securely (e.g., as a CI secret) — you'll need it on ever
 either a proxied or direct child. Commands launched manually from the same shell
 still inherit the export, so do not launch an agent outside `phantom exec` while
 the variable is set.
+
+### "Vault locked: this project's secrets are in an encrypted-file vault this process cannot open"
+
+The project's secrets were stored in the encrypted-file vault (for example by a
+shell that had `PHANTOM_VAULT_PASSPHRASE` set), but this process has no
+passphrase, so Phantom opened the OS keychain instead. Rather than answer from
+that empty view, commands refuse with exit 1: `list`, `expiry enforce`,
+`secrets-expiring-soon`, `validate`, `sync`, and `agent report`/`agent doctor`
+(which report `unsafe`). `phantom exec` and `phantom start` refuse to launch the
+child. `cloud push` and `team vault-push` also refuse a keychain-only partial
+inventory instead of replacing the remote copy with it. The same refusal comes
+from the MCP inventory tools as error `-32600`. With `PHANTOM_REQUIRE_KEYCHAIN=1`
+the file vault is never opened, even with a passphrase set, and the message
+says so.
+
+Fix: export the same `PHANTOM_VAULT_PASSPHRASE` the secrets were stored with
+in the shell, or for MCP clients in the server's env config, then retry or
+restart the server. The message names the vault file. If the vault was made by
+the automatic keychain-unavailable fallback, its passphrase was generated and
+kept in the OS credential store, and the message says how that case differs.
+If your secrets now live in the OS keychain, the file may be stale: back it up
+or move it aside rather than deleting it.
 
 ### Proxy port conflicts ("address already in use")
 
@@ -462,6 +485,8 @@ Note: entries written before HMAC chaining was introduced (pre-PR #62) are count
 ### Audit log is empty / "No audit events yet"
 
 The log file is only created once the first event is written. Ensure `PHANTOM_AUDIT=1` is set in the shell where `phantom exec` or vault-mutating commands run. Check the log path with `phantom audit path`.
+
+With an empty log, `phantom audit stats --json` still prints valid JSON (`total_events: 0`, `secrets: []`) and sends the hint to stderr, and `phantom audit export --format json` prints `[]`.
 
 ## Importing from other secret managers
 
