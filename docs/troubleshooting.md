@@ -444,8 +444,8 @@ Cloud sync is per-vault. Make sure you pushed from the same project directory. E
 ### "Subscription required" on cloud push
 
 There is no self-service hosted-plan upgrade available today. Keep the vault
-local, or request a bounded pilot through the
-[Phantom Pro waitlist](https://phm.dev/waitlist.html). Hosted-plan eligibility,
+local, or request a bounded pilot through
+[Phantom for enterprise](https://phm.dev/enterprise). Hosted-plan eligibility,
 vault and team limits, and pricing are still to be determined and are confirmed
 during pilot onboarding.
 
