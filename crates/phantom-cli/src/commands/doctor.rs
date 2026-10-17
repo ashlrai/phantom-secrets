@@ -150,11 +150,26 @@ pub fn run_doctor(fix: bool, check_expiry: bool, json: bool) -> Result<()> {
 }
 
 fn run_checks(fix: bool, check_expiry: bool) -> Result<(usize, usize)> {
-    let project_dir = std::env::current_dir()?;
+    let project_dir = crate::util::project_dir()?;
     let config_path = project_dir.join(".phantom.toml");
+    // A managed dotenv that cannot be resolved (missing, a symlink, two
+    // token-bearing candidates) is a finding for diagnosis. Repairs need a
+    // resolved file, so --fix still stops before any of them.
+    let mut unresolved_dotenv = None;
     let env_path = match PhantomConfig::load(&config_path).ok() {
         Some(config) => {
-            phantom_core::managed_dotenv::resolve_dotenv(&project_dir, &config, &[])?.path
+            match phantom_core::managed_dotenv::resolve_dotenv(&project_dir, &config, &[]) {
+                Ok(resolved) => resolved.path,
+                Err(error) if !fix => {
+                    unresolved_dotenv = Some(error);
+                    project_dir.join(".env")
+                }
+                Err(error) => {
+                    return Err(error.context(
+                        "The managed dotenv could not be resolved; doctor --fix made no repairs. Run `phantom doctor` to see the finding",
+                    ))
+                }
+            }
         }
         None => project_dir.join(".env"),
     };
@@ -257,7 +272,16 @@ fn run_checks(fix: bool, check_expiry: bool) -> Result<(usize, usize)> {
     }
 
     // Check 3: .env file
-    issues += check_managed_dotenv(&project_dir, &env_path);
+    match unresolved_dotenv {
+        Some(error) => {
+            check_fail(&format!("Managed dotenv: {error:#}"));
+            check_fix(
+                "Restore the managed dotenv as a regular file beside .phantom.toml, or rerun `phantom init --from <file>` to choose it",
+            );
+            issues += 1;
+        }
+        None => issues += check_managed_dotenv(&project_dir, &env_path),
+    }
 
     // Check 4: .gitignore
     let gitignore_path = project_dir.join(".gitignore");
@@ -1029,6 +1053,57 @@ mod tests {
         assert_eq!((issues, lines[0].0), (1, "warn"));
         assert!(lines[0].1.contains("OPENAI_API_KEY"));
         assert_eq!(lines[0].2.as_deref(), Some("Run: phantom init"));
+    }
+
+    /// `phantom doctor` aborted with the raw resolver error when the
+    /// configured managed dotenv was missing: the diagnostic failed on the
+    /// state it exists to diagnose. It now reports it as a failed check with a
+    /// fix, and `--fix` still stops before any repair.
+    #[test]
+    fn doctor_reports_a_missing_managed_dotenv_instead_of_aborting() {
+        let project = tempfile::tempdir().unwrap();
+        let dir = project.path().canonicalize().unwrap();
+        let mut config =
+            phantom_core::config::PhantomConfig::new_with_defaults("doctor-missing".to_string());
+        config.phantom.dotenv_path = Some(".env".to_string());
+        config.save(&dir.join(".phantom.toml")).unwrap();
+        let _seam = crate::util::test_seam::TestProject::install(
+            dir.clone(),
+            crate::util::test_seam::empty_keychain,
+        );
+
+        super::REPORT.with(|report| {
+            *report.borrow_mut() = Some(phantom_core::report::DoctorReport::default())
+        });
+        let outcome = super::run_checks(false, false);
+        let report = super::REPORT
+            .with(|report| report.borrow_mut().take())
+            .unwrap();
+        let (issues, _) = outcome.expect("doctor must report, not abort");
+        assert!(issues >= 1);
+        let line = report
+            .checks
+            .iter()
+            .find(|check| check.message.starts_with("Managed dotenv:"))
+            .expect("the missing dotenv is a finding");
+        assert_eq!(line.status, "fail");
+        assert!(
+            line.message.contains("does not exist: .env"),
+            "{}",
+            line.message
+        );
+        assert!(line.fix.as_deref().unwrap().contains("phantom init --from"));
+
+        super::REPORT.with(|report| {
+            *report.borrow_mut() = Some(phantom_core::report::DoctorReport::default())
+        });
+        let error = super::run_checks(true, false).unwrap_err();
+        super::REPORT.with(|report| report.borrow_mut().take());
+        assert!(
+            format!("{error:#}").contains("made no repairs"),
+            "{error:#}"
+        );
+        assert!(!dir.join(".gitignore").exists());
     }
 
     /// The `.env.example` repair derives from the bytes the guard read, not a
