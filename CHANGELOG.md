@@ -4,6 +4,28 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (`phantom_audit_incidents`, `phantom_leak_incidents_realtime`, `phantom audit incidents`)
+
+- The proxy only appends `proxy.response_leak` audit events; incidents are
+  persisted by the approval-gated `phantom audit alerts --backfill` (MCP
+  `phantom_audit_alerts` with `backfill=true`). Until someone ran it, the
+  read-only incident queries answered "No active leak incidents" while
+  fresh leak events sat in the audit log. They now also correlate the last
+  24 h of leak events in memory, without writing anything, and list the
+  incidents no backfill has persisted in `uncorrelated_incidents` (MCP:
+  plus `uncorrelated_count`), filtered like persisted incidents
+  (`min_confidence`, 24 h window, cleared by a later store of the secret).
+  Names only, never values. Each query parses the audit log once, keeping
+  only the window's leak events and each name's latest store time.
+- Both MCP tools now always return the same JSON object (also as
+  structuredContent) with `audit_log_present` and a `next_step`, instead of
+  plain text when nothing was found. "Set PHANTOM_AUDIT=1" is said only
+  when no audit log exists.
+- `phantom audit incidents --json` prints the same object whether or not
+  anything was found (it printed a bare `[]` when empty), and the text
+  output lists unpersisted incidents. `phantom leaks plan` warns on stderr
+  when its plan omits them.
+
 ### Fixed (`phantom_audit_recent` and `phantom audit show`)
 
 - Both read the whole audit log into memory to return the last few

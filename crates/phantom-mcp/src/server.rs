@@ -3826,8 +3826,13 @@ impl PhantomMcpServer {
             0.5 = single leak event; 0.95 = same secret leaked >3 times within 1 hour. \
             Each incident includes: incident_id, secret_name (never the value), \
             location_label, first_seen_ts, last_seen_ts, event_count, confidence, remediation. \
-            Incidents whose secret was subsequently stored are omitted. Reads only the persisted incident \
-            store; it does not run correlation or write state."
+            Incidents whose secret was subsequently stored are omitted. incidents lists the persisted \
+            incident store. The proxy only appends audit events, so leak events from the last 24 h that \
+            no backfill has persisted yet are correlated in memory and listed separately in \
+            uncorrelated_incidents (uncorrelated_count), with a next_step; treat them as possible leaks. \
+            Always returns JSON {incident_count, min_confidence, incidents, uncorrelated_count, \
+            uncorrelated_incidents, audit_log_present, next_step} (also as structuredContent). \
+            Read-only: it never writes incident or alert state."
     )]
     fn phantom_audit_incidents(
         &self,
@@ -3839,22 +3844,16 @@ impl PhantomMcpServer {
         let engine = LeakCorrelationEngine::new()
             .map_err(|e| internal_err(format!("Cannot initialise leak correlation engine: {e}")))?;
 
-        let incidents = engine
-            .active_incidents(params.min_confidence)
-            .map_err(|e| internal_err(format!("Failed to read leak incidents: {e}")))?;
-
-        if incidents.is_empty() {
-            return text_result(format!(
-                "No active leak incidents (min_confidence={:.2}). \
-                 Set PHANTOM_AUDIT=1 to enable audit logging.",
-                params.min_confidence
-            ));
-        }
+        let view = leak_incident_view(&engine, params.min_confidence)?;
 
         let out = serde_json::json!({
-            "incident_count": incidents.len(),
+            "incident_count": view.persisted.len(),
             "min_confidence": params.min_confidence,
-            "incidents": incidents,
+            "incidents": view.persisted,
+            "uncorrelated_count": view.uncorrelated.len(),
+            "uncorrelated_incidents": view.uncorrelated,
+            "audit_log_present": view.audit_log_present,
+            "next_step": view.next_step(),
         });
 
         json_object_result(&out)
@@ -3873,8 +3872,13 @@ impl PhantomMcpServer {
             secret_name (never the value), location_label, confidence, \
             first_seen (ISO-8601), last_seen (ISO-8601), incident_id. \
             Set min_confidence (default 0.5) to narrow results. \
-            Reads only persisted incidents and never rotates, writes correlation state, \
-            or exposes secret values. Use a separately approved rotation tool to remediate."
+            incidents lists persisted incidents; leak events from the last 24 h that no backfill \
+            has persisted yet are correlated in memory and listed in uncorrelated_incidents \
+            (uncorrelated_count, same entry shape) with a next_step. Always returns JSON \
+            {incident_count, min_confidence, effect, rotation_performed, incidents, \
+            uncorrelated_count, uncorrelated_incidents, audit_log_present, next_step}. \
+            Never rotates, writes incident or alert state, or exposes secret values. \
+            Use a separately approved rotation tool to remediate."
     )]
     fn phantom_leak_incidents_realtime(
         &self,
@@ -3886,44 +3890,11 @@ impl PhantomMcpServer {
         let engine = LeakCorrelationEngine::new()
             .map_err(|e| internal_err(format!("Cannot initialise leak correlation engine: {e}")))?;
 
-        // Retrieve active incidents: confidence >= min_confidence, < 24 h old.
-        let incidents = engine
-            .active_incidents(params.min_confidence)
-            .map_err(|e| internal_err(format!("Failed to read leak incidents: {e}")))?;
-
-        if incidents.is_empty() {
-            return text_result(format!(
-                "No active leak incidents (min_confidence={:.2}, window=24h). \
-                 Set PHANTOM_AUDIT=1 to enable audit logging.",
-                params.min_confidence
-            ));
-        }
-
-        // Build structured incident summaries (no secret values exposed).
-        let mut summaries: Vec<serde_json::Value> = incidents
-            .iter()
-            .map(|inc| {
-                serde_json::json!({
-                    "incident_id":    inc.incident_id,
-                    "secret_name":    inc.secret_name,
-                    "location_label": inc.location_label,
-                    "confidence":     inc.confidence,
-                    "first_seen":     iso8601(inc.first_seen_ts),
-                    "last_seen":      iso8601(inc.last_seen_ts),
-                    "event_count":    inc.event_count,
-                    "remediation":    inc.remediation,
-                })
-            })
-            .collect();
-
-        // Sort by confidence descending so the most critical are first.
-        summaries.sort_by(|a, b| {
-            b["confidence"]
-                .as_f64()
-                .unwrap_or(0.0)
-                .partial_cmp(&a["confidence"].as_f64().unwrap_or(0.0))
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        // Active incidents: confidence >= min_confidence, < 24 h old, plus
+        // the same window's leak events that no backfill has persisted yet.
+        let view = leak_incident_view(&engine, params.min_confidence)?;
+        let summaries = realtime_incident_summaries(&view.persisted);
+        let uncorrelated = realtime_incident_summaries(&view.uncorrelated);
 
         let out = serde_json::json!({
             "incident_count": summaries.len(),
@@ -3931,6 +3902,10 @@ impl PhantomMcpServer {
             "effect": "read_only",
             "rotation_performed": false,
             "incidents": summaries,
+            "uncorrelated_count": uncorrelated.len(),
+            "uncorrelated_incidents": uncorrelated,
+            "audit_log_present": view.audit_log_present,
+            "next_step": view.next_step(),
         });
 
         json_object_result(&out)
@@ -5639,6 +5614,71 @@ fn team_push_approval_params_json(
         }
     }))
     .map_err(|error| internal_err(format!("Failed to bind team-push approval: {error}")))
+}
+
+/// Value-free guidance for the read-only leak-incident tools; null when
+/// there is nothing to act on.
+trait IncidentNextStep {
+    fn next_step(&self) -> Option<String>;
+}
+
+impl IncidentNextStep for phantom_core::leak_correlation::IncidentView {
+    fn next_step(&self) -> Option<String> {
+        if !self.uncorrelated.is_empty() {
+            return Some(format!(
+                "{} leak incident(s) from proxy.response_leak audit events in the last 24 h are not persisted yet and are listed in uncorrelated_incidents. Treat each as a possible leak: review it, rotate the credential at the provider if the leak is real, and store the replacement from a trusted terminal. To persist incidents and send configured alerts, run `phantom audit alerts --backfill` in a trusted terminal (or phantom_audit_alerts with backfill=true, confirm and approval_token).",
+                self.uncorrelated.len()
+            ));
+        }
+        if !self.audit_log_present {
+            return Some(
+                "No audit log exists, so leaks cannot be observed. Run the proxy with PHANTOM_AUDIT=1 to record proxy.response_leak events."
+                    .to_string(),
+            );
+        }
+        None
+    }
+}
+
+/// The persisted active incidents and the same 24 h window's leak events
+/// that no backfill has persisted yet, from one parse of the audit log
+/// (correlated in memory, nothing written).
+fn leak_incident_view(
+    engine: &phantom_core::leak_correlation::LeakCorrelationEngine,
+    min_confidence: f64,
+) -> Result<phantom_core::leak_correlation::IncidentView, McpError> {
+    engine
+        .incident_view(min_confidence)
+        .map_err(|e| internal_err(format!("Failed to read leak incidents: {e}")))
+}
+
+/// Dashboard summaries (no secret values), most confident first.
+fn realtime_incident_summaries(
+    incidents: &[phantom_core::leak_correlation::LeakIncident],
+) -> Vec<serde_json::Value> {
+    let mut summaries: Vec<serde_json::Value> = incidents
+        .iter()
+        .map(|inc| {
+            serde_json::json!({
+                "incident_id":    inc.incident_id,
+                "secret_name":    inc.secret_name,
+                "location_label": inc.location_label,
+                "confidence":     inc.confidence,
+                "first_seen":     iso8601(inc.first_seen_ts),
+                "last_seen":      iso8601(inc.last_seen_ts),
+                "event_count":    inc.event_count,
+                "remediation":    inc.remediation,
+            })
+        })
+        .collect();
+    summaries.sort_by(|a, b| {
+        b["confidence"]
+            .as_f64()
+            .unwrap_or(0.0)
+            .partial_cmp(&a["confidence"].as_f64().unwrap_or(0.0))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    summaries
 }
 
 fn sanitized_alert_origins(
@@ -11991,6 +12031,120 @@ mod tests {
                     min_confidence: ok,
                 }))
                 .is_ok());
+        }
+    }
+
+    /// Writes `proxy.response_leak` lines (name only, never a value) into
+    /// `$HOME/.phantom/audit.log` the way the proxy's audit hook does.
+    fn write_leak_events(home: &std::path::Path, names: &[&str]) {
+        let dir = home.join(".phantom");
+        std::fs::create_dir_all(&dir).unwrap();
+        let now = phantom_vault::metadata::now_secs();
+        let mut lines = String::new();
+        for (offset, name) in names.iter().enumerate() {
+            lines.push_str(&format!(
+                "{{\"ts\":{},\"op\":\"proxy.response_leak\",\"name\":\"{}\",\"pid\":1,\"process\":\"phantom\"}}\n",
+                now - 10 - offset as u64,
+                name
+            ));
+        }
+        std::fs::write(dir.join("audit.log"), lines).unwrap();
+    }
+
+    /// The proxy only appends leak events; incidents are persisted by an
+    /// approval-gated backfill. Both read-only incident tools used to answer
+    /// "No active leak incidents" while fresh leak events sat in the log.
+    #[test]
+    fn test_incident_tools_report_leak_events_no_backfill_persisted() {
+        let _environment = TestEnvironment::new();
+        let (server, _dir) = setup_initialized_project();
+        let home = canonical_temp_dir();
+        unsafe { std::env::set_var("HOME", home.path()) };
+        write_leak_events(home.path(), &["OPENAI_API_KEY", "OPENAI_API_KEY"]);
+
+        let result = server
+            .phantom_audit_incidents(Parameters(AuditIncidentsParams {
+                min_confidence: 0.5,
+            }))
+            .unwrap();
+        let json = parse_result_json(&result);
+        assert_eq!(result.structured_content.as_ref(), Some(&json));
+        assert_eq!(json["incident_count"], 0);
+        assert_eq!(json["incidents"], serde_json::json!([]));
+        assert_eq!(json["uncorrelated_count"], 1);
+        assert_eq!(
+            json["uncorrelated_incidents"][0]["secret_name"],
+            "OPENAI_API_KEY"
+        );
+        assert_eq!(json["uncorrelated_incidents"][0]["event_count"], 2);
+        assert_eq!(json["audit_log_present"], true);
+        let next = json["next_step"].as_str().unwrap();
+        assert!(next.contains("phantom audit alerts --backfill"), "{next}");
+
+        let result = server
+            .phantom_leak_incidents_realtime(Parameters(LeakIncidentsRealtimeParams {
+                min_confidence: 0.5,
+            }))
+            .unwrap();
+        let json = parse_result_json(&result);
+        assert_eq!(json["incident_count"], 0);
+        assert_eq!(json["uncorrelated_count"], 1);
+        assert_eq!(
+            json["uncorrelated_incidents"][0]["secret_name"],
+            "OPENAI_API_KEY"
+        );
+        assert!(json["uncorrelated_incidents"][0]["first_seen"].is_string());
+        assert_eq!(json["effect"], "read_only");
+        assert!(json["next_step"].is_string());
+
+        // Both stay read-only: no incident or alert state is written.
+        assert!(!home.path().join(".phantom/leak-incidents.jsonl").exists());
+        assert!(!home.path().join(".phantom/leak-alerts.jsonl").exists());
+
+        // The min_confidence filter applies to the uncorrelated view too.
+        let json = parse_result_json(
+            &server
+                .phantom_audit_incidents(Parameters(AuditIncidentsParams {
+                    min_confidence: 0.9,
+                }))
+                .unwrap(),
+        );
+        assert_eq!(json["uncorrelated_count"], 0);
+        assert!(json["next_step"].is_null());
+    }
+
+    /// With no audit log the answer is JSON that says leaks cannot be seen,
+    /// not a bare "no incidents" text.
+    #[test]
+    fn test_incident_tools_without_audit_log_say_leaks_are_unobservable() {
+        let _environment = TestEnvironment::new();
+        let (server, _dir) = setup_initialized_project();
+        let home = canonical_temp_dir();
+        unsafe { std::env::set_var("HOME", home.path()) };
+
+        for json in [
+            parse_result_json(
+                &server
+                    .phantom_audit_incidents(Parameters(AuditIncidentsParams {
+                        min_confidence: 0.7,
+                    }))
+                    .unwrap(),
+            ),
+            parse_result_json(
+                &server
+                    .phantom_leak_incidents_realtime(Parameters(LeakIncidentsRealtimeParams {
+                        min_confidence: 0.5,
+                    }))
+                    .unwrap(),
+            ),
+        ] {
+            assert_eq!(json["incident_count"], 0);
+            assert_eq!(json["uncorrelated_count"], 0);
+            assert_eq!(json["audit_log_present"], false);
+            assert!(json["next_step"]
+                .as_str()
+                .unwrap()
+                .contains("PHANTOM_AUDIT=1"));
         }
     }
 

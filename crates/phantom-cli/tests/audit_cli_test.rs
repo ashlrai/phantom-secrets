@@ -200,3 +200,81 @@ fn audit_incidents_rejects_out_of_range_min_confidence() {
         .unwrap();
     assert!(out.status.success(), "{out:?}");
 }
+
+/// The proxy only appends `proxy.response_leak` events; incidents are
+/// persisted by the gated `audit alerts --backfill`. `audit incidents` used
+/// to answer "No active leak incidents" (or `[]` with --json) while fresh leak
+/// events sat in the audit log.
+#[test]
+fn audit_incidents_reports_leak_events_not_yet_persisted() {
+    let tmp = common::canonical_tempdir();
+    let phantom_dir = tmp.path().join(".phantom");
+    std::fs::create_dir_all(&phantom_dir).unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let line = |ts: u64| {
+        format!(
+            "{{\"ts\":{ts},\"op\":\"proxy.response_leak\",\"name\":\"OPENAI_API_KEY\",\"pid\":1,\"process\":\"phantom\"}}\n"
+        )
+    };
+    std::fs::write(
+        phantom_dir.join("audit.log"),
+        format!("{}{}", line(now - 20), line(now - 10)),
+    )
+    .unwrap();
+
+    let run = |args: &[&str]| {
+        Command::cargo_bin("phantom")
+            .expect("binary not found")
+            .current_dir(tmp.path())
+            .env("HOME", tmp.path())
+            .env_remove("PHANTOM_AUDIT")
+            .args(args)
+            .output()
+            .unwrap()
+    };
+
+    let out = run(&["audit", "incidents", "--json"]);
+    assert!(out.status.success(), "{out:?}");
+    let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(report["incidents"], serde_json::json!([]));
+    assert_eq!(
+        report["uncorrelated_incidents"][0]["secret_name"],
+        "OPENAI_API_KEY"
+    );
+    assert_eq!(report["uncorrelated_incidents"][0]["event_count"], 2);
+
+    let out = run(&["audit", "incidents"]);
+    assert!(out.status.success(), "{out:?}");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("not persisted yet"), "{stdout}");
+    assert!(stdout.contains("unpersisted"), "{stdout}");
+    assert!(stdout.contains("OPENAI_API_KEY"), "{stdout}");
+    assert!(
+        stdout.contains("phantom audit alerts --backfill"),
+        "{stdout}"
+    );
+
+    // Read-only: nothing was persisted.
+    assert!(!phantom_dir.join("leak-incidents.jsonl").exists());
+}
+
+/// With nothing found, --json keeps the same object shape (it used to print
+/// a bare `[]`).
+#[test]
+fn audit_incidents_json_shape_is_stable_when_empty() {
+    let tmp = common::canonical_tempdir();
+    let out = Command::cargo_bin("phantom")
+        .expect("binary not found")
+        .current_dir(tmp.path())
+        .env("HOME", tmp.path())
+        .args(["audit", "incidents", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(report["incidents"], serde_json::json!([]));
+    assert_eq!(report["uncorrelated_incidents"], serde_json::json!([]));
+}

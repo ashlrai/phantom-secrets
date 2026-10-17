@@ -1280,28 +1280,22 @@ pub fn run_incidents(min_confidence: f64, json: bool, auto_rotate_on_high: bool)
 
     // This command is read-only. Correlation and incident persistence are an
     // explicit backfill effect guarded by the audit terminal ceremony.
-    let incidents = engine
-        .active_incidents(min_confidence)
+    // The proxy only appends leak events; incidents are persisted by the
+    // gated `audit alerts --backfill`. Correlate the same window in memory
+    // (nothing written, one audit-log parse) so unpersisted leaks are not
+    // reported as all clear.
+    let view = engine
+        .incident_view(min_confidence)
         .map_err(|e| anyhow::anyhow!("Failed to read leak incidents: {e}"))?;
-
-    if incidents.is_empty() {
-        if json {
-            println!("[]");
-        } else {
-            println!(
-                "{}  No active leak incidents (min_confidence={:.2}). \
-                 Set {} to enable audit logging.",
-                "->".blue().bold(),
-                min_confidence,
-                "PHANTOM_AUDIT=1".cyan()
-            );
-        }
-        return Ok(());
-    }
+    let audit_log_present = view.audit_log_present;
+    let incidents = view.persisted;
+    let uncorrelated = view.uncorrelated;
 
     if json {
+        // One shape whether or not anything was found.
         let out = serde_json::json!({
             "incidents": incidents,
+            "uncorrelated_incidents": uncorrelated,
             "provider_credentials_rotated": [],
         });
         let s = serde_json::to_string_pretty(&out)
@@ -1310,12 +1304,44 @@ pub fn run_incidents(min_confidence: f64, json: bool, auto_rotate_on_high: bool)
         return Ok(());
     }
 
+    if incidents.is_empty() && uncorrelated.is_empty() {
+        if audit_log_present {
+            println!(
+                "{}  No persisted active leak incidents (min_confidence={:.2}).",
+                "->".blue().bold(),
+                min_confidence,
+            );
+        } else {
+            println!(
+                "{}  No active leak incidents (min_confidence={:.2}). \
+                 No audit log exists: set {} to record leak events.",
+                "->".blue().bold(),
+                min_confidence,
+                "PHANTOM_AUDIT=1".cyan()
+            );
+        }
+        return Ok(());
+    }
+
     println!(
         "{}  {} active leak incident(s) (confidence ≥ {:.2})",
         "->".blue().bold(),
-        incidents.len().to_string().red().bold(),
+        (incidents.len() + uncorrelated.len())
+            .to_string()
+            .red()
+            .bold(),
         min_confidence,
     );
+    if !uncorrelated.is_empty() {
+        println!(
+            "{}  {} of them are leak events from the last 24 h in the audit log, not persisted yet (status {}). \
+             Treat each as a possible leak. Persist them and send configured alerts with {}.",
+            "!".yellow().bold(),
+            uncorrelated.len().to_string().red().bold(),
+            "unpersisted".yellow(),
+            "phantom audit alerts --backfill".cyan()
+        );
+    }
     println!();
 
     // ── Table header ──────────────────────────────────────────────────────────
@@ -1329,14 +1355,18 @@ pub fn run_incidents(min_confidence: f64, json: bool, auto_rotate_on_high: bool)
     );
     println!("  {}", "-".repeat(100).dimmed());
 
-    for inc in &incidents {
+    // Unpersisted incidents share the table (same columns, names only).
+    let persisted_count = incidents.len();
+    for (row, inc) in incidents.iter().chain(uncorrelated.iter()).enumerate() {
         let confidence_str = if inc.confidence >= 0.9 {
             format!("{:.2}", inc.confidence).red().bold().to_string()
         } else {
             format!("{:.2}", inc.confidence).yellow().to_string()
         };
 
-        let status = if inc.confidence >= 0.9 {
+        let status = if row >= persisted_count {
+            "unpersisted".yellow().bold().to_string()
+        } else if inc.confidence >= 0.9 {
             "CRITICAL".red().bold().to_string()
         } else {
             "active".yellow().to_string()
