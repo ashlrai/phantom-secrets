@@ -9168,12 +9168,12 @@ mod tests {
             .phantom_validate_secret(params(serde_json::json!({ "name": "OPENAI_API_KEY" })))
             .unwrap();
         let report = result.structured_content.clone().unwrap();
-        assert_eq!(report["metadata_error"], true, "{report}");
-        assert!(report["never_checked"].is_null(), "{report}");
-        assert!(report["is_valid"].is_null(), "{report}");
-        assert!(report["last_check_ts"].is_null(), "{report}");
+        assert_eq!(report["metadata_error"], true);
+        assert!(report["never_checked"].is_null());
+        assert!(report["is_valid"].is_null());
+        assert!(report["last_check_ts"].is_null());
         let note = report["note"].as_str().unwrap();
-        assert!(note.contains("validation sidecar is malformed"), "{note}");
+        assert!(note.contains("validation sidecar is malformed"));
     }
 
     #[test]
@@ -9184,8 +9184,8 @@ mod tests {
             .phantom_validate_secret(params(serde_json::json!({ "name": "OPENAI_API_KEY" })))
             .unwrap();
         let report = result.structured_content.clone().unwrap();
-        assert_eq!(report["metadata_error"], false, "{report}");
-        assert_eq!(report["never_checked"], true, "{report}");
+        assert_eq!(report["metadata_error"], false);
+        assert_eq!(report["never_checked"], true);
     }
 
     #[test]
