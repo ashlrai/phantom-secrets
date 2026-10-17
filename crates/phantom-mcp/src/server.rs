@@ -242,6 +242,102 @@ impl PhantomMcpServer {
         }
     }
 
+    /// The vault half of `phantom_compliance_status`: whether every secret
+    /// of this project is readable here, and whether each has a TTL. A
+    /// locked or keychain-only inventory fails both checks instead of
+    /// reporting an empty or partial vault as compliant.
+    fn compliance_vault_probe(&self) -> ComplianceVaultProbe {
+        let not_verified = |reason: &str| {
+            (
+                false,
+                format!("Not verified: every secret must be readable here. {reason}"),
+            )
+        };
+        if !self.config_path().exists() {
+            return ComplianceVaultProbe {
+                accessible: Err("Vault not accessible — run phantom init.".to_string()),
+                ttl: (
+                    false,
+                    "Phantom not initialized — run phantom init.".to_string(),
+                ),
+            };
+        }
+        let (config, vault) = match self.load_config_and_vault() {
+            Ok(loaded) => loaded,
+            Err(error) => {
+                let detail = format!("Vault could not be opened: {}", error.message);
+                return ComplianceVaultProbe {
+                    ttl: not_verified(&detail),
+                    accessible: Err(detail),
+                };
+            }
+        };
+        if let Err(error) = vault.list() {
+            let detail = format!("Failed to list secrets: {error}");
+            return ComplianceVaultProbe {
+                ttl: not_verified(&detail),
+                accessible: Err(detail),
+            };
+        }
+        let partial = match self.require_readable_inventory(&config, vault.as_ref()) {
+            Ok(note) => note,
+            Err(locked) => Some(locked.message.to_string()),
+        };
+        if let Some(note) = partial {
+            return ComplianceVaultProbe {
+                ttl: not_verified(&note),
+                accessible: Err(note),
+            };
+        }
+        let entries = match vault.list_with_metadata() {
+            Ok(entries) => entries,
+            Err(error) => {
+                return ComplianceVaultProbe {
+                    accessible: Ok(()),
+                    ttl: (
+                        false,
+                        format!("Failed to read secret lifecycle metadata: {error}"),
+                    ),
+                };
+            }
+        };
+        let without_ttl: Vec<&str> = entries
+            .iter()
+            .filter(|(_, meta)| {
+                // A provider-issued expiry without a policy is still a TTL
+                // (same rule as phantom doctor and phantom_secret_rotation_due).
+                !meta
+                    .as_ref()
+                    .is_some_and(|m| m.expires_at.is_some() || m.rotation_policy.is_some())
+            })
+            .map(|(name, _)| name.as_str())
+            .collect();
+        let ttl = if without_ttl.is_empty() {
+            (
+                true,
+                "All secrets have an expiry or a rotation policy (TTL).".to_string(),
+            )
+        } else {
+            let shown = without_ttl.len().min(COMPLIANCE_MAX_LISTED_NAMES);
+            let mut detail = format!(
+                "{} secret(s) have no TTL: {}",
+                without_ttl.len(),
+                without_ttl[..shown].join(", ")
+            );
+            if without_ttl.len() > shown {
+                detail.push_str(&format!(
+                    " (and {} more; phantom_secret_rotation_due lists every one)",
+                    without_ttl.len() - shown
+                ));
+            }
+            (false, detail)
+        };
+        ComplianceVaultProbe {
+            accessible: Ok(()),
+            ttl,
+        }
+    }
+
     fn load_config(&self) -> Result<PhantomConfig, String> {
         let path = self.config_path();
         if !path.exists() {
@@ -4215,11 +4311,14 @@ impl PhantomMcpServer {
     /// Return a compliance status badge for the current project.
     #[tool(
         description = "Return the compliance state of the current Phantom project as a \
-            structured JSON badge. Checks: vault_accessible (vault can be read), \
+            structured JSON badge. Checks: vault_accessible (every secret of this project can be read here; \
+            false for an encrypted-file vault this process cannot open, even when the OS keychain \
+            holds some entries, the same rule as `phantom agent doctor`), \
             audit_enabled (PHANTOM_AUDIT env var is set), \
             precommit_installed (git pre-commit hook contains the current local-only phantom check), \
             env_clean (no unprotected real secrets in any dotenv phantom check scans: .env, .env.local, .env.development, .env.development.local, .env.production, .env.production.local, .env.test, .env.test.local and the configured dotenv_path; read without opening the vault, so it is reported before init and with a locked vault), \
-            secrets_have_ttl (every vault secret has an expiry (expires_at) or a rotation policy set). \
+            secrets_have_ttl (every vault secret has an expiry (expires_at) or a rotation policy set; \
+            false when not every secret can be read; the detail gives the exact count and names at most 20). \
             Each check is true/false with an optional detail string. \
             Overall 'compliant' is true only when all checks pass. Read-only."
     )]
@@ -4230,22 +4329,26 @@ impl PhantomMcpServer {
         let mut checks: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
         let mut all_pass = true;
 
-        // Check 1: vault accessible
-        let vault_ok = if self.config_path().exists() {
-            match self.load_config_and_vault() {
-                Ok((_cfg, vault)) => vault.list().is_ok(),
-                Err(_) => false,
-            }
-        } else {
-            false
-        };
+        // Check 1: vault accessible. One probe feeds checks 1 and 5. The same
+        // rule as `phantom agent doctor`: an encrypted-file vault this process
+        // cannot open is not accessible, whether the keychain it selected
+        // instead is empty (the locked state) or holds some entries (a
+        // keychain-only view). Either way check 5 cannot cover every secret.
+        let probe = self.compliance_vault_probe();
+        let vault_ok = probe.accessible.is_ok();
         if !vault_ok {
             all_pass = false;
         }
-        checks.insert("vault_accessible".to_string(), serde_json::json!({
-            "pass": vault_ok,
-            "detail": if vault_ok { "Vault backend is reachable." } else { "Vault not accessible — run phantom init." },
-        }));
+        checks.insert(
+            "vault_accessible".to_string(),
+            serde_json::json!({
+                "pass": vault_ok,
+                "detail": match &probe.accessible {
+                    Ok(()) => "Vault backend is reachable.".to_string(),
+                    Err(detail) => detail.clone(),
+                },
+            }),
+        );
 
         // Check 2: audit enabled
         let audit_ok = phantom_core::audit::enabled();
@@ -4300,49 +4403,7 @@ impl PhantomMcpServer {
         );
 
         // Check 5: all secrets have TTL
-        let (ttl_ok, ttl_detail) = if self.config_path().exists() {
-            match self.load_config_and_vault() {
-                Ok((_cfg, vault)) => match vault.list_with_metadata() {
-                    Ok(entries) => {
-                        let without_ttl: Vec<&str> = entries
-                            .iter()
-                            .filter(|(_, meta)| {
-                                // A provider-issued expiry without a policy is
-                                // still a TTL (same rule as phantom doctor and
-                                // phantom_secret_rotation_due).
-                                !meta.as_ref().is_some_and(|m| {
-                                    m.expires_at.is_some() || m.rotation_policy.is_some()
-                                })
-                            })
-                            .map(|(name, _)| name.as_str())
-                            .collect();
-                        if without_ttl.is_empty() {
-                            (
-                                true,
-                                "All secrets have an expiry or a rotation policy (TTL)."
-                                    .to_string(),
-                            )
-                        } else {
-                            (
-                                false,
-                                format!(
-                                    "{} secret(s) have no TTL: {}",
-                                    without_ttl.len(),
-                                    without_ttl.join(", ")
-                                ),
-                            )
-                        }
-                    }
-                    Err(e) => (false, format!("Failed to list secrets: {e}")),
-                },
-                Err(_) => (false, "Vault not accessible.".to_string()),
-            }
-        } else {
-            (
-                false,
-                "Phantom not initialized — run phantom init.".to_string(),
-            )
-        };
+        let (ttl_ok, ttl_detail) = probe.ttl;
         if !ttl_ok {
             all_pass = false;
         }
@@ -4529,6 +4590,8 @@ impl PhantomMcpServer {
             Returns: last_check_ts (Unix epoch, 0 = never checked), is_valid (bool), \
             failure_reason (string or null), validator_name (which validator ran), \
             and is_stale (whether the check is older than 24 h). \
+            If the stored results cannot be read, metadata_error is true, a note says why, \
+            and the other status fields are null rather than reporting never_checked. \
             This tool reads persisted ValidationMetadata — it does NOT make a live \
             HTTP request. Use phantom_validate_all to trigger a fresh check. \
             Read-only; no confirm required. Secret VALUES are never returned."
@@ -4551,22 +4614,35 @@ impl PhantomMcpServer {
             )));
         }
 
-        // Load validation metadata (may not exist yet — return a "never checked" record).
-        let meta = vault
-            .get_validation_metadata(&params.name)
-            .unwrap_or_default();
-
-        let is_stale = meta.is_stale(phantom_core::validator::DEFAULT_STALE_SECS);
-
-        let out = serde_json::json!({
-            "name": params.name,
-            "last_check_ts": meta.last_check_ts,
-            "is_valid": meta.is_valid,
-            "failure_reason": meta.failure_reason,
-            "validator_name": meta.validator_name,
-            "is_stale": is_stale,
-            "never_checked": meta.never_checked(),
-        });
+        // A missing record means "never checked". A record that cannot be
+        // read is not: report the error state instead of a default record
+        // that would read as "never checked, not valid".
+        let out = match vault.get_validation_metadata(&params.name) {
+            Ok(meta) => serde_json::json!({
+                "name": params.name,
+                "last_check_ts": meta.last_check_ts,
+                "is_valid": meta.is_valid,
+                "failure_reason": meta.failure_reason,
+                "validator_name": meta.validator_name,
+                "is_stale": meta.is_stale(phantom_core::validator::DEFAULT_STALE_SECS),
+                "never_checked": meta.never_checked(),
+                "metadata_error": false,
+            }),
+            Err(error) => serde_json::json!({
+                "name": params.name,
+                "last_check_ts": null,
+                "is_valid": null,
+                "failure_reason": null,
+                "validator_name": null,
+                "is_stale": null,
+                "never_checked": null,
+                "metadata_error": true,
+                "note": format!(
+                    "Stored validation results could not be read, so this secret's \
+                     validation state is unknown (not \"never checked\"): {error}"
+                ),
+            }),
+        };
 
         json_object_result(&with_vault_note(out, vault_note))
     }
@@ -4964,9 +5040,11 @@ impl PhantomMcpServer {
             secrets and return a structured list, the same answer as `phantom expiry enforce --json`. \
             Each entry has: name (string), expires_at (Unix u64), secs_overdue (u64), \
             status (human-readable string). \
-            With fail_closed=true, secrets that have no expiry policy set are also included \
-            with status='no_expiry_policy'. \
-            Returns { expired: [...], ok_count, no_expiry_count, fail_closed, pass }. \
+            `expired` holds only secrets whose expiry has passed. With fail_closed=true, \
+            secrets that have no expiry set are violations too and are named in \
+            no_expiry_policy (status='no_expiry_policy'); it is empty otherwise. \
+            Returns { expired: [...], no_expiry_policy: [...], ok_count, no_expiry_count, \
+            fail_closed, pass }. \
             pass=true means no action is needed. Read-only; no confirm required. \
             Secret VALUES are never returned."
     )]
@@ -4974,8 +5052,6 @@ impl PhantomMcpServer {
         &self,
         Parameters(params): Parameters<PhantomExpiryEnforceParams>,
     ) -> Result<CallToolResult, McpError> {
-        use phantom_core::rotation_strategy::{check_expiry, ExpiryStatus};
-
         // TTLs live in vault metadata (`phantom expiry set` writes them there
         // and `phantom expiry enforce` reads them there). This gate must not
         // pass over secrets in a vault this process cannot open.
@@ -4985,56 +5061,11 @@ impl PhantomMcpServer {
             .list_with_metadata()
             .map_err(|e| vault_read_err("Failed to read vault lifecycle metadata", e))?;
         let now = phantom_vault::metadata::now_secs();
-
-        let mut expired: Vec<serde_json::Value> = Vec::new();
-        let mut no_expiry_violations: Vec<serde_json::Value> = Vec::new();
-        let mut ok_count: usize = 0;
-        let mut no_expiry_count: usize = 0;
-
-        for (name, metadata) in &entries {
-            match metadata.as_ref().and_then(|metadata| metadata.expires_at) {
-                None => {
-                    no_expiry_count += 1;
-                    if params.fail_closed {
-                        no_expiry_violations.push(serde_json::json!({
-                            "name": name,
-                            "status": "no_expiry_policy",
-                        }));
-                    }
-                }
-                Some(expires_at) => {
-                    let status = check_expiry(expires_at, 0, now);
-                    if status.is_expired() {
-                        let secs_overdue = match &status {
-                            ExpiryStatus::Expired { secs_overdue } => *secs_overdue,
-                            _ => 0,
-                        };
-                        expired.push(serde_json::json!({
-                            "name": name,
-                            "expires_at": expires_at,
-                            "secs_overdue": secs_overdue,
-                            "status": status.label(),
-                        }));
-                    } else {
-                        ok_count += 1;
-                    }
-                }
-            }
-        }
-
-        // Merge no-expiry violations if fail_closed
-        let mut all_violations = expired.clone();
-        all_violations.extend(no_expiry_violations);
-
-        let pass = all_violations.is_empty();
-
-        let out = serde_json::json!({
-            "expired": all_violations,
-            "ok_count": ok_count,
-            "no_expiry_count": no_expiry_count,
-            "fail_closed": params.fail_closed,
-            "pass": pass,
-        });
+        // One builder for this tool and `phantom expiry enforce --json`.
+        let report =
+            phantom_vault::metadata::expiry_enforce_report(&entries, params.fail_closed, now);
+        let out = serde_json::to_value(&report)
+            .map_err(|error| internal_err(format!("Failed to encode expiry report: {error}")))?;
 
         json_object_result(&with_vault_note(out, vault_note))
     }
@@ -5579,6 +5610,18 @@ fn retrieve_optional_secret(
 
 /// Most access records `phantom_audit_analytics` returns in one response.
 const MCP_ANALYTICS_MAX_RECORDS: u32 = 10_000;
+
+/// Most secret names `phantom_compliance_status` lists in one check detail;
+/// the count is always exact.
+const COMPLIANCE_MAX_LISTED_NAMES: usize = 20;
+
+/// See `PhantomMcpServer::compliance_vault_probe`.
+struct ComplianceVaultProbe {
+    /// `Err(detail)` when not every secret of the project is readable here.
+    accessible: Result<(), String>,
+    /// The `secrets_have_ttl` check: pass and detail.
+    ttl: (bool, String),
+}
 
 /// Largest `phantom_audit_analytics` body (pretty JSON or CSV), in bytes. The
 /// CLI writes up to 64 MiB to a file or pipe; an MCP response lands in an
@@ -9080,6 +9123,71 @@ mod tests {
         }
     }
 
+    /// A readable vault whose stored validation results cannot be read.
+    struct UnreadableValidationResults;
+
+    impl phantom_vault::VaultBackend for UnreadableValidationResults {
+        fn store(&self, _: &str, _: &str) -> phantom_core::error::Result<()> {
+            Ok(())
+        }
+        fn retrieve(&self, name: &str) -> phantom_core::error::Result<zeroize::Zeroizing<String>> {
+            Err(phantom_core::error::PhantomError::SecretNotFound(
+                name.to_string(),
+            ))
+        }
+        fn delete(&self, _: &str) -> phantom_core::error::Result<()> {
+            Ok(())
+        }
+        fn list(&self) -> phantom_core::error::Result<Vec<String>> {
+            Ok(vec!["OPENAI_API_KEY".to_string()])
+        }
+        fn backend_name(&self) -> &str {
+            "encrypted-file"
+        }
+        fn get_validation_metadata(
+            &self,
+            _: &str,
+        ) -> phantom_core::error::Result<phantom_core::validator::ValidationMetadata> {
+            Err(phantom_core::error::PhantomError::VaultError(
+                "validation sidecar is malformed".to_string(),
+            ))
+        }
+    }
+
+    /// A read error on stored validation results was reported as
+    /// `never_checked: true, is_valid: false`, telling the agent to run a
+    /// first check rather than that the state is unknown.
+    #[test]
+    fn validate_secret_reports_unreadable_results_not_never_checked() {
+        let _environment = TestEnvironment::new();
+        let _home = TestHome::new();
+        let (server, _dir) = setup_initialized_project();
+        let _vault = TestVault::serve(|| Box::new(UnreadableValidationResults));
+
+        let result = server
+            .phantom_validate_secret(params(serde_json::json!({ "name": "OPENAI_API_KEY" })))
+            .unwrap();
+        let report = result.structured_content.clone().unwrap();
+        assert_eq!(report["metadata_error"], true);
+        assert!(report["never_checked"].is_null());
+        assert!(report["is_valid"].is_null());
+        assert!(report["last_check_ts"].is_null());
+        let note = report["note"].as_str().unwrap();
+        assert!(note.contains("validation sidecar is malformed"));
+    }
+
+    #[test]
+    fn validate_secret_reports_metadata_error_false_when_readable() {
+        let _environment = TestEnvironment::new();
+        let (server, _dir) = setup_initialized_project();
+        let result = server
+            .phantom_validate_secret(params(serde_json::json!({ "name": "OPENAI_API_KEY" })))
+            .unwrap();
+        let report = result.structured_content.clone().unwrap();
+        assert_eq!(report["metadata_error"], false);
+        assert_eq!(report["never_checked"], true);
+    }
+
     #[test]
     fn check_runtime_reports_names_never_tokens() {
         let _environment = TestEnvironment::new();
@@ -10988,16 +11096,35 @@ mod tests {
         assert_eq!(permissive["ok_count"], 0);
         assert_eq!(permissive["no_expiry_count"], 1, "{permissive}");
 
+        assert_eq!(permissive["no_expiry_policy"], serde_json::json!([]));
+
         let strict = report(true);
         assert_eq!(strict["pass"], false);
-        let names: Vec<&str> = strict["expired"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|entry| entry["name"].as_str().unwrap())
-            .collect();
-        assert_eq!(names, ["OPENAI_API_KEY", "DATABASE_URL"], "{strict}");
-        assert_eq!(strict["expired"][1]["status"], "no_expiry_policy");
+        let names = |field: &str| -> Vec<String> {
+            strict[field]
+                .as_array()
+                .unwrap_or_else(|| panic!("{field} missing: {strict}"))
+                .iter()
+                .map(|entry| entry["name"].as_str().unwrap().to_string())
+                .collect()
+        };
+        // `expired` holds only truly expired secrets, as the CLI's does; the
+        // no-policy violations have their own field.
+        assert_eq!(names("expired"), ["OPENAI_API_KEY"], "{strict}");
+        assert_eq!(names("no_expiry_policy"), ["DATABASE_URL"], "{strict}");
+        assert_eq!(strict["no_expiry_policy"][0]["status"], "no_expiry_policy");
+        assert_eq!(strict["ok_count"], 0);
+        assert_eq!(strict["no_expiry_count"], 1);
+
+        // Same fields as `phantom expiry enforce --json`, which serializes
+        // the same report.
+        let cli_shape =
+            serde_json::to_value(phantom_vault::metadata::expiry_enforce_report(&[], true, 0))
+                .unwrap();
+        let keys = |value: &serde_json::Value| -> Vec<String> {
+            value.as_object().unwrap().keys().cloned().collect()
+        };
+        assert_eq!(keys(&strict), keys(&cli_shape), "{strict}");
     }
 
     #[test]
@@ -12944,6 +13071,110 @@ mod tests {
                 .unwrap(),
             "secrets_have_ttl should be true after an explicit policy is set"
         );
+    }
+
+    fn compliance_report(server: &PhantomMcpServer) -> serde_json::Value {
+        parse_result_json(
+            &server
+                .phantom_compliance_status(Parameters(ComplianceStatusParams {}))
+                .unwrap(),
+        )
+    }
+
+    /// An empty keychain beside a locked encrypted-file vault is not an
+    /// accessible vault with nothing lacking a TTL: both checks fail and the
+    /// badge is not compliant.
+    #[test]
+    fn compliance_status_fails_a_locked_file_vault() {
+        let _environment = TestEnvironment::new();
+        let _home = TestHome::new();
+        let (server, _dir) = locked_file_vault_project();
+        let _vault = TestVault::serve(|| Box::new(EmptyKeychain));
+
+        let json = compliance_report(&server);
+        let vault = &json["checks"]["vault_accessible"];
+        assert_eq!(vault["pass"], false, "{json}");
+        assert!(
+            vault["detail"].as_str().unwrap().contains("Vault locked"),
+            "{json}"
+        );
+        let ttl = &json["checks"]["secrets_have_ttl"];
+        assert_eq!(ttl["pass"], false, "{json}");
+        assert!(
+            ttl["detail"].as_str().unwrap().starts_with("Not verified"),
+            "{json}"
+        );
+        assert_eq!(json["compliant"], false, "{json}");
+    }
+
+    /// A keychain holding some entries beside a locked file vault covers only
+    /// part of the project, as `phantom agent doctor` reports it: not
+    /// accessible, and the TTL check is not verified over the partial view.
+    #[test]
+    fn compliance_status_fails_a_keychain_only_view() {
+        let _environment = TestEnvironment::new();
+        let _home = TestHome::new();
+        let (server, _dir) = locked_file_vault_project();
+        let _vault = TestVault::serve(|| Box::new(KeychainWithOne));
+
+        let json = compliance_report(&server);
+        let vault = &json["checks"]["vault_accessible"];
+        assert_eq!(vault["pass"], false, "{json}");
+        assert!(
+            vault["detail"]
+                .as_str()
+                .unwrap()
+                .contains("covers only the OS keychain"),
+            "{json}"
+        );
+        let ttl = &json["checks"]["secrets_have_ttl"];
+        assert_eq!(ttl["pass"], false, "{json}");
+        assert!(
+            ttl["detail"].as_str().unwrap().starts_with("Not verified"),
+            "{json}"
+        );
+    }
+
+    /// Readable vault, 25 names, none with lifecycle metadata.
+    struct ManyWithoutTtl;
+
+    impl phantom_vault::VaultBackend for ManyWithoutTtl {
+        fn store(&self, _: &str, _: &str) -> phantom_core::error::Result<()> {
+            Ok(())
+        }
+        fn retrieve(&self, name: &str) -> phantom_core::error::Result<zeroize::Zeroizing<String>> {
+            Err(phantom_core::error::PhantomError::SecretNotFound(
+                name.to_string(),
+            ))
+        }
+        fn delete(&self, _: &str) -> phantom_core::error::Result<()> {
+            Ok(())
+        }
+        fn list(&self) -> phantom_core::error::Result<Vec<String>> {
+            Ok((0..25).map(|index| format!("NAME_{index:02}")).collect())
+        }
+        fn backend_name(&self) -> &str {
+            "encrypted-file"
+        }
+    }
+
+    /// The detail names a bounded sample but always the exact count.
+    #[test]
+    fn compliance_status_ttl_detail_is_bounded_with_exact_count() {
+        let _environment = TestEnvironment::new();
+        let _home = TestHome::new();
+        let (server, _dir) = setup_initialized_project();
+        let _vault = TestVault::serve(|| Box::new(ManyWithoutTtl));
+
+        let json = compliance_report(&server);
+        assert_eq!(json["checks"]["vault_accessible"]["pass"], true, "{json}");
+        let ttl = &json["checks"]["secrets_have_ttl"];
+        assert_eq!(ttl["pass"], false, "{json}");
+        let detail = ttl["detail"].as_str().unwrap();
+        assert!(detail.starts_with("25 secret(s) have no TTL: "), "{detail}");
+        assert!(detail.contains("NAME_19"), "{detail}");
+        assert!(!detail.contains("NAME_20"), "{detail}");
+        assert!(detail.contains("and 5 more"), "{detail}");
     }
 
     #[test]
