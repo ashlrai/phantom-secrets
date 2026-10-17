@@ -66,6 +66,12 @@ pub fn validate_dotenv_basename(name: &str) -> Result<String> {
     Ok(name.to_string())
 }
 
+/// Whether `name` is one of the files [`resolve_dotenv`] reads to choose the
+/// managed dotenv when `.phantom.toml` names none.
+pub fn is_resolver_candidate(name: &str) -> bool {
+    KNOWN_DOTENV_NAMES.contains(&name)
+}
+
 /// Parse the dotenv `name` in `project_dir` when it is a regular file.
 /// `Ok(None)` when it does not exist; a symlink or any other non-regular file
 /// is refused without being read. Messages name the file by `name`, relative to
