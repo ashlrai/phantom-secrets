@@ -302,6 +302,7 @@ phantom setup --client claude     # project MCP; see docs/claude-code.md for v0.
 phantom setup --client cursor     # ~/.cursor/mcp.json
 phantom setup --client windsurf   # ~/.codeium/windsurf/mcp_config.json
 phantom setup --client codex      # ~/.codex/config.toml
+phantom setup --client gemini     # ~/.gemini/settings.json (Gemini CLI)
 phantom setup --client claude --print   # snippet to stdout for any other client
 ```
 
@@ -314,7 +315,7 @@ the new config.
 
 Phantom's stdio MCP server can be configured in MCP clients that support local
 command servers. The setup writer currently has reviewed presets for Claude
-Code, Cursor, Windsurf, and Codex; other clients require their own compatible
+Code, Cursor, Windsurf, Codex, and Gemini CLI; other clients require their own compatible
 configuration.
 
 ## Cloud backup + Dashboard
@@ -419,7 +420,9 @@ dashboard is designed to show team memberships and member lists.
 | `phantom check` | Scan for unprotected secrets (pre-commit hook, `--staged`, `--runtime`) |
 | `phantom sync` | Push secrets to Vercel / Railway (`--dry-run --json` previews safely; `--only PATTERN` filters by glob, repeatable) |
 | `phantom pull` | Pull secrets from Vercel / Railway into vault |
-| `phantom setup` | Wire Phantom into an AI client. `--client claude` (default), `cursor`, `windsurf`, or `codex`. Add `--print` to emit the config snippet to stdout. `--status` is read-only: it reports which clients (including Gemini CLI) have Phantom wired (`--json` for automation) |
+| `phantom setup` | Wire Phantom into an AI client. `--client claude` (default), `cursor`, `windsurf`, `codex`, or `gemini`. Add `--print` to emit the config snippet to stdout. `--status` is read-only: it reports which clients have Phantom wired (`--json` for automation) |
+| `phantom mcp serve` | Run the MCP stdio server in-process; this is the entry `phantom setup` writes into AI-client configs |
+| `phantom mcp-approve <NONCE>` | From an attached trusted terminal, review the bounded value-blind effect and exact parameters for a pending MCP nonce, type its fresh challenge, and receive the one-use `approval_token` |
 | `phantom env` | Generate `.env.example` for team onboarding |
 | `phantom export` | From an attached trusted terminal, review an exact value-blind plan, type its fresh challenge, and enter a dedicated passphrase through the hidden prompt. Export `--passphrase-file`, plaintext export, argv passphrases, existing targets, symlinks, and paths outside the project fail closed. |
 | `phantom import` | From an attached trusted terminal, review and type the exact source/target/name/overwrite challenge before restoring a backup or importing Doppler, Infisical, dotenvx, 1Password, or env data. `--force` selects the reviewed overwrite set but never bypasses consent. A bounded private passphrase file is accepted only on non-Windows platforms and still requires the terminal ceremony. |
@@ -427,7 +430,7 @@ dashboard is designed to show team memberships and member lists.
 | `phantom audit tail` | Follow the audit log live (`--op`, `--name` filters) |
 | `phantom audit path` | Print the absolute path to the audit log file |
 | `phantom audit verify` | Verify HMAC-SHA256 chain integrity; exits 1 if tampering detected |
-| `phantom leaks plan` | Read-only dry run of what leak response would do for active incidents (`--min-confidence`, `--json`). Writes nothing, makes no network calls, prints names only |
+| `phantom leaks plan` | Read-only dry run of what leak response would do for active incidents (`--min-confidence`, `--json`). Writes nothing, makes no network calls, prints names only. Reads the optional `[leak_response]` policy (`on_leak = "off" | "plan" | "revoke"`, default `plan`; `revoke` needs `allow_revoke = true` and still only plans because live revoke is disabled in shipped builds) |
 | `phantom login` | From an attached trusted terminal, approve an exact network plan, then separately approve browser opening/polling and keychain persistence |
 | `phantom logout` | From an attached trusted terminal, approve deletion of persistent cloud authorization from the OS keychain |
 | `phantom cloud push` | After exact trusted-terminal confirmation, push a client-encrypted vault. A remote success followed by local reconciliation failure is partial success and must not be retried automatically. |
@@ -443,6 +446,7 @@ dashboard is designed to show team memberships and member lists.
 | `phantom validate` / `--watch` | Send selected credentials to configured validators only after exact trusted-terminal consent; watch authorization ends when config or the vault name set changes |
 | `phantom validate schedule` | Read status without mutation; setting or disabling persistent scheduler policy requires attached terminals and an exact typed challenge |
 | `phantom expiry set` | Persist lifecycle policy only after attached-terminal confirmation; `expiry enforce` is read-only, while `expiry rotate` is only a deprecated local token remap |
+| `phantom secrets-expiring-soon` | List expired or expiring secrets (`--days N`, default 7; `--json`). `--auto-rotate` is a deprecated local `phm_` token remap only; provider credentials and expiry metadata stay unchanged, and `--sync` is rejected |
 | `phantom open [page]` | From an attached trusted terminal, open only the reviewed aliases `dashboard`, `billing`, `team`, `docs`, `pricing`, `github`, `issues`, or `site`; arbitrary URLs, paths, and unknown aliases are rejected |
 | `phantom upgrade` | `--check-only` performs a read-only version lookup only for an eligible standalone install. Live standalone replacement requires attached terminals and two exact challenges; managed installs route to their owner, ambiguous installs fail closed, and `--force` is rejected. |
 | `phantom completion <shell>` | Print a shell-completion script (bash, zsh, fish, powershell, elvish) |
@@ -490,7 +494,7 @@ fails closed before vendor execution. No single-provider exception exists.
 - **Script wrapping** -- `phantom wrap` wraps selected runtime/build scripts (`dev`, `start`, `serve`, `build`, `deploy`, `preview`) and deliberately leaves test, lint, type, and format scripts alone
 - **Watch mode** -- `phantom watch` reports new unprotected secrets; legacy `--auto` hard-denies before mutation, so protection stays a reviewed transactional `phantom init`
 - **Multi-project scanner** -- `phantom init --all <DIR>` processes eligible repositories found within a five-level bounded scan and stops below the first matching repository; use `--dry-run` to verify the exact set and `--jobs N` to control parallelism
-- **Multi-IDE setup** -- `phantom setup --client claude|cursor|windsurf|codex` writes the right MCP config for each AI tool, or `--print` for a generic snippet
+- **Multi-IDE setup** -- `phantom setup --client claude|cursor|windsurf|codex|gemini` writes the right MCP config for each AI tool, or `--print` for a generic snippet
 - **Agent readiness** -- `phantom agent doctor` and `phantom agent report --json` report bounded protection findings and activation gaps; they do not certify a repository or agent as safe
 - **Enriched diagnostics** -- `phantom doctor` reports install source, vault backend, audit-log status, Argon2 params, and MCP wiring per client
 - **Secret explainer** -- `phantom why <KEY>` explains detection heuristics
@@ -579,7 +583,7 @@ and verified through its tap, and currently remains at `v0.7.8`.
 ### Connect an MCP client
 
 ```bash
-$ phantom setup --client claude   # or cursor, windsurf, codex
+$ phantom setup --client claude   # or cursor, windsurf, codex, gemini
 ```
 
 ## Architecture

@@ -96,7 +96,7 @@ Fix it automatically:
 phantom setup --client claude
 ```
 
-This wires the MCP server, removes legacy Phantom-managed dotenv allow grants, and preserves deny rules in `.claude/settings.local.json`. For other AI tools, swap in `--client cursor|windsurf|codex`. Agents can use Phantom's value-blind MCP inventory without dotenv read access.
+This wires the MCP server, removes legacy Phantom-managed dotenv allow grants, and preserves deny rules in `.claude/settings.local.json`. For other AI tools, swap in `--client cursor|windsurf|codex|gemini`. Agents can use Phantom's value-blind MCP inventory without dotenv read access.
 
 You can verify with:
 ```bash

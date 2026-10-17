@@ -1,4 +1,6 @@
 mod commands;
+#[cfg(test)]
+mod doc_facts;
 mod util;
 
 #[cfg(test)]
@@ -79,7 +81,7 @@ enum Commands {
         empty: bool,
     },
 
-    /// Wire Phantom into an AI client (Claude Code, Cursor, Windsurf, Codex)
+    /// Wire Phantom into an AI client (Claude Code, Cursor, Windsurf, Codex, Gemini CLI)
     #[command(next_help_heading = "Setup")]
     Setup {
         /// AI client to configure. Defaults to Claude Code if omitted.
@@ -1133,7 +1135,9 @@ fn run() -> anyhow::Result<()> {
                 commands::audit::run_tail(op.as_deref(), name.as_deref())
             }
             AuditAction::Path => commands::audit::run_path(),
-            AuditAction::Verify { with_context } => commands::audit::run_verify(with_context),
+            AuditAction::Verify { with_context } => {
+                commands::audit::run_verify(with_context, global_json)
+            }
             AuditAction::Stats {
                 json,
                 top,

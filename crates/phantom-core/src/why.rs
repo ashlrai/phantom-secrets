@@ -228,7 +228,7 @@ impl<'a> ExecVerdict<'a> {
     }
 }
 
-fn blocked_next_step(blocker: &ExecBlocker<'_>) -> String {
+pub fn blocked_next_step(blocker: &ExecBlocker<'_>) -> String {
     let service = blocker.service();
     match blocker {
         ExecBlocker::ConnectionString { key, .. } => format!(
