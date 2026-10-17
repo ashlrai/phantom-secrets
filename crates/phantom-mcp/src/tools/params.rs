@@ -648,6 +648,12 @@ pub struct AuditExportReportParams {
     /// Filter rows to operations containing this string. Omit for all ops.
     #[serde(default)]
     pub operation: Option<String>,
+    /// Maximum audit rows `action="export"` returns, newest kept (default:
+    /// 1000; values above 10000 are treated as 10000). A 1 MiB response
+    /// ceiling may return fewer; records_truncated and records_total then
+    /// say so. Ignored by `action="report"`.
+    #[serde(default = "default_analytics_max_records")]
+    pub max_records: u32,
     /// Save the compliance report to ~/.phantom/reports/ (report action only).
     #[serde(default)]
     pub save: bool,

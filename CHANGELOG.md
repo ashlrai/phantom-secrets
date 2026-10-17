@@ -82,6 +82,19 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   read once against one `now` (`phantom_core::analytics::export_analytics`),
   and `generated_at` is that same instant.
 
+### Fixed (`phantom_audit_export_report` with `action: "export"`)
+
+- The export returned every matching audit row inline, however many there
+  were. It is now bounded like `phantom_audit_analytics`: only the newest
+  `max_records` (new parameter: default 1000, at most 10000) within a
+  1 MiB response. The CSV or JSON array stays the first text block, and
+  `records_total`, `records_returned`, `records_truncated` and the
+  effective `max_records` come back in `structuredContent` and a second
+  JSON text block. `phantom audit export-range` still writes every row.
+- An empty match returned a prose sentence even when `format: "json"` was
+  requested. It now returns `[]` for JSON (as `phantom audit export-range`
+  does) and a header-only CSV for CSV, with zero counts.
+
 ### Fixed (audit CSV exports and `phantom audit export-range`)
 
 - Audit CSV exports did not quote a field containing a bare carriage
