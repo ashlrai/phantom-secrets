@@ -544,7 +544,7 @@ fn next_steps(logged_in: bool, has_cloud_version: bool) -> Vec<(&'static str, &'
         ),
         (
             "Connect your AI client (writes its MCP config):",
-            "phantom setup --client claude|cursor|windsurf|codex   # --print to stdout",
+            "phantom setup --client claude|cursor|windsurf|codex|gemini   # --print to stdout",
         ),
         (
             "Run your app or agent with secret injection:",

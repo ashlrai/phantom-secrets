@@ -13,6 +13,22 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   reported as unavailable because the broker is not wired into the CLI.
   Revert: remove the `Status` variant of `AgentAction`; nothing else depends on it.
 
+### Fixed (MCP expiry gate and sync platform; Gemini CLI setup)
+
+- MCP `phantom_expiry_enforce` read TTLs only from `.phantom.toml` overrides,
+  while `phantom expiry set` writes them to vault metadata. It returned
+  `pass: true` for a secret whose TTL had expired, and with `fail_closed: true`
+  it passed secrets with no TTL at all. It now reads vault metadata and gives
+  the same answer as `phantom expiry enforce --json`, and it refuses a locked
+  encrypted-file vault instead of passing over it.
+- MCP `phantom_sync` answered an unsupported `platform` such as `"heroku"` with
+  "No sync targets configured". It now returns invalid params naming the
+  supported platforms (vercel, railway). Platform names match case-insensitively.
+- `phantom setup --status` listed Gemini CLI, but `phantom setup --client
+  gemini` was rejected. It now writes `mcpServers.phantom` into
+  `~/.gemini/settings.json` (other settings are kept), and `--print` shows the
+  snippet.
+
 ### Fixed (agent report)
 
 - A malformed dotenv no longer hides a missing managed dotenv in
