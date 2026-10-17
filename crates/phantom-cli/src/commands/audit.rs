@@ -138,7 +138,7 @@ pub enum AuditAction {
     ///   phantom audit incidents
     Incidents {
         /// Only show incidents with confidence ≥ this value (default: 0.5)
-        #[arg(long, default_value_t = 0.5, value_name = "SCORE")]
+        #[arg(long, default_value_t = 0.5, value_name = "SCORE", value_parser = parse_min_confidence)]
         min_confidence: f64,
         /// Emit raw JSON lines instead of human-readable output
         #[arg(long)]
@@ -331,24 +331,75 @@ pub fn run_path() -> Result<()> {
     Ok(())
 }
 
-pub fn run_verify(with_context: bool) -> Result<()> {
+/// Clap parser for `--min-confidence`: a score in 0.0..=1.0.
+fn parse_min_confidence(raw: &str) -> std::result::Result<f64, String> {
+    let value: f64 = raw
+        .parse()
+        .map_err(|_| format!("'{raw}' is not a number"))?;
+    phantom_core::leak_correlation::check_min_confidence(value)
+}
+
+pub fn run_verify(with_context: bool, json: bool) -> Result<()> {
     let path = resolve_path()?;
-    if !path.exists() {
-        println!(
-            "{}  No audit log found — set {} to start logging.",
-            "->".blue().bold(),
-            "PHANTOM_AUDIT=1".cyan()
-        );
+    let log_present = path.exists();
+    // A retained head checkpoint proves a signed era existed, so a missing log
+    // beside it is a deletion: verify it (the walk reports a head mismatch)
+    // instead of reporting a log that never started.
+    let head_present = phantom_core::audit::head_checkpoint_path()
+        .map(|head| head.exists())
+        .unwrap_or(false);
+    if !log_present && !head_present {
+        if json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "log_present": false,
+                    "clean": true,
+                    "verified": 0,
+                    "note": "No audit log found. Set PHANTOM_AUDIT=1 to start logging.",
+                }))?
+            );
+        } else {
+            println!(
+                "{}  No audit log found — set {} to start logging.",
+                "->".blue().bold(),
+                "PHANTOM_AUDIT=1".cyan()
+            );
+        }
         return Ok(());
     }
 
     // When --with-context is requested, use the richer verify path.
     if with_context {
+        if json {
+            anyhow::bail!(
+                "`phantom audit verify --with-context` has no JSON form; run `phantom audit verify --json` for the machine-readable result"
+            );
+        }
         return run_verify_with_context();
     }
 
     let report = phantom_core::audit::verify_log()
         .map_err(|e| anyhow::anyhow!("Failed to verify audit log: {e}"))?;
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&verify_report_json(&report, log_present))?
+        );
+        if !report.is_clean() {
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+
+    if !log_present {
+        eprintln!(
+            "{}  {} is missing but its signed head checkpoint remains; the log was deleted or moved.",
+            "!".red().bold(),
+            path.display()
+        );
+    }
 
     let status = if report.is_clean() {
         "ok".green().bold().to_string()
@@ -457,6 +508,31 @@ pub fn run_verify(with_context: bool) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// The `phantom audit verify --json` object. Counts and line numbers only:
+/// it never carries event names, values, or HMACs.
+fn verify_report_json(report: &phantom_core::audit::VerifyReport, log_present: bool) -> Value {
+    let head = if report.head_missing {
+        "missing"
+    } else if report.head_mismatch {
+        "mismatch"
+    } else {
+        "ok"
+    };
+    serde_json::json!({
+        "log_present": log_present,
+        "clean": report.is_clean(),
+        "verified": report.verified,
+        "tampered": report.tampered,
+        "malformed": report.malformed,
+        "sequence_errors": report.sequence_errors,
+        "legacy": report.legacy,
+        "head": head,
+        "tampered_lines": report.tampered_lines,
+        "malformed_lines": report.malformed_lines,
+        "sequence_error_lines": report.sequence_error_lines,
+    })
 }
 
 /// `phantom audit verify --with-context`: decrypt and display `encrypted_context`
@@ -1535,9 +1611,7 @@ pub fn run_export_range(
     op: Option<&str>,
     pid: Option<u64>,
 ) -> Result<()> {
-    use phantom_core::audit_export::{
-        parse_date_to_ts, parse_date_to_ts_end, AuditExporter, ExportFilter,
-    };
+    use phantom_core::audit_export::{parse_date_range, AuditExporter, ExportFilter};
 
     if !matches!(format, "csv" | "json") {
         return Err(anyhow::anyhow!(
@@ -1545,13 +1619,14 @@ pub fn run_export_range(
             format
         ));
     }
+    let (from_ts, to_ts) = parse_date_range(from, to).map_err(anyhow::Error::msg)?;
 
     let exporter =
         AuditExporter::new().map_err(|e| anyhow::anyhow!("Failed to initialise exporter: {e}"))?;
 
     let filter = ExportFilter {
-        from_ts: parse_date_to_ts(from),
-        to_ts: parse_date_to_ts_end(to),
+        from_ts,
+        to_ts,
         secret_name: name.map(|s| s.to_string()),
         operation: op.map(|s| s.to_string()),
         pid,
@@ -1594,7 +1669,7 @@ pub fn run_report(
     save: bool,
     compact: bool,
 ) -> Result<()> {
-    use phantom_core::audit_export::{parse_date_to_ts, parse_date_to_ts_end, AuditExporter};
+    use phantom_core::audit_export::{parse_date_range, AuditExporter};
 
     if report_type != "compliance" {
         return Err(anyhow::anyhow!(
@@ -1603,11 +1678,10 @@ pub fn run_report(
         ));
     }
 
+    let (from_ts, to_ts) = parse_date_range(from, to).map_err(anyhow::Error::msg)?;
+
     let exporter =
         AuditExporter::new().map_err(|e| anyhow::anyhow!("Failed to initialise exporter: {e}"))?;
-
-    let from_ts = parse_date_to_ts(from);
-    let to_ts = parse_date_to_ts_end(to);
 
     let report = exporter
         .generate_compliance_report(from_ts, to_ts)
