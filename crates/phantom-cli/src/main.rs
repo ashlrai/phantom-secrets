@@ -236,9 +236,15 @@ enum Commands {
         /// Legacy positional secret value; rejected because argv is observable
         #[arg(hide = true)]
         value: Option<String>,
-        /// Read one new-name value from stdin; existing names are denied before the read
+        /// Read one new-name value from a pipe up to EOF (64 KiB cap); input with more than one line needs --multiline or --first-line; existing names are denied before the read
         #[arg(long)]
         stdin: bool,
+        /// With --stdin: store every line of multi-line input (PEM keys, JSON documents)
+        #[arg(long, requires = "stdin", conflicts_with = "first_line")]
+        multiline: bool,
+        /// With --stdin: store only the first line (pass/gopass put metadata after it)
+        #[arg(long, requires = "stdin")]
+        first_line: bool,
     },
 
     /// Remove a secret transactionally after an exact trusted-terminal challenge
@@ -948,7 +954,22 @@ fn run() -> anyhow::Result<()> {
             show_expiry,
             min_anomaly_score,
         } => commands::list::run_with_expiry(json, show_expiry, min_anomaly_score),
-        Commands::Add { name, value, stdin } => commands::add::run(&name, value, stdin),
+        Commands::Add {
+            name,
+            value,
+            stdin,
+            multiline,
+            first_line,
+        } => {
+            let lines = if multiline {
+                commands::add::StdinLines::Multiline
+            } else if first_line {
+                commands::add::StdinLines::FirstLine
+            } else {
+                commands::add::StdinLines::SingleOnly
+            };
+            commands::add::run(&name, value, stdin, lines)
+        }
         Commands::Remove { name } => commands::remove::run(&name),
         Commands::Reveal {
             name,
@@ -1302,7 +1323,35 @@ fn run() -> anyhow::Result<()> {
 #[cfg(test)]
 mod help_tests {
     use super::Cli;
-    use clap::CommandFactory;
+    use clap::{CommandFactory, Parser};
+
+    #[test]
+    fn add_line_flags_require_stdin_and_exclude_each_other() {
+        for args in [
+            &["phantom", "add", "NAME", "--multiline"][..],
+            &["phantom", "add", "NAME", "--first-line"][..],
+            &[
+                "phantom",
+                "add",
+                "NAME",
+                "--stdin",
+                "--multiline",
+                "--first-line",
+            ][..],
+        ] {
+            assert!(
+                Cli::try_parse_from(args).is_err(),
+                "{args:?} must be rejected"
+            );
+        }
+        for args in [
+            &["phantom", "add", "NAME", "--stdin"][..],
+            &["phantom", "add", "NAME", "--stdin", "--multiline"][..],
+            &["phantom", "add", "NAME", "--stdin", "--first-line"][..],
+        ] {
+            assert!(Cli::try_parse_from(args).is_ok(), "{args:?} must parse");
+        }
+    }
 
     fn grouped_section(about: &str) -> &str {
         about
