@@ -31,7 +31,7 @@ use std::collections::BTreeMap;
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 
-use crate::analytics::unix_to_iso8601;
+use crate::analytics::{csv_escape, unix_to_iso8601};
 use crate::leak_correlation::LeakIncident;
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -796,14 +796,6 @@ fn now_unix() -> u64 {
         .unwrap_or(0)
 }
 
-fn csv_escape(s: &str) -> String {
-    if s.contains(',') || s.contains('"') || s.contains('\n') {
-        format!("\"{}\"", s.replace('"', "\"\""))
-    } else {
-        s.to_string()
-    }
-}
-
 /// Parse `YYYY-MM-DD` into a Unix timestamp at midnight UTC.
 /// Returns 0 on parse failure or empty string.
 pub fn parse_date_to_ts(s: &str) -> u64 {
@@ -1054,6 +1046,24 @@ mod tests {
         );
         assert!(csv.contains("low"));
         assert!(csv.contains("myhost"));
+    }
+
+    #[test]
+    fn rows_to_csv_quotes_carriage_returns_in_hostname() {
+        let rows = vec![AuditExportRow {
+            timestamp: 1_750_000_000,
+            datetime: "2025-06-15T06:13:20Z".to_string(),
+            operation: "vault.retrieve".to_string(),
+            secret_name: "DEMO_NAME".to_string(),
+            pid: 42,
+            hostname: "host\rforged".to_string(),
+            severity: ExportSeverity::Low,
+        }];
+        let csv = AuditExporter::rows_to_csv(&rows);
+        assert!(
+            csv.contains(",42,\"host\rforged\",low\n"),
+            "a hostname with a bare CR must be quoted: {csv:?}"
+        );
     }
 
     // ── Test 6: compliance report heatmap correctness ─────────────────────────
