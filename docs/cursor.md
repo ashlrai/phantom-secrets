@@ -40,8 +40,8 @@ This writes `~/.cursor/mcp.json` with the `phantom` MCP server entry:
 {
   "mcpServers": {
     "phantom": {
-      "command": "phantom-mcp",
-      "args": []
+      "command": "/absolute/path/to/phantom",
+      "args": ["mcp", "serve"]
     }
   }
 }
@@ -83,16 +83,16 @@ migration guidance and never kills or deletes. Prefer
 
 ## MCP tools Cursor can use
 
-Once `phantom-secrets-mcp` is registered, Cursor Chat can call the same runtime
+Once the `phantom` server is registered, Cursor Chat can call the same runtime
 catalog as other MCP clients. See the [core tool examples in the Claude Code
 guide](./claude-code.md#core-mcp-tools-claude-can-use), and use MCP `tools/list`
 for the canonical catalog.
 
 Key tools for Cursor users:
 
-- `phantom_status` — check vault health and service mappings before starting work
+- `phantom_status` — check managed `.env` protection and service mappings before starting work (does not open the vault)
 - `phantom_list_secrets` — see which secrets are loaded (names only, never values)
-- `phantom_add_secret_interactive` — start the terminal-based secret entry flow
+- `phantom_add_secret_interactive` — return the `phantom add NAME` command to enter a new secret in a trusted terminal (effect-free, no approval)
 - `phantom_doctor` — validate config, `.gitignore`, `.env.example`, and pre-commit hook
 - `phantom_cloud_push` / `phantom_cloud_pull` — dual-gated cloud effects. With
   `force=false`, a partial pull blocks push until full reconciliation.
