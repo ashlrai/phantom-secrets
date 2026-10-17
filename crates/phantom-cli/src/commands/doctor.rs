@@ -693,7 +693,7 @@ fn run_checks(fix: bool, check_expiry: bool) -> Result<(usize, usize)> {
         });
 
         // The same clients `phantom setup --status` reports, in its order.
-        let home = dirs::home_dir();
+        let home = phantom_core::home::home_dir_with_platform_fallback().ok();
         for (name, path, global) in
             super::setup_status::client_config_paths(home.as_deref(), &project_dir)
         {
@@ -780,7 +780,7 @@ fn write_project_file_exact_with(
 /// Returns true for a present-but-unsafe or unreadable Phantom configuration.
 fn check_mcp_client(name: &str, path: &std::path::Path, global: bool) -> bool {
     let location = if global {
-        if let Some(home) = dirs::home_dir() {
+        if let Ok(home) = phantom_core::home::home_dir_with_platform_fallback() {
             if let Ok(suffix) = path.strip_prefix(&home) {
                 format!("~/{}", suffix.display())
             } else {
