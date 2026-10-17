@@ -4167,7 +4167,7 @@ impl PhantomMcpServer {
             audit_enabled (PHANTOM_AUDIT env var is set), \
             precommit_installed (git pre-commit hook contains the current local-only phantom check), \
             env_clean (no unprotected real secrets in any dotenv phantom check scans: .env, .env.local, .env.development, .env.development.local, .env.production, .env.production.local, .env.test, .env.test.local and the configured dotenv_path; read without opening the vault, so it is reported before init and with a locked vault), \
-            secrets_have_ttl (all vault secrets have a rotation policy set). \
+            secrets_have_ttl (every vault secret has an expiry (expires_at) or a rotation policy set). \
             Each check is true/false with an optional detail string. \
             Overall 'compliant' is true only when all checks pass. Read-only."
     )]
@@ -4255,16 +4255,20 @@ impl PhantomMcpServer {
                         let without_ttl: Vec<&str> = entries
                             .iter()
                             .filter(|(_, meta)| {
-                                meta.as_ref()
-                                    .and_then(|m| m.rotation_policy.as_ref())
-                                    .is_none()
+                                // A provider-issued expiry without a policy is
+                                // still a TTL (same rule as phantom doctor and
+                                // phantom_secret_rotation_due).
+                                !meta.as_ref().is_some_and(|m| {
+                                    m.expires_at.is_some() || m.rotation_policy.is_some()
+                                })
                             })
                             .map(|(name, _)| name.as_str())
                             .collect();
                         if without_ttl.is_empty() {
                             (
                                 true,
-                                "All secrets have a rotation policy (TTL).".to_string(),
+                                "All secrets have an expiry or a rotation policy (TTL)."
+                                    .to_string(),
                             )
                         } else {
                             (
@@ -4312,9 +4316,11 @@ impl PhantomMcpServer {
             Returns a JSON object with: due (list of secrets already expired), \
             warning (list of secrets expiring within warn_days, default 7), \
             ok (list of secrets with sufficient TTL remaining), \
-            no_ttl (list of secrets with no rotation policy set at all). \
+            no_ttl (list of secrets with neither an expiry nor a rotation policy). \
+            A secret with expires_at but no rotation policy is still classified by its expiry. \
             Each entry has: name, status (expired|warning|ok|no_ttl), \
-            days_remaining (null if no TTL), expires_at (ISO-8601 or null). \
+            days_remaining (null if no expiry; negative means already expired), \
+            expires_at (ISO-8601 or null), has_rotation_policy (bool). \
             Secret VALUES are never returned. Read-only; no confirm required."
     )]
     fn phantom_secret_rotation_due(
@@ -4334,52 +4340,37 @@ impl PhantomMcpServer {
         let mut no_ttl: Vec<serde_json::Value> = Vec::new();
 
         for (name, meta) in &entries {
-            match meta {
-                None => {
-                    no_ttl.push(serde_json::json!({
-                        "name": name,
-                        "status": "no_ttl",
-                        "days_remaining": null,
-                        "expires_at": null,
-                    }));
-                }
-                Some(m) => {
-                    let expires_iso = m.expires_at.map(phantom_core::analytics::unix_to_iso8601);
-
-                    if m.rotation_policy.is_none() {
-                        no_ttl.push(serde_json::json!({
-                            "name": name,
-                            "status": "no_ttl",
-                            "days_remaining": null,
-                            "expires_at": expires_iso,
-                        }));
-                    } else if m.is_expired() {
-                        let days = m.days_remaining().unwrap_or(0);
-                        due.push(serde_json::json!({
-                            "name": name,
-                            "status": "expired",
-                            "days_remaining": days,
-                            "expires_at": expires_iso,
-                        }));
-                    } else if m.is_expiring_soon(params.warn_days) {
-                        let days = m.days_remaining().unwrap_or(0);
-                        warning.push(serde_json::json!({
-                            "name": name,
-                            "status": "warning",
-                            "days_remaining": days,
-                            "expires_at": expires_iso,
-                        }));
-                    } else {
-                        let days = m.days_remaining();
-                        ok.push(serde_json::json!({
-                            "name": name,
-                            "status": "ok",
-                            "days_remaining": days,
-                            "expires_at": expires_iso,
-                        }));
-                    }
-                }
-            }
+            let Some(m) = meta.as_ref().filter(|m| {
+                // An `expires_at` without a rotation policy (for example a
+                // provider-issued expiry) is still a deadline: classify it.
+                m.expires_at.is_some() || m.rotation_policy.is_some()
+            }) else {
+                no_ttl.push(serde_json::json!({
+                    "name": name,
+                    "status": "no_ttl",
+                    "days_remaining": null,
+                    "expires_at": null,
+                    "has_rotation_policy": false,
+                }));
+                continue;
+            };
+            let expires_iso = m.expires_at.map(phantom_core::analytics::unix_to_iso8601);
+            let has_rotation_policy = m.rotation_policy.is_some();
+            // One clock read per entry: negative days_remaining is exactly
+            // "expired", so the bucket and the reported number agree.
+            let days = m.days_remaining();
+            let (bucket, status) = match days {
+                Some(d) if d < 0 => (&mut due, "expired"),
+                Some(d) if d <= params.warn_days as i64 => (&mut warning, "warning"),
+                _ => (&mut ok, "ok"),
+            };
+            bucket.push(serde_json::json!({
+                "name": name,
+                "status": status,
+                "days_remaining": days,
+                "expires_at": expires_iso,
+                "has_rotation_policy": has_rotation_policy,
+            }));
         }
 
         let out = serde_json::json!({
@@ -4796,8 +4787,9 @@ impl PhantomMcpServer {
     #[tool(
         description = "Query the local vault for secrets that are expired or expiring soon. \
             Returns a JSON array where each entry has: name (string), \
-            days_remaining (i64 — negative means already expired), \
-            expires_at (Unix epoch u64), status (human-readable string). \
+            days_remaining (i64, floored — negative means already expired, \
+            so a secret that expired under 24 h ago reports -1), \
+            expires_at (Unix epoch u64), status (human-readable string), expired (bool). \
             Use the `days` parameter (default 7) to tune the look-ahead window. \
             Secrets with no TTL set are omitted — use phantom_secret_rotation_due \
             to also surface those. Secret VALUES are never returned. Read-only; no confirm required."
@@ -4825,6 +4817,7 @@ impl PhantomMcpServer {
                         "days_remaining": days_remaining,
                         "expires_at": expires_at,
                         "status": m.ttl_status(),
+                        "expired": days_remaining < 0,
                     }))
                 } else {
                     None
@@ -12571,6 +12564,36 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_compliance_status_secrets_have_ttl_counts_expiry_without_policy() {
+        let _environment = TestEnvironment::new();
+        let (server, _dir) = setup_initialized_project();
+        let (_config, vault) = server.load_config_and_vault().unwrap();
+        let expires_at = phantom_vault::metadata::now_secs() + 30 * 86_400;
+        for entry_name in vault.list().unwrap() {
+            vault
+                .set_metadata(
+                    &entry_name,
+                    phantom_vault::SecretMetadata {
+                        expires_at: Some(expires_at),
+                        rotation_policy: None,
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+        }
+
+        let json = parse_result_json(
+            &server
+                .phantom_compliance_status(Parameters(ComplianceStatusParams {}))
+                .unwrap(),
+        );
+        assert_eq!(
+            json["checks"]["secrets_have_ttl"]["pass"], true,
+            "an expiry without a rotation policy is a TTL: {json}"
+        );
+    }
+
     // ── phantom_secret_rotation_due ───────────────────────────────────
 
     #[test]
@@ -12641,6 +12664,114 @@ mod tests {
                 "expires_at must be a string"
             );
         }
+    }
+
+    /// Pins one vaulted entry's metadata and returns its name.
+    fn pin_first_entry_metadata(
+        server: &PhantomMcpServer,
+        meta: phantom_vault::SecretMetadata,
+    ) -> String {
+        let (_config, vault) = server.load_config_and_vault().unwrap();
+        let entry_name = vault.list().unwrap().into_iter().next().unwrap();
+        vault.set_metadata(&entry_name, meta).unwrap();
+        entry_name
+    }
+
+    fn find_entry<'a>(
+        list: &'a serde_json::Value,
+        entry_name: &str,
+    ) -> Option<&'a serde_json::Value> {
+        list.as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["name"] == entry_name)
+    }
+
+    #[test]
+    fn test_rotation_due_classifies_expiry_without_rotation_policy() {
+        let _environment = TestEnvironment::new();
+        let (server, _dir) = setup_initialized_project();
+        let now = phantom_vault::metadata::now_secs();
+        let entry_name = pin_first_entry_metadata(
+            &server,
+            phantom_vault::SecretMetadata {
+                expires_at: Some(now - 3_600),
+                rotation_policy: None,
+                ..Default::default()
+            },
+        );
+
+        let json = parse_result_json(
+            &server
+                .phantom_secret_rotation_due(Parameters(RotationDueParams { warn_days: 7 }))
+                .unwrap(),
+        );
+        assert!(
+            find_entry(&json["no_ttl"], &entry_name).is_none(),
+            "an expired secret must not be reported as no_ttl: {json}"
+        );
+        let entry = find_entry(&json["due"], &entry_name).expect("expired secret is due");
+        assert_eq!(entry["status"], "expired");
+        assert_eq!(entry["days_remaining"], -1);
+        assert_eq!(entry["has_rotation_policy"], false);
+        assert!(entry["expires_at"].is_string());
+        assert_eq!(json["summary"]["expired"], 1);
+    }
+
+    #[test]
+    fn test_rotation_due_warns_on_expiry_without_rotation_policy() {
+        let _environment = TestEnvironment::new();
+        let (server, _dir) = setup_initialized_project();
+        let now = phantom_vault::metadata::now_secs();
+        let entry_name = pin_first_entry_metadata(
+            &server,
+            phantom_vault::SecretMetadata {
+                expires_at: Some(now + 2 * 86_400 + 600),
+                rotation_policy: None,
+                ..Default::default()
+            },
+        );
+
+        let json = parse_result_json(
+            &server
+                .phantom_secret_rotation_due(Parameters(RotationDueParams { warn_days: 7 }))
+                .unwrap(),
+        );
+        let entry = find_entry(&json["warning"], &entry_name).expect("expiring secret warns");
+        assert_eq!(entry["status"], "warning");
+        assert_eq!(entry["days_remaining"], 2);
+        assert_eq!(entry["has_rotation_policy"], false);
+        for other in json["no_ttl"].as_array().unwrap() {
+            assert_eq!(other["has_rotation_policy"], false);
+            assert!(other["expires_at"].is_null());
+        }
+    }
+
+    #[test]
+    fn test_expiry_check_recently_expired_is_negative_and_flagged() {
+        let _environment = TestEnvironment::new();
+        let (server, _dir) = setup_initialized_project();
+        let now = phantom_vault::metadata::now_secs();
+        let entry_name = pin_first_entry_metadata(
+            &server,
+            phantom_vault::SecretMetadata {
+                expires_at: Some(now - 3_600),
+                ..Default::default()
+            },
+        );
+
+        let json = parse_result_json(
+            &server
+                .phantom_secrets_expiry_check(Parameters(ExpiryCheckParams { days: 7 }))
+                .unwrap(),
+        );
+        let entry = find_entry(&json["secrets"], &entry_name).expect("expired secret listed");
+        assert_eq!(
+            entry["days_remaining"], -1,
+            "negative means already expired: {entry}"
+        );
+        assert_eq!(entry["expired"], true);
+        assert_eq!(entry["status"], "EXPIRED");
     }
 
     #[test]

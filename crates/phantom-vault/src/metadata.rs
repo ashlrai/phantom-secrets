@@ -119,14 +119,28 @@ impl SecretMetadata {
         }
     }
 
-    /// Returns the number of days remaining until expiry, or `None` if no
-    /// expiry is set. Returns `0` (or would be negative — clamped) when
-    /// already expired.
+    /// Returns the number of whole days remaining until expiry, or `None` if
+    /// no expiry is set.
+    ///
+    /// A non-negative value always means the secret has not expired yet; a
+    /// negative value always means it has (`is_expired()` is `true`). The
+    /// count is floored, so a secret that expired any time in the last 24 h
+    /// reports `-1`, never `0`.
     pub fn days_remaining(&self) -> Option<i64> {
+        self.days_remaining_at(now_secs())
+    }
+
+    /// [`Self::days_remaining`] evaluated at an explicit `now` (Unix seconds).
+    pub fn days_remaining_at(&self, now: Timestamp) -> Option<i64> {
         self.expires_at.map(|exp| {
-            let now = now_secs() as i64;
-            let secs_left = exp as i64 - now;
-            secs_left / 86_400
+            let secs_left = exp as i128 - now as i128;
+            if secs_left <= 0 {
+                // Matches `is_expired` (now >= expires_at): expired is
+                // always strictly negative, including the exact instant.
+                (secs_left.div_euclid(86_400) as i64).min(-1)
+            } else {
+                (secs_left / 86_400) as i64
+            }
         })
     }
 
@@ -243,6 +257,37 @@ mod tests {
         };
         let days = meta.days_remaining().expect("some");
         assert!(days < 0);
+    }
+
+    #[test]
+    fn days_remaining_is_negative_for_any_expired_secret() {
+        let now = 1_700_000_000;
+        let at = |expires_at| SecretMetadata {
+            expires_at: Some(expires_at),
+            ..Default::default()
+        };
+        // Expired one hour ago: used to truncate to 0 and read as "not expired".
+        assert_eq!(at(now - 3_600).days_remaining_at(now), Some(-1));
+        // Exact expiry instant counts as expired (matches `is_expired`).
+        assert_eq!(at(now).days_remaining_at(now), Some(-1));
+        assert_eq!(at(now - 86_400).days_remaining_at(now), Some(-1));
+        assert_eq!(at(now - 86_401).days_remaining_at(now), Some(-2));
+        assert_eq!(at(now - 10 * 86_400).days_remaining_at(now), Some(-10));
+        // Not yet expired stays non-negative.
+        assert_eq!(at(now + 1).days_remaining_at(now), Some(0));
+        assert_eq!(at(now + 3_600).days_remaining_at(now), Some(0));
+        assert_eq!(at(now + 86_400).days_remaining_at(now), Some(1));
+    }
+
+    #[test]
+    fn recently_expired_is_not_expiring_soon() {
+        let meta = SecretMetadata {
+            expires_at: Some(now_secs() - 3_600),
+            ..Default::default()
+        };
+        assert!(meta.is_expired());
+        assert!(meta.days_remaining().expect("some") < 0);
+        assert!(!meta.is_expiring_soon(7));
     }
 
     #[test]
