@@ -8,7 +8,7 @@ License: MIT
 Language: Rust
 Release evidence was verified on 2026-09-29. The immutable GitHub `v0.7.9` release at https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.9 resolves to `7a51ce512ec4aee12cc29ff859036af63fbe93db`. Its 19 assets were verified after all six native acceptance rows and release attestations passed in https://github.com/ashlrai/phantom-secrets/actions/runs/34153902556.
 Install: use the exact checksum-verified `v0.7.9` GitHub assets below on macOS, Linux, and Windows. The separately managed Homebrew formula still publishes the previous reviewed `v0.7.8`; its `v0.7.9` bump is pending.
-MCP: after installing both release binaries, run `phantom setup --client claude|cursor|windsurf|codex`.
+MCP: after installing both release binaries, run `phantom setup --client claude|cursor|windsurf|codex|gemini`.
 
 ## The Problem
 
@@ -53,7 +53,7 @@ Connection strings such as DATABASE_URL can be detected, vaulted, and replaced i
 - `phantom audit verify` — Verify HMAC-SHA256 chain integrity; exits 1 if tampering detected.
 - `phantom start` — Run a foreground proxy only when stdin/stdout/stderr are terminals; keep the trusted owning terminal open and press Ctrl-C there to stop. `--daemon` and current external control fail closed; `phantom stop` authenticates legacy v0.7.3 state only to report manual migration guidance and never kills or deletes.
 - `phantom list` — Show secret names stored in vault (never shows values). Add `--json` to emit a machine-readable array of `{name, detected_service}` for scripting; values are still excluded.
-- `phantom add <KEY>` — Transactionally create a new secret name in an initialized project through a hidden terminal prompt. It does not auto-create config, gitignore, or vault state; run `phantom init --empty` first in a new project. Positional values are rejected; for a trusted piped producer, pass `--stdin` and provide one line. Existing names are denied before prompt/stdin read and are never replaced.
+- `phantom add <KEY>` — Transactionally create a new secret name in an initialized project through a hidden terminal prompt. It does not auto-create config, gitignore, or vault state; run `phantom init --empty` first in a new project. Positional values are rejected; for a trusted piped producer, pass `--stdin` (read up to EOF, trailing newlines dropped, 64 KiB cap; refused when stdin is a terminal). Input with more than one line is refused before any write unless you add `--multiline` (store every line, e.g. a PEM key) or `--first-line` (store only line 1, e.g. `pass show` output). Existing names are denied before prompt/stdin read and are never replaced.
 - `phantom remove <KEY>` — After exact trusted-terminal consent, transactionally remove the vault value, lifecycle config, and exact managed-dotenv mapping.
 - `phantom reveal <KEY>` — View a secret value only from attached terminals after exact typed confirmation; there is no non-interactive bypass.
 - `phantom rotate` — After an exact attached-terminal challenge bound to the canonical project, config, dotenv, and sorted-name digest, regenerate all local phantom mappings without changing provider credentials. Headless use is denied before vault access or mutation, and drift aborts the write. `--sync` is rejected for a local-only remap; rotate at the provider, store the successor from a trusted terminal, then run a separately reviewed sync.
@@ -111,7 +111,7 @@ and `cargo install` commands are not the reviewed v0.7.9 GitHub release path.
 
 ### MCP setup
 
-Run `phantom setup --client claude|cursor|windsurf|codex` after installing both
+Run `phantom setup --client claude|cursor|windsurf|codex|gemini` after installing both
 `v0.7.9` GitHub release binaries. Ask the client to propose protection and review affected
 files and confirmation-gated steps. Keep secret entry in the trusted terminal
 and deployment/provider authority separate.

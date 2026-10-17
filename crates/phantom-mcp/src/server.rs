@@ -1026,6 +1026,10 @@ impl PhantomMcpServer {
         &self,
         Parameters(params): Parameters<AddSecretParams>,
     ) -> Result<CallToolResult, McpError> {
+        // Validate before the confirm and approval gates so an invalid name is
+        // never echoed back, never minted into an approval nonce, and never
+        // printed to the operator's stderr.
+        validate_mcp_secret_name(&params.name)?;
         require_confirm("phantom_add_secret", params.confirm)?;
         let params_json = serde_json::to_string(&params).unwrap_or_default();
         require_approval_token(
@@ -3882,8 +3886,9 @@ impl PhantomMcpServer {
         &self,
         Parameters(params): Parameters<AuditIncidentsParams>,
     ) -> Result<CallToolResult, McpError> {
-        use phantom_core::leak_correlation::LeakCorrelationEngine;
+        use phantom_core::leak_correlation::{check_min_confidence, LeakCorrelationEngine};
 
+        check_min_confidence(params.min_confidence).map_err(invalid_params_err)?;
         let engine = LeakCorrelationEngine::new()
             .map_err(|e| internal_err(format!("Cannot initialise leak correlation engine: {e}")))?;
 
@@ -3928,8 +3933,9 @@ impl PhantomMcpServer {
         &self,
         Parameters(params): Parameters<LeakIncidentsRealtimeParams>,
     ) -> Result<CallToolResult, McpError> {
-        use phantom_core::leak_correlation::LeakCorrelationEngine;
+        use phantom_core::leak_correlation::{check_min_confidence, LeakCorrelationEngine};
 
+        check_min_confidence(params.min_confidence).map_err(invalid_params_err)?;
         let engine = LeakCorrelationEngine::new()
             .map_err(|e| internal_err(format!("Cannot initialise leak correlation engine: {e}")))?;
 
@@ -4142,11 +4148,14 @@ impl PhantomMcpServer {
         &self,
         Parameters(params): Parameters<AuditExportReportParams>,
     ) -> Result<CallToolResult, McpError> {
-        use phantom_core::audit_export::{
-            parse_date_to_ts, parse_date_to_ts_end, AuditExporter, ExportFilter,
-        };
+        use phantom_core::audit_export::{parse_date_range, AuditExporter, ExportFilter};
 
         let format = crate::tools::helpers::parse_audit_format(&params.format)?;
+        let (from_ts, to_ts) = parse_date_range(
+            params.from.as_deref().unwrap_or(""),
+            params.to.as_deref().unwrap_or(""),
+        )
+        .map_err(|e| invalid_params_err(format!("{e}. Omit it for no bound.")))?;
 
         if params.save {
             if params.action == "export" {
@@ -4166,9 +4175,6 @@ impl PhantomMcpServer {
 
         let exporter = AuditExporter::new()
             .map_err(|e| internal_err(format!("Failed to initialise audit exporter: {e}")))?;
-
-        let from_ts = params.from.as_deref().map(parse_date_to_ts).unwrap_or(0);
-        let to_ts = params.to.as_deref().map(parse_date_to_ts_end).unwrap_or(0);
 
         match params.action.as_str() {
             "export" => {
@@ -4982,12 +4988,13 @@ impl PhantomMcpServer {
         ))
     }
 
-    /// Check `.phantom.toml` for expired secrets — returns the list of expired secrets.
+    /// Check vault TTL metadata for expired secrets — returns the list of expired secrets.
     ///
     /// Designed for AI agents that need to trigger rotation workflows when secrets expire.
     /// Read-only; never returns secret values.
     #[tool(
-        description = "Scan .phantom.toml for expired secrets and return a structured list. \
+        description = "Check the vault's TTL metadata (set with `phantom expiry set`) for expired \
+            secrets and return a structured list, the same answer as `phantom expiry enforce --json`. \
             Each entry has: name (string), expires_at (Unix u64), secs_overdue (u64), \
             status (human-readable string). \
             With fail_closed=true, secrets that have no expiry policy set are also included \
@@ -5002,7 +5009,14 @@ impl PhantomMcpServer {
     ) -> Result<CallToolResult, McpError> {
         use phantom_core::rotation_strategy::{check_expiry, ExpiryStatus};
 
-        let config = self.require_config()?;
+        // TTLs live in vault metadata (`phantom expiry set` writes them there
+        // and `phantom expiry enforce` reads them there). This gate must not
+        // pass over secrets in a vault this process cannot open.
+        let (config, vault) = self.load_config_and_vault()?;
+        let vault_note = self.require_readable_inventory(&config, vault.as_ref())?;
+        let entries = vault
+            .list_with_metadata()
+            .map_err(|e| vault_read_err("Failed to read vault lifecycle metadata", e))?;
         let now = phantom_vault::metadata::now_secs();
 
         let mut expired: Vec<serde_json::Value> = Vec::new();
@@ -5010,8 +5024,8 @@ impl PhantomMcpServer {
         let mut ok_count: usize = 0;
         let mut no_expiry_count: usize = 0;
 
-        for (name, override_cfg) in &config.phantom.secrets {
-            match override_cfg.expires_at {
+        for (name, metadata) in &entries {
+            match metadata.as_ref().and_then(|metadata| metadata.expires_at) {
                 None => {
                     no_expiry_count += 1;
                     if params.fail_closed {
@@ -5055,7 +5069,7 @@ impl PhantomMcpServer {
             "pass": pass,
         });
 
-        json_object_result(&out)
+        json_object_result(&with_vault_note(out, vault_note))
     }
 
     // ── Rotation schedule next ────────────────────────────────────────────
@@ -8155,6 +8169,44 @@ mod tests {
         assert_eq!(display_env_name(""), "<invalid env var name>");
     }
 
+    /// An unsupported platform answered "No sync targets configured" (or "no
+    /// targets match"), so an agent read a typo as a setup gap.
+    #[test]
+    fn sync_rejects_an_unsupported_platform_and_matches_case_insensitively() {
+        let _environment = TestEnvironment::new();
+        let (server, dir) = setup_initialized_project();
+        let sync = |platform: &str| {
+            server.phantom_sync(Parameters(SyncParams {
+                platform: Some(platform.to_string()),
+                project_id: None,
+            }))
+        };
+
+        let error = sync("heroku").unwrap_err();
+        assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        assert!(!error.message.contains("heroku"), "{}", error.message);
+        assert!(
+            error.message.contains("`vercel` or `railway`"),
+            "{}",
+            error.message
+        );
+
+        let config_path = dir.path().join(".phantom.toml");
+        let mut config = PhantomConfig::load(&config_path).unwrap();
+        config.sync.push(
+            toml::from_str(
+                "platform = \"vercel\"\ntoken_env = \"VERCEL_TOKEN\"\nproject_id = \"demo\"\n",
+            )
+            .unwrap(),
+        );
+        config.save(&config_path).unwrap();
+        let report = structured_report(&sync("Vercel").unwrap());
+        assert_eq!(report["targets"][0]["platform"], "vercel", "{report}");
+        let report = structured_report(&sync("").unwrap());
+        assert_eq!(report["targets"][0]["platform"], "vercel", "{report}");
+        assert!(sync("heroku").is_err());
+    }
+
     #[test]
     fn status_before_init_reports_next_step() {
         let _environment = TestEnvironment::new();
@@ -10351,6 +10403,39 @@ mod tests {
     }
 
     #[test]
+    fn deprecated_add_secret_refuses_invalid_names_without_echoing_them() {
+        let _environment = TestEnvironment::new();
+        let (server, _dir) = setup_initialized_project();
+        let marker = format!("zz{:x}", std::process::id());
+        for name in [
+            format!("{marker}\nINJECTED"),
+            format!("9{marker}"),
+            format!("{marker}-dash"),
+            format!("{marker}{}", "A".repeat(300)),
+            String::new(),
+        ] {
+            for confirm in [false, true] {
+                let error = server
+                    .phantom_add_secret(Parameters(AddSecretParams {
+                        name: name.clone(),
+                        confirm,
+                        approval_token: None,
+                    }))
+                    .unwrap_err();
+                assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+                assert!(
+                    error.message.contains("Secret names must"),
+                    "{}",
+                    error.message
+                );
+                if !name.is_empty() {
+                    assert!(!error.message.contains(&marker), "name was echoed back");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn test_destructive_tools_require_confirm() {
         let _environment = TestEnvironment::new();
         let (server, _dir) = setup_initialized_project();
@@ -10546,6 +10631,50 @@ mod tests {
             .unwrap();
         let text = get_result_text(&result);
         assert!(text.contains("no expiry"), "secrets without TTL: {text}");
+    }
+
+    /// `phantom expiry set` writes TTLs to vault metadata, and
+    /// `phantom expiry enforce` reads them there. The MCP gate read only
+    /// `.phantom.toml` overrides, so it passed an expired vault TTL and, with
+    /// fail_closed, every secret that had no TTL at all.
+    #[test]
+    fn expiry_enforce_reads_vault_ttl_metadata_like_the_cli() {
+        let _environment = TestEnvironment::new();
+        let (server, _dir) = setup_initialized_project();
+        let (_config, vault) = server.load_config_and_vault().unwrap();
+        vault
+            .set_metadata(
+                "OPENAI_API_KEY",
+                phantom_vault::metadata::SecretMetadata {
+                    expires_at: Some(300),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        let report = |fail_closed: bool| {
+            let result = server
+                .phantom_expiry_enforce(Parameters(PhantomExpiryEnforceParams { fail_closed }))
+                .unwrap();
+            result.structured_content.clone().unwrap()
+        };
+
+        let permissive = report(false);
+        assert_eq!(permissive["pass"], false, "{permissive}");
+        assert_eq!(permissive["expired"][0]["name"], "OPENAI_API_KEY");
+        assert_eq!(permissive["ok_count"], 0);
+        assert_eq!(permissive["no_expiry_count"], 1, "{permissive}");
+
+        let strict = report(true);
+        assert_eq!(strict["pass"], false);
+        let names: Vec<&str> = strict["expired"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, ["OPENAI_API_KEY", "DATABASE_URL"], "{strict}");
+        assert_eq!(strict["expired"][1]["status"], "no_expiry_policy");
     }
 
     #[test]
@@ -11468,6 +11597,90 @@ mod tests {
             let err = export(format).unwrap_err();
             assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
             assert!(err.message.contains("Invalid format"), "{}", err.message);
+        }
+    }
+
+    /// A malformed or inverted date used to be read as "no bound", so a
+    /// scoped compliance report silently covered the whole history.
+    #[test]
+    fn test_audit_export_report_rejects_bad_dates() {
+        let _environment = TestEnvironment::new();
+        let (server, _dir) = setup_initialized_project();
+        let home = canonical_temp_dir();
+        unsafe { std::env::set_var("HOME", home.path()) };
+        write_synthetic_audit_log(
+            home.path(),
+            &[(1_700_000_000, "vault.retrieve", Some("DATE_KEY"))],
+        );
+
+        let call = |action: &str, from: Option<&str>, to: Option<&str>| {
+            server.phantom_audit_export_report(Parameters(AuditExportReportParams {
+                action: action.to_string(),
+                format: "json".to_string(),
+                from: from.map(str::to_string),
+                to: to.map(str::to_string),
+                secret_name: None,
+                operation: None,
+                save: false,
+                confirm: false,
+                approval_token: None,
+            }))
+        };
+
+        for action in ["report", "export"] {
+            for (from, to, needle) in [
+                (Some("notadate"), None, "'from'"),
+                (None, Some("2026-13-45"), "'to'"),
+                (Some("2026-05-01"), Some("2026-01-01"), "after"),
+            ] {
+                let err = call(action, from, to).unwrap_err();
+                assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+                assert!(err.message.contains(needle), "{}", err.message);
+            }
+        }
+        // 1_700_000_000 is 2023-11-14 UTC.
+        let rows =
+            extract_content_text(&call("export", Some("2023-11-14"), Some("2023-11-14")).unwrap());
+        assert!(rows.contains("DATE_KEY"), "{rows}");
+    }
+
+    /// A min_confidence above 1.0 used to hide every incident and answer "No
+    /// active leak incidents", which an agent reads as all clear.
+    #[test]
+    fn test_incident_tools_reject_out_of_range_min_confidence() {
+        let _environment = TestEnvironment::new();
+        let (server, _dir) = setup_initialized_project();
+        let home = canonical_temp_dir();
+        unsafe { std::env::set_var("HOME", home.path()) };
+
+        for bad in [5.0, 1.01, -0.1, f64::NAN] {
+            let err = server
+                .phantom_audit_incidents(Parameters(AuditIncidentsParams {
+                    min_confidence: bad,
+                }))
+                .unwrap_err();
+            assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+            assert!(
+                err.message.contains("between 0.0 and 1.0"),
+                "{}",
+                err.message
+            );
+            let err = server
+                .phantom_leak_incidents_realtime(Parameters(LeakIncidentsRealtimeParams {
+                    min_confidence: bad,
+                }))
+                .unwrap_err();
+            assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        }
+        for ok in [0.0, 0.5, 1.0] {
+            assert!(server
+                .phantom_audit_incidents(Parameters(AuditIncidentsParams { min_confidence: ok }))
+                .is_ok());
+            assert!(server
+                .phantom_leak_incidents_realtime(Parameters(LeakIncidentsRealtimeParams {
+                    min_confidence: ok,
+                }))
+                .is_ok());
         }
     }
 

@@ -791,7 +791,7 @@
     },
     {
       "name": "phantom_expiry_enforce",
-      "description": "Scan .phantom.toml for expired secrets and return a structured list. Each entry has: name (string), expires_at (Unix u64), secs_overdue (u64), status (human-readable string). With fail_closed=true, secrets that have no expiry policy set are also included with status='no_expiry_policy'. Returns { expired: [...], ok_count, no_expiry_count, fail_closed, pass }. pass=true means no action is needed. Read-only; no confirm required. Secret VALUES are never returned.",
+      "description": "Check the vault's TTL metadata (set with `phantom expiry set`) for expired secrets and return a structured list, the same answer as `phantom expiry enforce --json`. Each entry has: name (string), expires_at (Unix u64), secs_overdue (u64), status (human-readable string). With fail_closed=true, secrets that have no expiry policy set are also included with status='no_expiry_policy'. Returns { expired: [...], ok_count, no_expiry_count, fail_closed, pass }. pass=true means no action is needed. Read-only; no confirm required. Secret VALUES are never returned.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {

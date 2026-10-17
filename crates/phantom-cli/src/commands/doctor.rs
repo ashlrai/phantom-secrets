@@ -202,8 +202,20 @@ fn run_checks(fix: bool, check_expiry: bool) -> Result<(usize, usize)> {
                 ));
 
                 let service_risks = config.service_risks();
+                // The same check `phantom exec` and `phantom start` refuse on,
+                // so their pointer at doctor always lands on a finding.
+                let launch_blocker = config.exec_route_blocker();
+                if let Some(blocker) = launch_blocker {
+                    check_fail(&launch_blocker_message(&blocker));
+                    check_fix(
+                        "Restore Phantom's built-in definition for that service (or remove the custom service) in a trusted terminal; `phantom why <KEY> --json` shows the same blocker",
+                    );
+                    issues += 1;
+                }
                 if service_risks.is_empty() {
-                    check_pass("Service routes look safe");
+                    if launch_blocker.is_none() {
+                        check_pass("Service routes look safe");
+                    }
                 } else {
                     for risk in &service_risks {
                         check_warn(&format!(
@@ -875,6 +887,20 @@ fn check_mcp_client(name: &str, path: &std::path::Path, global: bool) -> bool {
     }
 }
 
+/// Doctor's line for the route that stops `phantom exec` and `phantom start`.
+fn launch_blocker_message(blocker: &phantom_core::config::ExecBlocker<'_>) -> String {
+    use phantom_core::config::ExecBlocker;
+    match blocker {
+        ExecBlocker::AlteredBuiltinRoute { service } => format!(
+            "Launch blocked: service `{service}` differs from Phantom's built-in route (host pattern, header, header_format, secret_key or secret_type); phantom exec and start refuse to launch until it matches"
+        ),
+        other => format!(
+            "Launch blocked: service `{}` is a custom proxy route; phantom exec and start refuse to launch with it and run only with Phantom's built-in routes",
+            other.service()
+        ),
+    }
+}
+
 thread_local! {
     /// `Some` while `phantom doctor --json` collects lines instead of printing.
     static REPORT: RefCell<Option<DoctorReport>> = const { RefCell::new(None) };
@@ -1053,6 +1079,103 @@ mod tests {
         assert_eq!((issues, lines[0].0), (1, "warn"));
         assert!(lines[0].1.contains("OPENAI_API_KEY"));
         assert_eq!(lines[0].2.as_deref(), Some("Run: phantom init"));
+    }
+
+    /// Run doctor's checks on a project whose config `edit` changes and
+    /// return the collected report.
+    fn doctor_report_for(
+        edit: impl FnOnce(&mut phantom_core::config::PhantomConfig),
+    ) -> (
+        phantom_core::config::PhantomConfig,
+        phantom_core::report::DoctorReport,
+    ) {
+        let project = tempfile::tempdir().unwrap();
+        let dir = project.path().canonicalize().unwrap();
+        let mut config =
+            phantom_core::config::PhantomConfig::new_with_defaults("doctor-route".to_string());
+        edit(&mut config);
+        config.save(&dir.join(".phantom.toml")).unwrap();
+        let _seam = crate::util::test_seam::TestProject::install(
+            dir.clone(),
+            crate::util::test_seam::empty_keychain,
+        );
+        super::REPORT.with(|report| {
+            *report.borrow_mut() = Some(phantom_core::report::DoctorReport::default())
+        });
+        let outcome = super::run_checks(false, false);
+        let report = super::REPORT
+            .with(|report| report.borrow_mut().take())
+            .unwrap();
+        outcome.expect("doctor must report, not abort");
+        (config, report)
+    }
+
+    /// exec and start refuse an altered built-in or a custom `api_key` route
+    /// and point at `phantom doctor`. Doctor used to check host patterns
+    /// only, so a header change or a custom service on a public host printed
+    /// "Service routes look safe" while exec refused. It now reports the
+    /// same blocker exec uses.
+    #[test]
+    fn doctor_names_every_route_exec_refuses() {
+        type Edit = fn(&mut phantom_core::config::PhantomConfig);
+        let cases: [(&str, Edit, &str); 2] = [
+            (
+                "openai",
+                |config| {
+                    config.services.get_mut("openai").unwrap().header =
+                        Some("X-Api-Key".to_string());
+                },
+                "differs from Phantom's built-in route",
+            ),
+            (
+                "gateway",
+                |config| {
+                    config.services.insert(
+                        "gateway".to_string(),
+                        phantom_core::config::ServiceConfig {
+                            secret_key: "GATEWAY_API_KEY".to_string(),
+                            pattern: Some("api.gateway.example.com".to_string()),
+                            header: Some("Authorization".to_string()),
+                            header_format: Some("Bearer {secret}".to_string()),
+                            ..config.services["openai"].clone()
+                        },
+                    );
+                },
+                "custom proxy route",
+            ),
+        ];
+        for (service, edit, expected) in cases {
+            let (config, report) = doctor_report_for(edit);
+
+            let refusal = format!(
+                "{:#}",
+                super::super::exec::validate_routes_for_launch(&config).unwrap_err()
+            );
+            assert!(refusal.contains("phantom doctor"), "{refusal}");
+
+            assert!(
+                !report
+                    .checks
+                    .iter()
+                    .any(|check| check.message == "Service routes look safe"),
+                "{service}: doctor called routes safe while exec refuses"
+            );
+            let line = report
+                .checks
+                .iter()
+                .find(|check| check.message.contains(&format!("`{service}`")))
+                .unwrap_or_else(|| panic!("{service}: doctor has no finding for the route"));
+            assert_eq!(line.status, "fail", "{service}");
+            assert!(line.message.contains(expected), "{}", line.message);
+            assert!(line.message.contains("refuse"), "{}", line.message);
+            assert!(line.fix.as_deref().unwrap().contains("phantom why"));
+        }
+
+        let (_, report) = doctor_report_for(|_| {});
+        assert!(report
+            .checks
+            .iter()
+            .any(|check| check.message == "Service routes look safe"));
     }
 
     /// `phantom doctor` aborted with the raw resolver error when the

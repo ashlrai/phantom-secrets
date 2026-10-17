@@ -60,6 +60,19 @@ use reqwest;
 /// a high-confidence leak profile and triggers aggressive path-targeted scrubbing.
 pub const PROFILE_CONFIDENCE_THRESHOLD: u32 = 3;
 
+/// Check a caller-supplied `min_confidence` filter. Confidence scores lie in
+/// 0.0..=1.0, so a value above 1.0 hides every incident and reads as "no
+/// active leaks"; reject it (and NaN or negatives) instead.
+pub fn check_min_confidence(value: f64) -> Result<f64, String> {
+    if value.is_finite() && (0.0..=1.0).contains(&value) {
+        Ok(value)
+    } else {
+        Err(format!(
+            "min_confidence must be between 0.0 and 1.0 (got {value}); 0.5 is one leak event, 0.95 a repeated leak"
+        ))
+    }
+}
+
 /// HTTP request metadata captured alongside each proxy response for enriching
 /// leak profiles.  This is passed by the proxy on every response scrub.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]

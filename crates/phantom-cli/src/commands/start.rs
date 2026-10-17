@@ -152,7 +152,7 @@ async fn run_async() -> Result<()> {
     }
 
     let config = PhantomConfig::load(&config_path)?;
-    config.validate_agentic_proxy_routes()?;
+    super::exec::validate_routes_for_launch(&config)?;
 
     let preflight = phantom_core::managed_dotenv::resolve_dotenv(&project_dir, &config, &[])?;
     validate_start_dotenv(&preflight).context(
@@ -341,6 +341,7 @@ fn retrieve_required_default_secret(
                             "Protected dotenv key '{name}' has no vault entry for the default environment"
                         ),
                         "refusing to start a partial proxy",
+                        true,
                     )
                 }
                 other => anyhow::anyhow!(
@@ -495,5 +496,6 @@ mod shell_tests {
                 .to_string();
         assert!(error.contains("has no vault entry"));
         assert!(error.contains("refusing to start a partial proxy"));
+        assert!(error.contains("`phantom add OPENAI_API_KEY`"), "{error}");
     }
 }
