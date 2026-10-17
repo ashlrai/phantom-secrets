@@ -165,8 +165,13 @@ async fn run_async(cmd: &[String], env_flag: Option<&str>, quiet: bool) -> Resul
                 // Backend errors are distinct from a missing key and must abort
                 // before a partially mapped proxy session can start.
                 let namespaced = phantom_core::env_scope::namespaced_key(&active_env, &entry.key);
-                let real_value =
-                    retrieve_required_secret(vault.as_ref(), &namespaced, &entry.key, &active_env)?;
+                let real_value = retrieve_required_secret(
+                    vault.as_ref(),
+                    config.local_project_id(),
+                    &namespaced,
+                    &entry.key,
+                    &active_env,
+                )?;
 
                 // Generate a fresh session token for this secret.
                 let session_token = PhantomToken::generate();
@@ -409,29 +414,36 @@ fn unrouted_session_keys<'a>(
 
 fn retrieve_required_secret(
     vault: &dyn phantom_vault::VaultBackend,
+    project_id: &str,
     namespaced: &str,
     bare: &str,
     active_env: &str,
 ) -> Result<zeroize::Zeroizing<String>> {
+    let missing = || {
+        crate::util::missing_protected_entry(
+            vault,
+            project_id,
+            bare,
+            format!(
+                "Protected dotenv key '{bare}' has no vault entry for environment '{active_env}'"
+            ),
+            "refusing to launch the child",
+            active_env == DEFAULT_ENV,
+        )
+    };
     match vault.retrieve_for_injection(namespaced) {
         Ok(value) => Ok(value),
-        Err(phantom_core::error::PhantomError::SecretNotFound(_))
-            if active_env == DEFAULT_ENV =>
-        {
+        Err(phantom_core::error::PhantomError::SecretNotFound(_)) if active_env == DEFAULT_ENV => {
             vault
                 .retrieve_for_injection(bare)
                 .map_err(|error| match error {
-                phantom_core::error::PhantomError::SecretNotFound(_) => anyhow::anyhow!(
-                    "Protected dotenv key '{bare}' has no vault entry for environment '{active_env}'; refusing to launch the child"
-                ),
-                other => anyhow::anyhow!(
-                    "Failed to read legacy session secret '{bare}' from the vault: {other}"
-                ),
+                    phantom_core::error::PhantomError::SecretNotFound(_) => missing(),
+                    other => anyhow::anyhow!(
+                        "Failed to read legacy session secret '{bare}' from the vault: {other}"
+                    ),
                 })
         }
-        Err(phantom_core::error::PhantomError::SecretNotFound(_)) => Err(anyhow::anyhow!(
-            "Protected dotenv key '{bare}' has no vault entry for environment '{active_env}'; refusing to launch the child"
-        )),
+        Err(phantom_core::error::PhantomError::SecretNotFound(_)) => Err(missing()),
         Err(error) => Err(anyhow::anyhow!(
             "Failed to read namespaced session secret '{namespaced}' from the vault: {error}"
         )),
@@ -609,6 +621,7 @@ mod tests {
     fn exec_propagates_vault_read_errors_before_starting_a_session() {
         let error = retrieve_required_secret(
             &ReadFailingVault,
+            "exec-fixture",
             "production/API_KEY",
             "API_KEY",
             "production",
@@ -693,13 +706,61 @@ mod tests {
 
     #[test]
     fn exec_rejects_a_missing_protected_vault_entry() {
-        let error =
-            retrieve_required_secret(&MissingVault, "default/API_KEY", "API_KEY", DEFAULT_ENV)
-                .unwrap_err()
-                .to_string();
+        let error = retrieve_required_secret(
+            &MissingVault,
+            "exec-fixture",
+            "default/API_KEY",
+            "API_KEY",
+            DEFAULT_ENV,
+        )
+        .unwrap_err()
+        .to_string();
 
         assert!(error.contains("has no vault entry"));
         assert!(error.contains("refusing to launch the child"));
+        assert!(error.contains("`phantom add API_KEY`"), "{error}");
+    }
+
+    /// `phantom add` stores the default environment only, so another
+    /// environment's refusal must not send the user there.
+    #[test]
+    fn exec_missing_entry_outside_the_default_env_has_no_add_hint() {
+        let error = retrieve_required_secret(
+            &MissingVault,
+            "exec-fixture",
+            "staging/API_KEY",
+            "API_KEY",
+            "staging",
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("for environment 'staging'"), "{error}");
+        assert!(!error.contains("phantom add"), "{error}");
+    }
+
+    /// With the secrets in an encrypted-file vault this process cannot open,
+    /// exec said the protected key "has no vault entry". It still refuses,
+    /// and now names the locked vault and the unlock step.
+    #[cfg(unix)]
+    #[test]
+    fn exec_names_a_locked_file_vault_instead_of_a_missing_entry() {
+        let project =
+            crate::util::test_seam::LockedProject::new(crate::util::test_seam::empty_keychain);
+        let error = retrieve_required_secret(
+            &MissingVault,
+            &project.project_id,
+            "default/API_KEY",
+            "API_KEY",
+            DEFAULT_ENV,
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.starts_with("Vault locked:"), "{error}");
+        assert!(error.contains("refusing to launch the child"), "{error}");
+        assert!(error.contains("PHANTOM_VAULT_PASSPHRASE"), "{error}");
+        assert!(!error.contains("has no vault entry"), "{error}");
     }
 
     #[test]

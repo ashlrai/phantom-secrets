@@ -1376,6 +1376,14 @@ pub fn log_path() -> std::io::Result<PathBuf> {
     }
 }
 
+/// Path of the signed head checkpoint (`~/.phantom/audit-head.json`) that
+/// sits beside the audit log. Its presence proves a signed era existed, so a
+/// missing log next to it is a deletion to report, not a log that never
+/// started.
+pub fn head_checkpoint_path() -> std::io::Result<PathBuf> {
+    Ok(head_path(&log_path()?))
+}
+
 fn dirs_home_dir() -> Option<PathBuf> {
     crate::home::home_dir().ok()
 }

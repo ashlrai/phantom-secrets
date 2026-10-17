@@ -66,25 +66,64 @@ pub fn validate_dotenv_basename(name: &str) -> Result<String> {
     Ok(name.to_string())
 }
 
-/// Parse `path` when it is a regular file. `Ok(None)` when it does not exist;
-/// a symlink or any other non-regular file is refused before it is read.
-pub fn parse_regular_dotenv(path: &Path) -> Result<Option<DotenvFile>> {
-    let metadata = match std::fs::symlink_metadata(path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => {
-            return Err(error).with_context(|| format!("Failed to inspect {}", path.display()))
-        }
+/// Whether `name` is one of the files [`resolve_dotenv`] reads to choose the
+/// managed dotenv when `.phantom.toml` names none.
+pub fn is_resolver_candidate(name: &str) -> bool {
+    KNOWN_DOTENV_NAMES.contains(&name)
+}
+
+/// Parse the dotenv `name` in `project_dir` when it is a regular file.
+/// `Ok(None)` when it does not exist; a symlink or any other non-regular file
+/// is refused without being read. Messages name the file by `name`, relative to
+/// the project, never by its absolute path.
+///
+/// The check and the read cover the same file: it is opened without following
+/// a final symlink, then judged on the opened handle, so a file swapped for a
+/// symlink between a separate check and open cannot be followed.
+pub fn parse_regular_dotenv(project_dir: &Path, name: &str) -> Result<Option<DotenvFile>> {
+    let Some(file) = open_regular_file(&project_dir.join(name), name)? else {
+        return Ok(None);
     };
-    if metadata.file_type().is_symlink() || !metadata.is_file() {
-        anyhow::bail!(
-            "Refusing dotenv path that is not a regular, non-symlink file: {}",
-            path.display()
-        );
-    }
-    DotenvFile::parse_file(path)
-        .with_context(|| format!("Failed to read {}", path.display()))
-        .map(Some)
+    read_dotenv_handle(file, name).map(Some)
+}
+
+fn refuse_non_regular(shown: &str) -> anyhow::Error {
+    anyhow::anyhow!("Refusing dotenv path that is not a regular, non-symlink file: {shown}")
+}
+
+/// Open `path` read-only without following a final symlink, judged on the
+/// opened handle; see [`crate::fs::open_regular_nofollow`], which
+/// `crate::fs::read_regular_file` shares. `Ok(None)` when nothing is there.
+/// `shown` is the name used in errors.
+fn open_regular_file(path: &Path, shown: &str) -> Result<Option<std::fs::File>> {
+    use crate::fs::RegularOpenError;
+    crate::fs::open_regular_nofollow(path).map_err(|error| match error {
+        RegularOpenError::NotRegular => refuse_non_regular(shown),
+        RegularOpenError::Reopen(detail) => {
+            refuse_non_regular(shown).context(format!("{detail}: {shown}"))
+        }
+        RegularOpenError::Open(error) => {
+            anyhow::Error::new(error).context(format!("Failed to open {shown}"))
+        }
+        RegularOpenError::Inspect(error) => {
+            anyhow::Error::new(error).context(format!("Failed to inspect {shown}"))
+        }
+    })
+}
+
+/// Read and parse an already-checked handle. The plaintext buffer is zeroized.
+fn read_dotenv_handle(mut file: std::fs::File, shown: &str) -> Result<DotenvFile> {
+    use std::io::Read;
+    use zeroize::Zeroize;
+    #[cfg(test)]
+    tests::DOTENV_READS.with(|reads| reads.set(reads.get() + 1));
+    let mut content = String::new();
+    let read = file.read_to_string(&mut content);
+    let parsed = read
+        .map(|_| DotenvFile::parse_str(&content))
+        .with_context(|| format!("Failed to read {shown}"));
+    content.zeroize();
+    parsed
 }
 
 /// Every dotenv name a plaintext scan judges, beyond the configured
@@ -128,34 +167,33 @@ pub fn scanned_dotenv_paths(project_dir: &Path, configured: Option<&str>) -> Res
     let mut paths = Vec::new();
     for name in scanned_dotenv_names(configured)? {
         let path = project_dir.join(&name);
+        // A listing only; whoever reads a listed file reads it with
+        // `parse_regular_dotenv`, which re-checks on the opened handle.
         match std::fs::symlink_metadata(&path) {
             Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
                 anyhow::bail!(
-                    "Refusing dotenv scan target that is not a regular, non-symlink file: {}",
-                    path.display()
+                    "Refusing dotenv scan target that is not a regular, non-symlink file: {name}"
                 )
             }
             Ok(_) => paths.push(path),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => {
-                return Err(error).with_context(|| format!("Failed to inspect {}", path.display()))
-            }
+            Err(error) => return Err(error).with_context(|| format!("Failed to inspect {name}")),
         }
     }
     Ok(paths)
 }
 
-/// [`scanned_dotenv_paths`], parsed. For checks that must judge every file
-/// plaintext could sit in, not only the one that is managed. Reads no vault.
+/// The files of [`scanned_dotenv_names`] that exist, parsed. For checks that
+/// must judge every file plaintext could sit in, not only the one that is
+/// managed. Reads no vault.
 pub fn known_regular_dotenvs(
     project_dir: &Path,
     configured: Option<&str>,
 ) -> Result<Vec<(PathBuf, DotenvFile)>> {
     let mut found = Vec::new();
-    for path in scanned_dotenv_paths(project_dir, configured)? {
-        // Re-checked at read time: the file may have changed since the scan.
-        if let Some(file) = parse_regular_dotenv(&path)? {
-            found.push((path, file));
+    for name in scanned_dotenv_names(configured)? {
+        if let Some(file) = parse_regular_dotenv(project_dir, &name)? {
+            found.push((project_dir.join(&name), file));
         }
     }
     Ok(found)
@@ -179,17 +217,13 @@ pub fn resolve_dotenv(
     let protected_state = !vault_names.is_empty() || !config.phantom.secrets.is_empty();
 
     if let Some(configured) = config.phantom.dotenv_path.as_deref() {
-        let path = project_dir.join(validate_dotenv_basename(configured)?);
-        let file = parse_regular_dotenv(&path)?.ok_or_else(|| {
-            anyhow::anyhow!(
-                "Configured protected dotenv does not exist: {}",
-                path.display()
-            )
-        })?;
+        let name = validate_dotenv_basename(configured)?;
+        let path = project_dir.join(&name);
+        let file = parse_regular_dotenv(project_dir, &name)?
+            .ok_or_else(|| anyhow::anyhow!("Configured protected dotenv does not exist: {name}"))?;
         if protected_state && !has_tokens(&file) {
             anyhow::bail!(
-                "Protected vault/config state exists, but {} contains no phantom tokens; refusing an unprotected direct launch",
-                path.display()
+                "Protected vault/config state exists, but {name} contains no phantom tokens; refusing an unprotected direct launch"
             );
         }
         return Ok(ResolvedDotenv {
@@ -202,19 +236,21 @@ pub fn resolve_dotenv(
     let mut token_bearing = Vec::new();
     for name in KNOWN_DOTENV_NAMES {
         let path = project_dir.join(name);
-        if let Some(file) = parse_regular_dotenv(&path)? {
+        if let Some(file) = parse_regular_dotenv(project_dir, name)? {
             if has_tokens(&file) {
-                token_bearing.push(path.clone());
+                token_bearing.push(existing.len());
             }
             existing.push((path, file));
         }
     }
     match token_bearing.len() {
         1 => {
-            let path = token_bearing.pop().expect("length checked");
+            // Reuse the copy already read and judged; a second read could see
+            // a different file.
+            let (path, file) = existing.swap_remove(token_bearing[0]);
             return Ok(ResolvedDotenv {
-                file: parse_regular_dotenv(&path)?,
                 path,
+                file: Some(file),
             });
         }
         count if count > 1 => anyhow::bail!(
@@ -238,6 +274,11 @@ pub fn resolve_dotenv(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    thread_local! {
+        /// Dotenv handles read on this thread; tests count reads with it.
+        pub(super) static DOTENV_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
 
     #[test]
     fn rejects_repository_controlled_path_traversal() {
@@ -318,9 +359,175 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("target"), "A=1\n").unwrap();
         symlink("target", dir.path().join(".env")).unwrap();
-        assert!(parse_regular_dotenv(&dir.path().join(".env"))
-            .unwrap_err()
-            .to_string()
-            .contains("non-symlink"));
+        let message = format!(
+            "{:#}",
+            parse_regular_dotenv(dir.path(), ".env").unwrap_err()
+        );
+        assert!(message.contains("non-symlink"), "{message}");
+        // Named relative to the project, never by absolute path.
+        assert!(message.ends_with(": .env"), "{message}");
+        assert!(
+            !message.contains(&*dir.path().to_string_lossy()),
+            "{message}"
+        );
+    }
+
+    /// The refusal comes from the open itself (O_NOFOLLOW), not from a
+    /// separate path lookup that a swap could slip past.
+    #[cfg(unix)]
+    #[test]
+    fn open_refuses_a_symlink_without_a_prior_lookup() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("target"), "A=1\n").unwrap();
+        symlink("target", dir.path().join(".env")).unwrap();
+        let error = open_regular_file(&dir.path().join(".env"), ".env").unwrap_err();
+        assert!(error.to_string().contains("non-symlink"), "{error:#}");
+    }
+
+    /// A FIFO is refused on the opened handle (fstat), without blocking for a
+    /// writer.
+    #[cfg(unix)]
+    #[test]
+    fn open_refuses_a_fifo_on_the_handle_without_blocking() {
+        use std::os::unix::ffi::OsStrExt;
+        let dir = tempfile::tempdir().unwrap();
+        let fifo = dir.path().join(".env");
+        let c_path = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
+        // SAFETY: c_path is a valid NUL-terminated path for the call's duration.
+        assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) }, 0);
+        let error = open_regular_file(&fifo, ".env").unwrap_err();
+        assert!(error.to_string().contains("non-symlink"), "{error:#}");
+    }
+
+    /// Once checked, the handle is what is read: replacing the path with a
+    /// symlink afterwards cannot redirect the read to the symlink's target.
+    #[cfg(unix)]
+    #[test]
+    fn a_swap_after_the_check_does_not_change_what_is_read() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".env");
+        std::fs::write(&path, "CHECKED=1\n").unwrap();
+        std::fs::write(dir.path().join("elsewhere"), "SWAPPED_IN=1\n").unwrap();
+        let file = open_regular_file(&path, ".env").unwrap().unwrap();
+        std::fs::remove_file(&path).unwrap();
+        symlink("elsewhere", &path).unwrap();
+        let parsed = read_dotenv_handle(file, ".env").unwrap();
+        let keys: Vec<&str> = parsed.entries().iter().map(|e| e.key.as_str()).collect();
+        assert_eq!(keys, vec!["CHECKED"]);
+    }
+
+    /// Windows: a reparse point opened as itself is caught by the attribute
+    /// check, not only by `is_symlink()`, and a plain file is not.
+    #[cfg(windows)]
+    #[test]
+    fn windows_reparse_attribute_is_refused_and_plain_files_are_not() {
+        use std::io::Read;
+        use std::os::windows::fs::OpenOptionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let plain = dir.path().join(".env.local");
+        std::fs::write(&plain, "A=1\n").unwrap();
+        let plain_meta = std::fs::File::open(&plain).unwrap().metadata().unwrap();
+        assert!(!crate::fs::is_reparse_point(&plain_meta));
+        assert!(parse_regular_dotenv(dir.path(), ".env.local")
+            .unwrap()
+            .is_some());
+
+        // The reopen path: ReOpenFile on a handle opened with
+        // FILE_FLAG_OPEN_REPARSE_POINT gives a regular-file handle that reads
+        // the real contents. A non-name-surrogate reparse file (a Cloud Files
+        // placeholder) cannot be created on a CI runner without a sync
+        // provider, so the reopen itself is driven on a plain file here.
+        let flagged = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(0x0020_0000)
+            .open(&plain)
+            .unwrap();
+        let mut reopened = crate::fs::windows_reopen_contents(&flagged).unwrap();
+        let mut content = String::new();
+        reopened.read_to_string(&mut content).unwrap();
+        assert_eq!(content, "A=1\n");
+
+        std::fs::write(dir.path().join("target"), "A=1\n").unwrap();
+        // File symlinks need the create-symlink privilege (admin or Developer
+        // Mode). CI runners have it; skip rather than fail where it is absent.
+        if std::os::windows::fs::symlink_file("target", dir.path().join(".env")).is_err() {
+            eprintln!("skipping: cannot create a file symlink here");
+            return;
+        }
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        let link_meta = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(dir.path().join(".env"))
+            .unwrap()
+            .metadata()
+            .unwrap();
+        assert!(crate::fs::is_reparse_point(&link_meta));
+        let message = format!(
+            "{:#}",
+            parse_regular_dotenv(dir.path(), ".env").unwrap_err()
+        );
+        assert!(message.contains("non-symlink file: .env"), "{message}");
+    }
+
+    #[test]
+    fn resolve_reuses_the_single_token_bearing_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let token = PhantomToken::generate();
+        std::fs::write(dir.path().join(".env"), "PORT=1\n").unwrap();
+        std::fs::write(
+            dir.path().join(".env.local"),
+            format!("OPENAI_API_KEY={}\n", token.as_str()),
+        )
+        .unwrap();
+        let config = PhantomConfig::new_with_defaults("resolve-reuse".to_string());
+        DOTENV_READS.with(|reads| reads.set(0));
+        let resolved = resolve_dotenv(dir.path(), &config, &[]).unwrap();
+        // One read per existing file; a second read of the token-bearing
+        // file would make this 3.
+        assert_eq!(DOTENV_READS.with(|reads| reads.get()), 2);
+        assert_eq!(resolved.path, dir.path().join(".env.local"));
+        assert_eq!(
+            resolved.protected_keys(),
+            vec!["OPENAI_API_KEY".to_string()]
+        );
+    }
+
+    #[test]
+    fn resolve_messages_name_the_configured_file_relatively() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = PhantomConfig::new_with_defaults("resolve-rel".to_string());
+        config.phantom.dotenv_path = Some("custom.env".to_string());
+        let missing = format!(
+            "{:#}",
+            resolve_dotenv(dir.path(), &config, &[]).unwrap_err()
+        );
+        assert!(missing.ends_with("does not exist: custom.env"), "{missing}");
+
+        std::fs::write(dir.path().join("custom.env"), "PORT=1\n").unwrap();
+        let names = vec!["OPENAI_API_KEY".to_string()];
+        let unprotected = format!(
+            "{:#}",
+            resolve_dotenv(dir.path(), &config, &names).unwrap_err()
+        );
+        assert!(
+            unprotected.contains("but custom.env contains"),
+            "{unprotected}"
+        );
+        assert!(
+            !unprotected.contains(&*dir.path().to_string_lossy()),
+            "{unprotected}"
+        );
+    }
+
+    #[test]
+    fn parse_regular_dotenv_reads_a_regular_file_and_reports_absence() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(parse_regular_dotenv(dir.path(), ".env").unwrap().is_none());
+        std::fs::write(dir.path().join(".env"), "A=1\n").unwrap();
+        let parsed = parse_regular_dotenv(dir.path(), ".env").unwrap().unwrap();
+        assert_eq!(parsed.entries().len(), 1);
     }
 }

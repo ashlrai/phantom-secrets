@@ -7,7 +7,7 @@ const MAX_PUBLIC_KEY_BODY_BYTES = 4_096;
 
 /**
  * GET /api/v1/teams/:team_id/key — List every team member's user_id
- * and (if registered) public_key. Used by `phantom team vault push`
+ * and (if registered) public_key. Used by `phantom team vault-push`
  * to know who to encrypt the per-vault symmetric key to.
  *
  * Members without a registered public_key are returned with public_key

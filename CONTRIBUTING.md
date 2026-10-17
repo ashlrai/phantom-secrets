@@ -4,16 +4,12 @@ Thanks for helping make safe agentic development practical. Phantom accepts focu
 
 Please read the [Code of Conduct](CODE_OF_CONDUCT.md), [security policy](SECURITY.md), and [threat model](THREAT_MODEL.md) before changing a trust boundary. Report vulnerabilities privately; do not open a public issue for them.
 
-Release-state snapshot, verified 2026-09-03: the reviewed immutable GitHub
-release is `v0.7.5` at source commit
-`d2969e73995cc139e6253e0c8a70f1d683f88e20`; its 19 assets, all six native
-release rows, and GitHub provenance and SPDX attestations were verified in
-workflow 33709338577. Homebrew publishes the same reviewed `v0.7.5`; both npm `0.7.4` wrappers
-remain public only under the failed `release-candidate` track, while npm
-`latest` remains `0.6.0`. The GitHub receipt alone does not establish a `0.7.5`
-npm, crates.io, MCP Registry, or the independently verified Homebrew publication, deployment, provider integration,
-hosted entitlement, certification, or customer acceptance. See the
-[roadmap](ROADMAP.md) for the evidence gates.
+Current release state changes with every release, so this file does not pin
+it. See the [latest GitHub release](https://github.com/ashlrai/phantom-secrets/releases/latest),
+the [changelog](CHANGELOG.md), and the [roadmap](ROADMAP.md) for the evidence
+gates. A GitHub release receipt alone does not establish an npm, crates.io,
+MCP Registry, or Homebrew publication, deployment, provider integration,
+hosted entitlement, certification, or customer acceptance.
 
 ## Before you start
 
@@ -104,11 +100,21 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
 
+On pull requests, CI classifies the changed paths and skips suites a change
+cannot affect: docs-only changes skip the Rust and web suites, and Rust tests
+run through `cargo nextest` on the touched crates and their dependents. Secret
+scanning and the Rust dependency policy always run. The single `CI Gate` job
+fails if any selected job did not succeed. Pushes to `main` run everything.
+
 Run additional checks for the surface you changed:
 
 ```bash
 # MCP release binary
 cargo build --release --locked -p phantom-secrets-mcp --bin phantom-mcp
+
+# MCP catalog: mcp-registry/server.json must match the runtime tools/list
+cargo build --locked -p phantom-secrets-mcp --bin phantom-mcp
+node scripts/release/mcp-stdio-smoke.mjs target/debug/phantom-mcp 54
 
 # Provider hard-denial and exact cfg(test) transaction-scaffolding tests
 cargo test --locked -p phantom-secrets --test grant_github_app_test
@@ -129,7 +135,10 @@ for test in npm-mcp/test/*.test.js; do node "$test"; done
 
 When an MCP catalog intentionally changes, update the server declarations,
 closed parameter schemas, generated/mirrored registry surfaces, and packaged
-stdio smoke together. Do not hard-code a catalog count in prose unless release
+stdio smoke together. After reviewing the runtime effects, regenerate the
+registry file with
+`node scripts/release/mcp-stdio-smoke.mjs target/debug/phantom-mcp 54 mcp-registry/server.json --write-registry`;
+the Linux CI test job runs the same smoke without `--write-registry`. Do not hard-code a catalog count in prose unless release
 automation enforces it.
 
 Ignored keychain tests touch the host OS keychain. Run them only on a disposable test identity after reviewing the test:
