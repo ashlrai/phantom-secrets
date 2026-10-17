@@ -233,7 +233,7 @@
     },
     {
       "name": "phantom_audit_export_report",
-      "description": "Export audit log data or generate a structured compliance report. Two actions: 'export' — return raw audit rows (timestamp, datetime, operation, secret_name, pid, hostname, severity) filtered by date range, secret name, or operation type, in CSV or JSON format; 'report' — generate a full compliance report containing: (a) access-frequency heatmap per secret per calendar day, (b) leak-incident timeline with incident_id/secret_name/occurrences, (c) rotation-timing audit showing days since last vault.store per secret, (d) anomaly executive summary of high-score secrets. Use 'from'/'to' (YYYY-MM-DD) to scope the date range. Set 'save: true' to persist the report to ~/.phantom/reports/; saving requires confirm plus approval_token. Never exposes secret values. Read-only (save=false). Safe for AI agents.",
+      "description": "Export audit log data or generate a structured compliance report. Two actions: 'export' — return raw audit rows (timestamp, datetime, operation, secret_name, pid, hostname, severity) filtered by date range, secret name, or operation type, in CSV or JSON format. Export rows are bounded: only the newest max_records (default 1000, max 10000) are returned, within a 1 MiB response; the first text block is the CSV or JSON array (header-only CSV or [] when nothing matches) and structuredContent plus a second JSON text block carry records_total, records_returned, records_truncated and max_records. For a complete export run `phantom audit export-range` in a terminal; 'report' — generate a full compliance report containing: (a) access-frequency heatmap per secret per calendar day, (b) leak-incident timeline with incident_id/secret_name/occurrences, (c) rotation-timing audit showing days since last vault.store per secret, (d) anomaly executive summary of high-score secrets. Use 'from'/'to' (YYYY-MM-DD) to scope the date range. Set 'save: true' to persist the report to ~/.phantom/reports/; saving requires confirm plus approval_token. Never exposes secret values. Read-only (save=false). Safe for AI agents.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
@@ -268,6 +268,13 @@
               "string",
               "null"
             ]
+          },
+          "max_records": {
+            "default": 1000,
+            "description": "Maximum audit rows `action=\"export\"` returns, newest kept (default:\n1000; values above 10000 are treated as 10000). A 1 MiB response\nceiling may return fewer; records_truncated and records_total then\nsay so. Ignored by `action=\"report\"`.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
           },
           "operation": {
             "default": null,

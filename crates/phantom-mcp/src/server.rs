@@ -4108,7 +4108,12 @@ impl PhantomMcpServer {
             Two actions: \
             'export' — return raw audit rows (timestamp, datetime, operation, secret_name, \
             pid, hostname, severity) filtered by date range, secret name, or operation type, \
-            in CSV or JSON format; \
+            in CSV or JSON format. Export rows are bounded: only the newest max_records \
+            (default 1000, max 10000) are returned, within a 1 MiB response; the first text \
+            block is the CSV or JSON array (header-only CSV or [] when nothing matches) and \
+            structuredContent plus a second JSON text block carry records_total, \
+            records_returned, records_truncated and max_records. For a complete export run \
+            `phantom audit export-range` in a terminal; \
             'report' — generate a full compliance report containing: (a) access-frequency \
             heatmap per secret per calendar day, (b) leak-incident timeline with \
             incident_id/secret_name/occurrences, (c) rotation-timing audit showing days since \
@@ -4163,21 +4168,35 @@ impl PhantomMcpServer {
                     .export_rows(&filter)
                     .map_err(|e| internal_err(format!("Export failed: {e}")))?;
 
-                if rows.is_empty() {
-                    return text_result(
-                        "No audit rows match the requested filters. \
-                         Set PHANTOM_AUDIT=1 to enable audit logging."
-                            .to_string(),
-                    );
+                // Bounded like phantom_audit_analytics: rows are sorted
+                // oldest first, so keep the newest `keep` that fit both
+                // max_records and the response ceiling. An empty match is
+                // still valid output for the requested format.
+                let max_records = params.max_records.min(MCP_ANALYTICS_MAX_RECORDS);
+                let rows_total = rows.len();
+                let mut keep = rows_total.min(max_records as usize);
+                let csv = format == crate::tools::helpers::AuditFormat::Csv;
+                loop {
+                    let kept = &rows[rows_total - keep..];
+                    let body = if csv {
+                        AuditExporter::rows_to_csv(kept)
+                    } else {
+                        AuditExporter::rows_to_json(kept)
+                            .map_err(|e| internal_err(format!("Serialization error: {e}")))?
+                    };
+                    if body.len() <= MCP_ANALYTICS_MAX_BYTES || keep == 0 {
+                        let meta = serde_json::json!({
+                            "action": "export",
+                            "format": if csv { "csv" } else { "json" },
+                            "records_total": rows_total,
+                            "records_returned": keep,
+                            "records_truncated": keep < rows_total,
+                            "max_records": max_records,
+                        });
+                        return report_result(body, &meta);
+                    }
+                    keep = shrink_to_fit(keep, body.len(), MCP_ANALYTICS_MAX_BYTES);
                 }
-
-                if format == crate::tools::helpers::AuditFormat::Csv {
-                    return text_result(AuditExporter::rows_to_csv(&rows));
-                }
-
-                let json = AuditExporter::rows_to_json(&rows)
-                    .map_err(|e| internal_err(format!("Serialization error: {e}")))?;
-                text_result(json)
             }
 
             "report" | "" => {
@@ -5577,10 +5596,12 @@ fn retrieve_optional_secret(
     }
 }
 
-/// Most access records `phantom_audit_analytics` returns in one response.
+/// Most access records `phantom_audit_analytics` (and audit rows
+/// `phantom_audit_export_report` action="export") returns in one response.
 const MCP_ANALYTICS_MAX_RECORDS: u32 = 10_000;
 
-/// Largest `phantom_audit_analytics` body (pretty JSON or CSV), in bytes. The
+/// Largest `phantom_audit_analytics` or `phantom_audit_export_report` export
+/// body (pretty JSON or CSV), in bytes. The
 /// CLI writes up to 64 MiB to a file or pipe; an MCP response lands in an
 /// agent's context, so it gets a much smaller ceiling.
 const MCP_ANALYTICS_MAX_BYTES: usize = 1024 * 1024;
@@ -10351,6 +10372,7 @@ mod tests {
                 to: None,
                 secret_name: None,
                 operation: None,
+                max_records: crate::tools::params::default_analytics_max_records(),
                 save: true,
                 confirm: false,
                 approval_token: None,
@@ -12295,6 +12317,7 @@ mod tests {
                 to: None,
                 secret_name: None,
                 operation: None,
+                max_records: crate::tools::params::default_analytics_max_records(),
                 save: false,
                 confirm: false,
                 approval_token: None,
@@ -12345,6 +12368,7 @@ mod tests {
                 to: to.map(str::to_string),
                 secret_name: None,
                 operation: None,
+                max_records: crate::tools::params::default_analytics_max_records(),
                 save: false,
                 confirm: false,
                 approval_token: None,
@@ -12366,6 +12390,164 @@ mod tests {
         let rows =
             extract_content_text(&call("export", Some("2023-11-14"), Some("2023-11-14")).unwrap());
         assert!(rows.contains("DATE_KEY"), "{rows}");
+    }
+
+    fn export_params(
+        format: &str,
+        operation: Option<&str>,
+        max_records: u32,
+    ) -> AuditExportReportParams {
+        AuditExportReportParams {
+            action: "export".to_string(),
+            format: format.to_string(),
+            from: None,
+            to: None,
+            secret_name: None,
+            operation: operation.map(str::to_string),
+            max_records,
+            save: false,
+            confirm: false,
+            approval_token: None,
+        }
+    }
+
+    /// action="export" used to answer an empty match with a prose sentence,
+    /// even for format="json". It is now `[]` for JSON and a header-only CSV,
+    /// with zero counts in structuredContent.
+    #[test]
+    fn test_audit_export_empty_match_is_valid_output_for_the_format() {
+        let _environment = TestEnvironment::new();
+        let (server, _dir) = setup_initialized_project();
+        let home = canonical_temp_dir();
+        unsafe { std::env::set_var("HOME", home.path()) };
+        write_synthetic_audit_log(
+            home.path(),
+            &[(1_700_000_000, "vault.retrieve", Some("EMPTY_MATCH_ENTRY"))],
+        );
+
+        let result = server
+            .phantom_audit_export_report(Parameters(export_params(
+                "json",
+                Some("no.such.operation"),
+                1000,
+            )))
+            .unwrap();
+        let rows: serde_json::Value =
+            serde_json::from_str(&extract_content_text(&result)).expect("JSON body");
+        assert_eq!(rows, serde_json::json!([]));
+        let meta = result.structured_content.expect("export counts");
+        assert_eq!(meta["records_total"], 0);
+        assert_eq!(meta["records_returned"], 0);
+        assert_eq!(meta["records_truncated"], false);
+        assert_eq!(meta["format"], "json");
+
+        let result = server
+            .phantom_audit_export_report(Parameters(export_params(
+                "csv",
+                Some("no.such.operation"),
+                1000,
+            )))
+            .unwrap();
+        let body = extract_content_text(&result);
+        assert!(
+            body == "timestamp,datetime,operation,secret_name,pid,hostname,severity\n",
+            "an empty CSV export is exactly the header row"
+        );
+        let meta = result.structured_content.expect("export counts");
+        assert_eq!(meta["records_total"], 0);
+        assert_eq!(meta["format"], "csv");
+    }
+
+    /// action="export" used to return every matching row inline, however
+    /// many. Only the newest max_records come back now, under the same
+    /// parameter and truncation fields as phantom_audit_analytics.
+    #[test]
+    fn test_audit_export_returns_only_the_newest_max_records() {
+        let _environment = TestEnvironment::new();
+        let (server, _dir) = setup_initialized_project();
+        let home = canonical_temp_dir();
+        unsafe { std::env::set_var("HOME", home.path()) };
+        let base = 1_700_000_000_u64;
+        let entries: Vec<(u64, &str, Option<&str>)> = (0..30_u64)
+            .map(|i| (base + i, "vault.retrieve", Some("CAPPED_EXPORT_ENTRY")))
+            .collect();
+        write_synthetic_audit_log(home.path(), &entries);
+
+        let result = server
+            .phantom_audit_export_report(Parameters(export_params("json", None, 5)))
+            .unwrap();
+        let rows: serde_json::Value =
+            serde_json::from_str(&extract_content_text(&result)).expect("JSON body");
+        let returned: Vec<u64> = rows
+            .as_array()
+            .expect("JSON array")
+            .iter()
+            .map(|r| r["timestamp"].as_u64().unwrap())
+            .collect();
+        let newest: Vec<u64> = (25..30_u64).map(|i| base + i).collect();
+        assert!(returned == newest, "the newest rows are kept, oldest first");
+        let meta = result.structured_content.expect("export counts");
+        assert_eq!(meta["records_total"], 30);
+        assert_eq!(meta["records_returned"], 5);
+        assert_eq!(meta["records_truncated"], true);
+        assert_eq!(meta["max_records"], 5);
+
+        let result = server
+            .phantom_audit_export_report(Parameters(export_params("csv", None, 5)))
+            .unwrap();
+        let body = extract_content_text(&result);
+        let lines: Vec<&str> = body.lines().skip(1).collect();
+        assert_eq!(lines.len(), 5);
+        assert!(lines[0].starts_with(&format!("{},", base + 25)));
+        let meta = result.structured_content.expect("export counts");
+        assert_eq!(meta["records_truncated"], true);
+
+        // Under the cap nothing is truncated; above the hard maximum the
+        // cap is 10000.
+        let result = server
+            .phantom_audit_export_report(Parameters(export_params("json", None, u32::MAX)))
+            .unwrap();
+        let meta = result.structured_content.expect("export counts");
+        assert_eq!(meta["records_returned"], 30);
+        assert_eq!(meta["records_truncated"], false);
+        assert_eq!(meta["max_records"], 10_000);
+    }
+
+    /// Rows that do not fit in 1 MiB return fewer than max_records instead
+    /// of an unbounded response.
+    #[test]
+    fn test_audit_export_response_fits_the_byte_ceiling() {
+        let _environment = TestEnvironment::new();
+        let (server, _dir) = setup_initialized_project();
+        let home = canonical_temp_dir();
+        unsafe { std::env::set_var("HOME", home.path()) };
+        let long_name = format!("LONG_EXPORT_ENTRY_{}", "X".repeat(240));
+        let entries: Vec<(u64, &str, Option<&str>)> = (0..6000_u64)
+            .map(|i| {
+                (
+                    1_700_000_000 + i,
+                    "vault.retrieve",
+                    Some(long_name.as_str()),
+                )
+            })
+            .collect();
+        write_synthetic_audit_log(home.path(), &entries);
+
+        for format in ["json", "csv"] {
+            let result = server
+                .phantom_audit_export_report(Parameters(export_params(format, None, 10_000)))
+                .unwrap();
+            let body_len = extract_content_text(&result).len();
+            assert!(
+                body_len <= MCP_ANALYTICS_MAX_BYTES,
+                "{format} body over the ceiling"
+            );
+            let meta = result.structured_content.expect("export counts");
+            assert_eq!(meta["records_total"], 6000);
+            assert_eq!(meta["records_truncated"], true);
+            let returned = meta["records_returned"].as_u64().unwrap();
+            assert!(returned > 0 && returned < 6000, "{format} returned count");
+        }
     }
 
     /// A min_confidence above 1.0 used to hide every incident and answer "No
