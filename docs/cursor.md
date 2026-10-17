@@ -40,8 +40,8 @@ This writes `~/.cursor/mcp.json` with the `phantom` MCP server entry:
 {
   "mcpServers": {
     "phantom": {
-      "command": "phantom-mcp",
-      "args": []
+      "command": "/absolute/path/to/phantom",
+      "args": ["mcp", "serve"]
     }
   }
 }
@@ -83,7 +83,7 @@ migration guidance and never kills or deletes. Prefer
 
 ## MCP tools Cursor can use
 
-Once `phantom-secrets-mcp` is registered, Cursor Chat can call the same runtime
+Once the `phantom` server is registered, Cursor Chat can call the same runtime
 catalog as other MCP clients. See the [core tool examples in the Claude Code
 guide](./claude-code.md#core-mcp-tools-claude-can-use), and use MCP `tools/list`
 for the canonical catalog.
