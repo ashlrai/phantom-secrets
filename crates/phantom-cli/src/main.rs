@@ -234,7 +234,7 @@ enum Commands {
         /// Legacy positional secret value; rejected because argv is observable
         #[arg(hide = true)]
         value: Option<String>,
-        /// Read one new-name value from stdin; existing names are denied before the read
+        /// Read one new-name value from a pipe up to EOF (multi-line kept, 64 KiB cap); existing names are denied before the read
         #[arg(long)]
         stdin: bool,
     },

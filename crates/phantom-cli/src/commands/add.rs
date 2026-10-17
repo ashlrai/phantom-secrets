@@ -106,19 +106,21 @@ fn ensure_secret_absent(vault: &dyn VaultBackend, name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Upper bound on a value piped through `phantom add --stdin`. Generous for
+/// any real credential (a 4096-bit PEM private key or a cloud service-account
+/// JSON document is a few KiB) while keeping a runaway producer such as
+/// `/dev/zero` from growing memory without limit.
+const MAX_STDIN_VALUE_BYTES: usize = 64 * 1024;
+
 fn read_secret_value(name: &str, from_stdin: bool) -> Result<Zeroizing<String>> {
     if from_stdin {
-        let mut secret = Zeroizing::new(String::new());
-        std::io::stdin()
-            .read_line(&mut secret)
-            .context("Failed to read value from stdin")?;
-        while secret.ends_with(['\n', '\r']) {
-            secret.pop();
+        if stdin_is_tty() {
+            anyhow::bail!(
+                "--stdin reads from a pipe, but stdin is a terminal, where typed input would echo. Omit {} for the hidden prompt.",
+                "--stdin".cyan().bold()
+            );
         }
-        if secret.is_empty() {
-            anyhow::bail!("Received empty value on stdin — aborting.");
-        }
-        return Ok(secret);
+        return read_stdin_value(std::io::stdin().lock());
     }
     if !stdin_is_tty() {
         anyhow::bail!(
@@ -132,6 +134,39 @@ fn read_secret_value(name: &str, from_stdin: bool) -> Result<Zeroizing<String>> 
         anyhow::bail!("Empty value — aborting.");
     }
     Ok(Zeroizing::new(secret))
+}
+
+/// Read one whole value from a piped producer, up to EOF.
+///
+/// The value is everything the producer writes, so a multi-line credential
+/// (a PEM private key, a service-account JSON document) is stored intact,
+/// exactly as `phantom init` stores a quoted multi-line dotenv value. Only
+/// trailing line endings are dropped, so `echo "$VALUE" |` stores `$VALUE`.
+/// Oversized and non-UTF-8 input is refused before any vault write, and the
+/// refusal never contains input bytes.
+fn read_stdin_value(reader: impl std::io::Read) -> Result<Zeroizing<String>> {
+    use std::io::Read;
+
+    let mut bytes = Zeroizing::new(Vec::new());
+    reader
+        .take(MAX_STDIN_VALUE_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .context("Failed to read value from stdin")?;
+    if bytes.len() > MAX_STDIN_VALUE_BYTES {
+        anyhow::bail!(
+            "Value on stdin exceeds {} KiB; nothing was stored.",
+            MAX_STDIN_VALUE_BYTES / 1024
+        );
+    }
+    while bytes.ends_with(b"\n") || bytes.ends_with(b"\r") {
+        bytes.pop();
+    }
+    if bytes.is_empty() {
+        anyhow::bail!("Received empty value on stdin — aborting.");
+    }
+    let text = std::str::from_utf8(&bytes)
+        .map_err(|_| anyhow::anyhow!("Value on stdin is not valid UTF-8; nothing was stored."))?;
+    Ok(Zeroizing::new(text.to_owned()))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -329,6 +364,76 @@ mod tests {
     #[test]
     fn stdin_tty_check_does_not_panic() {
         let _ = stdin_is_tty();
+    }
+
+    /// Runtime-generated, credential-free fixture text so no secret-shaped
+    /// literal lands in history.
+    fn fixture_line(label: &str) -> String {
+        format!("{label}-{:016x}", std::process::id() as u64 ^ 0x5eed_5eed)
+    }
+
+    #[test]
+    fn stdin_value_keeps_every_line_of_a_multi_line_value() {
+        let first = fixture_line("first");
+        let middle = fixture_line("middle");
+        let last = fixture_line("last");
+        let piped = format!("{first}\n{middle}\r\n{last}\n");
+
+        let value = read_stdin_value(std::io::Cursor::new(piped.into_bytes())).unwrap();
+
+        // Previously only the first line was stored and the rest silently
+        // dropped, while the command still reported success.
+        assert_eq!(value.as_str(), format!("{first}\n{middle}\r\n{last}"));
+    }
+
+    #[test]
+    fn stdin_value_drops_only_trailing_line_endings() {
+        let line = fixture_line("single");
+        for piped in [
+            line.clone(),
+            format!("{line}\n"),
+            format!("{line}\r\n"),
+            format!("{line}\n\n"),
+        ] {
+            let value = read_stdin_value(std::io::Cursor::new(piped.into_bytes())).unwrap();
+            assert_eq!(value.as_str(), line);
+        }
+        for piped in ["", "\n", "\r\n\n"] {
+            let error = read_stdin_value(std::io::Cursor::new(piped.as_bytes().to_vec()))
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("empty value"), "{error}");
+        }
+    }
+
+    #[test]
+    fn stdin_value_over_the_cap_is_refused_without_echoing_input() {
+        let marker = b'q';
+        let oversized = vec![marker; MAX_STDIN_VALUE_BYTES + 1];
+
+        let error = read_stdin_value(std::io::Cursor::new(oversized))
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("exceeds 64 KiB"), "{error}");
+        assert!(!error.contains("qqqq"), "refusal must not echo input");
+
+        let at_cap = vec![marker; MAX_STDIN_VALUE_BYTES];
+        let value = read_stdin_value(std::io::Cursor::new(at_cap)).unwrap();
+        assert_eq!(value.len(), MAX_STDIN_VALUE_BYTES);
+    }
+
+    #[test]
+    fn stdin_value_that_is_not_utf8_is_refused_without_echoing_input() {
+        let mut piped = fixture_line("prefix").into_bytes();
+        piped.extend_from_slice(&[0xff, 0xfe, b'\n']);
+
+        let error = read_stdin_value(std::io::Cursor::new(piped))
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("not valid UTF-8"), "{error}");
+        assert!(!error.contains("prefix-"), "refusal must not echo input");
     }
 
     #[test]
