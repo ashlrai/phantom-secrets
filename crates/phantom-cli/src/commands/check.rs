@@ -15,18 +15,23 @@ use phantom_core::report::{
 /// including staged .env files, so pre-commit hooks block newly staged secrets.
 ///
 /// When `runtime` is true, scans every variable of the current environment for
-/// phantom tokens left without a proxy. Inside a `phantom exec` / `phantom
-/// start` session the session's own tokens are expected and reported clean.
+/// phantom tokens left without a proxy. A variable is excused only when a live
+/// `phantom exec` / `phantom start` proxy answers for the session variables
+/// and the session names that variable as its own (`PHANTOM_SESSION_KEYS`).
 ///
 /// With `json`, prints one machine-readable report on stdout and keeps the
 /// same exit status: 0 when clean, 1 when findings exist. An indeterminate
 /// scan is still an error with no report.
 pub fn run(staged_only: bool, runtime: bool, json: bool) -> Result<()> {
-    let mut proxy_session = false;
+    let mut scan = None;
     let (mode, findings, warnings) = if runtime {
-        let scan = phantom_core::report::scan_runtime_env(std::env::vars_os());
-        proxy_session = scan.proxy_session;
-        ("runtime", scan.findings, Vec::new())
+        let mut result = phantom_core::report::scan_runtime_env(
+            std::env::vars_os(),
+            phantom_core::report::proxy_answers,
+        );
+        let findings = std::mem::take(&mut result.findings);
+        scan = Some(result);
+        ("runtime", findings, Vec::new())
     } else if staged_only {
         let (findings, warnings) = staged_findings()?;
         ("staged", findings, warnings)
@@ -45,13 +50,15 @@ pub fn run(staged_only: bool, runtime: bool, json: bool) -> Result<()> {
             findings: &findings,
             warnings: &warnings,
             indeterminate: &[],
-            proxy_session,
+            proxy_session: scan.as_ref().is_some_and(|scan| scan.proxy_session),
+            excused: scan.as_ref().map_or(&[], |scan| scan.excused.as_slice()),
+            session_warning: scan.as_ref().and_then(|scan| scan.session_warning()),
         };
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
         print_warnings(&warnings);
-        if runtime {
-            print_runtime(&findings, proxy_session);
+        if let Some(scan) = &scan {
+            print_runtime(&findings, scan);
         } else {
             print_findings(&findings);
         }
@@ -387,23 +394,26 @@ fn is_env_file(file: &str) -> bool {
         .is_some_and(|name| name == ".env" || name.starts_with(".env.") || name.ends_with(".env"))
 }
 
-fn print_runtime(findings: &[Finding], proxy_session: bool) {
-    if proxy_session {
+fn print_runtime(findings: &[Finding], scan: &phantom_core::report::RuntimeEnvScan) {
+    if let Some(warning) = scan.session_warning() {
+        eprintln!("{} {}", "warn".yellow().bold(), warning);
+    }
+    if !scan.excused.is_empty() {
         println!(
-            "{} Inside a Phantom proxy session (PHANTOM_PROXY_PORT and PHANTOM_PROXY_TOKEN are set): phantom tokens here are the session's own.",
-            "ok".green().bold()
+            "{} Live Phantom proxy session owns: {}",
+            "ok".green().bold(),
+            scan.excused.join(", ")
         );
-        return;
     }
     if findings.is_empty() {
         println!(
-            "{} No phantom tokens in any environment variable.",
+            "{} No phantom token outside a live proxy session in any environment variable.",
             "ok".green().bold()
         );
         return;
     }
     eprintln!(
-        "\n{} Phantom tokens in environment (proxy not running)!\n",
+        "\n{} Phantom tokens in environment with no live proxy session that owns them!\n",
         "warn".yellow().bold()
     );
     for finding in findings {
@@ -490,6 +500,36 @@ mod tests {
     use super::*;
     use phantom_core::token::PhantomToken;
 
+    /// The liveness probe `--runtime` relies on, against the real proxy rather
+    /// than a stand-in: 200 for the session's header, nothing for another
+    /// header, and nothing once the proxy has stopped.
+    #[test]
+    fn runtime_probe_matches_the_real_proxy_health_endpoint() {
+        use phantom_core::report::proxy_answers;
+        use phantom_proxy::{Interceptor, ProxyConfig, ProxyServer, ServiceRegistry};
+
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let session_header = ProxyServer::generate_proxy_token();
+        let proxy = runtime
+            .block_on(ProxyServer::start(
+                ProxyConfig {
+                    port: 0,
+                    proxy_token: session_header.clone(),
+                    ..ProxyConfig::default()
+                },
+                ServiceRegistry::new(),
+                Interceptor::new(std::collections::HashMap::new()),
+            ))
+            .unwrap();
+        let port = proxy.port();
+
+        assert!(proxy_answers(port, &session_header));
+        assert!(!proxy_answers(port, "another-session"));
+
+        runtime.block_on(proxy.shutdown());
+        assert!(!proxy_answers(port, &session_header));
+    }
+
     /// A file listed as regular and then swapped for a symlink is refused at
     /// read time, not followed. Fails if the read goes back to
     /// `DotenvFile::parse_file`, which follows the link and reports the
@@ -540,6 +580,8 @@ mod tests {
             warnings: &[],
             indeterminate: &[],
             proxy_session: false,
+            excused: &[],
+            session_warning: None,
         };
         let json = serde_json::to_string(&report).unwrap();
         assert!(json.contains("\"name\":\"OPENAI_API_KEY\""));

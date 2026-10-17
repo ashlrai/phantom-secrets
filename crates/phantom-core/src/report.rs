@@ -38,9 +38,9 @@ pub struct CheckIndeterminate {
     pub reason: String,
 }
 
-/// The `check` report. `indeterminate` is omitted when empty and
-/// `proxy_session` when false, so CLI output keeps exactly the
-/// `{mode, clean, findings, warnings}` shape outside a proxy session.
+/// The `check` report. `indeterminate`, `excused` and `session_warning` are
+/// omitted when empty and `proxy_session` when false, so CLI output keeps
+/// exactly the `{mode, clean, findings, warnings}` shape outside a session.
 #[derive(Debug, Serialize)]
 pub struct CheckReport<'a> {
     pub mode: &'a str,
@@ -49,25 +49,50 @@ pub struct CheckReport<'a> {
     pub warnings: &'a [CheckConfigWarning],
     #[serde(skip_serializing_if = "<[_]>::is_empty")]
     pub indeterminate: &'a [CheckIndeterminate],
-    /// Runtime mode only: the scan ran inside a `phantom exec` / `phantom
-    /// start` proxy session, whose own `phm_` values are expected.
+    /// Runtime mode only: a live `phantom exec` / `phantom start` proxy
+    /// answered for the session variables in this environment.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub proxy_session: bool,
+    /// Runtime mode only: variables holding a phantom token that the live
+    /// session names as its own, so they are not findings. Names only.
+    #[serde(skip_serializing_if = "<[_]>::is_empty")]
+    pub excused: &'a [String],
+    /// Runtime mode only: why session variables did not excuse anything.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_warning: Option<&'a str>,
 }
 
-/// The variables `phantom exec` and `phantom start` set for a proxy session.
-/// With both present, `phm_` values in the environment are that session's
-/// own tokens, served by its proxy, not tokens left without one.
+/// The variables `phantom exec` and `phantom start` set for a proxy session:
+/// the proxy's port and the header value it requires.
 pub const PROXY_SESSION_VARS: [&str; 2] = ["PHANTOM_PROXY_PORT", "PHANTOM_PROXY_TOKEN"];
+
+/// Comma-separated names of the variables a proxy session filled with its own
+/// phantom tokens. Set by `phantom exec` for its child and printed by
+/// `phantom start`. Names only, never values.
+pub const SESSION_KEYS_VAR: &str = "PHANTOM_SESSION_KEYS";
+
+/// Shown when session variables are set but no proxy answered for them.
+pub const STALE_SESSION_WARNING: &str = "PHANTOM_PROXY_PORT and PHANTOM_PROXY_TOKEN are set, but no Phantom proxy answered for them, so the session variables look stale (for example a `phantom start` that has since stopped). No variable was excused.";
 
 /// A runtime scan of an environment for phantom tokens.
 #[derive(Debug, PartialEq, Eq)]
 pub struct RuntimeEnvScan {
-    /// One `runtime_env` finding per variable holding a phantom token, by
-    /// name, sorted. Empty inside a proxy session.
+    /// One `runtime_env` finding per variable holding a phantom token that a
+    /// live session does not own, by name, sorted.
     pub findings: Vec<CheckFinding>,
-    /// Both [`PROXY_SESSION_VARS`] are set and non-empty.
+    /// A live proxy answered for the session variables.
     pub proxy_session: bool,
+    /// Variables holding a phantom token that the live session owns, sorted.
+    pub excused: Vec<String>,
+    /// Session variables were set but did not lead to a live proxy.
+    pub stale_session: bool,
+}
+
+impl RuntimeEnvScan {
+    /// The value-free warning for the report, if any.
+    pub fn session_warning(&self) -> Option<&'static str> {
+        self.stale_session.then_some(STALE_SESSION_WARNING)
+    }
 }
 
 /// Scan every variable of an environment for a phantom token.
@@ -76,28 +101,68 @@ pub struct RuntimeEnvScan {
 /// a fixed list of well-known names (and two different lists), so a token in
 /// any other variable, such as one `phantom init` wrote for a custom key,
 /// was reported clean. Names are recorded; values never are.
-pub fn scan_runtime_env<I>(vars: I) -> RuntimeEnvScan
+///
+/// A variable is excused only when both [`PROXY_SESSION_VARS`] are set,
+/// `proxy_answers(port, header)` reports that proxy alive, and
+/// [`SESSION_KEYS_VAR`] names the variable. The probe is passed in so this
+/// stays pure; production callers pass [`proxy_answers`].
+pub fn scan_runtime_env<I, P>(vars: I, proxy_answers: P) -> RuntimeEnvScan
 where
     I: IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+    P: FnOnce(u16, &str) -> bool,
 {
     let mut names = std::collections::BTreeSet::new();
-    let mut session = [false; PROXY_SESSION_VARS.len()];
+    let mut port_raw: Option<std::ffi::OsString> = None;
+    let mut header_raw: Option<std::ffi::OsString> = None;
+    let mut owned_raw: Option<std::ffi::OsString> = None;
     for (key, raw) in vars {
-        if let Some(slot) = PROXY_SESSION_VARS.iter().position(|var| key == *var) {
-            session[slot] = !raw.is_empty();
-        }
         if raw
             .as_encoded_bytes()
             .starts_with(crate::token::PHANTOM_PREFIX.as_bytes())
         {
             names.insert(key.to_string_lossy().into_owned());
         }
+        if key == PROXY_SESSION_VARS[0] {
+            port_raw = Some(raw);
+        } else if key == PROXY_SESSION_VARS[1] {
+            header_raw = Some(raw);
+        } else if key == SESSION_KEYS_VAR {
+            owned_raw = Some(raw);
+        }
     }
-    let proxy_session = session.iter().all(|set| *set);
-    let findings = if proxy_session {
-        Vec::new()
+
+    let set = |raw: &Option<std::ffi::OsString>| raw.as_ref().is_some_and(|v| !v.is_empty());
+    let session_vars_set = set(&port_raw) && set(&header_raw);
+    let live = session_vars_set && {
+        let port = port_raw
+            .as_deref()
+            .and_then(|v| v.to_str())
+            .and_then(|v| v.trim().parse::<u16>().ok())
+            .filter(|port| *port != 0);
+        let header = header_raw.as_deref().and_then(|v| v.to_str());
+        match (port, header) {
+            (Some(port), Some(header)) => proxy_answers(port, header),
+            _ => false,
+        }
+    };
+    let owned: std::collections::BTreeSet<String> = if live {
+        owned_raw
+            .as_deref()
+            .and_then(|v| v.to_str())
+            .unwrap_or_default()
+            .split(',')
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(str::to_string)
+            .collect()
     } else {
-        names
+        Default::default()
+    };
+
+    let (excused, flagged): (Vec<String>, Vec<String>) =
+        names.into_iter().partition(|name| owned.contains(name));
+    RuntimeEnvScan {
+        findings: flagged
             .into_iter()
             .map(|name| CheckFinding {
                 kind: "runtime_env",
@@ -106,12 +171,50 @@ where
                 label: None,
                 pattern: None,
             })
-            .collect()
-    };
-    RuntimeEnvScan {
-        findings,
-        proxy_session,
+            .collect(),
+        proxy_session: live,
+        excused,
+        stale_session: session_vars_set && !live,
     }
+}
+
+/// Whether a Phantom proxy on `127.0.0.1:port` answers its health endpoint
+/// for this session: `GET /phantom/health` with the `x-phantom-proxy-token`
+/// header must return 200 within a short timeout. Loopback only; nothing is
+/// logged or returned but the answer.
+pub fn proxy_answers(port: u16, header: &str) -> bool {
+    use std::io::{Read, Write};
+    use std::time::Duration;
+
+    if header.is_empty() || header.bytes().any(|b| b == b'\r' || b == b'\n') {
+        return false;
+    }
+    let address = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    let Ok(mut stream) = std::net::TcpStream::connect_timeout(&address, Duration::from_millis(500))
+    else {
+        return false;
+    };
+    let wait = Some(Duration::from_millis(1500));
+    if stream.set_read_timeout(wait).is_err() || stream.set_write_timeout(wait).is_err() {
+        return false;
+    }
+    let request = format!(
+        "GET /phantom/health HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nx-phantom-proxy-token: {header}\r\nConnection: close\r\n\r\n"
+    );
+    if stream.write_all(request.as_bytes()).is_err() {
+        return false;
+    }
+    let mut head = [0u8; 16];
+    let mut filled = 0;
+    while filled < head.len() {
+        match stream.read(&mut head[filled..]) {
+            Ok(0) => break,
+            Ok(read) => filled += read,
+            Err(_) => return false,
+        }
+    }
+    let status_line = &head[..filled];
+    status_line.starts_with(b"HTTP/1.1 200 ") || status_line.starts_with(b"HTTP/1.0 200 ")
 }
 
 /// One doctor line. Messages are the same value-blind text the human report
@@ -194,6 +297,8 @@ mod tests {
             warnings: &[],
             indeterminate: &[],
             proxy_session: false,
+            excused: &[],
+            session_warning: None,
         };
         assert_eq!(
             serde_json::to_value(&report).unwrap(),
@@ -215,29 +320,70 @@ mod tests {
             .collect()
     }
 
+    fn alive(_: u16, _: &str) -> bool {
+        true
+    }
+
+    fn dead(_: u16, _: &str) -> bool {
+        false
+    }
+
     #[test]
     fn runtime_scan_finds_a_phantom_token_under_any_name() {
         let placeholder = crate::token::PhantomToken::generate();
-        let scan = scan_runtime_env(env(&[
-            ("BILLING_SERVICE_KEY", placeholder.as_str()),
-            ("OPENAI_API_KEY", placeholder.as_str()),
-            ("NODE_ENV", "development"),
-        ]));
+        let scan = scan_runtime_env(
+            env(&[
+                ("BILLING_SERVICE_KEY", placeholder.as_str()),
+                ("OPENAI_API_KEY", placeholder.as_str()),
+                ("NODE_ENV", "development"),
+            ]),
+            |_, _| panic!("no session variables, so no probe"),
+        );
         assert_eq!(names(&scan), ["BILLING_SERVICE_KEY", "OPENAI_API_KEY"]);
-        assert!(!scan.proxy_session);
+        assert!(!scan.proxy_session && !scan.stale_session);
+        assert!(scan.excused.is_empty());
         assert!(scan.findings.iter().all(|f| f.kind == "runtime_env"));
     }
 
     #[test]
-    fn runtime_scan_inside_a_proxy_session_reports_no_stray_tokens() {
+    fn runtime_scan_excuses_only_what_a_live_session_owns() {
         let placeholder = crate::token::PhantomToken::generate();
-        let scan = scan_runtime_env(env(&[
-            ("OPENAI_API_KEY", placeholder.as_str()),
-            ("PHANTOM_PROXY_PORT", "43123"),
-            ("PHANTOM_PROXY_TOKEN", "session"),
-        ]));
-        assert!(scan.proxy_session);
-        assert!(scan.findings.is_empty());
+        let mut seen = None;
+        let scan = scan_runtime_env(
+            env(&[
+                ("OPENAI_API_KEY", placeholder.as_str()),
+                ("BILLING_SERVICE_KEY", placeholder.as_str()),
+                ("PHANTOM_PROXY_PORT", "43123"),
+                ("PHANTOM_PROXY_TOKEN", "session"),
+                ("PHANTOM_SESSION_KEYS", "OPENAI_API_KEY, STRIPE_SECRET_KEY"),
+            ]),
+            |port, header| {
+                seen = Some((port, header.len()));
+                true
+            },
+        );
+        assert_eq!(seen, Some((43123, "session".len())));
+        assert!(scan.proxy_session && !scan.stale_session);
+        assert_eq!(scan.excused, ["OPENAI_API_KEY"]);
+        assert_eq!(names(&scan), ["BILLING_SERVICE_KEY"]);
+    }
+
+    #[test]
+    fn runtime_scan_with_a_dead_proxy_reports_findings_and_a_stale_session() {
+        let placeholder = crate::token::PhantomToken::generate();
+        let scan = scan_runtime_env(
+            env(&[
+                ("OPENAI_API_KEY", placeholder.as_str()),
+                ("PHANTOM_PROXY_PORT", "43123"),
+                ("PHANTOM_PROXY_TOKEN", "session"),
+                ("PHANTOM_SESSION_KEYS", "OPENAI_API_KEY"),
+            ]),
+            dead,
+        );
+        assert!(!scan.proxy_session && scan.stale_session);
+        assert!(scan.excused.is_empty());
+        assert_eq!(names(&scan), ["OPENAI_API_KEY"]);
+        assert_eq!(scan.session_warning(), Some(STALE_SESSION_WARNING));
     }
 
     #[test]
@@ -247,12 +393,75 @@ mod tests {
             &[("PHANTOM_PROXY_PORT", "43123")][..],
             &[("PHANTOM_PROXY_PORT", "43123"), ("PHANTOM_PROXY_TOKEN", "")][..],
         ] {
-            let mut pairs = vec![("OPENAI_API_KEY", placeholder.as_str())];
+            let mut pairs = vec![
+                ("OPENAI_API_KEY", placeholder.as_str()),
+                ("PHANTOM_SESSION_KEYS", "OPENAI_API_KEY"),
+            ];
             pairs.extend_from_slice(partial);
-            let scan = scan_runtime_env(env(&pairs));
-            assert!(!scan.proxy_session);
+            let scan = scan_runtime_env(env(&pairs), alive);
+            assert!(!scan.proxy_session && !scan.stale_session);
             assert_eq!(names(&scan), ["OPENAI_API_KEY"]);
         }
+    }
+
+    #[test]
+    fn runtime_scan_treats_an_unusable_port_as_stale() {
+        let placeholder = crate::token::PhantomToken::generate();
+        let scan = scan_runtime_env(
+            env(&[
+                ("OPENAI_API_KEY", placeholder.as_str()),
+                ("PHANTOM_PROXY_PORT", "not-a-port"),
+                ("PHANTOM_PROXY_TOKEN", "session"),
+                ("PHANTOM_SESSION_KEYS", "OPENAI_API_KEY"),
+            ]),
+            |_, _| panic!("an unusable port is never probed"),
+        );
+        assert!(scan.stale_session);
+        assert_eq!(names(&scan), ["OPENAI_API_KEY"]);
+    }
+
+    /// A one-shot loopback server that answers 200 only for `expected`.
+    fn health_server(expected: &'static str) -> u16 {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut request = Vec::new();
+                let mut chunk = [0u8; 512];
+                while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+                    match stream.read(&mut chunk) {
+                        Ok(0) | Err(_) => break,
+                        Ok(read) => request.extend_from_slice(&chunk[..read]),
+                    }
+                }
+                let text = String::from_utf8_lossy(&request);
+                let ok = text.starts_with("GET /phantom/health ")
+                    && text.contains(&format!("x-phantom-proxy-token: {expected}\r\n"));
+                let status = if ok { "200 OK" } else { "401 Unauthorized" };
+                let _ = stream.write_all(
+                    format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\n\r\n").as_bytes(),
+                );
+            }
+        });
+        port
+    }
+
+    #[test]
+    fn proxy_answers_requires_a_200_for_this_header() {
+        assert!(proxy_answers(health_server("session-a"), "session-a"));
+        assert!(!proxy_answers(health_server("session-a"), "session-b"));
+        assert!(!proxy_answers(health_server("session-a"), "bad\r\nheader"));
+    }
+
+    #[test]
+    fn proxy_answers_is_false_when_nothing_listens() {
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        assert!(!proxy_answers(port, "session"));
     }
 
     #[test]

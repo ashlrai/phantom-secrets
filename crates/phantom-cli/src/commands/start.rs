@@ -291,6 +291,14 @@ async fn run_async() -> Result<()> {
         "{}",
         format_export(syntax, "PHANTOM_PROXY_TOKEN", &proxy_token)
     );
+    println!(
+        "{}",
+        format_export(
+            syntax,
+            phantom_core::report::SESSION_KEYS_VAR,
+            &super::exec::session_key_names(token_to_secret.values().map(|(name, _)| name)),
+        )
+    );
     if header_auth_only {
         println!("  # Header-only mode: clients must send x-phantom-proxy-token.");
     } else {

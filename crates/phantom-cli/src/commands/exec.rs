@@ -357,6 +357,12 @@ async fn run_async(cmd: &[String], env_flag: Option<&str>, quiet: bool) -> Resul
         )
         .env("PHANTOM_PROXY_PORT", port.to_string())
         .env("PHANTOM_PROXY_TOKEN", &proxy_token)
+        // Names only: lets `phantom check --runtime` excuse exactly the
+        // variables this session filled, and nothing it inherited.
+        .env(
+            phantom_core::report::SESSION_KEYS_VAR,
+            session_key_names(env_key_to_session_token.keys()),
+        )
         // A protected dotenv key may itself have this reserved name. Never
         // reintroduce either the real vault passphrase or a confusing session
         // token under Phantom's internal decryption-key variable.
@@ -472,6 +478,15 @@ fn sanitized_child_command(
     command
 }
 
+/// The comma-separated, sorted variable names a session fills with its own
+/// phantom tokens, for [`phantom_core::report::SESSION_KEYS_VAR`].
+pub(crate) fn session_key_names<'a>(names: impl Iterator<Item = &'a String>) -> String {
+    let mut names: Vec<&str> = names.map(String::as_str).collect();
+    names.sort_unstable();
+    names.dedup();
+    names.join(",")
+}
+
 fn child_environment_policy(
     config: &PhantomConfig,
     protected_env_keys: &HashSet<String>,
@@ -481,6 +496,7 @@ fn child_environment_policy(
         VAULT_PASSPHRASE_ENV.to_string(),
         "PHANTOM_PROXY_TOKEN".to_string(),
         "PHANTOM_PROXY_PORT".to_string(),
+        phantom_core::report::SESSION_KEYS_VAR.to_string(),
     ]);
     scrub.extend(
         ServiceRegistry::known_override_env_names()
@@ -640,6 +656,16 @@ fn signal_name(signal: i32) -> Option<&'static str> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn session_key_names_are_sorted_unique_names() {
+        let names = ["OPENAI_API_KEY", "DATABASE_URL", "OPENAI_API_KEY"].map(String::from);
+        assert_eq!(
+            session_key_names(names.iter()),
+            "DATABASE_URL,OPENAI_API_KEY"
+        );
+        assert_eq!(session_key_names(std::iter::empty()), "");
+    }
+
     #[test]
     fn altered_route_refusal_points_at_doctor() {
         let mut config = PhantomConfig::new_with_defaults("route-test".to_string());
@@ -950,6 +976,7 @@ mod tests {
         for name in [
             "PHANTOM_PROXY_TOKEN",
             "PHANTOM_PROXY_PORT",
+            "PHANTOM_SESSION_KEYS",
             "OPENAI_BASE_URL",
             "OPENAI_API_KEY",
             "ROTATION_ADMIN_TOKEN",

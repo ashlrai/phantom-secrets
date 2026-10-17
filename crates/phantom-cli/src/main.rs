@@ -205,7 +205,7 @@ enum Commands {
         /// Only scan git-staged files (skip .env scanning, faster for pre-commit hooks)
         #[arg(long)]
         staged: bool,
-        /// Scan every environment variable for phantom tokens left without a proxy session
+        /// Scan every environment variable for phantom tokens a live proxy session does not own
         #[arg(long)]
         runtime: bool,
         /// Emit a names-only JSON report on stdout (exit status unchanged)
