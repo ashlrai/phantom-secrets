@@ -37,8 +37,8 @@ This patches `~/.codex/config.toml` with an `[mcp_servers.phantom]` entry:
 
 ```toml
 [mcp_servers.phantom]
-command = "phantom-mcp"
-args = []
+command = "/absolute/path/to/phantom"
+args = ["mcp", "serve"]
 ```
 
 Install both `v0.7.9` release binaries before setup. Version `0.7.9` records the
@@ -86,7 +86,7 @@ migration guidance and never kills a process or deletes the record.
 
 ## MCP tools Codex can use
 
-Once `phantom-secrets-mcp` is registered, Codex can call the same runtime
+Once the `phantom` server is registered, Codex can call the same runtime
 catalog as other MCP clients. See the [core tool examples in the Claude Code
 guide](./claude-code.md#core-mcp-tools-claude-can-use), and use MCP `tools/list`
 for the canonical catalog.
