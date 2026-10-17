@@ -250,6 +250,7 @@ fn audit_incidents_reports_leak_events_not_yet_persisted() {
     assert!(out.status.success(), "{out:?}");
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("not persisted yet"), "{stdout}");
+    assert!(stdout.contains("unpersisted"), "{stdout}");
     assert!(stdout.contains("OPENAI_API_KEY"), "{stdout}");
     assert!(
         stdout.contains("phantom audit alerts --backfill"),

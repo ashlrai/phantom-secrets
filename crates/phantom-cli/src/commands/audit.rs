@@ -1304,29 +1304,7 @@ pub fn run_incidents(min_confidence: f64, json: bool, auto_rotate_on_high: bool)
         return Ok(());
     }
 
-    if !uncorrelated.is_empty() {
-        println!(
-            "{}  {} leak incident(s) from the last 24 h are in the audit log but not persisted yet:",
-            "!".yellow().bold(),
-            uncorrelated.len().to_string().red().bold(),
-        );
-        for inc in &uncorrelated {
-            println!(
-                "  {:<28}  {:<10}  {} event(s), last seen {}",
-                inc.secret_name.bold(),
-                format!("{:.2}", inc.confidence),
-                inc.event_count,
-                format_unix_ts(inc.last_seen_ts),
-            );
-        }
-        println!(
-            "   Treat each as a possible leak. Persist them and send configured alerts with {}.",
-            "phantom audit alerts --backfill".cyan()
-        );
-        println!();
-    }
-
-    if incidents.is_empty() {
+    if incidents.is_empty() && uncorrelated.is_empty() {
         if audit_log_present {
             println!(
                 "{}  No persisted active leak incidents (min_confidence={:.2}).",
@@ -1348,9 +1326,22 @@ pub fn run_incidents(min_confidence: f64, json: bool, auto_rotate_on_high: bool)
     println!(
         "{}  {} active leak incident(s) (confidence ≥ {:.2})",
         "->".blue().bold(),
-        incidents.len().to_string().red().bold(),
+        (incidents.len() + uncorrelated.len())
+            .to_string()
+            .red()
+            .bold(),
         min_confidence,
     );
+    if !uncorrelated.is_empty() {
+        println!(
+            "{}  {} of them are leak events from the last 24 h in the audit log, not persisted yet (status {}). \
+             Treat each as a possible leak. Persist them and send configured alerts with {}.",
+            "!".yellow().bold(),
+            uncorrelated.len().to_string().red().bold(),
+            "unpersisted".yellow(),
+            "phantom audit alerts --backfill".cyan()
+        );
+    }
     println!();
 
     // ── Table header ──────────────────────────────────────────────────────────
@@ -1364,14 +1355,18 @@ pub fn run_incidents(min_confidence: f64, json: bool, auto_rotate_on_high: bool)
     );
     println!("  {}", "-".repeat(100).dimmed());
 
-    for inc in &incidents {
+    // Unpersisted incidents share the table (same columns, names only).
+    let persisted_count = incidents.len();
+    for (row, inc) in incidents.iter().chain(uncorrelated.iter()).enumerate() {
         let confidence_str = if inc.confidence >= 0.9 {
             format!("{:.2}", inc.confidence).red().bold().to_string()
         } else {
             format!("{:.2}", inc.confidence).yellow().to_string()
         };
 
-        let status = if inc.confidence >= 0.9 {
+        let status = if row >= persisted_count {
+            "unpersisted".yellow().bold().to_string()
+        } else if inc.confidence >= 0.9 {
             "CRITICAL".red().bold().to_string()
         } else {
             "active".yellow().to_string()
