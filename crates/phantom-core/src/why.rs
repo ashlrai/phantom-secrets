@@ -46,11 +46,42 @@ const CONNECTION_PATTERNS: [&str; 10] = [
     "DSN",
 ];
 
-/// Build the value-free why report for `key`.
+/// Where a why report is shown. Its `next_step` names the status command of
+/// that surface: the `phantom_status` MCP tool, or the `phantom status` CLI
+/// command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Surface {
+    Mcp,
+    Cli,
+}
+
+/// Build the value-free why report for `key`, as the MCP `phantom_why` tool
+/// shows it.
 ///
 /// `dotenv` is `None` when the managed dotenv file does not exist. The caller
 /// is responsible for validating a parsed dotenv before passing it in.
 pub fn why_report(key: &str, dotenv: Option<&DotenvFile>, config: Option<&PhantomConfig>) -> Value {
+    why_report_for(Surface::Mcp, key, dotenv, config)
+}
+
+/// [`why_report`] for `surface`: on the CLI, a `next_step` that points at the
+/// `phantom_status` MCP tool names the `phantom status` command instead.
+pub fn why_report_for(
+    surface: Surface,
+    key: &str,
+    dotenv: Option<&DotenvFile>,
+    config: Option<&PhantomConfig>,
+) -> Value {
+    let mut report = build_report(key, dotenv, config);
+    if surface == Surface::Cli {
+        if let Some(step) = report["next_step"].as_str() {
+            report["next_step"] = step.replace("phantom_status", "`phantom status`").into();
+        }
+    }
+    report
+}
+
+fn build_report(key: &str, dotenv: Option<&DotenvFile>, config: Option<&PhantomConfig>) -> Value {
     let mut report = json!({
         "key": key,
         "dotenv_exists": dotenv.is_some(),
@@ -197,7 +228,7 @@ impl<'a> ExecVerdict<'a> {
     }
 }
 
-fn blocked_next_step(blocker: &ExecBlocker<'_>) -> String {
+pub fn blocked_next_step(blocker: &ExecBlocker<'_>) -> String {
     let service = blocker.service();
     match blocker {
         ExecBlocker::ConnectionString { key, .. } => format!(
@@ -262,6 +293,22 @@ mod tests {
         assert_eq!(report["dotenv_exists"], false);
         assert_eq!(report["found"], false);
         assert!(report["next_step"].is_string());
+    }
+
+    #[test]
+    fn cli_next_steps_name_the_cli_status_command() {
+        let dotenv = parse("NODE_ENV=production\n");
+        let mcp = why_report("NOPE", Some(&dotenv), None);
+        assert!(mcp["next_step"]
+            .as_str()
+            .unwrap()
+            .contains("phantom_status"));
+
+        let cli = why_report_for(Surface::Cli, "NOPE", Some(&dotenv), None);
+        let step = cli["next_step"].as_str().unwrap();
+        assert!(step.contains("`phantom status`"), "{step}");
+        assert!(!step.contains("phantom_status"), "{step}");
+        assert_eq!(cli["found"], false);
     }
 
     #[test]

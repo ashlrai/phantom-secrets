@@ -78,7 +78,7 @@ async fn run_async(
         anyhow::bail!("`phantom sync --json` is currently supported with `--dry-run` only.");
     }
 
-    let project_dir = std::env::current_dir()?;
+    let project_dir = crate::util::project_dir()?;
     let config_path = project_dir.join(".phantom.toml");
 
     if !config_path.exists() {
@@ -90,10 +90,17 @@ async fn run_async(
     }
 
     let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
-    let vault = phantom_vault::try_create_vault(config.local_project_id())?;
+    let vault = crate::util::open_vault(config.local_project_id())?;
 
     // Cheap precondition check before decrypting anything.
     let secret_names = vault.list().context("Failed to list secrets")?;
+    // A locked file vault would otherwise read as "no secrets to sync".
+    let note = crate::util::inventory_guard(
+        vault.as_ref(),
+        config.local_project_id(),
+        secret_names.len(),
+    )?;
+    crate::util::warn_inventory_note(note.as_deref());
     if secret_names.is_empty() && dry_run && json {
         println!(
             "{}",
@@ -795,5 +802,19 @@ mod tests {
             .expect("live path must contain provider call");
         assert!(confirmation < retrieval);
         assert!(retrieval < provider);
+    }
+}
+
+#[cfg(all(test, unix))]
+mod locked_vault_tests {
+    use crate::util::test_seam::{empty_keychain, LockedProject};
+
+    /// `phantom sync --dry-run --json` reported `secret_count: 0` for a vault
+    /// it could not open.
+    #[test]
+    fn sync_refuses_a_locked_file_vault() {
+        let _project = LockedProject::new(empty_keychain);
+        let error = super::run(None, None, Vec::new(), true, true).unwrap_err();
+        assert!(error.to_string().starts_with("Vault locked:"), "{error:#}");
     }
 }

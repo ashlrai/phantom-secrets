@@ -1,4 +1,7 @@
+mod broken_pipe;
 mod commands;
+#[cfg(test)]
+mod doc_facts;
 mod util;
 
 #[cfg(test)]
@@ -33,7 +36,7 @@ use tracing_subscriber::EnvFilter;
                     Setup         init · agent · setup · doctor · workspace · vault · completion · mcp · mcp-approve\n  \
                     Daily use     exec · start · stop · status · check · list · add · remove · reveal · copy · env · why\n  \
                     Sync & teams  login · logout · cloud · team · sync · pull · export · import · wrap · unwrap\n  \
-                    Maintenance   upgrade · watch · rotate · grant · validate · expiry · secrets-expiring-soon · open · audit",
+                    Maintenance   upgrade · watch · rotate · grant · validate · expiry · secrets-expiring-soon · open · audit · leaks",
     version
 )]
 struct Cli {
@@ -79,7 +82,7 @@ enum Commands {
         empty: bool,
     },
 
-    /// Wire Phantom into an AI client (Claude Code, Cursor, Windsurf, Codex)
+    /// Wire Phantom into an AI client (Claude Code, Cursor, Windsurf, Codex, Gemini CLI)
     #[command(next_help_heading = "Setup")]
     Setup {
         /// AI client to configure. Defaults to Claude Code if omitted.
@@ -91,6 +94,10 @@ enum Commands {
         /// Configure audit encryption: none/local; cloud-signed is reserved and refused
         #[arg(long, value_enum, value_name = "MODE")]
         audit_mode: Option<commands::setup::AuditMode>,
+        /// Read-only: list which clients (Claude Code, Cursor, Windsurf, Codex,
+        /// Gemini CLI) have Phantom wired. Use the global --json for JSON.
+        #[arg(long, conflicts_with_all = ["client", "print", "audit_mode"])]
+        status: bool,
     },
 
     /// Agent readiness report, doctor, and setup workflows
@@ -230,9 +237,15 @@ enum Commands {
         /// Legacy positional secret value; rejected because argv is observable
         #[arg(hide = true)]
         value: Option<String>,
-        /// Read one new-name value from stdin; existing names are denied before the read
+        /// Read one new-name value from a pipe up to EOF (64 KiB cap); input with more than one line needs --multiline or --first-line; existing names are denied before the read
         #[arg(long)]
         stdin: bool,
+        /// With --stdin: store every line of multi-line input (PEM keys, JSON documents)
+        #[arg(long, requires = "stdin", conflicts_with = "first_line")]
+        multiline: bool,
+        /// With --stdin: store only the first line (pass/gopass put metadata after it)
+        #[arg(long, requires = "stdin")]
+        first_line: bool,
     },
 
     /// Remove a secret transactionally after an exact trusted-terminal challenge
@@ -517,6 +530,13 @@ enum Commands {
         watch: bool,
     },
 
+    /// Leak response tools (read-only preview)
+    #[command(next_help_heading = "Maintenance")]
+    Leaks {
+        #[command(subcommand)]
+        action: LeaksAction,
+    },
+
     /// View the opt-in audit log (requires PHANTOM_AUDIT=1 to start logging)
     #[command(next_help_heading = "Maintenance")]
     Audit {
@@ -572,6 +592,20 @@ enum Commands {
         /// Seconds to wait before clearing
         #[arg(long, default_value_t = 30)]
         secs: u64,
+    },
+}
+
+#[derive(Subcommand)]
+enum LeaksAction {
+    /// Show what automated leak response would do. Read-only: no writes, no
+    /// network, no secret values printed.
+    Plan {
+        /// Only plan for incidents with confidence at or above this value
+        #[arg(long, default_value_t = 0.5)]
+        min_confidence: f64,
+        /// Emit JSON instead of human-readable output
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -750,6 +784,12 @@ enum AgentAction {
     },
     /// Human-readable view of the readiness report
     Doctor,
+    /// Read-only, value-free view of MCP approval state (use --json for JSON)
+    Status {
+        /// Emit stable JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Initialize safe defaults for AI-agent use
     Setup {
         /// Show planned actions without changing files
@@ -857,11 +897,21 @@ enum CloudAction {
 const MAIN_STACK_SIZE: usize = 16 * 1024 * 1024;
 
 fn main() -> anyhow::Result<()> {
+    broken_pipe::install_panic_hook();
     let handle = std::thread::Builder::new()
         .name("phantom-main".into())
         .stack_size(MAIN_STACK_SIZE)
         .spawn(run)?;
     match handle.join() {
+        // The reader of stdout went away (`phantom list | head`): a normal
+        // end for a CLI, reported the way a shell reports SIGPIPE, with no
+        // panic text or error line. The worker has already unwound.
+        Ok(Err(error)) if broken_pipe::is_stdout_broken_pipe_error(&error) => {
+            std::process::exit(broken_pipe::BROKEN_PIPE_EXIT)
+        }
+        Err(panic) if broken_pipe::is_stdout_broken_pipe_panic(&*panic) => {
+            std::process::exit(broken_pipe::BROKEN_PIPE_EXIT)
+        }
         Ok(result) => result,
         // Propagate a panic on the worker thread as if it happened here so
         // the process still dies with the standard panic exit status.
@@ -915,7 +965,22 @@ fn run() -> anyhow::Result<()> {
             show_expiry,
             min_anomaly_score,
         } => commands::list::run_with_expiry(json, show_expiry, min_anomaly_score),
-        Commands::Add { name, value, stdin } => commands::add::run(&name, value, stdin),
+        Commands::Add {
+            name,
+            value,
+            stdin,
+            multiline,
+            first_line,
+        } => {
+            let lines = if multiline {
+                commands::add::StdinLines::Multiline
+            } else if first_line {
+                commands::add::StdinLines::FirstLine
+            } else {
+                commands::add::StdinLines::SingleOnly
+            };
+            commands::add::run(&name, value, stdin, lines)
+        }
         Commands::Remove { name } => commands::remove::run(&name),
         Commands::Reveal {
             name,
@@ -990,6 +1055,7 @@ fn run() -> anyhow::Result<()> {
         Commands::Agent { action } => match action {
             AgentAction::Report { json } => commands::agent::report(json || global_json),
             AgentAction::Doctor => commands::agent::doctor(),
+            AgentAction::Status { json } => commands::agent::status(json || global_json),
             AgentAction::Setup { dry_run, apply } => commands::agent::setup(dry_run, apply),
         },
         Commands::Exec { cmd } => commands::exec::run(&cmd, None, cli.quiet),
@@ -1011,7 +1077,14 @@ fn run() -> anyhow::Result<()> {
             client,
             print,
             audit_mode,
-        } => commands::setup::run(client, print, audit_mode),
+            status,
+        } => {
+            if status {
+                commands::setup_status::run(cli.json)
+            } else {
+                commands::setup::run(client, print, audit_mode)
+            }
+        }
         Commands::Sync {
             platform,
             project,
@@ -1066,6 +1139,12 @@ fn run() -> anyhow::Result<()> {
         Commands::Watch { auto, auto_rotate } => {
             commands::watch::run_with_rotate(auto, auto_rotate)
         }
+        Commands::Leaks { action } => match action {
+            LeaksAction::Plan {
+                min_confidence,
+                json,
+            } => commands::leaks::run_plan(min_confidence, json || global_json),
+        },
         Commands::Why { key } => commands::why::run(&key, global_json),
         Commands::Wrap { only, skip } => commands::wrap::run(&only, &skip),
         Commands::Unwrap => commands::unwrap::run(),
@@ -1088,7 +1167,9 @@ fn run() -> anyhow::Result<()> {
                 commands::audit::run_tail(op.as_deref(), name.as_deref())
             }
             AuditAction::Path => commands::audit::run_path(),
-            AuditAction::Verify { with_context } => commands::audit::run_verify(with_context),
+            AuditAction::Verify { with_context } => {
+                commands::audit::run_verify(with_context, global_json)
+            }
             AuditAction::Stats {
                 json,
                 top,
@@ -1253,7 +1334,35 @@ fn run() -> anyhow::Result<()> {
 #[cfg(test)]
 mod help_tests {
     use super::Cli;
-    use clap::CommandFactory;
+    use clap::{CommandFactory, Parser};
+
+    #[test]
+    fn add_line_flags_require_stdin_and_exclude_each_other() {
+        for args in [
+            &["phantom", "add", "NAME", "--multiline"][..],
+            &["phantom", "add", "NAME", "--first-line"][..],
+            &[
+                "phantom",
+                "add",
+                "NAME",
+                "--stdin",
+                "--multiline",
+                "--first-line",
+            ][..],
+        ] {
+            assert!(
+                Cli::try_parse_from(args).is_err(),
+                "{args:?} must be rejected"
+            );
+        }
+        for args in [
+            &["phantom", "add", "NAME", "--stdin"][..],
+            &["phantom", "add", "NAME", "--stdin", "--multiline"][..],
+            &["phantom", "add", "NAME", "--stdin", "--first-line"][..],
+        ] {
+            assert!(Cli::try_parse_from(args).is_ok(), "{args:?} must parse");
+        }
+    }
 
     fn grouped_section(about: &str) -> &str {
         about

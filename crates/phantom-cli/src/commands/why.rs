@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use colored::Colorize;
 use phantom_core::config::PhantomConfig;
 use phantom_core::dotenv::{classify, is_public_key, DotenvFile, EnvEntry, SecretClassification};
+use phantom_core::why::Surface;
 
 /// Human output for how `phantom exec` treats a protected key. It prints only
 /// fixed labels and sentences: the service and host are already shown on the
@@ -57,7 +58,7 @@ fn read_dotenv(
         Some(config) => {
             Ok(phantom_core::managed_dotenv::resolve_dotenv(project_dir, config, &[])?.file)
         }
-        None => phantom_core::managed_dotenv::parse_regular_dotenv(&project_dir.join(".env"))
+        None => phantom_core::managed_dotenv::parse_regular_dotenv(project_dir, ".env")
             .context("Refusing to classify ./.env; protection status is indeterminate"),
     }
 }
@@ -73,7 +74,7 @@ pub fn run(key: &str, json: bool) -> Result<()> {
     let dotenv = read_dotenv(&project_dir, config.as_ref())?;
 
     if json && dotenv.is_none() {
-        let report = phantom_core::why::why_report(key, None, config.as_ref());
+        let report = phantom_core::why::why_report_for(Surface::Cli, key, None, config.as_ref());
         println!("{}", serde_json::to_string_pretty(&report)?);
         return Ok(());
     }
@@ -89,7 +90,8 @@ pub fn run(key: &str, json: bool) -> Result<()> {
         .validate_for_mutation()
         .context("Managed dotenv is malformed; protection status is indeterminate")?;
     if json {
-        let report = phantom_core::why::why_report(key, Some(&dotenv), config.as_ref());
+        let report =
+            phantom_core::why::why_report_for(Surface::Cli, key, Some(&dotenv), config.as_ref());
         println!("{}", serde_json::to_string_pretty(&report)?);
         return Ok(());
     }
@@ -183,17 +185,17 @@ pub fn run(key: &str, json: bool) -> Result<()> {
             }
         }
         None => {
-            // Key not in .env — check if it's a known public prefix
-            if is_public_key(key) {
-                println!(
-                    "{} {} is not in .env, but would be classified as a {} (browser-safe)",
-                    "->".blue().bold(),
-                    key.bold(),
-                    "public key".yellow()
-                );
+            // A name that is not in the dotenv has nothing to explain; fail so
+            // a typo is not mistaken for an answer.
+            let public = if is_public_key(key) {
+                " (its prefix would classify it as a browser-safe public key)"
             } else {
-                println!("{} {} not found in .env", "!".yellow().bold(), key.bold());
-            }
+                ""
+            };
+            anyhow::bail!(
+                "{key} not found in the dotenv{public}.\n  Key names are case-sensitive; run {} to list the protected keys.",
+                "phantom status".cyan().bold()
+            );
         }
     }
 

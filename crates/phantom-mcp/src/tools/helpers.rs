@@ -17,6 +17,51 @@ pub fn invalid_params_err(msg: impl Into<String>) -> McpError {
     McpError::new(rmcp::model::ErrorCode::INVALID_PARAMS, msg.into(), None)
 }
 
+/// The call is well formed, but the project is not in a state to serve it:
+/// not initialized, config unreadable, vault locked or undecryptable, not
+/// logged in. The user can fix each of these, and the message names how.
+/// INTERNAL_ERROR (-32603) would tell the client the server itself failed.
+pub fn state_err(msg: impl Into<String>) -> McpError {
+    McpError::new(rmcp::model::ErrorCode::INVALID_REQUEST, msg.into(), None)
+}
+
+/// The next step before `phantom init`, shared with the listing tools.
+pub const NOT_INITIALIZED_NEXT_STEP: &str = "Phantom is not initialized in this project. Ask the \
+     user to run `phantom init` in a trusted terminal (or call phantom_init with confirm plus \
+     approval); phantom_why shows what init would protect.";
+
+pub fn not_initialized_err() -> McpError {
+    state_err(NOT_INITIALIZED_NEXT_STEP)
+}
+
+/// `.phantom.toml` exists but cannot be loaded.
+pub fn config_invalid_err(error: impl std::fmt::Display) -> McpError {
+    state_err(format!(
+        "Failed to load config: {error}. Next step: run phantom_doctor (it does not open the \
+         vault) to see the failing check, then fix .phantom.toml and retry."
+    ))
+}
+
+/// A vault read failed. A decryption failure is a wrong
+/// PHANTOM_VAULT_PASSPHRASE in this server's environment or a corrupt vault
+/// file; the user can act on either, so both next steps are named. Anything
+/// else stays an internal error.
+pub fn vault_read_err(context: &str, error: impl std::fmt::Display) -> McpError {
+    let detail = error.to_string();
+    if detail.contains("Decryption failed") {
+        return state_err(format!(
+            "{context}: the encrypted-file vault could not be decrypted: either a wrong \
+             passphrase or a corrupt vault file. Wrong passphrase: set \
+             PHANTOM_VAULT_PASSPHRASE in the MCP server's env config to the passphrase the \
+             secrets were stored with (the one `phantom` uses in the user's terminal), then \
+             restart the MCP server. Corrupt vault file: ask the user to run `phantom doctor` \
+             in a trusted terminal, then restore the secrets from an encrypted backup \
+             (`phantom import <FILE>`) or a cloud copy (`phantom cloud pull`)."
+        ));
+    }
+    internal_err(format!("{context}: {detail}"))
+}
+
 /// Output format accepted by the audit export tools.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuditFormat {

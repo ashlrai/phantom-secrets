@@ -40,14 +40,11 @@ pub fn run(warn_days: u64, auto_rotate: bool, sync_after: bool, json: bool) -> R
         );
     }
 
-    let project_dir = std::env::current_dir()?;
+    let project_dir = crate::util::project_dir()?;
     let config_path = project_dir.join(".phantom.toml");
 
     if !config_path.exists() {
-        anyhow::bail!(
-            "No .phantom.toml found. Run {} first.",
-            "phantom init".cyan().bold()
-        );
+        return Err(crate::util::missing_config_error(&project_dir));
     }
 
     let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
@@ -56,11 +53,15 @@ pub fn run(warn_days: u64, auto_rotate: bool, sync_after: bool, json: bool) -> R
             "Managed dotenv is malformed; auto-rotate stopped before vault, metadata, or output effects",
         )?;
     }
-    let vault = phantom_vault::try_create_vault(config.local_project_id())?;
+    let vault = crate::util::open_vault(config.local_project_id())?;
 
     let entries = vault
         .list_with_metadata()
         .context("Failed to read vault metadata")?;
+    // A locked file vault would otherwise read as "nothing expiring".
+    let note =
+        crate::util::inventory_guard(vault.as_ref(), config.local_project_id(), entries.len())?;
+    crate::util::warn_inventory_note(note.as_deref());
 
     // Collect secrets that are expired or expiring within warn_days.
     let mut expiring: Vec<ExpiryEntry> = entries
@@ -223,10 +224,7 @@ pub fn run_set(key: &str, days: u64) -> Result<()> {
     let config_path = project_dir.join(".phantom.toml");
 
     if !config_path.exists() {
-        anyhow::bail!(
-            "No .phantom.toml found. Run {} first.",
-            "phantom init".cyan().bold()
-        );
+        return Err(crate::util::missing_config_error(&project_dir));
     }
 
     let config_before =
@@ -342,28 +340,32 @@ pub fn run_enforce(fail_closed: bool, json: bool) -> Result<()> {
     use phantom_core::rotation_strategy::check_expiry;
     use phantom_vault::metadata::now_secs;
 
-    let project_dir = std::env::current_dir()?;
+    let project_dir = crate::util::project_dir()?;
     let config_path = project_dir.join(".phantom.toml");
 
     if !config_path.exists() {
-        anyhow::bail!(
-            "No .phantom.toml found. Run {} first.",
-            "phantom init".cyan().bold()
-        );
+        return Err(crate::util::missing_config_error(&project_dir));
     }
 
     let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
-    let vault = phantom_vault::try_create_vault(config.local_project_id())?;
+    let vault = crate::util::open_vault(config.local_project_id())?;
     let now = now_secs();
 
     let mut expired: Vec<EnforceEntry> = Vec::new();
     let mut ok_count: usize = 0;
     let mut no_expiry_count: usize = 0;
 
-    for (name, metadata) in vault
+    let entries = vault
         .list_with_metadata()
-        .context("Failed to read vault lifecycle metadata")?
-    {
+        .context("Failed to read vault lifecycle metadata")?;
+    // A gate: it must not pass over secrets in a vault it cannot open.
+    crate::util::require_complete_inventory(
+        vault.as_ref(),
+        config.local_project_id(),
+        entries.len(),
+        "enforce expiry",
+    )?;
+    for (name, metadata) in entries {
         match metadata.and_then(|metadata| metadata.expires_at) {
             None => {
                 no_expiry_count += 1;
@@ -459,10 +461,7 @@ pub fn run_rotate(key: &str) -> Result<()> {
     let config_path = project_dir.join(".phantom.toml");
 
     if !config_path.exists() {
-        anyhow::bail!(
-            "No .phantom.toml found. Run {} first.",
-            "phantom init".cyan().bold()
-        );
+        return Err(crate::util::missing_config_error(&project_dir));
     }
 
     let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
@@ -525,5 +524,40 @@ mod tests {
             .to_string();
             assert!(error.contains("no expiry policy was written"));
         }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod locked_vault_tests {
+    use crate::util::test_seam::{empty_keychain, keychain_with_one, LockedProject};
+
+    /// `phantom expiry enforce` is a CI gate. It passed (exit 0, "All 0
+    /// secret(s) ... within TTL"), even with --fail-closed, when the secrets
+    /// were in a vault it could not open.
+    #[test]
+    fn enforce_fails_on_a_locked_file_vault() {
+        let _project = LockedProject::new(empty_keychain);
+        for (fail_closed, json) in [(false, false), (true, false), (false, true)] {
+            let error = super::run_enforce(fail_closed, json).unwrap_err();
+            assert!(error.to_string().starts_with("Vault locked:"), "{error:#}");
+        }
+    }
+
+    #[test]
+    fn enforce_fails_on_a_keychain_only_view() {
+        let _project = LockedProject::new(keychain_with_one);
+        let error = super::run_enforce(false, true).unwrap_err().to_string();
+        assert!(
+            error.starts_with("Refusing to enforce expiry from a partial inventory"),
+            "{error}"
+        );
+    }
+
+    /// `phantom secrets-expiring-soon` answered "No secrets expiring".
+    #[test]
+    fn expiring_soon_refuses_a_locked_file_vault() {
+        let _project = LockedProject::new(empty_keychain);
+        let error = super::run(7, false, false, true).unwrap_err();
+        assert!(error.to_string().starts_with("Vault locked:"), "{error:#}");
     }
 }

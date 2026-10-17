@@ -318,7 +318,7 @@ fn prepare_export(output: &str) -> Result<ExportPlan> {
     let config_path = project_dir.join(".phantom.toml");
     let config_before = phantom_core::fs::read_regular_file(&config_path)
         .context("Failed to safely read .phantom.toml")?
-        .ok_or_else(|| anyhow::anyhow!("No .phantom.toml found. Run `phantom init` first."))?;
+        .ok_or_else(|| crate::util::missing_config_error(&project_dir))?;
     let config = PhantomConfig::load_from_bytes(&config_path, &config_before)
         .context("Failed to parse the reviewed .phantom.toml snapshot")?;
     recheck_exact_file(&config_path, &config_before, ".phantom.toml")?;
