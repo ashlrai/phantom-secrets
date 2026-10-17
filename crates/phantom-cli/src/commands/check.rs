@@ -402,7 +402,11 @@ fn print_runtime(findings: &[Finding], scan: &phantom_core::report::RuntimeEnvSc
         println!(
             "{} Live Phantom proxy session owns: {}",
             "ok".green().bold(),
-            scan.excused.join(", ")
+            scan.excused
+                .iter()
+                .map(|name| phantom_core::report::printable_name(name))
+                .collect::<Vec<_>>()
+                .join(", ")
         );
     }
     if findings.is_empty() {
@@ -420,7 +424,8 @@ fn print_runtime(findings: &[Finding], scan: &phantom_core::report::RuntimeEnvSc
         eprintln!(
             "  {} {} contains a phantom token",
             "!".yellow().bold(),
-            finding.name.as_deref().unwrap_or_default().bold()
+            phantom_core::report::printable_name(finding.name.as_deref().unwrap_or_default())
+                .bold()
         );
     }
     eprintln!(

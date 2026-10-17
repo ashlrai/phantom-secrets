@@ -178,9 +178,26 @@ where
     }
 }
 
+/// A variable name as text output may show it: control characters (a name
+/// can hold any byte but `=` and NUL) are escaped, so a crafted name cannot
+/// move the cursor, clear the screen, or fake another line of the report.
+/// JSON output is escaped by its serializer and does not need this.
+pub fn printable_name(name: &str) -> String {
+    name.chars()
+        .map(|c| {
+            if c.is_control() {
+                c.escape_default().to_string()
+            } else {
+                c.to_string()
+            }
+        })
+        .collect()
+}
+
 /// Whether a Phantom proxy on `127.0.0.1:port` answers its health endpoint
 /// for this session: `GET /phantom/health` with the `x-phantom-proxy-token`
-/// header must return 200 within a short timeout. Loopback only; nothing is
+/// header must return 200 with a body naming `"service":"phantom-proxy"`,
+/// within a short timeout and a bounded read. Loopback only; nothing is
 /// logged or returned but the answer.
 pub fn proxy_answers(port: u16, header: &str) -> bool {
     use std::io::{Read, Write};
@@ -204,18 +221,37 @@ pub fn proxy_answers(port: u16, header: &str) -> bool {
     if stream.write_all(request.as_bytes()).is_err() {
         return false;
     }
-    let mut head = [0u8; 16];
-    let mut filled = 0;
-    while filled < head.len() {
-        match stream.read(&mut head[filled..]) {
+    // Bounded: the proxy's health answer is a short JSON document. Another
+    // local server answering 200 on a reused port must not count, so the
+    // body has to name the proxy too.
+    let mut response = Vec::new();
+    let mut chunk = [0u8; 512];
+    while response.len() < HEALTH_RESPONSE_LIMIT {
+        match stream.read(&mut chunk) {
             Ok(0) => break,
-            Ok(read) => filled += read,
+            Ok(read) => response.extend_from_slice(&chunk[..read]),
             Err(_) => return false,
         }
     }
-    let status_line = &head[..filled];
-    status_line.starts_with(b"HTTP/1.1 200 ") || status_line.starts_with(b"HTTP/1.0 200 ")
+    response.truncate(HEALTH_RESPONSE_LIMIT);
+    let ok_status =
+        response.starts_with(b"HTTP/1.1 200 ") || response.starts_with(b"HTTP/1.0 200 ");
+    let body = response
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .map(|end| &response[end + 4..]);
+    ok_status
+        && body.is_some_and(|body| {
+            body.windows(HEALTH_SERVICE_MARKER.len())
+                .any(|window| window == HEALTH_SERVICE_MARKER)
+        })
 }
+
+/// Most bytes of a health answer [`proxy_answers`] reads.
+const HEALTH_RESPONSE_LIMIT: usize = 4096;
+
+/// What the proxy's `/phantom/health` body says about itself.
+const HEALTH_SERVICE_MARKER: &[u8] = br#""service":"phantom-proxy""#;
 
 /// One doctor line. Messages are the same value-blind text the human report
 /// prints; a following `Fix:`/`Fixed:` hint attaches to the check it explains.
@@ -420,8 +456,9 @@ mod tests {
         assert_eq!(names(&scan), ["OPENAI_API_KEY"]);
     }
 
-    /// A one-shot loopback server that answers 200 only for `expected`.
-    fn health_server(expected: &'static str) -> u16 {
+    /// A one-shot loopback server that answers 200 with `body` only for
+    /// `expected`.
+    fn health_server(expected: &'static str, body: &'static str) -> u16 {
         use std::io::{Read, Write};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -438,20 +475,46 @@ mod tests {
                 let text = String::from_utf8_lossy(&request);
                 let ok = text.starts_with("GET /phantom/health ")
                     && text.contains(&format!("x-phantom-proxy-token: {expected}\r\n"));
+                let reply = if ok { body } else { "" };
                 let status = if ok { "200 OK" } else { "401 Unauthorized" };
                 let _ = stream.write_all(
-                    format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\n\r\n").as_bytes(),
+                    format!(
+                        "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
+                        reply.len()
+                    )
+                    .as_bytes(),
                 );
             }
         });
         port
     }
 
+    const PROXY_HEALTH_BODY: &str = r#"{"status":"ok","service":"phantom-proxy"}"#;
+
     #[test]
     fn proxy_answers_requires_a_200_for_this_header() {
-        assert!(proxy_answers(health_server("session-a"), "session-a"));
-        assert!(!proxy_answers(health_server("session-a"), "session-b"));
-        assert!(!proxy_answers(health_server("session-a"), "bad\r\nheader"));
+        let proxy = |expected| health_server(expected, PROXY_HEALTH_BODY);
+        assert!(proxy_answers(proxy("session-a"), "session-a"));
+        assert!(!proxy_answers(proxy("session-a"), "session-b"));
+        assert!(!proxy_answers(proxy("session-a"), "bad\r\nheader"));
+    }
+
+    #[test]
+    fn proxy_answers_requires_the_body_to_name_the_proxy() {
+        let other = health_server("session-a", r#"{"status":"ok","service":"something-else"}"#);
+        assert!(!proxy_answers(other, "session-a"));
+        let empty = health_server("session-a", "");
+        assert!(!proxy_answers(empty, "session-a"));
+    }
+
+    #[test]
+    fn printable_name_escapes_control_characters() {
+        assert_eq!(printable_name("OPENAI_API_KEY"), "OPENAI_API_KEY");
+        assert_eq!(printable_name("BAD\nKEY"), "BAD\\nKEY");
+        assert_eq!(printable_name("ESC\u{1b}[2J"), "ESC\\u{1b}[2J");
+        assert!(!printable_name("A\rB\tC\u{7f}")
+            .chars()
+            .any(char::is_control));
     }
 
     #[test]

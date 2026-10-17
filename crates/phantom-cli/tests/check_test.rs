@@ -422,9 +422,20 @@ fn live_health_endpoint(expected: &'static str) -> String {
             let text = String::from_utf8_lossy(&request);
             let ok = text.starts_with("GET /phantom/health ")
                 && text.contains(&format!("x-phantom-proxy-token: {expected}\r\n"));
+            // The proxy's own health answer, which the probe requires.
+            let reply = if ok {
+                r#"{"status":"ok","service":"phantom-proxy"}"#
+            } else {
+                ""
+            };
             let status = if ok { "200 OK" } else { "401 Unauthorized" };
-            let _ = stream
-                .write_all(format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\n\r\n").as_bytes());
+            let _ = stream.write_all(
+                format!(
+                    "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
+                    reply.len()
+                )
+                .as_bytes(),
+            );
         }
     });
     port.to_string()
@@ -446,8 +457,10 @@ fn check_runtime_live_session_excuses_only_the_variables_it_owns() {
         .env("PHANTOM_PROXY_PORT", &port)
         .env("PHANTOM_PROXY_TOKEN", "session-live")
         .env("PHANTOM_SESSION_KEYS", "OPENAI_API_KEY")
-        .assert();
+        .assert()
+        .success();
     let report = runtime_report(&output);
+    assert_eq!(report["clean"], true, "{report}");
     assert_eq!(report["proxy_session"], true, "{report}");
     assert_eq!(report["excused"], serde_json::json!(["OPENAI_API_KEY"]));
     assert!(

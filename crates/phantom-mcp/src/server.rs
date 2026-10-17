@@ -2497,7 +2497,11 @@ impl PhantomMcpServer {
         if !scan.excused.is_empty() {
             output.push_str(&format!(
                 "A live Phantom proxy session owns: {}\n",
-                scan.excused.join(", ")
+                scan.excused
+                    .iter()
+                    .map(|name| phantom_core::report::printable_name(name))
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ));
         }
         if scan.findings.is_empty() {
@@ -2514,7 +2518,7 @@ impl PhantomMcpServer {
         for finding in &scan.findings {
             output.push_str(&format!(
                 "  - {}\n",
-                finding.name.as_deref().unwrap_or_default()
+                phantom_core::report::printable_name(finding.name.as_deref().unwrap_or_default())
             ));
         }
         output.push_str(
@@ -9043,10 +9047,21 @@ mod tests {
                 let text = String::from_utf8_lossy(&request);
                 let ok = text.starts_with("GET /phantom/health ")
                     && text.contains(&format!("x-phantom-proxy-token: {expected}\r\n"));
+                // The proxy's own health answer, which the probe requires.
+                let reply = if ok {
+                    r#"{"status":"ok","service":"phantom-proxy"}"#
+                } else {
+                    ""
+                };
                 let status = if ok { "200 OK" } else { "401 Unauthorized" };
                 let _ = stream.write_all(
-                    format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\n\r\n").as_bytes(),
+                    format!(
+                        "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
+                        reply.len()
+                    )
+                    .as_bytes(),
                 );
+                drop(stream);
             }
         });
         port.to_string()
@@ -9069,6 +9084,23 @@ mod tests {
             .iter()
             .filter_map(|finding| finding["name"].as_str().map(str::to_string))
             .collect()
+    }
+
+    #[test]
+    fn check_runtime_text_escapes_control_characters_in_names() {
+        let _environment = TestEnvironment::new();
+        let placeholder = PhantomToken::generate();
+        let result = runtime_check_with(&[
+            ("PHANTOM_MCP_TEST\nFAKE_LINE", Some(placeholder.as_str())),
+            ("PHANTOM_PROXY_PORT", None),
+            ("PHANTOM_PROXY_TOKEN", None),
+            ("PHANTOM_SESSION_KEYS", None),
+        ]);
+        let rendered = serde_json::to_value(&result).unwrap();
+        let text = rendered["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("PHANTOM_MCP_TEST\\nFAKE_LINE"), "{text}");
+        assert!(!text.contains("PHANTOM_MCP_TEST\nFAKE_LINE"), "{text}");
+        assert_no_value_leak(&result, &[placeholder.as_str()]);
     }
 
     #[test]

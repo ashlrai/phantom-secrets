@@ -203,9 +203,13 @@ async fn run_async() -> Result<()> {
     // Build token mapping
     let mut token_to_secret: HashMap<String, (String, String)> = HashMap::new();
     let mut secret_name_to_value: HashMap<String, String> = HashMap::new();
+    // Names for the session-keys export, taken from the dotenv keys before any
+    // vault read so nothing value-bearing feeds the printed line.
+    let mut session_names: Vec<String> = Vec::new();
     if let Some(dotenv) = resolved.file {
         for entry in dotenv.entries() {
             if PhantomToken::is_phantom_token(&entry.value) {
+                session_names.push(entry.key.clone());
                 let real_value = retrieve_required_default_secret(
                     vault.as_ref(),
                     config.local_project_id(),
@@ -288,12 +292,15 @@ async fn run_async() -> Result<()> {
         "{}",
         format_export(syntax, "PHANTOM_PROXY_TOKEN", &proxy_token)
     );
+    // `phantom check --runtime` excuses these by name only: unlike `phantom
+    // exec`, start cannot see which of the shell's variables it will serve, so
+    // every dotenv key holding a phantom token is listed, routed or not.
     println!(
         "{}",
         format_export(
             syntax,
             phantom_core::report::SESSION_KEYS_VAR,
-            &super::exec::session_key_names(token_to_secret.values().map(|(name, _)| name)),
+            &super::exec::session_key_names(session_names.iter()),
         )
     );
     if header_auth_only {
