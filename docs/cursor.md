@@ -90,9 +90,9 @@ for the canonical catalog.
 
 Key tools for Cursor users:
 
-- `phantom_status` — check vault health and service mappings before starting work
+- `phantom_status` — check managed `.env` protection and service mappings before starting work (does not open the vault)
 - `phantom_list_secrets` — see which secrets are loaded (names only, never values)
-- `phantom_add_secret_interactive` — start the terminal-based secret entry flow
+- `phantom_add_secret_interactive` — return the `phantom add NAME` command to enter a new secret in a trusted terminal (effect-free, no approval)
 - `phantom_doctor` — validate config, `.gitignore`, `.env.example`, and pre-commit hook
 - `phantom_cloud_push` / `phantom_cloud_pull` — dual-gated cloud effects. With
   `force=false`, a partial pull blocks push until full reconciliation.
