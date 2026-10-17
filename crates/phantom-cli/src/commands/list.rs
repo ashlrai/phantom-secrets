@@ -62,16 +62,7 @@ pub fn run_with_expiry(json: bool, show_expiry: bool, min_anomaly_score: Option<
     let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
     let vault = crate::util::open_vault(config.local_project_id())?;
 
-    let entries_with_meta = vault
-        .list_with_metadata()
-        .context("Failed to list secrets")?;
-    // A locked file vault is refused here, for `--json` as well, rather than
-    // listed as empty.
-    let note = crate::util::inventory_guard(
-        vault.as_ref(),
-        config.local_project_id(),
-        entries_with_meta.len(),
-    )?;
+    let (entries_with_meta, note) = read_inventory(vault.as_ref(), config.local_project_id())?;
     crate::util::warn_inventory_note(note.as_deref());
 
     let anomalies = if min_anomaly_score.is_some() {
@@ -226,6 +217,22 @@ pub fn run_with_expiry(json: bool, show_expiry: bool, min_anomaly_score: Option<
     Ok(())
 }
 
+/// Listed secrets with their metadata, and the [`crate::util::inventory_guard`]
+/// note when they come from a keychain-only view. A locked file vault with an
+/// empty keychain is refused, for `--json` as well, rather than listed empty.
+type Inventory = (
+    Vec<(String, Option<phantom_vault::metadata::SecretMetadata>)>,
+    Option<String>,
+);
+
+fn read_inventory(vault: &dyn phantom_vault::VaultBackend, project_id: &str) -> Result<Inventory> {
+    let entries = vault
+        .list_with_metadata()
+        .context("Failed to list secrets")?;
+    let note = crate::util::inventory_guard(vault, project_id, entries.len())?;
+    Ok((entries, note))
+}
+
 #[cfg(all(test, unix))]
 mod locked_vault_tests {
     use crate::util::test_seam::{empty_keychain, keychain_with_one, LockedProject};
@@ -241,9 +248,21 @@ mod locked_vault_tests {
         }
     }
 
+    /// A keychain that holds secrets of its own is listed, with the note
+    /// (printed as `warn`) that the list leaves out the locked file vault.
     #[test]
     fn list_serves_a_keychain_only_answer() {
-        let _project = LockedProject::new(keychain_with_one);
+        let project = LockedProject::new(keychain_with_one);
+        let vault = crate::util::open_vault(&project.project_id).unwrap();
+        let (entries, note) = super::read_inventory(vault.as_ref(), &project.project_id).unwrap();
+        let names: Vec<&str> = entries.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(names, ["KEYCHAIN_ONLY_KEY"]);
+        let note = note.expect("a keychain-only view carries the note");
+        assert!(
+            note.contains("covers only the OS keychain (1 secret(s))"),
+            "{note}"
+        );
+        assert!(note.contains("PHANTOM_VAULT_PASSPHRASE"), "{note}");
         super::run_with_expiry(true, false, None).unwrap();
     }
 }

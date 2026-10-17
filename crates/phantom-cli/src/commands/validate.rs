@@ -186,7 +186,7 @@ fn run_watch_loop(
 ) -> Result<()> {
     let report_path = watch_report_path();
     let n_jobs = jobs.unwrap_or(DEFAULT_JOBS).clamp(1, 16);
-    let initial_vault = phantom_vault::try_create_vault(project_id)?;
+    let initial_vault = crate::util::open_vault(project_id)?;
     let mut authorized_names = initial_vault.list()?;
     authorized_names.sort();
     let note =
@@ -631,5 +631,14 @@ mod locked_vault_tests {
             let error = super::run(true, None, json).unwrap_err();
             assert!(error.to_string().starts_with("Vault locked:"), "{error:#}");
         }
+    }
+
+    /// `phantom validate --watch` took its authorized name set from the same
+    /// keychain-only listing; it now refuses before the terminal consent.
+    #[test]
+    fn validate_watch_refuses_a_locked_file_vault() {
+        let _project = LockedProject::new(empty_keychain);
+        let error = super::run_watch(None, true).unwrap_err();
+        assert!(error.to_string().starts_with("Vault locked:"), "{error:#}");
     }
 }

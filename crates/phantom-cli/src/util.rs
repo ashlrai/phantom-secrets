@@ -153,9 +153,7 @@ pub(crate) mod test_seam {
             unreachable!("inventory reads never store")
         }
         fn retrieve(&self, name: &str) -> phantom_core::error::Result<zeroize::Zeroizing<String>> {
-            Err(phantom_core::error::PhantomError::SecretNotFound(
-                name.to_string(),
-            ))
+            panic!("a value was read from a keychain-only view: {name}")
         }
         fn delete(&self, _: &str) -> phantom_core::error::Result<()> {
             unreachable!("inventory reads never delete")
@@ -185,6 +183,7 @@ pub(crate) mod test_seam {
     #[cfg(unix)]
     pub(crate) struct LockedProject {
         pub(crate) dir: PathBuf,
+        pub(crate) project_id: String,
         _project: tempfile::TempDir,
         _home: tempfile::TempDir,
         previous: Vec<(&'static str, Option<std::ffi::OsString>)>,
@@ -233,9 +232,11 @@ pub(crate) mod test_seam {
                 phantom_vault::locked_file_vault_notice(config.local_project_id()).is_some(),
                 "fixture: the file vault must read as locked"
             );
+            let project_id = config.local_project_id().to_string();
             let seam = TestProject::install(dir.clone(), vault);
             LockedProject {
                 dir,
+                project_id,
                 _project: project,
                 _home: home,
                 previous,
