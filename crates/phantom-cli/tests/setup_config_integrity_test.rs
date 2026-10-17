@@ -86,3 +86,61 @@ fn codex_setup_preserves_invalid_toml() {
 
     assert_eq!(fs::read(config_path).unwrap(), original);
 }
+
+/// `phantom setup --status` listed Gemini CLI, but `--client gemini` was
+/// rejected by clap, so that row could never become `wired`.
+#[test]
+fn gemini_setup_wires_mcp_servers_and_keeps_other_settings() {
+    let dir = common::canonical_tempdir();
+    let gemini_dir = dir.path().join(".gemini");
+    fs::create_dir_all(&gemini_dir).unwrap();
+    let settings_path = gemini_dir.join("settings.json");
+    fs::write(
+        &settings_path,
+        br#"{"theme":"GitHub","mcpServers":{"other":{"command":"other-mcp"}}}"#,
+    )
+    .unwrap();
+
+    Command::cargo_bin("phantom")
+        .unwrap()
+        .args(["setup", "--client", "gemini"])
+        .current_dir(dir.path())
+        .env("HOME", dir.path())
+        .assert()
+        .success();
+
+    let settings: serde_json::Value =
+        serde_json::from_slice(&fs::read(&settings_path).unwrap()).unwrap();
+    assert_eq!(settings["theme"], "GitHub");
+    assert_eq!(settings["mcpServers"]["other"]["command"], "other-mcp");
+    let phantom = &settings["mcpServers"]["phantom"];
+    assert!(phantom["command"].as_str().is_some_and(|c| !c.is_empty()));
+    assert!(phantom["args"].is_array());
+
+    let status = Command::cargo_bin("phantom")
+        .unwrap()
+        .args(["setup", "--status", "--json"])
+        .current_dir(dir.path())
+        .env("HOME", dir.path())
+        .output()
+        .unwrap();
+    assert!(status.status.success());
+    let rows: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    let gemini = rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["id"] == "gemini")
+        .unwrap();
+    assert_eq!(gemini["state"], "wired", "{rows}");
+
+    let printed = Command::cargo_bin("phantom")
+        .unwrap()
+        .args(["setup", "--client", "gemini", "--print"])
+        .current_dir(dir.path())
+        .env("HOME", dir.path())
+        .output()
+        .unwrap();
+    assert!(printed.status.success());
+    assert!(String::from_utf8_lossy(&printed.stdout).contains("~/.gemini/settings.json"));
+}
