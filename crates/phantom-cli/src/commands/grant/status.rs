@@ -3,7 +3,7 @@
 //! `state ∈ active | expiring | broken | manual`. Safe to surface to agents via
 //! MCP (`phantom_grant_status`): no values, ever.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use colored::Colorize;
 use phantom_core::config::PhantomConfig;
 use phantom_core::rotation_provider::RotationProviderConfig;
@@ -60,10 +60,7 @@ pub fn run_status(provider: Option<&str>, json_output: bool) -> Result<()> {
     let project_dir = std::env::current_dir()?;
     let config_path = project_dir.join(".phantom.toml");
     if !config_path.exists() {
-        bail!(
-            "No .phantom.toml found. Run {} first.",
-            "phantom init".cyan().bold()
-        );
+        return Err(crate::util::missing_config_error(&project_dir));
     }
     let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
 

@@ -692,29 +692,12 @@ fn run_checks(fix: bool, check_expiry: bool) -> Result<(usize, usize)> {
             println!("  {} MCP client wiring:", "info".blue());
         });
 
-        // Claude Code — supported project-scoped MCP registration
-        let claude_path = project_dir.join(".mcp.json");
-        issues += usize::from(check_mcp_client("claude", &claude_path, false));
-
-        if let Some(home) = dirs::home_dir() {
-            // Cursor — ~/.cursor/mcp.json
-            issues += usize::from(check_mcp_client(
-                "cursor",
-                &home.join(".cursor/mcp.json"),
-                true,
-            ));
-            // Windsurf — ~/.codeium/windsurf/mcp_config.json
-            issues += usize::from(check_mcp_client(
-                "windsurf",
-                &home.join(".codeium/windsurf/mcp_config.json"),
-                true,
-            ));
-            // Codex — ~/.codex/config.toml
-            issues += usize::from(check_mcp_client(
-                "codex",
-                &home.join(".codex/config.toml"),
-                true,
-            ));
+        // The same clients `phantom setup --status` reports, in its order.
+        let home = dirs::home_dir();
+        for (name, path, global) in
+            super::setup_status::client_config_paths(home.as_deref(), &project_dir)
+        {
+            issues += usize::from(check_mcp_client(name, &path, global));
         }
     }
 
@@ -844,11 +827,18 @@ fn check_mcp_client(name: &str, path: &std::path::Path, global: bool) -> bool {
                     name,
                     location.dimmed()
                 );
-                println!(
-                    "          {} phantom setup --client {}",
-                    "Fix:".dimmed(),
-                    name
-                )
+                if <super::setup::Client as clap::ValueEnum>::from_str(name, true).is_ok() {
+                    println!(
+                        "          {} phantom setup --client {}",
+                        "Fix:".dimmed(),
+                        name
+                    )
+                } else {
+                    println!(
+                        "          {} point its phantom MCP entry at the local phantom-mcp binary",
+                        "Fix:".dimmed()
+                    )
+                }
             });
             true
         } else {

@@ -133,3 +133,29 @@ fn why_json_without_dotenv_is_json_and_human_output_is_unchanged() {
         "{text}"
     );
 }
+
+#[test]
+fn why_unknown_key_fails_and_names_the_cli_status_command() {
+    let project = common::canonical_tempdir();
+    let home = common::canonical_tempdir();
+    std::fs::write(project.path().join(".env"), "NODE_ENV=production\n").unwrap();
+
+    let human = phantom(project.path(), home.path(), &["why", "NOPE"]);
+    assert!(!human.status.success(), "{human:?}");
+    let stderr = String::from_utf8_lossy(&human.stderr);
+    assert!(stderr.contains("NOPE not found"), "{stderr}");
+    assert!(stderr.contains("phantom status"), "{stderr}");
+    assert!(!stderr.contains("phantom_status"), "{stderr}");
+
+    // --json stays a parseable report; its next step names the CLI command,
+    // not the MCP tool.
+    let report = stdout_json(&phantom(
+        project.path(),
+        home.path(),
+        &["why", "NOPE", "--json"],
+    ));
+    assert_eq!(report["found"], false);
+    let step = report["next_step"].as_str().unwrap();
+    assert!(step.contains("`phantom status`"), "{step}");
+    assert!(!step.contains("phantom_status"), "{step}");
+}

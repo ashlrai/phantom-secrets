@@ -101,3 +101,41 @@ fn list_json_emits_empty_array_when_vault_has_no_secrets() {
         .expect("top-level JSON should be an array");
     assert!(array.is_empty(), "expected empty JSON array, got: {stdout}");
 }
+
+#[test]
+fn list_from_a_project_subdirectory_names_the_project_root() {
+    let dir = common::canonical_tempdir();
+    init_project(&dir);
+    let sub = dir.path().join("src").join("nested");
+    fs::create_dir_all(&sub).unwrap();
+
+    let output = phantom(&dir)
+        .current_dir(&sub)
+        .env("NO_COLOR", "1")
+        .arg("list")
+        .assert()
+        .failure();
+    let stderr = String::from_utf8_lossy(&output.get_output().stderr);
+    assert!(
+        stderr.contains(&format!("inside the project at {}", dir.path().display())),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains(&format!("cd {}", dir.path().display())),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("Run phantom init first"), "{stderr}");
+
+    // Outside any project the error still points at `phantom init`.
+    let outside = common::canonical_tempdir();
+    let output = phantom(&outside)
+        .env("NO_COLOR", "1")
+        .arg("list")
+        .assert()
+        .failure();
+    let stderr = String::from_utf8_lossy(&output.get_output().stderr);
+    assert!(
+        stderr.contains("No .phantom.toml found. Run phantom init first."),
+        "{stderr}"
+    );
+}
