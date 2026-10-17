@@ -1,4 +1,6 @@
 mod commands;
+#[cfg(test)]
+mod doc_facts;
 mod util;
 
 #[cfg(test)]
