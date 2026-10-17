@@ -8,7 +8,7 @@ phantom status --json
 ```
 
 This contract ships in the `v0.7.9` release. The earlier `v0.7.8` binary
-(including Homebrew installs made before the formula moved on) accepted `--json`
+(still installed by the Homebrew formula until it is bumped) accepted `--json`
 but returned human-readable status;
 do not infer a configured project from that text. Consumers must reject missing
 or unsupported schema versions and treat parse failures as unknown status.

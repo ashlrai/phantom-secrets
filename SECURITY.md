@@ -16,7 +16,7 @@ GitHub provenance and SPDX attestations are bound to that immutable release.
 | Version or surface | Security support | Notes |
 |--------------------|------------------|-------|
 | Reviewed GitHub release, `v0.7.9` | Supported | Security fixes are prioritized for the immutable GitHub release and active development. Its native artifacts passed the tag-bound six-row release workflow; this is not a signing, notarization, certification, hosted-service, or customer-acceptance claim. |
-| Registry distributions | Mixed | As of 2026-10-16, the Homebrew formula (supported after native macOS/Linux checks), npm `latest` for both wrappers and the MCP Registry record serve the same release as the reviewed GitHub release. The npm publication has no provenance attestation or recorded npm-channel acceptance receipt, and older failed candidate wrappers remain under `release-candidate`, not the default install path. crates.io still serves the older `0.5.1` track. |
+| Registry distributions | Mixed | The exact 2026-09-29 snapshot has Homebrew still at the previous `v0.7.8` (bump to `v0.7.9` pending), supported after native macOS/Linux checks, while npm `latest` remains `0.6.0` and its `0.7.4` wrappers remain failed release candidates rather than the default install path. crates.io and MCP Registry do not yet publish `0.7.9`. |
 | Releases before `v0.7.4` | Best effort only | Please upgrade first when possible. Backports are not guaranteed. |
 | Forks, unofficial builds, or modified binaries | Not supported | Maintainers cannot verify the provenance or behavior of modified distributions. |
 

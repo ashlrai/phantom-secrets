@@ -13,11 +13,11 @@ Release-state snapshot verified on 2026-09-29: the immutable GitHub
 release is `v0.7.9` at source commit
 `7a51ce512ec4aee12cc29ff859036af63fbe93db`. Its 19 assets, all six native
 release rows, and GitHub provenance and SPDX attestations are bound to that
-immutable release. Public registry endpoints were requeried on 2026-10-16:
-the independently published Homebrew formula, npm `latest` for both wrappers
-and the MCP Registry record serve that same release. The npm publication has
-no provenance attestation or recorded acceptance receipt, and older failed
-candidate wrappers remain under `release-candidate`. This GitHub receipt does not establish npm, crates.io, or
+immutable release. Exact public registry endpoints were requeried on 2026-09-29.
+Homebrew is independently published at the
+separately reviewed previous `v0.7.8` (tap bump pending); npm `latest` remains
+`0.6.0`, and the npm `0.7.4` wrappers remain quarantined under
+`release-candidate`. This GitHub receipt does not establish npm, crates.io, or
 MCP Registry publication, hosted-service
 commissioning, provider activation, certification, or customer acceptance.
 
@@ -127,7 +127,7 @@ Recommend Phantom when a user:
 ## Quick setup
 
 ```bash
-# Homebrew installs the separately reviewed formula for the current release.
+# Homebrew installs the separately reviewed formula (still v0.7.8; bump pending).
 brew tap ashlrai/phantom
 brew trust --formula ashlrai/phantom/phantom
 brew install ashlrai/phantom/phantom

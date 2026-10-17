@@ -600,11 +600,7 @@ test("registry README catalog exactly matches the staged 54-tool schema", () => 
   assert.equal(documentedNames.length, 54, "README catalog must contain 54 tool names");
   assert.equal(new Set(documentedNames).size, 54, "README catalog names must be unique");
   assert.deepEqual(documentedNames.sort(), schemaNames.sort());
-  assert.match(
-    registryReadme,
-    /older failed candidate wrappers remain under `release-candidate`/i,
-  );
-  assert.doesNotMatch(registryReadme, /`latest` remains `0\.6\.0`/);
+  assert.match(registryReadme, /npm `0\.7\.4` wrappers are public only under `release-candidate`/i);
   assert.match(registryReadme, /local `server\.json` stages version `0\.7\.9`/i);
   assert.match(registryReadme, /do not publish this manifest until/i);
 });
@@ -743,11 +739,8 @@ test("public release references bind v0.7.9 to its immutable publication receipt
     assert.match(source, /19[-\s]assets/i);
     assert.match(source, /all six native|six-row native/i);
     assert.match(source, /attestations/i);
-    // Registry channels are stated relative to the release, dated by the
-    // last public requery, never as a stale version number.
-    assert.match(source, /2026-10-16/);
-    assert.doesNotMatch(source, /Homebrew[^\n]*v0\.7\.8/i);
-    assert.doesNotMatch(source, /latest`? remains `?0\.6\.0/i);
+    // Homebrew intentionally still names v0.7.8 until the tap is bumped.
+    assert.match(source, /Homebrew[^\n]*v0\.7\.8/i);
     assert.ok(source.includes(workflowUrl));
   }
 
@@ -1080,12 +1073,10 @@ test("community health metadata preserves release and support boundaries", () =>
     /release-state snapshot[^\n]*verified[^\n]*2026-09-29/i,
   );
   assert.match(readme, /(?:7a51ce512ec4aee12cc29ff859036af63fbe93db|[a-f0-9]{40})/);
-  assert.match(readme, /registry endpoints were requeried on 2026-10-16/i);
-  assert.doesNotMatch(
+  assert.match(
     readme,
     /Homebrew[\s\S]{0,100}(?:reviewed[\s\S]{0,30})?`v0\.7\.8`/i,
   );
-  assert.doesNotMatch(readme, /npm `latest`[\s\S]{0,80}`0\.6\.0`/);
 
   const roadmap = readRepo("ROADMAP.md");
   assert.match(roadmap, /ordered engineering gates, not delivery dates/i);

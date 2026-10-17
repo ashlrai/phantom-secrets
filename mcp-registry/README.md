@@ -22,10 +22,9 @@ publication receipt. The exact 2026-09-29 registry snapshot is:
   for six native targets from exact source
   `7a51ce512ec4aee12cc29ff859036af63fbe93db`; its 19 assets were published
   after all native rows and release attestations passed;
-- on 2026-10-16 the separately managed trusted Homebrew formula, npm `latest`
-  for both wrappers and the MCP Registry record served that same release; the
-  npm publication has no provenance attestation or recorded acceptance receipt,
-  and older failed candidate wrappers remain under `release-candidate`; and
+- the separately managed trusted Homebrew formula still publishes the previous reviewed `v0.7.8`;
+- both npm `0.7.4` wrappers are public only under `release-candidate`, while
+  `latest` remains `0.6.0`, and no `0.7.9` MCP Registry record was found; and
 - local `server.json` stages version `0.7.9` and points at a `0.7.9` npm wrapper,
   but neither that file nor its README proves the package or registry entry was
   published.
@@ -38,7 +37,7 @@ an unpinned npm or package-runner command to configure the current runtime.
 
 Install both current binaries from the
 [`v0.7.9` GitHub release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.9).
-The macOS trusted formula is the separately reviewed path for the same release:
+The macOS trusted formula is the separately reviewed path (still `v0.7.8` until bumped):
 
 ```bash
 brew tap ashlrai/phantom

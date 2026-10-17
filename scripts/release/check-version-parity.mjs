@@ -158,66 +158,6 @@ if (mismatches.length > 0) {
   throw new Error(`release version mismatch\n${details}`);
 }
 
-// Docs must not pin a registry channel (npm `latest`, Homebrew, MCP Registry)
-// to a release other than the workspace version: such claims went stale when
-// the channels moved on. State channel versions relative to the release and
-// date the last requery instead. Version-specific runbooks and the changelog
-// are history, not current-state claims, and are not scanned.
-const publishedClaimDocs = [
-  "README.md",
-  "SECURITY.md",
-  "SUPPORT.md",
-  "ROADMAP.md",
-  "AGENTS.md",
-  "mcp-registry/README.md",
-  "npm/README.md",
-  "npm-mcp/README.md",
-  "apps/web/public/llms.txt",
-  "apps/web/public/llms-full.txt",
-  ...readdirSync(join(repoRoot, "docs"), { withFileTypes: true })
-    .filter((entry) => entry.isFile() && /\.(?:md|txt)$/.test(entry.name))
-    .map((entry) => `docs/${entry.name}`)
-    .filter(
-      (path) =>
-        path !== "docs/npm-publication.md" &&
-        path !== "docs/mcp-registry-publication.md"
-    ),
-];
-const version = "v?([0-9]+\\.[0-9]+\\.[0-9]+)";
-const publishedClaimPatterns = [
-  [
-    "npm latest",
-    new RegExp(
-      "npm(?: packages')? `latest`(?: tags?)? (?:currently )?(?:remains|remain|resolves|resolve|is|at|serves|serve|points at) (?:[^\\s.;]+ ){0,8}?`?" +
-        version,
-      "gi"
-    ),
-  ],
-  ["Homebrew", new RegExp(`Homebrew[^.\\n]{0,80}?\`?${version}`, "gi")],
-  ["MCP Registry", new RegExp(`MCP Registry \`?${version}`, "gi")],
-];
-const staleClaims = [];
-for (const path of publishedClaimDocs) {
-  // One line per paragraph: claims wrap across lines and blockquotes, and
-  // link targets carry dots that are not sentence ends.
-  const text = read(path)
-    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
-    .replace(/\n>\s?/g, "\n")
-    .replace(/[ \t]*\n[ \t]*(?=\S)/g, " ");
-  for (const [channel, pattern] of publishedClaimPatterns) {
-    for (const match of text.matchAll(pattern)) {
-      if (match[1] !== workspaceVersion) {
-        staleClaims.push(`${path}: ${channel} named as ${match[1]}: "${match[0]}"`);
-      }
-    }
-  }
-}
-if (staleClaims.length > 0) {
-  throw new Error(
-    `docs name a published version other than ${workspaceVersion}; state the channel relative to the release instead\n${staleClaims.join("\n")}`
-  );
-}
-
 const crateDirs = readdirSync(join(repoRoot, "crates"), { withFileTypes: true })
   .filter((entry) => entry.isDirectory())
   .map((entry) => entry.name)

@@ -948,6 +948,61 @@ mod tests {
         .unwrap();
     }
 
+    /// Without a configured `dotenv_path` the resolver reads its candidate
+    /// names itself. An unreadable candidate is what made it fail, and is
+    /// already reported, so the finding is skipped; an unreadable file the
+    /// resolver never reads must not hide its failure.
+    #[cfg(unix)]
+    #[test]
+    fn without_a_dotenv_path_only_an_unreadable_resolver_candidate_skips_the_finding() {
+        let outside = TempDir::new().unwrap();
+        let target = outside.path().join("elsewhere.env");
+        std::fs::write(&target, "PORT=3000\n").unwrap();
+        let unresolved = |linked: &str| {
+            let dir = TempDir::new().unwrap();
+            let mut config = PhantomConfig::new_with_defaults(PhantomConfig::project_id_from_path(
+                &std::fs::canonicalize(dir.path()).unwrap(),
+            ));
+            // Protected state with no token-bearing dotenv: the resolver fails.
+            config.phantom.secrets.insert(
+                "SERVICE_TOKEN".to_string(),
+                crate::config::SecretOverride::default(),
+            );
+            std::fs::write(
+                dir.path().join(".phantom.toml"),
+                toml::to_string_pretty(&config).unwrap(),
+            )
+            .unwrap();
+            std::os::unix::fs::symlink(&target, dir.path().join(linked)).unwrap();
+
+            let report = build_report(dir.path(), no_vault());
+            assert!(
+                report
+                    .findings
+                    .iter()
+                    .any(|f| f.id == "env-parse-error" && f.file.as_deref() == Some(linked)),
+                "{linked} is reported as unreadable"
+            );
+            report
+                .findings
+                .iter()
+                .any(|f| f.id == "managed-dotenv-unresolved")
+        };
+
+        assert!(
+            crate::managed_dotenv::is_resolver_candidate(".env.local")
+                && !crate::managed_dotenv::is_resolver_candidate("service.env")
+        );
+        assert!(
+            !unresolved(".env.local"),
+            "an unreadable resolver candidate is the failure already reported"
+        );
+        assert!(
+            unresolved("service.env"),
+            "a file the resolver never reads must not hide its failure"
+        );
+    }
+
     /// Any `env-parse-error` used to suppress the finding, so a malformed
     /// `.env.local` hid that the managed `.env` itself was gone.
     #[test]
