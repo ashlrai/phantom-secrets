@@ -77,16 +77,22 @@ pub fn locked_vault_notice(vault: &dyn VaultBackend, project_id: &str) -> Option
 /// error names the locked vault and the unlock step instead of claiming the
 /// key has no entry. Either way the caller refuses: `missing` is the message
 /// for a vault that really lacks the key, and `refusal` ends both messages.
+/// `default_env` adds the `phantom add` next step, which stores the key for
+/// the default environment only.
 pub fn missing_protected_entry(
     vault: &dyn VaultBackend,
     project_id: &str,
     key: &str,
     missing: String,
     refusal: &str,
+    default_env: bool,
 ) -> anyhow::Error {
     match locked_vault_notice(vault, project_id) {
         Some(notice) => anyhow::anyhow!(
             "{VAULT_LOCKED}, so protected dotenv key '{key}' cannot be read from it; {refusal}. {notice}"
+        ),
+        None if default_env => anyhow::anyhow!(
+            "{missing}; {refusal}. Next step: store it from a trusted terminal with `phantom add {key}`, or remove {key} from the dotenv if the project no longer uses it."
         ),
         None => anyhow::anyhow!("{missing}; {refusal}"),
     }

@@ -3882,8 +3882,9 @@ impl PhantomMcpServer {
         &self,
         Parameters(params): Parameters<AuditIncidentsParams>,
     ) -> Result<CallToolResult, McpError> {
-        use phantom_core::leak_correlation::LeakCorrelationEngine;
+        use phantom_core::leak_correlation::{check_min_confidence, LeakCorrelationEngine};
 
+        check_min_confidence(params.min_confidence).map_err(invalid_params_err)?;
         let engine = LeakCorrelationEngine::new()
             .map_err(|e| internal_err(format!("Cannot initialise leak correlation engine: {e}")))?;
 
@@ -3928,8 +3929,9 @@ impl PhantomMcpServer {
         &self,
         Parameters(params): Parameters<LeakIncidentsRealtimeParams>,
     ) -> Result<CallToolResult, McpError> {
-        use phantom_core::leak_correlation::LeakCorrelationEngine;
+        use phantom_core::leak_correlation::{check_min_confidence, LeakCorrelationEngine};
 
+        check_min_confidence(params.min_confidence).map_err(invalid_params_err)?;
         let engine = LeakCorrelationEngine::new()
             .map_err(|e| internal_err(format!("Cannot initialise leak correlation engine: {e}")))?;
 
@@ -4142,11 +4144,14 @@ impl PhantomMcpServer {
         &self,
         Parameters(params): Parameters<AuditExportReportParams>,
     ) -> Result<CallToolResult, McpError> {
-        use phantom_core::audit_export::{
-            parse_date_to_ts, parse_date_to_ts_end, AuditExporter, ExportFilter,
-        };
+        use phantom_core::audit_export::{parse_date_range, AuditExporter, ExportFilter};
 
         let format = crate::tools::helpers::parse_audit_format(&params.format)?;
+        let (from_ts, to_ts) = parse_date_range(
+            params.from.as_deref().unwrap_or(""),
+            params.to.as_deref().unwrap_or(""),
+        )
+        .map_err(|e| invalid_params_err(format!("{e}. Omit it for no bound.")))?;
 
         if params.save {
             if params.action == "export" {
@@ -4166,9 +4171,6 @@ impl PhantomMcpServer {
 
         let exporter = AuditExporter::new()
             .map_err(|e| internal_err(format!("Failed to initialise audit exporter: {e}")))?;
-
-        let from_ts = params.from.as_deref().map(parse_date_to_ts).unwrap_or(0);
-        let to_ts = params.to.as_deref().map(parse_date_to_ts_end).unwrap_or(0);
 
         match params.action.as_str() {
             "export" => {
@@ -11558,6 +11560,90 @@ mod tests {
             let err = export(format).unwrap_err();
             assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
             assert!(err.message.contains("Invalid format"), "{}", err.message);
+        }
+    }
+
+    /// A malformed or inverted date used to be read as "no bound", so a
+    /// scoped compliance report silently covered the whole history.
+    #[test]
+    fn test_audit_export_report_rejects_bad_dates() {
+        let _environment = TestEnvironment::new();
+        let (server, _dir) = setup_initialized_project();
+        let home = canonical_temp_dir();
+        unsafe { std::env::set_var("HOME", home.path()) };
+        write_synthetic_audit_log(
+            home.path(),
+            &[(1_700_000_000, "vault.retrieve", Some("DATE_KEY"))],
+        );
+
+        let call = |action: &str, from: Option<&str>, to: Option<&str>| {
+            server.phantom_audit_export_report(Parameters(AuditExportReportParams {
+                action: action.to_string(),
+                format: "json".to_string(),
+                from: from.map(str::to_string),
+                to: to.map(str::to_string),
+                secret_name: None,
+                operation: None,
+                save: false,
+                confirm: false,
+                approval_token: None,
+            }))
+        };
+
+        for action in ["report", "export"] {
+            for (from, to, needle) in [
+                (Some("notadate"), None, "'from'"),
+                (None, Some("2026-13-45"), "'to'"),
+                (Some("2026-05-01"), Some("2026-01-01"), "after"),
+            ] {
+                let err = call(action, from, to).unwrap_err();
+                assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+                assert!(err.message.contains(needle), "{}", err.message);
+            }
+        }
+        // 1_700_000_000 is 2023-11-14 UTC.
+        let rows =
+            extract_content_text(&call("export", Some("2023-11-14"), Some("2023-11-14")).unwrap());
+        assert!(rows.contains("DATE_KEY"), "{rows}");
+    }
+
+    /// A min_confidence above 1.0 used to hide every incident and answer "No
+    /// active leak incidents", which an agent reads as all clear.
+    #[test]
+    fn test_incident_tools_reject_out_of_range_min_confidence() {
+        let _environment = TestEnvironment::new();
+        let (server, _dir) = setup_initialized_project();
+        let home = canonical_temp_dir();
+        unsafe { std::env::set_var("HOME", home.path()) };
+
+        for bad in [5.0, 1.01, -0.1, f64::NAN] {
+            let err = server
+                .phantom_audit_incidents(Parameters(AuditIncidentsParams {
+                    min_confidence: bad,
+                }))
+                .unwrap_err();
+            assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+            assert!(
+                err.message.contains("between 0.0 and 1.0"),
+                "{}",
+                err.message
+            );
+            let err = server
+                .phantom_leak_incidents_realtime(Parameters(LeakIncidentsRealtimeParams {
+                    min_confidence: bad,
+                }))
+                .unwrap_err();
+            assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        }
+        for ok in [0.0, 0.5, 1.0] {
+            assert!(server
+                .phantom_audit_incidents(Parameters(AuditIncidentsParams { min_confidence: ok }))
+                .is_ok());
+            assert!(server
+                .phantom_leak_incidents_realtime(Parameters(LeakIncidentsRealtimeParams {
+                    min_confidence: ok,
+                }))
+                .is_ok());
         }
     }
 

@@ -341,6 +341,7 @@ fn retrieve_required_default_secret(
                             "Protected dotenv key '{name}' has no vault entry for the default environment"
                         ),
                         "refusing to start a partial proxy",
+                        true,
                     )
                 }
                 other => anyhow::anyhow!(
@@ -495,5 +496,6 @@ mod shell_tests {
                 .to_string();
         assert!(error.contains("has no vault entry"));
         assert!(error.contains("refusing to start a partial proxy"));
+        assert!(error.contains("`phantom add OPENAI_API_KEY`"), "{error}");
     }
 }
