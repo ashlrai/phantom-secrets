@@ -3404,6 +3404,11 @@ impl PhantomMcpServer {
             ))
         })?;
 
+        let min_anomaly_score = params
+            .min_anomaly_score
+            .map(|value| crate::tools::helpers::score_threshold_param("min_anomaly_score", value))
+            .transpose()?;
+
         let report = phantom_core::analytics::compute_analytics(period).map_err(|e| {
             crate::tools::helpers::internal_err(format!("Failed to compute analytics: {e}"))
         })?;
@@ -3411,11 +3416,7 @@ impl PhantomMcpServer {
         let secrets: Vec<&phantom_core::analytics::SecretAnalytics> = report
             .secrets
             .iter()
-            .filter(|s| {
-                params
-                    .min_anomaly_score
-                    .is_none_or(|min| s.anomaly_score >= min)
-            })
+            .filter(|s| min_anomaly_score.is_none_or(|min| s.anomaly_score >= min))
             .collect();
 
         let out = serde_json::json!({
@@ -3497,13 +3498,16 @@ impl PhantomMcpServer {
             ))
         })?;
 
+        let min_score =
+            crate::tools::helpers::score_threshold_param("min_score", params.min_score)?;
+
         let report = phantom_core::analytics::compute_analytics(period)
             .map_err(|e| internal_err(format!("Failed to compute analytics: {e}")))?;
 
         let findings: Vec<serde_json::Value> = report
             .secrets
             .iter()
-            .filter(|s| s.anomaly_score >= params.min_score)
+            .filter(|s| s.anomaly_score >= min_score)
             .map(|s| {
                 // Determine anomaly type(s) from score thresholds.
                 let anomaly_type = if s.anomaly_score >= 0.6 {
@@ -3550,7 +3554,7 @@ impl PhantomMcpServer {
         let out = serde_json::json!({
             "generated_at": report.generated_at,
             "period": params.period,
-            "min_score": params.min_score,
+            "min_score": min_score,
             "findings": findings,
             "total_findings": findings.len(),
         });
@@ -3578,7 +3582,8 @@ impl PhantomMcpServer {
     ) -> Result<CallToolResult, McpError> {
         use phantom_core::analytics::{compute_windowed_anomalies, AuditThresholdConfig};
 
-        let threshold = params.threshold.clamp(0.0, 1.0);
+        let threshold =
+            crate::tools::helpers::score_threshold_param("threshold", params.threshold)?;
 
         // Build threshold config from MCP params (if either override is set).
         let thresholds = if params.max_accesses_per_hour.is_some()
@@ -3738,54 +3743,87 @@ impl PhantomMcpServer {
             Returns per-secret SecretAnalytics (access_count, daily_avg, max_daily, \
             min_daily, anomaly_score) plus timestamped AccessRecords for the requested \
             window. Supports JSON or CSV format. Use min_anomaly_score to filter to \
-            flagged secrets only. Never exposes secret values. \
+            flagged secrets only (clamped to 0.0-1.0; NaN is refused). Never exposes secret values. \
             Feed the output to Datadog, Grafana, CloudWatch, or any BI tool. \
             window_days=0 returns all history; default is 30 days. \
             format=\"csv\" produces RFC 4180 CSV; format=\"json\" produces structured JSON \
-            with 'analytics' (SecretAnalytics[]) and 'records' (AccessRecord[]) arrays."
+            with 'analytics' (SecretAnalytics[]) and 'records' (AccessRecord[]) arrays. \
+            Records are bounded: only the newest max_records (default 1000, max 10000) are \
+            returned, within a 1 MiB response. records_total counts every matching record in \
+            the window and records_truncated is true when older ones were left out; analytics \
+            and time_series always cover the whole window. CSV carries the same counts in \
+            structuredContent and a second JSON text block. For a complete export run \
+            `phantom audit analytics --export FILE` in a terminal."
     )]
     fn phantom_audit_analytics(
         &self,
         Parameters(params): Parameters<AuditAnalyticsParams>,
     ) -> Result<CallToolResult, McpError> {
-        use phantom_core::analytics::{compute_analytics, export_records, records_to_csv, Period};
+        use phantom_core::analytics::{export_analytics, records_to_csv, Period};
 
         let format = crate::tools::helpers::parse_audit_format(&params.format)?;
+        let min_anomaly_score = params
+            .min_anomaly_score
+            .map(|value| crate::tools::helpers::score_threshold_param("min_anomaly_score", value))
+            .transpose()?;
+        let max_records = params.max_records.min(MCP_ANALYTICS_MAX_RECORDS);
 
         // Exactly the requested lookback (0 = all history), as the CLI does.
         let period = Period::from_window_days(params.window_days);
 
-        let report = compute_analytics(period)
+        // One read of the log against one clock reading, so the summary and
+        // the records describe the same events.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let export = export_analytics(period, min_anomaly_score, now)
             .map_err(|e| internal_err(format!("Failed to compute analytics: {e}")))?;
 
-        let analytics: Vec<&phantom_core::analytics::SecretAnalytics> = report
+        let analytics: Vec<&phantom_core::analytics::SecretAnalytics> = export
+            .report
             .secrets
             .iter()
-            .filter(|s| {
-                params
-                    .min_anomaly_score
-                    .is_none_or(|min| s.anomaly_score >= min)
-            })
+            .filter(|s| min_anomaly_score.is_none_or(|min| s.anomaly_score >= min))
             .collect();
 
-        let records = export_records(period, params.min_anomaly_score)
-            .map_err(|e| internal_err(format!("Failed to export records: {e}")))?;
+        // Records are sorted oldest first: keep the newest `keep`.
+        let records = &export.records;
+        let records_total = records.len();
+        let mut keep = records_total.min(max_records as usize);
+        let counts = |keep: usize| {
+            serde_json::json!({
+                "records_total": records_total,
+                "records_returned": keep,
+                "records_truncated": keep < records_total,
+                "max_records": max_records,
+            })
+        };
 
         if format == crate::tools::helpers::AuditFormat::Csv {
-            let csv = records_to_csv(&records);
-            return text_result(csv);
+            loop {
+                let csv = records_to_csv(&records[records_total - keep..]);
+                if csv.len() <= MCP_ANALYTICS_MAX_BYTES {
+                    let mut meta = counts(keep);
+                    meta["format"] = "csv".into();
+                    meta["window_days"] = params.window_days.into();
+                    return report_result(csv, &meta);
+                }
+                keep = shrink_to_fit(keep, csv.len(), MCP_ANALYTICS_MAX_BYTES);
+            }
         }
 
-        // Build daily bucket time-series per secret for BI tools.
+        // Daily bucket time-series per secret for BI tools, over every record
+        // in the window (not only the returned ones).
         let mut daily_buckets: std::collections::BTreeMap<
-            String,
+            &str,
             std::collections::BTreeMap<String, u64>,
         > = std::collections::BTreeMap::new();
-        for rec in &records {
+        for rec in records {
             let day = phantom_core::analytics::unix_to_iso8601(rec.ts / 86400 * 86400);
             let day_key = &day[..10]; // YYYY-MM-DD
             *daily_buckets
-                .entry(rec.name.clone())
+                .entry(rec.name.as_str())
                 .or_default()
                 .entry(day_key.to_string())
                 .or_insert(0) += 1;
@@ -3802,15 +3840,34 @@ impl PhantomMcpServer {
             })
             .collect();
 
-        let out = serde_json::json!({
-            "generated_at": report.generated_at,
-            "window_days": params.window_days,
-            "analytics": analytics,
-            "records": records,
-            "time_series": time_series,
-        });
-
-        json_object_result(&out)
+        loop {
+            let mut out = serde_json::json!({
+                "generated_at": export.report.generated_at,
+                "window_days": params.window_days,
+                "analytics": analytics,
+                "records": &records[records_total - keep..],
+                "time_series": time_series,
+            });
+            if let (Some(out), serde_json::Value::Object(counts)) =
+                (out.as_object_mut(), counts(keep))
+            {
+                out.extend(counts);
+            }
+            let size = serde_json::to_string_pretty(&out)
+                .map_err(|e| internal_err(format!("Serialization error: {e}")))?
+                .len();
+            if size <= MCP_ANALYTICS_MAX_BYTES {
+                return json_object_result(&out);
+            }
+            if keep == 0 {
+                return Err(invalid_params_err(format!(
+                    "The analytics summary for this window is {size} bytes even with no records, over the \
+                     {MCP_ANALYTICS_MAX_BYTES} byte MCP response limit. Narrow window_days or raise \
+                     min_anomaly_score, or run `phantom audit analytics --export FILE` in a terminal."
+                )));
+            }
+            keep = shrink_to_fit(keep, size, MCP_ANALYTICS_MAX_BYTES);
+        }
     }
 
     /// Read correlated leak incidents without exposing secret values.
@@ -5518,6 +5575,21 @@ fn retrieve_optional_secret(
             "Failed to read {purpose} '{name}' from the vault: {error}"
         ))),
     }
+}
+
+/// Most access records `phantom_audit_analytics` returns in one response.
+const MCP_ANALYTICS_MAX_RECORDS: u32 = 10_000;
+
+/// Largest `phantom_audit_analytics` body (pretty JSON or CSV), in bytes. The
+/// CLI writes up to 64 MiB to a file or pipe; an MCP response lands in an
+/// agent's context, so it gets a much smaller ceiling.
+const MCP_ANALYTICS_MAX_BYTES: usize = 1024 * 1024;
+
+/// The next record count to try when `keep` records rendered to `size`
+/// bytes, over `limit`: scaled to fit and always strictly fewer.
+fn shrink_to_fit(keep: usize, size: usize, limit: usize) -> usize {
+    let scaled = (keep as u128 * limit as u128 / size.max(1) as u128) as usize;
+    scaled.min(keep.saturating_sub(1))
 }
 
 /// Longest secret name MCP accepts, in bytes.
@@ -11777,6 +11849,7 @@ mod tests {
                 window_days: 0,
                 min_anomaly_score: None,
                 format: "json".to_string(),
+                max_records: crate::tools::params::default_analytics_max_records(),
             }))
             .unwrap();
 
@@ -11825,6 +11898,7 @@ mod tests {
                     window_days,
                     min_anomaly_score: None,
                     format: "json".to_string(),
+                    max_records: crate::tools::params::default_analytics_max_records(),
                 }))
                 .unwrap();
             let json = parse_result_json(&result);
@@ -11879,11 +11953,228 @@ mod tests {
                     window_days: 14,
                     min_anomaly_score: None,
                     format: "csv".to_string(),
+                    max_records: crate::tools::params::default_analytics_max_records(),
                 }))
                 .unwrap(),
         );
         assert!(csv.contains("WINDOW_3D"), "{csv}");
         assert!(!csv.contains("WINDOW_20D"), "{csv}");
+    }
+
+    fn analytics_params(window_days: u32, format: &str, max_records: u32) -> AuditAnalyticsParams {
+        AuditAnalyticsParams {
+            window_days,
+            min_anomaly_score: None,
+            format: format.to_string(),
+            max_records,
+        }
+    }
+
+    /// Every record in the window used to be returned inline, however many
+    /// there were. Only the newest max_records come back now, and the
+    /// response says how many were left out.
+    #[test]
+    fn test_audit_analytics_returns_only_the_newest_max_records() {
+        let _environment = TestEnvironment::new();
+        let (server, _dir) = setup_initialized_project();
+        let home = canonical_temp_dir();
+        unsafe { std::env::set_var("HOME", home.path()) };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let entries: Vec<(u64, &str, Option<&str>)> = (0..30_u64)
+            .map(|i| (now - 1000 + i, "vault.retrieve", Some("CAPPED_ENTRY")))
+            .collect();
+        write_synthetic_audit_log(home.path(), &entries);
+
+        let json = parse_result_json(
+            &server
+                .phantom_audit_analytics(Parameters(analytics_params(0, "json", 5)))
+                .unwrap(),
+        );
+        let records = json["records"].as_array().unwrap();
+        let returned: Vec<u64> = records.iter().map(|r| r["ts"].as_u64().unwrap()).collect();
+        let newest: Vec<u64> = (25..30_u64).map(|i| now - 1000 + i).collect();
+        assert_eq!(
+            returned, newest,
+            "the newest records are kept, oldest first"
+        );
+        assert_eq!(json["records_total"], 30);
+        assert_eq!(json["records_returned"], 5);
+        assert_eq!(json["records_truncated"], true);
+        assert_eq!(json["max_records"], 5);
+        // The summary and the time series still cover the whole window.
+        assert_eq!(json["analytics"][0]["access_count"], 30);
+        let series_total: u64 = json["time_series"][0]["daily_buckets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|b| b["count"].as_u64().unwrap())
+            .sum();
+        assert_eq!(series_total, 30);
+
+        // Under the cap nothing is truncated.
+        let json = parse_result_json(
+            &server
+                .phantom_audit_analytics(Parameters(analytics_params(0, "json", 1000)))
+                .unwrap(),
+        );
+        assert_eq!(json["records"].as_array().unwrap().len(), 30);
+        assert_eq!(json["records_truncated"], false);
+
+        // Above the hard maximum the cap is 10000.
+        let json = parse_result_json(
+            &server
+                .phantom_audit_analytics(Parameters(analytics_params(0, "json", u32::MAX)))
+                .unwrap(),
+        );
+        assert_eq!(json["max_records"], 10_000);
+
+        // CSV: the same newest rows, and the counts in structuredContent.
+        let result = server
+            .phantom_audit_analytics(Parameters(analytics_params(0, "csv", 5)))
+            .unwrap();
+        let csv = extract_content_text(&result);
+        let rows: Vec<&str> = csv.lines().skip(1).collect();
+        assert_eq!(rows.len(), 5, "{csv}");
+        assert!(
+            rows[0].starts_with(&format!("{},", now - 1000 + 25)),
+            "{csv}"
+        );
+        let meta = result.structured_content.expect("csv counts");
+        assert_eq!(meta["records_total"], 30);
+        assert_eq!(meta["records_returned"], 5);
+        assert_eq!(meta["records_truncated"], true);
+        assert_eq!(meta["format"], "csv");
+    }
+
+    /// A window whose records do not fit in 1 MiB returns fewer than
+    /// max_records instead of an unbounded response.
+    #[test]
+    fn test_audit_analytics_response_fits_the_byte_ceiling() {
+        let _environment = TestEnvironment::new();
+        let (server, _dir) = setup_initialized_project();
+        let home = canonical_temp_dir();
+        unsafe { std::env::set_var("HOME", home.path()) };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let long_name = format!("LONG_ENTRY_{}", "X".repeat(240));
+        let entries: Vec<(u64, &str, Option<&str>)> = (0..6000_u64)
+            .map(|i| (now - 7000 + i, "vault.retrieve", Some(long_name.as_str())))
+            .collect();
+        write_synthetic_audit_log(home.path(), &entries);
+
+        for format in ["json", "csv"] {
+            let result = server
+                .phantom_audit_analytics(Parameters(analytics_params(0, format, 10_000)))
+                .unwrap();
+            let body = extract_content_text(&result);
+            assert!(
+                body.len() <= MCP_ANALYTICS_MAX_BYTES,
+                "{format}: {} bytes",
+                body.len()
+            );
+            let counts = if format == "json" {
+                parse_result_json(&result)
+            } else {
+                result.structured_content.clone().unwrap()
+            };
+            assert_eq!(counts["records_total"], 6000, "{format}");
+            assert_eq!(counts["records_truncated"], true, "{format}");
+            let returned = counts["records_returned"].as_u64().unwrap();
+            assert!(returned > 0 && returned < 6000, "{format}: {returned}");
+            if format == "json" {
+                let records = counts["records"].as_array().unwrap();
+                assert_eq!(records.len() as u64, returned);
+                assert_eq!(records.last().unwrap()["ts"], now - 7000 + 5999);
+            }
+        }
+    }
+
+    /// Score thresholds share one rule: clamped to 0.0..=1.0, NaN refused.
+    /// NaN used to be accepted and silently matched nothing, and an
+    /// out-of-range min_score was echoed back as given.
+    #[test]
+    fn test_audit_score_thresholds_are_clamped_and_nan_is_refused() {
+        let _environment = TestEnvironment::new();
+        let (server, _dir) = setup_initialized_project();
+        let home = canonical_temp_dir();
+        unsafe { std::env::set_var("HOME", home.path()) };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        write_synthetic_audit_log(
+            home.path(),
+            &[(now - 100, "vault.retrieve", Some("SCORED_ENTRY"))],
+        );
+
+        let json = parse_result_json(
+            &server
+                .phantom_audit_anomalies(Parameters(AuditAnomaliesParams {
+                    period: "all".to_string(),
+                    min_score: 5.0,
+                }))
+                .unwrap(),
+        );
+        assert_eq!(json["min_score"], 1.0);
+        let json = parse_result_json(
+            &server
+                .phantom_audit_anomalies(Parameters(AuditAnomaliesParams {
+                    period: "all".to_string(),
+                    min_score: -2.0,
+                }))
+                .unwrap(),
+        );
+        assert_eq!(json["min_score"], 0.0);
+        assert_eq!(json["total_findings"], 1);
+
+        // A negative min_anomaly_score is the same as 0.0: everything.
+        let json = parse_result_json(
+            &server
+                .phantom_audit_stats(Parameters(AuditStatsParams {
+                    period: "all".to_string(),
+                    min_anomaly_score: Some(-1.0),
+                }))
+                .unwrap(),
+        );
+        assert_eq!(json["secrets"].as_array().unwrap().len(), 1);
+
+        let nan_errors = [
+            server
+                .phantom_audit_stats(Parameters(AuditStatsParams {
+                    period: "all".to_string(),
+                    min_anomaly_score: Some(f64::NAN),
+                }))
+                .unwrap_err(),
+            server
+                .phantom_audit_anomalies(Parameters(AuditAnomaliesParams {
+                    period: "all".to_string(),
+                    min_score: f64::NAN,
+                }))
+                .unwrap_err(),
+            server
+                .phantom_audit_analytics(Parameters(AuditAnalyticsParams {
+                    min_anomaly_score: Some(f64::NAN),
+                    ..analytics_params(0, "json", 1000)
+                }))
+                .unwrap_err(),
+            server
+                .phantom_audit_anomalies_realtime(Parameters(AuditAnomaliesRealtimeParams {
+                    name: None,
+                    threshold: f64::NAN,
+                    max_accesses_per_hour: None,
+                    max_consecutive_quiet_days: None,
+                }))
+                .unwrap_err(),
+        ];
+        for error in nan_errors {
+            assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+            assert!(error.message.contains("NaN"), "{}", error.message);
+        }
     }
 
     #[test]
@@ -11910,6 +12201,7 @@ mod tests {
                 window_days: 0,
                 min_anomaly_score: Some(0.5),
                 format: "json".to_string(),
+                max_records: crate::tools::params::default_analytics_max_records(),
             }))
             .unwrap();
 
@@ -11950,6 +12242,7 @@ mod tests {
                 window_days: 0,
                 min_anomaly_score: None,
                 format: "csv".to_string(),
+                max_records: crate::tools::params::default_analytics_max_records(),
             }))
             .unwrap();
 
@@ -11991,6 +12284,7 @@ mod tests {
                 window_days: 0,
                 min_anomaly_score: None,
                 format: format.to_string(),
+                max_records: crate::tools::params::default_analytics_max_records(),
             }))
         };
         let export = |format: &str| {
@@ -12241,6 +12535,7 @@ mod tests {
                 window_days: 0,
                 min_anomaly_score: None,
                 format: "json".to_string(),
+                max_records: crate::tools::params::default_analytics_max_records(),
             }))
             .unwrap();
 

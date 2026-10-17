@@ -333,3 +333,52 @@ fn audit_analytics_window_is_the_exact_lookback() {
     assert_eq!(names_for("90"), ["WINDOW_1H", "WINDOW_5D", "WINDOW_60D"]);
     assert_eq!(names_for("0"), ["WINDOW_1H", "WINDOW_5D", "WINDOW_60D"]);
 }
+
+/// Anomaly-score flags use the MCP tools' rule: clamped to 0.0..=1.0 and NaN
+/// refused. `--min-anomaly-score NaN` used to be accepted and match nothing.
+#[test]
+fn audit_score_flags_clamp_and_refuse_nan() {
+    let tmp = common::canonical_tempdir();
+    let phantom_dir = tmp.path().join(".phantom");
+    std::fs::create_dir_all(&phantom_dir).unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    std::fs::write(
+        phantom_dir.join("audit.log"),
+        format!(
+            "{{\"ts\":{},\"op\":\"vault.retrieve\",\"name\":\"SCORED_ENTRY\",\"pid\":1,\"process\":\"phantom\"}}\n",
+            now - 100
+        ),
+    )
+    .unwrap();
+    let run = |args: &[&str]| {
+        Command::cargo_bin("phantom")
+            .expect("binary not found")
+            .current_dir(tmp.path())
+            .env("HOME", tmp.path())
+            .env_remove("PHANTOM_AUDIT")
+            .args(args)
+            .output()
+            .unwrap()
+    };
+
+    for args in [
+        &["audit", "stats", "--json", "--min-anomaly-score", "NaN"][..],
+        &["audit", "export", "--min-anomaly-score", "NaN"][..],
+        &["audit", "analytics", "--min-anomaly-score", "NaN"][..],
+        &["audit", "anomalies", "--threshold", "NaN"][..],
+    ] {
+        let out = run(args);
+        assert!(!out.status.success(), "{args:?}: {out:?}");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stderr.contains("NaN"), "{args:?}: {stderr}");
+    }
+
+    // Below the range is the same as 0.0: every secret is kept.
+    let out = run(&["audit", "analytics", "--min-anomaly-score=-1"]);
+    assert!(out.status.success(), "{out:?}");
+    let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(report["records"][0]["name"], "SCORED_ENTRY");
+}

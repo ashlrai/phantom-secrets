@@ -130,7 +130,7 @@
     },
     {
       "name": "phantom_audit_analytics",
-      "description": "Export full audit analytics for compliance dashboards. Returns per-secret SecretAnalytics (access_count, daily_avg, max_daily, min_daily, anomaly_score) plus timestamped AccessRecords for the requested window. Supports JSON or CSV format. Use min_anomaly_score to filter to flagged secrets only. Never exposes secret values. Feed the output to Datadog, Grafana, CloudWatch, or any BI tool. window_days=0 returns all history; default is 30 days. format=\"csv\" produces RFC 4180 CSV; format=\"json\" produces structured JSON with 'analytics' (SecretAnalytics[]) and 'records' (AccessRecord[]) arrays.",
+      "description": "Export full audit analytics for compliance dashboards. Returns per-secret SecretAnalytics (access_count, daily_avg, max_daily, min_daily, anomaly_score) plus timestamped AccessRecords for the requested window. Supports JSON or CSV format. Use min_anomaly_score to filter to flagged secrets only (clamped to 0.0-1.0; NaN is refused). Never exposes secret values. Feed the output to Datadog, Grafana, CloudWatch, or any BI tool. window_days=0 returns all history; default is 30 days. format=\"csv\" produces RFC 4180 CSV; format=\"json\" produces structured JSON with 'analytics' (SecretAnalytics[]) and 'records' (AccessRecord[]) arrays. Records are bounded: only the newest max_records (default 1000, max 10000) are returned, within a 1 MiB response. records_total counts every matching record in the window and records_truncated is true when older ones were left out; analytics and time_series always cover the whole window. CSV carries the same counts in structuredContent and a second JSON text block. For a complete export run `phantom audit analytics --export FILE` in a terminal.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
@@ -139,9 +139,16 @@
             "description": "Output format: \"json\" (default) or \"csv\", case-insensitive. Other\nvalues are rejected with an invalid-params error.",
             "type": "string"
           },
+          "max_records": {
+            "default": 1000,
+            "description": "Maximum access records to return, newest kept (default: 1000; values\nabove 10000 are treated as 10000). A 1 MiB response ceiling may return\nfewer; records_truncated and records_total then say so.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
           "min_anomaly_score": {
             "default": null,
-            "description": "Only include secrets whose anomaly score is at or above this threshold\n(range 0.0–1.0). Defaults to 0.0 (return all secrets).",
+            "description": "Only include secrets whose anomaly score is at or above this threshold\n(range 0.0–1.0; other values are clamped into it). Omit to return all\nsecrets.",
             "format": "double",
             "type": [
               "number",
@@ -167,7 +174,7 @@
         "properties": {
           "min_score": {
             "default": 0.4,
-            "description": "Minimum anomaly score to include (0.0–1.0). Defaults to 0.4.",
+            "description": "Minimum anomaly score to include (0.0–1.0; other values are clamped\ninto it). Defaults to 0.4.",
             "format": "double",
             "type": "number"
           },
@@ -216,7 +223,7 @@
           },
           "threshold": {
             "default": 0.5,
-            "description": "Minimum anomaly score (0.0–1.0) to include in results. Defaults to 0.5.",
+            "description": "Minimum anomaly score (0.0–1.0; other values are clamped into it) to\ninclude in results. Defaults to 0.5.",
             "format": "double",
             "type": "number"
           }
@@ -401,7 +408,7 @@
         "properties": {
           "min_anomaly_score": {
             "default": null,
-            "description": "Only include secrets whose anomaly score is at or above this threshold\n(range 0.0–1.0). Omit or set to 0.0 to return all secrets.",
+            "description": "Only include secrets whose anomaly score is at or above this threshold\n(range 0.0–1.0; other values are clamped into it). Omit or set to 0.0\nto return all secrets.",
             "format": "double",
             "type": [
               "number",

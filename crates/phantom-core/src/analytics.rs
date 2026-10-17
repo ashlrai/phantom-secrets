@@ -292,7 +292,12 @@ impl Period {
 
     /// Minimum Unix timestamp for events to be included (0 = no cutoff).
     pub fn cutoff_ts(self) -> u64 {
-        let now = now_unix();
+        self.cutoff_ts_at(now_unix())
+    }
+
+    /// [`Period::cutoff_ts`] against a caller-supplied `now`, so several
+    /// reads of one report share a single clock reading.
+    pub fn cutoff_ts_at(self, now: u64) -> u64 {
         match self {
             Period::Days7 => now.saturating_sub(7 * 86400),
             Period::Days30 => now.saturating_sub(30 * 86400),
@@ -311,19 +316,51 @@ impl Period {
 ///
 /// Returns `Ok(AnalyticsReport)` even when the log file does not exist.
 pub fn compute_analytics(period: Period) -> std::io::Result<AnalyticsReport> {
+    compute_analytics_at(period, now_unix())
+}
+
+/// [`compute_analytics`] with the window measured back from `now`, which is
+/// also the report's `generated_at`.
+pub fn compute_analytics_at(period: Period, now: u64) -> std::io::Result<AnalyticsReport> {
+    let raw = read_window(period, now)?;
+    Ok(build_report(raw, now))
+}
+
+/// Per-secret analytics and the access records behind them, from one read
+/// of the audit log against one clock reading.
+#[derive(Debug)]
+pub struct AnalyticsExport {
+    /// Analytics for every secret in the window (not filtered by score).
+    pub report: AnalyticsReport,
+    /// Records in the window, sorted by `ts` ascending, filtered to secrets
+    /// whose score is at or above the requested `min_anomaly_score`.
+    pub records: Vec<AccessRecord>,
+}
+
+/// Compute the analytics summary and export the access records together:
+/// the log is read once and both use the same `now`, so an event can never
+/// sit in the records but not the summary (or the reverse) because the
+/// clock moved or the log grew between two reads.
+pub fn export_analytics(
+    period: Period,
+    min_anomaly_score: Option<f64>,
+    now: u64,
+) -> std::io::Result<AnalyticsExport> {
+    let raw = read_window(period, now)?;
+    let report = build_report(raw.clone(), now);
+    let allowed = min_anomaly_score.map(|min| names_at_or_above(&report, min));
+    let records = records_from_events(raw, allowed.as_ref());
+    Ok(AnalyticsExport { report, records })
+}
+
+/// The audit events in `period` measured back from `now`; empty when the
+/// log does not exist.
+fn read_window(period: Period, now: u64) -> std::io::Result<Vec<RawEvent>> {
     let path = crate::audit::log_path()?;
-
     if !path.exists() {
-        return Ok(AnalyticsReport {
-            generated_at: iso8601_now(),
-            secrets: vec![],
-        });
+        return Ok(Vec::new());
     }
-
-    let cutoff = period.cutoff_ts();
-    let raw = read_events_from_path(&path, cutoff)?;
-    let report = build_report(raw);
-    Ok(report)
+    read_events_from_path(&path, period.cutoff_ts_at(now))
 }
 
 /// Read all access events from `path` that are at or after `cutoff_ts`.
@@ -421,7 +458,7 @@ fn read_events_from_path(path: &Path, cutoff_ts: u64) -> std::io::Result<Vec<Raw
 }
 
 /// Build the analytics report from raw events.
-fn build_report(events: Vec<RawEvent>) -> AnalyticsReport {
+fn build_report(events: Vec<RawEvent>, now: u64) -> AnalyticsReport {
     // Group by secret name — only events that carry a name contribute.
     // BTreeMap<name, Vec<ts>>
     let mut by_name: BTreeMap<String, Vec<u64>> = BTreeMap::new();
@@ -449,7 +486,7 @@ fn build_report(events: Vec<RawEvent>) -> AnalyticsReport {
     });
 
     AnalyticsReport {
-        generated_at: iso8601_now(),
+        generated_at: unix_to_iso8601(now),
         secrets: analytics,
     }
 }
@@ -549,36 +586,43 @@ pub fn export_records(
     period: Period,
     min_anomaly_score: Option<f64>,
 ) -> std::io::Result<Vec<AccessRecord>> {
-    let path = crate::audit::log_path()?;
+    export_records_at(period, min_anomaly_score, now_unix())
+}
 
-    if !path.exists() {
-        return Ok(vec![]);
-    }
+/// [`export_records`] with the window measured back from `now`.
+pub fn export_records_at(
+    period: Period,
+    min_anomaly_score: Option<f64>,
+    now: u64,
+) -> std::io::Result<Vec<AccessRecord>> {
+    let raw = read_window(period, now)?;
+    // Scores are computed only when they are needed to filter.
+    let allowed =
+        min_anomaly_score.map(|min| names_at_or_above(&build_report(raw.clone(), now), min));
+    Ok(records_from_events(raw, allowed.as_ref()))
+}
 
-    let cutoff = period.cutoff_ts();
-    let raw = read_events_from_path(&path, cutoff)?;
+/// Names of the secrets in `report` whose anomaly score is at or above `min`.
+fn names_at_or_above(report: &AnalyticsReport, min: f64) -> std::collections::HashSet<String> {
+    report
+        .secrets
+        .iter()
+        .filter(|s| s.anomaly_score >= min)
+        .map(|s| s.name.clone())
+        .collect()
+}
 
-    // If min_anomaly_score is set, first compute analytics to get scores.
-    let allowed_names: Option<std::collections::HashSet<String>> =
-        if let Some(min_score) = min_anomaly_score {
-            let report = build_report(raw.clone());
-            Some(
-                report
-                    .secrets
-                    .into_iter()
-                    .filter(|s| s.anomaly_score >= min_score)
-                    .map(|s| s.name)
-                    .collect(),
-            )
-        } else {
-            None
-        };
-
-    let mut records: Vec<AccessRecord> = raw
+/// Access records for `events` (only those that name a secret), sorted by
+/// `ts` ascending; with `allowed_names`, only those secrets are kept.
+fn records_from_events(
+    events: Vec<RawEvent>,
+    allowed_names: Option<&std::collections::HashSet<String>>,
+) -> Vec<AccessRecord> {
+    let mut records: Vec<AccessRecord> = events
         .into_iter()
         .filter_map(|ev| {
             let name = ev.name?; // skip events without a name
-            if let Some(ref allowed) = allowed_names {
+            if let Some(allowed) = allowed_names {
                 if !allowed.contains(&name) {
                     return None;
                 }
@@ -594,7 +638,20 @@ pub fn export_records(
         .collect();
 
     records.sort_by_key(|r| r.ts);
-    Ok(records)
+    records
+}
+
+/// Normalize an anomaly-score threshold (`min_anomaly_score`, `min_score`,
+/// `threshold`) the same way for every audit tool and command: NaN is
+/// refused, because every comparison with it is false and it would silently
+/// match nothing; any other value is clamped to the score range 0.0..=1.0.
+pub fn score_threshold(value: f64) -> Result<f64, String> {
+    if value.is_nan() {
+        return Err(
+            "anomaly score threshold must be a number between 0.0 and 1.0 (got NaN)".to_string(),
+        );
+    }
+    Ok(value.clamp(0.0, 1.0))
 }
 
 /// Render a `Vec<AccessRecord>` as RFC 4180 CSV (header + data rows).
@@ -637,10 +694,6 @@ fn now_unix() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
-}
-
-fn iso8601_now() -> String {
-    unix_to_iso8601(now_unix())
 }
 
 /// Format a Unix epoch (seconds) as `YYYY-MM-DDTHH:MM:SSZ`.
@@ -1120,6 +1173,78 @@ mod tests {
             assert_eq!(records.len(), 1, "nameless events should be excluded");
             assert_eq!(records[0].name, "K");
         });
+    }
+
+    /// The summary and the records share one clock reading: an event exactly
+    /// at the cutoff is in both or neither, and generated_at is that `now`.
+    #[test]
+    fn export_analytics_uses_one_now_for_summary_and_records() {
+        with_audit_home(|tmp| {
+            let log_path = tmp.join(".phantom/audit.log");
+            // A fixed instant in the past, so the real clock cannot move it.
+            let now = 1_700_000_000_u64;
+            let cutoff = now - 7 * 86400;
+            let entries = vec![
+                (cutoff - 1, "vault.retrieve", Some("BEFORE_CUTOFF")),
+                (cutoff, "vault.retrieve", Some("AT_CUTOFF")),
+                (now, "vault.retrieve", Some("AT_NOW")),
+            ];
+            write_synthetic_log(&log_path, &entries);
+
+            let export = export_analytics(Period::Days7, None, now).unwrap();
+            assert_eq!(export.report.generated_at, unix_to_iso8601(now));
+            let mut summary: Vec<&str> = export
+                .report
+                .secrets
+                .iter()
+                .map(|s| s.name.as_str())
+                .collect();
+            summary.sort_unstable();
+            let mut records: Vec<&str> = export.records.iter().map(|r| r.name.as_str()).collect();
+            records.sort_unstable();
+            assert_eq!(summary, ["AT_CUTOFF", "AT_NOW"]);
+            assert_eq!(records, summary);
+
+            // The separate entry points agree with it for the same `now`.
+            let report = compute_analytics_at(Period::Days7, now).unwrap();
+            assert_eq!(report.generated_at, unix_to_iso8601(now));
+            assert_eq!(report.secrets.len(), 2);
+            assert_eq!(
+                export_records_at(Period::Days7, None, now).unwrap().len(),
+                2
+            );
+        });
+    }
+
+    #[test]
+    fn export_analytics_filters_records_by_the_same_scores() {
+        with_audit_home(|tmp| {
+            let log_path = tmp.join(".phantom/audit.log");
+            let now = 1_700_000_000_u64;
+            let entries = vec![
+                (now - 11 * 86400, "vault.retrieve", Some("DORMANT_KEY")),
+                (now - 86400, "vault.retrieve", Some("DORMANT_KEY")),
+                (now - 100, "vault.retrieve", Some("STEADY_KEY")),
+            ];
+            write_synthetic_log(&log_path, &entries);
+
+            let export = export_analytics(Period::All, Some(0.5), now).unwrap();
+            // The summary is unfiltered; the records follow the threshold.
+            assert_eq!(export.report.secrets.len(), 2);
+            assert!(export.records.iter().all(|r| r.name == "DORMANT_KEY"));
+            assert_eq!(export.records.len(), 2);
+        });
+    }
+
+    #[test]
+    fn score_threshold_clamps_and_refuses_nan() {
+        assert_eq!(score_threshold(0.4), Ok(0.4));
+        assert_eq!(score_threshold(-3.0), Ok(0.0));
+        assert_eq!(score_threshold(7.5), Ok(1.0));
+        assert_eq!(score_threshold(f64::INFINITY), Ok(1.0));
+        assert_eq!(score_threshold(f64::NEG_INFINITY), Ok(0.0));
+        let error = score_threshold(f64::NAN).unwrap_err();
+        assert!(error.contains("NaN"), "{error}");
     }
 
     // ── CSV ───────────────────────────────────────────────────────────────────
