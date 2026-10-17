@@ -1,42 +1,13 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use colored::Colorize;
 use phantom_core::config::PhantomConfig;
 use phantom_core::dotenv::{is_example_placeholder, is_example_template_file, DotenvFile};
 use phantom_core::token::PhantomToken;
-use serde::Serialize;
 use std::path::{Path, PathBuf};
 
-/// One unprotected-secret finding. Findings carry names, paths and pattern
-/// labels only; secret values and phantom tokens are never recorded.
-#[derive(Debug, Serialize, PartialEq, Eq)]
-struct Finding {
-    /// `dotenv`, `staged_dotenv`, `staged_code`, or `runtime_env`.
-    kind: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    path: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    label: Option<&'static str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pattern: Option<&'static str>,
-}
-
-/// A risky `.phantom.toml` service route found in the staged config.
-#[derive(Debug, Serialize)]
-struct ConfigWarning {
-    path: String,
-    service: String,
-    message: String,
-}
-
-#[derive(Serialize)]
-struct Report<'a> {
-    mode: &'a str,
-    clean: bool,
-    findings: &'a [Finding],
-    warnings: &'a [ConfigWarning],
-}
+use phantom_core::report::{
+    CheckConfigWarning as ConfigWarning, CheckFinding as Finding, CheckReport as Report,
+};
 
 /// Check for unprotected secrets in .env files and staged git files.
 /// Returns exit code 1 if found. Designed to be used as a pre-commit hook.
@@ -70,6 +41,7 @@ pub fn run(staged_only: bool, runtime: bool, json: bool) -> Result<()> {
             clean: findings.is_empty(),
             findings: &findings,
             warnings: &warnings,
+            indeterminate: &[],
         };
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
@@ -88,9 +60,25 @@ pub fn run(staged_only: bool, runtime: bool, json: bool) -> Result<()> {
 }
 
 fn worktree_findings(project_dir: &Path) -> Result<Vec<Finding>> {
+    findings_in_listed(project_dir, dotenv_scan_paths(project_dir)?)
+}
+
+/// Read the files a listing returned. Split from the listing so a test can
+/// hand it a path that became a symlink after it was listed.
+fn findings_in_listed(project_dir: &Path, listed: Vec<PathBuf>) -> Result<Vec<Finding>> {
     let mut findings = Vec::new();
-    for path in dotenv_scan_paths(project_dir)? {
-        let dotenv = DotenvFile::parse_file(&path)?;
+    for path in listed {
+        // The listing's symlink check and this read are separate lookups, so
+        // the read re-checks on the opened handle rather than following a
+        // file swapped for a symlink in between.
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .context("dotenv scan target has no file name")?;
+        let Some(dotenv) = phantom_core::managed_dotenv::parse_regular_dotenv(project_dir, name)?
+        else {
+            continue;
+        };
         dotenv.validate_for_mutation()?;
         for entry in dotenv.real_secret_entries() {
             findings.push(Finding {
@@ -239,40 +227,17 @@ fn print_findings(findings: &[Finding]) {
     );
 }
 
+/// The same scan list as the MCP compliance `env_clean` check
+/// ([`phantom_core::managed_dotenv::SCANNED_DOTENV_NAMES`] plus the configured
+/// `dotenv_path`), so the two cannot disagree about which files exist.
 fn dotenv_scan_paths(project_dir: &Path) -> Result<Vec<PathBuf>> {
-    let mut candidates = vec![
-        project_dir.join(".env"),
-        project_dir.join(".env.local"),
-        project_dir.join(".env.development"),
-        project_dir.join(".env.production"),
-    ];
     let config_path = project_dir.join(".phantom.toml");
-    if config_path.exists() {
-        let config = PhantomConfig::load(&config_path)?;
-        if let Some(configured) = config.phantom.dotenv_path.as_deref() {
-            let configured = phantom_core::managed_dotenv::validate_dotenv_basename(configured)?;
-            candidates.push(project_dir.join(configured));
-        }
-    }
-
-    let mut paths = Vec::new();
-    for path in candidates {
-        if paths.contains(&path) {
-            continue;
-        }
-        match std::fs::symlink_metadata(&path) {
-            Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
-                anyhow::bail!(
-                    "Refusing dotenv scan target that is not a regular, non-symlink file: {}",
-                    path.display()
-                )
-            }
-            Ok(_) => paths.push(path),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
-        }
-    }
-    Ok(paths)
+    let configured = if config_path.exists() {
+        PhantomConfig::load(&config_path)?.phantom.dotenv_path
+    } else {
+        None
+    };
+    phantom_core::managed_dotenv::scanned_dotenv_paths(project_dir, configured.as_deref())
 }
 
 fn config_risks(file: &str, content: &str) -> Vec<ConfigWarning> {
@@ -454,6 +419,35 @@ fn staged_added_lines(file: &str) -> Result<String> {
 mod tests {
     use super::*;
 
+    /// A file listed as regular and then swapped for a symlink is refused at
+    /// read time, not followed. Fails if the read goes back to
+    /// `DotenvFile::parse_file`, which follows the link and reports the
+    /// target's key.
+    #[cfg(unix)]
+    #[test]
+    fn read_refuses_a_listed_file_swapped_for_a_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let value = format!("outside-{}", std::process::id());
+        std::fs::write(
+            outside.path().join("target.env"),
+            format!("GITHUB_TOKEN={value}\n"),
+        )
+        .unwrap();
+        std::fs::write(dir.path().join(".env"), "PORT=3000\n").unwrap();
+        let listed = dotenv_scan_paths(dir.path()).unwrap();
+        assert_eq!(listed, vec![dir.path().join(".env")]);
+
+        std::fs::remove_file(dir.path().join(".env")).unwrap();
+        std::os::unix::fs::symlink(outside.path().join("target.env"), dir.path().join(".env"))
+            .unwrap();
+
+        let error = findings_in_listed(dir.path(), listed).unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("non-symlink file: .env"), "{message}");
+        assert!(!message.contains(&value), "{message}");
+    }
+
     #[test]
     fn worktree_findings_report_names_without_values() {
         let dir = tempfile::tempdir().unwrap();
@@ -473,6 +467,7 @@ mod tests {
             clean: false,
             findings: &findings,
             warnings: &[],
+            indeterminate: &[],
         };
         let json = serde_json::to_string(&report).unwrap();
         assert!(json.contains("\"name\":\"OPENAI_API_KEY\""));
@@ -520,6 +515,31 @@ mod tests {
             .map(|entry| entry.key.as_str())
             .collect();
         assert_eq!(names, vec!["OPENAI_API_KEY"]);
+    }
+
+    #[test]
+    fn scans_production_and_test_dotenvs() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in [
+            ".env.production.local",
+            ".env.test",
+            ".env.development.local",
+        ] {
+            std::fs::write(dir.path().join(name), "PORT=3000\n").unwrap();
+        }
+        let names: Vec<_> = dotenv_scan_paths(dir.path())
+            .unwrap()
+            .into_iter()
+            .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                ".env.development.local",
+                ".env.production.local",
+                ".env.test"
+            ]
+        );
     }
 
     #[test]

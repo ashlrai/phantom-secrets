@@ -130,7 +130,6 @@ try {
   // before the effect.
   const dualApprovalTools = new Set([
     "phantom_add_secret",
-    "phantom_add_secret_interactive",
     "phantom_apply_expiry_policy",
     "phantom_audit_alerts",
     "phantom_audit_export_report",
@@ -160,7 +159,10 @@ try {
     "phantom_validation_schedule",
     "phantom_wrap",
   ]);
+  // phantom_add_secret_interactive only returns the `phantom add NAME`
+  // command; the effect happens when the user runs it in a trusted terminal.
   const readOnlyOrDeniedTools = new Set([
+    "phantom_add_secret_interactive",
     "phantom_audit_analytics",
     "phantom_audit_anomalies",
     "phantom_audit_anomalies_realtime",
@@ -199,6 +201,18 @@ try {
     if (!("confirm" in properties) || !("approval_token" in properties)) {
       throw new Error(`${tool.name} is effectful but lacks the dual approval schema`);
     }
+  }
+  const addInteractive = result.tools.find(
+    (tool) => tool.name === "phantom_add_secret_interactive"
+  );
+  const addInteractiveProperties = addInteractive?.inputSchema?.properties ?? {};
+  if (
+    "approval_token" in addInteractiveProperties ||
+    "value" in addInteractiveProperties
+  ) {
+    throw new Error(
+      "phantom_add_secret_interactive must stay effect-free and value-free"
+    );
   }
   const realtimeLeak = result.tools.find(
     (tool) => tool.name === "phantom_leak_incidents_realtime"

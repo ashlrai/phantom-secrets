@@ -357,12 +357,18 @@ phantom_env
 These tools return an error unless called with `confirm: true` and a valid
 `approval_token` obtained through the server's out-of-band
 `phantom mcp-approve` challenge. The agent must obtain explicit user consent;
-an approval token does not replace that consent.
+an approval token does not replace that consent. They are disabled unless the
+operator sets `PHANTOM_MCP_EFFECTS=trusted-terminal` in the server environment,
+outside agent authority. The first call without `approval_token` prints a nonce
+on the server's stderr; run `phantom mcp-approve <NONCE>` in a trusted terminal
+and retry with `approval_token: "<nonce>:<token>"`. Exception:
+`phantom_add_secret_interactive` is listed here for history but is effect-free
+and needs neither gate.
 
 phantom_add_secret_interactive
-  Start a trusted terminal prompt for adding a secret without passing the value through MCP.
-  Params: name (string), confirm (bool, must be true), approval_token (string)
-  Effect: returns the terminal command to run; the user enters the value outside agent context.
+  Return the `phantom add NAME` command for adding a secret without passing the value through MCP.
+  Params: name (string, [A-Za-z_][A-Za-z0-9_]*), confirm (optional, ignored)
+  Effect: none. No approval or PHANTOM_MCP_EFFECTS needed; the user runs the command and enters the value outside agent context.
 
 phantom_add_secret
   Deprecated compatibility tool. Plaintext values passed through MCP are rejected.

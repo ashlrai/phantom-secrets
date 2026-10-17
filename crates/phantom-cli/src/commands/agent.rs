@@ -99,7 +99,7 @@ fn readiness_report(project_dir: &std::path::Path) -> AgentReadinessReport {
 fn vault_probe(project_dir: &std::path::Path) -> Option<VaultProbe> {
     let config_path = project_dir.join(".phantom.toml");
     let config = PhantomConfig::load(&config_path).ok()?;
-    let vault = match phantom_vault::try_create_vault(config.local_project_id()) {
+    let vault = match crate::util::open_vault(config.local_project_id()) {
         Ok(vault) => vault,
         Err(error) => {
             return Some(VaultProbe {
@@ -112,12 +112,33 @@ fn vault_probe(project_dir: &std::path::Path) -> Option<VaultProbe> {
     };
     let backend = vault.backend_name().to_string();
     match vault.list() {
-        Ok(names) => Some(VaultProbe {
-            accessible: true,
-            backend: Some(backend),
-            secret_count: Some(names.len()),
-            error: None,
-        }),
+        // The project's encrypted-file vault cannot be opened here, so the
+        // secrets agents run with are not reachable: not accessible, whether
+        // the keychain this process selected is empty or not.
+        Ok(names) => match crate::util::inventory_guard(
+            vault.as_ref(),
+            config.local_project_id(),
+            names.len(),
+        ) {
+            Ok(None) => Some(VaultProbe {
+                accessible: true,
+                backend: Some(backend),
+                secret_count: Some(names.len()),
+                error: None,
+            }),
+            Ok(Some(note)) => Some(VaultProbe {
+                accessible: false,
+                backend: Some(backend),
+                secret_count: Some(names.len()),
+                error: Some(note),
+            }),
+            Err(locked) => Some(VaultProbe {
+                accessible: false,
+                backend: Some(backend),
+                secret_count: None,
+                error: Some(locked.to_string()),
+            }),
+        },
         Err(err) => Some(VaultProbe {
             accessible: false,
             backend: Some(backend),
@@ -503,5 +524,23 @@ mod tests {
             std::fs::read(project.join(".gitignore")).unwrap(),
             b"decoy\n"
         );
+    }
+}
+
+#[cfg(all(test, unix))]
+mod locked_vault_tests {
+    use crate::util::test_seam::{empty_keychain, keychain_with_one, LockedProject};
+
+    /// `phantom agent report` called a locked file vault accessible (status
+    /// Protected) because the keychain it fell back to listed without error.
+    #[test]
+    fn vault_probe_reports_a_locked_file_vault_as_not_accessible() {
+        for make in [empty_keychain, keychain_with_one] {
+            let project = LockedProject::new(make);
+            let probe = super::vault_probe(&project.dir).unwrap();
+            assert!(!probe.accessible);
+            let error = probe.error.unwrap();
+            assert!(error.contains("PHANTOM_VAULT_PASSPHRASE"), "{error}");
+        }
     }
 }

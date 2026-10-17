@@ -88,10 +88,9 @@ Init / scaffolding (mutating; require `confirm` and `approval_token`):
 - `phantom_wrap` — parameters: `only`, `skip`, `confirm`, `approval_token`; selectively wraps runtime/build `package.json` scripts and leaves test, lint, type, and format scripts unchanged
 - `phantom_unwrap` — parameters: `confirm`, `approval_token`; restores scripts from `:raw` variants
 
-> Note: a legacy `phantom_add_secret` tool exists but is hard-deprecated — it refuses any plaintext value through MCP because tool arguments enter agent context. Use `phantom_add_secret_interactive` (below) instead.
+> Note: a legacy `phantom_add_secret` tool exists but is hard-deprecated — it refuses any plaintext value through MCP because tool arguments enter agent context. Use `phantom_add_secret_interactive` (`name` only) instead: it is effect-free, needs no approval, and returns `phantom add NAME` for the user's trusted terminal.
 
 Other mutating tools (also require `confirm` and `approval_token`):
-- `phantom_add_secret_interactive`: `name`, `confirm`, `approval_token`
 - `phantom_remove_secret`: exact vault/lifecycle/managed-dotenv transaction;
   `name`, `confirm`, `approval_token`; `phantom_rotate`: `confirm`, `approval_token`
 - `phantom_cloud_push`: `confirm`, `approval_token`; `phantom_cloud_pull`:
