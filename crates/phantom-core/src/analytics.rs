@@ -659,7 +659,7 @@ pub fn score_threshold(value: f64) -> Result<f64, String> {
 pub fn records_to_csv(records: &[AccessRecord]) -> String {
     let mut out = String::from("ts,datetime,op,name,process\n");
     for r in records {
-        // CSV-escape: wrap in double-quotes if the field contains comma/quote/newline.
+        // CSV-escape: quote any field containing a comma, quote, CR or LF.
         let name = csv_escape(&r.name);
         let op = csv_escape(&r.op);
         let process = csv_escape(&r.process);
@@ -669,8 +669,13 @@ pub fn records_to_csv(records: &[AccessRecord]) -> String {
     out
 }
 
-fn csv_escape(s: &str) -> String {
-    if s.contains(',') || s.contains('"') || s.contains('\n') {
+/// RFC 4180 field escaping shared by every Phantom CSV writer: a field
+/// containing a comma, a double quote, a line feed or a carriage return is
+/// wrapped in double quotes with inner quotes doubled. A bare `\r` must be
+/// quoted too: spreadsheet and CSV readers treat it as a record break, so an
+/// unquoted one splits a single audit row into two.
+pub(crate) fn csv_escape(s: &str) -> String {
+    if s.contains([',', '"', '\n', '\r']) {
         format!("\"{}\"", s.replace('"', "\"\""))
     } else {
         s.to_string()
@@ -1279,6 +1284,43 @@ mod tests {
             csv.contains("\"KEY,WITH,COMMAS\""),
             "commas should be CSV-escaped"
         );
+    }
+
+    #[test]
+    fn records_to_csv_quotes_carriage_returns_so_rows_never_split() {
+        let records = vec![AccessRecord {
+            ts: 1_700_000_000,
+            datetime: "2023-11-14T22:13:20Z".to_string(),
+            op: "vault.retrieve".to_string(),
+            name: "DEMO_NAME".to_string(),
+            process: "run\rforged".to_string(),
+        }];
+        let csv = records_to_csv(&records);
+        assert!(
+            csv.contains(",\"run\rforged\"\n"),
+            "a field with a bare CR must be quoted: {csv:?}"
+        );
+        // Outside quoted fields only LF record breaks remain: header + 1 row.
+        let mut in_quotes = false;
+        let mut breaks = 0;
+        for c in csv.chars() {
+            match c {
+                '"' => in_quotes = !in_quotes,
+                '\r' | '\n' if !in_quotes => breaks += 1,
+                _ => {}
+            }
+        }
+        assert_eq!(breaks, 2, "exactly two record breaks: {csv:?}");
+    }
+
+    #[test]
+    fn csv_escape_quotes_every_rfc4180_special_and_nothing_else() {
+        assert_eq!(csv_escape("plain"), "plain");
+        assert_eq!(csv_escape("a,b"), "\"a,b\"");
+        assert_eq!(csv_escape("a\"b"), "\"a\"\"b\"");
+        assert_eq!(csv_escape("a\nb"), "\"a\nb\"");
+        assert_eq!(csv_escape("a\rb"), "\"a\rb\"");
+        assert_eq!(csv_escape("a\r\nb"), "\"a\r\nb\"");
     }
 
     #[test]

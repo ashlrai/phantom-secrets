@@ -1697,20 +1697,33 @@ pub fn run_export_range(
             "{}  No audit rows match the requested filters.",
             "->".blue().bold()
         );
-        return Ok(());
     }
-
-    match format {
-        "csv" => print!("{}", AuditExporter::rows_to_csv(&rows)),
-        "json" => {
-            let json = AuditExporter::rows_to_json(&rows)
-                .map_err(|e| anyhow::anyhow!("Serialisation error: {e}"))?;
-            println!("{}", json);
-        }
-        _ => unreachable!(),
-    }
+    print!("{}", render_export_range(format, &rows)?);
 
     Ok(())
+}
+
+/// The exact stdout of `phantom audit export-range`. An empty match stays
+/// machine-readable, like `phantom audit export`: JSON is an empty array, so
+/// `| jq` sees valid input instead of nothing. CSV keeps the empty-stdout
+/// behavior `phantom audit export` has for no records.
+fn render_export_range(
+    format: &str,
+    rows: &[phantom_core::audit_export::AuditExportRow],
+) -> Result<String> {
+    use phantom_core::audit_export::AuditExporter;
+    match format {
+        "csv" if rows.is_empty() => Ok(String::new()),
+        "csv" => Ok(AuditExporter::rows_to_csv(rows)),
+        "json" => {
+            let json = AuditExporter::rows_to_json(rows)
+                .map_err(|e| anyhow::anyhow!("Serialisation error: {e}"))?;
+            Ok(format!("{json}\n"))
+        }
+        other => Err(anyhow::anyhow!(
+            "Invalid format '{other}'. Use: csv or json"
+        )),
+    }
 }
 
 /// `phantom audit report --type compliance` — generate and optionally save a
@@ -1967,6 +1980,15 @@ mod tests {
     use super::*;
     use std::io::Write;
     use tempfile::tempdir;
+
+    #[test]
+    fn export_range_with_no_matches_prints_valid_json() {
+        let out = render_export_range("json", &[]).unwrap();
+        let parsed: Value = serde_json::from_str(&out).expect("stdout must be valid JSON");
+        assert_eq!(parsed, serde_json::json!([]));
+        assert_eq!(render_export_range("csv", &[]).unwrap(), "");
+        assert!(render_export_range("xml", &[]).is_err());
+    }
 
     fn write_fixture(dir: &std::path::Path, lines: &[&str]) -> PathBuf {
         let path = dir.join("audit.log");

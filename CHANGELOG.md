@@ -82,6 +82,21 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   read once against one `now` (`phantom_core::analytics::export_analytics`),
   and `generated_at` is that same instant.
 
+### Fixed (audit CSV exports and `phantom audit export-range`)
+
+- Audit CSV exports did not quote a field containing a bare carriage
+  return (`\r`); they only quoted commas, quotes and line feeds. CSV and
+  spreadsheet readers treat a bare `\r` as a record break, so one audit
+  row (for example a process or hostname field with a `\r`) was read as
+  two, the second one forged. `phantom audit export --format csv`,
+  `phantom audit analytics --format csv`, `phantom audit export-range
+  --format csv`, `phantom_audit_analytics` and
+  `phantom_audit_export_report` CSV now quote it, through one shared RFC
+  4180 escaper instead of two copies.
+- `phantom audit export-range --format json` printed nothing on stdout when
+  no rows matched, so `| jq` and scripts got invalid JSON. It now prints
+  `[]`, like `phantom audit export`. Names only, never values.
+
 ### Fixed (`phantom_secrets_expiry_check`, `phantom_secret_rotation_due`, `phantom_compliance_status`, `phantom secrets-expiring-soon`)
 
 - `days_remaining` truncated toward zero, so a secret that expired less
