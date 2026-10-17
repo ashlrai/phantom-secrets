@@ -4,6 +4,22 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (`phantom_audit_recent` and `phantom audit show`)
+
+- Both read the whole audit log into memory to return the last few
+  events, and the log is append-only and never rotated. They now read only
+  the newest 8 MiB (seeking from the end, dropping the partial first line),
+  so memory stays bounded however long the log grows. `phantom audit
+  verify` still reads and checks the whole chain.
+- Lines that are not audit events used to be skipped silently (MCP) or
+  echoed to stderr (CLI). They are now counted, never echoed:
+  `phantom_audit_recent` reports `unparsable_lines` and a note pointing at
+  `phantom audit verify`, and `phantom audit show` prints the count.
+- `phantom_audit_recent` reports `window_truncated` and
+  `matched_in_window`; `total_in_log` is present only when the window
+  covered the whole log. `phantom audit show` says when older events were
+  not examined and fewer than `--last` matched.
+
 ### Fixed (`phantom check --runtime` and MCP `phantom_check` runtime mode)
 
 - The runtime check looked only at a fixed list of well-known variable

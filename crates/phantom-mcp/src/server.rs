@@ -3435,7 +3435,12 @@ impl PhantomMcpServer {
             seq, ts (Unix epoch), op (operation name), name (secret name, if applicable), \
             pid, process. Secret VALUES are never recorded in the audit log and \
             will never appear here. Supports optional filtering by op prefix or \
-            exact secret name. Read-only; no confirm required. \
+            exact secret name. Reads only the newest 8 MiB of the log: \
+            `window_truncated: true` means older events were not examined, so \
+            `matched_in_window` is not a total and `total_in_log` is omitted. \
+            `unparsable_lines` counts lines in the window that are not audit events \
+            and were skipped (run `phantom audit verify` to check the chain). \
+            Read-only; no confirm required. \
             Requires PHANTOM_AUDIT=1 to have been set when operations were performed."
     )]
     fn phantom_audit_recent(
@@ -3456,77 +3461,18 @@ impl PhantomMcpServer {
             return json_object_result(&out);
         }
 
-        let content = std::fs::read_to_string(&log_path)
-            .map_err(|e| internal_err(format!("Failed to read audit log: {e}")))?;
-
-        // Parse all non-marker, non-malformed lines, collecting relevant fields only.
-        // NEVER include "value" or any secret material.
-        let mut events: Vec<serde_json::Value> = Vec::new();
-        for raw in content.lines() {
-            let trimmed = raw.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            let v: serde_json::Value = match serde_json::from_str(trimmed) {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
-            // Skip chain-started marker lines.
-            if v.get("hmac_chain_started_at").is_some() {
-                continue;
-            }
-            // Must have an "op" field to be a real event.
-            let op = match v.get("op").and_then(|o| o.as_str()) {
-                Some(op) => op.to_string(),
-                None => continue,
-            };
-
-            // Apply op_filter
-            if let Some(ref filter) = params.op_filter {
-                if !op.starts_with(filter.as_str()) {
-                    continue;
-                }
-            }
-
-            // Apply name_filter
-            let name = v
-                .get("name")
-                .and_then(|n| n.as_str())
-                .map(|s| s.to_string());
-            if let Some(ref nf) = params.name_filter {
-                match &name {
-                    Some(n) if n == nf => {}
-                    _ => continue,
-                }
-            }
-
-            // Build a safe output object — explicitly whitelist fields, never include values.
-            let mut obj = serde_json::Map::new();
-            for field in &["seq", "ts", "pid", "process"] {
-                if let Some(val) = v.get(*field) {
-                    obj.insert(field.to_string(), val.clone());
-                }
-            }
-            obj.insert("op".to_string(), serde_json::Value::String(op));
-            if let Some(ref n) = name {
-                obj.insert("name".to_string(), serde_json::Value::String(n.clone()));
-            }
-
-            events.push(serde_json::Value::Object(obj));
-        }
-
-        // Take the last N events.
-        let total_in_log = events.len();
-        if events.len() > n {
-            let start = events.len() - n;
-            events = events.into_iter().skip(start).collect();
-        }
-
-        let out = serde_json::json!({
-            "events": events,
-            "total_returned": events.len(),
-            "total_in_log": total_in_log,
-        });
+        // The newest window only: the log is append-only and never rotated.
+        let recent = phantom_core::audit::read_recent_lines(
+            &log_path,
+            phantom_core::audit::RECENT_WINDOW_BYTES,
+        )
+        .map_err(|e| internal_err(format!("Failed to read audit log: {e}")))?;
+        let out = audit_recent_report(
+            recent,
+            n,
+            params.op_filter.as_deref(),
+            params.name_filter.as_deref(),
+        );
 
         json_object_result(&out)
     }
@@ -6456,6 +6402,87 @@ impl DoctorLog {
     fn summary(&mut self, line: impl Into<String>) {
         self.lines.push(line.into());
     }
+}
+
+/// The `phantom_audit_recent` answer for one bounded read of the log.
+///
+/// Only whitelisted fields leave: seq, ts, pid, process, op and name, never a
+/// value. Chain-start markers are skipped silently; any other line that is
+/// not an audit event is counted in `unparsable_lines`, never echoed.
+fn audit_recent_report(
+    recent: phantom_core::audit::RecentLines,
+    n: usize,
+    op_filter: Option<&str>,
+    name_filter: Option<&str>,
+) -> serde_json::Value {
+    let mut unparsable = recent.unreadable_lines;
+    let mut events: Vec<serde_json::Value> = Vec::new();
+    for line in &recent.lines {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            unparsable += 1;
+            continue;
+        };
+        if v.get("hmac_chain_started_at").is_some() {
+            continue;
+        }
+        let Some(op) = v.get("op").and_then(|o| o.as_str()) else {
+            unparsable += 1;
+            continue;
+        };
+        if op_filter.is_some_and(|filter| !op.starts_with(filter)) {
+            continue;
+        }
+        let name = v.get("name").and_then(|n| n.as_str());
+        if name_filter.is_some_and(|filter| name != Some(filter)) {
+            continue;
+        }
+        let mut obj = serde_json::Map::new();
+        for field in ["seq", "ts", "pid", "process"] {
+            if let Some(val) = v.get(field) {
+                obj.insert(field.to_string(), val.clone());
+            }
+        }
+        obj.insert("op".to_string(), serde_json::Value::String(op.to_string()));
+        if let Some(name) = name {
+            obj.insert(
+                "name".to_string(),
+                serde_json::Value::String(name.to_string()),
+            );
+        }
+        events.push(serde_json::Value::Object(obj));
+    }
+
+    let matched_in_window = events.len();
+    if events.len() > n {
+        events.drain(..events.len() - n);
+    }
+    let mut notes = Vec::new();
+    if recent.window_truncated {
+        notes.push(format!(
+            "Only the newest {} MiB of the audit log were read; older events were not examined, so `matched_in_window` is not a total.",
+            phantom_core::audit::RECENT_WINDOW_BYTES / (1024 * 1024)
+        ));
+    }
+    if unparsable > 0 {
+        notes.push(format!(
+            "{unparsable} line(s) in the window are not audit events and were skipped; run `phantom audit verify` to check the chain."
+        ));
+    }
+
+    let mut out = serde_json::json!({
+        "events": events,
+        "total_returned": events.len(),
+        "matched_in_window": matched_in_window,
+        "window_truncated": recent.window_truncated,
+        "unparsable_lines": unparsable,
+    });
+    if !recent.window_truncated {
+        out["total_in_log"] = serde_json::json!(matched_in_window);
+    }
+    if !notes.is_empty() {
+        out["note"] = serde_json::Value::String(notes.join(" "));
+    }
+    out
 }
 
 #[cfg(test)]
@@ -11145,6 +11172,93 @@ mod tests {
                 "event must not have 'value' field"
             );
         }
+    }
+
+    #[test]
+    fn test_audit_recent_counts_unparsable_lines_without_echoing_them() {
+        let _environment = TestEnvironment::new();
+        let (server, _dir) = setup_initialized_project();
+        let home = canonical_temp_dir();
+        unsafe { std::env::set_var("HOME", home.path()) };
+        let now = 1_700_000_000_u64;
+        write_synthetic_audit_log(
+            home.path(),
+            &[(now - 10, "vault.store", Some("OPENAI_API_KEY"))],
+        );
+        {
+            use std::io::Write;
+            let mut f = std::fs::OpenOptions::new()
+                .append(true)
+                .open(home.path().join(".phantom").join("audit.log"))
+                .unwrap();
+            writeln!(f, "not json UNPARSABLE_MARKER").unwrap();
+            writeln!(f, r#"{{"seq":2,"note":"no op UNPARSABLE_MARKER"}}"#).unwrap();
+        }
+        write_synthetic_audit_log(
+            home.path(),
+            &[(now, "vault.retrieve", Some("OPENAI_API_KEY"))],
+        );
+
+        let result = server
+            .phantom_audit_recent(Parameters(AuditRecentParams {
+                n: 10,
+                op_filter: None,
+                name_filter: None,
+            }))
+            .unwrap();
+
+        let json = parse_result_json(&result);
+        assert_eq!(json["events"].as_array().unwrap().len(), 2, "{json}");
+        assert_eq!(json["unparsable_lines"], 2, "{json}");
+        assert_eq!(json["window_truncated"], false, "{json}");
+        assert_eq!(json["total_in_log"], 2, "{json}");
+        assert!(json["note"]
+            .as_str()
+            .unwrap()
+            .contains("phantom audit verify"));
+        assert!(!extract_content_text(&result).contains("UNPARSABLE_MARKER"));
+    }
+
+    #[test]
+    fn audit_recent_report_says_when_the_window_was_cut() {
+        let recent = phantom_core::audit::RecentLines {
+            lines: vec![
+                r#"{"seq":9,"ts":1,"op":"vault.retrieve","name":"OPENAI_API_KEY"}"#.to_string(),
+            ],
+            window_truncated: true,
+            unreadable_lines: 1,
+        };
+        let out = audit_recent_report(recent, 10, Some("vault"), None);
+        assert_eq!(out["window_truncated"], true);
+        assert_eq!(out["matched_in_window"], 1);
+        assert!(out.get("total_in_log").is_none(), "{out}");
+        assert_eq!(out["unparsable_lines"], 1);
+        let note = out["note"].as_str().unwrap();
+        assert!(note.contains("newest 8 MiB"), "{note}");
+        assert!(note.contains("not a total"), "{note}");
+    }
+
+    #[test]
+    fn audit_recent_report_keeps_the_last_n_in_order() {
+        let recent = phantom_core::audit::RecentLines {
+            lines: (0..5)
+                .map(|i| format!(r#"{{"seq":{i},"op":"vault.store","name":"K{i}"}}"#))
+                .chain([r#"{"hmac_chain_started_at":1}"#.to_string()])
+                .collect(),
+            window_truncated: false,
+            unreadable_lines: 0,
+        };
+        let out = audit_recent_report(recent, 2, None, None);
+        let names: Vec<&str> = out["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, ["K3", "K4"]);
+        assert_eq!(out["total_in_log"], 5);
+        assert_eq!(out["unparsable_lines"], 0);
+        assert!(out.get("note").is_none(), "{out}");
     }
 
     // ── phantom_audit_anomalies ───────────────────────────────────────

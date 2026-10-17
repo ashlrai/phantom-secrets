@@ -362,7 +362,7 @@
     },
     {
       "name": "phantom_audit_recent",
-      "description": "List the last N audit events from the HMAC-chained audit log. Returns structured JSONL — each line is a JSON object with fields: seq, ts (Unix epoch), op (operation name), name (secret name, if applicable), pid, process. Secret VALUES are never recorded in the audit log and will never appear here. Supports optional filtering by op prefix or exact secret name. Read-only; no confirm required. Requires PHANTOM_AUDIT=1 to have been set when operations were performed.",
+      "description": "List the last N audit events from the HMAC-chained audit log. Returns structured JSONL — each line is a JSON object with fields: seq, ts (Unix epoch), op (operation name), name (secret name, if applicable), pid, process. Secret VALUES are never recorded in the audit log and will never appear here. Supports optional filtering by op prefix or exact secret name. Reads only the newest 8 MiB of the log: `window_truncated: true` means older events were not examined, so `matched_in_window` is not a total and `total_in_log` is omitted. `unparsable_lines` counts lines in the window that are not audit events and were skipped (run `phantom audit verify` to check the chain). Read-only; no confirm required. Requires PHANTOM_AUDIT=1 to have been set when operations were performed.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
