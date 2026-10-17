@@ -1084,7 +1084,7 @@
     },
     {
       "name": "phantom_secret_rotation_due",
-      "description": "Query which secrets in the vault are due for rotation. Returns a JSON object with: due (list of secrets already expired), warning (list of secrets expiring within warn_days, default 7), ok (list of secrets with sufficient TTL remaining), no_ttl (list of secrets with no rotation policy set at all). Each entry has: name, status (expired|warning|ok|no_ttl), days_remaining (null if no TTL), expires_at (ISO-8601 or null). Secret VALUES are never returned. Read-only; no confirm required.",
+      "description": "Query which secrets in the vault are due for rotation. Returns a JSON object with: due (list of secrets already expired), warning (list of secrets expiring within warn_days, default 7), ok (list of secrets with sufficient TTL remaining), no_ttl (list of secrets with neither an expiry nor a rotation policy). A secret with expires_at but no rotation policy is still classified by its expiry. Each entry has: name, status (expired|warning|ok|no_ttl), days_remaining (null if no expiry; negative means already expired), expires_at (ISO-8601 or null), has_rotation_policy (bool). Secret VALUES are never returned. Read-only; no confirm required.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
@@ -1136,7 +1136,7 @@
     },
     {
       "name": "phantom_secrets_expiry_check",
-      "description": "Query the local vault for secrets that are expired or expiring soon. Returns a JSON array where each entry has: name (string), days_remaining (i64 — negative means already expired), expires_at (Unix epoch u64), status (human-readable string). Use the `days` parameter (default 7) to tune the look-ahead window. Secrets with no TTL set are omitted — use phantom_secret_rotation_due to also surface those. Secret VALUES are never returned. Read-only; no confirm required.",
+      "description": "Query the local vault for secrets that are expired or expiring soon. Returns a JSON array where each entry has: name (string), days_remaining (i64, floored — negative means already expired, so a secret that expired under 24 h ago reports -1), expires_at (Unix epoch u64), status (human-readable string), expired (bool). Use the `days` parameter (default 7) to tune the look-ahead window. Secrets with no TTL set are omitted — use phantom_secret_rotation_due to also surface those. Secret VALUES are never returned. Read-only; no confirm required.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {

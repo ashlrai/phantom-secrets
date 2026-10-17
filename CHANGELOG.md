@@ -4,6 +4,26 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (`phantom_secrets_expiry_check`, `phantom_secret_rotation_due`, `phantom secrets-expiring-soon`)
+
+- `days_remaining` truncated toward zero, so a secret that expired less
+  than 24 h ago reported `0`, which every consumer reads as "not expired
+  yet" despite the documented "negative means already expired". It is now
+  floored and strictly negative once a secret has expired (including the
+  exact expiry instant): under 24 h ago reports `-1`. Expired values that
+  are not a whole number of days shift by one (2.5 days ago: `-3`, was
+  `-2`). `SecretMetadata::is_expiring_soon` no longer also returns true
+  for a secret that expired under 24 h ago.
+- `phantom_secret_rotation_due` put a secret with an `expires_at` but no
+  rotation policy (for example a provider-issued expiry) under `no_ttl`,
+  even once expired, so an agent never saw it as due. It is now classified
+  by its expiry into `due`, `warning` or `ok`, matching `phantom rotate
+  --batch` and `phantom doctor`; `no_ttl` holds only secrets with neither
+  an expiry nor a policy. Each entry gains `has_rotation_policy`.
+- `phantom_secrets_expiry_check` entries and `phantom secrets-expiring-soon
+  --json` entries gain an `expired` boolean. Existing fields are unchanged.
+  Names and lifecycle metadata only, never values.
+
 ### Fixed (`phantom_audit_incidents`, `phantom_leak_incidents_realtime`, `phantom audit incidents`)
 
 - The proxy only appends `proxy.response_leak` audit events; incidents are

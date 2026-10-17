@@ -17,12 +17,15 @@ use std::io::{IsTerminal, Write};
 pub struct ExpiryEntry {
     /// Secret name (never includes the value).
     pub name: String,
-    /// Days remaining until expiry; negative means already expired.
+    /// Whole days remaining until expiry, floored: negative means already
+    /// expired (a secret that expired under 24 h ago reports `-1`).
     pub days_remaining: i64,
     /// Unix timestamp of the expiry instant.
     pub expires_at: u64,
     /// Human-readable status string (e.g. "3 days remaining", "EXPIRED").
     pub status: String,
+    /// `true` when the expiry instant has passed (`days_remaining < 0`).
+    pub expired: bool,
 }
 
 /// Run `phantom secrets-expiring-soon [--days N] [--auto-rotate] [--sync]`.
@@ -63,29 +66,7 @@ pub fn run(warn_days: u64, auto_rotate: bool, sync_after: bool, json: bool) -> R
         crate::util::inventory_guard(vault.as_ref(), config.local_project_id(), entries.len())?;
     crate::util::warn_inventory_note(note.as_deref());
 
-    // Collect secrets that are expired or expiring within warn_days.
-    let mut expiring: Vec<ExpiryEntry> = entries
-        .iter()
-        .filter_map(|(name, meta)| {
-            let m = meta.as_ref()?;
-            let expires_at = m.expires_at?;
-            let days_remaining = m.days_remaining()?;
-            // Include expired (days_remaining < 0) and expiring soon.
-            if days_remaining <= warn_days as i64 {
-                Some(ExpiryEntry {
-                    name: name.clone(),
-                    days_remaining,
-                    expires_at,
-                    status: m.ttl_status(),
-                })
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    // Sort: most-urgent first (lowest / most-negative days_remaining).
-    expiring.sort_by_key(|e| e.days_remaining);
+    let expiring = collect_expiring(&entries, warn_days);
 
     if json {
         println!("{}", serde_json::to_string_pretty(&expiring)?);
@@ -98,6 +79,38 @@ pub fn run(warn_days: u64, auto_rotate: bool, sync_after: bool, json: bool) -> R
     }
 
     Ok(())
+}
+
+/// Secrets that are expired or expire within `warn_days`, most urgent first.
+/// Never reads secret values; only names and lifecycle metadata.
+fn collect_expiring(
+    entries: &[(String, Option<phantom_vault::SecretMetadata>)],
+    warn_days: u64,
+) -> Vec<ExpiryEntry> {
+    let mut expiring: Vec<ExpiryEntry> = entries
+        .iter()
+        .filter_map(|(entry_name, meta)| {
+            let m = meta.as_ref()?;
+            let expires_at = m.expires_at?;
+            let days_remaining = m.days_remaining()?;
+            // Include expired (days_remaining < 0) and expiring soon.
+            if days_remaining <= warn_days as i64 {
+                Some(ExpiryEntry {
+                    name: entry_name.clone(),
+                    days_remaining,
+                    expires_at,
+                    status: m.ttl_status(),
+                    expired: days_remaining < 0,
+                })
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    // Sort: most-urgent first (lowest / most-negative days_remaining).
+    expiring.sort_by_key(|e| e.days_remaining);
+    expiring
 }
 
 /// Print the human-readable expiry table to stdout.
@@ -524,6 +537,34 @@ mod tests {
             .to_string();
             assert!(error.contains("no expiry policy was written"));
         }
+    }
+
+    #[test]
+    fn recently_expired_secret_reports_negative_days_and_expired() {
+        let now = phantom_vault::metadata::now_secs();
+        let meta = |expires_at| {
+            Some(phantom_vault::SecretMetadata {
+                expires_at: Some(expires_at),
+                ..Default::default()
+            })
+        };
+        let entries = vec![
+            ("SOON".to_string(), meta(now + 3 * 86_400 + 600)),
+            ("JUST_EXPIRED".to_string(), meta(now - 3_600)),
+            ("FAR".to_string(), meta(now + 90 * 86_400)),
+            ("NO_EXPIRY".to_string(), None),
+        ];
+        let report = collect_expiring(&entries, 7);
+        let names: Vec<&str> = report.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, ["JUST_EXPIRED", "SOON"]);
+        assert_eq!(report[0].days_remaining, -1);
+        assert!(report[0].expired);
+        assert_eq!(report[0].status, "EXPIRED");
+        assert_eq!(report[1].days_remaining, 3);
+        assert!(!report[1].expired);
+        let json = serde_json::to_value(&report).unwrap();
+        assert_eq!(json[0]["expired"], true);
+        assert_eq!(json[1]["expired"], false);
     }
 }
 
