@@ -45,22 +45,51 @@ pub fn inventory_guard(
     project_id: &str,
     listed: usize,
 ) -> anyhow::Result<Option<String>> {
-    if vault.backend_name() == "encrypted-file" {
-        return Ok(None);
-    }
-    let Some(notice) = phantom_vault::locked_file_vault_notice(project_id) else {
+    let Some(notice) = locked_vault_notice(vault, project_id) else {
         return Ok(None);
     };
     if listed == 0 {
-        anyhow::bail!(
-            "Vault locked: this project's secrets are in an encrypted-file vault this process \
-             cannot open, so an empty answer here would be wrong. {notice}"
-        );
+        anyhow::bail!("{VAULT_LOCKED}, so an empty answer here would be wrong. {notice}");
     }
     Ok(Some(format!(
         "This covers only the OS keychain ({listed} secret(s)); secrets in the encrypted-file \
          vault are not included. {notice}"
     )))
+}
+
+/// Lead of every refusal caused by a locked encrypted-file vault.
+pub const VAULT_LOCKED: &str =
+    "Vault locked: this project's secrets are in an encrypted-file vault this process cannot open";
+
+/// The locked-vault notice (with its unlock step) when `vault` is the OS
+/// keychain this process selected beside an encrypted-file vault for
+/// `project_id` that it cannot open. `None` when `vault` is that file vault
+/// or no such file exists.
+pub fn locked_vault_notice(vault: &dyn VaultBackend, project_id: &str) -> Option<String> {
+    if vault.backend_name() == "encrypted-file" {
+        return None;
+    }
+    phantom_vault::locked_file_vault_notice(project_id)
+}
+
+/// The error for a protected key the opened vault does not hold. Beside a
+/// locked encrypted-file vault the key is most likely in that file, so the
+/// error names the locked vault and the unlock step instead of claiming the
+/// key has no entry. Either way the caller refuses: `missing` is the message
+/// for a vault that really lacks the key, and `refusal` ends both messages.
+pub fn missing_protected_entry(
+    vault: &dyn VaultBackend,
+    project_id: &str,
+    key: &str,
+    missing: String,
+    refusal: &str,
+) -> anyhow::Error {
+    match locked_vault_notice(vault, project_id) {
+        Some(notice) => anyhow::anyhow!(
+            "{VAULT_LOCKED}, so protected dotenv key '{key}' cannot be read from it; {refusal}. {notice}"
+        ),
+        None => anyhow::anyhow!("{missing}; {refusal}"),
+    }
 }
 
 /// [`inventory_guard`] for a use that must see every secret: a push that
@@ -296,6 +325,46 @@ mod tests {
         assert!(
             error.starts_with("Refusing to push to the cloud vault from a partial inventory"),
             "{error}"
+        );
+    }
+
+    /// With `PHANTOM_REQUIRE_KEYCHAIN=1` the vault is the OS keychain even
+    /// when `PHANTOM_VAULT_PASSPHRASE` is set, so the file vault is never
+    /// read. The passphrase used to silence the notice, and an empty keychain
+    /// listing read as "no secrets".
+    #[test]
+    fn a_required_keychain_beside_a_file_vault_is_refused_with_a_passphrase_set() {
+        struct Restore(Option<std::ffi::OsString>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                match self.0.take() {
+                    Some(value) => unsafe { std::env::set_var("PHANTOM_REQUIRE_KEYCHAIN", value) },
+                    None => unsafe { std::env::remove_var("PHANTOM_REQUIRE_KEYCHAIN") },
+                }
+            }
+        }
+
+        let project = LockedProject::new(empty_keychain);
+        let _restore = Restore(std::env::var_os("PHANTOM_REQUIRE_KEYCHAIN"));
+        unsafe {
+            std::env::set_var("PHANTOM_REQUIRE_KEYCHAIN", "1");
+            // Restored by `LockedProject` on drop.
+            std::env::set_var(
+                "PHANTOM_VAULT_PASSPHRASE",
+                format!(
+                    "fixture-{}",
+                    phantom_core::token::PhantomToken::generate().as_str()
+                ),
+            );
+        }
+        let vault = open_vault("unused").unwrap();
+        let message = inventory_guard(vault.as_ref(), &project.project_id, 0)
+            .unwrap_err()
+            .to_string();
+        assert!(message.starts_with("Vault locked:"), "{message}");
+        assert!(
+            message.contains("PHANTOM_REQUIRE_KEYCHAIN is set"),
+            "{message}"
         );
     }
 

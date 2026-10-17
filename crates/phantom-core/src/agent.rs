@@ -272,6 +272,31 @@ pub fn build_report(project_dir: &Path, options: AgentReadinessOptions) -> Agent
         );
     }
 
+    // The managed dotenv is what `phantom exec` resolves before launching. A
+    // configured file that is missing (or cannot be chosen unambiguously)
+    // fails every protected launch, so it is a critical finding, as it is a
+    // failed check in `phantom doctor`. A dotenv already reported as
+    // unreadable above is not reported twice.
+    let dotenv_reported = findings.iter().any(|f| f.id == "env-parse-error");
+    if let (Some(config), false) = (&config, dotenv_reported) {
+        if let Err(error) = crate::managed_dotenv::resolve_dotenv(project_dir, config, &[]) {
+            push_finding(
+                &mut findings,
+                &mut fixes,
+                &mut commands,
+                FindingSpec::new(
+                    "managed-dotenv-unresolved",
+                    FindingSeverity::Critical,
+                    format!(
+                        "Managed dotenv could not be resolved: {error:#}. Restore the managed dotenv as a regular file beside .phantom.toml, or rerun `phantom init --from <file>` to choose it."
+                    ),
+                    "phantom doctor",
+                )
+                .file(".phantom.toml"),
+            );
+        }
+    }
+
     if config.is_some() && !signals.vault_accessible {
         let message = options
             .vault
@@ -843,6 +868,51 @@ mod tests {
         assert_eq!(report.exit_code, 0);
     }
 
+    /// `phantom agent report` said Protected for a project whose configured
+    /// managed dotenv was gone, so every `phantom exec` would refuse to launch.
+    #[test]
+    fn missing_managed_dotenv_is_a_critical_finding() {
+        let dir = TempDir::new().unwrap();
+        let mut config = PhantomConfig::new_with_defaults(PhantomConfig::project_id_from_path(
+            &std::fs::canonicalize(dir.path()).unwrap(),
+        ));
+        config.phantom.dotenv_path = Some(".env".to_string());
+        std::fs::write(
+            dir.path().join(".phantom.toml"),
+            toml::to_string_pretty(&config).unwrap(),
+        )
+        .unwrap();
+
+        let report = build_report(
+            dir.path(),
+            AgentReadinessOptions {
+                vault: Some(VaultProbe {
+                    accessible: true,
+                    backend: Some("file".to_string()),
+                    secret_count: Some(1),
+                    error: None,
+                }),
+                cloud_logged_in: false,
+                audit_enabled: false,
+            },
+        );
+
+        let finding = report
+            .findings
+            .iter()
+            .find(|f| f.id == "managed-dotenv-unresolved")
+            .expect("the missing managed dotenv is reported");
+        assert_eq!(finding.severity, FindingSeverity::Critical);
+        assert!(
+            finding.message.contains("does not exist: .env"),
+            "{}",
+            finding.message
+        );
+        assert!(finding.message.contains("phantom init --from <file>"));
+        assert_eq!(report.status, ReadinessStatus::Unsafe);
+        assert_eq!(report.exit_code, 1);
+    }
+
     #[test]
     fn legacy_network_capable_setup_cannot_report_verified() {
         let dir = TempDir::new().unwrap();
@@ -882,6 +952,10 @@ mod tests {
         );
 
         assert_eq!(report.status, ReadinessStatus::Protected);
+        assert!(!report
+            .findings
+            .iter()
+            .any(|f| f.id == "managed-dotenv-unresolved"));
         assert!(report.findings.iter().any(|f| f.id == "mcp-not-wired"));
         assert!(report
             .findings
