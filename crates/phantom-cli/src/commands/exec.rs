@@ -366,19 +366,24 @@ async fn run_async(cmd: &[String], env_flag: Option<&str>, quiet: bool) -> Resul
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
+    // Take over termination signals before the child exists, so a SIGTERM
+    // or SIGINT aimed at phantom can no longer kill it and orphan the child
+    // (which would keep running against a proxy that is gone). The handlers
+    // reset to default in the child on exec.
+    let forwarder = SignalForwarder::install().context("Failed to install signal handlers")?;
     let mut child = command
         .spawn()
         .context(format!("Failed to start command: {}", program))?;
 
-    // Wait for the child to exit
-    let status = child.wait().await?;
+    // Wait for the child to exit, forwarding termination signals to it.
+    let status = forwarder.wait_for(&mut child).await?;
 
     // Shut down the proxy — session tokens are now invalid
     progress!(quiet, "\n{} Shutting down proxy...", "->".blue().bold());
     proxy.shutdown().await;
 
     if !status.success() {
-        let code = status.code().unwrap_or(1);
+        let code = child_exit_code(&status);
         progress!(
             quiet,
             "{} Command exited with code {}",
@@ -548,8 +553,172 @@ fn redact_session_segment(url: &str) -> String {
     format!("{}<redacted>{}", &url[..start], &url[end..])
 }
 
+/// Exit code that reports the child's status: its own code, or 128 + N
+/// when signal N ended it (the shell convention), so a forwarded SIGTERM
+/// that kills the child surfaces as 143 rather than a generic 1.
+fn child_exit_code(status: &std::process::ExitStatus) -> i32 {
+    if let Some(code) = status.code() {
+        return code;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(signal) = status.signal() {
+            return 128 + signal;
+        }
+    }
+    1
+}
+
+/// Termination signals phantom catches while the child runs, so phantom
+/// outlives the child, forwards the signal to it, and then shuts the proxy
+/// down and exits with the child's status.
+#[cfg(unix)]
+struct SignalForwarder {
+    interrupt: tokio::signal::unix::Signal,
+    terminate: tokio::signal::unix::Signal,
+    hangup: tokio::signal::unix::Signal,
+}
+
+#[cfg(unix)]
+impl SignalForwarder {
+    fn install() -> std::io::Result<Self> {
+        use tokio::signal::unix::{signal, SignalKind};
+        Ok(Self {
+            interrupt: signal(SignalKind::interrupt())?,
+            terminate: signal(SignalKind::terminate())?,
+            hangup: signal(SignalKind::hangup())?,
+        })
+    }
+
+    async fn wait_for(
+        mut self,
+        child: &mut tokio::process::Child,
+    ) -> std::io::Result<std::process::ExitStatus> {
+        loop {
+            let signal = tokio::select! {
+                status = child.wait() => return status,
+                Some(()) = self.interrupt.recv() => libc::SIGINT,
+                Some(()) = self.terminate.recv() => libc::SIGTERM,
+                Some(()) = self.hangup.recv() => libc::SIGHUP,
+            };
+            if signal == libc::SIGINT && foreground_of_terminal() {
+                // Ctrl-C at a terminal already reached the child: the tty
+                // signals the whole foreground process group. Sending it again
+                // would read as a second Ctrl-C to tools that force-quit on one.
+                continue;
+            }
+            // exec does not give the child its own process group, so signal
+            // the child itself; tokio has not reaped it while we are here.
+            if let Some(pid) = child.id().and_then(|pid| libc::pid_t::try_from(pid).ok()) {
+                // SAFETY: kill(2) with a live child pid and a valid signal number.
+                unsafe {
+                    libc::kill(pid, signal);
+                }
+            }
+        }
+    }
+}
+
+/// Whether phantom's process group is the foreground group of the terminal
+/// on stdin, i.e. a terminal-generated SIGINT was delivered to the child too.
+#[cfg(unix)]
+fn foreground_of_terminal() -> bool {
+    // SAFETY: tcgetpgrp and getpgrp only read process state.
+    unsafe {
+        let foreground = libc::tcgetpgrp(libc::STDIN_FILENO);
+        foreground != -1 && foreground == libc::getpgrp()
+    }
+}
+
+/// On Windows, Ctrl-C reaches every process attached to the console, the
+/// child included. Catch it so phantom does not exit first; keep waiting.
+#[cfg(windows)]
+struct SignalForwarder {
+    ctrl_c: tokio::signal::windows::CtrlC,
+}
+
+#[cfg(windows)]
+impl SignalForwarder {
+    fn install() -> std::io::Result<Self> {
+        Ok(Self {
+            ctrl_c: tokio::signal::windows::ctrl_c()?,
+        })
+    }
+
+    async fn wait_for(
+        mut self,
+        child: &mut tokio::process::Child,
+    ) -> std::io::Result<std::process::ExitStatus> {
+        loop {
+            tokio::select! {
+                status = child.wait() => return status,
+                Some(()) = self.ctrl_c.recv() => continue,
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    /// A SIGTERM delivered to phantom while the child runs used to kill
+    /// phantom by default and orphan the child. The forwarder now catches it,
+    /// passes it to the child, and returns the child's own exit status.
+    #[cfg(unix)]
+    #[test]
+    fn sigterm_to_phantom_reaches_the_child_and_its_status_is_returned() {
+        let dir = tempfile::tempdir().unwrap();
+        let ready = dir.path().join("ready");
+        let marker = dir.path().join("child-saw-term");
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let forwarder = super::SignalForwarder::install().unwrap();
+            let mut child = tokio::process::Command::new("sh")
+                .arg("-c")
+                .arg(r#"trap 'echo term > "$MARKER"; exit 42' TERM; : > "$READY"; while :; do sleep 0.05; done"#)
+                .env("READY", &ready)
+                .env("MARKER", &marker)
+                .spawn()
+                .unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while !ready.exists() {
+                assert!(std::time::Instant::now() < deadline, "child never started");
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            // SAFETY: signal this test process, which the forwarder handles.
+            unsafe {
+                libc::kill(libc::getpid(), libc::SIGTERM);
+            }
+            let status = tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                forwarder.wait_for(&mut child),
+            )
+            .await
+            .expect("phantom waited for the child")
+            .unwrap();
+            assert_eq!(status.code(), Some(42));
+            assert!(marker.exists(), "the child did not receive SIGTERM");
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn child_exit_code_reports_code_or_128_plus_signal() {
+        use std::os::unix::process::ExitStatusExt;
+        assert_eq!(
+            super::child_exit_code(&std::process::ExitStatus::from_raw(3 << 8)),
+            3
+        );
+        assert_eq!(
+            super::child_exit_code(&std::process::ExitStatus::from_raw(libc::SIGTERM)),
+            143
+        );
+        assert_eq!(
+            super::child_exit_code(&std::process::ExitStatus::from_raw(libc::SIGKILL)),
+            137
+        );
+    }
+
     #[test]
     fn printed_base_url_hides_session_token() {
         let token = "ab".repeat(32);
