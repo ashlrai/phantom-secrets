@@ -572,7 +572,7 @@ fn redact_session_segment(url: &str) -> String {
 /// command that shows which route differs and what Phantom expects.
 pub(super) fn validate_routes_for_launch(config: &PhantomConfig) -> Result<()> {
     config.validate_agentic_proxy_routes().context(
-        "Refusing unapproved repository-controlled proxy routing. Run `phantom doctor` to see which service route in .phantom.toml differs from Phantom's built-in route and the host it expects; proxied launches run only with built-in routes",
+        "Refusing unapproved repository-controlled proxy routing. Run `phantom doctor` to see which service in .phantom.toml blocks launch and what to restore; proxied launches run only with Phantom's built-in routes",
     )?;
     Ok(())
 }
