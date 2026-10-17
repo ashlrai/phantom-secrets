@@ -4,6 +4,35 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+No additional unreleased changes are recorded after the `0.8.0` candidate.
+
+## [0.8.0] - 2026-10-13
+
+Source candidate. Until a `v0.8.0` tag and its tag-bound release workflow
+exist, the immutable `v0.7.9` GitHub release remains the current published
+receipt; nothing here claims npm, crates.io, Homebrew or MCP Registry
+publication. Entries cite merged pull requests only.
+
+### Changed (earlier merged work since v0.7.9)
+
+- Upgraded the MCP server to rmcp 3.5 (#132).
+- `--help` now opens with a quick start and lists every command by task (#126).
+- The README leads with install and a three-command quick start (#116); docs
+  include tested Claude Code, Cursor and GitHub Actions recipes (#133).
+
+### Fixed (earlier merged work since v0.7.9)
+
+- `phantom exec` keeps the child's stdout clean and honors `--quiet` (#130).
+- `phantom init` no longer duplicates `DATABASE_URL`, explains the
+  connection-string block, and warns about volatile Linux keyutils (#124, #125).
+- The pre-commit hook accepts the `.env.example` that `phantom init` writes (#119).
+- The SEO observer accepts the product guide schema on `/secrets` (#161).
+
+### Security (earlier merged work since v0.7.9)
+
+- Web dependency audit fixes for brace-expansion, DOMPurify and Next.js
+  advisories (#160); rustls 0.23.45 for RUSTSEC-2026-0285 (#120).
+
 ### Fixed (agent report)
 
 - A malformed dotenv no longer hides a missing managed dotenv in
@@ -296,6 +325,19 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   with a `phm_` token broke `/Accounts/{sid}/...` requests. Projects
   initialized earlier keep the SID protected until it is written back to
   `.env` as its plain value.
+
+### Breaking changes and migration
+
+- CLI and MCP commands that previously answered "empty" or "No secrets stored"
+  when an encrypted-file vault could not be opened now refuse with a
+  "Vault locked" message and the unlock step (#190, #212, #220). Scripts that
+  treated the old empty answer as success must handle the non-zero exit.
+- The MCP server is built on rmcp 3.5 (#132). Tool names and schemas are
+  unchanged. Re-register only if your client pinned an older
+  `phantom-secrets-mcp` binary path.
+- Proxy defaults changed: the global burst guard is 100 requests per 10 s (was
+  20), and the request and buffered response body cap is 32 MiB (was 10 MiB).
+  Set `PHANTOM_RATE_LIMIT_BURST` to restore the old burst value.
 
 ### Changed (MCP, agent-visible)
 

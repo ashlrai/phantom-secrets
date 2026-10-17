@@ -2553,7 +2553,7 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "phantom-secrets"
-version = "0.7.9"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "arboard",
@@ -2597,7 +2597,7 @@ dependencies = [
 
 [[package]]
 name = "phantom-secrets-authority"
-version = "0.7.9"
+version = "0.8.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2606,7 +2606,7 @@ dependencies = [
 
 [[package]]
 name = "phantom-secrets-broker"
-version = "0.7.9"
+version = "0.8.0"
 dependencies = [
  "fs2",
  "hex",
@@ -2624,7 +2624,7 @@ dependencies = [
 
 [[package]]
 name = "phantom-secrets-core"
-version = "0.7.9"
+version = "0.8.0"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -2660,7 +2660,7 @@ dependencies = [
 
 [[package]]
 name = "phantom-secrets-evidence"
-version = "0.7.9"
+version = "0.8.0"
 dependencies = [
  "fs2",
  "hex",
@@ -2678,7 +2678,7 @@ dependencies = [
 
 [[package]]
 name = "phantom-secrets-locus-contract"
-version = "0.7.9"
+version = "0.8.0"
 dependencies = [
  "phantom-secrets-authority",
  "serde",
@@ -2689,7 +2689,7 @@ dependencies = [
 
 [[package]]
 name = "phantom-secrets-mcp"
-version = "0.7.9"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -2715,7 +2715,7 @@ dependencies = [
 
 [[package]]
 name = "phantom-secrets-proxy"
-version = "0.7.9"
+version = "0.8.0"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -2742,7 +2742,7 @@ dependencies = [
 
 [[package]]
 name = "phantom-secrets-runtime"
-version = "0.7.9"
+version = "0.8.0"
 dependencies = [
  "hex",
  "libc",
@@ -2759,7 +2759,7 @@ dependencies = [
 
 [[package]]
 name = "phantom-secrets-session"
-version = "0.7.9"
+version = "0.8.0"
 dependencies = [
  "fs2",
  "hex",
@@ -2778,7 +2778,7 @@ dependencies = [
 
 [[package]]
 name = "phantom-secrets-vault"
-version = "0.7.9"
+version = "0.8.0"
 dependencies = [
  "argon2",
  "chacha20poly1305",
@@ -2802,7 +2802,7 @@ dependencies = [
 
 [[package]]
 name = "phantom-secrets-workspace"
-version = "0.7.9"
+version = "0.8.0"
 dependencies = [
  "chacha20poly1305",
  "fs2",

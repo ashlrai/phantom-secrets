@@ -88,10 +88,10 @@ test("manual rehearsal delegates to the shared graph with read-only authority", 
 });
 
 test("release defaults and lockfiles are part of the exact version parity contract", () => {
-  assert.match(rehearsal, /default: v0\.7\.9/);
+  assert.match(rehearsal, /default: v0\.8\.0/);
   assert.match(
     npmCandidateAcceptance,
-    /^      version:\n[\s\S]*?^        default: 0\.7\.9$/m
+    /^      version:\n[\s\S]*?^        default: 0\.8\.0$/m
   );
   assert.match(versionParity, /json\("apps\/web\/package-lock\.json"\)/);
   assert.match(versionParity, /Hosted web lockfile root/);
@@ -105,10 +105,10 @@ test("release defaults and lockfiles are part of the exact version parity contra
   assert.equal(
     execFileSync(
       process.execPath,
-      [join(repoRoot, "scripts/release/check-version-parity.mjs"), "v0.7.9"],
+      [join(repoRoot, "scripts/release/check-version-parity.mjs"), "v0.8.0"],
       { cwd: repoRoot, encoding: "utf8" }
     ).trim(),
-    "release version parity passed: 0.7.9 across 21 surfaces and 12 crates"
+    "release version parity passed: 0.8.0 across 21 surfaces and 12 crates"
   );
 });
 
@@ -296,9 +296,9 @@ test("npm and MCP distribution metadata and runbooks remain publication-safe", (
   assert.match(readiness, /stage both under `release-candidate`/);
   assert.match(readiness, /six-target npm-channel\s+acceptance gate/);
   assert.match(readiness, /MCP\s+wrapper to `latest` first and the primary CLI to `latest` last/);
-  assert.match(readiness, /release_tag=v0\.7\.9/);
-  assert.match(readiness, /pre-tag-preflight\.mjs v0\.7\.9/);
-  assert.match(readiness, /publish-crates\.sh --verify-only --version 0\.7\.9/);
+  assert.match(readiness, /release_tag=v0\.8\.0/);
+  assert.match(readiness, /pre-tag-preflight\.mjs v0\.8\.0/);
+  assert.match(readiness, /publish-crates\.sh --verify-only --version 0\.8\.0/);
 
   const npmPlan = markdownSection(
     npmPublication,
@@ -738,7 +738,7 @@ test("npm package contents remain the exact five reviewed files", () => {
   ]) {
     const pack = inspectPack(directory);
     assert.equal(pack.name, packageName);
-    assert.equal(pack.version, "0.7.9");
+    assert.equal(pack.version, "0.8.0");
     assert.equal(pack.entryCount, 5);
     assert.deepEqual(
       pack.files.map(({ path }) => path).sort(),
