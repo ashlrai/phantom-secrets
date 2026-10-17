@@ -33,7 +33,7 @@ use tracing_subscriber::EnvFilter;
                     Setup         init · agent · setup · doctor · workspace · vault · completion · mcp · mcp-approve\n  \
                     Daily use     exec · start · stop · status · check · list · add · remove · reveal · copy · env · why\n  \
                     Sync & teams  login · logout · cloud · team · sync · pull · export · import · wrap · unwrap\n  \
-                    Maintenance   upgrade · watch · rotate · grant · validate · expiry · secrets-expiring-soon · open · audit",
+                    Maintenance   upgrade · watch · rotate · grant · validate · expiry · secrets-expiring-soon · open · audit · leaks",
     version
 )]
 struct Cli {
@@ -521,6 +521,13 @@ enum Commands {
         watch: bool,
     },
 
+    /// Leak response tools (read-only preview)
+    #[command(next_help_heading = "Maintenance")]
+    Leaks {
+        #[command(subcommand)]
+        action: LeaksAction,
+    },
+
     /// View the opt-in audit log (requires PHANTOM_AUDIT=1 to start logging)
     #[command(next_help_heading = "Maintenance")]
     Audit {
@@ -576,6 +583,20 @@ enum Commands {
         /// Seconds to wait before clearing
         #[arg(long, default_value_t = 30)]
         secs: u64,
+    },
+}
+
+#[derive(Subcommand)]
+enum LeaksAction {
+    /// Show what automated leak response would do. Read-only: no writes, no
+    /// network, no secret values printed.
+    Plan {
+        /// Only plan for incidents with confidence at or above this value
+        #[arg(long, default_value_t = 0.5)]
+        min_confidence: f64,
+        /// Emit JSON instead of human-readable output
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -1077,6 +1098,12 @@ fn run() -> anyhow::Result<()> {
         Commands::Watch { auto, auto_rotate } => {
             commands::watch::run_with_rotate(auto, auto_rotate)
         }
+        Commands::Leaks { action } => match action {
+            LeaksAction::Plan {
+                min_confidence,
+                json,
+            } => commands::leaks::run_plan(min_confidence, json || global_json),
+        },
         Commands::Why { key } => commands::why::run(&key, global_json),
         Commands::Wrap { only, skip } => commands::wrap::run(&only, &skip),
         Commands::Unwrap => commands::unwrap::run(),
