@@ -136,7 +136,7 @@
         "properties": {
           "format": {
             "default": "json",
-            "description": "Output format: \"json\" (default) or \"csv\".",
+            "description": "Output format: \"json\" (default) or \"csv\", case-insensitive. Other\nvalues are rejected with an invalid-params error.",
             "type": "string"
           },
           "min_anomaly_score": {
@@ -251,7 +251,7 @@
           },
           "format": {
             "default": "json",
-            "description": "Output format: \"csv\" or \"json\". Default: \"json\".",
+            "description": "Output format: \"csv\" or \"json\", case-insensitive. Default: \"json\".\nOther values are rejected with an invalid-params error.",
             "type": "string"
           },
           "from": {
@@ -427,7 +427,7 @@
     },
     {
       "name": "phantom_check",
-      "description": "Check for security issues. With runtime=true, scans current environment for phantom tokens without a proxy (leak detection). Otherwise, scans .env files for unprotected real secrets. Returns a human summary plus a value-blind JSON report (also as structuredContent) shaped like `phantom check --json`: {mode, clean, findings: [{kind, path?, name?}], warnings, indeterminate?}. Reports names and paths only, never values or phantom tokens.",
+      "description": "Check for security issues. With runtime=true, scans current environment for phantom tokens without a proxy (leak detection). Otherwise, scans the same dotenv files as `phantom check` for unprotected real secrets: .env, .env.local, .env.development, .env.development.local, .env.production, .env.production.local, .env.test, .env.test.local, plus the configured dotenv_path; a symlink is not followed and makes the result indeterminate. Returns a human summary plus a value-blind JSON report (also as structuredContent) shaped like `phantom check --json`: {mode, clean, findings: [{kind, path?, name?}], warnings, indeterminate?}. Reports names and paths only, never values or phantom tokens.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
@@ -517,7 +517,7 @@
     },
     {
       "name": "phantom_compliance_status",
-      "description": "Return the compliance state of the current Phantom project as a structured JSON badge. Checks: vault_accessible (vault can be read), audit_enabled (PHANTOM_AUDIT env var is set), precommit_installed (git pre-commit hook contains the current local-only phantom check), env_clean (no unprotected real secrets in .env), secrets_have_ttl (all vault secrets have a rotation policy set). Each check is true/false with an optional detail string. Overall 'compliant' is true only when all checks pass. Read-only.",
+      "description": "Return the compliance state of the current Phantom project as a structured JSON badge. Checks: vault_accessible (vault can be read), audit_enabled (PHANTOM_AUDIT env var is set), precommit_installed (git pre-commit hook contains the current local-only phantom check), env_clean (no unprotected real secrets in any dotenv phantom check scans: .env, .env.local, .env.development, .env.development.local, .env.production, .env.production.local, .env.test, .env.test.local and the configured dotenv_path; read without opening the vault, so it is reported before init and with a locked vault), secrets_have_ttl (all vault secrets have a rotation policy set). Each check is true/false with an optional detail string. Overall 'compliant' is true only when all checks pass. Read-only.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object"
@@ -851,7 +851,7 @@
     },
     {
       "name": "phantom_list_secrets",
-      "description": "List all secret names in the Phantom vault. Returns names only — never exposes actual secret values. Use this to see what secrets are configured. Returns a summary plus JSON {count, secrets: [{name, service}]} (also as structuredContent).",
+      "description": "List all secret names in the Phantom vault. Returns names only — never exposes actual secret values. Use this to see what secrets are configured. Returns a summary plus JSON {count, secrets: [{name, service}]} (also as structuredContent). Before `phantom init` it opens no vault and returns {count: 0, secrets: [], initialized: false, next_step} instead of an error.",
       "inputSchema": {
         "properties": {},
         "type": "object"
@@ -859,7 +859,7 @@
     },
     {
       "name": "phantom_list_with_expiry",
-      "description": "List all secret names with their TTL/expiry status. Shows days remaining, EXPIRED flag, or 'no expiry' for each secret. Never returns secret values. Use it to audit which credentials need an explicit provider rotation or local expiry-policy review. Returns a summary plus JSON {count, show_expiry, expired, expiring_soon, secrets: [{name, service, status?, expires_at?, days_remaining?}]} (also as structuredContent).",
+      "description": "List all secret names with their TTL/expiry status. Shows days remaining, EXPIRED flag, or 'no expiry' for each secret. Never returns secret values. Use it to audit which credentials need an explicit provider rotation or local expiry-policy review. Returns a summary plus JSON {count, show_expiry, expired, expiring_soon, secrets: [{name, service, status?, expires_at?, days_remaining?}]} (also as structuredContent). Before `phantom init` it opens no vault and returns an empty report with initialized: false and next_step instead of an error.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
@@ -1606,7 +1606,7 @@
     },
     {
       "name": "phantom_why",
-      "description": "Explain why an environment variable is or isn't protected by Phantom. Shows classification (Secret, PublicKey, NotSecret), whether it has a phantom token, and what heuristic matched. Returns a summary plus value-free JSON {key, dotenv_exists, found, classification, protected, reason, matched_pattern, service, next_step} (also as structuredContent).",
+      "description": "Explain why an environment variable is or isn't protected by Phantom. Shows classification (Secret, PublicKey, NotSecret), whether it has a phantom token, and what heuristic matched. Value-blind: it reads .phantom.toml and the dotenv, never the vault, so it answers while the vault is locked and before `phantom init` (it then classifies ./.env, and exec is null). For a protected key it also says how `phantom exec` treats it. exec.delivery judges the key alone: `proxied` (a built-in route injects the real value for exec.upstream), `no_route` (the child gets only a session token that no provider accepts, so calls with it fail), `withheld` (exec never hands the child this provider-management or sync credential), `connection_string_refused` or `custom_route_refused` (exec will not start). exec.blocked_by is non-null when the config stops exec from starting for every key: {service, reason: `custom_route`, `altered_builtin_route` or `connection_string`, key}. next_step explains anything but an unblocked `proxied`. Returns a summary plus value-free JSON {key, dotenv_exists, found, classification, protected, reason, matched_pattern, service, exec: {delivery, service, upstream, blocked_by} | null, next_step} (also as structuredContent).",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {

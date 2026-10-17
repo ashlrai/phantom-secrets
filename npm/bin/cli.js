@@ -607,7 +607,9 @@ function extractBinaryFromArchive(archivePath, binaryPath, {
         "archive extraction",
         execFileSyncImpl,
         "tar",
-        ["xzf", archivePath, "--no-same-owner", "-C", stagingDir, binaryFilename],
+        // --no-same-owner: as root, tar would otherwise keep the release
+        // runner's uid and the owned-path check below would refuse the file.
+        ["--no-same-owner", "-xzf", archivePath, "-C", stagingDir, binaryFilename],
         { stdio: "pipe" },
         { timeoutMs: execTimeoutMs, heartbeat }
       );

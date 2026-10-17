@@ -1,0 +1,195 @@
+{
+  "version": 1,
+  "clients": [
+    {
+      "id": "claude",
+      "displayName": "Claude Code",
+      "wire": "write",
+      "configPath": {
+        "darwin": [
+          ".claude.json"
+        ],
+        "linux": [
+          ".claude.json"
+        ],
+        "win32": [
+          ".claude.json"
+        ]
+      },
+      "format": "json-mcpServers",
+      "detection": {
+        "homePaths": [
+          [
+            ".claude"
+          ],
+          [
+            ".claude.json"
+          ]
+        ],
+        "binary": "claude"
+      },
+      "serverName": "ashlr-hub",
+      "wiredEntry": {
+        "type": "stdio",
+        "command": "ashlr",
+        "args": [
+          "mcp"
+        ],
+        "env": {}
+      },
+      "source": "src/core/integrations/editors.ts (existing wiring)"
+    },
+    {
+      "id": "codex",
+      "displayName": "Codex",
+      "wire": "write",
+      "configPath": {
+        "darwin": [
+          ".codex",
+          "config.toml"
+        ],
+        "linux": [
+          ".codex",
+          "config.toml"
+        ],
+        "win32": [
+          ".codex",
+          "config.toml"
+        ]
+      },
+      "format": "toml-mcp_servers",
+      "detection": {
+        "homePaths": [
+          [
+            ".codex"
+          ]
+        ],
+        "binary": "codex"
+      },
+      "serverName": "ashlr-hub",
+      "wiredEntry": {
+        "command": "ashlr",
+        "args": [
+          "mcp"
+        ]
+      },
+      "source": "src/core/integrations/editors.ts (existing wiring)"
+    },
+    {
+      "id": "cursor",
+      "displayName": "Cursor",
+      "wire": "write",
+      "configPath": {
+        "darwin": [
+          ".cursor",
+          "mcp.json"
+        ],
+        "linux": [
+          ".cursor",
+          "mcp.json"
+        ],
+        "win32": [
+          ".cursor",
+          "mcp.json"
+        ]
+      },
+      "format": "json-mcpServers",
+      "detection": {
+        "homePaths": [
+          [
+            ".cursor"
+          ]
+        ],
+        "binary": "cursor"
+      },
+      "serverName": "ashlr-hub",
+      "wiredEntry": {
+        "command": "ashlr",
+        "args": [
+          "mcp"
+        ]
+      },
+      "source": "src/core/integrations/editors.ts (existing wiring)"
+    },
+    {
+      "id": "windsurf",
+      "displayName": "Windsurf",
+      "wire": "status",
+      "configPath": {
+        "darwin": [
+          ".codeium",
+          "windsurf",
+          "mcp_config.json"
+        ],
+        "linux": [
+          ".codeium",
+          "windsurf",
+          "mcp_config.json"
+        ],
+        "win32": [
+          ".codeium",
+          "windsurf",
+          "mcp_config.json"
+        ]
+      },
+      "format": "json-mcpServers",
+      "detection": {
+        "homePaths": [
+          [
+            ".codeium",
+            "windsurf"
+          ]
+        ],
+        "binary": "windsurf"
+      },
+      "serverName": "ashlr-hub",
+      "wiredEntry": {
+        "command": "ashlr",
+        "args": [
+          "mcp"
+        ]
+      },
+      "source": "phantom-secrets crates/phantom-cli/src/commands/setup.rs (writes ~/.codeium/windsurf/mcp_config.json)"
+    },
+    {
+      "id": "gemini",
+      "displayName": "Gemini CLI",
+      "wire": "status",
+      "configPath": {
+        "darwin": [
+          ".gemini",
+          "settings.json"
+        ],
+        "linux": [
+          ".gemini",
+          "settings.json"
+        ],
+        "win32": [
+          ".gemini",
+          "settings.json"
+        ]
+      },
+      "projectConfigPath": [
+        ".gemini",
+        "settings.json"
+      ],
+      "format": "json-mcpServers",
+      "detection": {
+        "homePaths": [
+          [
+            ".gemini"
+          ]
+        ],
+        "binary": "gemini"
+      },
+      "serverName": "ashlr-hub",
+      "wiredEntry": {
+        "command": "ashlr",
+        "args": [
+          "mcp"
+        ]
+      },
+      "source": "https://github.com/google-gemini/gemini-cli/blob/main/docs/tools/mcp-server.md"
+    }
+  ]
+}

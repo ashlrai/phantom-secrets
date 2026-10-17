@@ -762,6 +762,10 @@ mod tests {
             cwd,
         }
     }
+    // Fixtures that must outlive a timeout, cancel or revoke `exec` their
+    // command instead of forking it. Linux RLIMIT_NPROC counts every task of
+    // the real UID, so a busy runner can exceed the 64-process budget and make
+    // `sh` exit 2 ("Cannot fork") before the timeout fires.
     fn fixture(body: &str) -> (TempDir, PathBuf, EngineeringAction) {
         let w = TempDir::new().unwrap();
         let p = w.path().join("cargo-fixture");
@@ -821,7 +825,7 @@ mod tests {
     }
     #[tokio::test]
     async fn timeout() {
-        let (w, p, a) = fixture("sleep 5");
+        let (w, p, a) = fixture("exec sleep 5");
         assert_eq!(
             runtime(w.path(), &p, &a, 50, 4096, None)
                 .execute(&a, &CancellationToken::default())
@@ -876,7 +880,7 @@ mod tests {
     }
     #[tokio::test]
     async fn cancel_deterministic() {
-        let (w, p, a) = fixture("sleep 5");
+        let (w, p, a) = fixture("exec sleep 5");
         let s = Arc::new(Semaphore::new(0));
         let r = runtime(w.path(), &p, &a, 10000, 4096, Some(s.clone()));
         let c = CancellationToken::default();
@@ -889,7 +893,7 @@ mod tests {
     }
     #[tokio::test]
     async fn revoke_deterministic() {
-        let (w, p, a) = fixture("sleep 5");
+        let (w, p, a) = fixture("exec sleep 5");
         let s = Arc::new(Semaphore::new(0));
         let r = runtime(w.path(), &p, &a, 10000, 4096, Some(s.clone()));
         let h = r.revocation_handle();

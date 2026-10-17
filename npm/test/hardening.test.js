@@ -611,31 +611,31 @@ async function assertPreviousVersionCachePreserved(stage) {
       chmodSync(archive, 0o600);
       const output = join(fixtureDir, "extracted-cli");
       let extractionCalls = 0;
+      const extractionArgs = [];
       extractBinaryFromArchive(archive, output, {
         cacheDir: fixtureDir,
         execFileSyncImpl: (executable, args, options) => {
           extractionCalls += 1;
+          extractionArgs.push(args);
           assert.ok(options.timeout > 0 && options.timeout < 120_000);
-          // Root extraction must not restore the release builder's uid.
-          if (args[0] === "xzf") assert.ok(args.includes("--no-same-owner"));
           return execFileSync(executable, args, options);
         },
       });
       assert.strictEqual(extractionCalls, 2);
+      // Root would otherwise keep the release runner's uid on the extracted file.
+      assert.ok(extractionArgs[1].includes("--no-same-owner"));
       assert.strictEqual(readFileSync(output, "utf8"), "cli");
       assert.strictEqual(lstatSync(output).mode & 0o777, 0o700);
-      // Release archives carry the CI builder's uid. GNU tar running as root
-      // restores it unless told not to, which failed the owned-path check
-      // in every root container (Docker, cloud agent sandboxes).
-      const gnuTar = execFileSync("tar", ["--version"], { encoding: "utf8" }).includes("GNU tar");
-      if (gnuTar && typeof process.getuid === "function" && process.getuid() === 0) {
+      if (process.getuid() === 0) {
+        // Release archives carry the CI runner's uid; a root install must still succeed.
         const foreignArchive = join(fixtureDir, "foreign-owner.tar.gz");
         execFileSync("tar", [
-          "czf", foreignArchive, "--owner=4242", "--group=4242", "-C", source, "phantom", "phantom-mcp",
+          "--owner=4242", "--group=4242", "-czf", foreignArchive, "-C", source, "phantom", "phantom-mcp",
         ]);
         chmodSync(foreignArchive, 0o600);
-        const foreignOutput = join(fixtureDir, "extracted-foreign-owner");
+        const foreignOutput = join(fixtureDir, "foreign-owner-cli");
         extractBinaryFromArchive(foreignArchive, foreignOutput, { cacheDir: fixtureDir });
+        assert.strictEqual(readFileSync(foreignOutput, "utf8"), "cli");
         assert.strictEqual(lstatSync(foreignOutput).uid, 0);
       }
       const archiveSymlink = join(fixtureDir, "archive-link.tar.gz");

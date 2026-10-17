@@ -209,7 +209,11 @@ async fn run_async() -> Result<()> {
     if let Some(dotenv) = resolved.file {
         for entry in dotenv.entries() {
             if PhantomToken::is_phantom_token(&entry.value) {
-                let real_value = retrieve_required_default_secret(vault.as_ref(), &entry.key)?;
+                let real_value = retrieve_required_default_secret(
+                    vault.as_ref(),
+                    config.local_project_id(),
+                    &entry.key,
+                )?;
                 token_to_secret.insert(
                     entry.value.clone(),
                     (entry.key.clone(), String::from(real_value.as_str())),
@@ -318,6 +322,7 @@ fn validate_start_dotenv(resolved: &phantom_core::managed_dotenv::ResolvedDotenv
 
 fn retrieve_required_default_secret(
     vault: &dyn phantom_vault::VaultBackend,
+    project_id: &str,
     name: &str,
 ) -> Result<zeroize::Zeroizing<String>> {
     let namespaced = phantom_core::env_scope::namespaced_key(DEFAULT_ENV, name);
@@ -327,9 +332,17 @@ fn retrieve_required_default_secret(
             vault
                 .retrieve_for_injection(name)
                 .map_err(|error| match error {
-                phantom_core::error::PhantomError::SecretNotFound(_) => anyhow::anyhow!(
-                    "Protected dotenv key '{name}' has no vault entry for the default environment; refusing to start a partial proxy"
-                ),
+                phantom_core::error::PhantomError::SecretNotFound(_) => {
+                    crate::util::missing_protected_entry(
+                        vault,
+                        project_id,
+                        name,
+                        format!(
+                            "Protected dotenv key '{name}' has no vault entry for the default environment"
+                        ),
+                        "refusing to start a partial proxy",
+                    )
+                }
                 other => anyhow::anyhow!(
                     "Failed to read legacy default secret '{name}' from the vault: {other}"
                 ),
@@ -455,11 +468,31 @@ mod shell_tests {
         assert!(preflight < legacy && legacy < lifecycle && lifecycle < vault);
     }
 
+    /// `phantom start` had exec's wording for a key held in a locked
+    /// encrypted-file vault; it now names that vault and still refuses.
+    #[cfg(unix)]
+    #[test]
+    fn foreground_start_names_a_locked_file_vault() {
+        let project =
+            crate::util::test_seam::LockedProject::new(crate::util::test_seam::empty_keychain);
+        let error =
+            retrieve_required_default_secret(&MissingVault, &project.project_id, "OPENAI_API_KEY")
+                .unwrap_err()
+                .to_string();
+        assert!(error.starts_with("Vault locked:"), "{error}");
+        assert!(
+            error.contains("refusing to start a partial proxy"),
+            "{error}"
+        );
+        assert!(!error.contains("has no vault entry"), "{error}");
+    }
+
     #[test]
     fn foreground_start_rejects_a_missing_protected_vault_entry() {
-        let error = retrieve_required_default_secret(&MissingVault, "OPENAI_API_KEY")
-            .unwrap_err()
-            .to_string();
+        let error =
+            retrieve_required_default_secret(&MissingVault, "start-fixture", "OPENAI_API_KEY")
+                .unwrap_err()
+                .to_string();
         assert!(error.contains("has no vault entry"));
         assert!(error.contains("refusing to start a partial proxy"));
     }

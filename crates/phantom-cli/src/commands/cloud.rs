@@ -16,10 +16,39 @@ pub fn run_push() -> Result<()> {
     // cloud credentials or any vault value.
     let api_base = auth::api_base_url()?;
     let token = Zeroizing::new(auth::require_token()?);
+    push_after_consent(
+        &project_dir,
+        &config_path,
+        config_before,
+        config,
+        &api_base,
+        &token,
+    )
+}
 
-    let vault = phantom_vault::try_create_vault(config.local_project_id())?;
+/// `cloud push` once terminal consent is given and the bearer is read: list
+/// the local vault, judge that inventory, and only then read values, fetch the
+/// cloud passphrase and send. Split out so a test can enter here without a
+/// terminal; `run_push` is the only production caller.
+fn push_after_consent(
+    project_dir: &Path,
+    config_path: &Path,
+    config_before: Vec<u8>,
+    config: PhantomConfig,
+    api_base: &str,
+    token: &str,
+) -> Result<()> {
+    let vault = crate::util::open_vault(config.local_project_id())?;
     let mut secret_names = vault.list()?;
     secret_names.sort();
+    // The push replaces the cloud copy: never from a keychain-only view of a
+    // project whose encrypted-file vault this process cannot open.
+    crate::util::require_complete_inventory(
+        vault.as_ref(),
+        config.local_project_id(),
+        secret_names.len(),
+        "push to the cloud vault",
+    )?;
 
     if secret_names.is_empty() {
         println!("{}  No secrets to push", "warn".yellow().bold());
@@ -65,8 +94,8 @@ pub fn run_push() -> Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
     let new_version = rt
         .block_on(cloud::push(
-            &api_base,
-            &token,
+            api_base,
+            token,
             config.portable_project_id(),
             &blob_b64,
             expected_version,
@@ -100,11 +129,11 @@ pub fn run_push() -> Result<()> {
         })?
         .into_bytes();
     phantom_vault::commit_init(
-        &project_dir,
+        project_dir,
         vault.as_ref(),
         guards,
         vec![phantom_vault::InitFile::replace_if_unchanged(
-            &config_path,
+            config_path,
             Some(config_before),
             config_after,
         )],
@@ -676,5 +705,47 @@ mod tests {
         assert!(error.to_string().contains("trusted terminal"));
         assert_eq!(reader.position(), 0);
         assert!(output.is_empty());
+    }
+}
+
+#[cfg(all(test, unix))]
+mod locked_vault_tests {
+    use crate::util::test_seam::{empty_keychain, keychain_with_one, LockedProject};
+
+    /// Entered after consent and the bearer, as `run_push` does. The stub
+    /// keychain panics on any value read, and the API base is unroutable, so
+    /// a refusal here comes before any retrieve or network call.
+    fn push(project: &LockedProject) -> String {
+        let (config_path, config_before, config) =
+            super::load_cloud_config_exact(&project.dir).unwrap();
+        super::push_after_consent(
+            &project.dir,
+            &config_path,
+            config_before,
+            config,
+            "http://127.0.0.1:9",
+            "unused-bearer",
+        )
+        .unwrap_err()
+        .to_string()
+    }
+
+    /// A keychain-only view would replace the cloud copy with a partial set.
+    #[test]
+    fn cloud_push_refuses_a_partial_inventory_before_any_read_or_send() {
+        let project = LockedProject::new(keychain_with_one);
+        let error = push(&project);
+        assert!(
+            error.starts_with("Refusing to push to the cloud vault from a partial inventory"),
+            "{error}"
+        );
+    }
+
+    /// An empty keychain beside a locked file vault was "No secrets to push".
+    #[test]
+    fn cloud_push_refuses_a_locked_file_vault() {
+        let project = LockedProject::new(empty_keychain);
+        let error = push(&project);
+        assert!(error.starts_with("Vault locked:"), "{error}");
     }
 }

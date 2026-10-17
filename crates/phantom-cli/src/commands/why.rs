@@ -3,6 +3,65 @@ use colored::Colorize;
 use phantom_core::config::PhantomConfig;
 use phantom_core::dotenv::{classify, is_public_key, DotenvFile, EnvEntry, SecretClassification};
 
+/// Human output for how `phantom exec` treats a protected key. It prints only
+/// fixed labels and sentences: the service and host are already shown on the
+/// `Service:` line, and `phantom why --json` carries the names.
+fn print_exec_verdict(verdict: &phantom_core::why::ExecVerdict<'_>) {
+    use phantom_core::config::{ExecBlocker, ExecDelivery};
+    let delivery: &'static str = match verdict.delivery {
+        ExecDelivery::Proxied { .. } => "proxied (the real value is injected for its provider)",
+        ExecDelivery::NoRoute => "no route (the child gets a session token no provider accepts)",
+        ExecDelivery::Withheld => "withheld (exec never hands this key to the child)",
+        ExecDelivery::ConnectionStringRefused { .. } => {
+            "refused (a connection string needs a protocol-aware broker)"
+        }
+        ExecDelivery::CustomRouteRefused { .. } => {
+            "refused (its service is not Phantom's built-in route)"
+        }
+    };
+    let blocked: Option<&'static str> = verdict.blocked_by.map(|blocker| match blocker {
+        ExecBlocker::ConnectionString { .. } => {
+            "exec will not start for any key while a connection string is protected in the dotenv; run database commands from a trusted terminal outside `phantom exec`"
+        }
+        ExecBlocker::CustomRoute { .. } => {
+            "exec will not start for any key while .phantom.toml has a custom proxy route; removing it is the user's decision in a trusted terminal"
+        }
+        ExecBlocker::AlteredBuiltinRoute { .. } => {
+            "exec will not start for any key until every built-in service in .phantom.toml matches Phantom's route again"
+        }
+    });
+    let ok = blocked.is_none() && matches!(verdict.delivery, ExecDelivery::Proxied { .. });
+    if ok {
+        println!("   Exec:   {}", delivery.green());
+        return;
+    }
+    println!("   Exec:   {}", delivery.yellow());
+    if let Some(blocked) = blocked {
+        println!("   {} {}", "!".yellow().bold(), blocked);
+    }
+    println!(
+        "   {} Run {} for the service and next step.",
+        "->".blue().bold(),
+        "phantom why <KEY> --json".cyan()
+    );
+}
+
+/// The dotenv `why` classifies: the managed dotenv when the project has a
+/// config, else `./.env`, matching MCP `phantom_why`. Either way a symlinked
+/// or non-regular file is refused before it is read; `None` when it is absent.
+fn read_dotenv(
+    project_dir: &std::path::Path,
+    config: Option<&PhantomConfig>,
+) -> Result<Option<DotenvFile>> {
+    match config {
+        Some(config) => {
+            Ok(phantom_core::managed_dotenv::resolve_dotenv(project_dir, config, &[])?.file)
+        }
+        None => phantom_core::managed_dotenv::parse_regular_dotenv(project_dir, ".env")
+            .context("Refusing to classify ./.env; protection status is indeterminate"),
+    }
+}
+
 /// Explain why a specific key is or isn't protected by Phantom.
 ///
 /// With `json`, prints the value-free report shared with the MCP `phantom_why`
@@ -11,27 +70,21 @@ pub fn run(key: &str, json: bool) -> Result<()> {
     let project_dir = std::env::current_dir()?;
     let config_path = project_dir.join(".phantom.toml");
     let config = PhantomConfig::load(&config_path).ok();
-    let env_path = match config.as_ref() {
-        Some(config) => {
-            phantom_core::managed_dotenv::resolve_dotenv(&project_dir, config, &[])?.path
-        }
-        None => project_dir.join(".env"),
-    };
+    let dotenv = read_dotenv(&project_dir, config.as_ref())?;
 
-    if json && !env_path.exists() {
+    if json && dotenv.is_none() {
         let report = phantom_core::why::why_report(key, None, config.as_ref());
         println!("{}", serde_json::to_string_pretty(&report)?);
         return Ok(());
     }
 
-    if !env_path.exists() {
+    let Some(dotenv) = dotenv else {
         anyhow::bail!(
             "No .env file found in current directory.\n  {}",
             crate::util::docs_url("getting-started")
         );
-    }
+    };
 
-    let dotenv = DotenvFile::parse_file(&env_path).context("Failed to read .env")?;
     dotenv
         .validate_for_mutation()
         .context("Managed dotenv is malformed; protection status is indeterminate")?;
@@ -70,6 +123,7 @@ pub fn run(key: &str, json: bool) -> Result<()> {
                             break;
                         }
                     }
+                    print_exec_verdict(&phantom_core::why::ExecVerdict::new(key, &dotenv, cfg));
                     println!(
                         "   Vault:  {}",
                         phantom_vault::try_create_vault(cfg.local_project_id())?
@@ -204,5 +258,33 @@ fn explain_why_secret(entry: &EnvEntry) {
             "   Reason: Value is a high-entropy string ({} chars)",
             value.len()
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn read_dotenv_refuses_a_symlinked_env_before_init() {
+        let project = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let target = outside.path().join("elsewhere.env");
+        std::fs::write(&target, "NODE_ENV=production\n").unwrap();
+        std::os::unix::fs::symlink(&target, project.path().join(".env")).unwrap();
+
+        let error = read_dotenv(project.path(), None).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("not a regular, non-symlink file"),
+            "{error:#}"
+        );
+
+        // A regular ./.env is still read, and a missing one is None.
+        std::fs::remove_file(project.path().join(".env")).unwrap();
+        assert!(read_dotenv(project.path(), None).unwrap().is_none());
+        std::fs::write(project.path().join(".env"), "NODE_ENV=production\n").unwrap();
+        let dotenv = read_dotenv(project.path(), None).unwrap().unwrap();
+        assert_eq!(dotenv.entries().len(), 1);
     }
 }
