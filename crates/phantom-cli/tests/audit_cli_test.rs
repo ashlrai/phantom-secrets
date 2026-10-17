@@ -278,3 +278,58 @@ fn audit_incidents_json_shape_is_stable_when_empty() {
     assert_eq!(report["incidents"], serde_json::json!([]));
     assert_eq!(report["uncorrelated_incidents"], serde_json::json!([]));
 }
+
+/// `--window` used to round up to 7 or 30 days (`--window 3` covered a week,
+/// `--window 90` only 30 days) while the JSON echoed the requested value.
+#[test]
+fn audit_analytics_window_is_the_exact_lookback() {
+    let tmp = common::canonical_tempdir();
+    let phantom_dir = tmp.path().join(".phantom");
+    std::fs::create_dir_all(&phantom_dir).unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let day = 86_400_u64;
+    let line = |ts: u64, entry_name: &str| {
+        format!(
+            "{{\"ts\":{ts},\"op\":\"vault.retrieve\",\"name\":\"{entry_name}\",\"pid\":1,\"process\":\"phantom\"}}\n"
+        )
+    };
+    std::fs::write(
+        phantom_dir.join("audit.log"),
+        [
+            line(now - 60 * day, "WINDOW_60D"),
+            line(now - 5 * day, "WINDOW_5D"),
+            line(now - 3600, "WINDOW_1H"),
+        ]
+        .concat(),
+    )
+    .unwrap();
+
+    let names_for = |window: &str| -> Vec<String> {
+        let out = Command::cargo_bin("phantom")
+            .expect("binary not found")
+            .current_dir(tmp.path())
+            .env("HOME", tmp.path())
+            .env_remove("PHANTOM_AUDIT")
+            .args(["audit", "analytics", "--window", window])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{out:?}");
+        let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(report["window_days"], window.parse::<u32>().unwrap());
+        let mut names: Vec<String> = report["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["name"].as_str().unwrap().to_string())
+            .collect();
+        names.sort();
+        names
+    };
+
+    assert_eq!(names_for("3"), ["WINDOW_1H"]);
+    assert_eq!(names_for("90"), ["WINDOW_1H", "WINDOW_5D", "WINDOW_60D"]);
+    assert_eq!(names_for("0"), ["WINDOW_1H", "WINDOW_5D", "WINDOW_60D"]);
+}

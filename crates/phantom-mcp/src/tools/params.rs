@@ -525,7 +525,8 @@ fn default_realtime_threshold() -> f64 {
 /// Parameters for `phantom_audit_analytics` — full analytics + access-record export.
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct AuditAnalyticsParams {
-    /// Time window in days (default: 30). 0 means all available history.
+    /// Time window in days (default: 30): exactly the last N days of events.
+    /// 0 means all available history.
     #[serde(default = "default_analytics_window")]
     pub window_days: u32,
     /// Only include secrets whose anomaly score is at or above this threshold

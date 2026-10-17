@@ -3752,13 +3752,8 @@ impl PhantomMcpServer {
 
         let format = crate::tools::helpers::parse_audit_format(&params.format)?;
 
-        // Convert window_days to a Period.
-        let period = match params.window_days {
-            0 => Period::All,
-            7 => Period::Days7,
-            1..=30 => Period::Days30,
-            _ => Period::All,
-        };
+        // Exactly the requested lookback (0 = all history), as the CLI does.
+        let period = Period::from_window_days(params.window_days);
 
         let report = compute_analytics(period)
             .map_err(|e| internal_err(format!("Failed to compute analytics: {e}")))?;
@@ -11797,6 +11792,98 @@ mod tests {
 
         let analytics = json["analytics"].as_array().unwrap();
         assert_eq!(analytics.len(), 2, "two distinct secrets");
+    }
+
+    /// window_days used to round to a neighbouring window: 1..=29 meant 30
+    /// days, 31+ meant all history, while the report echoed the requested
+    /// value. Each window now covers exactly the last N days.
+    #[test]
+    fn test_audit_analytics_window_days_is_the_exact_lookback() {
+        let _environment = TestEnvironment::new();
+        let (server, _dir) = setup_initialized_project();
+        let home = canonical_temp_dir();
+        unsafe { std::env::set_var("HOME", home.path()) };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let day = 86_400_u64;
+        write_synthetic_audit_log(
+            home.path(),
+            &[
+                (now - 200 * day, "vault.retrieve", Some("WINDOW_200D")),
+                (now - 60 * day, "vault.retrieve", Some("WINDOW_60D")),
+                (now - 20 * day, "vault.retrieve", Some("WINDOW_20D")),
+                (now - 3 * day, "vault.retrieve", Some("WINDOW_3D")),
+                (now - 3600, "vault.retrieve", Some("WINDOW_1H")),
+            ],
+        );
+
+        let names_for = |window_days: u32| -> (Vec<String>, Vec<String>) {
+            let result = server
+                .phantom_audit_analytics(Parameters(AuditAnalyticsParams {
+                    window_days,
+                    min_anomaly_score: None,
+                    format: "json".to_string(),
+                }))
+                .unwrap();
+            let json = parse_result_json(&result);
+            assert_eq!(json["window_days"], window_days);
+            let mut analytics: Vec<String> = json["analytics"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|s| s["name"].as_str().unwrap().to_string())
+                .collect();
+            analytics.sort();
+            let mut records: Vec<String> = json["records"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|r| r["name"].as_str().unwrap().to_string())
+                .collect();
+            records.sort();
+            (analytics, records)
+        };
+
+        for (window_days, expected) in [
+            (1_u32, vec!["WINDOW_1H"]),
+            (14, vec!["WINDOW_1H", "WINDOW_3D"]),
+            (
+                90,
+                vec!["WINDOW_1H", "WINDOW_20D", "WINDOW_3D", "WINDOW_60D"],
+            ),
+            (
+                0,
+                vec![
+                    "WINDOW_1H",
+                    "WINDOW_200D",
+                    "WINDOW_20D",
+                    "WINDOW_3D",
+                    "WINDOW_60D",
+                ],
+            ),
+        ] {
+            let (analytics, records) = names_for(window_days);
+            assert_eq!(
+                analytics, expected,
+                "analytics for window_days={window_days}"
+            );
+            assert_eq!(records, expected, "records for window_days={window_days}");
+        }
+
+        // CSV covers the same window as JSON.
+        let csv = extract_content_text(
+            &server
+                .phantom_audit_analytics(Parameters(AuditAnalyticsParams {
+                    window_days: 14,
+                    min_anomaly_score: None,
+                    format: "csv".to_string(),
+                }))
+                .unwrap(),
+        );
+        assert!(csv.contains("WINDOW_3D"), "{csv}");
+        assert!(!csv.contains("WINDOW_20D"), "{csv}");
     }
 
     #[test]

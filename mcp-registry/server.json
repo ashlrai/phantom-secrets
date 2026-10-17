@@ -150,7 +150,7 @@
           },
           "window_days": {
             "default": 30,
-            "description": "Time window in days (default: 30). 0 means all available history.",
+            "description": "Time window in days (default: 30): exactly the last N days of events.\n0 means all available history.",
             "format": "uint32",
             "minimum": 0,
             "type": "integer"

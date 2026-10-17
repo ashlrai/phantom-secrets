@@ -259,6 +259,9 @@ pub struct AccessRecord {
 pub enum Period {
     Days7,
     Days30,
+    /// The last `n` days (`n * 86400` seconds before now), for any `n` that
+    /// is not one of the named windows.
+    LastDays(u32),
     /// All available history.
     All,
 }
@@ -274,12 +277,26 @@ impl Period {
         }
     }
 
+    /// The exact lookback for a `--window DAYS` / `window_days` argument:
+    /// `0` is all history and any other `n` is the last `n` days. Never
+    /// rounds to a neighbouring window, so a reported window matches the
+    /// events it covers.
+    pub fn from_window_days(days: u32) -> Period {
+        match days {
+            0 => Period::All,
+            7 => Period::Days7,
+            30 => Period::Days30,
+            n => Period::LastDays(n),
+        }
+    }
+
     /// Minimum Unix timestamp for events to be included (0 = no cutoff).
     pub fn cutoff_ts(self) -> u64 {
         let now = now_unix();
         match self {
             Period::Days7 => now.saturating_sub(7 * 86400),
             Period::Days30 => now.saturating_sub(30 * 86400),
+            Period::LastDays(n) => now.saturating_sub(u64::from(n) * 86400),
             Period::All => 0,
         }
     }
@@ -762,6 +779,24 @@ mod tests {
         let diff = now.saturating_sub(cutoff);
         // Should be within 1s of 7 days
         assert!((diff as i64 - 7 * 86400).abs() <= 1, "diff={diff}");
+    }
+
+    #[test]
+    fn window_days_maps_to_the_exact_lookback() {
+        assert_eq!(Period::from_window_days(0), Period::All);
+        assert_eq!(Period::from_window_days(7), Period::Days7);
+        assert_eq!(Period::from_window_days(30), Period::Days30);
+        for days in [1_u32, 3, 14, 31, 90, 365] {
+            let period = Period::from_window_days(days);
+            assert_eq!(period, Period::LastDays(days));
+            let diff = now_unix().saturating_sub(period.cutoff_ts());
+            assert!(
+                (diff as i64 - i64::from(days) * 86400).abs() <= 1,
+                "days={days} diff={diff}"
+            );
+        }
+        // The largest window saturates at the epoch instead of overflowing.
+        assert_eq!(Period::from_window_days(u32::MAX).cutoff_ts(), 0);
     }
 
     // ── Anomaly detection ─────────────────────────────────────────────────────

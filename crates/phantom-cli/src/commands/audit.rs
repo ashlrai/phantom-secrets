@@ -89,7 +89,7 @@ pub enum AuditAction {
     },
     /// Export full audit analytics for external dashboards (Datadog, Grafana, CloudWatch)
     Analytics {
-        /// Time window in days (default: 30; 0 = all history)
+        /// Time window in days: exactly the last N days (default: 30; 0 = all history)
         #[arg(long, default_value_t = 30)]
         window: u32,
         /// Only include secrets with anomaly score at or above this threshold (0.0–1.0)
@@ -927,11 +927,7 @@ pub fn run_analytics(
     // exact-before publication below instead of being overwritten.
     let export_plan = export.map(prepare_analytics_export).transpose()?;
 
-    let period = match window {
-        0 => Period::All,
-        1..=7 => Period::Days7,
-        _ => Period::Days30,
-    };
+    let period = Period::from_window_days(window);
 
     let report = compute_analytics(period)
         .map_err(|e| anyhow::anyhow!("Failed to compute analytics: {e}"))?;

@@ -4,6 +4,18 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (`phantom_audit_analytics`, `phantom audit analytics`)
+
+- The analytics window was rounded to a neighbouring preset while the
+  report still echoed the requested value. MCP `window_days` 1 to 29
+  covered 30 days and 31 or more covered all history; CLI `--window` 1 to
+  7 covered 7 days and 8 or more covered 30 days, so `--window 90`
+  silently dropped days 31 to 90. Both now cover exactly the last N days
+  (`0` is still all history), through one shared
+  `phantom_core::analytics::Period::from_window_days`, so the MCP tool and
+  the CLI agree. Analytics, records, time series and CSV all follow the
+  window. Names and counts only, never values.
+
 ### Fixed (`phantom_secrets_expiry_check`, `phantom_secret_rotation_due`, `phantom_compliance_status`, `phantom secrets-expiring-soon`)
 
 - `days_remaining` truncated toward zero, so a secret that expired less
