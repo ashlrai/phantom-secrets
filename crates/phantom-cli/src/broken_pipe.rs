@@ -86,11 +86,13 @@ fn stdout_reader_gone() -> bool {
     ready > 0 && descriptor.revents & (libc::POLLERR | libc::POLLHUP) != 0
 }
 
-/// Windows has no cheap way to ask; a write that failed with a broken pipe
-/// error there is taken at its word.
+/// Off Unix there is no cheap way to ask whether stdout's reader is gone, so a
+/// returned broken-pipe error cannot be tied to stdout and stays an error (it
+/// may come from a child process or a socket). Only the `println!` panic,
+/// which names stdout itself, becomes the quiet exit there.
 #[cfg(not(unix))]
 fn stdout_reader_gone() -> bool {
-    true
+    false
 }
 
 /// Keep the default panic report for every panic except the stdout broken

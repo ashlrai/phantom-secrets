@@ -20,7 +20,9 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   "failed printing to stdout: Broken pipe" when the reader closed early. A
   write to a closed stdout is now a quiet exit with status 141, as a shell
   reports SIGPIPE. The SIGPIPE disposition is unchanged, so `phantom exec`
-  children and the in-process proxy behave as before.
+  children and the in-process proxy behave as before. On Windows only the
+  `println!` case exits 141; a broken-pipe error a command returns stays an
+  error there, since it cannot be tied to stdout.
 
 ### Fixed (agent report)
 
