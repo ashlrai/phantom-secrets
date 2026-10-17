@@ -126,15 +126,13 @@ pub fn run_plan(min_confidence: f64, json: bool) -> Result<()> {
     }
     let engine = LeakCorrelationEngine::new()
         .map_err(|e| anyhow::anyhow!("Cannot initialise leak correlation engine: {e}"))?;
-    let incidents = engine
-        .active_incidents(min_confidence)
+    let view = engine
+        .incident_view(min_confidence)
         .map_err(|e| anyhow::anyhow!("Failed to read leak incidents: {e}"))?;
-    let plan = build_plan(&incidents, provider_name_for);
+    let plan = build_plan(&view.persisted, provider_name_for);
     // The plan covers persisted incidents only. Say so when the audit log
     // holds leak events no backfill has persisted (stderr keeps --json clean).
-    let uncorrelated = engine
-        .uncorrelated_incidents(min_confidence)
-        .map_err(|e| anyhow::anyhow!("Failed to read leak events from the audit log: {e}"))?;
+    let uncorrelated = view.uncorrelated;
     if !uncorrelated.is_empty() {
         eprintln!(
             "{}  {} leak incident(s) from the last 24 h are in the audit log but not persisted, so this plan omits them. Run `phantom audit incidents` to list them and `phantom audit alerts --backfill` to persist them.",

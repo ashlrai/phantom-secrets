@@ -5616,17 +5616,13 @@ fn team_push_approval_params_json(
     .map_err(|error| internal_err(format!("Failed to bind team-push approval: {error}")))
 }
 
-/// What the read-only leak-incident tools know: the persisted active
-/// incidents, and the same 24 h window's leak events that no backfill has
-/// persisted yet (correlated in memory, nothing written).
-struct LeakIncidentView {
-    persisted: Vec<phantom_core::leak_correlation::LeakIncident>,
-    uncorrelated: Vec<phantom_core::leak_correlation::LeakIncident>,
-    audit_log_present: bool,
+/// Value-free guidance for the read-only leak-incident tools; null when
+/// there is nothing to act on.
+trait IncidentNextStep {
+    fn next_step(&self) -> Option<String>;
 }
 
-impl LeakIncidentView {
-    /// Value-free guidance; null when there is nothing to act on.
+impl IncidentNextStep for phantom_core::leak_correlation::IncidentView {
     fn next_step(&self) -> Option<String> {
         if !self.uncorrelated.is_empty() {
             return Some(format!(
@@ -5644,26 +5640,16 @@ impl LeakIncidentView {
     }
 }
 
+/// The persisted active incidents and the same 24 h window's leak events
+/// that no backfill has persisted yet, from one parse of the audit log
+/// (correlated in memory, nothing written).
 fn leak_incident_view(
     engine: &phantom_core::leak_correlation::LeakCorrelationEngine,
     min_confidence: f64,
-) -> Result<LeakIncidentView, McpError> {
-    let persisted = engine
-        .active_incidents(min_confidence)
-        .map_err(|e| internal_err(format!("Failed to read leak incidents: {e}")))?;
-    let uncorrelated = engine.uncorrelated_incidents(min_confidence).map_err(|e| {
-        internal_err(format!(
-            "Failed to read leak events from the audit log: {e}"
-        ))
-    })?;
-    let audit_log_present = phantom_core::audit::log_path()
-        .map(|path| path.exists())
-        .unwrap_or(false);
-    Ok(LeakIncidentView {
-        persisted,
-        uncorrelated,
-        audit_log_present,
-    })
+) -> Result<phantom_core::leak_correlation::IncidentView, McpError> {
+    engine
+        .incident_view(min_confidence)
+        .map_err(|e| internal_err(format!("Failed to read leak incidents: {e}")))
 }
 
 /// Dashboard summaries (no secret values), most confident first.

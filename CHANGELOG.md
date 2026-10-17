@@ -15,7 +15,8 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   incidents no backfill has persisted in `uncorrelated_incidents` (MCP:
   plus `uncorrelated_count`), filtered like persisted incidents
   (`min_confidence`, 24 h window, cleared by a later store of the secret).
-  Names only, never values.
+  Names only, never values. Each query parses the audit log once, keeping
+  only the window's leak events and each name's latest store time.
 - Both MCP tools now always return the same JSON object (also as
   structuredContent) with `audit_log_present` and a `next_step`, instead of
   plain text when nothing was found. "Set PHANTOM_AUDIT=1" is said only

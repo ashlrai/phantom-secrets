@@ -1280,15 +1280,16 @@ pub fn run_incidents(min_confidence: f64, json: bool, auto_rotate_on_high: bool)
 
     // This command is read-only. Correlation and incident persistence are an
     // explicit backfill effect guarded by the audit terminal ceremony.
-    let incidents = engine
-        .active_incidents(min_confidence)
-        .map_err(|e| anyhow::anyhow!("Failed to read leak incidents: {e}"))?;
     // The proxy only appends leak events; incidents are persisted by the
     // gated `audit alerts --backfill`. Correlate the same window in memory
-    // (nothing written) so unpersisted leaks are not reported as all clear.
-    let uncorrelated = engine
-        .uncorrelated_incidents(min_confidence)
-        .map_err(|e| anyhow::anyhow!("Failed to read leak events from the audit log: {e}"))?;
+    // (nothing written, one audit-log parse) so unpersisted leaks are not
+    // reported as all clear.
+    let view = engine
+        .incident_view(min_confidence)
+        .map_err(|e| anyhow::anyhow!("Failed to read leak incidents: {e}"))?;
+    let audit_log_present = view.audit_log_present;
+    let incidents = view.persisted;
+    let uncorrelated = view.uncorrelated;
 
     if json {
         // One shape whether or not anything was found.
@@ -1326,9 +1327,6 @@ pub fn run_incidents(min_confidence: f64, json: bool, auto_rotate_on_high: bool)
     }
 
     if incidents.is_empty() {
-        let audit_log_present = phantom_core::audit::log_path()
-            .map(|path| path.exists())
-            .unwrap_or(false);
         if audit_log_present {
             println!(
                 "{}  No persisted active leak incidents (min_confidence={:.2}).",
