@@ -20,7 +20,23 @@ struct AddPlan {
 }
 
 /// Add one secret through a single exact-before project transaction.
-pub fn run(name: &str, value_arg: Option<String>, from_stdin: bool) -> Result<()> {
+/// How `phantom add --stdin` treats input with more than one line.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StdinLines {
+    /// Default: a single line is stored; more than one line is refused.
+    SingleOnly,
+    /// `--multiline`: store the whole value, inner line breaks kept.
+    Multiline,
+    /// `--first-line`: store only line 1 (pass/gopass put metadata after it).
+    FirstLine,
+}
+
+pub fn run(
+    name: &str,
+    value_arg: Option<String>,
+    from_stdin: bool,
+    lines: StdinLines,
+) -> Result<()> {
     if let Some(mut value) = value_arg {
         value.zeroize();
         anyhow::bail!(
@@ -47,7 +63,7 @@ pub fn run(name: &str, value_arg: Option<String>, from_stdin: bool) -> Result<()
     // Existing-name authority is resolved from value-blind vault metadata
     // before stdin or the hidden prompt is touched. A second check in
     // `prepare_add_plan` closes the race between this preflight and commit.
-    let value = read_secret_value(name, from_stdin)?;
+    let value = read_secret_value(name, from_stdin, lines)?;
     let plan = prepare_add_plan(
         &project_dir,
         &config_path,
@@ -112,7 +128,7 @@ fn ensure_secret_absent(vault: &dyn VaultBackend, name: &str) -> Result<()> {
 /// `/dev/zero` from growing memory without limit.
 const MAX_STDIN_VALUE_BYTES: usize = 64 * 1024;
 
-fn read_secret_value(name: &str, from_stdin: bool) -> Result<Zeroizing<String>> {
+fn read_secret_value(name: &str, from_stdin: bool, lines: StdinLines) -> Result<Zeroizing<String>> {
     if from_stdin {
         if stdin_is_tty() {
             anyhow::bail!(
@@ -120,7 +136,7 @@ fn read_secret_value(name: &str, from_stdin: bool) -> Result<Zeroizing<String>> 
                 "--stdin".cyan().bold()
             );
         }
-        return read_stdin_value(std::io::stdin().lock());
+        return read_stdin_value(std::io::stdin().lock(), lines);
     }
     if !stdin_is_tty() {
         anyhow::bail!(
@@ -136,18 +152,22 @@ fn read_secret_value(name: &str, from_stdin: bool) -> Result<Zeroizing<String>> 
     Ok(Zeroizing::new(secret))
 }
 
-/// Read one whole value from a piped producer, up to EOF.
+/// Read one value from a piped producer, up to EOF.
 ///
-/// The value is everything the producer writes, so a multi-line credential
-/// (a PEM private key, a service-account JSON document) is stored intact,
-/// exactly as `phantom init` stores a quoted multi-line dotenv value. Only
-/// trailing line endings are dropped, so `echo "$VALUE" |` stores `$VALUE`.
-/// Oversized and non-UTF-8 input is refused before any vault write, and the
-/// refusal never contains input bytes.
-fn read_stdin_value(reader: impl std::io::Read) -> Result<Zeroizing<String>> {
+/// Trailing line endings are dropped first, so `echo "$VALUE" |` is one line.
+/// Input that still spans more than one line is refused unless the caller
+/// said what to store: `--multiline` keeps every line exactly (a PEM key or
+/// service-account JSON, as `phantom init` stores quoted multi-line values),
+/// `--first-line` keeps only line 1 (pass/gopass metadata follows it).
+/// Guessing either way would silently store a broken credential, and `add`
+/// is create-only, so it cannot be redone in place. Oversized, multi-line
+/// and non-UTF-8 input is refused before any vault write, and no refusal
+/// contains input bytes.
+fn read_stdin_value(reader: impl std::io::Read, lines: StdinLines) -> Result<Zeroizing<String>> {
     use std::io::Read;
 
-    let mut bytes = Zeroizing::new(Vec::new());
+    // Sized once so the buffer never regrows and leaves unwiped copies.
+    let mut bytes = Zeroizing::new(Vec::with_capacity(MAX_STDIN_VALUE_BYTES + 1));
     reader
         .take(MAX_STDIN_VALUE_BYTES as u64 + 1)
         .read_to_end(&mut bytes)
@@ -161,12 +181,50 @@ fn read_stdin_value(reader: impl std::io::Read) -> Result<Zeroizing<String>> {
     while bytes.ends_with(b"\n") || bytes.ends_with(b"\r") {
         bytes.pop();
     }
+    let line_count = count_lines(&bytes);
+    if line_count > 1 {
+        match lines {
+            StdinLines::Multiline => {}
+            StdinLines::FirstLine => {
+                let end = bytes
+                    .iter()
+                    .position(|byte| *byte == b'\n' || *byte == b'\r')
+                    .unwrap_or(bytes.len());
+                // Truncate in place: the dropped tail stays inside the
+                // zeroizing allocation and is wiped with it.
+                bytes.truncate(end);
+            }
+            StdinLines::SingleOnly => anyhow::bail!(
+                "Input on stdin has {line_count} lines; pass --multiline to store all of it or --first-line to store only the first; nothing was stored."
+            ),
+        }
+    }
     if bytes.is_empty() {
         anyhow::bail!("Received empty value on stdin — aborting.");
     }
     let text = std::str::from_utf8(&bytes)
         .map_err(|_| anyhow::anyhow!("Value on stdin is not valid UTF-8; nothing was stored."))?;
     Ok(Zeroizing::new(text.to_owned()))
+}
+
+/// Count lines, treating `\n`, `\r\n` and a lone `\r` as one break each.
+fn count_lines(bytes: &[u8]) -> usize {
+    let mut breaks = 0;
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'\n' => breaks += 1,
+            b'\r' => {
+                breaks += 1;
+                if bytes.get(index + 1) == Some(&b'\n') {
+                    index += 1;
+                }
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+    breaks + 1
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -379,11 +437,96 @@ mod tests {
         let last = fixture_line("last");
         let piped = format!("{first}\n{middle}\r\n{last}\n");
 
-        let value = read_stdin_value(std::io::Cursor::new(piped.into_bytes())).unwrap();
+        let value = read_stdin_value(
+            std::io::Cursor::new(piped.into_bytes()),
+            StdinLines::Multiline,
+        )
+        .unwrap();
 
-        // Previously only the first line was stored and the rest silently
-        // dropped, while the command still reported success.
         assert_eq!(value.as_str(), format!("{first}\n{middle}\r\n{last}"));
+    }
+
+    #[test]
+    fn multi_line_stdin_value_without_a_flag_is_refused_without_echoing_input() {
+        let first = fixture_line("alpha");
+        let second = fixture_line("bravo");
+        for piped in [
+            format!("{first}\n{second}\n"),
+            format!("{first}\r\n{second}"),
+            format!("{first}\r{second}\r\n"),
+        ] {
+            let error = read_stdin_value(
+                std::io::Cursor::new(piped.into_bytes()),
+                StdinLines::SingleOnly,
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(error.contains("has 2 lines"), "{error}");
+            assert!(error.contains("--multiline"), "{error}");
+            assert!(error.contains("--first-line"), "{error}");
+            assert!(error.contains("nothing was stored"), "{error}");
+            assert!(!error.contains("alpha-"), "refusal must not echo input");
+            assert!(!error.contains("bravo-"), "refusal must not echo input");
+        }
+    }
+
+    #[test]
+    fn first_line_flag_stores_only_the_first_line() {
+        let first = fixture_line("first");
+        let metadata = fixture_line("login");
+        for piped in [
+            format!("{first}\n{metadata}\nurl: {metadata}\n"),
+            format!("{first}\r\n{metadata}\r\n"),
+        ] {
+            let value = read_stdin_value(
+                std::io::Cursor::new(piped.into_bytes()),
+                StdinLines::FirstLine,
+            )
+            .unwrap();
+            assert_eq!(value.as_str(), first);
+        }
+        // A single line is unaffected by either flag.
+        for lines in [StdinLines::FirstLine, StdinLines::Multiline] {
+            let value = read_stdin_value(
+                std::io::Cursor::new(format!("{first}\n").into_bytes()),
+                lines,
+            )
+            .unwrap();
+            assert_eq!(value.as_str(), first);
+        }
+    }
+
+    /// `std::io::repeat` that panics if asked for bytes past the cap, so the
+    /// test fails (instead of hanging) if the reader is not bounded.
+    struct EndlessProducer {
+        inner: std::io::Repeat,
+        served: usize,
+    }
+
+    impl std::io::Read for EndlessProducer {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            assert!(
+                self.served <= MAX_STDIN_VALUE_BYTES,
+                "stdin was read past the {MAX_STDIN_VALUE_BYTES}-byte cap"
+            );
+            let read = self.inner.read(buf)?;
+            self.served += read;
+            Ok(read)
+        }
+    }
+
+    #[test]
+    fn endless_stdin_producer_is_cut_off_at_the_cap() {
+        let producer = EndlessProducer {
+            inner: std::io::repeat(b'a'),
+            served: 0,
+        };
+
+        let error = read_stdin_value(producer, StdinLines::Multiline)
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("exceeds 64 KiB"), "{error}");
     }
 
     #[test]
@@ -395,13 +538,20 @@ mod tests {
             format!("{line}\r\n"),
             format!("{line}\n\n"),
         ] {
-            let value = read_stdin_value(std::io::Cursor::new(piped.into_bytes())).unwrap();
+            let value = read_stdin_value(
+                std::io::Cursor::new(piped.into_bytes()),
+                StdinLines::SingleOnly,
+            )
+            .unwrap();
             assert_eq!(value.as_str(), line);
         }
         for piped in ["", "\n", "\r\n\n"] {
-            let error = read_stdin_value(std::io::Cursor::new(piped.as_bytes().to_vec()))
-                .unwrap_err()
-                .to_string();
+            let error = read_stdin_value(
+                std::io::Cursor::new(piped.as_bytes().to_vec()),
+                StdinLines::SingleOnly,
+            )
+            .unwrap_err()
+            .to_string();
             assert!(error.contains("empty value"), "{error}");
         }
     }
@@ -411,7 +561,7 @@ mod tests {
         let marker = b'q';
         let oversized = vec![marker; MAX_STDIN_VALUE_BYTES + 1];
 
-        let error = read_stdin_value(std::io::Cursor::new(oversized))
+        let error = read_stdin_value(std::io::Cursor::new(oversized), StdinLines::SingleOnly)
             .unwrap_err()
             .to_string();
 
@@ -419,7 +569,7 @@ mod tests {
         assert!(!error.contains("qqqq"), "refusal must not echo input");
 
         let at_cap = vec![marker; MAX_STDIN_VALUE_BYTES];
-        let value = read_stdin_value(std::io::Cursor::new(at_cap)).unwrap();
+        let value = read_stdin_value(std::io::Cursor::new(at_cap), StdinLines::SingleOnly).unwrap();
         assert_eq!(value.len(), MAX_STDIN_VALUE_BYTES);
     }
 
@@ -428,7 +578,7 @@ mod tests {
         let mut piped = fixture_line("prefix").into_bytes();
         piped.extend_from_slice(&[0xff, 0xfe, b'\n']);
 
-        let error = read_stdin_value(std::io::Cursor::new(piped))
+        let error = read_stdin_value(std::io::Cursor::new(piped), StdinLines::SingleOnly)
             .unwrap_err()
             .to_string();
 
@@ -465,7 +615,7 @@ mod tests {
             .find("phantom_vault::try_create_vault(config.local_project_id())?")
             .unwrap();
         let input = source
-            .find("let value = read_secret_value(name, from_stdin)?")
+            .find("let value = read_secret_value(name, from_stdin, lines)?")
             .unwrap();
         assert!(validate < vault);
         assert!(validate < input);
