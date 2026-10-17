@@ -4,7 +4,7 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
-### Fixed (`phantom_secrets_expiry_check`, `phantom_secret_rotation_due`, `phantom secrets-expiring-soon`)
+### Fixed (`phantom_secrets_expiry_check`, `phantom_secret_rotation_due`, `phantom_compliance_status`, `phantom secrets-expiring-soon`)
 
 - `days_remaining` truncated toward zero, so a secret that expired less
   than 24 h ago reported `0`, which every consumer reads as "not expired
@@ -20,6 +20,10 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   by its expiry into `due`, `warning` or `ok`, matching `phantom rotate
   --batch` and `phantom doctor`; `no_ttl` holds only secrets with neither
   an expiry nor a policy. Each entry gains `has_rotation_policy`.
+- `phantom_compliance_status` failed `secrets_have_ttl` for a secret with
+  an `expires_at` but no rotation policy. A secret now passes when it has
+  either, the same rule as `phantom_secret_rotation_due` and `phantom
+  doctor`.
 - `phantom_secrets_expiry_check` entries and `phantom secrets-expiring-soon
   --json` entries gain an `expired` boolean. Existing fields are unchanged.
   Names and lifecycle metadata only, never values.

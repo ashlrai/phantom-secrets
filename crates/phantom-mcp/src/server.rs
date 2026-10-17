@@ -4167,7 +4167,7 @@ impl PhantomMcpServer {
             audit_enabled (PHANTOM_AUDIT env var is set), \
             precommit_installed (git pre-commit hook contains the current local-only phantom check), \
             env_clean (no unprotected real secrets in any dotenv phantom check scans: .env, .env.local, .env.development, .env.development.local, .env.production, .env.production.local, .env.test, .env.test.local and the configured dotenv_path; read without opening the vault, so it is reported before init and with a locked vault), \
-            secrets_have_ttl (all vault secrets have a rotation policy set). \
+            secrets_have_ttl (every vault secret has an expiry (expires_at) or a rotation policy set). \
             Each check is true/false with an optional detail string. \
             Overall 'compliant' is true only when all checks pass. Read-only."
     )]
@@ -4255,16 +4255,20 @@ impl PhantomMcpServer {
                         let without_ttl: Vec<&str> = entries
                             .iter()
                             .filter(|(_, meta)| {
-                                meta.as_ref()
-                                    .and_then(|m| m.rotation_policy.as_ref())
-                                    .is_none()
+                                // A provider-issued expiry without a policy is
+                                // still a TTL (same rule as phantom doctor and
+                                // phantom_secret_rotation_due).
+                                !meta.as_ref().is_some_and(|m| {
+                                    m.expires_at.is_some() || m.rotation_policy.is_some()
+                                })
                             })
                             .map(|(name, _)| name.as_str())
                             .collect();
                         if without_ttl.is_empty() {
                             (
                                 true,
-                                "All secrets have a rotation policy (TTL).".to_string(),
+                                "All secrets have an expiry or a rotation policy (TTL)."
+                                    .to_string(),
                             )
                         } else {
                             (
@@ -12557,6 +12561,36 @@ mod tests {
                 .as_bool()
                 .unwrap(),
             "secrets_have_ttl should be true after an explicit policy is set"
+        );
+    }
+
+    #[test]
+    fn test_compliance_status_secrets_have_ttl_counts_expiry_without_policy() {
+        let _environment = TestEnvironment::new();
+        let (server, _dir) = setup_initialized_project();
+        let (_config, vault) = server.load_config_and_vault().unwrap();
+        let expires_at = phantom_vault::metadata::now_secs() + 30 * 86_400;
+        for entry_name in vault.list().unwrap() {
+            vault
+                .set_metadata(
+                    &entry_name,
+                    phantom_vault::SecretMetadata {
+                        expires_at: Some(expires_at),
+                        rotation_policy: None,
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+        }
+
+        let json = parse_result_json(
+            &server
+                .phantom_compliance_status(Parameters(ComplianceStatusParams {}))
+                .unwrap(),
+        );
+        assert_eq!(
+            json["checks"]["secrets_have_ttl"]["pass"], true,
+            "an expiry without a rotation policy is a TTL: {json}"
         );
     }
 
