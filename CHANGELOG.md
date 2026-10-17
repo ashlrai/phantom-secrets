@@ -28,6 +28,24 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 - Variable names in the runtime check's text output have control
   characters escaped.
 
+### Fixed (exec signals and `why` input)
+
+- A SIGTERM, SIGHUP or SIGINT sent to `phantom exec` killed Phantom and left
+  the child running, orphaned, against a proxy that was gone. Phantom now
+  forwards the signal to the child, waits for it, shuts the proxy down, and
+  exits with the child's status (128 + N when signal N ended it). A signal
+  Phantom inherited as ignored (`nohup`, a background job started by a
+  script) stays ignored and is not forwarded, so the child keeps ignoring it
+  too. A SIGINT is not forwarded while Phantom is the foreground process
+  group of its terminal, because a terminal Ctrl-C has already reached the
+  child; a `kill -INT` from another process in that situation is not
+  forwarded either. On Windows, Phantom now waits for the child after Ctrl-C
+  instead of exiting first.
+- `phantom why ""` (or a blank name) answered "not found" with exit 0. It now
+  exits 1 and asks for the exact key name.
+- `phantom why` hints named the MCP tool `phantom_status` where the CLI
+  command `phantom status` belongs; they now name both.
+
 ### Changed (`phantom add --stdin` input handling)
 
 - `phantom add NAME --stdin` used to store only the first line of piped

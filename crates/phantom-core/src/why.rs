@@ -101,7 +101,7 @@ fn build_report(key: &str, dotenv: Option<&DotenvFile>, config: Option<&PhantomC
     };
     let Some(entry) = dotenv.entries().into_iter().find(|e| e.key == key) else {
         report["next_step"] =
-            "Check the exact key spelling (case-sensitive); phantom_status lists dotenv counts."
+            "Check the exact key spelling (case-sensitive); `phantom status` (MCP: phantom_status) lists dotenv counts."
                 .into();
         return report;
     };
@@ -258,7 +258,7 @@ pub fn exec_next_step(key: &str, delivery: &ExecDelivery<'_>) -> Option<String> 
             "No proxy route injects `{key}`. Under `phantom exec` the child gets only a \
              session token for it, which no provider accepts, so calls that send it fail \
              (typically HTTP 401). Phantom proxies only its built-in providers \
-             (phantom_status lists the configured routes). Whether this key should stay \
+             (`phantom status`, or phantom_status over MCP, lists the configured routes). Whether this key should stay \
              protected is the user's decision in a trusted terminal."
         )),
         ExecDelivery::ConnectionStringRefused { .. } => Some(format!(
