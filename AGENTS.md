@@ -143,7 +143,7 @@ brew install ashlrai/phantom/phantom
 # https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.9
 
 phantom init                            # Protect .env secrets
-phantom setup --client claude           # Wire MCP into Claude Code (or cursor|windsurf|codex)
+phantom setup --client claude           # Wire MCP into Claude Code (or cursor|windsurf|codex|gemini)
 phantom exec -- claude                  # Run Claude Code with proxy
 phantom sync --platform vercel          # Push secrets to deployment
 # The following hosted flows require a separately commissioned Phantom Cloud

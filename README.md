@@ -420,7 +420,7 @@ dashboard is designed to show team memberships and member lists.
 | `phantom check` | Scan for unprotected secrets (pre-commit hook, `--staged`, `--runtime`) |
 | `phantom sync` | Push secrets to Vercel / Railway (`--dry-run --json` previews safely; `--only PATTERN` filters by glob, repeatable) |
 | `phantom pull` | Pull secrets from Vercel / Railway into vault |
-| `phantom setup` | Wire Phantom into an AI client. `--client claude` (default), `cursor`, `windsurf`, or `codex`. Add `--print` to emit the config snippet to stdout. `--status` is read-only: it reports which clients (including Gemini CLI) have Phantom wired (`--json` for automation) |
+| `phantom setup` | Wire Phantom into an AI client. `--client claude` (default), `cursor`, `windsurf`, `codex`, or `gemini`. Add `--print` to emit the config snippet to stdout. `--status` is read-only: it reports which clients have Phantom wired (`--json` for automation) |
 | `phantom mcp serve` | Run the MCP stdio server in-process; this is the entry `phantom setup` writes into AI-client configs |
 | `phantom mcp-approve <NONCE>` | From an attached trusted terminal, review the bounded value-blind effect and exact parameters for a pending MCP nonce, type its fresh challenge, and receive the one-use `approval_token` |
 | `phantom env` | Generate `.env.example` for team onboarding |
@@ -583,7 +583,7 @@ and verified through its tap, and currently remains at `v0.7.8`.
 ### Connect an MCP client
 
 ```bash
-$ phantom setup --client claude   # or cursor, windsurf, codex
+$ phantom setup --client claude   # or cursor, windsurf, codex, gemini
 ```
 
 ## Architecture
