@@ -122,6 +122,9 @@ pub fn build_report(project_dir: &Path, options: AgentReadinessOptions) -> Agent
     let env_files = discover_env_files(project_dir);
     files.extend(env_files.iter().map(|p| rel(project_dir, p)));
     let mut unprotected = Vec::new();
+    // Keys holding a phantom token in a readable dotenv: the same notion of
+    // "protected" `phantom exec` uses when it decides whether to start.
+    let mut protected_keys = std::collections::HashSet::new();
     // Dotenv files reported below as unreadable (the resolver could not read
     // them either) and as malformed (readable, so the resolver can still pick
     // one), by name relative to the project.
@@ -153,6 +156,13 @@ pub fn build_report(project_dir: &Path, options: AgentReadinessOptions) -> Agent
                 for entry in dotenv.real_secret_entries() {
                     unprotected.push((path.clone(), entry.key.clone()));
                 }
+                protected_keys.extend(
+                    dotenv
+                        .entries()
+                        .into_iter()
+                        .filter(|entry| crate::token::PhantomToken::is_phantom_token(&entry.value))
+                        .map(|entry| entry.key.clone()),
+                );
             }
             Err(err) => {
                 unreadable_dotenvs.push(rel(project_dir, path));
@@ -209,6 +219,31 @@ pub fn build_report(project_dir: &Path, options: AgentReadinessOptions) -> Agent
         has_wrapped_scripts: package_has_wrapped_scripts(&package_json),
         has_precommit,
     };
+
+    // `phantom exec` refuses to start for every key while a connection string
+    // is protected (or a route is blocked). Report it here, value-free, so a
+    // protected project is not read as ready for `phantom exec`.
+    if let Some(blocker) = config
+        .as_ref()
+        .and_then(|c| c.exec_blocker(|name| protected_keys.contains(name)))
+    {
+        let key = blocker.key();
+        push_finding(
+            &mut findings,
+            &mut fixes,
+            &mut commands,
+            FindingSpec::new(
+                "exec-blocked",
+                FindingSeverity::Warning,
+                crate::why::blocked_next_step(&blocker),
+                match key {
+                    Some(key) => format!("phantom why {key}"),
+                    None => "phantom why <KEY>".to_string(),
+                },
+            )
+            .file(".phantom.toml"),
+        );
+    }
 
     if let Some(error) = precommit_error {
         push_finding(
@@ -838,6 +873,51 @@ mod tests {
         assert!(!refused
             .message
             .contains(&outside.path().display().to_string()));
+    }
+
+    fn init_protected_project(dir: &Path, env: &str) {
+        let config = PhantomConfig::new_with_defaults(PhantomConfig::project_id_from_path(
+            &std::fs::canonicalize(dir).unwrap(),
+        ));
+        assert!(config.services.contains_key("database"));
+        std::fs::write(
+            dir.join(".phantom.toml"),
+            toml::to_string_pretty(&config).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(dir.join(".env"), env).unwrap();
+    }
+
+    #[test]
+    fn protected_connection_string_is_reported_as_blocking_exec() {
+        let dir = TempDir::new().unwrap();
+        init_protected_project(
+            dir.path(),
+            "DATABASE_URL=phm_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n",
+        );
+
+        let report = build_report(dir.path(), no_vault());
+
+        let finding = report
+            .findings
+            .iter()
+            .find(|f| f.id == "exec-blocked")
+            .expect("doctor reports that exec is blocked");
+        assert_eq!(finding.severity, FindingSeverity::Warning);
+        assert!(finding.message.contains("DATABASE_URL"));
+        assert!(finding.message.contains("outside `phantom exec`"));
+        assert_eq!(finding.command.as_deref(), Some("phantom why DATABASE_URL"));
+        assert_ne!(report.status, ReadinessStatus::Verified);
+    }
+
+    #[test]
+    fn unprotected_connection_string_key_does_not_report_exec_blocked() {
+        let dir = TempDir::new().unwrap();
+        init_protected_project(dir.path(), "OPENAI_API_KEY=phm_test\n");
+
+        let report = build_report(dir.path(), no_vault());
+
+        assert!(!report.findings.iter().any(|f| f.id == "exec-blocked"));
     }
 
     #[test]
