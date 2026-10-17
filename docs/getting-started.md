@@ -215,7 +215,12 @@ phantom remove STRIPE_SECRET_KEY
 `add` creates a new protected name, stores its value, and writes a phantom token
 to `.env`. It prompts silently so the secret never enters shell history or the
 process list. Positional secret values are rejected; use `--stdin` only with a
-trusted producer. An existing protected name is denied from value-blind vault
+trusted producer. `--stdin` reads up to EOF (trailing newlines are dropped, 64 KiB
+cap) and is refused when stdin is a terminal. Input with more than one line is
+refused before anything is stored unless you say what to keep: `--multiline`
+stores every line (a PEM key, a JSON document), `--first-line` stores only line 1
+(`pass show svc/api | phantom add API_KEY --stdin --first-line`, since pass and
+gopass put metadata after the key). An existing protected name is denied from value-blind vault
 metadata before Phantom reads the prompt or stdin. `add` never replaces it.
 `remove` requires attached stdin/stdout/stderr plus an exact typed challenge,
 then transactionally removes the vault value, lifecycle config, and exact
