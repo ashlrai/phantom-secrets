@@ -15,8 +15,15 @@ use tempfile::TempDir;
 /// What `128 + SIGPIPE` reads as in a shell; Phantom exits with it on EPIPE.
 const BROKEN_PIPE_EXIT: i32 = 141;
 
-/// Commands that print to stdout and exit 0 in a project with no secrets,
-/// without opening a vault.
+/// Passphrase for the encrypted-file vault the commands run against. `list`
+/// opens the project vault, and without this the OS keychain is used: with
+/// `HOME` pointed at the temp dir, macOS has no default keychain there (it is
+/// found through `$HOME/Library`), so `list` failed before printing anything.
+/// The file vault behaves the same on every platform and never touches the
+/// developer's real keychain.
+const TEST_VAULT_PASS: &str = "broken-pipe-test-vault";
+
+/// Commands that print to stdout and exit 0 in a project with no secrets.
 const COMMANDS: &[&[&str]] = &[
     &["doctor"],
     &["status"],
@@ -46,6 +53,8 @@ fn phantom(dir: &TempDir, args: &[&str]) -> Command {
     cmd.args(args)
         .current_dir(dir.path())
         .env("HOME", dir.path())
+        .env("PHANTOM_VAULT_PASSPHRASE", TEST_VAULT_PASS)
+        .env_remove("PHANTOM_REQUIRE_KEYCHAIN")
         .env_remove("PHANTOM_AUDIT")
         .stdin(Stdio::null())
         .stderr(Stdio::piped());
