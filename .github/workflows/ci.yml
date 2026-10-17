@@ -21,6 +21,13 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # Test and check builds keep file:line debug info (enough for panics and
+  # backtraces) instead of full debug info. Measured on the workspace: the
+  # target dir drops from 7.4 GB to 3.5 GB (less rust-cache to restore and
+  # save) and a workspace rebuild over cached deps from 52s to 41s on Linux;
+  # linking is the larger share on Windows and macOS. Release builds are
+  # configured separately and are unaffected.
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
   PHANTOM_NPM_AUDIT_VERSION: 11.15.0
 
 jobs:
@@ -55,8 +62,9 @@ jobs:
           docs='^(docs/|[^/]*\.md$|.*/README\.md$|LICENSE|\.github/ISSUE_TEMPLATE/|\.github/PULL_REQUEST_TEMPLATE)'
           web='^(apps/web/|scripts/supabase/|scripts/seo/|\.github/workflows/)'
           # Rust/CLI suites: anything that is neither docs nor web-only nor the video sandbox.
+          # scripts/supabase and scripts/seo are exercised only by the web job.
           rust=false; webc=false
-          if printf '%s\n' "$files" | grep -Ev "$docs" | grep -Ev '^(apps/web/|video/)' | grep -q .; then rust=true; fi
+          if printf '%s\n' "$files" | grep -Ev "$docs" | grep -Ev '^(apps/web/|scripts/supabase/|scripts/seo/|video/)' | grep -q .; then rust=true; fi
           if printf '%s\n' "$files" | grep -Eq '^\.github/workflows/'; then rust=true; fi
           if printf '%s\n' "$files" | grep -Eq "$web"; then webc=true; fi
           echo "rust=$rust" >> "$GITHUB_OUTPUT"; echo "web=$webc" >> "$GITHUB_OUTPUT"
@@ -262,6 +270,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (2026-04-24)
         with:
           toolchain: 1.95.0
+      # This job compiled every dependency from scratch on each run (~2.5 min).
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
       - name: Verify native host and check the workspace
         shell: pwsh
         run: |
