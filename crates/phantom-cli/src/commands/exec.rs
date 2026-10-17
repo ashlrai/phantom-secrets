@@ -369,7 +369,7 @@ async fn run_async(cmd: &[String], env_flag: Option<&str>, quiet: bool) -> Resul
         // it stays a finding (the warning above names it too).
         .env(
             phantom_core::report::SESSION_KEYS_VAR,
-            routed_session_key_names(session_names.iter(), &unrouted),
+            routed_session_variable_list(session_names.iter(), &unrouted),
         )
         // A protected dotenv key may itself have this reserved name. Never
         // reintroduce either the real vault passphrase or a confusing session
@@ -493,19 +493,19 @@ fn sanitized_child_command(
 
 /// The comma-separated, sorted variable names a session fills with its own
 /// phantom tokens, for [`phantom_core::report::SESSION_KEYS_VAR`].
-pub(crate) fn session_key_names<'a>(names: impl Iterator<Item = &'a String>) -> String {
+pub(crate) fn session_variable_list<'a>(names: impl Iterator<Item = &'a String>) -> String {
     let mut names: Vec<&str> = names.map(String::as_str).collect();
     names.sort_unstable();
     names.dedup();
     names.join(",")
 }
 
-/// [`session_key_names`] without the keys no route serves.
-fn routed_session_key_names<'a>(
+/// [`session_variable_list`] without the keys no route serves.
+fn routed_session_variable_list<'a>(
     names: impl Iterator<Item = &'a String>,
     unrouted: &[String],
 ) -> String {
-    session_key_names(names.filter(|name| !unrouted.contains(name)))
+    session_variable_list(names.filter(|name| !unrouted.contains(name)))
 }
 
 fn child_environment_policy(
@@ -862,17 +862,17 @@ mod tests {
     }
 
     #[test]
-    fn session_key_names_are_sorted_unique_names() {
+    fn session_variable_list_is_sorted_and_unique() {
         let names = ["OPENAI_API_KEY", "DATABASE_URL", "OPENAI_API_KEY"].map(String::from);
         assert_eq!(
-            session_key_names(names.iter()),
+            session_variable_list(names.iter()),
             "DATABASE_URL,OPENAI_API_KEY"
         );
-        assert_eq!(session_key_names(std::iter::empty()), "");
+        assert_eq!(session_variable_list(std::iter::empty()), "");
     }
 
     #[test]
-    fn session_key_names_leave_out_unrouted_keys() {
+    fn session_variable_list_leaves_out_unrouted_names() {
         let mut registry = ServiceRegistry::new();
         registry.add_route(phantom_proxy::ServiceRoute {
             name: "openai".to_string(),
@@ -887,7 +887,7 @@ mod tests {
         let unrouted = unrouted_session_keys(&registry, keys.iter());
         assert_eq!(unrouted, ["LEGACY_SERVICE_KEY"]);
         assert_eq!(
-            routed_session_key_names(keys.iter(), &unrouted),
+            routed_session_variable_list(keys.iter(), &unrouted),
             "OPENAI_API_KEY"
         );
     }

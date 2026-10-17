@@ -300,7 +300,7 @@ async fn run_async() -> Result<()> {
         format_export(
             syntax,
             phantom_core::report::SESSION_KEYS_VAR,
-            &super::exec::session_key_names(session_names.iter()),
+            &super::exec::session_variable_list(session_names.iter()),
         )
     );
     if header_auth_only {
