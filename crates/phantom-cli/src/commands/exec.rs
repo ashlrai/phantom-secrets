@@ -428,6 +428,7 @@ fn retrieve_required_secret(
                 "Protected dotenv key '{bare}' has no vault entry for environment '{active_env}'"
             ),
             "refusing to launch the child",
+            active_env == DEFAULT_ENV,
         )
     };
     match vault.retrieve_for_injection(namespaced) {
@@ -717,6 +718,25 @@ mod tests {
 
         assert!(error.contains("has no vault entry"));
         assert!(error.contains("refusing to launch the child"));
+        assert!(error.contains("`phantom add API_KEY`"), "{error}");
+    }
+
+    /// `phantom add` stores the default environment only, so another
+    /// environment's refusal must not send the user there.
+    #[test]
+    fn exec_missing_entry_outside_the_default_env_has_no_add_hint() {
+        let error = retrieve_required_secret(
+            &MissingVault,
+            "exec-fixture",
+            "staging/API_KEY",
+            "API_KEY",
+            "staging",
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("for environment 'staging'"), "{error}");
+        assert!(!error.contains("phantom add"), "{error}");
     }
 
     /// With the secrets in an encrypted-file vault this process cannot open,
