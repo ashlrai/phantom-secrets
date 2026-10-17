@@ -93,7 +93,7 @@ for the canonical catalog.
 
 Tools most relevant to Codex task execution:
 
-- `phantom_status` — check project config and managed `.env` state before a task starts (it does not open the vault)
+- `phantom_status` — check `.env` protection and service mappings before a task starts (does not open the vault)
 - `phantom_list_secrets` — let Codex know which secrets exist without exposing values
 - `phantom_add_secret_interactive` — return the terminal command to enter a secret out-of-band; useful when Codex identifies a missing key mid-task
 - `phantom_check` — scan `.env` or runtime environment for unprotected secrets
