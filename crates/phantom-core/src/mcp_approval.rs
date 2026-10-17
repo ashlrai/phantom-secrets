@@ -1067,6 +1067,50 @@ pub fn list_pending_approvals() -> std::io::Result<Vec<ApprovalRecord>> {
         .collect())
 }
 
+/// Value-free view of one approval record: no nonce, argument hash, or
+/// parameter summary.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ApprovalStatusEntry {
+    pub tool_name: String,
+    pub project_id: String,
+    pub created_at: u64,
+    pub expires_at: Option<u64>,
+    pub approved: bool,
+    pub approved_at: Option<u64>,
+    pub expired: bool,
+}
+
+/// Read-only snapshot for status displays. Unlike [`list_pending_approvals`]
+/// this takes no storage lock and creates no directory or lock file, so it
+/// writes nothing even on a machine that has never used MCP approvals. Writers
+/// replace the file atomically, so an unlocked read sees a whole file.
+pub fn read_approval_status() -> std::io::Result<Vec<ApprovalStatusEntry>> {
+    let path = approvals_path()?;
+    let records = load_records_if_present(&path)?;
+    Ok(records
+        .into_iter()
+        .map(|r| ApprovalStatusEntry {
+            expired: r.is_expired(),
+            tool_name: r.tool_name,
+            project_id: r.project_id,
+            created_at: r.created_at,
+            expires_at: r.expires_at,
+            approved: r.approved,
+            approved_at: r.approved_at,
+        })
+        .collect())
+}
+
+/// Whether the approval HMAC key file exists. The key is never read.
+pub fn approval_key_present() -> std::io::Result<bool> {
+    let path = approval_key_path()?;
+    match std::fs::symlink_metadata(&path) {
+        Ok(m) => Ok(m.is_file()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
 /// Prune expired and consumed records from the approvals file.
 pub fn prune_stale_approvals() -> std::io::Result<usize> {
     let _lock = acquire_storage_lock()?;
