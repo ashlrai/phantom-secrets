@@ -98,6 +98,7 @@ merges its MCP entry, but it is not a general client-configuration manager.
 ```bash
 phantom agent doctor
 phantom agent report --json
+phantom agent status --json   # read-only MCP approval counts; no nonces or values
 ```
 
 Resolve critical findings before continuing. The JSON report can return
