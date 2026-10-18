@@ -5,6 +5,7 @@ pub mod check;
 pub mod cloud;
 pub mod completion;
 pub mod copy;
+pub mod crypto;
 pub mod doctor;
 pub mod env;
 pub mod env_scope;

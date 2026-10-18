@@ -16,6 +16,18 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   `phantom_cloud_status` also gives the HTTP status, using the classifier now
   in `phantom-secrets-core`.
 
+### Fixed (cloud vault key and team keypair)
+
+- Any failure to read the cloud vault key from the OS keychain (a locked or
+  unreachable keychain, an access denial, an undecodable value) was treated as
+  "no key yet", so `phantom cloud push`/`pull` and the matching MCP tools
+  generated a fresh key and overwrote the stored one, leaving every vault
+  already pushed under it undecryptable. The team-vault keypair had the same
+  flaw and could overwrite the private key that existing team key shares are
+  encrypted to. A new key or keypair is now created only when the keychain
+  reports no entry; any other read failure is returned as an error and the
+  stored key is left untouched.
+
 ### Added (`phantom doctor --pq`)
 
 - `phantom doctor --pq` (with optional `--json`) prints a read-only,
@@ -24,6 +36,14 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   resistant at their current 256-bit key size, and the state of the
   experimental, unaudited `pq-hybrid` feature. It reads no vault, key, or
   config and needs no project.
+
+### Added (`phantom crypto inventory`)
+
+- `phantom crypto inventory [--format text|json]` lists every algorithm and
+  format tag Phantom names (AEAD, KDF, MAC, KEM, signature), with its status
+  (default, experimental) and quantum class (vulnerable, resistant, hybrid),
+  from the crypto-agility registry. It reads no vault, key, or config and
+  needs no project. The JSON is Phantom's own shape, not a CycloneDX CBOM.
 
 ### Fixed (MCP `phantom_cloud_status`)
 
