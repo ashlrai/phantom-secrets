@@ -4,6 +4,21 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (MCP `phantom_cloud_status`)
+
+- A `.phantom.toml` that existed but could not be read or parsed was treated
+  as no config, so the tool silently omitted the last synced version. It now
+  says the config could not be loaded, that the local sync state is unknown,
+  and how to recover. A missing config still reports nothing. A partial cloud
+  reconciliation (blocked `phantom_cloud_push`) is now reported too, matching
+  `phantom cloud status`.
+- Any account lookup failure, including a network failure, a 5xx response or
+  an unparseable reply, was reported as "token expired, run `phantom login`".
+  Only an authentication rejection (HTTP 401) is reported that way now; other
+  failures say the account status could not be checked and give the failure
+  class (could not reach Phantom Cloud, server error with its HTTP status, and
+  so on).
+
 ### Fixed (`phantom doctor` Claude Code settings check)
 
 - A `.claude/settings.local.json` that exists but is not valid JSON was

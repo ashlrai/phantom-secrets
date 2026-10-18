@@ -3017,31 +3017,13 @@ impl PhantomMcpServer {
             .map_err(|e| internal_err(format!("Invalid cloud API URL: {e}")))?;
 
         let status = match phantom_core::auth::load_token() {
-            Some(token) => match phantom_core::auth::get_user_info(&api_base, &token).await {
-                Ok(user) => {
-                    let mut s =
-                        format!("Cloud: logged in as @{} ({})", user.github_login, user.plan);
-                    if let Some(count) = user.vaults_count {
-                        s.push_str(&format!("\nVaults: {count}"));
-                    }
-                    s
-                }
-                Err(_) => {
-                    "Cloud: token expired. Run `phantom login` to re-authenticate.".to_string()
-                }
-            },
+            Some(token) => cloud_account_status_text(
+                phantom_core::auth::get_user_info(&api_base, &token).await,
+            ),
             None => "Cloud: not logged in. Run `phantom login` to enable cloud sync.".to_string(),
         };
 
-        let config_status = if let Ok(config) = self.load_config() {
-            if let Some(cloud) = &config.cloud {
-                format!("\nLast synced version: {}", cloud.version)
-            } else {
-                "\nNo cloud sync history for this project.".to_string()
-            }
-        } else {
-            String::new()
-        };
+        let config_status = local_cloud_sync_status_text(&self.config_path());
 
         text_result(format!("{status}{config_status}"))
     }
@@ -6930,9 +6912,178 @@ fn audit_recent_report(
     out
 }
 
+/// The account line `phantom_cloud_status` reports for an account lookup.
+fn cloud_account_status_text(
+    lookup: phantom_core::error::Result<phantom_core::auth::UserInfo>,
+) -> String {
+    match lookup {
+        Ok(user) => {
+            let mut s = format!("Cloud: logged in as @{} ({})", user.github_login, user.plan);
+            if let Some(count) = user.vaults_count {
+                s.push_str(&format!("\nVaults: {count}"));
+            }
+            s
+        }
+        Err(phantom_core::error::PhantomError::AuthRequired) => {
+            "Cloud: token expired. Run `phantom login` to re-authenticate.".to_string()
+        }
+        Err(error) => format!(
+            "Cloud: could not check account status ({}). The stored login was not rejected; \
+             check the network connection and the cloud API URL, then retry.",
+            cloud_lookup_failure_class(&error)
+        ),
+    }
+}
+
+/// A short, value-free class for an account lookup failure that is not an
+/// auth rejection, so a network or server fault is not reported as an
+/// expired login.
+fn cloud_lookup_failure_class(error: &phantom_core::error::PhantomError) -> String {
+    use phantom_core::error::PhantomError;
+    match error {
+        PhantomError::AuthError(_) => "could not reach Phantom Cloud".to_string(),
+        PhantomError::CloudError { status: 0, .. } => {
+            "could not reach Phantom Cloud: HTTP client unavailable".to_string()
+        }
+        PhantomError::CloudError { status, .. } if (200..300).contains(status) => {
+            format!("unexpected response from Phantom Cloud, HTTP {status}")
+        }
+        PhantomError::CloudError { status, .. } if *status >= 500 => {
+            format!("Phantom Cloud server error, HTTP {status}")
+        }
+        PhantomError::CloudError { status, .. } => {
+            format!("Phantom Cloud refused the request, HTTP {status}")
+        }
+        _ => "Phantom Cloud request failed".to_string(),
+    }
+}
+
+/// The local `.phantom.toml` sync lines `phantom_cloud_status` reports. A
+/// missing config reports nothing; a config that exists but cannot be read or
+/// parsed is reported, because its sync version and any blocked push are
+/// unknown rather than absent.
+fn local_cloud_sync_status_text(config_path: &Path) -> String {
+    let config = match PhantomConfig::load(config_path) {
+        Ok(config) => config,
+        Err(phantom_core::error::PhantomError::ConfigNotFound(_)) => return String::new(),
+        Err(_) => {
+            return "\n.phantom.toml exists but could not be loaded; last synced version and \
+                    reconciliation state are unknown. Run phantom_doctor (it does not open the \
+                    vault) to see the failing check, fix or restore .phantom.toml (for example \
+                    from version control), then retry."
+                .to_string()
+        }
+    };
+    let Some(cloud) = &config.cloud else {
+        return "\nNo cloud sync history for this project.".to_string();
+    };
+    let mut text = format!("\nLast synced version: {}", cloud.version);
+    if cloud.reconciliation_required {
+        let remote = cloud
+            .reconciliation_remote_version
+            .map_or_else(|| "unknown".to_string(), |version| version.to_string());
+        text.push_str(&format!(
+            "\nPartial reconciliation with remote version {remote}; cloud push is blocked until \
+             every remote secret is reconciled."
+        ));
+    }
+    text
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn cloud_user(login: &str) -> phantom_core::auth::UserInfo {
+        phantom_core::auth::UserInfo {
+            email: None,
+            github_login: login.to_string(),
+            plan: "free".to_string(),
+            vaults_count: Some(2),
+        }
+    }
+
+    #[test]
+    fn cloud_status_reports_expired_login_only_for_auth_required() {
+        let ok = cloud_account_status_text(Ok(cloud_user("octo")));
+        assert!(ok.contains("logged in as @octo (free)"));
+        assert!(ok.contains("Vaults: 2"));
+
+        let expired =
+            cloud_account_status_text(Err(phantom_core::error::PhantomError::AuthRequired));
+        assert!(expired.contains("phantom login"));
+        assert!(expired.contains("expired"));
+    }
+
+    #[test]
+    fn cloud_status_does_not_blame_the_login_for_network_or_server_errors() {
+        use phantom_core::error::PhantomError;
+        let cases = [
+            (
+                PhantomError::AuthError("Failed to connect to Phantom Cloud".to_string()),
+                "could not reach Phantom Cloud",
+            ),
+            (
+                PhantomError::CloudError {
+                    status: 503,
+                    message: "Phantom Cloud account lookup: Phantom Cloud rejected the request"
+                        .to_string(),
+                },
+                "HTTP 503",
+            ),
+            (
+                PhantomError::CloudError {
+                    status: 200,
+                    message: "Phantom Cloud account lookup: response was invalid JSON".to_string(),
+                },
+                "unexpected response",
+            ),
+        ];
+        for (error, expected) in cases {
+            let text = cloud_account_status_text(Err(error));
+            assert!(
+                !text.contains("expired"),
+                "non-auth failure reported as expired login"
+            );
+            assert!(
+                !text.contains("phantom login"),
+                "non-auth failure told to log in again"
+            );
+            assert!(
+                text.contains("could not check"),
+                "missing could-not-check wording"
+            );
+            assert!(text.contains(expected), "missing error class: {expected}");
+        }
+    }
+
+    #[test]
+    fn cloud_status_local_sync_lines_split_missing_from_broken_config() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(".phantom.toml");
+
+        assert_eq!(local_cloud_sync_status_text(&path), "");
+
+        std::fs::write(&path, "this is = = not toml [").unwrap();
+        let broken = local_cloud_sync_status_text(&path);
+        assert!(broken.contains("could not be loaded"));
+        assert!(broken.contains("unknown"));
+        assert!(broken.contains("phantom_doctor"));
+
+        let mut config = PhantomConfig::new_with_defaults("cloud-status-test".to_string());
+        config.save(&path).unwrap();
+        assert!(local_cloud_sync_status_text(&path).contains("No cloud sync history"));
+
+        let cloud = config.cloud.get_or_insert_default();
+        cloud.version = 7;
+        cloud.reconciliation_required = true;
+        cloud.reconciliation_remote_version = Some(9);
+        config.save(&path).unwrap();
+        let synced = local_cloud_sync_status_text(&path);
+        assert!(synced.contains("Last synced version: 7"));
+        assert!(synced.contains("remote version 9"));
+        assert!(synced.contains("push is blocked"));
+    }
 
     #[test]
     fn initialize_reports_phantom_identity_not_the_sdk() {
