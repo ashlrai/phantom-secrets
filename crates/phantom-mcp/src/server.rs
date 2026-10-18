@@ -3582,7 +3582,10 @@ impl PhantomMcpServer {
             explanation). Secret VALUES are never returned. Read-only; no confirm required. \
             Anomaly types: 'spike' = single day >3x daily average; \
             'dormant' = access after >=7 consecutive quiet days. \
-            Use min_score to filter (default 0.4). Use period to limit the window.")]
+            Use min_score to filter (default 0.4). Use period to limit the window. \
+            findings holds the highest-scoring max_records (default 1000, max 10000) within a \
+            1 MiB response: total_findings counts every match, findings_returned the listed \
+            ones, and records_truncated is true when some were left out.")]
     fn phantom_audit_anomalies(
         &self,
         Parameters(params): Parameters<AuditAnomaliesParams>,
@@ -3647,15 +3650,21 @@ impl PhantomMcpServer {
             })
             .collect();
 
-        let out = serde_json::json!({
+        // Already highest score first: the cut keeps the strongest findings.
+        let base = serde_json::json!({
             "generated_at": report.generated_at,
             "period": params.period,
             "min_score": min_score,
-            "findings": findings,
             "total_findings": findings.len(),
         });
 
-        json_object_result(&out)
+        bounded_lists_result(
+            base,
+            &[("findings", &findings)],
+            mcp_max_records(params.max_records),
+            MCP_ANALYTICS_MAX_BYTES,
+            "Narrow period or raise min_score.",
+        )
     }
 
     /// Real-time windowed anomaly check — safe for AI agent polling.
@@ -3670,7 +3679,10 @@ impl PhantomMcpServer {
             max_quiet_gap_days. Secret VALUES are never returned. Read-only; no confirm required. \
             Use threshold (default 0.5) to filter results. Pass name to check a single secret. \
             Per-secret overrides from .phantom.toml [phantom.secrets.{name}.audit] are respected \
-            when max_accesses_per_hour / max_consecutive_quiet_days are omitted."
+            when max_accesses_per_hour / max_consecutive_quiet_days are omitted. \
+            findings holds the highest-scoring max_records (default 1000, max 10000) within a \
+            1 MiB response: total_findings counts every match, findings_returned the listed \
+            ones, and records_truncated is true when some were left out."
     )]
     fn phantom_audit_anomalies_realtime(
         &self,
@@ -3718,15 +3730,21 @@ impl PhantomMcpServer {
             .map(|d| d.as_secs())
             .unwrap_or(0);
 
-        let out = serde_json::json!({
+        // Already highest score first: the cut keeps the strongest findings.
+        let base = serde_json::json!({
             "checked_at": phantom_core::analytics::unix_to_iso8601(now_ts),
             "threshold": threshold,
             "name_filter": params.name,
-            "findings": findings,
             "total_findings": findings.len(),
         });
 
-        json_object_result(&out)
+        bounded_lists_result(
+            base,
+            &[("findings", &findings)],
+            mcp_max_records(params.max_records),
+            MCP_ANALYTICS_MAX_BYTES,
+            "Raise threshold or pass name.",
+        )
     }
 
     /// Hotspot alert inspection and acknowledgement tool.
@@ -3743,7 +3761,11 @@ impl PhantomMcpServer {
             Set snooze_seconds>0 with ack=true to snooze instead of fully acknowledging. \
             Pass include_acked=true to also return already-acknowledged or snoozed alerts. \
             Use secret_name to filter to a specific secret. Read-only when ack=false; \
-            ack=true persists acknowledgement state and requires confirm plus approval_token."
+            ack=true persists acknowledgement state and requires confirm plus approval_token. \
+            alerts lists at most 10000 (unacked first, then fastest) within a 1 MiB response: \
+            total_alerts counts every match, alerts_returned the listed ones, and \
+            records_truncated is true when some were left out; ack=true acknowledges every \
+            matching alert, listed or not."
     )]
     fn phantom_audit_hotspot_alerts(
         &self,
@@ -3822,15 +3844,22 @@ impl PhantomMcpServer {
             })
             .collect();
 
-        let out = serde_json::json!({
+        // Unacked first, then fastest: the cut keeps the most urgent alerts.
+        // ack=true above acknowledged every matching alert, listed or not.
+        let base = serde_json::json!({
             "generated_at": phantom_core::analytics::unix_to_iso8601(now_ts),
             "total_alerts": alert_records.len(),
             "ack_performed": params.ack,
             "snooze_seconds": params.snooze_seconds,
-            "alerts": alert_records,
         });
 
-        json_object_result(&out)
+        bounded_lists_result(
+            base,
+            &[("alerts", &alert_records)],
+            MCP_ANALYTICS_MAX_RECORDS,
+            MCP_ANALYTICS_MAX_BYTES,
+            "Pass secret_name, or omit include_acked.",
+        )
     }
 
     /// Full audit analytics export for external dashboards (Datadog, Grafana, CloudWatch).
@@ -3980,6 +4009,10 @@ impl PhantomMcpServer {
             uncorrelated_incidents (uncorrelated_count), with a next_step; treat them as possible leaks. \
             Always returns JSON {incident_count, min_confidence, incidents, uncorrelated_count, \
             uncorrelated_incidents, audit_log_present, next_step} (also as structuredContent). \
+            Each list holds at most max_records (default 1000, max 10000), most confident first, \
+            within a 1 MiB response: incident_count and uncorrelated_count stay exact, \
+            incidents_returned and uncorrelated_incidents_returned count the listed entries, and \
+            records_truncated is true when some were left out. \
             Read-only: it never writes incident or alert state."
     )]
     fn phantom_audit_incidents(
@@ -3993,18 +4026,27 @@ impl PhantomMcpServer {
             .map_err(|e| internal_err(format!("Cannot initialise leak correlation engine: {e}")))?;
 
         let view = leak_incident_view(&engine, params.min_confidence)?;
+        let incidents = ranked_incidents(&view.persisted)?;
+        let uncorrelated = ranked_incidents(&view.uncorrelated)?;
 
-        let out = serde_json::json!({
-            "incident_count": view.persisted.len(),
+        let base = serde_json::json!({
+            "incident_count": incidents.len(),
             "min_confidence": params.min_confidence,
-            "incidents": view.persisted,
-            "uncorrelated_count": view.uncorrelated.len(),
-            "uncorrelated_incidents": view.uncorrelated,
+            "uncorrelated_count": uncorrelated.len(),
             "audit_log_present": view.audit_log_present,
             "next_step": view.next_step(),
         });
 
-        json_object_result(&out)
+        bounded_lists_result(
+            base,
+            &[
+                ("incidents", &incidents),
+                ("uncorrelated_incidents", &uncorrelated),
+            ],
+            mcp_max_records(params.max_records),
+            MCP_ANALYTICS_MAX_BYTES,
+            "Raise min_confidence.",
+        )
     }
 
     /// Real-time leak incident dashboard for AI agents and users.
@@ -4025,6 +4067,10 @@ impl PhantomMcpServer {
             (uncorrelated_count, same entry shape) with a next_step. Always returns JSON \
             {incident_count, min_confidence, effect, rotation_performed, incidents, \
             uncorrelated_count, uncorrelated_incidents, audit_log_present, next_step}. \
+            Each list holds at most max_records (default 1000, max 10000), most confident first, \
+            within a 1 MiB response: incident_count and uncorrelated_count stay exact, \
+            incidents_returned and uncorrelated_incidents_returned count the listed entries, and \
+            records_truncated is true when some were left out. \
             Never rotates, writes incident or alert state, or exposes secret values. \
             Use a separately approved rotation tool to remediate."
     )]
@@ -4044,19 +4090,27 @@ impl PhantomMcpServer {
         let summaries = realtime_incident_summaries(&view.persisted);
         let uncorrelated = realtime_incident_summaries(&view.uncorrelated);
 
-        let out = serde_json::json!({
+        // Most confident first: the cut keeps the strongest incidents.
+        let base = serde_json::json!({
             "incident_count": summaries.len(),
             "min_confidence": params.min_confidence,
             "effect": "read_only",
             "rotation_performed": false,
-            "incidents": summaries,
             "uncorrelated_count": uncorrelated.len(),
-            "uncorrelated_incidents": uncorrelated,
             "audit_log_present": view.audit_log_present,
             "next_step": view.next_step(),
         });
 
-        json_object_result(&out)
+        bounded_lists_result(
+            base,
+            &[
+                ("incidents", &summaries),
+                ("uncorrelated_incidents", &uncorrelated),
+            ],
+            mcp_max_records(params.max_records),
+            MCP_ANALYTICS_MAX_BYTES,
+            "Raise min_confidence.",
+        )
     }
 
     /// Retrieve recent leak-incident alert records for Claude Code dashboards.
@@ -5891,6 +5945,58 @@ impl IncidentNextStep for phantom_core::leak_correlation::IncidentView {
 /// The persisted active incidents and the same 24 h window's leak events
 /// that no backfill has persisted yet, from one parse of the audit log
 /// (correlated in memory, nothing written).
+/// An MCP response holding `base` plus each of `lists`, every list cut to
+/// its first `max_records` entries (callers rank them most relevant first),
+/// and to fewer when the pretty JSON would pass `limit` bytes. Each list
+/// gets `<list>_returned`; `records_truncated` says whether any entry was
+/// left out and `max_records` is the effective cap. `base` carries the
+/// exact totals. `narrow` tells the agent how to shrink an over-limit
+/// response that no longer has entries to drop.
+fn bounded_lists_result(
+    base: serde_json::Value,
+    lists: &[(&str, &[serde_json::Value])],
+    max_records: u32,
+    limit: usize,
+    narrow: &str,
+) -> Result<CallToolResult, McpError> {
+    let longest = lists
+        .iter()
+        .map(|(_, items)| items.len())
+        .max()
+        .unwrap_or(0);
+    let mut keep = longest.min(max_records as usize);
+    loop {
+        let mut out = base.clone();
+        let mut truncated = false;
+        for (name, items) in lists {
+            let returned = items.len().min(keep);
+            truncated |= returned < items.len();
+            out[*name] = serde_json::Value::Array(items[..returned].to_vec());
+            out[format!("{name}_returned")] = returned.into();
+        }
+        out["records_truncated"] = truncated.into();
+        out["max_records"] = max_records.into();
+        let size = serde_json::to_string_pretty(&out)
+            .map_err(|e| internal_err(format!("Serialization error: {e}")))?
+            .len();
+        if size <= limit {
+            return json_object_result(&out);
+        }
+        if keep == 0 {
+            return Err(invalid_params_err(format!(
+                "The response is {size} bytes even with empty lists, over the {limit} byte MCP \
+                 response limit. {narrow}"
+            )));
+        }
+        keep = shrink_to_fit(keep, size, limit);
+    }
+}
+
+/// The effective `max_records` of an MCP list tool.
+fn mcp_max_records(requested: u32) -> u32 {
+    requested.min(MCP_ANALYTICS_MAX_RECORDS)
+}
+
 fn leak_incident_view(
     engine: &phantom_core::leak_correlation::LeakCorrelationEngine,
     min_confidence: f64,
@@ -5898,6 +6004,27 @@ fn leak_incident_view(
     engine
         .incident_view(min_confidence)
         .map_err(|e| internal_err(format!("Failed to read leak incidents: {e}")))
+}
+
+/// `phantom_audit_incidents` entries (no secret values): most confident
+/// first, then most recently seen, then by incident id.
+fn ranked_incidents(
+    incidents: &[phantom_core::leak_correlation::LeakIncident],
+) -> Result<Vec<serde_json::Value>, McpError> {
+    let mut ranked: Vec<&phantom_core::leak_correlation::LeakIncident> = incidents.iter().collect();
+    ranked.sort_by(|a, b| {
+        b.confidence
+            .total_cmp(&a.confidence)
+            .then_with(|| b.last_seen_ts.cmp(&a.last_seen_ts))
+            .then_with(|| a.incident_id.cmp(&b.incident_id))
+    });
+    ranked
+        .into_iter()
+        .map(|incident| {
+            serde_json::to_value(incident)
+                .map_err(|e| internal_err(format!("Serialization error: {e}")))
+        })
+        .collect()
 }
 
 /// Dashboard summaries (no secret values), most confident first.
@@ -11648,6 +11775,7 @@ mod tests {
             .phantom_audit_anomalies(Parameters(AuditAnomaliesParams {
                 period: "all".to_string(),
                 min_score: 0.4,
+                max_records: crate::tools::params::default_analytics_max_records(),
             }))
             .unwrap();
 
@@ -11686,6 +11814,7 @@ mod tests {
             .phantom_audit_anomalies(Parameters(AuditAnomaliesParams {
                 period: "all".to_string(),
                 min_score: 0.4,
+                max_records: crate::tools::params::default_analytics_max_records(),
             }))
             .unwrap();
 
@@ -11729,6 +11858,7 @@ mod tests {
             .phantom_audit_anomalies(Parameters(AuditAnomaliesParams {
                 period: "all".to_string(),
                 min_score: 0.4,
+                max_records: crate::tools::params::default_analytics_max_records(),
             }))
             .unwrap();
 
@@ -11768,6 +11898,7 @@ mod tests {
             .phantom_audit_anomalies(Parameters(AuditAnomaliesParams {
                 period: "all".to_string(),
                 min_score: 0.0,
+                max_records: crate::tools::params::default_analytics_max_records(),
             }))
             .unwrap();
 
@@ -11817,6 +11948,7 @@ mod tests {
             .phantom_audit_anomalies(Parameters(AuditAnomaliesParams {
                 period: "all".to_string(),
                 min_score: 0.9,
+                max_records: crate::tools::params::default_analytics_max_records(),
             }))
             .unwrap();
 
@@ -11836,6 +11968,7 @@ mod tests {
             .phantom_audit_anomalies(Parameters(AuditAnomaliesParams {
                 period: "invalid".to_string(),
                 min_score: 0.4,
+                max_records: crate::tools::params::default_analytics_max_records(),
             }))
             .unwrap_err();
 
@@ -12390,6 +12523,7 @@ mod tests {
                 .phantom_audit_anomalies(Parameters(AuditAnomaliesParams {
                     period: "all".to_string(),
                     min_score: 5.0,
+                    max_records: crate::tools::params::default_analytics_max_records(),
                 }))
                 .unwrap(),
         );
@@ -12399,6 +12533,7 @@ mod tests {
                 .phantom_audit_anomalies(Parameters(AuditAnomaliesParams {
                     period: "all".to_string(),
                     min_score: -2.0,
+                    max_records: crate::tools::params::default_analytics_max_records(),
                 }))
                 .unwrap(),
         );
@@ -12427,6 +12562,7 @@ mod tests {
                 .phantom_audit_anomalies(Parameters(AuditAnomaliesParams {
                     period: "all".to_string(),
                     min_score: f64::NAN,
+                    max_records: crate::tools::params::default_analytics_max_records(),
                 }))
                 .unwrap_err(),
             server
@@ -12441,6 +12577,7 @@ mod tests {
                     threshold: f64::NAN,
                     max_accesses_per_hour: None,
                     max_consecutive_quiet_days: None,
+                    max_records: crate::tools::params::default_analytics_max_records(),
                 }))
                 .unwrap_err(),
         ];
@@ -13021,6 +13158,7 @@ mod tests {
             let err = server
                 .phantom_audit_incidents(Parameters(AuditIncidentsParams {
                     min_confidence: bad,
+                    max_records: crate::tools::params::default_analytics_max_records(),
                 }))
                 .unwrap_err();
             assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
@@ -13032,17 +13170,22 @@ mod tests {
             let err = server
                 .phantom_leak_incidents_realtime(Parameters(LeakIncidentsRealtimeParams {
                     min_confidence: bad,
+                    max_records: crate::tools::params::default_analytics_max_records(),
                 }))
                 .unwrap_err();
             assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
         }
         for ok in [0.0, 0.5, 1.0] {
             assert!(server
-                .phantom_audit_incidents(Parameters(AuditIncidentsParams { min_confidence: ok }))
+                .phantom_audit_incidents(Parameters(AuditIncidentsParams {
+                    min_confidence: ok,
+                    max_records: crate::tools::params::default_analytics_max_records(),
+                }))
                 .is_ok());
             assert!(server
                 .phantom_leak_incidents_realtime(Parameters(LeakIncidentsRealtimeParams {
                     min_confidence: ok,
+                    max_records: crate::tools::params::default_analytics_max_records(),
                 }))
                 .is_ok());
         }
@@ -13079,6 +13222,7 @@ mod tests {
         let result = server
             .phantom_audit_incidents(Parameters(AuditIncidentsParams {
                 min_confidence: 0.5,
+                max_records: crate::tools::params::default_analytics_max_records(),
             }))
             .unwrap();
         let json = parse_result_json(&result);
@@ -13098,6 +13242,7 @@ mod tests {
         let result = server
             .phantom_leak_incidents_realtime(Parameters(LeakIncidentsRealtimeParams {
                 min_confidence: 0.5,
+                max_records: crate::tools::params::default_analytics_max_records(),
             }))
             .unwrap();
         let json = parse_result_json(&result);
@@ -13120,6 +13265,7 @@ mod tests {
             &server
                 .phantom_audit_incidents(Parameters(AuditIncidentsParams {
                     min_confidence: 0.9,
+                    max_records: crate::tools::params::default_analytics_max_records(),
                 }))
                 .unwrap(),
         );
@@ -13141,6 +13287,7 @@ mod tests {
                 &server
                     .phantom_audit_incidents(Parameters(AuditIncidentsParams {
                         min_confidence: 0.7,
+                        max_records: crate::tools::params::default_analytics_max_records(),
                     }))
                     .unwrap(),
             ),
@@ -13148,6 +13295,7 @@ mod tests {
                 &server
                     .phantom_leak_incidents_realtime(Parameters(LeakIncidentsRealtimeParams {
                         min_confidence: 0.5,
+                        max_records: crate::tools::params::default_analytics_max_records(),
                     }))
                     .unwrap(),
             ),
@@ -13160,6 +13308,151 @@ mod tests {
                 .unwrap()
                 .contains("PHANTOM_AUDIT=1"));
         }
+    }
+
+    /// Both incident tools used to list every incident the view held. Each
+    /// list is cut to max_records now, with exact counts beside it.
+    #[test]
+    fn test_incident_tools_cap_lists_and_keep_exact_counts() {
+        let _environment = TestEnvironment::new();
+        let (server, _dir) = setup_initialized_project();
+        let home = canonical_temp_dir();
+        unsafe { std::env::set_var("HOME", home.path()) };
+        let names: Vec<String> = (0..5).map(|i| format!("LEAKED_NAME_{i}")).collect();
+        let names: Vec<&str> = names.iter().map(String::as_str).collect();
+        write_leak_events(home.path(), &names);
+
+        for json in [
+            parse_result_json(
+                &server
+                    .phantom_audit_incidents(Parameters(AuditIncidentsParams {
+                        min_confidence: 0.5,
+                        max_records: 2,
+                    }))
+                    .unwrap(),
+            ),
+            parse_result_json(
+                &server
+                    .phantom_leak_incidents_realtime(Parameters(LeakIncidentsRealtimeParams {
+                        min_confidence: 0.5,
+                        max_records: 2,
+                    }))
+                    .unwrap(),
+            ),
+        ] {
+            assert_eq!(json["uncorrelated_count"], 5);
+            assert_eq!(json["uncorrelated_incidents_returned"], 2);
+            assert_eq!(json["uncorrelated_incidents"].as_array().unwrap().len(), 2);
+            assert_eq!(json["incident_count"], 0);
+            assert_eq!(json["incidents_returned"], 0);
+            assert_eq!(json["records_truncated"], true);
+            assert_eq!(json["max_records"], 2);
+        }
+
+        // Above the hard cap max_records is clamped, and nothing is cut.
+        let json = parse_result_json(
+            &server
+                .phantom_audit_incidents(Parameters(AuditIncidentsParams {
+                    min_confidence: 0.5,
+                    max_records: u32::MAX,
+                }))
+                .unwrap(),
+        );
+        assert_eq!(json["uncorrelated_incidents_returned"], 5);
+        assert_eq!(json["records_truncated"], false);
+        assert_eq!(json["max_records"], MCP_ANALYTICS_MAX_RECORDS);
+    }
+
+    fn numbered_entries(count: usize, pad: usize) -> Vec<serde_json::Value> {
+        (0..count)
+            .map(|i| serde_json::json!({ "id": i, "pad": "p".repeat(pad) }))
+            .collect()
+    }
+
+    fn entry_ids(json: &serde_json::Value, list: &str) -> Vec<u64> {
+        json[list]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["id"].as_u64().unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn bounded_lists_result_caps_each_list_at_max_records() {
+        let first = numbered_entries(5, 0);
+        let second = numbered_entries(1, 0);
+        let result = bounded_lists_result(
+            serde_json::json!({ "first_count": 5 }),
+            &[("first", &first), ("second", &second)],
+            3,
+            MCP_ANALYTICS_MAX_BYTES,
+            "",
+        )
+        .unwrap();
+        let json = parse_result_json(&result);
+        assert_eq!(result.structured_content.as_ref(), Some(&json));
+        assert_eq!(entry_ids(&json, "first"), [0, 1, 2]);
+        assert_eq!(entry_ids(&json, "second"), [0]);
+        assert_eq!(json["first_returned"], 3);
+        assert_eq!(json["second_returned"], 1);
+        assert_eq!(json["first_count"], 5);
+        assert_eq!(json["records_truncated"], true);
+        assert_eq!(json["max_records"], 3);
+    }
+
+    #[test]
+    fn bounded_lists_result_fits_the_byte_limit() {
+        let entries = numbered_entries(100, 100);
+        let limit = 4_096;
+        let result = bounded_lists_result(
+            serde_json::json!({ "total": 100 }),
+            &[("entries", &entries)],
+            MCP_ANALYTICS_MAX_RECORDS,
+            limit,
+            "",
+        )
+        .unwrap();
+        assert!(extract_content_text(&result).len() <= limit);
+        let json = parse_result_json(&result);
+        let ids = entry_ids(&json, "entries");
+        assert!(!ids.is_empty() && ids.len() < 100);
+        // The first (most relevant) entries are the ones kept.
+        assert_eq!(ids, (0..ids.len() as u64).collect::<Vec<_>>());
+        assert_eq!(json["entries_returned"], ids.len());
+        assert_eq!(json["records_truncated"], true);
+    }
+
+    #[test]
+    fn bounded_lists_result_under_the_caps_is_not_truncated() {
+        let entries = numbered_entries(4, 0);
+        let json = parse_result_json(
+            &bounded_lists_result(
+                serde_json::json!({}),
+                &[("entries", &entries)],
+                MCP_ANALYTICS_MAX_RECORDS,
+                MCP_ANALYTICS_MAX_BYTES,
+                "",
+            )
+            .unwrap(),
+        );
+        assert_eq!(entry_ids(&json, "entries"), [0, 1, 2, 3]);
+        assert_eq!(json["entries_returned"], 4);
+        assert_eq!(json["records_truncated"], false);
+    }
+
+    #[test]
+    fn bounded_lists_result_refuses_an_oversized_base() {
+        let entries = numbered_entries(2, 0);
+        let err = bounded_lists_result(
+            serde_json::json!({ "pad": "p".repeat(512) }),
+            &[("entries", &entries)],
+            MCP_ANALYTICS_MAX_RECORDS,
+            256,
+            "Narrow it.",
+        )
+        .unwrap_err();
+        assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
     }
 
     #[test]

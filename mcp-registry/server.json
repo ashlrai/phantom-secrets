@@ -168,10 +168,17 @@
     },
     {
       "name": "phantom_audit_anomalies",
-      "description": "Query the audit log for suspicious access patterns. Returns a findings array where each entry has: name (secret name), anomaly_type (spike | dormant | first_access), anomaly_score (0.0–1.0), access_count, last_access (ISO-8601), daily_avg, and context (human-readable explanation). Secret VALUES are never returned. Read-only; no confirm required. Anomaly types: 'spike' = single day >3x daily average; 'dormant' = access after >=7 consecutive quiet days. Use min_score to filter (default 0.4). Use period to limit the window.",
+      "description": "Query the audit log for suspicious access patterns. Returns a findings array where each entry has: name (secret name), anomaly_type (spike | dormant | first_access), anomaly_score (0.0–1.0), access_count, last_access (ISO-8601), daily_avg, and context (human-readable explanation). Secret VALUES are never returned. Read-only; no confirm required. Anomaly types: 'spike' = single day >3x daily average; 'dormant' = access after >=7 consecutive quiet days. Use min_score to filter (default 0.4). Use period to limit the window. findings holds the highest-scoring max_records (default 1000, max 10000) within a 1 MiB response: total_findings counts every match, findings_returned the listed ones, and records_truncated is true when some were left out.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
+          "max_records": {
+            "default": 1000,
+            "description": "Maximum findings to return, highest scores kept (default: 1000;\nvalues above 10000 are treated as 10000). A 1 MiB response ceiling\nmay return fewer; total_findings stays exact and records_truncated\nthen says so.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
           "min_score": {
             "default": 0.4,
             "description": "Minimum anomaly score to include (0.0–1.0; other values are clamped\ninto it). Defaults to 0.4.",
@@ -189,7 +196,7 @@
     },
     {
       "name": "phantom_audit_anomalies_realtime",
-      "description": "Check whether a secret (or all secrets) has been accessed unusually based on windowed rate and quiet-period analysis of the current audit log. Unlike phantom_audit_anomalies (which uses multi-day daily-bucket statistics), this tool evaluates: (1) accesses within the last rolling hour vs max_accesses_per_hour threshold; (2) re-access after a quiet period longer than max_consecutive_quiet_days. Returns a findings array with fields: name, anomaly_score (0.0–1.0), alert (bool), reason (string), accesses_last_hour, max_quiet_gap_days. Secret VALUES are never returned. Read-only; no confirm required. Use threshold (default 0.5) to filter results. Pass name to check a single secret. Per-secret overrides from .phantom.toml [phantom.secrets.{name}.audit] are respected when max_accesses_per_hour / max_consecutive_quiet_days are omitted.",
+      "description": "Check whether a secret (or all secrets) has been accessed unusually based on windowed rate and quiet-period analysis of the current audit log. Unlike phantom_audit_anomalies (which uses multi-day daily-bucket statistics), this tool evaluates: (1) accesses within the last rolling hour vs max_accesses_per_hour threshold; (2) re-access after a quiet period longer than max_consecutive_quiet_days. Returns a findings array with fields: name, anomaly_score (0.0–1.0), alert (bool), reason (string), accesses_last_hour, max_quiet_gap_days. Secret VALUES are never returned. Read-only; no confirm required. Use threshold (default 0.5) to filter results. Pass name to check a single secret. Per-secret overrides from .phantom.toml [phantom.secrets.{name}.audit] are respected when max_accesses_per_hour / max_consecutive_quiet_days are omitted. findings holds the highest-scoring max_records (default 1000, max 10000) within a 1 MiB response: total_findings counts every match, findings_returned the listed ones, and records_truncated is true when some were left out.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
@@ -212,6 +219,13 @@
               "integer",
               "null"
             ]
+          },
+          "max_records": {
+            "default": 1000,
+            "description": "Maximum findings to return, highest scores kept (default: 1000;\nvalues above 10000 are treated as 10000). A 1 MiB response ceiling\nmay return fewer; total_findings stays exact and records_truncated\nthen says so.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
           },
           "name": {
             "default": null,
@@ -311,7 +325,7 @@
     },
     {
       "name": "phantom_audit_hotspot_alerts",
-      "description": "Inspect per-secret access-velocity spike alerts without manually parsing the audit log. Returns alerts for secrets whose access count in the rolling 24-hour window either (a) exceeds 5× the 7-day mean baseline, or (b) includes a burst of ≥100 accesses within any 5-minute window. Each alert record contains: secret_name, current_velocity (24h count), baseline_velocity (7-day daily mean), alert_level (always 'high'), first_spike_ts (ISO-8601), ack_status ('unacked'|'acked'|'snoozed'), peak_5m_count, and trigger (human-readable description). Secret VALUES are never returned. Set ack=true to acknowledge all returned alerts (removes them from the active list). Set snooze_seconds>0 with ack=true to snooze instead of fully acknowledging. Pass include_acked=true to also return already-acknowledged or snoozed alerts. Use secret_name to filter to a specific secret. Read-only when ack=false; ack=true persists acknowledgement state and requires confirm plus approval_token.",
+      "description": "Inspect per-secret access-velocity spike alerts without manually parsing the audit log. Returns alerts for secrets whose access count in the rolling 24-hour window either (a) exceeds 5× the 7-day mean baseline, or (b) includes a burst of ≥100 accesses within any 5-minute window. Each alert record contains: secret_name, current_velocity (24h count), baseline_velocity (7-day daily mean), alert_level (always 'high'), first_spike_ts (ISO-8601), ack_status ('unacked'|'acked'|'snoozed'), peak_5m_count, and trigger (human-readable description). Secret VALUES are never returned. Set ack=true to acknowledge all returned alerts (removes them from the active list). Set snooze_seconds>0 with ack=true to snooze instead of fully acknowledging. Pass include_acked=true to also return already-acknowledged or snoozed alerts. Use secret_name to filter to a specific secret. Read-only when ack=false; ack=true persists acknowledgement state and requires confirm plus approval_token. alerts lists at most 10000 (unacked first, then fastest) within a 1 MiB response: total_alerts counts every match, alerts_returned the listed ones, and records_truncated is true when some were left out; ack=true acknowledges every matching alert, listed or not.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
@@ -360,10 +374,17 @@
     },
     {
       "name": "phantom_audit_incidents",
-      "description": "Return active leak incidents derived from proxy.response_leak audit events. Incidents are correlated by (secret_name, location) within a 24-hour window. min_confidence (default 0.7) filters by confidence score: 0.5 = single leak event; 0.95 = same secret leaked >3 times within 1 hour. Each incident includes: incident_id, secret_name (never the value), location_label, first_seen_ts, last_seen_ts, event_count, confidence, remediation. Incidents whose secret was subsequently stored are omitted. incidents lists the persisted incident store. The proxy only appends audit events, so leak events from the last 24 h that no backfill has persisted yet are correlated in memory and listed separately in uncorrelated_incidents (uncorrelated_count), with a next_step; treat them as possible leaks. Always returns JSON {incident_count, min_confidence, incidents, uncorrelated_count, uncorrelated_incidents, audit_log_present, next_step} (also as structuredContent). Read-only: it never writes incident or alert state.",
+      "description": "Return active leak incidents derived from proxy.response_leak audit events. Incidents are correlated by (secret_name, location) within a 24-hour window. min_confidence (default 0.7) filters by confidence score: 0.5 = single leak event; 0.95 = same secret leaked >3 times within 1 hour. Each incident includes: incident_id, secret_name (never the value), location_label, first_seen_ts, last_seen_ts, event_count, confidence, remediation. Incidents whose secret was subsequently stored are omitted. incidents lists the persisted incident store. The proxy only appends audit events, so leak events from the last 24 h that no backfill has persisted yet are correlated in memory and listed separately in uncorrelated_incidents (uncorrelated_count), with a next_step; treat them as possible leaks. Always returns JSON {incident_count, min_confidence, incidents, uncorrelated_count, uncorrelated_incidents, audit_log_present, next_step} (also as structuredContent). Each list holds at most max_records (default 1000, max 10000), most confident first, within a 1 MiB response: incident_count and uncorrelated_count stay exact, incidents_returned and uncorrelated_incidents_returned count the listed entries, and records_truncated is true when some were left out. Read-only: it never writes incident or alert state.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
+          "max_records": {
+            "default": 1000,
+            "description": "Maximum entries in each of incidents and uncorrelated_incidents,\nmost confident kept (default: 1000; values above 10000 are treated as\n10000). A 1 MiB response ceiling may return fewer; incident_count and\nuncorrelated_count stay exact and records_truncated then says so.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
           "min_confidence": {
             "default": 0.7,
             "description": "Only return incidents whose confidence score is at or above this value\n(range 0.0–1.0). Defaults to 0.7.",
@@ -848,11 +869,18 @@
     },
     {
       "name": "phantom_leak_incidents_realtime",
-      "description": "Query active leak incidents for a real-time security dashboard. Returns incidents with confidence > 0.5 seen within the last 24 hours, sorted by confidence descending. Each entry contains: secret_name (never the value), location_label, confidence, first_seen (ISO-8601), last_seen (ISO-8601), incident_id. Set min_confidence (default 0.5) to narrow results. incidents lists persisted incidents; leak events from the last 24 h that no backfill has persisted yet are correlated in memory and listed in uncorrelated_incidents (uncorrelated_count, same entry shape) with a next_step. Always returns JSON {incident_count, min_confidence, effect, rotation_performed, incidents, uncorrelated_count, uncorrelated_incidents, audit_log_present, next_step}. Never rotates, writes incident or alert state, or exposes secret values. Use a separately approved rotation tool to remediate.",
+      "description": "Query active leak incidents for a real-time security dashboard. Returns incidents with confidence > 0.5 seen within the last 24 hours, sorted by confidence descending. Each entry contains: secret_name (never the value), location_label, confidence, first_seen (ISO-8601), last_seen (ISO-8601), incident_id. Set min_confidence (default 0.5) to narrow results. incidents lists persisted incidents; leak events from the last 24 h that no backfill has persisted yet are correlated in memory and listed in uncorrelated_incidents (uncorrelated_count, same entry shape) with a next_step. Always returns JSON {incident_count, min_confidence, effect, rotation_performed, incidents, uncorrelated_count, uncorrelated_incidents, audit_log_present, next_step}. Each list holds at most max_records (default 1000, max 10000), most confident first, within a 1 MiB response: incident_count and uncorrelated_count stay exact, incidents_returned and uncorrelated_incidents_returned count the listed entries, and records_truncated is true when some were left out. Never rotates, writes incident or alert state, or exposes secret values. Use a separately approved rotation tool to remediate.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
         "properties": {
+          "max_records": {
+            "default": 1000,
+            "description": "Maximum entries in each of incidents and uncorrelated_incidents,\nmost confident kept (default: 1000; values above 10000 are treated as\n10000). A 1 MiB response ceiling may return fewer; incident_count and\nuncorrelated_count stay exact and records_truncated then says so.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
           "min_confidence": {
             "default": 0.5,
             "description": "Only return incidents whose confidence score is at or above this value\n(range 0.0–1.0). Defaults to 0.5 per spec (active incident threshold).",
