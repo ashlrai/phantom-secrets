@@ -53,6 +53,10 @@ libc = "0.2"
 # (issuance → rotation bootstrap). No key generation here — signing only.
 jsonwebtoken = { version = "10.3.0", features = ["aws_lc_rs"] }
 
+# Optional hybrid post-quantum key sharing (X25519 + ML-KEM-768 via X-Wing).
+# Off by default. The crate has never been independently audited.
+x-wing = { version = "0.1.1", default-features = false, features = ["getrandom", "zeroize"], optional = true }
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
@@ -62,6 +66,10 @@ windows-sys = { version = "0.61", features = [
     "Win32_System_SystemServices",
     "Win32_System_Threading",
 ] }
+
+[features]
+# Hybrid post-quantum team key share (experimental, unaudited crate). Off by default.
+pq-hybrid = ["dep:x-wing"]
 
 [dev-dependencies]
 # Generate a throwaway RSA keypair at test runtime so the issuance/JWT tests
