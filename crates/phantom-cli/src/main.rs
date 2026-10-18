@@ -120,6 +120,11 @@ enum Commands {
         /// Emit one JSON report on stdout instead of the human checklist
         #[arg(long)]
         json: bool,
+        /// Print a read-only, value-free post-quantum readiness report
+        /// (algorithms in use, which are quantum-vulnerable) instead of the
+        /// health checks. Combine with --json for machine-readable output.
+        #[arg(long)]
+        pq: bool,
     },
 
     /// Print a shell-completion script to stdout.
@@ -1050,8 +1055,17 @@ fn run() -> anyhow::Result<()> {
                 }
             }
         },
-        Commands::Doctor { fix, expiry, json } => {
-            commands::doctor::run_doctor(fix, expiry, json || global_json)
+        Commands::Doctor {
+            fix,
+            expiry,
+            json,
+            pq,
+        } => {
+            if pq {
+                commands::pq_report::run(json || global_json)
+            } else {
+                commands::doctor::run_doctor(fix, expiry, json || global_json)
+            }
         }
         Commands::Agent { action } => match action {
             AgentAction::Report { json } => commands::agent::report(json || global_json),
