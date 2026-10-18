@@ -4,6 +4,15 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (`phantom doctor` Claude Code settings check)
+
+- A `.claude/settings.local.json` that exists but is not valid JSON was
+  skipped with no row and no issue, so `phantom doctor` could finish with
+  "All checks passed!" (and `--json` with `"ok": true`) while the dotenv
+  read-grant and legacy MCP entry checks never ran. Doctor now reports it as
+  a counted warning with a fix step, and does not print the "dotenv read
+  grants remain closed" pass for it.
+
 ### Fixed (`phantom audit show --json`, `phantom audit stats --analytics --json`)
 
 - With `--json` and no events, `phantom audit show` (including
