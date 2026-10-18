@@ -405,7 +405,19 @@ fn run_checks(fix: bool, check_expiry: bool) -> Result<(usize, usize)> {
     let claude_settings = project_dir.join(".claude/settings.local.json");
     if claude_settings.exists() {
         let content = std::fs::read_to_string(&claude_settings)?;
-        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&content) {
+        let parsed = serde_json::from_str::<serde_json::Value>(&content);
+        if parsed.is_err() {
+            // An unparseable settings file is not "no legacy grants": the
+            // checks below could not run, so this is a finding, never a pass.
+            check_warn(
+                "Claude Code settings (.claude/settings.local.json) could not be parsed; dotenv read grants and legacy MCP entries were not checked",
+            );
+            check_fix(
+                "Fix the JSON in .claude/settings.local.json (or remove the file), then rerun phantom doctor",
+            );
+            issues += 1;
+        }
+        if let Ok(parsed) = parsed {
             if parsed["mcpServers"].get("phantom").is_some() {
                 check_warn(
                     "Claude Code Phantom MCP entry is in legacy settings; move it to .mcp.json",
@@ -1121,6 +1133,53 @@ mod tests {
             .unwrap();
         outcome.expect("doctor must report, not abort");
         (config, report)
+    }
+
+    /// A `.claude/settings.local.json` that does not parse was skipped with no
+    /// row and no issue, so doctor could end with "All checks passed!" while
+    /// the dotenv read-grant check never ran. It is now a counted warning.
+    #[test]
+    fn doctor_counts_unparseable_claude_settings_as_an_issue() {
+        let run = |settings: Option<&str>| {
+            let project = tempfile::tempdir().unwrap();
+            let dir = project.path().canonicalize().unwrap();
+            phantom_core::config::PhantomConfig::new_with_defaults("doctor-claude".to_string())
+                .save(&dir.join(".phantom.toml"))
+                .unwrap();
+            if let Some(text) = settings {
+                std::fs::create_dir_all(dir.join(".claude")).unwrap();
+                std::fs::write(dir.join(".claude/settings.local.json"), text).unwrap();
+            }
+            let _seam = crate::util::test_seam::TestProject::install(
+                dir.clone(),
+                crate::util::test_seam::empty_keychain,
+            );
+            super::REPORT.with(|report| {
+                *report.borrow_mut() = Some(phantom_core::report::DoctorReport::default())
+            });
+            let outcome = super::run_checks(false, false);
+            let report = super::REPORT
+                .with(|report| report.borrow_mut().take())
+                .unwrap();
+            let (issues, _) = outcome.expect("doctor must report, not abort");
+            (issues, report)
+        };
+
+        let (baseline, _) = run(Some("{}"));
+        let (issues, report) = run(Some("{\"permissions\": {\"allow\": [\"Read(./.env)\"]},"));
+        assert_eq!(issues, baseline + 1);
+        let line = report
+            .checks
+            .iter()
+            .find(|check| check.message.contains("settings.local.json"))
+            .expect("unparseable Claude settings must be a finding");
+        assert_eq!(line.status, "warn");
+        assert!(line.message.contains("could not be parsed"));
+        assert!(line.fix.is_some());
+        assert!(!report
+            .checks
+            .iter()
+            .any(|check| check.message == "Claude Code dotenv read grants remain closed"));
     }
 
     /// exec and start refuse an altered built-in or a custom `api_key` route
