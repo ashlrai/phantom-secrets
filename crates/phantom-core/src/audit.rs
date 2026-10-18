@@ -1990,6 +1990,13 @@ mod tests {
     use std::sync::{Arc, Barrier};
     use tempfile::tempdir;
 
+    #[test]
+    fn audit_keys_are_256_bits() {
+        // Grover margin: generated HMAC key and derived AES key are 32 bytes.
+        assert_eq!(generate_key().len() * 8, 256);
+        assert_eq!(derive_encryption_key(&generate_key()).len() * 8, 256);
+    }
+
     fn with_temp_home<F: FnOnce()>(env: &str, val: &str, f: F) {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let prev = std::env::var(env).ok();
