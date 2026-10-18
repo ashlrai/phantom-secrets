@@ -3,15 +3,19 @@ use colored::Colorize;
 
 /// Rewrite package.json scripts to auto-prefix with the installed local `phantom` binary.
 /// Original scripts are saved as `*:raw` variants for escape-hatch usage.
-pub fn run(only: &Option<Vec<String>>, skip: &Option<Vec<String>>) -> Result<()> {
+///
+/// `quiet` suppresses the per-script and summary lines; warnings and errors
+/// still print.
+pub fn run(only: &Option<Vec<String>>, skip: &Option<Vec<String>>, quiet: bool) -> Result<()> {
     let project_dir = std::env::current_dir()?;
-    run_in(&project_dir, only, skip, || {})
+    run_in(&project_dir, only, skip, quiet, || {})
 }
 
 fn run_in(
     project_dir: &std::path::Path,
     only: &Option<Vec<String>>,
     skip: &Option<Vec<String>>,
+    quiet: bool,
     after_lock: impl FnOnce(),
 ) -> Result<()> {
     let pkg_path = project_dir.join("package.json");
@@ -45,6 +49,9 @@ fn run_in(
     replace_package_json(&target, &before, format!("{output}\n").as_bytes())
         .context("package.json changed after it was read; no scripts were wrapped")?;
 
+    if quiet {
+        return Ok(());
+    }
     for name in &wrapped {
         println!(
             "   {} {} -> wrapped with phantom exec",
@@ -273,7 +280,7 @@ mod tests {
         )
         .unwrap();
 
-        run_in(&project, &None, &None, || {
+        run_in(&project, &None, &None, false, || {
             std::fs::rename(&project, &moved).unwrap();
             std::fs::create_dir(&project).unwrap();
             std::fs::write(project.join("package.json"), br#"{"decoy":true}"#).unwrap();

@@ -130,3 +130,101 @@ fn exec_quiet_still_propagates_child_exit_code() {
         "child's own error must still reach stderr:\n{stderr}"
     );
 }
+
+/// Only services with a vaulted credential are rerouted. A base URL for an
+/// unvaulted service (ANTHROPIC_BASE_URL in an OpenAI-only project) would send
+/// the child's SDK, including `phantom exec -- claude`, to a proxy route that
+/// can only answer 503 "route credential unavailable".
+#[cfg(unix)]
+#[test]
+fn exec_routes_only_vaulted_services() {
+    let (project, home) = initialized_project();
+
+    let output = phantom_command(project.path(), home.path())
+        .args(["exec", "--", "sh", "-c"])
+        .arg("printf 'OPENAI=%s\\nANTHROPIC=%s\\n' \"${OPENAI_BASE_URL-unset}\" \"${ANTHROPIC_BASE_URL-unset}\"")
+        .output()
+        .unwrap();
+    assert_success(&output, "phantom exec");
+
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let field = |key: &str| {
+        stdout
+            .lines()
+            .find_map(|line| line.strip_prefix(&format!("{key}=")))
+            .unwrap_or_else(|| panic!("{key} missing from child output:\n{stdout}"))
+            .to_string()
+    };
+    assert!(
+        field("OPENAI").contains("/openai/_phantom/"),
+        "child must still receive the OpenAI proxy base URL:\n{stdout}"
+    );
+    assert_eq!(
+        field("ANTHROPIC"),
+        "unset",
+        "an unvaulted service must not be rerouted to a credential-less proxy route"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("OPENAI_BASE_URL = "), "stderr:\n{stderr}");
+    assert!(
+        !stderr.contains("ANTHROPIC_BASE_URL = "),
+        "stderr:\n{stderr}"
+    );
+}
+
+/// A protected key with no proxy route reaches the child only as a session
+/// token that no provider accepts. Exec must say so instead of counting it as
+/// proxied, even under `--quiet` (warnings are not progress).
+#[test]
+fn exec_warns_about_protected_keys_without_a_route() {
+    use rand::RngCore;
+    let project = common::canonical_tempdir();
+    let home = common::canonical_tempdir();
+    // Values are generated per run; only the key names matter here.
+    let mut bytes = [0u8; 24];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    let routed_value = format!("routed-{}", hex::encode(bytes));
+    rand::thread_rng().fill_bytes(&mut bytes);
+    let unrouted_value = format!("unrouted-{}", hex::encode(bytes));
+    fs::write(
+        project.path().join(".env"),
+        format!("OPENAI_API_KEY={routed_value}\nGROQ_API_KEY={unrouted_value}\n"),
+    )
+    .unwrap();
+    let output = phantom_command(project.path(), home.path())
+        .args(["init", "--from", ".env"])
+        .output()
+        .unwrap();
+    assert_success(&output, "phantom init");
+
+    for (args, quiet) in [
+        (&["exec", "--"][..], false),
+        (&["--quiet", "exec", "--"][..], true),
+    ] {
+        let output = phantom_command(project.path(), home.path())
+            .args(args)
+            .arg(phantom_binary())
+            .arg("--version")
+            .output()
+            .unwrap();
+        assert_success(&output, "phantom exec");
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        assert_eq!(stdout.replace("\r\n", "\n"), expected_child_stdout());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let warning = stderr
+            .lines()
+            .find(|line| line.contains("No proxy route"))
+            .unwrap_or_else(|| panic!("{args:?} printed no route warning:\n{stderr}"));
+        assert!(warning.contains("GROQ_API_KEY"), "{warning}");
+        assert!(!warning.contains("OPENAI_API_KEY"), "{warning}");
+        if !quiet {
+            assert!(
+                stderr.contains("1 secret(s) proxied"),
+                "only the routed key is proxied:\n{stderr}"
+            );
+        }
+        for value in [&routed_value, &unrouted_value] {
+            assert!(!stderr.contains(value.as_str()), "value leaked:\n{stderr}");
+        }
+    }
+}

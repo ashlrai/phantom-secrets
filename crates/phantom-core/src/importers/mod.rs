@@ -29,7 +29,9 @@ pub type SecretMap = BTreeMap<String, Zeroizing<String>>;
 pub trait Importer {
     /// Parse raw bytes from the source format and return a secret map.
     ///
-    /// - Empty values are skipped silently.
+    /// - Empty (and JSON `null`) values are skipped silently.
+    /// - An entry whose value cannot be one secret (a JSON array or nested
+    ///   object) refuses the whole import rather than being dropped.
     /// - Duplicate keys within the same input emit a warning to stderr;
     ///   the last value wins.
     fn parse(input: &[u8]) -> Result<SecretMap>;
@@ -224,6 +226,35 @@ fn windows_file_information(
             .context("GetFileInformationByHandle failed for competitor import");
     }
     Ok(information)
+}
+
+/// Convert one JSON export value into an importable string.
+///
+/// Strings are taken as-is and numbers/bools are coerced; `null` means unset
+/// and yields `None` (skipped like an empty value). Arrays and objects cannot
+/// be represented as a single secret, so the whole import is refused instead
+/// of silently dropping that entry while reporting success. The error names
+/// the entry and its JSON type, never a value.
+pub(crate) fn json_scalar(
+    source: &str,
+    name: &str,
+    value: &serde_json::Value,
+) -> Result<Option<String>> {
+    match value {
+        serde_json::Value::String(text) => Ok(Some(text.clone())),
+        serde_json::Value::Number(number) => Ok(Some(number.to_string())),
+        serde_json::Value::Bool(flag) => Ok(Some(flag.to_string())),
+        serde_json::Value::Null => Ok(None),
+        serde_json::Value::Array(_) => Err(unsupported_entry(source, name, "an array")),
+        serde_json::Value::Object(_) => Err(unsupported_entry(source, name, "a nested object")),
+    }
+}
+
+pub(crate) fn unsupported_entry(source: &str, name: &str, kind: &str) -> anyhow::Error {
+    anyhow::anyhow!(
+        "{source} entry '{name}' has {kind} value that cannot be imported as one secret; \
+         nothing was imported. Export flat KEY: value pairs and retry."
+    )
 }
 
 /// Reuse phantom-core's existing dotenv parser for plain `.env` files.

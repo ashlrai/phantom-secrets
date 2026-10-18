@@ -32,7 +32,9 @@ fn run_in(project_dir: &std::path::Path, output: &str, after_lock: impl FnOnce()
     let config = transaction_lock
         .target(&config_path)?
         .read_regular()?
-        .and_then(|bytes| PhantomConfig::load_from_bytes(&config_path, bytes.bytes()).ok());
+        .map(|bytes| PhantomConfig::load_from_bytes(&config_path, bytes.bytes()))
+        .transpose()
+        .context("Failed to load .phantom.toml; no .env.example was written")?;
     let (_env_path, dotenv) = match config.as_ref() {
         Some(config) => resolve_dotenv_anchored(&transaction_lock, project_dir, config)?,
         None => {
@@ -258,6 +260,21 @@ mod tests {
             std::fs::read_to_string(project.path().join(".env")).unwrap(),
             source
         );
+    }
+
+    /// A `.phantom.toml` that exists but does not parse used to read as "not
+    /// initialized": the example was generated from `./.env` with no config,
+    /// not from the managed dotenv the config names.
+    #[test]
+    fn malformed_config_writes_no_example() {
+        let project = tempfile::tempdir().unwrap();
+        std::fs::write(project.path().join(".env"), "APP_NAME=demo\n").unwrap();
+        std::fs::write(project.path().join(".phantom.toml"), "[phantom\nversion = ").unwrap();
+
+        let error = run_in(project.path(), ".env.example", || {}).unwrap_err();
+
+        assert!(format!("{error:#}").contains("Failed to load .phantom.toml"));
+        assert!(!project.path().join(".env.example").exists());
     }
 
     #[test]

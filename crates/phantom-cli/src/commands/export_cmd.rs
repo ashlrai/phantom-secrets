@@ -314,18 +314,26 @@ struct ExportPlan {
 }
 
 fn prepare_export(output: &str) -> Result<ExportPlan> {
-    let project_dir = std::env::current_dir()?.canonicalize()?;
+    let project_dir = crate::util::project_dir()?.canonicalize()?;
     let config_path = project_dir.join(".phantom.toml");
     let config_before = phantom_core::fs::read_regular_file(&config_path)
         .context("Failed to safely read .phantom.toml")?
-        .ok_or_else(|| anyhow::anyhow!("No .phantom.toml found. Run `phantom init` first."))?;
+        .ok_or_else(|| crate::util::missing_config_error(&project_dir))?;
     let config = PhantomConfig::load_from_bytes(&config_path, &config_before)
         .context("Failed to parse the reviewed .phantom.toml snapshot")?;
     recheck_exact_file(&config_path, &config_before, ".phantom.toml")?;
     let local_project_id = config.local_project_id().to_string();
     let output_path = resolve_export_destination(&project_dir, output)?;
-    let vault = phantom_vault::try_create_vault(&local_project_id)?;
+    let vault = crate::util::open_vault(&local_project_id)?;
     let mut names = vault.list().context("Failed to list secrets")?;
+    // A backup taken from a keychain-only view would silently leave out every
+    // secret in a locked encrypted-file vault.
+    crate::util::require_complete_inventory(
+        vault.as_ref(),
+        &local_project_id,
+        names.len(),
+        "export a backup",
+    )?;
     names.sort();
     names.dedup();
     validate_consent_names(&names)?;
@@ -929,5 +937,28 @@ mod tests {
                 .all(|name| !name.starts_with(".phantom-backup-")),
             "staging files remained: {names:?}"
         );
+    }
+
+    /// A backup prepared from the OS keychain beside a locked encrypted-file
+    /// vault would leave out every secret in that file while reporting a
+    /// complete-looking name set, so the export is refused before review.
+    #[cfg(unix)]
+    #[test]
+    fn export_refuses_a_partial_inventory_beside_a_locked_file_vault() {
+        use crate::util::test_seam::{empty_keychain, keychain_with_one, LockedProject};
+        for make in [empty_keychain, keychain_with_one] {
+            let project = LockedProject::new(make);
+            let error = match prepare_export("backup.phantom") {
+                Ok(_) => panic!("export prepared from a partial inventory"),
+                Err(error) => error.to_string(),
+            };
+            assert!(
+                error.starts_with("Vault locked:")
+                    || error.starts_with("Refusing to export a backup from a partial inventory"),
+                "{error}"
+            );
+            assert!(error.contains("PHANTOM_VAULT_PASSPHRASE"), "{error}");
+            assert!(!project.dir.join("backup.phantom").exists());
+        }
     }
 }
