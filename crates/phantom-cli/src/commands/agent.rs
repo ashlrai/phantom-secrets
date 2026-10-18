@@ -261,8 +261,19 @@ fn apply_setup(project_dir: &std::path::Path, before: &AgentReadinessReport) -> 
         );
     }
 
+    if before
+        .findings
+        .iter()
+        .any(|finding| finding.id == "invalid-config")
+    {
+        anyhow::bail!(
+            ".phantom.toml exists but could not be loaded; agent setup made no gitignore, example, config, vault, or client changes. Fix or restore it, then run `phantom doctor`"
+        );
+    }
+
     let config_path = project_dir.join(".phantom.toml");
-    let config = PhantomConfig::load(&config_path).ok();
+    let config = crate::util::load_config_if_present(&config_path)
+        .context("Failed to load .phantom.toml; agent setup made no changes")?;
     let env_path = match config.as_ref() {
         Some(config) => {
             phantom_core::managed_dotenv::resolve_dotenv(project_dir, config, &[])?.path
@@ -377,7 +388,9 @@ fn ensure_gitignore(project_dir: &std::path::Path) -> Result<bool> {
     let config = lock
         .target(&config_path)?
         .read_regular()?
-        .and_then(|bytes| PhantomConfig::load_from_bytes(&config_path, bytes.bytes()).ok());
+        .map(|bytes| PhantomConfig::load_from_bytes(&config_path, bytes.bytes()))
+        .transpose()
+        .context("Failed to load .phantom.toml; agent setup made no changes")?;
     let (dotenv_target, dotenv_before) = agent_dotenv_guard(&lock, project_dir, config.as_ref())?;
     let target = lock.target(&path)?;
     let before = target
@@ -412,7 +425,9 @@ fn ensure_env_example(project_dir: &std::path::Path) -> Result<bool> {
     let config = lock
         .target(&config_path)?
         .read_regular()?
-        .and_then(|bytes| PhantomConfig::load_from_bytes(&config_path, bytes.bytes()).ok());
+        .map(|bytes| PhantomConfig::load_from_bytes(&config_path, bytes.bytes()))
+        .transpose()
+        .context("Failed to load .phantom.toml; agent setup made no changes")?;
     let (dotenv_target, dotenv_before) = agent_dotenv_guard(&lock, project_dir, config.as_ref())?;
     let Some(dotenv_before) = dotenv_before else {
         return Ok(false);
@@ -553,6 +568,39 @@ mod tests {
         assert!(error.to_string().contains("malformed"));
         assert_eq!(std::fs::read(project.path().join(".env")).unwrap(), source);
         for path in [".gitignore", ".env.example", ".phantom.toml", ".claude"] {
+            assert!(
+                !project.path().join(path).exists(),
+                "unexpected mutation: {path}"
+            );
+        }
+    }
+
+    /// A `.phantom.toml` that exists but does not parse read as "not
+    /// initialized": `agent setup --apply` judged `./.env` and wrote
+    /// `.gitignore`. It now refuses before any change, and the helpers that
+    /// read the config under the project lock refuse too.
+    #[test]
+    fn malformed_config_blocks_all_agent_setup_mutations() {
+        let project = tempfile::tempdir().unwrap();
+        let config = b"[phantom\nversion = ";
+        std::fs::write(project.path().join(".phantom.toml"), config).unwrap();
+        std::fs::write(project.path().join(".env"), b"APP_NAME=demo\n").unwrap();
+        let report = super::readiness_report(project.path());
+        assert!(report.findings.iter().any(|f| f.id == "invalid-config"));
+
+        let error = super::apply_setup(project.path(), &report).unwrap_err();
+
+        assert!(
+            error.to_string().contains("could not be loaded"),
+            "unexpected refusal"
+        );
+        assert!(super::ensure_gitignore(project.path()).is_err());
+        assert!(super::ensure_env_example(project.path()).is_err());
+        assert_eq!(
+            std::fs::read(project.path().join(".phantom.toml")).unwrap(),
+            config
+        );
+        for path in [".gitignore", ".env.example", ".claude", ".mcp.json"] {
             assert!(
                 !project.path().join(path).exists(),
                 "unexpected mutation: {path}"

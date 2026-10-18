@@ -479,23 +479,42 @@ pub fn run_status() -> Result<()> {
         }
     }
 
-    // Show local cloud config if it exists
-    if let Ok(config) = PhantomConfig::load(std::path::Path::new(".phantom.toml")) {
-        if let Some(cloud) = &config.cloud {
-            println!("   Last synced version: {}", cloud.version);
-            if cloud.reconciliation_required {
-                let remote = cloud
-                    .reconciliation_remote_version
-                    .map_or_else(|| "unknown".to_string(), |version| version.to_string());
-                println!(
-                    "{}  Partial reconciliation with remote version {remote}; cloud push is blocked until every remote secret is reconciled.",
-                    "warn".yellow().bold()
-                );
-            }
-        }
+    for line in local_cloud_status_lines(std::path::Path::new(".phantom.toml")) {
+        println!("{line}");
     }
 
     Ok(())
+}
+
+/// Lines `phantom cloud status` prints about the local `.phantom.toml` cloud
+/// state. A missing config prints nothing; a config that exists but cannot be
+/// read or parsed is reported, because its sync version and any blocked push
+/// are unknown rather than absent.
+fn local_cloud_status_lines(config_path: &std::path::Path) -> Vec<String> {
+    let config = match crate::util::load_config_if_present(config_path) {
+        Ok(Some(config)) => config,
+        Ok(None) => return Vec::new(),
+        Err(_) => {
+            return vec![format!(
+                "{}  .phantom.toml exists but could not be loaded; last synced version and reconciliation state are unknown. Fix or restore it (for example from version control), then rerun `phantom cloud status`.",
+                "warn".yellow().bold()
+            )]
+        }
+    };
+    let Some(cloud) = &config.cloud else {
+        return Vec::new();
+    };
+    let mut lines = vec![format!("   Last synced version: {}", cloud.version)];
+    if cloud.reconciliation_required {
+        let remote = cloud
+            .reconciliation_remote_version
+            .map_or_else(|| "unknown".to_string(), |version| version.to_string());
+        lines.push(format!(
+            "{}  Partial reconciliation with remote version {remote}; cloud push is blocked until every remote secret is reconciled.",
+            "warn".yellow().bold()
+        ));
+    }
+    lines
 }
 
 #[cfg(test)]
@@ -532,6 +551,30 @@ mod tests {
             "passphrase".to_string(),
         )
         .unwrap()
+    }
+
+    /// A `.phantom.toml` that exists but cannot be parsed is not "no config":
+    /// status must say the local cloud state is unknown instead of printing
+    /// nothing, which reads as "never synced" and hides a blocked push.
+    #[test]
+    fn cloud_status_reports_a_broken_config_instead_of_hiding_it() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join(".phantom.toml");
+        assert!(local_cloud_status_lines(&config_path).is_empty());
+
+        std::fs::write(&config_path, "[phantom\nversion = ").unwrap();
+        let lines = local_cloud_status_lines(&config_path);
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].contains("could not be loaded"));
+        assert!(lines[0].contains("unknown"));
+
+        let mut config = cloud_test_config(4);
+        config.cloud.as_mut().unwrap().reconciliation_required = true;
+        write_config(&config_path, &config);
+        let lines = local_cloud_status_lines(&config_path);
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].contains("Last synced version: 4"));
+        assert!(lines[1].contains("Partial reconciliation"));
     }
 
     #[test]

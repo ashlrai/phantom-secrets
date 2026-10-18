@@ -2,7 +2,6 @@ use anyhow::{Context, Result};
 use colored::Colorize;
 use phantom_core::config::PhantomConfig;
 use phantom_core::dotenv::{is_example_placeholder, is_example_template_file, DotenvFile};
-use phantom_core::token::PhantomToken;
 use std::path::{Path, PathBuf};
 
 use phantom_core::report::{
@@ -15,15 +14,24 @@ use phantom_core::report::{
 /// When `staged_only` is true, checks staged content from the git index,
 /// including staged .env files, so pre-commit hooks block newly staged secrets.
 ///
-/// When `runtime` is true, scans the current environment for phantom tokens
-/// that haven't been replaced (proxy not running).
+/// When `runtime` is true, scans every variable of the current environment for
+/// phantom tokens left without a proxy. A variable is excused only when a live
+/// `phantom exec` / `phantom start` proxy answers for the session variables
+/// and the session names that variable as its own (`PHANTOM_SESSION_KEYS`).
 ///
 /// With `json`, prints one machine-readable report on stdout and keeps the
 /// same exit status: 0 when clean, 1 when findings exist. An indeterminate
 /// scan is still an error with no report.
 pub fn run(staged_only: bool, runtime: bool, json: bool) -> Result<()> {
+    let mut scan = None;
     let (mode, findings, warnings) = if runtime {
-        ("runtime", runtime_findings(), Vec::new())
+        let mut result = phantom_core::report::scan_runtime_env(
+            std::env::vars_os(),
+            phantom_core::report::proxy_answers,
+        );
+        let findings = std::mem::take(&mut result.findings);
+        scan = Some(result);
+        ("runtime", findings, Vec::new())
     } else if staged_only {
         let (findings, warnings) = staged_findings()?;
         ("staged", findings, warnings)
@@ -42,12 +50,15 @@ pub fn run(staged_only: bool, runtime: bool, json: bool) -> Result<()> {
             findings: &findings,
             warnings: &warnings,
             indeterminate: &[],
+            proxy_session: scan.as_ref().is_some_and(|scan| scan.proxy_session),
+            excused: scan.as_ref().map_or(&[], |scan| scan.excused.as_slice()),
+            session_warning: scan.as_ref().and_then(|scan| scan.session_warning()),
         };
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
         print_warnings(&warnings);
-        if runtime {
-            print_runtime(&findings);
+        if let Some(scan) = &scan {
+            print_runtime(&findings, scan);
         } else {
             print_findings(&findings);
         }
@@ -139,28 +150,117 @@ fn staged_findings() -> Result<(Vec<Finding>, Vec<ConfigWarning>)> {
     Ok((findings, warnings))
 }
 
-const CODE_PATTERNS: [(&str, &str); 9] = [
-    ("sk-", "OpenAI API key"),
-    ("sk_live_", "Stripe live key"),
-    ("sk_test_", "Stripe test key"),
-    ("ghp_", "GitHub personal token"),
-    ("github_pat_", "GitHub PAT"),
-    ("glpat-", "GitLab PAT"),
-    ("xoxb-", "Slack bot token"),
-    ("xoxp-", "Slack user token"),
-    ("AKIA", "AWS access key"),
+/// Credential shapes looked for in staged code: the prefix, a label for the
+/// report, and the shortest tail that can follow the prefix in a real key.
+/// A bare prefix is not a key: `task-`, `risk-` and `desk-` all contain `sk-`,
+/// so a match must start a token and carry a key-length tail.
+struct CodePattern {
+    prefix: &'static str,
+    label: &'static str,
+    min_tail: usize,
+    /// AWS access key IDs are upper-case alphanumerics only.
+    upper_alnum_only: bool,
+}
+
+const CODE_PATTERNS: [CodePattern; 9] = [
+    CodePattern {
+        prefix: "sk-",
+        label: "OpenAI API key",
+        min_tail: 20,
+        upper_alnum_only: false,
+    },
+    CodePattern {
+        prefix: "sk_live_",
+        label: "Stripe live key",
+        min_tail: 16,
+        upper_alnum_only: false,
+    },
+    CodePattern {
+        prefix: "sk_test_",
+        label: "Stripe test key",
+        min_tail: 16,
+        upper_alnum_only: false,
+    },
+    CodePattern {
+        prefix: "ghp_",
+        label: "GitHub personal token",
+        min_tail: 30,
+        upper_alnum_only: false,
+    },
+    CodePattern {
+        prefix: "github_pat_",
+        label: "GitHub PAT",
+        min_tail: 30,
+        upper_alnum_only: false,
+    },
+    CodePattern {
+        prefix: "glpat-",
+        label: "GitLab PAT",
+        min_tail: 20,
+        upper_alnum_only: false,
+    },
+    CodePattern {
+        prefix: "xoxb-",
+        label: "Slack bot token",
+        min_tail: 20,
+        upper_alnum_only: false,
+    },
+    CodePattern {
+        prefix: "xoxp-",
+        label: "Slack user token",
+        min_tail: 20,
+        upper_alnum_only: false,
+    },
+    CodePattern {
+        prefix: "AKIA",
+        label: "AWS access key",
+        min_tail: 16,
+        upper_alnum_only: true,
+    },
 ];
+
+/// A tail with no digit and no capital is an identifier
+/// (`sk-third-party-rollback-race`), not an issued key: twenty random base62
+/// characters with neither is a one-in-thirty-million draw.
+fn is_identifier_tail(tail: &[u8]) -> bool {
+    !tail
+        .iter()
+        .any(|b| b.is_ascii_digit() || b.is_ascii_uppercase())
+}
+
+/// Whether `text` holds `pattern.prefix` at the start of a token, followed by
+/// at least `min_tail` key characters that do not read as an identifier.
+fn contains_credential(text: &str, pattern: &CodePattern) -> bool {
+    let bytes = text.as_bytes();
+    text.match_indices(pattern.prefix).any(|(start, _)| {
+        if start > 0 && bytes[start - 1].is_ascii_alphanumeric() {
+            return false;
+        }
+        let rest = &bytes[start + pattern.prefix.len()..];
+        let len = rest
+            .iter()
+            .take_while(|b| {
+                if pattern.upper_alnum_only {
+                    b.is_ascii_uppercase() || b.is_ascii_digit()
+                } else {
+                    b.is_ascii_alphanumeric() || **b == b'_' || **b == b'-'
+                }
+            })
+            .count();
+        len >= pattern.min_tail && !is_identifier_tail(&rest[..len])
+    })
+}
 
 fn code_pattern_findings(file: &str, added: &str) -> Vec<Finding> {
     CODE_PATTERNS
         .iter()
-        .filter(|(pattern, _)| added.contains(pattern))
-        .map(|(pattern, label)| Finding {
+        .filter(|pattern| contains_credential(added, pattern))
+        .map(|pattern| Finding {
             kind: "staged_code",
             path: Some(file.to_string()),
             name: None,
-            label: Some(label),
-            pattern: Some(pattern),
+            label: Some(pattern.label),
+            pattern: Some(pattern.prefix),
         })
         .collect()
 }
@@ -294,53 +394,38 @@ fn is_env_file(file: &str) -> bool {
         .is_some_and(|name| name == ".env" || name.starts_with(".env.") || name.ends_with(".env"))
 }
 
-/// Common env vars that hold API keys. A phantom token in one of them means
-/// the proxy is not running and API calls will fail with auth errors.
-const RUNTIME_API_KEY_VARS: [&str; 11] = [
-    "OPENAI_API_KEY",
-    "ANTHROPIC_API_KEY",
-    "STRIPE_SECRET_KEY",
-    "SUPABASE_SERVICE_ROLE_KEY",
-    "SUPABASE_ANON_KEY",
-    "DATABASE_URL",
-    "RESEND_API_KEY",
-    "SENDGRID_API_KEY",
-    "TWILIO_AUTH_TOKEN",
-    "GITHUB_TOKEN",
-    "CLOUDFLARE_API_TOKEN",
-];
-
-fn runtime_findings() -> Vec<Finding> {
-    RUNTIME_API_KEY_VARS
-        .iter()
-        .filter(|var| std::env::var(var).is_ok_and(|value| PhantomToken::is_phantom_token(&value)))
-        .map(|var| Finding {
-            kind: "runtime_env",
-            path: None,
-            name: Some(var.to_string()),
-            label: None,
-            pattern: None,
-        })
-        .collect()
-}
-
-fn print_runtime(findings: &[Finding]) {
+fn print_runtime(findings: &[Finding], scan: &phantom_core::report::RuntimeEnvScan) {
+    if let Some(warning) = scan.session_warning() {
+        eprintln!("{} {}", "warn".yellow().bold(), warning);
+    }
+    if !scan.excused.is_empty() {
+        println!(
+            "{} Live Phantom proxy session owns: {}",
+            "ok".green().bold(),
+            scan.excused
+                .iter()
+                .map(|name| phantom_core::report::printable_name(name))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
     if findings.is_empty() {
         println!(
-            "{} No phantom tokens in environment (proxy running or secrets injected).",
+            "{} No phantom token outside a live proxy session in any environment variable.",
             "ok".green().bold()
         );
         return;
     }
     eprintln!(
-        "\n{} Phantom tokens in environment (proxy not running)!\n",
+        "\n{} Phantom tokens in environment with no live proxy session that owns them!\n",
         "warn".yellow().bold()
     );
     for finding in findings {
         eprintln!(
             "  {} {} contains a phantom token",
             "!".yellow().bold(),
-            finding.name.as_deref().unwrap_or_default().bold()
+            phantom_core::report::printable_name(finding.name.as_deref().unwrap_or_default())
+                .bold()
         );
     }
     eprintln!(
@@ -418,6 +503,37 @@ fn staged_added_lines(file: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use phantom_core::token::PhantomToken;
+
+    /// The liveness probe `--runtime` relies on, against the real proxy rather
+    /// than a stand-in: 200 for the session's header, nothing for another
+    /// header, and nothing once the proxy has stopped.
+    #[test]
+    fn runtime_probe_matches_the_real_proxy_health_endpoint() {
+        use phantom_core::report::proxy_answers;
+        use phantom_proxy::{Interceptor, ProxyConfig, ProxyServer, ServiceRegistry};
+
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let session_header = ProxyServer::generate_proxy_token();
+        let proxy = runtime
+            .block_on(ProxyServer::start(
+                ProxyConfig {
+                    port: 0,
+                    proxy_token: session_header.clone(),
+                    ..ProxyConfig::default()
+                },
+                ServiceRegistry::new(),
+                Interceptor::new(std::collections::HashMap::new()),
+            ))
+            .unwrap();
+        let port = proxy.port();
+
+        assert!(proxy_answers(port, &session_header));
+        assert!(!proxy_answers(port, "another-session"));
+
+        runtime.block_on(proxy.shutdown());
+        assert!(!proxy_answers(port, &session_header));
+    }
 
     /// A file listed as regular and then swapped for a symlink is refused at
     /// read time, not followed. Fails if the read goes back to
@@ -468,6 +584,9 @@ mod tests {
             findings: &findings,
             warnings: &[],
             indeterminate: &[],
+            proxy_session: false,
+            excused: &[],
+            session_warning: None,
         };
         let json = serde_json::to_string(&report).unwrap();
         assert!(json.contains("\"name\":\"OPENAI_API_KEY\""));
@@ -488,13 +607,76 @@ mod tests {
 
     #[test]
     fn code_patterns_report_label_and_prefix_only() {
-        let findings =
-            code_pattern_findings("src/app.ts", "const key = \"ghp_abcdefSECRETSUFFIX\";");
+        let line = format!(
+            "const key = \"{}{}\";",
+            "ghp_", "Q7rT2mVx9KpL4wZs8NdY3hBc6FjGu5EaR1oW"
+        );
+        let findings = code_pattern_findings("src/app.ts", &line);
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].label, Some("GitHub personal token"));
         assert_eq!(findings[0].pattern, Some("ghp_"));
         let json = serde_json::to_string(&findings).unwrap();
-        assert!(!json.contains("SECRETSUFFIX"), "{json}");
+        assert!(!json.contains("Q7rT2mVx9K"), "{json}");
+    }
+
+    #[test]
+    fn code_patterns_ignore_prefixes_inside_words_and_short_tails() {
+        // `task-`, `risk-` and `desk-` contain `sk-`; none of these is a key.
+        for text in [
+            "const brief = buildTaskBrief(task-context);",
+            "see docs/task-to-pr and risk-register, desk-layout",
+            "import { x } from './teams/task-brief-helpers-module.js';",
+            "placeholder sk-... or sk-your-key-here",
+            "AKIAEXAMPLE is too short; ghp_short",
+            "mask_test_value_with_long_suffix_here",
+            "fn sk-third-party-rollback-race() and github_pat_grammar_reject_hyphens_identically",
+        ] {
+            assert!(code_pattern_findings("src/a.ts", text).is_empty(), "{text}");
+        }
+    }
+
+    #[test]
+    fn code_patterns_still_catch_documented_placeholders() {
+        // The examples' FAKE_KEY and AWS's documented key must keep failing the
+        // gate: a placeholder with digits or capitals is treated like a key.
+        for text in [
+            format!("{}{}{}", "sk-proj-", "EXAMPLEONLY", "0".repeat(40)),
+            format!("{}{}", "AKIA", "IOSFODNN7EXAMPLE"),
+        ] {
+            assert_eq!(code_pattern_findings("src/a.ts", &text).len(), 1, "{text}");
+        }
+    }
+
+    #[test]
+    fn code_patterns_still_catch_real_key_shapes() {
+        // Random-looking tails, built at runtime so no literal key sits in source.
+        let cases = [
+            (
+                format!("OPENAI={}{}", "sk-", "proj-Hq8vN2cW7rT4kLx9ZpM3sJ6d"),
+                "sk-",
+            ),
+            (
+                format!("key: '{}{}'", "sk_live_", "51HxYzQ7rT2mVx9KpL4w"),
+                "sk_live_",
+            ),
+            (
+                format!("\"{}{}\"", "ghp_", "Q7rT2mVx9KpL4wZs8NdY3hBc6FjGu5EaR1oW"),
+                "ghp_",
+            ),
+            (
+                format!("token={}{}", "xoxb-", "7391046285-5810362947-Hq8vN2cW"),
+                "xoxb-",
+            ),
+            (
+                format!("aws_access_key_id = {}{}", "AKIA", "Q7RT2MVX9KPL4WZS"),
+                "AKIA",
+            ),
+        ];
+        for (text, prefix) in cases {
+            let findings = code_pattern_findings("src/a.ts", &text);
+            assert_eq!(findings.len(), 1, "{text}");
+            assert_eq!(findings[0].pattern, Some(prefix));
+        }
     }
 
     #[test]

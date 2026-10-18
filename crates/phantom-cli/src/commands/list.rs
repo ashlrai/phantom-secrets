@@ -20,32 +20,51 @@ struct SecretEntry<'a> {
     anomaly_class: Option<String>,
 }
 
+type AnomalyMap = std::collections::HashMap<String, (u8, AnomalyClass)>;
+
 /// Build a name → (anomaly_score, anomaly_class) map from the audit log.
-/// Falls back to empty map on any error — anomaly info is best-effort.
-fn anomaly_map() -> std::collections::HashMap<String, (u8, AnomalyClass)> {
-    let mut map = std::collections::HashMap::new();
-    let stats = match phantom_core::audit::audit_stats() {
-        Ok(s) => s,
-        Err(_) => return map,
-    };
+///
+/// A log that does not exist yet yields an empty map (nothing was
+/// retrieved). A log that exists but cannot be read, or fails integrity
+/// verification, is an error: answering "every secret is normal" from a
+/// log nobody could read would hide exactly the activity the filter is for.
+fn anomaly_map() -> Result<AnomalyMap> {
+    let stats = phantom_core::audit::audit_stats().context(
+        "Failed to read the audit log for --min-anomaly-score; anomaly levels are unknown \
+         (run `phantom audit verify` to check the log)",
+    )?;
+    let mut map = AnomalyMap::new();
     for s in &stats.secrets {
-        // Use retrieval frequency as a proxy for anomaly score:
-        // secrets retrieved >20 times (in log history) get caution/alert flags.
-        // The real per-request anomaly scoring lives in the proxy rate limiter;
-        // here we surface a rough heuristic from historical audit log data.
-        let (score, class) = if s.retrieves >= 50 {
-            (80u8, AnomalyClass::Alert)
-        } else if s.retrieves >= 20 {
-            (40u8, AnomalyClass::Caution)
-        } else {
-            (
-                ((s.retrieves as f64 / 20.0) * 40.0) as u8,
-                AnomalyClass::Normal,
-            )
-        };
-        map.insert(s.name.clone(), (score, class));
+        map.insert(s.name.clone(), retrieval_anomaly(s.retrieves));
     }
-    map
+    Ok(map)
+}
+
+/// Retrieval frequency as a rough anomaly heuristic from audit history:
+/// secrets retrieved 20+ times are caution, 50+ alert. The real per-request
+/// scoring lives in the proxy rate limiter.
+fn retrieval_anomaly(retrieves: u64) -> (u8, AnomalyClass) {
+    if retrieves >= 50 {
+        (80u8, AnomalyClass::Alert)
+    } else if retrieves >= 20 {
+        (40u8, AnomalyClass::Caution)
+    } else {
+        (
+            ((retrieves as f64 / 20.0) * 40.0) as u8,
+            AnomalyClass::Normal,
+        )
+    }
+}
+
+/// `--min-anomaly-score` is a level: 0 = all, 1 = caution and alert,
+/// 2 = alert only. It is compared with the anomaly class, not with the
+/// 0-100 heuristic score shown beside it.
+fn meets_anomaly_level(anomalies: &AnomalyMap, name: &str, min_level: u8) -> bool {
+    let class = anomalies
+        .get(name)
+        .map(|(_, class)| *class)
+        .unwrap_or(AnomalyClass::Normal);
+    class.score() >= min_level
 }
 
 pub fn run_with_expiry(json: bool, show_expiry: bool, min_anomaly_score: Option<u8>) -> Result<()> {
@@ -53,10 +72,7 @@ pub fn run_with_expiry(json: bool, show_expiry: bool, min_anomaly_score: Option<
     let config_path = project_dir.join(".phantom.toml");
 
     if !config_path.exists() {
-        anyhow::bail!(
-            "No .phantom.toml found. Run {} first.",
-            "phantom init".cyan().bold()
-        );
+        return Err(crate::util::missing_config_error(&project_dir));
     }
 
     let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
@@ -66,7 +82,7 @@ pub fn run_with_expiry(json: bool, show_expiry: bool, min_anomaly_score: Option<
     crate::util::warn_inventory_note(note.as_deref());
 
     let anomalies = if min_anomaly_score.is_some() {
-        anomaly_map()
+        anomaly_map()?
     } else {
         std::collections::HashMap::new()
     };
@@ -75,12 +91,7 @@ pub fn run_with_expiry(json: bool, show_expiry: bool, min_anomaly_score: Option<
     let filtered: Vec<_> = entries_with_meta
         .iter()
         .filter(|(name, _)| {
-            if let Some(min_score) = min_anomaly_score {
-                let score = anomalies.get(name.as_str()).map(|(s, _)| *s).unwrap_or(0);
-                score >= min_score
-            } else {
-                true
-            }
+            min_anomaly_score.is_none_or(|level| meets_anomaly_level(&anomalies, name, level))
         })
         .collect();
 
@@ -264,5 +275,79 @@ mod locked_vault_tests {
         );
         assert!(note.contains("PHANTOM_VAULT_PASSPHRASE"), "{note}");
         super::run_with_expiry(true, false, None).unwrap();
+    }
+
+    /// `phantom list --min-anomaly-score N` answered from an empty map when
+    /// the audit log could not be read, so every secret showed as normal
+    /// (and exit 0) instead of the read failure being reported.
+    #[test]
+    fn anomaly_filter_refuses_an_unreadable_audit_log() {
+        let _project = LockedProject::new(keychain_with_one);
+        let log = phantom_core::audit::log_path().unwrap();
+        if log.is_file() {
+            std::fs::remove_file(&log).unwrap();
+        }
+        // A directory where the log file belongs: it exists but cannot be read.
+        std::fs::create_dir_all(&log).unwrap();
+        for json in [true, false] {
+            for level in [0u8, 1, 2] {
+                let error = super::run_with_expiry(json, false, Some(level)).unwrap_err();
+                assert!(
+                    error
+                        .to_string()
+                        .starts_with("Failed to read the audit log for --min-anomaly-score"),
+                    "unexpected error for json={json} level={level}"
+                );
+            }
+        }
+        // Without the filter the audit log is never consulted.
+        super::run_with_expiry(true, false, None).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod anomaly_level_tests {
+    use super::{meets_anomaly_level, retrieval_anomaly, AnomalyMap};
+    use phantom_core::audit::AnomalyClass;
+
+    fn map_with(retrieves: u64) -> AnomalyMap {
+        let mut map = AnomalyMap::new();
+        map.insert("NAME_A".to_string(), retrieval_anomaly(retrieves));
+        map
+    }
+
+    /// The flag is documented as 0 = all, 1 = caution+, 2 = alert only, but
+    /// it was compared with the 0-100 heuristic score, so a single retrieval
+    /// (score 2) passed `--min-anomaly-score 2` as if it were an alert.
+    #[test]
+    fn min_anomaly_score_is_a_class_level() {
+        assert_eq!(retrieval_anomaly(1).1, AnomalyClass::Normal);
+        assert_eq!(retrieval_anomaly(20).1, AnomalyClass::Caution);
+        assert_eq!(retrieval_anomaly(50).1, AnomalyClass::Alert);
+
+        let normal = map_with(1);
+        assert!(meets_anomaly_level(&normal, "NAME_A", 0));
+        assert!(!meets_anomaly_level(&normal, "NAME_A", 1));
+        assert!(!meets_anomaly_level(&normal, "NAME_A", 2));
+
+        let caution = map_with(20);
+        assert!(meets_anomaly_level(&caution, "NAME_A", 1));
+        assert!(!meets_anomaly_level(&caution, "NAME_A", 2));
+
+        let alert = map_with(50);
+        assert!(meets_anomaly_level(&alert, "NAME_A", 2));
+
+        // A name with no audit history is normal.
+        assert!(meets_anomaly_level(&alert, "NAME_B", 0));
+        assert!(!meets_anomaly_level(&alert, "NAME_B", 1));
+    }
+
+    #[test]
+    fn min_anomaly_score_above_two_is_rejected_by_the_parser() {
+        use clap::Parser;
+        let parsed = crate::Cli::try_parse_from(["phantom", "list", "--min-anomaly-score", "3"]);
+        assert!(parsed.is_err());
+        let parsed = crate::Cli::try_parse_from(["phantom", "list", "--min-anomaly-score", "2"]);
+        assert!(parsed.is_ok());
     }
 }

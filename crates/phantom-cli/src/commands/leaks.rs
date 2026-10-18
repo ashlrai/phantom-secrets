@@ -8,6 +8,7 @@
 
 use anyhow::Result;
 use colored::Colorize;
+use phantom_core::config::{LeakResponseConfig, OnLeak, PhantomConfig};
 use phantom_core::leak_correlation::{LeakCorrelationEngine, LeakIncident};
 use phantom_core::rotation_provider::default_rotation_providers;
 use serde::Serialize;
@@ -87,18 +88,64 @@ fn provider_name_for(secret_name: &str) -> Option<String> {
         .map(|p| p.name().to_string())
 }
 
+/// Read the `[leak_response]` policy from `./.phantom.toml`. No file means the
+/// default policy (`plan`). A present but invalid policy is an error.
+fn load_policy() -> Result<OnLeak> {
+    let path = std::path::Path::new(".phantom.toml");
+    if !path.exists() {
+        return Ok(OnLeak::default());
+    }
+    let config =
+        PhantomConfig::load(path).map_err(|e| anyhow::anyhow!("Cannot read .phantom.toml: {e}"))?;
+    config
+        .leak_response
+        .effective()
+        .map_err(|e| anyhow::anyhow!("{e}"))
+}
+
 /// Run `phantom leaks plan`. Reads incidents only; writes nothing.
 pub fn run_plan(min_confidence: f64, json: bool) -> Result<()> {
+    let policy = load_policy()?;
+    if policy == OnLeak::Off {
+        if json {
+            let out = serde_json::json!({
+                "dry_run": true,
+                "on_leak": policy.as_str(),
+                "live_revoke_available": LeakResponseConfig::live_revoke_available(),
+                "min_confidence": min_confidence,
+                "plan": [],
+            });
+            println!("{}", serde_json::to_string_pretty(&out)?);
+        } else {
+            println!(
+                "{}  Leak response is off ([leak_response] on_leak = \"off\"). Nothing to plan.",
+                "->".blue().bold()
+            );
+        }
+        return Ok(());
+    }
     let engine = LeakCorrelationEngine::new()
         .map_err(|e| anyhow::anyhow!("Cannot initialise leak correlation engine: {e}"))?;
-    let incidents = engine
-        .active_incidents(min_confidence)
+    let view = engine
+        .incident_view(min_confidence)
         .map_err(|e| anyhow::anyhow!("Failed to read leak incidents: {e}"))?;
-    let plan = build_plan(&incidents, provider_name_for);
+    let plan = build_plan(&view.persisted, provider_name_for);
+    // The plan covers persisted incidents only. Say so when the audit log
+    // holds leak events no backfill has persisted (stderr keeps --json clean).
+    let uncorrelated = view.uncorrelated;
+    if !uncorrelated.is_empty() {
+        eprintln!(
+            "{}  {} leak incident(s) from the last 24 h are in the audit log but not persisted, so this plan omits them. Run `phantom audit incidents` to list them and `phantom audit alerts --backfill` to persist them.",
+            "warn".yellow().bold(),
+            uncorrelated.len()
+        );
+    }
 
     if json {
         let out = serde_json::json!({
             "dry_run": true,
+            "on_leak": policy.as_str(),
+            "live_revoke_available": LeakResponseConfig::live_revoke_available(),
             "min_confidence": min_confidence,
             "plan": plan,
         });
@@ -136,6 +183,9 @@ pub fn run_plan(min_confidence: f64, json: bool) -> Result<()> {
         }
     }
     println!();
+    if policy == OnLeak::Revoke {
+        println!("on_leak = \"revoke\" is set, but live revoke is disabled in this build; showing the plan only.");
+    }
     println!("Automated revoke and rotation are disabled in this build; these steps are manual.");
     Ok(())
 }
