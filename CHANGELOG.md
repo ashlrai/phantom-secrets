@@ -4,6 +4,14 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (`phantom cloud status`)
+
+- A `.phantom.toml` that existed but could not be read or parsed was treated
+  as no config, so status silently omitted the last synced version and any
+  partial-reconciliation warning (a blocked `phantom cloud push`). Status now
+  warns that the config could not be loaded, that the local sync state is
+  unknown, and how to recover. A missing config still prints nothing.
+
 ### Fixed (`phantom audit show --json`, `phantom audit stats --analytics --json`)
 
 - With `--json` and no events, `phantom audit show` (including
