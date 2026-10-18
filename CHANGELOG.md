@@ -4,6 +4,16 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Added (`phantom doctor --all`)
+
+- `phantom doctor --all` (with optional `--json`) prints one read-only,
+  value-free report that combines the health checks, the `--pq` report, agent
+  readiness (`agent doctor`), MCP approval status (`agent status`) and which of
+  `ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL` and `OLLAMA_HOST` are set and whether
+  each points at a loopback host. It never prints a URL and fixes nothing; it
+  conflicts with `--fix`, `--pq` and `--expiry`. Default `phantom doctor`
+  behavior is unchanged.
+
 ### Fixed (`leaks plan` with `on_leak = "off"`)
 
 - `on_leak = "off"` in a repository's `.phantom.toml` made `phantom leaks
