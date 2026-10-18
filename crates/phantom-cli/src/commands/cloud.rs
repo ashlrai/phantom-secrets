@@ -441,34 +441,110 @@ fn update_cloud_reconciliation(config: &mut PhantomConfig, remote_version: u64, 
     }
 }
 
-pub fn run_status() -> Result<()> {
+/// What `phantom cloud status` learned, before it is rendered.
+enum CloudLogin {
+    NotLoggedIn,
+    /// The service rejected the stored bearer (HTTP 401): log in again.
+    TokenRejected,
+    /// The account lookup failed for another reason (network, server error,
+    /// unparseable reply). The stored login was not rejected.
+    LookupFailed(phantom_core::error::PhantomError),
+    LoggedIn(auth::UserInfo),
+}
+
+/// `phantom cloud status --json`: one object with the same facts as the text
+/// report. `user` is the account email when the service returns one, else the
+/// GitHub login. Never includes the stored bearer.
+fn cloud_status_json(
+    login: &CloudLogin,
+    cloud: Option<&phantom_core::config::CloudConfig>,
+    local_config_unreadable: bool,
+) -> serde_json::Value {
+    let user = match login {
+        CloudLogin::LoggedIn(user) => Some(user),
+        _ => None,
+    };
+    serde_json::json!({
+        "loggedIn": user.is_some(),
+        "tokenStored": !matches!(login, CloudLogin::NotLoggedIn),
+        "tokenRejected": matches!(login, CloudLogin::TokenRejected),
+        "accountLookupFailed": matches!(login, CloudLogin::LookupFailed(_)),
+        "user": user.map(|u| u.email.clone().unwrap_or_else(|| u.github_login.clone())),
+        "email": user.and_then(|u| u.email.clone()),
+        "githubLogin": user.map(|u| u.github_login.clone()),
+        "tier": user.map(|u| u.plan.clone()),
+        "vaultsCount": user.and_then(|u| u.vaults_count),
+        "lastSyncedVersion": cloud.map(|c| c.version),
+        "reconciliationRequired": cloud.is_some_and(|c| c.reconciliation_required),
+        "reconciliationRemoteVersion": cloud.and_then(|c| c.reconciliation_remote_version),
+        "localConfigUnreadable": local_config_unreadable,
+    })
+}
+
+/// `json` prints one object (see [`cloud_status_json`]) instead of the text
+/// report. Both pass the same trusted-terminal consent gate first and make
+/// the same single authenticated request.
+pub fn run_status(json: bool) -> Result<()> {
     require_trusted_terminal_cloud(&CloudConsentPlan {
         effect: "read the stored Phantom bearer and send an authenticated request for cloud account and vault status".to_string(),
         challenge: "cloud status authenticated".to_string(),
     })?;
     let api_base = auth::api_base_url()?;
 
-    match auth::load_token() {
+    let login = match auth::load_token() {
         Some(token) => {
+            let token = Zeroizing::new(token);
             let rt = tokio::runtime::Runtime::new()?;
             match rt.block_on(auth::get_user_info(&api_base, &token)) {
-                Ok(user) => {
-                    println!(
-                        "{}  Cloud: logged in as @{} ({})",
-                        "ok".green().bold(),
-                        user.github_login,
-                        user.plan
-                    );
-                    if let Some(count) = user.vaults_count {
-                        println!("   Vaults: {count}");
-                    }
-                }
-                Err(error) => {
-                    write_account_lookup_failure(&mut std::io::stdout(), &error)?;
-                }
+                Ok(user) => CloudLogin::LoggedIn(user),
+                Err(phantom_core::error::PhantomError::AuthRequired) => CloudLogin::TokenRejected,
+                Err(error) => CloudLogin::LookupFailed(error),
             }
         }
-        None => {
+        None => CloudLogin::NotLoggedIn,
+    };
+    let config_path = std::path::Path::new(".phantom.toml");
+
+    if json {
+        let (config, local_config_unreadable) =
+            match crate::util::load_config_if_present(config_path) {
+                Ok(config) => (config, false),
+                Err(_) => (None, true),
+            };
+        let cloud = config.as_ref().and_then(|config| config.cloud.as_ref());
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&cloud_status_json(
+                &login,
+                cloud,
+                local_config_unreadable
+            ))?
+        );
+        return Ok(());
+    }
+
+    match &login {
+        CloudLogin::LoggedIn(user) => {
+            println!(
+                "{}  Cloud: logged in as @{} ({})",
+                "ok".green().bold(),
+                user.github_login,
+                user.plan
+            );
+            if let Some(count) = user.vaults_count {
+                println!("   Vaults: {count}");
+            }
+        }
+        CloudLogin::TokenRejected => {
+            write_account_lookup_failure(
+                &mut std::io::stdout(),
+                &phantom_core::error::PhantomError::AuthRequired,
+            )?;
+        }
+        CloudLogin::LookupFailed(error) => {
+            write_account_lookup_failure(&mut std::io::stdout(), error)?;
+        }
+        CloudLogin::NotLoggedIn => {
             println!(
                 "{}  Cloud: not logged in — run `phantom login`",
                 "->".blue().bold()
@@ -476,7 +552,7 @@ pub fn run_status() -> Result<()> {
         }
     }
 
-    for line in local_cloud_status_lines(std::path::Path::new(".phantom.toml")) {
+    for line in local_cloud_status_lines(config_path) {
         println!("{line}");
     }
 
@@ -566,6 +642,68 @@ fn local_cloud_status_lines(config_path: &std::path::Path) -> Vec<String> {
 mod tests {
     use super::*;
     use phantom_vault::VaultBackend;
+
+    #[test]
+    fn cloud_status_json_reports_logged_out_without_identity() {
+        let report = cloud_status_json(&CloudLogin::NotLoggedIn, None, false);
+        assert_eq!(report["loggedIn"], false);
+        assert_eq!(report["tokenStored"], false);
+        assert_eq!(report["user"], serde_json::Value::Null);
+        assert_eq!(report["tier"], serde_json::Value::Null);
+        assert_eq!(report["lastSyncedVersion"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn cloud_status_json_reports_identity_tier_and_sync_state() {
+        let user = auth::UserInfo {
+            email: None,
+            github_login: "octo-placeholder".to_string(),
+            plan: "pro".to_string(),
+            vaults_count: Some(2),
+        };
+        let cloud = phantom_core::config::CloudConfig {
+            version: 7,
+            reconciliation_required: true,
+            reconciliation_remote_version: Some(9),
+        };
+        let report = cloud_status_json(&CloudLogin::LoggedIn(user), Some(&cloud), false);
+        assert_eq!(report["loggedIn"], true);
+        assert_eq!(report["user"], "octo-placeholder");
+        assert_eq!(report["githubLogin"], "octo-placeholder");
+        assert_eq!(report["tier"], "pro");
+        assert_eq!(report["vaultsCount"], 2);
+        assert_eq!(report["lastSyncedVersion"], 7);
+        assert_eq!(report["reconciliationRequired"], true);
+        assert_eq!(report["reconciliationRemoteVersion"], 9);
+
+        let rejected = cloud_status_json(&CloudLogin::TokenRejected, None, false);
+        assert_eq!(rejected["loggedIn"], false);
+        assert_eq!(rejected["tokenStored"], true);
+        assert_eq!(rejected["tokenRejected"], true);
+        assert_eq!(rejected["accountLookupFailed"], false);
+    }
+
+    #[test]
+    fn cloud_status_json_does_not_call_a_lookup_failure_a_rejected_token() {
+        let failed = cloud_status_json(
+            &CloudLogin::LookupFailed(phantom_core::error::PhantomError::CloudError {
+                status: 503,
+                message: "service unavailable".to_string(),
+            }),
+            None,
+            true,
+        );
+        assert_eq!(failed["loggedIn"], false);
+        assert_eq!(failed["tokenStored"], true);
+        assert_eq!(failed["tokenRejected"], false);
+        assert_eq!(failed["accountLookupFailed"], true);
+        assert_eq!(failed["localConfigUnreadable"], true);
+        assert_eq!(failed["lastSyncedVersion"], serde_json::Value::Null);
+        assert!(
+            !failed.to_string().contains("service unavailable"),
+            "lookup error text must not reach the JSON report"
+        );
+    }
     use tempfile::TempDir;
 
     #[test]

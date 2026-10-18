@@ -487,9 +487,16 @@ fn get_staged_files() -> Result<Vec<String>> {
         ])
         .output()
         .map_err(|_| {
-            anyhow::anyhow!("Failed to inspect staged paths; clean status is indeterminate")
+            anyhow::anyhow!(
+                "Failed to inspect staged paths: could not run git (is it on PATH?); clean status is indeterminate"
+            )
         })?;
     if !output.status.success() {
+        if !inside_git_work_tree() {
+            anyhow::bail!(
+                "`phantom check --staged` must run inside a git work tree; clean status is indeterminate. Use `phantom check` to scan .env files here."
+            );
+        }
         anyhow::bail!("Failed to inspect staged paths; clean status is indeterminate");
     }
     let paths = String::from_utf8(output.stdout).map_err(|_| {
@@ -500,6 +507,15 @@ fn get_staged_files() -> Result<Vec<String>> {
         .filter(|path| !path.is_empty())
         .map(String::from)
         .collect())
+}
+
+fn inside_git_work_tree() -> bool {
+    std::process::Command::new("git")
+        .args(["rev-parse", "--is-inside-work-tree"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .is_ok_and(|out| out.status.success() && out.stdout.starts_with(b"true"))
 }
 
 fn read_staged_file(file: &str) -> Result<String> {

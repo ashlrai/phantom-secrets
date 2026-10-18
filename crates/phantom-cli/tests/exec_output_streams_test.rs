@@ -131,6 +131,47 @@ fn exec_quiet_still_propagates_child_exit_code() {
     );
 }
 
+/// Only services with a vaulted credential are rerouted. A base URL for an
+/// unvaulted service (ANTHROPIC_BASE_URL in an OpenAI-only project) would send
+/// the child's SDK, including `phantom exec -- claude`, to a proxy route that
+/// can only answer 503 "route credential unavailable".
+#[cfg(unix)]
+#[test]
+fn exec_routes_only_vaulted_services() {
+    let (project, home) = initialized_project();
+
+    let output = phantom_command(project.path(), home.path())
+        .args(["exec", "--", "sh", "-c"])
+        .arg("printf 'OPENAI=%s\\nANTHROPIC=%s\\n' \"${OPENAI_BASE_URL-unset}\" \"${ANTHROPIC_BASE_URL-unset}\"")
+        .output()
+        .unwrap();
+    assert_success(&output, "phantom exec");
+
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let field = |key: &str| {
+        stdout
+            .lines()
+            .find_map(|line| line.strip_prefix(&format!("{key}=")))
+            .unwrap_or_else(|| panic!("{key} missing from child output:\n{stdout}"))
+            .to_string()
+    };
+    assert!(
+        field("OPENAI").contains("/openai/_phantom/"),
+        "child must still receive the OpenAI proxy base URL:\n{stdout}"
+    );
+    assert_eq!(
+        field("ANTHROPIC"),
+        "unset",
+        "an unvaulted service must not be rerouted to a credential-less proxy route"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("OPENAI_BASE_URL = "), "stderr:\n{stderr}");
+    assert!(
+        !stderr.contains("ANTHROPIC_BASE_URL = "),
+        "stderr:\n{stderr}"
+    );
+}
+
 /// A protected key with no proxy route reaches the child only as a session
 /// token that no provider accepts. Exec must say so instead of counting it as
 /// proxied, even under `--quiet` (warnings are not progress).

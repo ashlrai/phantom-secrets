@@ -158,6 +158,26 @@ fn ordinary_check_does_not_require_git_repository() {
 }
 
 #[test]
+fn staged_check_outside_git_says_why_it_is_indeterminate() {
+    let dir = common::canonical_tempdir();
+    let ceiling = dir.path().parent().expect("tempdir has a parent");
+
+    let output = phantom(&dir)
+        .env("GIT_CEILING_DIRECTORIES", ceiling)
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .args(["check", "--staged"])
+        .assert()
+        .failure();
+    let stderr = String::from_utf8_lossy(&output.get_output().stderr);
+    assert!(
+        stderr.contains("must run inside a git work tree"),
+        "expected a not-a-repository explanation, got: {stderr}"
+    );
+    assert_eq!(stderr.matches("Error:").count(), 1, "{stderr}");
+}
+
+#[test]
 fn check_staged_warns_on_risky_phantom_config_without_blocking() {
     let dir = common::canonical_tempdir();
     StdCommand::new("git")
