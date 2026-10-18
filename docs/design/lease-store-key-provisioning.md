@@ -140,3 +140,39 @@ Each phase is its own PR. None enables lease issuance or revocation.
 2. Is `LeaseSummary` missing a field operators need, or does it include one that should be dropped?
 3. Should the store descriptor record the key backend in the snapshot (format bump) or beside it?
 4. Is `HMAC-SHA256` with a distinct domain string acceptable as the derivation primitive if Option B is ever revisited, or must it use HKDF?
+
+## 10. Reviewer decision checklist (added for the security review)
+
+Re-verified on `main` at `6895ecb` (2026-10-18): the broker and runtime files cited above are unchanged since `dab7f32`, and the only user of `DurableReplayStore` outside the broker crate is still `crates/phantom-runtime/src/runtime.rs`. `mcp_approval.rs` gained code but `load_or_create_approval_key` is still at line 363. The file-mode precedent in section 3 (Option C) now also uses `O_NOFOLLOW` when it opens the key file (`mcp_approval.rs:142`); a lease key file should do the same.
+
+### What the reviewer must decide
+
+| # | Decision | Options | Recommendation |
+|---|----------|---------|----------------|
+| D1 | Key source | A (OS credential store), B (derive from passphrase), C (0600 file) | A where durable, C only if D2 allows it, never B |
+| D2 | Linux without a durable credential store | fail closed, or fall back to a 0600 file outside the store root | Fail closed. Revisit only if users ask for lease support on headless Linux |
+| D3 | CLI access to lease state | direct `phantom-broker` dependency, or IPC to the broker | IPC when the authority transport exists; no dependency before then |
+| D4 | Where the key backend is recorded | in the snapshot (format bump) or beside it | Beside it: a non-secret descriptor file with the backend name only, no format bump |
+| D5 | Derivation primitive if B is ever revisited | HMAC with a domain string, or HKDF | HKDF (needs a new dependency) |
+| D6 | `LeaseSummary` fields | as proposed in section 5 | Approve as proposed; drop `environment` if the reviewer treats it as sensitive |
+
+### Risks the reviewer should weigh
+
+1. Same-user agents. No local key source stops a process running as the same OS user. The key protects against other users, backups and disk images, not against an agent in the user's own session. The approval ceremony is the control for that case, and this design must not be described as protecting against it.
+2. Rollback. A valid older snapshot would un-revoke leases. Provisioning a key does not change this. Lease issuance must stay inactive until a monotonic anchor exists (phase 4).
+3. Key loss. On Linux keyutils the key does not survive a reboot. Because every restart already revokes all leases (section 7), loss is cheap, but `open_existing` fails hard and a human or a documented command must bootstrap a new store. The failure message must say so without printing key material.
+4. Rotation ordering. Persist the new key before rewriting the snapshot and keep the old key until a reopen succeeds. A fault-injection test is required before any rotation code lands.
+5. Credential-store churn. Option A on Linux Secret Service depends on the `keyring` crate, which is planned to move to version 4 (issue #242). The two should not be built in the same PR. If a lease key module lands first it must use the same `credential_entry` helper that #242 will rewrite, so the migration touches one call site.
+6. Entropy. `validate_key` rejects only the all-zero key. Generate with `OsRng` and keep it that way; do not accept caller-supplied keys from the CLI, environment or argv.
+
+### Options with a recommendation
+
+- Conservative (recommended): phases 0 to 2 as written, D2 fail closed, no CLI wiring, no lease issuance. Result: a library that can list leases value-free and provision a key on platforms with a durable store.
+- Wider: add the Option C file fallback on Linux. More users get working leases, but the key then sits in the same home directory as backups of the data it protects. Acceptable only if the reviewer accepts that trade-off in writing here.
+- Not recommended: derive from the file-vault passphrase (Option B), or add a direct CLI dependency on `phantom-broker` before the IPC transport exists.
+
+### Approval record (to be filled by the reviewer)
+
+- D1: ________  D2: ________  D3: ________  D4: ________  D5: ________  D6: ________
+- Reviewer and date: ________
+- Phase 1 may start after D6 is recorded. Phases 2 and 3 need D1 to D4. Nothing here enables lease issuance or revocation.
