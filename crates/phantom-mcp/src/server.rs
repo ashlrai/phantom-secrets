@@ -4215,9 +4215,15 @@ impl PhantomMcpServer {
             heatmap per secret per calendar day, (b) leak-incident timeline with \
             incident_id/secret_name/occurrences, (c) rotation-timing audit showing days since \
             last vault.store per secret, (d) anomaly executive summary of high-score secrets. \
+            The returned report is bounded the same way: each of heatmap (most-accessed \
+            secrets), leak_timeline (newest incidents), rotation_audit (longest since \
+            rotation) and anomaly_summary (highest scores) holds at most max_records entries, \
+            within a 1 MiB response; total_events, distinct_secrets and high_severity_events \
+            stay exact, <list>_total and <list>_returned count each list, and \
+            records_truncated is true when any entry was left out. \
             Use 'from'/'to' (YYYY-MM-DD) to scope the date range. \
-            Set 'save: true' to persist the report to ~/.phantom/reports/; saving requires \
-            confirm plus approval_token. \
+            Set 'save: true' to persist the complete report to ~/.phantom/reports/; saving \
+            requires confirm plus approval_token. \
             Never exposes secret values. Read-only (save=false). Safe for AI agents."
     )]
     fn phantom_audit_export_report(
@@ -4313,12 +4319,22 @@ impl PhantomMcpServer {
                     None
                 };
 
+                // The saved file is complete; only the inline copy is
+                // bounded, like action="export".
+                let max_records = params.max_records.min(MCP_ANALYTICS_MAX_RECORDS);
+                let inline = bounded_compliance_report(&report, max_records)?;
+
                 if let Some(path) = saved_path {
                     // Summary first so the agent sees where it was saved; the
                     // report follows as JSON text and structuredContent.
-                    report_result(format!("Compliance report saved to: {path}"), &report)
+                    let note = if inline["records_truncated"] == true {
+                        " (complete; the copy below is truncated, see records_truncated)"
+                    } else {
+                        ""
+                    };
+                    report_result(format!("Compliance report saved to: {path}{note}"), &inline)
                 } else {
-                    json_object_result(&report)
+                    json_object_result(&inline)
                 }
             }
 
@@ -5683,6 +5699,114 @@ fn audit_alerts_report(
             return json_object_result(&out);
         }
         keep = shrink_to_fit(keep, size, limit);
+    }
+}
+
+/// The inline copy of a compliance report that `phantom_audit_export_report`
+/// action="report" returns: each list holds at most `max_records` entries,
+/// and fewer when the pretty JSON would pass `MCP_ANALYTICS_MAX_BYTES`. The
+/// scalar totals (`total_events`, `distinct_secrets`, `high_severity_events`)
+/// stay exact, and `<list>_total`, `<list>_returned`, `records_truncated` and
+/// `max_records` say what was left out. Kept entries, deterministically:
+/// heatmap, the most-accessed secrets (name order); leak_timeline, the newest
+/// incidents (chronological); rotation_audit, the longest since rotation
+/// (name order); anomaly_summary, the highest scores (its own order).
+fn bounded_compliance_report(
+    report: &phantom_core::audit_export::ComplianceReport,
+    max_records: u32,
+) -> Result<serde_json::Value, McpError> {
+    // Indices into each list, most relevant first.
+    let mut heatmap: Vec<usize> = (0..report.heatmap.len()).collect();
+    heatmap.sort_by(|&a, &b| {
+        let (a, b) = (&report.heatmap[a], &report.heatmap[b]);
+        b.total
+            .cmp(&a.total)
+            .then_with(|| a.secret_name.cmp(&b.secret_name))
+    });
+    let mut leaks: Vec<usize> = (0..report.leak_timeline.len()).collect();
+    leaks.sort_by(|&a, &b| {
+        let (a, b) = (&report.leak_timeline[a], &report.leak_timeline[b]);
+        (&b.first_seen, &b.last_seen, &b.incident_id).cmp(&(
+            &a.first_seen,
+            &a.last_seen,
+            &a.incident_id,
+        ))
+    });
+    let mut rotation: Vec<usize> = (0..report.rotation_audit.len()).collect();
+    rotation.sort_by(|&a, &b| {
+        let (a, b) = (&report.rotation_audit[a], &report.rotation_audit[b]);
+        b.days_since_rotation
+            .cmp(&a.days_since_rotation)
+            .then_with(|| a.secret_name.cmp(&b.secret_name))
+    });
+    let anomalies: Vec<usize> = (0..report.anomaly_summary.len()).collect();
+
+    /// Order the kept entries are shown in.
+    enum Show {
+        /// Most relevant first, as ranked.
+        Ranked,
+        /// The report's own order.
+        Source,
+        /// Reverse of the ranking (newest-first ranking shown oldest first).
+        Reversed,
+    }
+
+    /// The first `keep` of a ranking, in display order.
+    fn pick<T: serde::Serialize>(
+        items: &[T],
+        ranked: &[usize],
+        keep: usize,
+        show: Show,
+    ) -> Result<serde_json::Value, McpError> {
+        let mut chosen: Vec<usize> = ranked[..keep.min(ranked.len())].to_vec();
+        match show {
+            Show::Ranked => {}
+            Show::Source => chosen.sort_unstable(),
+            Show::Reversed => chosen.reverse(),
+        }
+        let chosen: Vec<&T> = chosen.iter().map(|&i| &items[i]).collect();
+        serde_json::to_value(chosen).map_err(|e| internal_err(format!("Serialization error: {e}")))
+    }
+
+    let full = serde_json::to_value(report)
+        .map_err(|e| internal_err(format!("Serialization error: {e}")))?;
+    let lists: [(&str, usize); 4] = [
+        ("heatmap", heatmap.len()),
+        ("leak_timeline", leaks.len()),
+        ("rotation_audit", rotation.len()),
+        ("anomaly_summary", anomalies.len()),
+    ];
+    let longest = lists.iter().map(|(_, len)| *len).max().unwrap_or(0);
+    let mut keep = longest.min(max_records as usize);
+    loop {
+        let mut out = full.clone();
+        out["heatmap"] = pick(&report.heatmap, &heatmap, keep, Show::Source)?;
+        out["leak_timeline"] = pick(&report.leak_timeline, &leaks, keep, Show::Reversed)?;
+        out["rotation_audit"] = pick(&report.rotation_audit, &rotation, keep, Show::Source)?;
+        out["anomaly_summary"] = pick(&report.anomaly_summary, &anomalies, keep, Show::Ranked)?;
+        let mut truncated = false;
+        for (name, total) in lists {
+            let returned = total.min(keep);
+            truncated |= returned < total;
+            out[format!("{name}_total")] = total.into();
+            out[format!("{name}_returned")] = returned.into();
+        }
+        out["records_truncated"] = truncated.into();
+        out["max_records"] = max_records.into();
+        let size = serde_json::to_string_pretty(&out)
+            .map_err(|e| internal_err(format!("Serialization error: {e}")))?
+            .len();
+        if size <= MCP_ANALYTICS_MAX_BYTES {
+            return Ok(out);
+        }
+        if keep == 0 {
+            return Err(invalid_params_err(format!(
+                "The compliance report summary is {size} bytes even with empty lists, over the \
+                 {MCP_ANALYTICS_MAX_BYTES} byte MCP response limit. Narrow from/to, or run \
+                 `phantom audit report --save` in a terminal."
+            )));
+        }
+        keep = shrink_to_fit(keep, size, MCP_ANALYTICS_MAX_BYTES);
     }
 }
 
@@ -12829,6 +12953,213 @@ mod tests {
             let returned = meta["records_returned"].as_u64().unwrap();
             assert!(returned > 0 && returned < 6000, "{format} returned count");
         }
+    }
+
+    fn report_params(max_records: u32, save: bool) -> AuditExportReportParams {
+        AuditExportReportParams {
+            action: "report".to_string(),
+            format: "json".to_string(),
+            from: None,
+            to: None,
+            secret_name: None,
+            operation: None,
+            max_records,
+            save,
+            confirm: save,
+            approval_token: None,
+        }
+    }
+
+    /// 30 secrets (secret `i` read `i + 1` times, stored at `i`) and 30 leak
+    /// incidents first seen at `base + i`.
+    fn write_report_fixture(home: &std::path::Path) {
+        let base = 1_700_000_000_u64;
+        let names: Vec<String> = (0..30).map(|i| format!("REPORT_ENTRY_{i:02}")).collect();
+        let mut entries: Vec<(u64, &str, Option<&str>)> = Vec::new();
+        for (i, name) in names.iter().enumerate() {
+            let i = i as u64;
+            entries.push((base + i, "vault.store", Some(name.as_str())));
+            for j in 0..=i {
+                entries.push((
+                    base + 100 + i * 100 + j,
+                    "vault.retrieve",
+                    Some(name.as_str()),
+                ));
+            }
+        }
+        entries.sort_by_key(|entry| entry.0);
+        write_synthetic_audit_log(home, &entries);
+
+        use std::io::Write;
+        let mut incidents =
+            std::fs::File::create(home.join(".phantom/leak-incidents.jsonl")).unwrap();
+        // Written newest first: the timeline is still chronological.
+        for i in (0..30_u64).rev() {
+            let incident = phantom_core::leak_correlation::LeakIncident {
+                incident_id: format!("incident-{i:02}"),
+                secret_name: format!("REPORT_ENTRY_{i:02}"),
+                location_label: "body".to_string(),
+                first_seen_ts: base + i,
+                last_seen_ts: base + i,
+                event_count: 1,
+                confidence: 0.5,
+                remediation: "rotate".to_string(),
+            };
+            writeln!(incidents, "{}", serde_json::to_string(&incident).unwrap()).unwrap();
+        }
+    }
+
+    fn names_in(list: &serde_json::Value) -> Vec<String> {
+        list.as_array()
+            .expect("list")
+            .iter()
+            .map(|entry| entry["secret_name"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    /// action="report" used to return every heatmap, timeline, rotation and
+    /// anomaly entry inline, however many. Each list now holds at most
+    /// max_records entries, the most relevant ones, with exact totals and the
+    /// same truncation fields as action="export".
+    #[test]
+    fn test_audit_report_lists_are_capped_with_exact_totals() {
+        let _environment = TestEnvironment::new();
+        let (server, _dir) = setup_initialized_project();
+        let home = canonical_temp_dir();
+        unsafe { std::env::set_var("HOME", home.path()) };
+        write_report_fixture(home.path());
+
+        let result = server
+            .phantom_audit_export_report(Parameters(report_params(5, false)))
+            .unwrap();
+        let report = result.structured_content.expect("report");
+        assert_eq!(report["max_records"], 5);
+        assert_eq!(report["records_truncated"], true);
+        for list in ["heatmap", "leak_timeline", "rotation_audit"] {
+            assert_eq!(report[format!("{list}_total")], 30, "{list} total");
+            assert_eq!(report[format!("{list}_returned")], 5, "{list} returned");
+            assert_eq!(report[list].as_array().unwrap().len(), 5, "{list} length");
+        }
+        let anomalies_total = report["anomaly_summary_total"].as_u64().unwrap();
+        assert!(
+            report["anomaly_summary"].as_array().unwrap().len() as u64 <= anomalies_total.min(5)
+        );
+        // Exact scalars: 30 stores plus 1 + 2 + ... + 30 reads.
+        assert_eq!(report["total_events"], 30 + 465);
+        assert_eq!(report["distinct_secrets"], 30);
+
+        let top: Vec<String> = (25..30).map(|i| format!("REPORT_ENTRY_{i:02}")).collect();
+        assert!(
+            names_in(&report["heatmap"]) == top,
+            "most-accessed secrets, name order"
+        );
+        assert!(
+            names_in(&report["rotation_audit"])
+                == (0..5)
+                    .map(|i| format!("REPORT_ENTRY_{i:02}"))
+                    .collect::<Vec<_>>(),
+            "longest since rotation, name order"
+        );
+        let incidents: Vec<&str> = report["leak_timeline"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["incident_id"].as_str().unwrap())
+            .collect();
+        assert!(
+            incidents
+                == [
+                    "incident-25",
+                    "incident-26",
+                    "incident-27",
+                    "incident-28",
+                    "incident-29"
+                ],
+            "newest incidents, chronological"
+        );
+
+        // Under the cap nothing is cut; above the hard maximum the cap is 10000.
+        let result = server
+            .phantom_audit_export_report(Parameters(report_params(u32::MAX, false)))
+            .unwrap();
+        let report = result.structured_content.expect("report");
+        assert_eq!(report["records_truncated"], false);
+        assert_eq!(report["max_records"], 10_000);
+        assert_eq!(report["heatmap_returned"], 30);
+        assert_eq!(report["leak_timeline"].as_array().unwrap().len(), 30);
+        assert_eq!(report["leak_timeline"][0]["incident_id"], "incident-00");
+    }
+
+    /// A report whose lists do not fit in 1 MiB returns fewer entries
+    /// instead of an unbounded response.
+    #[test]
+    fn test_audit_report_response_fits_the_byte_ceiling() {
+        let _environment = TestEnvironment::new();
+        let (server, _dir) = setup_initialized_project();
+        let home = canonical_temp_dir();
+        unsafe { std::env::set_var("HOME", home.path()) };
+        let names: Vec<String> = (0..4000)
+            .map(|i| format!("LONG_REPORT_ENTRY_{i:04}_{}", "X".repeat(240)))
+            .collect();
+        let entries: Vec<(u64, &str, Option<&str>)> = names
+            .iter()
+            .enumerate()
+            .map(|(i, name)| {
+                (
+                    1_700_000_000 + i as u64,
+                    "vault.retrieve",
+                    Some(name.as_str()),
+                )
+            })
+            .collect();
+        write_synthetic_audit_log(home.path(), &entries);
+
+        let result = server
+            .phantom_audit_export_report(Parameters(report_params(10_000, false)))
+            .unwrap();
+        let body_len = extract_content_text(&result).len();
+        assert!(
+            body_len <= MCP_ANALYTICS_MAX_BYTES,
+            "report body over the ceiling"
+        );
+        let report = result.structured_content.expect("report");
+        assert_eq!(report["records_truncated"], true);
+        assert_eq!(report["heatmap_total"], 4000);
+        assert_eq!(report["total_events"], 4000);
+        let returned = report["heatmap_returned"].as_u64().unwrap();
+        assert!(returned > 0 && returned < 4000, "heatmap returned count");
+        assert_eq!(report["heatmap"].as_array().unwrap().len() as u64, returned);
+    }
+
+    /// save=true still writes the complete report; only the inline copy is
+    /// bounded.
+    #[test]
+    fn test_audit_report_save_keeps_the_file_complete() {
+        let _environment = TestEnvironment::new();
+        let (server, _dir) = setup_initialized_project();
+        let home = canonical_temp_dir();
+        unsafe { std::env::set_var("HOME", home.path()) };
+        unsafe { std::env::set_var("PHANTOM_MCP_SKIP_APPROVAL", "1") };
+        write_report_fixture(home.path());
+
+        let result = server
+            .phantom_audit_export_report(Parameters(report_params(5, true)))
+            .unwrap();
+        let inline = result.structured_content.clone().expect("report");
+        assert_eq!(inline["heatmap"].as_array().unwrap().len(), 5);
+        assert_eq!(inline["records_truncated"], true);
+        assert!(extract_content_text(&result).contains("truncated"));
+
+        let reports_dir = home.path().join(".phantom/reports");
+        let saved: Vec<_> = std::fs::read_dir(&reports_dir).unwrap().collect();
+        assert_eq!(saved.len(), 1);
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(saved[0].as_ref().unwrap().path()).unwrap())
+                .unwrap();
+        assert_eq!(saved["heatmap"].as_array().unwrap().len(), 30);
+        assert_eq!(saved["leak_timeline"].as_array().unwrap().len(), 30);
+        assert_eq!(saved["rotation_audit"].as_array().unwrap().len(), 30);
+        assert!(saved.get("records_truncated").is_none());
     }
 
     /// A min_confidence above 1.0 used to hide every incident and answer "No

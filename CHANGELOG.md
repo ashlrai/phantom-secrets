@@ -4,6 +4,22 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (`phantom_audit_export_report` with `action: "report"`)
+
+- The compliance report came back inline with no bound: one heatmap entry
+  per secret (with every day), every leak incident, every rotation-audit
+  and anomaly entry, however large the audit history. Each of those lists
+  now holds at most `max_records` entries (default 1000, max 10000) within
+  the same 1 MiB response ceiling as `action: "export"` and
+  `phantom_audit_analytics`, keeping the most-accessed secrets, the newest
+  incidents, the secrets longest since rotation and the highest anomaly
+  scores. `total_events`, `distinct_secrets` and `high_severity_events`
+  stay exact; `heatmap_total`/`heatmap_returned` (and the same pair for
+  `leak_timeline`, `rotation_audit`, `anomaly_summary`),
+  `records_truncated` and `max_records` say what was left out. A report
+  saved with `save: true` is still complete on disk. Names and counts
+  only, never values.
+
 ### Fixed (`phantom_expiry_enforce`, `phantom expiry enforce --json`)
 
 - With `fail_closed=true` the MCP tool put the secrets that have no expiry
