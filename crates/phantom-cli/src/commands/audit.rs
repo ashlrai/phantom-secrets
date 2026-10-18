@@ -241,7 +241,17 @@ pub fn run_show(
     leaked_secrets: bool,
 ) -> Result<()> {
     let path = resolve_path()?;
+    run_show_at(&path, last, op, name, json, leaked_secrets)
+}
 
+fn run_show_at(
+    path: &std::path::Path,
+    last: usize,
+    op: Option<&str>,
+    name: Option<&str>,
+    json: bool,
+    leaked_secrets: bool,
+) -> Result<()> {
     if !path.exists() {
         println!(
             "{}  No audit events yet — set {} to start logging.",
@@ -258,7 +268,10 @@ pub fn run_show(
         op
     };
 
-    let matched = read_matching_lines(&path, effective_op, name);
+    // An unreadable log is not an empty one: fail instead of reporting
+    // "No matching audit events" (or empty --json output) with exit 0.
+    let matched = read_matching_lines(path, effective_op, name)
+        .map_err(|error| anyhow::anyhow!("Failed to read audit log {}: {error}", path.display()))?;
     if matched.unparsable > 0 {
         eprintln!(
             "{} Skipped {} line(s) that are not valid audit JSON; run {} to check the chain.",
@@ -1832,7 +1845,7 @@ fn read_matching_lines(
     path: &std::path::Path,
     op: Option<&str>,
     name: Option<&str>,
-) -> MatchedLines {
+) -> std::io::Result<MatchedLines> {
     read_matching_lines_within(path, op, name, phantom_core::audit::RECENT_WINDOW_BYTES)
 }
 
@@ -1841,18 +1854,8 @@ fn read_matching_lines_within(
     op: Option<&str>,
     name: Option<&str>,
     max_bytes: u64,
-) -> MatchedLines {
-    let recent = match phantom_core::audit::read_recent_lines(path, max_bytes) {
-        Ok(recent) => recent,
-        Err(e) => {
-            eprintln!("{} Failed to open audit log: {}", "warn".yellow().bold(), e);
-            return MatchedLines {
-                lines: Vec::new(),
-                unparsable: 0,
-                window_truncated: false,
-            };
-        }
-    };
+) -> std::io::Result<MatchedLines> {
+    let recent = phantom_core::audit::read_recent_lines(path, max_bytes)?;
     let mut matched = MatchedLines {
         lines: Vec::new(),
         unparsable: recent.unreadable_lines,
@@ -1868,7 +1871,7 @@ fn read_matching_lines_within(
             matched.lines.push(line);
         }
     }
-    matched
+    Ok(matched)
 }
 
 /// Returns true if the raw JSON line passes both op and name filters.
@@ -2063,7 +2066,9 @@ mod tests {
             tmp.path(),
             &[LINE_STORE, LINE_RETRIEVE, LINE_PUSH, LINE_STRIPE],
         );
-        let results = read_matching_lines(&path, Some("vault.store"), None).lines;
+        let results = read_matching_lines(&path, Some("vault.store"), None)
+            .unwrap()
+            .lines;
         assert_eq!(results.len(), 2);
         assert!(results[0].contains("vault.store"));
         assert!(results[1].contains("STRIPE_KEY"));
@@ -2076,7 +2081,9 @@ mod tests {
             tmp.path(),
             &[LINE_STORE, LINE_RETRIEVE, LINE_PUSH, LINE_STRIPE],
         );
-        let results = read_matching_lines(&path, None, Some("OPENAI_API_KEY")).lines;
+        let results = read_matching_lines(&path, None, Some("OPENAI_API_KEY"))
+            .unwrap()
+            .lines;
         assert_eq!(results.len(), 2);
         assert!(results[0].contains("vault.store"));
         assert!(results[1].contains("vault.retrieve"));
@@ -2089,7 +2096,9 @@ mod tests {
             tmp.path(),
             &[LINE_STORE, LINE_RETRIEVE, LINE_PUSH, LINE_STRIPE],
         );
-        let results = read_matching_lines(&path, Some("vault.store"), Some("OPENAI_API_KEY")).lines;
+        let results = read_matching_lines(&path, Some("vault.store"), Some("OPENAI_API_KEY"))
+            .unwrap()
+            .lines;
         assert_eq!(results.len(), 1);
         assert!(results[0].contains("vault.store"));
         assert!(results[0].contains("OPENAI_API_KEY"));
@@ -2121,7 +2130,7 @@ mod tests {
         let tmp = tempdir().unwrap();
         let path = write_fixture(tmp.path(), &[LINE_STORE, LINE_MALFORMED, LINE_PUSH]);
         // Should return 2 valid lines, not crash, and count the bad one
-        let results = read_matching_lines(&path, None, None);
+        let results = read_matching_lines(&path, None, None).unwrap();
         assert_eq!(results.lines.len(), 2);
         assert_eq!(results.unparsable, 1);
         assert!(!results.window_truncated);
@@ -2131,7 +2140,7 @@ mod tests {
     fn empty_file_returns_no_lines() {
         let tmp = tempdir().unwrap();
         let path = write_fixture(tmp.path(), &[]);
-        let results = read_matching_lines(&path, None, None);
+        let results = read_matching_lines(&path, None, None).unwrap();
         assert!(results.lines.is_empty());
     }
 
@@ -2144,10 +2153,32 @@ mod tests {
         );
         // The last line plus a fragment of the one before it.
         let window = LINE_STRIPE.len() as u64 + 1 + 5;
-        let results = read_matching_lines_within(&path, None, None, window);
+        let results = read_matching_lines_within(&path, None, None, window).unwrap();
         assert!(results.window_truncated);
         assert_eq!(results.lines, [LINE_STRIPE]);
         assert_eq!(results.unparsable, 0);
+    }
+
+    #[test]
+    fn show_fails_when_the_audit_log_cannot_be_read() {
+        // A directory at the log path exists but cannot be read as a file,
+        // even as root. Before this fix `audit show` printed "No matching
+        // audit events" (and nothing at all with --json) and exited 0.
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("audit.log");
+        std::fs::create_dir(&path).unwrap();
+
+        assert!(read_matching_lines(&path, None, None).is_err());
+        assert!(run_show_at(&path, 20, None, None, true, false).is_err());
+        assert!(run_show_at(&path, 20, None, None, false, false).is_err());
+        assert!(run_show_at(&path, 20, None, None, true, true).is_err());
+    }
+
+    #[test]
+    fn show_reports_an_empty_but_readable_log_as_success() {
+        let tmp = tempdir().unwrap();
+        let path = write_fixture(tmp.path(), &[]);
+        assert!(run_show_at(&path, 20, None, None, true, false).is_ok());
     }
 
     #[test]
