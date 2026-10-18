@@ -43,6 +43,19 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   instead of counting them as never checked, and no longer reports "All
   secrets passed" over unreadable results.
 
+### Fixed (`phantom_audit_alerts`)
+
+- `last` was passed through with no maximum, so a large value returned
+  every persisted leak alert into the agent's context, and the alerts file
+  was read whole into memory to pick them. The tool now clamps `last` to
+  10000 (the `phantom_audit_analytics` maximum), keeps the newest alerts
+  that fit a 1 MiB response, and reports `records_total` (every alert in
+  the file), `records_returned`, `records_truncated`, `max_records` and
+  `unparsable_lines`; `alert_count` still counts the alerts listed. The
+  file is streamed once without following a symlink, holding at most
+  `last` alerts and one 64 KiB line in memory, and `phantom audit alerts`
+  reads it the same way. Names only, never values.
+
 ### Fixed (`phantom_compliance_status`)
 
 - With this project's secrets in an encrypted-file vault the MCP process

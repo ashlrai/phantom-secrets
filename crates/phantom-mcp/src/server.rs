@@ -4067,9 +4067,12 @@ impl PhantomMcpServer {
             Set 'backfill: true' to re-run correlation, persist new incidents/alerts, and dispatch \
             configured notifications before returning the list; this requires confirm plus \
             approval_token. \
-            Returns the most recent 'last' alerts (default 50) in chronological order, \
-            including: secret_name, location_label, confidence, event_count, alerted_at, \
-            backends_notified, and remediation advice. \
+            Returns the most recent 'last' alerts (default 50, max 10000) in chronological \
+            order within a 1 MiB response, including: secret_name, location_label, \
+            confidence, event_count, alerted_at, backends_notified, and remediation advice. \
+            records_total counts every alert in the file, records_returned the alerts listed, \
+            and records_truncated is true when older ones were left out; max_records is the \
+            effective 'last'. For more run `phantom audit alerts --last N --json` in a terminal. \
             Never exposes secret values. Read-only when backfill=false. Safe for AI agents."
     )]
     fn phantom_audit_alerts(
@@ -4179,23 +4182,21 @@ impl PhantomMcpServer {
         let alerter =
             LeakIncidentAlerter::with_path(dummy_config, alerts_path, Box::new(NullDispatch));
 
-        let alerts = alerter
-            .load_recent_alerts(params.last)
+        // Bounded like phantom_audit_analytics: the scan holds at most
+        // max_records alerts, and the newest that fit 1 MiB are returned.
+        let max_records = params.last.min(MCP_ANALYTICS_MAX_RECORDS as usize);
+        let recent = alerter
+            .scan_recent_alerts(max_records)
             .map_err(|e| internal_err(format!("Failed to read alerts: {e}")))?;
 
-        if alerts.is_empty() {
+        if recent.total == 0 {
             return text_result(
                 "No leak alerts found. Configure [alerting] in .phantom.toml and run \
                  `phantom audit alerts --backfill` to emit pending alerts.",
             );
         }
 
-        let out = serde_json::json!({
-            "alert_count": alerts.len(),
-            "alerts": alerts,
-        });
-
-        json_object_result(&out)
+        audit_alerts_report(&recent, max_records, MCP_ANALYTICS_MAX_BYTES)
     }
 
     /// Export raw audit rows or generate a full compliance report.
@@ -5670,6 +5671,35 @@ const MCP_ANALYTICS_MAX_BYTES: usize = 1024 * 1024;
 fn shrink_to_fit(keep: usize, size: usize, limit: usize) -> usize {
     let scaled = (keep as u128 * limit as u128 / size.max(1) as u128) as usize;
     scaled.min(keep.saturating_sub(1))
+}
+
+/// The `phantom_audit_alerts` response: the newest of `recent.alerts` whose
+/// pretty JSON fits `limit` bytes, with exact counts.
+fn audit_alerts_report(
+    recent: &phantom_core::leak_correlation::RecentAlerts,
+    max_records: usize,
+    limit: usize,
+) -> Result<CallToolResult, McpError> {
+    let alerts = &recent.alerts;
+    let mut keep = alerts.len();
+    loop {
+        let out = serde_json::json!({
+            "alert_count": keep,
+            "alerts": &alerts[alerts.len() - keep..],
+            "records_total": recent.total,
+            "records_returned": keep,
+            "records_truncated": keep < recent.total,
+            "max_records": max_records,
+            "unparsable_lines": recent.unparsable_lines,
+        });
+        let size = serde_json::to_string_pretty(&out)
+            .map_err(|e| internal_err(format!("Serialization error: {e}")))?
+            .len();
+        if size <= limit || keep == 0 {
+            return json_object_result(&out);
+        }
+        keep = shrink_to_fit(keep, size, limit);
+    }
 }
 
 /// The inline copy of a compliance report that `phantom_audit_export_report`
@@ -11334,6 +11364,130 @@ mod tests {
     fn parse_result_json(result: &CallToolResult) -> serde_json::Value {
         let text = extract_content_text(result);
         serde_json::from_str(&text).unwrap_or_else(|_| serde_json::json!({}))
+    }
+
+    // ── phantom_audit_alerts ──────────────────────────────────────────
+
+    fn write_synthetic_alerts(home: &std::path::Path, count: u64, remediation_len: usize) {
+        let dir = home.join(".phantom");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut contents = String::new();
+        for i in 0..count {
+            let alert = serde_json::json!({
+                "incident_id": format!("inc_{i}"),
+                "secret_name": format!("ALERT_{i}"),
+                "location_label": "body",
+                "confidence": 0.95,
+                "event_count": 1,
+                "alerted_at": 1_000_000 + i,
+                "backends_notified": [],
+                "remediation": "r".repeat(remediation_len),
+            });
+            contents.push_str(&alert.to_string());
+            contents.push('\n');
+        }
+        std::fs::write(dir.join("leak-alerts.jsonl"), contents).unwrap();
+    }
+
+    fn alerts_params(last: usize) -> AuditAlertsParams {
+        AuditAlertsParams {
+            last,
+            backfill: false,
+            confirm: false,
+            approval_token: None,
+        }
+    }
+
+    fn alert_ids(json: &serde_json::Value) -> Vec<String> {
+        json["alerts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|alert| alert["incident_id"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    /// `last` used to be passed through unbounded, so a large value returned
+    /// every alert in the file. It is clamped to 10000 now, the newest that
+    /// fit 1 MiB are kept, and the counts are exact.
+    #[test]
+    fn audit_alerts_clamps_last_and_reports_exact_counts() {
+        let _environment = TestEnvironment::new();
+        let home = TestHome::new();
+        let (server, _dir) = setup_initialized_project();
+        write_synthetic_alerts(home._dir.path(), 10_005, 0);
+
+        let result = server
+            .phantom_audit_alerts(Parameters(alerts_params(usize::MAX)))
+            .unwrap();
+        let json = parse_result_json(&result);
+        assert_eq!(result.structured_content.as_ref(), Some(&json));
+        assert!(extract_content_text(&result).len() <= MCP_ANALYTICS_MAX_BYTES);
+        assert_eq!(json["records_total"], 10_005);
+        assert_eq!(json["records_truncated"], true);
+        assert_eq!(json["max_records"], 10_000);
+        let returned = json["records_returned"].as_u64().unwrap();
+        assert!(returned > 0 && returned < 10_000);
+        assert_eq!(json["alert_count"], returned);
+        let ids = alert_ids(&json);
+        assert_eq!(ids.len() as u64, returned);
+        // The newest, in chronological order.
+        let first_kept = format!("inc_{}", 10_005 - returned);
+        assert_eq!(ids.first(), Some(&first_kept));
+        assert_eq!(ids.last().map(String::as_str), Some("inc_10004"));
+
+        let json = parse_result_json(
+            &server
+                .phantom_audit_alerts(Parameters(alerts_params(3)))
+                .unwrap(),
+        );
+        assert_eq!(alert_ids(&json), ["inc_10002", "inc_10003", "inc_10004"]);
+        assert_eq!(json["records_total"], 10_005);
+        assert_eq!(json["records_truncated"], true);
+        assert_eq!(json["max_records"], 3);
+    }
+
+    /// Alerts that fit the count can still be too large together; the
+    /// newest that fit 1 MiB are returned.
+    #[test]
+    fn audit_alerts_fit_the_mcp_byte_ceiling() {
+        let _environment = TestEnvironment::new();
+        let home = TestHome::new();
+        let (server, _dir) = setup_initialized_project();
+        write_synthetic_alerts(home._dir.path(), 2_000, 2_000);
+
+        let result = server
+            .phantom_audit_alerts(Parameters(alerts_params(50_000)))
+            .unwrap();
+        let text = extract_content_text(&result);
+        assert!(text.len() <= MCP_ANALYTICS_MAX_BYTES);
+        let json = parse_result_json(&result);
+        let returned = json["records_returned"].as_u64().unwrap();
+        assert!(returned > 0 && returned < 2_000);
+        assert_eq!(json["records_total"], 2_000);
+        assert_eq!(json["records_truncated"], true);
+        let ids = alert_ids(&json);
+        assert_eq!(ids.len() as u64, returned);
+        assert_eq!(ids.last().map(String::as_str), Some("inc_1999"));
+    }
+
+    #[test]
+    fn audit_alerts_under_the_caps_are_not_truncated() {
+        let _environment = TestEnvironment::new();
+        let home = TestHome::new();
+        let (server, _dir) = setup_initialized_project();
+        write_synthetic_alerts(home._dir.path(), 4, 0);
+
+        let json = parse_result_json(
+            &server
+                .phantom_audit_alerts(Parameters(alerts_params(50)))
+                .unwrap(),
+        );
+        assert_eq!(alert_ids(&json), ["inc_0", "inc_1", "inc_2", "inc_3"]);
+        assert_eq!(json["records_total"], 4);
+        assert_eq!(json["records_returned"], 4);
+        assert_eq!(json["records_truncated"], false);
+        assert_eq!(json["unparsable_lines"], 0);
     }
 
     // ── phantom_audit_recent ──────────────────────────────────────────
