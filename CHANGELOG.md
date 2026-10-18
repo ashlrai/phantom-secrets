@@ -4,6 +4,15 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (`leaks plan` with `on_leak = "off"`)
+
+- `on_leak = "off"` in a repository's `.phantom.toml` made `phantom leaks
+  plan` answer "Nothing to plan" (and `plan: []` in `--json`) without
+  reading the user's incidents, which live in `~/.phantom` and cover every
+  project. It still plans nothing, but it now warns how many active
+  incidents it left out and names `phantom audit incidents`; `--json` adds
+  `suppressed_incidents` (null when the incidents could not be read).
+
 ### Fixed (`phantom_expiry_enforce` over a keychain-only view)
 
 - With some secrets in the OS keychain beside an encrypted-file vault the
