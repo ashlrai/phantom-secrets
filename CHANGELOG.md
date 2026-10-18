@@ -4,6 +4,18 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (`phantom doctor`, `phantom agent setup --apply`, `phantom env`)
+
+- A `.phantom.toml` that existed but could not be read or parsed was treated
+  as "no config". `phantom doctor` judged `./.env` instead of the managed
+  dotenv the config names, and `--fix` wrote `.gitignore` and `.env.example`
+  from it; `phantom agent setup --apply` and `phantom env` did the same.
+  Doctor now reports the broken config as a failed check with a next step
+  (fix or restore it), marks the managed dotenv as not checked, and `--fix`
+  makes no repairs. `phantom agent setup --apply` and `phantom env` refuse
+  before any change. A config that does not exist still means "not
+  initialized".
+
 ### Fixed (`phantom list --min-anomaly-score`)
 
 - An audit log that existed but could not be read, or failed integrity
