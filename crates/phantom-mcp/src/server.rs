@@ -5176,7 +5176,14 @@ impl PhantomMcpServer {
         // and `phantom expiry enforce` reads them there). This gate must not
         // pass over secrets in a vault this process cannot open.
         let (config, vault) = self.load_config_and_vault()?;
-        let vault_note = self.require_readable_inventory(&config, vault.as_ref())?;
+        // A gate, like `phantom expiry enforce` (require_complete_inventory):
+        // a keychain-only view beside a locked file vault is refused, not
+        // answered with pass=true over secrets this process never saw.
+        if let Some(note) = self.require_readable_inventory(&config, vault.as_ref())? {
+            return Err(state_err(format!(
+                "Refusing to enforce expiry from a partial inventory. {note}"
+            )));
+        }
         let entries = vault
             .list_with_metadata()
             .map_err(|e| vault_read_err("Failed to read vault lifecycle metadata", e))?;
@@ -5187,7 +5194,7 @@ impl PhantomMcpServer {
         let out = serde_json::to_value(&report)
             .map_err(|error| internal_err(format!("Failed to encode expiry report: {error}")))?;
 
-        json_object_result(&with_vault_note(out, vault_note))
+        json_object_result(&out)
     }
 
     // ── Rotation schedule next ────────────────────────────────────────────
@@ -9498,6 +9505,26 @@ mod tests {
                     error.message
                 );
             }
+        }
+    }
+
+    /// `phantom_expiry_enforce` is a gate. With keychain entries beside a
+    /// locked file vault it answered `pass: true` (plus a vault_note) over
+    /// secrets it never read, while `phantom expiry enforce`, whose answer it
+    /// claims to match, refuses a partial inventory. It now refuses too.
+    #[test]
+    fn expiry_enforce_refuses_a_keychain_only_view() {
+        let _environment = TestEnvironment::new();
+        let _home = TestHome::new();
+        let (server, _dir) = locked_file_vault_project();
+        let _vault = TestVault::serve(|| Box::new(KeychainWithOne));
+        for fail_closed in [false, true] {
+            let error = server
+                .phantom_expiry_enforce(Parameters(PhantomExpiryEnforceParams { fail_closed }))
+                .expect_err("a partial inventory must not pass the expiry gate");
+            assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_REQUEST);
+            assert!(error.message.contains("partial inventory"));
+            assert!(error.message.contains("covers only the OS keychain"));
         }
     }
 

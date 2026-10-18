@@ -4,6 +4,15 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (`phantom_expiry_enforce` over a keychain-only view)
+
+- With some secrets in the OS keychain beside an encrypted-file vault the
+  MCP process could not open, `phantom_expiry_enforce` answered
+  `pass: true` (with a `vault_note`) over the keychain alone, while
+  `phantom expiry enforce`, whose answer it claims to match, refuses a
+  partial inventory. The tool now refuses too (-32600, with the unlock step)
+  instead of passing the gate over secrets it never read.
+
 ### Fixed (`phantom doctor` Claude Code settings check)
 
 - A `.claude/settings.local.json` that exists but is not valid JSON was
