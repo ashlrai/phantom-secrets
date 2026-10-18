@@ -1,0 +1,21 @@
+# LiteLLM config for gateway mode behind Phantom. Value-free: every secret is
+# read from the environment, and the provider key variable holds a phm_
+# placeholder (set by `phantom exec`), never a real key.
+#
+# Run: phantom exec -- litellm --config config.yaml --host 127.0.0.1 --port 4000
+model_list:
+  - model_name: gpt-gateway
+    litellm_params:
+      model: openai/gpt-4o-mini
+      # phantom exec exports OPENAI_BASE_URL as
+      #   http://127.0.0.1:<port>/openai/_phantom/<session token>/
+      api_base: os.environ/OPENAI_BASE_URL
+      api_key: os.environ/OPENAI_API_KEY
+
+general_settings:
+  # Agents authenticate to LiteLLM with this, not with a provider key. Set it
+  # in the environment of the process that starts LiteLLM only.
+  master_key: os.environ/LITELLM_MASTER_KEY
+  # Do not let callers choose api_base or api_key per request (see the
+  # GHSA-3cv6-jpf6-8222 workaround in docs/litellm.md).
+  allow_client_side_credentials: false
