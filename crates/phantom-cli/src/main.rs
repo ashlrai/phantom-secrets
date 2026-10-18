@@ -36,7 +36,7 @@ use tracing_subscriber::EnvFilter;
                     Setup         init · agent · setup · doctor · workspace · vault · completion · mcp · mcp-approve\n  \
                     Daily use     exec · start · stop · status · check · list · add · remove · reveal · copy · env · why\n  \
                     Sync & teams  login · logout · cloud · team · sync · pull · export · import · wrap · unwrap\n  \
-                    Maintenance   upgrade · watch · rotate · grant · validate · expiry · secrets-expiring-soon · open · audit · leaks",
+                    Maintenance   upgrade · watch · rotate · grant · validate · expiry · secrets-expiring-soon · open · audit · leaks · crypto",
     version
 )]
 struct Cli {
@@ -120,6 +120,11 @@ enum Commands {
         /// Emit one JSON report on stdout instead of the human checklist
         #[arg(long)]
         json: bool,
+        /// Print a read-only, value-free post-quantum readiness report
+        /// (algorithms in use, which are quantum-vulnerable) instead of the
+        /// health checks. Combine with --json for machine-readable output.
+        #[arg(long)]
+        pq: bool,
     },
 
     /// Print a shell-completion script to stdout.
@@ -545,6 +550,13 @@ enum Commands {
         action: AuditAction,
     },
 
+    /// Cryptography inventory: algorithms and format tags Phantom uses
+    #[command(next_help_heading = "Maintenance")]
+    Crypto {
+        #[command(subcommand)]
+        action: CryptoAction,
+    },
+
     /// Open a closed-catalog Phantom page after an exact trusted-terminal challenge.
     /// Aliases: dashboard, billing, team, docs, pricing, github, issues, site.
     /// Other words and arbitrary URLs are rejected before browser access.
@@ -593,6 +605,17 @@ enum Commands {
         /// Seconds to wait before clearing
         #[arg(long, default_value_t = 30)]
         secs: u64,
+    },
+}
+
+#[derive(Subcommand)]
+enum CryptoAction {
+    /// List every algorithm and format tag Phantom names, with role, status
+    /// and quantum class. Reads no vault, key, or config.
+    Inventory {
+        /// Output format. The global --json is the same as --format json.
+        #[arg(long, value_enum, default_value_t = commands::crypto::InventoryFormat::Text)]
+        format: commands::crypto::InventoryFormat,
     },
 }
 
@@ -1050,8 +1073,17 @@ fn run() -> anyhow::Result<()> {
                 }
             }
         },
-        Commands::Doctor { fix, expiry, json } => {
-            commands::doctor::run_doctor(fix, expiry, json || global_json)
+        Commands::Doctor {
+            fix,
+            expiry,
+            json,
+            pq,
+        } => {
+            if pq {
+                commands::pq_report::run(json || global_json)
+            } else {
+                commands::doctor::run_doctor(fix, expiry, json || global_json)
+            }
         }
         Commands::Agent { action } => match action {
             AgentAction::Report { json } => commands::agent::report(json || global_json),
@@ -1246,6 +1278,13 @@ fn run() -> anyhow::Result<()> {
         Commands::Open { target } => commands::open::run(&target),
         Commands::Upgrade { force, check_only } => commands::upgrade::run(force, check_only),
         Commands::Completion { shell } => commands::completion::run(shell),
+        Commands::Crypto { action } => match action {
+            CryptoAction::Inventory { format } => commands::crypto::run_inventory(if global_json {
+                commands::crypto::InventoryFormat::Json
+            } else {
+                format
+            }),
+        },
         Commands::Mcp { action } => match action {
             McpAction::Serve => commands::mcp::run_serve(),
         },

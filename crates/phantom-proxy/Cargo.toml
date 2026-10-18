@@ -30,6 +30,11 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 reqwest = { version = "0.12", features = ["rustls-tls", "stream"], default-features = false }
 tokio-stream = "0.1"
+# Upstream TLS uses the aws-lc-rs provider so the client offers the X25519MLKEM768
+# hybrid group. Both crates are already in the lockfile (self_update pulls rustls
+# with aws-lc-rs); versions are unified with the existing 0.23 line.
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std", "tls12", "prefer-post-quantum"] }
+webpki-roots = "1"
 rand = { workspace = true }
 hex = { workspace = true }
 base64 = { workspace = true }
