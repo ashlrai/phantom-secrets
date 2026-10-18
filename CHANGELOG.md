@@ -13,6 +13,14 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   experimental, unaudited `pq-hybrid` feature. It reads no vault, key, or
   config and needs no project.
 
+### Added (`phantom crypto inventory`)
+
+- `phantom crypto inventory [--format text|json]` lists every algorithm and
+  format tag Phantom names (AEAD, KDF, MAC, KEM, signature), with its status
+  (default, experimental) and quantum class (vulnerable, resistant, hybrid),
+  from the crypto-agility registry. It reads no vault, key, or config and
+  needs no project. The JSON is Phantom's own shape, not a CycloneDX CBOM.
+
 ### Fixed (MCP `phantom_cloud_status`)
 
 - A `.phantom.toml` that existed but could not be read or parsed was treated
