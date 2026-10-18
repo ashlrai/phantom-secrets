@@ -224,8 +224,9 @@ enum Commands {
         #[arg(long)]
         show_expiry: bool,
         /// Only show secrets whose anomaly score is >= this value (0=all, 1=caution+, 2=alert only).
-        /// Reads per-secret rate-limit stats from the audit log.
-        #[arg(long, value_name = "SCORE")]
+        /// Reads per-secret retrieval counts from the audit log; an unreadable or
+        /// tampered log is an error, not an all-normal answer.
+        #[arg(long, value_name = "SCORE", value_parser = clap::value_parser!(u8).range(0..=2))]
         min_anomaly_score: Option<u8>,
     },
 

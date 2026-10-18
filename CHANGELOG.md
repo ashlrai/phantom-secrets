@@ -4,6 +4,18 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (`phantom list --min-anomaly-score`)
+
+- An audit log that existed but could not be read, or failed integrity
+  verification, was treated as empty: every secret came back as
+  `anomaly:normal`, the filter matched nothing at levels 1 and 2, and the
+  command exited 0. It is now an error naming the audit log (run
+  `phantom audit verify`); a log that does not exist yet still means no
+  history. The flag is also compared as the documented level (0 = all,
+  1 = caution and alert, 2 = alert only) against the anomaly class rather
+  than the 0-100 heuristic score, so one retrieval no longer passes
+  `--min-anomaly-score 2`, and values above 2 are refused by the parser.
+
 ### Fixed (`phantom_audit_export_report` with `action: "report"`)
 
 - The compliance report came back inline with no bound: one heatmap entry
