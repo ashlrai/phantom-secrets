@@ -4,7 +4,7 @@ Status: DRAFT for review. Docs only. No proxy or config code is changed by this 
 
 ## Why this is being considered
 
-The [LiteLLM guide](../litellm.md) runs LiteLLM behind Phantom (LiteLLM to Phantom to provider). The opposite order (agent to Phantom to a local LiteLLM, so Phantom injects a LiteLLM key and agents never hold one) needs a route whose upstream is a plain-HTTP loopback address such as `http://127.0.0.1:4000`. Today that route cannot be expressed. This document lists what such a route would change, so a reviewer can decide whether to allow it and under what rules. It does not recommend building it.
+The [LiteLLM guide](../litellm.md) runs LiteLLM behind Phantom (LiteLLM to Phantom to provider). The opposite order (agent to Phantom to a local LiteLLM, so Phantom injects a LiteLLM key and agents never hold one) needs a route whose upstream is a plain-HTTP loopback address such as `http://127.0.0.1:4000`. Today that route cannot be expressed. This document lists what such a route would change, so a reviewer can decide whether to allow it and under what rules. It recommends the most restrictive option (see Recommendation) and recommends against building anything broader.
 
 ## What the code does today
 
@@ -27,6 +27,18 @@ The [LiteLLM guide](../litellm.md) runs LiteLLM behind Phantom (LiteLLM to Phant
 | Surface area of LiteLLM itself | Its proxy has had critical advisories (research note, 2026-10-18: auth bypass, SSRF, RCE, key disclosure) | Doc stays "optional, loopback only, pinned and cosign verified". Phantom must not start or manage LiteLLM. |
 | Logging | URLs with the session token can appear in logs | Prefer header authentication for this route (`PHANTOM_PROXY_HEADER_AUTH_ONLY`) so the session token is not in a URL (OPEN: LiteLLM `extra_headers` support not tested). |
 
+## Recommendation
+
+Option B, in its most restrictive form, and only after this review is merged and the maintainer has read it:
+
+- Opt-in only. Off by default. No route exists until the user creates a machine-local, value-blind approval for the exact route definition (hash of the definition, stored outside any repository).
+- Loopback addresses only. The literal `127.0.0.1` or `[::1]` with an explicit port. No hostnames (including `localhost`), no `0.0.0.0`, no private ranges, no userinfo in the URL.
+- Refuses redirects and any non-loopback host. Keep `Policy::none()` and `no_proxy()`, and fail the request if the target ever resolves to anything other than the approved loopback address and port.
+- Never configurable from repository config, never available to agentic runs from repo-authored `.phantom.toml`.
+- Inject only a scoped LiteLLM virtual key, never the master key.
+
+Option A stays the default guidance until then. Option C is not recommended now: it generalizes the risk to arbitrary custom routes.
+
 ## Options
 
 A. Do nothing. LiteLLM behind Phantom (the guide) already keeps real provider keys out of LiteLLM. Agents hold a LiteLLM key. Lowest risk, already tested against a mock.
@@ -43,4 +55,4 @@ C. Machine-local approval ledger for arbitrary custom routes, the generalization
 
 ## Decision requested
 
-Choose A, B or C. Until then no code is written. This draft was not reviewed by anyone yet.
+Recommended: B (restrictive form above). Choose A, B or C. Until the maintainer has read this review and it is merged, no code is written. This draft was not reviewed by anyone yet.
