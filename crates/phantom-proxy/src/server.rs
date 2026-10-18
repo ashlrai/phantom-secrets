@@ -1,6 +1,6 @@
 use crate::interceptor::Interceptor;
 use crate::rate_limiter::{RateLimitConfig, RateLimiter};
-use crate::services::ServiceRegistry;
+use crate::services::{AuthInjection, ServiceRegistry};
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full, StreamBody};
 use hyper::body::{Frame, Incoming};
@@ -15,6 +15,7 @@ use tokio::sync::{watch, Semaphore};
 use tokio::task::JoinSet;
 use tokio_stream::StreamExt;
 use tracing::{debug, error, info, warn};
+use zeroize::Zeroizing;
 
 const MAX_CONCURRENT_CONNECTIONS: usize = 256;
 const MAX_CONCURRENT_REQUESTS: usize = 32;
@@ -22,6 +23,13 @@ const REQUEST_HEADER_TIMEOUT: std::time::Duration = std::time::Duration::from_se
 const REQUEST_BODY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 const SHUTDOWN_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 const MAX_HTTP1_BUFFER_BYTES: usize = 64 * 1024;
+/// Default hard cap for buffered bodies: 32 MiB.
+pub const DEFAULT_MAX_BODY_SIZE: usize = 32 * 1024 * 1024;
+/// Default budget for body bytes buffered across all in-flight requests:
+/// 320 MiB, the worst case under the previous 10 MiB x 32-slot limits. A
+/// single request may still use the full per-body cap; only the aggregate is
+/// bounded, so raising the per-body cap did not triple worst-case memory.
+pub const DEFAULT_MAX_BUFFERED_BYTES: usize = 32 * 10 * 1024 * 1024;
 
 /// Configuration for the proxy server.
 #[derive(Clone)]
@@ -30,9 +38,21 @@ pub struct ProxyConfig {
     pub port: u16,
     /// Session token for proxy authentication (defense-in-depth)
     pub proxy_token: String,
-    /// Maximum request body size in bytes (default: 10MB)
+    /// Hard cap in bytes for a buffered request body and for a buffered
+    /// (content-length-framed) upstream response (default: 32 MiB, the
+    /// Anthropic Messages API request limit; long agent sessions with images
+    /// or PDFs exceed 10 MiB).
     pub max_body_size: usize,
-    /// Upstream request timeout in seconds (default: 30)
+    /// Aggregate budget in bytes for request and buffered-response bodies
+    /// held by all in-flight requests (default: 320 MiB). A request that
+    /// would exceed it is rejected with 503 and `retry-after`.
+    pub max_buffered_bytes: usize,
+    /// Upstream idle timeout in seconds (default: 600).
+    ///
+    /// This bounds each wait for upstream bytes (response headers or the next
+    /// body chunk), not the whole exchange. A total deadline would cut off
+    /// long LLM streams and slow non-streaming reasoning calls that the
+    /// official OpenAI and Anthropic SDKs allow for up to 600 seconds.
     pub upstream_timeout_secs: u64,
     /// Connection timeout in seconds (default: 5)
     pub connect_timeout_secs: u64,
@@ -51,8 +71,9 @@ impl Default for ProxyConfig {
         Self {
             port: 0,
             proxy_token: String::new(),
-            max_body_size: 10 * 1024 * 1024, // 10MB
-            upstream_timeout_secs: 30,
+            max_body_size: DEFAULT_MAX_BODY_SIZE,
+            max_buffered_bytes: DEFAULT_MAX_BUFFERED_BYTES,
+            upstream_timeout_secs: 600,
             connect_timeout_secs: 5,
             allow_query_token_auth: false,
             rate_limit: RateLimitConfig::from_env(),
@@ -68,6 +89,23 @@ pub struct ProxyServer {
     shutdown_tx: watch::Sender<bool>,
     /// Server task handle
     handle: tokio::task::JoinHandle<()>,
+}
+
+/// Upstream TLS client config: rustls with the aws-lc-rs provider and the
+/// webpki root store. Certificate verification is unchanged from the previous
+/// reqwest `rustls-tls` default; only the crypto provider differs.
+fn upstream_tls_config() -> rustls::ClientConfig {
+    let mut roots = rustls::RootCertStore::empty();
+    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    let mut cfg = rustls::ClientConfig::builder_with_provider(std::sync::Arc::new(
+        rustls::crypto::aws_lc_rs::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .expect("aws-lc-rs provider supports the default TLS versions")
+    .with_root_certificates(roots)
+    .with_no_client_auth();
+    cfg.alpn_protocols = vec![b"http/1.1".to_vec()];
+    cfg
 }
 
 impl ProxyServer {
@@ -88,11 +126,17 @@ impl ProxyServer {
             interceptor,
             rate_limiter: RateLimiter::new(config.rate_limit),
             request_slots: Arc::new(Semaphore::new(MAX_CONCURRENT_REQUESTS)),
+            buffer_budget: Arc::new(Semaphore::new(
+                config.max_buffered_bytes.min(Semaphore::MAX_PERMITS),
+            )),
             proxy_token: config.proxy_token,
             allow_query_token_auth: config.allow_query_token_auth,
             max_body_size: config.max_body_size,
             http_client: reqwest::Client::builder()
                 .danger_accept_invalid_certs(false)
+                // aws-lc-rs provider: offers X25519MLKEM768 (post-quantum
+                // hybrid) first, with classical groups as fallback.
+                .use_preconfigured_tls(upstream_tls_config())
                 // Credential-bearing upstream requests must never inherit an
                 // agent-controlled HTTP(S)/ALL_PROXY redirect.
                 .no_proxy()
@@ -100,7 +144,10 @@ impl ProxyServer {
                 // redirects in some HTTP stacks. Never follow upstream
                 // redirects inside the secret-injecting proxy.
                 .redirect(reqwest::redirect::Policy::none())
-                .timeout(std::time::Duration::from_secs(config.upstream_timeout_secs))
+                // Idle (per-read) deadline, never a total one: a stalled
+                // upstream is still cut off, but a healthy SSE stream or a
+                // slow reasoning response is not truncated mid-flight.
+                .read_timeout(std::time::Duration::from_secs(config.upstream_timeout_secs))
                 .connect_timeout(std::time::Duration::from_secs(config.connect_timeout_secs))
                 .build()?,
         });
@@ -144,6 +191,7 @@ struct ProxyState {
     interceptor: Interceptor,
     rate_limiter: RateLimiter,
     request_slots: Arc<Semaphore>,
+    buffer_budget: Arc<Semaphore>,
     proxy_token: String,
     allow_query_token_auth: bool,
     max_body_size: usize,
@@ -245,16 +293,158 @@ async fn run_server(
     }
 }
 
+/// Bytes of the shared buffer budget held by one request until it returns.
+struct BufferReservation {
+    budget: Arc<Semaphore>,
+    held: Option<tokio::sync::OwnedSemaphorePermit>,
+}
+
+impl BufferReservation {
+    fn new(budget: Arc<Semaphore>) -> Self {
+        Self { budget, held: None }
+    }
+
+    /// Reserve `bytes` more without waiting; false when the budget is spent.
+    fn try_reserve(&mut self, bytes: usize) -> bool {
+        if bytes == 0 {
+            return true;
+        }
+        let Ok(bytes) = u32::try_from(bytes) else {
+            return false;
+        };
+        match self.budget.clone().try_acquire_many_owned(bytes) {
+            Ok(permit) => {
+                match self.held.as_mut() {
+                    Some(held) => held.merge(permit),
+                    None => self.held = Some(permit),
+                }
+                true
+            }
+            Err(_) => false,
+        }
+    }
+}
+
+fn buffer_budget_exhausted_response() -> Response<BoxBody> {
+    warn!("Rejected request because the proxy body buffer budget is exhausted");
+    let mut response = error_response(
+        StatusCode::SERVICE_UNAVAILABLE,
+        r#"{"error":"proxy body buffer budget is temporarily exhausted","source":"phantom-proxy"}"#,
+    );
+    response
+        .headers_mut()
+        .insert("retry-after", hyper::header::HeaderValue::from_static("1"));
+    response
+}
+
 type BoxBody = http_body_util::Either<
     Full<Bytes>,
     StreamBody<tokio_stream::wrappers::ReceiverStream<Result<Frame<Bytes>, std::io::Error>>>,
 >;
 
+/// Every proxy-generated error body is JSON. Label it so SDK clients parse
+/// the error instead of surfacing an opaque text blob, and never cache it.
 fn error_response(status: StatusCode, body: impl Into<Bytes>) -> Response<BoxBody> {
     Response::builder()
         .status(status)
+        .header(hyper::header::CONTENT_TYPE, "application/json")
+        .header(hyper::header::CACHE_CONTROL, "no-store")
         .body(BoxBody::Left(Full::new(body.into())))
         .unwrap()
+}
+
+/// Why an upstream request failed before any response arrived.
+///
+/// Built only from error kinds and fixed phrases: the raw error chain can name
+/// hosts, addresses, or certificate subjects, so none of it reaches the client.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UpstreamFailure {
+    Timeout,
+    DnsResolution,
+    ConnectionRefused,
+    TlsHandshake,
+    Connect,
+    Other,
+}
+
+impl UpstreamFailure {
+    fn classify(error: &reqwest::Error) -> Self {
+        if error.is_timeout() {
+            return Self::Timeout;
+        }
+        let mut source: Option<&(dyn std::error::Error + 'static)> =
+            std::error::Error::source(error);
+        let mut dns = false;
+        let mut tls = false;
+        while let Some(current) = source {
+            if let Some(io) = current.downcast_ref::<std::io::Error>() {
+                match io.kind() {
+                    std::io::ErrorKind::ConnectionRefused => return Self::ConnectionRefused,
+                    std::io::ErrorKind::TimedOut => return Self::Timeout,
+                    _ => {}
+                }
+            }
+            let text = current.to_string().to_ascii_lowercase();
+            dns |= text.contains("dns error") || text.contains("failed to lookup address");
+            tls |= text.contains("certificate")
+                || text.contains("tls")
+                || text.contains("handshake")
+                || text.contains("invalidcontenttype")
+                || text.contains("corrupt message");
+            source = current.source();
+        }
+        if dns {
+            Self::DnsResolution
+        } else if tls {
+            Self::TlsHandshake
+        } else if error.is_connect() {
+            Self::Connect
+        } else {
+            Self::Other
+        }
+    }
+
+    fn error(self) -> &'static str {
+        match self {
+            Self::Timeout => "upstream request timed out",
+            Self::DnsResolution | Self::ConnectionRefused | Self::TlsHandshake | Self::Connect => {
+                "could not connect to upstream service"
+            }
+            Self::Other => "upstream request failed",
+        }
+    }
+
+    fn reason(self) -> &'static str {
+        match self {
+            Self::Timeout => "timeout",
+            Self::DnsResolution => "dns_resolution_failed",
+            Self::ConnectionRefused => "connection_refused",
+            Self::TlsHandshake => "tls_handshake_failed",
+            Self::Connect => "connect_failed",
+            Self::Other => "request_failed",
+        }
+    }
+
+    fn hint(self) -> &'static str {
+        match self {
+            Self::Timeout => {
+                "the upstream did not respond in time; retry, or check network reachability of the service host"
+            }
+            Self::DnsResolution => {
+                "the service host did not resolve; check network/DNS access and the service host in .phantom.toml"
+            }
+            Self::ConnectionRefused => {
+                "nothing accepted the connection at the service host; check the host and port in .phantom.toml"
+            }
+            Self::TlsHandshake => {
+                "the TLS handshake with the service host failed; check that it is an HTTPS endpoint with a valid certificate and that the system clock is correct"
+            }
+            Self::Connect => {
+                "could not open a connection to the service host; check network access and the service host in .phantom.toml"
+            }
+            Self::Other => "the upstream request failed before a response; retry, then check `phantom doctor`",
+        }
+    }
 }
 
 /// Accept only an absent `Content-Encoding` header or exactly one `identity`
@@ -298,24 +488,12 @@ async fn handle_request(
     let method = req.method().clone();
     let original_path = req.uri().path().to_string();
     let (path, path_token) = strip_path_proxy_token(&original_path);
-    // Strip phantom_token from query before forwarding to upstream
-    let query = req
-        .uri()
-        .query()
-        .map(|q| {
-            let filtered: Vec<&str> = q
-                .split('&')
-                .filter(|p| !p.starts_with("phantom_token="))
-                .collect();
-            if filtered.is_empty() {
-                String::new()
-            } else {
-                format!("?{}", filtered.join("&"))
-            }
-        })
-        .unwrap_or_default();
-
-    debug!("{} {} query_present={}", method, path, !query.is_empty());
+    debug!(
+        "{} {} query_present={}",
+        method,
+        path,
+        req.uri().query().is_some_and(|q| !q.is_empty())
+    );
 
     // Verify proxy token (defense-in-depth — prevents other local processes from using the proxy)
     // Token check runs before ALL endpoints, including health check.
@@ -367,15 +545,31 @@ async fn handle_request(
             warn!("No route found for path: {}", path);
             return Ok(error_response(
                 StatusCode::NOT_FOUND,
-                format!(
-                    r#"{{"error":"no route for path: {}","hint":"check .phantom.toml service configuration"}}"#,
-                    path
-                ),
+                serde_json::json!({
+                    "error": format!("no route for path: {path}"),
+                    "hint": "check .phantom.toml service configuration",
+                    "routes": state
+                        .registry
+                        .services()
+                        .into_iter()
+                        .map(|(name, _)| format!("/{name}"))
+                        .collect::<Vec<_>>(),
+                })
+                .to_string(),
             ));
         }
     };
 
-    let target_url = format!("{}{}{}", route.target_base, remainder, query);
+    // Strip phantom_token and any route-owned credential parameters (for
+    // example Gemini's `?key=`) before forwarding to the upstream.
+    let owned_slots = route.owned_alternate_slots();
+    let query = filter_query(req.uri().query(), owned_slots.query_params);
+    let target_url = format!(
+        "{}{}{}",
+        route.target_base,
+        route.upstream_path(remainder),
+        query
+    );
     debug!("Proxying reviewed route for service {}", route.name);
 
     let Ok(_request_permit) = state.request_slots.clone().try_acquire_owned() else {
@@ -385,7 +579,7 @@ async fn handle_request(
         );
         let mut response = error_response(
             StatusCode::SERVICE_UNAVAILABLE,
-            r#"{"error":"proxy request capacity is temporarily exhausted"}"#,
+            r#"{"error":"proxy request capacity is temporarily exhausted","source":"phantom-proxy"}"#,
         );
         response
             .headers_mut()
@@ -410,13 +604,17 @@ async fn handle_request(
                 );
                 let mut resp = error_response(
                     StatusCode::TOO_MANY_REQUESTS,
-                    format!(
-                        r#"{{"error":"rate limit exceeded","secret_key":"{}","anomaly_class":"alert","per_secret_10s":{},"total_10s":{},"anomaly_score":{}}}"#,
-                        route.secret_key,
-                        decision.per_secret_10s,
-                        decision.total_10s,
-                        decision.anomaly_score,
-                    ),
+                    serde_json::json!({
+                        "error": "rate limit exceeded",
+                        "source": "phantom-proxy",
+                        "secret_key": route.secret_key,
+                        "anomaly_class": "alert",
+                        "per_secret_10s": decision.per_secret_10s,
+                        "total_10s": decision.total_10s,
+                        "anomaly_score": decision.anomaly_score,
+                        "hint": "Phantom's local burst guard rejected this request, not the provider. Retry after the retry-after delay, or raise PHANTOM_RATE_LIMIT_PER_SECRET / PHANTOM_RATE_LIMIT_BURST before phantom exec.",
+                    })
+                    .to_string(),
                 );
                 resp.headers_mut().insert(
                     "x-phantom-anomaly-class",
@@ -473,14 +671,53 @@ async fn handle_request(
     // If the route names a vault secret, inject its formatted auth header
     // server-side. Lets clients skip threading phantom tokens through their
     // own request setup entirely.
-    let configured_auth_header = state
-        .interceptor
-        .format_header_for_secret_key(&route.header_format, &route.secret_key);
+    // Basic routes keep the client's non-secret username (an account
+    // identifier, from the first Authorization header) and replace the
+    // password with the vault value. Without a usable username the request
+    // is rejected locally: a password-only Basic value is never valid.
+    let configured_auth_header = match route.auth_injection() {
+        AuthInjection::BasicPassword => {
+            let Some(username) = req
+                .headers()
+                .get(route.header.as_str())
+                .and_then(basic_auth_username)
+            else {
+                warn!(
+                    "Rejected Basic-auth request without a usable username for service {}",
+                    route.name
+                );
+                return Ok(error_response(
+                    StatusCode::BAD_REQUEST,
+                    serde_json::json!({
+                        "error": "basic auth username required",
+                        "source": "phantom-proxy",
+                        "service": route.name,
+                        "hint": "This route injects only the password. Send Authorization: Basic base64(<ACCOUNT_SID>:<anything>) with your plain account identifier as the username; Phantom replaces the password with the protected value.",
+                    })
+                    .to_string(),
+                ));
+            };
+            state
+                .interceptor
+                .format_basic_auth_for_secret_key(&username, &route.secret_key)
+        }
+        AuthInjection::Template => state
+            .interceptor
+            .format_header_for_secret_key(&route.header_format, &route.secret_key)
+            .map(Zeroizing::new),
+    };
     let Some(configured_auth_header) = configured_auth_header else {
         warn!("Route credential unavailable for service {}", route.name);
         return Ok(error_response(
             StatusCode::SERVICE_UNAVAILABLE,
-            r#"{"error":"route credential unavailable"}"#,
+            serde_json::json!({
+                "error": "route credential unavailable",
+                "source": "phantom-proxy",
+                "service": route.name,
+                "secret_key": route.secret_key,
+                "hint": "Phantom has no vault value for this route in this session. Protect the key with phantom init or phantom add, then restart phantom exec.",
+            })
+            .to_string(),
         ));
     };
 
@@ -509,6 +746,18 @@ async fn handle_request(
         if name_str.eq_ignore_ascii_case(&route.header) {
             continue;
         }
+        // Alternate slots where the upstream accepts the same credential
+        // are route-owned as well.
+        // A client's own credential there (for example an OAuth bearer) is
+        // forwarded; only values carrying a phantom token are dropped.
+        if owned_slots
+            .headers_carrying_phantom_token
+            .iter()
+            .any(|owned| name_str.eq_ignore_ascii_case(owned))
+            && carries_phantom_token(value.as_bytes())
+        {
+            continue;
+        }
 
         outgoing = outgoing.header(name, value.clone());
     }
@@ -517,7 +766,8 @@ async fn handle_request(
         "Injected configured auth header '{}' for service {}",
         route.header, route.name
     );
-    outgoing = outgoing.header(route.header.as_str(), configured_auth_header);
+    outgoing = outgoing.header(route.header.as_str(), configured_auth_header.as_str());
+    drop(configured_auth_header);
 
     // Response scrubbing is defined over identity bytes. Never forward the
     // client's compression preferences to the upstream.
@@ -527,13 +777,35 @@ async fn handle_request(
     // deliberate atomicity boundary: streaming a prefix and then discovering
     // that the body exceeds the cap can cause an upstream mutation to execute
     // on truncated input. The buffer remains strictly bounded.
-    let limited_body = http_body_util::Limited::new(req.into_body(), state.max_body_size);
-    let body_bytes = match tokio::time::timeout(REQUEST_BODY_TIMEOUT, limited_body.collect()).await
-    {
-        Ok(Ok(collected)) => collected.to_bytes(),
+    //
+    // Every buffered byte (request and buffered response) is also charged to
+    // a shared budget so the aggregate across concurrent requests stays
+    // bounded regardless of the per-body cap.
+    let mut reservation = BufferReservation::new(state.buffer_budget.clone());
+    let max_body_size = state.max_body_size;
+    let collect = async {
+        let mut body = req.into_body();
+        let mut collected = Vec::new();
+        while let Some(frame) = body.frame().await {
+            let frame = frame.map_err(|_| BodyReadError::Read)?;
+            let Ok(data) = frame.into_data() else {
+                continue;
+            };
+            if collected.len().saturating_add(data.len()) > max_body_size {
+                return Err(BodyReadError::TooLarge);
+            }
+            if !reservation.try_reserve(data.len()) {
+                return Err(BodyReadError::Budget);
+            }
+            collected.extend_from_slice(&data);
+        }
+        Ok(Bytes::from(collected))
+    };
+    let body_bytes = match tokio::time::timeout(REQUEST_BODY_TIMEOUT, collect).await {
+        Ok(Ok(collected)) => collected,
+        Ok(Err(BodyReadError::Budget)) => return Ok(buffer_budget_exhausted_response()),
         Ok(Err(error)) => {
-            let err_str = error.to_string();
-            if err_str.contains("length limit exceeded") {
+            if error == BodyReadError::TooLarge {
                 warn!(
                     "Request body too large (limit: {} bytes)",
                     state.max_body_size
@@ -570,17 +842,21 @@ async fn handle_request(
     let response = match outgoing.send().await {
         Ok(resp) => resp,
         Err(e) => {
-            error!("Upstream request failed for service {}", route.name);
-            let user_msg = if e.is_timeout() {
-                "upstream request timed out"
-            } else if e.is_connect() {
-                "could not connect to upstream service"
-            } else {
-                "upstream request failed"
-            };
+            let failure = UpstreamFailure::classify(&e);
+            error!(
+                "Upstream request failed for service {} ({})",
+                route.name,
+                failure.reason()
+            );
             return Ok(error_response(
                 StatusCode::BAD_GATEWAY,
-                format!(r#"{{"error":"{user_msg}","service":"{}"}}"#, route.name),
+                serde_json::json!({
+                    "error": failure.error(),
+                    "reason": failure.reason(),
+                    "hint": failure.hint(),
+                    "service": route.name,
+                })
+                .to_string(),
             ));
         }
     };
@@ -609,6 +885,21 @@ async fn handle_request(
         .map(|s| s.to_string());
 
     // Copy response headers (skip hop-by-hop and content-length since we stream)
+    //
+    // Any body-bearing response without a declared length is streamed:
+    // close-delimited (unframed) responses carry neither `content-length`
+    // nor `transfer-encoding`, and NDJSON or JSON-array streams are not
+    // `text/event-stream`. Buffering those would stall the client until the
+    // upstream closed and cap them at `max_body_size`. The streaming scrubber is byte-oriented and holds the
+    // same exact-value and credential-format guarantees across every chunk
+    // boundary for every content type.
+    let has_declared_length = response
+        .headers()
+        .contains_key(reqwest::header::CONTENT_LENGTH);
+    let may_have_body = method != hyper::Method::HEAD
+        && !status.is_informational()
+        && status != StatusCode::NO_CONTENT
+        && status != StatusCode::NOT_MODIFIED;
     let is_streaming = response
         .headers()
         .get("transfer-encoding")
@@ -618,7 +909,8 @@ async fn handle_request(
         || response_content_type
             .as_deref()
             .map(|v| v.contains("text/event-stream"))
-            .unwrap_or(false);
+            .unwrap_or(false)
+        || (may_have_body && !has_declared_length);
 
     let resp_scrubber = state.interceptor.to_response_scrubber();
     for (name, value) in response.headers() {
@@ -656,10 +948,27 @@ async fn handle_request(
         let resp_ct = response_content_type.clone();
         let byte_stream = response.bytes_stream();
         tokio::spawn(async move {
-            tokio::pin!(byte_stream);
+            let mut byte_stream = Box::pin(byte_stream);
             let mut scrub_state = crate::response_scrubber::StreamingScrubState::new();
+            let mut upstream_failed = false;
 
-            while let Some(chunk_result) = byte_stream.next().await {
+            let mut client_gone = false;
+
+            loop {
+                // Watch the client side too: an SDK that gives up must
+                // release the upstream socket now, not when the next chunk
+                // (or the idle timeout) finally arrives.
+                let next = tokio::select! {
+                    biased;
+                    _ = tx.closed() => {
+                        client_gone = true;
+                        break;
+                    }
+                    next = byte_stream.next() => next,
+                };
+                let Some(chunk_result) = next else {
+                    break;
+                };
                 match chunk_result {
                     Ok(chunk) => {
                         let (scrubbed, scrub_event) = resp_scrubber.scrub_stream_chunk(
@@ -681,19 +990,40 @@ async fn handle_request(
                                 .await
                                 .is_err()
                         {
+                            client_gone = true;
                             break;
                         }
                     }
                     Err(e) => {
                         debug!("Upstream stream error: {}", e);
+                        upstream_failed = true;
                         break;
                     }
                 }
             }
 
-            let (scrubbed, _) = resp_scrubber.finish_stream(resp_ct.as_deref(), scrub_state);
-            if !scrubbed.is_empty() {
-                let _ = tx.send(Ok(Frame::data(Bytes::from(scrubbed)))).await;
+            // Dropping the upstream body stream here closes its connection.
+            drop(byte_stream);
+            if client_gone {
+                return;
+            }
+            if !upstream_failed {
+                let (scrubbed, _) = resp_scrubber.finish_stream(resp_ct.as_deref(), scrub_state);
+                if !scrubbed.is_empty() {
+                    let _ = tx.send(Ok(Frame::data(Bytes::from(scrubbed)))).await;
+                }
+            } else {
+                // Held-back candidate bytes are not flushed for a failed
+                // stream: the client is about to see an error anyway.
+                // Abort the client body instead of ending it cleanly. A
+                // clean end would make a truncated SSE stream (or a cut
+                // chunked JSON body) look like a complete response, so SDKs
+                // and agents would silently act on partial output.
+                let _ = tx
+                    .send(Err(std::io::Error::other(
+                        "upstream response body ended before completion",
+                    )))
+                    .await;
             }
         });
 
@@ -736,6 +1066,9 @@ async fn handle_request(
                     ),
                 ));
             }
+            if !reservation.try_reserve(chunk.len()) {
+                return Ok(buffer_budget_exhausted_response());
+            }
             response_body.extend_from_slice(&chunk);
         }
 
@@ -754,6 +1087,115 @@ async fn handle_request(
         let builder = builder.header("content-length", final_body.len().to_string());
         Ok(builder.body(BoxBody::Left(Full::new(final_body))).unwrap())
     }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum BodyReadError {
+    Read,
+    TooLarge,
+    Budget,
+}
+
+/// Rebuild the query string for the upstream, dropping `phantom_token` and
+/// every route-owned credential parameter. Names are compared ASCII
+/// case-insensitively after percent-decoding. Other parameters are forwarded
+/// byte-for-byte in their original order; only `&` separates pairs.
+fn filter_query(raw: Option<&str>, owned_params: &[&str]) -> String {
+    let Some(raw) = raw else {
+        return String::new();
+    };
+    let kept: Vec<&str> = raw
+        .split('&')
+        .filter(|pair| {
+            let name = pair.split_once('=').map_or(*pair, |(name, _)| name);
+            let decoded = percent_decode_query_component(name);
+            !std::iter::once("phantom_token")
+                .chain(owned_params.iter().copied())
+                .any(|owned| decoded.eq_ignore_ascii_case(owned.as_bytes()))
+        })
+        .collect();
+    if kept.is_empty() {
+        String::new()
+    } else {
+        format!("?{}", kept.join("&"))
+    }
+}
+
+/// Whether a header value contains a `phm_` token marker (ASCII
+/// case-insensitive). Used only to decide whether to drop the value.
+fn carries_phantom_token(value: &[u8]) -> bool {
+    value
+        .windows(4)
+        .any(|window| window.eq_ignore_ascii_case(b"phm_"))
+}
+
+/// Decode `%XX` escapes and `+` in a query component. Malformed escapes are
+/// kept literally, matching how lenient servers treat them.
+fn percent_decode_query_component(component: &str) -> Vec<u8> {
+    fn hex(byte: u8) -> Option<u8> {
+        match byte {
+            b'0'..=b'9' => Some(byte - b'0'),
+            b'a'..=b'f' => Some(byte - b'a' + 10),
+            b'A'..=b'F' => Some(byte - b'A' + 10),
+            _ => None,
+        }
+    }
+    let bytes = component.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'%' => {
+                match (
+                    bytes.get(i + 1).copied().and_then(hex),
+                    bytes.get(i + 2).copied().and_then(hex),
+                ) {
+                    (Some(high), Some(low)) => {
+                        out.push(high << 4 | low);
+                        i += 3;
+                        continue;
+                    }
+                    _ => out.push(b'%'),
+                }
+            }
+            b'+' => out.push(b' '),
+            byte => out.push(byte),
+        }
+        i += 1;
+    }
+    out
+}
+
+/// Extract the username from a client `Authorization: Basic` value when it
+/// is a plausible non-secret account identifier. The client's password is
+/// never read beyond the separator. Usernames that carry a Phantom token,
+/// exceed 128 bytes, or contain characters outside a conservative identifier
+/// set are refused and the request is rejected locally.
+fn basic_auth_username(value: &hyper::header::HeaderValue) -> Option<String> {
+    use base64::Engine as _;
+    let value = value.to_str().ok()?.trim();
+    let (scheme, encoded) = value.split_once(' ')?;
+    if !scheme.eq_ignore_ascii_case("basic") {
+        return None;
+    }
+    let decoded = Zeroizing::new(
+        base64::engine::general_purpose::STANDARD
+            .decode(encoded.trim())
+            .ok()?,
+    );
+    let separator = decoded.iter().position(|byte| *byte == b':')?;
+    let username = &decoded[..separator];
+    if username.is_empty()
+        || username.len() > 128
+        || !username
+            .iter()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-' | b'@' | b'+'))
+        || carries_phantom_token(username)
+    {
+        return None;
+    }
+    // Validated ASCII above.
+    Some(String::from_utf8_lossy(username).into_owned())
 }
 
 fn strip_path_proxy_token(path: &str) -> (String, Option<String>) {
@@ -834,6 +1276,8 @@ mod tests {
             secret_key: "TEST_API_KEY".to_string(),
             header: "Authorization".to_string(),
             header_format: "Bearer {secret}".to_string(),
+            credential_profile: crate::services::CredentialProfile::Standard,
+            sdk_base_path: None,
         });
 
         let mut mappings = HashMap::new();
@@ -995,6 +1439,150 @@ mod tests {
         proxy.shutdown().await;
     }
 
+    /// Start a header-auth proxy with one `test` route to `target_base`.
+    async fn failure_probe_proxy(
+        target_base: String,
+        max_body_size: usize,
+    ) -> (ProxyServer, String) {
+        let mut registry = ServiceRegistry::new();
+        registry.add_route(ServiceRoute {
+            name: "test".to_string(),
+            target_base,
+            secret_key: "TEST_API_KEY".to_string(),
+            header: "Authorization".to_string(),
+            header_format: "Bearer {secret}".to_string(),
+            credential_profile: crate::services::CredentialProfile::Standard,
+            sdk_base_path: None,
+        });
+        let mut named = HashMap::new();
+        named.insert("TEST_API_KEY".to_string(), route_fixture_value());
+        let proxy_key = ProxyServer::generate_proxy_token();
+        let proxy = ProxyServer::start(
+            ProxyConfig {
+                port: 0,
+                proxy_token: proxy_key.clone(),
+                max_body_size,
+                ..ProxyConfig::default()
+            },
+            registry,
+            Interceptor::new_with_named(HashMap::new(), named),
+        )
+        .await
+        .unwrap();
+        (proxy, proxy_key)
+    }
+
+    /// Runtime-built, credential-free route value.
+    fn route_fixture_value() -> String {
+        format!("route-fixture-{:x}", std::process::id())
+    }
+
+    #[tokio::test]
+    async fn upstream_connect_failures_name_a_value_free_reason() {
+        let mock = crate::test_server::MockServer::start().await;
+        let closed = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let cases = [
+            (format!("http://127.0.0.1:{closed}"), "connection_refused"),
+            // TLS to a plain-HTTP listener: the handshake cannot complete.
+            (
+                format!("https://127.0.0.1:{}", mock.port),
+                "tls_handshake_failed",
+            ),
+            (
+                "http://phantom-unresolvable.invalid".to_string(),
+                "dns_resolution_failed",
+            ),
+        ];
+        for (target_base, reason) in cases {
+            let (proxy, proxy_key) = failure_probe_proxy(target_base.clone(), 1024).await;
+            let response = reqwest::Client::new()
+                .get(format!("http://127.0.0.1:{}/test/v1/models", proxy.port()))
+                .header("x-phantom-proxy-token", &proxy_key)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), 502, "{target_base}");
+            let body = response.text().await.unwrap();
+            let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+            assert_eq!(parsed["reason"], reason, "{target_base}: {body}");
+            assert_eq!(parsed["service"], "test");
+            assert_eq!(parsed["error"], "could not connect to upstream service");
+            assert!(
+                parsed["hint"]
+                    .as_str()
+                    .is_some_and(|hint| hint.contains(".phantom.toml") || hint.contains("HTTPS")),
+                "{body}"
+            );
+            assert!(!body.contains(&route_fixture_value()), "{body}");
+            assert!(!body.contains("127.0.0.1"), "{body}");
+            assert!(!body.contains(".invalid"), "{body}");
+            proxy.shutdown().await;
+        }
+        assert!(mock.get_requests().is_empty());
+        mock.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn proxy_error_bodies_are_labelled_json_and_uncached() {
+        let mock = crate::test_server::MockServer::start().await;
+        let (proxy, proxy_key) =
+            failure_probe_proxy(format!("http://127.0.0.1:{}", mock.port), 16).await;
+        let client = reqwest::Client::new();
+
+        let oversized = client
+            .post(format!("http://127.0.0.1:{}/test/v1/chat", proxy.port()))
+            .header("x-phantom-proxy-token", &proxy_key)
+            .body(vec![b'a'; 64])
+            .send()
+            .await
+            .unwrap();
+        let unauthorized = client
+            .get(format!("http://127.0.0.1:{}/test/v1/models", proxy.port()))
+            .send()
+            .await
+            .unwrap();
+        for (response, status) in [(oversized, 413), (unauthorized, 401)] {
+            assert_eq!(response.status(), status);
+            assert_eq!(
+                response.headers().get("content-type").unwrap(),
+                "application/json"
+            );
+            assert_eq!(response.headers().get("cache-control").unwrap(), "no-store");
+            let body = response.text().await.unwrap();
+            serde_json::from_str::<serde_json::Value>(&body).unwrap();
+        }
+        assert!(mock.get_requests().is_empty());
+        proxy.shutdown().await;
+        mock.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn unknown_route_lists_the_configured_route_prefixes() {
+        let mock = crate::test_server::MockServer::start().await;
+        let (proxy, proxy_key) =
+            failure_probe_proxy(format!("http://127.0.0.1:{}", mock.port), 1024).await;
+
+        let response = reqwest::Client::new()
+            .get(format!(
+                "http://127.0.0.1:{}/openai/v1/models",
+                proxy.port()
+            ))
+            .header("x-phantom-proxy-token", &proxy_key)
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), 404);
+        let parsed: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(parsed["routes"], serde_json::json!(["/test"]));
+        proxy.shutdown().await;
+        mock.shutdown().await;
+    }
+
     #[tokio::test]
     async fn test_proxy_accepts_path_token_and_strips_before_routing() {
         let mock = crate::test_server::MockServer::start().await;
@@ -1005,6 +1593,8 @@ mod tests {
             secret_key: "TEST_API_KEY".to_string(),
             header: "Authorization".to_string(),
             header_format: "Bearer {secret}".to_string(),
+            credential_profile: crate::services::CredentialProfile::Standard,
+            sdk_base_path: None,
         });
         let mut named = HashMap::new();
         named.insert("TEST_API_KEY".to_string(), "real-secret-value".to_string());
@@ -1128,6 +1718,8 @@ mod tests {
             secret_key: "TEST_API_KEY".to_string(),
             header: "Authorization".to_string(),
             header_format: "Bearer {secret}".to_string(),
+            credential_profile: crate::services::CredentialProfile::Standard,
+            sdk_base_path: None,
         });
 
         let mut mappings = HashMap::new();
@@ -1196,6 +1788,8 @@ mod tests {
             secret_key: "TEST_KEY".to_string(),
             header: "x-api-key".to_string(),
             header_format: "{secret}".to_string(),
+            credential_profile: crate::services::CredentialProfile::Standard,
+            sdk_base_path: None,
         });
 
         let mut mappings = HashMap::new();
@@ -1253,6 +1847,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn sdk_base_url_with_appended_version_reaches_upstream_without_double_slash() {
+        // `phantom exec` exports a slash-terminated base URL with the session
+        // token in the path; callers appending `/v1/...` produce `T//v1/...`.
+        let mock = crate::test_server::MockServer::start().await;
+        let mut registry = ServiceRegistry::new();
+        registry.add_route(ServiceRoute {
+            name: "testapi".to_string(),
+            target_base: format!("http://127.0.0.1:{}", mock.port),
+            secret_key: "TEST_API_KEY".to_string(),
+            header: "Authorization".to_string(),
+            header_format: "Bearer {secret}".to_string(),
+            credential_profile: crate::services::CredentialProfile::Standard,
+            sdk_base_path: None,
+        });
+        let interceptor = Interceptor::new_scoped(
+            HashMap::new(),
+            HashMap::from([("TEST_API_KEY".to_string(), "sk-route-owned".to_string())]),
+        );
+        let token = "session-token-for-path-auth";
+        let proxy = ProxyServer::start(
+            ProxyConfig {
+                port: 0,
+                proxy_token: token.to_string(),
+                allow_query_token_auth: true,
+                ..ProxyConfig::default()
+            },
+            registry,
+            interceptor,
+        )
+        .await
+        .unwrap();
+
+        let base = format!(
+            "http://127.0.0.1:{}/testapi/_phantom/{token}/",
+            proxy.port()
+        );
+        let resp = reqwest::Client::new()
+            .get(format!("{base}/v1/models"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let requests = mock.get_requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].path, "/v1/models");
+        assert_eq!(
+            requests[0].headers.get("authorization"),
+            Some(&"Bearer sk-route-owned".to_string())
+        );
+
+        proxy.shutdown().await;
+        mock.shutdown().await;
+    }
+
+    #[tokio::test]
     async fn cross_route_token_never_reaches_upstream_as_a_secret() {
         let mock = crate::test_server::MockServer::start().await;
         let openai_token = "phm_1111111122222222333333334444444455555555666666667777777788888888";
@@ -1266,6 +1915,8 @@ mod tests {
             secret_key: "OPENAI_API_KEY".to_string(),
             header: "Authorization".to_string(),
             header_format: "Bearer {secret}".to_string(),
+            credential_profile: crate::services::CredentialProfile::Standard,
+            sdk_base_path: None,
         });
         let mappings = HashMap::from([
             (
@@ -1357,6 +2008,8 @@ mod tests {
             secret_key: "TEST_KEY".to_string(),
             header: "Authorization".to_string(),
             header_format: "Bearer {secret}".to_string(),
+            credential_profile: crate::services::CredentialProfile::Standard,
+            sdk_base_path: None,
         });
 
         let mut mappings = HashMap::new();
@@ -1432,6 +2085,8 @@ mod tests {
             secret_key: "TEST_KEY".to_string(),
             header: "Authorization".to_string(),
             header_format: "Bearer {secret}".to_string(),
+            credential_profile: crate::services::CredentialProfile::Standard,
+            sdk_base_path: None,
         });
 
         let mut mappings = HashMap::new();
@@ -1509,6 +2164,8 @@ mod tests {
             secret_key: "TEST_API_KEY".to_string(),
             header: "Authorization".to_string(),
             header_format: "Bearer {secret}".to_string(),
+            credential_profile: crate::services::CredentialProfile::Standard,
+            sdk_base_path: None,
         });
 
         let mut named = HashMap::new();
@@ -1564,6 +2221,8 @@ mod tests {
             secret_key: "MISSING_KEY".to_string(),
             header: "Authorization".to_string(),
             header_format: "Bearer {secret}".to_string(),
+            credential_profile: crate::services::CredentialProfile::Standard,
+            sdk_base_path: None,
         });
 
         let proxy = ProxyServer::start(
@@ -1608,6 +2267,8 @@ mod tests {
             secret_key: "KEY".to_string(),
             header: "Authorization".to_string(),
             header_format: "Bearer {secret}".to_string(),
+            credential_profile: crate::services::CredentialProfile::Standard,
+            sdk_base_path: None,
         });
 
         let interceptor = Interceptor::new_with_named(
@@ -1657,6 +2318,8 @@ mod tests {
             secret_key: "KEY".to_string(),
             header: "Authorization".to_string(),
             header_format: "Bearer {secret}".to_string(),
+            credential_profile: crate::services::CredentialProfile::Standard,
+            sdk_base_path: None,
         });
 
         let interceptor = Interceptor::new_with_named(
@@ -1748,6 +2411,8 @@ mod tests {
             secret_key: "REDIRECT_KEY".to_string(),
             header: "Authorization".to_string(),
             header_format: "Bearer {secret}".to_string(),
+            credential_profile: crate::services::CredentialProfile::Standard,
+            sdk_base_path: None,
         });
         let mut named = HashMap::new();
         named.insert(
@@ -1815,6 +2480,8 @@ mod tests {
             secret_key: "TEST_KEY".to_string(),
             header: "Authorization".to_string(),
             header_format: "Bearer {secret}".to_string(),
+            credential_profile: crate::services::CredentialProfile::Standard,
+            sdk_base_path: None,
         });
 
         let mut mappings = HashMap::new();
@@ -1945,6 +2612,8 @@ mod tests {
             secret_key: "SSE_KEY".to_string(),
             header: "Authorization".to_string(),
             header_format: "Bearer {secret}".to_string(),
+            credential_profile: crate::services::CredentialProfile::Standard,
+            sdk_base_path: None,
         });
 
         let mut mappings = HashMap::new();
@@ -2032,6 +2701,8 @@ mod tests {
             secret_key: "RESPONSE_KEY".to_string(),
             header: "Authorization".to_string(),
             header_format: "Bearer {secret}".to_string(),
+            credential_profile: crate::services::CredentialProfile::Standard,
+            sdk_base_path: None,
         });
         let mut mappings = HashMap::new();
         mappings.insert(phantom_token.to_string(), real_secret.to_string());
@@ -2084,6 +2755,8 @@ mod tests {
             secret_key: "TEST_KEY".to_string(),
             header: "Authorization".to_string(),
             header_format: "Bearer {secret}".to_string(),
+            credential_profile: crate::services::CredentialProfile::Standard,
+            sdk_base_path: None,
         });
 
         let mut mappings = HashMap::new();
@@ -2136,5 +2809,932 @@ mod tests {
 
         proxy.shutdown().await;
         mock.shutdown().await;
+    }
+
+    /// One-connection upstream that replays `script` as raw HTTP/1.1 bytes
+    /// (each part after its delay) and then closes the socket. Lets tests
+    /// model slow streams and mid-body disconnects the hyper mock cannot.
+    async fn scripted_upstream(script: Vec<(u64, &'static str)>) -> u16 {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut head = Vec::new();
+            let mut buf = [0u8; 1024];
+            while !head.windows(4).any(|w| w == b"\r\n\r\n") {
+                let n = stream.read(&mut buf).await.unwrap();
+                if n == 0 {
+                    return;
+                }
+                head.extend_from_slice(&buf[..n]);
+            }
+            for (delay_ms, part) in script {
+                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                if stream.write_all(part.as_bytes()).await.is_err() {
+                    return;
+                }
+                let _ = stream.flush().await;
+            }
+        });
+        port
+    }
+
+    async fn proxy_to(upstream_port: u16, upstream_timeout_secs: u64) -> ProxyServer {
+        let mut registry = ServiceRegistry::new();
+        registry.add_route(ServiceRoute {
+            name: "anthropic".to_string(),
+            target_base: format!("http://127.0.0.1:{upstream_port}"),
+            secret_key: "ANTHROPIC_API_KEY".to_string(),
+            header: "x-api-key".to_string(),
+            header_format: "{secret}".to_string(),
+            credential_profile: crate::services::CredentialProfile::Standard,
+            sdk_base_path: None,
+        });
+        // Mirror `phantom exec`: the session token map and the named map
+        // carry the same value (the response scrubber reads the former).
+        let interceptor = Interceptor::new_scoped(
+            HashMap::from([(
+                "phm_session_token_for_stream_tests".to_string(),
+                (
+                    "ANTHROPIC_API_KEY".to_string(),
+                    "route-owned-anthropic-value".to_string(),
+                ),
+            )]),
+            HashMap::from([(
+                "ANTHROPIC_API_KEY".to_string(),
+                "route-owned-anthropic-value".to_string(),
+            )]),
+        );
+        ProxyServer::start(
+            ProxyConfig {
+                port: 0,
+                proxy_token: "stream-test-token".to_string(),
+                upstream_timeout_secs,
+                ..ProxyConfig::default()
+            },
+            registry,
+            interceptor,
+        )
+        .await
+        .unwrap()
+    }
+
+    const SSE_HEAD: &str =
+        "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ntransfer-encoding: chunked\r\n\r\n";
+
+    #[tokio::test]
+    async fn sse_stream_longer_than_upstream_timeout_is_not_cut_off() {
+        // Claude Code / OpenAI SDK streams routinely run for minutes. The
+        // upstream timeout must bound idle gaps, not the whole response.
+        let upstream = scripted_upstream(vec![
+            (0, SSE_HEAD),
+            (0, "f\r\ndata: event-1\n\n\r\n"),
+            (600, "f\r\ndata: event-2\n\n\r\n"),
+            (600, "f\r\ndata: event-3\n\n\r\n"),
+            (600, "f\r\ndata: event-4\n\n\r\n"),
+            (0, "0\r\n\r\n"),
+        ])
+        .await;
+        let proxy = proxy_to(upstream, 1).await;
+        let resp = reqwest::Client::new()
+            .post(format!(
+                "http://127.0.0.1:{}/anthropic/v1/messages?beta=true",
+                proxy.port()
+            ))
+            .header("x-phantom-proxy-token", "stream-test-token")
+            .body(r#"{"stream":true}"#)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let body = resp.text().await.expect("complete stream");
+        for n in 1..=4 {
+            assert!(body.contains(&format!("data: event-{n}\n\n")), "{body:?}");
+        }
+        proxy.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn slow_buffered_body_longer_than_upstream_timeout_is_delivered() {
+        let upstream = scripted_upstream(vec![
+            (
+                0,
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 12\r\n\r\n",
+            ),
+            (0, "{\"ok\":"),
+            (700, "true"),
+            (700, "}\n"),
+        ])
+        .await;
+        let proxy = proxy_to(upstream, 1).await;
+        let resp = reqwest::Client::new()
+            .get(format!(
+                "http://127.0.0.1:{}/anthropic/v1/models",
+                proxy.port()
+            ))
+            .header("x-phantom-proxy-token", "stream-test-token")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        assert_eq!(resp.text().await.unwrap(), "{\"ok\":true}\n");
+        proxy.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn stalled_upstream_still_times_out() {
+        let upstream = scripted_upstream(vec![(2_500, SSE_HEAD)]).await;
+        let proxy = proxy_to(upstream, 1).await;
+        let resp = reqwest::Client::new()
+            .get(format!(
+                "http://127.0.0.1:{}/anthropic/v1/models",
+                proxy.port()
+            ))
+            .header("x-phantom-proxy-token", "stream-test-token")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 502);
+        assert!(resp.text().await.unwrap().contains("timed out"));
+        proxy.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn upstream_disconnect_mid_stream_is_not_reported_as_complete() {
+        // A cut SSE stream must surface as a transport error so the SDK
+        // retries or fails, instead of a clean but truncated response.
+        let upstream = scripted_upstream(vec![
+            (0, SSE_HEAD),
+            (0, "15\r\ndata: partial-delta\n\n\r\n"),
+            (50, "40\r\ndata: this chunk never fin"),
+        ])
+        .await;
+        let proxy = proxy_to(upstream, 5).await;
+        let resp = reqwest::Client::new()
+            .post(format!(
+                "http://127.0.0.1:{}/anthropic/v1/messages",
+                proxy.port()
+            ))
+            .header("x-phantom-proxy-token", "stream-test-token")
+            .body("{}")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        assert!(
+            resp.bytes().await.is_err(),
+            "truncated upstream stream was delivered as a complete body"
+        );
+        proxy.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn uncredentialed_route_error_names_service_and_fix() {
+        let mut registry = ServiceRegistry::new();
+        registry.add_route(ServiceRoute {
+            name: "anthropic".to_string(),
+            target_base: "http://127.0.0.1:9".to_string(),
+            secret_key: "ANTHROPIC_API_KEY".to_string(),
+            header: "x-api-key".to_string(),
+            header_format: "{secret}".to_string(),
+            credential_profile: crate::services::CredentialProfile::Standard,
+            sdk_base_path: None,
+        });
+        let proxy = ProxyServer::start(
+            ProxyConfig {
+                port: 0,
+                proxy_token: "t".to_string(),
+                ..ProxyConfig::default()
+            },
+            registry,
+            Interceptor::new_scoped(HashMap::new(), HashMap::new()),
+        )
+        .await
+        .unwrap();
+        let resp = reqwest::Client::new()
+            .post(format!(
+                "http://127.0.0.1:{}/anthropic/v1/messages",
+                proxy.port()
+            ))
+            .header("x-phantom-proxy-token", "t")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 503);
+        let body: serde_json::Value = serde_json::from_str(&resp.text().await.unwrap()).unwrap();
+        assert_eq!(body["error"], "route credential unavailable");
+        assert_eq!(body["source"], "phantom-proxy");
+        assert_eq!(body["service"], "anthropic");
+        assert_eq!(body["secret_key"], "ANTHROPIC_API_KEY");
+        proxy.shutdown().await;
+    }
+
+    /// One-connection upstream that writes `first`, then holds the response
+    /// open until the returned gate fires (writing `rest` part by part) or
+    /// until the proxy closes the connection, which `closed` reports.
+    async fn gated_upstream(
+        first: &'static str,
+        rest: Vec<&'static str>,
+    ) -> (
+        u16,
+        tokio::sync::oneshot::Sender<()>,
+        tokio::sync::oneshot::Receiver<()>,
+    ) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (gate_tx, gate_rx) = tokio::sync::oneshot::channel::<()>();
+        let (closed_tx, closed_rx) = tokio::sync::oneshot::channel::<()>();
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut head = Vec::new();
+            let mut buf = [0u8; 1024];
+            while !head.windows(4).any(|w| w == b"\r\n\r\n") {
+                let n = stream.read(&mut buf).await.unwrap();
+                if n == 0 {
+                    return;
+                }
+                head.extend_from_slice(&buf[..n]);
+            }
+            stream.write_all(first.as_bytes()).await.unwrap();
+            stream.flush().await.unwrap();
+            tokio::select! {
+                gate = gate_rx => {
+                    if gate.is_ok() {
+                        for part in rest {
+                            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                            stream.write_all(part.as_bytes()).await.unwrap();
+                            stream.flush().await.unwrap();
+                        }
+                    }
+                }
+                _ = async {
+                    loop {
+                        match stream.read(&mut buf).await {
+                            Ok(0) | Err(_) => break,
+                            Ok(_) => {}
+                        }
+                    }
+                } => {
+                    let _ = closed_tx.send(());
+                }
+            }
+        });
+        (port, gate_tx, closed_rx)
+    }
+
+    #[tokio::test]
+    async fn unframed_ndjson_stream_is_streamed_and_scrubbed_across_chunks() {
+        // No content-length and no chunked framing: a close-delimited NDJSON
+        // stream. The first line must reach the client while the upstream is
+        // still holding the rest back (no timing assumptions), and a managed
+        // value split across writes must still be redacted.
+        let (upstream, gate, _closed) = gated_upstream(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/x-ndjson\r\nconnection: close\r\n\r\n{\"delta\":\"first\"}\n",
+            vec!["{\"leak\":\"route-owned-", "anthropic-value\"}\n"],
+        )
+        .await;
+        let proxy = proxy_to(upstream, 30).await;
+        let mut resp = reqwest::Client::new()
+            .post(format!(
+                "http://127.0.0.1:{}/anthropic/v1/stream",
+                proxy.port()
+            ))
+            .header("x-phantom-proxy-token", "stream-test-token")
+            .body("{}")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let mut body = Vec::new();
+        while !body.ends_with(b"\n") {
+            let chunk = tokio::time::timeout(std::time::Duration::from_secs(10), resp.chunk())
+                .await
+                .expect("first NDJSON line was held until the upstream finished")
+                .unwrap()
+                .expect("first line");
+            body.extend_from_slice(&chunk);
+        }
+        assert_eq!(body, b"{\"delta\":\"first\"}\n");
+        gate.send(()).unwrap();
+        while let Some(chunk) = resp.chunk().await.unwrap() {
+            body.extend_from_slice(&chunk);
+        }
+        let text = String::from_utf8(body).unwrap();
+        assert!(!text.contains("route-owned-anthropic-value"), "{text}");
+        assert!(!text.contains("anthropic-value"), "{text}");
+        assert!(text.contains("[REDACTED"), "{text}");
+        proxy.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn client_disconnect_releases_an_idle_upstream_stream_promptly() {
+        // With a 600 s idle timeout the forwarding task must not wait for the
+        // next upstream byte to notice that the client went away.
+        let (upstream, _gate, closed) = gated_upstream(
+            "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ntransfer-encoding: chunked\r\n\r\nf\r\ndata: event-1\n\n\r\n",
+            Vec::new(),
+        )
+        .await;
+        let proxy = proxy_to(upstream, 600).await;
+        let mut resp = reqwest::Client::new()
+            .post(format!(
+                "http://127.0.0.1:{}/anthropic/v1/messages",
+                proxy.port()
+            ))
+            .header("x-phantom-proxy-token", "stream-test-token")
+            .body("{}")
+            .send()
+            .await
+            .unwrap();
+        let first = resp.chunk().await.unwrap().expect("first event");
+        assert_eq!(&first[..], b"data: event-1\n\n");
+        drop(resp);
+        tokio::time::timeout(std::time::Duration::from_secs(10), closed)
+            .await
+            .expect("upstream connection stayed open after the client disconnected")
+            .expect("upstream observed close");
+        proxy.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn aggregate_buffer_budget_bounds_request_bodies() {
+        let mock = crate::test_server::MockServer::start().await;
+        let mut registry = ServiceRegistry::new();
+        registry.add_route(ServiceRoute {
+            name: "anthropic".to_string(),
+            target_base: format!("http://127.0.0.1:{}", mock.port),
+            secret_key: "ANTHROPIC_API_KEY".to_string(),
+            header: "x-api-key".to_string(),
+            header_format: "{secret}".to_string(),
+            credential_profile: crate::services::CredentialProfile::Standard,
+            sdk_base_path: None,
+        });
+        let proxy = ProxyServer::start(
+            ProxyConfig {
+                port: 0,
+                proxy_token: "t".to_string(),
+                max_body_size: 4096,
+                max_buffered_bytes: 1024,
+                ..ProxyConfig::default()
+            },
+            registry,
+            Interceptor::new_scoped(
+                HashMap::new(),
+                HashMap::from([("ANTHROPIC_API_KEY".to_string(), "v".to_string())]),
+            ),
+        )
+        .await
+        .unwrap();
+        let client = reqwest::Client::new();
+        let url = format!("http://127.0.0.1:{}/anthropic/v1/messages", proxy.port());
+
+        // Within the per-body cap but over the shared budget: rejected.
+        let over = client
+            .post(&url)
+            .header("x-phantom-proxy-token", "t")
+            .body(vec![b'a'; 2048])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(over.status(), 503);
+        assert!(over.headers().contains_key("retry-after"));
+        let body: serde_json::Value = serde_json::from_str(&over.text().await.unwrap()).unwrap();
+        assert_eq!(body["source"], "phantom-proxy");
+        assert!(mock.get_requests().is_empty());
+
+        // Budget is returned when a request finishes, so repeated in-budget
+        // requests (body plus buffered response) keep succeeding.
+        for _ in 0..3 {
+            let ok = client
+                .post(&url)
+                .header("x-phantom-proxy-token", "t")
+                .body(vec![b'a'; 512])
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(ok.status(), 200);
+        }
+        assert_eq!(mock.get_requests().len(), 3);
+        proxy.shutdown().await;
+        mock.shutdown().await;
+    }
+
+    #[test]
+    fn buffer_reservation_releases_bytes_on_drop() {
+        let budget = Arc::new(Semaphore::new(100));
+        let mut first = BufferReservation::new(budget.clone());
+        assert!(first.try_reserve(60));
+        assert!(first.try_reserve(30));
+        let mut second = BufferReservation::new(budget.clone());
+        assert!(!second.try_reserve(20));
+        drop(first);
+        assert_eq!(budget.available_permits(), 100);
+        assert!(second.try_reserve(100));
+    }
+
+    #[tokio::test]
+    async fn proxy_error_bodies_escape_route_names() {
+        let mut registry = ServiceRegistry::new();
+        registry.add_route(ServiceRoute {
+            name: "r".to_string(),
+            target_base: "http://127.0.0.1:9".to_string(),
+            secret_key: "KEY\"\\".to_string(),
+            header: "x-api-key".to_string(),
+            header_format: "{secret}".to_string(),
+            credential_profile: crate::services::CredentialProfile::Standard,
+            sdk_base_path: None,
+        });
+        let proxy = ProxyServer::start(
+            ProxyConfig {
+                port: 0,
+                proxy_token: "t".to_string(),
+                ..ProxyConfig::default()
+            },
+            registry,
+            Interceptor::new_scoped(HashMap::new(), HashMap::new()),
+        )
+        .await
+        .unwrap();
+        let resp = reqwest::Client::new()
+            .get(format!("http://127.0.0.1:{}/r/v1", proxy.port()))
+            .header("x-phantom-proxy-token", "t")
+            .send()
+            .await
+            .unwrap();
+        let text = resp.text().await.unwrap();
+        let body: serde_json::Value = serde_json::from_str(&text).expect(&text);
+        assert_eq!(body["secret_key"], "KEY\"\\", "{text}");
+        proxy.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn request_bodies_up_to_32_mib_are_forwarded_and_larger_ones_rejected() {
+        assert_eq!(ProxyConfig::default().max_body_size, 32 * 1024 * 1024);
+        let mock = crate::test_server::MockServer::start().await;
+        let mut registry = ServiceRegistry::new();
+        registry.add_route(ServiceRoute {
+            name: "anthropic".to_string(),
+            target_base: format!("http://127.0.0.1:{}", mock.port),
+            secret_key: "ANTHROPIC_API_KEY".to_string(),
+            header: "x-api-key".to_string(),
+            header_format: "{secret}".to_string(),
+            credential_profile: crate::services::CredentialProfile::Standard,
+            sdk_base_path: None,
+        });
+        let proxy = ProxyServer::start(
+            ProxyConfig {
+                port: 0,
+                proxy_token: "t".to_string(),
+                ..ProxyConfig::default()
+            },
+            registry,
+            Interceptor::new_scoped(
+                HashMap::new(),
+                HashMap::from([("ANTHROPIC_API_KEY".to_string(), "v".to_string())]),
+            ),
+        )
+        .await
+        .unwrap();
+        let client = reqwest::Client::new();
+        let url = format!("http://127.0.0.1:{}/anthropic/v1/messages", proxy.port());
+
+        // 12 MiB: an image-heavy agent turn that the old 10 MiB cap rejected.
+        let ok = client
+            .post(&url)
+            .header("x-phantom-proxy-token", "t")
+            .body(vec![b'a'; 12 * 1024 * 1024])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(ok.status(), 200);
+        assert_eq!(mock.get_requests()[0].body.len(), 12 * 1024 * 1024);
+
+        let too_big = client
+            .post(&url)
+            .header("x-phantom-proxy-token", "t")
+            .body(vec![b'a'; 32 * 1024 * 1024 + 1])
+            .send()
+            .await;
+        // The proxy may answer 413 before the client finishes writing.
+        if let Ok(resp) = too_big {
+            assert_eq!(resp.status(), 413);
+        }
+        assert_eq!(
+            mock.get_requests().len(),
+            1,
+            "oversized body reached upstream"
+        );
+        proxy.shutdown().await;
+        mock.shutdown().await;
+    }
+
+    /// Start a proxy with one route whose vault value is `secret`.
+    async fn single_route_proxy(
+        upstream_port: u16,
+        header: &str,
+        header_format: &str,
+        credential_profile: crate::services::CredentialProfile,
+        secret: &str,
+    ) -> ProxyServer {
+        let mut registry = ServiceRegistry::new();
+        registry.add_route(ServiceRoute {
+            name: "svc".to_string(),
+            target_base: format!("http://127.0.0.1:{upstream_port}"),
+            secret_key: "SVC_SECRET".to_string(),
+            header: header.to_string(),
+            header_format: header_format.to_string(),
+            credential_profile,
+            sdk_base_path: None,
+        });
+        let interceptor = Interceptor::new_scoped(
+            HashMap::new(),
+            HashMap::from([("SVC_SECRET".to_string(), secret.to_string())]),
+        );
+        ProxyServer::start(
+            ProxyConfig {
+                port: 0,
+                proxy_token: String::new(),
+                ..ProxyConfig::default()
+            },
+            registry,
+            interceptor,
+        )
+        .await
+        .unwrap()
+    }
+
+    async fn basic_route_proxy(upstream_port: u16, secret: &str) -> ProxyServer {
+        single_route_proxy(
+            upstream_port,
+            "Authorization",
+            "Basic {secret}",
+            crate::services::CredentialProfile::BasicPassword,
+            secret,
+        )
+        .await
+    }
+
+    async fn google_route_proxy(upstream_port: u16, secret: &str) -> ProxyServer {
+        single_route_proxy(
+            upstream_port,
+            "x-goog-api-key",
+            "{secret}",
+            crate::services::CredentialProfile::GoogleApiKey,
+            secret,
+        )
+        .await
+    }
+
+    /// Random lowercase hex from the OS CSPRNG, so no credential literal
+    /// flows into a test request.
+    fn random_hex(bytes: usize) -> String {
+        use rand::RngCore;
+        let mut buf = vec![0u8; bytes];
+        rand::thread_rng().fill_bytes(&mut buf);
+        hex::encode(buf)
+    }
+
+    fn basic(user: &str, password: &str) -> String {
+        use base64::Engine as _;
+        format!(
+            "Basic {}",
+            base64::engine::general_purpose::STANDARD.encode(format!("{user}:{password}"))
+        )
+    }
+
+    fn session_token() -> String {
+        format!("phm_{}", "ab12".repeat(16))
+    }
+
+    #[tokio::test]
+    async fn basic_route_keeps_client_username_and_injects_vault_password() {
+        let mock = crate::test_server::MockServer::start().await;
+        let secret_value = random_hex(16);
+        let secret = secret_value.as_str();
+        let proxy = basic_route_proxy(mock.port, secret).await;
+        let path_owner = format!("AC{}", random_hex(16));
+        let token = session_token();
+
+        let resp = reqwest::Client::new()
+            .post(format!(
+                "http://127.0.0.1:{}/svc/2010-04-01/Accounts/{path_owner}/Messages.json",
+                proxy.port()
+            ))
+            .header("Authorization", basic(&path_owner, &token))
+            .body("To=x&From=y&Body=hi")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+
+        let requests = mock.get_requests();
+        let auth = requests[0].headers.get("authorization").unwrap();
+        assert_eq!(auth, &basic(&path_owner, secret));
+        assert!(!auth.contains("phm_"));
+        proxy.shutdown().await;
+        mock.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn basic_route_uses_first_authorization_and_forwards_neither() {
+        let mock = crate::test_server::MockServer::start().await;
+        let secret_value = random_hex(16);
+        let secret = secret_value.as_str();
+        let proxy = basic_route_proxy(mock.port, secret).await;
+        let token = session_token();
+        let first_user = format!("first_{}", random_hex(4));
+        let second_user = format!("second_{}", random_hex(4));
+
+        let resp = reqwest::Client::new()
+            .get(format!("http://127.0.0.1:{}/svc/ping", proxy.port()))
+            .header("Authorization", basic(&first_user, &token))
+            .header(
+                reqwest::header::AUTHORIZATION,
+                reqwest::header::HeaderValue::from_str(&basic(&second_user, &token)).unwrap(),
+            )
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let recorded = &mock.get_requests()[0];
+        assert_eq!(
+            recorded.headers.get("authorization").unwrap(),
+            &basic(&first_user, secret)
+        );
+        assert!(recorded
+            .headers
+            .values()
+            .all(|value| !value.contains("phm_") && !value.contains(&basic(&second_user, &token))));
+        proxy.shutdown().await;
+        mock.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn basic_route_rejects_unusable_client_usernames_locally() {
+        let mock = crate::test_server::MockServer::start().await;
+        let secret_value = random_hex(16);
+        let secret = secret_value.as_str();
+        let proxy = basic_route_proxy(mock.port, secret).await;
+        let token = session_token();
+        let client = reqwest::Client::new();
+        let url = format!("http://127.0.0.1:{}/svc/ping", proxy.port());
+
+        // A phantom token as username, a username with a non-identifier
+        // character, a non-Basic scheme, and no header at all are rejected
+        // by the proxy; nothing reaches the upstream.
+        let client_password = random_hex(8);
+        let bad_shape_user = format!("acct/../{}", random_hex(2));
+        for header in [
+            Some(basic(&token, &client_password)),
+            Some(basic(&bad_shape_user, &client_password)),
+            Some(format!("Bearer {token}")),
+            None,
+        ] {
+            let mut request = client.get(&url);
+            if let Some(header) = header {
+                request = request.header("Authorization", header);
+            }
+            let resp = request.send().await.unwrap();
+            assert_eq!(resp.status(), 400);
+            let body: serde_json::Value = resp.json().await.unwrap();
+            assert_eq!(body["source"], "phantom-proxy");
+            assert_eq!(body["service"], "svc");
+            let text = body.to_string();
+            assert!(!text.contains(secret));
+            assert!(!text.contains("phm_"));
+            assert!(text.contains("Authorization: Basic base64(<ACCOUNT_SID>:<anything>)"));
+        }
+        assert!(mock.get_requests().is_empty());
+        proxy.shutdown().await;
+        mock.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn google_api_key_route_owns_query_key_and_phantom_authorization() {
+        let mock = crate::test_server::MockServer::start().await;
+        let secret_value = random_hex(16);
+        let secret = secret_value.as_str();
+        let proxy = google_route_proxy(mock.port, secret).await;
+        let token = session_token();
+
+        let resp = reqwest::Client::new()
+            .post(format!(
+                "http://127.0.0.1:{}/svc/v1beta/models/m:streamGenerateContent?alt=sse&key={token}&KEY={token}&k%65y={token}&api_key={token}&keyword=ok&a=1;key=kept",
+                proxy.port()
+            ))
+            .header("Authorization", format!("Bearer {}", token.to_uppercase()))
+            .header("x-goog-api-key", &token)
+            .body("{}")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+
+        let recorded = &mock.get_requests()[0];
+        assert_eq!(
+            recorded.path,
+            "/v1beta/models/m:streamGenerateContent?alt=sse&keyword=ok&a=1;key=kept"
+        );
+        assert_eq!(recorded.headers.get("x-goog-api-key").unwrap(), secret);
+        assert!(!recorded.headers.contains_key("authorization"));
+        assert!(recorded
+            .headers
+            .values()
+            .all(|value| !value.to_ascii_lowercase().contains("phm_")));
+        proxy.shutdown().await;
+        mock.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn google_api_key_route_forwards_clients_own_oauth_bearer() {
+        let mock = crate::test_server::MockServer::start().await;
+        let proxy = google_route_proxy(mock.port, &random_hex(16)).await;
+        let oauth = format!("Bearer {}", random_hex(16));
+
+        let resp = reqwest::Client::new()
+            .get(format!(
+                "http://127.0.0.1:{}/svc/v1beta/models",
+                proxy.port()
+            ))
+            .header("Authorization", &oauth)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        assert_eq!(
+            mock.get_requests()[0].headers.get("authorization"),
+            Some(&oauth)
+        );
+        proxy.shutdown().await;
+        mock.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn standard_routes_keep_key_query_params_and_ignore_basic_shape() {
+        let mock = crate::test_server::MockServer::start().await;
+        // Same header shape as the Twilio route, but no trusted profile: the
+        // plain template applies and `key=` is forwarded.
+        let secret_value = random_hex(16);
+        let secret = secret_value.as_str();
+        let proxy = single_route_proxy(
+            mock.port,
+            "Authorization",
+            "Basic {secret}",
+            crate::services::CredentialProfile::Standard,
+            secret,
+        )
+        .await;
+        let resp = reqwest::Client::new()
+            .get(format!(
+                "http://127.0.0.1:{}/svc/v1/items?key=sort-field",
+                proxy.port()
+            ))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let recorded = &mock.get_requests()[0];
+        assert_eq!(recorded.path, "/v1/items?key=sort-field");
+        assert_eq!(
+            recorded.headers.get("authorization").unwrap(),
+            &format!("Basic {secret}")
+        );
+        proxy.shutdown().await;
+        mock.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn cloudflare_sdk_and_wrangler_base_urls_reach_client_v4() {
+        // The trusted built-in route, pointed at the mock upstream.
+        let services = std::collections::BTreeMap::from([(
+            "cloudflare".to_string(),
+            phantom_core::config::PhantomConfig::trusted_builtin_proxy_service("cloudflare")
+                .unwrap(),
+        )]);
+        let mut route = ServiceRegistry::from_config(&services)
+            .match_route("/cloudflare")
+            .unwrap()
+            .0
+            .clone();
+        let mock = crate::test_server::MockServer::start().await;
+        route.target_base = format!("http://127.0.0.1:{}", mock.port);
+        let mut registry = ServiceRegistry::new();
+        registry.add_route(route);
+
+        let secret_value = random_hex(20);
+        let interceptor = Interceptor::new_scoped(
+            HashMap::new(),
+            HashMap::from([("CLOUDFLARE_API_TOKEN".to_string(), secret_value.clone())]),
+        );
+        let token = random_hex(16);
+        let proxy = ProxyServer::start(
+            ProxyConfig {
+                port: 0,
+                proxy_token: token.clone(),
+                allow_query_token_auth: true,
+                ..ProxyConfig::default()
+            },
+            registry,
+            interceptor,
+        )
+        .await
+        .unwrap();
+
+        // The value `phantom exec` exports as CLOUDFLARE_BASE_URL and
+        // CLOUDFLARE_API_BASE_URL.
+        let base = format!(
+            "http://127.0.0.1:{}/cloudflare/_phantom/{token}/",
+            proxy.port()
+        );
+        let client = reqwest::Client::new();
+        // Wrangler concatenates `${base}${resource}`; the Stainless SDKs
+        // join without a doubled slash; explicit versioned paths pass as-is.
+        for (requested, expected) in [
+            ("/user/tokens/verify", "/client/v4/user/tokens/verify"),
+            (
+                "accounts/abc/workers/scripts",
+                "/client/v4/accounts/abc/workers/scripts",
+            ),
+            ("client/v4/zones?per_page=5", "/client/v4/zones?per_page=5"),
+        ] {
+            let resp = client
+                .get(format!("{base}{requested}"))
+                .header("authorization", format!("Bearer {}", session_token()))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), 200, "{requested}");
+            let recorded = mock.get_requests().pop().unwrap();
+            assert_eq!(recorded.path, expected);
+            assert_eq!(
+                recorded.headers.get("authorization").unwrap(),
+                &format!("Bearer {secret_value}")
+            );
+        }
+        assert_eq!(mock.get_requests().len(), 3);
+        proxy.shutdown().await;
+        mock.shutdown().await;
+    }
+
+    #[test]
+    fn filter_query_drops_owned_params_after_decoding() {
+        assert_eq!(filter_query(None, &["key"]), "");
+        assert_eq!(filter_query(Some("a=1&b=2"), &[]), "?a=1&b=2");
+        assert_eq!(filter_query(Some("phantom_token=t&a=1"), &[]), "?a=1");
+        assert_eq!(
+            filter_query(Some("Phantom_Token=t&phantom%5Ftoken=u&a=1"), &[]),
+            "?a=1"
+        );
+        assert_eq!(
+            filter_query(
+                Some("key=1&Key=2&%6B%45y=3&key&a=key&api_key=4"),
+                &["key", "api_key"]
+            ),
+            "?a=key"
+        );
+        assert_eq!(filter_query(Some("key=1"), &["key"]), "");
+        assert_eq!(filter_query(Some("a=1;key=2"), &["key"]), "?a=1;key=2");
+        assert_eq!(filter_query(Some("%zz=1&k%2=2"), &["key"]), "?%zz=1&k%2=2");
+    }
+
+    #[test]
+    fn phantom_token_detection_is_case_insensitive() {
+        assert!(carries_phantom_token(b"Bearer phm_abc"));
+        assert!(carries_phantom_token(b"Bearer PHM_ABC"));
+        assert!(!carries_phantom_token(b"Bearer ya29.token"));
+    }
+
+    #[test]
+    fn basic_auth_username_parsing() {
+        use hyper::header::HeaderValue;
+        let parse = |value: &str| basic_auth_username(&HeaderValue::from_str(value).unwrap());
+        let pw = random_hex(8);
+        let user = format!("acct_{}", random_hex(4));
+        assert_eq!(parse(&basic(&user, &pw)).as_deref(), Some(user.as_str()));
+        let empty_password = String::new();
+        assert_eq!(
+            parse(&basic(&user, &empty_password)).as_deref(),
+            Some(user.as_str())
+        );
+        let email_user = format!("{}@example.com", random_hex(4));
+        assert_eq!(
+            parse(&basic(&email_user, &format!("{pw}:{pw}"))).as_deref(),
+            Some(email_user.as_str())
+        );
+        assert_eq!(parse(&basic("", &pw)), None);
+        assert_eq!(parse(&basic(&"a".repeat(129), &pw)), None);
+        assert_eq!(parse(&basic(&session_token(), &pw)), None);
+        assert_eq!(
+            parse(&basic(&format!("x-PHM_{}", random_hex(2)), &pw)),
+            None
+        );
+        assert_eq!(parse(&basic(&format!("a {}", random_hex(2)), &pw)), None);
+        assert_eq!(parse("Basic not-base64!"), None);
+        assert_eq!(parse("Bearer abc"), None);
+        use base64::Engine as _;
+        let no_colon = base64::engine::general_purpose::STANDARD.encode("nocolon");
+        assert_eq!(parse(&format!("Basic {no_colon}")), None);
     }
 }

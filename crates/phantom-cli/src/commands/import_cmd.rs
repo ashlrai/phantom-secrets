@@ -449,27 +449,36 @@ pub fn run_from(source: &str, file: &str, force: bool) -> Result<()> {
     );
 
     // Suggest phantom init if the managed dotenv contains plaintext secrets.
-    if env_path.exists() {
-        if let Ok(dotenv) = phantom_core::dotenv::DotenvFile::parse_file(&env_path) {
-            if !dotenv.real_secret_entries().is_empty() {
-                println!(
-                    "\n{} Your {} still contains plaintext secrets.",
-                    "!".yellow().bold(),
-                    env_path
-                        .file_name()
-                        .and_then(|name| name.to_str())
-                        .unwrap_or("managed dotenv")
-                        .cyan()
-                );
-                println!(
-                    "   Run {} to replace them with phantom tokens.",
-                    "phantom init".cyan().bold()
-                );
-            }
-        }
+    if managed_dotenv_has_plaintext(&project.project_dir, &env_path) {
+        println!(
+            "\n{} Your {} still contains plaintext secrets.",
+            "!".yellow().bold(),
+            env_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("managed dotenv")
+                .cyan()
+        );
+        println!(
+            "   Run {} to replace them with phantom tokens.",
+            "phantom init".cyan().bold()
+        );
     }
 
     Ok(())
+}
+
+/// Whether the managed dotenv (`env_path`, beside `.phantom.toml`) still holds
+/// plaintext secrets. It is opened without following a symlink and judged on
+/// the opened handle; a link, a missing file or a read error gives no hint.
+fn managed_dotenv_has_plaintext(project_dir: &Path, env_path: &Path) -> bool {
+    let Some(name) = env_path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    matches!(
+        phantom_core::managed_dotenv::parse_regular_dotenv(project_dir, name),
+        Ok(Some(dotenv)) if !dotenv.real_secret_entries().is_empty()
+    )
 }
 
 fn parse_competitor_source(
@@ -785,6 +794,24 @@ mod fail_closed_tests {
             .err()
             .expect("symlink import source must be rejected");
         assert!(error.to_string().contains("must not be a symlink"));
+    }
+
+    /// The post-import hint reads the managed dotenv without following a
+    /// symlink: a linked file's target is never read, so it gives no hint.
+    #[cfg(unix)]
+    #[test]
+    fn plaintext_hint_does_not_follow_a_symlinked_managed_dotenv() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let target = outside.path().join("elsewhere.env");
+        std::fs::write(&target, format!("OPENAI_API_KEY={}-outside\n", "sk")).unwrap();
+        let env_path = dir.path().join(".env");
+        std::os::unix::fs::symlink(&target, &env_path).unwrap();
+        assert!(!managed_dotenv_has_plaintext(dir.path(), &env_path));
+
+        std::fs::remove_file(&env_path).unwrap();
+        std::fs::copy(&target, &env_path).unwrap();
+        assert!(managed_dotenv_has_plaintext(dir.path(), &env_path));
     }
 
     #[test]

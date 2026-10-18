@@ -1,4 +1,7 @@
+mod broken_pipe;
 mod commands;
+#[cfg(test)]
+mod doc_facts;
 mod util;
 
 #[cfg(test)]
@@ -33,7 +36,7 @@ use tracing_subscriber::EnvFilter;
                     Setup         init · agent · setup · doctor · workspace · vault · completion · mcp · mcp-approve\n  \
                     Daily use     exec · start · stop · status · check · list · add · remove · reveal · copy · env · why\n  \
                     Sync & teams  login · logout · cloud · team · sync · pull · export · import · wrap · unwrap\n  \
-                    Maintenance   upgrade · watch · rotate · grant · validate · expiry · secrets-expiring-soon · open · audit",
+                    Maintenance   upgrade · watch · rotate · grant · validate · expiry · secrets-expiring-soon · open · audit · leaks · crypto",
     version
 )]
 struct Cli {
@@ -44,7 +47,7 @@ struct Cli {
     #[arg(short, long, global = true)]
     verbose: bool,
 
-    /// Suppress all output except errors
+    /// Suppress progress output from exec, wrap, and unwrap (errors and warnings still print; other commands ignore it)
     #[arg(short, long, global = true)]
     quiet: bool,
 
@@ -79,7 +82,7 @@ enum Commands {
         empty: bool,
     },
 
-    /// Wire Phantom into an AI client (Claude Code, Cursor, Windsurf, Codex)
+    /// Wire Phantom into an AI client (Claude Code, Cursor, Windsurf, Codex, Gemini CLI)
     #[command(next_help_heading = "Setup")]
     Setup {
         /// AI client to configure. Defaults to Claude Code if omitted.
@@ -91,6 +94,10 @@ enum Commands {
         /// Configure audit encryption: none/local; cloud-signed is reserved and refused
         #[arg(long, value_enum, value_name = "MODE")]
         audit_mode: Option<commands::setup::AuditMode>,
+        /// Read-only: list which clients (Claude Code, Cursor, Windsurf, Codex,
+        /// Gemini CLI) have Phantom wired. Use the global --json for JSON.
+        #[arg(long, conflicts_with_all = ["client", "print", "audit_mode"])]
+        status: bool,
     },
 
     /// Agent readiness report, doctor, and setup workflows
@@ -110,16 +117,24 @@ enum Commands {
         /// soon-to-expire secrets
         #[arg(long)]
         expiry: bool,
+        /// Emit one JSON report on stdout instead of the human checklist
+        #[arg(long)]
+        json: bool,
+        /// Print a read-only, value-free post-quantum readiness report
+        /// (algorithms in use, which are quantum-vulnerable) instead of the
+        /// health checks. Combine with --json for machine-readable output.
+        #[arg(long)]
+        pq: bool,
     },
 
-    /// Print a shell-completion script to stdout.
+    /// Print a shell-completion script to stdout
     ///
     /// Source the output from your shell rc, e.g.
     ///   bash:       phantom completion bash > ~/.local/share/bash-completion/completions/phantom
     ///   zsh:        phantom completion zsh > "${fpath[1]}/_phantom"
     ///   fish:       phantom completion fish > ~/.config/fish/completions/phantom.fish
     ///   powershell: phantom completion powershell | Out-String | Invoke-Expression
-    #[command(next_help_heading = "Setup")]
+    #[command(next_help_heading = "Setup", verbatim_doc_comment)]
     Completion {
         /// Shell to generate completions for
         #[arg(value_enum)]
@@ -133,7 +148,7 @@ enum Commands {
         action: McpAction,
     },
 
-    /// Approve a pending MCP nonce for a mutating vault operation.
+    /// Approve a pending MCP nonce for a mutating vault operation
     ///
     /// Run this in a trusted terminal after the MCP server prints a nonce to
     /// stderr. The returned approval_token must be passed as `approval_token`
@@ -141,7 +156,11 @@ enum Commands {
     ///
     /// Example:
     ///   phantom mcp-approve d3a9f2...
-    #[command(name = "mcp-approve", next_help_heading = "Setup")]
+    #[command(
+        name = "mcp-approve",
+        next_help_heading = "Setup",
+        verbatim_doc_comment
+    )]
     McpApprove {
         /// The nonce printed by the MCP server to stderr
         nonce: String,
@@ -196,9 +215,12 @@ enum Commands {
         /// Only scan git-staged files (skip .env scanning, faster for pre-commit hooks)
         #[arg(long)]
         staged: bool,
-        /// Check if phantom tokens are in environment without proxy running
+        /// Scan every environment variable for phantom tokens a live proxy session does not own
         #[arg(long)]
         runtime: bool,
+        /// Emit a names-only JSON report on stdout (exit status unchanged)
+        #[arg(long)]
+        json: bool,
     },
 
     /// List stored secret names (never shows values)
@@ -211,8 +233,9 @@ enum Commands {
         #[arg(long)]
         show_expiry: bool,
         /// Only show secrets whose anomaly score is >= this value (0=all, 1=caution+, 2=alert only).
-        /// Reads per-secret rate-limit stats from the audit log.
-        #[arg(long, value_name = "SCORE")]
+        /// Reads per-secret retrieval counts from the audit log; an unreadable or
+        /// tampered log is an error, not an all-normal answer.
+        #[arg(long, value_name = "SCORE", value_parser = clap::value_parser!(u8).range(0..=2))]
         min_anomaly_score: Option<u8>,
     },
 
@@ -224,9 +247,15 @@ enum Commands {
         /// Legacy positional secret value; rejected because argv is observable
         #[arg(hide = true)]
         value: Option<String>,
-        /// Read one new-name value from stdin; existing names are denied before the read
+        /// Read one new-name value from a pipe up to EOF (64 KiB cap); input with more than one line needs --multiline or --first-line; existing names are denied before the read
         #[arg(long)]
         stdin: bool,
+        /// With --stdin: store every line of multi-line input (PEM keys, JSON documents)
+        #[arg(long, requires = "stdin", conflicts_with = "first_line")]
+        multiline: bool,
+        /// With --stdin: store only the first line (pass/gopass put metadata after it)
+        #[arg(long, requires = "stdin")]
+        first_line: bool,
     },
 
     /// Remove a secret transactionally after an exact trusted-terminal challenge
@@ -374,7 +403,7 @@ enum Commands {
     ///
     /// Note: dotenvx encrypted .env.vault files are not supported — run
     ///   `dotenvx decrypt --stdout > .env` first, then import the plain .env.
-    #[command(next_help_heading = "Sync & teams")]
+    #[command(next_help_heading = "Sync & teams", verbatim_doc_comment)]
     Import {
         /// Path to the encrypted Phantom backup
         #[arg(required_unless_present = "from")]
@@ -511,11 +540,25 @@ enum Commands {
         watch: bool,
     },
 
+    /// Leak response tools (read-only preview)
+    #[command(next_help_heading = "Maintenance")]
+    Leaks {
+        #[command(subcommand)]
+        action: LeaksAction,
+    },
+
     /// View the opt-in audit log (requires PHANTOM_AUDIT=1 to start logging)
     #[command(next_help_heading = "Maintenance")]
     Audit {
         #[command(subcommand)]
         action: AuditAction,
+    },
+
+    /// Cryptography inventory: algorithms and format tags Phantom uses
+    #[command(next_help_heading = "Maintenance")]
+    Crypto {
+        #[command(subcommand)]
+        action: CryptoAction,
     },
 
     /// Open a closed-catalog Phantom page after an exact trusted-terminal challenge.
@@ -552,7 +595,7 @@ enum Commands {
     ///   phantom expiry set <KEY> <DAYS>      — mark a secret expiring in N days
     ///   phantom expiry enforce [--fail-closed] — exit 1 if any secret has expired
     ///   phantom expiry rotate <KEY>          — deprecated local phm_ token remap only
-    #[command(next_help_heading = "Maintenance")]
+    #[command(next_help_heading = "Maintenance", verbatim_doc_comment)]
     Expiry {
         #[command(subcommand)]
         action: ExpiryAction,
@@ -566,6 +609,31 @@ enum Commands {
         /// Seconds to wait before clearing
         #[arg(long, default_value_t = 30)]
         secs: u64,
+    },
+}
+
+#[derive(Subcommand)]
+enum CryptoAction {
+    /// List every algorithm and format tag Phantom names, with role, status
+    /// and quantum class. Reads no vault, key, or config.
+    Inventory {
+        /// Output format. The global --json is the same as --format json.
+        #[arg(long, value_enum, default_value_t = commands::crypto::InventoryFormat::Text)]
+        format: commands::crypto::InventoryFormat,
+    },
+}
+
+#[derive(Subcommand)]
+enum LeaksAction {
+    /// Show what automated leak response would do. Read-only: no writes, no
+    /// network, no secret values printed.
+    Plan {
+        /// Only plan for incidents with confidence at or above this value
+        #[arg(long, default_value_t = 0.5)]
+        min_confidence: f64,
+        /// Emit JSON instead of human-readable output
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -600,7 +668,7 @@ enum ExpiryAction {
 
 #[derive(Subcommand)]
 enum ValidateAction {
-    /// Show or configure validation scheduling; writes require exact terminal consent.
+    /// Show or configure validation scheduling; writes require exact terminal consent
     ///
     /// Examples:
     ///   phantom validate schedule hourly
@@ -609,6 +677,7 @@ enum ValidateAction {
     ///   phantom validate schedule weekly
     ///   phantom validate schedule --disable
     ///   phantom validate schedule --status
+    #[command(verbatim_doc_comment)]
     Schedule {
         /// Schedule interval: hourly, 6h, daily, daily@2am, weekly, disabled
         #[arg(value_name = "INTERVAL")]
@@ -744,6 +813,12 @@ enum AgentAction {
     },
     /// Human-readable view of the readiness report
     Doctor,
+    /// Read-only, value-free view of MCP approval state (use --json for JSON)
+    Status {
+        /// Emit stable JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Initialize safe defaults for AI-agent use
     Setup {
         /// Show planned actions without changing files
@@ -850,22 +925,262 @@ enum CloudAction {
 /// of relying on the OS default.
 const MAIN_STACK_SIZE: usize = 16 * 1024 * 1024;
 
-fn main() -> anyhow::Result<()> {
-    let handle = std::thread::Builder::new()
+fn main() -> std::process::ExitCode {
+    broken_pipe::install_panic_hook();
+    let handle = match std::thread::Builder::new()
         .name("phantom-main".into())
         .stack_size(MAIN_STACK_SIZE)
-        .spawn(run)?;
+        .spawn(run)
+    {
+        Ok(handle) => handle,
+        Err(error) => return report_error(&anyhow::Error::from(error)),
+    };
     match handle.join() {
-        Ok(result) => result,
+        Ok(Ok(())) => std::process::ExitCode::SUCCESS,
+        // The reader of stdout went away (`phantom list | head`): a normal
+        // end for a CLI, reported the way a shell reports SIGPIPE, with no
+        // panic text or error line. The worker has already unwound.
+        Ok(Err(error)) if broken_pipe::is_stdout_broken_pipe_error(&error) => {
+            std::process::exit(broken_pipe::BROKEN_PIPE_EXIT)
+        }
+        Err(panic) if broken_pipe::is_stdout_broken_pipe_panic(&*panic) => {
+            std::process::exit(broken_pipe::BROKEN_PIPE_EXIT)
+        }
+        Ok(Err(error)) if error.downcast_ref::<UsageError>().is_some() => {
+            report_error(&error);
+            std::process::ExitCode::from(2)
+        }
+        Ok(Err(error)) => report_error(&error),
         // Propagate a panic on the worker thread as if it happened here so
         // the process still dies with the standard panic exit status.
         Err(panic) => std::panic::resume_unwind(panic),
     }
 }
 
+/// Print a command failure to stderr and return exit code 1.
+///
+/// Returning `anyhow::Result` from `main` prints the error with `{:?}`, which
+/// appends a full stack backtrace whenever `RUST_BACKTRACE` or
+/// `RUST_LIB_BACKTRACE` is set. Agent and CI shells commonly export
+/// `RUST_BACKTRACE=1`, which buried actionable messages such as the non-TTY
+/// `phantom add` refusal under dozens of frames. Keep the same
+/// `Error:`/`Caused by:` layout without the backtrace.
+fn report_error(error: &anyhow::Error) -> std::process::ExitCode {
+    eprintln!("{}", format_error(error));
+    std::process::ExitCode::FAILURE
+}
+
+fn format_error(error: &anyhow::Error) -> String {
+    let mut message = format!("Error: {error}");
+    let mut causes = error.chain().skip(1).peekable();
+    if causes.peek().is_some() {
+        message.push_str("\n\nCaused by:");
+        for cause in causes {
+            message.push_str(&format!("\n    {cause}"));
+        }
+    }
+    message
+}
+
+/// A command-line usage error found after clap parsing. `main` reports it
+/// like any error but exits 2, the status clap uses for usage errors.
+#[derive(Debug)]
+struct UsageError(String);
+
+impl std::fmt::Display for UsageError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for UsageError {}
+
+/// Route the global `--json` flag to the command that runs.
+///
+/// `--json` is a global flag, so clap accepts it on every command. Commands
+/// with no JSON output used to ignore it and print human text with exit 0,
+/// which a script then fails to parse. This returns the command path when the
+/// command has no JSON output, and otherwise makes sure the command's own
+/// `--json` flag is set.
+///
+/// The match is exhaustive on purpose: a new command must decide here.
+fn apply_global_json(command: &mut Commands) -> Result<(), &'static str> {
+    use commands::audit::AuditAction as A;
+    match command {
+        // Commands that read the global flag themselves.
+        Commands::Status { .. }
+        | Commands::Sync { .. }
+        | Commands::Doctor { .. }
+        | Commands::Check { .. }
+        | Commands::Agent {
+            action: AgentAction::Report { .. },
+        }
+        | Commands::Why { .. }
+        | Commands::Crypto {
+            action: CryptoAction::Inventory { .. },
+        }
+        | Commands::Audit {
+            action: A::Verify { .. },
+        }
+        | Commands::Setup { status: true, .. }
+        | Commands::Grant { .. }
+        | Commands::Vault {
+            action: VaultAction::MigrateLinux,
+        } => Ok(()),
+        Commands::Rotate {
+            batch,
+            shadow,
+            provider,
+            name,
+            ..
+        } => {
+            if *batch || (!*shadow && (provider.is_some() || name.is_some())) {
+                Ok(())
+            } else {
+                Err("phantom rotate (without --batch or --name)")
+            }
+        }
+        Commands::Validate {
+            action, promote, ..
+        } => {
+            if action.is_none() && promote.is_some() {
+                Err("phantom validate --promote")
+            } else {
+                Ok(())
+            }
+        }
+        // Commands with their own `--json` flag.
+        Commands::List { json, .. }
+        | Commands::Agent {
+            action: AgentAction::Status { json },
+        }
+        | Commands::Leaks {
+            action: LeaksAction::Plan { json, .. },
+        }
+        | Commands::SecretsExpiringSoon { json, .. }
+        | Commands::Expiry {
+            action: ExpiryAction::Enforce { json, .. },
+        }
+        | Commands::Workspace {
+            action: WorkspaceCliAction::Plan { json } | WorkspaceCliAction::Status { json, .. },
+        }
+        | Commands::Audit {
+            action:
+                A::Show { json, .. }
+                | A::Stats { json, .. }
+                | A::Anomalies { json, .. }
+                | A::Incidents { json, .. }
+                | A::Alerts { json, .. },
+        } => {
+            *json = true;
+            Ok(())
+        }
+        // Audit exports whose output is JSON unless another format is chosen.
+        Commands::Audit {
+            action: A::Export { format, .. },
+        } => json_format(format, "phantom audit export --format csv"),
+        Commands::Audit {
+            action: A::Analytics { format, .. },
+        } => json_format(format, "phantom audit analytics --format csv"),
+        Commands::Audit {
+            action: A::ExportRange { format, .. },
+        } => json_format(format, "phantom audit export-range --format csv"),
+        Commands::Audit {
+            action: A::Report { .. },
+        } => Ok(()),
+        // Commands with no JSON output.
+        Commands::Audit {
+            action: A::Tail { .. },
+        } => Err("phantom audit tail"),
+        Commands::Audit { action: A::Path } => Err("phantom audit path"),
+        Commands::Agent {
+            action: AgentAction::Doctor,
+        } => Err("phantom agent doctor"),
+        Commands::Agent {
+            action: AgentAction::Setup { .. },
+        } => Err("phantom agent setup"),
+        Commands::Expiry {
+            action: ExpiryAction::Set { .. },
+        } => Err("phantom expiry set"),
+        Commands::Expiry {
+            action: ExpiryAction::Rotate { .. },
+        } => Err("phantom expiry rotate"),
+        Commands::Workspace {
+            action: WorkspaceCliAction::Apply { .. },
+        } => Err("phantom workspace apply"),
+        Commands::Init { .. } => Err("phantom init"),
+        Commands::Setup { .. } => Err("phantom setup"),
+        Commands::Completion { .. } => Err("phantom completion"),
+        Commands::Mcp {
+            action: McpAction::Serve,
+        } => Err("phantom mcp serve"),
+        Commands::McpApprove { .. } => Err("phantom mcp-approve"),
+        Commands::Exec { .. } => Err("phantom exec"),
+        Commands::Start { .. } => Err("phantom start"),
+        Commands::Stop => Err("phantom stop"),
+        Commands::Add { .. } => Err("phantom add"),
+        Commands::Remove { .. } => Err("phantom remove"),
+        Commands::Reveal { .. } => Err("phantom reveal"),
+        Commands::Copy { .. } => Err("phantom copy"),
+        Commands::Env { .. } => Err("phantom env"),
+        Commands::Login => Err("phantom login"),
+        Commands::Logout => Err("phantom logout"),
+        // Read the global flag themselves (still behind the trusted-terminal
+        // consent gate, like their text output).
+        Commands::Cloud {
+            action: CloudAction::Status,
+        } => Ok(()),
+        Commands::Cloud {
+            action: CloudAction::Push,
+        } => Err("phantom cloud push"),
+        Commands::Cloud {
+            action: CloudAction::Pull { .. },
+        } => Err("phantom cloud pull"),
+        Commands::Team { action } => match action {
+            TeamAction::List => Ok(()),
+            TeamAction::Create { .. } => Err("phantom team create"),
+            TeamAction::Members { .. } => Err("phantom team members"),
+            TeamAction::Invite { .. } => Err("phantom team invite"),
+            TeamAction::KeyPublish { .. } => Err("phantom team key-publish"),
+            TeamAction::VaultPush { .. } => Err("phantom team vault-push"),
+            TeamAction::VaultPull { .. } => Err("phantom team vault-pull"),
+            TeamAction::Revoke { .. } => Err("phantom team revoke"),
+            TeamAction::RotateVault { .. } => Err("phantom team rotate-vault"),
+        },
+        Commands::Pull { .. } => Err("phantom pull"),
+        // `export --json` is a hidden legacy plaintext flag kept only to fail
+        // closed with its own message; never turn it on from here.
+        Commands::Export { json: true, .. } => Ok(()),
+        Commands::Export { .. } => Err("phantom export"),
+        Commands::Import { .. } => Err("phantom import"),
+        Commands::Wrap { .. } => Err("phantom wrap"),
+        Commands::Unwrap => Err("phantom unwrap"),
+        Commands::Upgrade { .. } => Err("phantom upgrade"),
+        Commands::Watch { .. } => Err("phantom watch"),
+        Commands::Open { .. } => Err("phantom open"),
+        Commands::ClearClipboardAfter { .. } => Err("phantom __clear-clipboard-after"),
+    }
+}
+
+fn json_format(format: &str, otherwise: &'static str) -> Result<(), &'static str> {
+    if format == "json" {
+        Ok(())
+    } else {
+        Err(otherwise)
+    }
+}
+
 fn run() -> anyhow::Result<()> {
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
     let global_json = cli.json;
+    if global_json {
+        if let Err(command) = apply_global_json(&mut cli.command) {
+            return Err(UsageError(format!(
+                "'{command}' has no --json output; run it without --json"
+            ))
+            .into());
+        }
+    }
 
     // Initialize logging — only show tracing output in verbose mode
     let filter = if cli.verbose {
@@ -878,6 +1193,8 @@ fn run() -> anyhow::Result<()> {
         .with_env_filter(filter)
         .with_target(false)
         .without_time()
+        // Stdout carries command output, including `--json` reports.
+        .with_writer(std::io::stderr)
         .init();
 
     match cli.command {
@@ -907,7 +1224,22 @@ fn run() -> anyhow::Result<()> {
             show_expiry,
             min_anomaly_score,
         } => commands::list::run_with_expiry(json, show_expiry, min_anomaly_score),
-        Commands::Add { name, value, stdin } => commands::add::run(&name, value, stdin),
+        Commands::Add {
+            name,
+            value,
+            stdin,
+            multiline,
+            first_line,
+        } => {
+            let lines = if multiline {
+                commands::add::StdinLines::Multiline
+            } else if first_line {
+                commands::add::StdinLines::FirstLine
+            } else {
+                commands::add::StdinLines::SingleOnly
+            };
+            commands::add::run(&name, value, stdin, lines)
+        }
         Commands::Remove { name } => commands::remove::run(&name),
         Commands::Reveal {
             name,
@@ -976,16 +1308,32 @@ fn run() -> anyhow::Result<()> {
                 }
             }
         },
-        Commands::Doctor { fix, expiry } => commands::doctor::run_doctor(fix, expiry),
+        Commands::Doctor {
+            fix,
+            expiry,
+            json,
+            pq,
+        } => {
+            if pq {
+                commands::pq_report::run(json || global_json)
+            } else {
+                commands::doctor::run_doctor(fix, expiry, json || global_json)
+            }
+        }
         Commands::Agent { action } => match action {
             AgentAction::Report { json } => commands::agent::report(json || global_json),
             AgentAction::Doctor => commands::agent::doctor(),
+            AgentAction::Status { json } => commands::agent::status(json || global_json),
             AgentAction::Setup { dry_run, apply } => commands::agent::setup(dry_run, apply),
         },
         Commands::Exec { cmd } => commands::exec::run(&cmd, None, cli.quiet),
         Commands::Start { daemon } => commands::start::run(daemon),
         Commands::Stop => commands::stop::run(),
-        Commands::Check { staged, runtime } => commands::check::run(staged, runtime),
+        Commands::Check {
+            staged,
+            runtime,
+            json,
+        } => commands::check::run(staged, runtime, json || global_json),
         Commands::Pull {
             from,
             project,
@@ -997,7 +1345,14 @@ fn run() -> anyhow::Result<()> {
             client,
             print,
             audit_mode,
-        } => commands::setup::run(client, print, audit_mode),
+            status,
+        } => {
+            if status {
+                commands::setup_status::run(cli.json)
+            } else {
+                commands::setup::run(client, print, audit_mode)
+            }
+        }
         Commands::Sync {
             platform,
             project,
@@ -1047,14 +1402,20 @@ fn run() -> anyhow::Result<()> {
         Commands::Cloud { action } => match action {
             CloudAction::Push => commands::cloud::run_push(),
             CloudAction::Pull { force } => commands::cloud::run_pull(force),
-            CloudAction::Status => commands::cloud::run_status(),
+            CloudAction::Status => commands::cloud::run_status(cli.json),
         },
         Commands::Watch { auto, auto_rotate } => {
             commands::watch::run_with_rotate(auto, auto_rotate)
         }
-        Commands::Why { key } => commands::why::run(&key),
-        Commands::Wrap { only, skip } => commands::wrap::run(&only, &skip),
-        Commands::Unwrap => commands::unwrap::run(),
+        Commands::Leaks { action } => match action {
+            LeaksAction::Plan {
+                min_confidence,
+                json,
+            } => commands::leaks::run_plan(min_confidence, json || global_json),
+        },
+        Commands::Why { key } => commands::why::run(&key, global_json),
+        Commands::Wrap { only, skip } => commands::wrap::run(&only, &skip, cli.quiet),
+        Commands::Unwrap => commands::unwrap::run(cli.quiet),
         Commands::Copy { name, to, rename } => commands::copy::run(&name, &to, &rename),
         Commands::Audit { action } => match action {
             AuditAction::Show {
@@ -1074,7 +1435,9 @@ fn run() -> anyhow::Result<()> {
                 commands::audit::run_tail(op.as_deref(), name.as_deref())
             }
             AuditAction::Path => commands::audit::run_path(),
-            AuditAction::Verify { with_context } => commands::audit::run_verify(with_context),
+            AuditAction::Verify { with_context } => {
+                commands::audit::run_verify(with_context, global_json)
+            }
             AuditAction::Stats {
                 json,
                 top,
@@ -1150,6 +1513,13 @@ fn run() -> anyhow::Result<()> {
         Commands::Open { target } => commands::open::run(&target),
         Commands::Upgrade { force, check_only } => commands::upgrade::run(force, check_only),
         Commands::Completion { shell } => commands::completion::run(shell),
+        Commands::Crypto { action } => match action {
+            CryptoAction::Inventory { format } => commands::crypto::run_inventory(if global_json {
+                commands::crypto::InventoryFormat::Json
+            } else {
+                format
+            }),
+        },
         Commands::Mcp { action } => match action {
             McpAction::Serve => commands::mcp::run_serve(),
         },
@@ -1179,7 +1549,7 @@ fn run() -> anyhow::Result<()> {
         },
         Commands::ClearClipboardAfter { secs } => commands::reveal::run_clear_after(secs),
         Commands::Team { action } => match action {
-            TeamAction::List => commands::team::run_list(),
+            TeamAction::List => commands::team::run_list(cli.json),
             TeamAction::Create { name } => commands::team::run_create(&name),
             TeamAction::Members { team_id } => commands::team::run_members(&team_id),
             TeamAction::Invite {
@@ -1239,7 +1609,35 @@ fn run() -> anyhow::Result<()> {
 #[cfg(test)]
 mod help_tests {
     use super::Cli;
-    use clap::CommandFactory;
+    use clap::{CommandFactory, Parser};
+
+    #[test]
+    fn add_line_flags_require_stdin_and_exclude_each_other() {
+        for args in [
+            &["phantom", "add", "NAME", "--multiline"][..],
+            &["phantom", "add", "NAME", "--first-line"][..],
+            &[
+                "phantom",
+                "add",
+                "NAME",
+                "--stdin",
+                "--multiline",
+                "--first-line",
+            ][..],
+        ] {
+            assert!(
+                Cli::try_parse_from(args).is_err(),
+                "{args:?} must be rejected"
+            );
+        }
+        for args in [
+            &["phantom", "add", "NAME", "--stdin"][..],
+            &["phantom", "add", "NAME", "--stdin", "--multiline"][..],
+            &["phantom", "add", "NAME", "--stdin", "--first-line"][..],
+        ] {
+            assert!(Cli::try_parse_from(args).is_ok(), "{args:?} must parse");
+        }
+    }
 
     fn grouped_section(about: &str) -> &str {
         about
@@ -1298,6 +1696,186 @@ mod help_tests {
                 );
             }
         }
+    }
+
+    /// Example blocks in doc comments are indented one-per-line. Without
+    /// `verbatim_doc_comment`, clap reflows them into one paragraph, so
+    /// `phantom import --help` printed every example on a single line.
+    #[test]
+    fn help_example_blocks_keep_one_example_per_line() {
+        fn walk(command: &mut clap::Command, path: &str) {
+            let rendered = command.render_long_help().to_string();
+            for line in rendered.lines() {
+                assert!(
+                    line.matches(path).count() <= 1,
+                    "`{path} --help` reflowed several examples into one line: {line}"
+                );
+            }
+            let names: Vec<String> = command
+                .get_subcommands()
+                .filter(|sub| !sub.is_hide_set())
+                .map(|sub| sub.get_name().to_string())
+                .collect();
+            for name in names {
+                let sub = command
+                    .find_subcommand_mut(&name)
+                    .expect("listed subcommand");
+                walk(sub, &format!("{path} {name}"));
+            }
+        }
+        let mut command = Cli::command();
+        command.build();
+        let names: Vec<String> = command
+            .get_subcommands()
+            .filter(|sub| !sub.is_hide_set())
+            .map(|sub| sub.get_name().to_string())
+            .collect();
+        for name in names {
+            let sub = command
+                .find_subcommand_mut(&name)
+                .expect("listed subcommand");
+            walk(sub, &format!("phantom {name}"));
+        }
+    }
+
+    /// Every visible command path, with placeholder values for its required
+    /// arguments, so `--json` routing can be checked command by command.
+    fn command_paths() -> Vec<(String, Vec<String>)> {
+        fn required_args(command: &clap::Command) -> Vec<String> {
+            let mut argv = Vec::new();
+            for arg in command.get_arguments() {
+                if !arg.is_required_set() || arg.is_global_set() {
+                    continue;
+                }
+                let value = arg
+                    .get_possible_values()
+                    .first()
+                    .map(|value| value.get_name().to_string())
+                    // "1" parses as both a string and a number.
+                    .unwrap_or_else(|| "1".to_string());
+                if let Some(long) = arg.get_long() {
+                    argv.push(format!("--{long}"));
+                }
+                argv.push(value);
+            }
+            argv
+        }
+        fn walk(
+            command: &clap::Command,
+            prefix: Vec<String>,
+            out: &mut Vec<(String, Vec<String>)>,
+        ) {
+            let subs: Vec<&clap::Command> = command
+                .get_subcommands()
+                .filter(|sub| !sub.is_hide_set() && sub.get_name() != "help")
+                .collect();
+            if subs.is_empty() || !command.is_subcommand_required_set() {
+                let mut argv = prefix.clone();
+                argv.extend(required_args(command));
+                out.push((prefix.join(" "), argv));
+            }
+            for sub in subs {
+                let mut next = prefix.clone();
+                next.push(sub.get_name().to_string());
+                walk(sub, next, out);
+            }
+        }
+        let mut command = Cli::command();
+        command.build();
+        let mut out = Vec::new();
+        for sub in command.get_subcommands().filter(|sub| !sub.is_hide_set()) {
+            if sub.get_name() == "help" {
+                continue;
+            }
+            walk(sub, vec![sub.get_name().to_string()], &mut out);
+        }
+        out
+    }
+
+    /// Classify every command for the global `--json` flag. A new command, or
+    /// one that gains or loses JSON output, must update this list on purpose.
+    #[test]
+    fn global_json_is_routed_or_rejected_for_every_command() {
+        let supported: &[&str] = &[
+            "agent report",
+            "agent status",
+            "audit alerts",
+            "audit analytics",
+            "audit anomalies",
+            "audit export",
+            "audit export-range",
+            "audit incidents",
+            "audit report",
+            "audit show",
+            "audit stats",
+            "audit verify",
+            "check",
+            "cloud status",
+            "crypto inventory",
+            "doctor",
+            "expiry enforce",
+            // Not JSON output: its hidden legacy `--json` fails closed with
+            // "Plaintext JSON export is disabled".
+            "export",
+            "grant add",
+            "grant list",
+            "grant revoke",
+            "grant status",
+            "leaks plan",
+            "list",
+            "secrets-expiring-soon",
+            "status",
+            "sync",
+            "team list",
+            "validate",
+            "validate history",
+            "validate schedule",
+            "vault migrate-linux",
+            "workspace plan",
+            "why",
+            "workspace status",
+        ];
+        let mut seen = Vec::new();
+        for (name, path) in command_paths() {
+            let mut argv = vec!["phantom".to_string(), "--json".to_string()];
+            argv.extend(path.iter().cloned());
+            // Conditionally required positionals (`import <FILE>`) are not
+            // marked required; supply one when the bare form does not parse.
+            let mut cli = super::Cli::try_parse_from(&argv)
+                .or_else(|_| {
+                    argv.push("1".to_string());
+                    super::Cli::try_parse_from(&argv)
+                })
+                .unwrap_or_else(|error| panic!("{argv:?} must parse: {error}"));
+            assert!(cli.json, "{argv:?}");
+            let routed = super::apply_global_json(&mut cli.command);
+            assert_eq!(
+                routed.is_ok(),
+                supported.contains(&name.as_str()),
+                "`phantom {name} --json` classification changed: {routed:?}"
+            );
+            if let Err(message) = routed {
+                assert!(
+                    message.starts_with(&format!("phantom {name}")),
+                    "rejection must name the command: {message}"
+                );
+            }
+            seen.push(name);
+        }
+        for name in supported {
+            assert!(seen.iter().any(|s| s == name), "unknown command `{name}`");
+        }
+        assert!(seen.iter().any(|s| s == "why"), "walk must reach `why`");
+    }
+
+    #[test]
+    fn global_json_sets_a_commands_own_json_flag() {
+        let mut cli = super::Cli::try_parse_from(["phantom", "--json", "list"]).unwrap();
+        super::apply_global_json(&mut cli.command).unwrap();
+        assert!(matches!(
+            cli.command,
+            super::Commands::List { json: true, .. }
+        ));
     }
 
     #[test]

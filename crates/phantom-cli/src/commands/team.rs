@@ -6,7 +6,24 @@ use std::io::{BufRead, IsTerminal, Write};
 use std::path::PathBuf;
 use zeroize::Zeroizing;
 
-pub fn run_list() -> Result<()> {
+/// `phantom team list --json`: `{"teams":[{"id","name","role"}]}`. The
+/// service does not report an active team, so no `active` field is invented.
+fn team_list_json(team_list: &[teams::Team]) -> serde_json::Value {
+    serde_json::json!({
+        "teams": team_list
+            .iter()
+            .map(|team| serde_json::json!({
+                "id": team.id,
+                "name": team.name,
+                "role": team.role,
+            }))
+            .collect::<Vec<_>>(),
+    })
+}
+
+/// `json` prints [`team_list_json`] instead of the text list. Both pass the
+/// same trusted-terminal consent gate and make the same single request.
+pub fn run_list(json: bool) -> Result<()> {
     require_trusted_terminal_team(&team_consent_plan(
         "list",
         &[],
@@ -17,6 +34,14 @@ pub fn run_list() -> Result<()> {
 
     let rt = tokio::runtime::Runtime::new()?;
     let team_list = rt.block_on(teams::list_teams(&api_base, &token))?;
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&team_list_json(&team_list))?
+        );
+        return Ok(());
+    }
 
     if team_list.is_empty() {
         println!(
@@ -145,12 +170,35 @@ pub fn run_vault_push(team_id: &str) -> Result<()> {
     let token = Zeroizing::new(auth::require_token()?);
     let api_base = auth::api_base_url()?;
     let kp = auth::get_or_create_team_keypair()?;
+    vault_push_after_consent(team_id, &project_id, &config, &token, &api_base, &kp)
+}
+
+/// `team vault-push` once terminal consent is given and the bearer and team
+/// keypair are read: list the local vault, judge that inventory, and only
+/// then read values and send. Split out so a test can enter here without a
+/// terminal; `run_vault_push` is the only production caller.
+fn vault_push_after_consent(
+    team_id: &str,
+    project_id: &str,
+    config: &phantom_core::config::PhantomConfig,
+    token: &str,
+    api_base: &str,
+    kp: &phantom_core::team_crypto::MemberKeypair,
+) -> Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
 
     // Read the local vault into a Zeroizing-valued map so the secret
     // bytes are scrubbed when the helper drops them.
-    let vault = phantom_vault::try_create_vault(config.local_project_id())?;
+    let vault = crate::util::open_vault(config.local_project_id())?;
     let secret_names = vault.list()?;
+    // The push overwrites the remote shared vault: never from a keychain-only
+    // view of a project whose encrypted-file vault this process cannot open.
+    crate::util::require_complete_inventory(
+        vault.as_ref(),
+        config.local_project_id(),
+        secret_names.len(),
+        "push to the team vault",
+    )?;
     if secret_names.is_empty() {
         println!("{}  No secrets to push", "warn".yellow().bold());
         return Ok(());
@@ -163,12 +211,7 @@ pub fn run_vault_push(team_id: &str) -> Result<()> {
 
     let outcome = rt
         .block_on(teams_vault::push_for_project(
-            &api_base,
-            &token,
-            team_id,
-            &project_id,
-            secrets,
-            &kp,
+            api_base, token, team_id, project_id, secrets, kp,
         ))
         .context(
             "Team vault push did not return a success receipt; the remote ciphertext outcome is unknown. Do not retry automatically until the remote vault version is inspected",
@@ -475,7 +518,7 @@ fn invitation_checklist(team_id: &str) -> String {
 mod tests {
     use super::{
         apply_team_vault_pull_transaction, confirm_team_effect, invitation_checklist,
-        team_consent_plan,
+        team_consent_plan, team_list_json,
     };
     use phantom_core::error::{PhantomError, Result as PhantomResult};
     use phantom_vault::{file::FileVault, VaultBackend};
@@ -483,6 +526,20 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::TempDir;
     use zeroize::Zeroizing;
+
+    #[test]
+    fn team_list_json_wraps_teams_with_name_and_role() {
+        let teams = vec![phantom_core::teams::Team {
+            id: "team-placeholder-id".to_string(),
+            name: "placeholder-team".to_string(),
+            role: "admin".to_string(),
+        }];
+        let report = team_list_json(&teams);
+        assert_eq!(report["teams"][0]["name"], "placeholder-team");
+        assert_eq!(report["teams"][0]["role"], "admin");
+        assert_eq!(report["teams"][0]["id"], "team-placeholder-id");
+        assert_eq!(team_list_json(&[])["teams"], serde_json::json!([]));
+    }
 
     struct FaultVault {
         inner: FileVault,
@@ -676,5 +733,50 @@ mod tests {
         assert!(error.to_string().contains("trusted terminal"));
         assert_eq!(reader.position(), 0);
         assert!(output.is_empty());
+    }
+}
+
+#[cfg(all(test, unix))]
+mod locked_vault_tests {
+    use crate::util::test_seam::{empty_keychain, keychain_with_one, LockedProject};
+
+    /// Entered after consent, the bearer and the team keypair, as
+    /// `run_vault_push` does. The stub keychain panics on any value read, and
+    /// the API base is unroutable, so a refusal here comes before any
+    /// retrieve or network call.
+    fn push(project: &LockedProject) -> String {
+        let config =
+            phantom_core::config::PhantomConfig::load(&project.dir.join(".phantom.toml")).unwrap();
+        let kp = phantom_core::team_crypto::MemberKeypair::generate();
+        super::vault_push_after_consent(
+            "team-fixture",
+            config.portable_project_id(),
+            &config,
+            "unused-bearer",
+            "http://127.0.0.1:9",
+            &kp,
+        )
+        .unwrap_err()
+        .to_string()
+    }
+
+    /// A keychain-only view would overwrite the shared vault with a partial
+    /// set.
+    #[test]
+    fn team_vault_push_refuses_a_partial_inventory_before_any_read_or_send() {
+        let project = LockedProject::new(keychain_with_one);
+        let error = push(&project);
+        assert!(
+            error.starts_with("Refusing to push to the team vault from a partial inventory"),
+            "{error}"
+        );
+    }
+
+    /// An empty keychain beside a locked file vault was "No secrets to push".
+    #[test]
+    fn team_vault_push_refuses_a_locked_file_vault() {
+        let project = LockedProject::new(empty_keychain);
+        let error = push(&project);
+        assert!(error.starts_with("Vault locked:"), "{error}");
     }
 }

@@ -4,6 +4,8 @@ use colored::Colorize;
 use phantom_core::config::PhantomConfig;
 use phantom_core::dotenv::DotenvFile;
 use phantom_core::precommit_hook::{self, HookChange};
+use phantom_core::report::{DoctorMcpClient as McpClientState, DoctorReport};
+use std::cell::RefCell;
 use zeroize::Zeroizing;
 
 fn doctor_can_open_vault(_fix: bool) -> bool {
@@ -64,14 +66,122 @@ fn ensure_dotenv_repair_guard(guard: Option<&DotenvRepairGuard>) -> Result<()> {
     Ok(())
 }
 
+/// The managed dotenv as the repair guard read it (`None` when it was
+/// absent). Repairs derive from these bytes, which
+/// [`ensure_dotenv_repair_guard`] re-compares before any write, never from a
+/// second read of the path that could follow a swapped-in symlink.
+fn guarded_dotenv(guard: Option<&DotenvRepairGuard>) -> Result<Option<DotenvFile>> {
+    let Some(bytes) = guard.and_then(|(_, before)| before.as_deref()) else {
+        return Ok(None);
+    };
+    let text = std::str::from_utf8(bytes).context("Managed dotenv is not valid UTF-8")?;
+    Ok(Some(DotenvFile::parse_str(text)))
+}
+
+/// Report on the managed dotenv (`env_path`, beside `.phantom.toml`) and
+/// return the issues found. It is opened without following a symlink and
+/// judged on the opened handle, so a linked file is reported, not followed.
+fn check_managed_dotenv(project_dir: &std::path::Path, env_path: &std::path::Path) -> usize {
+    let name = env_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(".env");
+    let dotenv = match phantom_core::managed_dotenv::parse_regular_dotenv(project_dir, name) {
+        Ok(Some(dotenv)) => dotenv,
+        Ok(None) => {
+            check_info("No .env file in current directory");
+            return 0;
+        }
+        Err(error) => {
+            check_fail(&format!(".env could not be read: {error:#}"));
+            // Only to choose the hint; the read above already decided.
+            let special = std::fs::symlink_metadata(env_path)
+                .is_ok_and(|metadata| metadata.file_type().is_symlink() || !metadata.is_file());
+            if special {
+                check_fix(&format!(
+                    "Replace {name} with a regular file (not a symlink or special file), then rerun phantom doctor"
+                ));
+            }
+            return 1;
+        }
+    };
+    let entries = dotenv.entries();
+    let real_secrets = dotenv.real_secret_entries();
+    if let Err(error) = dotenv.validate_for_mutation() {
+        check_fail(&format!(".env parse error: {error}"));
+        1
+    } else if real_secrets.is_empty() {
+        check_pass(&format!(
+            ".env has {} entries, all protected",
+            entries.len()
+        ));
+        0
+    } else {
+        check_warn(&format!(
+            ".env has {} unprotected secret(s): {}",
+            real_secrets.len(),
+            real_secrets
+                .iter()
+                .map(|e| e.key.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+        check_fix("Run: phantom init");
+        1
+    }
+}
+
 /// Run the full doctor suite. Pass `check_expiry = true` to also scan secret
 /// TTL metadata and warn about expired or soon-to-expire entries.
-pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
-    let project_dir = std::env::current_dir()?;
+pub fn run_doctor(fix: bool, check_expiry: bool, json: bool) -> Result<()> {
+    if json {
+        REPORT.with(|report| *report.borrow_mut() = Some(DoctorReport::default()));
+    }
+    let outcome = run_checks(fix, check_expiry);
+    let Some(mut report) = REPORT.with(|report| report.borrow_mut().take()) else {
+        return outcome.map(|_| ());
+    };
+    let (issues, fixed) = outcome?;
+    report.ok = issues == 0;
+    report.issues = issues;
+    report.fixed = fixed;
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    Ok(())
+}
+
+fn run_checks(fix: bool, check_expiry: bool) -> Result<(usize, usize)> {
+    let project_dir = crate::util::project_dir()?;
     let config_path = project_dir.join(".phantom.toml");
-    let env_path = match PhantomConfig::load(&config_path).ok() {
+    // A managed dotenv that cannot be resolved (missing, a symlink, two
+    // token-bearing candidates) is a finding for diagnosis. Repairs need a
+    // resolved file, so --fix still stops before any of them.
+    let mut unresolved_dotenv = None;
+    // A config that exists but cannot be read or parsed is not "no config":
+    // the managed dotenv it names is unknown, so doctor reports the dotenv
+    // as unchecked instead of judging `./.env`, and --fix makes no repairs.
+    let (loaded_config, config_broken) = match crate::util::load_config_if_present(&config_path) {
+        Ok(config) => (config, false),
+        Err(error) if fix => {
+            return Err(anyhow::Error::new(error).context(
+                ".phantom.toml exists but could not be loaded; doctor --fix made no repairs. Fix or restore it, then run `phantom doctor`",
+            ))
+        }
+        Err(_) => (None, true),
+    };
+    let env_path = match loaded_config.as_ref() {
         Some(config) => {
-            phantom_core::managed_dotenv::resolve_dotenv(&project_dir, &config, &[])?.path
+            match phantom_core::managed_dotenv::resolve_dotenv(&project_dir, config, &[]) {
+                Ok(resolved) => resolved.path,
+                Err(error) if !fix => {
+                    unresolved_dotenv = Some(error);
+                    project_dir.join(".env")
+                }
+                Err(error) => {
+                    return Err(error.context(
+                        "The managed dotenv could not be resolved; doctor --fix made no repairs. Run `phantom doctor` to see the finding",
+                    ))
+                }
+            }
         }
         None => project_dir.join(".env"),
     };
@@ -85,11 +195,13 @@ pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
     // a cross-file rollback contract. Re-running --fix advances the next item.
     let mut mutation_applied = false;
 
-    println!("{}", "Phantom Doctor".bold().underline());
-    println!();
+    human(|| {
+        println!("{}", "Phantom Doctor".bold().underline());
+        println!();
+    });
 
     // Check 1: .phantom.toml exists
-    if config_path.exists() {
+    if config_broken || config_path.exists() {
         check_pass(".phantom.toml found");
         match PhantomConfig::load(&config_path) {
             Ok(config) => {
@@ -102,8 +214,20 @@ pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
                 ));
 
                 let service_risks = config.service_risks();
+                // The same check `phantom exec` and `phantom start` refuse on,
+                // so their pointer at doctor always lands on a finding.
+                let launch_blocker = config.exec_route_blocker();
+                if let Some(blocker) = launch_blocker {
+                    check_fail(&launch_blocker_message(&blocker));
+                    check_fix(
+                        "Restore Phantom's built-in definition for that service (or remove the custom service) in a trusted terminal; `phantom why <KEY> --json` shows the same blocker",
+                    );
+                    issues += 1;
+                }
                 if service_risks.is_empty() {
-                    check_pass("Service routes look safe");
+                    if launch_blocker.is_none() {
+                        check_pass("Service routes look safe");
+                    }
                 } else {
                     for risk in &service_risks {
                         check_warn(&format!(
@@ -124,6 +248,18 @@ pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
                     let vault = phantom_vault::try_create_vault(config.local_project_id())?;
                     check_pass(&format!("Vault backend: {}", vault.backend_name()));
                     match vault.list() {
+                        Ok(names)
+                            if names.is_empty() && vault.backend_name() != "encrypted-file" =>
+                        {
+                            match phantom_vault::locked_file_vault_notice(config.local_project_id())
+                            {
+                                Some(notice) => {
+                                    check_warn(&notice);
+                                    issues += 1;
+                                }
+                                None => check_pass("0 secret(s) in vault"),
+                            }
+                        }
                         Ok(names) => check_pass(&format!("{} secret(s) in vault", names.len())),
                         Err(e) => {
                             check_fail(&format!("Vault access failed: {e}"));
@@ -132,6 +268,12 @@ pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
                     }
                 } else {
                     check_info("Vault backend and inventory not opened in read-only doctor mode");
+                    if let Some(notice) =
+                        phantom_vault::locked_file_vault_notice(config.local_project_id())
+                    {
+                        check_warn(&notice);
+                        issues += 1;
+                    }
                 }
 
                 // Check sync targets
@@ -144,6 +286,9 @@ pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
             }
             Err(e) => {
                 check_fail(&format!("Config parse error: {e}"));
+                check_fix(
+                    "Fix or restore .phantom.toml (for example from version control), then rerun phantom doctor",
+                );
                 issues += 1;
             }
         }
@@ -154,42 +299,20 @@ pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
     }
 
     // Check 3: .env file
-    if env_path.exists() {
-        let dotenv = DotenvFile::parse_file(&env_path);
-        match dotenv {
-            Ok(dotenv) => {
-                let entries = dotenv.entries();
-                let real_secrets = dotenv.real_secret_entries();
-
-                if let Err(error) = dotenv.validate_for_mutation() {
-                    check_fail(&format!(".env parse error: {error}"));
-                    issues += 1;
-                } else if real_secrets.is_empty() {
-                    check_pass(&format!(
-                        ".env has {} entries, all protected",
-                        entries.len()
-                    ));
-                } else {
-                    check_warn(&format!(
-                        ".env has {} unprotected secret(s): {}",
-                        real_secrets.len(),
-                        real_secrets
-                            .iter()
-                            .map(|e| e.key.as_str())
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    ));
-                    check_fix("Run: phantom init");
-                    issues += 1;
-                }
-            }
-            Err(e) => {
-                check_fail(&format!(".env parse error: {e}"));
-                issues += 1;
-            }
+    match unresolved_dotenv {
+        None if config_broken => {
+            check_warn(
+                "Managed dotenv not checked: .phantom.toml could not be loaded, so which dotenv it manages is unknown",
+            );
         }
-    } else {
-        check_info("No .env file in current directory");
+        Some(error) => {
+            check_fail(&format!("Managed dotenv: {error:#}"));
+            check_fix(
+                "Restore the managed dotenv as a regular file beside .phantom.toml, or rerun `phantom init --from <file>` to choose it",
+            );
+            issues += 1;
+        }
+        None => issues += check_managed_dotenv(&project_dir, &env_path),
     }
 
     // Check 4: .gitignore
@@ -226,6 +349,7 @@ pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
         }
     } else {
         check_warn("No .gitignore — consider adding one");
+        check_fix("Run: phantom doctor --fix (creates .gitignore with .env patterns)");
         if fix && !mutation_applied {
             ensure_dotenv_repair_guard(repair_dotenv_guard.as_ref())?;
             write_project_file_exact(
@@ -251,11 +375,10 @@ pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
     } else {
         check_warn("No .env.example — team onboarding may be difficult");
         check_fix("Run: phantom env");
-        if fix && !mutation_applied && env_path.exists() {
-            if let Ok(dotenv) = DotenvFile::parse_file(&env_path) {
-                let config = PhantomConfig::load(&config_path).ok();
+        if fix && !mutation_applied {
+            if let Some(dotenv) = guarded_dotenv(repair_dotenv_guard.as_ref())? {
                 let content = dotenv
-                    .generate_example_content(config.as_ref())
+                    .generate_example_content(loaded_config.as_ref())
                     .context("Managed dotenv is malformed; doctor made no .env.example repair")?;
                 ensure_dotenv_repair_guard(repair_dotenv_guard.as_ref())?;
                 write_project_file_exact(
@@ -267,6 +390,8 @@ pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
                 check_fixed("Generated .env.example");
                 fixed += 1;
                 mutation_applied = true;
+            } else {
+                issues += 1;
             }
         } else if fix {
             issues += 1; // Can't fix without .env
@@ -280,7 +405,19 @@ pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
     let claude_settings = project_dir.join(".claude/settings.local.json");
     if claude_settings.exists() {
         let content = std::fs::read_to_string(&claude_settings)?;
-        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&content) {
+        let parsed = serde_json::from_str::<serde_json::Value>(&content);
+        if parsed.is_err() {
+            // An unparseable settings file is not "no legacy grants": the
+            // checks below could not run, so this is a finding, never a pass.
+            check_warn(
+                "Claude Code settings (.claude/settings.local.json) could not be parsed; dotenv read grants and legacy MCP entries were not checked",
+            );
+            check_fix(
+                "Fix the JSON in .claude/settings.local.json (or remove the file), then rerun phantom doctor",
+            );
+            issues += 1;
+        }
+        if let Ok(parsed) = parsed {
             if parsed["mcpServers"].get("phantom").is_some() {
                 check_warn(
                     "Claude Code Phantom MCP entry is in legacy settings; move it to .mcp.json",
@@ -326,7 +463,8 @@ pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
         }
     }
 
-    // Check 8: Pre-commit hook
+    // Check 8: Pre-commit hook. This is the last gated repair, so its branches
+    // need not set `mutation_applied`; a repair added after it must do so.
     match precommit_hook::inspect(&project_dir)? {
         precommit_hook::HookState::Present {
             content,
@@ -492,10 +630,23 @@ pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
                 if let Ok(names) = vault.list() {
                     let mut invalid_count = 0usize;
                     let mut stale_count = 0usize;
+                    let mut unchecked_count = 0usize;
+                    let mut unreadable_count = 0usize;
+                    let mut first_read_error = None;
                     for name in &names {
-                        let meta = vault.get_validation_metadata(name).unwrap_or_default();
+                        // A read error is not "never checked": the state is
+                        // unknown, the same rule as phantom_validate_secret.
+                        let meta = match vault.get_validation_metadata(name) {
+                            Ok(meta) => meta,
+                            Err(error) => {
+                                unreadable_count += 1;
+                                first_read_error.get_or_insert_with(|| error.to_string());
+                                continue;
+                            }
+                        };
                         if meta.never_checked() {
                             // Not yet validated — not an issue, just informational.
+                            unchecked_count += 1;
                         } else if !meta.is_valid {
                             invalid_count += 1;
                             let reason = meta.failure_reason.as_deref().unwrap_or("unknown reason");
@@ -506,16 +657,15 @@ pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
                             stale_count += 1;
                         }
                     }
+                    if let Some(error) = first_read_error {
+                        check_warn(&format!(
+                            "Validation: stored results for {unreadable_count} secret(s) could not be read; their state is unknown ({error})"
+                        ));
+                    }
                     if invalid_count == 0 && stale_count == 0 && !names.is_empty() {
-                        let all_checked = names.iter().all(|n| {
-                            vault
-                                .get_validation_metadata(n)
-                                .map(|m| !m.never_checked())
-                                .unwrap_or(false)
-                        });
-                        if all_checked {
+                        if unchecked_count == 0 && unreadable_count == 0 {
                             check_pass("All secrets passed last validation check");
-                        } else {
+                        } else if unchecked_count > 0 {
                             check_info(
                             "Validation: run `phantom validate --check-all` to check credential health",
                         );
@@ -592,61 +742,48 @@ pub fn run_doctor(fix: bool, check_expiry: bool) -> Result<()> {
 
     // Check 14: MCP setup status per known client
     {
-        println!();
-        println!("  {} MCP client wiring:", "info".blue());
+        human(|| {
+            println!();
+            println!("  {} MCP client wiring:", "info".blue());
+        });
 
-        // Claude Code — supported project-scoped MCP registration
-        let claude_path = project_dir.join(".mcp.json");
-        issues += usize::from(check_mcp_client("claude", &claude_path, false));
-
-        if let Some(home) = dirs::home_dir() {
-            // Cursor — ~/.cursor/mcp.json
-            issues += usize::from(check_mcp_client(
-                "cursor",
-                &home.join(".cursor/mcp.json"),
-                true,
-            ));
-            // Windsurf — ~/.codeium/windsurf/mcp_config.json
-            issues += usize::from(check_mcp_client(
-                "windsurf",
-                &home.join(".codeium/windsurf/mcp_config.json"),
-                true,
-            ));
-            // Codex — ~/.codex/config.toml
-            issues += usize::from(check_mcp_client(
-                "codex",
-                &home.join(".codex/config.toml"),
-                true,
-            ));
+        // The same clients `phantom setup --status` reports, in its order.
+        let home = phantom_core::home::home_dir_with_platform_fallback().ok();
+        for (name, path, global) in
+            super::setup_status::client_config_paths(home.as_deref(), &project_dir)
+        {
+            issues += usize::from(check_mcp_client(name, &path, global));
         }
     }
 
-    println!();
-    if fix && fixed > 0 {
-        println!("{} Auto-fixed {} issue(s)", "ok".green().bold(), fixed);
-        if issues > 0 {
+    human(|| {
+        println!();
+        if fix && fixed > 0 {
+            println!("{} Auto-fixed {} issue(s)", "ok".green().bold(), fixed);
+            if issues > 0 {
+                println!(
+                    "{} Re-run `phantom doctor --fix` to apply the next isolated repair",
+                    "next".blue().bold()
+                );
+            }
+        }
+        if issues == 0 {
+            println!("{} All checks passed!", "ok".green().bold());
+        } else {
             println!(
-                "{} Re-run `phantom doctor --fix` to apply the next isolated repair",
-                "next".blue().bold()
+                "{} {} issue(s) found{}",
+                "!".yellow().bold(),
+                issues,
+                if !fix {
+                    " — run `phantom doctor --fix` to auto-fix"
+                } else {
+                    ""
+                }
             );
         }
-    }
-    if issues == 0 {
-        println!("{} All checks passed!", "ok".green().bold());
-    } else {
-        println!(
-            "{} {} issue(s) found{}",
-            "!".yellow().bold(),
-            issues,
-            if !fix {
-                " — run `phantom doctor --fix` to auto-fix"
-            } else {
-                ""
-            }
-        );
-    }
+    });
 
-    Ok(())
+    Ok((issues, fixed))
 }
 
 fn write_project_file_exact(
@@ -698,15 +835,7 @@ fn write_project_file_exact_with(
 /// Returns true for a present-but-unsafe or unreadable Phantom configuration.
 fn check_mcp_client(name: &str, path: &std::path::Path, global: bool) -> bool {
     let location = if global {
-        if let Some(home) = dirs::home_dir() {
-            if let Ok(suffix) = path.strip_prefix(&home) {
-                format!("~/{}", suffix.display())
-            } else {
-                path.display().to_string()
-            }
-        } else {
-            path.display().to_string()
-        }
+        phantom_core::home::display_home_relative(path)
     } else {
         path.display().to_string()
     };
@@ -715,79 +844,148 @@ fn check_mcp_client(name: &str, path: &std::path::Path, global: bool) -> bool {
         let content = match std::fs::read_to_string(path) {
             Ok(content) => content,
             Err(error) => {
-                println!(
-                    "       {} {} config cannot be read safely: {} ({})",
-                    "FAIL".red().bold(),
-                    name,
-                    error,
-                    location.dimmed()
-                );
+                mcp_client(name, &location, "unreadable", || {
+                    println!(
+                        "       {} {} config cannot be read safely: {} ({})",
+                        "FAIL".red().bold(),
+                        name,
+                        error,
+                        location.dimmed()
+                    )
+                });
                 return true;
             }
         };
         if phantom_core::agent::mcp_config_has_local_runtime(path) {
-            println!(
-                "       {} {} uses a local Phantom executable ({})",
-                "ok".green(),
-                name,
-                location.dimmed()
-            );
+            mcp_client(name, &location, "local_runtime", || {
+                println!(
+                    "       {} {} uses a local Phantom executable ({})",
+                    "ok".green(),
+                    name,
+                    location.dimmed()
+                )
+            });
             false
         } else if content.contains("phantom") {
-            println!(
-                "       {} {} Phantom entry is stale or network-capable ({})",
-                "warn".yellow(),
-                name,
-                location.dimmed()
-            );
-            println!(
-                "          {} phantom setup --client {}",
-                "Fix:".dimmed(),
-                name
-            );
+            mcp_client(name, &location, "stale", || {
+                println!(
+                    "       {} {} Phantom entry is stale or network-capable ({})",
+                    "warn".yellow(),
+                    name,
+                    location.dimmed()
+                );
+                if <super::setup::Client as clap::ValueEnum>::from_str(name, true).is_ok() {
+                    println!(
+                        "          {} phantom setup --client {}",
+                        "Fix:".dimmed(),
+                        name
+                    )
+                } else {
+                    println!(
+                        "          {} point its phantom MCP entry at the local phantom-mcp binary",
+                        "Fix:".dimmed()
+                    )
+                }
+            });
             true
         } else {
-            println!(
-                "       {} {} config exists but no phantom MCP ({})",
-                "--".dimmed(),
-                name,
-                location.dimmed()
-            );
+            mcp_client(name, &location, "not_phantom", || {
+                println!(
+                    "       {} {} config exists but no phantom MCP ({})",
+                    "--".dimmed(),
+                    name,
+                    location.dimmed()
+                )
+            });
             false
         }
     } else {
-        println!(
-            "       {} {} not configured ({})",
-            "--".dimmed(),
-            name,
-            location.dimmed()
-        );
+        mcp_client(name, &location, "not_configured", || {
+            println!(
+                "       {} {} not configured ({})",
+                "--".dimmed(),
+                name,
+                location.dimmed()
+            )
+        });
         false
     }
 }
 
+/// Doctor's line for the route that stops `phantom exec` and `phantom start`.
+fn launch_blocker_message(blocker: &phantom_core::config::ExecBlocker<'_>) -> String {
+    use phantom_core::config::ExecBlocker;
+    match blocker {
+        ExecBlocker::AlteredBuiltinRoute { service } => format!(
+            "Launch blocked: service `{service}` differs from Phantom's built-in route (host pattern, header, header_format, secret_key or secret_type); phantom exec and start refuse to launch until it matches"
+        ),
+        other => format!(
+            "Launch blocked: service `{}` is a custom proxy route; phantom exec and start refuse to launch with it and run only with Phantom's built-in routes",
+            other.service()
+        ),
+    }
+}
+
+thread_local! {
+    /// `Some` while `phantom doctor --json` collects lines instead of printing.
+    static REPORT: RefCell<Option<DoctorReport>> = const { RefCell::new(None) };
+}
+
+/// Run `print` only for the human report.
+fn human(print: impl FnOnce()) {
+    if REPORT.with(|report| report.borrow().is_none()) {
+        print();
+    }
+}
+
+fn record(status: &'static str, msg: &str, print: impl FnOnce()) {
+    REPORT.with(|report| match report.borrow_mut().as_mut() {
+        Some(report) => report.push(status, msg),
+        None => print(),
+    });
+}
+
+fn mcp_client(name: &str, location: &str, state: &'static str, print: impl FnOnce()) {
+    REPORT.with(|report| match report.borrow_mut().as_mut() {
+        Some(report) => report.mcp_clients.push(McpClientState {
+            client: name.to_string(),
+            path: location.to_string(),
+            state,
+        }),
+        None => print(),
+    });
+}
+
 fn check_pass(msg: &str) {
-    println!("  {} {}", "pass".green(), msg);
+    record("pass", msg, || println!("  {} {}", "pass".green(), msg));
 }
 
 fn check_fail(msg: &str) {
-    println!("  {} {}", "FAIL".red().bold(), msg);
+    record("fail", msg, || {
+        println!("  {} {}", "FAIL".red().bold(), msg)
+    });
 }
 
 fn check_warn(msg: &str) {
-    println!("  {} {}", "warn".yellow(), msg);
+    record("warn", msg, || println!("  {} {}", "warn".yellow(), msg));
 }
 
 fn check_info(msg: &str) {
-    println!("  {} {}", "info".blue(), msg);
+    record("info", msg, || println!("  {} {}", "info".blue(), msg));
 }
 
 fn check_fix(msg: &str) {
-    println!("       {} {}", "Fix:".dimmed(), msg.dimmed());
+    REPORT.with(|report| match report.borrow_mut().as_mut() {
+        Some(report) => report.attach_fix(msg),
+        None => println!("       {} {}", "Fix:".dimmed(), msg.dimmed()),
+    });
 }
 
 fn check_fixed(msg: &str) {
-    println!("       {} {}", "Fixed:".green(), msg);
+    REPORT.with(|report| match report.borrow_mut().as_mut() {
+        Some(report) => report.attach_fixed(msg),
+        None => println!("       {} {}", "Fixed:".green(), msg),
+    });
 }
 
 #[cfg(test)]
@@ -849,6 +1047,337 @@ mod tests {
 
         assert!(error.to_string().contains("changed after doctor preflight"));
         assert!(!project.path().join(".gitignore").exists());
+    }
+
+    /// Run `check_managed_dotenv` with the JSON report capturing its lines.
+    /// One captured doctor line: status, message, fix hint.
+    type CheckLine = (&'static str, String, Option<String>);
+
+    fn dotenv_check_lines(project: &Path) -> (usize, Vec<CheckLine>) {
+        super::REPORT.with(|report| {
+            *report.borrow_mut() = Some(phantom_core::report::DoctorReport::default())
+        });
+        let issues = super::check_managed_dotenv(project, &project.join(".env"));
+        let report = super::REPORT
+            .with(|report| report.borrow_mut().take())
+            .unwrap();
+        let lines = report
+            .checks
+            .into_iter()
+            .map(|check| (check.status, check.message, check.fix))
+            .collect();
+        (issues, lines)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dotenv_check_reports_a_symlink_without_reading_its_target() {
+        let project = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let target = outside.path().join("elsewhere.env");
+        std::fs::write(&target, format!("OPENAI_API_KEY={}-outside\n", "sk")).unwrap();
+        std::os::unix::fs::symlink(&target, project.path().join(".env")).unwrap();
+
+        let (issues, lines) = dotenv_check_lines(project.path());
+
+        assert_eq!(issues, 1);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert_eq!(lines[0].0, "fail");
+        assert!(lines[0].1.contains("not a regular, non-symlink file"));
+        assert!(!lines[0].1.contains("OPENAI_API_KEY"));
+        let fix = lines[0].2.as_deref().expect("a symlink gets a fix hint");
+        assert!(fix.contains("Replace .env with a regular file"), "{fix}");
+    }
+
+    #[test]
+    fn dotenv_check_reads_a_regular_file_and_notes_an_absent_one() {
+        let project = tempfile::tempdir().unwrap();
+        let (issues, lines) = dotenv_check_lines(project.path());
+        assert_eq!((issues, lines[0].0), (0, "info"));
+
+        std::fs::write(
+            project.path().join(".env"),
+            format!("OPENAI_API_KEY={}-inside\n", "sk"),
+        )
+        .unwrap();
+        let (issues, lines) = dotenv_check_lines(project.path());
+        assert_eq!((issues, lines[0].0), (1, "warn"));
+        assert!(lines[0].1.contains("OPENAI_API_KEY"));
+        assert_eq!(lines[0].2.as_deref(), Some("Run: phantom init"));
+    }
+
+    /// Run doctor's checks on a project whose config `edit` changes and
+    /// return the collected report.
+    fn doctor_report_for(
+        edit: impl FnOnce(&mut phantom_core::config::PhantomConfig),
+    ) -> (
+        phantom_core::config::PhantomConfig,
+        phantom_core::report::DoctorReport,
+    ) {
+        let project = tempfile::tempdir().unwrap();
+        let dir = project.path().canonicalize().unwrap();
+        let mut config =
+            phantom_core::config::PhantomConfig::new_with_defaults("doctor-route".to_string());
+        edit(&mut config);
+        config.save(&dir.join(".phantom.toml")).unwrap();
+        let _seam = crate::util::test_seam::TestProject::install(
+            dir.clone(),
+            crate::util::test_seam::empty_keychain,
+        );
+        super::REPORT.with(|report| {
+            *report.borrow_mut() = Some(phantom_core::report::DoctorReport::default())
+        });
+        let outcome = super::run_checks(false, false);
+        let report = super::REPORT
+            .with(|report| report.borrow_mut().take())
+            .unwrap();
+        outcome.expect("doctor must report, not abort");
+        (config, report)
+    }
+
+    /// A `.claude/settings.local.json` that does not parse was skipped with no
+    /// row and no issue, so doctor could end with "All checks passed!" while
+    /// the dotenv read-grant check never ran. It is now a counted warning.
+    #[test]
+    fn doctor_counts_unparseable_claude_settings_as_an_issue() {
+        let run = |settings: Option<&str>| {
+            let project = tempfile::tempdir().unwrap();
+            let dir = project.path().canonicalize().unwrap();
+            phantom_core::config::PhantomConfig::new_with_defaults("doctor-claude".to_string())
+                .save(&dir.join(".phantom.toml"))
+                .unwrap();
+            if let Some(text) = settings {
+                std::fs::create_dir_all(dir.join(".claude")).unwrap();
+                std::fs::write(dir.join(".claude/settings.local.json"), text).unwrap();
+            }
+            let _seam = crate::util::test_seam::TestProject::install(
+                dir.clone(),
+                crate::util::test_seam::empty_keychain,
+            );
+            super::REPORT.with(|report| {
+                *report.borrow_mut() = Some(phantom_core::report::DoctorReport::default())
+            });
+            let outcome = super::run_checks(false, false);
+            let report = super::REPORT
+                .with(|report| report.borrow_mut().take())
+                .unwrap();
+            let (issues, _) = outcome.expect("doctor must report, not abort");
+            (issues, report)
+        };
+
+        let (baseline, _) = run(Some("{}"));
+        let (issues, report) = run(Some("{\"permissions\": {\"allow\": [\"Read(./.env)\"]},"));
+        assert_eq!(issues, baseline + 1);
+        let line = report
+            .checks
+            .iter()
+            .find(|check| check.message.contains("settings.local.json"))
+            .expect("unparseable Claude settings must be a finding");
+        assert_eq!(line.status, "warn");
+        assert!(line.message.contains("could not be parsed"));
+        assert!(line.fix.is_some());
+        assert!(!report
+            .checks
+            .iter()
+            .any(|check| check.message == "Claude Code dotenv read grants remain closed"));
+    }
+
+    /// exec and start refuse an altered built-in or a custom `api_key` route
+    /// and point at `phantom doctor`. Doctor used to check host patterns
+    /// only, so a header change or a custom service on a public host printed
+    /// "Service routes look safe" while exec refused. It now reports the
+    /// same blocker exec uses.
+    #[test]
+    fn doctor_names_every_route_exec_refuses() {
+        type Edit = fn(&mut phantom_core::config::PhantomConfig);
+        let cases: [(&str, Edit, &str); 2] = [
+            (
+                "openai",
+                |config| {
+                    config.services.get_mut("openai").unwrap().header =
+                        Some("X-Api-Key".to_string());
+                },
+                "differs from Phantom's built-in route",
+            ),
+            (
+                "gateway",
+                |config| {
+                    config.services.insert(
+                        "gateway".to_string(),
+                        phantom_core::config::ServiceConfig {
+                            secret_key: "GATEWAY_API_KEY".to_string(),
+                            pattern: Some("api.gateway.example.com".to_string()),
+                            header: Some("Authorization".to_string()),
+                            header_format: Some("Bearer {secret}".to_string()),
+                            ..config.services["openai"].clone()
+                        },
+                    );
+                },
+                "custom proxy route",
+            ),
+        ];
+        for (service, edit, expected) in cases {
+            let (config, report) = doctor_report_for(edit);
+
+            let refusal = format!(
+                "{:#}",
+                super::super::exec::validate_routes_for_launch(&config).unwrap_err()
+            );
+            assert!(refusal.contains("phantom doctor"), "{refusal}");
+
+            assert!(
+                !report
+                    .checks
+                    .iter()
+                    .any(|check| check.message == "Service routes look safe"),
+                "{service}: doctor called routes safe while exec refuses"
+            );
+            let line = report
+                .checks
+                .iter()
+                .find(|check| check.message.contains(&format!("`{service}`")))
+                .unwrap_or_else(|| panic!("{service}: doctor has no finding for the route"));
+            assert_eq!(line.status, "fail", "{service}");
+            assert!(line.message.contains(expected), "{}", line.message);
+            assert!(line.message.contains("refuse"), "{}", line.message);
+            assert!(line.fix.as_deref().unwrap().contains("phantom why"));
+        }
+
+        let (_, report) = doctor_report_for(|_| {});
+        assert!(report
+            .checks
+            .iter()
+            .any(|check| check.message == "Service routes look safe"));
+    }
+
+    /// `phantom doctor` aborted with the raw resolver error when the
+    /// configured managed dotenv was missing: the diagnostic failed on the
+    /// state it exists to diagnose. It now reports it as a failed check with a
+    /// fix, and `--fix` still stops before any repair.
+    #[test]
+    fn doctor_reports_a_missing_managed_dotenv_instead_of_aborting() {
+        let project = tempfile::tempdir().unwrap();
+        let dir = project.path().canonicalize().unwrap();
+        let mut config =
+            phantom_core::config::PhantomConfig::new_with_defaults("doctor-missing".to_string());
+        config.phantom.dotenv_path = Some(".env".to_string());
+        config.save(&dir.join(".phantom.toml")).unwrap();
+        let _seam = crate::util::test_seam::TestProject::install(
+            dir.clone(),
+            crate::util::test_seam::empty_keychain,
+        );
+
+        super::REPORT.with(|report| {
+            *report.borrow_mut() = Some(phantom_core::report::DoctorReport::default())
+        });
+        let outcome = super::run_checks(false, false);
+        let report = super::REPORT
+            .with(|report| report.borrow_mut().take())
+            .unwrap();
+        let (issues, _) = outcome.expect("doctor must report, not abort");
+        assert!(issues >= 1);
+        let line = report
+            .checks
+            .iter()
+            .find(|check| check.message.starts_with("Managed dotenv:"))
+            .expect("the missing dotenv is a finding");
+        assert_eq!(line.status, "fail");
+        assert!(
+            line.message.contains("does not exist: .env"),
+            "{}",
+            line.message
+        );
+        assert!(line.fix.as_deref().unwrap().contains("phantom init --from"));
+
+        super::REPORT.with(|report| {
+            *report.borrow_mut() = Some(phantom_core::report::DoctorReport::default())
+        });
+        let error = super::run_checks(true, false).unwrap_err();
+        super::REPORT.with(|report| report.borrow_mut().take());
+        assert!(
+            format!("{error:#}").contains("made no repairs"),
+            "{error:#}"
+        );
+        assert!(!dir.join(".gitignore").exists());
+    }
+
+    /// A `.phantom.toml` that exists but does not parse read as "no config"
+    /// for the dotenv check and repairs: doctor judged `./.env` and `--fix`
+    /// wrote `.gitignore` and `.env.example` from it. Doctor now reports the
+    /// broken config with a next step, leaves the managed dotenv unchecked,
+    /// and `--fix` makes no repairs.
+    #[test]
+    fn doctor_reports_a_broken_config_and_fix_makes_no_repairs() {
+        let project = tempfile::tempdir().unwrap();
+        let dir = project.path().canonicalize().unwrap();
+        std::fs::write(dir.join(".phantom.toml"), "[phantom\nversion = ").unwrap();
+        std::fs::write(dir.join(".env"), "APP_NAME=demo\n").unwrap();
+        let _seam = crate::util::test_seam::TestProject::install(
+            dir.clone(),
+            crate::util::test_seam::empty_keychain,
+        );
+
+        super::REPORT.with(|report| {
+            *report.borrow_mut() = Some(phantom_core::report::DoctorReport::default())
+        });
+        let outcome = super::run_checks(false, false);
+        let report = super::REPORT
+            .with(|report| report.borrow_mut().take())
+            .unwrap();
+        let (issues, _) = outcome.expect("doctor must report, not abort");
+        assert!(issues >= 1);
+        let line = report
+            .checks
+            .iter()
+            .find(|check| check.message.starts_with("Config parse error"))
+            .expect("the broken config is a finding");
+        assert_eq!(line.status, "fail");
+        assert!(line.fix.as_deref().unwrap().contains("Fix or restore"));
+        assert!(
+            !report
+                .checks
+                .iter()
+                .any(|check| check.message.starts_with(".env has")
+                    || check.message.starts_with("No .env file")),
+            "doctor judged ./.env while the managed dotenv is unknown"
+        );
+        assert!(report.checks.iter().any(|check| check.status == "warn"
+            && check.message.starts_with("Managed dotenv not checked")));
+
+        super::REPORT.with(|report| {
+            *report.borrow_mut() = Some(phantom_core::report::DoctorReport::default())
+        });
+        let error = super::run_checks(true, false).unwrap_err();
+        super::REPORT.with(|report| report.borrow_mut().take());
+        assert!(format!("{error:#}").contains("made no repairs"));
+        assert!(!dir.join(".gitignore").exists());
+        assert!(!dir.join(".env.example").exists());
+    }
+
+    /// The `.env.example` repair derives from the bytes the guard read, not a
+    /// second read of the path: a swap to a symlink afterwards is not followed
+    /// (and the guard's re-check refuses the write).
+    #[cfg(unix)]
+    #[test]
+    fn example_repair_uses_the_guarded_bytes_not_a_reread() {
+        let project = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let target = outside.path().join("elsewhere.env");
+        std::fs::write(&target, "OUTSIDE_ONLY=1\n").unwrap();
+        let env_path = project.path().join(".env");
+        std::fs::write(&env_path, b"API_KEY=phm_before\n").unwrap();
+        let guard = super::prepare_dotenv_repair_guard(&env_path).unwrap();
+        std::fs::remove_file(&env_path).unwrap();
+        std::os::unix::fs::symlink(&target, &env_path).unwrap();
+
+        let dotenv = super::guarded_dotenv(Some(&guard)).unwrap().unwrap();
+        let keys: Vec<_> = dotenv.entries().iter().map(|e| e.key.clone()).collect();
+        assert_eq!(keys, ["API_KEY"]);
+        assert!(super::ensure_dotenv_repair_guard(Some(&guard)).is_err());
+
+        let absent = tempfile::tempdir().unwrap();
+        let guard = super::prepare_dotenv_repair_guard(&absent.path().join(".env")).unwrap();
+        assert!(super::guarded_dotenv(Some(&guard)).unwrap().is_none());
     }
 
     #[test]

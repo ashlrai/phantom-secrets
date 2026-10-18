@@ -424,3 +424,143 @@ fn init_handles_all_public_keys_no_secrets() {
         "VITE_ value must be preserved"
     );
 }
+
+/// A secret-looking value made at run time, so no credential-shaped literal
+/// sits in the source.
+fn generated_value() -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock after epoch")
+        .as_nanos();
+    format!("generated{nanos:x}{:x}", std::process::id())
+}
+
+fn init_with_key(dir: &TempDir) -> std::process::Output {
+    fs::write(
+        dir.path().join(".env"),
+        format!(
+            "OPENAI_API_KEY={}\nNODE_ENV=development\n",
+            generated_value()
+        ),
+    )
+    .expect("write .env");
+    Command::cargo_bin("phantom")
+        .expect("binary not found")
+        .args(["init", "--from", ".env"])
+        .current_dir(dir.path())
+        .env("PHANTOM_VAULT_PASSPHRASE", VAULT_PASS)
+        .env("HOME", dir.path())
+        .output()
+        .expect("run phantom init")
+}
+
+#[test]
+fn init_leaves_an_existing_env_example_byte_for_byte() {
+    // A project's own, hand-written example: comments, documented keys that
+    // are not in .env, and no trailing newline. init used to replace it with a
+    // generated stub.
+    let dir = common::canonical_tempdir();
+    let existing: &[u8] = b"# Every variable the code reads.\n# DATABASE_URL: the runtime login.\nDATABASE_URL=\nOPENAI_API_KEY=\nNODE_ENV=development\nFEATURE_FLAG=off";
+    fs::write(dir.path().join(".env.example"), existing).expect("write .env.example");
+
+    let output = init_with_key(&dir);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        fs::read(dir.path().join(".env.example")).expect("read .env.example"),
+        existing,
+        ".env.example must not be rewritten"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Left the existing") && !stdout.contains("Generated"),
+        "{stdout}"
+    );
+    // The secret itself is still protected.
+    let env = fs::read_to_string(dir.path().join(".env")).expect("read .env");
+    assert!(env.contains("OPENAI_API_KEY=phm_"), "{env}");
+}
+
+#[test]
+fn init_still_generates_env_example_when_absent() {
+    let dir = common::canonical_tempdir();
+    let output = init_with_key(&dir);
+    assert!(output.status.success(), "{output:?}");
+    let example = fs::read_to_string(dir.path().join(".env.example")).expect("read .env.example");
+    assert!(example.contains("OPENAI_API_KEY="), "{example}");
+    assert!(!example.contains("generated"), "{example}");
+    assert!(!example.contains("phm_"), "{example}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Generated") && !stdout.contains("Left the existing"),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn init_warns_by_name_when_the_kept_env_example_holds_real_values() {
+    // Kept, so it is still the user's file to fix; but kept quietly, a real
+    // value in it would wait for the pre-commit check to be noticed.
+    let dir = common::canonical_tempdir();
+    let leaked = generated_value();
+    let existing = format!(
+        "# Example\nSTRIPE_SECRET_KEY={leaked}\nOPENAI_API_KEY=your_openai_here\nNODE_ENV=development\n"
+    );
+    fs::write(dir.path().join(".env.example"), &existing).expect("write .env.example");
+
+    let output = init_with_key(&dir);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        fs::read_to_string(dir.path().join(".env.example")).expect("read .env.example"),
+        existing,
+        ".env.example must still be left unchanged"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let warning = stdout
+        .lines()
+        .find(|line| line.contains("look like real secrets"))
+        .unwrap_or_else(|| panic!("no warning for the kept example: {stdout}"));
+    assert!(warning.contains("STRIPE_SECRET_KEY"), "{warning}");
+    // A placeholder is not reported, and no value is ever printed.
+    assert!(!warning.contains("OPENAI_API_KEY"), "{warning}");
+    assert!(warning.contains("phantom check --staged"), "{warning}");
+    assert!(!stdout.contains(&leaked), "{stdout}");
+}
+
+#[test]
+fn init_does_not_warn_about_a_kept_env_example_of_placeholders() {
+    let dir = common::canonical_tempdir();
+    fs::write(
+        dir.path().join(".env.example"),
+        "OPENAI_API_KEY=\nSTRIPE_SECRET_KEY=your_stripe_secret_key_here\nPORT=3000\n",
+    )
+    .expect("write .env.example");
+    let output = init_with_key(&dir);
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Left the existing"), "{stdout}");
+    assert!(!stdout.contains("look like real secrets"), "{stdout}");
+}
+
+#[test]
+fn init_claude_md_describes_the_vault_backend_it_used() {
+    let dir = common::canonical_tempdir();
+    let output = run_init(&dir).success();
+    let stdout = String::from_utf8_lossy(&output.get_output().stdout).to_string();
+    let backend = stdout
+        .split("Using ")
+        .nth(1)
+        .and_then(|rest| rest.split(" vault backend").next())
+        .unwrap_or_else(|| panic!("no backend line: {stdout}"));
+    let claude = fs::read_to_string(dir.path().join("CLAUDE.md")).unwrap();
+    let expected = if backend == "encrypted-file" {
+        "passphrase-encrypted vault file"
+    } else if backend.starts_with("linux-keyutils") {
+        "Linux kernel keyring (linux-keyutils), which is volatile"
+    } else {
+        "OS keychain"
+    };
+    assert!(claude.contains(expected), "{backend}: {claude}");
+    if expected != "OS keychain" {
+        assert!(!claude.contains("OS keychain"), "{backend}: {claude}");
+    }
+}

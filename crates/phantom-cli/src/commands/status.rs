@@ -91,6 +91,9 @@ pub fn run(oneline: bool, json: bool) -> Result<()> {
         "  Vault:       {}",
         "not opened by read-only status".dimmed()
     );
+    if let Some(notice) = phantom_vault::locked_file_vault_notice(config.local_project_id()) {
+        println!("  {} {}", "warn".yellow().bold(), notice);
+    }
     println!(
         "  Managed placeholders: {}",
         names.len().to_string().green().bold()

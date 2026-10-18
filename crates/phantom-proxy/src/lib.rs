@@ -14,4 +14,4 @@ pub use response_scrubber::{
     StreamingScrubState,
 };
 pub use server::{ProxyConfig, ProxyServer};
-pub use services::{ServiceRegistry, ServiceRoute};
+pub use services::{CredentialProfile, ServiceRegistry, ServiceRoute};

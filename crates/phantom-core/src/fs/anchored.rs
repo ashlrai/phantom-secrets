@@ -1777,7 +1777,7 @@ fn reopen_directory_for_effects(directory: &Dir) -> io::Result<File> {
 }
 
 #[cfg(unix)]
-fn std_file_identity(file: &std::fs::File) -> io::Result<FileIdentity> {
+pub(crate) fn std_file_identity(file: &std::fs::File) -> io::Result<FileIdentity> {
     use std::os::unix::fs::MetadataExt;
     let metadata = file.metadata()?;
     Ok(FileIdentity {
@@ -1787,7 +1787,7 @@ fn std_file_identity(file: &std::fs::File) -> io::Result<FileIdentity> {
 }
 
 #[cfg(windows)]
-fn std_file_identity(file: &std::fs::File) -> io::Result<FileIdentity> {
+pub(crate) fn std_file_identity(file: &std::fs::File) -> io::Result<FileIdentity> {
     let information = windows_file_information_std(file)?;
     Ok(FileIdentity {
         volume: u64::from(information.dwVolumeSerialNumber),
@@ -1798,7 +1798,7 @@ fn std_file_identity(file: &std::fs::File) -> io::Result<FileIdentity> {
 }
 
 #[cfg(not(any(unix, windows)))]
-fn std_file_identity(_file: &std::fs::File) -> io::Result<FileIdentity> {
+pub(crate) fn std_file_identity(_file: &std::fs::File) -> io::Result<FileIdentity> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "stable directory identity requires Unix or Windows",
