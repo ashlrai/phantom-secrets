@@ -451,24 +451,9 @@ pub fn run_status() -> Result<()> {
     match auth::load_token() {
         Some(token) => {
             let rt = tokio::runtime::Runtime::new()?;
-            match rt.block_on(auth::get_user_info(&api_base, &token)) {
-                Ok(user) => {
-                    println!(
-                        "{}  Cloud: logged in as @{} ({})",
-                        "ok".green().bold(),
-                        user.github_login,
-                        user.plan
-                    );
-                    if let Some(count) = user.vaults_count {
-                        println!("   Vaults: {count}");
-                    }
-                }
-                Err(_) => {
-                    println!(
-                        "{}  Cloud: token expired — run `phantom login`",
-                        "warn".yellow().bold()
-                    );
-                }
+            let lookup = rt.block_on(auth::get_user_info(&api_base, &token));
+            for line in account_status_lines(lookup) {
+                println!("{line}");
             }
         }
         None => {
@@ -484,6 +469,43 @@ pub fn run_status() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Lines `phantom cloud status` prints for the cloud account lookup. Only an
+/// authentication rejection (HTTP 401) is reported as an expired login; a
+/// network fault, server error or unparseable reply says the status could not
+/// be checked, with a value-free failure class, because logging in again would
+/// not help.
+fn account_status_lines(lookup: phantom_core::error::Result<auth::UserInfo>) -> Vec<String> {
+    match lookup {
+        Ok(user) => {
+            let mut lines = vec![format!(
+                "{}  Cloud: logged in as @{} ({})",
+                "ok".green().bold(),
+                user.github_login,
+                user.plan
+            )];
+            if let Some(count) = user.vaults_count {
+                lines.push(format!("   Vaults: {count}"));
+            }
+            lines
+        }
+        Err(phantom_core::error::PhantomError::AuthRequired) => vec![format!(
+            "{}  Cloud: token expired — run `phantom login`",
+            "warn".yellow().bold()
+        )],
+        Err(error) => vec![
+            format!(
+                "{}  Cloud: could not check account status ({})",
+                "warn".yellow().bold(),
+                error.cloud_failure_class()
+            ),
+            format!(
+                "{}  The stored login was not rejected; check the network connection, then retry.",
+                "->".blue().bold()
+            ),
+        ],
+    }
 }
 
 /// Lines `phantom cloud status` prints about the local `.phantom.toml` cloud
@@ -522,6 +544,73 @@ mod tests {
     use super::*;
     use phantom_vault::VaultBackend;
     use tempfile::TempDir;
+
+    #[test]
+    fn cloud_status_reports_expired_login_only_for_auth_required() {
+        let ok = account_status_lines(Ok(auth::UserInfo {
+            email: None,
+            github_login: "octo".to_string(),
+            plan: "free".to_string(),
+            vaults_count: Some(2),
+        }))
+        .join("\n");
+        assert!(ok.contains("logged in as @octo (free)"));
+        assert!(ok.contains("Vaults: 2"));
+
+        let expired =
+            account_status_lines(Err(phantom_core::error::PhantomError::AuthRequired)).join("\n");
+        assert!(expired.contains("expired"));
+        assert!(expired.contains("phantom login"));
+        assert!(!expired.contains("could not check"));
+    }
+
+    #[test]
+    fn cloud_status_does_not_blame_the_login_for_network_or_server_errors() {
+        use phantom_core::error::PhantomError;
+        let cases = [
+            (
+                PhantomError::AuthError("connection refused by host".to_string()),
+                "could not reach Phantom Cloud",
+            ),
+            (
+                PhantomError::CloudError {
+                    status: 503,
+                    message: "service unavailable".to_string(),
+                },
+                "Phantom Cloud server error, HTTP 503",
+            ),
+            (
+                PhantomError::CloudError {
+                    status: 403,
+                    message: "forbidden".to_string(),
+                },
+                "Phantom Cloud refused the request, HTTP 403",
+            ),
+            (
+                PhantomError::CloudError {
+                    status: 200,
+                    message: "response was invalid JSON".to_string(),
+                },
+                "unexpected response from Phantom Cloud",
+            ),
+        ];
+        for (error, expected) in cases {
+            let text = account_status_lines(Err(error)).join("\n");
+            assert!(
+                !text.contains("expired"),
+                "non-auth failure reported as expired login"
+            );
+            assert!(
+                !text.contains("phantom login"),
+                "non-auth failure told to log in again"
+            );
+            assert!(
+                text.contains("could not check account status"),
+                "missing could-not-check wording"
+            );
+            assert!(text.contains(expected), "missing error class: {expected}");
+        }
+    }
 
     fn cloud_test_config(version: u64) -> PhantomConfig {
         let mut config = PhantomConfig::new_with_defaults("cloud-test-project".to_string());
