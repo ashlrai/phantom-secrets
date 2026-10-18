@@ -20,7 +20,6 @@ use chacha20poly1305::{
     aead::{Aead, KeyInit, Payload},
     ChaCha20Poly1305, Nonce,
 };
-use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use x_wing::{
     Decapsulate, DecapsulationKey, Decapsulator, Encapsulate, EncapsulationKey, Kem, KeyExport,
@@ -92,8 +91,7 @@ pub fn seal_sym_key_hybrid(sym_key: &[u8; 32], recipient_pub_b64: &str) -> Resul
         .map_err(|_| PhantomError::AuthError("Invalid hybrid pubkey".to_string()))?;
     let (ct, shared) = pk.encapsulate();
 
-    let mut nonce_bytes = [0u8; 12];
-    rand::thread_rng().fill_bytes(&mut nonce_bytes);
+    let nonce_bytes: [u8; 12] = rand::random();
     let wrapped = ChaCha20Poly1305::new(shared.as_slice().into())
         .encrypt(
             Nonce::from_slice(&nonce_bytes),
