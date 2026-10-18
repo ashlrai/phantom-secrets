@@ -10,9 +10,10 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   an unparseable reply, was reported as "token expired, run `phantom login`",
   so users were told to log in again when that would not help. Only an
   authentication rejection (HTTP 401) is reported that way now; other
-  failures say the account status could not be checked and give the same
-  failure class as MCP `phantom_cloud_status` (could not reach Phantom Cloud,
-  server error with its HTTP status, and so on). The CLI and MCP now share one
+  failures say the account status could not be checked and name the kind of
+  failure (could not reach Phantom Cloud, server error, refused, unexpected
+  response). The terminal prints only that fixed kind; MCP
+  `phantom_cloud_status` also gives the HTTP status. Both come from one
   classifier in `phantom-secrets-core`.
 
 ### Fixed (MCP `phantom_cloud_status`)

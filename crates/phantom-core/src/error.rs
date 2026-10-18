@@ -54,6 +54,26 @@ pub enum PhantomError {
 pub type Result<T> = std::result::Result<T, PhantomError>;
 
 impl PhantomError {
+    /// The same failure class as [`Self::cloud_failure_class`] without the
+    /// HTTP status, as a fixed string. Terminal output uses this so that
+    /// nothing it prints is carried over from the failed request.
+    pub fn cloud_failure_kind(&self) -> &'static str {
+        match self {
+            PhantomError::AuthError(_) => "could not reach Phantom Cloud",
+            PhantomError::CloudError { status: 0, .. } => {
+                "could not reach Phantom Cloud: HTTP client unavailable"
+            }
+            PhantomError::CloudError { status, .. } if (200..300).contains(status) => {
+                "unexpected response from Phantom Cloud"
+            }
+            PhantomError::CloudError { status, .. } if *status >= 500 => {
+                "Phantom Cloud server error"
+            }
+            PhantomError::CloudError { .. } => "Phantom Cloud refused the request",
+            _ => "Phantom Cloud request failed",
+        }
+    }
+
     /// A short, value-free class for a Phantom Cloud request failure that is
     /// not an auth rejection, so a network or server fault is not reported as
     /// an expired login. It never includes the error's message text.
@@ -123,6 +143,37 @@ mod tests {
         ];
         for (error, expected) in cases {
             assert_eq!(error.cloud_failure_class(), expected);
+        }
+    }
+
+    #[test]
+    fn cloud_failure_kind_matches_the_class_without_the_status() {
+        let cases = [
+            PhantomError::AuthError("connection refused by host".to_string()),
+            PhantomError::CloudError {
+                status: 0,
+                message: "client build failed".to_string(),
+            },
+            PhantomError::CloudError {
+                status: 200,
+                message: "response was invalid JSON".to_string(),
+            },
+            PhantomError::CloudError {
+                status: 502,
+                message: "bad gateway".to_string(),
+            },
+            PhantomError::CloudError {
+                status: 403,
+                message: "forbidden".to_string(),
+            },
+            PhantomError::Other("something odd".to_string()),
+        ];
+        for error in cases {
+            let kind = error.cloud_failure_kind();
+            assert!(error.cloud_failure_class().starts_with(kind));
+            assert!(
+                !kind.contains("HTTP 5") && !kind.contains("HTTP 4") && !kind.contains("HTTP 2")
+            );
         }
     }
 }
