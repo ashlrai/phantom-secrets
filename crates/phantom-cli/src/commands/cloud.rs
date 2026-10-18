@@ -464,9 +464,7 @@ pub fn run_status() -> Result<()> {
                     }
                 }
                 Err(error) => {
-                    for line in account_lookup_failure_lines(&error) {
-                        println!("{line}");
-                    }
+                    write_account_lookup_failure(&mut std::io::stdout(), &error)?;
                 }
             }
         }
@@ -485,29 +483,52 @@ pub fn run_status() -> Result<()> {
     Ok(())
 }
 
-/// Lines `phantom cloud status` prints when the cloud account lookup fails.
-/// Only an authentication rejection (HTTP 401) is reported as an expired
-/// login; a network fault, server error or unparseable reply says the status
-/// could not be checked, with a fixed failure class, because logging in again
-/// would not help.
-fn account_lookup_failure_lines(error: &phantom_core::error::PhantomError) -> Vec<String> {
-    if matches!(error, phantom_core::error::PhantomError::AuthRequired) {
-        return vec![format!(
-            "{}  Cloud: token expired — run `phantom login`",
-            "warn".yellow().bold()
-        )];
+/// Writes what `phantom cloud status` says when the cloud account lookup
+/// fails. Only an authentication rejection (HTTP 401) is reported as an
+/// expired login; a network fault, server error or unparseable reply says the
+/// status could not be checked and names the kind of failure, because logging
+/// in again would not help. The error only selects a branch: every line
+/// written is fixed text, so nothing from the failed request is printed.
+fn write_account_lookup_failure(
+    out: &mut impl Write,
+    error: &phantom_core::error::PhantomError,
+) -> std::io::Result<()> {
+    use phantom_core::error::PhantomError;
+    let warn = "warn".yellow().bold();
+    match error {
+        PhantomError::AuthRequired => {
+            return writeln!(out, "{warn}  Cloud: token expired — run `phantom login`");
+        }
+        PhantomError::AuthError(_) => writeln!(
+            out,
+            "{warn}  Cloud: could not check account status (could not reach Phantom Cloud)"
+        )?,
+        PhantomError::CloudError { status: 0, .. } => writeln!(
+            out,
+            "{warn}  Cloud: could not check account status (could not reach Phantom Cloud: HTTP client unavailable)"
+        )?,
+        PhantomError::CloudError { status, .. } if (200..300).contains(status) => writeln!(
+            out,
+            "{warn}  Cloud: could not check account status (unexpected response from Phantom Cloud)"
+        )?,
+        PhantomError::CloudError { status, .. } if *status >= 500 => writeln!(
+            out,
+            "{warn}  Cloud: could not check account status (Phantom Cloud server error)"
+        )?,
+        PhantomError::CloudError { .. } => writeln!(
+            out,
+            "{warn}  Cloud: could not check account status (Phantom Cloud refused the request)"
+        )?,
+        _ => writeln!(
+            out,
+            "{warn}  Cloud: could not check account status (Phantom Cloud request failed)"
+        )?,
     }
-    vec![
-        format!(
-            "{}  Cloud: could not check account status ({})",
-            "warn".yellow().bold(),
-            error.cloud_failure_kind()
-        ),
-        format!(
-            "{}  The stored login was not rejected; check the network connection, then retry.",
-            "->".blue().bold()
-        ),
-    ]
+    writeln!(
+        out,
+        "{}  The stored login was not rejected; check the network connection, then retry.",
+        "->".blue().bold()
+    )
 }
 
 /// Lines `phantom cloud status` prints about the local `.phantom.toml` cloud
@@ -549,9 +570,10 @@ mod tests {
 
     #[test]
     fn cloud_status_reports_expired_login_only_for_auth_required() {
-        let expired =
-            account_lookup_failure_lines(&phantom_core::error::PhantomError::AuthRequired)
-                .join("\n");
+        let mut out = Vec::new();
+        write_account_lookup_failure(&mut out, &phantom_core::error::PhantomError::AuthRequired)
+            .unwrap();
+        let expired = String::from_utf8(out).unwrap();
         assert!(expired.contains("expired"));
         assert!(expired.contains("phantom login"));
         assert!(!expired.contains("could not check"));
@@ -588,7 +610,9 @@ mod tests {
             ),
         ];
         for (error, expected) in cases {
-            let text = account_lookup_failure_lines(&error).join("\n");
+            let mut out = Vec::new();
+            write_account_lookup_failure(&mut out, &error).unwrap();
+            let text = String::from_utf8(out).unwrap();
             assert!(
                 !text.contains("expired"),
                 "non-auth failure reported as expired login"

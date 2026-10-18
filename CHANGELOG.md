@@ -12,9 +12,9 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   authentication rejection (HTTP 401) is reported that way now; other
   failures say the account status could not be checked and name the kind of
   failure (could not reach Phantom Cloud, server error, refused, unexpected
-  response). The terminal prints only that fixed kind; MCP
-  `phantom_cloud_status` also gives the HTTP status. Both come from one
-  classifier in `phantom-secrets-core`.
+  response). The terminal prints only fixed text for that kind; MCP
+  `phantom_cloud_status` also gives the HTTP status, using the classifier now
+  in `phantom-secrets-core`.
 
 ### Fixed (MCP `phantom_cloud_status`)
 
