@@ -4,6 +4,15 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (`phantom audit show`)
+
+- An audit log that existed but could not be read (for example a directory
+  at `~/.phantom/audit.log`, or an I/O error) was reported as "No matching
+  audit events" and the command exited 0, so `--json` consumers saw an empty
+  result. `phantom audit show` now fails with the read error and a nonzero
+  exit, matching the MCP `phantom_audit_recent` tool. A missing log still
+  reports "No audit events yet", and a readable empty log still succeeds.
+
 ### Fixed (`phantom import --from doppler|dotenvx|1password`)
 
 - JSON exports silently dropped entries they could not interpret (an array,
