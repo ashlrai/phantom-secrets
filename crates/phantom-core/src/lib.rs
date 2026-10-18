@@ -26,6 +26,10 @@ pub mod sync;
 pub mod team_crypto;
 #[cfg(feature = "pq-hybrid")]
 pub mod team_crypto_pq;
+
+/// True when this build of `phantom-core` includes the experimental `pq-hybrid`
+/// feature (X-Wing team key share library). Read by `phantom doctor --pq`.
+pub const PQ_HYBRID_COMPILED: bool = cfg!(feature = "pq-hybrid");
 pub mod teams;
 pub mod teams_vault;
 pub mod token;
