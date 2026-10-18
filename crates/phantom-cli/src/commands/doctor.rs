@@ -156,9 +156,21 @@ fn run_checks(fix: bool, check_expiry: bool) -> Result<(usize, usize)> {
     // token-bearing candidates) is a finding for diagnosis. Repairs need a
     // resolved file, so --fix still stops before any of them.
     let mut unresolved_dotenv = None;
-    let env_path = match PhantomConfig::load(&config_path).ok() {
+    // A config that exists but cannot be read or parsed is not "no config":
+    // the managed dotenv it names is unknown, so doctor reports the dotenv
+    // as unchecked instead of judging `./.env`, and --fix makes no repairs.
+    let (loaded_config, config_broken) = match crate::util::load_config_if_present(&config_path) {
+        Ok(config) => (config, false),
+        Err(error) if fix => {
+            return Err(anyhow::Error::new(error).context(
+                ".phantom.toml exists but could not be loaded; doctor --fix made no repairs. Fix or restore it, then run `phantom doctor`",
+            ))
+        }
+        Err(_) => (None, true),
+    };
+    let env_path = match loaded_config.as_ref() {
         Some(config) => {
-            match phantom_core::managed_dotenv::resolve_dotenv(&project_dir, &config, &[]) {
+            match phantom_core::managed_dotenv::resolve_dotenv(&project_dir, config, &[]) {
                 Ok(resolved) => resolved.path,
                 Err(error) if !fix => {
                     unresolved_dotenv = Some(error);
@@ -189,7 +201,7 @@ fn run_checks(fix: bool, check_expiry: bool) -> Result<(usize, usize)> {
     });
 
     // Check 1: .phantom.toml exists
-    if config_path.exists() {
+    if config_broken || config_path.exists() {
         check_pass(".phantom.toml found");
         match PhantomConfig::load(&config_path) {
             Ok(config) => {
@@ -274,6 +286,9 @@ fn run_checks(fix: bool, check_expiry: bool) -> Result<(usize, usize)> {
             }
             Err(e) => {
                 check_fail(&format!("Config parse error: {e}"));
+                check_fix(
+                    "Fix or restore .phantom.toml (for example from version control), then rerun phantom doctor",
+                );
                 issues += 1;
             }
         }
@@ -285,6 +300,11 @@ fn run_checks(fix: bool, check_expiry: bool) -> Result<(usize, usize)> {
 
     // Check 3: .env file
     match unresolved_dotenv {
+        None if config_broken => {
+            check_warn(
+                "Managed dotenv not checked: .phantom.toml could not be loaded, so which dotenv it manages is unknown",
+            );
+        }
         Some(error) => {
             check_fail(&format!("Managed dotenv: {error:#}"));
             check_fix(
@@ -357,9 +377,8 @@ fn run_checks(fix: bool, check_expiry: bool) -> Result<(usize, usize)> {
         check_fix("Run: phantom env");
         if fix && !mutation_applied {
             if let Some(dotenv) = guarded_dotenv(repair_dotenv_guard.as_ref())? {
-                let config = PhantomConfig::load(&config_path).ok();
                 let content = dotenv
-                    .generate_example_content(config.as_ref())
+                    .generate_example_content(loaded_config.as_ref())
                     .context("Managed dotenv is malformed; doctor made no .env.example repair")?;
                 ensure_dotenv_repair_guard(repair_dotenv_guard.as_ref())?;
                 write_project_file_exact(
@@ -1221,6 +1240,59 @@ mod tests {
             "{error:#}"
         );
         assert!(!dir.join(".gitignore").exists());
+    }
+
+    /// A `.phantom.toml` that exists but does not parse read as "no config"
+    /// for the dotenv check and repairs: doctor judged `./.env` and `--fix`
+    /// wrote `.gitignore` and `.env.example` from it. Doctor now reports the
+    /// broken config with a next step, leaves the managed dotenv unchecked,
+    /// and `--fix` makes no repairs.
+    #[test]
+    fn doctor_reports_a_broken_config_and_fix_makes_no_repairs() {
+        let project = tempfile::tempdir().unwrap();
+        let dir = project.path().canonicalize().unwrap();
+        std::fs::write(dir.join(".phantom.toml"), "[phantom\nversion = ").unwrap();
+        std::fs::write(dir.join(".env"), "APP_NAME=demo\n").unwrap();
+        let _seam = crate::util::test_seam::TestProject::install(
+            dir.clone(),
+            crate::util::test_seam::empty_keychain,
+        );
+
+        super::REPORT.with(|report| {
+            *report.borrow_mut() = Some(phantom_core::report::DoctorReport::default())
+        });
+        let outcome = super::run_checks(false, false);
+        let report = super::REPORT
+            .with(|report| report.borrow_mut().take())
+            .unwrap();
+        let (issues, _) = outcome.expect("doctor must report, not abort");
+        assert!(issues >= 1);
+        let line = report
+            .checks
+            .iter()
+            .find(|check| check.message.starts_with("Config parse error"))
+            .expect("the broken config is a finding");
+        assert_eq!(line.status, "fail");
+        assert!(line.fix.as_deref().unwrap().contains("Fix or restore"));
+        assert!(
+            !report
+                .checks
+                .iter()
+                .any(|check| check.message.starts_with(".env has")
+                    || check.message.starts_with("No .env file")),
+            "doctor judged ./.env while the managed dotenv is unknown"
+        );
+        assert!(report.checks.iter().any(|check| check.status == "warn"
+            && check.message.starts_with("Managed dotenv not checked")));
+
+        super::REPORT.with(|report| {
+            *report.borrow_mut() = Some(phantom_core::report::DoctorReport::default())
+        });
+        let error = super::run_checks(true, false).unwrap_err();
+        super::REPORT.with(|report| report.borrow_mut().take());
+        assert!(format!("{error:#}").contains("made no repairs"));
+        assert!(!dir.join(".gitignore").exists());
+        assert!(!dir.join(".env.example").exists());
     }
 
     /// The `.env.example` repair derives from the bytes the guard read, not a
