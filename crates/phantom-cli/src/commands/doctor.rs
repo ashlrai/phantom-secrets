@@ -599,10 +599,23 @@ fn run_checks(fix: bool, check_expiry: bool) -> Result<(usize, usize)> {
                 if let Ok(names) = vault.list() {
                     let mut invalid_count = 0usize;
                     let mut stale_count = 0usize;
+                    let mut unchecked_count = 0usize;
+                    let mut unreadable_count = 0usize;
+                    let mut first_read_error = None;
                     for name in &names {
-                        let meta = vault.get_validation_metadata(name).unwrap_or_default();
+                        // A read error is not "never checked": the state is
+                        // unknown, the same rule as phantom_validate_secret.
+                        let meta = match vault.get_validation_metadata(name) {
+                            Ok(meta) => meta,
+                            Err(error) => {
+                                unreadable_count += 1;
+                                first_read_error.get_or_insert_with(|| error.to_string());
+                                continue;
+                            }
+                        };
                         if meta.never_checked() {
                             // Not yet validated — not an issue, just informational.
+                            unchecked_count += 1;
                         } else if !meta.is_valid {
                             invalid_count += 1;
                             let reason = meta.failure_reason.as_deref().unwrap_or("unknown reason");
@@ -613,16 +626,15 @@ fn run_checks(fix: bool, check_expiry: bool) -> Result<(usize, usize)> {
                             stale_count += 1;
                         }
                     }
+                    if let Some(error) = first_read_error {
+                        check_warn(&format!(
+                            "Validation: stored results for {unreadable_count} secret(s) could not be read; their state is unknown ({error})"
+                        ));
+                    }
                     if invalid_count == 0 && stale_count == 0 && !names.is_empty() {
-                        let all_checked = names.iter().all(|n| {
-                            vault
-                                .get_validation_metadata(n)
-                                .map(|m| !m.never_checked())
-                                .unwrap_or(false)
-                        });
-                        if all_checked {
+                        if unchecked_count == 0 && unreadable_count == 0 {
                             check_pass("All secrets passed last validation check");
-                        } else {
+                        } else if unchecked_count > 0 {
                             check_info(
                             "Validation: run `phantom validate --check-all` to check credential health",
                         );

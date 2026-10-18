@@ -242,6 +242,102 @@ impl PhantomMcpServer {
         }
     }
 
+    /// The vault half of `phantom_compliance_status`: whether every secret
+    /// of this project is readable here, and whether each has a TTL. A
+    /// locked or keychain-only inventory fails both checks instead of
+    /// reporting an empty or partial vault as compliant.
+    fn compliance_vault_probe(&self) -> ComplianceVaultProbe {
+        let not_verified = |reason: &str| {
+            (
+                false,
+                format!("Not verified: every secret must be readable here. {reason}"),
+            )
+        };
+        if !self.config_path().exists() {
+            return ComplianceVaultProbe {
+                accessible: Err("Vault not accessible — run phantom init.".to_string()),
+                ttl: (
+                    false,
+                    "Phantom not initialized — run phantom init.".to_string(),
+                ),
+            };
+        }
+        let (config, vault) = match self.load_config_and_vault() {
+            Ok(loaded) => loaded,
+            Err(error) => {
+                let detail = format!("Vault could not be opened: {}", error.message);
+                return ComplianceVaultProbe {
+                    ttl: not_verified(&detail),
+                    accessible: Err(detail),
+                };
+            }
+        };
+        if let Err(error) = vault.list() {
+            let detail = format!("Failed to list secrets: {error}");
+            return ComplianceVaultProbe {
+                ttl: not_verified(&detail),
+                accessible: Err(detail),
+            };
+        }
+        let partial = match self.require_readable_inventory(&config, vault.as_ref()) {
+            Ok(note) => note,
+            Err(locked) => Some(locked.message.to_string()),
+        };
+        if let Some(note) = partial {
+            return ComplianceVaultProbe {
+                ttl: not_verified(&note),
+                accessible: Err(note),
+            };
+        }
+        let entries = match vault.list_with_metadata() {
+            Ok(entries) => entries,
+            Err(error) => {
+                return ComplianceVaultProbe {
+                    accessible: Ok(()),
+                    ttl: (
+                        false,
+                        format!("Failed to read secret lifecycle metadata: {error}"),
+                    ),
+                };
+            }
+        };
+        let without_ttl: Vec<&str> = entries
+            .iter()
+            .filter(|(_, meta)| {
+                // A provider-issued expiry without a policy is still a TTL
+                // (same rule as phantom doctor and phantom_secret_rotation_due).
+                !meta
+                    .as_ref()
+                    .is_some_and(|m| m.expires_at.is_some() || m.rotation_policy.is_some())
+            })
+            .map(|(name, _)| name.as_str())
+            .collect();
+        let ttl = if without_ttl.is_empty() {
+            (
+                true,
+                "All secrets have an expiry or a rotation policy (TTL).".to_string(),
+            )
+        } else {
+            let shown = without_ttl.len().min(COMPLIANCE_MAX_LISTED_NAMES);
+            let mut detail = format!(
+                "{} secret(s) have no TTL: {}",
+                without_ttl.len(),
+                without_ttl[..shown].join(", ")
+            );
+            if without_ttl.len() > shown {
+                detail.push_str(&format!(
+                    " (and {} more; phantom_secret_rotation_due lists every one)",
+                    without_ttl.len() - shown
+                ));
+            }
+            (false, detail)
+        };
+        ComplianceVaultProbe {
+            accessible: Ok(()),
+            ttl,
+        }
+    }
+
     fn load_config(&self) -> Result<PhantomConfig, String> {
         let path = self.config_path();
         if !path.exists() {
@@ -2474,79 +2570,77 @@ impl PhantomMcpServer {
         text_result(output)
     }
 
+    /// The runtime-mode answer for one environment scan.
+    fn runtime_check_report(
+        &self,
+        scan: phantom_core::report::RuntimeEnvScan,
+    ) -> Result<CallToolResult, McpError> {
+        let report = CheckReport {
+            mode: "runtime",
+            clean: scan.findings.is_empty(),
+            findings: &scan.findings,
+            warnings: &[],
+            indeterminate: &[],
+            proxy_session: scan.proxy_session,
+            excused: &scan.excused,
+            session_warning: scan.session_warning(),
+        };
+
+        let mut output = String::new();
+        if let Some(warning) = scan.session_warning() {
+            output.push_str(&format!("Warning: {warning}\n"));
+        }
+        if !scan.excused.is_empty() {
+            output.push_str(&format!(
+                "A live Phantom proxy session owns: {}\n",
+                scan.excused
+                    .iter()
+                    .map(|name| phantom_core::report::printable_name(name))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        if scan.findings.is_empty() {
+            output.push_str(
+                "No issues found. No environment variable holds a phantom token outside a live proxy session that owns it.",
+            );
+            return report_result(output, &report);
+        }
+
+        output.push_str(&format!(
+            "WARNING: {} environment variable(s) hold a phantom token that no live proxy session owns:\n",
+            scan.findings.len()
+        ));
+        for finding in &scan.findings {
+            output.push_str(&format!(
+                "  - {}\n",
+                phantom_core::report::printable_name(finding.name.as_deref().unwrap_or_default())
+            ));
+        }
+        output.push_str(
+            "\nClient-supplied headers and bodies never resolve phantom placeholders, even while the proxy is running.\n\
+             `phantom exec -- <command>` can start an authenticated session whose exact configured routes inject only route-owned authentication; review the route mapping before use.",
+        );
+        report_result(output, &report)
+    }
+
     /// Check for leaked secrets or orphaned phantom tokens.
     #[tool(
-        description = "Check for security issues. With runtime=true, scans current environment for phantom tokens without a proxy (leak detection). Otherwise, scans the same dotenv files as `phantom check` for unprotected real secrets: .env, .env.local, .env.development, .env.development.local, .env.production, .env.production.local, .env.test, .env.test.local, plus the configured dotenv_path; a symlink is not followed and makes the result indeterminate. Returns a human summary plus a value-blind JSON report (also as structuredContent) shaped like `phantom check --json`: {mode, clean, findings: [{kind, path?, name?}], warnings, indeterminate?}. Reports names and paths only, never values or phantom tokens."
+        description = "Check for security issues. With runtime=true, scans every environment variable of this server for a phantom token (leak detection). A variable is excused only when PHANTOM_PROXY_PORT and PHANTOM_PROXY_TOKEN lead to a live Phantom proxy (its health endpoint answers) and the session lists the variable in PHANTOM_SESSION_KEYS; excused names are reported in `excused` and `proxy_session` is true. Session variables with no live proxy are reported in `session_warning` and excuse nothing. Otherwise, scans the same dotenv files as `phantom check` for unprotected real secrets: .env, .env.local, .env.development, .env.development.local, .env.production, .env.production.local, .env.test, .env.test.local, plus the configured dotenv_path; a symlink is not followed and makes the result indeterminate. Returns a human summary plus a value-blind JSON report (also as structuredContent) shaped like `phantom check --json`: {mode, clean, findings: [{kind, path?, name?}], warnings, indeterminate?, proxy_session?, excused?, session_warning?}. Reports names and paths only, never values or phantom tokens."
     )]
     fn phantom_check(
         &self,
         Parameters(params): Parameters<CheckParams>,
     ) -> Result<CallToolResult, McpError> {
         if params.runtime {
-            // Scan common API key env vars for phantom tokens in the process environment
-            let api_vars = [
-                "OPENAI_API_KEY",
-                "ANTHROPIC_API_KEY",
-                "STRIPE_SECRET_KEY",
-                "STRIPE_API_KEY",
-                "GITHUB_TOKEN",
-                "AWS_SECRET_ACCESS_KEY",
-                "DATABASE_URL",
-                "REDIS_URL",
-                "SENDGRID_API_KEY",
-                "TWILIO_AUTH_TOKEN",
-                "SLACK_TOKEN",
-                "SLACK_BOT_TOKEN",
-                "DISCORD_TOKEN",
-                "FIREBASE_API_KEY",
-                "SUPABASE_SERVICE_ROLE_KEY",
-                "CLOUDFLARE_API_TOKEN",
-            ];
-
-            let found: Vec<&str> = api_vars
-                .iter()
-                .copied()
-                .filter(|var| {
-                    std::env::var(var).is_ok_and(|val| PhantomToken::is_phantom_token(&val))
-                })
-                .collect();
-            let findings: Vec<CheckFinding> = found
-                .iter()
-                .map(|var| CheckFinding {
-                    kind: "runtime_env",
-                    path: None,
-                    name: Some(var.to_string()),
-                    label: None,
-                    pattern: None,
-                })
-                .collect();
-            let report = CheckReport {
-                mode: "runtime",
-                clean: findings.is_empty(),
-                findings: &findings,
-                warnings: &[],
-                indeterminate: &[],
-            };
-
-            if found.is_empty() {
-                return report_result(
-                    "No issues found. No phantom tokens detected in environment variables.",
-                    &report,
-                );
-            }
-
-            let mut output = format!(
-                "WARNING: {} phantom token(s) found in environment without proxy:\n",
-                found.len()
-            );
-            for var in &found {
-                output.push_str(&format!("  - {}\n", var));
-            }
-            output.push_str(
-                "\nClient-supplied headers and bodies never resolve phantom placeholders, even while the proxy is running.\n\
-                 `phantom exec -- <command>` can start an authenticated session whose exact configured routes inject only route-owned authentication; review the route mapping before use.",
-            );
-            report_result(output, &report)
+            // Every variable, not a list of well-known names: a token in any
+            // other variable used to be reported clean. A variable is excused
+            // only when a live proxy answers for this session and the session
+            // names it as its own.
+            self.runtime_check_report(phantom_core::report::scan_runtime_env(
+                std::env::vars_os(),
+                phantom_core::report::proxy_answers,
+            ))
         } else {
             // Scan the same files as `phantom check` and compliance `env_clean`:
             // SCANNED_DOTENV_NAMES plus the configured `dotenv_path`. A symlink
@@ -2640,6 +2734,9 @@ impl PhantomMcpServer {
                 findings: &findings,
                 warnings: &[],
                 indeterminate: &indeterminate,
+                proxy_session: false,
+                excused: &[],
+                session_warning: None,
             };
 
             if total_issues == 0 && malformed_files == 0 {
@@ -3403,6 +3500,11 @@ impl PhantomMcpServer {
             ))
         })?;
 
+        let min_anomaly_score = params
+            .min_anomaly_score
+            .map(|value| crate::tools::helpers::score_threshold_param("min_anomaly_score", value))
+            .transpose()?;
+
         let report = phantom_core::analytics::compute_analytics(period).map_err(|e| {
             crate::tools::helpers::internal_err(format!("Failed to compute analytics: {e}"))
         })?;
@@ -3410,11 +3512,7 @@ impl PhantomMcpServer {
         let secrets: Vec<&phantom_core::analytics::SecretAnalytics> = report
             .secrets
             .iter()
-            .filter(|s| {
-                params
-                    .min_anomaly_score
-                    .is_none_or(|min| s.anomaly_score >= min)
-            })
+            .filter(|s| min_anomaly_score.is_none_or(|min| s.anomaly_score >= min))
             .collect();
 
         let out = serde_json::json!({
@@ -3434,7 +3532,12 @@ impl PhantomMcpServer {
             seq, ts (Unix epoch), op (operation name), name (secret name, if applicable), \
             pid, process. Secret VALUES are never recorded in the audit log and \
             will never appear here. Supports optional filtering by op prefix or \
-            exact secret name. Read-only; no confirm required. \
+            exact secret name. Reads only the newest 8 MiB of the log: \
+            `window_truncated: true` means older events were not examined, so \
+            `matched_in_window` is not a total and `total_in_log` is omitted. \
+            `unparsable_lines` counts lines in the window that are not audit events \
+            and were skipped (run `phantom audit verify` to check the chain). \
+            Read-only; no confirm required. \
             Requires PHANTOM_AUDIT=1 to have been set when operations were performed."
     )]
     fn phantom_audit_recent(
@@ -3455,77 +3558,18 @@ impl PhantomMcpServer {
             return json_object_result(&out);
         }
 
-        let content = std::fs::read_to_string(&log_path)
-            .map_err(|e| internal_err(format!("Failed to read audit log: {e}")))?;
-
-        // Parse all non-marker, non-malformed lines, collecting relevant fields only.
-        // NEVER include "value" or any secret material.
-        let mut events: Vec<serde_json::Value> = Vec::new();
-        for raw in content.lines() {
-            let trimmed = raw.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            let v: serde_json::Value = match serde_json::from_str(trimmed) {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
-            // Skip chain-started marker lines.
-            if v.get("hmac_chain_started_at").is_some() {
-                continue;
-            }
-            // Must have an "op" field to be a real event.
-            let op = match v.get("op").and_then(|o| o.as_str()) {
-                Some(op) => op.to_string(),
-                None => continue,
-            };
-
-            // Apply op_filter
-            if let Some(ref filter) = params.op_filter {
-                if !op.starts_with(filter.as_str()) {
-                    continue;
-                }
-            }
-
-            // Apply name_filter
-            let name = v
-                .get("name")
-                .and_then(|n| n.as_str())
-                .map(|s| s.to_string());
-            if let Some(ref nf) = params.name_filter {
-                match &name {
-                    Some(n) if n == nf => {}
-                    _ => continue,
-                }
-            }
-
-            // Build a safe output object — explicitly whitelist fields, never include values.
-            let mut obj = serde_json::Map::new();
-            for field in &["seq", "ts", "pid", "process"] {
-                if let Some(val) = v.get(*field) {
-                    obj.insert(field.to_string(), val.clone());
-                }
-            }
-            obj.insert("op".to_string(), serde_json::Value::String(op));
-            if let Some(ref n) = name {
-                obj.insert("name".to_string(), serde_json::Value::String(n.clone()));
-            }
-
-            events.push(serde_json::Value::Object(obj));
-        }
-
-        // Take the last N events.
-        let total_in_log = events.len();
-        if events.len() > n {
-            let start = events.len() - n;
-            events = events.into_iter().skip(start).collect();
-        }
-
-        let out = serde_json::json!({
-            "events": events,
-            "total_returned": events.len(),
-            "total_in_log": total_in_log,
-        });
+        // The newest window only: the log is append-only and never rotated.
+        let recent = phantom_core::audit::read_recent_lines(
+            &log_path,
+            phantom_core::audit::RECENT_WINDOW_BYTES,
+        )
+        .map_err(|e| internal_err(format!("Failed to read audit log: {e}")))?;
+        let out = audit_recent_report(
+            recent,
+            n,
+            params.op_filter.as_deref(),
+            params.name_filter.as_deref(),
+        );
 
         json_object_result(&out)
     }
@@ -3550,13 +3594,16 @@ impl PhantomMcpServer {
             ))
         })?;
 
+        let min_score =
+            crate::tools::helpers::score_threshold_param("min_score", params.min_score)?;
+
         let report = phantom_core::analytics::compute_analytics(period)
             .map_err(|e| internal_err(format!("Failed to compute analytics: {e}")))?;
 
         let findings: Vec<serde_json::Value> = report
             .secrets
             .iter()
-            .filter(|s| s.anomaly_score >= params.min_score)
+            .filter(|s| s.anomaly_score >= min_score)
             .map(|s| {
                 // Determine anomaly type(s) from score thresholds.
                 let anomaly_type = if s.anomaly_score >= 0.6 {
@@ -3603,7 +3650,7 @@ impl PhantomMcpServer {
         let out = serde_json::json!({
             "generated_at": report.generated_at,
             "period": params.period,
-            "min_score": params.min_score,
+            "min_score": min_score,
             "findings": findings,
             "total_findings": findings.len(),
         });
@@ -3631,7 +3678,8 @@ impl PhantomMcpServer {
     ) -> Result<CallToolResult, McpError> {
         use phantom_core::analytics::{compute_windowed_anomalies, AuditThresholdConfig};
 
-        let threshold = params.threshold.clamp(0.0, 1.0);
+        let threshold =
+            crate::tools::helpers::score_threshold_param("threshold", params.threshold)?;
 
         // Build threshold config from MCP params (if either override is set).
         let thresholds = if params.max_accesses_per_hour.is_some()
@@ -3791,59 +3839,87 @@ impl PhantomMcpServer {
             Returns per-secret SecretAnalytics (access_count, daily_avg, max_daily, \
             min_daily, anomaly_score) plus timestamped AccessRecords for the requested \
             window. Supports JSON or CSV format. Use min_anomaly_score to filter to \
-            flagged secrets only. Never exposes secret values. \
+            flagged secrets only (clamped to 0.0-1.0; NaN is refused). Never exposes secret values. \
             Feed the output to Datadog, Grafana, CloudWatch, or any BI tool. \
             window_days=0 returns all history; default is 30 days. \
             format=\"csv\" produces RFC 4180 CSV; format=\"json\" produces structured JSON \
-            with 'analytics' (SecretAnalytics[]) and 'records' (AccessRecord[]) arrays."
+            with 'analytics' (SecretAnalytics[]) and 'records' (AccessRecord[]) arrays. \
+            Records are bounded: only the newest max_records (default 1000, max 10000) are \
+            returned, within a 1 MiB response. records_total counts every matching record in \
+            the window and records_truncated is true when older ones were left out; analytics \
+            and time_series always cover the whole window. CSV carries the same counts in \
+            structuredContent and a second JSON text block. For a complete export run \
+            `phantom audit analytics --export FILE` in a terminal."
     )]
     fn phantom_audit_analytics(
         &self,
         Parameters(params): Parameters<AuditAnalyticsParams>,
     ) -> Result<CallToolResult, McpError> {
-        use phantom_core::analytics::{compute_analytics, export_records, records_to_csv, Period};
+        use phantom_core::analytics::{export_analytics, records_to_csv, Period};
 
         let format = crate::tools::helpers::parse_audit_format(&params.format)?;
+        let min_anomaly_score = params
+            .min_anomaly_score
+            .map(|value| crate::tools::helpers::score_threshold_param("min_anomaly_score", value))
+            .transpose()?;
+        let max_records = params.max_records.min(MCP_ANALYTICS_MAX_RECORDS);
 
-        // Convert window_days to a Period.
-        let period = match params.window_days {
-            0 => Period::All,
-            7 => Period::Days7,
-            1..=30 => Period::Days30,
-            _ => Period::All,
-        };
+        // Exactly the requested lookback (0 = all history), as the CLI does.
+        let period = Period::from_window_days(params.window_days);
 
-        let report = compute_analytics(period)
+        // One read of the log against one clock reading, so the summary and
+        // the records describe the same events.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let export = export_analytics(period, min_anomaly_score, now)
             .map_err(|e| internal_err(format!("Failed to compute analytics: {e}")))?;
 
-        let analytics: Vec<&phantom_core::analytics::SecretAnalytics> = report
+        let analytics: Vec<&phantom_core::analytics::SecretAnalytics> = export
+            .report
             .secrets
             .iter()
-            .filter(|s| {
-                params
-                    .min_anomaly_score
-                    .is_none_or(|min| s.anomaly_score >= min)
-            })
+            .filter(|s| min_anomaly_score.is_none_or(|min| s.anomaly_score >= min))
             .collect();
 
-        let records = export_records(period, params.min_anomaly_score)
-            .map_err(|e| internal_err(format!("Failed to export records: {e}")))?;
+        // Records are sorted oldest first: keep the newest `keep`.
+        let records = &export.records;
+        let records_total = records.len();
+        let mut keep = records_total.min(max_records as usize);
+        let counts = |keep: usize| {
+            serde_json::json!({
+                "records_total": records_total,
+                "records_returned": keep,
+                "records_truncated": keep < records_total,
+                "max_records": max_records,
+            })
+        };
 
         if format == crate::tools::helpers::AuditFormat::Csv {
-            let csv = records_to_csv(&records);
-            return text_result(csv);
+            loop {
+                let csv = records_to_csv(&records[records_total - keep..]);
+                if csv.len() <= MCP_ANALYTICS_MAX_BYTES {
+                    let mut meta = counts(keep);
+                    meta["format"] = "csv".into();
+                    meta["window_days"] = params.window_days.into();
+                    return report_result(csv, &meta);
+                }
+                keep = shrink_to_fit(keep, csv.len(), MCP_ANALYTICS_MAX_BYTES);
+            }
         }
 
-        // Build daily bucket time-series per secret for BI tools.
+        // Daily bucket time-series per secret for BI tools, over every record
+        // in the window (not only the returned ones).
         let mut daily_buckets: std::collections::BTreeMap<
-            String,
+            &str,
             std::collections::BTreeMap<String, u64>,
         > = std::collections::BTreeMap::new();
-        for rec in &records {
+        for rec in records {
             let day = phantom_core::analytics::unix_to_iso8601(rec.ts / 86400 * 86400);
             let day_key = &day[..10]; // YYYY-MM-DD
             *daily_buckets
-                .entry(rec.name.clone())
+                .entry(rec.name.as_str())
                 .or_default()
                 .entry(day_key.to_string())
                 .or_insert(0) += 1;
@@ -3860,15 +3936,34 @@ impl PhantomMcpServer {
             })
             .collect();
 
-        let out = serde_json::json!({
-            "generated_at": report.generated_at,
-            "window_days": params.window_days,
-            "analytics": analytics,
-            "records": records,
-            "time_series": time_series,
-        });
-
-        json_object_result(&out)
+        loop {
+            let mut out = serde_json::json!({
+                "generated_at": export.report.generated_at,
+                "window_days": params.window_days,
+                "analytics": analytics,
+                "records": &records[records_total - keep..],
+                "time_series": time_series,
+            });
+            if let (Some(out), serde_json::Value::Object(counts)) =
+                (out.as_object_mut(), counts(keep))
+            {
+                out.extend(counts);
+            }
+            let size = serde_json::to_string_pretty(&out)
+                .map_err(|e| internal_err(format!("Serialization error: {e}")))?
+                .len();
+            if size <= MCP_ANALYTICS_MAX_BYTES {
+                return json_object_result(&out);
+            }
+            if keep == 0 {
+                return Err(invalid_params_err(format!(
+                    "The analytics summary for this window is {size} bytes even with no records, over the \
+                     {MCP_ANALYTICS_MAX_BYTES} byte MCP response limit. Narrow window_days or raise \
+                     min_anomaly_score, or run `phantom audit analytics --export FILE` in a terminal."
+                )));
+            }
+            keep = shrink_to_fit(keep, size, MCP_ANALYTICS_MAX_BYTES);
+        }
     }
 
     /// Read correlated leak incidents without exposing secret values.
@@ -3879,8 +3974,13 @@ impl PhantomMcpServer {
             0.5 = single leak event; 0.95 = same secret leaked >3 times within 1 hour. \
             Each incident includes: incident_id, secret_name (never the value), \
             location_label, first_seen_ts, last_seen_ts, event_count, confidence, remediation. \
-            Incidents whose secret was subsequently stored are omitted. Reads only the persisted incident \
-            store; it does not run correlation or write state."
+            Incidents whose secret was subsequently stored are omitted. incidents lists the persisted \
+            incident store. The proxy only appends audit events, so leak events from the last 24 h that \
+            no backfill has persisted yet are correlated in memory and listed separately in \
+            uncorrelated_incidents (uncorrelated_count), with a next_step; treat them as possible leaks. \
+            Always returns JSON {incident_count, min_confidence, incidents, uncorrelated_count, \
+            uncorrelated_incidents, audit_log_present, next_step} (also as structuredContent). \
+            Read-only: it never writes incident or alert state."
     )]
     fn phantom_audit_incidents(
         &self,
@@ -3892,22 +3992,16 @@ impl PhantomMcpServer {
         let engine = LeakCorrelationEngine::new()
             .map_err(|e| internal_err(format!("Cannot initialise leak correlation engine: {e}")))?;
 
-        let incidents = engine
-            .active_incidents(params.min_confidence)
-            .map_err(|e| internal_err(format!("Failed to read leak incidents: {e}")))?;
-
-        if incidents.is_empty() {
-            return text_result(format!(
-                "No active leak incidents (min_confidence={:.2}). \
-                 Set PHANTOM_AUDIT=1 to enable audit logging.",
-                params.min_confidence
-            ));
-        }
+        let view = leak_incident_view(&engine, params.min_confidence)?;
 
         let out = serde_json::json!({
-            "incident_count": incidents.len(),
+            "incident_count": view.persisted.len(),
             "min_confidence": params.min_confidence,
-            "incidents": incidents,
+            "incidents": view.persisted,
+            "uncorrelated_count": view.uncorrelated.len(),
+            "uncorrelated_incidents": view.uncorrelated,
+            "audit_log_present": view.audit_log_present,
+            "next_step": view.next_step(),
         });
 
         json_object_result(&out)
@@ -3926,8 +4020,13 @@ impl PhantomMcpServer {
             secret_name (never the value), location_label, confidence, \
             first_seen (ISO-8601), last_seen (ISO-8601), incident_id. \
             Set min_confidence (default 0.5) to narrow results. \
-            Reads only persisted incidents and never rotates, writes correlation state, \
-            or exposes secret values. Use a separately approved rotation tool to remediate."
+            incidents lists persisted incidents; leak events from the last 24 h that no backfill \
+            has persisted yet are correlated in memory and listed in uncorrelated_incidents \
+            (uncorrelated_count, same entry shape) with a next_step. Always returns JSON \
+            {incident_count, min_confidence, effect, rotation_performed, incidents, \
+            uncorrelated_count, uncorrelated_incidents, audit_log_present, next_step}. \
+            Never rotates, writes incident or alert state, or exposes secret values. \
+            Use a separately approved rotation tool to remediate."
     )]
     fn phantom_leak_incidents_realtime(
         &self,
@@ -3939,44 +4038,11 @@ impl PhantomMcpServer {
         let engine = LeakCorrelationEngine::new()
             .map_err(|e| internal_err(format!("Cannot initialise leak correlation engine: {e}")))?;
 
-        // Retrieve active incidents: confidence >= min_confidence, < 24 h old.
-        let incidents = engine
-            .active_incidents(params.min_confidence)
-            .map_err(|e| internal_err(format!("Failed to read leak incidents: {e}")))?;
-
-        if incidents.is_empty() {
-            return text_result(format!(
-                "No active leak incidents (min_confidence={:.2}, window=24h). \
-                 Set PHANTOM_AUDIT=1 to enable audit logging.",
-                params.min_confidence
-            ));
-        }
-
-        // Build structured incident summaries (no secret values exposed).
-        let mut summaries: Vec<serde_json::Value> = incidents
-            .iter()
-            .map(|inc| {
-                serde_json::json!({
-                    "incident_id":    inc.incident_id,
-                    "secret_name":    inc.secret_name,
-                    "location_label": inc.location_label,
-                    "confidence":     inc.confidence,
-                    "first_seen":     iso8601(inc.first_seen_ts),
-                    "last_seen":      iso8601(inc.last_seen_ts),
-                    "event_count":    inc.event_count,
-                    "remediation":    inc.remediation,
-                })
-            })
-            .collect();
-
-        // Sort by confidence descending so the most critical are first.
-        summaries.sort_by(|a, b| {
-            b["confidence"]
-                .as_f64()
-                .unwrap_or(0.0)
-                .partial_cmp(&a["confidence"].as_f64().unwrap_or(0.0))
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        // Active incidents: confidence >= min_confidence, < 24 h old, plus
+        // the same window's leak events that no backfill has persisted yet.
+        let view = leak_incident_view(&engine, params.min_confidence)?;
+        let summaries = realtime_incident_summaries(&view.persisted);
+        let uncorrelated = realtime_incident_summaries(&view.uncorrelated);
 
         let out = serde_json::json!({
             "incident_count": summaries.len(),
@@ -3984,6 +4050,10 @@ impl PhantomMcpServer {
             "effect": "read_only",
             "rotation_performed": false,
             "incidents": summaries,
+            "uncorrelated_count": uncorrelated.len(),
+            "uncorrelated_incidents": uncorrelated,
+            "audit_log_present": view.audit_log_present,
+            "next_step": view.next_step(),
         });
 
         json_object_result(&out)
@@ -4134,7 +4204,12 @@ impl PhantomMcpServer {
             Two actions: \
             'export' — return raw audit rows (timestamp, datetime, operation, secret_name, \
             pid, hostname, severity) filtered by date range, secret name, or operation type, \
-            in CSV or JSON format; \
+            in CSV or JSON format. Export rows are bounded: only the newest max_records \
+            (default 1000, max 10000) are returned, within a 1 MiB response; the first text \
+            block is the CSV or JSON array (header-only CSV or [] when nothing matches) and \
+            structuredContent plus a second JSON text block carry records_total, \
+            records_returned, records_truncated and max_records. For a complete export run \
+            `phantom audit export-range` in a terminal; \
             'report' — generate a full compliance report containing: (a) access-frequency \
             heatmap per secret per calendar day, (b) leak-incident timeline with \
             incident_id/secret_name/occurrences, (c) rotation-timing audit showing days since \
@@ -4189,21 +4264,35 @@ impl PhantomMcpServer {
                     .export_rows(&filter)
                     .map_err(|e| internal_err(format!("Export failed: {e}")))?;
 
-                if rows.is_empty() {
-                    return text_result(
-                        "No audit rows match the requested filters. \
-                         Set PHANTOM_AUDIT=1 to enable audit logging."
-                            .to_string(),
-                    );
+                // Bounded like phantom_audit_analytics: rows are sorted
+                // oldest first, so keep the newest `keep` that fit both
+                // max_records and the response ceiling. An empty match is
+                // still valid output for the requested format.
+                let max_records = params.max_records.min(MCP_ANALYTICS_MAX_RECORDS);
+                let rows_total = rows.len();
+                let mut keep = rows_total.min(max_records as usize);
+                let csv = format == crate::tools::helpers::AuditFormat::Csv;
+                loop {
+                    let kept = &rows[rows_total - keep..];
+                    let body = if csv {
+                        AuditExporter::rows_to_csv(kept)
+                    } else {
+                        AuditExporter::rows_to_json(kept)
+                            .map_err(|e| internal_err(format!("Serialization error: {e}")))?
+                    };
+                    if body.len() <= MCP_ANALYTICS_MAX_BYTES || keep == 0 {
+                        let meta = serde_json::json!({
+                            "action": "export",
+                            "format": if csv { "csv" } else { "json" },
+                            "records_total": rows_total,
+                            "records_returned": keep,
+                            "records_truncated": keep < rows_total,
+                            "max_records": max_records,
+                        });
+                        return report_result(body, &meta);
+                    }
+                    keep = shrink_to_fit(keep, body.len(), MCP_ANALYTICS_MAX_BYTES);
                 }
-
-                if format == crate::tools::helpers::AuditFormat::Csv {
-                    return text_result(AuditExporter::rows_to_csv(&rows));
-                }
-
-                let json = AuditExporter::rows_to_json(&rows)
-                    .map_err(|e| internal_err(format!("Serialization error: {e}")))?;
-                text_result(json)
             }
 
             "report" | "" => {
@@ -4241,11 +4330,14 @@ impl PhantomMcpServer {
     /// Return a compliance status badge for the current project.
     #[tool(
         description = "Return the compliance state of the current Phantom project as a \
-            structured JSON badge. Checks: vault_accessible (vault can be read), \
+            structured JSON badge. Checks: vault_accessible (every secret of this project can be read here; \
+            false for an encrypted-file vault this process cannot open, even when the OS keychain \
+            holds some entries, the same rule as `phantom agent doctor`), \
             audit_enabled (PHANTOM_AUDIT env var is set), \
             precommit_installed (git pre-commit hook contains the current local-only phantom check), \
             env_clean (no unprotected real secrets in any dotenv phantom check scans: .env, .env.local, .env.development, .env.development.local, .env.production, .env.production.local, .env.test, .env.test.local and the configured dotenv_path; read without opening the vault, so it is reported before init and with a locked vault), \
-            secrets_have_ttl (all vault secrets have a rotation policy set). \
+            secrets_have_ttl (every vault secret has an expiry (expires_at) or a rotation policy set; \
+            false when not every secret can be read; the detail gives the exact count and names at most 20). \
             Each check is true/false with an optional detail string. \
             Overall 'compliant' is true only when all checks pass. Read-only."
     )]
@@ -4256,22 +4348,26 @@ impl PhantomMcpServer {
         let mut checks: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
         let mut all_pass = true;
 
-        // Check 1: vault accessible
-        let vault_ok = if self.config_path().exists() {
-            match self.load_config_and_vault() {
-                Ok((_cfg, vault)) => vault.list().is_ok(),
-                Err(_) => false,
-            }
-        } else {
-            false
-        };
+        // Check 1: vault accessible. One probe feeds checks 1 and 5. The same
+        // rule as `phantom agent doctor`: an encrypted-file vault this process
+        // cannot open is not accessible, whether the keychain it selected
+        // instead is empty (the locked state) or holds some entries (a
+        // keychain-only view). Either way check 5 cannot cover every secret.
+        let probe = self.compliance_vault_probe();
+        let vault_ok = probe.accessible.is_ok();
         if !vault_ok {
             all_pass = false;
         }
-        checks.insert("vault_accessible".to_string(), serde_json::json!({
-            "pass": vault_ok,
-            "detail": if vault_ok { "Vault backend is reachable." } else { "Vault not accessible — run phantom init." },
-        }));
+        checks.insert(
+            "vault_accessible".to_string(),
+            serde_json::json!({
+                "pass": vault_ok,
+                "detail": match &probe.accessible {
+                    Ok(()) => "Vault backend is reachable.".to_string(),
+                    Err(detail) => detail.clone(),
+                },
+            }),
+        );
 
         // Check 2: audit enabled
         let audit_ok = phantom_core::audit::enabled();
@@ -4326,45 +4422,7 @@ impl PhantomMcpServer {
         );
 
         // Check 5: all secrets have TTL
-        let (ttl_ok, ttl_detail) = if self.config_path().exists() {
-            match self.load_config_and_vault() {
-                Ok((_cfg, vault)) => match vault.list_with_metadata() {
-                    Ok(entries) => {
-                        let without_ttl: Vec<&str> = entries
-                            .iter()
-                            .filter(|(_, meta)| {
-                                meta.as_ref()
-                                    .and_then(|m| m.rotation_policy.as_ref())
-                                    .is_none()
-                            })
-                            .map(|(name, _)| name.as_str())
-                            .collect();
-                        if without_ttl.is_empty() {
-                            (
-                                true,
-                                "All secrets have a rotation policy (TTL).".to_string(),
-                            )
-                        } else {
-                            (
-                                false,
-                                format!(
-                                    "{} secret(s) have no TTL: {}",
-                                    without_ttl.len(),
-                                    without_ttl.join(", ")
-                                ),
-                            )
-                        }
-                    }
-                    Err(e) => (false, format!("Failed to list secrets: {e}")),
-                },
-                Err(_) => (false, "Vault not accessible.".to_string()),
-            }
-        } else {
-            (
-                false,
-                "Phantom not initialized — run phantom init.".to_string(),
-            )
-        };
+        let (ttl_ok, ttl_detail) = probe.ttl;
         if !ttl_ok {
             all_pass = false;
         }
@@ -4390,9 +4448,11 @@ impl PhantomMcpServer {
             Returns a JSON object with: due (list of secrets already expired), \
             warning (list of secrets expiring within warn_days, default 7), \
             ok (list of secrets with sufficient TTL remaining), \
-            no_ttl (list of secrets with no rotation policy set at all). \
+            no_ttl (list of secrets with neither an expiry nor a rotation policy). \
+            A secret with expires_at but no rotation policy is still classified by its expiry. \
             Each entry has: name, status (expired|warning|ok|no_ttl), \
-            days_remaining (null if no TTL), expires_at (ISO-8601 or null). \
+            days_remaining (null if no expiry; negative means already expired), \
+            expires_at (ISO-8601 or null), has_rotation_policy (bool). \
             Secret VALUES are never returned. Read-only; no confirm required."
     )]
     fn phantom_secret_rotation_due(
@@ -4412,52 +4472,37 @@ impl PhantomMcpServer {
         let mut no_ttl: Vec<serde_json::Value> = Vec::new();
 
         for (name, meta) in &entries {
-            match meta {
-                None => {
-                    no_ttl.push(serde_json::json!({
-                        "name": name,
-                        "status": "no_ttl",
-                        "days_remaining": null,
-                        "expires_at": null,
-                    }));
-                }
-                Some(m) => {
-                    let expires_iso = m.expires_at.map(phantom_core::analytics::unix_to_iso8601);
-
-                    if m.rotation_policy.is_none() {
-                        no_ttl.push(serde_json::json!({
-                            "name": name,
-                            "status": "no_ttl",
-                            "days_remaining": null,
-                            "expires_at": expires_iso,
-                        }));
-                    } else if m.is_expired() {
-                        let days = m.days_remaining().unwrap_or(0);
-                        due.push(serde_json::json!({
-                            "name": name,
-                            "status": "expired",
-                            "days_remaining": days,
-                            "expires_at": expires_iso,
-                        }));
-                    } else if m.is_expiring_soon(params.warn_days) {
-                        let days = m.days_remaining().unwrap_or(0);
-                        warning.push(serde_json::json!({
-                            "name": name,
-                            "status": "warning",
-                            "days_remaining": days,
-                            "expires_at": expires_iso,
-                        }));
-                    } else {
-                        let days = m.days_remaining();
-                        ok.push(serde_json::json!({
-                            "name": name,
-                            "status": "ok",
-                            "days_remaining": days,
-                            "expires_at": expires_iso,
-                        }));
-                    }
-                }
-            }
+            let Some(m) = meta.as_ref().filter(|m| {
+                // An `expires_at` without a rotation policy (for example a
+                // provider-issued expiry) is still a deadline: classify it.
+                m.expires_at.is_some() || m.rotation_policy.is_some()
+            }) else {
+                no_ttl.push(serde_json::json!({
+                    "name": name,
+                    "status": "no_ttl",
+                    "days_remaining": null,
+                    "expires_at": null,
+                    "has_rotation_policy": false,
+                }));
+                continue;
+            };
+            let expires_iso = m.expires_at.map(phantom_core::analytics::unix_to_iso8601);
+            let has_rotation_policy = m.rotation_policy.is_some();
+            // One clock read per entry: negative days_remaining is exactly
+            // "expired", so the bucket and the reported number agree.
+            let days = m.days_remaining();
+            let (bucket, status) = match days {
+                Some(d) if d < 0 => (&mut due, "expired"),
+                Some(d) if d <= params.warn_days as i64 => (&mut warning, "warning"),
+                _ => (&mut ok, "ok"),
+            };
+            bucket.push(serde_json::json!({
+                "name": name,
+                "status": status,
+                "days_remaining": days,
+                "expires_at": expires_iso,
+                "has_rotation_policy": has_rotation_policy,
+            }));
         }
 
         let out = serde_json::json!({
@@ -4564,6 +4609,8 @@ impl PhantomMcpServer {
             Returns: last_check_ts (Unix epoch, 0 = never checked), is_valid (bool), \
             failure_reason (string or null), validator_name (which validator ran), \
             and is_stale (whether the check is older than 24 h). \
+            If the stored results cannot be read, metadata_error is true, a note says why, \
+            and the other status fields are null rather than reporting never_checked. \
             This tool reads persisted ValidationMetadata — it does NOT make a live \
             HTTP request. Use phantom_validate_all to trigger a fresh check. \
             Read-only; no confirm required. Secret VALUES are never returned."
@@ -4586,22 +4633,35 @@ impl PhantomMcpServer {
             )));
         }
 
-        // Load validation metadata (may not exist yet — return a "never checked" record).
-        let meta = vault
-            .get_validation_metadata(&params.name)
-            .unwrap_or_default();
-
-        let is_stale = meta.is_stale(phantom_core::validator::DEFAULT_STALE_SECS);
-
-        let out = serde_json::json!({
-            "name": params.name,
-            "last_check_ts": meta.last_check_ts,
-            "is_valid": meta.is_valid,
-            "failure_reason": meta.failure_reason,
-            "validator_name": meta.validator_name,
-            "is_stale": is_stale,
-            "never_checked": meta.never_checked(),
-        });
+        // A missing record means "never checked". A record that cannot be
+        // read is not: report the error state instead of a default record
+        // that would read as "never checked, not valid".
+        let out = match vault.get_validation_metadata(&params.name) {
+            Ok(meta) => serde_json::json!({
+                "name": params.name,
+                "last_check_ts": meta.last_check_ts,
+                "is_valid": meta.is_valid,
+                "failure_reason": meta.failure_reason,
+                "validator_name": meta.validator_name,
+                "is_stale": meta.is_stale(phantom_core::validator::DEFAULT_STALE_SECS),
+                "never_checked": meta.never_checked(),
+                "metadata_error": false,
+            }),
+            Err(error) => serde_json::json!({
+                "name": params.name,
+                "last_check_ts": null,
+                "is_valid": null,
+                "failure_reason": null,
+                "validator_name": null,
+                "is_stale": null,
+                "never_checked": null,
+                "metadata_error": true,
+                "note": format!(
+                    "Stored validation results could not be read, so this secret's \
+                     validation state is unknown (not \"never checked\"): {error}"
+                ),
+            }),
+        };
 
         json_object_result(&with_vault_note(out, vault_note))
     }
@@ -4874,8 +4934,9 @@ impl PhantomMcpServer {
     #[tool(
         description = "Query the local vault for secrets that are expired or expiring soon. \
             Returns a JSON array where each entry has: name (string), \
-            days_remaining (i64 — negative means already expired), \
-            expires_at (Unix epoch u64), status (human-readable string). \
+            days_remaining (i64, floored — negative means already expired, \
+            so a secret that expired under 24 h ago reports -1), \
+            expires_at (Unix epoch u64), status (human-readable string), expired (bool). \
             Use the `days` parameter (default 7) to tune the look-ahead window. \
             Secrets with no TTL set are omitted — use phantom_secret_rotation_due \
             to also surface those. Secret VALUES are never returned. Read-only; no confirm required."
@@ -4903,6 +4964,7 @@ impl PhantomMcpServer {
                         "days_remaining": days_remaining,
                         "expires_at": expires_at,
                         "status": m.ttl_status(),
+                        "expired": days_remaining < 0,
                     }))
                 } else {
                     None
@@ -4997,9 +5059,11 @@ impl PhantomMcpServer {
             secrets and return a structured list, the same answer as `phantom expiry enforce --json`. \
             Each entry has: name (string), expires_at (Unix u64), secs_overdue (u64), \
             status (human-readable string). \
-            With fail_closed=true, secrets that have no expiry policy set are also included \
-            with status='no_expiry_policy'. \
-            Returns { expired: [...], ok_count, no_expiry_count, fail_closed, pass }. \
+            `expired` holds only secrets whose expiry has passed. With fail_closed=true, \
+            secrets that have no expiry set are violations too and are named in \
+            no_expiry_policy (status='no_expiry_policy'); it is empty otherwise. \
+            Returns { expired: [...], no_expiry_policy: [...], ok_count, no_expiry_count, \
+            fail_closed, pass }. \
             pass=true means no action is needed. Read-only; no confirm required. \
             Secret VALUES are never returned."
     )]
@@ -5007,8 +5071,6 @@ impl PhantomMcpServer {
         &self,
         Parameters(params): Parameters<PhantomExpiryEnforceParams>,
     ) -> Result<CallToolResult, McpError> {
-        use phantom_core::rotation_strategy::{check_expiry, ExpiryStatus};
-
         // TTLs live in vault metadata (`phantom expiry set` writes them there
         // and `phantom expiry enforce` reads them there). This gate must not
         // pass over secrets in a vault this process cannot open.
@@ -5018,56 +5080,11 @@ impl PhantomMcpServer {
             .list_with_metadata()
             .map_err(|e| vault_read_err("Failed to read vault lifecycle metadata", e))?;
         let now = phantom_vault::metadata::now_secs();
-
-        let mut expired: Vec<serde_json::Value> = Vec::new();
-        let mut no_expiry_violations: Vec<serde_json::Value> = Vec::new();
-        let mut ok_count: usize = 0;
-        let mut no_expiry_count: usize = 0;
-
-        for (name, metadata) in &entries {
-            match metadata.as_ref().and_then(|metadata| metadata.expires_at) {
-                None => {
-                    no_expiry_count += 1;
-                    if params.fail_closed {
-                        no_expiry_violations.push(serde_json::json!({
-                            "name": name,
-                            "status": "no_expiry_policy",
-                        }));
-                    }
-                }
-                Some(expires_at) => {
-                    let status = check_expiry(expires_at, 0, now);
-                    if status.is_expired() {
-                        let secs_overdue = match &status {
-                            ExpiryStatus::Expired { secs_overdue } => *secs_overdue,
-                            _ => 0,
-                        };
-                        expired.push(serde_json::json!({
-                            "name": name,
-                            "expires_at": expires_at,
-                            "secs_overdue": secs_overdue,
-                            "status": status.label(),
-                        }));
-                    } else {
-                        ok_count += 1;
-                    }
-                }
-            }
-        }
-
-        // Merge no-expiry violations if fail_closed
-        let mut all_violations = expired.clone();
-        all_violations.extend(no_expiry_violations);
-
-        let pass = all_violations.is_empty();
-
-        let out = serde_json::json!({
-            "expired": all_violations,
-            "ok_count": ok_count,
-            "no_expiry_count": no_expiry_count,
-            "fail_closed": params.fail_closed,
-            "pass": pass,
-        });
+        // One builder for this tool and `phantom expiry enforce --json`.
+        let report =
+            phantom_vault::metadata::expiry_enforce_report(&entries, params.fail_closed, now);
+        let out = serde_json::to_value(&report)
+            .map_err(|error| internal_err(format!("Failed to encode expiry report: {error}")))?;
 
         json_object_result(&with_vault_note(out, vault_note))
     }
@@ -5610,6 +5627,35 @@ fn retrieve_optional_secret(
     }
 }
 
+/// Most access records `phantom_audit_analytics` (and audit rows
+/// `phantom_audit_export_report` action="export") returns in one response.
+const MCP_ANALYTICS_MAX_RECORDS: u32 = 10_000;
+
+/// Most secret names `phantom_compliance_status` lists in one check detail;
+/// the count is always exact.
+const COMPLIANCE_MAX_LISTED_NAMES: usize = 20;
+
+/// See `PhantomMcpServer::compliance_vault_probe`.
+struct ComplianceVaultProbe {
+    /// `Err(detail)` when not every secret of the project is readable here.
+    accessible: Result<(), String>,
+    /// The `secrets_have_ttl` check: pass and detail.
+    ttl: (bool, String),
+}
+
+/// Largest `phantom_audit_analytics` or `phantom_audit_export_report` export
+/// body (pretty JSON or CSV), in bytes. The
+/// CLI writes up to 64 MiB to a file or pipe; an MCP response lands in an
+/// agent's context, so it gets a much smaller ceiling.
+const MCP_ANALYTICS_MAX_BYTES: usize = 1024 * 1024;
+
+/// The next record count to try when `keep` records rendered to `size`
+/// bytes, over `limit`: scaled to fit and always strictly fewer.
+fn shrink_to_fit(keep: usize, size: usize, limit: usize) -> usize {
+    let scaled = (keep as u128 * limit as u128 / size.max(1) as u128) as usize;
+    scaled.min(keep.saturating_sub(1))
+}
+
 /// Longest secret name MCP accepts, in bytes.
 const MAX_MCP_SECRET_NAME_BYTES: usize = 256;
 
@@ -5692,6 +5738,71 @@ fn team_push_approval_params_json(
         }
     }))
     .map_err(|error| internal_err(format!("Failed to bind team-push approval: {error}")))
+}
+
+/// Value-free guidance for the read-only leak-incident tools; null when
+/// there is nothing to act on.
+trait IncidentNextStep {
+    fn next_step(&self) -> Option<String>;
+}
+
+impl IncidentNextStep for phantom_core::leak_correlation::IncidentView {
+    fn next_step(&self) -> Option<String> {
+        if !self.uncorrelated.is_empty() {
+            return Some(format!(
+                "{} leak incident(s) from proxy.response_leak audit events in the last 24 h are not persisted yet and are listed in uncorrelated_incidents. Treat each as a possible leak: review it, rotate the credential at the provider if the leak is real, and store the replacement from a trusted terminal. To persist incidents and send configured alerts, run `phantom audit alerts --backfill` in a trusted terminal (or phantom_audit_alerts with backfill=true, confirm and approval_token).",
+                self.uncorrelated.len()
+            ));
+        }
+        if !self.audit_log_present {
+            return Some(
+                "No audit log exists, so leaks cannot be observed. Run the proxy with PHANTOM_AUDIT=1 to record proxy.response_leak events."
+                    .to_string(),
+            );
+        }
+        None
+    }
+}
+
+/// The persisted active incidents and the same 24 h window's leak events
+/// that no backfill has persisted yet, from one parse of the audit log
+/// (correlated in memory, nothing written).
+fn leak_incident_view(
+    engine: &phantom_core::leak_correlation::LeakCorrelationEngine,
+    min_confidence: f64,
+) -> Result<phantom_core::leak_correlation::IncidentView, McpError> {
+    engine
+        .incident_view(min_confidence)
+        .map_err(|e| internal_err(format!("Failed to read leak incidents: {e}")))
+}
+
+/// Dashboard summaries (no secret values), most confident first.
+fn realtime_incident_summaries(
+    incidents: &[phantom_core::leak_correlation::LeakIncident],
+) -> Vec<serde_json::Value> {
+    let mut summaries: Vec<serde_json::Value> = incidents
+        .iter()
+        .map(|inc| {
+            serde_json::json!({
+                "incident_id":    inc.incident_id,
+                "secret_name":    inc.secret_name,
+                "location_label": inc.location_label,
+                "confidence":     inc.confidence,
+                "first_seen":     iso8601(inc.first_seen_ts),
+                "last_seen":      iso8601(inc.last_seen_ts),
+                "event_count":    inc.event_count,
+                "remediation":    inc.remediation,
+            })
+        })
+        .collect();
+    summaries.sort_by(|a, b| {
+        b["confidence"]
+            .as_f64()
+            .unwrap_or(0.0)
+            .partial_cmp(&a["confidence"].as_f64().unwrap_or(0.0))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    summaries
 }
 
 fn sanitized_alert_origins(
@@ -6455,6 +6566,87 @@ impl DoctorLog {
     fn summary(&mut self, line: impl Into<String>) {
         self.lines.push(line.into());
     }
+}
+
+/// The `phantom_audit_recent` answer for one bounded read of the log.
+///
+/// Only whitelisted fields leave: seq, ts, pid, process, op and name, never a
+/// value. Chain-start markers are skipped silently; any other line that is
+/// not an audit event is counted in `unparsable_lines`, never echoed.
+fn audit_recent_report(
+    recent: phantom_core::audit::RecentLines,
+    n: usize,
+    op_filter: Option<&str>,
+    name_filter: Option<&str>,
+) -> serde_json::Value {
+    let mut unparsable = recent.unreadable_lines;
+    let mut events: Vec<serde_json::Value> = Vec::new();
+    for line in &recent.lines {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            unparsable += 1;
+            continue;
+        };
+        if v.get("hmac_chain_started_at").is_some() {
+            continue;
+        }
+        let Some(op) = v.get("op").and_then(|o| o.as_str()) else {
+            unparsable += 1;
+            continue;
+        };
+        if op_filter.is_some_and(|filter| !op.starts_with(filter)) {
+            continue;
+        }
+        let name = v.get("name").and_then(|n| n.as_str());
+        if name_filter.is_some_and(|filter| name != Some(filter)) {
+            continue;
+        }
+        let mut obj = serde_json::Map::new();
+        for field in ["seq", "ts", "pid", "process"] {
+            if let Some(val) = v.get(field) {
+                obj.insert(field.to_string(), val.clone());
+            }
+        }
+        obj.insert("op".to_string(), serde_json::Value::String(op.to_string()));
+        if let Some(name) = name {
+            obj.insert(
+                "name".to_string(),
+                serde_json::Value::String(name.to_string()),
+            );
+        }
+        events.push(serde_json::Value::Object(obj));
+    }
+
+    let matched_in_window = events.len();
+    if events.len() > n {
+        events.drain(..events.len() - n);
+    }
+    let mut notes = Vec::new();
+    if recent.window_truncated {
+        notes.push(format!(
+            "Only the newest {} MiB of the audit log were read; older events were not examined, so `matched_in_window` is not a total.",
+            phantom_core::audit::RECENT_WINDOW_BYTES / (1024 * 1024)
+        ));
+    }
+    if unparsable > 0 {
+        notes.push(format!(
+            "{unparsable} line(s) in the window are not audit events and were skipped; run `phantom audit verify` to check the chain."
+        ));
+    }
+
+    let mut out = serde_json::json!({
+        "events": events,
+        "total_returned": events.len(),
+        "matched_in_window": matched_in_window,
+        "window_truncated": recent.window_truncated,
+        "unparsable_lines": unparsable,
+    });
+    if !recent.window_truncated {
+        out["total_in_log"] = serde_json::json!(matched_in_window);
+    }
+    if !notes.is_empty() {
+        out["note"] = serde_json::Value::String(notes.join(" "));
+    }
+    out
 }
 
 #[cfg(test)]
@@ -8952,6 +9144,71 @@ mod tests {
         }
     }
 
+    /// A readable vault whose stored validation results cannot be read.
+    struct UnreadableValidationResults;
+
+    impl phantom_vault::VaultBackend for UnreadableValidationResults {
+        fn store(&self, _: &str, _: &str) -> phantom_core::error::Result<()> {
+            Ok(())
+        }
+        fn retrieve(&self, name: &str) -> phantom_core::error::Result<zeroize::Zeroizing<String>> {
+            Err(phantom_core::error::PhantomError::SecretNotFound(
+                name.to_string(),
+            ))
+        }
+        fn delete(&self, _: &str) -> phantom_core::error::Result<()> {
+            Ok(())
+        }
+        fn list(&self) -> phantom_core::error::Result<Vec<String>> {
+            Ok(vec!["OPENAI_API_KEY".to_string()])
+        }
+        fn backend_name(&self) -> &str {
+            "encrypted-file"
+        }
+        fn get_validation_metadata(
+            &self,
+            _: &str,
+        ) -> phantom_core::error::Result<phantom_core::validator::ValidationMetadata> {
+            Err(phantom_core::error::PhantomError::VaultError(
+                "validation sidecar is malformed".to_string(),
+            ))
+        }
+    }
+
+    /// A read error on stored validation results was reported as
+    /// `never_checked: true, is_valid: false`, telling the agent to run a
+    /// first check rather than that the state is unknown.
+    #[test]
+    fn validate_secret_reports_unreadable_results_not_never_checked() {
+        let _environment = TestEnvironment::new();
+        let _home = TestHome::new();
+        let (server, _dir) = setup_initialized_project();
+        let _vault = TestVault::serve(|| Box::new(UnreadableValidationResults));
+
+        let result = server
+            .phantom_validate_secret(params(serde_json::json!({ "name": "OPENAI_API_KEY" })))
+            .unwrap();
+        let report = result.structured_content.clone().unwrap();
+        assert_eq!(report["metadata_error"], true);
+        assert!(report["never_checked"].is_null());
+        assert!(report["is_valid"].is_null());
+        assert!(report["last_check_ts"].is_null());
+        let note = report["note"].as_str().unwrap();
+        assert!(note.contains("validation sidecar is malformed"));
+    }
+
+    #[test]
+    fn validate_secret_reports_metadata_error_false_when_readable() {
+        let _environment = TestEnvironment::new();
+        let (server, _dir) = setup_initialized_project();
+        let result = server
+            .phantom_validate_secret(params(serde_json::json!({ "name": "OPENAI_API_KEY" })))
+            .unwrap();
+        let report = result.structured_content.clone().unwrap();
+        assert_eq!(report["metadata_error"], false);
+        assert_eq!(report["never_checked"], true);
+    }
+
     #[test]
     fn check_runtime_reports_names_never_tokens() {
         let _environment = TestEnvironment::new();
@@ -8977,6 +9234,201 @@ mod tests {
             .unwrap()
             .contains(&serde_json::json!({"kind":"runtime_env","name":var})));
         assert_no_value_leak(&result, &[token.as_str()]);
+    }
+
+    /// Run the runtime check with `vars` set (or removed, for `None`) and
+    /// restore each one afterwards. Callers hold `TestEnvironment`.
+    fn runtime_check_with(vars: &[(&str, Option<&str>)]) -> CallToolResult {
+        let previous: Vec<_> = vars
+            .iter()
+            .map(|(name, _)| (*name, std::env::var_os(name)))
+            .collect();
+        for (name, setting) in vars {
+            // SAFETY: serialized by TestEnvironment's process env lock; restored below.
+            unsafe {
+                match setting {
+                    Some(raw) => std::env::set_var(name, raw),
+                    None => std::env::remove_var(name),
+                }
+            }
+        }
+        let server = PhantomMcpServer::with_dir(TempDir::new().unwrap().path().to_path_buf());
+        let result = server.phantom_check(Parameters(CheckParams { runtime: true }));
+        for (name, before) in previous {
+            // SAFETY: as above.
+            unsafe {
+                match before {
+                    Some(raw) => std::env::set_var(name, raw),
+                    None => std::env::remove_var(name),
+                }
+            }
+        }
+        result.unwrap()
+    }
+
+    #[test]
+    fn check_runtime_finds_a_phantom_token_under_a_custom_name() {
+        let _environment = TestEnvironment::new();
+        let placeholder = PhantomToken::generate();
+        let result = runtime_check_with(&[
+            ("PHANTOM_MCP_TEST_BILLING_KEY", Some(placeholder.as_str())),
+            ("PHANTOM_PROXY_PORT", None),
+            ("PHANTOM_PROXY_TOKEN", None),
+            ("PHANTOM_SESSION_KEYS", None),
+        ]);
+        let report = structured_report(&result);
+        assert_eq!(report["clean"], false, "{report}");
+        assert!(report["findings"].as_array().unwrap().contains(
+            &serde_json::json!({"kind":"runtime_env","name":"PHANTOM_MCP_TEST_BILLING_KEY"})
+        ));
+        assert_no_value_leak(&result, &[placeholder.as_str()]);
+    }
+
+    /// A loopback health endpoint that answers 200 to `expected`, for as many
+    /// requests as arrive while the test runs.
+    fn live_health_endpoint(expected: &'static str) -> String {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                let mut request = Vec::new();
+                let mut chunk = [0u8; 512];
+                while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+                    match stream.read(&mut chunk) {
+                        Ok(0) | Err(_) => break,
+                        Ok(read) => request.extend_from_slice(&chunk[..read]),
+                    }
+                }
+                let text = String::from_utf8_lossy(&request);
+                let ok = text.starts_with("GET /phantom/health ")
+                    && text.contains(&format!("x-phantom-proxy-token: {expected}\r\n"));
+                // The proxy's own health answer, which the probe requires.
+                let reply = if ok {
+                    r#"{"status":"ok","service":"phantom-proxy"}"#
+                } else {
+                    ""
+                };
+                let status = if ok { "200 OK" } else { "401 Unauthorized" };
+                let _ = stream.write_all(
+                    format!(
+                        "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
+                        reply.len()
+                    )
+                    .as_bytes(),
+                );
+                drop(stream);
+            }
+        });
+        port.to_string()
+    }
+
+    /// A loopback port with nothing listening on it.
+    fn dead_port() -> String {
+        std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port()
+            .to_string()
+    }
+
+    fn finding_names(report: &serde_json::Value) -> Vec<String> {
+        report["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|finding| finding["name"].as_str().map(str::to_string))
+            .collect()
+    }
+
+    #[test]
+    fn check_runtime_text_escapes_control_characters_in_names() {
+        let _environment = TestEnvironment::new();
+        let placeholder = PhantomToken::generate();
+        let result = runtime_check_with(&[
+            ("PHANTOM_MCP_TEST\nFAKE_LINE", Some(placeholder.as_str())),
+            ("PHANTOM_PROXY_PORT", None),
+            ("PHANTOM_PROXY_TOKEN", None),
+            ("PHANTOM_SESSION_KEYS", None),
+        ]);
+        let rendered = serde_json::to_value(&result).unwrap();
+        let text = rendered["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("PHANTOM_MCP_TEST\\nFAKE_LINE"), "{text}");
+        assert!(!text.contains("PHANTOM_MCP_TEST\nFAKE_LINE"), "{text}");
+        assert_no_value_leak(&result, &[placeholder.as_str()]);
+    }
+
+    #[test]
+    fn check_runtime_live_session_excuses_only_its_own_variables() {
+        let _environment = TestEnvironment::new();
+        let placeholder = PhantomToken::generate();
+        let port = live_health_endpoint("session-live");
+        let result = runtime_check_with(&[
+            ("OPENAI_API_KEY", Some(placeholder.as_str())),
+            ("PHANTOM_MCP_TEST_INHERITED_KEY", Some(placeholder.as_str())),
+            ("PHANTOM_PROXY_PORT", Some(port.as_str())),
+            ("PHANTOM_PROXY_TOKEN", Some("session-live")),
+            ("PHANTOM_SESSION_KEYS", Some("OPENAI_API_KEY")),
+        ]);
+        let report = structured_report(&result);
+        assert_eq!(report["proxy_session"], true, "{report}");
+        assert_eq!(report["excused"], serde_json::json!(["OPENAI_API_KEY"]));
+        assert_eq!(report["clean"], false, "{report}");
+        let names = finding_names(&report);
+        assert!(
+            names.contains(&"PHANTOM_MCP_TEST_INHERITED_KEY".to_string()),
+            "{report}"
+        );
+        assert!(!names.contains(&"OPENAI_API_KEY".to_string()), "{report}");
+        assert!(report.get("session_warning").is_none(), "{report}");
+        assert_no_value_leak(&result, &[placeholder.as_str()]);
+    }
+
+    #[test]
+    fn check_runtime_live_session_owning_every_token_is_clean() {
+        let _environment = TestEnvironment::new();
+        let placeholder = PhantomToken::generate();
+        let port = live_health_endpoint("session-owned");
+        let result = runtime_check_with(&[
+            ("OPENAI_API_KEY", Some(placeholder.as_str())),
+            ("PHANTOM_PROXY_PORT", Some(port.as_str())),
+            ("PHANTOM_PROXY_TOKEN", Some("session-owned")),
+            ("PHANTOM_SESSION_KEYS", Some("OPENAI_API_KEY")),
+        ]);
+        let report = structured_report(&result);
+        assert!(
+            !finding_names(&report).contains(&"OPENAI_API_KEY".to_string()),
+            "{report}"
+        );
+        assert_eq!(report["excused"], serde_json::json!(["OPENAI_API_KEY"]));
+        assert_eq!(report["proxy_session"], true, "{report}");
+        assert_no_value_leak(&result, &[placeholder.as_str()]);
+    }
+
+    #[test]
+    fn check_runtime_stale_session_variables_excuse_nothing() {
+        let _environment = TestEnvironment::new();
+        let placeholder = PhantomToken::generate();
+        let port = dead_port();
+        let result = runtime_check_with(&[
+            ("OPENAI_API_KEY", Some(placeholder.as_str())),
+            ("PHANTOM_PROXY_PORT", Some(port.as_str())),
+            ("PHANTOM_PROXY_TOKEN", Some("session-stopped")),
+            ("PHANTOM_SESSION_KEYS", Some("OPENAI_API_KEY")),
+        ]);
+        let report = structured_report(&result);
+        assert_eq!(report["clean"], false, "{report}");
+        assert!(
+            finding_names(&report).contains(&"OPENAI_API_KEY".to_string()),
+            "{report}"
+        );
+        assert!(report.get("proxy_session").is_none(), "{report}");
+        assert!(report.get("excused").is_none(), "{report}");
+        assert!(report["session_warning"]
+            .as_str()
+            .is_some_and(|warning| warning.contains("look stale")));
+        assert_no_value_leak(&result, &[placeholder.as_str(), "session-stopped"]);
     }
 
     #[test]
@@ -10028,6 +10480,7 @@ mod tests {
                 to: None,
                 secret_name: None,
                 operation: None,
+                max_records: crate::tools::params::default_analytics_max_records(),
                 save: true,
                 confirm: false,
                 approval_token: None,
@@ -10665,16 +11118,35 @@ mod tests {
         assert_eq!(permissive["ok_count"], 0);
         assert_eq!(permissive["no_expiry_count"], 1, "{permissive}");
 
+        assert_eq!(permissive["no_expiry_policy"], serde_json::json!([]));
+
         let strict = report(true);
         assert_eq!(strict["pass"], false);
-        let names: Vec<&str> = strict["expired"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|entry| entry["name"].as_str().unwrap())
-            .collect();
-        assert_eq!(names, ["OPENAI_API_KEY", "DATABASE_URL"], "{strict}");
-        assert_eq!(strict["expired"][1]["status"], "no_expiry_policy");
+        let names = |field: &str| -> Vec<String> {
+            strict[field]
+                .as_array()
+                .unwrap_or_else(|| panic!("{field} missing: {strict}"))
+                .iter()
+                .map(|entry| entry["name"].as_str().unwrap().to_string())
+                .collect()
+        };
+        // `expired` holds only truly expired secrets, as the CLI's does; the
+        // no-policy violations have their own field.
+        assert_eq!(names("expired"), ["OPENAI_API_KEY"], "{strict}");
+        assert_eq!(names("no_expiry_policy"), ["DATABASE_URL"], "{strict}");
+        assert_eq!(strict["no_expiry_policy"][0]["status"], "no_expiry_policy");
+        assert_eq!(strict["ok_count"], 0);
+        assert_eq!(strict["no_expiry_count"], 1);
+
+        // Same fields as `phantom expiry enforce --json`, which serializes
+        // the same report.
+        let cli_shape =
+            serde_json::to_value(phantom_vault::metadata::expiry_enforce_report(&[], true, 0))
+                .unwrap();
+        let keys = |value: &serde_json::Value| -> Vec<String> {
+            value.as_object().unwrap().keys().cloned().collect()
+        };
+        assert_eq!(keys(&strict), keys(&cli_shape), "{strict}");
     }
 
     #[test]
@@ -10949,6 +11421,93 @@ mod tests {
                 "event must not have 'value' field"
             );
         }
+    }
+
+    #[test]
+    fn test_audit_recent_counts_unparsable_lines_without_echoing_them() {
+        let _environment = TestEnvironment::new();
+        let (server, _dir) = setup_initialized_project();
+        let home = canonical_temp_dir();
+        unsafe { std::env::set_var("HOME", home.path()) };
+        let now = 1_700_000_000_u64;
+        write_synthetic_audit_log(
+            home.path(),
+            &[(now - 10, "vault.store", Some("OPENAI_API_KEY"))],
+        );
+        {
+            use std::io::Write;
+            let mut f = std::fs::OpenOptions::new()
+                .append(true)
+                .open(home.path().join(".phantom").join("audit.log"))
+                .unwrap();
+            writeln!(f, "not json UNPARSABLE_MARKER").unwrap();
+            writeln!(f, r#"{{"seq":2,"note":"no op UNPARSABLE_MARKER"}}"#).unwrap();
+        }
+        write_synthetic_audit_log(
+            home.path(),
+            &[(now, "vault.retrieve", Some("OPENAI_API_KEY"))],
+        );
+
+        let result = server
+            .phantom_audit_recent(Parameters(AuditRecentParams {
+                n: 10,
+                op_filter: None,
+                name_filter: None,
+            }))
+            .unwrap();
+
+        let json = parse_result_json(&result);
+        assert_eq!(json["events"].as_array().unwrap().len(), 2, "{json}");
+        assert_eq!(json["unparsable_lines"], 2, "{json}");
+        assert_eq!(json["window_truncated"], false, "{json}");
+        assert_eq!(json["total_in_log"], 2, "{json}");
+        assert!(json["note"]
+            .as_str()
+            .unwrap()
+            .contains("phantom audit verify"));
+        assert!(!extract_content_text(&result).contains("UNPARSABLE_MARKER"));
+    }
+
+    #[test]
+    fn audit_recent_report_says_when_the_window_was_cut() {
+        let recent = phantom_core::audit::RecentLines {
+            lines: vec![
+                r#"{"seq":9,"ts":1,"op":"vault.retrieve","name":"OPENAI_API_KEY"}"#.to_string(),
+            ],
+            window_truncated: true,
+            unreadable_lines: 1,
+        };
+        let out = audit_recent_report(recent, 10, Some("vault"), None);
+        assert_eq!(out["window_truncated"], true);
+        assert_eq!(out["matched_in_window"], 1);
+        assert!(out.get("total_in_log").is_none(), "{out}");
+        assert_eq!(out["unparsable_lines"], 1);
+        let note = out["note"].as_str().unwrap();
+        assert!(note.contains("newest 8 MiB"), "{note}");
+        assert!(note.contains("not a total"), "{note}");
+    }
+
+    #[test]
+    fn audit_recent_report_keeps_the_last_n_in_order() {
+        let recent = phantom_core::audit::RecentLines {
+            lines: (0..5)
+                .map(|i| format!(r#"{{"seq":{i},"op":"vault.store","name":"K{i}"}}"#))
+                .chain([r#"{"hmac_chain_started_at":1}"#.to_string()])
+                .collect(),
+            window_truncated: false,
+            unreadable_lines: 0,
+        };
+        let out = audit_recent_report(recent, 2, None, None);
+        let names: Vec<&str> = out["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, ["K3", "K4"]);
+        assert_eq!(out["total_in_log"], 5);
+        assert_eq!(out["unparsable_lines"], 0);
+        assert!(out.get("note").is_none(), "{out}");
     }
 
     // ── phantom_audit_anomalies ───────────────────────────────────────
@@ -11439,6 +11998,7 @@ mod tests {
                 window_days: 0,
                 min_anomaly_score: None,
                 format: "json".to_string(),
+                max_records: crate::tools::params::default_analytics_max_records(),
             }))
             .unwrap();
 
@@ -11454,6 +12014,316 @@ mod tests {
 
         let analytics = json["analytics"].as_array().unwrap();
         assert_eq!(analytics.len(), 2, "two distinct secrets");
+    }
+
+    /// window_days used to round to a neighbouring window: 1..=29 meant 30
+    /// days, 31+ meant all history, while the report echoed the requested
+    /// value. Each window now covers exactly the last N days.
+    #[test]
+    fn test_audit_analytics_window_days_is_the_exact_lookback() {
+        let _environment = TestEnvironment::new();
+        let (server, _dir) = setup_initialized_project();
+        let home = canonical_temp_dir();
+        unsafe { std::env::set_var("HOME", home.path()) };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let day = 86_400_u64;
+        write_synthetic_audit_log(
+            home.path(),
+            &[
+                (now - 200 * day, "vault.retrieve", Some("WINDOW_200D")),
+                (now - 60 * day, "vault.retrieve", Some("WINDOW_60D")),
+                (now - 20 * day, "vault.retrieve", Some("WINDOW_20D")),
+                (now - 3 * day, "vault.retrieve", Some("WINDOW_3D")),
+                (now - 3600, "vault.retrieve", Some("WINDOW_1H")),
+            ],
+        );
+
+        let names_for = |window_days: u32| -> (Vec<String>, Vec<String>) {
+            let result = server
+                .phantom_audit_analytics(Parameters(AuditAnalyticsParams {
+                    window_days,
+                    min_anomaly_score: None,
+                    format: "json".to_string(),
+                    max_records: crate::tools::params::default_analytics_max_records(),
+                }))
+                .unwrap();
+            let json = parse_result_json(&result);
+            assert_eq!(json["window_days"], window_days);
+            let mut analytics: Vec<String> = json["analytics"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|s| s["name"].as_str().unwrap().to_string())
+                .collect();
+            analytics.sort();
+            let mut records: Vec<String> = json["records"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|r| r["name"].as_str().unwrap().to_string())
+                .collect();
+            records.sort();
+            (analytics, records)
+        };
+
+        for (window_days, expected) in [
+            (1_u32, vec!["WINDOW_1H"]),
+            (14, vec!["WINDOW_1H", "WINDOW_3D"]),
+            (
+                90,
+                vec!["WINDOW_1H", "WINDOW_20D", "WINDOW_3D", "WINDOW_60D"],
+            ),
+            (
+                0,
+                vec![
+                    "WINDOW_1H",
+                    "WINDOW_200D",
+                    "WINDOW_20D",
+                    "WINDOW_3D",
+                    "WINDOW_60D",
+                ],
+            ),
+        ] {
+            let (analytics, records) = names_for(window_days);
+            assert_eq!(
+                analytics, expected,
+                "analytics for window_days={window_days}"
+            );
+            assert_eq!(records, expected, "records for window_days={window_days}");
+        }
+
+        // CSV covers the same window as JSON.
+        let csv = extract_content_text(
+            &server
+                .phantom_audit_analytics(Parameters(AuditAnalyticsParams {
+                    window_days: 14,
+                    min_anomaly_score: None,
+                    format: "csv".to_string(),
+                    max_records: crate::tools::params::default_analytics_max_records(),
+                }))
+                .unwrap(),
+        );
+        assert!(csv.contains("WINDOW_3D"), "{csv}");
+        assert!(!csv.contains("WINDOW_20D"), "{csv}");
+    }
+
+    fn analytics_params(window_days: u32, format: &str, max_records: u32) -> AuditAnalyticsParams {
+        AuditAnalyticsParams {
+            window_days,
+            min_anomaly_score: None,
+            format: format.to_string(),
+            max_records,
+        }
+    }
+
+    /// Every record in the window used to be returned inline, however many
+    /// there were. Only the newest max_records come back now, and the
+    /// response says how many were left out.
+    #[test]
+    fn test_audit_analytics_returns_only_the_newest_max_records() {
+        let _environment = TestEnvironment::new();
+        let (server, _dir) = setup_initialized_project();
+        let home = canonical_temp_dir();
+        unsafe { std::env::set_var("HOME", home.path()) };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let entries: Vec<(u64, &str, Option<&str>)> = (0..30_u64)
+            .map(|i| (now - 1000 + i, "vault.retrieve", Some("CAPPED_ENTRY")))
+            .collect();
+        write_synthetic_audit_log(home.path(), &entries);
+
+        let json = parse_result_json(
+            &server
+                .phantom_audit_analytics(Parameters(analytics_params(0, "json", 5)))
+                .unwrap(),
+        );
+        let records = json["records"].as_array().unwrap();
+        let returned: Vec<u64> = records.iter().map(|r| r["ts"].as_u64().unwrap()).collect();
+        let newest: Vec<u64> = (25..30_u64).map(|i| now - 1000 + i).collect();
+        assert_eq!(
+            returned, newest,
+            "the newest records are kept, oldest first"
+        );
+        assert_eq!(json["records_total"], 30);
+        assert_eq!(json["records_returned"], 5);
+        assert_eq!(json["records_truncated"], true);
+        assert_eq!(json["max_records"], 5);
+        // The summary and the time series still cover the whole window.
+        assert_eq!(json["analytics"][0]["access_count"], 30);
+        let series_total: u64 = json["time_series"][0]["daily_buckets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|b| b["count"].as_u64().unwrap())
+            .sum();
+        assert_eq!(series_total, 30);
+
+        // Under the cap nothing is truncated.
+        let json = parse_result_json(
+            &server
+                .phantom_audit_analytics(Parameters(analytics_params(0, "json", 1000)))
+                .unwrap(),
+        );
+        assert_eq!(json["records"].as_array().unwrap().len(), 30);
+        assert_eq!(json["records_truncated"], false);
+
+        // Above the hard maximum the cap is 10000.
+        let json = parse_result_json(
+            &server
+                .phantom_audit_analytics(Parameters(analytics_params(0, "json", u32::MAX)))
+                .unwrap(),
+        );
+        assert_eq!(json["max_records"], 10_000);
+
+        // CSV: the same newest rows, and the counts in structuredContent.
+        let result = server
+            .phantom_audit_analytics(Parameters(analytics_params(0, "csv", 5)))
+            .unwrap();
+        let csv = extract_content_text(&result);
+        let rows: Vec<&str> = csv.lines().skip(1).collect();
+        assert_eq!(rows.len(), 5, "{csv}");
+        assert!(
+            rows[0].starts_with(&format!("{},", now - 1000 + 25)),
+            "{csv}"
+        );
+        let meta = result.structured_content.expect("csv counts");
+        assert_eq!(meta["records_total"], 30);
+        assert_eq!(meta["records_returned"], 5);
+        assert_eq!(meta["records_truncated"], true);
+        assert_eq!(meta["format"], "csv");
+    }
+
+    /// A window whose records do not fit in 1 MiB returns fewer than
+    /// max_records instead of an unbounded response.
+    #[test]
+    fn test_audit_analytics_response_fits_the_byte_ceiling() {
+        let _environment = TestEnvironment::new();
+        let (server, _dir) = setup_initialized_project();
+        let home = canonical_temp_dir();
+        unsafe { std::env::set_var("HOME", home.path()) };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let long_name = format!("LONG_ENTRY_{}", "X".repeat(240));
+        let entries: Vec<(u64, &str, Option<&str>)> = (0..6000_u64)
+            .map(|i| (now - 7000 + i, "vault.retrieve", Some(long_name.as_str())))
+            .collect();
+        write_synthetic_audit_log(home.path(), &entries);
+
+        for format in ["json", "csv"] {
+            let result = server
+                .phantom_audit_analytics(Parameters(analytics_params(0, format, 10_000)))
+                .unwrap();
+            let body = extract_content_text(&result);
+            assert!(
+                body.len() <= MCP_ANALYTICS_MAX_BYTES,
+                "{format}: {} bytes",
+                body.len()
+            );
+            let counts = if format == "json" {
+                parse_result_json(&result)
+            } else {
+                result.structured_content.clone().unwrap()
+            };
+            assert_eq!(counts["records_total"], 6000, "{format}");
+            assert_eq!(counts["records_truncated"], true, "{format}");
+            let returned = counts["records_returned"].as_u64().unwrap();
+            assert!(returned > 0 && returned < 6000, "{format}: {returned}");
+            if format == "json" {
+                let records = counts["records"].as_array().unwrap();
+                assert_eq!(records.len() as u64, returned);
+                assert_eq!(records.last().unwrap()["ts"], now - 7000 + 5999);
+            }
+        }
+    }
+
+    /// Score thresholds share one rule: clamped to 0.0..=1.0, NaN refused.
+    /// NaN used to be accepted and silently matched nothing, and an
+    /// out-of-range min_score was echoed back as given.
+    #[test]
+    fn test_audit_score_thresholds_are_clamped_and_nan_is_refused() {
+        let _environment = TestEnvironment::new();
+        let (server, _dir) = setup_initialized_project();
+        let home = canonical_temp_dir();
+        unsafe { std::env::set_var("HOME", home.path()) };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        write_synthetic_audit_log(
+            home.path(),
+            &[(now - 100, "vault.retrieve", Some("SCORED_ENTRY"))],
+        );
+
+        let json = parse_result_json(
+            &server
+                .phantom_audit_anomalies(Parameters(AuditAnomaliesParams {
+                    period: "all".to_string(),
+                    min_score: 5.0,
+                }))
+                .unwrap(),
+        );
+        assert_eq!(json["min_score"], 1.0);
+        let json = parse_result_json(
+            &server
+                .phantom_audit_anomalies(Parameters(AuditAnomaliesParams {
+                    period: "all".to_string(),
+                    min_score: -2.0,
+                }))
+                .unwrap(),
+        );
+        assert_eq!(json["min_score"], 0.0);
+        assert_eq!(json["total_findings"], 1);
+
+        // A negative min_anomaly_score is the same as 0.0: everything.
+        let json = parse_result_json(
+            &server
+                .phantom_audit_stats(Parameters(AuditStatsParams {
+                    period: "all".to_string(),
+                    min_anomaly_score: Some(-1.0),
+                }))
+                .unwrap(),
+        );
+        assert_eq!(json["secrets"].as_array().unwrap().len(), 1);
+
+        let nan_errors = [
+            server
+                .phantom_audit_stats(Parameters(AuditStatsParams {
+                    period: "all".to_string(),
+                    min_anomaly_score: Some(f64::NAN),
+                }))
+                .unwrap_err(),
+            server
+                .phantom_audit_anomalies(Parameters(AuditAnomaliesParams {
+                    period: "all".to_string(),
+                    min_score: f64::NAN,
+                }))
+                .unwrap_err(),
+            server
+                .phantom_audit_analytics(Parameters(AuditAnalyticsParams {
+                    min_anomaly_score: Some(f64::NAN),
+                    ..analytics_params(0, "json", 1000)
+                }))
+                .unwrap_err(),
+            server
+                .phantom_audit_anomalies_realtime(Parameters(AuditAnomaliesRealtimeParams {
+                    name: None,
+                    threshold: f64::NAN,
+                    max_accesses_per_hour: None,
+                    max_consecutive_quiet_days: None,
+                }))
+                .unwrap_err(),
+        ];
+        for error in nan_errors {
+            assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+            assert!(error.message.contains("NaN"), "{}", error.message);
+        }
     }
 
     #[test]
@@ -11480,6 +12350,7 @@ mod tests {
                 window_days: 0,
                 min_anomaly_score: Some(0.5),
                 format: "json".to_string(),
+                max_records: crate::tools::params::default_analytics_max_records(),
             }))
             .unwrap();
 
@@ -11520,6 +12391,7 @@ mod tests {
                 window_days: 0,
                 min_anomaly_score: None,
                 format: "csv".to_string(),
+                max_records: crate::tools::params::default_analytics_max_records(),
             }))
             .unwrap();
 
@@ -11561,6 +12433,7 @@ mod tests {
                 window_days: 0,
                 min_anomaly_score: None,
                 format: format.to_string(),
+                max_records: crate::tools::params::default_analytics_max_records(),
             }))
         };
         let export = |format: &str| {
@@ -11571,6 +12444,7 @@ mod tests {
                 to: None,
                 secret_name: None,
                 operation: None,
+                max_records: crate::tools::params::default_analytics_max_records(),
                 save: false,
                 confirm: false,
                 approval_token: None,
@@ -11621,6 +12495,7 @@ mod tests {
                 to: to.map(str::to_string),
                 secret_name: None,
                 operation: None,
+                max_records: crate::tools::params::default_analytics_max_records(),
                 save: false,
                 confirm: false,
                 approval_token: None,
@@ -11642,6 +12517,164 @@ mod tests {
         let rows =
             extract_content_text(&call("export", Some("2023-11-14"), Some("2023-11-14")).unwrap());
         assert!(rows.contains("DATE_KEY"), "{rows}");
+    }
+
+    fn export_params(
+        format: &str,
+        operation: Option<&str>,
+        max_records: u32,
+    ) -> AuditExportReportParams {
+        AuditExportReportParams {
+            action: "export".to_string(),
+            format: format.to_string(),
+            from: None,
+            to: None,
+            secret_name: None,
+            operation: operation.map(str::to_string),
+            max_records,
+            save: false,
+            confirm: false,
+            approval_token: None,
+        }
+    }
+
+    /// action="export" used to answer an empty match with a prose sentence,
+    /// even for format="json". It is now `[]` for JSON and a header-only CSV,
+    /// with zero counts in structuredContent.
+    #[test]
+    fn test_audit_export_empty_match_is_valid_output_for_the_format() {
+        let _environment = TestEnvironment::new();
+        let (server, _dir) = setup_initialized_project();
+        let home = canonical_temp_dir();
+        unsafe { std::env::set_var("HOME", home.path()) };
+        write_synthetic_audit_log(
+            home.path(),
+            &[(1_700_000_000, "vault.retrieve", Some("EMPTY_MATCH_ENTRY"))],
+        );
+
+        let result = server
+            .phantom_audit_export_report(Parameters(export_params(
+                "json",
+                Some("no.such.operation"),
+                1000,
+            )))
+            .unwrap();
+        let rows: serde_json::Value =
+            serde_json::from_str(&extract_content_text(&result)).expect("JSON body");
+        assert_eq!(rows, serde_json::json!([]));
+        let meta = result.structured_content.expect("export counts");
+        assert_eq!(meta["records_total"], 0);
+        assert_eq!(meta["records_returned"], 0);
+        assert_eq!(meta["records_truncated"], false);
+        assert_eq!(meta["format"], "json");
+
+        let result = server
+            .phantom_audit_export_report(Parameters(export_params(
+                "csv",
+                Some("no.such.operation"),
+                1000,
+            )))
+            .unwrap();
+        let body = extract_content_text(&result);
+        assert!(
+            body == "timestamp,datetime,operation,secret_name,pid,hostname,severity\n",
+            "an empty CSV export is exactly the header row"
+        );
+        let meta = result.structured_content.expect("export counts");
+        assert_eq!(meta["records_total"], 0);
+        assert_eq!(meta["format"], "csv");
+    }
+
+    /// action="export" used to return every matching row inline, however
+    /// many. Only the newest max_records come back now, under the same
+    /// parameter and truncation fields as phantom_audit_analytics.
+    #[test]
+    fn test_audit_export_returns_only_the_newest_max_records() {
+        let _environment = TestEnvironment::new();
+        let (server, _dir) = setup_initialized_project();
+        let home = canonical_temp_dir();
+        unsafe { std::env::set_var("HOME", home.path()) };
+        let base = 1_700_000_000_u64;
+        let entries: Vec<(u64, &str, Option<&str>)> = (0..30_u64)
+            .map(|i| (base + i, "vault.retrieve", Some("CAPPED_EXPORT_ENTRY")))
+            .collect();
+        write_synthetic_audit_log(home.path(), &entries);
+
+        let result = server
+            .phantom_audit_export_report(Parameters(export_params("json", None, 5)))
+            .unwrap();
+        let rows: serde_json::Value =
+            serde_json::from_str(&extract_content_text(&result)).expect("JSON body");
+        let returned: Vec<u64> = rows
+            .as_array()
+            .expect("JSON array")
+            .iter()
+            .map(|r| r["timestamp"].as_u64().unwrap())
+            .collect();
+        let newest: Vec<u64> = (25..30_u64).map(|i| base + i).collect();
+        assert!(returned == newest, "the newest rows are kept, oldest first");
+        let meta = result.structured_content.expect("export counts");
+        assert_eq!(meta["records_total"], 30);
+        assert_eq!(meta["records_returned"], 5);
+        assert_eq!(meta["records_truncated"], true);
+        assert_eq!(meta["max_records"], 5);
+
+        let result = server
+            .phantom_audit_export_report(Parameters(export_params("csv", None, 5)))
+            .unwrap();
+        let body = extract_content_text(&result);
+        let lines: Vec<&str> = body.lines().skip(1).collect();
+        assert_eq!(lines.len(), 5);
+        assert!(lines[0].starts_with(&format!("{},", base + 25)));
+        let meta = result.structured_content.expect("export counts");
+        assert_eq!(meta["records_truncated"], true);
+
+        // Under the cap nothing is truncated; above the hard maximum the
+        // cap is 10000.
+        let result = server
+            .phantom_audit_export_report(Parameters(export_params("json", None, u32::MAX)))
+            .unwrap();
+        let meta = result.structured_content.expect("export counts");
+        assert_eq!(meta["records_returned"], 30);
+        assert_eq!(meta["records_truncated"], false);
+        assert_eq!(meta["max_records"], 10_000);
+    }
+
+    /// Rows that do not fit in 1 MiB return fewer than max_records instead
+    /// of an unbounded response.
+    #[test]
+    fn test_audit_export_response_fits_the_byte_ceiling() {
+        let _environment = TestEnvironment::new();
+        let (server, _dir) = setup_initialized_project();
+        let home = canonical_temp_dir();
+        unsafe { std::env::set_var("HOME", home.path()) };
+        let long_name = format!("LONG_EXPORT_ENTRY_{}", "X".repeat(240));
+        let entries: Vec<(u64, &str, Option<&str>)> = (0..6000_u64)
+            .map(|i| {
+                (
+                    1_700_000_000 + i,
+                    "vault.retrieve",
+                    Some(long_name.as_str()),
+                )
+            })
+            .collect();
+        write_synthetic_audit_log(home.path(), &entries);
+
+        for format in ["json", "csv"] {
+            let result = server
+                .phantom_audit_export_report(Parameters(export_params(format, None, 10_000)))
+                .unwrap();
+            let body_len = extract_content_text(&result).len();
+            assert!(
+                body_len <= MCP_ANALYTICS_MAX_BYTES,
+                "{format} body over the ceiling"
+            );
+            let meta = result.structured_content.expect("export counts");
+            assert_eq!(meta["records_total"], 6000);
+            assert_eq!(meta["records_truncated"], true);
+            let returned = meta["records_returned"].as_u64().unwrap();
+            assert!(returned > 0 && returned < 6000, "{format} returned count");
+        }
     }
 
     /// A min_confidence above 1.0 used to hide every incident and answer "No
@@ -11684,6 +12717,120 @@ mod tests {
         }
     }
 
+    /// Writes `proxy.response_leak` lines (name only, never a value) into
+    /// `$HOME/.phantom/audit.log` the way the proxy's audit hook does.
+    fn write_leak_events(home: &std::path::Path, names: &[&str]) {
+        let dir = home.join(".phantom");
+        std::fs::create_dir_all(&dir).unwrap();
+        let now = phantom_vault::metadata::now_secs();
+        let mut lines = String::new();
+        for (offset, name) in names.iter().enumerate() {
+            lines.push_str(&format!(
+                "{{\"ts\":{},\"op\":\"proxy.response_leak\",\"name\":\"{}\",\"pid\":1,\"process\":\"phantom\"}}\n",
+                now - 10 - offset as u64,
+                name
+            ));
+        }
+        std::fs::write(dir.join("audit.log"), lines).unwrap();
+    }
+
+    /// The proxy only appends leak events; incidents are persisted by an
+    /// approval-gated backfill. Both read-only incident tools used to answer
+    /// "No active leak incidents" while fresh leak events sat in the log.
+    #[test]
+    fn test_incident_tools_report_leak_events_no_backfill_persisted() {
+        let _environment = TestEnvironment::new();
+        let (server, _dir) = setup_initialized_project();
+        let home = canonical_temp_dir();
+        unsafe { std::env::set_var("HOME", home.path()) };
+        write_leak_events(home.path(), &["OPENAI_API_KEY", "OPENAI_API_KEY"]);
+
+        let result = server
+            .phantom_audit_incidents(Parameters(AuditIncidentsParams {
+                min_confidence: 0.5,
+            }))
+            .unwrap();
+        let json = parse_result_json(&result);
+        assert_eq!(result.structured_content.as_ref(), Some(&json));
+        assert_eq!(json["incident_count"], 0);
+        assert_eq!(json["incidents"], serde_json::json!([]));
+        assert_eq!(json["uncorrelated_count"], 1);
+        assert_eq!(
+            json["uncorrelated_incidents"][0]["secret_name"],
+            "OPENAI_API_KEY"
+        );
+        assert_eq!(json["uncorrelated_incidents"][0]["event_count"], 2);
+        assert_eq!(json["audit_log_present"], true);
+        let next = json["next_step"].as_str().unwrap();
+        assert!(next.contains("phantom audit alerts --backfill"), "{next}");
+
+        let result = server
+            .phantom_leak_incidents_realtime(Parameters(LeakIncidentsRealtimeParams {
+                min_confidence: 0.5,
+            }))
+            .unwrap();
+        let json = parse_result_json(&result);
+        assert_eq!(json["incident_count"], 0);
+        assert_eq!(json["uncorrelated_count"], 1);
+        assert_eq!(
+            json["uncorrelated_incidents"][0]["secret_name"],
+            "OPENAI_API_KEY"
+        );
+        assert!(json["uncorrelated_incidents"][0]["first_seen"].is_string());
+        assert_eq!(json["effect"], "read_only");
+        assert!(json["next_step"].is_string());
+
+        // Both stay read-only: no incident or alert state is written.
+        assert!(!home.path().join(".phantom/leak-incidents.jsonl").exists());
+        assert!(!home.path().join(".phantom/leak-alerts.jsonl").exists());
+
+        // The min_confidence filter applies to the uncorrelated view too.
+        let json = parse_result_json(
+            &server
+                .phantom_audit_incidents(Parameters(AuditIncidentsParams {
+                    min_confidence: 0.9,
+                }))
+                .unwrap(),
+        );
+        assert_eq!(json["uncorrelated_count"], 0);
+        assert!(json["next_step"].is_null());
+    }
+
+    /// With no audit log the answer is JSON that says leaks cannot be seen,
+    /// not a bare "no incidents" text.
+    #[test]
+    fn test_incident_tools_without_audit_log_say_leaks_are_unobservable() {
+        let _environment = TestEnvironment::new();
+        let (server, _dir) = setup_initialized_project();
+        let home = canonical_temp_dir();
+        unsafe { std::env::set_var("HOME", home.path()) };
+
+        for json in [
+            parse_result_json(
+                &server
+                    .phantom_audit_incidents(Parameters(AuditIncidentsParams {
+                        min_confidence: 0.7,
+                    }))
+                    .unwrap(),
+            ),
+            parse_result_json(
+                &server
+                    .phantom_leak_incidents_realtime(Parameters(LeakIncidentsRealtimeParams {
+                        min_confidence: 0.5,
+                    }))
+                    .unwrap(),
+            ),
+        ] {
+            assert_eq!(json["incident_count"], 0);
+            assert_eq!(json["uncorrelated_count"], 0);
+            assert_eq!(json["audit_log_present"], false);
+            assert!(json["next_step"]
+                .as_str()
+                .unwrap()
+                .contains("PHANTOM_AUDIT=1"));
+        }
+    }
+
     #[test]
     fn test_audit_analytics_no_log_returns_empty() {
         let _environment = TestEnvironment::new();
@@ -11697,6 +12844,7 @@ mod tests {
                 window_days: 0,
                 min_anomaly_score: None,
                 format: "json".to_string(),
+                max_records: crate::tools::params::default_analytics_max_records(),
             }))
             .unwrap();
 
@@ -12107,6 +13255,140 @@ mod tests {
         );
     }
 
+    fn compliance_report(server: &PhantomMcpServer) -> serde_json::Value {
+        parse_result_json(
+            &server
+                .phantom_compliance_status(Parameters(ComplianceStatusParams {}))
+                .unwrap(),
+        )
+    }
+
+    /// An empty keychain beside a locked encrypted-file vault is not an
+    /// accessible vault with nothing lacking a TTL: both checks fail and the
+    /// badge is not compliant.
+    #[test]
+    fn compliance_status_fails_a_locked_file_vault() {
+        let _environment = TestEnvironment::new();
+        let _home = TestHome::new();
+        let (server, _dir) = locked_file_vault_project();
+        let _vault = TestVault::serve(|| Box::new(EmptyKeychain));
+
+        let json = compliance_report(&server);
+        let vault = &json["checks"]["vault_accessible"];
+        assert_eq!(vault["pass"], false, "{json}");
+        assert!(
+            vault["detail"].as_str().unwrap().contains("Vault locked"),
+            "{json}"
+        );
+        let ttl = &json["checks"]["secrets_have_ttl"];
+        assert_eq!(ttl["pass"], false, "{json}");
+        assert!(
+            ttl["detail"].as_str().unwrap().starts_with("Not verified"),
+            "{json}"
+        );
+        assert_eq!(json["compliant"], false, "{json}");
+    }
+
+    /// A keychain holding some entries beside a locked file vault covers only
+    /// part of the project, as `phantom agent doctor` reports it: not
+    /// accessible, and the TTL check is not verified over the partial view.
+    #[test]
+    fn compliance_status_fails_a_keychain_only_view() {
+        let _environment = TestEnvironment::new();
+        let _home = TestHome::new();
+        let (server, _dir) = locked_file_vault_project();
+        let _vault = TestVault::serve(|| Box::new(KeychainWithOne));
+
+        let json = compliance_report(&server);
+        let vault = &json["checks"]["vault_accessible"];
+        assert_eq!(vault["pass"], false, "{json}");
+        assert!(
+            vault["detail"]
+                .as_str()
+                .unwrap()
+                .contains("covers only the OS keychain"),
+            "{json}"
+        );
+        let ttl = &json["checks"]["secrets_have_ttl"];
+        assert_eq!(ttl["pass"], false, "{json}");
+        assert!(
+            ttl["detail"].as_str().unwrap().starts_with("Not verified"),
+            "{json}"
+        );
+    }
+
+    /// Readable vault, 25 names, none with lifecycle metadata.
+    struct ManyWithoutTtl;
+
+    impl phantom_vault::VaultBackend for ManyWithoutTtl {
+        fn store(&self, _: &str, _: &str) -> phantom_core::error::Result<()> {
+            Ok(())
+        }
+        fn retrieve(&self, name: &str) -> phantom_core::error::Result<zeroize::Zeroizing<String>> {
+            Err(phantom_core::error::PhantomError::SecretNotFound(
+                name.to_string(),
+            ))
+        }
+        fn delete(&self, _: &str) -> phantom_core::error::Result<()> {
+            Ok(())
+        }
+        fn list(&self) -> phantom_core::error::Result<Vec<String>> {
+            Ok((0..25).map(|index| format!("NAME_{index:02}")).collect())
+        }
+        fn backend_name(&self) -> &str {
+            "encrypted-file"
+        }
+    }
+
+    /// The detail names a bounded sample but always the exact count.
+    #[test]
+    fn compliance_status_ttl_detail_is_bounded_with_exact_count() {
+        let _environment = TestEnvironment::new();
+        let _home = TestHome::new();
+        let (server, _dir) = setup_initialized_project();
+        let _vault = TestVault::serve(|| Box::new(ManyWithoutTtl));
+
+        let json = compliance_report(&server);
+        assert_eq!(json["checks"]["vault_accessible"]["pass"], true, "{json}");
+        let ttl = &json["checks"]["secrets_have_ttl"];
+        assert_eq!(ttl["pass"], false, "{json}");
+        let detail = ttl["detail"].as_str().unwrap();
+        assert!(detail.starts_with("25 secret(s) have no TTL: "), "{detail}");
+        assert!(detail.contains("NAME_19"), "{detail}");
+        assert!(!detail.contains("NAME_20"), "{detail}");
+        assert!(detail.contains("and 5 more"), "{detail}");
+    }
+
+    #[test]
+    fn test_compliance_status_secrets_have_ttl_counts_expiry_without_policy() {
+        let _environment = TestEnvironment::new();
+        let (server, _dir) = setup_initialized_project();
+        let (_config, vault) = server.load_config_and_vault().unwrap();
+        let expires_at = phantom_vault::metadata::now_secs() + 30 * 86_400;
+        for entry_name in vault.list().unwrap() {
+            vault
+                .set_metadata(
+                    &entry_name,
+                    phantom_vault::SecretMetadata {
+                        expires_at: Some(expires_at),
+                        rotation_policy: None,
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+        }
+
+        let json = parse_result_json(
+            &server
+                .phantom_compliance_status(Parameters(ComplianceStatusParams {}))
+                .unwrap(),
+        );
+        assert_eq!(
+            json["checks"]["secrets_have_ttl"]["pass"], true,
+            "an expiry without a rotation policy is a TTL: {json}"
+        );
+    }
+
     // ── phantom_secret_rotation_due ───────────────────────────────────
 
     #[test]
@@ -12177,6 +13459,114 @@ mod tests {
                 "expires_at must be a string"
             );
         }
+    }
+
+    /// Pins one vaulted entry's metadata and returns its name.
+    fn pin_first_entry_metadata(
+        server: &PhantomMcpServer,
+        meta: phantom_vault::SecretMetadata,
+    ) -> String {
+        let (_config, vault) = server.load_config_and_vault().unwrap();
+        let entry_name = vault.list().unwrap().into_iter().next().unwrap();
+        vault.set_metadata(&entry_name, meta).unwrap();
+        entry_name
+    }
+
+    fn find_entry<'a>(
+        list: &'a serde_json::Value,
+        entry_name: &str,
+    ) -> Option<&'a serde_json::Value> {
+        list.as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["name"] == entry_name)
+    }
+
+    #[test]
+    fn test_rotation_due_classifies_expiry_without_rotation_policy() {
+        let _environment = TestEnvironment::new();
+        let (server, _dir) = setup_initialized_project();
+        let now = phantom_vault::metadata::now_secs();
+        let entry_name = pin_first_entry_metadata(
+            &server,
+            phantom_vault::SecretMetadata {
+                expires_at: Some(now - 3_600),
+                rotation_policy: None,
+                ..Default::default()
+            },
+        );
+
+        let json = parse_result_json(
+            &server
+                .phantom_secret_rotation_due(Parameters(RotationDueParams { warn_days: 7 }))
+                .unwrap(),
+        );
+        assert!(
+            find_entry(&json["no_ttl"], &entry_name).is_none(),
+            "an expired secret must not be reported as no_ttl: {json}"
+        );
+        let entry = find_entry(&json["due"], &entry_name).expect("expired secret is due");
+        assert_eq!(entry["status"], "expired");
+        assert_eq!(entry["days_remaining"], -1);
+        assert_eq!(entry["has_rotation_policy"], false);
+        assert!(entry["expires_at"].is_string());
+        assert_eq!(json["summary"]["expired"], 1);
+    }
+
+    #[test]
+    fn test_rotation_due_warns_on_expiry_without_rotation_policy() {
+        let _environment = TestEnvironment::new();
+        let (server, _dir) = setup_initialized_project();
+        let now = phantom_vault::metadata::now_secs();
+        let entry_name = pin_first_entry_metadata(
+            &server,
+            phantom_vault::SecretMetadata {
+                expires_at: Some(now + 2 * 86_400 + 600),
+                rotation_policy: None,
+                ..Default::default()
+            },
+        );
+
+        let json = parse_result_json(
+            &server
+                .phantom_secret_rotation_due(Parameters(RotationDueParams { warn_days: 7 }))
+                .unwrap(),
+        );
+        let entry = find_entry(&json["warning"], &entry_name).expect("expiring secret warns");
+        assert_eq!(entry["status"], "warning");
+        assert_eq!(entry["days_remaining"], 2);
+        assert_eq!(entry["has_rotation_policy"], false);
+        for other in json["no_ttl"].as_array().unwrap() {
+            assert_eq!(other["has_rotation_policy"], false);
+            assert!(other["expires_at"].is_null());
+        }
+    }
+
+    #[test]
+    fn test_expiry_check_recently_expired_is_negative_and_flagged() {
+        let _environment = TestEnvironment::new();
+        let (server, _dir) = setup_initialized_project();
+        let now = phantom_vault::metadata::now_secs();
+        let entry_name = pin_first_entry_metadata(
+            &server,
+            phantom_vault::SecretMetadata {
+                expires_at: Some(now - 3_600),
+                ..Default::default()
+            },
+        );
+
+        let json = parse_result_json(
+            &server
+                .phantom_secrets_expiry_check(Parameters(ExpiryCheckParams { days: 7 }))
+                .unwrap(),
+        );
+        let entry = find_entry(&json["secrets"], &entry_name).expect("expired secret listed");
+        assert_eq!(
+            entry["days_remaining"], -1,
+            "negative means already expired: {entry}"
+        );
+        assert_eq!(entry["expired"], true);
+        assert_eq!(entry["status"], "EXPIRED");
     }
 
     #[test]

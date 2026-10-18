@@ -130,7 +130,7 @@
     },
     {
       "name": "phantom_audit_analytics",
-      "description": "Export full audit analytics for compliance dashboards. Returns per-secret SecretAnalytics (access_count, daily_avg, max_daily, min_daily, anomaly_score) plus timestamped AccessRecords for the requested window. Supports JSON or CSV format. Use min_anomaly_score to filter to flagged secrets only. Never exposes secret values. Feed the output to Datadog, Grafana, CloudWatch, or any BI tool. window_days=0 returns all history; default is 30 days. format=\"csv\" produces RFC 4180 CSV; format=\"json\" produces structured JSON with 'analytics' (SecretAnalytics[]) and 'records' (AccessRecord[]) arrays.",
+      "description": "Export full audit analytics for compliance dashboards. Returns per-secret SecretAnalytics (access_count, daily_avg, max_daily, min_daily, anomaly_score) plus timestamped AccessRecords for the requested window. Supports JSON or CSV format. Use min_anomaly_score to filter to flagged secrets only (clamped to 0.0-1.0; NaN is refused). Never exposes secret values. Feed the output to Datadog, Grafana, CloudWatch, or any BI tool. window_days=0 returns all history; default is 30 days. format=\"csv\" produces RFC 4180 CSV; format=\"json\" produces structured JSON with 'analytics' (SecretAnalytics[]) and 'records' (AccessRecord[]) arrays. Records are bounded: only the newest max_records (default 1000, max 10000) are returned, within a 1 MiB response. records_total counts every matching record in the window and records_truncated is true when older ones were left out; analytics and time_series always cover the whole window. CSV carries the same counts in structuredContent and a second JSON text block. For a complete export run `phantom audit analytics --export FILE` in a terminal.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
@@ -139,9 +139,16 @@
             "description": "Output format: \"json\" (default) or \"csv\", case-insensitive. Other\nvalues are rejected with an invalid-params error.",
             "type": "string"
           },
+          "max_records": {
+            "default": 1000,
+            "description": "Maximum access records to return, newest kept (default: 1000; values\nabove 10000 are treated as 10000). A 1 MiB response ceiling may return\nfewer; records_truncated and records_total then say so.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
           "min_anomaly_score": {
             "default": null,
-            "description": "Only include secrets whose anomaly score is at or above this threshold\n(range 0.0–1.0). Defaults to 0.0 (return all secrets).",
+            "description": "Only include secrets whose anomaly score is at or above this threshold\n(range 0.0–1.0; other values are clamped into it). Omit to return all\nsecrets.",
             "format": "double",
             "type": [
               "number",
@@ -150,7 +157,7 @@
           },
           "window_days": {
             "default": 30,
-            "description": "Time window in days (default: 30). 0 means all available history.",
+            "description": "Time window in days (default: 30): exactly the last N days of events.\n0 means all available history.",
             "format": "uint32",
             "minimum": 0,
             "type": "integer"
@@ -167,7 +174,7 @@
         "properties": {
           "min_score": {
             "default": 0.4,
-            "description": "Minimum anomaly score to include (0.0–1.0). Defaults to 0.4.",
+            "description": "Minimum anomaly score to include (0.0–1.0; other values are clamped\ninto it). Defaults to 0.4.",
             "format": "double",
             "type": "number"
           },
@@ -216,7 +223,7 @@
           },
           "threshold": {
             "default": 0.5,
-            "description": "Minimum anomaly score (0.0–1.0) to include in results. Defaults to 0.5.",
+            "description": "Minimum anomaly score (0.0–1.0; other values are clamped into it) to\ninclude in results. Defaults to 0.5.",
             "format": "double",
             "type": "number"
           }
@@ -226,7 +233,7 @@
     },
     {
       "name": "phantom_audit_export_report",
-      "description": "Export audit log data or generate a structured compliance report. Two actions: 'export' — return raw audit rows (timestamp, datetime, operation, secret_name, pid, hostname, severity) filtered by date range, secret name, or operation type, in CSV or JSON format; 'report' — generate a full compliance report containing: (a) access-frequency heatmap per secret per calendar day, (b) leak-incident timeline with incident_id/secret_name/occurrences, (c) rotation-timing audit showing days since last vault.store per secret, (d) anomaly executive summary of high-score secrets. Use 'from'/'to' (YYYY-MM-DD) to scope the date range. Set 'save: true' to persist the report to ~/.phantom/reports/; saving requires confirm plus approval_token. Never exposes secret values. Read-only (save=false). Safe for AI agents.",
+      "description": "Export audit log data or generate a structured compliance report. Two actions: 'export' — return raw audit rows (timestamp, datetime, operation, secret_name, pid, hostname, severity) filtered by date range, secret name, or operation type, in CSV or JSON format. Export rows are bounded: only the newest max_records (default 1000, max 10000) are returned, within a 1 MiB response; the first text block is the CSV or JSON array (header-only CSV or [] when nothing matches) and structuredContent plus a second JSON text block carry records_total, records_returned, records_truncated and max_records. For a complete export run `phantom audit export-range` in a terminal; 'report' — generate a full compliance report containing: (a) access-frequency heatmap per secret per calendar day, (b) leak-incident timeline with incident_id/secret_name/occurrences, (c) rotation-timing audit showing days since last vault.store per secret, (d) anomaly executive summary of high-score secrets. Use 'from'/'to' (YYYY-MM-DD) to scope the date range. Set 'save: true' to persist the report to ~/.phantom/reports/; saving requires confirm plus approval_token. Never exposes secret values. Read-only (save=false). Safe for AI agents.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
@@ -261,6 +268,13 @@
               "string",
               "null"
             ]
+          },
+          "max_records": {
+            "default": 1000,
+            "description": "Maximum audit rows `action=\"export\"` returns, newest kept (default:\n1000; values above 10000 are treated as 10000). A 1 MiB response\nceiling may return fewer; records_truncated and records_total then\nsay so. Ignored by `action=\"report\"`.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
           },
           "operation": {
             "default": null,
@@ -346,7 +360,7 @@
     },
     {
       "name": "phantom_audit_incidents",
-      "description": "Return active leak incidents derived from proxy.response_leak audit events. Incidents are correlated by (secret_name, location) within a 24-hour window. min_confidence (default 0.7) filters by confidence score: 0.5 = single leak event; 0.95 = same secret leaked >3 times within 1 hour. Each incident includes: incident_id, secret_name (never the value), location_label, first_seen_ts, last_seen_ts, event_count, confidence, remediation. Incidents whose secret was subsequently stored are omitted. Reads only the persisted incident store; it does not run correlation or write state.",
+      "description": "Return active leak incidents derived from proxy.response_leak audit events. Incidents are correlated by (secret_name, location) within a 24-hour window. min_confidence (default 0.7) filters by confidence score: 0.5 = single leak event; 0.95 = same secret leaked >3 times within 1 hour. Each incident includes: incident_id, secret_name (never the value), location_label, first_seen_ts, last_seen_ts, event_count, confidence, remediation. Incidents whose secret was subsequently stored are omitted. incidents lists the persisted incident store. The proxy only appends audit events, so leak events from the last 24 h that no backfill has persisted yet are correlated in memory and listed separately in uncorrelated_incidents (uncorrelated_count), with a next_step; treat them as possible leaks. Always returns JSON {incident_count, min_confidence, incidents, uncorrelated_count, uncorrelated_incidents, audit_log_present, next_step} (also as structuredContent). Read-only: it never writes incident or alert state.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
@@ -362,7 +376,7 @@
     },
     {
       "name": "phantom_audit_recent",
-      "description": "List the last N audit events from the HMAC-chained audit log. Returns structured JSONL — each line is a JSON object with fields: seq, ts (Unix epoch), op (operation name), name (secret name, if applicable), pid, process. Secret VALUES are never recorded in the audit log and will never appear here. Supports optional filtering by op prefix or exact secret name. Read-only; no confirm required. Requires PHANTOM_AUDIT=1 to have been set when operations were performed.",
+      "description": "List the last N audit events from the HMAC-chained audit log. Returns structured JSONL — each line is a JSON object with fields: seq, ts (Unix epoch), op (operation name), name (secret name, if applicable), pid, process. Secret VALUES are never recorded in the audit log and will never appear here. Supports optional filtering by op prefix or exact secret name. Reads only the newest 8 MiB of the log: `window_truncated: true` means older events were not examined, so `matched_in_window` is not a total and `total_in_log` is omitted. `unparsable_lines` counts lines in the window that are not audit events and were skipped (run `phantom audit verify` to check the chain). Read-only; no confirm required. Requires PHANTOM_AUDIT=1 to have been set when operations were performed.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
@@ -401,7 +415,7 @@
         "properties": {
           "min_anomaly_score": {
             "default": null,
-            "description": "Only include secrets whose anomaly score is at or above this threshold\n(range 0.0–1.0). Omit or set to 0.0 to return all secrets.",
+            "description": "Only include secrets whose anomaly score is at or above this threshold\n(range 0.0–1.0; other values are clamped into it). Omit or set to 0.0\nto return all secrets.",
             "format": "double",
             "type": [
               "number",
@@ -427,7 +441,7 @@
     },
     {
       "name": "phantom_check",
-      "description": "Check for security issues. With runtime=true, scans current environment for phantom tokens without a proxy (leak detection). Otherwise, scans the same dotenv files as `phantom check` for unprotected real secrets: .env, .env.local, .env.development, .env.development.local, .env.production, .env.production.local, .env.test, .env.test.local, plus the configured dotenv_path; a symlink is not followed and makes the result indeterminate. Returns a human summary plus a value-blind JSON report (also as structuredContent) shaped like `phantom check --json`: {mode, clean, findings: [{kind, path?, name?}], warnings, indeterminate?}. Reports names and paths only, never values or phantom tokens.",
+      "description": "Check for security issues. With runtime=true, scans every environment variable of this server for a phantom token (leak detection). A variable is excused only when PHANTOM_PROXY_PORT and PHANTOM_PROXY_TOKEN lead to a live Phantom proxy (its health endpoint answers) and the session lists the variable in PHANTOM_SESSION_KEYS; excused names are reported in `excused` and `proxy_session` is true. Session variables with no live proxy are reported in `session_warning` and excuse nothing. Otherwise, scans the same dotenv files as `phantom check` for unprotected real secrets: .env, .env.local, .env.development, .env.development.local, .env.production, .env.production.local, .env.test, .env.test.local, plus the configured dotenv_path; a symlink is not followed and makes the result indeterminate. Returns a human summary plus a value-blind JSON report (also as structuredContent) shaped like `phantom check --json`: {mode, clean, findings: [{kind, path?, name?}], warnings, indeterminate?, proxy_session?, excused?, session_warning?}. Reports names and paths only, never values or phantom tokens.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
@@ -517,7 +531,7 @@
     },
     {
       "name": "phantom_compliance_status",
-      "description": "Return the compliance state of the current Phantom project as a structured JSON badge. Checks: vault_accessible (vault can be read), audit_enabled (PHANTOM_AUDIT env var is set), precommit_installed (git pre-commit hook contains the current local-only phantom check), env_clean (no unprotected real secrets in any dotenv phantom check scans: .env, .env.local, .env.development, .env.development.local, .env.production, .env.production.local, .env.test, .env.test.local and the configured dotenv_path; read without opening the vault, so it is reported before init and with a locked vault), secrets_have_ttl (all vault secrets have a rotation policy set). Each check is true/false with an optional detail string. Overall 'compliant' is true only when all checks pass. Read-only.",
+      "description": "Return the compliance state of the current Phantom project as a structured JSON badge. Checks: vault_accessible (every secret of this project can be read here; false for an encrypted-file vault this process cannot open, even when the OS keychain holds some entries, the same rule as `phantom agent doctor`), audit_enabled (PHANTOM_AUDIT env var is set), precommit_installed (git pre-commit hook contains the current local-only phantom check), env_clean (no unprotected real secrets in any dotenv phantom check scans: .env, .env.local, .env.development, .env.development.local, .env.production, .env.production.local, .env.test, .env.test.local and the configured dotenv_path; read without opening the vault, so it is reported before init and with a locked vault), secrets_have_ttl (every vault secret has an expiry (expires_at) or a rotation policy set; false when not every secret can be read; the detail gives the exact count and names at most 20). Each check is true/false with an optional detail string. Overall 'compliant' is true only when all checks pass. Read-only.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object"
@@ -791,7 +805,7 @@
     },
     {
       "name": "phantom_expiry_enforce",
-      "description": "Check the vault's TTL metadata (set with `phantom expiry set`) for expired secrets and return a structured list, the same answer as `phantom expiry enforce --json`. Each entry has: name (string), expires_at (Unix u64), secs_overdue (u64), status (human-readable string). With fail_closed=true, secrets that have no expiry policy set are also included with status='no_expiry_policy'. Returns { expired: [...], ok_count, no_expiry_count, fail_closed, pass }. pass=true means no action is needed. Read-only; no confirm required. Secret VALUES are never returned.",
+      "description": "Check the vault's TTL metadata (set with `phantom expiry set`) for expired secrets and return a structured list, the same answer as `phantom expiry enforce --json`. Each entry has: name (string), expires_at (Unix u64), secs_overdue (u64), status (human-readable string). `expired` holds only secrets whose expiry has passed. With fail_closed=true, secrets that have no expiry set are violations too and are named in no_expiry_policy (status='no_expiry_policy'); it is empty otherwise. Returns { expired: [...], no_expiry_policy: [...], ok_count, no_expiry_count, fail_closed, pass }. pass=true means no action is needed. Read-only; no confirm required. Secret VALUES are never returned.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
@@ -834,7 +848,7 @@
     },
     {
       "name": "phantom_leak_incidents_realtime",
-      "description": "Query active leak incidents for a real-time security dashboard. Returns incidents with confidence > 0.5 seen within the last 24 hours, sorted by confidence descending. Each entry contains: secret_name (never the value), location_label, confidence, first_seen (ISO-8601), last_seen (ISO-8601), incident_id. Set min_confidence (default 0.5) to narrow results. Reads only persisted incidents and never rotates, writes correlation state, or exposes secret values. Use a separately approved rotation tool to remediate.",
+      "description": "Query active leak incidents for a real-time security dashboard. Returns incidents with confidence > 0.5 seen within the last 24 hours, sorted by confidence descending. Each entry contains: secret_name (never the value), location_label, confidence, first_seen (ISO-8601), last_seen (ISO-8601), incident_id. Set min_confidence (default 0.5) to narrow results. incidents lists persisted incidents; leak events from the last 24 h that no backfill has persisted yet are correlated in memory and listed in uncorrelated_incidents (uncorrelated_count, same entry shape) with a next_step. Always returns JSON {incident_count, min_confidence, effect, rotation_performed, incidents, uncorrelated_count, uncorrelated_incidents, audit_log_present, next_step}. Never rotates, writes incident or alert state, or exposes secret values. Use a separately approved rotation tool to remediate.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
@@ -1084,7 +1098,7 @@
     },
     {
       "name": "phantom_secret_rotation_due",
-      "description": "Query which secrets in the vault are due for rotation. Returns a JSON object with: due (list of secrets already expired), warning (list of secrets expiring within warn_days, default 7), ok (list of secrets with sufficient TTL remaining), no_ttl (list of secrets with no rotation policy set at all). Each entry has: name, status (expired|warning|ok|no_ttl), days_remaining (null if no TTL), expires_at (ISO-8601 or null). Secret VALUES are never returned. Read-only; no confirm required.",
+      "description": "Query which secrets in the vault are due for rotation. Returns a JSON object with: due (list of secrets already expired), warning (list of secrets expiring within warn_days, default 7), ok (list of secrets with sufficient TTL remaining), no_ttl (list of secrets with neither an expiry nor a rotation policy). A secret with expires_at but no rotation policy is still classified by its expiry. Each entry has: name, status (expired|warning|ok|no_ttl), days_remaining (null if no expiry; negative means already expired), expires_at (ISO-8601 or null), has_rotation_policy (bool). Secret VALUES are never returned. Read-only; no confirm required.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
@@ -1136,7 +1150,7 @@
     },
     {
       "name": "phantom_secrets_expiry_check",
-      "description": "Query the local vault for secrets that are expired or expiring soon. Returns a JSON array where each entry has: name (string), days_remaining (i64 — negative means already expired), expires_at (Unix epoch u64), status (human-readable string). Use the `days` parameter (default 7) to tune the look-ahead window. Secrets with no TTL set are omitted — use phantom_secret_rotation_due to also surface those. Secret VALUES are never returned. Read-only; no confirm required.",
+      "description": "Query the local vault for secrets that are expired or expiring soon. Returns a JSON array where each entry has: name (string), days_remaining (i64, floored — negative means already expired, so a secret that expired under 24 h ago reports -1), expires_at (Unix epoch u64), status (human-readable string), expired (bool). Use the `days` parameter (default 7) to tune the look-ahead window. Secrets with no TTL set are omitted — use phantom_secret_rotation_due to also surface those. Secret VALUES are never returned. Read-only; no confirm required.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
@@ -1540,7 +1554,7 @@
     },
     {
       "name": "phantom_validate_secret",
-      "description": "Query the last-known validation status for a specific secret. Returns: last_check_ts (Unix epoch, 0 = never checked), is_valid (bool), failure_reason (string or null), validator_name (which validator ran), and is_stale (whether the check is older than 24 h). This tool reads persisted ValidationMetadata — it does NOT make a live HTTP request. Use phantom_validate_all to trigger a fresh check. Read-only; no confirm required. Secret VALUES are never returned.",
+      "description": "Query the last-known validation status for a specific secret. Returns: last_check_ts (Unix epoch, 0 = never checked), is_valid (bool), failure_reason (string or null), validator_name (which validator ran), and is_stale (whether the check is older than 24 h). If the stored results cannot be read, metadata_error is true, a note says why, and the other status fields are null rather than reporting never_checked. This tool reads persisted ValidationMetadata — it does NOT make a live HTTP request. Use phantom_validate_all to trigger a fresh check. Read-only; no confirm required. Secret VALUES are never returned.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {

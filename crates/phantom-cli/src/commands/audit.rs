@@ -71,8 +71,8 @@ pub enum AuditAction {
         /// Include anomaly detection scores in the output (implies --json adds extra fields)
         #[arg(long)]
         analytics: bool,
-        /// Only show secrets whose anomaly score is at or above this threshold (0.0–1.0)
-        #[arg(long, value_name = "SCORE")]
+        /// Only show secrets whose anomaly score is at or above this threshold (0.0–1.0; clamped)
+        #[arg(long, value_name = "SCORE", value_parser = parse_score_threshold)]
         min_anomaly_score: Option<f64>,
     },
     /// Export timestamped access records for compliance reports
@@ -83,17 +83,17 @@ pub enum AuditAction {
         /// Time period: 7d, 30d, or all
         #[arg(long, default_value = "30d")]
         period: String,
-        /// Only export records for secrets whose anomaly score is at or above this threshold
-        #[arg(long, value_name = "SCORE")]
+        /// Only export records for secrets whose anomaly score is at or above this threshold (0.0–1.0; clamped)
+        #[arg(long, value_name = "SCORE", value_parser = parse_score_threshold)]
         min_anomaly_score: Option<f64>,
     },
     /// Export full audit analytics for external dashboards (Datadog, Grafana, CloudWatch)
     Analytics {
-        /// Time window in days (default: 30; 0 = all history)
+        /// Time window in days: exactly the last N days (default: 30; 0 = all history)
         #[arg(long, default_value_t = 30)]
         window: u32,
-        /// Only include secrets with anomaly score at or above this threshold (0.0–1.0)
-        #[arg(long, value_name = "SCORE")]
+        /// Only include secrets with anomaly score at or above this threshold (0.0–1.0; clamped)
+        #[arg(long, value_name = "SCORE", value_parser = parse_score_threshold)]
         min_anomaly_score: Option<f64>,
         /// Output format: json (default) or csv
         #[arg(long, default_value = "json")]
@@ -110,8 +110,8 @@ pub enum AuditAction {
         /// Tail the audit log and emit alerts as new events are written (Ctrl-C to stop)
         #[arg(long)]
         realtime: bool,
-        /// Minimum anomaly score (0.0–1.0) at which an alert is emitted (default: 0.5)
-        #[arg(long, default_value_t = 0.5, value_name = "SCORE")]
+        /// Minimum anomaly score (0.0–1.0; clamped) at which an alert is emitted (default: 0.5)
+        #[arg(long, default_value_t = 0.5, value_name = "SCORE", value_parser = parse_score_threshold)]
         threshold: f64,
         /// Only check this specific secret (omit to check all secrets)
         #[arg(long, value_name = "NAME")]
@@ -258,7 +258,23 @@ pub fn run_show(
         op
     };
 
-    let lines = read_matching_lines(&path, effective_op, name);
+    let matched = read_matching_lines(&path, effective_op, name);
+    if matched.unparsable > 0 {
+        eprintln!(
+            "{} Skipped {} line(s) that are not valid audit JSON; run {} to check the chain.",
+            "warn".yellow().bold(),
+            matched.unparsable,
+            "phantom audit verify".cyan()
+        );
+    }
+    if matched.window_truncated && matched.lines.len() < last {
+        eprintln!(
+            "{}  Only the newest {} MiB of the audit log were read; older events were not examined.",
+            "->".blue().bold(),
+            phantom_core::audit::RECENT_WINDOW_BYTES / (1024 * 1024)
+        );
+    }
+    let lines = matched.lines;
 
     if lines.is_empty() {
         println!("{}  No matching audit events.", "->".blue().bold());
@@ -329,6 +345,16 @@ pub fn run_path() -> Result<()> {
     let path = resolve_path()?;
     println!("{}", path.display());
     Ok(())
+}
+
+/// Clap parser for `--min-anomaly-score` and `--threshold`: the shared
+/// anomaly-score rule (clamped to 0.0..=1.0, NaN refused), the same one the
+/// MCP audit tools apply.
+fn parse_score_threshold(raw: &str) -> std::result::Result<f64, String> {
+    let value: f64 = raw
+        .parse()
+        .map_err(|_| format!("'{raw}' is not a number"))?;
+    phantom_core::analytics::score_threshold(value)
 }
 
 /// Clap parser for `--min-confidence`: a score in 0.0..=1.0.
@@ -897,7 +923,7 @@ pub fn run_analytics(
     export: Option<&str>,
     auto_alert_on_anomaly: bool,
 ) -> Result<()> {
-    use phantom_core::analytics::{compute_analytics, export_records, records_to_csv, Period};
+    use phantom_core::analytics::{export_analytics, records_to_csv, Period};
 
     if !matches!(format, "json" | "csv") {
         return Err(anyhow::anyhow!(
@@ -911,23 +937,23 @@ pub fn run_analytics(
     // exact-before publication below instead of being overwritten.
     let export_plan = export.map(prepare_analytics_export).transpose()?;
 
-    let period = match window {
-        0 => Period::All,
-        1..=7 => Period::Days7,
-        _ => Period::Days30,
-    };
+    let period = Period::from_window_days(window);
 
-    let report = compute_analytics(period)
-        .map_err(|e| anyhow::anyhow!("Failed to compute analytics: {e}"))?;
+    // One read of the log against one clock reading, so the summary and the
+    // records describe the same events.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let phantom_core::analytics::AnalyticsExport { report, records } =
+        export_analytics(period, min_anomaly_score, now)
+            .map_err(|e| anyhow::anyhow!("Failed to compute analytics: {e}"))?;
 
     let analytics: Vec<&phantom_core::analytics::SecretAnalytics> = report
         .secrets
         .iter()
         .filter(|s| min_anomaly_score.is_none_or(|min| s.anomaly_score >= min))
         .collect();
-
-    let records = export_records(period, min_anomaly_score)
-        .map_err(|e| anyhow::anyhow!("Failed to export records: {e}"))?;
 
     // Build the output string.
     let output = if format == "csv" {
@@ -1264,28 +1290,22 @@ pub fn run_incidents(min_confidence: f64, json: bool, auto_rotate_on_high: bool)
 
     // This command is read-only. Correlation and incident persistence are an
     // explicit backfill effect guarded by the audit terminal ceremony.
-    let incidents = engine
-        .active_incidents(min_confidence)
+    // The proxy only appends leak events; incidents are persisted by the
+    // gated `audit alerts --backfill`. Correlate the same window in memory
+    // (nothing written, one audit-log parse) so unpersisted leaks are not
+    // reported as all clear.
+    let view = engine
+        .incident_view(min_confidence)
         .map_err(|e| anyhow::anyhow!("Failed to read leak incidents: {e}"))?;
-
-    if incidents.is_empty() {
-        if json {
-            println!("[]");
-        } else {
-            println!(
-                "{}  No active leak incidents (min_confidence={:.2}). \
-                 Set {} to enable audit logging.",
-                "->".blue().bold(),
-                min_confidence,
-                "PHANTOM_AUDIT=1".cyan()
-            );
-        }
-        return Ok(());
-    }
+    let audit_log_present = view.audit_log_present;
+    let incidents = view.persisted;
+    let uncorrelated = view.uncorrelated;
 
     if json {
+        // One shape whether or not anything was found.
         let out = serde_json::json!({
             "incidents": incidents,
+            "uncorrelated_incidents": uncorrelated,
             "provider_credentials_rotated": [],
         });
         let s = serde_json::to_string_pretty(&out)
@@ -1294,12 +1314,44 @@ pub fn run_incidents(min_confidence: f64, json: bool, auto_rotate_on_high: bool)
         return Ok(());
     }
 
+    if incidents.is_empty() && uncorrelated.is_empty() {
+        if audit_log_present {
+            println!(
+                "{}  No persisted active leak incidents (min_confidence={:.2}).",
+                "->".blue().bold(),
+                min_confidence,
+            );
+        } else {
+            println!(
+                "{}  No active leak incidents (min_confidence={:.2}). \
+                 No audit log exists: set {} to record leak events.",
+                "->".blue().bold(),
+                min_confidence,
+                "PHANTOM_AUDIT=1".cyan()
+            );
+        }
+        return Ok(());
+    }
+
     println!(
         "{}  {} active leak incident(s) (confidence ≥ {:.2})",
         "->".blue().bold(),
-        incidents.len().to_string().red().bold(),
+        (incidents.len() + uncorrelated.len())
+            .to_string()
+            .red()
+            .bold(),
         min_confidence,
     );
+    if !uncorrelated.is_empty() {
+        println!(
+            "{}  {} of them are leak events from the last 24 h in the audit log, not persisted yet (status {}). \
+             Treat each as a possible leak. Persist them and send configured alerts with {}.",
+            "!".yellow().bold(),
+            uncorrelated.len().to_string().red().bold(),
+            "unpersisted".yellow(),
+            "phantom audit alerts --backfill".cyan()
+        );
+    }
     println!();
 
     // ── Table header ──────────────────────────────────────────────────────────
@@ -1313,14 +1365,18 @@ pub fn run_incidents(min_confidence: f64, json: bool, auto_rotate_on_high: bool)
     );
     println!("  {}", "-".repeat(100).dimmed());
 
-    for inc in &incidents {
+    // Unpersisted incidents share the table (same columns, names only).
+    let persisted_count = incidents.len();
+    for (row, inc) in incidents.iter().chain(uncorrelated.iter()).enumerate() {
         let confidence_str = if inc.confidence >= 0.9 {
             format!("{:.2}", inc.confidence).red().bold().to_string()
         } else {
             format!("{:.2}", inc.confidence).yellow().to_string()
         };
 
-        let status = if inc.confidence >= 0.9 {
+        let status = if row >= persisted_count {
+            "unpersisted".yellow().bold().to_string()
+        } else if inc.confidence >= 0.9 {
             "CRITICAL".red().bold().to_string()
         } else {
             "active".yellow().to_string()
@@ -1641,20 +1697,33 @@ pub fn run_export_range(
             "{}  No audit rows match the requested filters.",
             "->".blue().bold()
         );
-        return Ok(());
     }
-
-    match format {
-        "csv" => print!("{}", AuditExporter::rows_to_csv(&rows)),
-        "json" => {
-            let json = AuditExporter::rows_to_json(&rows)
-                .map_err(|e| anyhow::anyhow!("Serialisation error: {e}"))?;
-            println!("{}", json);
-        }
-        _ => unreachable!(),
-    }
+    print!("{}", render_export_range(format, &rows)?);
 
     Ok(())
+}
+
+/// The exact stdout of `phantom audit export-range`. An empty match stays
+/// machine-readable, like `phantom audit export`: JSON is an empty array, so
+/// `| jq` sees valid input instead of nothing. CSV keeps the empty-stdout
+/// behavior `phantom audit export` has for no records.
+fn render_export_range(
+    format: &str,
+    rows: &[phantom_core::audit_export::AuditExportRow],
+) -> Result<String> {
+    use phantom_core::audit_export::AuditExporter;
+    match format {
+        "csv" if rows.is_empty() => Ok(String::new()),
+        "csv" => Ok(AuditExporter::rows_to_csv(rows)),
+        "json" => {
+            let json = AuditExporter::rows_to_json(rows)
+                .map_err(|e| anyhow::anyhow!("Serialisation error: {e}"))?;
+            Ok(format!("{json}\n"))
+        }
+        other => Err(anyhow::anyhow!(
+            "Invalid format '{other}'. Use: csv or json"
+        )),
+    }
 }
 
 /// `phantom audit report --type compliance` — generate and optionally save a
@@ -1747,53 +1816,59 @@ fn resolve_path() -> Result<PathBuf> {
         .map_err(|e| anyhow::anyhow!("Could not resolve home directory to locate audit log: {e}"))
 }
 
-/// Read all lines from the file, skip malformed JSON with a stderr warning,
-/// and return only lines that match the given filters.
-fn read_matching_lines(path: &PathBuf, op: Option<&str>, name: Option<&str>) -> Vec<String> {
-    let file = match std::fs::File::open(path) {
-        Ok(f) => f,
+/// Audit lines that passed the filters, from a bounded window of the log.
+struct MatchedLines {
+    lines: Vec<String>,
+    /// Lines in the window that were not UTF-8 or not JSON, skipped.
+    unparsable: usize,
+    /// The log is larger than the window; older lines were not examined.
+    window_truncated: bool,
+}
+
+/// The matching lines among the newest [`phantom_core::audit::RECENT_WINDOW_BYTES`]
+/// of the log. The log is append-only and never rotated, so this no longer
+/// reads it whole; chain verification (`phantom audit verify`) still does.
+fn read_matching_lines(
+    path: &std::path::Path,
+    op: Option<&str>,
+    name: Option<&str>,
+) -> MatchedLines {
+    read_matching_lines_within(path, op, name, phantom_core::audit::RECENT_WINDOW_BYTES)
+}
+
+fn read_matching_lines_within(
+    path: &std::path::Path,
+    op: Option<&str>,
+    name: Option<&str>,
+    max_bytes: u64,
+) -> MatchedLines {
+    let recent = match phantom_core::audit::read_recent_lines(path, max_bytes) {
+        Ok(recent) => recent,
         Err(e) => {
             eprintln!("{} Failed to open audit log: {}", "warn".yellow().bold(), e);
-            return vec![];
+            return MatchedLines {
+                lines: Vec::new(),
+                unparsable: 0,
+                window_truncated: false,
+            };
         }
     };
-    let reader = BufReader::new(file);
-    let mut out = Vec::new();
-    for (i, line_result) in reader.lines().enumerate() {
-        let line = match line_result {
-            Ok(l) => l,
-            Err(e) => {
-                eprintln!(
-                    "{} Skipping unreadable line {}: {}",
-                    "warn".yellow().bold(),
-                    i + 1,
-                    e
-                );
-                continue;
-            }
-        };
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
+    let mut matched = MatchedLines {
+        lines: Vec::new(),
+        unparsable: recent.unreadable_lines,
+        window_truncated: recent.window_truncated,
+    };
+    for line in recent.lines {
+        // Validate JSON; a malformed line is counted, never echoed.
+        if serde_json::from_str::<Value>(&line).is_err() {
+            matched.unparsable += 1;
             continue;
         }
-        // Validate JSON — skip malformed lines
-        match serde_json::from_str::<Value>(trimmed) {
-            Ok(_) => {}
-            Err(e) => {
-                eprintln!(
-                    "{} Skipping malformed JSON on line {}: {}",
-                    "warn".yellow().bold(),
-                    i + 1,
-                    e
-                );
-                continue;
-            }
-        }
-        if matches_filters(trimmed, op, name) {
-            out.push(trimmed.to_string());
+        if matches_filters(&line, op, name) {
+            matched.lines.push(line);
         }
     }
-    out
+    matched
 }
 
 /// Returns true if the raw JSON line passes both op and name filters.
@@ -1906,6 +1981,15 @@ mod tests {
     use std::io::Write;
     use tempfile::tempdir;
 
+    #[test]
+    fn export_range_with_no_matches_prints_valid_json() {
+        let out = render_export_range("json", &[]).unwrap();
+        let parsed: Value = serde_json::from_str(&out).expect("stdout must be valid JSON");
+        assert_eq!(parsed, serde_json::json!([]));
+        assert_eq!(render_export_range("csv", &[]).unwrap(), "");
+        assert!(render_export_range("xml", &[]).is_err());
+    }
+
     fn write_fixture(dir: &std::path::Path, lines: &[&str]) -> PathBuf {
         let path = dir.join("audit.log");
         let mut f = std::fs::File::create(&path).unwrap();
@@ -1979,7 +2063,7 @@ mod tests {
             tmp.path(),
             &[LINE_STORE, LINE_RETRIEVE, LINE_PUSH, LINE_STRIPE],
         );
-        let results = read_matching_lines(&path, Some("vault.store"), None);
+        let results = read_matching_lines(&path, Some("vault.store"), None).lines;
         assert_eq!(results.len(), 2);
         assert!(results[0].contains("vault.store"));
         assert!(results[1].contains("STRIPE_KEY"));
@@ -1992,7 +2076,7 @@ mod tests {
             tmp.path(),
             &[LINE_STORE, LINE_RETRIEVE, LINE_PUSH, LINE_STRIPE],
         );
-        let results = read_matching_lines(&path, None, Some("OPENAI_API_KEY"));
+        let results = read_matching_lines(&path, None, Some("OPENAI_API_KEY")).lines;
         assert_eq!(results.len(), 2);
         assert!(results[0].contains("vault.store"));
         assert!(results[1].contains("vault.retrieve"));
@@ -2005,7 +2089,7 @@ mod tests {
             tmp.path(),
             &[LINE_STORE, LINE_RETRIEVE, LINE_PUSH, LINE_STRIPE],
         );
-        let results = read_matching_lines(&path, Some("vault.store"), Some("OPENAI_API_KEY"));
+        let results = read_matching_lines(&path, Some("vault.store"), Some("OPENAI_API_KEY")).lines;
         assert_eq!(results.len(), 1);
         assert!(results[0].contains("vault.store"));
         assert!(results[0].contains("OPENAI_API_KEY"));
@@ -2036,9 +2120,11 @@ mod tests {
     fn malformed_line_is_skipped_not_panicked() {
         let tmp = tempdir().unwrap();
         let path = write_fixture(tmp.path(), &[LINE_STORE, LINE_MALFORMED, LINE_PUSH]);
-        // Should return 2 valid lines, not crash
+        // Should return 2 valid lines, not crash, and count the bad one
         let results = read_matching_lines(&path, None, None);
-        assert_eq!(results.len(), 2);
+        assert_eq!(results.lines.len(), 2);
+        assert_eq!(results.unparsable, 1);
+        assert!(!results.window_truncated);
     }
 
     #[test]
@@ -2046,7 +2132,22 @@ mod tests {
         let tmp = tempdir().unwrap();
         let path = write_fixture(tmp.path(), &[]);
         let results = read_matching_lines(&path, None, None);
-        assert!(results.is_empty());
+        assert!(results.lines.is_empty());
+    }
+
+    #[test]
+    fn matching_lines_come_from_the_newest_window_only() {
+        let tmp = tempdir().unwrap();
+        let path = write_fixture(
+            tmp.path(),
+            &[LINE_STORE, LINE_RETRIEVE, LINE_PUSH, LINE_STRIPE],
+        );
+        // The last line plus a fragment of the one before it.
+        let window = LINE_STRIPE.len() as u64 + 1 + 5;
+        let results = read_matching_lines_within(&path, None, None, window);
+        assert!(results.window_truncated);
+        assert_eq!(results.lines, [LINE_STRIPE]);
+        assert_eq!(results.unparsable, 0);
     }
 
     #[test]

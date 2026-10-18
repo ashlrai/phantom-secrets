@@ -71,7 +71,7 @@ parameter names match the runtime JSON schema exactly.
 | `phantom_status` | Show project ID, managed dotenv protection counts, and service mappings without opening the vault | — |
 | `phantom_doctor` | Run repository-local health checks (config, dotenv protection, `.gitignore`, `.env.example`, pre-commit hook) without opening the vault; `fix=true` mutates files and activates both gates | fix, confirm, approval_token |
 | `phantom_why` | Explain why a key is or is not protected and how `phantom exec` delivers it (`exec.delivery`, e.g. `no_route`). Never opens the vault; works before init and with a locked vault | key |
-| `phantom_check` | Scan supported dotenv files, or selected process variables with `runtime=true` | runtime |
+| `phantom_check` | Scan supported dotenv files, or every process variable with `runtime=true` | runtime |
 | `phantom_env` | Generate an env example file with secret placeholders | output (default `.env.example`), confirm, approval_token |
 | `phantom_sync` | Preview deployment-platform sync configuration (Vercel, Railway) | platform (optional), project_id (optional) |
 | `phantom_add_secret` | **Deprecated** — refuses plaintext via MCP. Use `phantom_add_secret_interactive` instead | name, confirm, approval_token |
@@ -99,8 +99,8 @@ parameter names match the runtime JSON schema exactly.
 | `phantom_validation_schedule` | Read schedule state, or persist a new interval when supplied | interval (optional), confirm (conditional), approval_token (conditional) |
 | `phantom_audit_hotspot_alerts` | Inspect hotspot alerts, or persist acknowledgements/snoozes | secret_name, ack, snooze_seconds, include_acked, confirm (conditional), approval_token (conditional) |
 | `phantom_audit_alerts` | Read persisted alerts, or backfill correlation state, persist alerts, and dispatch configured notifications | last, backfill, confirm (conditional), approval_token (conditional) |
-| `phantom_audit_export_report` | Return an in-memory export/report, or persist a report with `save=true` | action, format, from, to, secret_name, operation, save, confirm (conditional), approval_token (conditional) |
-| `phantom_leak_incidents_realtime` | Read persisted incident summaries only; never rotates or writes correlation state | min_confidence |
+| `phantom_audit_export_report` | Return an in-memory export (newest `max_records` rows, capped)/report, or persist a report with `save=true` | action, format, from, to, secret_name, operation, max_records, save, confirm (conditional), approval_token (conditional) |
+| `phantom_leak_incidents_realtime` | Read persisted incident summaries, plus leak events from the last 24 h not yet persisted (`uncorrelated_incidents`, correlated in memory); never rotates or writes incident or alert state | min_confidence |
 | `phantom_secrets_auto_rotate` | **Deprecated name** — remap one local `phm_` placeholder only; never rotates credentials, renews TTL metadata, clears incidents, or syncs | name, sync (`true` rejected), confirm, approval_token |
 
 Cloud and team tools are client implementations for a separately commissioned

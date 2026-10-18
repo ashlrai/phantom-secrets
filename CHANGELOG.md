@@ -4,6 +4,216 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (`phantom_expiry_enforce`, `phantom expiry enforce --json`)
+
+- With `fail_closed=true` the MCP tool put the secrets that have no expiry
+  into its `expired` array (status `no_expiry_policy`), while
+  `phantom expiry enforce --fail-closed --json`, which the tool claimed to
+  match, kept `expired` to secrets whose expiry has passed and named no
+  one. Both now serialize one report,
+  `phantom_vault::metadata::ExpiryEnforceReport`: `expired` holds only
+  expired secrets, and the new `no_expiry_policy` array names the
+  no-expiry violations under fail-closed (empty otherwise). `pass`,
+  `ok_count` and `no_expiry_count` are unchanged. Names and timestamps
+  only, never values.
+
+### Fixed (`phantom_validate_secret`, `phantom doctor` validation check)
+
+- A read error on a secret's stored validation results was turned into a
+  default record and reported as `never_checked: true, is_valid: false`.
+  `phantom_validate_secret` now returns `metadata_error: true` with a note
+  and null status fields (`metadata_error` is `false` otherwise). The
+  doctor validation check warns that those secrets' state is unknown
+  instead of counting them as never checked, and no longer reports "All
+  secrets passed" over unreadable results.
+
+### Fixed (`phantom_compliance_status`)
+
+- With this project's secrets in an encrypted-file vault the MCP process
+  could not open (`PHANTOM_VAULT_PASSPHRASE` unset there) and an empty OS
+  keychain selected instead, the badge reported `vault_accessible` and
+  `secrets_have_ttl` as passing ("All secrets have an expiry or a rotation
+  policy") and could report `compliant: true` over a vault it never read.
+  With some keychain entries beside the locked file it reported the vault
+  accessible and judged TTLs over the keychain alone. Both checks now fail
+  in both states, with the unlock step in the detail, the same rule
+  `phantom agent doctor` already applies to its vault probe. A secret
+  lifecycle metadata read error now fails `secrets_have_ttl` without
+  marking the vault inaccessible.
+- The `secrets_have_ttl` detail listed every secret name lacking a TTL in
+  one string. It now names at most 20 and always gives the exact count
+  ("and N more"; `phantom_secret_rotation_due` lists every one). Names
+  only, never values.
+
+### Fixed (`phantom_audit_analytics`, `phantom audit analytics`)
+
+- The analytics window was rounded to a neighbouring preset while the
+  report still echoed the requested value. MCP `window_days` 1 to 29
+  covered 30 days and 31 or more covered all history; CLI `--window` 1 to
+  7 covered 7 days and 8 or more covered 30 days, so `--window 90`
+  silently dropped days 31 to 90. Both now cover exactly the last N days
+  (`0` is still all history), through one shared
+  `phantom_core::analytics::Period::from_window_days`, so the MCP tool and
+  the CLI agree. Analytics, records, time series and CSV all follow the
+  window. Names and counts only, never values.
+- `phantom_audit_analytics` returned every access record in the window
+  inline, however many there were. It now returns only the newest
+  `max_records` (new parameter: default 1000, at most 10000) within a
+  1 MiB response, and reports `records_total`, `records_returned`,
+  `records_truncated` and the effective `max_records`. `analytics` and
+  `time_series` still cover the whole window. With `format: "csv"` the CSV
+  stays the first text block, and the same counts come back in
+  `structuredContent` and in a second JSON text block. The CLI keeps
+  writing the full export to `--export FILE` or stdout.
+- Anomaly-score thresholds now follow one rule everywhere: they are clamped
+  to 0.0..=1.0 and NaN is refused with an invalid-params (MCP) or argument
+  (CLI) error. The rule covers `min_anomaly_score` on
+  `phantom_audit_stats` and `phantom_audit_analytics`, `min_score` on
+  `phantom_audit_anomalies`, `threshold` on
+  `phantom_audit_anomalies_realtime`, and the CLI's `--min-anomaly-score`
+  on `audit stats`, `audit export` and `audit analytics` plus
+  `--threshold` on `audit anomalies`. Before, NaN was accepted and
+  silently matched nothing, and `phantom_audit_anomalies` echoed an
+  out-of-range `min_score` back unchanged.
+- The analytics summary and the access records used to come from two
+  separate reads of the audit log, each with its own clock reading, so they
+  could disagree about an event at the window edge or one appended between
+  the reads. `phantom_audit_analytics` and `phantom audit analytics` now
+  read once against one `now` (`phantom_core::analytics::export_analytics`),
+  and `generated_at` is that same instant.
+
+### Fixed (`phantom_audit_export_report` with `action: "export"`)
+
+- The export returned every matching audit row inline, however many there
+  were. It is now bounded like `phantom_audit_analytics`: only the newest
+  `max_records` (new parameter: default 1000, at most 10000) within a
+  1 MiB response. The CSV or JSON array stays the first text block, and
+  `records_total`, `records_returned`, `records_truncated` and the
+  effective `max_records` come back in `structuredContent` and a second
+  JSON text block. `phantom audit export-range` still writes every row.
+- An empty match returned a prose sentence even when `format: "json"` was
+  requested. It now returns `[]` for JSON (as `phantom audit export-range`
+  does) and a header-only CSV for CSV, with zero counts.
+
+### Fixed (audit CSV exports and `phantom audit export-range`)
+
+- Audit CSV exports did not quote a field containing a bare carriage
+  return (`\r`); they only quoted commas, quotes and line feeds. CSV and
+  spreadsheet readers treat a bare `\r` as a record break, so one audit
+  row (for example a process or hostname field with a `\r`) was read as
+  two, the second one forged. `phantom audit export --format csv`,
+  `phantom audit analytics --format csv`, `phantom audit export-range
+  --format csv`, `phantom_audit_analytics` and
+  `phantom_audit_export_report` CSV now quote it, through one shared RFC
+  4180 escaper instead of two copies.
+- `phantom audit export-range --format json` printed nothing on stdout when
+  no rows matched, so `| jq` and scripts got invalid JSON. It now prints
+  `[]`, like `phantom audit export`. Names only, never values.
+
+### Fixed (`phantom_secrets_expiry_check`, `phantom_secret_rotation_due`, `phantom_compliance_status`, `phantom secrets-expiring-soon`)
+
+- `days_remaining` truncated toward zero, so a secret that expired less
+  than 24 h ago reported `0`, which every consumer reads as "not expired
+  yet" despite the documented "negative means already expired". It is now
+  floored and strictly negative once a secret has expired (including the
+  exact expiry instant): under 24 h ago reports `-1`. Expired values that
+  are not a whole number of days shift by one (2.5 days ago: `-3`, was
+  `-2`). `SecretMetadata::is_expiring_soon` no longer also returns true
+  for a secret that expired under 24 h ago.
+- `phantom_secret_rotation_due` put a secret with an `expires_at` but no
+  rotation policy (for example a provider-issued expiry) under `no_ttl`,
+  even once expired, so an agent never saw it as due. It is now classified
+  by its expiry into `due`, `warning` or `ok`, matching `phantom rotate
+  --batch` and `phantom doctor`; `no_ttl` holds only secrets with neither
+  an expiry nor a policy. Each entry gains `has_rotation_policy`.
+- `phantom_compliance_status` failed `secrets_have_ttl` for a secret with
+  an `expires_at` but no rotation policy. A secret now passes when it has
+  either, the same rule as `phantom_secret_rotation_due` and `phantom
+  doctor`.
+- `phantom_secrets_expiry_check` entries and `phantom secrets-expiring-soon
+  --json` entries gain an `expired` boolean. Existing fields are unchanged.
+  Names and lifecycle metadata only, never values.
+
+### Fixed (`phantom_audit_incidents`, `phantom_leak_incidents_realtime`, `phantom audit incidents`)
+
+- The proxy only appends `proxy.response_leak` audit events; incidents are
+  persisted by the approval-gated `phantom audit alerts --backfill` (MCP
+  `phantom_audit_alerts` with `backfill=true`). Until someone ran it, the
+  read-only incident queries answered "No active leak incidents" while
+  fresh leak events sat in the audit log. They now also correlate the last
+  24 h of leak events in memory, without writing anything, and list the
+  incidents no backfill has persisted in `uncorrelated_incidents` (MCP:
+  plus `uncorrelated_count`), filtered like persisted incidents
+  (`min_confidence`, 24 h window, cleared by a later store of the secret).
+  Names only, never values. Each query parses the audit log once, keeping
+  only the window's leak events and each name's latest store time.
+- Both MCP tools now always return the same JSON object (also as
+  structuredContent) with `audit_log_present` and a `next_step`, instead of
+  plain text when nothing was found. "Set PHANTOM_AUDIT=1" is said only
+  when no audit log exists.
+- `phantom audit incidents --json` prints the same object whether or not
+  anything was found (it printed a bare `[]` when empty), and the text
+  output lists unpersisted incidents. `phantom leaks plan` warns on stderr
+  when its plan omits them.
+
+### Fixed (`phantom_audit_recent` and `phantom audit show`)
+
+- Both read the whole audit log into memory to return the last few
+  events, and the log is append-only and never rotated. They now read only
+  the newest 8 MiB (seeking from the end, dropping the partial first line),
+  so memory stays bounded however long the log grows. `phantom audit
+  verify` still reads and checks the whole chain.
+- Lines that are not audit events used to be skipped silently (MCP) or
+  echoed to stderr (CLI). They are now counted, never echoed:
+  `phantom_audit_recent` reports `unparsable_lines` and a note pointing at
+  `phantom audit verify`, and `phantom audit show` prints the count.
+- `phantom_audit_recent` reports `window_truncated` and
+  `matched_in_window`; `total_in_log` is present only when the window
+  covered the whole log. `phantom audit show` says when older events were
+  not examined and fewer than `--last` matched.
+
+### Fixed (`phantom check --runtime` and MCP `phantom_check` runtime mode)
+
+- The runtime check looked only at a fixed list of well-known variable
+  names, and the CLI and MCP server used two different lists. A phantom
+  token in any other variable, such as one `phantom init` wrote for a
+  custom key, was reported clean. Both now scan every environment variable
+  through one shared function and report the names (never the values).
+- A phantom token is now excused only when it belongs to a live proxy
+  session. `PHANTOM_PROXY_PORT` and `PHANTOM_PROXY_TOKEN` must lead to a
+  proxy whose health endpoint answers 200 with a body that identifies the
+  Phantom proxy (a loopback request with a short timeout and a bounded
+  read), and the variable must be named in `PHANTOM_SESSION_KEYS`.
+  `phantom exec` now sets that for its child, listing only keys a route
+  serves; `phantom start` prints it with its other exports, listing every
+  dotenv key holding a phantom token (names only). Excused names are listed in the
+  JSON report's `excused` field with `proxy_session: true`. Session
+  variables with no live proxy behind them, such as exports left over from
+  a stopped `phantom start`, excuse nothing and add a value-free
+  `session_warning`. Before this, the check flagged a running session's
+  own tokens as "proxy not running". Outside a session the report shape is
+  unchanged.
+- Variable names in the runtime check's text output have control
+  characters escaped.
+
+### Fixed (exec signals and `why` input)
+
+- A SIGTERM, SIGHUP or SIGINT sent to `phantom exec` killed Phantom and left
+  the child running, orphaned, against a proxy that was gone. Phantom now
+  forwards the signal to the child, waits for it, shuts the proxy down, and
+  exits with the child's status (128 + N when signal N ended it). A signal
+  Phantom inherited as ignored (`nohup`, a background job started by a
+  script) stays ignored and is not forwarded, so the child keeps ignoring it
+  too. A SIGINT is not forwarded while Phantom is the foreground process
+  group of its terminal, because a terminal Ctrl-C has already reached the
+  child; a `kill -INT` from another process in that situation is not
+  forwarded either. On Windows, Phantom now waits for the child after Ctrl-C
+  instead of exiting first.
+- `phantom why ""` (or a blank name) answered "not found" with exit 0. It now
+  exits 1 and asks for the exact key name.
+- `phantom why` hints named the MCP tool `phantom_status` where the CLI
+  command `phantom status` belongs; they now name both.
+
 ### Changed (`phantom add --stdin` input handling)
 
 - `phantom add NAME --stdin` used to store only the first line of piped

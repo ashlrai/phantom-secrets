@@ -200,3 +200,185 @@ fn audit_incidents_rejects_out_of_range_min_confidence() {
         .unwrap();
     assert!(out.status.success(), "{out:?}");
 }
+
+/// The proxy only appends `proxy.response_leak` events; incidents are
+/// persisted by the gated `audit alerts --backfill`. `audit incidents` used
+/// to answer "No active leak incidents" (or `[]` with --json) while fresh leak
+/// events sat in the audit log.
+#[test]
+fn audit_incidents_reports_leak_events_not_yet_persisted() {
+    let tmp = common::canonical_tempdir();
+    let phantom_dir = tmp.path().join(".phantom");
+    std::fs::create_dir_all(&phantom_dir).unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let line = |ts: u64| {
+        format!(
+            "{{\"ts\":{ts},\"op\":\"proxy.response_leak\",\"name\":\"OPENAI_API_KEY\",\"pid\":1,\"process\":\"phantom\"}}\n"
+        )
+    };
+    std::fs::write(
+        phantom_dir.join("audit.log"),
+        format!("{}{}", line(now - 20), line(now - 10)),
+    )
+    .unwrap();
+
+    let run = |args: &[&str]| {
+        Command::cargo_bin("phantom")
+            .expect("binary not found")
+            .current_dir(tmp.path())
+            .env("HOME", tmp.path())
+            .env_remove("PHANTOM_AUDIT")
+            .args(args)
+            .output()
+            .unwrap()
+    };
+
+    let out = run(&["audit", "incidents", "--json"]);
+    assert!(out.status.success(), "{out:?}");
+    let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(report["incidents"], serde_json::json!([]));
+    assert_eq!(
+        report["uncorrelated_incidents"][0]["secret_name"],
+        "OPENAI_API_KEY"
+    );
+    assert_eq!(report["uncorrelated_incidents"][0]["event_count"], 2);
+
+    let out = run(&["audit", "incidents"]);
+    assert!(out.status.success(), "{out:?}");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("not persisted yet"), "{stdout}");
+    assert!(stdout.contains("unpersisted"), "{stdout}");
+    assert!(stdout.contains("OPENAI_API_KEY"), "{stdout}");
+    assert!(
+        stdout.contains("phantom audit alerts --backfill"),
+        "{stdout}"
+    );
+
+    // Read-only: nothing was persisted.
+    assert!(!phantom_dir.join("leak-incidents.jsonl").exists());
+}
+
+/// With nothing found, --json keeps the same object shape (it used to print
+/// a bare `[]`).
+#[test]
+fn audit_incidents_json_shape_is_stable_when_empty() {
+    let tmp = common::canonical_tempdir();
+    let out = Command::cargo_bin("phantom")
+        .expect("binary not found")
+        .current_dir(tmp.path())
+        .env("HOME", tmp.path())
+        .args(["audit", "incidents", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(report["incidents"], serde_json::json!([]));
+    assert_eq!(report["uncorrelated_incidents"], serde_json::json!([]));
+}
+
+/// `--window` used to round up to 7 or 30 days (`--window 3` covered a week,
+/// `--window 90` only 30 days) while the JSON echoed the requested value.
+#[test]
+fn audit_analytics_window_is_the_exact_lookback() {
+    let tmp = common::canonical_tempdir();
+    let phantom_dir = tmp.path().join(".phantom");
+    std::fs::create_dir_all(&phantom_dir).unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let day = 86_400_u64;
+    let line = |ts: u64, entry_name: &str| {
+        format!(
+            "{{\"ts\":{ts},\"op\":\"vault.retrieve\",\"name\":\"{entry_name}\",\"pid\":1,\"process\":\"phantom\"}}\n"
+        )
+    };
+    std::fs::write(
+        phantom_dir.join("audit.log"),
+        [
+            line(now - 60 * day, "WINDOW_60D"),
+            line(now - 5 * day, "WINDOW_5D"),
+            line(now - 3600, "WINDOW_1H"),
+        ]
+        .concat(),
+    )
+    .unwrap();
+
+    let names_for = |window: &str| -> Vec<String> {
+        let out = Command::cargo_bin("phantom")
+            .expect("binary not found")
+            .current_dir(tmp.path())
+            .env("HOME", tmp.path())
+            .env_remove("PHANTOM_AUDIT")
+            .args(["audit", "analytics", "--window", window])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{out:?}");
+        let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(report["window_days"], window.parse::<u32>().unwrap());
+        let mut names: Vec<String> = report["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["name"].as_str().unwrap().to_string())
+            .collect();
+        names.sort();
+        names
+    };
+
+    assert_eq!(names_for("3"), ["WINDOW_1H"]);
+    assert_eq!(names_for("90"), ["WINDOW_1H", "WINDOW_5D", "WINDOW_60D"]);
+    assert_eq!(names_for("0"), ["WINDOW_1H", "WINDOW_5D", "WINDOW_60D"]);
+}
+
+/// Anomaly-score flags use the MCP tools' rule: clamped to 0.0..=1.0 and NaN
+/// refused. `--min-anomaly-score NaN` used to be accepted and match nothing.
+#[test]
+fn audit_score_flags_clamp_and_refuse_nan() {
+    let tmp = common::canonical_tempdir();
+    let phantom_dir = tmp.path().join(".phantom");
+    std::fs::create_dir_all(&phantom_dir).unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    std::fs::write(
+        phantom_dir.join("audit.log"),
+        format!(
+            "{{\"ts\":{},\"op\":\"vault.retrieve\",\"name\":\"SCORED_ENTRY\",\"pid\":1,\"process\":\"phantom\"}}\n",
+            now - 100
+        ),
+    )
+    .unwrap();
+    let run = |args: &[&str]| {
+        Command::cargo_bin("phantom")
+            .expect("binary not found")
+            .current_dir(tmp.path())
+            .env("HOME", tmp.path())
+            .env_remove("PHANTOM_AUDIT")
+            .args(args)
+            .output()
+            .unwrap()
+    };
+
+    for args in [
+        &["audit", "stats", "--json", "--min-anomaly-score", "NaN"][..],
+        &["audit", "export", "--min-anomaly-score", "NaN"][..],
+        &["audit", "analytics", "--min-anomaly-score", "NaN"][..],
+        &["audit", "anomalies", "--threshold", "NaN"][..],
+    ] {
+        let out = run(args);
+        assert!(!out.status.success(), "{args:?}: {out:?}");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stderr.contains("NaN"), "{args:?}: {stderr}");
+    }
+
+    // Below the range is the same as 0.0: every secret is kept.
+    let out = run(&["audit", "analytics", "--min-anomaly-score=-1"]);
+    assert!(out.status.success(), "{out:?}");
+    let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(report["records"][0]["name"], "SCORED_ENTRY");
+}

@@ -83,6 +83,15 @@ pub fn parse_audit_format(format: &str) -> Result<AuditFormat, McpError> {
     }
 }
 
+/// Normalize an anomaly-score threshold parameter with the rule every audit
+/// tool and `phantom audit` command shares
+/// ([`phantom_core::analytics::score_threshold`]): clamp to 0.0..=1.0 and
+/// refuse NaN with an invalid-params error naming the parameter.
+pub fn score_threshold_param(param: &str, value: f64) -> Result<f64, McpError> {
+    phantom_core::analytics::score_threshold(value)
+        .map_err(|error| invalid_params_err(format!("Invalid {param}: {error}")))
+}
+
 pub fn require_confirm(tool: &str, confirm: bool) -> Result<(), McpError> {
     if confirm {
         return Ok(());

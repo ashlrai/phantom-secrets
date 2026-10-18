@@ -450,7 +450,8 @@ pub struct AuditStatsParams {
     #[serde(default = "default_audit_period")]
     pub period: String,
     /// Only include secrets whose anomaly score is at or above this threshold
-    /// (range 0.0–1.0). Omit or set to 0.0 to return all secrets.
+    /// (range 0.0–1.0; other values are clamped into it). Omit or set to 0.0
+    /// to return all secrets.
     #[serde(default)]
     pub min_anomaly_score: Option<f64>,
 }
@@ -483,7 +484,8 @@ pub struct AuditAnomaliesParams {
     /// Time period to analyse: "7d", "30d", or "all". Defaults to "30d".
     #[serde(default = "default_anomalies_period")]
     pub period: String,
-    /// Minimum anomaly score to include (0.0–1.0). Defaults to 0.4.
+    /// Minimum anomaly score to include (0.0–1.0; other values are clamped
+    /// into it). Defaults to 0.4.
     #[serde(default = "default_min_anomaly")]
     pub min_score: f64,
 }
@@ -503,7 +505,8 @@ pub struct AuditAnomaliesRealtimeParams {
     /// Filter to a single secret name. Omit to check all secrets.
     #[serde(default)]
     pub name: Option<String>,
-    /// Minimum anomaly score (0.0–1.0) to include in results. Defaults to 0.5.
+    /// Minimum anomaly score (0.0–1.0; other values are clamped into it) to
+    /// include in results. Defaults to 0.5.
     #[serde(default = "default_realtime_threshold")]
     pub threshold: f64,
     /// Override: max accesses allowed within any rolling 1-hour window before
@@ -525,21 +528,32 @@ fn default_realtime_threshold() -> f64 {
 /// Parameters for `phantom_audit_analytics` — full analytics + access-record export.
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct AuditAnalyticsParams {
-    /// Time window in days (default: 30). 0 means all available history.
+    /// Time window in days (default: 30): exactly the last N days of events.
+    /// 0 means all available history.
     #[serde(default = "default_analytics_window")]
     pub window_days: u32,
     /// Only include secrets whose anomaly score is at or above this threshold
-    /// (range 0.0–1.0). Defaults to 0.0 (return all secrets).
+    /// (range 0.0–1.0; other values are clamped into it). Omit to return all
+    /// secrets.
     #[serde(default)]
     pub min_anomaly_score: Option<f64>,
     /// Output format: "json" (default) or "csv", case-insensitive. Other
     /// values are rejected with an invalid-params error.
     #[serde(default = "default_analytics_format")]
     pub format: String,
+    /// Maximum access records to return, newest kept (default: 1000; values
+    /// above 10000 are treated as 10000). A 1 MiB response ceiling may return
+    /// fewer; records_truncated and records_total then say so.
+    #[serde(default = "default_analytics_max_records")]
+    pub max_records: u32,
 }
 
 fn default_analytics_window() -> u32 {
     30
+}
+
+pub fn default_analytics_max_records() -> u32 {
+    1_000
 }
 
 fn default_analytics_format() -> String {
@@ -634,6 +648,12 @@ pub struct AuditExportReportParams {
     /// Filter rows to operations containing this string. Omit for all ops.
     #[serde(default)]
     pub operation: Option<String>,
+    /// Maximum audit rows `action="export"` returns, newest kept (default:
+    /// 1000; values above 10000 are treated as 10000). A 1 MiB response
+    /// ceiling may return fewer; records_truncated and records_total then
+    /// say so. Ignored by `action="report"`.
+    #[serde(default = "default_analytics_max_records")]
+    pub max_records: u32,
     /// Save the compliance report to ~/.phantom/reports/ (report action only).
     #[serde(default)]
     pub save: bool,
