@@ -12,6 +12,17 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   warns that the config could not be loaded, that the local sync state is
   unknown, and how to recover. A missing config still prints nothing.
 
+### Fixed (`phantom audit show --json`, `phantom audit stats --analytics --json`)
+
+- With `--json` and no events, `phantom audit show` (including
+  `--leaked-secrets`) printed "No audit events yet" or "No matching audit
+  events" on stdout, so a script reading stdout as JSON Lines got prose. The
+  hint now goes to stderr and stdout carries zero event lines.
+  `phantom audit stats --analytics --json` had the same problem; it now
+  prints its normal `{generated_at, secrets}` object with an empty `secrets`
+  list. Output without `--json` is unchanged, and an unreadable audit log
+  still fails with a nonzero exit.
+
 ### Fixed (`phantom audit show`)
 
 - An audit log that existed but could not be read (for example a directory

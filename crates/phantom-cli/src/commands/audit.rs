@@ -241,9 +241,23 @@ pub fn run_show(
     leaked_secrets: bool,
 ) -> Result<()> {
     let path = resolve_path()?;
-    run_show_at(&path, last, op, name, json, leaked_secrets)
+    run_show_at(
+        &path,
+        last,
+        op,
+        name,
+        json,
+        leaked_secrets,
+        &mut std::io::stdout(),
+        &mut std::io::stderr(),
+    )
 }
 
+/// `--json` output is JSON Lines: one audit event object per stdout line.
+/// With no events stdout stays empty (zero records), and the human hint goes
+/// to `err` so a script parsing stdout never sees prose. Without `--json`
+/// the hint stays on `out` exactly as before.
+#[allow(clippy::too_many_arguments)]
 fn run_show_at(
     path: &std::path::Path,
     last: usize,
@@ -251,13 +265,28 @@ fn run_show_at(
     name: Option<&str>,
     json: bool,
     leaked_secrets: bool,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
 ) -> Result<()> {
+    let hint_to = |json: bool, out: &mut dyn Write, err: &mut dyn Write, hint: String| {
+        if json {
+            writeln!(err, "{hint}")
+        } else {
+            writeln!(out, "{hint}")
+        }
+    };
+
     if !path.exists() {
-        println!(
-            "{}  No audit events yet — set {} to start logging.",
-            "->".blue().bold(),
-            "PHANTOM_AUDIT=1".cyan()
-        );
+        hint_to(
+            json,
+            out,
+            err,
+            format!(
+                "{}  No audit events yet — set {} to start logging.",
+                "->".blue().bold(),
+                "PHANTOM_AUDIT=1".cyan()
+            ),
+        )?;
         return Ok(());
     }
 
@@ -290,7 +319,12 @@ fn run_show_at(
     let lines = matched.lines;
 
     if lines.is_empty() {
-        println!("{}  No matching audit events.", "->".blue().bold());
+        hint_to(
+            json,
+            out,
+            err,
+            format!("{}  No matching audit events.", "->".blue().bold()),
+        )?;
         return Ok(());
     }
 
@@ -305,7 +339,7 @@ fn run_show_at(
 
     if json {
         for line in &window {
-            println!("{}", line);
+            writeln!(out, "{}", line)?;
         }
     } else {
         for line in &window {
@@ -794,41 +828,87 @@ pub fn run_stats(
     Ok(())
 }
 
-/// Run the analytics-enhanced stats path (with anomaly scores).
-fn run_stats_analytics(json: bool, top: usize, min_anomaly_score: Option<f64>) -> Result<()> {
-    let report = phantom_core::analytics::compute_analytics(phantom_core::analytics::Period::All)
-        .map_err(|e| anyhow::anyhow!("Failed to compute analytics: {e}"))?;
-
-    if report.secrets.is_empty() {
-        println!(
-            "{}  No audit events yet — set {} to start logging.",
-            "->".blue().bold(),
-            "PHANTOM_AUDIT=1".cyan()
-        );
-        return Ok(());
-    }
-
-    let mut secrets: Vec<&phantom_core::analytics::SecretAnalytics> = report
+/// Rows shown by `phantom audit stats --analytics`, after the anomaly-score
+/// floor and `--top` limit.
+fn select_analytics_rows(
+    report: &phantom_core::analytics::AnalyticsReport,
+    top: usize,
+    min_anomaly_score: Option<f64>,
+) -> Vec<&phantom_core::analytics::SecretAnalytics> {
+    let mut rows: Vec<&phantom_core::analytics::SecretAnalytics> = report
         .secrets
         .iter()
         .filter(|s| min_anomaly_score.is_none_or(|min| s.anomaly_score >= min))
         .collect();
+    if top > 0 && top < rows.len() {
+        rows.truncate(top);
+    }
+    rows
+}
 
-    if top > 0 && top < secrets.len() {
-        secrets.truncate(top);
+/// The `phantom audit stats --analytics --json` envelope. Same shape whether
+/// or not any events exist.
+fn stats_analytics_json(
+    report: &phantom_core::analytics::AnalyticsReport,
+    rows: &[&phantom_core::analytics::SecretAnalytics],
+) -> Value {
+    serde_json::json!({
+        "generated_at": report.generated_at,
+        "secrets": rows,
+    })
+}
+
+/// Run the analytics-enhanced stats path (with anomaly scores).
+fn run_stats_analytics(json: bool, top: usize, min_anomaly_score: Option<f64>) -> Result<()> {
+    let report = phantom_core::analytics::compute_analytics(phantom_core::analytics::Period::All)
+        .map_err(|e| anyhow::anyhow!("Failed to compute analytics: {e}"))?;
+    render_stats_analytics(
+        &report,
+        json,
+        top,
+        min_anomaly_score,
+        &mut std::io::stdout(),
+        &mut std::io::stderr(),
+    )
+}
+
+/// Render `phantom audit stats --analytics`. With `--json`, `out` always
+/// carries the `{generated_at, secrets}` envelope (an empty `secrets` list
+/// when nothing is logged) and the human hint goes to `err`.
+fn render_stats_analytics(
+    report: &phantom_core::analytics::AnalyticsReport,
+    json: bool,
+    top: usize,
+    min_anomaly_score: Option<f64>,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> Result<()> {
+    if report.secrets.is_empty() {
+        let hint = format!(
+            "{}  No audit events yet — set {} to start logging.",
+            "->".blue().bold(),
+            "PHANTOM_AUDIT=1".cyan()
+        );
+        if !json {
+            writeln!(out, "{hint}")?;
+            return Ok(());
+        }
+        // Keep stdout machine-readable: the hint goes to stderr and the
+        // normal envelope is emitted with an empty `secrets` list below.
+        writeln!(err, "{hint}")?;
     }
 
+    let secrets = select_analytics_rows(report, top, min_anomaly_score);
+
     if json {
-        let out = serde_json::json!({
-            "generated_at": report.generated_at,
-            "secrets": secrets,
-        });
-        println!("{}", serde_json::to_string_pretty(&out)?);
+        let envelope = stats_analytics_json(report, &secrets);
+        writeln!(out, "{}", serde_json::to_string_pretty(&envelope)?)?;
         return Ok(());
     }
 
     // Human-readable table
-    println!(
+    writeln!(
+        out,
         "{}  Analytics for {} secret(s){}",
         "->".blue().bold(),
         secrets.len(),
@@ -836,8 +916,8 @@ fn run_stats_analytics(json: bool, top: usize, min_anomaly_score: Option<f64>) -
             .map(|s| format!(" (anomaly_score ≥ {s:.2})"))
             .unwrap_or_default()
             .dimmed()
-    );
-    println!();
+    )?;
+    writeln!(out)?;
 
     let name_w = secrets
         .iter()
@@ -845,7 +925,8 @@ fn run_stats_analytics(json: bool, top: usize, min_anomaly_score: Option<f64>) -
         .max()
         .unwrap_or(4)
         .max(4);
-    println!(
+    writeln!(
+        out,
         "  {:<name_w$}  {:>7}  {:>8}  {:>8}  {:>8}  {:>7}",
         "SECRET".bold(),
         "ACCESSES".bold(),
@@ -854,8 +935,8 @@ fn run_stats_analytics(json: bool, top: usize, min_anomaly_score: Option<f64>) -
         "MIN/DAY".bold(),
         "ANOMALY".bold(),
         name_w = name_w,
-    );
-    println!("  {}", "-".repeat(name_w + 46));
+    )?;
+    writeln!(out, "  {}", "-".repeat(name_w + 46))?;
 
     for s in &secrets {
         let score_str = if s.anomaly_score >= 0.6 {
@@ -866,7 +947,8 @@ fn run_stats_analytics(json: bool, top: usize, min_anomaly_score: Option<f64>) -
             format!("{:.2}", s.anomaly_score).dimmed().to_string()
         };
 
-        println!(
+        writeln!(
+            out,
             "  {:<name_w$}  {:>7}  {:>8.2}  {:>8}  {:>8}  {:>7}",
             s.name.bold(),
             s.access_count,
@@ -875,7 +957,7 @@ fn run_stats_analytics(json: bool, top: usize, min_anomaly_score: Option<f64>) -
             s.min_daily,
             score_str,
             name_w = name_w,
-        );
+        )?;
     }
 
     Ok(())
@@ -2169,16 +2251,155 @@ mod tests {
         std::fs::create_dir(&path).unwrap();
 
         assert!(read_matching_lines(&path, None, None).is_err());
-        assert!(run_show_at(&path, 20, None, None, true, false).is_err());
-        assert!(run_show_at(&path, 20, None, None, false, false).is_err());
-        assert!(run_show_at(&path, 20, None, None, true, true).is_err());
+        assert!(run_show_at(
+            &path,
+            20,
+            None,
+            None,
+            true,
+            false,
+            &mut Vec::new(),
+            &mut Vec::new()
+        )
+        .is_err());
+        assert!(run_show_at(
+            &path,
+            20,
+            None,
+            None,
+            false,
+            false,
+            &mut Vec::new(),
+            &mut Vec::new()
+        )
+        .is_err());
+        assert!(run_show_at(
+            &path,
+            20,
+            None,
+            None,
+            true,
+            true,
+            &mut Vec::new(),
+            &mut Vec::new()
+        )
+        .is_err());
     }
 
     #[test]
     fn show_reports_an_empty_but_readable_log_as_success() {
         let tmp = tempdir().unwrap();
         let path = write_fixture(tmp.path(), &[]);
-        assert!(run_show_at(&path, 20, None, None, true, false).is_ok());
+        assert!(run_show_at(
+            &path,
+            20,
+            None,
+            None,
+            true,
+            false,
+            &mut Vec::new(),
+            &mut Vec::new()
+        )
+        .is_ok());
+    }
+
+    /// Run `audit show` against `path` and return (stdout, stderr).
+    fn show_output(
+        path: &std::path::Path,
+        op: Option<&str>,
+        json: bool,
+        leaked: bool,
+    ) -> (String, String) {
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        run_show_at(path, 20, op, None, json, leaked, &mut out, &mut err).unwrap();
+        (
+            String::from_utf8(out).unwrap(),
+            String::from_utf8(err).unwrap(),
+        )
+    }
+
+    /// Every non-empty stdout line must be a JSON object (JSON Lines).
+    fn all_lines_are_json_objects(stdout: &str) -> bool {
+        stdout
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .all(|l| serde_json::from_str::<Value>(l).is_ok_and(|v| v.is_object()))
+    }
+
+    #[test]
+    fn show_json_keeps_stdout_machine_readable_when_the_log_is_missing() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("audit.log");
+        for leaked in [false, true] {
+            let (stdout, stderr) = show_output(&path, None, true, leaked);
+            assert!(stdout.is_empty());
+            assert!(stderr.contains("No audit events yet"));
+        }
+        // Human output is unchanged: the hint stays on stdout.
+        let (stdout, stderr) = show_output(&path, None, false, false);
+        assert!(stdout.contains("No audit events yet"));
+        assert!(stderr.is_empty());
+    }
+
+    #[test]
+    fn show_json_keeps_stdout_machine_readable_when_nothing_matches() {
+        let tmp = tempdir().unwrap();
+        let empty = write_fixture(tmp.path(), &[]);
+        let (stdout, stderr) = show_output(&empty, None, true, false);
+        assert!(stdout.is_empty());
+        assert!(stderr.contains("No matching audit events"));
+
+        let other = tempdir().unwrap();
+        let path = write_fixture(other.path(), &[LINE_STORE, LINE_PUSH]);
+        for (op, leaked) in [(Some("vault.delete"), false), (None, true)] {
+            let (stdout, stderr) = show_output(&path, op, true, leaked);
+            assert!(stdout.is_empty());
+            assert!(stderr.contains("No matching audit events"));
+        }
+
+        let (stdout, stderr) = show_output(&path, Some("vault.delete"), false, false);
+        assert!(stdout.contains("No matching audit events"));
+        assert!(stderr.is_empty());
+    }
+
+    #[test]
+    fn show_json_prints_one_event_object_per_line() {
+        let tmp = tempdir().unwrap();
+        let path = write_fixture(tmp.path(), &[LINE_STORE, LINE_PUSH]);
+        let (stdout, stderr) = show_output(&path, None, true, false);
+        assert_eq!(stdout.lines().count(), 2);
+        assert!(all_lines_are_json_objects(&stdout));
+        assert!(stderr.is_empty());
+    }
+
+    #[test]
+    fn stats_analytics_json_with_no_events_prints_the_empty_envelope() {
+        let report = phantom_core::analytics::AnalyticsReport {
+            generated_at: "2026-01-01T00:00:00Z".to_string(),
+            secrets: Vec::new(),
+        };
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        render_stats_analytics(&report, true, 0, None, &mut out, &mut err).unwrap();
+        let parsed: Value =
+            serde_json::from_slice(&out).expect("stats --analytics --json stdout must be JSON");
+        assert_eq!(
+            parsed,
+            serde_json::json!({"generated_at": "2026-01-01T00:00:00Z", "secrets": []})
+        );
+        assert!(String::from_utf8(err)
+            .unwrap()
+            .contains("No audit events yet"));
+
+        // Human output is unchanged.
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        render_stats_analytics(&report, false, 0, None, &mut out, &mut err).unwrap();
+        assert!(String::from_utf8(out)
+            .unwrap()
+            .contains("No audit events yet"));
+        assert!(err.is_empty());
     }
 
     #[test]
