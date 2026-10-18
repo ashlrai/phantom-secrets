@@ -194,6 +194,13 @@ mod tests {
     use rand::RngCore;
 
     #[test]
+    fn vault_key_is_256_bits() {
+        // Grover margin: the Argon2id output used as the AEAD key is 32 bytes.
+        assert_eq!(KEY_LEN * 8, 256);
+        assert_eq!(derive_key("pw", &[1u8; 16]).unwrap().len() * 8, 256);
+    }
+
+    #[test]
     fn test_encrypt_decrypt_roundtrip() {
         let plaintext = b"hello world secret data";
         let passphrase = "test-passphrase-123";
