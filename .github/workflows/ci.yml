@@ -96,6 +96,8 @@ jobs:
       # Linking the workspace's test binaries with link.exe is most of the
       # Windows Build step (86-107s vs 44s on Linux). rust-lld ships with the
       # toolchain; the variable only applies to the x86_64 MSVC target.
+      # rust-cache hashes CARGO_* variables into its key, so the first run after
+      # this changes rebuilds dependencies once (253s) before the cache warms.
       CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER: rust-lld
     steps:
       # Third-party actions are pinned to commit SHAs (not floating tags) so
