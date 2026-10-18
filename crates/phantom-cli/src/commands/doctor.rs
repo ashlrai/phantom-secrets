@@ -156,9 +156,21 @@ fn run_checks(fix: bool, check_expiry: bool) -> Result<(usize, usize)> {
     // token-bearing candidates) is a finding for diagnosis. Repairs need a
     // resolved file, so --fix still stops before any of them.
     let mut unresolved_dotenv = None;
-    let env_path = match PhantomConfig::load(&config_path).ok() {
+    // A config that exists but cannot be read or parsed is not "no config":
+    // the managed dotenv it names is unknown, so doctor reports the dotenv
+    // as unchecked instead of judging `./.env`, and --fix makes no repairs.
+    let (loaded_config, config_broken) = match crate::util::load_config_if_present(&config_path) {
+        Ok(config) => (config, false),
+        Err(error) if fix => {
+            return Err(anyhow::Error::new(error).context(
+                ".phantom.toml exists but could not be loaded; doctor --fix made no repairs. Fix or restore it, then run `phantom doctor`",
+            ))
+        }
+        Err(_) => (None, true),
+    };
+    let env_path = match loaded_config.as_ref() {
         Some(config) => {
-            match phantom_core::managed_dotenv::resolve_dotenv(&project_dir, &config, &[]) {
+            match phantom_core::managed_dotenv::resolve_dotenv(&project_dir, config, &[]) {
                 Ok(resolved) => resolved.path,
                 Err(error) if !fix => {
                     unresolved_dotenv = Some(error);
@@ -189,7 +201,7 @@ fn run_checks(fix: bool, check_expiry: bool) -> Result<(usize, usize)> {
     });
 
     // Check 1: .phantom.toml exists
-    if config_path.exists() {
+    if config_broken || config_path.exists() {
         check_pass(".phantom.toml found");
         match PhantomConfig::load(&config_path) {
             Ok(config) => {
@@ -202,8 +214,20 @@ fn run_checks(fix: bool, check_expiry: bool) -> Result<(usize, usize)> {
                 ));
 
                 let service_risks = config.service_risks();
+                // The same check `phantom exec` and `phantom start` refuse on,
+                // so their pointer at doctor always lands on a finding.
+                let launch_blocker = config.exec_route_blocker();
+                if let Some(blocker) = launch_blocker {
+                    check_fail(&launch_blocker_message(&blocker));
+                    check_fix(
+                        "Restore Phantom's built-in definition for that service (or remove the custom service) in a trusted terminal; `phantom why <KEY> --json` shows the same blocker",
+                    );
+                    issues += 1;
+                }
                 if service_risks.is_empty() {
-                    check_pass("Service routes look safe");
+                    if launch_blocker.is_none() {
+                        check_pass("Service routes look safe");
+                    }
                 } else {
                     for risk in &service_risks {
                         check_warn(&format!(
@@ -262,6 +286,9 @@ fn run_checks(fix: bool, check_expiry: bool) -> Result<(usize, usize)> {
             }
             Err(e) => {
                 check_fail(&format!("Config parse error: {e}"));
+                check_fix(
+                    "Fix or restore .phantom.toml (for example from version control), then rerun phantom doctor",
+                );
                 issues += 1;
             }
         }
@@ -273,6 +300,11 @@ fn run_checks(fix: bool, check_expiry: bool) -> Result<(usize, usize)> {
 
     // Check 3: .env file
     match unresolved_dotenv {
+        None if config_broken => {
+            check_warn(
+                "Managed dotenv not checked: .phantom.toml could not be loaded, so which dotenv it manages is unknown",
+            );
+        }
         Some(error) => {
             check_fail(&format!("Managed dotenv: {error:#}"));
             check_fix(
@@ -345,9 +377,8 @@ fn run_checks(fix: bool, check_expiry: bool) -> Result<(usize, usize)> {
         check_fix("Run: phantom env");
         if fix && !mutation_applied {
             if let Some(dotenv) = guarded_dotenv(repair_dotenv_guard.as_ref())? {
-                let config = PhantomConfig::load(&config_path).ok();
                 let content = dotenv
-                    .generate_example_content(config.as_ref())
+                    .generate_example_content(loaded_config.as_ref())
                     .context("Managed dotenv is malformed; doctor made no .env.example repair")?;
                 ensure_dotenv_repair_guard(repair_dotenv_guard.as_ref())?;
                 write_project_file_exact(
@@ -374,7 +405,19 @@ fn run_checks(fix: bool, check_expiry: bool) -> Result<(usize, usize)> {
     let claude_settings = project_dir.join(".claude/settings.local.json");
     if claude_settings.exists() {
         let content = std::fs::read_to_string(&claude_settings)?;
-        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&content) {
+        let parsed = serde_json::from_str::<serde_json::Value>(&content);
+        if parsed.is_err() {
+            // An unparseable settings file is not "no legacy grants": the
+            // checks below could not run, so this is a finding, never a pass.
+            check_warn(
+                "Claude Code settings (.claude/settings.local.json) could not be parsed; dotenv read grants and legacy MCP entries were not checked",
+            );
+            check_fix(
+                "Fix the JSON in .claude/settings.local.json (or remove the file), then rerun phantom doctor",
+            );
+            issues += 1;
+        }
+        if let Ok(parsed) = parsed {
             if parsed["mcpServers"].get("phantom").is_some() {
                 check_warn(
                     "Claude Code Phantom MCP entry is in legacy settings; move it to .mcp.json",
@@ -587,10 +630,23 @@ fn run_checks(fix: bool, check_expiry: bool) -> Result<(usize, usize)> {
                 if let Ok(names) = vault.list() {
                     let mut invalid_count = 0usize;
                     let mut stale_count = 0usize;
+                    let mut unchecked_count = 0usize;
+                    let mut unreadable_count = 0usize;
+                    let mut first_read_error = None;
                     for name in &names {
-                        let meta = vault.get_validation_metadata(name).unwrap_or_default();
+                        // A read error is not "never checked": the state is
+                        // unknown, the same rule as phantom_validate_secret.
+                        let meta = match vault.get_validation_metadata(name) {
+                            Ok(meta) => meta,
+                            Err(error) => {
+                                unreadable_count += 1;
+                                first_read_error.get_or_insert_with(|| error.to_string());
+                                continue;
+                            }
+                        };
                         if meta.never_checked() {
                             // Not yet validated — not an issue, just informational.
+                            unchecked_count += 1;
                         } else if !meta.is_valid {
                             invalid_count += 1;
                             let reason = meta.failure_reason.as_deref().unwrap_or("unknown reason");
@@ -601,16 +657,15 @@ fn run_checks(fix: bool, check_expiry: bool) -> Result<(usize, usize)> {
                             stale_count += 1;
                         }
                     }
+                    if let Some(error) = first_read_error {
+                        check_warn(&format!(
+                            "Validation: stored results for {unreadable_count} secret(s) could not be read; their state is unknown ({error})"
+                        ));
+                    }
                     if invalid_count == 0 && stale_count == 0 && !names.is_empty() {
-                        let all_checked = names.iter().all(|n| {
-                            vault
-                                .get_validation_metadata(n)
-                                .map(|m| !m.never_checked())
-                                .unwrap_or(false)
-                        });
-                        if all_checked {
+                        if unchecked_count == 0 && unreadable_count == 0 {
                             check_pass("All secrets passed last validation check");
-                        } else {
+                        } else if unchecked_count > 0 {
                             check_info(
                             "Validation: run `phantom validate --check-all` to check credential health",
                         );
@@ -692,29 +747,12 @@ fn run_checks(fix: bool, check_expiry: bool) -> Result<(usize, usize)> {
             println!("  {} MCP client wiring:", "info".blue());
         });
 
-        // Claude Code — supported project-scoped MCP registration
-        let claude_path = project_dir.join(".mcp.json");
-        issues += usize::from(check_mcp_client("claude", &claude_path, false));
-
-        if let Some(home) = dirs::home_dir() {
-            // Cursor — ~/.cursor/mcp.json
-            issues += usize::from(check_mcp_client(
-                "cursor",
-                &home.join(".cursor/mcp.json"),
-                true,
-            ));
-            // Windsurf — ~/.codeium/windsurf/mcp_config.json
-            issues += usize::from(check_mcp_client(
-                "windsurf",
-                &home.join(".codeium/windsurf/mcp_config.json"),
-                true,
-            ));
-            // Codex — ~/.codex/config.toml
-            issues += usize::from(check_mcp_client(
-                "codex",
-                &home.join(".codex/config.toml"),
-                true,
-            ));
+        // The same clients `phantom setup --status` reports, in its order.
+        let home = phantom_core::home::home_dir_with_platform_fallback().ok();
+        for (name, path, global) in
+            super::setup_status::client_config_paths(home.as_deref(), &project_dir)
+        {
+            issues += usize::from(check_mcp_client(name, &path, global));
         }
     }
 
@@ -797,15 +835,7 @@ fn write_project_file_exact_with(
 /// Returns true for a present-but-unsafe or unreadable Phantom configuration.
 fn check_mcp_client(name: &str, path: &std::path::Path, global: bool) -> bool {
     let location = if global {
-        if let Some(home) = dirs::home_dir() {
-            if let Ok(suffix) = path.strip_prefix(&home) {
-                format!("~/{}", suffix.display())
-            } else {
-                path.display().to_string()
-            }
-        } else {
-            path.display().to_string()
-        }
+        phantom_core::home::display_home_relative(path)
     } else {
         path.display().to_string()
     };
@@ -844,11 +874,18 @@ fn check_mcp_client(name: &str, path: &std::path::Path, global: bool) -> bool {
                     name,
                     location.dimmed()
                 );
-                println!(
-                    "          {} phantom setup --client {}",
-                    "Fix:".dimmed(),
-                    name
-                )
+                if <super::setup::Client as clap::ValueEnum>::from_str(name, true).is_ok() {
+                    println!(
+                        "          {} phantom setup --client {}",
+                        "Fix:".dimmed(),
+                        name
+                    )
+                } else {
+                    println!(
+                        "          {} point its phantom MCP entry at the local phantom-mcp binary",
+                        "Fix:".dimmed()
+                    )
+                }
             });
             true
         } else {
@@ -872,6 +909,20 @@ fn check_mcp_client(name: &str, path: &std::path::Path, global: bool) -> bool {
             )
         });
         false
+    }
+}
+
+/// Doctor's line for the route that stops `phantom exec` and `phantom start`.
+fn launch_blocker_message(blocker: &phantom_core::config::ExecBlocker<'_>) -> String {
+    use phantom_core::config::ExecBlocker;
+    match blocker {
+        ExecBlocker::AlteredBuiltinRoute { service } => format!(
+            "Launch blocked: service `{service}` differs from Phantom's built-in route (host pattern, header, header_format, secret_key or secret_type); phantom exec and start refuse to launch until it matches"
+        ),
+        other => format!(
+            "Launch blocked: service `{}` is a custom proxy route; phantom exec and start refuse to launch with it and run only with Phantom's built-in routes",
+            other.service()
+        ),
     }
 }
 
@@ -1055,6 +1106,150 @@ mod tests {
         assert_eq!(lines[0].2.as_deref(), Some("Run: phantom init"));
     }
 
+    /// Run doctor's checks on a project whose config `edit` changes and
+    /// return the collected report.
+    fn doctor_report_for(
+        edit: impl FnOnce(&mut phantom_core::config::PhantomConfig),
+    ) -> (
+        phantom_core::config::PhantomConfig,
+        phantom_core::report::DoctorReport,
+    ) {
+        let project = tempfile::tempdir().unwrap();
+        let dir = project.path().canonicalize().unwrap();
+        let mut config =
+            phantom_core::config::PhantomConfig::new_with_defaults("doctor-route".to_string());
+        edit(&mut config);
+        config.save(&dir.join(".phantom.toml")).unwrap();
+        let _seam = crate::util::test_seam::TestProject::install(
+            dir.clone(),
+            crate::util::test_seam::empty_keychain,
+        );
+        super::REPORT.with(|report| {
+            *report.borrow_mut() = Some(phantom_core::report::DoctorReport::default())
+        });
+        let outcome = super::run_checks(false, false);
+        let report = super::REPORT
+            .with(|report| report.borrow_mut().take())
+            .unwrap();
+        outcome.expect("doctor must report, not abort");
+        (config, report)
+    }
+
+    /// A `.claude/settings.local.json` that does not parse was skipped with no
+    /// row and no issue, so doctor could end with "All checks passed!" while
+    /// the dotenv read-grant check never ran. It is now a counted warning.
+    #[test]
+    fn doctor_counts_unparseable_claude_settings_as_an_issue() {
+        let run = |settings: Option<&str>| {
+            let project = tempfile::tempdir().unwrap();
+            let dir = project.path().canonicalize().unwrap();
+            phantom_core::config::PhantomConfig::new_with_defaults("doctor-claude".to_string())
+                .save(&dir.join(".phantom.toml"))
+                .unwrap();
+            if let Some(text) = settings {
+                std::fs::create_dir_all(dir.join(".claude")).unwrap();
+                std::fs::write(dir.join(".claude/settings.local.json"), text).unwrap();
+            }
+            let _seam = crate::util::test_seam::TestProject::install(
+                dir.clone(),
+                crate::util::test_seam::empty_keychain,
+            );
+            super::REPORT.with(|report| {
+                *report.borrow_mut() = Some(phantom_core::report::DoctorReport::default())
+            });
+            let outcome = super::run_checks(false, false);
+            let report = super::REPORT
+                .with(|report| report.borrow_mut().take())
+                .unwrap();
+            let (issues, _) = outcome.expect("doctor must report, not abort");
+            (issues, report)
+        };
+
+        let (baseline, _) = run(Some("{}"));
+        let (issues, report) = run(Some("{\"permissions\": {\"allow\": [\"Read(./.env)\"]},"));
+        assert_eq!(issues, baseline + 1);
+        let line = report
+            .checks
+            .iter()
+            .find(|check| check.message.contains("settings.local.json"))
+            .expect("unparseable Claude settings must be a finding");
+        assert_eq!(line.status, "warn");
+        assert!(line.message.contains("could not be parsed"));
+        assert!(line.fix.is_some());
+        assert!(!report
+            .checks
+            .iter()
+            .any(|check| check.message == "Claude Code dotenv read grants remain closed"));
+    }
+
+    /// exec and start refuse an altered built-in or a custom `api_key` route
+    /// and point at `phantom doctor`. Doctor used to check host patterns
+    /// only, so a header change or a custom service on a public host printed
+    /// "Service routes look safe" while exec refused. It now reports the
+    /// same blocker exec uses.
+    #[test]
+    fn doctor_names_every_route_exec_refuses() {
+        type Edit = fn(&mut phantom_core::config::PhantomConfig);
+        let cases: [(&str, Edit, &str); 2] = [
+            (
+                "openai",
+                |config| {
+                    config.services.get_mut("openai").unwrap().header =
+                        Some("X-Api-Key".to_string());
+                },
+                "differs from Phantom's built-in route",
+            ),
+            (
+                "gateway",
+                |config| {
+                    config.services.insert(
+                        "gateway".to_string(),
+                        phantom_core::config::ServiceConfig {
+                            secret_key: "GATEWAY_API_KEY".to_string(),
+                            pattern: Some("api.gateway.example.com".to_string()),
+                            header: Some("Authorization".to_string()),
+                            header_format: Some("Bearer {secret}".to_string()),
+                            ..config.services["openai"].clone()
+                        },
+                    );
+                },
+                "custom proxy route",
+            ),
+        ];
+        for (service, edit, expected) in cases {
+            let (config, report) = doctor_report_for(edit);
+
+            let refusal = format!(
+                "{:#}",
+                super::super::exec::validate_routes_for_launch(&config).unwrap_err()
+            );
+            assert!(refusal.contains("phantom doctor"), "{refusal}");
+
+            assert!(
+                !report
+                    .checks
+                    .iter()
+                    .any(|check| check.message == "Service routes look safe"),
+                "{service}: doctor called routes safe while exec refuses"
+            );
+            let line = report
+                .checks
+                .iter()
+                .find(|check| check.message.contains(&format!("`{service}`")))
+                .unwrap_or_else(|| panic!("{service}: doctor has no finding for the route"));
+            assert_eq!(line.status, "fail", "{service}");
+            assert!(line.message.contains(expected), "{}", line.message);
+            assert!(line.message.contains("refuse"), "{}", line.message);
+            assert!(line.fix.as_deref().unwrap().contains("phantom why"));
+        }
+
+        let (_, report) = doctor_report_for(|_| {});
+        assert!(report
+            .checks
+            .iter()
+            .any(|check| check.message == "Service routes look safe"));
+    }
+
     /// `phantom doctor` aborted with the raw resolver error when the
     /// configured managed dotenv was missing: the diagnostic failed on the
     /// state it exists to diagnose. It now reports it as a failed check with a
@@ -1104,6 +1299,59 @@ mod tests {
             "{error:#}"
         );
         assert!(!dir.join(".gitignore").exists());
+    }
+
+    /// A `.phantom.toml` that exists but does not parse read as "no config"
+    /// for the dotenv check and repairs: doctor judged `./.env` and `--fix`
+    /// wrote `.gitignore` and `.env.example` from it. Doctor now reports the
+    /// broken config with a next step, leaves the managed dotenv unchecked,
+    /// and `--fix` makes no repairs.
+    #[test]
+    fn doctor_reports_a_broken_config_and_fix_makes_no_repairs() {
+        let project = tempfile::tempdir().unwrap();
+        let dir = project.path().canonicalize().unwrap();
+        std::fs::write(dir.join(".phantom.toml"), "[phantom\nversion = ").unwrap();
+        std::fs::write(dir.join(".env"), "APP_NAME=demo\n").unwrap();
+        let _seam = crate::util::test_seam::TestProject::install(
+            dir.clone(),
+            crate::util::test_seam::empty_keychain,
+        );
+
+        super::REPORT.with(|report| {
+            *report.borrow_mut() = Some(phantom_core::report::DoctorReport::default())
+        });
+        let outcome = super::run_checks(false, false);
+        let report = super::REPORT
+            .with(|report| report.borrow_mut().take())
+            .unwrap();
+        let (issues, _) = outcome.expect("doctor must report, not abort");
+        assert!(issues >= 1);
+        let line = report
+            .checks
+            .iter()
+            .find(|check| check.message.starts_with("Config parse error"))
+            .expect("the broken config is a finding");
+        assert_eq!(line.status, "fail");
+        assert!(line.fix.as_deref().unwrap().contains("Fix or restore"));
+        assert!(
+            !report
+                .checks
+                .iter()
+                .any(|check| check.message.starts_with(".env has")
+                    || check.message.starts_with("No .env file")),
+            "doctor judged ./.env while the managed dotenv is unknown"
+        );
+        assert!(report.checks.iter().any(|check| check.status == "warn"
+            && check.message.starts_with("Managed dotenv not checked")));
+
+        super::REPORT.with(|report| {
+            *report.borrow_mut() = Some(phantom_core::report::DoctorReport::default())
+        });
+        let error = super::run_checks(true, false).unwrap_err();
+        super::REPORT.with(|report| report.borrow_mut().take());
+        assert!(format!("{error:#}").contains("made no repairs"));
+        assert!(!dir.join(".gitignore").exists());
+        assert!(!dir.join(".env.example").exists());
     }
 
     /// The `.env.example` repair derives from the bytes the guard read, not a

@@ -141,6 +141,22 @@ fn has_phantom(format: Format, text: &str) -> Option<bool> {
     }
 }
 
+/// Every client's config path in display order, as `(id, path, global)`.
+/// `phantom doctor` checks exactly these clients; home-rooted ones are
+/// skipped when there is no home directory.
+pub(crate) fn client_config_paths(
+    home: Option<&Path>,
+    project: &Path,
+) -> Vec<(&'static str, PathBuf, bool)> {
+    CLIENTS
+        .iter()
+        .filter_map(|spec| match spec.root {
+            Root::Project => Some((spec.id, project.join(spec.relative), false)),
+            Root::Home => home.map(|home| (spec.id, home.join(spec.relative), true)),
+        })
+        .collect()
+}
+
 pub(crate) fn collect(home: &Path, project: &Path) -> Vec<ClientStatus> {
     CLIENTS.iter().map(|c| probe(c, home, project)).collect()
 }

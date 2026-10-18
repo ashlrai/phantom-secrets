@@ -254,9 +254,10 @@ pub fn run(env_path_arg: &str) -> Result<()> {
             if let Some(prepared) = &claude_setup {
                 files.extend(prepared.transaction_files());
             }
-            let mut guidance = docs::prepare_guidance(&project_dir)?;
-            files.extend(guidance.take_files());
             let vault = phantom_vault::try_create_vault(&vault_project_id);
+            let backend = vault.as_ref().ok().map(|vault| vault.backend_name());
+            let mut guidance = docs::prepare_guidance(&project_dir, backend)?;
+            files.extend(guidance.take_files());
             commit_after_vault_provisioning(
                 &project_dir,
                 reviewed_project_identity,
@@ -374,12 +375,12 @@ pub fn run(env_path_arg: &str) -> Result<()> {
     if let Some(prepared) = &claude_setup {
         files.extend(prepared.transaction_files());
     }
-    let mut guidance = docs::prepare_guidance(&project_dir)?;
-    files.extend(guidance.take_files());
-
     let vault = phantom_vault::try_create_vault(phantom_config.local_project_id()).context(
         "Vault provisioning failed before any project files were changed. Set PHANTOM_VAULT_PASSPHRASE to a durable secret value and retry",
     )?;
+    let mut guidance = docs::prepare_guidance(&project_dir, Some(vault.backend_name()))?;
+    files.extend(guidance.take_files());
+
     let secrets = real_entries
         .iter()
         .map(|entry| {
@@ -544,7 +545,7 @@ fn next_steps(logged_in: bool, has_cloud_version: bool) -> Vec<(&'static str, &'
         ),
         (
             "Connect your AI client (writes its MCP config):",
-            "phantom setup --client claude|cursor|windsurf|codex   # --print to stdout",
+            "phantom setup --client claude|cursor|windsurf|codex|gemini   # --print to stdout",
         ),
         (
             "Run your app or agent with secret injection:",
@@ -700,11 +701,12 @@ mod tests {
         assert!(regular.contains("TrustedAnchor::open(&project_dir)"));
         assert!(regular.contains("prepare_auto_setup_claude_code(&project_dir)"));
         assert_eq!(
-            regular.matches("prepare_guidance(&project_dir)").count(),
+            regular.matches("prepare_guidance(&project_dir, ").count(),
             2,
             "both init branches must keep mutating guidance inside the reviewed project"
         );
         assert!(!regular.contains("prepare_guidance(&project_dir, &cwd)"));
+        assert!(!regular.contains("prepare_guidance(&cwd"));
         assert_eq!(
             regular.matches("reviewed_project_identity,").count(),
             2,

@@ -105,3 +105,102 @@ fn min_confidence_filters_plan() {
     let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     assert!(v["plan"].as_array().unwrap().is_empty());
 }
+
+fn plan_in(home: &Path, cwd: &Path, extra: &[&str]) -> assert_cmd::assert::Assert {
+    Command::cargo_bin("phantom")
+        .expect("binary not found")
+        .env("HOME", home)
+        .env("NO_COLOR", "1")
+        .current_dir(cwd)
+        .args(["leaks", "plan"])
+        .args(extra)
+        .assert()
+}
+
+fn write_policy(cwd: &Path, body: &str) {
+    std::fs::write(
+        cwd.join(".phantom.toml"),
+        format!("[phantom]\nversion = \"1\"\nproject_id = \"abc123\"\n{body}"),
+    )
+    .unwrap();
+}
+
+#[test]
+fn on_leak_off_prints_nothing_to_plan() {
+    let tmp = common::canonical_tempdir();
+    let proj = common::canonical_tempdir();
+    seed(tmp.path(), "STRIPE_SECRET_KEY", 0.95);
+    write_policy(proj.path(), "[leak_response]\non_leak = \"off\"\n");
+    let out = plan_in(tmp.path(), proj.path(), &["--json"]).success();
+    let v: serde_json::Value = serde_json::from_slice(&out.get_output().stdout).unwrap();
+    assert_eq!(v["on_leak"], "off");
+    assert_eq!(v["plan"].as_array().unwrap().len(), 0);
+    // A repository's policy must not hide the user's active incidents.
+    assert_eq!(v["suppressed_incidents"], 1);
+}
+
+#[test]
+fn on_leak_off_text_still_reports_active_incidents() {
+    let tmp = common::canonical_tempdir();
+    let proj = common::canonical_tempdir();
+    seed(tmp.path(), "STRIPE_SECRET_KEY", 0.95);
+    write_policy(proj.path(), "[leak_response]\non_leak = \"off\"\n");
+    let out = plan_in(tmp.path(), proj.path(), &[]).success();
+    let stdout = String::from_utf8_lossy(&out.get_output().stdout).to_string();
+    assert!(
+        stdout.contains("1 active leak incident(s) exist and are not planned"),
+        "stdout: {stdout}"
+    );
+    assert!(!stdout.contains("Nothing to plan"), "stdout: {stdout}");
+}
+
+#[test]
+fn on_leak_off_with_no_incidents_says_nothing_to_plan() {
+    let tmp = common::canonical_tempdir();
+    let proj = common::canonical_tempdir();
+    write_policy(proj.path(), "[leak_response]\non_leak = \"off\"\n");
+    let out = plan_in(tmp.path(), proj.path(), &["--json"]).success();
+    let v: serde_json::Value = serde_json::from_slice(&out.get_output().stdout).unwrap();
+    assert_eq!(v["suppressed_incidents"], 0);
+}
+
+#[test]
+fn on_leak_default_is_plan() {
+    let tmp = common::canonical_tempdir();
+    let proj = common::canonical_tempdir();
+    seed(tmp.path(), "STRIPE_SECRET_KEY", 0.95);
+    write_policy(proj.path(), "");
+    let out = plan_in(tmp.path(), proj.path(), &["--json"]).success();
+    let v: serde_json::Value = serde_json::from_slice(&out.get_output().stdout).unwrap();
+    assert_eq!(v["on_leak"], "plan");
+    assert_eq!(v["live_revoke_available"], false);
+    assert_eq!(v["plan"][0]["action"], "revoke_and_rotate");
+}
+
+#[test]
+fn on_leak_revoke_without_opt_in_fails_closed() {
+    let tmp = common::canonical_tempdir();
+    let proj = common::canonical_tempdir();
+    seed(tmp.path(), "STRIPE_SECRET_KEY", 0.95);
+    write_policy(proj.path(), "[leak_response]\non_leak = \"revoke\"\n");
+    let out = plan_in(tmp.path(), proj.path(), &[]).failure();
+    let err = String::from_utf8_lossy(&out.get_output().stderr).to_string();
+    assert!(err.contains("allow_revoke"), "stderr: {err}");
+}
+
+#[test]
+fn on_leak_revoke_opted_in_still_only_plans() {
+    let tmp = common::canonical_tempdir();
+    let proj = common::canonical_tempdir();
+    seed(tmp.path(), "STRIPE_SECRET_KEY", 0.95);
+    write_policy(
+        proj.path(),
+        "[leak_response]\non_leak = \"revoke\"\nallow_revoke = true\n",
+    );
+    let before = snapshot(tmp.path());
+    let out = plan_in(tmp.path(), proj.path(), &[]).success();
+    let stdout = String::from_utf8_lossy(&out.get_output().stdout).to_string();
+    assert!(stdout.contains("live revoke is disabled in this build"));
+    assert!(stdout.contains("Dry run: nothing was changed"));
+    assert_eq!(before, snapshot(tmp.path()));
+}

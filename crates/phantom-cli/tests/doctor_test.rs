@@ -172,6 +172,15 @@ fn doctor_json_reports_checks_hints_and_mcp_clients() {
             .unwrap_or_else(|| panic!("{stdout}"));
         assert_eq!(missing_config["status"], "warn");
         assert_eq!(missing_config["fix"], "Run: phantom init");
+        let missing_gitignore = checks
+            .iter()
+            .find(|check| check["message"] == "No .gitignore — consider adding one")
+            .unwrap_or_else(|| panic!("{stdout}"));
+        assert_eq!(
+            missing_gitignore["fix"],
+            "Run: phantom doctor --fix (creates .gitignore with .env patterns)",
+            "the .env.example hint must not attach to the .gitignore warning"
+        );
 
         let claude = report["mcp_clients"]
             .as_array()
@@ -402,5 +411,79 @@ fn doctor_counts_missing_example_when_dotenv_is_unparseable() {
         without_example["issues"].as_u64().unwrap(),
         with_example["issues"].as_u64().unwrap() + 1,
         "missing .env.example must count as one issue: {without_example} vs {with_example}"
+    );
+}
+
+#[test]
+fn doctor_checks_the_same_mcp_clients_as_setup_status() {
+    let dir = common::canonical_tempdir();
+    fs::create_dir_all(dir.path().join(".gemini")).unwrap();
+    fs::write(
+        dir.path().join(".gemini/settings.json"),
+        r#"{"mcpServers":{"phantom":{"command":"npx","args":["-y","phantom-secrets-mcp"]}}}"#,
+    )
+    .unwrap();
+
+    let status = phantom(&dir)
+        .args(["--json", "setup", "--status"])
+        .assert()
+        .success();
+    let status: serde_json::Value = serde_json::from_slice(&status.get_output().stdout).unwrap();
+    let status_ids: Vec<&str> = status
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["id"].as_str().unwrap())
+        .collect();
+
+    let report = doctor_json(&dir, &["doctor", "--json"]);
+    let clients = report["mcp_clients"].as_array().unwrap();
+    let doctor_ids: Vec<&str> = clients
+        .iter()
+        .map(|client| client["client"].as_str().unwrap())
+        .collect();
+    assert_eq!(doctor_ids, status_ids, "{report}");
+    let gemini = clients
+        .iter()
+        .find(|client| client["client"] == "gemini")
+        .unwrap();
+    assert_eq!(gemini["state"], "stale", "{report}");
+    assert_eq!(gemini["path"], "~/.gemini/settings.json", "{report}");
+}
+
+#[test]
+fn doctor_pq_json_is_value_free_and_needs_no_project() {
+    // Empty directory: no .phantom.toml, no vault. The report must still work.
+    let dir = common::canonical_tempdir();
+    let output = phantom(&dir)
+        .args(["doctor", "--pq", "--json"])
+        .output()
+        .expect("run phantom doctor --pq --json");
+    assert!(output.status.success(), "{output:?}");
+    let report: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout is one JSON document");
+    let surfaces = report["surfaces"].as_array().expect("surfaces array");
+    assert!(surfaces.iter().any(|s| s["status"] == "vulnerable"));
+    assert!(surfaces.iter().any(|s| s["status"] == "resistant"));
+    assert!(report["pq_hybrid"]["status"]
+        .as_str()
+        .unwrap()
+        .contains("experimental"));
+    assert!(!dir.path().join(".phantom.toml").exists());
+}
+
+#[test]
+fn doctor_pq_human_report_names_hybrid_caveat() {
+    let dir = common::canonical_tempdir();
+    let output = phantom(&dir)
+        .args(["doctor", "--pq"])
+        .output()
+        .expect("run phantom doctor --pq");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("quantum-vulnerable"), "{stdout}");
+    assert!(
+        stdout.contains("not been independently audited"),
+        "{stdout}"
     );
 }

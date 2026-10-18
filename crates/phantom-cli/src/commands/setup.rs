@@ -33,6 +33,9 @@ pub enum Client {
     Windsurf,
     /// Codex (OpenAI) — patches ~/.codex/config.toml
     Codex,
+    /// Gemini CLI — writes `mcpServers` in ~/.gemini/settings.json
+    #[value(name = "gemini", alias = "gemini-cli")]
+    Gemini,
 }
 
 impl Client {
@@ -42,6 +45,7 @@ impl Client {
             Client::Cursor => "Cursor",
             Client::Windsurf => "Windsurf",
             Client::Codex => "Codex",
+            Client::Gemini => "Gemini CLI",
         }
     }
 }
@@ -116,6 +120,7 @@ pub fn run(client: Option<Client>, print: bool, audit_mode: Option<AuditMode>) -
         Client::Cursor => setup_cursor(&mcp),
         Client::Windsurf => setup_windsurf(&mcp),
         Client::Codex => setup_codex(&mcp),
+        Client::Gemini => setup_gemini(&mcp),
     }
 }
 
@@ -656,6 +661,28 @@ fn setup_windsurf(mcp: &McpCommand) -> Result<()> {
     Ok(())
 }
 
+// ────────────────────────── Gemini CLI ─────────────────────────
+
+/// Gemini CLI reads user MCP servers from the top-level `mcpServers` object
+/// in `~/.gemini/settings.json`, the same `{command, args}` shape as Cursor.
+/// Every other setting in that file is preserved.
+fn setup_gemini(mcp: &McpCommand) -> Result<()> {
+    let home = home_dir()?;
+    let path = home.join(".gemini/settings.json");
+    upsert_global_mcp_servers_json(&home, Path::new(".gemini/settings.json"), mcp, || {})?;
+    println!(
+        "\n{} Gemini CLI configured at {}",
+        "ok".green().bold(),
+        display(&path).dimmed()
+    );
+    println!(
+        "{} {} to activate (`/mcp` lists connected servers).",
+        "->".blue().bold(),
+        "Restart Gemini CLI".bold()
+    );
+    Ok(())
+}
+
 // ──────────────────────────── Codex ────────────────────────────
 
 fn setup_codex(mcp: &McpCommand) -> Result<()> {
@@ -1165,7 +1192,7 @@ fn finish_global_operation<T>(
 
 fn print_snippet(client: Client, mcp: &McpCommand) -> Result<()> {
     match client {
-        Client::ClaudeCode | Client::Cursor | Client::Windsurf => {
+        Client::ClaudeCode | Client::Cursor | Client::Windsurf | Client::Gemini => {
             let body = serde_json::json!({
                 "mcpServers": {
                     "phantom": {
@@ -1178,6 +1205,7 @@ fn print_snippet(client: Client, mcp: &McpCommand) -> Result<()> {
                 Client::ClaudeCode => ".mcp.json (project; approve this server in Claude Code)",
                 Client::Cursor => "~/.cursor/mcp.json",
                 Client::Windsurf => "~/.codeium/windsurf/mcp_config.json",
+                Client::Gemini => "~/.gemini/settings.json (merge into mcpServers)",
                 _ => unreachable!(),
             };
             println!("# {} — {}", client.label(), target);
@@ -1298,12 +1326,7 @@ fn home_dir() -> Result<PathBuf> {
 }
 
 fn display(path: &Path) -> String {
-    if let Ok(home) = home_dir() {
-        if let Ok(suffix) = path.strip_prefix(&home) {
-            return format!("~/{}", suffix.display());
-        }
-    }
-    path.display().to_string()
+    phantom_core::home::display_home_relative(path)
 }
 
 #[cfg(test)]

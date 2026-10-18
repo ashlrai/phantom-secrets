@@ -121,6 +121,62 @@ fn add_no_value_no_stdin_on_non_tty_fails() {
 }
 
 #[test]
+fn non_tty_refusal_is_actionable_and_backtrace_free_under_rust_backtrace() {
+    let dir = common::canonical_tempdir();
+    init_project(&dir);
+
+    // Agent and CI shells often export RUST_BACKTRACE=1. Errors must stay a
+    // short, actionable message instead of an anyhow stack dump.
+    let output = phantom(&dir)
+        .args(["add", "SOME_KEY"])
+        .env("RUST_BACKTRACE", "1")
+        .env("RUST_LIB_BACKTRACE", "1")
+        .write_stdin("ignored\n")
+        .assert()
+        .code(1);
+    let stderr = String::from_utf8_lossy(&output.get_output().stderr);
+    assert!(
+        stderr.starts_with("Error: stdin is not a terminal"),
+        "unexpected stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("--stdin"),
+        "refusal must name the fix: {stderr}"
+    );
+    assert!(
+        !stderr.contains("Stack backtrace") && !stderr.contains("anyhow::"),
+        "error output leaked a backtrace: {stderr}"
+    );
+}
+
+#[test]
+fn error_causes_are_kept_without_a_backtrace() {
+    let dir = common::canonical_tempdir();
+    init_project(&dir);
+
+    // A wrong passphrase fails with context plus an underlying cause.
+    let output = phantom(&dir)
+        .arg("list")
+        .env(
+            "PHANTOM_VAULT_PASSPHRASE",
+            "not-the-passphrase-used-by-init",
+        )
+        .env("RUST_BACKTRACE", "full")
+        .assert()
+        .code(1);
+    let stderr = String::from_utf8_lossy(&output.get_output().stderr);
+    assert!(stderr.contains("Error: "), "stderr: {stderr}");
+    assert!(
+        stderr.contains("Caused by:"),
+        "cause chain dropped: {stderr}"
+    );
+    assert!(
+        !stderr.contains("Stack backtrace"),
+        "error output leaked a backtrace: {stderr}"
+    );
+}
+
+#[test]
 fn positional_secret_value_is_rejected_before_project_mutation() {
     let dir = common::canonical_tempdir();
     let output = phantom(&dir)

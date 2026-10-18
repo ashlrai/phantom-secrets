@@ -3,9 +3,11 @@ pub mod analytics;
 pub mod audit;
 pub mod audit_export;
 pub mod auth;
+pub mod blob_format;
 pub mod cloud;
 mod cloud_http;
 pub mod config;
+pub mod crypto_registry;
 pub mod dotenv;
 pub mod env_scope;
 pub mod error;
@@ -23,6 +25,12 @@ pub mod rotation_provider;
 pub mod rotation_strategy;
 pub mod sync;
 pub mod team_crypto;
+#[cfg(feature = "pq-hybrid")]
+pub mod team_crypto_pq;
+
+/// True when this build of `phantom-core` includes the experimental `pq-hybrid`
+/// feature (X-Wing team key share library). Read by `phantom doctor --pq`.
+pub const PQ_HYBRID_COMPILED: bool = cfg!(feature = "pq-hybrid");
 pub mod teams;
 pub mod teams_vault;
 pub mod token;

@@ -22,6 +22,47 @@ pub fn project_dir() -> anyhow::Result<PathBuf> {
     Ok(std::env::current_dir()?)
 }
 
+/// The error for a command that needs `.phantom.toml` in `project_dir`.
+///
+/// Commands work on the current directory only. When an ancestor directory
+/// holds a `.phantom.toml`, the error names it so a run from a project
+/// subdirectory is not told to `phantom init` a second project.
+pub fn missing_config_error(project_dir: &std::path::Path) -> anyhow::Error {
+    let root = project_dir
+        .ancestors()
+        .skip(1)
+        .find(|dir| dir.join(".phantom.toml").is_file());
+    match root {
+        Some(root) => anyhow::anyhow!(
+            "No .phantom.toml in {}. Phantom commands run from the project root; this directory is inside the project at {}. Run {} first.",
+            project_dir.display(),
+            root.display(),
+            format!("cd {}", root.display()).cyan().bold()
+        ),
+        None => anyhow::anyhow!(
+            "No .phantom.toml found. Run {} first.",
+            "phantom init".cyan().bold()
+        ),
+    }
+}
+
+/// The project's `.phantom.toml` at `path`, or `None` only when it does not
+/// exist.
+///
+/// A config that exists but cannot be read or parsed is an error. Callers
+/// that report readiness or derive repairs from the config must not read it
+/// as "not initialized": that silently swaps the managed dotenv for `./.env`
+/// and drops every config-derived check.
+pub fn load_config_if_present(
+    path: &std::path::Path,
+) -> phantom_core::error::Result<Option<phantom_core::config::PhantomConfig>> {
+    match phantom_core::config::PhantomConfig::load(path) {
+        Ok(config) => Ok(Some(config)),
+        Err(phantom_core::error::PhantomError::ConfigNotFound(_)) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
 /// Open the vault for `project_id`. Tests install a stub backend with
 /// [`test_seam::TestProject`].
 pub fn open_vault(project_id: &str) -> anyhow::Result<Box<dyn VaultBackend>> {
@@ -77,16 +118,22 @@ pub fn locked_vault_notice(vault: &dyn VaultBackend, project_id: &str) -> Option
 /// error names the locked vault and the unlock step instead of claiming the
 /// key has no entry. Either way the caller refuses: `missing` is the message
 /// for a vault that really lacks the key, and `refusal` ends both messages.
+/// `default_env` adds the `phantom add` next step, which stores the key for
+/// the default environment only.
 pub fn missing_protected_entry(
     vault: &dyn VaultBackend,
     project_id: &str,
     key: &str,
     missing: String,
     refusal: &str,
+    default_env: bool,
 ) -> anyhow::Error {
     match locked_vault_notice(vault, project_id) {
         Some(notice) => anyhow::anyhow!(
             "{VAULT_LOCKED}, so protected dotenv key '{key}' cannot be read from it; {refusal}. {notice}"
+        ),
+        None if default_env => anyhow::anyhow!(
+            "{missing}; {refusal}. Next step: store it from a trusted terminal with `phantom add {key}`, or remove {key} from the dotenv if the project no longer uses it."
         ),
         None => anyhow::anyhow!("{missing}; {refusal}"),
     }

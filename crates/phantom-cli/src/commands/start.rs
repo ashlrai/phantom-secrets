@@ -145,14 +145,11 @@ async fn run_async() -> Result<()> {
     let config_path = project_dir.join(".phantom.toml");
 
     if !config_path.exists() {
-        anyhow::bail!(
-            "No .phantom.toml found. Run {} first.",
-            "phantom init".cyan().bold()
-        );
+        return Err(crate::util::missing_config_error(&project_dir));
     }
 
     let config = PhantomConfig::load(&config_path)?;
-    config.validate_agentic_proxy_routes()?;
+    super::exec::validate_routes_for_launch(&config)?;
 
     let preflight = phantom_core::managed_dotenv::resolve_dotenv(&project_dir, &config, &[])?;
     validate_start_dotenv(&preflight).context(
@@ -206,9 +203,13 @@ async fn run_async() -> Result<()> {
     // Build token mapping
     let mut token_to_secret: HashMap<String, (String, String)> = HashMap::new();
     let mut secret_name_to_value: HashMap<String, String> = HashMap::new();
+    // Names for the session-keys export, taken from the dotenv keys before any
+    // vault read so nothing value-bearing feeds the printed line.
+    let mut session_names: Vec<String> = Vec::new();
     if let Some(dotenv) = resolved.file {
         for entry in dotenv.entries() {
             if PhantomToken::is_phantom_token(&entry.value) {
+                session_names.push(entry.key.clone());
                 let real_value = retrieve_required_default_secret(
                     vault.as_ref(),
                     config.local_project_id(),
@@ -291,6 +292,17 @@ async fn run_async() -> Result<()> {
         "{}",
         format_export(syntax, "PHANTOM_PROXY_TOKEN", &proxy_token)
     );
+    // `phantom check --runtime` excuses these by name only: unlike `phantom
+    // exec`, start cannot see which of the shell's variables it will serve, so
+    // every dotenv key holding a phantom token is listed, routed or not.
+    println!(
+        "{}",
+        format_export(
+            syntax,
+            phantom_core::report::SESSION_KEYS_VAR,
+            &super::exec::session_variable_list(session_names.iter()),
+        )
+    );
     if header_auth_only {
         println!("  # Header-only mode: clients must send x-phantom-proxy-token.");
     } else {
@@ -341,6 +353,7 @@ fn retrieve_required_default_secret(
                             "Protected dotenv key '{name}' has no vault entry for the default environment"
                         ),
                         "refusing to start a partial proxy",
+                        true,
                     )
                 }
                 other => anyhow::anyhow!(
@@ -495,5 +508,6 @@ mod shell_tests {
                 .to_string();
         assert!(error.contains("has no vault entry"));
         assert!(error.contains("refusing to start a partial proxy"));
+        assert!(error.contains("`phantom add OPENAI_API_KEY`"), "{error}");
     }
 }

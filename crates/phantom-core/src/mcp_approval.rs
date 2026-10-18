@@ -986,8 +986,10 @@ fn load_records_if_present(path: &Path) -> std::io::Result<Vec<StoredApprovalRec
 
 fn load_all_records(path: &Path) -> std::io::Result<Vec<StoredApprovalRecord>> {
     require_regular_file_if_present(path, "MCP approval records")?;
-    let f = File::open(path)?;
-    let reader = BufReader::new(f);
+    parse_records(BufReader::new(File::open(path)?))
+}
+
+fn parse_records(reader: impl BufRead) -> std::io::Result<Vec<StoredApprovalRecord>> {
     let mut records = Vec::new();
     for (index, line) in reader.lines().enumerate() {
         let line = line?;
@@ -1065,6 +1067,85 @@ pub fn list_pending_approvals() -> std::io::Result<Vec<ApprovalRecord>> {
         .filter(|r| !r.approved && !r.is_expired())
         .map(ApprovalRecord::from)
         .collect())
+}
+
+/// Value-free view of one approval record: no nonce, argument hash, or
+/// parameter summary.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ApprovalStatusEntry {
+    pub tool_name: String,
+    pub project_id: String,
+    pub created_at: u64,
+    pub expires_at: Option<u64>,
+    pub approved: bool,
+    pub approved_at: Option<u64>,
+    pub expired: bool,
+}
+
+/// Read-only snapshot for status displays. Unlike [`list_pending_approvals`]
+/// this takes no storage lock and creates no directory or lock file, so it
+/// writes nothing even on a machine that has never used MCP approvals. Writers
+/// replace the file atomically, so an unlocked read sees a whole file.
+///
+/// The storage directory and records file are held to the same shape the
+/// locked writers enforce (a real directory, a regular file opened without
+/// following a symlink), so status never reports records the MCP server
+/// would refuse to use.
+pub fn read_approval_status() -> std::io::Result<Vec<ApprovalStatusEntry>> {
+    if !approval_home_is_real_dir_if_present()? {
+        return Ok(Vec::new());
+    }
+    let path = approvals_path()?;
+    let records = match crate::fs::read_regular_file(&path) {
+        Ok(Some(bytes)) => parse_records(&bytes[..])?,
+        Ok(None) => Vec::new(),
+        Err(error) => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("MCP approval records: {error}"),
+            ))
+        }
+    };
+    Ok(records
+        .into_iter()
+        .map(|r| ApprovalStatusEntry {
+            expired: r.is_expired(),
+            tool_name: r.tool_name,
+            project_id: r.project_id,
+            created_at: r.created_at,
+            expires_at: r.expires_at,
+            approved: r.approved,
+            approved_at: r.approved_at,
+        })
+        .collect())
+}
+
+/// Whether the approval HMAC key file exists. The key is never read.
+/// A symlink or other non-regular entry is an error, not "absent": the MCP
+/// server refuses such a key, so reporting it as not created would mislead.
+pub fn approval_key_present() -> std::io::Result<bool> {
+    if !approval_home_is_real_dir_if_present()? {
+        return Ok(false);
+    }
+    let path = approval_key_path()?;
+    require_regular_file_if_present(&path, "MCP approval key")?;
+    Ok(std::fs::symlink_metadata(&path).is_ok())
+}
+
+/// `Ok(false)` when `~/.phantom` is absent; an error when it exists but is a
+/// symlink or not a directory (the locked writers refuse that layout).
+fn approval_home_is_real_dir_if_present() -> std::io::Result<bool> {
+    match std::fs::symlink_metadata(approval_home()?) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "MCP approval storage directory is not a real directory",
+            ))
+        }
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
+    }
 }
 
 /// Prune expired and consumed records from the approvals file.

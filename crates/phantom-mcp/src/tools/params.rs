@@ -324,7 +324,7 @@ fn default_example_output() -> String {
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct SyncParams {
-    /// Platform to sync to (vercel, railway). If empty, syncs all configured targets.
+    /// Platform to show: `vercel` or `railway` (case-insensitive). Omit it, or pass an empty string, to show every configured target. Any other value is refused.
     #[serde(default)]
     pub platform: Option<String>,
     /// Override project ID for this sync
@@ -450,7 +450,8 @@ pub struct AuditStatsParams {
     #[serde(default = "default_audit_period")]
     pub period: String,
     /// Only include secrets whose anomaly score is at or above this threshold
-    /// (range 0.0–1.0). Omit or set to 0.0 to return all secrets.
+    /// (range 0.0–1.0; other values are clamped into it). Omit or set to 0.0
+    /// to return all secrets.
     #[serde(default)]
     pub min_anomaly_score: Option<f64>,
 }
@@ -483,9 +484,16 @@ pub struct AuditAnomaliesParams {
     /// Time period to analyse: "7d", "30d", or "all". Defaults to "30d".
     #[serde(default = "default_anomalies_period")]
     pub period: String,
-    /// Minimum anomaly score to include (0.0–1.0). Defaults to 0.4.
+    /// Minimum anomaly score to include (0.0–1.0; other values are clamped
+    /// into it). Defaults to 0.4.
     #[serde(default = "default_min_anomaly")]
     pub min_score: f64,
+    /// Maximum findings to return, highest scores kept (default: 1000;
+    /// values above 10000 are treated as 10000). A 1 MiB response ceiling
+    /// may return fewer; total_findings stays exact and records_truncated
+    /// then says so.
+    #[serde(default = "default_analytics_max_records")]
+    pub max_records: u32,
 }
 
 fn default_anomalies_period() -> String {
@@ -503,7 +511,8 @@ pub struct AuditAnomaliesRealtimeParams {
     /// Filter to a single secret name. Omit to check all secrets.
     #[serde(default)]
     pub name: Option<String>,
-    /// Minimum anomaly score (0.0–1.0) to include in results. Defaults to 0.5.
+    /// Minimum anomaly score (0.0–1.0; other values are clamped into it) to
+    /// include in results. Defaults to 0.5.
     #[serde(default = "default_realtime_threshold")]
     pub threshold: f64,
     /// Override: max accesses allowed within any rolling 1-hour window before
@@ -514,6 +523,12 @@ pub struct AuditAnomaliesRealtimeParams {
     /// triggers a quiet-period alert. Defaults to 7.
     #[serde(default)]
     pub max_consecutive_quiet_days: Option<u64>,
+    /// Maximum findings to return, highest scores kept (default: 1000;
+    /// values above 10000 are treated as 10000). A 1 MiB response ceiling
+    /// may return fewer; total_findings stays exact and records_truncated
+    /// then says so.
+    #[serde(default = "default_analytics_max_records")]
+    pub max_records: u32,
 }
 
 fn default_realtime_threshold() -> f64 {
@@ -525,21 +540,32 @@ fn default_realtime_threshold() -> f64 {
 /// Parameters for `phantom_audit_analytics` — full analytics + access-record export.
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct AuditAnalyticsParams {
-    /// Time window in days (default: 30). 0 means all available history.
+    /// Time window in days (default: 30): exactly the last N days of events.
+    /// 0 means all available history.
     #[serde(default = "default_analytics_window")]
     pub window_days: u32,
     /// Only include secrets whose anomaly score is at or above this threshold
-    /// (range 0.0–1.0). Defaults to 0.0 (return all secrets).
+    /// (range 0.0–1.0; other values are clamped into it). Omit to return all
+    /// secrets.
     #[serde(default)]
     pub min_anomaly_score: Option<f64>,
     /// Output format: "json" (default) or "csv", case-insensitive. Other
     /// values are rejected with an invalid-params error.
     #[serde(default = "default_analytics_format")]
     pub format: String,
+    /// Maximum access records to return, newest kept (default: 1000; values
+    /// above 10000 are treated as 10000). A 1 MiB response ceiling may return
+    /// fewer; records_truncated and records_total then say so.
+    #[serde(default = "default_analytics_max_records")]
+    pub max_records: u32,
 }
 
 fn default_analytics_window() -> u32 {
     30
+}
+
+pub fn default_analytics_max_records() -> u32 {
+    1_000
 }
 
 fn default_analytics_format() -> String {
@@ -560,6 +586,12 @@ pub struct AuditIncidentsParams {
     /// (range 0.0–1.0). Defaults to 0.7.
     #[serde(default = "default_min_confidence")]
     pub min_confidence: f64,
+    /// Maximum entries in each of incidents and uncorrelated_incidents,
+    /// most confident kept (default: 1000; values above 10000 are treated as
+    /// 10000). A 1 MiB response ceiling may return fewer; incident_count and
+    /// uncorrelated_count stay exact and records_truncated then says so.
+    #[serde(default = "default_analytics_max_records")]
+    pub max_records: u32,
 }
 
 fn default_min_confidence() -> f64 {
@@ -576,6 +608,12 @@ pub struct LeakIncidentsRealtimeParams {
     /// (range 0.0–1.0). Defaults to 0.5 per spec (active incident threshold).
     #[serde(default = "default_realtime_min_confidence")]
     pub min_confidence: f64,
+    /// Maximum entries in each of incidents and uncorrelated_incidents,
+    /// most confident kept (default: 1000; values above 10000 are treated as
+    /// 10000). A 1 MiB response ceiling may return fewer; incident_count and
+    /// uncorrelated_count stay exact and records_truncated then says so.
+    #[serde(default = "default_analytics_max_records")]
+    pub max_records: u32,
 }
 
 fn default_realtime_min_confidence() -> f64 {
@@ -634,6 +672,13 @@ pub struct AuditExportReportParams {
     /// Filter rows to operations containing this string. Omit for all ops.
     #[serde(default)]
     pub operation: Option<String>,
+    /// Maximum audit rows `action="export"` returns, newest kept, and
+    /// maximum entries in each list of the returned `action="report"`
+    /// (default: 1000; values above 10000 are treated as 10000). A 1 MiB
+    /// response ceiling may return fewer; records_truncated and the totals
+    /// then say so. A saved report is always complete.
+    #[serde(default = "default_analytics_max_records")]
+    pub max_records: u32,
     /// Save the compliance report to ~/.phantom/reports/ (report action only).
     #[serde(default)]
     pub save: bool,
