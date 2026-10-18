@@ -4,6 +4,18 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (cloud vault key and team keypair)
+
+- Any failure to read the cloud vault key from the OS keychain (a locked or
+  unreachable keychain, an access denial, an undecodable value) was treated as
+  "no key yet", so `phantom cloud push`/`pull` and the matching MCP tools
+  generated a fresh key and overwrote the stored one, leaving every vault
+  already pushed under it undecryptable. The team-vault keypair had the same
+  flaw and could overwrite the private key that existing team key shares are
+  encrypted to. A new key or keypair is now created only when the keychain
+  reports no entry; any other read failure is returned as an error and the
+  stored key is left untouched.
+
 ### Fixed (`phantom cloud status`)
 
 - A `.phantom.toml` that existed but could not be read or parsed was treated
