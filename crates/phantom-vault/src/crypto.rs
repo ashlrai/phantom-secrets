@@ -197,7 +197,8 @@ mod tests {
     fn vault_key_is_256_bits() {
         // Grover margin: the Argon2id output used as the AEAD key is 32 bytes.
         assert_eq!(KEY_LEN * 8, 256);
-        assert_eq!(derive_key("pw", &[1u8; 16]).unwrap().len() * 8, 256);
+        let salt: [u8; SALT_LEN] = rand::random();
+        assert_eq!(derive_key("pw", &salt).unwrap().len() * 8, 256);
     }
 
     #[test]
