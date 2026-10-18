@@ -16,6 +16,16 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   before any change. A config that does not exist still means "not
   initialized".
 
+### Fixed (`phantom why`)
+
+- A `.phantom.toml` that existed but could not be read or parsed was
+  treated as "not initialized": `phantom why` classified `./.env` instead of
+  the managed dotenv, dropped the service and exec verdict, and exited 0, so
+  a protected key read as fine (`--json`: `"protected": true`, `"exec":
+  null`) while `phantom exec` refused to start. It is now an error saying
+  protection status is indeterminate, matching MCP `phantom_why`; only a
+  missing config still means the project is not initialized.
+
 ### Fixed (`phantom list --min-anomaly-score`)
 
 - An audit log that existed but could not be read, or failed integrity
