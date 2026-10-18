@@ -1431,12 +1431,75 @@ impl LeakIncidentAlerter {
 
     /// Load all alerts, returning at most `last` most-recent ones (by `alerted_at`).
     pub fn load_recent_alerts(&self, last: usize) -> std::io::Result<Vec<LeakAlert>> {
-        let mut alerts = self.load_all_alerts()?;
-        alerts.sort_by_key(|alert| std::cmp::Reverse(alert.alerted_at));
-        alerts.truncate(last);
-        // Restore chronological order for display.
-        alerts.reverse();
-        Ok(alerts)
+        Ok(self.scan_recent_alerts(last)?.alerts)
+    }
+
+    /// The newest `last` alerts (by `alerted_at`, then file order) in
+    /// chronological order, plus the exact number of alerts in the file.
+    ///
+    /// Streams the file once: memory holds at most `last` alerts and one line
+    /// of at most [`MAX_ALERT_LINE_BYTES`], whatever the file's size. A longer
+    /// line, or one that is not an alert, is counted in `unparsable_lines`
+    /// and skipped.
+    pub fn scan_recent_alerts(&self, last: usize) -> std::io::Result<RecentAlerts> {
+        use std::cmp::Reverse;
+        use std::collections::BinaryHeap;
+
+        let mut recent = RecentAlerts::default();
+        let file = match crate::fs::open_regular_nofollow(&self.alerts_path) {
+            Ok(Some(file)) => file,
+            Ok(None) => return Ok(recent),
+            Err(crate::fs::RegularOpenError::Open(error))
+            | Err(crate::fs::RegularOpenError::Inspect(error)) => return Err(error),
+            Err(_) => {
+                return Err(std::io::Error::other(format!(
+                    "refusing non-regular or symlink file target: {}",
+                    self.alerts_path.display()
+                )))
+            }
+        };
+        let mut reader = std::io::BufReader::new(file);
+        // Min-heap on (alerted_at, line index): the root is the oldest kept.
+        let mut kept: BinaryHeap<Reverse<RankedAlert>> = BinaryHeap::new();
+        let mut line = Vec::new();
+        let mut index = 0usize;
+        while let Some(complete) = read_bounded_line(&mut reader, &mut line, MAX_ALERT_LINE_BYTES)?
+        {
+            index += 1;
+            if line.iter().all(u8::is_ascii_whitespace) && complete {
+                continue;
+            }
+            let alert = complete
+                .then(|| serde_json::from_slice::<LeakAlert>(&line).ok())
+                .flatten();
+            let Some(alert) = alert else {
+                recent.unparsable_lines += 1;
+                continue;
+            };
+            recent.total += 1;
+            if last == 0 {
+                continue;
+            }
+            let ranked = RankedAlert {
+                alerted_at: alert.alerted_at,
+                index,
+                alert,
+            };
+            if kept.len() < last {
+                kept.push(Reverse(ranked));
+            } else if kept
+                .peek()
+                .is_some_and(|Reverse(oldest)| oldest.key() < ranked.key())
+            {
+                kept.pop();
+                kept.push(Reverse(ranked));
+            }
+        }
+        // Ascending (alerted_at, index) is chronological order for display.
+        let mut ordered: Vec<RankedAlert> = kept.into_iter().map(|Reverse(r)| r).collect();
+        ordered.sort_by_key(RankedAlert::key);
+        recent.alerts = ordered.into_iter().map(|r| r.alert).collect();
+        Ok(recent)
     }
 
     // ── Private ───────────────────────────────────────────────────────────────
@@ -1484,6 +1547,102 @@ impl LeakIncidentAlerter {
         contents.extend_from_slice(&line);
         crate::fs::atomic_write_if_unchanged(&self.alerts_path, before.as_deref(), &contents)
     }
+}
+
+/// Longest line [`LeakIncidentAlerter::scan_recent_alerts`] parses as an
+/// alert, in bytes. A real alert line is a few hundred bytes: fixed fields,
+/// a secret name and a short remediation template.
+pub const MAX_ALERT_LINE_BYTES: usize = 64 * 1024;
+
+/// Result of [`LeakIncidentAlerter::scan_recent_alerts`].
+#[derive(Debug, Default)]
+pub struct RecentAlerts {
+    /// The newest alerts kept, in chronological order.
+    pub alerts: Vec<LeakAlert>,
+    /// Every alert in the file, kept or not.
+    pub total: usize,
+    /// Non-blank lines that were not an alert (or were too long) and so were
+    /// skipped.
+    pub unparsable_lines: usize,
+}
+
+struct RankedAlert {
+    alerted_at: u64,
+    index: usize,
+    alert: LeakAlert,
+}
+
+impl RankedAlert {
+    fn key(&self) -> (u64, usize) {
+        (self.alerted_at, self.index)
+    }
+}
+
+impl PartialEq for RankedAlert {
+    fn eq(&self, other: &Self) -> bool {
+        self.key() == other.key()
+    }
+}
+
+impl Eq for RankedAlert {}
+
+impl PartialOrd for RankedAlert {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for RankedAlert {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.key().cmp(&other.key())
+    }
+}
+
+/// Read the next line into `line` (without its `\n` or `\r\n`), keeping at
+/// most `max` bytes. `Ok(None)` at end of file; `Ok(Some(false))` when the
+/// line was longer than `max` (the rest of it is consumed and dropped).
+fn read_bounded_line(
+    reader: &mut impl BufRead,
+    line: &mut Vec<u8>,
+    max: usize,
+) -> std::io::Result<Option<bool>> {
+    line.clear();
+    let mut complete = true;
+    let mut read_any = false;
+    loop {
+        let buf = match reader.fill_buf() {
+            Ok(buf) => buf,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        };
+        if buf.is_empty() {
+            break;
+        }
+        read_any = true;
+        let (chunk, used, done) = match buf.iter().position(|b| *b == b'\n') {
+            Some(end) => (&buf[..end], end + 1, true),
+            None => (buf, buf.len(), false),
+        };
+        if complete {
+            if line.len() + chunk.len() <= max {
+                line.extend_from_slice(chunk);
+            } else {
+                complete = false;
+                line.clear();
+            }
+        }
+        reader.consume(used);
+        if done {
+            break;
+        }
+    }
+    if !read_any {
+        return Ok(None);
+    }
+    if line.last() == Some(&b'\r') {
+        line.pop();
+    }
+    Ok(Some(complete))
 }
 
 fn is_public_alert_ip(ip: std::net::IpAddr) -> bool {
@@ -2179,6 +2338,99 @@ mod tests {
         // Should be the 3 most recent (alerted_at values), in chronological order.
         assert!(recent[0].alerted_at <= recent[1].alerted_at);
         assert!(recent[1].alerted_at <= recent[2].alerted_at);
+    }
+
+    fn plain_alert(i: u64, alerted_at: u64) -> LeakAlert {
+        LeakAlert {
+            incident_id: format!("inc_{i}"),
+            secret_name: format!("KEY_{i}"),
+            location_label: "body".to_string(),
+            confidence: 0.95,
+            event_count: 1,
+            alerted_at,
+            backends_notified: vec![],
+            remediation: String::new(),
+        }
+    }
+
+    #[test]
+    fn scan_recent_alerts_counts_every_alert_and_keeps_the_newest() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("leak-alerts.jsonl");
+        let mut contents = String::new();
+        // Out of order on disk; two share alerted_at 500.
+        for (i, at) in [(0u64, 300u64), (1, 500), (2, 100), (3, 500), (4, 200)] {
+            contents.push_str(&serde_json::to_string(&plain_alert(i, at)).unwrap());
+            contents.push('\n');
+        }
+        contents.push_str("not an alert\n\n   \n");
+        contents.push_str(&"x".repeat(MAX_ALERT_LINE_BYTES + 1));
+        contents.push('\n');
+        contents.push_str(&serde_json::to_string(&plain_alert(5, 400)).unwrap());
+        std::fs::write(&path, contents).unwrap();
+        let alerter = LeakIncidentAlerter::with_path(
+            AlertingConfig::default(),
+            path,
+            Box::new(SpyDispatch::default()),
+        );
+
+        let recent = alerter.scan_recent_alerts(3).unwrap();
+        assert_eq!(recent.total, 6);
+        assert_eq!(recent.unparsable_lines, 2);
+        let ids: Vec<&str> = recent
+            .alerts
+            .iter()
+            .map(|a| a.incident_id.as_str())
+            .collect();
+        // Newest three, chronological; the later line wins a tie.
+        assert_eq!(ids, ["inc_5", "inc_1", "inc_3"]);
+
+        let none = alerter.scan_recent_alerts(0).unwrap();
+        assert_eq!(none.total, 6);
+        assert!(none.alerts.is_empty());
+
+        let all = alerter.scan_recent_alerts(usize::MAX).unwrap();
+        assert_eq!(all.alerts.len(), 6);
+        assert_eq!(alerter.load_recent_alerts(2).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn bounded_line_reader_drops_long_lines_and_strips_endings() {
+        let data = b"abc\r\ntoolong\nok";
+        let mut reader = std::io::BufReader::with_capacity(2, &data[..]);
+        let mut line = Vec::new();
+        assert_eq!(
+            read_bounded_line(&mut reader, &mut line, 4).unwrap(),
+            Some(true)
+        );
+        assert_eq!(line, b"abc");
+        assert_eq!(
+            read_bounded_line(&mut reader, &mut line, 4).unwrap(),
+            Some(false)
+        );
+        assert!(line.is_empty());
+        assert_eq!(
+            read_bounded_line(&mut reader, &mut line, 4).unwrap(),
+            Some(true)
+        );
+        assert_eq!(line, b"ok");
+        assert_eq!(read_bounded_line(&mut reader, &mut line, 4).unwrap(), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn scan_recent_alerts_refuses_a_symlink() {
+        let tmp = tempdir().unwrap();
+        let target = tmp.path().join("target.jsonl");
+        std::fs::write(&target, "").unwrap();
+        let link = tmp.path().join("leak-alerts.jsonl");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let alerter = LeakIncidentAlerter::with_path(
+            AlertingConfig::default(),
+            link,
+            Box::new(SpyDispatch::default()),
+        );
+        assert!(alerter.scan_recent_alerts(10).is_err());
     }
 
     // Test 10: multiple backends called for same incident
