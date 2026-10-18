@@ -27,7 +27,8 @@ pub fn report(json: bool) -> Result<()> {
 pub fn status(json: bool) -> Result<()> {
     use phantom_core::mcp_approval;
     let entries = mcp_approval::read_approval_status().context("reading MCP approval state")?;
-    let key_present = mcp_approval::approval_key_present().unwrap_or(false);
+    let key_present =
+        mcp_approval::approval_key_present().context("checking the MCP approval key")?;
     let pending = entries.iter().filter(|e| !e.approved && !e.expired).count();
     let approved_unused = entries.iter().filter(|e| e.approved && !e.expired).count();
     let expired = entries.iter().filter(|e| e.expired).count();
