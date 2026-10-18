@@ -6967,31 +6967,8 @@ fn cloud_account_status_text(
         Err(error) => format!(
             "Cloud: could not check account status ({}). The stored login was not rejected; \
              check the network connection and the cloud API URL, then retry.",
-            cloud_lookup_failure_class(&error)
+            error.cloud_failure_class()
         ),
-    }
-}
-
-/// A short, value-free class for an account lookup failure that is not an
-/// auth rejection, so a network or server fault is not reported as an
-/// expired login.
-fn cloud_lookup_failure_class(error: &phantom_core::error::PhantomError) -> String {
-    use phantom_core::error::PhantomError;
-    match error {
-        PhantomError::AuthError(_) => "could not reach Phantom Cloud".to_string(),
-        PhantomError::CloudError { status: 0, .. } => {
-            "could not reach Phantom Cloud: HTTP client unavailable".to_string()
-        }
-        PhantomError::CloudError { status, .. } if (200..300).contains(status) => {
-            format!("unexpected response from Phantom Cloud, HTTP {status}")
-        }
-        PhantomError::CloudError { status, .. } if *status >= 500 => {
-            format!("Phantom Cloud server error, HTTP {status}")
-        }
-        PhantomError::CloudError { status, .. } => {
-            format!("Phantom Cloud refused the request, HTTP {status}")
-        }
-        _ => "Phantom Cloud request failed".to_string(),
     }
 }
 

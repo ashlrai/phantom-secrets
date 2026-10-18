@@ -47,6 +47,42 @@ pub enum QuantumClass {
     Hybrid,
 }
 
+impl Kind {
+    /// Stable lowercase label, used in `phantom crypto inventory` output.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Kind::Aead => "aead",
+            Kind::Kdf => "kdf",
+            Kind::Mac => "mac",
+            Kind::Kem => "kem",
+            Kind::Signature => "signature",
+        }
+    }
+}
+
+impl Status {
+    /// Stable lowercase label, used in `phantom crypto inventory` output.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Status::Default => "default",
+            Status::Optional => "optional",
+            Status::Experimental => "experimental",
+            Status::Deprecated => "deprecated",
+        }
+    }
+}
+
+impl QuantumClass {
+    /// Stable lowercase label, used in `phantom crypto inventory` output.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            QuantumClass::Vulnerable => "vulnerable",
+            QuantumClass::Resistant => "resistant",
+            QuantumClass::Hybrid => "hybrid",
+        }
+    }
+}
+
 /// One algorithm row.
 #[derive(Debug, Clone, Copy)]
 pub struct Algorithm {
@@ -241,6 +277,31 @@ mod tests {
             by_wire_label(WIRE_XWING_CHACHA20POLY1305).unwrap().name,
             "xwing"
         );
+    }
+
+    #[test]
+    fn labels_are_distinct_and_lowercase() {
+        let kinds =
+            [Kind::Aead, Kind::Kdf, Kind::Mac, Kind::Kem, Kind::Signature].map(Kind::as_str);
+        let statuses = [
+            Status::Default,
+            Status::Optional,
+            Status::Experimental,
+            Status::Deprecated,
+        ]
+        .map(Status::as_str);
+        let classes = [
+            QuantumClass::Vulnerable,
+            QuantumClass::Resistant,
+            QuantumClass::Hybrid,
+        ]
+        .map(QuantumClass::as_str);
+        for set in [&kinds[..], &statuses[..], &classes[..]] {
+            assert_eq!(set.len(), set.iter().collect::<HashSet<_>>().len());
+            for label in set {
+                assert_eq!(*label, label.to_ascii_lowercase());
+            }
+        }
     }
 
     #[test]
