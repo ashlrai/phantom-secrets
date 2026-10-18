@@ -97,3 +97,68 @@ fn counts_states_prints_no_nonce_or_hash_and_writes_nothing() {
     assert!(human.contains("phantom_a"));
     assert_eq!(before, snapshot(home.path()));
 }
+
+fn status_fails(home: &Path) -> String {
+    let out = Command::cargo_bin("phantom")
+        .expect("binary not found")
+        .env("HOME", home)
+        .env("NO_COLOR", "1")
+        .args(["agent", "status", "--json"])
+        .assert()
+        .failure()
+        .get_output()
+        .clone();
+    assert!(out.stdout.is_empty(), "no partial report on failure");
+    String::from_utf8(out.stderr).unwrap()
+}
+
+/// The MCP server refuses a symlinked key, so status must not call it absent.
+#[cfg(unix)]
+#[test]
+fn symlinked_key_is_an_error_not_absent() {
+    let home = tempfile::tempdir().unwrap();
+    let elsewhere = tempfile::tempdir().unwrap();
+    let dir = home.path().join(".phantom");
+    std::fs::create_dir_all(&dir).unwrap();
+    let real = elsewhere.path().join("key");
+    std::fs::write(&real, "00ff00ff").unwrap();
+    std::os::unix::fs::symlink(&real, dir.join("mcp-approval-key")).unwrap();
+    let err = status_fails(home.path());
+    assert!(err.contains("not a regular file"), "{err}");
+}
+
+/// Writers refuse a symlinked `~/.phantom`; status must not report records
+/// read through it as live approval state.
+#[cfg(unix)]
+#[test]
+fn symlinked_storage_dir_is_refused() {
+    let home = tempfile::tempdir().unwrap();
+    let elsewhere = tempfile::tempdir().unwrap();
+    let t = now();
+    std::fs::write(
+        elsewhere.path().join("mcp-approvals.jsonl"),
+        format!(
+            r#"{{"nonce":"{NONCE}","tool_name":"phantom_a","arg_hash":"{HASH}","project_id":"/p","created_at":{t},"expires_at":{},"approved":false}}"#,
+            t + 300
+        ) + "\n",
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(elsewhere.path(), home.path().join(".phantom")).unwrap();
+    let err = status_fails(home.path());
+    assert!(err.contains("not a real directory"), "{err}");
+}
+
+/// The records file itself is opened without following a symlink.
+#[cfg(unix)]
+#[test]
+fn symlinked_records_file_is_refused() {
+    let home = tempfile::tempdir().unwrap();
+    let elsewhere = tempfile::tempdir().unwrap();
+    let dir = home.path().join(".phantom");
+    std::fs::create_dir_all(&dir).unwrap();
+    let real = elsewhere.path().join("records");
+    std::fs::write(&real, "").unwrap();
+    std::os::unix::fs::symlink(&real, dir.join("mcp-approvals.jsonl")).unwrap();
+    let err = status_fails(home.path());
+    assert!(err.contains("MCP approval records"), "{err}");
+}

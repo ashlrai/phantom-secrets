@@ -135,6 +135,33 @@ fn on_leak_off_prints_nothing_to_plan() {
     let v: serde_json::Value = serde_json::from_slice(&out.get_output().stdout).unwrap();
     assert_eq!(v["on_leak"], "off");
     assert_eq!(v["plan"].as_array().unwrap().len(), 0);
+    // A repository's policy must not hide the user's active incidents.
+    assert_eq!(v["suppressed_incidents"], 1);
+}
+
+#[test]
+fn on_leak_off_text_still_reports_active_incidents() {
+    let tmp = common::canonical_tempdir();
+    let proj = common::canonical_tempdir();
+    seed(tmp.path(), "STRIPE_SECRET_KEY", 0.95);
+    write_policy(proj.path(), "[leak_response]\non_leak = \"off\"\n");
+    let out = plan_in(tmp.path(), proj.path(), &[]).success();
+    let stdout = String::from_utf8_lossy(&out.get_output().stdout).to_string();
+    assert!(
+        stdout.contains("1 active leak incident(s) exist and are not planned"),
+        "stdout: {stdout}"
+    );
+    assert!(!stdout.contains("Nothing to plan"), "stdout: {stdout}");
+}
+
+#[test]
+fn on_leak_off_with_no_incidents_says_nothing_to_plan() {
+    let tmp = common::canonical_tempdir();
+    let proj = common::canonical_tempdir();
+    write_policy(proj.path(), "[leak_response]\non_leak = \"off\"\n");
+    let out = plan_in(tmp.path(), proj.path(), &["--json"]).success();
+    let v: serde_json::Value = serde_json::from_slice(&out.get_output().stdout).unwrap();
+    assert_eq!(v["suppressed_incidents"], 0);
 }
 
 #[test]

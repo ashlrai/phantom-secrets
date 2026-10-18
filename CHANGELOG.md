@@ -4,6 +4,24 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (`leaks plan` with `on_leak = "off"`)
+
+- `on_leak = "off"` in a repository's `.phantom.toml` made `phantom leaks
+  plan` answer "Nothing to plan" (and `plan: []` in `--json`) without
+  reading the user's incidents, which live in `~/.phantom` and cover every
+  project. It still plans nothing, but it now warns how many active
+  incidents it left out and names `phantom audit incidents`; `--json` adds
+  `suppressed_incidents` (null when the incidents could not be read).
+
+### Fixed (`phantom_expiry_enforce` over a keychain-only view)
+
+- With some secrets in the OS keychain beside an encrypted-file vault the
+  MCP process could not open, `phantom_expiry_enforce` answered
+  `pass: true` (with a `vault_note`) over the keychain alone, while
+  `phantom expiry enforce`, whose answer it claims to match, refuses a
+  partial inventory. The tool now refuses too (-32600, with the unlock step)
+  instead of passing the gate over secrets it never read.
+
 ### Fixed (`phantom cloud status`)
 
 - Any account lookup failure, including a network failure, a 5xx response or
@@ -27,6 +45,7 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   encrypted to. A new key or keypair is now created only when the keychain
   reports no entry; any other read failure is returned as an error and the
   stored key is left untouched.
+
 
 ### Added (`phantom doctor --pq`)
 
@@ -436,6 +455,22 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   prints nonces, argument hashes, or parameter summaries. Lease state is
   reported as unavailable because the broker is not wired into the CLI.
   Revert: remove the `Status` variant of `AgentAction`; nothing else depends on it.
+
+### Fixed (locked-vault paths missed by #220/#221)
+
+- MCP `phantom_cloud_push` and `phantom_team_vault_push` built the pushed
+  snapshot from the OS keychain beside an encrypted-file vault this process
+  could not open: an empty keychain answered "No secrets to push", and a
+  non-empty one requested approval for a push that would replace the remote
+  copy without the file vault's secrets. Both now refuse with "Vault locked"
+  and the unlock step, as `phantom cloud push` and `phantom team vault-push`
+  do.
+- `phantom rotate --batch` answered "No secrets in vault." (or nothing due)
+  with exit 0 in that state; it now refuses like `phantom
+  secrets-expiring-soon`, and notes a keychain-only answer.
+- `phantom export` prepared a backup from that keychain-only view; it now
+  refuses before review instead of writing a backup that leaves out the
+  file vault's secrets.
 
 ### Fixed (broken pipe)
 

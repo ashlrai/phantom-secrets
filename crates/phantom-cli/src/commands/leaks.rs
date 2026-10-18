@@ -107,6 +107,14 @@ fn load_policy() -> Result<OnLeak> {
 pub fn run_plan(min_confidence: f64, json: bool) -> Result<()> {
     let policy = load_policy()?;
     if policy == OnLeak::Off {
+        // The policy comes from the repository's `.phantom.toml`, but the
+        // incidents are the user's own (under HOME, across every project). A
+        // repository must not be able to make active incidents read as
+        // "nothing to plan", so the count is still reported.
+        let suppressed = LeakCorrelationEngine::new()
+            .ok()
+            .and_then(|engine| engine.incident_view(min_confidence).ok())
+            .map(|view| view.persisted.len() + view.uncorrelated.len());
         if json {
             let out = serde_json::json!({
                 "dry_run": true,
@@ -114,13 +122,24 @@ pub fn run_plan(min_confidence: f64, json: bool) -> Result<()> {
                 "live_revoke_available": LeakResponseConfig::live_revoke_available(),
                 "min_confidence": min_confidence,
                 "plan": [],
+                "suppressed_incidents": suppressed,
             });
             println!("{}", serde_json::to_string_pretty(&out)?);
         } else {
-            println!(
-                "{}  Leak response is off ([leak_response] on_leak = \"off\"). Nothing to plan.",
-                "->".blue().bold()
-            );
+            match suppressed {
+                Some(0) => println!(
+                    "{}  Leak response is off ([leak_response] on_leak = \"off\"). Nothing to plan.",
+                    "->".blue().bold()
+                ),
+                Some(count) => println!(
+                    "{}  Leak response is off ([leak_response] on_leak = \"off\" in ./.phantom.toml), but {count} active leak incident(s) exist and are not planned. Run `phantom audit incidents` to list them.",
+                    "warn".yellow().bold()
+                ),
+                None => println!(
+                    "{}  Leak response is off ([leak_response] on_leak = \"off\" in ./.phantom.toml); leak incidents could not be read, so some may exist. Run `phantom audit incidents` to list them.",
+                    "warn".yellow().bold()
+                ),
+            }
         }
         return Ok(());
     }
