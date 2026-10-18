@@ -43,7 +43,7 @@ One command per AI client — Phantom writes the right config file for each:
 
 | Editor | Command | Writes to |
 |---|---|---|
-| Claude Code | `phantom setup --client claude` | `.claude/settings.local.json` (project) |
+| Claude Code | `phantom setup --client claude` | `.mcp.json` (project; also hardens `.claude/settings.local.json`) |
 | Cursor | `phantom setup --client cursor` | `~/.cursor/mcp.json` |
 | Windsurf | `phantom setup --client windsurf` | `~/.codeium/windsurf/mcp_config.json` |
 | Codex | `phantom setup --client codex` | `~/.codex/config.toml` |
@@ -75,7 +75,7 @@ The runtime `tools/list` response and release-checked MCP schema are the canonic
 
 Read-only, or read-only by default where noted:
 - `phantom_list_secrets` — names only, never values
-- `phantom_status` — vault and config state
+- `phantom_status` — project config and managed .env state (does not open the vault)
 - `phantom_check` — scan supported dotenv files; parameter: `runtime` only (the CLI separately supports `phantom check --staged`)
 - `phantom_doctor` — diagnostic checks; parameters: `fix`, `confirm`, `approval_token`, with both gates required only for `fix=true`
 - `phantom_why` — explain a token's origin; parameter: `key`
@@ -88,10 +88,9 @@ Init / scaffolding (mutating; require `confirm` and `approval_token`):
 - `phantom_wrap` — parameters: `only`, `skip`, `confirm`, `approval_token`; selectively wraps runtime/build `package.json` scripts and leaves test, lint, type, and format scripts unchanged
 - `phantom_unwrap` — parameters: `confirm`, `approval_token`; restores scripts from `:raw` variants
 
-> Note: a legacy `phantom_add_secret` tool exists but is hard-deprecated — it refuses any plaintext value through MCP because tool arguments enter agent context. Use `phantom_add_secret_interactive` (below) instead.
+> Note: a legacy `phantom_add_secret` tool exists but is hard-deprecated — it refuses any plaintext value through MCP because tool arguments enter agent context. Use `phantom_add_secret_interactive` (`name` only) instead: it is effect-free, needs no approval, and returns `phantom add NAME` for the user's trusted terminal.
 
 Other mutating tools (also require `confirm` and `approval_token`):
-- `phantom_add_secret_interactive`: `name`, `confirm`, `approval_token`
 - `phantom_remove_secret`: exact vault/lifecycle/managed-dotenv transaction;
   `name`, `confirm`, `approval_token`; `phantom_rotate`: `confirm`, `approval_token`
 - `phantom_cloud_push`: `confirm`, `approval_token`; `phantom_cloud_pull`:
@@ -122,7 +121,7 @@ Team member removal and automatic vault-key rotation are not shipped. Use fixed-
 
 ## CLI surface
 
-`init · agent · exec · start · stop · list · add · remove · reveal · rotate · status · doctor · check · sync · pull · env · setup · login · logout · cloud · team · export · import · audit · wrap · unwrap · watch · why · copy · open · upgrade · completion`
+Setup: `init · agent · setup · doctor · workspace · vault · completion · mcp · mcp-approve` | Daily use: `exec · start · stop · status · check · list · add · remove · reveal · copy · env · why` | Sync & teams: `login · logout · cloud · team · sync · pull · export · import · wrap · unwrap` | Maintenance: `upgrade · watch · rotate · grant · validate · expiry · secrets-expiring-soon · open · audit`
 
 Recently-added flags worth knowing:
 

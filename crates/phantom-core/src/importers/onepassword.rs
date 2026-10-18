@@ -28,7 +28,7 @@
 use anyhow::Result;
 use zeroize::Zeroizing;
 
-use super::{Importer, SecretMap};
+use super::{json_scalar, Importer, SecretMap};
 
 pub struct OnePasswordImporter;
 
@@ -45,19 +45,8 @@ impl Importer for OnePasswordImporter {
 
         let mut map = SecretMap::new();
         for (key, val) in obj {
-            let value = match &val {
-                serde_json::Value::String(s) => s.clone(),
-                serde_json::Value::Number(n) => n.to_string(),
-                serde_json::Value::Bool(b) => b.to_string(),
-                // Nested objects (e.g. full op item JSON) — not supported in V1
-                serde_json::Value::Object(_) => {
-                    eprintln!(
-                        "warn: key '{key}' has a nested object value — skipped. \
-                         Pre-collect flat key=value pairs (see --help)."
-                    );
-                    continue;
-                }
-                _ => continue,
+            let Some(value) = json_scalar("1Password", &key, &val)? else {
+                continue;
             };
             if value.is_empty() {
                 continue;
@@ -112,15 +101,21 @@ mod tests {
     }
 
     #[test]
-    fn warns_and_skips_nested_objects() {
-        // Nested op item JSON — V1 skips these with a warning
-        let input = r#"{
-            "FLAT_KEY": "flat_value",
-            "NESTED": {"username": "foo", "password": "bar"}
-        }"#;
-        let map = OnePasswordImporter::parse(input.as_bytes()).unwrap();
-        assert_eq!(map.get("FLAT_KEY").map(|v| v.as_str()), Some("flat_value"));
-        assert!(!map.contains_key("NESTED"));
+    fn refuses_nested_objects_and_arrays_instead_of_dropping_them() {
+        // A nested op item or a list cannot be one secret. Dropping it while
+        // the CLI reports "0 skipped, 0 failed" would lose the entry silently.
+        for input in [
+            r#"{"FLAT_KEY": "flat_value", "NESTED": {"username": "u", "field": "f"}}"#,
+            r#"{"FLAT_KEY": "flat_value", "NESTED": ["one", "two"]}"#,
+        ] {
+            let error = OnePasswordImporter::parse(input.as_bytes())
+                .err()
+                .map(|error| error.to_string())
+                .unwrap_or_default();
+            assert!(error.contains("'NESTED'"));
+            assert!(error.contains("nothing was imported"));
+            assert!(!error.contains("flat_value"));
+        }
     }
 
     #[test]

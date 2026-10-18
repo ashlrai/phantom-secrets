@@ -1,4 +1,7 @@
+mod broken_pipe;
 mod commands;
+#[cfg(test)]
+mod doc_facts;
 mod util;
 
 #[cfg(test)]
@@ -33,7 +36,7 @@ use tracing_subscriber::EnvFilter;
                     Setup         init · agent · setup · doctor · workspace · vault · completion · mcp · mcp-approve\n  \
                     Daily use     exec · start · stop · status · check · list · add · remove · reveal · copy · env · why\n  \
                     Sync & teams  login · logout · cloud · team · sync · pull · export · import · wrap · unwrap\n  \
-                    Maintenance   upgrade · watch · rotate · grant · validate · expiry · secrets-expiring-soon · open · audit",
+                    Maintenance   upgrade · watch · rotate · grant · validate · expiry · secrets-expiring-soon · open · audit · leaks · crypto",
     version
 )]
 struct Cli {
@@ -79,7 +82,7 @@ enum Commands {
         empty: bool,
     },
 
-    /// Wire Phantom into an AI client (Claude Code, Cursor, Windsurf, Codex)
+    /// Wire Phantom into an AI client (Claude Code, Cursor, Windsurf, Codex, Gemini CLI)
     #[command(next_help_heading = "Setup")]
     Setup {
         /// AI client to configure. Defaults to Claude Code if omitted.
@@ -91,6 +94,10 @@ enum Commands {
         /// Configure audit encryption: none/local; cloud-signed is reserved and refused
         #[arg(long, value_enum, value_name = "MODE")]
         audit_mode: Option<commands::setup::AuditMode>,
+        /// Read-only: list which clients (Claude Code, Cursor, Windsurf, Codex,
+        /// Gemini CLI) have Phantom wired. Use the global --json for JSON.
+        #[arg(long, conflicts_with_all = ["client", "print", "audit_mode"])]
+        status: bool,
     },
 
     /// Agent readiness report, doctor, and setup workflows
@@ -113,6 +120,11 @@ enum Commands {
         /// Emit one JSON report on stdout instead of the human checklist
         #[arg(long)]
         json: bool,
+        /// Print a read-only, value-free post-quantum readiness report
+        /// (algorithms in use, which are quantum-vulnerable) instead of the
+        /// health checks. Combine with --json for machine-readable output.
+        #[arg(long)]
+        pq: bool,
     },
 
     /// Print a shell-completion script to stdout
@@ -203,7 +215,7 @@ enum Commands {
         /// Only scan git-staged files (skip .env scanning, faster for pre-commit hooks)
         #[arg(long)]
         staged: bool,
-        /// Check if phantom tokens are in environment without proxy running
+        /// Scan every environment variable for phantom tokens a live proxy session does not own
         #[arg(long)]
         runtime: bool,
         /// Emit a names-only JSON report on stdout (exit status unchanged)
@@ -221,8 +233,9 @@ enum Commands {
         #[arg(long)]
         show_expiry: bool,
         /// Only show secrets whose anomaly score is >= this value (0=all, 1=caution+, 2=alert only).
-        /// Reads per-secret rate-limit stats from the audit log.
-        #[arg(long, value_name = "SCORE")]
+        /// Reads per-secret retrieval counts from the audit log; an unreadable or
+        /// tampered log is an error, not an all-normal answer.
+        #[arg(long, value_name = "SCORE", value_parser = clap::value_parser!(u8).range(0..=2))]
         min_anomaly_score: Option<u8>,
     },
 
@@ -234,9 +247,15 @@ enum Commands {
         /// Legacy positional secret value; rejected because argv is observable
         #[arg(hide = true)]
         value: Option<String>,
-        /// Read one new-name value from stdin; existing names are denied before the read
+        /// Read one new-name value from a pipe up to EOF (64 KiB cap); input with more than one line needs --multiline or --first-line; existing names are denied before the read
         #[arg(long)]
         stdin: bool,
+        /// With --stdin: store every line of multi-line input (PEM keys, JSON documents)
+        #[arg(long, requires = "stdin", conflicts_with = "first_line")]
+        multiline: bool,
+        /// With --stdin: store only the first line (pass/gopass put metadata after it)
+        #[arg(long, requires = "stdin")]
+        first_line: bool,
     },
 
     /// Remove a secret transactionally after an exact trusted-terminal challenge
@@ -521,11 +540,25 @@ enum Commands {
         watch: bool,
     },
 
+    /// Leak response tools (read-only preview)
+    #[command(next_help_heading = "Maintenance")]
+    Leaks {
+        #[command(subcommand)]
+        action: LeaksAction,
+    },
+
     /// View the opt-in audit log (requires PHANTOM_AUDIT=1 to start logging)
     #[command(next_help_heading = "Maintenance")]
     Audit {
         #[command(subcommand)]
         action: AuditAction,
+    },
+
+    /// Cryptography inventory: algorithms and format tags Phantom uses
+    #[command(next_help_heading = "Maintenance")]
+    Crypto {
+        #[command(subcommand)]
+        action: CryptoAction,
     },
 
     /// Open a closed-catalog Phantom page after an exact trusted-terminal challenge.
@@ -576,6 +609,31 @@ enum Commands {
         /// Seconds to wait before clearing
         #[arg(long, default_value_t = 30)]
         secs: u64,
+    },
+}
+
+#[derive(Subcommand)]
+enum CryptoAction {
+    /// List every algorithm and format tag Phantom names, with role, status
+    /// and quantum class. Reads no vault, key, or config.
+    Inventory {
+        /// Output format. The global --json is the same as --format json.
+        #[arg(long, value_enum, default_value_t = commands::crypto::InventoryFormat::Text)]
+        format: commands::crypto::InventoryFormat,
+    },
+}
+
+#[derive(Subcommand)]
+enum LeaksAction {
+    /// Show what automated leak response would do. Read-only: no writes, no
+    /// network, no secret values printed.
+    Plan {
+        /// Only plan for incidents with confidence at or above this value
+        #[arg(long, default_value_t = 0.5)]
+        min_confidence: f64,
+        /// Emit JSON instead of human-readable output
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -755,6 +813,12 @@ enum AgentAction {
     },
     /// Human-readable view of the readiness report
     Doctor,
+    /// Read-only, value-free view of MCP approval state (use --json for JSON)
+    Status {
+        /// Emit stable JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Initialize safe defaults for AI-agent use
     Setup {
         /// Show planned actions without changing files
@@ -862,6 +926,7 @@ enum CloudAction {
 const MAIN_STACK_SIZE: usize = 16 * 1024 * 1024;
 
 fn main() -> std::process::ExitCode {
+    broken_pipe::install_panic_hook();
     let handle = match std::thread::Builder::new()
         .name("phantom-main".into())
         .stack_size(MAIN_STACK_SIZE)
@@ -872,6 +937,15 @@ fn main() -> std::process::ExitCode {
     };
     match handle.join() {
         Ok(Ok(())) => std::process::ExitCode::SUCCESS,
+        // The reader of stdout went away (`phantom list | head`): a normal
+        // end for a CLI, reported the way a shell reports SIGPIPE, with no
+        // panic text or error line. The worker has already unwound.
+        Ok(Err(error)) if broken_pipe::is_stdout_broken_pipe_error(&error) => {
+            std::process::exit(broken_pipe::BROKEN_PIPE_EXIT)
+        }
+        Err(panic) if broken_pipe::is_stdout_broken_pipe_panic(&*panic) => {
+            std::process::exit(broken_pipe::BROKEN_PIPE_EXIT)
+        }
         Ok(Err(error)) if error.downcast_ref::<UsageError>().is_some() => {
             report_error(&error);
             std::process::ExitCode::from(2)
@@ -941,6 +1015,14 @@ fn apply_global_json(command: &mut Commands) -> Result<(), &'static str> {
         | Commands::Agent {
             action: AgentAction::Report { .. },
         }
+        | Commands::Why { .. }
+        | Commands::Crypto {
+            action: CryptoAction::Inventory { .. },
+        }
+        | Commands::Audit {
+            action: A::Verify { .. },
+        }
+        | Commands::Setup { status: true, .. }
         | Commands::Grant { .. }
         | Commands::Vault {
             action: VaultAction::MigrateLinux,
@@ -969,6 +1051,12 @@ fn apply_global_json(command: &mut Commands) -> Result<(), &'static str> {
         }
         // Commands with their own `--json` flag.
         Commands::List { json, .. }
+        | Commands::Agent {
+            action: AgentAction::Status { json },
+        }
+        | Commands::Leaks {
+            action: LeaksAction::Plan { json, .. },
+        }
         | Commands::SecretsExpiringSoon { json, .. }
         | Commands::Expiry {
             action: ExpiryAction::Enforce { json, .. },
@@ -1005,9 +1093,6 @@ fn apply_global_json(command: &mut Commands) -> Result<(), &'static str> {
             action: A::Tail { .. },
         } => Err("phantom audit tail"),
         Commands::Audit { action: A::Path } => Err("phantom audit path"),
-        Commands::Audit {
-            action: A::Verify { .. },
-        } => Err("phantom audit verify"),
         Commands::Agent {
             action: AgentAction::Doctor,
         } => Err("phantom agent doctor"),
@@ -1038,7 +1123,6 @@ fn apply_global_json(command: &mut Commands) -> Result<(), &'static str> {
         Commands::Reveal { .. } => Err("phantom reveal"),
         Commands::Copy { .. } => Err("phantom copy"),
         Commands::Env { .. } => Err("phantom env"),
-        Commands::Why { .. } => Err("phantom why"),
         Commands::Login => Err("phantom login"),
         Commands::Logout => Err("phantom logout"),
         // Read the global flag themselves (still behind the trusted-terminal
@@ -1140,7 +1224,22 @@ fn run() -> anyhow::Result<()> {
             show_expiry,
             min_anomaly_score,
         } => commands::list::run_with_expiry(json, show_expiry, min_anomaly_score),
-        Commands::Add { name, value, stdin } => commands::add::run(&name, value, stdin),
+        Commands::Add {
+            name,
+            value,
+            stdin,
+            multiline,
+            first_line,
+        } => {
+            let lines = if multiline {
+                commands::add::StdinLines::Multiline
+            } else if first_line {
+                commands::add::StdinLines::FirstLine
+            } else {
+                commands::add::StdinLines::SingleOnly
+            };
+            commands::add::run(&name, value, stdin, lines)
+        }
         Commands::Remove { name } => commands::remove::run(&name),
         Commands::Reveal {
             name,
@@ -1209,12 +1308,22 @@ fn run() -> anyhow::Result<()> {
                 }
             }
         },
-        Commands::Doctor { fix, expiry, json } => {
-            commands::doctor::run_doctor(fix, expiry, json || global_json)
+        Commands::Doctor {
+            fix,
+            expiry,
+            json,
+            pq,
+        } => {
+            if pq {
+                commands::pq_report::run(json || global_json)
+            } else {
+                commands::doctor::run_doctor(fix, expiry, json || global_json)
+            }
         }
         Commands::Agent { action } => match action {
             AgentAction::Report { json } => commands::agent::report(json || global_json),
             AgentAction::Doctor => commands::agent::doctor(),
+            AgentAction::Status { json } => commands::agent::status(json || global_json),
             AgentAction::Setup { dry_run, apply } => commands::agent::setup(dry_run, apply),
         },
         Commands::Exec { cmd } => commands::exec::run(&cmd, None, cli.quiet),
@@ -1236,7 +1345,14 @@ fn run() -> anyhow::Result<()> {
             client,
             print,
             audit_mode,
-        } => commands::setup::run(client, print, audit_mode),
+            status,
+        } => {
+            if status {
+                commands::setup_status::run(cli.json)
+            } else {
+                commands::setup::run(client, print, audit_mode)
+            }
+        }
         Commands::Sync {
             platform,
             project,
@@ -1291,7 +1407,13 @@ fn run() -> anyhow::Result<()> {
         Commands::Watch { auto, auto_rotate } => {
             commands::watch::run_with_rotate(auto, auto_rotate)
         }
-        Commands::Why { key } => commands::why::run(&key),
+        Commands::Leaks { action } => match action {
+            LeaksAction::Plan {
+                min_confidence,
+                json,
+            } => commands::leaks::run_plan(min_confidence, json || global_json),
+        },
+        Commands::Why { key } => commands::why::run(&key, global_json),
         Commands::Wrap { only, skip } => commands::wrap::run(&only, &skip, cli.quiet),
         Commands::Unwrap => commands::unwrap::run(cli.quiet),
         Commands::Copy { name, to, rename } => commands::copy::run(&name, &to, &rename),
@@ -1313,7 +1435,9 @@ fn run() -> anyhow::Result<()> {
                 commands::audit::run_tail(op.as_deref(), name.as_deref())
             }
             AuditAction::Path => commands::audit::run_path(),
-            AuditAction::Verify { with_context } => commands::audit::run_verify(with_context),
+            AuditAction::Verify { with_context } => {
+                commands::audit::run_verify(with_context, global_json)
+            }
             AuditAction::Stats {
                 json,
                 top,
@@ -1389,6 +1513,13 @@ fn run() -> anyhow::Result<()> {
         Commands::Open { target } => commands::open::run(&target),
         Commands::Upgrade { force, check_only } => commands::upgrade::run(force, check_only),
         Commands::Completion { shell } => commands::completion::run(shell),
+        Commands::Crypto { action } => match action {
+            CryptoAction::Inventory { format } => commands::crypto::run_inventory(if global_json {
+                commands::crypto::InventoryFormat::Json
+            } else {
+                format
+            }),
+        },
         Commands::Mcp { action } => match action {
             McpAction::Serve => commands::mcp::run_serve(),
         },
@@ -1479,6 +1610,34 @@ fn run() -> anyhow::Result<()> {
 mod help_tests {
     use super::Cli;
     use clap::{CommandFactory, Parser};
+
+    #[test]
+    fn add_line_flags_require_stdin_and_exclude_each_other() {
+        for args in [
+            &["phantom", "add", "NAME", "--multiline"][..],
+            &["phantom", "add", "NAME", "--first-line"][..],
+            &[
+                "phantom",
+                "add",
+                "NAME",
+                "--stdin",
+                "--multiline",
+                "--first-line",
+            ][..],
+        ] {
+            assert!(
+                Cli::try_parse_from(args).is_err(),
+                "{args:?} must be rejected"
+            );
+        }
+        for args in [
+            &["phantom", "add", "NAME", "--stdin"][..],
+            &["phantom", "add", "NAME", "--stdin", "--multiline"][..],
+            &["phantom", "add", "NAME", "--stdin", "--first-line"][..],
+        ] {
+            assert!(Cli::try_parse_from(args).is_ok(), "{args:?} must parse");
+        }
+    }
 
     fn grouped_section(about: &str) -> &str {
         about
@@ -1639,6 +1798,7 @@ mod help_tests {
     fn global_json_is_routed_or_rejected_for_every_command() {
         let supported: &[&str] = &[
             "agent report",
+            "agent status",
             "audit alerts",
             "audit analytics",
             "audit anomalies",
@@ -1648,8 +1808,10 @@ mod help_tests {
             "audit report",
             "audit show",
             "audit stats",
+            "audit verify",
             "check",
             "cloud status",
+            "crypto inventory",
             "doctor",
             "expiry enforce",
             // Not JSON output: its hidden legacy `--json` fails closed with
@@ -1659,6 +1821,7 @@ mod help_tests {
             "grant list",
             "grant revoke",
             "grant status",
+            "leaks plan",
             "list",
             "secrets-expiring-soon",
             "status",
@@ -1669,6 +1832,7 @@ mod help_tests {
             "validate schedule",
             "vault migrate-linux",
             "workspace plan",
+            "why",
             "workspace status",
         ];
         let mut seen = Vec::new();

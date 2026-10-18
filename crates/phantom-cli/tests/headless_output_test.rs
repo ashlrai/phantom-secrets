@@ -156,9 +156,10 @@ fn json_on_a_command_without_json_output_is_a_usage_error() {
     init_project(&dir);
 
     for args in [
-        vec!["why", "OPENAI_API_KEY", "--json"],
-        vec!["--json", "why", "OPENAI_API_KEY"],
-        vec!["audit", "verify", "--json"],
+        // `why` and `audit verify` gained JSON output on main; these did not.
+        vec!["audit", "path", "--json"],
+        vec!["--json", "audit", "path"],
+        vec!["logout", "--json"],
     ] {
         let output = phantom(&dir).args(&args).assert().code(2);
         let out = output.get_output();

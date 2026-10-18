@@ -381,11 +381,167 @@ fn check_runtime_json_names_variable_without_token() {
     let output = phantom(&dir)
         .args(["check", "--runtime", "--json"])
         .env("OPENAI_API_KEY", &token)
+        .env_remove("PHANTOM_PROXY_PORT")
+        .env_remove("PHANTOM_PROXY_TOKEN")
+        .env_remove("PHANTOM_SESSION_KEYS")
         .assert()
         .failure();
     let stdout = String::from_utf8_lossy(&output.get_output().stdout);
     let report: serde_json::Value = serde_json::from_str(&stdout).expect("json report");
     assert_eq!(report["mode"], "runtime");
-    assert_eq!(report["findings"][0]["name"], "OPENAI_API_KEY");
+    assert!(
+        report["findings"]
+            .as_array()
+            .expect("findings")
+            .contains(&serde_json::json!({"kind":"runtime_env","name":"OPENAI_API_KEY"})),
+        "{report}"
+    );
     assert!(!stdout.contains(&token), "{stdout}");
+}
+
+#[test]
+fn check_runtime_json_names_a_custom_variable() {
+    let dir = common::canonical_tempdir();
+    let placeholder = format!("phm_{}", "cd".repeat(32));
+    let output = phantom(&dir)
+        .args(["check", "--runtime", "--json"])
+        .env("BILLING_SERVICE_KEY", &placeholder)
+        .env_remove("PHANTOM_PROXY_PORT")
+        .env_remove("PHANTOM_PROXY_TOKEN")
+        .env_remove("PHANTOM_SESSION_KEYS")
+        .assert()
+        .failure();
+    let stdout = String::from_utf8_lossy(&output.get_output().stdout);
+    let report: serde_json::Value = serde_json::from_str(&stdout).expect("json report");
+    assert_eq!(report["clean"], false, "{report}");
+    assert!(
+        report["findings"]
+            .as_array()
+            .expect("findings")
+            .contains(&serde_json::json!({"kind":"runtime_env","name":"BILLING_SERVICE_KEY"})),
+        "{report}"
+    );
+    assert!(!stdout.contains(&placeholder), "{stdout}");
+}
+
+/// A loopback health endpoint that answers 200 to `expected`.
+fn live_health_endpoint(expected: &'static str) -> String {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    std::thread::spawn(move || {
+        for mut stream in listener.incoming().flatten() {
+            let mut request = Vec::new();
+            let mut chunk = [0u8; 512];
+            while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+                match stream.read(&mut chunk) {
+                    Ok(0) | Err(_) => break,
+                    Ok(read) => request.extend_from_slice(&chunk[..read]),
+                }
+            }
+            let text = String::from_utf8_lossy(&request);
+            let ok = text.starts_with("GET /phantom/health ")
+                && text.contains(&format!("x-phantom-proxy-token: {expected}\r\n"));
+            // The proxy's own health answer, which the probe requires.
+            let reply = if ok {
+                r#"{"status":"ok","service":"phantom-proxy"}"#
+            } else {
+                ""
+            };
+            let status = if ok { "200 OK" } else { "401 Unauthorized" };
+            let _ = stream.write_all(
+                format!(
+                    "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
+                    reply.len()
+                )
+                .as_bytes(),
+            );
+        }
+    });
+    port.to_string()
+}
+
+fn runtime_report(output: &assert_cmd::assert::Assert) -> serde_json::Value {
+    let stdout = String::from_utf8_lossy(&output.get_output().stdout);
+    serde_json::from_str(&stdout).expect("json report")
+}
+
+#[test]
+fn check_runtime_live_session_excuses_only_the_variables_it_owns() {
+    let dir = common::canonical_tempdir();
+    let placeholder = format!("phm_{}", "ef".repeat(32));
+    let port = live_health_endpoint("session-live");
+    let output = phantom(&dir)
+        .args(["check", "--runtime", "--json"])
+        .env("OPENAI_API_KEY", &placeholder)
+        .env("PHANTOM_PROXY_PORT", &port)
+        .env("PHANTOM_PROXY_TOKEN", "session-live")
+        .env("PHANTOM_SESSION_KEYS", "OPENAI_API_KEY")
+        .assert()
+        .success();
+    let report = runtime_report(&output);
+    assert_eq!(report["clean"], true, "{report}");
+    assert_eq!(report["proxy_session"], true, "{report}");
+    assert_eq!(report["excused"], serde_json::json!(["OPENAI_API_KEY"]));
+    assert!(
+        !report["findings"]
+            .as_array()
+            .expect("findings")
+            .contains(&serde_json::json!({"kind":"runtime_env","name":"OPENAI_API_KEY"})),
+        "{report}"
+    );
+    assert!(!report.to_string().contains(&placeholder));
+
+    let output = phantom(&dir)
+        .args(["check", "--runtime", "--json"])
+        .env("OPENAI_API_KEY", &placeholder)
+        .env("BILLING_SERVICE_KEY", &placeholder)
+        .env("PHANTOM_PROXY_PORT", &port)
+        .env("PHANTOM_PROXY_TOKEN", "session-live")
+        .env("PHANTOM_SESSION_KEYS", "OPENAI_API_KEY")
+        .assert()
+        .failure();
+    let report = runtime_report(&output);
+    assert!(
+        report["findings"]
+            .as_array()
+            .expect("findings")
+            .contains(&serde_json::json!({"kind":"runtime_env","name":"BILLING_SERVICE_KEY"})),
+        "{report}"
+    );
+}
+
+#[test]
+fn check_runtime_stale_session_variables_excuse_nothing() {
+    let dir = common::canonical_tempdir();
+    let placeholder = format!("phm_{}", "ef".repeat(32));
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .expect("bind")
+        .local_addr()
+        .expect("addr")
+        .port()
+        .to_string();
+    let output = phantom(&dir)
+        .args(["check", "--runtime", "--json"])
+        .env("OPENAI_API_KEY", &placeholder)
+        .env("PHANTOM_PROXY_PORT", &port)
+        .env("PHANTOM_PROXY_TOKEN", "session-stopped")
+        .env("PHANTOM_SESSION_KEYS", "OPENAI_API_KEY")
+        .assert()
+        .failure();
+    let report = runtime_report(&output);
+    assert!(
+        report["findings"]
+            .as_array()
+            .expect("findings")
+            .contains(&serde_json::json!({"kind":"runtime_env","name":"OPENAI_API_KEY"})),
+        "{report}"
+    );
+    assert!(report.get("excused").is_none(), "{report}");
+    assert!(
+        report["session_warning"]
+            .as_str()
+            .is_some_and(|warning| warning.contains("look stale")),
+        "{report}"
+    );
 }
