@@ -74,7 +74,7 @@ pub fn build(pq_hybrid_compiled: bool) -> PqReport {
         },
         Surface {
             surface: "team key share (classic)",
-            algorithms: "X25519 key agreement, XChaCha20-Poly1305 box, 256-bit team key",
+            algorithms: "XChaCha20-Poly1305 box over an X25519 agreement (256-bit team key)",
             status: QuantumStatus::Vulnerable,
             note: "A captured share could be opened later if X25519 is broken. The hosted key route accepts classic 32-byte keys only.",
         },
