@@ -21,7 +21,7 @@ use anyhow::Result;
 use serde_json::Value;
 use zeroize::Zeroizing;
 
-use super::{Importer, SecretMap};
+use super::{json_scalar, unsupported_entry, Importer, SecretMap};
 
 pub struct DopplerImporter;
 
@@ -37,36 +37,46 @@ impl Importer for DopplerImporter {
         let mut map = SecretMap::new();
 
         for (key, val) in obj.iter() {
+            // Doppler includes meta-keys like "DOPPLER_PROJECT", "DOPPLER_CONFIG",
+            // "DOPPLER_ENVIRONMENT" — skip them before interpreting the value.
+            if key.starts_with("DOPPLER_") {
+                continue;
+            }
+
             let raw_value: Option<String> = match val {
-                // Object format: {"raw": "...", "computed": "...", ...}
+                // Object format: {"raw": "...", "computed": "...", ...}.
+                // Prefer a non-null "raw", then "computed"; an object with
+                // neither field is not a Doppler secret and is refused.
                 Value::Object(inner) => {
-                    // Prefer "raw"; fall back to "computed" then any string field
-                    let v = inner
-                        .get("raw")
-                        .or_else(|| inner.get("computed"))
-                        .and_then(|v| v.as_str())
-                        .map(ToOwned::to_owned);
-                    v
+                    let mut chosen = None;
+                    let mut seen = false;
+                    for field in ["raw", "computed"] {
+                        if let Some(candidate) = inner.get(field) {
+                            seen = true;
+                            chosen = json_scalar("Doppler", key, candidate)?;
+                            if chosen.is_some() {
+                                break;
+                            }
+                        }
+                    }
+                    if !seen {
+                        return Err(unsupported_entry(
+                            "Doppler",
+                            key,
+                            "an object without a raw or computed",
+                        ));
+                    }
+                    chosen
                 }
-                // Flat format: "KEY": "value"
-                Value::String(s) => Some(s.clone()),
-                // Numbers, bools — coerce to string
-                Value::Number(n) => Some(n.to_string()),
-                Value::Bool(b) => Some(b.to_string()),
-                // Null or nested objects we can't interpret
-                _ => None,
+                // Flat format: "KEY": "value"; numbers/bools are coerced,
+                // null is unset, arrays are refused.
+                other => json_scalar("Doppler", key, other)?,
             };
 
             let Some(value) = raw_value else {
                 continue;
             };
             if value.is_empty() {
-                continue;
-            }
-
-            // Doppler includes meta-keys like "DOPPLER_PROJECT", "DOPPLER_CONFIG",
-            // "DOPPLER_ENVIRONMENT" — skip them.
-            if key.starts_with("DOPPLER_") {
                 continue;
             }
 
@@ -166,5 +176,48 @@ mod tests {
         assert_eq!(map.get("PORT").map(|v| v.as_str()), Some("3000"));
         assert_eq!(map.get("DEBUG").map(|v| v.as_str()), Some("true"));
         assert_eq!(map.get("API_KEY").map(|v| v.as_str()), Some("sk-abc"));
+    }
+
+    #[test]
+    fn raw_null_falls_back_to_computed() {
+        let input = r#"{"REAL_KEY": {"raw": null, "computed": "computed_value", "note": ""}}"#;
+        let map = DopplerImporter::parse(input.as_bytes()).unwrap();
+        assert_eq!(
+            map.get("REAL_KEY").map(|v| v.as_str()),
+            Some("computed_value")
+        );
+    }
+
+    #[test]
+    fn refuses_entries_it_cannot_interpret_instead_of_dropping_them() {
+        // Each of these used to be dropped silently while the rest imported
+        // and the CLI reported "0 skipped, 0 failed".
+        for input in [
+            r#"{"KEEP": "kept_value", "BAD": ["one", "two"]}"#,
+            r#"{"KEEP": "kept_value", "BAD": {"value": "v", "note": ""}}"#,
+            r#"{"KEEP": "kept_value", "BAD": {"raw": ["v"], "note": ""}}"#,
+            r#"{"KEEP": "kept_value", "BAD": {"raw": {"nested": "v"}}}"#,
+        ] {
+            let error = DopplerImporter::parse(input.as_bytes())
+                .err()
+                .map(|error| error.to_string())
+                .unwrap_or_default();
+            assert!(error.contains("'BAD'"));
+            assert!(error.contains("nothing was imported"));
+            assert!(!error.contains("kept_value"));
+        }
+    }
+
+    #[test]
+    fn null_values_are_unset_and_meta_keys_skip_before_parsing() {
+        let input = r#"{
+            "NULL_FLAT": null,
+            "NULL_OBJECT": {"raw": null, "computed": null},
+            "DOPPLER_EXTRA": ["meta", "list"],
+            "REAL_KEY": "has_value"
+        }"#;
+        let map = DopplerImporter::parse(input.as_bytes()).unwrap();
+        assert_eq!(map.len(), 1);
+        assert!(map.contains_key("REAL_KEY"));
     }
 }

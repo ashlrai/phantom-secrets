@@ -4,6 +4,17 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (`phantom import --from doppler|dotenvx|1password`)
+
+- JSON exports silently dropped entries they could not interpret (an array,
+  a nested object, or a Doppler object without a usable `raw`/`computed`
+  field; 1Password only printed a warning) and imported the rest, so the
+  command reported `0 skipped, 0 failed` while a secret never reached the
+  vault. Such an entry now refuses the whole import before any vault change,
+  naming the entry and its JSON type but never a value. A Doppler entry
+  with `"raw": null` now falls back to its `computed` value instead of being
+  dropped; `null` and empty values are still skipped as unset.
+
 ### Fixed (`phantom doctor`, `phantom agent setup --apply`, `phantom env`)
 
 - A `.phantom.toml` that existed but could not be read or parsed was treated
