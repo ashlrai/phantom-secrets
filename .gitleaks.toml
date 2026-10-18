@@ -29,6 +29,21 @@ regexes = [
   '''^phm_[0-9a-f]{8}$''',
 ]
 
+# The generic detector flags the cipher name "XChaCha20-Poly1305" inside the
+# descriptive text of the `phantom doctor --pq` report. It is an algorithm
+# name, not a credential. Ignore only that exact detected value, and only in
+# the file that owns the report text.
+[[allowlists]]
+description = "Cipher name in post-quantum report prose"
+condition = "and"
+regexTarget = "secret"
+paths = [
+  '''(?:^|/)crates/phantom-cli/src/commands/pq_report\.rs$''',
+]
+regexes = [
+  '''^XChaCha20-Poly1305$''',
+]
+
 # Several security tests intentionally exercise credential-shaped strings from
 # inside otherwise production source files. Ignore only lines that contain an
 # unmistakable placeholder marker, and only in the exact files that own those
