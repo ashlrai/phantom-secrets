@@ -4,6 +4,15 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Added (`phantom doctor --pq`)
+
+- `phantom doctor --pq` (with optional `--json`) prints a read-only,
+  value-free post-quantum readiness report: which algorithms Phantom uses per
+  surface, which are quantum-vulnerable (X25519, Ed25519) and which are
+  resistant at their current 256-bit key size, and the state of the
+  experimental, unaudited `pq-hybrid` feature. It reads no vault, key, or
+  config and needs no project.
+
 ### Fixed (`phantom doctor` Claude Code settings check)
 
 - A `.claude/settings.local.json` that exists but is not valid JSON was
