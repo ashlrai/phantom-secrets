@@ -488,6 +488,12 @@ pub struct AuditAnomaliesParams {
     /// into it). Defaults to 0.4.
     #[serde(default = "default_min_anomaly")]
     pub min_score: f64,
+    /// Maximum findings to return, highest scores kept (default: 1000;
+    /// values above 10000 are treated as 10000). A 1 MiB response ceiling
+    /// may return fewer; total_findings stays exact and records_truncated
+    /// then says so.
+    #[serde(default = "default_analytics_max_records")]
+    pub max_records: u32,
 }
 
 fn default_anomalies_period() -> String {
@@ -517,6 +523,12 @@ pub struct AuditAnomaliesRealtimeParams {
     /// triggers a quiet-period alert. Defaults to 7.
     #[serde(default)]
     pub max_consecutive_quiet_days: Option<u64>,
+    /// Maximum findings to return, highest scores kept (default: 1000;
+    /// values above 10000 are treated as 10000). A 1 MiB response ceiling
+    /// may return fewer; total_findings stays exact and records_truncated
+    /// then says so.
+    #[serde(default = "default_analytics_max_records")]
+    pub max_records: u32,
 }
 
 fn default_realtime_threshold() -> f64 {
@@ -574,6 +586,12 @@ pub struct AuditIncidentsParams {
     /// (range 0.0–1.0). Defaults to 0.7.
     #[serde(default = "default_min_confidence")]
     pub min_confidence: f64,
+    /// Maximum entries in each of incidents and uncorrelated_incidents,
+    /// most confident kept (default: 1000; values above 10000 are treated as
+    /// 10000). A 1 MiB response ceiling may return fewer; incident_count and
+    /// uncorrelated_count stay exact and records_truncated then says so.
+    #[serde(default = "default_analytics_max_records")]
+    pub max_records: u32,
 }
 
 fn default_min_confidence() -> f64 {
@@ -590,6 +608,12 @@ pub struct LeakIncidentsRealtimeParams {
     /// (range 0.0–1.0). Defaults to 0.5 per spec (active incident threshold).
     #[serde(default = "default_realtime_min_confidence")]
     pub min_confidence: f64,
+    /// Maximum entries in each of incidents and uncorrelated_incidents,
+    /// most confident kept (default: 1000; values above 10000 are treated as
+    /// 10000). A 1 MiB response ceiling may return fewer; incident_count and
+    /// uncorrelated_count stay exact and records_truncated then says so.
+    #[serde(default = "default_analytics_max_records")]
+    pub max_records: u32,
 }
 
 fn default_realtime_min_confidence() -> f64 {

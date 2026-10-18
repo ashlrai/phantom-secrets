@@ -16,6 +16,22 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   than the 0-100 heuristic score, so one retrieval no longer passes
   `--min-anomaly-score 2`, and values above 2 are refused by the parser.
 
+### Fixed (`phantom_audit_anomalies`, `phantom_audit_anomalies_realtime`, `phantom_audit_hotspot_alerts`, `phantom_audit_incidents`, `phantom_leak_incidents_realtime`)
+
+- These tools returned every finding, alert or incident they computed,
+  bounded only by the size of the audit log and incident store. Each list
+  now holds at most `max_records` entries (new optional parameter on the
+  anomaly and incident tools: default 1000, max 10000; a fixed 10000 for
+  `phantom_audit_hotspot_alerts`) within the 1 MiB MCP response ceiling
+  `phantom_audit_analytics` uses, keeping the highest scores, the most
+  urgent alerts (unacked first, then fastest) and the most confident
+  incidents. `total_findings`, `total_alerts`, `incident_count` and
+  `uncorrelated_count` stay exact; `<list>_returned`, `records_truncated`
+  and `max_records` say what was left out. `phantom_audit_incidents` now
+  lists incidents most confident first (then most recently seen).
+  `ack: true` on `phantom_audit_hotspot_alerts` still acknowledges every
+  matching alert, listed or not. Names and counts only, never values.
+
 ### Fixed (`phantom_audit_export_report` with `action: "report"`)
 
 - The compliance report came back inline with no bound: one heatmap entry

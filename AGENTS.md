@@ -100,7 +100,7 @@ parameter names match the runtime JSON schema exactly.
 | `phantom_audit_hotspot_alerts` | Inspect hotspot alerts, or persist acknowledgements/snoozes | secret_name, ack, snooze_seconds, include_acked, confirm (conditional), approval_token (conditional) |
 | `phantom_audit_alerts` | Read the newest persisted alerts (last: default 50, max 10000, within 1 MiB, with records_total/records_returned/records_truncated), or backfill correlation state, persist alerts, and dispatch configured notifications | last, backfill, confirm (conditional), approval_token (conditional) |
 | `phantom_audit_export_report` | Return an in-memory export (newest `max_records` rows, capped) or report (each list capped at `max_records`, exact totals), or persist the complete report with `save=true` | action, format, from, to, secret_name, operation, max_records, save, confirm (conditional), approval_token (conditional) |
-| `phantom_leak_incidents_realtime` | Read persisted incident summaries, plus leak events from the last 24 h not yet persisted (`uncorrelated_incidents`, correlated in memory); never rotates or writes incident or alert state | min_confidence |
+| `phantom_leak_incidents_realtime` | Read persisted incident summaries, plus leak events from the last 24 h not yet persisted (`uncorrelated_incidents`, correlated in memory), each list capped at `max_records` with exact counts; never rotates or writes incident or alert state | min_confidence, max_records |
 | `phantom_secrets_auto_rotate` | **Deprecated name** — remap one local `phm_` placeholder only; never rotates credentials, renews TTL metadata, clears incidents, or syncs | name, sync (`true` rejected), confirm, approval_token |
 
 Cloud and team tools are client implementations for a separately commissioned
