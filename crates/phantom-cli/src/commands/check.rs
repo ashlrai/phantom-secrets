@@ -251,6 +251,47 @@ fn contains_credential(text: &str, pattern: &CodePattern) -> bool {
     })
 }
 
+/// Label for a LiteLLM-shaped key. Shape only: LiteLLM generates virtual keys
+/// as `sk-` plus `secrets.token_urlsafe(16)`, which is exactly 22 URL-safe
+/// characters (checked in litellm 1.103.5, `key_management_endpoints.py`
+/// and `constants.py`; the length is configurable through
+/// `LENGTH_OF_LITELLM_GENERATED_KEY`). Legacy OpenAI keys carry a 48-character
+/// tail and `sk-proj-` keys are longer, so a 22-character tail is the
+/// LiteLLM-shaped case. This is a hint for the report, not proof of origin.
+const LITELLM_KEY_LABEL: &str = "LiteLLM-style virtual key (sk- plus 22 characters)";
+const LITELLM_TAIL_LEN: usize = 22;
+
+/// Tail lengths of every `sk-` token in `text` that the `sk-` rule accepts.
+fn sk_credential_tail_lens(text: &str, pattern: &CodePattern) -> Vec<usize> {
+    let bytes = text.as_bytes();
+    text.match_indices(pattern.prefix)
+        .filter_map(|(start, _)| {
+            if start > 0 && bytes[start - 1].is_ascii_alphanumeric() {
+                return None;
+            }
+            let rest = &bytes[start + pattern.prefix.len()..];
+            let len = rest
+                .iter()
+                .take_while(|b| b.is_ascii_alphanumeric() || **b == b'_' || **b == b'-')
+                .count();
+            (len >= pattern.min_tail && !is_identifier_tail(&rest[..len])).then_some(len)
+        })
+        .collect()
+}
+
+/// The report label for a matched pattern. Only the `sk-` rule can relabel,
+/// and only when every accepted token has the LiteLLM tail length, so a file
+/// that also holds an OpenAI-shaped key keeps the OpenAI label.
+fn finding_label(pattern: &CodePattern, added: &str) -> &'static str {
+    if pattern.prefix == "sk-" {
+        let tails = sk_credential_tail_lens(added, pattern);
+        if !tails.is_empty() && tails.iter().all(|len| *len == LITELLM_TAIL_LEN) {
+            return LITELLM_KEY_LABEL;
+        }
+    }
+    pattern.label
+}
+
 fn code_pattern_findings(file: &str, added: &str) -> Vec<Finding> {
     CODE_PATTERNS
         .iter()
@@ -259,7 +300,7 @@ fn code_pattern_findings(file: &str, added: &str) -> Vec<Finding> {
             kind: "staged_code",
             path: Some(file.to_string()),
             name: None,
-            label: Some(pattern.label),
+            label: Some(finding_label(pattern, added)),
             pattern: Some(pattern.prefix),
         })
         .collect()
@@ -676,6 +717,62 @@ mod tests {
             let findings = code_pattern_findings("src/a.ts", &text);
             assert_eq!(findings.len(), 1, "{text}");
             assert_eq!(findings[0].pattern, Some(prefix));
+        }
+    }
+
+    #[test]
+    fn litellm_shaped_virtual_key_gets_its_own_label() {
+        // 22 URL-safe characters after `sk-`, built at runtime.
+        let tail = "Hq8vN2cW7rT4kLx9ZpM3sJ";
+        assert_eq!(tail.len(), 22);
+        let text = format!("LITELLM_KEY={}{}", "sk-", tail);
+        let findings = code_pattern_findings("src/app.ts", &text);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].label, Some(LITELLM_KEY_LABEL));
+        assert_eq!(findings[0].pattern, Some("sk-"));
+        let json = serde_json::to_string(&findings).unwrap();
+        assert!(!json.contains(tail), "{json}");
+        // urlsafe alphabet includes `-` and `_`.
+        let dashed = format!("{}{}", "sk-", "Hq8vN2cW-rT4kLx9_pM3sJ");
+        let findings = code_pattern_findings("src/a.ts", &dashed);
+        assert_eq!(findings[0].label, Some(LITELLM_KEY_LABEL));
+    }
+
+    #[test]
+    fn longer_sk_keys_keep_the_openai_label() {
+        for text in [
+            format!(
+                "{}{}",
+                "sk-", "Hq8vN2cW7rT4kLx9ZpM3sJ6dQ1fY5bVn0gXaE8uRt2wK4zP"
+            ),
+            format!("{}{}", "sk-proj-", "Hq8vN2cW7rT4kLx9ZpM3sJ6dQ1fY"),
+            format!("{}{}", "sk-", "Hq8vN2cW7rT4kLx9ZpM3sJa"),
+        ] {
+            let findings = code_pattern_findings("src/a.ts", &text);
+            assert_eq!(findings.len(), 1, "{text}");
+            assert_eq!(findings[0].label, Some("OpenAI API key"), "{text}");
+        }
+        // A file with one LiteLLM-shaped and one longer key keeps the OpenAI label.
+        let mixed = format!(
+            "a={}{}\nb={}{}",
+            "sk-", "Hq8vN2cW7rT4kLx9ZpM3sJ", "sk-", "Hq8vN2cW7rT4kLx9ZpM3sJ6dQ1fY5bVn0gXaE8u"
+        );
+        let findings = code_pattern_findings("src/a.ts", &mixed);
+        assert_eq!(findings[0].label, Some("OpenAI API key"));
+    }
+
+    #[test]
+    fn litellm_documented_short_example_keys_are_not_flagged() {
+        // LiteLLM's docs use short example master keys; a short tail is not a key.
+        for text in [
+            "master_key: sk-1234",
+            "Authorization: Bearer sk-1234",
+            "sk-12345678",
+        ] {
+            assert!(
+                code_pattern_findings("config.yaml", text).is_empty(),
+                "{text}"
+            );
         }
     }
 

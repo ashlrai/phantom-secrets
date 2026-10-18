@@ -5,6 +5,15 @@
 //! ChaCha20-Poly1305 under the KEM shared secret. Confidentiality holds if
 //! either X25519 or ML-KEM-768 holds.
 //!
+//! Draft status (checked 2026-10-18): the `x-wing` 0.1.1 crate states it
+//! matches draft version 06; the current draft is version 11 (2026-09-23).
+//! The test vectors in draft 11 Appendix C are byte-identical to the vectors
+//! shipped with the crate (see `draft_11_vectors_match` in the tests), and the
+//! draft 11 change log lists only editorial, ASN.1, PEM and SHAKE-argument
+//! notation changes after version 06 (it lists nothing for 08 to 11), so the
+//! vectors are the evidence that the construction is unchanged. The
+//! draft is still an Internet-Draft, so re-check on each new revision.
+//!
 //! WARNING: the `x-wing` and `ml-kem` crates have never been independently
 //! audited, and X-Wing is a pre-1.0 draft. Do not rely on this alone.
 //!
@@ -253,5 +262,25 @@ mod tests {
         .unwrap();
         assert_eq!(*open_sym_key(&classic, &m).unwrap(), *key);
         assert!(classic.v.is_none());
+    }
+
+    /// Draft 11 Appendix C known-answer vectors (same as the crate's KATs).
+    /// Checks the seed-to-public-key expansion and decapsulation against the
+    /// published values, so a crate bump that diverges from the draft fails.
+    #[test]
+    fn draft_11_vectors_match() {
+        let raw = include_str!("../tests/fixtures/xwing-draft-11-vectors.json");
+        let doc: serde_json::Value = serde_json::from_str(raw).unwrap();
+        let vectors = doc["vectors"].as_array().unwrap();
+        assert_eq!(vectors.len(), 3);
+        for v in vectors {
+            let field = |k: &str| hex::decode(v[k].as_str().unwrap()).unwrap();
+            let seed: [u8; 32] = field("seed").try_into().unwrap();
+            let kp = HybridKeypair::from_secret_bytes(seed);
+            assert_eq!(B64.decode(kp.public_b64()).unwrap(), field("pk"));
+            let ct = x_wing::Ciphertext::try_from(field("ct").as_slice()).unwrap();
+            let ss = kp.sk.decapsulate(&ct);
+            assert_eq!(ss.as_slice(), field("ss").as_slice());
+        }
     }
 }
