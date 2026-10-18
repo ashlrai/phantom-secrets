@@ -4,6 +4,14 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (audit HMAC key length)
+
+- The audit HMAC key loader now rejects a key file that does not decode to
+  exactly 32 bytes, with an error that states the expected and found
+  lengths and never echoes key material. Phantom always writes 32 bytes, so
+  only a hand-edited or corrupted file is affected. Delete `audit-hmac-key`
+  to regenerate it (this starts a new chain). Fixes #270.
+
 ### Fixed (`leaks plan` with `on_leak = "off"`)
 
 - `on_leak = "off"` in a repository's `.phantom.toml` made `phantom leaks
