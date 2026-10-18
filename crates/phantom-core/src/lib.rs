@@ -7,6 +7,7 @@ pub mod blob_format;
 pub mod cloud;
 mod cloud_http;
 pub mod config;
+pub mod crypto_registry;
 pub mod dotenv;
 pub mod env_scope;
 pub mod error;
