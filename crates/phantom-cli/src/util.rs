@@ -46,6 +46,23 @@ pub fn missing_config_error(project_dir: &std::path::Path) -> anyhow::Error {
     }
 }
 
+/// The project's `.phantom.toml` at `path`, or `None` only when it does not
+/// exist.
+///
+/// A config that exists but cannot be read or parsed is an error. Callers
+/// that report readiness or derive repairs from the config must not read it
+/// as "not initialized": that silently swaps the managed dotenv for `./.env`
+/// and drops every config-derived check.
+pub fn load_config_if_present(
+    path: &std::path::Path,
+) -> phantom_core::error::Result<Option<phantom_core::config::PhantomConfig>> {
+    match phantom_core::config::PhantomConfig::load(path) {
+        Ok(config) => Ok(Some(config)),
+        Err(phantom_core::error::PhantomError::ConfigNotFound(_)) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
 /// Open the vault for `project_id`. Tests install a stub backend with
 /// [`test_seam::TestProject`].
 pub fn open_vault(project_id: &str) -> anyhow::Result<Box<dyn VaultBackend>> {
