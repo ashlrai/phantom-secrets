@@ -91,6 +91,23 @@ pub struct ProxyServer {
     handle: tokio::task::JoinHandle<()>,
 }
 
+/// Upstream TLS client config: rustls with the aws-lc-rs provider and the
+/// webpki root store. Certificate verification is unchanged from the previous
+/// reqwest `rustls-tls` default; only the crypto provider differs.
+fn upstream_tls_config() -> rustls::ClientConfig {
+    let mut roots = rustls::RootCertStore::empty();
+    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    let mut cfg = rustls::ClientConfig::builder_with_provider(std::sync::Arc::new(
+        rustls::crypto::aws_lc_rs::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .expect("aws-lc-rs provider supports the default TLS versions")
+    .with_root_certificates(roots)
+    .with_no_client_auth();
+    cfg.alpn_protocols = vec![b"http/1.1".to_vec()];
+    cfg
+}
+
 impl ProxyServer {
     /// Start the proxy server.
     pub async fn start(
@@ -117,6 +134,9 @@ impl ProxyServer {
             max_body_size: config.max_body_size,
             http_client: reqwest::Client::builder()
                 .danger_accept_invalid_certs(false)
+                // aws-lc-rs provider: offers X25519MLKEM768 (post-quantum
+                // hybrid) first, with classical groups as fallback.
+                .use_preconfigured_tls(upstream_tls_config())
                 // Credential-bearing upstream requests must never inherit an
                 // agent-controlled HTTP(S)/ALL_PROXY redirect.
                 .no_proxy()
