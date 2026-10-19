@@ -4,6 +4,28 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Added (proxy TLS key exchange: negotiation test and doctor line)
+
+- New hermetic test `crates/phantom-proxy/tests/tls_pq_negotiation_test.rs`:
+  a local rustls server on 127.0.0.1 that accepts only X25519MLKEM768, with a
+  per-run self-signed certificate trusted only by the test, completes the
+  handshake with the proxy's real upstream TLS client and records
+  X25519MLKEM768 on the server side. A negative control server that accepts
+  only MLKEM768, which the proxy does not offer, fails with
+  `NoKxGroupsInCommon` and the proxy returns 502 `tls_handshake_failed`.
+- `phantom doctor`, `phantom doctor --pq` and `phantom doctor --all --json`
+  report the key exchange groups the proxy offers, read from the proxy's own
+  provider config (`phantom_proxy::upstream_offered_key_exchange_groups`),
+  for example "offers X25519MLKEM768 first ...; negotiated only if the
+  upstream supports it". A test checks that this list equals the
+  supported_groups the proxy sends in its ClientHello. The `--pq` JSON gains
+  `proxy_tls_key_exchange`; its "not assessed" entry now names only the group
+  negotiated with each real upstream.
+- Test-only `ProxyServer::start_trusting_test_roots` (behind the existing
+  `test-utils` feature) adds trust anchors for a local TLS upstream. Release
+  builds keep webpki roots only. `aws-lc-rs` (already in the lockfile via
+  rustls) is a new dev-dependency of the proxy crate.
+
 ### Docs and tests (LiteLLM gateway)
 
 - `docs/litellm.md` is now the single LiteLLM guide: the example config

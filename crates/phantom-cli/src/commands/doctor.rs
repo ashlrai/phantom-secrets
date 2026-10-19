@@ -574,6 +574,10 @@ fn run_checks(fix: bool, check_expiry: bool) -> Result<(usize, usize)> {
         }
     }
 
+    // Check 11b: Proxy upstream TLS key exchange groups (read from the
+    // proxy's provider config; what is negotiated depends on each upstream).
+    check_info(&super::pq_report::proxy_tls_doctor_line());
+
     // Check 12: Audit logging
     {
         if phantom_core::audit::AuditEventEncryption::from_env()

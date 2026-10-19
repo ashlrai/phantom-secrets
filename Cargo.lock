@@ -2805,6 +2805,7 @@ dependencies = [
 name = "phantom-secrets-proxy"
 version = "0.7.9"
 dependencies = [
+ "aws-lc-rs",
  "base64 0.22.1",
  "bytes",
  "hex",

@@ -95,8 +95,21 @@ pub struct ProxyServer {
 /// webpki root store. Certificate verification is unchanged from the previous
 /// reqwest `rustls-tls` default; only the crypto provider differs.
 fn upstream_tls_config() -> rustls::ClientConfig {
+    upstream_tls_config_with_extra_roots(&[])
+}
+
+/// The upstream client config with additional trust anchors. Production passes
+/// none; only the `test-utils` start path below passes a test-local root.
+fn upstream_tls_config_with_extra_roots(
+    extra_roots: &[rustls::pki_types::CertificateDer<'static>],
+) -> rustls::ClientConfig {
     let mut roots = rustls::RootCertStore::empty();
     roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    for root in extra_roots {
+        roots
+            .add(root.clone())
+            .expect("test root certificate must parse as a trust anchor");
+    }
     let mut cfg = rustls::ClientConfig::builder_with_provider(std::sync::Arc::new(
         rustls::crypto::aws_lc_rs::default_provider(),
     ))
@@ -108,12 +121,68 @@ fn upstream_tls_config() -> rustls::ClientConfig {
     cfg
 }
 
+/// One TLS key exchange group the proxy's upstream client offers.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct OfferedKxGroup {
+    /// rustls name of the group, for example `X25519MLKEM768` or `X25519`.
+    pub name: String,
+    /// IANA TLS Supported Groups code point, for example `0x11ec`.
+    pub code_point: u16,
+}
+
+/// The key exchange groups the proxy's upstream TLS client offers, in offer
+/// order (most preferred first). Read from the same provider config the proxy
+/// connects with, not from a hard-coded list. What is negotiated with a given
+/// upstream also depends on that server.
+pub fn upstream_offered_key_exchange_groups() -> Vec<OfferedKxGroup> {
+    upstream_tls_config()
+        .crypto_provider()
+        .kx_groups
+        .iter()
+        .map(|group| {
+            let named = group.name();
+            OfferedKxGroup {
+                name: format!("{named:?}"),
+                code_point: u16::from(named),
+            }
+        })
+        .collect()
+}
+
 impl ProxyServer {
     /// Start the proxy server.
     pub async fn start(
         config: ProxyConfig,
         registry: ServiceRegistry,
         interceptor: Interceptor,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        Self::start_with_upstream_tls(config, registry, interceptor, upstream_tls_config()).await
+    }
+
+    /// Test-only: start the proxy with its normal upstream TLS config plus
+    /// extra trust anchors, so a test can stand up a local TLS upstream with a
+    /// self-signed certificate. Not available in release builds.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub async fn start_trusting_test_roots(
+        config: ProxyConfig,
+        registry: ServiceRegistry,
+        interceptor: Interceptor,
+        extra_roots: Vec<rustls::pki_types::CertificateDer<'static>>,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        Self::start_with_upstream_tls(
+            config,
+            registry,
+            interceptor,
+            upstream_tls_config_with_extra_roots(&extra_roots),
+        )
+        .await
+    }
+
+    async fn start_with_upstream_tls(
+        config: ProxyConfig,
+        registry: ServiceRegistry,
+        interceptor: Interceptor,
+        upstream_tls: rustls::ClientConfig,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let addr = SocketAddr::from(([127, 0, 0, 1], config.port));
         let listener = TcpListener::bind(addr).await?;
@@ -136,7 +205,7 @@ impl ProxyServer {
                 .danger_accept_invalid_certs(false)
                 // aws-lc-rs provider: offers X25519MLKEM768 (post-quantum
                 // hybrid) first, with classical groups as fallback.
-                .use_preconfigured_tls(upstream_tls_config())
+                .use_preconfigured_tls(upstream_tls)
                 // Credential-bearing upstream requests must never inherit an
                 // agent-controlled HTTP(S)/ALL_PROXY redirect.
                 .no_proxy()
