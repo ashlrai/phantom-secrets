@@ -41,6 +41,7 @@ jobs:
     outputs:
       rust: ${{ steps.classify.outputs.rust }}
       web: ${{ steps.classify.outputs.web }}
+      temporal_example: ${{ steps.classify.outputs.temporal_example }}
       filterset: ${{ steps.affected.outputs.filterset }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -55,7 +56,8 @@ jobs:
         run: |
           set -euo pipefail
           if [ "$EVENT" != "pull_request" ]; then
-            echo "rust=true" >> "$GITHUB_OUTPUT"; echo "web=true" >> "$GITHUB_OUTPUT"; exit 0
+            echo "rust=true" >> "$GITHUB_OUTPUT"; echo "web=true" >> "$GITHUB_OUTPUT"
+            echo "temporal_example=true" >> "$GITHUB_OUTPUT"; exit 0
           fi
           files="$(git diff --name-only "$BASE...$HEAD")"
           printf '%s\n' "$files"
@@ -67,8 +69,12 @@ jobs:
           if printf '%s\n' "$files" | grep -Ev "$docs" | grep -Ev '^(apps/web/|scripts/supabase/|scripts/seo/|video/)' | grep -q .; then rust=true; fi
           if printf '%s\n' "$files" | grep -Eq '^\.github/workflows/'; then rust=true; fi
           if printf '%s\n' "$files" | grep -Eq "$web"; then webc=true; fi
+          # The Temporal codec example (Python) has its own job.
+          temporal=false
+          if printf '%s\n' "$files" | grep -Eq '^(examples/temporal-codec-python/|\.github/workflows/)'; then temporal=true; fi
           echo "rust=$rust" >> "$GITHUB_OUTPUT"; echo "web=$webc" >> "$GITHUB_OUTPUT"
-          echo "rust=$rust web=$webc"
+          echo "temporal_example=$temporal" >> "$GITHUB_OUTPUT"
+          echo "rust=$rust web=$webc temporal_example=$temporal"
       - id: affected
         env:
           EVENT: ${{ github.event_name }}
@@ -474,6 +480,39 @@ jobs:
       - name: Package every crates.io crate in dependency order
         run: ./scripts/publish-crates.sh --verify-only --skip-source-gates
 
+  temporal-codec-example:
+    name: Temporal codec example tests
+    needs: changes
+    if: needs.changes.outputs.temporal_example == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Runner's own python3, no extra action. Exact versions, wheels only,
+      # every file hash-checked against requirements-ci.txt.
+      - name: Install pinned dependencies
+        working-directory: examples/temporal-codec-python
+        run: |
+          set -euo pipefail
+          python3 --version
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --disable-pip-version-check --no-cache-dir \
+            --require-hashes --only-binary=:all: -r requirements-ci.txt
+      # Fake keys only; the HTTP tests bind 127.0.0.1. A skipped test fails
+      # the job, so a missing dependency cannot pass silently.
+      - name: Run codec, CORS and key delivery tests
+        working-directory: examples/temporal-codec-python
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/venv/bin/python" -m unittest -v 2>&1 | tee "$RUNNER_TEMP/unittest.log"
+          if grep -q 'skipped' "$RUNNER_TEMP/unittest.log"; then
+            echo "::error::a Temporal codec example test was skipped"; exit 1
+          fi
+
   # The single required status check. Fails if any job failed or was
   # cancelled, or if a job the classifier selected did not succeed. A job may
   # be skipped only when the classifier deselected it (or, for Ignored Tests,
@@ -481,7 +520,7 @@ jobs:
   gate:
     name: CI Gate
     if: always()
-    needs: [changes, test, test-ignored, lint, dependency-policy, windows-arm-source-check, npm-wrappers, web, secret-scan, crate-publication-contract]
+    needs: [changes, test, test-ignored, lint, dependency-policy, windows-arm-source-check, npm-wrappers, web, secret-scan, crate-publication-contract, temporal-codec-example]
     runs-on: ubuntu-latest
     steps:
       - name: Require every selected job
@@ -494,12 +533,14 @@ jobs:
           const ch = needs.changes;
           if (ch?.result !== 'success') throw new Error(`changes: ${ch?.result}`);
           const rust = ch.outputs.rust === 'true', web = ch.outputs.web === 'true';
+          const temporalExample = ch.outputs.temporal_example === 'true';
           const always = ['dependency-policy', 'secret-scan'];
           const rustJobs = ['test', 'lint', 'windows-arm-source-check', 'npm-wrappers', 'crate-publication-contract'];
           const expect = {
             ...Object.fromEntries(always.map((j) => [j, true])),
             ...Object.fromEntries(rustJobs.map((j) => [j, rust])),
             web,
+            'temporal-codec-example': temporalExample,
             'test-ignored': process.env.EVENT === 'workflow_dispatch',
           };
           const bad = [];
@@ -509,5 +550,5 @@ jobs:
           }
           if (Object.keys(needs).length !== Object.keys(expect).length + 1) bad.push('gate inventory drift');
           if (bad.length) throw new Error(bad.join(', '));
-          console.log(`CI Gate passed (rust=${rust}, web=${web})`);
+          console.log(`CI Gate passed (rust=${rust}, web=${web}, temporal_example=${temporalExample})`);
           NODE
