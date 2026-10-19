@@ -4,6 +4,21 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Added (lease store key provisioning library, no callers)
+
+- `phantom_vault::lease_key` provisions and loads the 32-byte key that
+  authenticates the broker's lease store, per the decisions recorded in the
+  #230 design note. Provisioning is an explicit call that generates the key
+  from the OS CSPRNG, stores it in the OS credential store (macOS Keychain,
+  Windows Credential Manager), reads it back, and never overwrites an existing
+  entry. Loading never provisions. Linux fails closed until a reboot-durable
+  Secret Service store exists. Key bytes are never printed or logged.
+- `DurableReplayStore::list_leases` returns a value-free `LeaseSummary` per
+  lease (ids, operation, generation, use counts, revoked flag, time window).
+  It verifies the snapshot MAC, needs no broker epoch, and never writes.
+- Nothing calls either yet: no CLI command, and no lease issuance, revoke or
+  rotate flow is enabled.
+
 ### Added (`phantom setup --undo`)
 
 - `phantom setup --undo` reads `~/.phantom/setup-manifest.json` and shows what
