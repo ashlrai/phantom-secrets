@@ -47,7 +47,16 @@ pub struct KeyShare {
     /// enabled (`PHANTOM_BLOB_FORMAT=v2`), so default output is unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub v: Option<u8>,
+    /// Algorithm label. Readers accept it absent (every share written so far)
+    /// or equal to [`CLASSIC_SHARE_ALG`], and reject any other value. Writers
+    /// do not emit it yet, so the wire format is unchanged; v0.7.9 readers
+    /// ignore unknown fields, so a later writer can add it compatibly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alg: Option<String>,
 }
+
+/// Algorithm label of the classic share (X25519 + XChaCha20-Poly1305 box).
+pub const CLASSIC_SHARE_ALG: &str = "x25519-xchacha20poly1305";
 
 /// Highest share format version this build can open.
 pub const SHARE_VERSION_MAX: u8 = crate::blob_format::VERSION_2;
@@ -160,11 +169,19 @@ pub fn seal_sym_key_with(
             crate::blob_format::WriteFormat::Legacy => None,
             crate::blob_format::WriteFormat::Tagged => Some(crate::blob_format::VERSION_2),
         },
+        alg: None,
     })
 }
 
 /// Recover the symmetric key from a share intended for `me`.
 pub fn open_sym_key(share: &KeyShare, me: &MemberKeypair) -> Result<Zeroizing<[u8; 32]>> {
+    if let Some(alg) = share.alg.as_deref() {
+        if alg != CLASSIC_SHARE_ALG {
+            return Err(PhantomError::AuthError(format!(
+                "Unsupported key share algorithm {alg:?}; upgrade phantom"
+            )));
+        }
+    }
     if let Some(v) = share.v {
         if v == 0 || v > SHARE_VERSION_MAX {
             return Err(PhantomError::AuthError(format!(
@@ -313,5 +330,83 @@ mod tests {
         share.v = Some(99);
         let err = open_sym_key(&share, &alice).unwrap_err().to_string();
         assert!(err.contains("Unsupported key share version 99"), "{err}");
+    }
+
+    /// Hand-made share JSON: a real legacy share with `alg` added by hand.
+    fn share_json_with_alg(alg: &str) -> (MemberKeypair, Zeroizing<[u8; 32]>, String) {
+        let alice = MemberKeypair::generate();
+        let sym_key = generate_sym_key();
+        let share = seal_sym_key_with(
+            &sym_key,
+            &alice.public_b64(),
+            crate::blob_format::WriteFormat::Legacy,
+        )
+        .unwrap();
+        let json = format!(
+            r#"{{"ephemeral_pk":"{}","nonce":"{}","ciphertext":"{}","alg":"{alg}"}}"#,
+            share.ephemeral_pk, share.nonce, share.ciphertext
+        );
+        (alice, sym_key, json)
+    }
+
+    #[test]
+    fn share_with_classic_alg_label_opens() {
+        let (alice, sym_key, json) = share_json_with_alg(CLASSIC_SHARE_ALG);
+        let parsed: KeyShare = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.alg.as_deref(), Some(CLASSIC_SHARE_ALG));
+        assert_eq!(*open_sym_key(&parsed, &alice).unwrap(), *sym_key);
+    }
+
+    #[test]
+    fn share_with_unknown_or_hybrid_alg_label_is_rejected() {
+        for alg in ["xwing-chacha20poly1305", "x25519-xchacha20poly1305-v9", ""] {
+            let (alice, _, json) = share_json_with_alg(alg);
+            let parsed: KeyShare = serde_json::from_str(&json).unwrap();
+            let err = open_sym_key(&parsed, &alice).unwrap_err().to_string();
+            assert!(
+                err.contains("Unsupported key share algorithm"),
+                "{alg}: {err}"
+            );
+        }
+    }
+
+    /// Writers must not change: pin the exact JSON keys and decoded sizes of
+    /// both write formats (the values are random, the structure is not).
+    #[test]
+    fn share_writer_output_structure_is_unchanged() {
+        let alice = MemberKeypair::generate();
+        let sym_key = generate_sym_key();
+        for (format, want_keys) in [
+            (
+                crate::blob_format::WriteFormat::Legacy,
+                vec!["ciphertext", "ephemeral_pk", "nonce"],
+            ),
+            (
+                crate::blob_format::WriteFormat::Tagged,
+                vec!["ciphertext", "ephemeral_pk", "nonce", "v"],
+            ),
+        ] {
+            let share = seal_sym_key_with(&sym_key, &alice.public_b64(), format).unwrap();
+            let value = serde_json::to_value(&share).unwrap();
+            let mut keys: Vec<&str> = value
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect();
+            keys.sort_unstable();
+            assert_eq!(keys, want_keys);
+            let len = |k: &str| B64.decode(value[k].as_str().unwrap()).unwrap().len();
+            assert_eq!(
+                (len("ephemeral_pk"), len("nonce"), len("ciphertext")),
+                (32, 24, 48)
+            );
+            if want_keys.contains(&"v") {
+                assert_eq!(value["v"], 2);
+            }
+            // Field order on the wire is unchanged too.
+            let json = serde_json::to_string(&share).unwrap();
+            assert!(json.starts_with(r#"{"ephemeral_pk":""#), "{json}");
+        }
     }
 }
