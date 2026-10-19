@@ -126,6 +126,10 @@ Within a Cursor terminal session running under `phantom exec`, your existing cod
 
 ---
 
+## Gateway mode (not supported with a loopback gateway)
+
+[LiteLLM behind Phantom](litellm.md) keeps real keys out of a local gateway, but it does not cover Cursor's editor. LiteLLM's documentation says its Cursor integration (an overridden OpenAI base URL) makes Cursor's servers call the proxy, so the proxy must be reachable from the internet, and that it is best effort (https://docs.litellm.ai/docs/tutorials/cursor_integration). A loopback-only gateway cannot satisfy that, and exposing a proxy that holds provider access for Cursor is not recommended here. Use the direct Phantom setup above.
+
 ## Troubleshooting
 
 **MCP tools not showing up in Cursor Chat**

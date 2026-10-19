@@ -2,7 +2,6 @@ use anyhow::{Context, Result};
 use colored::Colorize;
 use phantom_core::config::PhantomConfig;
 use phantom_core::dotenv::{is_example_placeholder, is_example_template_file, DotenvFile};
-use phantom_core::token::PhantomToken;
 use std::path::{Path, PathBuf};
 
 use phantom_core::report::{
@@ -15,15 +14,24 @@ use phantom_core::report::{
 /// When `staged_only` is true, checks staged content from the git index,
 /// including staged .env files, so pre-commit hooks block newly staged secrets.
 ///
-/// When `runtime` is true, scans the current environment for phantom tokens
-/// that haven't been replaced (proxy not running).
+/// When `runtime` is true, scans every variable of the current environment for
+/// phantom tokens left without a proxy. A variable is excused only when a live
+/// `phantom exec` / `phantom start` proxy answers for the session variables
+/// and the session names that variable as its own (`PHANTOM_SESSION_KEYS`).
 ///
 /// With `json`, prints one machine-readable report on stdout and keeps the
 /// same exit status: 0 when clean, 1 when findings exist. An indeterminate
 /// scan is still an error with no report.
 pub fn run(staged_only: bool, runtime: bool, json: bool) -> Result<()> {
+    let mut scan = None;
     let (mode, findings, warnings) = if runtime {
-        ("runtime", runtime_findings(), Vec::new())
+        let mut result = phantom_core::report::scan_runtime_env(
+            std::env::vars_os(),
+            phantom_core::report::proxy_answers,
+        );
+        let findings = std::mem::take(&mut result.findings);
+        scan = Some(result);
+        ("runtime", findings, Vec::new())
     } else if staged_only {
         let (findings, warnings) = staged_findings()?;
         ("staged", findings, warnings)
@@ -42,12 +50,15 @@ pub fn run(staged_only: bool, runtime: bool, json: bool) -> Result<()> {
             findings: &findings,
             warnings: &warnings,
             indeterminate: &[],
+            proxy_session: scan.as_ref().is_some_and(|scan| scan.proxy_session),
+            excused: scan.as_ref().map_or(&[], |scan| scan.excused.as_slice()),
+            session_warning: scan.as_ref().and_then(|scan| scan.session_warning()),
         };
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
         print_warnings(&warnings);
-        if runtime {
-            print_runtime(&findings);
+        if let Some(scan) = &scan {
+            print_runtime(&findings, scan);
         } else {
             print_findings(&findings);
         }
@@ -240,6 +251,47 @@ fn contains_credential(text: &str, pattern: &CodePattern) -> bool {
     })
 }
 
+/// Label for a LiteLLM-shaped key. Shape only: LiteLLM generates virtual keys
+/// as `sk-` plus `secrets.token_urlsafe(16)`, which is exactly 22 URL-safe
+/// characters (checked in litellm 1.103.5, `key_management_endpoints.py`
+/// and `constants.py`; the length is configurable through
+/// `LENGTH_OF_LITELLM_GENERATED_KEY`). Legacy OpenAI keys carry a 48-character
+/// tail and `sk-proj-` keys are longer, so a 22-character tail is the
+/// LiteLLM-shaped case. This is a hint for the report, not proof of origin.
+const LITELLM_KEY_LABEL: &str = "LiteLLM-style virtual key (sk- plus 22 characters)";
+const LITELLM_TAIL_LEN: usize = 22;
+
+/// Tail lengths of every `sk-` token in `text` that the `sk-` rule accepts.
+fn sk_credential_tail_lens(text: &str, pattern: &CodePattern) -> Vec<usize> {
+    let bytes = text.as_bytes();
+    text.match_indices(pattern.prefix)
+        .filter_map(|(start, _)| {
+            if start > 0 && bytes[start - 1].is_ascii_alphanumeric() {
+                return None;
+            }
+            let rest = &bytes[start + pattern.prefix.len()..];
+            let len = rest
+                .iter()
+                .take_while(|b| b.is_ascii_alphanumeric() || **b == b'_' || **b == b'-')
+                .count();
+            (len >= pattern.min_tail && !is_identifier_tail(&rest[..len])).then_some(len)
+        })
+        .collect()
+}
+
+/// The report label for a matched pattern. Only the `sk-` rule can relabel,
+/// and only when every accepted token has the LiteLLM tail length, so a file
+/// that also holds an OpenAI-shaped key keeps the OpenAI label.
+fn finding_label(pattern: &CodePattern, added: &str) -> &'static str {
+    if pattern.prefix == "sk-" {
+        let tails = sk_credential_tail_lens(added, pattern);
+        if !tails.is_empty() && tails.iter().all(|len| *len == LITELLM_TAIL_LEN) {
+            return LITELLM_KEY_LABEL;
+        }
+    }
+    pattern.label
+}
+
 fn code_pattern_findings(file: &str, added: &str) -> Vec<Finding> {
     CODE_PATTERNS
         .iter()
@@ -248,7 +300,7 @@ fn code_pattern_findings(file: &str, added: &str) -> Vec<Finding> {
             kind: "staged_code",
             path: Some(file.to_string()),
             name: None,
-            label: Some(pattern.label),
+            label: Some(finding_label(pattern, added)),
             pattern: Some(pattern.prefix),
         })
         .collect()
@@ -383,53 +435,38 @@ fn is_env_file(file: &str) -> bool {
         .is_some_and(|name| name == ".env" || name.starts_with(".env.") || name.ends_with(".env"))
 }
 
-/// Common env vars that hold API keys. A phantom token in one of them means
-/// the proxy is not running and API calls will fail with auth errors.
-const RUNTIME_API_KEY_VARS: [&str; 11] = [
-    "OPENAI_API_KEY",
-    "ANTHROPIC_API_KEY",
-    "STRIPE_SECRET_KEY",
-    "SUPABASE_SERVICE_ROLE_KEY",
-    "SUPABASE_ANON_KEY",
-    "DATABASE_URL",
-    "RESEND_API_KEY",
-    "SENDGRID_API_KEY",
-    "TWILIO_AUTH_TOKEN",
-    "GITHUB_TOKEN",
-    "CLOUDFLARE_API_TOKEN",
-];
-
-fn runtime_findings() -> Vec<Finding> {
-    RUNTIME_API_KEY_VARS
-        .iter()
-        .filter(|var| std::env::var(var).is_ok_and(|value| PhantomToken::is_phantom_token(&value)))
-        .map(|var| Finding {
-            kind: "runtime_env",
-            path: None,
-            name: Some(var.to_string()),
-            label: None,
-            pattern: None,
-        })
-        .collect()
-}
-
-fn print_runtime(findings: &[Finding]) {
+fn print_runtime(findings: &[Finding], scan: &phantom_core::report::RuntimeEnvScan) {
+    if let Some(warning) = scan.session_warning() {
+        eprintln!("{} {}", "warn".yellow().bold(), warning);
+    }
+    if !scan.excused.is_empty() {
+        println!(
+            "{} Live Phantom proxy session owns: {}",
+            "ok".green().bold(),
+            scan.excused
+                .iter()
+                .map(|name| phantom_core::report::printable_name(name))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
     if findings.is_empty() {
         println!(
-            "{} No phantom tokens in environment (proxy running or secrets injected).",
+            "{} No phantom token outside a live proxy session in any environment variable.",
             "ok".green().bold()
         );
         return;
     }
     eprintln!(
-        "\n{} Phantom tokens in environment (proxy not running)!\n",
+        "\n{} Phantom tokens in environment with no live proxy session that owns them!\n",
         "warn".yellow().bold()
     );
     for finding in findings {
         eprintln!(
             "  {} {} contains a phantom token",
             "!".yellow().bold(),
-            finding.name.as_deref().unwrap_or_default().bold()
+            phantom_core::report::printable_name(finding.name.as_deref().unwrap_or_default())
+                .bold()
         );
     }
     eprintln!(
@@ -450,9 +487,16 @@ fn get_staged_files() -> Result<Vec<String>> {
         ])
         .output()
         .map_err(|_| {
-            anyhow::anyhow!("Failed to inspect staged paths; clean status is indeterminate")
+            anyhow::anyhow!(
+                "Failed to inspect staged paths: could not run git (is it on PATH?); clean status is indeterminate"
+            )
         })?;
     if !output.status.success() {
+        if !inside_git_work_tree() {
+            anyhow::bail!(
+                "`phantom check --staged` must run inside a git work tree; clean status is indeterminate. Use `phantom check` to scan .env files here."
+            );
+        }
         anyhow::bail!("Failed to inspect staged paths; clean status is indeterminate");
     }
     let paths = String::from_utf8(output.stdout).map_err(|_| {
@@ -463,6 +507,15 @@ fn get_staged_files() -> Result<Vec<String>> {
         .filter(|path| !path.is_empty())
         .map(String::from)
         .collect())
+}
+
+fn inside_git_work_tree() -> bool {
+    std::process::Command::new("git")
+        .args(["rev-parse", "--is-inside-work-tree"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .is_ok_and(|out| out.status.success() && out.stdout.starts_with(b"true"))
 }
 
 fn read_staged_file(file: &str) -> Result<String> {
@@ -507,6 +560,37 @@ fn staged_added_lines(file: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use phantom_core::token::PhantomToken;
+
+    /// The liveness probe `--runtime` relies on, against the real proxy rather
+    /// than a stand-in: 200 for the session's header, nothing for another
+    /// header, and nothing once the proxy has stopped.
+    #[test]
+    fn runtime_probe_matches_the_real_proxy_health_endpoint() {
+        use phantom_core::report::proxy_answers;
+        use phantom_proxy::{Interceptor, ProxyConfig, ProxyServer, ServiceRegistry};
+
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let session_header = ProxyServer::generate_proxy_token();
+        let proxy = runtime
+            .block_on(ProxyServer::start(
+                ProxyConfig {
+                    port: 0,
+                    proxy_token: session_header.clone(),
+                    ..ProxyConfig::default()
+                },
+                ServiceRegistry::new(),
+                Interceptor::new(std::collections::HashMap::new()),
+            ))
+            .unwrap();
+        let port = proxy.port();
+
+        assert!(proxy_answers(port, &session_header));
+        assert!(!proxy_answers(port, "another-session"));
+
+        runtime.block_on(proxy.shutdown());
+        assert!(!proxy_answers(port, &session_header));
+    }
 
     /// A file listed as regular and then swapped for a symlink is refused at
     /// read time, not followed. Fails if the read goes back to
@@ -557,6 +641,9 @@ mod tests {
             findings: &findings,
             warnings: &[],
             indeterminate: &[],
+            proxy_session: false,
+            excused: &[],
+            session_warning: None,
         };
         let json = serde_json::to_string(&report).unwrap();
         assert!(json.contains("\"name\":\"OPENAI_API_KEY\""));
@@ -646,6 +733,62 @@ mod tests {
             let findings = code_pattern_findings("src/a.ts", &text);
             assert_eq!(findings.len(), 1, "{text}");
             assert_eq!(findings[0].pattern, Some(prefix));
+        }
+    }
+
+    #[test]
+    fn litellm_shaped_virtual_key_gets_its_own_label() {
+        // 22 URL-safe characters after `sk-`, built at runtime.
+        let tail = "Hq8vN2cW7rT4kLx9ZpM3sJ";
+        assert_eq!(tail.len(), 22);
+        let text = format!("LITELLM_KEY={}{}", "sk-", tail);
+        let findings = code_pattern_findings("src/app.ts", &text);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].label, Some(LITELLM_KEY_LABEL));
+        assert_eq!(findings[0].pattern, Some("sk-"));
+        let json = serde_json::to_string(&findings).unwrap();
+        assert!(!json.contains(tail), "{json}");
+        // urlsafe alphabet includes `-` and `_`.
+        let dashed = format!("{}{}", "sk-", "Hq8vN2cW-rT4kLx9_pM3sJ");
+        let findings = code_pattern_findings("src/a.ts", &dashed);
+        assert_eq!(findings[0].label, Some(LITELLM_KEY_LABEL));
+    }
+
+    #[test]
+    fn longer_sk_keys_keep_the_openai_label() {
+        for text in [
+            format!(
+                "{}{}",
+                "sk-", "Hq8vN2cW7rT4kLx9ZpM3sJ6dQ1fY5bVn0gXaE8uRt2wK4zP"
+            ),
+            format!("{}{}", "sk-proj-", "Hq8vN2cW7rT4kLx9ZpM3sJ6dQ1fY"),
+            format!("{}{}", "sk-", "Hq8vN2cW7rT4kLx9ZpM3sJa"),
+        ] {
+            let findings = code_pattern_findings("src/a.ts", &text);
+            assert_eq!(findings.len(), 1, "{text}");
+            assert_eq!(findings[0].label, Some("OpenAI API key"), "{text}");
+        }
+        // A file with one LiteLLM-shaped and one longer key keeps the OpenAI label.
+        let mixed = format!(
+            "a={}{}\nb={}{}",
+            "sk-", "Hq8vN2cW7rT4kLx9ZpM3sJ", "sk-", "Hq8vN2cW7rT4kLx9ZpM3sJ6dQ1fY5bVn0gXaE8u"
+        );
+        let findings = code_pattern_findings("src/a.ts", &mixed);
+        assert_eq!(findings[0].label, Some("OpenAI API key"));
+    }
+
+    #[test]
+    fn litellm_documented_short_example_keys_are_not_flagged() {
+        // LiteLLM's docs use short example master keys; a short tail is not a key.
+        for text in [
+            "master_key: sk-1234",
+            "Authorization: Bearer sk-1234",
+            "sk-12345678",
+        ] {
+            assert!(
+                code_pattern_findings("config.yaml", text).is_empty(),
+                "{text}"
+            );
         }
     }
 

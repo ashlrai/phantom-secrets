@@ -441,37 +441,110 @@ fn update_cloud_reconciliation(config: &mut PhantomConfig, remote_version: u64, 
     }
 }
 
-pub fn run_status() -> Result<()> {
+/// What `phantom cloud status` learned, before it is rendered.
+enum CloudLogin {
+    NotLoggedIn,
+    /// The service rejected the stored bearer (HTTP 401): log in again.
+    TokenRejected,
+    /// The account lookup failed for another reason (network, server error,
+    /// unparseable reply). The stored login was not rejected.
+    LookupFailed(phantom_core::error::PhantomError),
+    LoggedIn(auth::UserInfo),
+}
+
+/// `phantom cloud status --json`: one object with the same facts as the text
+/// report. `user` is the account email when the service returns one, else the
+/// GitHub login. Never includes the stored bearer.
+fn cloud_status_json(
+    login: &CloudLogin,
+    cloud: Option<&phantom_core::config::CloudConfig>,
+    local_config_unreadable: bool,
+) -> serde_json::Value {
+    let user = match login {
+        CloudLogin::LoggedIn(user) => Some(user),
+        _ => None,
+    };
+    serde_json::json!({
+        "loggedIn": user.is_some(),
+        "tokenStored": !matches!(login, CloudLogin::NotLoggedIn),
+        "tokenRejected": matches!(login, CloudLogin::TokenRejected),
+        "accountLookupFailed": matches!(login, CloudLogin::LookupFailed(_)),
+        "user": user.map(|u| u.email.clone().unwrap_or_else(|| u.github_login.clone())),
+        "email": user.and_then(|u| u.email.clone()),
+        "githubLogin": user.map(|u| u.github_login.clone()),
+        "tier": user.map(|u| u.plan.clone()),
+        "vaultsCount": user.and_then(|u| u.vaults_count),
+        "lastSyncedVersion": cloud.map(|c| c.version),
+        "reconciliationRequired": cloud.is_some_and(|c| c.reconciliation_required),
+        "reconciliationRemoteVersion": cloud.and_then(|c| c.reconciliation_remote_version),
+        "localConfigUnreadable": local_config_unreadable,
+    })
+}
+
+/// `json` prints one object (see [`cloud_status_json`]) instead of the text
+/// report. Both pass the same trusted-terminal consent gate first and make
+/// the same single authenticated request.
+pub fn run_status(json: bool) -> Result<()> {
     require_trusted_terminal_cloud(&CloudConsentPlan {
         effect: "read the stored Phantom bearer and send an authenticated request for cloud account and vault status".to_string(),
         challenge: "cloud status authenticated".to_string(),
     })?;
     let api_base = auth::api_base_url()?;
 
-    match auth::load_token() {
+    let login = match auth::load_token() {
         Some(token) => {
+            let token = Zeroizing::new(token);
             let rt = tokio::runtime::Runtime::new()?;
             match rt.block_on(auth::get_user_info(&api_base, &token)) {
-                Ok(user) => {
-                    println!(
-                        "{}  Cloud: logged in as @{} ({})",
-                        "ok".green().bold(),
-                        user.github_login,
-                        user.plan
-                    );
-                    if let Some(count) = user.vaults_count {
-                        println!("   Vaults: {count}");
-                    }
-                }
-                Err(_) => {
-                    println!(
-                        "{}  Cloud: token expired — run `phantom login`",
-                        "warn".yellow().bold()
-                    );
-                }
+                Ok(user) => CloudLogin::LoggedIn(user),
+                Err(phantom_core::error::PhantomError::AuthRequired) => CloudLogin::TokenRejected,
+                Err(error) => CloudLogin::LookupFailed(error),
             }
         }
-        None => {
+        None => CloudLogin::NotLoggedIn,
+    };
+    let config_path = std::path::Path::new(".phantom.toml");
+
+    if json {
+        let (config, local_config_unreadable) =
+            match crate::util::load_config_if_present(config_path) {
+                Ok(config) => (config, false),
+                Err(_) => (None, true),
+            };
+        let cloud = config.as_ref().and_then(|config| config.cloud.as_ref());
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&cloud_status_json(
+                &login,
+                cloud,
+                local_config_unreadable
+            ))?
+        );
+        return Ok(());
+    }
+
+    match &login {
+        CloudLogin::LoggedIn(user) => {
+            println!(
+                "{}  Cloud: logged in as @{} ({})",
+                "ok".green().bold(),
+                user.github_login,
+                user.plan
+            );
+            if let Some(count) = user.vaults_count {
+                println!("   Vaults: {count}");
+            }
+        }
+        CloudLogin::TokenRejected => {
+            write_account_lookup_failure(
+                &mut std::io::stdout(),
+                &phantom_core::error::PhantomError::AuthRequired,
+            )?;
+        }
+        CloudLogin::LookupFailed(error) => {
+            write_account_lookup_failure(&mut std::io::stdout(), error)?;
+        }
+        CloudLogin::NotLoggedIn => {
             println!(
                 "{}  Cloud: not logged in — run `phantom login`",
                 "->".blue().bold()
@@ -479,30 +552,220 @@ pub fn run_status() -> Result<()> {
         }
     }
 
-    // Show local cloud config if it exists
-    if let Ok(config) = PhantomConfig::load(std::path::Path::new(".phantom.toml")) {
-        if let Some(cloud) = &config.cloud {
-            println!("   Last synced version: {}", cloud.version);
-            if cloud.reconciliation_required {
-                let remote = cloud
-                    .reconciliation_remote_version
-                    .map_or_else(|| "unknown".to_string(), |version| version.to_string());
-                println!(
-                    "{}  Partial reconciliation with remote version {remote}; cloud push is blocked until every remote secret is reconciled.",
-                    "warn".yellow().bold()
-                );
-            }
-        }
+    for line in local_cloud_status_lines(config_path) {
+        println!("{line}");
     }
 
     Ok(())
+}
+
+/// Writes what `phantom cloud status` says when the cloud account lookup
+/// fails. Only an authentication rejection (HTTP 401) is reported as an
+/// expired login; a network fault, server error or unparseable reply says the
+/// status could not be checked and names the kind of failure, because logging
+/// in again would not help. The error only selects a branch: every line
+/// written is fixed text, so nothing from the failed request is printed.
+fn write_account_lookup_failure(
+    out: &mut impl Write,
+    error: &phantom_core::error::PhantomError,
+) -> std::io::Result<()> {
+    use phantom_core::error::PhantomError;
+    let warn = "warn".yellow().bold();
+    match error {
+        PhantomError::AuthRequired => {
+            return writeln!(out, "{warn}  Cloud: token expired — run `phantom login`");
+        }
+        PhantomError::AuthError(_) => writeln!(
+            out,
+            "{warn}  Cloud: could not check account status (could not reach Phantom Cloud)"
+        )?,
+        PhantomError::CloudError { status: 0, .. } => writeln!(
+            out,
+            "{warn}  Cloud: could not check account status (could not reach Phantom Cloud: HTTP client unavailable)"
+        )?,
+        PhantomError::CloudError { status, .. } if (200..300).contains(status) => writeln!(
+            out,
+            "{warn}  Cloud: could not check account status (unexpected response from Phantom Cloud)"
+        )?,
+        PhantomError::CloudError { status, .. } if *status >= 500 => writeln!(
+            out,
+            "{warn}  Cloud: could not check account status (Phantom Cloud server error)"
+        )?,
+        PhantomError::CloudError { .. } => writeln!(
+            out,
+            "{warn}  Cloud: could not check account status (Phantom Cloud refused the request)"
+        )?,
+        _ => writeln!(
+            out,
+            "{warn}  Cloud: could not check account status (Phantom Cloud request failed)"
+        )?,
+    }
+    writeln!(
+        out,
+        "{}  The stored login was not rejected; check the network connection, then retry.",
+        "->".blue().bold()
+    )
+}
+
+/// Lines `phantom cloud status` prints about the local `.phantom.toml` cloud
+/// state. A missing config prints nothing; a config that exists but cannot be
+/// read or parsed is reported, because its sync version and any blocked push
+/// are unknown rather than absent.
+fn local_cloud_status_lines(config_path: &std::path::Path) -> Vec<String> {
+    let config = match crate::util::load_config_if_present(config_path) {
+        Ok(Some(config)) => config,
+        Ok(None) => return Vec::new(),
+        Err(_) => {
+            return vec![format!(
+                "{}  .phantom.toml exists but could not be loaded; last synced version and reconciliation state are unknown. Fix or restore it (for example from version control), then rerun `phantom cloud status`.",
+                "warn".yellow().bold()
+            )]
+        }
+    };
+    let Some(cloud) = &config.cloud else {
+        return Vec::new();
+    };
+    let mut lines = vec![format!("   Last synced version: {}", cloud.version)];
+    if cloud.reconciliation_required {
+        let remote = cloud
+            .reconciliation_remote_version
+            .map_or_else(|| "unknown".to_string(), |version| version.to_string());
+        lines.push(format!(
+            "{}  Partial reconciliation with remote version {remote}; cloud push is blocked until every remote secret is reconciled.",
+            "warn".yellow().bold()
+        ));
+    }
+    lines
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use phantom_vault::VaultBackend;
+
+    #[test]
+    fn cloud_status_json_reports_logged_out_without_identity() {
+        let report = cloud_status_json(&CloudLogin::NotLoggedIn, None, false);
+        assert_eq!(report["loggedIn"], false);
+        assert_eq!(report["tokenStored"], false);
+        assert_eq!(report["user"], serde_json::Value::Null);
+        assert_eq!(report["tier"], serde_json::Value::Null);
+        assert_eq!(report["lastSyncedVersion"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn cloud_status_json_reports_identity_tier_and_sync_state() {
+        let user = auth::UserInfo {
+            email: None,
+            github_login: "octo-placeholder".to_string(),
+            plan: "pro".to_string(),
+            vaults_count: Some(2),
+        };
+        let cloud = phantom_core::config::CloudConfig {
+            version: 7,
+            reconciliation_required: true,
+            reconciliation_remote_version: Some(9),
+        };
+        let report = cloud_status_json(&CloudLogin::LoggedIn(user), Some(&cloud), false);
+        assert_eq!(report["loggedIn"], true);
+        assert_eq!(report["user"], "octo-placeholder");
+        assert_eq!(report["githubLogin"], "octo-placeholder");
+        assert_eq!(report["tier"], "pro");
+        assert_eq!(report["vaultsCount"], 2);
+        assert_eq!(report["lastSyncedVersion"], 7);
+        assert_eq!(report["reconciliationRequired"], true);
+        assert_eq!(report["reconciliationRemoteVersion"], 9);
+
+        let rejected = cloud_status_json(&CloudLogin::TokenRejected, None, false);
+        assert_eq!(rejected["loggedIn"], false);
+        assert_eq!(rejected["tokenStored"], true);
+        assert_eq!(rejected["tokenRejected"], true);
+        assert_eq!(rejected["accountLookupFailed"], false);
+    }
+
+    #[test]
+    fn cloud_status_json_does_not_call_a_lookup_failure_a_rejected_token() {
+        let failed = cloud_status_json(
+            &CloudLogin::LookupFailed(phantom_core::error::PhantomError::CloudError {
+                status: 503,
+                message: "service unavailable".to_string(),
+            }),
+            None,
+            true,
+        );
+        assert_eq!(failed["loggedIn"], false);
+        assert_eq!(failed["tokenStored"], true);
+        assert_eq!(failed["tokenRejected"], false);
+        assert_eq!(failed["accountLookupFailed"], true);
+        assert_eq!(failed["localConfigUnreadable"], true);
+        assert_eq!(failed["lastSyncedVersion"], serde_json::Value::Null);
+        assert!(
+            !failed.to_string().contains("service unavailable"),
+            "lookup error text must not reach the JSON report"
+        );
+    }
     use tempfile::TempDir;
+
+    #[test]
+    fn cloud_status_reports_expired_login_only_for_auth_required() {
+        let mut out = Vec::new();
+        write_account_lookup_failure(&mut out, &phantom_core::error::PhantomError::AuthRequired)
+            .unwrap();
+        let expired = String::from_utf8(out).unwrap();
+        assert!(expired.contains("expired"));
+        assert!(expired.contains("phantom login"));
+        assert!(!expired.contains("could not check"));
+    }
+
+    #[test]
+    fn cloud_status_does_not_blame_the_login_for_network_or_server_errors() {
+        use phantom_core::error::PhantomError;
+        let cases = [
+            (
+                PhantomError::AuthError("connection refused by host".to_string()),
+                "could not reach Phantom Cloud",
+            ),
+            (
+                PhantomError::CloudError {
+                    status: 503,
+                    message: "service unavailable".to_string(),
+                },
+                "Phantom Cloud server error",
+            ),
+            (
+                PhantomError::CloudError {
+                    status: 403,
+                    message: "forbidden".to_string(),
+                },
+                "Phantom Cloud refused the request",
+            ),
+            (
+                PhantomError::CloudError {
+                    status: 200,
+                    message: "response was invalid JSON".to_string(),
+                },
+                "unexpected response from Phantom Cloud",
+            ),
+        ];
+        for (error, expected) in cases {
+            let mut out = Vec::new();
+            write_account_lookup_failure(&mut out, &error).unwrap();
+            let text = String::from_utf8(out).unwrap();
+            assert!(
+                !text.contains("expired"),
+                "non-auth failure reported as expired login"
+            );
+            assert!(
+                !text.contains("phantom login"),
+                "non-auth failure told to log in again"
+            );
+            assert!(
+                text.contains("could not check account status"),
+                "missing could-not-check wording"
+            );
+            assert!(text.contains(expected), "missing error class: {expected}");
+        }
+    }
 
     fn cloud_test_config(version: u64) -> PhantomConfig {
         let mut config = PhantomConfig::new_with_defaults("cloud-test-project".to_string());
@@ -532,6 +795,30 @@ mod tests {
             "passphrase".to_string(),
         )
         .unwrap()
+    }
+
+    /// A `.phantom.toml` that exists but cannot be parsed is not "no config":
+    /// status must say the local cloud state is unknown instead of printing
+    /// nothing, which reads as "never synced" and hides a blocked push.
+    #[test]
+    fn cloud_status_reports_a_broken_config_instead_of_hiding_it() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join(".phantom.toml");
+        assert!(local_cloud_status_lines(&config_path).is_empty());
+
+        std::fs::write(&config_path, "[phantom\nversion = ").unwrap();
+        let lines = local_cloud_status_lines(&config_path);
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].contains("could not be loaded"));
+        assert!(lines[0].contains("unknown"));
+
+        let mut config = cloud_test_config(4);
+        config.cloud.as_mut().unwrap().reconciliation_required = true;
+        write_config(&config_path, &config);
+        let lines = local_cloud_status_lines(&config_path);
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].contains("Last synced version: 4"));
+        assert!(lines[1].contains("Partial reconciliation"));
     }
 
     #[test]

@@ -2,6 +2,7 @@ pub mod crypto;
 pub mod file;
 pub mod init_transaction;
 pub mod keychain;
+pub mod lease_key;
 pub mod managed_remove;
 pub mod metadata;
 pub mod shadowing;

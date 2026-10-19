@@ -47,6 +47,17 @@ fn print_exec_verdict(verdict: &phantom_core::why::ExecVerdict<'_>) {
     );
 }
 
+/// Refuse an empty or whitespace-only key. It can never match a dotenv
+/// entry, so answering "not found" (exit 0) sent agents chasing spelling.
+fn validate_key_argument(key: &str) -> Result<()> {
+    if key.trim().is_empty() {
+        anyhow::bail!(
+            "No key name given. Pass the exact dotenv key name, for example `phantom why OPENAI_API_KEY`; `phantom status` lists the managed dotenv."
+        );
+    }
+    Ok(())
+}
+
 /// The dotenv `why` classifies: the managed dotenv when the project has a
 /// config, else `./.env`, matching MCP `phantom_why`. Either way a symlinked
 /// or non-regular file is refused before it is read; `None` when it is absent.
@@ -63,15 +74,34 @@ fn read_dotenv(
     }
 }
 
+/// The project's `.phantom.toml`, or `None` only when it does not exist.
+///
+/// A config that exists but cannot be read or parsed is an error, matching
+/// MCP `phantom_why`: treating it as "not initialized" would classify
+/// `./.env` instead of the managed dotenv and drop the exec verdict, so a
+/// protected key read as fine while `phantom exec` refuses to start.
+fn load_config(project_dir: &std::path::Path) -> Result<Option<PhantomConfig>> {
+    match PhantomConfig::load(&project_dir.join(".phantom.toml")) {
+        Ok(config) => Ok(Some(config)),
+        Err(phantom_core::error::PhantomError::ConfigNotFound(_)) => Ok(None),
+        Err(error) => Err(anyhow::Error::new(error)).context(
+            "Failed to load .phantom.toml; protection status is indeterminate. Fix or restore it, then retry",
+        ),
+    }
+}
+
 /// Explain why a specific key is or isn't protected by Phantom.
 ///
 /// With `json`, prints the value-free report shared with the MCP `phantom_why`
 /// tool instead of the human explanation.
 pub fn run(key: &str, json: bool) -> Result<()> {
-    let project_dir = std::env::current_dir()?;
-    let config_path = project_dir.join(".phantom.toml");
-    let config = PhantomConfig::load(&config_path).ok();
-    let dotenv = read_dotenv(&project_dir, config.as_ref())?;
+    run_in(&std::env::current_dir()?, key, json)
+}
+
+fn run_in(project_dir: &std::path::Path, key: &str, json: bool) -> Result<()> {
+    validate_key_argument(key)?;
+    let config = load_config(project_dir)?;
+    let dotenv = read_dotenv(project_dir, config.as_ref())?;
 
     if json && dotenv.is_none() {
         let report = phantom_core::why::why_report_for(Surface::Cli, key, None, config.as_ref());
@@ -266,6 +296,50 @@ fn explain_why_secret(entry: &EnvEntry) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn empty_or_blank_key_is_refused_with_an_example() {
+        for key in ["", "   ", "\t"] {
+            let error = format!("{:#}", run(key, true).unwrap_err());
+            assert!(error.contains("No key name given"), "{error}");
+            assert!(error.contains("phantom why OPENAI_API_KEY"), "{error}");
+        }
+        assert!(validate_key_argument("OPENAI_API_KEY").is_ok());
+    }
+
+    #[test]
+    fn not_found_next_step_names_the_cli_command() {
+        let dotenv = DotenvFile::parse_str("NODE_ENV=production\n");
+        let report = phantom_core::why::why_report("MISSING_KEY", Some(&dotenv), None);
+        let step = report["next_step"].as_str().unwrap();
+        assert!(step.contains("`phantom status`"), "{step}");
+    }
+
+    #[test]
+    fn malformed_config_is_an_error_not_an_uninitialized_project() {
+        let project = tempfile::tempdir().unwrap();
+        let token = phantom_core::token::PhantomToken::generate();
+        std::fs::write(
+            project.path().join(".env"),
+            format!("OPENAI_API_KEY={}\n", token.as_str()),
+        )
+        .unwrap();
+        std::fs::write(project.path().join(".phantom.toml"), "[phantom\nversion = ").unwrap();
+
+        for json in [true, false] {
+            let error = run_in(project.path(), "OPENAI_API_KEY", json).unwrap_err();
+            assert!(
+                format!("{error:#}").contains("Failed to load .phantom.toml"),
+                "malformed config must not read as not initialized (json={json})"
+            );
+        }
+        assert!(load_config(project.path()).is_err());
+
+        // Only a missing config means "not initialized".
+        std::fs::remove_file(project.path().join(".phantom.toml")).unwrap();
+        assert!(load_config(project.path()).unwrap().is_none());
+        assert!(run_in(project.path(), "OPENAI_API_KEY", true).is_ok());
+    }
 
     #[cfg(unix)]
     #[test]

@@ -29,6 +29,8 @@ Phantom replaces project secrets with scoped `phm_` placeholders. Applications u
 
 ---
 
+![phantom init swaps the real keys in .env for phm_ tokens; phantom list shows the vault without values](docs/assets/phantom-secrets-demo.gif)
+
 ## Install
 
 ```bash
@@ -389,6 +391,16 @@ $ phantom team vault-pull <team_id>   # on a teammate's machine
 # decrypts the vault, writes secrets locally.
 ```
 
+### Experimental: X-Wing hybrid team share
+
+The `pq-hybrid` cargo feature adds an experimental X-Wing (X25519 + ML-KEM-768)
+team key share. It is off by default and does not change default behavior: the
+default build keeps the X25519 share described above. The X-Wing share is local
+only. phm.dev does not accept it yet, because the hosted team key route takes
+32-byte public keys and an X-Wing public key is 1216 bytes. The `x-wing` and
+`ml-kem` crates are unaudited, and X-Wing is pre-1.0. Do not rely on it for
+production secrets.
+
 After a hosted deployment is commissioned and accepted, its read-only team
 dashboard is designed to show team memberships and member lists.
 
@@ -426,7 +438,7 @@ dashboard is designed to show team memberships and member lists.
 | `phantom env` | Generate `.env.example` for team onboarding |
 | `phantom export` | From an attached trusted terminal, review an exact value-blind plan, type its fresh challenge, and enter a dedicated passphrase through the hidden prompt. Export `--passphrase-file`, plaintext export, argv passphrases, existing targets, symlinks, and paths outside the project fail closed. |
 | `phantom import` | From an attached trusted terminal, review and type the exact source/target/name/overwrite challenge before restoring a backup or importing Doppler, Infisical, dotenvx, 1Password, or env data. `--force` selects the reviewed overwrite set but never bypasses consent. A bounded private passphrase file is accepted only on non-Windows platforms and still requires the terminal ceremony. |
-| `phantom audit show` | Print recent audit events (`--last N`, `--op OP`, `--name NAME`, `--json`). Requires `PHANTOM_AUDIT=1` |
+| `phantom audit show` | Print recent audit events from the newest 8 MiB of the log (`--last N`, `--op OP`, `--name NAME`, `--json`); says when older events were not examined or lines were skipped. Requires `PHANTOM_AUDIT=1` |
 | `phantom audit tail` | Follow the audit log live (`--op`, `--name` filters) |
 | `phantom audit path` | Print the absolute path to the audit log file |
 | `phantom audit verify` | Verify HMAC-SHA256 chain integrity; exits 1 if tampering detected |
@@ -450,6 +462,7 @@ dashboard is designed to show team memberships and member lists.
 | `phantom open [page]` | From an attached trusted terminal, open only the reviewed aliases `dashboard`, `billing`, `team`, `docs`, `pricing`, `github`, `issues`, or `site`; arbitrary URLs, paths, and unknown aliases are rejected |
 | `phantom upgrade` | `--check-only` performs a read-only version lookup only for an eligible standalone install. Live standalone replacement requires attached terminals and two exact challenges; managed installs route to their owner, ambiguous installs fail closed, and `--force` is rejected. |
 | `phantom completion <shell>` | Print a shell-completion script (bash, zsh, fish, powershell, elvish) |
+| `phantom crypto inventory` | List the algorithms and format tags Phantom uses, with role, status and quantum class (`--format text` or `json`). Reads no vault, key, or config; not a CycloneDX CBOM |
 
 ## Rotating real provider credentials
 
@@ -696,6 +709,10 @@ written scope.
 - [Support](SUPPORT.md)
 - [Governance](GOVERNANCE.md)
 - [Citation](CITATION.cff)
+
+## Part of the Ashlr ecosystem
+
+Phantom Secrets is one of the open-source tools from [Ashlr](https://ashlr.ai), a forward-deployed engineering company. Its siblings: [Lexicon](https://github.com/ashlrai/lexicon), [Locus](https://github.com/ashlrai/locus), [Ashlr Stack](https://github.com/ashlrai/ashlr-stack), [Ashlr Markdown](https://github.com/ashlrai/ashlr-md), [Ashlr plugin](https://github.com/ashlrai/ashlr-plugin).
 
 ## Contributing
 

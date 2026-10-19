@@ -680,14 +680,28 @@ fn write_hmac_key(key_path: &Path, key: &[u8]) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Required audit HMAC key length in bytes (256-bit).
+const HMAC_KEY_LEN: usize = 32;
+
 fn read_hmac_key(key_path: &Path) -> std::io::Result<Vec<u8>> {
     let hex_str = std::fs::read_to_string(key_path)?;
-    hex::decode(hex_str.trim()).map_err(|e| {
+    // The decode error is not forwarded: it can name a character from the key file.
+    let key = hex::decode(hex_str.trim()).map_err(|_| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            format!("invalid audit HMAC key: {e}"),
+            "invalid audit HMAC key: file is not valid hex; delete audit-hmac-key to regenerate (this starts a new chain)",
         )
-    })
+    })?;
+    if key.len() != HMAC_KEY_LEN {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "invalid audit HMAC key: expected {HMAC_KEY_LEN} bytes, found {}; delete audit-hmac-key to regenerate (this starts a new chain)",
+                key.len()
+            ),
+        ));
+    }
+    Ok(key)
 }
 
 fn write_chain_marker(log_path: &Path, key: &[u8]) -> std::io::Result<()> {
@@ -1365,6 +1379,70 @@ pub fn verify_log_with_context() -> std::io::Result<(VerifyReport, Vec<VerifiedE
 // Shared helpers
 // ──────────────────────────────────────────────────────────────────────────────
 
+/// Most bytes of the audit log a "recent events" read examines: the newest
+/// ones. The log is append-only and never rotated, so reading it whole to
+/// show the last few events grows without bound. Chain verification
+/// (`verify_log`) still reads the whole log; this window is for listings.
+pub const RECENT_WINDOW_BYTES: u64 = 8 * 1024 * 1024;
+
+/// The newest complete lines of the audit log, from a bounded window.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct RecentLines {
+    /// Non-empty lines in file order, without line endings.
+    pub lines: Vec<String>,
+    /// The log is larger than the window, so older lines were not read.
+    pub window_truncated: bool,
+    /// Lines in the window that were not UTF-8 and so were skipped.
+    pub unreadable_lines: usize,
+}
+
+/// Read the newest `max_bytes` of `path` and split them into lines.
+///
+/// When the file is larger than the window, the read starts `max_bytes`
+/// before the end and the first (partial) line is dropped. Memory stays
+/// bounded by `max_bytes` whatever the log's size.
+pub fn read_recent_lines(path: &Path, max_bytes: u64) -> std::io::Result<RecentLines> {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let mut file = File::open(path)?;
+    let len = file.metadata()?.len();
+    let window_truncated = len > max_bytes;
+    // When cut, read one byte more, from just before the window: if that byte
+    // is a newline, the window starts exactly on a line and keeps it whole.
+    let read_len = if window_truncated {
+        file.seek(SeekFrom::Start(len - max_bytes - 1))?;
+        max_bytes + 1
+    } else {
+        max_bytes
+    };
+    let mut window = Vec::new();
+    file.take(read_len).read_to_end(&mut window)?;
+
+    let mut rest: &[u8] = &window;
+    if window_truncated {
+        // Everything through the first newline (possibly the extra byte
+        // itself) belongs to a line that began before the window.
+        rest = match rest.iter().position(|b| *b == b'\n') {
+            Some(end) => &rest[end + 1..],
+            None => &[],
+        };
+    }
+
+    let mut recent = RecentLines {
+        window_truncated,
+        ..RecentLines::default()
+    };
+    for raw in rest.split(|b| *b == b'\n') {
+        let raw = raw.strip_suffix(b"\r").unwrap_or(raw);
+        match std::str::from_utf8(raw) {
+            Ok(line) if line.trim().is_empty() => {}
+            Ok(line) => recent.lines.push(line.trim().to_string()),
+            Err(_) => recent.unreadable_lines += 1,
+        }
+    }
+    Ok(recent)
+}
+
 pub fn log_path() -> std::io::Result<PathBuf> {
     if let Some(home) = dirs_home_dir() {
         Ok(home.join(".phantom").join("audit.log"))
@@ -1926,6 +2004,13 @@ mod tests {
     use std::sync::{Arc, Barrier};
     use tempfile::tempdir;
 
+    #[test]
+    fn audit_keys_are_256_bits() {
+        // Grover margin: generated HMAC key and derived AES key are 32 bytes.
+        assert_eq!(generate_key().len() * 8, 256);
+        assert_eq!(derive_encryption_key(&generate_key()).len() * 8, 256);
+    }
+
     fn with_temp_home<F: FnOnce()>(env: &str, val: &str, f: F) {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let prev = std::env::var(env).ok();
@@ -1966,6 +2051,60 @@ mod tests {
     }
 
     // ── existing tests (must still pass) ────────────────────────────────────
+
+    #[test]
+    fn recent_lines_reads_a_small_log_whole() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audit.log");
+        std::fs::write(&path, b"{\"op\":\"a\"}\r\n\n{\"op\":\"b\"}\n").unwrap();
+        let recent = read_recent_lines(&path, RECENT_WINDOW_BYTES).unwrap();
+        assert_eq!(recent.lines, [r#"{"op":"a"}"#, r#"{"op":"b"}"#]);
+        assert!(!recent.window_truncated);
+        assert_eq!(recent.unreadable_lines, 0);
+    }
+
+    #[test]
+    fn recent_lines_reads_only_the_newest_window_and_drops_the_partial_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audit.log");
+        let lines: Vec<String> = (0..100).map(|i| format!(r#"{{"op":"e{i:03}"}}"#)).collect();
+        std::fs::write(&path, format!("{}\n", lines.join("\n"))).unwrap();
+        let line_len = lines[0].len() as u64 + 1;
+
+        // Three whole lines plus part of a fourth.
+        let recent = read_recent_lines(&path, line_len * 3 + 4).unwrap();
+        assert!(recent.window_truncated);
+        assert_eq!(recent.lines, lines[97..]);
+        assert_eq!(recent.unreadable_lines, 0);
+    }
+
+    #[test]
+    fn recent_lines_keeps_a_line_that_starts_exactly_at_the_window() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audit.log");
+        let lines: Vec<String> = (0..10).map(|i| format!(r#"{{"op":"e{i:03}"}}"#)).collect();
+        std::fs::write(&path, format!("{}\n", lines.join("\n"))).unwrap();
+        let line_len = lines[0].len() as u64 + 1;
+
+        // Exactly three whole lines: the byte before the window is a newline.
+        let recent = read_recent_lines(&path, line_len * 3).unwrap();
+        assert!(recent.window_truncated);
+        assert_eq!(recent.lines, lines[7..]);
+
+        // One byte short of three lines: the first is partial and dropped.
+        let recent = read_recent_lines(&path, line_len * 3 - 1).unwrap();
+        assert_eq!(recent.lines, lines[8..]);
+    }
+
+    #[test]
+    fn recent_lines_counts_non_utf8_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audit.log");
+        std::fs::write(&path, b"{\"op\":\"a\"}\n\xff\xfe\n{\"op\":\"b\"}\n").unwrap();
+        let recent = read_recent_lines(&path, RECENT_WINDOW_BYTES).unwrap();
+        assert_eq!(recent.lines.len(), 2);
+        assert_eq!(recent.unreadable_lines, 1);
+    }
 
     #[test]
     fn disabled_by_default() {
@@ -2234,6 +2373,40 @@ mod tests {
             assert_eq!(report.malformed_lines, vec![3]);
             assert!(!report.is_clean());
         });
+    }
+
+    #[test]
+    fn read_hmac_key_requires_exactly_32_bytes() {
+        let dir = std::env::temp_dir().join(format!(
+            "phantom-hmac-len-{}-{}",
+            std::process::id(),
+            now_unix()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("audit-hmac-key");
+        for len in [0usize, 1, 31, 33, 64] {
+            std::fs::write(&path, hex::encode(vec![0xabu8; len])).unwrap();
+            let err = read_hmac_key(&path).unwrap_err();
+            assert_eq!(err.kind(), std::io::ErrorKind::InvalidData, "len {len}");
+            let msg = err.to_string();
+            assert!(msg.contains("expected 32 bytes"), "len {len}: {msg}");
+            assert!(msg.contains(&format!("found {len}")), "len {len}: {msg}");
+            assert!(
+                !msg.contains("abab"),
+                "message must not contain key material"
+            );
+        }
+        std::fs::write(&path, hex::encode([0xabu8; 32])).unwrap();
+        assert_eq!(read_hmac_key(&path).unwrap(), vec![0xabu8; 32]);
+        // Trailing newline is still accepted.
+        std::fs::write(&path, format!("{}\n", hex::encode([0xcdu8; 32]))).unwrap();
+        assert_eq!(read_hmac_key(&path).unwrap().len(), 32);
+        // Non-hex content: clear error, no echo of the content.
+        std::fs::write(&path, "zzzsecretzzz").unwrap();
+        let msg = read_hmac_key(&path).unwrap_err().to_string();
+        assert!(msg.contains("not valid hex"));
+        assert!(!msg.contains("secret"));
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

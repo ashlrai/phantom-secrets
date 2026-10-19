@@ -27,6 +27,12 @@ pub struct PlannedResponse {
     pub event_count: usize,
     /// Matched provider name, or null when none matches the secret name.
     pub provider: Option<String>,
+    /// Where a human rotates this provider's credential (static text, no
+    /// values). `None` when no provider matched.
+    pub manual_rotation_location: Option<String>,
+    /// Always `disabled_in_this_build` for a matched provider: shipped builds
+    /// refuse live issuance and revoke. `None` when no provider matched.
+    pub live_rotation: Option<String>,
     /// `revoke_and_rotate` or `review`.
     pub action: String,
     /// Ordered manual steps. Nothing here is executed by this command.
@@ -73,12 +79,33 @@ pub fn build_plan(
                 location_label: inc.location_label.clone(),
                 confidence: inc.confidence,
                 event_count: inc.event_count,
+                manual_rotation_location: provider
+                    .as_deref()
+                    .map(|p| manual_rotation_location(p).to_string()),
+                live_rotation: provider
+                    .as_ref()
+                    .map(|_| "disabled_in_this_build".to_string()),
                 provider,
                 action: if high { "revoke_and_rotate" } else { "review" }.to_string(),
                 steps,
             }
         })
         .collect()
+}
+
+/// Static, value-free location where a human rotates a provider credential.
+/// URLs appear only where the provider module itself states them.
+pub fn manual_rotation_location(provider: &str) -> &'static str {
+    match provider {
+        "stripe" => "https://dashboard.stripe.com/apikeys",
+        "supabase" | "supabase-management" => "https://supabase.com/dashboard/account/tokens",
+        "aws" => "the AWS CLI or console",
+        "github" => "GitHub settings",
+        "google" => "Google Cloud console",
+        "vercel" => "the Vercel dashboard",
+        "sentry" => "the Sentry dashboard",
+        _ => "the provider's own console",
+    }
 }
 
 fn provider_name_for(secret_name: &str) -> Option<String> {
@@ -107,6 +134,14 @@ fn load_policy() -> Result<OnLeak> {
 pub fn run_plan(min_confidence: f64, json: bool) -> Result<()> {
     let policy = load_policy()?;
     if policy == OnLeak::Off {
+        // The policy comes from the repository's `.phantom.toml`, but the
+        // incidents are the user's own (under HOME, across every project). A
+        // repository must not be able to make active incidents read as
+        // "nothing to plan", so the count is still reported.
+        let suppressed = LeakCorrelationEngine::new()
+            .ok()
+            .and_then(|engine| engine.incident_view(min_confidence).ok())
+            .map(|view| view.persisted.len() + view.uncorrelated.len());
         if json {
             let out = serde_json::json!({
                 "dry_run": true,
@@ -114,22 +149,43 @@ pub fn run_plan(min_confidence: f64, json: bool) -> Result<()> {
                 "live_revoke_available": LeakResponseConfig::live_revoke_available(),
                 "min_confidence": min_confidence,
                 "plan": [],
+                "suppressed_incidents": suppressed,
             });
             println!("{}", serde_json::to_string_pretty(&out)?);
         } else {
-            println!(
-                "{}  Leak response is off ([leak_response] on_leak = \"off\"). Nothing to plan.",
-                "->".blue().bold()
-            );
+            match suppressed {
+                Some(0) => println!(
+                    "{}  Leak response is off ([leak_response] on_leak = \"off\"). Nothing to plan.",
+                    "->".blue().bold()
+                ),
+                Some(count) => println!(
+                    "{}  Leak response is off ([leak_response] on_leak = \"off\" in ./.phantom.toml), but {count} active leak incident(s) exist and are not planned. Run `phantom audit incidents` to list them.",
+                    "warn".yellow().bold()
+                ),
+                None => println!(
+                    "{}  Leak response is off ([leak_response] on_leak = \"off\" in ./.phantom.toml); leak incidents could not be read, so some may exist. Run `phantom audit incidents` to list them.",
+                    "warn".yellow().bold()
+                ),
+            }
         }
         return Ok(());
     }
     let engine = LeakCorrelationEngine::new()
         .map_err(|e| anyhow::anyhow!("Cannot initialise leak correlation engine: {e}"))?;
-    let incidents = engine
-        .active_incidents(min_confidence)
+    let view = engine
+        .incident_view(min_confidence)
         .map_err(|e| anyhow::anyhow!("Failed to read leak incidents: {e}"))?;
-    let plan = build_plan(&incidents, provider_name_for);
+    let plan = build_plan(&view.persisted, provider_name_for);
+    // The plan covers persisted incidents only. Say so when the audit log
+    // holds leak events no backfill has persisted (stderr keeps --json clean).
+    let uncorrelated = view.uncorrelated;
+    if !uncorrelated.is_empty() {
+        eprintln!(
+            "{}  {} leak incident(s) from the last 24 h are in the audit log but not persisted, so this plan omits them. Run `phantom audit incidents` to list them and `phantom audit alerts --backfill` to persist them.",
+            "warn".yellow().bold(),
+            uncorrelated.len()
+        );
+    }
 
     if json {
         let out = serde_json::json!({
@@ -168,6 +224,9 @@ pub fn run_plan(min_confidence: f64, json: bool) -> Result<()> {
             item.provider.as_deref().unwrap_or("unknown"),
         );
         println!("    action: {}", item.action.yellow());
+        if let Some(loc) = &item.manual_rotation_location {
+            println!("    rotate manually at: {loc} (live rotation disabled in this build)");
+        }
         for (i, step) in item.steps.iter().enumerate() {
             println!("    {}. {}", i + 1, step);
         }
@@ -211,6 +270,42 @@ mod tests {
         assert_eq!(plan[0].action, "review");
         assert_eq!(plan[0].provider, None);
         assert!(plan[0].steps[1].contains("the provider that issued it"));
+    }
+
+    #[test]
+    fn matched_provider_carries_static_location_and_live_disabled() {
+        let plan = build_plan(&[inc("STRIPE_SECRET_KEY", 0.9)], provider_name_for);
+        assert_eq!(
+            plan[0].manual_rotation_location.as_deref(),
+            Some("https://dashboard.stripe.com/apikeys")
+        );
+        assert_eq!(
+            plan[0].live_rotation.as_deref(),
+            Some("disabled_in_this_build")
+        );
+    }
+
+    #[test]
+    fn unmatched_provider_has_no_location() {
+        let plan = build_plan(&[inc("TOTALLY_UNRELATED_NAME", 0.9)], provider_name_for);
+        assert_eq!(plan[0].manual_rotation_location, None);
+        assert_eq!(plan[0].live_rotation, None);
+    }
+
+    #[test]
+    fn every_default_provider_has_a_specific_location() {
+        let generic = manual_rotation_location("zzz-unknown");
+        for p in default_rotation_providers() {
+            assert_ne!(manual_rotation_location(p.name()), generic, "{}", p.name());
+        }
+    }
+
+    #[test]
+    fn plan_json_never_contains_secret_like_values() {
+        let plan = build_plan(&[inc("STRIPE_SECRET_KEY", 0.9)], provider_name_for);
+        let json = serde_json::to_string(&plan).unwrap();
+        assert!(!json.contains("sk_live"));
+        assert!(!json.contains("phm_"));
     }
 
     #[test]

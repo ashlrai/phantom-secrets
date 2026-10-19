@@ -2,12 +2,15 @@ use anyhow::{Context, Result};
 use colored::Colorize;
 
 /// Reverse `phantom wrap` — restore original scripts from `:raw` variants.
-pub fn run() -> Result<()> {
+///
+/// `quiet` suppresses the per-script and summary lines; warnings and errors
+/// still print.
+pub fn run(quiet: bool) -> Result<()> {
     let project_dir = std::env::current_dir()?;
-    run_in(&project_dir, || {})
+    run_in(&project_dir, quiet, || {})
 }
 
-fn run_in(project_dir: &std::path::Path, after_lock: impl FnOnce()) -> Result<()> {
+fn run_in(project_dir: &std::path::Path, quiet: bool, after_lock: impl FnOnce()) -> Result<()> {
     let pkg_path = project_dir.join("package.json");
     let transaction_lock = phantom_vault::acquire_project_transaction_lock(project_dir)
         .context("Failed to acquire the project transaction lock")?;
@@ -49,6 +52,9 @@ fn run_in(project_dir: &std::path::Path, after_lock: impl FnOnce()) -> Result<()
         }
     }
 
+    if quiet {
+        return Ok(());
+    }
     for name in &restored {
         println!(
             "   {} {} -> restored from {}:raw",
@@ -158,7 +164,7 @@ mod tests {
         )
         .unwrap();
 
-        run_in(&project, || {
+        run_in(&project, false, || {
             std::fs::rename(&project, &moved).unwrap();
             std::fs::create_dir(&project).unwrap();
             std::fs::write(project.join("package.json"), br#"{"decoy":true}"#).unwrap();

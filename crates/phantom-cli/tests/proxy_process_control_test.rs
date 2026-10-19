@@ -412,6 +412,7 @@ fn child_environment_probe() {
         assert_ne!(port, "65535");
         let value = std::env::var("OPENAI_BASE_URL").expect("fresh proxy override");
         assert!(value.starts_with("http://127.0.0.1:"));
+        assert_ne!(value, "http://attacker.invalid");
         // Only OpenAI is protected here. The inherited Anthropic override is
         // scrubbed, and no proxy URL replaces it: a route without a loaded
         // credential would answer every SDK call with a proxy 503.

@@ -55,6 +55,15 @@ fn credential_entry(
     }
 }
 
+/// Platform credential entry for non-vault keys (the lease store key in
+/// `lease_key.rs`). Goes through `credential_entry` so the keyring 4
+/// migration (#242) changes one call site. Not available on Linux, where the
+/// lease key fails closed.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+pub(crate) fn os_keychain_entry(service: &str, account: &str) -> keyring::Result<keyring::Entry> {
+    credential_entry(CredentialStore::OsKeychain, service, account)
+}
+
 /// Construct the platform store used before any explicit per-project Linux
 /// migration. This also prevents Cargo feature unification from redirecting
 /// fallback-passphrase entries when Secret Service support is compiled in.

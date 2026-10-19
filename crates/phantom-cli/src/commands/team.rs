@@ -6,7 +6,24 @@ use std::io::{BufRead, IsTerminal, Write};
 use std::path::PathBuf;
 use zeroize::Zeroizing;
 
-pub fn run_list() -> Result<()> {
+/// `phantom team list --json`: `{"teams":[{"id","name","role"}]}`. The
+/// service does not report an active team, so no `active` field is invented.
+fn team_list_json(team_list: &[teams::Team]) -> serde_json::Value {
+    serde_json::json!({
+        "teams": team_list
+            .iter()
+            .map(|team| serde_json::json!({
+                "id": team.id,
+                "name": team.name,
+                "role": team.role,
+            }))
+            .collect::<Vec<_>>(),
+    })
+}
+
+/// `json` prints [`team_list_json`] instead of the text list. Both pass the
+/// same trusted-terminal consent gate and make the same single request.
+pub fn run_list(json: bool) -> Result<()> {
     require_trusted_terminal_team(&team_consent_plan(
         "list",
         &[],
@@ -17,6 +34,14 @@ pub fn run_list() -> Result<()> {
 
     let rt = tokio::runtime::Runtime::new()?;
     let team_list = rt.block_on(teams::list_teams(&api_base, &token))?;
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&team_list_json(&team_list))?
+        );
+        return Ok(());
+    }
 
     if team_list.is_empty() {
         println!(
@@ -493,7 +518,7 @@ fn invitation_checklist(team_id: &str) -> String {
 mod tests {
     use super::{
         apply_team_vault_pull_transaction, confirm_team_effect, invitation_checklist,
-        team_consent_plan,
+        team_consent_plan, team_list_json,
     };
     use phantom_core::error::{PhantomError, Result as PhantomResult};
     use phantom_vault::{file::FileVault, VaultBackend};
@@ -501,6 +526,20 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::TempDir;
     use zeroize::Zeroizing;
+
+    #[test]
+    fn team_list_json_wraps_teams_with_name_and_role() {
+        let teams = vec![phantom_core::teams::Team {
+            id: "team-placeholder-id".to_string(),
+            name: "placeholder-team".to_string(),
+            role: "admin".to_string(),
+        }];
+        let report = team_list_json(&teams);
+        assert_eq!(report["teams"][0]["name"], "placeholder-team");
+        assert_eq!(report["teams"][0]["role"], "admin");
+        assert_eq!(report["teams"][0]["id"], "team-placeholder-id");
+        assert_eq!(team_list_json(&[])["teams"], serde_json::json!([]));
+    }
 
     struct FaultVault {
         inner: FileVault,

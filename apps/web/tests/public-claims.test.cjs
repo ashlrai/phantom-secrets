@@ -1140,6 +1140,8 @@ test("contributor templates keep secrets and evidence layers separated", () => {
   assert.match(bug, /persistent `phm_` mappings; mappings are sensitive metadata/i);
   assert.doesNotMatch(bug, /phm_ tokens are safe to share/i);
   assert.match(bug, /private vulnerability reporting/i);
+  assert.match(bug, /phantom doctor --all --json/);
+  assert.match(bug, /read-only, value-free report/);
 
   const feature = readRepo(".github/ISSUE_TEMPLATE/feature_request.yml");
   assert.match(feature, /Source, artifact, publication, deployment, provider activation, and user acceptance are separate outcomes/i);
