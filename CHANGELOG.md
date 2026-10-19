@@ -4,6 +4,61 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Added (`phantom setup --undo`)
+
+- `phantom setup --undo` reads `~/.phantom/setup-manifest.json` and shows what
+  it would restore from the backups or remove (files setup created). It is a
+  dry run by default; `--undo --apply` performs it. Entries are undone newest
+  first and marked undone in the manifest. Backups are kept.
+- A file is acted on only if its SHA-256 still equals what setup wrote.
+  Otherwise that file is refused and named, its backup is kept, and the other
+  files still proceed (exit code is non-zero). `--force-undo` (with `--apply`)
+  overrides only that check; it never overrides the symlink refusal or a backup
+  that no longer matches the manifest. A missing backup is refused. No file
+  contents are printed.
+
+### Changed (`phantom setup --client` refuses to overwrite a differing entry)
+
+- For Cursor, Windsurf, Gemini CLI and Codex, `phantom setup --client <c>` now
+  refuses when a `phantom` entry already exists and differs from what setup
+  would write (including an entry with extra keys such as `env`). The error
+  names the entry and the file and never prints values. Pass `--replace` to
+  overwrite it. An identical entry is left untouched.
+- Before any write to an existing client config, setup copies it byte for byte
+  to `<config>.phantom-bak-<ms>` (mode 0600) and records the change in
+  `~/.phantom/setup-manifest.json`: path, backup path, timestamp, action, and
+  SHA-256 hashes before and after. The manifest holds no config values. It
+  prepares a later `--undo`.
+- Behavior change: scripts that relied on setup silently replacing a stale
+  entry must add `--replace`. `--replace` is not used for Claude Code, whose
+  setup merges into its files, and cannot be combined with `--dry-run`.
+
+### Fixed (audit HMAC key length)
+
+- The audit HMAC key loader now rejects a key file that does not decode to
+  exactly 32 bytes, with an error that states the expected and found
+  lengths and never echoes key material. Phantom always writes 32 bytes, so
+  only a hand-edited or corrupted file is affected. Delete `audit-hmac-key`
+  to regenerate it (this starts a new chain). Fixes #270.
+
+### Added (`phantom doctor --all`)
+
+- `phantom doctor --all` (with optional `--json`) prints one read-only,
+  value-free report that combines the health checks, the `--pq` report, agent
+  readiness (`agent doctor`), MCP approval status (`agent status`) and which of
+  `ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL` and `OLLAMA_HOST` are set and whether
+  each points at a loopback host. It never prints a URL and fixes nothing; it
+  conflicts with `--fix`, `--pq` and `--expiry`. Default `phantom doctor`
+  behavior is unchanged.
+
+### Added (`leaks plan` provider facts)
+
+- `phantom leaks plan` now shows, for each incident with a matched provider,
+  where a human rotates the credential and that live rotation is disabled in
+  this build. `--json` adds `manual_rotation_location` and `live_rotation`
+  (both null when no provider matched). Static text only, no values, no
+  network, no writes.
+
 ### Fixed (`leaks plan` with `on_leak = "off"`)
 
 - `on_leak = "off"` in a repository's `.phantom.toml` made `phantom leaks

@@ -70,6 +70,12 @@ fn plan_json_is_dry_run_and_writes_nothing() {
     assert_eq!(v["plan"][0]["secret_name"], "STRIPE_SECRET_KEY");
     assert_eq!(v["plan"][0]["action"], "revoke_and_rotate");
     assert_eq!(v["plan"][0]["provider"], "stripe");
+    assert_eq!(
+        v["plan"][0]["manual_rotation_location"],
+        "https://dashboard.stripe.com/apikeys"
+    );
+    assert_eq!(v["plan"][0]["live_rotation"], "disabled_in_this_build");
+    assert_eq!(v["live_revoke_available"], false);
 
     assert_eq!(before, snapshot(tmp.path()), "plan must not write files");
 }
