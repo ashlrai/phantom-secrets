@@ -4,6 +4,14 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Security (vendor error summaries)
+
+- Rotation and issuance error summaries keep a vendor's `type`, `code` or
+  `status` value only when it is a short structural code such as
+  `invalid_request_error`. Any other value prints as `withheld`, so a key a
+  vendor echoes into one of those fields no longer reaches CLI output, MCP
+  responses or the audit log.
+
 ### CI (docs command check on docs-only PRs)
 
 - New `Docs command check` job runs `docs_command_flags_test` on pull requests
