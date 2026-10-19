@@ -107,6 +107,16 @@ enum Commands {
         /// manifest are written first.
         #[arg(long, conflicts_with_all = ["print", "audit_mode", "status", "dry_run"])]
         replace: bool,
+        /// Reverse the changes recorded in ~/.phantom/setup-manifest.json.
+        /// Shows what would be restored or removed; add --apply to do it.
+        #[arg(long, conflicts_with_all = ["client", "print", "audit_mode", "status", "dry_run", "replace"])]
+        undo: bool,
+        /// With --undo: perform the undo instead of only showing it
+        #[arg(long, requires = "undo")]
+        apply: bool,
+        /// With --undo --apply: also undo files that changed after setup wrote them
+        #[arg(long, requires = "apply")]
+        force_undo: bool,
     },
 
     /// Agent readiness report, doctor, and setup workflows
@@ -1366,8 +1376,13 @@ fn run() -> anyhow::Result<()> {
             status,
             dry_run,
             replace,
+            undo,
+            apply,
+            force_undo,
         } => {
-            if status {
+            if undo {
+                commands::setup_undo::run(apply, force_undo)
+            } else if status {
                 commands::setup_status::run(cli.json)
             } else if dry_run {
                 commands::setup_plan::run_dry_run(client)

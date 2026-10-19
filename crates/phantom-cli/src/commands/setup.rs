@@ -1306,6 +1306,7 @@ fn gate_and_backup(
         action: action_name.to_string(),
         sha256_before: before.map(|read| setup_backup::sha256_hex(read.bytes())),
         sha256_after: setup_backup::sha256_hex(new_bytes),
+        undone_ms: None,
     }))
 }
 

@@ -34,6 +34,7 @@ pub mod setup;
 pub mod setup_backup;
 pub mod setup_plan;
 pub mod setup_status;
+pub mod setup_undo;
 pub mod start;
 pub mod status;
 pub mod stop;

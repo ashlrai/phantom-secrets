@@ -29,6 +29,9 @@ pub(crate) struct ManifestEntry {
     pub sha256_before: Option<String>,
     /// SHA-256 of the bytes setup wrote.
     pub sha256_after: String,
+    /// Set by `setup --undo --apply` once this entry has been undone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub undone_ms: Option<u128>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -86,9 +89,14 @@ pub(crate) fn load(home: &Path) -> Result<Manifest> {
 pub(crate) fn record(home: &Path, entry: ManifestEntry) -> Result<()> {
     let mut manifest = load(home)?;
     manifest.entries.push(entry);
+    save(home, &manifest)
+}
+
+/// Write the manifest atomically with private permissions.
+pub(crate) fn save(home: &Path, manifest: &Manifest) -> Result<()> {
     let path = manifest_path(home);
     phantom_core::fs::ensure_real_parent(&path)?;
-    let bytes = serde_json::to_vec_pretty(&manifest).context("Failed to serialize manifest")?;
+    let bytes = serde_json::to_vec_pretty(manifest).context("Failed to serialize manifest")?;
     phantom_core::fs::atomic_write(&path, &bytes)
         .with_context(|| format!("Failed to write {}", path.display()))
 }
@@ -133,6 +141,7 @@ mod tests {
             action: "add".into(),
             sha256_before: None,
             sha256_after: sha256_hex(b"a"),
+            undone_ms: None,
         };
         assert!(record(home.path(), entry).is_err());
         assert_eq!(
@@ -159,6 +168,7 @@ mod tests {
                     action: "replace".into(),
                     sha256_before: Some(sha256_hex(b"one")),
                     sha256_after: sha256_hex(b"two"),
+                    undone_ms: None,
                 },
             )
             .unwrap();
