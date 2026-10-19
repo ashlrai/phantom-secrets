@@ -4,6 +4,14 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Added (`leaks plan` provider facts)
+
+- `phantom leaks plan` now shows, for each incident with a matched provider,
+  where a human rotates the credential and that live rotation is disabled in
+  this build. `--json` adds `manual_rotation_location` and `live_rotation`
+  (both null when no provider matched). Static text only, no values, no
+  network, no writes.
+
 ### Fixed (`leaks plan` with `on_leak = "off"`)
 
 - `on_leak = "off"` in a repository's `.phantom.toml` made `phantom leaks
