@@ -134,12 +134,7 @@ does not deploy or authorize production credentials.
 
 ## Gateway mode (optional, experimental)
 
-To route Codex through a local LiteLLM gateway that holds no real keys, run LiteLLM behind Phantom as described in [LiteLLM behind Phantom](litellm.md).
-
-- LiteLLM's documentation describes a custom provider in `~/.codex/config.toml` with `base_url` set to the LiteLLM proxy, `env_key = "LITELLM_API_KEY"` and `wire_api = "responses"` (https://docs.litellm.ai/docs/tutorials/openai_codex). Phantom has not tested Codex against LiteLLM, and the Phantom side was verified only with an OpenAI-style chat completion to a mock, not the Responses API.
-- Put a LiteLLM key in `LITELLM_API_KEY`, never a provider key or the Phantom proxy token.
-- Keep LiteLLM on `127.0.0.1`, pinned to a safe version, with `allow_client_side_credentials: false`.
-- Without the gateway, the direct Phantom route above stays the default.
+To route Codex through a local LiteLLM gateway that holds no real keys, see [Connect an agent](litellm.md#connect-an-agent) in the LiteLLM guide. Without the gateway, the direct Phantom route above stays the default.
 
 ## Troubleshooting
 

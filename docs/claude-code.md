@@ -275,12 +275,7 @@ Claude: Run this to pull secrets from Vercel:
 
 ## Gateway mode (optional, experimental)
 
-If you already run LiteLLM as a local gateway, keep real provider keys out of it by running it behind Phantom as described in [LiteLLM behind Phantom](litellm.md). Claude Code then talks to LiteLLM, and LiteLLM talks to Phantom's proxy with a `phm_` placeholder.
-
-- LiteLLM's documentation says to set `ANTHROPIC_BASE_URL` to the LiteLLM proxy and `ANTHROPIC_AUTH_TOKEN` to a LiteLLM key (https://docs.litellm.ai/docs/tutorials/claude_responses_api). Phantom has not tested Claude Code against LiteLLM; the Phantom side was only tested with an OpenAI-style request to a mock (see the guide).
-- Give Claude Code a LiteLLM key, never a provider key or the Phantom proxy token.
-- Keep LiteLLM on `127.0.0.1`, pinned to a safe version, with `allow_client_side_credentials: false`.
-- Without the gateway, nothing changes: the direct Phantom route above remains the default.
+To run Claude Code through a local LiteLLM gateway that holds no real keys, see [Connect an agent](litellm.md#connect-an-agent) in the LiteLLM guide. Without the gateway, nothing changes: the direct Phantom route above stays the default.
 
 ## What Claude cannot do
 

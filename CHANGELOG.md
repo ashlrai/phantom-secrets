@@ -4,6 +4,26 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Docs and tests (LiteLLM gateway)
+
+- `docs/litellm.md` is now the single LiteLLM guide: the example config
+  inline (`phm_` placeholder, `api_base` from the Phantom proxy, run under
+  `phantom exec -- litellm`), pinning to `1.83.0` or newer with the
+  removed `1.82.7` and `1.82.8` releases and GHSA-5mg7-485q-xm76,
+  `allow_client_side_credentials: false`, loopback only, never
+  `phantom reveal`, and one "Connect an agent" section for Claude Code,
+  Codex, Gemini CLI and Cursor. The Claude Code, Codex and Cursor guides
+  now link to it instead of repeating it.
+- New hermetic test `crates/phantom-proxy/tests/litellm_gateway_hermetic_test.rs`
+  (no LiteLLM, 127.0.0.1 only): the test acts as the LiteLLM client against
+  a mock OpenAI-compatible upstream and a second mock that no route names. It
+  checks that the placeholder is swapped only at the proxy and only toward the
+  configured upstream, that the second mock never receives a request (Host
+  override, absolute-form URL, forwarding headers, upstream redirect), and
+  that the real key never appears in error or reflected bodies, proxy logs or
+  the audit ledger. `tracing-subscriber` (already a workspace dependency) is
+  added as a dev-dependency of the proxy crate to capture its logs.
+
 ### Added (lease status classification library, no callers)
 
 - `LeaseSummary::status(store_generation, now_unix)` returns a value-free
