@@ -6,10 +6,13 @@ body:
     attributes:
       value: |
         Thanks for taking the time to file a bug. Before submitting, please run
-        `phantom doctor` and paste the redacted output below — it captures most
-        of what we'd otherwise need to ask for. For a suspected vulnerability,
-        stop here and use GitHub private vulnerability reporting or the private
-        email address in `SECURITY.md`.
+        `phantom --version` and `phantom doctor --all --json` and paste the
+        redacted output below. `--all` is one read-only, value-free report
+        (health checks, post-quantum report, agent readiness, MCP approval
+        status, gateway base-URL environment) and fixes nothing. On older
+        releases without `--all`, paste plain `phantom doctor` output. For a
+        suspected vulnerability, stop here and use GitHub private vulnerability
+        reporting or the private email address in `SECURITY.md`.
 
   - type: input
     id: version
@@ -79,8 +82,8 @@ body:
   - type: textarea
     id: doctor
     attributes:
-      label: Output of `phantom doctor`
-      description: Redact credentials, cookies, device codes, cloud tokens, vault values, and persistent `phm_` mappings.
+      label: Output of `phantom doctor --all --json`
+      description: Run `phantom doctor --all --json` (or `phantom doctor` on releases without `--all`). The report is value-free, but still check it and redact credentials, cookies, device codes, cloud tokens, vault values, persistent `phm_` mappings, and any private paths or project names.
       render: shell
     validations:
       required: false
