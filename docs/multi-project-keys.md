@@ -16,14 +16,14 @@ Practical consequence: lay your checkouts out by owner and protect each one.
 
 ```text
 ~/code/personal/...      # your own projects
-~/code/acme/...          # your company
+~/code/company/...       # your company
 ~/code/clients/<client>/ # one directory tree per client
 ```
 
 ```bash
 # Preview, then protect every repo with a .env under one owner's tree
-phantom init --all ~/code/clients/globex --dry-run
-phantom init --all ~/code/clients/globex
+phantom init --all ~/code/clients/example-client --dry-run
+phantom init --all ~/code/clients/example-client
 ```
 
 Run `--all` per owner tree rather than once over `~/code`, so a review of the
@@ -34,7 +34,7 @@ dry-run output covers exactly one client at a time.
 Reuse across projects is explicit and one-directional:
 
 ```bash
-cd ~/code/acme/api
+cd ~/code/company/api
 phantom copy STRIPE_SECRET_KEY --to ../billing-worker
 phantom copy OPENAI_API_KEY --to ../evals --as OPENAI_API_KEY_EVALS
 ```
