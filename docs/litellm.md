@@ -121,7 +121,7 @@ Limits:
 - The route is always `https://`. A LiteLLM on plain HTTP loopback is not supported (see "Not supported").
 - Only the one configured header is swapped. A `phm_` placeholder the client puts in a different header is forwarded as is. LiteLLM then rejects a placeholder, not a real key.
 
-Tested in CI by `crates/phantom-proxy/tests/litellm_upstream_headers_test.rs` (`cargo test -p phantom-secrets-proxy --test litellm_upstream_headers_test`). For each of the seven headers above it builds the route from a `.phantom.toml`-style service, points it at a plain-HTTP mock on 127.0.0.1, and checks that the mock gets the real key exactly once in that header, never sees the placeholder or the proxy token, and that echoes of the key (whole or its last half, in a response header and a JSON body) do not reach the client. Not tested: a real LiteLLM, streaming responses for this route, and `phantom start` end to end.
+Tested in CI by `crates/phantom-proxy/tests/litellm_upstream_headers_test.rs` (`cargo test -p phantom-secrets-proxy --test litellm_upstream_headers_test`). For each of the seven headers above it builds the route from a `.phantom.toml`-style service, points it at a plain-HTTP mock on 127.0.0.1, and checks that the mock gets the real key exactly once in that header, never sees the placeholder or the proxy token, and that echoes of the key (whole or its last half, in a response header and a JSON body) do not reach the client. A second test does the same for a streamed (`text/event-stream`, chunked) response that echoes the key split across chunks, then its last half, and checks that the stream still completes with `data: [DONE]`. Not tested: a real LiteLLM and `phantom start` end to end.
 
 ## Not supported
 
