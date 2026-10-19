@@ -29,6 +29,8 @@ Phantom replaces project secrets with scoped `phm_` placeholders. Applications u
 
 ---
 
+![phantom init swaps the real keys in .env for phm_ tokens; phantom list shows the vault without values](docs/assets/phantom-secrets-demo.gif)
+
 ## Install
 
 ```bash
