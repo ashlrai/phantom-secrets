@@ -98,6 +98,10 @@ enum Commands {
         /// Gemini CLI) have Phantom wired. Use the global --json for JSON.
         #[arg(long, conflicts_with_all = ["client", "print", "audit_mode"])]
         status: bool,
+        /// Show what setup would change for Cursor, Windsurf, Gemini CLI or
+        /// Codex, as a diff, without writing anything
+        #[arg(long, conflicts_with_all = ["print", "audit_mode", "status"])]
+        dry_run: bool,
     },
 
     /// Agent readiness report, doctor, and setup workflows
@@ -1355,9 +1359,12 @@ fn run() -> anyhow::Result<()> {
             print,
             audit_mode,
             status,
+            dry_run,
         } => {
             if status {
                 commands::setup_status::run(cli.json)
+            } else if dry_run {
+                commands::setup_plan::run_dry_run(client)
             } else {
                 commands::setup::run(client, print, audit_mode)
             }
