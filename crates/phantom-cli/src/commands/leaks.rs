@@ -27,6 +27,12 @@ pub struct PlannedResponse {
     pub event_count: usize,
     /// Matched provider name, or null when none matches the secret name.
     pub provider: Option<String>,
+    /// Where a human rotates this provider's credential (static text, no
+    /// values). `None` when no provider matched.
+    pub manual_rotation_location: Option<String>,
+    /// Always `disabled_in_this_build` for a matched provider: shipped builds
+    /// refuse live issuance and revoke. `None` when no provider matched.
+    pub live_rotation: Option<String>,
     /// `revoke_and_rotate` or `review`.
     pub action: String,
     /// Ordered manual steps. Nothing here is executed by this command.
@@ -73,12 +79,33 @@ pub fn build_plan(
                 location_label: inc.location_label.clone(),
                 confidence: inc.confidence,
                 event_count: inc.event_count,
+                manual_rotation_location: provider
+                    .as_deref()
+                    .map(|p| manual_rotation_location(p).to_string()),
+                live_rotation: provider
+                    .as_ref()
+                    .map(|_| "disabled_in_this_build".to_string()),
                 provider,
                 action: if high { "revoke_and_rotate" } else { "review" }.to_string(),
                 steps,
             }
         })
         .collect()
+}
+
+/// Static, value-free location where a human rotates a provider credential.
+/// URLs appear only where the provider module itself states them.
+pub fn manual_rotation_location(provider: &str) -> &'static str {
+    match provider {
+        "stripe" => "https://dashboard.stripe.com/apikeys",
+        "supabase" | "supabase-management" => "https://supabase.com/dashboard/account/tokens",
+        "aws" => "the AWS CLI or console",
+        "github" => "GitHub settings",
+        "google" => "Google Cloud console",
+        "vercel" => "the Vercel dashboard",
+        "sentry" => "the Sentry dashboard",
+        _ => "the provider's own console",
+    }
 }
 
 fn provider_name_for(secret_name: &str) -> Option<String> {
@@ -197,6 +224,9 @@ pub fn run_plan(min_confidence: f64, json: bool) -> Result<()> {
             item.provider.as_deref().unwrap_or("unknown"),
         );
         println!("    action: {}", item.action.yellow());
+        if let Some(loc) = &item.manual_rotation_location {
+            println!("    rotate manually at: {loc} (live rotation disabled in this build)");
+        }
         for (i, step) in item.steps.iter().enumerate() {
             println!("    {}. {}", i + 1, step);
         }
@@ -240,6 +270,42 @@ mod tests {
         assert_eq!(plan[0].action, "review");
         assert_eq!(plan[0].provider, None);
         assert!(plan[0].steps[1].contains("the provider that issued it"));
+    }
+
+    #[test]
+    fn matched_provider_carries_static_location_and_live_disabled() {
+        let plan = build_plan(&[inc("STRIPE_SECRET_KEY", 0.9)], provider_name_for);
+        assert_eq!(
+            plan[0].manual_rotation_location.as_deref(),
+            Some("https://dashboard.stripe.com/apikeys")
+        );
+        assert_eq!(
+            plan[0].live_rotation.as_deref(),
+            Some("disabled_in_this_build")
+        );
+    }
+
+    #[test]
+    fn unmatched_provider_has_no_location() {
+        let plan = build_plan(&[inc("TOTALLY_UNRELATED_NAME", 0.9)], provider_name_for);
+        assert_eq!(plan[0].manual_rotation_location, None);
+        assert_eq!(plan[0].live_rotation, None);
+    }
+
+    #[test]
+    fn every_default_provider_has_a_specific_location() {
+        let generic = manual_rotation_location("zzz-unknown");
+        for p in default_rotation_providers() {
+            assert_ne!(manual_rotation_location(p.name()), generic, "{}", p.name());
+        }
+    }
+
+    #[test]
+    fn plan_json_never_contains_secret_like_values() {
+        let plan = build_plan(&[inc("STRIPE_SECRET_KEY", 0.9)], provider_name_for);
+        let json = serde_json::to_string(&plan).unwrap();
+        assert!(!json.contains("sk_live"));
+        assert!(!json.contains("phm_"));
     }
 
     #[test]
