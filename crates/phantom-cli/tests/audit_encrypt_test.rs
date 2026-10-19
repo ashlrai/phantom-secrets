@@ -524,6 +524,7 @@ fn sidecar_event_ed25519_sign_verify_roundtrip() {
         encrypted_context: encrypted_context.to_string(),
         signature: sig_hex,
         pubkey: pubkey_hex,
+        sig_alg: None,
     };
 
     assert!(
@@ -561,6 +562,7 @@ fn sidecar_event_invalid_signature_rejected() {
         encrypted_context: "dGVzdA==".to_string(),
         signature: hex::encode(bad_signature.to_bytes()),
         pubkey: pubkey_hex,
+        sig_alg: None,
     };
 
     assert!(
@@ -597,6 +599,7 @@ fn sidecar_event_tampered_payload_rejected() {
         encrypted_context: "dGVzdA==".to_string(),
         signature: hex::encode(signature.to_bytes()),
         pubkey: pubkey_hex,
+        sig_alg: None,
     };
 
     assert!(
@@ -615,6 +618,7 @@ fn sidecar_event_bad_pubkey_hex_rejected() {
         encrypted_context: "abc".to_string(),
         signature: "abc".to_string(),
         pubkey: "not-valid-hex!!".to_string(),
+        sig_alg: None,
     };
     assert!(!verify_sidecar_event(&event));
 }
@@ -629,6 +633,7 @@ fn sidecar_event_bad_signature_hex_rejected() {
         encrypted_context: "abc".to_string(),
         signature: "not-valid-hex!!".to_string(),
         pubkey: "a".repeat(64), // 32 zero bytes in hex
+        sig_alg: None,
     };
     assert!(!verify_sidecar_event(&event));
 }
@@ -805,6 +810,7 @@ fn sidecar_event_serializes_correctly() {
         encrypted_context: "dGVzdA==".to_string(),
         signature: "aabbcc".to_string(),
         pubkey: "ddeeff".to_string(),
+        sig_alg: None,
     };
     let json = serde_json::to_value(&event).unwrap();
     assert_eq!(json["seq"], 42);
@@ -824,6 +830,7 @@ fn sidecar_event_omits_name_when_none() {
         encrypted_context: "abc".to_string(),
         signature: "def".to_string(),
         pubkey: "ghi".to_string(),
+        sig_alg: None,
     };
     let json = serde_json::to_value(&event).unwrap();
     assert!(
@@ -842,10 +849,63 @@ fn sidecar_event_roundtrip_serde() {
         encrypted_context: "Y2lwaGVydGV4dA==".to_string(),
         signature: "s".repeat(128),
         pubkey: "p".repeat(64),
+        sig_alg: None,
     };
     let json = serde_json::to_string(&event).unwrap();
     let back: SidecarEvent = serde_json::from_str(&json).unwrap();
     assert_eq!(back.seq, 7);
     assert_eq!(back.op, "vault.delete");
     assert_eq!(back.name.as_deref(), Some("TOKEN"));
+}
+
+/// Deterministic Ed25519 sidecar event (fixed seed), as JSON written by hand.
+fn sidecar_fixture_json(sig_alg: Option<&str>) -> String {
+    use ed25519_dalek::{Signer, SigningKey};
+    let signing_key = SigningKey::from_bytes(&[7u8; 32]);
+    let pubkey_hex = hex::encode(signing_key.verifying_key().to_bytes());
+    let mut canonical_map: std::collections::BTreeMap<&str, String> =
+        std::collections::BTreeMap::new();
+    canonical_map.insert("seq", "1".to_string());
+    canonical_map.insert("ts", "1700000000".to_string());
+    canonical_map.insert("op", "vault.store".to_string());
+    canonical_map.insert("encrypted_context", "dGVzdA==".to_string());
+    canonical_map.insert("pubkey", pubkey_hex.clone());
+    canonical_map.insert("name", "TEST_KEY".to_string());
+    let payload = serde_json::to_vec(&canonical_map).unwrap();
+    let sig_hex = hex::encode(signing_key.sign(&payload).to_bytes());
+    let label = sig_alg
+        .map(|a| format!(r#","sig_alg":"{a}""#))
+        .unwrap_or_default();
+    format!(
+        r#"{{"seq":1,"ts":1700000000,"op":"vault.store","name":"TEST_KEY","encrypted_context":"dGVzdA==","signature":"{sig_hex}","pubkey":"{pubkey_hex}"{label}}}"#
+    )
+}
+
+#[test]
+fn unlabelled_sidecar_fixture_verifies() {
+    let event: SidecarEvent = serde_json::from_str(&sidecar_fixture_json(None)).unwrap();
+    assert_eq!(event.sig_alg, None);
+    assert!(verify_sidecar_event(&event));
+}
+
+#[test]
+fn labelled_sidecar_events_fail_closed() {
+    // Same valid Ed25519 signature; only the label is added.
+    for label in ["ed25519", "ml-dsa-65", ""] {
+        let event: SidecarEvent = serde_json::from_str(&sidecar_fixture_json(Some(label))).unwrap();
+        assert_eq!(event.sig_alg.as_deref(), Some(label));
+        assert!(
+            !verify_sidecar_event(&event),
+            "label {label:?} must not verify"
+        );
+    }
+}
+
+/// Writers must not change: an Ed25519 event serializes to exactly the bytes
+/// it did before `sig_alg` existed (field names, order, no label).
+#[test]
+fn sidecar_event_serialization_is_unchanged() {
+    let json = sidecar_fixture_json(None);
+    let event: SidecarEvent = serde_json::from_str(&json).unwrap();
+    assert_eq!(serde_json::to_string(&event).unwrap(), json);
 }
