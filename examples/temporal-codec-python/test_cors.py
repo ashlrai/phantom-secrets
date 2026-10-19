@@ -168,6 +168,26 @@ class ServerCorsTests(unittest.TestCase):
         self.assertEqual(headers["vary"], "Origin")
         self.assertIn("payloads", json.loads(body))
 
+    def test_web_ui_query_string_is_routed(self):
+        # Temporal Web UI 2.54.1 appends ?preserveStorageRefs=true.
+        port = self.start(CorsPolicy(parse_allowed_origins(UI)))
+        path = "/encode?preserveStorageRefs=true"
+        pre = {"Origin": UI, "Access-Control-Request-Method": "POST",
+               "Access-Control-Request-Headers": "content-type,x-namespace"}
+        status, headers, _ = self.request(port, "OPTIONS", path, pre)
+        self.assertEqual(status, 204)
+        self.assertEqual(headers["access-control-allow-origin"], UI)
+        status, headers, body = self.request(
+            port, "POST", path,
+            {"Origin": UI, "Content-Type": "application/json", "X-Namespace": "default"}, self.BODY)
+        self.assertEqual(status, 200)
+        self.assertIn("payloads", json.loads(body))
+
+    def test_malformed_body_is_400(self):
+        port = self.start(CorsPolicy())
+        status, _, _ = self.request(port, "POST", "/decode", {"Content-Type": "application/json"}, b"{not json")
+        self.assertEqual(status, 400)
+
     def test_refused_origin_gets_no_cors_headers_and_no_payload(self):
         port = self.start(CorsPolicy(parse_allowed_origins(UI)))
         status, headers, body = self.post(port, "http://evil.example")
