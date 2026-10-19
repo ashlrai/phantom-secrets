@@ -690,3 +690,30 @@ test("workflow policy rejects expanded authority and every secret context syntax
     assert.throws(() => assertReadOnlyWorkflowPolicy(unsafe));
   }
 });
+
+test("non-HTML sitemap entries such as /docs/manifest.json are skipped, not HTML-checked", async () => {
+  await withFixtureServer(
+    async ({ options }) => {
+      const report = await observeProduction(options);
+      const manifestFindings = report.findings.filter(
+        (finding) => finding.route === "/docs/manifest.json",
+      );
+      assert.deepEqual(manifestFindings, []);
+      assert.equal(report.technical.sitemap.route_count, publicPaths.size + 1);
+    },
+    {
+      "/sitemap.xml": (response, origin) => {
+        response.setHeader("content-type", "application/xml");
+        response.end(
+          `<?xml version="1.0"?><urlset>${[...publicPaths, "/docs/manifest.json"]
+            .map((route) => `<url><loc>${origin}${route}</loc></url>`)
+            .join("")}</urlset>`,
+        );
+      },
+      "/docs/manifest.json": (response) => {
+        response.setHeader("content-type", "application/json");
+        response.end('{"name":"Phantom docs"}');
+      },
+    },
+  );
+});
