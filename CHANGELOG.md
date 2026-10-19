@@ -4,6 +4,18 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Security (proxy partial-echo redaction)
+
+- The proxy now redacts any run of 12 or more consecutive characters of a
+  managed key in response headers and bodies, not only the whole key, so an
+  upstream that echoes part of the swapped-in key (first half, last half or a
+  middle slice) no longer passes it to the child. Streams carry at most 11
+  trailing bytes between chunks, and only while they could still start a run,
+  so runs split across chunks are caught without delaying clean events.
+  Masked displays such as `sk-ant-api03-...wxyz` pass unchanged. Partial
+  matching applies to token-like values of 16 or more characters; connection
+  strings and passphrases are still matched exactly only.
+
 ### Security (vendor error summaries)
 
 - Rotation and issuance error summaries keep a vendor's `type`, `code` or
