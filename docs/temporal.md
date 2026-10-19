@@ -1,6 +1,6 @@
 # Temporal workers with no secrets on disk (optional)
 
-Status: guidance only. Phantom does not depend on Temporal, ships no Temporal code, and has not been tested against a Temporal server in this repository. Items marked DESIGN are untested proposals. Facts about Temporal come from the Temporal documentation and releases pages read on 2026-10-18 and may change; check the linked pages.
+Status: guidance only. Phantom does not depend on Temporal, ships no Temporal code, and has not been tested against a Temporal server in this repository. Items marked DESIGN are untested proposals. Facts about Temporal come from the Temporal documentation and releases pages read on 2026-10-18 and rechecked on 2026-10-19, and may change; check the linked pages. A payload codec sketch lives in [`examples/temporal-codec-python`](../examples/temporal-codec-python/README.md) (unit tested with fake keys only).
 
 ## What this is for
 
@@ -14,7 +14,9 @@ Never put a real secret value in any of these, because Temporal stores them in w
 - signal inputs, query inputs and results, memo, and headers
 - application error messages and stack traces (failure text is stored too)
 
-Pass secret names, `phm_` placeholders, or opaque identifiers instead. A payload codec can encrypt payloads, but it is a second layer. It is not a reason to put a raw value in a payload.
+Pass secret names or opaque identifiers instead, and let the activity use the credential that `phantom exec` gave its own process. A `phm_` placeholder is not a real key, so it is safe in history, but prefer the name: `phantom exec` hands each run fresh session placeholders that stop working when that run ends, so a placeholder recorded in history will not resolve when the workflow is replayed or retried on another worker.
+
+A payload codec can encrypt payloads, but it is a second layer. It is not a reason to put a raw value in a payload.
 
 ## Rule 2: start workers through Phantom
 
@@ -30,13 +32,27 @@ Activities that call model or API providers should send requests through the Pha
 
 ## Rule 3: lock down the Temporal server
 
-According to the Temporal self-hosted security guide, a server with no Authorizer configured uses the default `noopAuthorizer`, which allows every API request. Anyone who can reach the frontend can call any API.
+**Configure an Authorizer.** The Temporal self-hosted security guide warns that if you do not configure an `Authorizer`, the server uses the default `noopAuthorizer`, which allows every API request with no authentication or access control: anyone who can reach the server can call any API, including administrative ones (https://docs.temporal.io/self-hosted-guide/security). The guide says to configure an `Authorizer` with a matching `ClaimMapper` (server options `temporal.WithAuthorizer` and `temporal.WithClaimMapper`).
 
 - Do not expose a development server to a network. `temporal server start-dev` is for local experiments only and must never hold real secrets.
-- For anything shared, configure mTLS and an Authorizer and ClaimMapper as described in the Temporal guide.
-- If you run a Codec Server, keep it on localhost or behind authentication. It decodes sensitive payloads in one call.
+- For anything shared, configure mTLS (`internode` and `frontend`) plus the Authorizer and ClaimMapper.
 
-## Rule 4: treat inbound text as data
+**Pin the server version.** Use Temporal Server v1.32.1 or newer. v1.32.1 was published on 2026-10-08 and was the newest release on the v1.32 line when this page was checked (https://github.com/temporalio/temporal/releases/tag/v1.32.1). Its release notes list bug fixes and no security advisories, so the pin is a current baseline, not a fix for a known issue. Check the releases page for newer patches before you upgrade.
+
+## Rule 4: encrypt payloads with a codec, and guard the Codec Server
+
+Per the Temporal data encryption guide (https://docs.temporal.io/production-deployment/data-encryption):
+
+- A Payload Codec encrypts payloads before they reach the Temporal Service, so data is unencrypted only in the client and worker processes. It covers workflow, activity and child workflow inputs and results, signal inputs, memo, headers (check your SDK), query inputs and results, and local activity and side effect results. Failure messages and stack traces are encoded only if you enable that in the Failure Converter.
+- A Codec Server is an HTTP server you run (`/encode`, `/decode`, and `/download` for External Storage). It decodes sensitive data in one call, so restrict access. Keeping it on localhost is a pattern the guide accepts. Authorization from the Web UI requires HTTPS, and the Web UI also needs CORS headers.
+
+How this fits with Phantom:
+
+- Running the worker under `phantom exec` keeps provider keys out of it, but it does not deliver a codec key. `phantom exec` exports `phm_` placeholders, and the Phantom proxy injects real credentials only into outbound requests on its routes; it does not hand key material to a process. A codec key stored in Phantom would therefore reach the worker as a placeholder, which cannot encrypt anything. The [codec sketch](../examples/temporal-codec-python/README.md) reads its key from `PHANTOM_TEMPORAL_CODEC_KEY_<ID>` and records the key id in payload metadata for rotation. Delivering that key to the worker and the Codec Server without a file on disk is still an open question.
+- The sketch's Codec Server binds to `127.0.0.1:8081` and sends no CORS headers, so it suits the Temporal CLI (`--codec-endpoint`) but not the Web UI as is. It is untested.
+- A codec does not make it safe to put a raw secret in a payload (Rule 1).
+
+## Rule 5: treat inbound text as data
 
 Workflows that react to email, webhooks, or issue text must treat that text as untrusted data. Do not pass it to a model as instructions, and do not let it choose which secrets, tools, or approvals are used. Anything irreversible (send, publish, rotate, delete) needs an explicit approval step that the inbound text cannot supply.
 

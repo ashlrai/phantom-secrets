@@ -4,6 +4,16 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Docs (Temporal)
+
+- `docs/temporal.md`: configure an Authorizer (the default `noopAuthorizer`
+  allows every request, per Temporal's security guide), pin Temporal Server
+  v1.32.1 or newer (release page cited), a Codec Server section from
+  Temporal's data encryption guide, and why workflow history should carry
+  secret names rather than `phm_` placeholders (`phantom exec` placeholders
+  are per run). It links the `examples/temporal-codec-python` sketch and
+  restates its open question: `phantom exec` does not deliver a codec key.
+
 ### Added (proxy TLS key exchange: negotiation test and doctor line)
 
 - New hermetic test `crates/phantom-proxy/tests/tls_pq_negotiation_test.rs`:
