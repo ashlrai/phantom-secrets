@@ -13,5 +13,5 @@ pub use response_scrubber::{
     AdaptiveResponseScrubber, AdaptiveScrubHit, ContentKind, ResponseScrubber, ScrubEvent,
     StreamingScrubState,
 };
-pub use server::{ProxyConfig, ProxyServer};
+pub use server::{upstream_offered_key_exchange_groups, OfferedKxGroup, ProxyConfig, ProxyServer};
 pub use services::{CredentialProfile, ServiceRegistry, ServiceRoute};

@@ -401,6 +401,20 @@ only. phm.dev does not accept it yet, because the hosted team key route takes
 `ml-kem` crates are unaudited, and X-Wing is pre-1.0. Do not rely on it for
 production secrets.
 
+### Proxy upstream TLS key exchange
+
+The proxy's HTTPS client uses the aws-lc-rs provider and offers the hybrid
+X25519MLKEM768 group first, then X25519, secp256r1 and secp384r1. A hybrid key
+exchange is used only if the upstream server supports it. A hermetic test confirms that a local
+server accepting only X25519MLKEM768 negotiates it with the proxy, and that a
+server sharing no group with the proxy fails the handshake. Which group a given
+provider negotiates is not tested. To see the groups this build offers, read
+from the proxy's own TLS config:
+
+```bash
+phantom doctor --pq
+```
+
 After a hosted deployment is commissioned and accepted, its read-only team
 dashboard is designed to show team memberships and member lists.
 

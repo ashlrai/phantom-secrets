@@ -11,7 +11,8 @@
 //!
 //! The proxy builds its client with the aws-lc-rs provider, which offers
 //! X25519MLKEM768 first. This asserts what the client OFFERS. A negotiated group also depends on the
-//! upstream server, which this test does not exercise.
+//! upstream server; `tls_pq_negotiation_test.rs` checks negotiation against a
+//! local PQ-only server.
 
 use phantom_proxy::{Interceptor, ProxyConfig, ProxyServer, ServiceRegistry, ServiceRoute};
 use std::collections::HashMap;
@@ -144,3 +145,27 @@ async fn upstream_client_pq_group_posture_is_pinned() {
 }
 
 const EXPECT_HYBRID_OFFERED: bool = true;
+
+/// `phantom doctor` reports `upstream_offered_key_exchange_groups()`. It must
+/// be exactly what goes on the wire, in the same order.
+#[tokio::test]
+async fn reported_groups_match_the_client_hello() {
+    let on_wire = offered_groups().await;
+    let reported: Vec<u16> = phantom_proxy::upstream_offered_key_exchange_groups()
+        .iter()
+        .map(|g| g.code_point)
+        .collect();
+    assert_eq!(
+        reported, on_wire,
+        "reported {reported:04x?} vs wire {on_wire:04x?}"
+    );
+    let names: Vec<String> = phantom_proxy::upstream_offered_key_exchange_groups()
+        .into_iter()
+        .map(|g| g.name)
+        .collect();
+    assert_eq!(
+        names.first().map(String::as_str),
+        Some("X25519MLKEM768"),
+        "{names:?}"
+    );
+}

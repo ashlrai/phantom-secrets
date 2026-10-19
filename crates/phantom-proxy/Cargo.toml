@@ -52,3 +52,6 @@ phantom-secrets-proxy = { path = ".", features = ["test-utils"] }
 tempfile = "3"
 serde_json = { workspace = true }
 tracing-subscriber = { workspace = true }
+# Test-only: key and signature for a per-run self-signed certificate in
+# tests/tls_pq_negotiation_test.rs. Already in the lockfile via rustls.
+aws-lc-rs = { version = "1", default-features = false, features = ["aws-lc-sys"] }
