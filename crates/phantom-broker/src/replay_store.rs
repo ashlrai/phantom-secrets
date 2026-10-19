@@ -190,6 +190,29 @@ pub enum ReplayUseReservation {
     Existing(ReplayUseState),
 }
 
+/// Value-free view of one persisted lease, for status displays.
+///
+/// Built field by field from the authenticated snapshot. It carries opaque
+/// identifiers, counters and the lease time window only: no digests, nonces,
+/// constraints beyond the time window, environment label, key bytes or secret
+/// values. A lease from an earlier broker generation is reported as revoked,
+/// because every new broker lifetime revokes all prior leases.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LeaseSummary {
+    pub lease_id: LeaseId,
+    pub grant_id: GrantId,
+    pub operation: Operation,
+    pub workspace_id: WorkspaceId,
+    pub broker_generation: u64,
+    pub remaining_uses: u32,
+    pub revoked: bool,
+    pub active_uses: u32,
+    /// Unix seconds; the lease is not valid before this time.
+    pub not_before: u64,
+    /// Unix seconds, exclusive: at this time the lease is expired.
+    pub expires_at: u64,
+}
+
 /// A local durable ledger. The authentication key must come from a protected
 /// host facility; it is never written to disk and is zeroized on drop.
 pub struct DurableReplayStore {
@@ -797,6 +820,41 @@ impl DurableReplayStore {
         })
     }
 
+    /// List every persisted lease without exposing values or mutating state.
+    ///
+    /// Works on a store opened with `open_existing` and does not require (or
+    /// start) an epoch, so listing never revokes anything. The snapshot MAC is
+    /// verified first; a tampered snapshot returns `AuthenticationFailed`.
+    /// Leases are returned in lease id order.
+    pub fn list_leases(&self) -> Result<Vec<LeaseSummary>, ReplayStoreError> {
+        self.with_locked_state_unchecked(|state| {
+            let mut leases = Vec::with_capacity(state.leases.len());
+            for (lease_id, lease) in &state.leases {
+                let active_uses = lease
+                    .uses
+                    .values()
+                    .filter(|use_state| matches!(use_state, PersistedUseState::Active))
+                    .count();
+                leases.push(LeaseSummary {
+                    lease_id: lease_id
+                        .parse()
+                        .map_err(|_| ReplayStoreError::InvalidState)?,
+                    grant_id: lease.grant_id.clone(),
+                    operation: lease.operation,
+                    workspace_id: lease.workspace_id.clone(),
+                    broker_generation: lease.broker_generation,
+                    remaining_uses: lease.remaining_uses,
+                    revoked: lease.revoked,
+                    active_uses: u32::try_from(active_uses)
+                        .map_err(|_| ReplayStoreError::InvalidState)?,
+                    not_before: lease.constraints.time.not_before,
+                    expires_at: lease.constraints.time.expires_at,
+                });
+            }
+            Ok((leases, false))
+        })
+    }
+
     fn ensure_active(&self) -> Result<(), ReplayStoreError> {
         if self.activation.load(Ordering::Acquire) != ACTIVE {
             return Err(ReplayStoreError::NotActive);
@@ -1354,6 +1412,120 @@ mod tests {
             store.reserve(&nonce("a"), "request-2", &lease),
             Err(ReplayStoreError::Replay)
         ));
+    }
+
+    #[test]
+    fn list_leases_is_value_free_read_only_and_works_without_an_epoch() {
+        let (temp, store) = store();
+        let lease = binding();
+        let lease_id = lease.lease_id().clone();
+        assert!(store.list_leases().unwrap().is_empty());
+        store.reserve(&nonce("e"), "request-1", &lease).unwrap();
+        let _permit = match store.begin_use(&lease_id, "operation-1", 10).unwrap() {
+            ReplayUseReservation::New(permit) => permit,
+            ReplayUseReservation::Existing(_) => panic!("first use must mint a permit"),
+        };
+        let live = store.list_leases().unwrap();
+        assert_eq!(live.len(), 1);
+        let row = &live[0];
+        assert_eq!(row.lease_id, lease_id);
+        assert_eq!(&row.grant_id, &lease.grant_id);
+        assert_eq!(row.operation, lease.operation);
+        assert_eq!(row.broker_generation, 1);
+        assert!(!row.revoked);
+        assert_eq!(row.active_uses, 1);
+        assert_eq!(row.not_before, lease.constraints().time.not_before);
+        assert_eq!(row.expires_at, lease.constraints().time.expires_at);
+        drop(store);
+
+        // Listing from a store that was only opened (no epoch) must not revoke,
+        // rewrite or touch the snapshot.
+        let state_path = temp.path().join("broker").join(STATE_FILE_NAME);
+        let before_bytes = fs::read(&state_path).unwrap();
+        let before_mtime = fs::metadata(&state_path).unwrap().modified().unwrap();
+        let opened = reopen_store(temp.path().join("broker"), [7_u8; 32]).unwrap();
+        let listed = opened.list_leases().unwrap();
+        assert_eq!(
+            listed, live,
+            "listing before an epoch shows the stored state"
+        );
+        assert_eq!(fs::read(&state_path).unwrap(), before_bytes);
+        assert_eq!(
+            fs::metadata(&state_path).unwrap().modified().unwrap(),
+            before_mtime
+        );
+
+        // The listed store can still be activated, which revokes the old lease.
+        assert_eq!(opened.start_epoch().unwrap(), 2);
+        let after = opened.list_leases().unwrap();
+        assert!(after[0].revoked);
+        assert_eq!(after[0].active_uses, 0);
+        assert_eq!(after[0].broker_generation, 1);
+    }
+
+    #[test]
+    fn list_leases_rejects_a_tampered_or_wrong_key_snapshot() {
+        let (temp, store) = store();
+        store.reserve(&nonce("f"), "request-1", &binding()).unwrap();
+        drop(store);
+        assert!(matches!(
+            reopen_store(temp.path().join("broker"), [8_u8; 32]),
+            Err(ReplayStoreError::AuthenticationFailed)
+        ));
+        let opened = reopen_store(temp.path().join("broker"), [7_u8; 32]).unwrap();
+        let state_path = temp.path().join("broker").join(STATE_FILE_NAME);
+        let text = fs::read_to_string(&state_path).unwrap();
+        let tampered = text.replacen("\"revoked\":false", "\"revoked\":true", 1);
+        assert_ne!(text, tampered);
+        fs::write(&state_path, tampered).unwrap();
+        assert!(matches!(
+            opened.list_leases(),
+            Err(ReplayStoreError::AuthenticationFailed)
+        ));
+    }
+
+    #[test]
+    fn lease_summary_exposes_only_the_approved_fields() {
+        let (_temp, store) = store();
+        store.reserve(&nonce("0"), "request-1", &binding()).unwrap();
+        let rows = store.list_leases().unwrap();
+        let value = serde_json::to_value(&rows[0]).unwrap();
+        let mut keys: Vec<&str> = value
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "active_uses",
+                "broker_generation",
+                "expires_at",
+                "grant_id",
+                "lease_id",
+                "not_before",
+                "operation",
+                "remaining_uses",
+                "revoked",
+                "workspace_id",
+            ]
+        );
+        let text = value.to_string();
+        for excluded in [
+            "sha256",
+            "nonce",
+            "environment",
+            "network",
+            "spend",
+            "idempotency",
+            "store_id",
+            "hmac",
+        ] {
+            assert!(!text.contains(excluded), "summary leaked {excluded}");
+        }
+        assert!(!text.contains(&hex::encode([7_u8; 32])));
     }
 
     #[test]
