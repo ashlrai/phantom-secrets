@@ -36,7 +36,7 @@ Reuse across projects is explicit and one-directional:
 ```bash
 cd ~/code/company/api
 phantom copy STRIPE_SECRET_KEY --to ../billing-worker
-phantom copy OPENAI_API_KEY --to ../evals --as OPENAI_API_KEY_EVALS
+phantom copy OPENAI_API_KEY --to ../evals --rename OPENAI_API_KEY_EVALS
 ```
 
 `copy` never overwrites a name the target already owns. There is no implicit
