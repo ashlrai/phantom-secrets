@@ -31,4 +31,6 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 .venv/bin/python -m unittest
 ```
 
+CI runs the same tests in the `Temporal codec example tests` job whenever this directory or a workflow changes, and on every push to `main`. It installs the exact versions in `requirements-ci.txt` (wheels only, every file hash-checked) and fails if any test is skipped.
+
 Use `temporal server start-dev` only for experiments, and never put real secrets in it.

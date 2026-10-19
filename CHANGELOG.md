@@ -4,6 +4,14 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### CI (Temporal codec example)
+
+- New `Temporal codec example tests` job runs the example's 25 unit and local
+  HTTP tests when `examples/temporal-codec-python/` or a workflow changes, and
+  on every push to `main`; it is part of `CI Gate`. Dependencies come from
+  `requirements-ci.txt`: exact versions, wheels only, `--require-hashes`. A
+  skipped test fails the job.
+
 ### Fixed (Temporal codec example: Web UI calls)
 
 - `examples/temporal-codec-python`: the codec server now routes on the URL
