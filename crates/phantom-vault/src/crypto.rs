@@ -335,6 +335,64 @@ mod tests {
         assert_eq!(decrypt(&blob, passphrase).unwrap(), b"edge");
     }
 
+    /// Untagged blob whose salt starts with `PHMB` and the given version and
+    /// algorithm bytes, sealed with `derive`.
+    fn colliding_blob(
+        derive: fn(&str, &[u8]) -> Result<[u8; KEY_LEN]>,
+        passphrase: &str,
+        version: u8,
+        alg: u8,
+    ) -> Vec<u8> {
+        // Random salt and nonce; only the salt's first 6 bytes are forced.
+        let mut salt: [u8; SALT_LEN] = rand::random();
+        salt[..4].copy_from_slice(&blob_format::MAGIC);
+        salt[4] = version;
+        salt[5] = alg;
+        let nonce_bytes: [u8; NONCE_LEN] = rand::random();
+        let mut key = derive(passphrase, &salt).unwrap();
+        let cipher = ChaCha20Poly1305::new_from_slice(&key).unwrap();
+        key.zeroize();
+        let ct = cipher
+            .encrypt(Nonce::from_slice(&nonce_bytes), b"edge".as_ref())
+            .unwrap();
+        let mut blob = salt.to_vec();
+        blob.extend_from_slice(&nonce_bytes);
+        blob.extend_from_slice(&ct);
+        blob
+    }
+
+    #[test]
+    fn legacy_salt_colliding_with_an_unsupported_header_still_decrypts() {
+        // A salt that looks like a future header (for example version 3)
+        // must fall back to the legacy layout, not fail as unsupported.
+        for (version, alg) in [(3u8, 1u8), (blob_format::VERSION_2, 0xff), (0xff, 0xff)] {
+            let blob = colliding_blob(derive_key, "collide", version, alg);
+            assert!(matches!(
+                blob_format::classify(&blob),
+                Tag::Unsupported { .. }
+            ));
+            assert_eq!(
+                decrypt(&blob, "collide").unwrap(),
+                b"edge",
+                "v{version} a{alg}"
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_params_blob_with_v2_colliding_salt_still_decrypts() {
+        // Old vaults used `Argon2::default()`. The V2 attempt uses only the
+        // hardened KDF, so the legacy fallback must still try both.
+        let blob = colliding_blob(
+            derive_key_legacy,
+            "collide",
+            blob_format::VERSION_2,
+            blob_format::ALG_CHACHA20_POLY1305,
+        );
+        assert!(matches!(blob_format::classify(&blob), Tag::V2(_)));
+        assert_eq!(decrypt(&blob, "collide").unwrap(), b"edge");
+    }
+
     #[test]
     fn golden_untagged_fixture_decrypts() {
         let blob = hex_to_bytes(GOLDEN_HEX);
