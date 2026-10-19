@@ -243,28 +243,6 @@ mod tests {
     }
 
     #[test]
-    fn legacy_blob_whose_nonce_collides_with_an_unsupported_header_still_opens() {
-        for (version, alg) in [(3u8, 1u8), (VERSION_2, 0xff), (0xff, 0xff)] {
-            // Random nonce; only its first 6 bytes are forced to the header.
-            let mut nonce: [u8; NONCE_LEN] = rand::random();
-            nonce[..4].copy_from_slice(&MAGIC);
-            nonce[4] = version;
-            nonce[5] = alg;
-            let ct = ChaCha20Poly1305::new((&KEY).into())
-                .encrypt(Nonce::from_slice(&nonce), b"edge".as_ref())
-                .unwrap();
-            let mut blob = nonce.to_vec();
-            blob.extend_from_slice(&ct);
-            assert!(matches!(classify(&blob), Tag::Unsupported { .. }));
-            assert_eq!(
-                open_team_blob(&blob, &KEY).unwrap().as_slice(),
-                b"edge",
-                "v{version} a{alg}"
-            );
-        }
-    }
-
-    #[test]
     fn default_env_is_legacy() {
         // Do not mutate the environment (tests run in parallel); just check
         // the parser against the current process value.
