@@ -4,6 +4,19 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Added (`phantom setup --undo`)
+
+- `phantom setup --undo` reads `~/.phantom/setup-manifest.json` and shows what
+  it would restore from the backups or remove (files setup created). It is a
+  dry run by default; `--undo --apply` performs it. Entries are undone newest
+  first and marked undone in the manifest. Backups are kept.
+- A file is acted on only if its SHA-256 still equals what setup wrote.
+  Otherwise that file is refused and named, its backup is kept, and the other
+  files still proceed (exit code is non-zero). `--force-undo` (with `--apply`)
+  overrides only that check; it never overrides the symlink refusal or a backup
+  that no longer matches the manifest. A missing backup is refused. No file
+  contents are printed.
+
 ### Changed (`phantom setup --client` refuses to overwrite a differing entry)
 
 - For Cursor, Windsurf, Gemini CLI and Codex, `phantom setup --client <c>` now

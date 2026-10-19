@@ -83,7 +83,7 @@ The diff prints the command path and args only. It never prints environment valu
 
 1. phantom-secrets: `phantom setup --client <c> --dry-run` for the JSON clients and Codex, planning only, no behavior change. Tests: plan matches what a real write produces; nothing written; invalid file untouched.
 2. phantom-secrets: backup plus manifest before an existing-file write (no output change except one line naming the backup).
-3. phantom-secrets: `phantom setup --undo`.
+3. phantom-secrets: `phantom setup --undo` (done: dry run by default, `--undo --apply` performs it, `--force-undo` overrides only the hash check).
 4. phantom-secrets: `conflict` refusal and `--replace` (behavior change, needs release note; Mason decision).
 5. phantom-secrets: `phantom setup` with no client plans all detected clients.
 6. Cross-repo: keep the vendored client-table fixture current when phantom #813 merges.
