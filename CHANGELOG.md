@@ -4,6 +4,15 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Docs (Temporal: codec errors in the CLI)
+
+- `docs/temporal.md`: explains why `temporal workflow show` reports
+  `context deadline exceeded` after about 10 seconds when the Codec Server
+  refuses: the Go SDK retries the codec error as gRPC `Unknown` inside the
+  default 10 second RPC timeout. Links each step at CLI v1.9.1, SDK v1.47.0
+  and api-go v1.63.5, and records a local measurement (5 decode calls, 10.0 s,
+  for 400, 500, 422 and a bad 200). Upstream behavior; the example is unchanged.
+
 ### CI (Temporal codec example)
 
 - New `Temporal codec example tests` job runs the example's 25 unit and local
