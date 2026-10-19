@@ -51,3 +51,4 @@ tokio = { workspace = true }
 phantom-secrets-proxy = { path = ".", features = ["test-utils"] }
 tempfile = "3"
 serde_json = { workspace = true }
+tracing-subscriber = { workspace = true }
