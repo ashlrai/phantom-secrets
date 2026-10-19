@@ -13,6 +13,8 @@ live provider identifiers, cloud tokens, device codes, cookies, or persistent
 | [Agent delegation templates](agent-delegation/README.md) | Documentation templates | Copyable policy, task brief, and pilot-acceptance structures for a bounded agent task. |
 | [Claude Code](claude-code/README.md) | Executable recipe, disposable workspace | `init` → `setup --client claude` → MCP secret listing by name → `exec` with a placeholder and a local proxy URL → commit through the pre-commit hook. |
 | [Cursor](cursor/README.md) | Executable recipe, disposable workspace and HOME | Merge Phantom into `~/.cursor/mcp.json` without touching existing servers, then query the configured server over MCP. |
+| [LiteLLM gateway](litellm/README.md) | Experimental, local smoke test, not in CI | LiteLLM holds only a `phm_` placeholder and sends it to the Phantom proxy; verified against a mock upstream. |
+| [Next.js](nextjs/README.md) | Executable recipe, disposable workspace, needs network for `npm install` | A Next.js 16 server under `phantom exec` sees a `phm_` placeholder and a healthy local proxy, never the value. |
 | [GitHub Actions secret gate](github-actions/README.md) | Copyable workflow plus an executable local replay | A pull-request check that fails on raw dotenv values and hardcoded provider keys, with no vault or secrets in CI. |
 
 The repository does not currently claim a stable Rust library API or ship a

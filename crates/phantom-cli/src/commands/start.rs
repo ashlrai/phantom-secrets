@@ -68,6 +68,32 @@ pub(super) fn format_export(syntax: ShellSyntax, var: &str, value: &str) -> Stri
     }
 }
 
+/// Line that clears `var` in the selected shell.
+pub(super) fn format_unset(syntax: ShellSyntax, var: &str) -> String {
+    match syntax {
+        ShellSyntax::Bash => format!("  unset {var}"),
+        ShellSyntax::Fish => format!("  set -e {var}"),
+        ShellSyntax::PowerShell => {
+            format!("  Remove-Item Env:{var} -ErrorAction SilentlyContinue")
+        }
+        ShellSyntax::Cmd => format!("  set {var}="),
+    }
+}
+
+/// Override names a full registry would export that this session does not:
+/// the shell must clear them, or a stale value from an earlier session keeps
+/// pointing that SDK at a dead (or uncredentialed) proxy route.
+fn dropped_override_names(all: &[(String, String)], exported: &[(String, String)]) -> Vec<String> {
+    let mut names: Vec<String> = all
+        .iter()
+        .map(|(name, _)| name.clone())
+        .filter(|name| !exported.iter().any(|(kept, _)| kept == name))
+        .collect();
+    names.sort();
+    names.dedup();
+    names
+}
+
 fn quote_posix_single(value: &str) -> String {
     value.replace('\'', "'\\''")
 }
@@ -119,14 +145,11 @@ async fn run_async() -> Result<()> {
     let config_path = project_dir.join(".phantom.toml");
 
     if !config_path.exists() {
-        anyhow::bail!(
-            "No .phantom.toml found. Run {} first.",
-            "phantom init".cyan().bold()
-        );
+        return Err(crate::util::missing_config_error(&project_dir));
     }
 
     let config = PhantomConfig::load(&config_path)?;
-    config.validate_agentic_proxy_routes()?;
+    super::exec::validate_routes_for_launch(&config)?;
 
     let preflight = phantom_core::managed_dotenv::resolve_dotenv(&project_dir, &config, &[])?;
     validate_start_dotenv(&preflight).context(
@@ -180,10 +203,18 @@ async fn run_async() -> Result<()> {
     // Build token mapping
     let mut token_to_secret: HashMap<String, (String, String)> = HashMap::new();
     let mut secret_name_to_value: HashMap<String, String> = HashMap::new();
+    // Names for the session-keys export, taken from the dotenv keys before any
+    // vault read so nothing value-bearing feeds the printed line.
+    let mut session_names: Vec<String> = Vec::new();
     if let Some(dotenv) = resolved.file {
         for entry in dotenv.entries() {
             if PhantomToken::is_phantom_token(&entry.value) {
-                let real_value = retrieve_required_default_secret(vault.as_ref(), &entry.key)?;
+                session_names.push(entry.key.clone());
+                let real_value = retrieve_required_default_secret(
+                    vault.as_ref(),
+                    config.local_project_id(),
+                    &entry.key,
+                )?;
                 token_to_secret.insert(
                     entry.value.clone(),
                     (entry.key.clone(), String::from(real_value.as_str())),
@@ -201,6 +232,11 @@ async fn run_async() -> Result<()> {
     }
 
     let registry = ServiceRegistry::from_config(&config.services);
+    // Export base-URL overrides only for routes this session can serve. An
+    // SDK pointed at a route without a loaded credential would receive a
+    // proxy 503 for every call instead of reaching its provider.
+    let mut exported_routes = registry.clone();
+    exported_routes.retain_routes(|route| secret_name_to_value.contains_key(&route.secret_key));
     let interceptor = Interceptor::new_scoped(token_to_secret.clone(), secret_name_to_value);
     let proxy_token = ProxyServer::generate_proxy_token();
 
@@ -238,12 +274,15 @@ async fn run_async() -> Result<()> {
     let syntax = detect_shell_syntax();
     let header_auth_only = header_auth_only();
     let overrides = if header_auth_only {
-        registry.base_url_overrides(port)
+        exported_routes.base_url_overrides(port)
     } else {
-        registry.base_url_overrides_with_token(port, Some(&proxy_token))
+        exported_routes.base_url_overrides_with_token(port, Some(&proxy_token))
     };
     for (env_var, url) in &overrides {
         println!("{}", format_export(syntax, env_var, url));
+    }
+    for name in dropped_override_names(&registry.base_url_overrides(port), &overrides) {
+        println!("{}", format_unset(syntax, &name));
     }
     println!(
         "{}",
@@ -252,6 +291,17 @@ async fn run_async() -> Result<()> {
     println!(
         "{}",
         format_export(syntax, "PHANTOM_PROXY_TOKEN", &proxy_token)
+    );
+    // `phantom check --runtime` excuses these by name only: unlike `phantom
+    // exec`, start cannot see which of the shell's variables it will serve, so
+    // every dotenv key holding a phantom token is listed, routed or not.
+    println!(
+        "{}",
+        format_export(
+            syntax,
+            phantom_core::report::SESSION_KEYS_VAR,
+            &super::exec::session_variable_list(session_names.iter()),
+        )
     );
     if header_auth_only {
         println!("  # Header-only mode: clients must send x-phantom-proxy-token.");
@@ -284,6 +334,7 @@ fn validate_start_dotenv(resolved: &phantom_core::managed_dotenv::ResolvedDotenv
 
 fn retrieve_required_default_secret(
     vault: &dyn phantom_vault::VaultBackend,
+    project_id: &str,
     name: &str,
 ) -> Result<zeroize::Zeroizing<String>> {
     let namespaced = phantom_core::env_scope::namespaced_key(DEFAULT_ENV, name);
@@ -293,9 +344,18 @@ fn retrieve_required_default_secret(
             vault
                 .retrieve_for_injection(name)
                 .map_err(|error| match error {
-                phantom_core::error::PhantomError::SecretNotFound(_) => anyhow::anyhow!(
-                    "Protected dotenv key '{name}' has no vault entry for the default environment; refusing to start a partial proxy"
-                ),
+                phantom_core::error::PhantomError::SecretNotFound(_) => {
+                    crate::util::missing_protected_entry(
+                        vault,
+                        project_id,
+                        name,
+                        format!(
+                            "Protected dotenv key '{name}' has no vault entry for the default environment"
+                        ),
+                        "refusing to start a partial proxy",
+                        true,
+                    )
+                }
                 other => anyhow::anyhow!(
                     "Failed to read legacy default secret '{name}' from the vault: {other}"
                 ),
@@ -367,6 +427,26 @@ mod shell_tests {
     }
 
     #[test]
+    fn uncredentialed_routes_are_unset_in_every_shell() {
+        let all = vec![
+            ("OPENAI_BASE_URL".to_string(), "u".to_string()),
+            ("ANTHROPIC_BASE_URL".to_string(), "u".to_string()),
+        ];
+        let exported = vec![("OPENAI_BASE_URL".to_string(), "u".to_string())];
+        assert_eq!(
+            dropped_override_names(&all, &exported),
+            vec!["ANTHROPIC_BASE_URL".to_string()]
+        );
+        assert_eq!(format_unset(ShellSyntax::Bash, "X"), "  unset X");
+        assert_eq!(format_unset(ShellSyntax::Fish, "X"), "  set -e X");
+        assert_eq!(
+            format_unset(ShellSyntax::PowerShell, "X"),
+            "  Remove-Item Env:X -ErrorAction SilentlyContinue"
+        );
+        assert_eq!(format_unset(ShellSyntax::Cmd, "X"), "  set X=");
+    }
+
+    #[test]
     fn daemon_mode_fails_closed_before_runtime_creation() {
         let error = run(true).unwrap_err().to_string();
         assert!(error.contains("Detached proxy mode is disabled"));
@@ -401,12 +481,33 @@ mod shell_tests {
         assert!(preflight < legacy && legacy < lifecycle && lifecycle < vault);
     }
 
+    /// `phantom start` had exec's wording for a key held in a locked
+    /// encrypted-file vault; it now names that vault and still refuses.
+    #[cfg(unix)]
+    #[test]
+    fn foreground_start_names_a_locked_file_vault() {
+        let project =
+            crate::util::test_seam::LockedProject::new(crate::util::test_seam::empty_keychain);
+        let error =
+            retrieve_required_default_secret(&MissingVault, &project.project_id, "OPENAI_API_KEY")
+                .unwrap_err()
+                .to_string();
+        assert!(error.starts_with("Vault locked:"), "{error}");
+        assert!(
+            error.contains("refusing to start a partial proxy"),
+            "{error}"
+        );
+        assert!(!error.contains("has no vault entry"), "{error}");
+    }
+
     #[test]
     fn foreground_start_rejects_a_missing_protected_vault_entry() {
-        let error = retrieve_required_default_secret(&MissingVault, "OPENAI_API_KEY")
-            .unwrap_err()
-            .to_string();
+        let error =
+            retrieve_required_default_secret(&MissingVault, "start-fixture", "OPENAI_API_KEY")
+                .unwrap_err()
+                .to_string();
         assert!(error.contains("has no vault entry"));
         assert!(error.contains("refusing to start a partial proxy"));
+        assert!(error.contains("`phantom add OPENAI_API_KEY`"), "{error}");
     }
 }

@@ -17,12 +17,88 @@ pub fn invalid_params_err(msg: impl Into<String>) -> McpError {
     McpError::new(rmcp::model::ErrorCode::INVALID_PARAMS, msg.into(), None)
 }
 
+/// The call is well formed, but the project is not in a state to serve it:
+/// not initialized, config unreadable, vault locked or undecryptable, not
+/// logged in. The user can fix each of these, and the message names how.
+/// INTERNAL_ERROR (-32603) would tell the client the server itself failed.
+pub fn state_err(msg: impl Into<String>) -> McpError {
+    McpError::new(rmcp::model::ErrorCode::INVALID_REQUEST, msg.into(), None)
+}
+
+/// The next step before `phantom init`, shared with the listing tools.
+pub const NOT_INITIALIZED_NEXT_STEP: &str = "Phantom is not initialized in this project. Ask the \
+     user to run `phantom init` in a trusted terminal (or call phantom_init with confirm plus \
+     approval); phantom_why shows what init would protect.";
+
+pub fn not_initialized_err() -> McpError {
+    state_err(NOT_INITIALIZED_NEXT_STEP)
+}
+
+/// `.phantom.toml` exists but cannot be loaded.
+pub fn config_invalid_err(error: impl std::fmt::Display) -> McpError {
+    state_err(format!(
+        "Failed to load config: {error}. Next step: run phantom_doctor (it does not open the \
+         vault) to see the failing check, then fix .phantom.toml and retry."
+    ))
+}
+
+/// A vault read failed. A decryption failure is a wrong
+/// PHANTOM_VAULT_PASSPHRASE in this server's environment or a corrupt vault
+/// file; the user can act on either, so both next steps are named. Anything
+/// else stays an internal error.
+pub fn vault_read_err(context: &str, error: impl std::fmt::Display) -> McpError {
+    let detail = error.to_string();
+    if detail.contains("Decryption failed") {
+        return state_err(format!(
+            "{context}: the encrypted-file vault could not be decrypted: either a wrong \
+             passphrase or a corrupt vault file. Wrong passphrase: set \
+             PHANTOM_VAULT_PASSPHRASE in the MCP server's env config to the passphrase the \
+             secrets were stored with (the one `phantom` uses in the user's terminal), then \
+             restart the MCP server. Corrupt vault file: ask the user to run `phantom doctor` \
+             in a trusted terminal, then restore the secrets from an encrypted backup \
+             (`phantom import <FILE>`) or a cloud copy (`phantom cloud pull`)."
+        ));
+    }
+    internal_err(format!("{context}: {detail}"))
+}
+
+/// Output format accepted by the audit export tools.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuditFormat {
+    Json,
+    Csv,
+}
+
+/// Parse an audit export `format` parameter: "json" or "csv", ignoring ASCII
+/// case. Anything else is an invalid-params error naming the accepted values.
+pub fn parse_audit_format(format: &str) -> Result<AuditFormat, McpError> {
+    if format.eq_ignore_ascii_case("json") {
+        Ok(AuditFormat::Json)
+    } else if format.eq_ignore_ascii_case("csv") {
+        Ok(AuditFormat::Csv)
+    } else {
+        Err(invalid_params_err(format!(
+            "Invalid format '{format}'. Use: json or csv"
+        )))
+    }
+}
+
+/// Normalize an anomaly-score threshold parameter with the rule every audit
+/// tool and `phantom audit` command shares
+/// ([`phantom_core::analytics::score_threshold`]): clamp to 0.0..=1.0 and
+/// refuse NaN with an invalid-params error naming the parameter.
+pub fn score_threshold_param(param: &str, value: f64) -> Result<f64, McpError> {
+    phantom_core::analytics::score_threshold(value)
+        .map_err(|error| invalid_params_err(format!("Invalid {param}: {error}")))
+}
+
 pub fn require_confirm(tool: &str, confirm: bool) -> Result<(), McpError> {
     if confirm {
         return Ok(());
     }
     Err(invalid_params_err(format!(
-        "{tool} is a destructive vault operation. Ask the user for explicit \
+        "{tool} is effectful: it changes the vault or project files, or sends a \
+         stored credential to a provider (even to read). Ask the user for explicit \
          confirmation, then retry the call with `confirm: true`. This gate \
          exists to prevent prompt-injected content (READMEs, issue comments, \
          dependency docs) from silently mutating or exfiltrating secrets."
@@ -62,7 +138,10 @@ pub fn require_approval_token(
              the requesting agent cannot modify, and `phantom mcp-approve` plus \
              ~/.phantom/mcp-approvals.jsonl are outside that agent's command and file \
              authority. A same-user shell or agent-controlled PTY can defeat the terminal \
-             ceremony; leave effects disabled when that separation cannot be guaranteed."
+             ceremony; leave effects disabled when that separation cannot be guaranteed. \
+             Once enabled, each call also needs out-of-band approval: the operator must \
+             approve it in their own trusted terminal and supply the resulting \
+             `approval_token`. See docs/claude-code.md (Effectful tools)."
         )));
     }
 
@@ -131,9 +210,69 @@ pub fn text_result(msg: impl Into<String>) -> Result<CallToolResult, McpError> {
     )]))
 }
 
+/// A diagnostic result for agents: the existing human summary stays the first
+/// text block, the value-blind report follows as serialized JSON text, and the
+/// same report is attached as MCP `structuredContent`.
+pub fn report_result(
+    summary: impl Into<String>,
+    report: &impl serde::Serialize,
+) -> Result<CallToolResult, McpError> {
+    let value = serde_json::to_value(report)
+        .map_err(|error| internal_err(format!("Serialization error: {error}")))?;
+    let json = serde_json::to_string_pretty(&value)
+        .map_err(|error| internal_err(format!("Serialization error: {error}")))?;
+    let mut result = CallToolResult::success(vec![
+        ContentBlock::text(summary.into()),
+        ContentBlock::text(json),
+    ]);
+    result.structured_content = Some(value);
+    Ok(result)
+}
+
+/// A tool whose whole answer is already a JSON object: keep the pretty JSON
+/// as the only text block (existing clients parse it) and attach the same
+/// object as MCP `structuredContent`.
+pub fn json_object_result(report: &impl serde::Serialize) -> Result<CallToolResult, McpError> {
+    let value = serde_json::to_value(report)
+        .map_err(|error| internal_err(format!("Serialization error: {error}")))?;
+    let json = serde_json::to_string_pretty(&value)
+        .map_err(|error| internal_err(format!("Serialization error: {error}")))?;
+    let mut result = CallToolResult::success(vec![ContentBlock::text(json)]);
+    if value.is_object() {
+        result.structured_content = Some(value);
+    }
+    Ok(result)
+}
+
+/// Vault construction failed. Tell the agent what to do next instead of
+/// surfacing a bare backend error.
+pub fn vault_init_err(error: impl std::fmt::Display) -> McpError {
+    internal_err(format!(
+        "Failed to initialize vault: {error}. Next step: ask the user to run \
+         `phantom doctor` in a trusted terminal. If no OS keychain is available \
+         (headless Linux, CI), the operator can set PHANTOM_VAULT_PASSPHRASE in the \
+         MCP server environment to use the encrypted-file vault. Repository-only \
+         tools (phantom_status, phantom_doctor, phantom_check) still work."
+    ))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{effect_execution_enabled, extract_nonce, extract_token};
+    use super::{
+        effect_execution_enabled, extract_nonce, extract_token, json_object_result, require_confirm,
+    };
+
+    #[test]
+    fn json_object_result_attaches_objects_only() {
+        let object = json_object_result(&serde_json::json!({ "count": 1 })).unwrap();
+        assert_eq!(object.content.len(), 1);
+        assert_eq!(
+            object.structured_content,
+            Some(serde_json::json!({ "count": 1 }))
+        );
+        let array = json_object_result(&serde_json::json!([1, 2])).unwrap();
+        assert!(array.structured_content.is_none());
+    }
 
     #[test]
     fn effect_execution_requires_exact_operator_mode() {
@@ -158,5 +297,24 @@ mod tests {
 
         assert_eq!(extract_nonce(token), "tokenhex");
         assert_eq!(extract_token(token), "tokenhex");
+    }
+
+    #[test]
+    fn confirm_refusal_does_not_call_a_provider_read_destructive() {
+        // The gate also guards reads that send a stored credential to a
+        // provider (phantom_cloud_status, phantom_team_list, ...). Calling
+        // those "a destructive vault operation" sent agents the wrong signal.
+        assert!(require_confirm("phantom_team_list", true).is_ok());
+        let message = require_confirm("phantom_team_list", false)
+            .unwrap_err()
+            .message
+            .to_string();
+        assert!(message.contains("phantom_team_list"), "{message}");
+        assert!(!message.contains("destructive"), "{message}");
+        assert!(
+            message.contains("sends a stored credential to a provider"),
+            "{message}"
+        );
+        assert!(message.contains("`confirm: true`"), "{message}");
     }
 }

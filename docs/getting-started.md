@@ -215,7 +215,12 @@ phantom remove STRIPE_SECRET_KEY
 `add` creates a new protected name, stores its value, and writes a phantom token
 to `.env`. It prompts silently so the secret never enters shell history or the
 process list. Positional secret values are rejected; use `--stdin` only with a
-trusted producer. An existing protected name is denied from value-blind vault
+trusted producer. `--stdin` reads up to EOF (trailing newlines are dropped, 64 KiB
+cap) and is refused when stdin is a terminal. Input with more than one line is
+refused before anything is stored unless you say what to keep: `--multiline`
+stores every line (a PEM key, a JSON document), `--first-line` stores only line 1
+(`pass show svc/api | phantom add API_KEY --stdin --first-line`, since pass and
+gopass put metadata after the key). An existing protected name is denied from value-blind vault
 metadata before Phantom reads the prompt or stdin. `add` never replaces it.
 `remove` requires attached stdin/stdout/stderr plus an exact typed challenge,
 then transactionally removes the vault value, lifecycle config, and exact
@@ -314,6 +319,24 @@ phantom check
 
 Exit code 0 = clean. Exit code 1 = unprotected secrets found.
 
+Agents and CI can add `--json` (or the global `phantom --json check`) to get one
+report on stdout instead of the human text. It lists names, paths and pattern
+labels only, never values or phantom tokens, and keeps the same exit codes. A
+scan whose result is indeterminate is still an error with no report.
+
+```json
+{
+  "mode": "worktree",
+  "clean": false,
+  "findings": [{ "kind": "dotenv", "path": "/repo/.env", "name": "OPENAI_API_KEY" }],
+  "warnings": []
+}
+```
+
+`mode` is `worktree`, `staged` or `runtime`. Each finding's `kind` is `dotenv`,
+`staged_dotenv`, `staged_code` (with `label` and `pattern`) or `runtime_env`.
+`warnings` lists risky `.phantom.toml` routes found in staged config.
+
 ### `phantom doctor`
 
 Health check for your setup: config validity, vault access, `.env` protection, `.gitignore` coverage, `.env.example`, pre-commit hook.
@@ -322,6 +345,17 @@ Health check for your setup: config validity, vault access, `.env` protection, `
 phantom doctor
 phantom doctor --fix    # auto-fix safe issues
 ```
+
+`phantom doctor --json` (or `phantom --json doctor`) prints one report on stdout
+for agents and CI: `ok`, `issues`, `fixed`, a `checks` list of
+`{status, message, fix?, fixed?}` with status `pass`, `fail`, `warn` or `info`,
+and `mcp_clients` with each client's config path and state (`local_runtime`,
+`stale`, `unreadable`, `not_phantom` or `not_configured`). Messages are the same
+value-blind text as the human checklist, and the exit status is unchanged.
+A configured managed dotenv that is missing or cannot be read safely (for
+example a symlink) is a `fail` check named "Managed dotenv" with a fix hint;
+the other checks still run. `phantom doctor --fix` stops with an error before
+any repair in that state.
 
 ```
 $ phantom doctor
@@ -349,6 +383,10 @@ phantom agent setup --apply   # initialize safe defaults
 ```
 
 The readiness engine checks `.env` files, `.phantom.toml`, vault access, unprotected secrets, `.env.example`, `.gitignore`, MCP client wiring, package script wrapping, pre-commit protection, audit status, cloud login, team state, and sync targets. It returns one state: `unsafe`, `protected`, `verified`, `team-ready`, or `compliance-ready`.
+A locked encrypted-file vault (secrets stored with `PHANTOM_VAULT_PASSPHRASE`,
+which this shell lacks) and a missing or unresolvable managed dotenv
+(`managed-dotenv-unresolved`) are critical findings: the state is `unsafe` and
+the command exits 1.
 
 ### `phantom reveal`
 

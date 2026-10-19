@@ -5,6 +5,8 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # A merge queue reruns every job on the queued merge commit so CI Gate reports there.
+  merge_group:
   workflow_dispatch:
 
 # Scope GITHUB_TOKEN down — CI only needs to read the repo.
@@ -19,16 +21,84 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # Test and check builds keep file:line debug info (enough for panics and
+  # backtraces) instead of full debug info. Measured on the workspace: the
+  # target dir drops from 7.4 GB to 3.5 GB (less rust-cache to restore and
+  # save) and a workspace rebuild over cached deps from 52s to 41s on Linux;
+  # linking is the larger share on Windows and macOS. Release builds are
+  # configured separately and are unaffected.
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
   PHANTOM_NPM_AUDIT_VERSION: 11.15.0
 
 jobs:
+  # Path classification. Docs-only changes skip the Rust/web suites; secret
+  # scanning and dependency policy always run. Pushes to main and manual runs
+  # always run everything. The `CI Gate` job below is the single required
+  # check, so skipped jobs never leave a required status pending.
+  changes:
+    name: Classify changes
+    runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ steps.classify.outputs.rust }}
+      web: ${{ steps.classify.outputs.web }}
+      filterset: ${{ steps.affected.outputs.filterset }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - id: classify
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" != "pull_request" ]; then
+            echo "rust=true" >> "$GITHUB_OUTPUT"; echo "web=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          files="$(git diff --name-only "$BASE...$HEAD")"
+          printf '%s\n' "$files"
+          docs='^(docs/|[^/]*\.md$|.*/README\.md$|LICENSE|\.github/ISSUE_TEMPLATE/|\.github/PULL_REQUEST_TEMPLATE)'
+          web='^(apps/web/|scripts/supabase/|scripts/seo/|\.github/workflows/)'
+          # Rust/CLI suites: anything that is neither docs nor web-only nor the video sandbox.
+          # scripts/supabase and scripts/seo are exercised only by the web job.
+          rust=false; webc=false
+          if printf '%s\n' "$files" | grep -Ev "$docs" | grep -Ev '^(apps/web/|scripts/supabase/|scripts/seo/|video/)' | grep -q .; then rust=true; fi
+          if printf '%s\n' "$files" | grep -Eq '^\.github/workflows/'; then rust=true; fi
+          if printf '%s\n' "$files" | grep -Eq "$web"; then webc=true; fi
+          echo "rust=$rust" >> "$GITHUB_OUTPUT"; echo "web=$webc" >> "$GITHUB_OUTPUT"
+          echo "rust=$rust web=$webc"
+      - id: affected
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ "$EVENT" = "pull_request" ]; then
+            fs="$(bash scripts/ci/affected-filterset.sh "$BASE" "$HEAD" || echo 'all()')"
+          else
+            fs='all()'
+          fi
+          echo "filterset=$fs" >> "$GITHUB_OUTPUT"
+          echo "nextest filterset: $fs"
+
   test:
     name: Test (${{ matrix.os }})
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [macos-latest, ubuntu-latest, windows-latest]
+    env:
+      # Linking the workspace's test binaries with link.exe is most of the
+      # Windows Build step (86-107s vs 44s on Linux). rust-lld ships with the
+      # toolchain; the variable only applies to the x86_64 MSVC target.
+      # rust-cache hashes CARGO_* variables into its key, so the first run after
+      # this changes rebuilds dependencies once (253s) before the cache warms.
+      CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER: rust-lld
     steps:
       # Third-party actions are pinned to commit SHAs (not floating tags) so
       # a future tag-move or account compromise on the action repo cannot
@@ -44,10 +114,24 @@ jobs:
         with:
           toolchain: 1.95.0
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2
+        with:
+          tool: cargo-nextest
       - name: Build
         run: cargo build --workspace --all-targets --locked --verbose
+      # nextest runs every test in its own process, in parallel across all
+      # test binaries. Same targets as `cargo test --all-targets` (which never
+      # ran doctests); ignored tests stay ignored.
+      # PRs test only the crates the diff touches plus every crate depending on
+      # them (nextest rdeps filterset); workspace-wide changes (manifests,
+      # lockfile, toolchain, CI) select all(). Pushes to main always run the
+      # complete suite on every OS.
       - name: Run tests
-        run: cargo test --workspace --all-targets --locked --no-fail-fast --verbose
+        # PRs test only crates the diff touches plus their reverse deps
+        # (computed in `changes`); main pushes always run all().
+        if: needs.changes.outputs.filterset != 'none()'
+        shell: bash
+        run: cargo nextest run --workspace --all-targets --locked --no-fail-fast -E "${{ needs.changes.outputs.filterset }}"
       - name: Verify examples
         run: node --test scripts/examples-first-five-minutes.test.mjs scripts/agent-first-five-minutes.test.mjs scripts/examples-client-recipes.test.mjs
       - name: Verify installed CLI and MCP onboarding
@@ -69,6 +153,13 @@ jobs:
         run: node scripts/check-platform-installers.mjs
       - name: Verify MCP platform mappings
         run: node npm-mcp/test/platform-matrix.test.js
+      # The registry catalog is what MCP Registry publication ships. It was
+      # only compared with the runtime tools/list at release build, so a tool
+      # schema change on main (#201) left it stale until the next tag. Same
+      # smoke and tool count as release-build.yml, against the debug build.
+      - name: Verify MCP registry catalog matches runtime tools/list
+        if: runner.os == 'Linux'
+        run: node scripts/release/mcp-stdio-smoke.mjs target/debug/phantom-mcp 54
       - name: Run direct installer offline tests
         if: runner.os == 'Linux'
         run: node --test scripts/installers.test.js scripts/release/native-installer-acceptance.test.mjs
@@ -125,6 +216,8 @@ jobs:
 
   lint:
     name: Lint
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -172,6 +265,8 @@ jobs:
 
   windows-arm-source-check:
     name: Windows ARM64 source check
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: windows-11-vs2026-arm
     permissions:
       contents: read
@@ -182,6 +277,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (2026-04-24)
         with:
           toolchain: 1.95.0
+      # This job compiled every dependency from scratch on each run (~2.5 min).
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
       - name: Verify native host and check the workspace
         shell: pwsh
         run: |
@@ -195,6 +292,8 @@ jobs:
 
   npm-wrappers:
     name: npm wrapper tests and package inspection
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -227,6 +326,8 @@ jobs:
 
   web:
     name: Web security, tests, and build
+    needs: changes
+    if: needs.changes.outputs.web == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 35
     permissions:
@@ -342,6 +443,8 @@ jobs:
 
   crate-publication-contract:
     name: Crate publication contract
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -365,5 +468,46 @@ jobs:
         run: bash scripts/release/install-mcp-publisher.sh
       - name: Validate the staged MCP Registry manifest
         run: /tmp/phantom-mcp-publisher-bin/mcp-publisher validate mcp-registry/server.json
+      # fmt, clippy and the full test suite are the Lint and Test jobs; the
+      # gate requires both, so this job only packages and verifies crates.
+      # --publish still runs every source gate itself.
       - name: Package every crates.io crate in dependency order
-        run: ./scripts/publish-crates.sh --verify-only
+        run: ./scripts/publish-crates.sh --verify-only --skip-source-gates
+
+  # The single required status check. Fails if any job failed or was
+  # cancelled, or if a job the classifier selected did not succeed. A job may
+  # be skipped only when the classifier deselected it (or, for Ignored Tests,
+  # outside workflow_dispatch).
+  gate:
+    name: CI Gate
+    if: always()
+    needs: [changes, test, test-ignored, lint, dependency-policy, windows-arm-source-check, npm-wrappers, web, secret-scan, crate-publication-contract]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every selected job
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          node <<'NODE'
+          const needs = JSON.parse(process.env.NEEDS);
+          const ch = needs.changes;
+          if (ch?.result !== 'success') throw new Error(`changes: ${ch?.result}`);
+          const rust = ch.outputs.rust === 'true', web = ch.outputs.web === 'true';
+          const always = ['dependency-policy', 'secret-scan'];
+          const rustJobs = ['test', 'lint', 'windows-arm-source-check', 'npm-wrappers', 'crate-publication-contract'];
+          const expect = {
+            ...Object.fromEntries(always.map((j) => [j, true])),
+            ...Object.fromEntries(rustJobs.map((j) => [j, rust])),
+            web,
+            'test-ignored': process.env.EVENT === 'workflow_dispatch',
+          };
+          const bad = [];
+          for (const [job, selected] of Object.entries(expect)) {
+            const result = needs[job]?.result;
+            if (selected ? result !== 'success' : result !== 'skipped') bad.push(`${job}=${result} (selected=${selected})`);
+          }
+          if (Object.keys(needs).length !== Object.keys(expect).length + 1) bad.push('gate inventory drift');
+          if (bad.length) throw new Error(bad.join(', '));
+          console.log(`CI Gate passed (rust=${rust}, web=${web})`);
+          NODE

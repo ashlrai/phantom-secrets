@@ -1,5 +1,5 @@
 use crate::{Result, WorkspaceError};
-use phantom_core::dotenv::{classify, DotenvFile, SecretClassification};
+use phantom_core::dotenv::{classify, SecretClassification};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
@@ -195,10 +195,27 @@ fn is_env_file_name(name: &str) -> bool {
 }
 
 fn inspect_env_file(root: &Path, path: &Path) -> Result<EnvFileObservation> {
-    let dotenv = DotenvFile::parse_file(path).map_err(|error| WorkspaceError::Io {
+    // The walk lists regular files only, but the path can be swapped for a
+    // symlink before this read. Open without following one and judge the
+    // opened handle, so a swapped-in link is refused instead of followed.
+    let io_error = |source: std::io::Error| WorkspaceError::Io {
         path: path.to_path_buf(),
-        source: std::io::Error::other(error.to_string()),
-    })?;
+        source,
+    };
+    let (Some(directory), Some(name)) = (path.parent(), path.file_name().and_then(|n| n.to_str()))
+    else {
+        return Err(io_error(std::io::Error::other(
+            "dotenv path has no parent directory or UTF-8 file name",
+        )));
+    };
+    let dotenv = phantom_core::managed_dotenv::parse_regular_dotenv(directory, name)
+        .map_err(|error| io_error(std::io::Error::other(error.to_string())))?
+        .ok_or_else(|| {
+            io_error(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "dotenv file was removed after it was listed",
+            ))
+        })?;
     dotenv
         .validate_for_mutation()
         .map_err(|error| WorkspaceError::Io {
@@ -549,4 +566,43 @@ fn relative_path(root: &Path, path: &Path) -> String {
 
 pub(crate) fn digest_hex(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A listed file swapped for a symlink before it is read: the read must
+    /// refuse the link rather than report the target's keys.
+    #[cfg(unix)]
+    #[test]
+    fn inspection_refuses_a_listed_file_swapped_for_a_symlink() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let target = outside.path().join("elsewhere.env");
+        std::fs::write(&target, format!("OPENAI_API_KEY={}-outside\n", "sk")).unwrap();
+        let listed = root.path().join(".env");
+        std::fs::write(&listed, "NODE_ENV=development\n").unwrap();
+        std::fs::remove_file(&listed).unwrap();
+        std::os::unix::fs::symlink(&target, &listed).unwrap();
+
+        let error = inspect_env_file(root.path(), &listed).unwrap_err();
+        let message = error.to_string();
+        assert!(
+            message.contains("not a regular, non-symlink file"),
+            "{message}"
+        );
+        assert!(!message.contains("OPENAI_API_KEY"), "{message}");
+    }
+
+    #[test]
+    fn inspection_reads_a_regular_file() {
+        let root = tempfile::tempdir().unwrap();
+        let listed = root.path().join(".env");
+        std::fs::write(&listed, format!("OPENAI_API_KEY={}-inside\n", "sk")).unwrap();
+
+        let observation = inspect_env_file(root.path(), &listed).unwrap();
+        assert_eq!(observation.path, ".env");
+        assert_eq!(observation.unprotected_secret_names, ["OPENAI_API_KEY"]);
+    }
 }
