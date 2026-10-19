@@ -4,6 +4,11 @@ use phantom_core::agent::{self, AgentReadinessOptions, AgentReadinessReport, Vau
 use phantom_core::config::PhantomConfig;
 use phantom_core::dotenv::DotenvFile;
 
+/// Readiness report for the current directory, for the combined doctor.
+pub fn readiness_for_cwd() -> Result<AgentReadinessReport> {
+    Ok(readiness_report(&std::env::current_dir()?))
+}
+
 pub fn report(json: bool) -> Result<()> {
     let project_dir = std::env::current_dir()?;
     let report = readiness_report(&project_dir);
@@ -38,34 +43,7 @@ pub fn status(json: bool) -> Result<()> {
         .unwrap_or(0);
 
     if json {
-        let approvals: Vec<_> = entries
-            .iter()
-            .map(|e| {
-                serde_json::json!({
-                    "tool_name": e.tool_name,
-                    "project_id": e.project_id,
-                    "state": approval_state(e),
-                    "created_at": e.created_at,
-                    "expires_at": e.expires_at,
-                    "remaining_secs": e.expires_at.map(|x| x.saturating_sub(now)),
-                    "approved_at": e.approved_at,
-                })
-            })
-            .collect();
-        let out = serde_json::json!({
-            "approvals": {
-                "pending": pending,
-                "approved_unused": approved_unused,
-                "expired": expired,
-                "key_present": key_present,
-                "records": approvals,
-            },
-            "leases": {
-                "available": false,
-                "reason": "the lease broker is not wired into the CLI; no lease state is read",
-            },
-        });
-        println!("{}", serde_json::to_string_pretty(&out)?);
+        println!("{}", serde_json::to_string_pretty(&status_json()?)?);
         return Ok(());
     }
 
@@ -107,6 +85,49 @@ pub fn status(json: bool) -> Result<()> {
     println!();
     println!("Approve a pending request yourself with: phantom mcp-approve <NONCE>");
     Ok(())
+}
+
+/// The `phantom agent status --json` document, for the combined doctor.
+/// Read-only and value-free, like `status`.
+pub fn status_json() -> Result<serde_json::Value> {
+    use phantom_core::mcp_approval;
+    let entries = mcp_approval::read_approval_status().context("reading MCP approval state")?;
+    let key_present =
+        mcp_approval::approval_key_present().context("checking the MCP approval key")?;
+    let pending = entries.iter().filter(|e| !e.approved && !e.expired).count();
+    let approved_unused = entries.iter().filter(|e| e.approved && !e.expired).count();
+    let expired = entries.iter().filter(|e| e.expired).count();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let approvals: Vec<_> = entries
+        .iter()
+        .map(|e| {
+            serde_json::json!({
+                "tool_name": e.tool_name,
+                "project_id": e.project_id,
+                "state": approval_state(e),
+                "created_at": e.created_at,
+                "expires_at": e.expires_at,
+                "remaining_secs": e.expires_at.map(|x| x.saturating_sub(now)),
+                "approved_at": e.approved_at,
+            })
+        })
+        .collect();
+    Ok(serde_json::json!({
+        "approvals": {
+            "pending": pending,
+            "approved_unused": approved_unused,
+            "expired": expired,
+            "key_present": key_present,
+            "records": approvals,
+        },
+        "leases": {
+            "available": false,
+            "reason": "the lease broker is not wired into the CLI; no lease state is read",
+        },
+    }))
 }
 
 fn approval_state(e: &phantom_core::mcp_approval::ApprovalStatusEntry) -> &'static str {
