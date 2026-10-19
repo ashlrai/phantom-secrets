@@ -680,14 +680,28 @@ fn write_hmac_key(key_path: &Path, key: &[u8]) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Required audit HMAC key length in bytes (256-bit).
+const HMAC_KEY_LEN: usize = 32;
+
 fn read_hmac_key(key_path: &Path) -> std::io::Result<Vec<u8>> {
     let hex_str = std::fs::read_to_string(key_path)?;
-    hex::decode(hex_str.trim()).map_err(|e| {
+    // The decode error is not forwarded: it can name a character from the key file.
+    let key = hex::decode(hex_str.trim()).map_err(|_| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            format!("invalid audit HMAC key: {e}"),
+            "invalid audit HMAC key: file is not valid hex; delete audit-hmac-key to regenerate (this starts a new chain)",
         )
-    })
+    })?;
+    if key.len() != HMAC_KEY_LEN {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "invalid audit HMAC key: expected {HMAC_KEY_LEN} bytes, found {}; delete audit-hmac-key to regenerate (this starts a new chain)",
+                key.len()
+            ),
+        ));
+    }
+    Ok(key)
 }
 
 fn write_chain_marker(log_path: &Path, key: &[u8]) -> std::io::Result<()> {
@@ -2359,6 +2373,40 @@ mod tests {
             assert_eq!(report.malformed_lines, vec![3]);
             assert!(!report.is_clean());
         });
+    }
+
+    #[test]
+    fn read_hmac_key_requires_exactly_32_bytes() {
+        let dir = std::env::temp_dir().join(format!(
+            "phantom-hmac-len-{}-{}",
+            std::process::id(),
+            now_unix()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("audit-hmac-key");
+        for len in [0usize, 1, 31, 33, 64] {
+            std::fs::write(&path, hex::encode(vec![0xabu8; len])).unwrap();
+            let err = read_hmac_key(&path).unwrap_err();
+            assert_eq!(err.kind(), std::io::ErrorKind::InvalidData, "len {len}");
+            let msg = err.to_string();
+            assert!(msg.contains("expected 32 bytes"), "len {len}: {msg}");
+            assert!(msg.contains(&format!("found {len}")), "len {len}: {msg}");
+            assert!(
+                !msg.contains("abab"),
+                "message must not contain key material"
+            );
+        }
+        std::fs::write(&path, hex::encode([0xabu8; 32])).unwrap();
+        assert_eq!(read_hmac_key(&path).unwrap(), vec![0xabu8; 32]);
+        // Trailing newline is still accepted.
+        std::fs::write(&path, format!("{}\n", hex::encode([0xcdu8; 32]))).unwrap();
+        assert_eq!(read_hmac_key(&path).unwrap().len(), 32);
+        // Non-hex content: clear error, no echo of the content.
+        std::fs::write(&path, "zzzsecretzzz").unwrap();
+        let msg = read_hmac_key(&path).unwrap_err().to_string();
+        assert!(msg.contains("not valid hex"));
+        assert!(!msg.contains("secret"));
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
