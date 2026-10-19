@@ -5,14 +5,17 @@
 //! ChaCha20-Poly1305 under the KEM shared secret. Confidentiality holds if
 //! either X25519 or ML-KEM-768 holds.
 //!
-//! Draft status (checked 2026-10-18): the `x-wing` 0.1.1 crate states it
+//! Draft status (checked 2026-10-19): the `x-wing` 0.1.1 crate states it
 //! matches draft version 06; the current draft is version 11 (2026-09-23).
-//! The test vectors in draft 11 Appendix C are byte-identical to the vectors
-//! shipped with the crate (see `draft_11_vectors_match` in the tests), and the
-//! draft 11 change log lists only editorial, ASN.1, PEM and SHAKE-argument
-//! notation changes after version 06 (it lists nothing for 08 to 11), so the
-//! vectors are the evidence that the construction is unchanged. The
-//! draft is still an Internet-Draft, so re-check on each new revision.
+//! This build is verified against the draft 11 test vectors: all three
+//! vectors in Appendix C of
+//! https://www.ietf.org/archive/id/draft-connolly-cfrg-xwing-kem-11.txt are
+//! copied verbatim into `tests/fixtures/xwing-draft-11-vectors.json`, and the
+//! tests check key generation from `seed` (`pk`), decapsulation (`ss`) and
+//! deterministic encapsulation from `eseed` (`ct`, `ss`) byte for byte. CI
+//! runs them with `--features pq-hybrid`. The draft 11 change log lists only
+//! editorial, ASN.1, PEM and SHAKE-argument notation changes after version
+//! 06. The draft is still an Internet-Draft, so re-check on each new revision.
 //!
 //! WARNING: the `x-wing` and `ml-kem` crates have never been independently
 //! audited, and X-Wing is a pre-1.0 draft. Do not rely on this alone.
@@ -267,6 +270,26 @@ mod tests {
     /// Draft 11 Appendix C known-answer vectors (same as the crate's KATs).
     /// Checks the seed-to-public-key expansion and decapsulation against the
     /// published values, so a crate bump that diverges from the draft fails.
+    #[test]
+    fn draft_11_vectors_match_encapsulation() {
+        let raw = include_str!("../tests/fixtures/xwing-draft-11-vectors.json");
+        let doc: serde_json::Value = serde_json::from_str(raw).unwrap();
+        let vectors = doc["vectors"].as_array().unwrap();
+        assert_eq!(vectors.len(), 3);
+        for v in vectors {
+            let field = |k: &str| hex::decode(v[k].as_str().unwrap()).unwrap();
+            // Draft 11 uses the 32-byte seed as the decapsulation key.
+            assert_eq!(field("sk"), field("seed"));
+            let ek = EncapsulationKey::try_from(field("pk").as_slice()).unwrap();
+            let eseed = field("eseed");
+            assert_eq!(eseed.len(), x_wing::ENCAPSULATION_RANDOMNESS_SIZE);
+            let randomness = eseed.as_slice().try_into().unwrap();
+            let (ct, ss) = ek.encapsulate_deterministic(&randomness);
+            assert_eq!(ct.as_slice(), field("ct").as_slice());
+            assert_eq!(ss.as_slice(), field("ss").as_slice());
+        }
+    }
+
     #[test]
     fn draft_11_vectors_match() {
         let raw = include_str!("../tests/fixtures/xwing-draft-11-vectors.json");
