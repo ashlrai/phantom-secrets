@@ -4,6 +4,22 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Changed (`phantom setup --client` refuses to overwrite a differing entry)
+
+- For Cursor, Windsurf, Gemini CLI and Codex, `phantom setup --client <c>` now
+  refuses when a `phantom` entry already exists and differs from what setup
+  would write (including an entry with extra keys such as `env`). The error
+  names the entry and the file and never prints values. Pass `--replace` to
+  overwrite it. An identical entry is left untouched.
+- Before any write to an existing client config, setup copies it byte for byte
+  to `<config>.phantom-bak-<ms>` (mode 0600) and records the change in
+  `~/.phantom/setup-manifest.json`: path, backup path, timestamp, action, and
+  SHA-256 hashes before and after. The manifest holds no config values. It
+  prepares a later `--undo`.
+- Behavior change: scripts that relied on setup silently replacing a stale
+  entry must add `--replace`. `--replace` is not used for Claude Code, whose
+  setup merges into its files, and cannot be combined with `--dry-run`.
+
 ### Fixed (audit HMAC key length)
 
 - The audit HMAC key loader now rejects a key file that does not decode to

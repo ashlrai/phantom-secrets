@@ -102,6 +102,11 @@ enum Commands {
         /// Codex, as a diff, without writing anything
         #[arg(long, conflicts_with_all = ["print", "audit_mode", "status"])]
         dry_run: bool,
+        /// Overwrite an existing, differing `phantom` entry in the client config.
+        /// Without it, setup refuses and names the entry. A backup and a
+        /// manifest are written first.
+        #[arg(long, conflicts_with_all = ["print", "audit_mode", "status", "dry_run"])]
+        replace: bool,
     },
 
     /// Agent readiness report, doctor, and setup workflows
@@ -1360,13 +1365,14 @@ fn run() -> anyhow::Result<()> {
             audit_mode,
             status,
             dry_run,
+            replace,
         } => {
             if status {
                 commands::setup_status::run(cli.json)
             } else if dry_run {
                 commands::setup_plan::run_dry_run(client)
             } else {
-                commands::setup::run(client, print, audit_mode)
+                commands::setup::run(client, print, audit_mode, replace)
             }
         }
         Commands::Sync {

@@ -67,7 +67,10 @@ fn read_regular(path: &Path) -> Result<Option<String>, String> {
     }
 }
 
-fn judge(existing: Option<(String, Vec<String>, Vec<String>)>, mcp: &McpCommand) -> Action {
+pub(crate) fn judge(
+    existing: Option<(String, Vec<String>, Vec<String>)>,
+    mcp: &McpCommand,
+) -> Action {
     match existing {
         None => Action::Add,
         Some((cmd, args, extra)) => {
@@ -147,6 +150,25 @@ pub(crate) fn plan_client(home: &Path, client: Client, mcp: &McpCommand) -> Resu
         action: judge(existing, mcp),
         wanted,
     })
+}
+
+pub(crate) fn entry_from_json_value(v: &Value) -> (String, Vec<String>, Vec<String>) {
+    match v {
+        Value::Object(e) => entry_json(e),
+        // Not an object: always differs from what setup writes.
+        _ => (
+            String::new(),
+            Vec::new(),
+            vec!["(not an object)".to_string()],
+        ),
+    }
+}
+
+pub(crate) fn entry_from_toml_value(v: &toml::Value) -> (String, Vec<String>, Vec<String>) {
+    match v {
+        toml::Value::Table(e) => entry_toml(e),
+        _ => (String::new(), Vec::new(), vec!["(not a table)".to_string()]),
+    }
 }
 
 fn entry_json(e: &serde_json::Map<String, Value>) -> (String, Vec<String>, Vec<String>) {

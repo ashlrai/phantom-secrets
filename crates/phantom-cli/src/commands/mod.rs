@@ -31,6 +31,7 @@ pub mod remove;
 pub mod reveal;
 pub mod rotate;
 pub mod setup;
+pub mod setup_backup;
 pub mod setup_plan;
 pub mod setup_status;
 pub mod start;
