@@ -1,6 +1,6 @@
 # Lease store key provisioning and a value-free list method
 
-Status: proposal for security review. Docs only. No behavior described here is implemented, and nothing in this document activates lease issuance, revocation, or any broker path.
+Status: decided (conservative options, recorded 2026-10-19 under the Engineering Orchestrator's delegation; see section 11). Docs only. Nothing in this document activates lease issuance, revocation, or any broker path. The first implementation slice (key provisioning plus the value-free list method, library only) is a separate PR.
 
 All line references are to `main` at commit `dab7f32`. Re-verify them before acting on this document.
 
@@ -176,3 +176,31 @@ Re-verified on `main` at `6895ecb` (2026-10-18): the broker and runtime files ci
 - D1: ________  D2: ________  D3: ________  D4: ________  D5: ________  D6: ________
 - Reviewer and date: ________
 - Phase 1 may start after D6 is recorded. Phases 2 and 3 need D1 to D4. Nothing here enables lease issuance or revocation.
+- Filled in section 11 (2026-10-19). Mason may still overrule any line there; until he does, the conservative choice stands.
+
+## 11. Decisions (2026-10-19, conservative option on every open question)
+
+Re-verified on `main` at `110a63e` (2026-10-19): the broker, runtime, keychain, crypto and MCP approval files cited above are byte-identical to `6895ecb`, so the line references still hold.
+
+Recorded by the Phantom Core Engineer on the Engineering Orchestrator's instruction (approved under Mason's delegation): for each open question take the most conservative option. Each line is decided, with a one-line rationale.
+
+| # | Decision | Rationale |
+|---|----------|-----------|
+| D1 | Option A only: the OS credential store, through the vault crate's existing `credential_entry` helper. No Option B. No Option C (no 0600 key file). | The vault itself never keeps raw key bytes in a plain file (its file fallback is passphrase-encrypted), so a raw 0600 lease key file would be a new, weaker pattern. |
+| D2 | Fail closed on Linux. Provisioning and loading refuse there until a durable Secret Service store exists (keyring 4 on zbus 6, issue #242, scoping note #285). | Kernel keyutils does not survive a reboot, and the Linux Secret Service path is about to be rewritten; refusing is safer than a key that silently disappears. |
+| D3 | No `phantom-broker` dependency in `phantom-cli`, and no CLI command in the first slice. Provisioning is a separate, explicit library call; nothing provisions a key as a side effect of loading or listing. | The CLI runs in agent-reachable shells, and the IPC transport the reviewer preferred does not exist yet. |
+| D4 | The key backend is recorded beside the snapshot in a non-secret descriptor (backend name and format version only), never in the snapshot. No format bump. | Keeps `STORE_FORMAT_VERSION = 2` unchanged and keeps the descriptor out of the MAC'd state. |
+| D5 | If Option B is ever revisited it must use HKDF. Option B is not used, so no new dependency is added now. | HKDF is the standard extract-and-expand construction; a single-block HMAC would need its own review. |
+| D6 | `LeaseSummary` as proposed, minus `environment`, with `not_before` and `expires_at` taken from `TimeConstraints` (always present, so not optional). | Dropping the one free-text label shrinks the review surface; the time window is needed to call a lease expired. |
+| Q1 | Same as D2: no file fallback; fail closed. | See D2. |
+| Q2 | Same as D6. | See D6. |
+| Q3 | Same as D4: beside the snapshot. | See D4. |
+| Q4 | Same as D5: HKDF. | See D5. |
+| K1 | Key is exactly 32 bytes from `OsRng`; an all-zero result is refused; a stored entry of any other length is refused, not repaired. | Matches `validate_key` and the store's `[u8; 32]` constructors, and never trusts a malformed entry. |
+| K2 | Provisioning never overwrites. A valid existing key returns "already provisioned" without touching it; a malformed one is refused and needs a human. | Overwriting a key makes the store unreadable, which is a destructive act that must not happen by accident. |
+| K3 | Loading never provisions. A missing key is a hard error that says how to provision, and prints no key material. | Fail closed; a reader must not create authority. |
+| K4 | The key is never accepted from an environment variable, argv, or a caller, never logged, and its `Debug` output is redacted. | Section 2, item 2. |
+| R1 | Rollback anchor: explicitly deferred to phase 4. The store stays an inactive boundary, and nothing issues or revokes leases until a host-protected monotonic anchor exists. | No key option fixes rollback (section 1, last bullet). |
+| R2 | Rotation: deferred. No rotation code lands until a fault-injection test for the ordering in section 4 exists. | Section 10, risk 4. |
+
+Phases after these decisions: the first slice combines phase 1 (`list_leases`) and phase 2 (key provisioning) as one library-only PR with no callers. Phase 3 (CLI surface) and phase 4 (rollback anchor) are unchanged and still need their own review. Any live revoke or rotate flow (`docs/design/leak-response-rotation-flow.md`) stays design-only or dry-run until this design is accepted.
