@@ -858,10 +858,10 @@ fn sidecar_event_roundtrip_serde() {
     assert_eq!(back.name.as_deref(), Some("TOKEN"));
 }
 
-/// Deterministic Ed25519 sidecar event (fixed seed), as JSON written by hand.
+/// Ed25519 sidecar event (fresh key each call), as JSON written by hand.
 fn sidecar_fixture_json(sig_alg: Option<&str>) -> String {
     use ed25519_dalek::{Signer, SigningKey};
-    let signing_key = SigningKey::from_bytes(&[7u8; 32]);
+    let signing_key = SigningKey::generate(&mut rand::rngs::OsRng);
     let pubkey_hex = hex::encode(signing_key.verifying_key().to_bytes());
     let mut canonical_map: std::collections::BTreeMap<&str, String> =
         std::collections::BTreeMap::new();
