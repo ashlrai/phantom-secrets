@@ -2261,6 +2261,12 @@ mod tests {
     }
 }
 
+/// Test-only rotation-ordering harness for the #230 design note, sections 4
+/// and 10 (risk 4). Adds no library code.
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+#[path = "replay_store_rotation_tests.rs"]
+mod rotation_ordering_tests;
+
 #[cfg(all(test, not(any(target_os = "linux", target_os = "macos"))))]
 mod unsupported_platform_tests {
     use super::*;
