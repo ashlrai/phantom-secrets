@@ -37,7 +37,7 @@ If your API calls fail with authentication errors after setting up Phantom:
    `phantom reveal <KEY>` and complete the exact typed confirmation, or use
    `--clipboard` to avoid printing it on screen
 4. **Check BASE_URL is set**: The proxy only works when `OPENAI_BASE_URL` (or equivalent) points to the local proxy. Use `phantom exec -- <cmd>` which sets these automatically.
-5. **Check the key has a proxy route**: `phantom why <KEY>` (or MCP `phantom_why`) reports how `phantom exec` delivers a protected key. `no_route` means no built-in route injects it (for example `GROQ_API_KEY` or `JWT_SECRET`), so the child gets only a session token that no provider accepts. `phantom exec` names these keys at launch with `warn No proxy route for ...`.
+5. **Check the key has a proxy route**: `phantom why <KEY>` (or MCP `phantom_why`) reports how `phantom exec` delivers a protected key. `no_route` means no built-in route injects it (for example `GROQ_API_KEY` or `JWT_SECRET`), so the child gets only a session token that no provider accepts. `phantom exec` names these keys at launch with `warn No proxy route for ...`. Custom routes: `phantom start` serves custom routes from `.phantom.toml`; `phantom exec` refuses them and runs only Phantom's exact built-in routes. The reason: `phantom start` is run by a person on project config they have reviewed. `phantom exec` launches an agent, and anything in the repository, `.phantom.toml` included, may have been written by that agent or by an untrusted change, so accepting custom routes there would widen the attack surface.
 
 ### Proxy hangs or times out
 

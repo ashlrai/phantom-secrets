@@ -910,6 +910,39 @@ mod tests {
         assert!(error.contains("`openai`"), "{error}");
     }
 
+    /// Pins the exec/start split for custom routes (docs/litellm.md): the
+    /// `.phantom.toml` route from the LiteLLM upstream example is refused by
+    /// exec's launch check, while the registry `phantom start` builds from the
+    /// same config still serves it.
+    #[test]
+    fn custom_litellm_route_is_refused_by_exec_but_built_for_start() {
+        let mut config = PhantomConfig::new_with_defaults("route-test".to_string());
+        config.services.insert(
+            "litellm".to_string(),
+            phantom_core::config::ServiceConfig {
+                secret_key: "LITELLM_API_KEY".to_string(),
+                pattern: Some("litellm.example.internal".to_string()),
+                header: Some("x-litellm-api-key".to_string()),
+                header_format: Some("Bearer {secret}".to_string()),
+                secret_type: "api_key".to_string(),
+            },
+        );
+
+        let error = format!(
+            "{:#}",
+            super::validate_routes_for_launch(&config)
+                .expect_err("exec must refuse a custom route")
+        );
+        assert!(error.contains("`litellm`"), "{error}");
+        assert!(error.contains("built-in routes"), "{error}");
+
+        let registry = phantom_proxy::ServiceRegistry::from_config(&config.services);
+        let (route, _) = registry
+            .match_route("/litellm")
+            .expect("phantom start builds the custom route");
+        assert_eq!(route.header, "x-litellm-api-key");
+    }
+
     #[test]
     fn spawn_failure_uses_shell_exit_codes_and_names_the_fix() {
         let (code, message) = super::spawn_failure(
