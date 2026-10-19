@@ -4,6 +4,14 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### CI (docs command check on docs-only PRs)
+
+- New `Docs command check` job runs `docs_command_flags_test` on pull requests
+  that change README.md, top-level `docs/*.md`, `apps/web/src/`,
+  `apps/web/public/llms*.txt` or a workflow. Docs-only and web-only PRs skip
+  the Test job, so until now the check that documented `phantom` commands and
+  flags match the CLI never ran on the PRs that change those docs; drift could
+  only show up on `main` after merge. It is part of `CI Gate`.
 ### Docs (Temporal: codec errors in the CLI)
 
 - `docs/temporal.md`: explains why `temporal workflow show` reports

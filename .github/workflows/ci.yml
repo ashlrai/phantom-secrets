@@ -42,6 +42,7 @@ jobs:
       rust: ${{ steps.classify.outputs.rust }}
       web: ${{ steps.classify.outputs.web }}
       temporal_example: ${{ steps.classify.outputs.temporal_example }}
+      docs_commands: ${{ steps.classify.outputs.docs_commands }}
       filterset: ${{ steps.affected.outputs.filterset }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -57,7 +58,9 @@ jobs:
           set -euo pipefail
           if [ "$EVENT" != "pull_request" ]; then
             echo "rust=true" >> "$GITHUB_OUTPUT"; echo "web=true" >> "$GITHUB_OUTPUT"
-            echo "temporal_example=true" >> "$GITHUB_OUTPUT"; exit 0
+            echo "temporal_example=true" >> "$GITHUB_OUTPUT"
+            # The full Test job already runs the docs command check here.
+            echo "docs_commands=false" >> "$GITHUB_OUTPUT"; exit 0
           fi
           files="$(git diff --name-only "$BASE...$HEAD")"
           printf '%s\n' "$files"
@@ -74,7 +77,12 @@ jobs:
           if printf '%s\n' "$files" | grep -Eq '^(examples/temporal-codec-python/|\.github/workflows/)'; then temporal=true; fi
           echo "rust=$rust" >> "$GITHUB_OUTPUT"; echo "web=$webc" >> "$GITHUB_OUTPUT"
           echo "temporal_example=$temporal" >> "$GITHUB_OUTPUT"
-          echo "rust=$rust web=$webc temporal_example=$temporal"
+          # Files docs_command_flags_test reads. Docs-only and web-only PRs skip
+          # the Test job, so run that one test on its own for them.
+          docs_commands=false
+          if printf '%s\n' "$files" | grep -Eq '^(README\.md$|docs/[^/]+\.md$|apps/web/src/|apps/web/public/llms[^/]*\.txt$|\.github/workflows/)'; then docs_commands=true; fi
+          echo "docs_commands=$docs_commands" >> "$GITHUB_OUTPUT"
+          echo "rust=$rust web=$webc temporal_example=$temporal docs_commands=$docs_commands"
       - id: affected
         env:
           EVENT: ${{ github.event_name }}
@@ -513,6 +521,27 @@ jobs:
             echo "::error::a Temporal codec example test was skipped"; exit 1
           fi
 
+  docs-commands:
+    name: Docs command check
+    needs: changes
+    if: needs.changes.outputs.docs_commands == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (2026-04-24)
+        with:
+          toolchain: 1.95.0
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      # Checks every documented `phantom ...` command and flag in README.md,
+      # docs/*.md, apps/web sources and llms*.txt against the CLI's --help.
+      - name: Documented phantom commands match the CLI
+        run: cargo test --locked -p phantom-secrets --test docs_command_flags_test
+
   # The single required status check. Fails if any job failed or was
   # cancelled, or if a job the classifier selected did not succeed. A job may
   # be skipped only when the classifier deselected it (or, for Ignored Tests,
@@ -520,7 +549,7 @@ jobs:
   gate:
     name: CI Gate
     if: always()
-    needs: [changes, test, test-ignored, lint, dependency-policy, windows-arm-source-check, npm-wrappers, web, secret-scan, crate-publication-contract, temporal-codec-example]
+    needs: [changes, test, test-ignored, lint, dependency-policy, windows-arm-source-check, npm-wrappers, web, secret-scan, crate-publication-contract, temporal-codec-example, docs-commands]
     runs-on: ubuntu-latest
     steps:
       - name: Require every selected job
@@ -534,6 +563,7 @@ jobs:
           if (ch?.result !== 'success') throw new Error(`changes: ${ch?.result}`);
           const rust = ch.outputs.rust === 'true', web = ch.outputs.web === 'true';
           const temporalExample = ch.outputs.temporal_example === 'true';
+          const docsCommands = ch.outputs.docs_commands === 'true';
           const always = ['dependency-policy', 'secret-scan'];
           const rustJobs = ['test', 'lint', 'windows-arm-source-check', 'npm-wrappers', 'crate-publication-contract'];
           const expect = {
@@ -541,6 +571,7 @@ jobs:
             ...Object.fromEntries(rustJobs.map((j) => [j, rust])),
             web,
             'temporal-codec-example': temporalExample,
+            'docs-commands': docsCommands,
             'test-ignored': process.env.EVENT === 'workflow_dispatch',
           };
           const bad = [];
@@ -550,5 +581,5 @@ jobs:
           }
           if (Object.keys(needs).length !== Object.keys(expect).length + 1) bad.push('gate inventory drift');
           if (bad.length) throw new Error(bad.join(', '));
-          console.log(`CI Gate passed (rust=${rust}, web=${web}, temporal_example=${temporalExample})`);
+          console.log(`CI Gate passed (rust=${rust}, web=${web}, temporal_example=${temporalExample}, docs_commands=${docsCommands})`);
           NODE
