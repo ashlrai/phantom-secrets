@@ -7,6 +7,7 @@ pub mod completion;
 pub mod copy;
 pub mod crypto;
 pub mod doctor;
+pub mod doctor_all;
 pub mod env;
 pub mod env_scope;
 pub mod exec;

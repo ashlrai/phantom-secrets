@@ -129,6 +129,12 @@ enum Commands {
         /// health checks. Combine with --json for machine-readable output.
         #[arg(long)]
         pq: bool,
+        /// One read-only, value-free report that combines the health checks,
+        /// the post-quantum report, agent readiness, MCP approval status and
+        /// the gateway base-URL environment. Fixes nothing. Combine with
+        /// --json for machine-readable output.
+        #[arg(long, conflicts_with_all = ["fix", "pq", "expiry"])]
+        all: bool,
     },
 
     /// Print a shell-completion script to stdout
@@ -1317,8 +1323,11 @@ fn run() -> anyhow::Result<()> {
             expiry,
             json,
             pq,
+            all,
         } => {
-            if pq {
+            if all {
+                commands::doctor_all::run(json || global_json)
+            } else if pq {
                 commands::pq_report::run(json || global_json)
             } else {
                 commands::doctor::run_doctor(fix, expiry, json || global_json)

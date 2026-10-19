@@ -135,18 +135,25 @@ fn check_managed_dotenv(project_dir: &std::path::Path, env_path: &std::path::Pat
 /// TTL metadata and warn about expired or soon-to-expire entries.
 pub fn run_doctor(fix: bool, check_expiry: bool, json: bool) -> Result<()> {
     if json {
-        REPORT.with(|report| *report.borrow_mut() = Some(DoctorReport::default()));
+        let report = collect_report(fix, check_expiry)?;
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
     }
+    run_checks(fix, check_expiry).map(|_| ())
+}
+
+/// Run the checks and return the structured report instead of printing it.
+/// Used by `phantom doctor --json` and the combined `phantom doctor --all`.
+pub fn collect_report(fix: bool, check_expiry: bool) -> Result<DoctorReport> {
+    REPORT.with(|report| *report.borrow_mut() = Some(DoctorReport::default()));
     let outcome = run_checks(fix, check_expiry);
-    let Some(mut report) = REPORT.with(|report| report.borrow_mut().take()) else {
-        return outcome.map(|_| ());
-    };
+    let taken = REPORT.with(|report| report.borrow_mut().take());
     let (issues, fixed) = outcome?;
+    let mut report = taken.unwrap_or_default();
     report.ok = issues == 0;
     report.issues = issues;
     report.fixed = fixed;
-    println!("{}", serde_json::to_string_pretty(&report)?);
-    Ok(())
+    Ok(report)
 }
 
 fn run_checks(fix: bool, check_expiry: bool) -> Result<(usize, usize)> {
