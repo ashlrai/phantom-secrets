@@ -4,6 +4,32 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (audit HMAC key length)
+
+- The audit HMAC key loader now rejects a key file that does not decode to
+  exactly 32 bytes, with an error that states the expected and found
+  lengths and never echoes key material. Phantom always writes 32 bytes, so
+  only a hand-edited or corrupted file is affected. Delete `audit-hmac-key`
+  to regenerate it (this starts a new chain). Fixes #270.
+
+### Added (`phantom doctor --all`)
+
+- `phantom doctor --all` (with optional `--json`) prints one read-only,
+  value-free report that combines the health checks, the `--pq` report, agent
+  readiness (`agent doctor`), MCP approval status (`agent status`) and which of
+  `ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL` and `OLLAMA_HOST` are set and whether
+  each points at a loopback host. It never prints a URL and fixes nothing; it
+  conflicts with `--fix`, `--pq` and `--expiry`. Default `phantom doctor`
+  behavior is unchanged.
+
+### Added (`leaks plan` provider facts)
+
+- `phantom leaks plan` now shows, for each incident with a matched provider,
+  where a human rotates the credential and that live rotation is disabled in
+  this build. `--json` adds `manual_rotation_location` and `live_rotation`
+  (both null when no provider matched). Static text only, no values, no
+  network, no writes.
+
 ### Fixed (`leaks plan` with `on_leak = "off"`)
 
 - `on_leak = "off"` in a repository's `.phantom.toml` made `phantom leaks

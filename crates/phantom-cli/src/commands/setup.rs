@@ -39,7 +39,7 @@ pub enum Client {
 }
 
 impl Client {
-    fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             Client::ClaudeCode => "Claude Code",
             Client::Cursor => "Cursor",
@@ -53,8 +53,18 @@ impl Client {
 /// The command spec we write into each client's MCP config.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct McpCommand {
-    command: String,
-    args: Vec<String>,
+    pub(crate) command: String,
+    pub(crate) args: Vec<String>,
+}
+
+#[cfg(test)]
+impl McpCommand {
+    pub(crate) fn for_test(command: &str, args: &[&str]) -> Self {
+        Self {
+            command: command.to_string(),
+            args: args.iter().map(|a| a.to_string()).collect(),
+        }
+    }
 }
 
 /// Remove only the two dotenv read grants emitted by older Phantom releases.
