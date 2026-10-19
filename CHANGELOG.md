@@ -4,6 +4,18 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Changed (Temporal codec example: CORS allowlist and key delivery)
+
+- `examples/temporal-codec-python`: the codec server gains an opt-in exact
+  origin allowlist (`PHANTOM_TEMPORAL_CODEC_CORS_ORIGINS`, default none).
+  `*`, `null` and patterns are refused at startup; allowed origins get only
+  `POST`/`OPTIONS` on `/encode` and `/decode` with `Content-Type` and
+  `X-Namespace`, and other origins get 403 with no CORS headers.
+- Keys can now be read once from an inherited pipe
+  (`PHANTOM_TEMPORAL_CODEC_KEYS_FD`) that is closed after reading, keeping
+  them out of argv and the environment. Fixes the server failing at startup
+  because `PHANTOM_TEMPORAL_CODEC_KEY_ID` was parsed as a key.
+
 ### Docs (Temporal)
 
 - `docs/temporal.md`: configure an Authorizer (the default `noopAuthorizer`

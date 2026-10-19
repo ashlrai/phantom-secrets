@@ -1,30 +1,56 @@
-"""Localhost-only codec server sketch for the Temporal Web UI.
+"""Localhost-only codec server sketch for Temporal tooling.
 
 DESIGN, untested against the Temporal Web UI or a server. Binds 127.0.0.1
-only, sends no CORS headers (so a browser UI on another origin cannot call it
-until you add an explicit allow-list yourself), and requires no values from
-Phantom. It decodes sensitive data in one call, so never expose it.
+only and decodes sensitive data in one call, so never expose it.
+
+CORS is off by default: no CORS headers are sent, so a browser page on another
+origin cannot read responses (the Temporal CLI, which sends no Origin header,
+works as before). To let the Temporal Web UI call it, opt in with an exact
+origin list in PHANTOM_TEMPORAL_CODEC_CORS_ORIGINS (see cors.py). A request
+that carries an Origin not on the list is refused with 403 and no CORS headers.
 """
 
 import asyncio
-import json
 import os
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from google.protobuf import json_format
 from temporalio.api.common.v1 import Payloads
 
-from codec import EncryptionCodec, keys_from_env
+from codec import EncryptionCodec, load_keys
+from cors import CODEC_PATHS, CorsPolicy
+
+MAX_BODY_BYTES = 1_000_000
 
 
-def make_handler(codec: EncryptionCodec):
+def make_handler(codec: EncryptionCodec, cors: CorsPolicy = CorsPolicy()):
     class Handler(BaseHTTPRequestHandler):
+        def _plain(self, status: int, extra=()):
+            self.send_response(status)
+            for name, value in extra:
+                self.send_header(name, value)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def do_OPTIONS(self):
+            decision = cors.for_preflight(
+                self.path,
+                self.headers.get("Origin"),
+                self.headers.get("Access-Control-Request-Method"),
+                self.headers.get("Access-Control-Request-Headers"),
+            )
+            self._plain(204 if decision.allowed else 403, decision.headers)
+
         def do_POST(self):
-            if self.path not in ("/encode", "/decode"):
+            if self.path not in CODEC_PATHS:
                 self.send_error(404)
                 return
+            decision = cors.for_request(self.headers.get("Origin"))
+            if not decision.allowed:
+                self._plain(403)
+                return
             length = int(self.headers.get("Content-Length", "0"))
-            if length > 1_000_000:
+            if length > MAX_BODY_BYTES:
                 self.send_error(413)
                 return
             body = json_format.Parse(self.rfile.read(length), Payloads())
@@ -36,7 +62,10 @@ def make_handler(codec: EncryptionCodec):
                 return
             out = json_format.MessageToJson(Payloads(payloads=result)).encode()
             self.send_response(200)
+            for name, value in decision.headers:
+                self.send_header(name, value)
             self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(out)))
             self.end_headers()
             self.wfile.write(out)
 
@@ -47,6 +76,11 @@ def make_handler(codec: EncryptionCodec):
 
 
 if __name__ == "__main__":
-    keys = keys_from_env()
+    # Prefer PHANTOM_TEMPORAL_CODEC_KEYS_FD (inherited pipe) over key variables.
+    keys = load_keys(os.environ)
     codec = EncryptionCodec(keys, os.environ["PHANTOM_TEMPORAL_CODEC_KEY_ID"])
-    HTTPServer(("127.0.0.1", 8081), make_handler(codec)).serve_forever()
+    # Fails at startup on a wildcard, pattern or malformed origin.
+    # Authorization stays off: this sketch does not check credentials, so it
+    # must not invite browsers to send them.
+    cors = CorsPolicy.from_env(os.environ)
+    HTTPServer(("127.0.0.1", 8081), make_handler(codec, cors)).serve_forever()
