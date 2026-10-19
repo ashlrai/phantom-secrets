@@ -21,6 +21,7 @@ certification, or customer acceptance.
 |------|-------|
 | Protect a project for the first time | [Getting started](getting-started.md) |
 | Delegate one bounded task to an AI coding client | [Safe delegation quickstart](delegation-quickstart.md) |
+| Keep personal, company, and client keys separate | [Multi-project key separation](multi-project-keys.md) |
 | Plan a team or enterprise pilot | [Enterprise adoption](enterprise-adoption.md) |
 | Understand open-source rights and paid evaluation paths | [Commercial offerings](commercial-offerings.md) |
 | Plan a public-sector evaluation | [Government evaluation](government-evaluation.md) |
