@@ -4,6 +4,18 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Added (lease status classification library, no callers)
+
+- `LeaseSummary::status(store_generation, now_unix)` returns a value-free
+  `LeaseStatus` (`revoked_by_restart`, `revoked`, `not_yet_valid`, `expired`,
+  `exhausted`, `current`, `inconsistent`) for status displays. It is pure and
+  is not an authorization decision; `begin_use` keeps its own checks.
+- `DurableReplayStore::stored_generation` reads the broker generation from the
+  authenticated snapshot without an epoch and never writes, so a status view
+  can tell leases revoked by a restart from leases revoked explicitly.
+- Nothing calls either yet: no CLI command, and no lease issuance, revoke or
+  rotate flow is enabled.
+
 ### Added (lease store key provisioning library, no callers)
 
 - `phantom_vault::lease_key` provisions and loads the 32-byte key that
