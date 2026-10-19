@@ -117,7 +117,7 @@ For such a route the proxy removes the client's copy of that header, injects the
 
 Limits:
 
-- `phantom exec` refuses this route. It accepts only Phantom's exact built-in routes, and a self-hosted LiteLLM has no fixed host to build in. `phantom start` builds routes from `.phantom.toml` as written.
+- `phantom exec` refuses this route and runs only Phantom's exact built-in routes; a self-hosted LiteLLM has no fixed host, so it cannot be one. `phantom start` serves it from `.phantom.toml`. Why the difference: `phantom start` is run by a person on project config they have reviewed. `phantom exec` launches an agent, and anything in the repository, `.phantom.toml` included, may have been written by that agent or by an untrusted change, so accepting custom routes there would widen the attack surface. A test pins exec's refusal (`custom_litellm_route_is_refused_by_exec_but_built_for_start` in `crates/phantom-cli/src/commands/exec.rs`).
 - The route is always `https://`. A LiteLLM on plain HTTP loopback is not supported (see "Not supported").
 - Only the one configured header is swapped. A `phm_` placeholder the client puts in a different header is forwarded as is. LiteLLM then rejects a placeholder, not a real key.
 
