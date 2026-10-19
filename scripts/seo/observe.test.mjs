@@ -717,3 +717,45 @@ test("non-HTML sitemap entries such as /docs/manifest.json are skipped, not HTML
     },
   );
 });
+
+test("release drift compares the Phantom Secrets SoftwareApplication, not the umbrella app", async () => {
+  const umbrella = (response, origin) => {
+    response.setHeader("content-type", "text/html");
+    response.end(
+      html(origin, "/").replace(
+        /"softwareVersion":"9\.8\.7"/,
+        '"softwareVersion":"3.29.15","codeRepository":"https://github.com/ashlrai/phantom"',
+      ),
+    );
+  };
+  const secrets = (version) => (response, origin) => {
+    response.setHeader("content-type", "text/html");
+    response.end(
+      html(origin, "/secrets").replace(
+        "</body>",
+        `${jsonLd("SoftwareApplication", {
+          softwareVersion: version,
+          codeRepository: "https://github.com/ashlrai/phantom-secrets",
+        })}</body>`,
+      ),
+    );
+  };
+  const versionFindings = (report) =>
+    report.findings.filter((finding) => finding.code.startsWith("live_release_version"));
+
+  await withFixtureServer(
+    async ({ options }) => {
+      assert.deepEqual(versionFindings(await observeProduction(options)), []);
+    },
+    { "/": umbrella, "/secrets": secrets("9.8.7") },
+  );
+  await withFixtureServer(
+    async ({ options }) => {
+      const drift = versionFindings(await observeProduction(options));
+      assert.equal(drift.length, 1);
+      assert.equal(drift[0].code, "live_release_version_drift");
+      assert.match(drift[0].message, /0\.0\.1/);
+    },
+    { "/": umbrella, "/secrets": secrets("0.0.1") },
+  );
+});

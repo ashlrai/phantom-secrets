@@ -688,7 +688,9 @@ function canonicalMatches(candidate, expected, siteOrigin) {
   }
 }
 
-function findSoftwareVersion(jsonLd) {
+// Only a SoftwareApplication for `repositoryUrl` (or one naming no repository)
+// counts, so another product's app on the same page is not compared.
+function findSoftwareVersion(jsonLd, repositoryUrl) {
   const stack = [...jsonLd];
   while (stack.length) {
     const value = stack.pop();
@@ -700,7 +702,8 @@ function findSoftwareVersion(jsonLd) {
     const type = value["@type"];
     if (
       (type === "SoftwareApplication" || (Array.isArray(type) && type.includes("SoftwareApplication"))) &&
-      typeof value.softwareVersion === "string"
+      typeof value.softwareVersion === "string" &&
+      (value.codeRepository === undefined || value.codeRepository === repositoryUrl)
     ) {
       return value.softwareVersion;
     }
@@ -983,7 +986,16 @@ export async function observeProduction(options = {}) {
         "Latest GitHub release is not an immutable final release",
       );
     }
-    const liveVersion = home?.json_ld ? findSoftwareVersion(home.json_ld) : null;
+    const repositoryPath = new URL(githubRepositoryApi).pathname.match(/\/repos\/([^/]+\/[^/]+)\/?$/)?.[1];
+    const repositoryUrl = repositoryPath ? `https://github.com/${repositoryPath}` : null;
+    const versionSource = [...PRODUCT_GUIDE_ROUTES]
+      .map((path) => routeResults.find((result) => result.route === path))
+      .map((result) => ({
+        route: result?.route,
+        version: result?.json_ld ? findSoftwareVersion(result.json_ld, repositoryUrl) : null,
+      }))
+      .find((candidate) => candidate.version);
+    const liveVersion = versionSource?.version ?? null;
     const releaseVersion = release.tag_name.slice(1);
     if (!liveVersion) {
       addFinding(findings, "warn", "live_release_version_missing", "Homepage SoftwareApplication has no softwareVersion");
@@ -992,8 +1004,8 @@ export async function observeProduction(options = {}) {
         findings,
         "warn",
         "live_release_version_drift",
-        `Homepage reports ${liveVersion}; latest GitHub release is ${releaseVersion}`,
-        "/",
+        `${versionSource.route} reports ${liveVersion}; latest GitHub release is ${releaseVersion}`,
+        versionSource.route,
       );
     }
     if (llms && !llms.text.includes(`\`${release.tag_name}\``)) {
