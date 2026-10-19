@@ -213,6 +213,61 @@ pub struct LeaseSummary {
     pub expires_at: u64,
 }
 
+/// Value-free status of one listed lease, derived from a [`LeaseSummary`],
+/// the generation stored in the same snapshot, and a caller-supplied clock.
+///
+/// This is a description of the stored state for status displays only. It is
+/// never an authorization decision: `begin_use` keeps its own checks, and a
+/// `Current` lease is not usable unless a broker has an active epoch for its
+/// generation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LeaseStatus {
+    /// Issued in an earlier broker generation. Every new broker lifetime
+    /// revokes all prior leases, so this lease can never be used again.
+    RevokedByRestart,
+    /// Revoked explicitly within its own generation.
+    Revoked,
+    /// The lease time window has not started yet.
+    NotYetValid,
+    /// The lease time window has ended (`expires_at` is exclusive).
+    Expired,
+    /// No uses remain. Uses already in progress may still finish.
+    Exhausted,
+    /// Not revoked, inside its time window, with uses remaining, as of the
+    /// stored snapshot.
+    Current,
+    /// The lease claims a generation newer than the snapshot. An
+    /// authenticated snapshot should never contain this; treat it as broken.
+    Inconsistent,
+}
+
+impl LeaseSummary {
+    /// Classify this lease. `store_generation` must come from the same
+    /// snapshot (see [`DurableReplayStore::stored_generation`]); `now_unix`
+    /// is Unix seconds. Pure: reads no clock, file, key or value.
+    ///
+    /// Precedence: inconsistent, revoked by restart, revoked, not yet valid,
+    /// expired, exhausted, current.
+    pub fn status(&self, store_generation: u64, now_unix: u64) -> LeaseStatus {
+        if self.broker_generation > store_generation {
+            LeaseStatus::Inconsistent
+        } else if self.broker_generation < store_generation {
+            LeaseStatus::RevokedByRestart
+        } else if self.revoked {
+            LeaseStatus::Revoked
+        } else if now_unix < self.not_before {
+            LeaseStatus::NotYetValid
+        } else if now_unix >= self.expires_at {
+            LeaseStatus::Expired
+        } else if self.remaining_uses == 0 {
+            LeaseStatus::Exhausted
+        } else {
+            LeaseStatus::Current
+        }
+    }
+}
+
 /// A local durable ledger. The authentication key must come from a protected
 /// host facility; it is never written to disk and is zeroized on drop.
 pub struct DurableReplayStore {
@@ -853,6 +908,16 @@ impl DurableReplayStore {
             }
             Ok((leases, false))
         })
+    }
+
+    /// The broker generation recorded in the authenticated snapshot.
+    ///
+    /// Read-only and epoch-free like [`Self::list_leases`]: it verifies the
+    /// snapshot MAC, never starts an epoch, never writes, and so never
+    /// revokes anything. Unlike `current_generation`, it does not require an
+    /// active store, and it says nothing about whether a broker is running.
+    pub fn stored_generation(&self) -> Result<u64, ReplayStoreError> {
+        self.with_locked_state_unchecked(|state| Ok((state.broker_generation, false)))
     }
 
     fn ensure_active(&self) -> Result<(), ReplayStoreError> {
@@ -1526,6 +1591,106 @@ mod tests {
             assert!(!text.contains(excluded), "summary leaked {excluded}");
         }
         assert!(!text.contains(&hex::encode([7_u8; 32])));
+    }
+
+    fn summary_for_status(generation: u64, revoked: bool, remaining_uses: u32) -> LeaseSummary {
+        let (_temp, store) = store();
+        store.reserve(&nonce("1"), "request-1", &binding()).unwrap();
+        let mut row = store.list_leases().unwrap().remove(0);
+        row.broker_generation = generation;
+        row.revoked = revoked;
+        row.remaining_uses = remaining_uses;
+        row.not_before = 100;
+        row.expires_at = 200;
+        row
+    }
+
+    #[test]
+    fn lease_status_follows_the_documented_precedence() {
+        let current = summary_for_status(3, false, 2);
+        assert_eq!(current.status(3, 100), LeaseStatus::Current);
+        assert_eq!(current.status(3, 199), LeaseStatus::Current);
+        assert_eq!(current.status(3, 99), LeaseStatus::NotYetValid);
+        assert_eq!(
+            current.status(3, 200),
+            LeaseStatus::Expired,
+            "expires_at is exclusive"
+        );
+        assert_eq!(current.status(4, 150), LeaseStatus::RevokedByRestart);
+        assert_eq!(current.status(2, 150), LeaseStatus::Inconsistent);
+
+        let exhausted = summary_for_status(3, false, 0);
+        assert_eq!(exhausted.status(3, 150), LeaseStatus::Exhausted);
+        assert_eq!(exhausted.status(3, 250), LeaseStatus::Expired);
+
+        let revoked = summary_for_status(3, true, 2);
+        assert_eq!(revoked.status(3, 150), LeaseStatus::Revoked);
+        assert_eq!(revoked.status(3, 250), LeaseStatus::Revoked);
+        assert_eq!(revoked.status(5, 150), LeaseStatus::RevokedByRestart);
+        assert_eq!(revoked.status(1, 150), LeaseStatus::Inconsistent);
+    }
+
+    #[test]
+    fn lease_status_serializes_as_value_free_snake_case() {
+        let text = serde_json::to_string(&[
+            LeaseStatus::RevokedByRestart,
+            LeaseStatus::Revoked,
+            LeaseStatus::NotYetValid,
+            LeaseStatus::Expired,
+            LeaseStatus::Exhausted,
+            LeaseStatus::Current,
+            LeaseStatus::Inconsistent,
+        ])
+        .unwrap();
+        assert_eq!(
+            text,
+            r#"["revoked_by_restart","revoked","not_yet_valid","expired","exhausted","current","inconsistent"]"#
+        );
+    }
+
+    #[test]
+    fn stored_generation_is_read_only_epoch_free_and_authenticated() {
+        let (temp, store) = store();
+        store.reserve(&nonce("2"), "request-1", &binding()).unwrap();
+        assert_eq!(store.stored_generation().unwrap(), 1);
+        drop(store);
+
+        let state_path = temp.path().join("broker").join(STATE_FILE_NAME);
+        let before_bytes = fs::read(&state_path).unwrap();
+        let before_mtime = fs::metadata(&state_path).unwrap().modified().unwrap();
+        let opened = reopen_store(temp.path().join("broker"), [7_u8; 32]).unwrap();
+        assert!(matches!(
+            opened.current_generation(),
+            Err(ReplayStoreError::NotActive)
+        ));
+        assert_eq!(opened.stored_generation().unwrap(), 1);
+        let rows = opened.list_leases().unwrap();
+        let now = rows[0].not_before;
+        assert_eq!(
+            rows[0].status(opened.stored_generation().unwrap(), now),
+            LeaseStatus::Current
+        );
+        assert_eq!(fs::read(&state_path).unwrap(), before_bytes);
+        assert_eq!(
+            fs::metadata(&state_path).unwrap().modified().unwrap(),
+            before_mtime
+        );
+
+        // After a new epoch the same lease reads as revoked by restart.
+        assert_eq!(opened.start_epoch().unwrap(), 2);
+        assert_eq!(opened.stored_generation().unwrap(), 2);
+        let after = opened.list_leases().unwrap();
+        assert_eq!(after[0].status(2, now), LeaseStatus::RevokedByRestart);
+
+        // A tampered snapshot is refused rather than read.
+        let text = fs::read_to_string(&state_path).unwrap();
+        let tampered = text.replacen("\"revoked\":true", "\"revoked\":false", 1);
+        assert_ne!(text, tampered);
+        fs::write(&state_path, tampered).unwrap();
+        assert!(matches!(
+            opened.stored_generation(),
+            Err(ReplayStoreError::AuthenticationFailed)
+        ));
     }
 
     #[test]

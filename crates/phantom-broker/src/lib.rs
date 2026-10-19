@@ -26,7 +26,7 @@ pub use protocol::{
     RevocationTarget, RevokeV1, ValidatedBrokerEnvelope, BROKER_PROTOCOL_VERSION,
 };
 pub use replay_store::{
-    CompletionWitness, DurableReplayStore, ExecutionPermit, LeaseSummary,
+    CompletionWitness, DurableReplayStore, ExecutionPermit, LeaseStatus, LeaseSummary,
     ReplayCompletionReservation, ReplayReservation, ReplayStoreError, ReplayUseReservation,
     ReplayUseState, TerminalDisposition,
 };
