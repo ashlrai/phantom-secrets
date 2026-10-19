@@ -56,7 +56,7 @@ After protecting a project with `phantom init`, an agent can use read-only tools
 such as:
 
 - `phantom_list_secrets` to list protected names without values;
-- `phantom_status` to inspect project and vault state;
+- `phantom_status` to inspect project config and managed `.env` state (it does not open the vault);
 - `phantom_check` to scan supported dotenv content;
 - `phantom_doctor` to diagnose the current setup; and
 - `phantom_why` to explain why a name is or is not protected.
@@ -70,8 +70,9 @@ public identifiers.
 Never paste a provider key into a tool argument. The legacy
 `phantom_add_secret` MCP tool is hard-deprecated and refuses plaintext.
 
-Use `phantom_add_secret_interactive` instead. It requests a trusted-terminal
-ceremony so the user enters the value outside the MCP and model context. The
+Use `phantom_add_secret_interactive` instead. It is effect-free (no approval
+needed) and returns `phantom add NAME`, which the user runs in a trusted
+terminal so the value is entered outside the MCP and model context. The
 agent may name the required variable and explain why it is needed; it must not
 ask the user to paste the value into chat.
 

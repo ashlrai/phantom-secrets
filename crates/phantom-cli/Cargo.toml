@@ -41,7 +41,13 @@ indicatif = "0.18"
 base64 = { workspace = true }
 notify = "8.2"
 rpassword = "7"
-self_update = { version = "1.2", default-features = false, features = ["reqwest", "rustls", "github", "progress-bar", "checksums", "compression-tar-gz", "compression-zip-deflate", "archive-tar", "archive-zip"] }
+self_update = { version = "1.2", default-features = false, features = ["reqwest", "rustls", "github", "progress-bar", "checksums", "compression-tar-gz", "archive-tar"] }
+# Windows release assets are .zip. self_update 1.x still pins the zip 8 line
+# (every zip 8 release is yanked), so upgrade.rs extracts the one expected
+# binary itself with zip 9 and swaps it in with self-replace.
+zip = { version = "9.0.3", default-features = false, features = ["deflate-flate2"] }
+self-replace = "1"
+tempfile = "3"
 toml = { workspace = true }
 rand = { workspace = true }
 hex = { workspace = true }
@@ -56,7 +62,6 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage
 
 [dev-dependencies]
 assert_cmd = "2"
-tempfile = "3"
 wiremock = "0.6"
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 rand = { workspace = true }

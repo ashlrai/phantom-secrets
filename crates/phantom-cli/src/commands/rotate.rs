@@ -1282,22 +1282,24 @@ pub fn run_batch(
         );
     }
 
-    let project_dir = std::env::current_dir()?;
+    let project_dir = crate::util::project_dir()?;
     let config_path = project_dir.join(".phantom.toml");
 
     if !config_path.exists() {
-        anyhow::bail!(
-            "No .phantom.toml found. Run {} first.",
-            "phantom init".cyan().bold()
-        );
+        return Err(crate::util::missing_config_error(&project_dir));
     }
 
     let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
-    let vault = phantom_vault::try_create_vault(config.local_project_id())
-        .context("Failed to initialize vault")?;
+    let vault =
+        crate::util::open_vault(config.local_project_id()).context("Failed to initialize vault")?;
 
     // Gather all secrets with their expiry metadata and provider config.
     let names = vault.list().context("Failed to list secrets")?;
+    // A locked file vault would otherwise read as "No secrets in vault" or
+    // "No secrets are due for rotation".
+    let note =
+        crate::util::inventory_guard(vault.as_ref(), config.local_project_id(), names.len())?;
+    crate::util::warn_inventory_note(note.as_deref());
     if names.is_empty() {
         println!("{} No secrets in vault.", "!".yellow().bold());
         return Ok(());
@@ -1977,5 +1979,20 @@ mod token_remap_tests {
             .to_string();
         assert!(promote_error.contains("deprecated and disabled"));
         assert!(promote_error.contains("No credential or metadata was changed"));
+    }
+
+    /// `phantom rotate --batch` answered "No secrets in vault." with exit 0
+    /// when the project's secrets were in an encrypted-file vault this
+    /// process could not open; it now refuses with the unlock step, as
+    /// `phantom secrets-expiring-soon` and MCP `phantom_secret_rotation_due`
+    /// do.
+    #[cfg(unix)]
+    #[test]
+    fn batch_rotation_report_refuses_a_locked_file_vault() {
+        let _project =
+            crate::util::test_seam::LockedProject::new(crate::util::test_seam::empty_keychain);
+        let error = run_batch(30, false, true).unwrap_err().to_string();
+        assert!(error.starts_with("Vault locked:"), "{error}");
+        assert!(error.contains("PHANTOM_VAULT_PASSPHRASE"), "{error}");
     }
 }

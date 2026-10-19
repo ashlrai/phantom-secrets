@@ -8,6 +8,9 @@ unsound = "all"
 unused-ignored-advisory = "deny"
 ignore = [
     { id = "RUSTSEC-2023-0071", reason = "rsa is a dev-only test dependency; Phantom does not perform network-observable RSA private-key operations, and RustSec lists no fixed release" },
+    { id = "RUSTSEC-2026-0370", reason = "zvariant is unmaintained, not vulnerable: keyring 3 pulls it in through zbus 4 for the Linux Secret Service backend; the crate was folded into zbus 6, which no keyring 3 release supports, so RustSec lists no safe upgrade. Revisit with the keyring 4 migration" },
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names is unmaintained, not vulnerable: keyring 3 pulls it in through zbus 4 for the Linux Secret Service backend; the crate was folded into zbus 6, which no keyring 3 release supports, so RustSec lists no safe upgrade. Revisit with the keyring 4 migration" },
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive is unmaintained, not vulnerable: keyring 3 pulls it in through zbus 4 for the Linux Secret Service backend; the crate was folded into zbus 6, which no keyring 3 release supports, so RustSec lists no safe upgrade. Revisit with the keyring 4 migration" },
 ]
 
 [licenses]
@@ -53,12 +56,17 @@ skip = [
     { crate = "bitflags@1.3.2", reason = "Existing notify platform backends require bitflags 1 while the rest of the graph uses bitflags 2" },
     { crate = "block-buffer@0.12.1", reason = "self_update 1.2 checksum enforcement uses the current sha2 0.11 digest stack while core cryptography remains on the sha2 0.10 stack" },
     { crate = "const-oid@0.10.2", reason = "self_update 1.2 checksum enforcement uses the current sha2 0.11 digest stack while RSA test dependencies retain const-oid 0.9" },
+    { crate = "curve25519-dalek@4.1.3", reason = "the experimental pq-hybrid feature (x-wing, ml-kem) pulls newer RustCrypto crates while crypto_box 0.9 stays on the previous generation" },
+    { crate = "fiat-crypto@0.2.9", reason = "the experimental pq-hybrid feature (x-wing, ml-kem) pulls newer RustCrypto crates while crypto_box 0.9 stays on the previous generation" },
+    { crate = "rand_core@0.6.4", reason = "the experimental pq-hybrid feature (x-wing, ml-kem) pulls newer RustCrypto crates while crypto_box 0.9 stays on the previous generation" },
+    { crate = "sha3@0.11.0", reason = "the experimental pq-hybrid feature (x-wing, ml-kem) pulls newer RustCrypto crates while crypto_box 0.9 stays on the previous generation" },
     { crate = "core-foundation@0.9.4", reason = "Existing keyring and HTTP dependencies span two macOS Core Foundation bindings generations" },
     { crate = "cpufeatures@0.3.1", reason = "self_update 1.2 checksum enforcement uses sha2 0.11 while existing cryptography retains cpufeatures 0.2" },
     { crate = "crypto-common@0.2.2", reason = "self_update 1.2 checksum enforcement uses sha2 0.11 while existing cryptography retains crypto-common 0.1" },
     { crate = "digest@0.11.3", reason = "self_update 1.2 checksum enforcement uses sha2 0.11 while existing cryptography retains digest 0.10" },
     { crate = "getrandom@0.2.17", reason = "Existing cryptography dependencies use getrandom 0.2 while tempfile uses getrandom 0.4" },
     { crate = "linux-raw-sys@0.4.15", reason = "Existing which/rustix 0.38 path has not converged on the rustix 1 dependency family" },
+    { crate = "nix@0.29.0", reason = "zbus 4 (Linux Secret Service keyring) uses nix 0.29 on Linux while zip 9 (Windows self-update extraction) uses nix 0.31 only on macOS/BSD; the two never build into the same binary" },
     { crate = "redox_syscall@0.5.18", reason = "Existing parking_lot path has not converged on the libredox dependency family" },
     { crate = "reqwest@0.12.28", reason = "Existing workspace HTTP clients use reqwest 0.12 while self_update uses reqwest 0.13" },
     { crate = "rustix@0.38.44", reason = "Existing which dependency has not converged on the rustix 1 dependency family" },

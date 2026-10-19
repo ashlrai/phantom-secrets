@@ -115,7 +115,7 @@ Options: --json (emit a machine-readable array of `{name, detected_service}` for
 Transactionally create a new secret name in an initialized project. It does not auto-create config, gitignore, or vault state; run `phantom init --empty` first in a new project. Writes a persistent sensitive `phm_` mapping to the managed dotenv file.
 Prompts silently on the controlling terminal, so the value never enters shell history or `ps aux`. Positional secret values are rejected; use `--stdin` only with a trusted pipe. Existing names are denied before prompt/stdin read and are never replaced.
 Example (interactive, hidden input): phantom add STRIPE_SECRET_KEY
-Options: --stdin (read one line for a new name from a trusted piped producer)
+Options: --stdin (read the value for a new name, up to EOF, from a trusted piped producer; trailing newlines dropped, 64 KiB cap; refused when stdin is a terminal). Input with more than one line is refused unless you add --multiline (store every line, e.g. a PEM key) or --first-line (store only line 1, e.g. `pass show` output with metadata after the key); nothing is stored on refusal.
 
 ### phantom remove <KEY>
 From an attached trusted terminal, review and type the exact removal challenge.
@@ -167,8 +167,9 @@ Generate .env.example with secret values masked and non-secrets preserved.
 Options: --output <filename>
 
 ### phantom setup
-Configure Claude Code MCP server and permissions automatically.
-Writes to .claude/settings.local.json.
+Configure an MCP client automatically. For Claude Code, writes the phantom MCP server to the project .mcp.json
+and removes legacy Phantom grants from .claude/settings.local.json. Cursor: ~/.cursor/mcp.json;
+Windsurf: ~/.codeium/windsurf/mcp_config.json; Codex: ~/.codex/config.toml.
 
 ### phantom login
 After a hosted deployment and account entitlement are independently
@@ -307,7 +308,8 @@ phantom_list_secrets
   Returns: count and names, with service mappings if configured.
 
 phantom_status
-  Show project ID, vault backend, secret count, service mappings, .env state.
+  Show project ID, managed .env protection counts and service mappings. Does not open the vault;
+  use phantom_list_secrets for stored names.
   Returns: formatted status report.
 
 phantom_cloud_status
@@ -355,12 +357,18 @@ phantom_env
 These tools return an error unless called with `confirm: true` and a valid
 `approval_token` obtained through the server's out-of-band
 `phantom mcp-approve` challenge. The agent must obtain explicit user consent;
-an approval token does not replace that consent.
+an approval token does not replace that consent. They are disabled unless the
+operator sets `PHANTOM_MCP_EFFECTS=trusted-terminal` in the server environment,
+outside agent authority. The first call without `approval_token` prints a nonce
+on the server's stderr; run `phantom mcp-approve <NONCE>` in a trusted terminal
+and retry with `approval_token: "<nonce>:<token>"`. Exception:
+`phantom_add_secret_interactive` is listed here for history but is effect-free
+and needs neither gate.
 
 phantom_add_secret_interactive
-  Start a trusted terminal prompt for adding a secret without passing the value through MCP.
-  Params: name (string), confirm (bool, must be true), approval_token (string)
-  Effect: returns the terminal command to run; the user enters the value outside agent context.
+  Return the `phantom add NAME` command for adding a secret without passing the value through MCP.
+  Params: name (string, [A-Za-z_][A-Za-z0-9_]*), confirm (optional, ignored)
+  Effect: none. No approval or PHANTOM_MCP_EFFECTS needed; the user runs the command and enters the value outside agent context.
 
 phantom_add_secret
   Deprecated compatibility tool. Plaintext values passed through MCP are rejected.
@@ -411,7 +419,7 @@ phantom_apply_expiry_policy
   secret preflight instead of injecting an expired value. A later verified
   lifecycle promotion restores access. Demotion does not recall a value already
   injected into or cached by a running process.
-  Params: promote_rotated, confirm (bool, must be true), approval_token (string)
+  Params: also_promote_rotated (bool, default true), confirm (bool, must be true), approval_token (string)
 
 ### Team tools (planned Pro pilot, multi-developer fixed-membership shared vaults)
 
@@ -579,7 +587,7 @@ Cloud tokens stored hashed (SHA-256) in database — never plaintext.
 
 The vault, package, cloud, and team mutation tools documented above require explicit consent, `confirm=true`, and the out-of-band `approval_token` challenge as guards against unintended mutation. Advanced tools have distinct runtime schemas and conditional gates; inspect `tools/list` instead of extrapolating. These gates are not prompt-injection immunity; an agent or user can still authorize a harmful request.
 
-phantom_reveal blocked in non-interactive contexts by default to prevent AI agents from reading real values.
+There is no MCP reveal tool. CLI `phantom reveal` always requires attached terminals and exact typed confirmation; there is no non-interactive bypass.
 
 Opt-in audit log: PHANTOM_AUDIT=1 writes vault events as JSONL to ~/.phantom/audit.log (secret name only).
 Each entry is chained with HMAC-SHA256 and checked against a signed head checkpoint; phantom audit verify detects tampering, sequence gaps, prefix deletion, and tail/head mismatches. Full log and checkpoint deletion still requires external evidence.
