@@ -82,6 +82,11 @@ lazy_static! {
 pub struct ResponseLeakAnalyzer {
     /// real_secret_value -> secret_key_name (from vault injection map).
     vault_values: Vec<(SecretValue, String)>,
+    /// Prefilter for partial-run matching: one bit per hashed
+    /// [`PARTIAL_MIN_RUN`]-byte window of every token-like managed value.
+    /// Holds hash bits only, never window plaintext; every bitset hit is
+    /// verified against the value itself before anything is redacted.
+    partial_filter: Option<Box<[u64]>>,
 }
 
 impl ResponseLeakAnalyzer {
@@ -93,7 +98,7 @@ impl ResponseLeakAnalyzer {
             .iter()
             .map(|(name, value)| (SecretValue::new(value.clone()), name.clone()))
             .collect();
-        Self { vault_values }
+        Self::with_partial_filter(vault_values)
     }
 
     /// Build from a token→secret mapping (same shape as Interceptor::new).
@@ -117,7 +122,154 @@ impl ResponseLeakAnalyzer {
             .into_iter()
             .map(|(token, secret)| (SecretValue::new(secret), token.to_string()))
             .collect();
-        Self { vault_values }
+        Self::with_partial_filter(vault_values)
+    }
+
+    fn with_partial_filter(vault_values: Vec<(SecretValue, String)>) -> Self {
+        let mut bits = vec![0u64; PARTIAL_FILTER_WORDS];
+        let mut any = false;
+        for (value, _) in &vault_values {
+            let value = value.as_str().as_bytes();
+            for start in partial_window_starts(value) {
+                let bit = partial_bit(window_hash(&value[start..start + PARTIAL_MIN_RUN]));
+                bits[bit / 64] |= 1 << (bit % 64);
+                any = true;
+            }
+        }
+        Self {
+            vault_values,
+            partial_filter: any.then(|| bits.into_boxed_slice()),
+        }
+    }
+
+    /// Whether any managed value is eligible for partial-run redaction.
+    pub(crate) fn has_partial_matching(&self) -> bool {
+        self.partial_filter.is_some()
+    }
+
+    /// Name reported for the managed value at `index`.
+    pub(crate) fn vault_name(&self, index: usize) -> &str {
+        self.vault_values[index].1.as_str()
+    }
+
+    /// Maximal runs in `input` made of [`PARTIAL_MIN_RUN`]-byte windows that
+    /// also occur in a token-like managed value, outside its public prefix.
+    /// Returns `(start, end, value_index)` sorted, non-overlapping.
+    pub(crate) fn partial_runs(&self, input: &[u8]) -> Vec<(usize, usize, usize)> {
+        let Some(filter) = self.partial_filter.as_deref() else {
+            return Vec::new();
+        };
+        if input.len() < PARTIAL_MIN_RUN {
+            return Vec::new();
+        }
+        let mut runs: Vec<(usize, usize, usize)> = Vec::new();
+        let mut hash = window_hash(&input[..PARTIAL_MIN_RUN]);
+        let mut start = 0;
+        loop {
+            let bit = partial_bit(hash);
+            if filter[bit / 64] & (1 << (bit % 64)) != 0 {
+                let window = &input[start..start + PARTIAL_MIN_RUN];
+                if let Some(index) = self.verify_partial_window(window) {
+                    let end = start + PARTIAL_MIN_RUN;
+                    match runs.last_mut() {
+                        Some(last) if start <= last.1 => last.1 = last.1.max(end),
+                        _ => runs.push((start, end, index)),
+                    }
+                }
+            }
+            let next = start + PARTIAL_MIN_RUN;
+            if next >= input.len() {
+                break;
+            }
+            hash = roll_hash(hash, input[start], input[next]);
+            start += 1;
+        }
+        runs
+    }
+
+    /// Where a stream may stop emitting: the start of the shortest trailing
+    /// suffix (under [`PARTIAL_MIN_RUN`] bytes) that is a prefix of some
+    /// eligible window, or `input.len()` when none is. Only such a suffix can
+    /// still become a run once more bytes arrive; every earlier unfinished
+    /// window already disagrees with every value, so holding nothing else
+    /// keeps streams prompt.
+    pub(crate) fn partial_hold_start(&self, input: &[u8]) -> usize {
+        if self.partial_filter.is_none() {
+            return input.len();
+        }
+        let from = input.len().saturating_sub(PARTIAL_MIN_RUN - 1);
+        (from..input.len())
+            .find(|&j| {
+                let suffix = &input[j..];
+                self.vault_values.iter().any(|(value, _)| {
+                    let value = value.as_str().as_bytes();
+                    partial_window_starts(value)
+                        .any(|start| value[start..start + PARTIAL_MIN_RUN].starts_with(suffix))
+                })
+            })
+            .unwrap_or(input.len())
+    }
+
+    fn verify_partial_window(&self, window: &[u8]) -> Option<usize> {
+        self.vault_values.iter().position(|(value, _)| {
+            let value = value.as_str().as_bytes();
+            partial_window_starts(value)
+                .any(|start| &value[start..start + PARTIAL_MIN_RUN] == window)
+        })
+    }
+
+    /// Replace every partial run in `input` with a vault-secret marker, one
+    /// event per managed value. For `str` callers, runs are widened to char
+    /// boundaries so the result stays valid UTF-8.
+    fn redact_partial_runs(
+        &self,
+        input: &[u8],
+        char_boundary: Option<&str>,
+        location: &LeakLocation,
+        events: &mut Vec<LeakEvent>,
+    ) -> Option<Vec<u8>> {
+        let runs = self.partial_runs(input);
+        if runs.is_empty() {
+            return None;
+        }
+        let marker = format!("[REDACTED:{}]", format_pattern_label(""));
+        let mut output = Vec::with_capacity(input.len());
+        let mut cursor = 0;
+        let now = now_unix();
+        for (mut start, mut end, index) in runs {
+            if let Some(text) = char_boundary {
+                while start > 0 && !text.is_char_boundary(start) {
+                    start -= 1;
+                }
+                while end < text.len() && !text.is_char_boundary(end) {
+                    end += 1;
+                }
+            }
+            start = start.max(cursor);
+            if end <= start {
+                continue;
+            }
+            output.extend_from_slice(&input[cursor..start]);
+            output.extend_from_slice(marker.as_bytes());
+            cursor = end;
+            let name = self.vault_name(index).to_string();
+            if let Some(event) = events.iter_mut().find(|e| {
+                e.pattern == "vault-secret" && e.secret_name.as_deref() == Some(name.as_str())
+            }) {
+                event.match_count += 1;
+            } else {
+                events.push(LeakEvent {
+                    ts: now,
+                    location: location.clone(),
+                    severity: LeakSeverity::High,
+                    secret_name: Some(name),
+                    pattern: format_pattern_label(""),
+                    match_count: 1,
+                });
+            }
+        }
+        output.extend_from_slice(&input[cursor..]);
+        Some(output)
     }
 
     /// Analyze `body` bytes for leaked secrets. Returns (scrubbed_body, events).
@@ -217,6 +369,22 @@ impl ResponseLeakAnalyzer {
             }
         }
 
+        // 1b. Partial runs of a managed value (a vendor echoing part of the
+        //     key). Exact matches above are already replaced.
+        if let Some(next) = self.redact_partial_runs(
+            result.as_bytes(),
+            Some(result.as_str()),
+            &location,
+            &mut events,
+        ) {
+            // Runs are widened to char boundaries, so this cannot fail; keep
+            // the original on the impossible path rather than panic.
+            if let Ok(next) = String::from_utf8(next) {
+                result.zeroize();
+                result = next;
+            }
+        }
+
         // 2. Format-pattern match (catches secrets not yet in vault injection map).
         for (label, re) in SECRET_PATTERNS.iter() {
             // Count remaining matches (after vault replacements above).
@@ -296,8 +464,88 @@ impl ResponseLeakAnalyzer {
             }
         }
 
+        if let Some(next) = self.redact_partial_runs(&result, None, &location, &mut events) {
+            result.zeroize();
+            result = next;
+        }
+
         (result, events)
     }
+}
+
+/// Minimum run of consecutive managed-value bytes that is redacted when it
+/// appears in a response without the rest of the value.
+pub(crate) const PARTIAL_MIN_RUN: usize = 12;
+/// Values shorter than this are matched exactly only.
+const PARTIAL_MIN_VALUE_LEN: usize = 16;
+/// Public prefixes (`sk-ant-api03-`, `sk_live_`) are searched for in the first
+/// this-many bytes.
+const PUBLIC_PREFIX_SCAN: usize = 16;
+const PARTIAL_FILTER_WORDS: usize = 1024; // 65,536 bits, 8 KiB
+const WINDOW_HASH_BASE: u64 = 0x0000_0100_0000_01b3;
+
+/// Token-like values (API keys, JWTs) qualify for partial matching. Values
+/// with spaces, `:` or `@` (passphrases, connection strings) do not, because
+/// a 12-byte run of them can be ordinary text such as `localhost:5432`.
+fn is_token_like(value: &[u8]) -> bool {
+    value.len() >= PARTIAL_MIN_VALUE_LEN
+        && value
+            .iter()
+            .all(|b| b.is_ascii_alphanumeric() || b"-_.+/=~".contains(b))
+}
+
+/// Length of a value's public prefix: through the last `-` or `_` in its
+/// first [`PUBLIC_PREFIX_SCAN`] bytes. Masked displays show this prefix.
+fn public_prefix_len(value: &[u8]) -> usize {
+    let head = &value[..value.len().min(PUBLIC_PREFIX_SCAN)];
+    head.iter()
+        .rposition(|b| *b == b'-' || *b == b'_')
+        .map(|i| i + 1)
+        .unwrap_or(0)
+}
+
+/// Window starts eligible for partial matching: token-like values only, and
+/// never a window that lies entirely inside the public prefix, so a masked
+/// form such as `sk-ant-api03-...wxyz` is not redacted.
+fn partial_window_starts(value: &[u8]) -> impl Iterator<Item = usize> {
+    let eligible = is_token_like(value) && value.len() >= PARTIAL_MIN_RUN;
+    let prefix = public_prefix_len(value);
+    let first = prefix.saturating_sub(PARTIAL_MIN_RUN - 1);
+    let last = if eligible {
+        value.len() - PARTIAL_MIN_RUN + 1
+    } else {
+        0
+    };
+    first.min(last)..last
+}
+
+fn window_hash(window: &[u8]) -> u64 {
+    window.iter().fold(0u64, |h, &b| {
+        h.wrapping_mul(WINDOW_HASH_BASE)
+            .wrapping_add(u64::from(b) + 1)
+    })
+}
+
+/// `WINDOW_HASH_BASE ^ (PARTIAL_MIN_RUN - 1)`, the weight of a window's
+/// first byte.
+const WINDOW_HASH_TOP: u64 = {
+    let mut p = 1u64;
+    let mut i = 0;
+    while i < PARTIAL_MIN_RUN - 1 {
+        p = p.wrapping_mul(WINDOW_HASH_BASE);
+        i += 1;
+    }
+    p
+};
+
+fn roll_hash(hash: u64, outgoing: u8, incoming: u8) -> u64 {
+    hash.wrapping_sub((u64::from(outgoing) + 1).wrapping_mul(WINDOW_HASH_TOP))
+        .wrapping_mul(WINDOW_HASH_BASE)
+        .wrapping_add(u64::from(incoming) + 1)
+}
+
+fn partial_bit(hash: u64) -> usize {
+    (hash.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 48) as usize
 }
 
 /// Return a value-independent label for an exact vault-secret match.
