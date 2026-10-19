@@ -169,6 +169,11 @@ pub struct SidecarEvent {
     pub signature: String,
     /// Hex-encoded public key (for auditor verification).
     pub pubkey: String,
+    /// Signature scheme. Absent means Ed25519, and Ed25519 events never carry
+    /// it, so their bytes match every earlier writer. No other scheme is
+    /// supported yet, so any present value fails verification (fail closed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sig_alg: Option<String>,
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -1124,6 +1129,12 @@ fn derive_encryption_key(hmac_key: &[u8]) -> [u8; 32] {
 /// Verify an ED25519 signature on a `SidecarEvent`.
 /// Returns `true` if the signature is valid, `false` otherwise.
 pub fn verify_sidecar_event(event: &SidecarEvent) -> bool {
+    // Only unlabelled Ed25519 events exist. A labelled event, including a
+    // redundant "ed25519" label, is from a newer writer and is rejected
+    // rather than verified under the wrong scheme.
+    if event.sig_alg.is_some() {
+        return false;
+    }
     use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 
     let pubkey_bytes = match hex::decode(&event.pubkey) {
