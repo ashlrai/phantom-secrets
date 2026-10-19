@@ -339,6 +339,7 @@ fn apply_setup(project_dir: &std::path::Path, before: &AgentReadinessReport) -> 
         Some(crate::commands::setup::Client::ClaudeCode),
         false,
         None,
+        false,
     )?;
 
     if project_dir.join("package.json").exists() {

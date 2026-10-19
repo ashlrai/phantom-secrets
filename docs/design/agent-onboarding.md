@@ -8,7 +8,7 @@ Facts were checked on 2026-10-18 against phantom-secrets `main` at `34513e2`, ph
 
 | Surface | Command | Clients | Dry run | Backup | Undo | Differing entry |
 |---------|---------|---------|---------|--------|------|-----------------|
-| phantom-secrets (Rust) | `phantom setup --client <c>` | Claude Code, Cursor, Windsurf, Codex, Gemini CLI | no (`--print` shows a snippet only) | no | no | replaced silently (a unit test asserts it) |
+| phantom-secrets (Rust) | `phantom setup --client <c>` | Claude Code, Cursor, Windsurf, Codex, Gemini CLI | no (`--print` shows a snippet only) | no | yes for Cursor, Windsurf, Gemini CLI, Codex (slice 2) | no | refused unless `--replace` (slice 2) |
 | phantom-secrets (Rust) | `phantom setup --status` | same five | read-only report | n/a | n/a | n/a |
 | phantom (TS) | `phm wire <c>` and `wire status` | Claude Code, Codex, Cursor write; Gemini and Windsurf status only | no | no | no | not verified here |
 | phantom (TS), PR #821 (draft) | `phm wire sync [--apply\|--undo]` | JSON clients from the client table (Codex skipped) | yes, default | yes, plus manifest | yes, hash checked | `conflict`, exit 1, never overwritten |
