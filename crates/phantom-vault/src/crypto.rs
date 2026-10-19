@@ -343,11 +343,12 @@ mod tests {
         version: u8,
         alg: u8,
     ) -> Vec<u8> {
-        let mut salt = [7u8; SALT_LEN];
+        // Random salt and nonce; only the salt's first 6 bytes are forced.
+        let mut salt: [u8; SALT_LEN] = rand::random();
         salt[..4].copy_from_slice(&blob_format::MAGIC);
         salt[4] = version;
         salt[5] = alg;
-        let nonce_bytes = [8u8; NONCE_LEN];
+        let nonce_bytes: [u8; NONCE_LEN] = rand::random();
         let mut key = derive(passphrase, &salt).unwrap();
         let cipher = ChaCha20Poly1305::new_from_slice(&key).unwrap();
         key.zeroize();
