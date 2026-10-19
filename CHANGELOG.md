@@ -4,6 +4,17 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (Temporal codec example: Web UI calls)
+
+- `examples/temporal-codec-python`: the codec server now routes on the URL
+  path only. Temporal Web UI 2.54.1 calls `/decode?preserveStorageRefs=true`,
+  which the sketch refused (preflight 403, POST 404). A malformed body now gets
+  400. Adds `e2e_worker.py` and `e2e_start.py`, and `docs/temporal.md` records a
+  local end-to-end run (CLI v1.9.1 dev server on 127.0.0.1, worker under
+  `phantom exec`, payloads `binary/encrypted` in history, decoded through
+  `--codec-endpoint`, CORS preflight checked with curl). The Web UI rendering
+  was not checked.
+
 ### Changed (Temporal codec example: CORS allowlist and key delivery)
 
 - `examples/temporal-codec-python`: the codec server gains an opt-in exact

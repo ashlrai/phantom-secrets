@@ -49,8 +49,44 @@ Per the Temporal data encryption guide (https://docs.temporal.io/production-depl
 How this fits with Phantom:
 
 - Running the worker under `phantom exec` keeps provider keys out of it, but it does not deliver a codec key. `phantom exec` exports `phm_` placeholders, and the Phantom proxy injects real credentials only into outbound requests on its routes; it does not hand key material to a process. A codec key stored in Phantom would therefore reach the worker as a placeholder, which cannot encrypt anything. The [codec sketch](../examples/temporal-codec-python/README.md) records the key id in payload metadata for rotation, so key ids land in workflow history and must be plain labels. It prefers to read its keys once from an inherited pipe named by `PHANTOM_TEMPORAL_CODEC_KEYS_FD` (an fd number, not a secret), which keeps them out of argv and the process environment; `PHANTOM_TEMPORAL_CODEC_KEY_<ID>` variables remain as a weaker fallback. Phantom has no command that writes a key to that pipe, so the producer is yours to choose, and it must not take the key on its own command line.
-- The sketch's Codec Server binds to `127.0.0.1:8081` and sends no CORS headers by default, which suits the Temporal CLI (`--codec-endpoint`). For the Web UI, list exact origins (scheme, host and port) in `PHANTOM_TEMPORAL_CODEC_CORS_ORIGINS`; `*` and patterns are refused at startup. It then allows only `POST` to `/encode` and `/decode` with `Content-Type` and `X-Namespace`, and refuses a request from any other origin with 403 and no CORS headers. It does not check authorization, so it does not allow the `Authorization` header. It has unit and local HTTP tests but was not run against the Web UI.
+- The sketch's Codec Server binds to `127.0.0.1:8081` and sends no CORS headers by default, which suits the Temporal CLI (`--codec-endpoint`). For the Web UI, list exact origins (scheme, host and port) in `PHANTOM_TEMPORAL_CODEC_CORS_ORIGINS`; `*` and patterns are refused at startup. It then allows only `POST` to `/encode` and `/decode` with `Content-Type` and `X-Namespace`, and refuses a request from any other origin with 403 and no CORS headers. It does not check authorization, so it does not allow the `Authorization` header; leave the UI's codec "pass access token" and "include credentials" settings off. The browser origin is the exact URL you open, so `http://localhost:8233` and `http://127.0.0.1:8233` are different origins. See the local end-to-end check below for what was and was not verified.
 - A codec does not make it safe to put a raw secret in a payload (Rule 1).
+
+### Local end-to-end check (2026-10-19, one Linux x86_64 box, fake data only)
+
+Setup:
+
+- Temporal CLI v1.9.1 from the temporalio/cli GitHub release. `sha256sum -c` against the release's `checksums.txt` passed for `temporal_cli_1.9.1_linux_amd64.tar.gz` (sha256 `09a0326a51db84d02735e53542b9ebd8c4758daf47482a9ab0abce15844e60d5`). The release publishes no GitHub artifact attestation, so this checks integrity against the release page, not provenance. `temporal --version` reports Server 1.32.0 and UI 2.54.1. That server is older than the v1.32.1 pin in Rule 3; it was used only for this local experiment.
+- Python 3 venv with the example's `requirements.txt` (temporalio 1.34.0, cryptography 50.0.2). Phantom built from `main`.
+- A throwaway HOME and project with one fake `OPENAI_API_KEY`, imported by `phantom init` into an encrypted-file vault (fake `PHANTOM_VAULT_PASSPHRASE`; no OS keychain on that box).
+- A fake 32-byte codec key, generated per run, held in a shell variable and written only into pipes with the `printf` builtin.
+
+Steps:
+
+```sh
+temporal server start-dev --ip 127.0.0.1 --ui-ip 127.0.0.1 \
+  --db-filename ./dev.db --ui-codec-endpoint http://127.0.0.1:8081
+export PHANTOM_TEMPORAL_CODEC_KEY_ID=e2e-test PHANTOM_TEMPORAL_CODEC_KEYS_FD=3
+PHANTOM_TEMPORAL_CODEC_CORS_ORIGINS=http://localhost:8233 \
+  python codec_server.py 3< <(printf 'e2e-test=%s\n' "$KEY") &
+phantom exec -- python e2e_worker.py OPENAI_API_KEY 3< <(printf 'e2e-test=%s\n' "$KEY") &
+python e2e_start.py e2e-greeting-2 fake-e2e-input-MARKER-7f3a 3< <(printf 'e2e-test=%s\n' "$KEY")
+temporal workflow show -w e2e-greeting-2 --output json
+temporal workflow show -w e2e-greeting-2 --output json --codec-endpoint http://127.0.0.1:8081
+```
+
+Observed:
+
+- Every listening socket of the dev server was on 127.0.0.1 (gRPC 7233, UI 8233, metrics and internal ports). A snapshot of open TCP sockets of the server, worker, proxy and codec server showed only loopback peers. Traffic was not captured for the whole run.
+- `phantom exec` started its proxy on 127.0.0.1 and the worker reported `OPENAI_API_KEY: placeholder`. The worker got the codec key through fd 3 across `phantom exec`. Nothing in argv or the environment carried it.
+- The workflow returned `Hello, fake-e2e-input-MARKER-7f3a`.
+- Without the codec, `temporal workflow show` listed 4 payloads (workflow input, activity input, activity result, workflow result), all with encoding `binary/encrypted` and `encryption-key-id` `e2e-test`. None contained the marker. The server's SQLite file did not contain the marker either.
+- With `--codec-endpoint`, the same 4 payloads showed as `json/plain` with the input and the result in clear.
+- CORS with the allowlist set to `http://localhost:8233`, checked with curl: a preflight for `POST` with `content-type,x-namespace` got 204 with `Access-Control-Allow-Origin: http://localhost:8233`, `Access-Control-Allow-Methods: POST, OPTIONS`, `Access-Control-Allow-Headers: Content-Type, X-Namespace`, `Access-Control-Max-Age: 600`, `Vary: Origin`. Preflights from `http://127.0.0.1:8233` and `http://evil.example`, or one asking for `authorization`, got 403 with no CORS headers. A `POST /decode` from the allowed origin returned the decoded payload with `Access-Control-Allow-Origin`. From another origin it got 403 with an empty body.
+- Bug found and fixed: the bundled UI's JavaScript (2.54.1, read from the local server) posts to `<endpoint>/decode?preserveStorageRefs=true` with only `Content-Type` and `X-Namespace` (plus `Authorization` only when "pass access token" is on). The sketch compared the path including the query, so every UI call would have failed (preflight 403, POST 404). It now routes on the path only, and the same curl calls with the query got 204 and 200.
+- A payload encrypted under a key the codec server no longer has got an immediate 400 from the codec server. `temporal workflow show` reported `context deadline exceeded` after about 10 seconds rather than that 400.
+
+Not verified: the Web UI rendering decoded payloads in a browser (no browser was driven; only the UI's request shape was checked), Authorization or HTTPS for the Codec Server, External Storage (`/download`), Temporal Cloud, Windows or macOS, and Server v1.32.1 or newer.
 
 ## Rule 5: treat inbound text as data
 

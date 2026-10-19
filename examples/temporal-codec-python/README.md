@@ -1,6 +1,6 @@
 # Temporal payload codec sketch (untested design)
 
-Status: sketch. The codec's round trip, key rotation by key id, tamper rejection and key-length check are unit tested with fake keys (`python -m unittest`), as are key delivery (`test_key_delivery.py`) and the codec server's CORS policy, including HTTP requests to the handler on 127.0.0.1 (`test_cors.py`). It has not been run against a Temporal server or the Temporal Web UI. Read [docs/temporal.md](../../docs/temporal.md) first. Temporal is optional; Phantom does not depend on it.
+Status: sketch. The codec's round trip, key rotation by key id, tamper rejection and key-length check are unit tested with fake keys (`python -m unittest`), as are key delivery (`test_key_delivery.py`) and the codec server's CORS policy, including HTTP requests to the handler on 127.0.0.1 (`test_cors.py`). It was run once end to end against a local `temporal server start-dev` (CLI v1.9.1) with a worker under `phantom exec`, using `e2e_worker.py` and `e2e_start.py`; the steps and results are in [docs/temporal.md](../../docs/temporal.md). The Web UI rendering itself was not checked. Read [docs/temporal.md](../../docs/temporal.md) first. Temporal is optional; Phantom does not depend on it.
 
 What it does: encrypts each Temporal payload with AES-256-GCM, records a key id in payload metadata so keys can rotate, and offers a localhost-only codec server (127.0.0.1:8081) for decoding in tooling.
 
@@ -8,6 +8,7 @@ Codec server CORS:
 
 - Off by default. No CORS headers are sent, which suits the Temporal CLI (`--codec-endpoint`). A request that carries an `Origin` header not on the list is refused with 403 and no CORS headers.
 - To let a browser page such as the Temporal Web UI call it, set `PHANTOM_TEMPORAL_CODEC_CORS_ORIGINS` to a comma-separated list of exact origins, for example `http://localhost:8080`. Each entry must be exactly `scheme://host[:port]` with `http` or `https`. `*`, `null`, patterns, paths and user info are refused at startup. Matching compares scheme, host and port (a default port matches whether written or not).
+- The origin is the exact URL the browser opened: `http://localhost:8233` and `http://127.0.0.1:8233` are different. Leave the UI's codec "pass access token" and "include credentials" settings off; this sketch supports neither.
 - Allowed origins get only what the codec protocol needs: `POST` (and the `OPTIONS` preflight) on `/encode` and `/decode`, with `Content-Type` and `X-Namespace`. No credentials are allowed. The `Authorization` header is not allowed because this sketch does not check it.
 
 Key delivery (keep the key out of argv, environment dumps and workflow history):

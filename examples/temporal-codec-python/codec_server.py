@@ -13,6 +13,7 @@ that carries an Origin not on the list is refused with 403 and no CORS headers.
 import asyncio
 import os
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from urllib.parse import urlsplit
 
 from google.protobuf import json_format
 from temporalio.api.common.v1 import Payloads
@@ -32,9 +33,14 @@ def make_handler(codec: EncryptionCodec, cors: CorsPolicy = CorsPolicy()):
             self.send_header("Content-Length", "0")
             self.end_headers()
 
+        def _route(self) -> str:
+            # The Temporal Web UI (2.54.1, checked) calls
+            # /decode?preserveStorageRefs=true, so route on the path only.
+            return urlsplit(self.path).path
+
         def do_OPTIONS(self):
             decision = cors.for_preflight(
-                self.path,
+                self._route(),
                 self.headers.get("Origin"),
                 self.headers.get("Access-Control-Request-Method"),
                 self.headers.get("Access-Control-Request-Headers"),
@@ -42,7 +48,8 @@ def make_handler(codec: EncryptionCodec, cors: CorsPolicy = CorsPolicy()):
             self._plain(204 if decision.allowed else 403, decision.headers)
 
         def do_POST(self):
-            if self.path not in CODEC_PATHS:
+            route = self._route()
+            if route not in CODEC_PATHS:
                 self.send_error(404)
                 return
             decision = cors.for_request(self.headers.get("Origin"))
@@ -53,8 +60,12 @@ def make_handler(codec: EncryptionCodec, cors: CorsPolicy = CorsPolicy()):
             if length > MAX_BODY_BYTES:
                 self.send_error(413)
                 return
-            body = json_format.Parse(self.rfile.read(length), Payloads())
-            fn = codec.encode if self.path == "/encode" else codec.decode
+            try:
+                body = json_format.Parse(self.rfile.read(length), Payloads())
+            except json_format.ParseError:
+                self.send_error(400, "body is not a Payloads JSON document")
+                return
+            fn = codec.encode if route == "/encode" else codec.decode
             try:
                 result = asyncio.run(fn(body.payloads))
             except ValueError:
