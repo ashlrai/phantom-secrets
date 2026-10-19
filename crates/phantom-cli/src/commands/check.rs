@@ -1,9 +1,12 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use colored::Colorize;
 use phantom_core::config::PhantomConfig;
 use phantom_core::dotenv::{is_example_placeholder, is_example_template_file, DotenvFile};
-use phantom_core::token::PhantomToken;
 use std::path::{Path, PathBuf};
+
+use phantom_core::report::{
+    CheckConfigWarning as ConfigWarning, CheckFinding as Finding, CheckReport as Report,
+};
 
 /// Check for unprotected secrets in .env files and staged git files.
 /// Returns exit code 1 if found. Designed to be used as a pre-commit hook.
@@ -11,199 +14,415 @@ use std::path::{Path, PathBuf};
 /// When `staged_only` is true, checks staged content from the git index,
 /// including staged .env files, so pre-commit hooks block newly staged secrets.
 ///
-/// When `runtime` is true, scans the current environment for phantom tokens
-/// that haven't been replaced (proxy not running).
-pub fn run(staged_only: bool, runtime: bool) -> Result<()> {
-    if runtime {
-        return run_runtime_check();
-    }
+/// When `runtime` is true, scans every variable of the current environment for
+/// phantom tokens left without a proxy. A variable is excused only when a live
+/// `phantom exec` / `phantom start` proxy answers for the session variables
+/// and the session names that variable as its own (`PHANTOM_SESSION_KEYS`).
+///
+/// With `json`, prints one machine-readable report on stdout and keeps the
+/// same exit status: 0 when clean, 1 when findings exist. An indeterminate
+/// scan is still an error with no report.
+pub fn run(staged_only: bool, runtime: bool, json: bool) -> Result<()> {
+    let mut scan = None;
+    let (mode, findings, warnings) = if runtime {
+        let mut result = phantom_core::report::scan_runtime_env(
+            std::env::vars_os(),
+            phantom_core::report::proxy_answers,
+        );
+        let findings = std::mem::take(&mut result.findings);
+        scan = Some(result);
+        ("runtime", findings, Vec::new())
+    } else if staged_only {
+        let (findings, warnings) = staged_findings()?;
+        ("staged", findings, warnings)
+    } else {
+        (
+            "worktree",
+            worktree_findings(&std::env::current_dir()?)?,
+            Vec::new(),
+        )
+    };
 
-    let project_dir = std::env::current_dir()?;
-    let mut issues = 0;
-
-    // Check all .env files (skip when --staged flag is used for fast pre-commit)
-    if !staged_only {
-        for path in dotenv_scan_paths(&project_dir)? {
-            let dotenv = DotenvFile::parse_file(&path)?;
-            dotenv.validate_for_mutation()?;
-            let real_secrets = dotenv.real_secret_entries();
-
-            if !real_secrets.is_empty() {
-                if issues == 0 {
-                    eprintln!(
-                        "\n{} Unprotected secrets detected!\n",
-                        "BLOCKED".red().bold()
-                    );
-                }
-
-                eprintln!(
-                    "  {} {} has unprotected secret name(s):",
-                    "!".red().bold(),
-                    path.display()
-                );
-
-                for entry in &real_secrets {
-                    eprintln!("    {} {}", "-".dimmed(), entry.key.bold());
-                }
-
-                issues += real_secrets.len();
-            }
+    if json {
+        let report = Report {
+            mode,
+            clean: findings.is_empty(),
+            findings: &findings,
+            warnings: &warnings,
+            indeterminate: &[],
+            proxy_session: scan.as_ref().is_some_and(|scan| scan.proxy_session),
+            excused: scan.as_ref().map_or(&[], |scan| scan.excused.as_slice()),
+            session_warning: scan.as_ref().and_then(|scan| scan.session_warning()),
+        };
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print_warnings(&warnings);
+        if let Some(scan) = &scan {
+            print_runtime(&findings, scan);
+        } else {
+            print_findings(&findings);
         }
     }
 
-    // `--staged` is the pre-commit surface. Ordinary worktree checks remain
-    // usable without a Git repository or Git binary.
-    if staged_only {
-        for file in get_staged_files()? {
-            if file.ends_with(".phantom.toml") {
-                let content = read_staged_file(&file)?;
-                warn_on_config_risks(&file, &content);
-                continue;
-            }
-
-            if is_env_file(&file) {
-                // Dotenv is a strict text format. Non-UTF-8 content makes its
-                // protection status indeterminate and therefore fails closed.
-                let content = read_staged_file(&file)?;
-                let dotenv = DotenvFile::parse_str(&content);
-                dotenv.validate_for_mutation()?;
-                let mut real_secrets = dotenv.real_secret_entries();
-                // Committable templates (.env.example etc.) may name secrets
-                // as long as each value is an empty or `phantom init`-style
-                // placeholder. Any other value is still reported.
-                if is_example_template_file(&file) {
-                    real_secrets.retain(|entry| !is_example_placeholder(&entry.value));
-                }
-
-                if !real_secrets.is_empty() {
-                    if issues == 0 {
-                        eprintln!(
-                            "\n{} Unprotected secrets detected!\n",
-                            "BLOCKED".red().bold()
-                        );
-                    }
-                    eprintln!(
-                        "  {} staged {} has unprotected secret name(s):",
-                        "!".red().bold(),
-                        file
-                    );
-                    for entry in &real_secrets {
-                        eprintln!("    {} {}", "-".dimmed(), entry.key.bold());
-                    }
-                    issues += real_secrets.len();
-                }
-                continue;
-            }
-
-            // Do not decode arbitrary staged blobs: PNG, PDF, and other
-            // unrelated binary assets are valid. Git emits a textual binary
-            // diff marker and therefore no added lines for those files.
-            let scan_content = staged_added_lines(&file)?;
-            for (pattern, label) in [
-                ("sk-", "OpenAI API key"),
-                ("sk_live_", "Stripe live key"),
-                ("sk_test_", "Stripe test key"),
-                ("ghp_", "GitHub personal token"),
-                ("github_pat_", "GitHub PAT"),
-                ("glpat-", "GitLab PAT"),
-                ("xoxb-", "Slack bot token"),
-                ("xoxp-", "Slack user token"),
-                ("AKIA", "AWS access key"),
-            ] {
-                if scan_content.contains(pattern) {
-                    if issues == 0 {
-                        eprintln!("\n{} Potential secrets in code!\n", "BLOCKED".red().bold());
-                    }
-                    eprintln!(
-                        "  {} {} may contain {} ({})",
-                        "!".red().bold(),
-                        file,
-                        label,
-                        pattern
-                    );
-                    issues += 1;
-                }
-            }
-        }
-    }
-
-    if issues > 0 {
-        eprintln!(
-            "\n{} Run {} to protect your secrets.",
-            "fix".yellow().bold(),
-            "phantom init".cyan().bold()
-        );
-        eprintln!(
-            "{} Or use {} to bypass (not recommended).\n",
-            "   ".yellow(),
-            "git commit --no-verify".dimmed()
-        );
+    if !findings.is_empty() {
         std::process::exit(1);
     }
-
-    println!("{} No unprotected secrets found.", "ok".green().bold());
     Ok(())
 }
 
-fn dotenv_scan_paths(project_dir: &Path) -> Result<Vec<PathBuf>> {
-    let mut candidates = vec![
-        project_dir.join(".env"),
-        project_dir.join(".env.local"),
-        project_dir.join(".env.development"),
-        project_dir.join(".env.production"),
-    ];
-    let config_path = project_dir.join(".phantom.toml");
-    if config_path.exists() {
-        let config = PhantomConfig::load(&config_path)?;
-        if let Some(configured) = config.phantom.dotenv_path.as_deref() {
-            let configured = phantom_core::managed_dotenv::validate_dotenv_basename(configured)?;
-            candidates.push(project_dir.join(configured));
-        }
-    }
-
-    let mut paths = Vec::new();
-    for path in candidates {
-        if paths.contains(&path) {
-            continue;
-        }
-        match std::fs::symlink_metadata(&path) {
-            Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
-                anyhow::bail!(
-                    "Refusing dotenv scan target that is not a regular, non-symlink file: {}",
-                    path.display()
-                )
-            }
-            Ok(_) => paths.push(path),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
-        }
-    }
-    Ok(paths)
+fn worktree_findings(project_dir: &Path) -> Result<Vec<Finding>> {
+    findings_in_listed(project_dir, dotenv_scan_paths(project_dir)?)
 }
 
-fn warn_on_config_risks(file: &str, content: &str) {
-    let Ok(config) = toml::from_str::<PhantomConfig>(content) else {
+/// Read the files a listing returned. Split from the listing so a test can
+/// hand it a path that became a symlink after it was listed.
+fn findings_in_listed(project_dir: &Path, listed: Vec<PathBuf>) -> Result<Vec<Finding>> {
+    let mut findings = Vec::new();
+    for path in listed {
+        // The listing's symlink check and this read are separate lookups, so
+        // the read re-checks on the opened handle rather than following a
+        // file swapped for a symlink in between.
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .context("dotenv scan target has no file name")?;
+        let Some(dotenv) = phantom_core::managed_dotenv::parse_regular_dotenv(project_dir, name)?
+        else {
+            continue;
+        };
+        dotenv.validate_for_mutation()?;
+        for entry in dotenv.real_secret_entries() {
+            findings.push(Finding {
+                kind: "dotenv",
+                path: Some(path.display().to_string()),
+                name: Some(entry.key.clone()),
+                label: None,
+                pattern: None,
+            });
+        }
+    }
+    Ok(findings)
+}
+
+/// `--staged` is the pre-commit surface. Ordinary worktree checks remain
+/// usable without a Git repository or Git binary.
+fn staged_findings() -> Result<(Vec<Finding>, Vec<ConfigWarning>)> {
+    let mut findings = Vec::new();
+    let mut warnings = Vec::new();
+    for file in get_staged_files()? {
+        if file.ends_with(".phantom.toml") {
+            let content = read_staged_file(&file)?;
+            warnings.extend(config_risks(&file, &content));
+            continue;
+        }
+
+        if is_env_file(&file) {
+            // Dotenv is a strict text format. Non-UTF-8 content makes its
+            // protection status indeterminate and therefore fails closed.
+            let content = read_staged_file(&file)?;
+            let dotenv = DotenvFile::parse_str(&content);
+            dotenv.validate_for_mutation()?;
+            let mut real_secrets = dotenv.real_secret_entries();
+            // Committable templates (.env.example etc.) may name secrets
+            // as long as each value is an empty or `phantom init`-style
+            // placeholder. Any other value is still reported.
+            if is_example_template_file(&file) {
+                real_secrets.retain(|entry| !is_example_placeholder(&entry.value));
+            }
+            for entry in real_secrets {
+                findings.push(Finding {
+                    kind: "staged_dotenv",
+                    path: Some(file.clone()),
+                    name: Some(entry.key.clone()),
+                    label: None,
+                    pattern: None,
+                });
+            }
+            continue;
+        }
+
+        // Do not decode arbitrary staged blobs: PNG, PDF, and other
+        // unrelated binary assets are valid. Git emits a textual binary
+        // diff marker and therefore no added lines for those files.
+        let scan_content = staged_added_lines(&file)?;
+        findings.extend(code_pattern_findings(&file, &scan_content));
+    }
+    Ok((findings, warnings))
+}
+
+/// Credential shapes looked for in staged code: the prefix, a label for the
+/// report, and the shortest tail that can follow the prefix in a real key.
+/// A bare prefix is not a key: `task-`, `risk-` and `desk-` all contain `sk-`,
+/// so a match must start a token and carry a key-length tail.
+struct CodePattern {
+    prefix: &'static str,
+    label: &'static str,
+    min_tail: usize,
+    /// AWS access key IDs are upper-case alphanumerics only.
+    upper_alnum_only: bool,
+}
+
+const CODE_PATTERNS: [CodePattern; 9] = [
+    CodePattern {
+        prefix: "sk-",
+        label: "OpenAI API key",
+        min_tail: 20,
+        upper_alnum_only: false,
+    },
+    CodePattern {
+        prefix: "sk_live_",
+        label: "Stripe live key",
+        min_tail: 16,
+        upper_alnum_only: false,
+    },
+    CodePattern {
+        prefix: "sk_test_",
+        label: "Stripe test key",
+        min_tail: 16,
+        upper_alnum_only: false,
+    },
+    CodePattern {
+        prefix: "ghp_",
+        label: "GitHub personal token",
+        min_tail: 30,
+        upper_alnum_only: false,
+    },
+    CodePattern {
+        prefix: "github_pat_",
+        label: "GitHub PAT",
+        min_tail: 30,
+        upper_alnum_only: false,
+    },
+    CodePattern {
+        prefix: "glpat-",
+        label: "GitLab PAT",
+        min_tail: 20,
+        upper_alnum_only: false,
+    },
+    CodePattern {
+        prefix: "xoxb-",
+        label: "Slack bot token",
+        min_tail: 20,
+        upper_alnum_only: false,
+    },
+    CodePattern {
+        prefix: "xoxp-",
+        label: "Slack user token",
+        min_tail: 20,
+        upper_alnum_only: false,
+    },
+    CodePattern {
+        prefix: "AKIA",
+        label: "AWS access key",
+        min_tail: 16,
+        upper_alnum_only: true,
+    },
+];
+
+/// A tail with no digit and no capital is an identifier
+/// (`sk-third-party-rollback-race`), not an issued key: twenty random base62
+/// characters with neither is a one-in-thirty-million draw.
+fn is_identifier_tail(tail: &[u8]) -> bool {
+    !tail
+        .iter()
+        .any(|b| b.is_ascii_digit() || b.is_ascii_uppercase())
+}
+
+/// Whether `text` holds `pattern.prefix` at the start of a token, followed by
+/// at least `min_tail` key characters that do not read as an identifier.
+fn contains_credential(text: &str, pattern: &CodePattern) -> bool {
+    let bytes = text.as_bytes();
+    text.match_indices(pattern.prefix).any(|(start, _)| {
+        if start > 0 && bytes[start - 1].is_ascii_alphanumeric() {
+            return false;
+        }
+        let rest = &bytes[start + pattern.prefix.len()..];
+        let len = rest
+            .iter()
+            .take_while(|b| {
+                if pattern.upper_alnum_only {
+                    b.is_ascii_uppercase() || b.is_ascii_digit()
+                } else {
+                    b.is_ascii_alphanumeric() || **b == b'_' || **b == b'-'
+                }
+            })
+            .count();
+        len >= pattern.min_tail && !is_identifier_tail(&rest[..len])
+    })
+}
+
+/// Label for a LiteLLM-shaped key. Shape only: LiteLLM generates virtual keys
+/// as `sk-` plus `secrets.token_urlsafe(16)`, which is exactly 22 URL-safe
+/// characters (checked in litellm 1.103.5, `key_management_endpoints.py`
+/// and `constants.py`; the length is configurable through
+/// `LENGTH_OF_LITELLM_GENERATED_KEY`). Legacy OpenAI keys carry a 48-character
+/// tail and `sk-proj-` keys are longer, so a 22-character tail is the
+/// LiteLLM-shaped case. This is a hint for the report, not proof of origin.
+const LITELLM_KEY_LABEL: &str = "LiteLLM-style virtual key (sk- plus 22 characters)";
+const LITELLM_TAIL_LEN: usize = 22;
+
+/// Tail lengths of every `sk-` token in `text` that the `sk-` rule accepts.
+fn sk_credential_tail_lens(text: &str, pattern: &CodePattern) -> Vec<usize> {
+    let bytes = text.as_bytes();
+    text.match_indices(pattern.prefix)
+        .filter_map(|(start, _)| {
+            if start > 0 && bytes[start - 1].is_ascii_alphanumeric() {
+                return None;
+            }
+            let rest = &bytes[start + pattern.prefix.len()..];
+            let len = rest
+                .iter()
+                .take_while(|b| b.is_ascii_alphanumeric() || **b == b'_' || **b == b'-')
+                .count();
+            (len >= pattern.min_tail && !is_identifier_tail(&rest[..len])).then_some(len)
+        })
+        .collect()
+}
+
+/// The report label for a matched pattern. Only the `sk-` rule can relabel,
+/// and only when every accepted token has the LiteLLM tail length, so a file
+/// that also holds an OpenAI-shaped key keeps the OpenAI label.
+fn finding_label(pattern: &CodePattern, added: &str) -> &'static str {
+    if pattern.prefix == "sk-" {
+        let tails = sk_credential_tail_lens(added, pattern);
+        if !tails.is_empty() && tails.iter().all(|len| *len == LITELLM_TAIL_LEN) {
+            return LITELLM_KEY_LABEL;
+        }
+    }
+    pattern.label
+}
+
+fn code_pattern_findings(file: &str, added: &str) -> Vec<Finding> {
+    CODE_PATTERNS
+        .iter()
+        .filter(|pattern| contains_credential(added, pattern))
+        .map(|pattern| Finding {
+            kind: "staged_code",
+            path: Some(file.to_string()),
+            name: None,
+            label: Some(finding_label(pattern, added)),
+            pattern: Some(pattern.prefix),
+        })
+        .collect()
+}
+
+fn print_findings(findings: &[Finding]) {
+    let Some(first) = findings.first() else {
+        println!("{} No unprotected secrets found.", "ok".green().bold());
         return;
     };
+    if first.kind == "staged_code" {
+        eprintln!("\n{} Potential secrets in code!\n", "BLOCKED".red().bold());
+    } else {
+        eprintln!(
+            "\n{} Unprotected secrets detected!\n",
+            "BLOCKED".red().bold()
+        );
+    }
 
-    let risks = config.service_risks();
-    if risks.is_empty() {
-        return;
+    let mut last_header: Option<(&str, Option<&str>)> = None;
+    for finding in findings {
+        let path = finding.path.as_deref().unwrap_or_default();
+        match finding.kind {
+            "staged_code" => eprintln!(
+                "  {} {} may contain {} ({})",
+                "!".red().bold(),
+                path,
+                finding.label.unwrap_or_default(),
+                finding.pattern.unwrap_or_default()
+            ),
+            kind => {
+                let header = (kind, finding.path.as_deref());
+                if last_header != Some(header) {
+                    let staged = if kind == "staged_dotenv" {
+                        "staged "
+                    } else {
+                        ""
+                    };
+                    eprintln!(
+                        "  {} {}{} has unprotected secret name(s):",
+                        "!".red().bold(),
+                        staged,
+                        path
+                    );
+                    last_header = Some(header);
+                }
+                eprintln!(
+                    "    {} {}",
+                    "-".dimmed(),
+                    finding.name.as_deref().unwrap_or_default().bold()
+                );
+            }
+        }
     }
 
     eprintln!(
-        "\n{} Risky Phantom service route(s) in {}:\n",
-        "warn".yellow().bold(),
-        file
+        "\n{} Run {} to protect your secrets.",
+        "fix".yellow().bold(),
+        "phantom init".cyan().bold()
     );
-    for risk in risks {
+    eprintln!(
+        "{} Or use {} to bypass (not recommended).\n",
+        "   ".yellow(),
+        "git commit --no-verify".dimmed()
+    );
+}
+
+/// The same scan list as the MCP compliance `env_clean` check
+/// ([`phantom_core::managed_dotenv::SCANNED_DOTENV_NAMES`] plus the configured
+/// `dotenv_path`), so the two cannot disagree about which files exist.
+fn dotenv_scan_paths(project_dir: &Path) -> Result<Vec<PathBuf>> {
+    let config_path = project_dir.join(".phantom.toml");
+    let configured = if config_path.exists() {
+        PhantomConfig::load(&config_path)?.phantom.dotenv_path
+    } else {
+        None
+    };
+    phantom_core::managed_dotenv::scanned_dotenv_paths(project_dir, configured.as_deref())
+}
+
+fn config_risks(file: &str, content: &str) -> Vec<ConfigWarning> {
+    let Ok(config) = toml::from_str::<PhantomConfig>(content) else {
+        return Vec::new();
+    };
+    config
+        .service_risks()
+        .into_iter()
+        .map(|risk| ConfigWarning {
+            path: file.to_string(),
+            service: risk.service.to_string(),
+            message: risk.message.to_string(),
+        })
+        .collect()
+}
+
+fn print_warnings(warnings: &[ConfigWarning]) {
+    let mut last_path: Option<&str> = None;
+    for warning in warnings {
+        if last_path != Some(warning.path.as_str()) {
+            if last_path.is_some() {
+                print_config_note();
+            }
+            eprintln!(
+                "\n{} Risky Phantom service route(s) in {}:\n",
+                "warn".yellow().bold(),
+                warning.path
+            );
+            last_path = Some(warning.path.as_str());
+        }
         eprintln!(
             "  {} {}: {}",
             "!".yellow().bold(),
-            risk.service.bold(),
-            risk.message
+            warning.service.bold(),
+            warning.message
         );
     }
+    if last_path.is_some() {
+        print_config_note();
+    }
+}
+
+fn print_config_note() {
     eprintln!(
         "\n{} Review .phantom.toml service mappings before running untrusted code.\n",
         "note".yellow().bold()
@@ -216,60 +435,45 @@ fn is_env_file(file: &str) -> bool {
         .is_some_and(|name| name == ".env" || name.starts_with(".env.") || name.ends_with(".env"))
 }
 
-/// Check if the current environment has phantom tokens in API key variables
-/// (meaning the proxy is not running and API calls will fail with auth errors).
-fn run_runtime_check() -> Result<()> {
-    let mut issues = 0;
-
-    // Common env vars that hold API keys
-    let api_key_vars = [
-        "OPENAI_API_KEY",
-        "ANTHROPIC_API_KEY",
-        "STRIPE_SECRET_KEY",
-        "SUPABASE_SERVICE_ROLE_KEY",
-        "SUPABASE_ANON_KEY",
-        "DATABASE_URL",
-        "RESEND_API_KEY",
-        "SENDGRID_API_KEY",
-        "TWILIO_AUTH_TOKEN",
-        "GITHUB_TOKEN",
-        "CLOUDFLARE_API_TOKEN",
-    ];
-
-    for var_name in &api_key_vars {
-        if let Ok(value) = std::env::var(var_name) {
-            if PhantomToken::is_phantom_token(&value) {
-                if issues == 0 {
-                    eprintln!(
-                        "\n{} Phantom tokens in environment (proxy not running)!\n",
-                        "warn".yellow().bold()
-                    );
-                }
-                eprintln!(
-                    "  {} {} contains phantom token ({})",
-                    "!".yellow().bold(),
-                    var_name.bold(),
-                    value.get(..12).unwrap_or(&value).dimmed()
-                );
-                issues += 1;
-            }
-        }
+fn print_runtime(findings: &[Finding], scan: &phantom_core::report::RuntimeEnvScan) {
+    if let Some(warning) = scan.session_warning() {
+        eprintln!("{} {}", "warn".yellow().bold(), warning);
     }
-
-    if issues > 0 {
-        eprintln!(
-            "\n{} Start the proxy with: {}",
-            "fix".yellow().bold(),
-            "phantom exec -- <your-command>".cyan().bold()
+    if !scan.excused.is_empty() {
+        println!(
+            "{} Live Phantom proxy session owns: {}",
+            "ok".green().bold(),
+            scan.excused
+                .iter()
+                .map(|name| phantom_core::report::printable_name(name))
+                .collect::<Vec<_>>()
+                .join(", ")
         );
-        std::process::exit(1);
     }
-
-    println!(
-        "{} No phantom tokens in environment (proxy running or secrets injected).",
-        "ok".green().bold()
+    if findings.is_empty() {
+        println!(
+            "{} No phantom token outside a live proxy session in any environment variable.",
+            "ok".green().bold()
+        );
+        return;
+    }
+    eprintln!(
+        "\n{} Phantom tokens in environment with no live proxy session that owns them!\n",
+        "warn".yellow().bold()
     );
-    Ok(())
+    for finding in findings {
+        eprintln!(
+            "  {} {} contains a phantom token",
+            "!".yellow().bold(),
+            phantom_core::report::printable_name(finding.name.as_deref().unwrap_or_default())
+                .bold()
+        );
+    }
+    eprintln!(
+        "\n{} Start the proxy with: {}",
+        "fix".yellow().bold(),
+        "phantom exec -- <your-command>".cyan().bold()
+    );
 }
 
 fn get_staged_files() -> Result<Vec<String>> {
@@ -283,9 +487,16 @@ fn get_staged_files() -> Result<Vec<String>> {
         ])
         .output()
         .map_err(|_| {
-            anyhow::anyhow!("Failed to inspect staged paths; clean status is indeterminate")
+            anyhow::anyhow!(
+                "Failed to inspect staged paths: could not run git (is it on PATH?); clean status is indeterminate"
+            )
         })?;
     if !output.status.success() {
+        if !inside_git_work_tree() {
+            anyhow::bail!(
+                "`phantom check --staged` must run inside a git work tree; clean status is indeterminate. Use `phantom check` to scan .env files here."
+            );
+        }
         anyhow::bail!("Failed to inspect staged paths; clean status is indeterminate");
     }
     let paths = String::from_utf8(output.stdout).map_err(|_| {
@@ -296,6 +507,15 @@ fn get_staged_files() -> Result<Vec<String>> {
         .filter(|path| !path.is_empty())
         .map(String::from)
         .collect())
+}
+
+fn inside_git_work_tree() -> bool {
+    std::process::Command::new("git")
+        .args(["rev-parse", "--is-inside-work-tree"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .is_ok_and(|out| out.status.success() && out.stdout.starts_with(b"true"))
 }
 
 fn read_staged_file(file: &str) -> Result<String> {
@@ -340,6 +560,237 @@ fn staged_added_lines(file: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use phantom_core::token::PhantomToken;
+
+    /// The liveness probe `--runtime` relies on, against the real proxy rather
+    /// than a stand-in: 200 for the session's header, nothing for another
+    /// header, and nothing once the proxy has stopped.
+    #[test]
+    fn runtime_probe_matches_the_real_proxy_health_endpoint() {
+        use phantom_core::report::proxy_answers;
+        use phantom_proxy::{Interceptor, ProxyConfig, ProxyServer, ServiceRegistry};
+
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let session_header = ProxyServer::generate_proxy_token();
+        let proxy = runtime
+            .block_on(ProxyServer::start(
+                ProxyConfig {
+                    port: 0,
+                    proxy_token: session_header.clone(),
+                    ..ProxyConfig::default()
+                },
+                ServiceRegistry::new(),
+                Interceptor::new(std::collections::HashMap::new()),
+            ))
+            .unwrap();
+        let port = proxy.port();
+
+        assert!(proxy_answers(port, &session_header));
+        assert!(!proxy_answers(port, "another-session"));
+
+        runtime.block_on(proxy.shutdown());
+        assert!(!proxy_answers(port, &session_header));
+    }
+
+    /// A file listed as regular and then swapped for a symlink is refused at
+    /// read time, not followed. Fails if the read goes back to
+    /// `DotenvFile::parse_file`, which follows the link and reports the
+    /// target's key.
+    #[cfg(unix)]
+    #[test]
+    fn read_refuses_a_listed_file_swapped_for_a_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let value = format!("outside-{}", std::process::id());
+        std::fs::write(
+            outside.path().join("target.env"),
+            format!("GITHUB_TOKEN={value}\n"),
+        )
+        .unwrap();
+        std::fs::write(dir.path().join(".env"), "PORT=3000\n").unwrap();
+        let listed = dotenv_scan_paths(dir.path()).unwrap();
+        assert_eq!(listed, vec![dir.path().join(".env")]);
+
+        std::fs::remove_file(dir.path().join(".env")).unwrap();
+        std::os::unix::fs::symlink(outside.path().join("target.env"), dir.path().join(".env"))
+            .unwrap();
+
+        let error = findings_in_listed(dir.path(), listed).unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("non-symlink file: .env"), "{message}");
+        assert!(!message.contains(&value), "{message}");
+    }
+
+    #[test]
+    fn worktree_findings_report_names_without_values() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(".env"),
+            "OPENAI_API_KEY=sk-live-value-that-must-not-leak-123456\nPORT=3000\n",
+        )
+        .unwrap();
+
+        let findings = worktree_findings(dir.path()).unwrap();
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].kind, "dotenv");
+        assert_eq!(findings[0].name.as_deref(), Some("OPENAI_API_KEY"));
+
+        let report = Report {
+            mode: "worktree",
+            clean: false,
+            findings: &findings,
+            warnings: &[],
+            indeterminate: &[],
+            proxy_session: false,
+            excused: &[],
+            session_warning: None,
+        };
+        let json = serde_json::to_string(&report).unwrap();
+        assert!(json.contains("\"name\":\"OPENAI_API_KEY\""));
+        assert!(!json.contains("must-not-leak"), "{json}");
+        assert!(!json.contains("PORT"), "{json}");
+    }
+
+    #[test]
+    fn protected_worktree_is_clean() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(".env"),
+            format!("OPENAI_API_KEY={}\n", PhantomToken::generate().as_str()),
+        )
+        .unwrap();
+        assert!(worktree_findings(dir.path()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn code_patterns_report_label_and_prefix_only() {
+        let line = format!(
+            "const key = \"{}{}\";",
+            "ghp_", "Q7rT2mVx9KpL4wZs8NdY3hBc6FjGu5EaR1oW"
+        );
+        let findings = code_pattern_findings("src/app.ts", &line);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].label, Some("GitHub personal token"));
+        assert_eq!(findings[0].pattern, Some("ghp_"));
+        let json = serde_json::to_string(&findings).unwrap();
+        assert!(!json.contains("Q7rT2mVx9K"), "{json}");
+    }
+
+    #[test]
+    fn code_patterns_ignore_prefixes_inside_words_and_short_tails() {
+        // `task-`, `risk-` and `desk-` contain `sk-`; none of these is a key.
+        for text in [
+            "const brief = buildTaskBrief(task-context);",
+            "see docs/task-to-pr and risk-register, desk-layout",
+            "import { x } from './teams/task-brief-helpers-module.js';",
+            "placeholder sk-... or sk-your-key-here",
+            "AKIAEXAMPLE is too short; ghp_short",
+            "mask_test_value_with_long_suffix_here",
+            "fn sk-third-party-rollback-race() and github_pat_grammar_reject_hyphens_identically",
+        ] {
+            assert!(code_pattern_findings("src/a.ts", text).is_empty(), "{text}");
+        }
+    }
+
+    #[test]
+    fn code_patterns_still_catch_documented_placeholders() {
+        // The examples' FAKE_KEY and AWS's documented key must keep failing the
+        // gate: a placeholder with digits or capitals is treated like a key.
+        for text in [
+            format!("{}{}{}", "sk-proj-", "EXAMPLEONLY", "0".repeat(40)),
+            format!("{}{}", "AKIA", "IOSFODNN7EXAMPLE"),
+        ] {
+            assert_eq!(code_pattern_findings("src/a.ts", &text).len(), 1, "{text}");
+        }
+    }
+
+    #[test]
+    fn code_patterns_still_catch_real_key_shapes() {
+        // Random-looking tails, built at runtime so no literal key sits in source.
+        let cases = [
+            (
+                format!("OPENAI={}{}", "sk-", "proj-Hq8vN2cW7rT4kLx9ZpM3sJ6d"),
+                "sk-",
+            ),
+            (
+                format!("key: '{}{}'", "sk_live_", "51HxYzQ7rT2mVx9KpL4w"),
+                "sk_live_",
+            ),
+            (
+                format!("\"{}{}\"", "ghp_", "Q7rT2mVx9KpL4wZs8NdY3hBc6FjGu5EaR1oW"),
+                "ghp_",
+            ),
+            (
+                format!("token={}{}", "xoxb-", "7391046285-5810362947-Hq8vN2cW"),
+                "xoxb-",
+            ),
+            (
+                format!("aws_access_key_id = {}{}", "AKIA", "Q7RT2MVX9KPL4WZS"),
+                "AKIA",
+            ),
+        ];
+        for (text, prefix) in cases {
+            let findings = code_pattern_findings("src/a.ts", &text);
+            assert_eq!(findings.len(), 1, "{text}");
+            assert_eq!(findings[0].pattern, Some(prefix));
+        }
+    }
+
+    #[test]
+    fn litellm_shaped_virtual_key_gets_its_own_label() {
+        // 22 URL-safe characters after `sk-`, built at runtime.
+        let tail = "Hq8vN2cW7rT4kLx9ZpM3sJ";
+        assert_eq!(tail.len(), 22);
+        let text = format!("LITELLM_KEY={}{}", "sk-", tail);
+        let findings = code_pattern_findings("src/app.ts", &text);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].label, Some(LITELLM_KEY_LABEL));
+        assert_eq!(findings[0].pattern, Some("sk-"));
+        let json = serde_json::to_string(&findings).unwrap();
+        assert!(!json.contains(tail), "{json}");
+        // urlsafe alphabet includes `-` and `_`.
+        let dashed = format!("{}{}", "sk-", "Hq8vN2cW-rT4kLx9_pM3sJ");
+        let findings = code_pattern_findings("src/a.ts", &dashed);
+        assert_eq!(findings[0].label, Some(LITELLM_KEY_LABEL));
+    }
+
+    #[test]
+    fn longer_sk_keys_keep_the_openai_label() {
+        for text in [
+            format!(
+                "{}{}",
+                "sk-", "Hq8vN2cW7rT4kLx9ZpM3sJ6dQ1fY5bVn0gXaE8uRt2wK4zP"
+            ),
+            format!("{}{}", "sk-proj-", "Hq8vN2cW7rT4kLx9ZpM3sJ6dQ1fY"),
+            format!("{}{}", "sk-", "Hq8vN2cW7rT4kLx9ZpM3sJa"),
+        ] {
+            let findings = code_pattern_findings("src/a.ts", &text);
+            assert_eq!(findings.len(), 1, "{text}");
+            assert_eq!(findings[0].label, Some("OpenAI API key"), "{text}");
+        }
+        // A file with one LiteLLM-shaped and one longer key keeps the OpenAI label.
+        let mixed = format!(
+            "a={}{}\nb={}{}",
+            "sk-", "Hq8vN2cW7rT4kLx9ZpM3sJ", "sk-", "Hq8vN2cW7rT4kLx9ZpM3sJ6dQ1fY5bVn0gXaE8u"
+        );
+        let findings = code_pattern_findings("src/a.ts", &mixed);
+        assert_eq!(findings[0].label, Some("OpenAI API key"));
+    }
+
+    #[test]
+    fn litellm_documented_short_example_keys_are_not_flagged() {
+        // LiteLLM's docs use short example master keys; a short tail is not a key.
+        for text in [
+            "master_key: sk-1234",
+            "Authorization: Bearer sk-1234",
+            "sk-12345678",
+        ] {
+            assert!(
+                code_pattern_findings("config.yaml", text).is_empty(),
+                "{text}"
+            );
+        }
+    }
 
     #[test]
     fn configured_custom_dotenv_is_scanned_for_real_secrets() {
@@ -359,6 +810,31 @@ mod tests {
             .map(|entry| entry.key.as_str())
             .collect();
         assert_eq!(names, vec!["OPENAI_API_KEY"]);
+    }
+
+    #[test]
+    fn scans_production_and_test_dotenvs() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in [
+            ".env.production.local",
+            ".env.test",
+            ".env.development.local",
+        ] {
+            std::fs::write(dir.path().join(name), "PORT=3000\n").unwrap();
+        }
+        let names: Vec<_> = dotenv_scan_paths(dir.path())
+            .unwrap()
+            .into_iter()
+            .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                ".env.development.local",
+                ".env.production.local",
+                ".env.test"
+            ]
+        );
     }
 
     #[test]

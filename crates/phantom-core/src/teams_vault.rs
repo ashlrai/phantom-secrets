@@ -17,11 +17,6 @@ use crate::error::{PhantomError, Result};
 use crate::team_crypto::{self, KeyShare, MemberKeypair};
 use crate::teams;
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
-use chacha20poly1305::{
-    aead::{Aead, KeyInit},
-    ChaCha20Poly1305, Nonce,
-};
-use rand::RngCore;
 use std::collections::{BTreeMap, HashMap};
 use zeroize::{Zeroize, Zeroizing};
 
@@ -221,23 +216,12 @@ async fn push_inner(
 
     // Per-push 32-byte symmetric key, never reused.
     let sym_key = team_crypto::generate_sym_key();
-    let cipher = ChaCha20Poly1305::new(sym_key.as_slice().into());
-    let mut nonce_bytes = [0u8; NONCE_LEN];
-    rand::thread_rng().fill_bytes(&mut nonce_bytes);
-    let nonce = Nonce::from_slice(&nonce_bytes);
-    let ciphertext = cipher
-        .encrypt(nonce, plaintext.as_bytes())
-        .map_err(|error| {
-            partial_push_error(
-                "local vault encryption",
-                &receipt,
-                PhantomError::Other(format!("Encrypt failed: {error}")),
-            )
-        })?;
-
-    let mut framed = Vec::with_capacity(NONCE_LEN + ciphertext.len());
-    framed.extend_from_slice(&nonce_bytes);
-    framed.extend_from_slice(&ciphertext);
+    let framed = crate::blob_format::seal_team_blob(
+        plaintext.as_bytes(),
+        &sym_key,
+        crate::blob_format::WriteFormat::from_env(),
+    )
+    .map_err(|error| partial_push_error("local vault encryption", &receipt, error))?;
     let blob_b64 = B64.encode(&framed);
 
     // Wrap the symmetric key for each recipient.
@@ -331,14 +315,7 @@ pub async fn pull_for_project(
             "Encrypted blob too short to be valid".to_string(),
         ));
     }
-    let (nonce_bytes, ct) = framed.split_at(NONCE_LEN);
-    let nonce = Nonce::from_slice(nonce_bytes);
-    let cipher = ChaCha20Poly1305::new(sym_key.as_slice().into());
-    let plaintext = Zeroizing::new(
-        cipher
-            .decrypt(nonce, ct)
-            .map_err(|e| PhantomError::Other(format!("Decrypt failed: {e}")))?,
-    );
+    let plaintext = crate::blob_format::open_team_blob(&framed, &sym_key)?;
 
     let secrets = parse_secret_json(&plaintext)
         .map_err(|e| PhantomError::Other(format!("Bad vault JSON: {e}")))?;
@@ -430,17 +407,11 @@ pub async fn rotate_vault(
     );
 
     let sym_key = team_crypto::generate_sym_key();
-    let cipher = ChaCha20Poly1305::new(sym_key.as_slice().into());
-    let mut nonce_bytes = [0u8; NONCE_LEN];
-    rand::thread_rng().fill_bytes(&mut nonce_bytes);
-    let nonce = Nonce::from_slice(&nonce_bytes);
-    let ciphertext = cipher
-        .encrypt(nonce, plaintext.as_bytes())
-        .map_err(|e| PhantomError::Other(format!("Encrypt failed: {e}")))?;
-
-    let mut framed = Vec::with_capacity(NONCE_LEN + ciphertext.len());
-    framed.extend_from_slice(&nonce_bytes);
-    framed.extend_from_slice(&ciphertext);
+    let framed = crate::blob_format::seal_team_blob(
+        plaintext.as_bytes(),
+        &sym_key,
+        crate::blob_format::WriteFormat::from_env(),
+    )?;
     let blob_b64 = B64.encode(&framed);
 
     let mut shares: HashMap<String, team_crypto::KeyShare> = HashMap::new();
@@ -494,16 +465,11 @@ pub fn encrypt_secrets_to_blob(
             .map_err(|e| PhantomError::Other(format!("Serialize failed: {e}")))?,
     );
     let sym_key = team_crypto::generate_sym_key();
-    let cipher = ChaCha20Poly1305::new(sym_key.as_slice().into());
-    let mut nonce_bytes = [0u8; NONCE_LEN];
-    rand::thread_rng().fill_bytes(&mut nonce_bytes);
-    let nonce = Nonce::from_slice(&nonce_bytes);
-    let ciphertext = cipher
-        .encrypt(nonce, plaintext.as_bytes())
-        .map_err(|e| PhantomError::Other(format!("Encrypt failed: {e}")))?;
-    let mut framed = Vec::with_capacity(NONCE_LEN + ciphertext.len());
-    framed.extend_from_slice(&nonce_bytes);
-    framed.extend_from_slice(&ciphertext);
+    let framed = crate::blob_format::seal_team_blob(
+        plaintext.as_bytes(),
+        &sym_key,
+        crate::blob_format::WriteFormat::from_env(),
+    )?;
     Ok((B64.encode(&framed), sym_key))
 }
 
@@ -520,14 +486,7 @@ pub fn decrypt_blob_with_key(
             "Encrypted blob too short to be valid".to_string(),
         ));
     }
-    let (nonce_bytes, ct) = framed.split_at(NONCE_LEN);
-    let nonce = Nonce::from_slice(nonce_bytes);
-    let cipher = ChaCha20Poly1305::new(sym_key.into());
-    let plaintext = Zeroizing::new(
-        cipher
-            .decrypt(nonce, ct)
-            .map_err(|e| PhantomError::Other(format!("Decrypt failed: {e}")))?,
-    );
+    let plaintext = crate::blob_format::open_team_blob(&framed, sym_key)?;
     let secrets = parse_secret_json(&plaintext)
         .map_err(|e| PhantomError::Other(format!("Bad vault JSON: {e}")))?;
     Ok(secrets)

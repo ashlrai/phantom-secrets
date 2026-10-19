@@ -4,6 +4,11 @@ use phantom_core::agent::{self, AgentReadinessOptions, AgentReadinessReport, Vau
 use phantom_core::config::PhantomConfig;
 use phantom_core::dotenv::DotenvFile;
 
+/// Readiness report for the current directory, for the combined doctor.
+pub fn readiness_for_cwd() -> Result<AgentReadinessReport> {
+    Ok(readiness_report(&std::env::current_dir()?))
+}
+
 pub fn report(json: bool) -> Result<()> {
     let project_dir = std::env::current_dir()?;
     let report = readiness_report(&project_dir);
@@ -18,6 +23,121 @@ pub fn report(json: bool) -> Result<()> {
         std::process::exit(report.exit_code);
     }
     Ok(())
+}
+
+/// `phantom agent status`: value-free, read-only view of MCP approval state.
+///
+/// Reads `~/.phantom/mcp-approvals.jsonl` without locking or creating anything.
+/// Never prints nonces, argument hashes, parameter summaries, or key material.
+pub fn status(json: bool) -> Result<()> {
+    use phantom_core::mcp_approval;
+    let entries = mcp_approval::read_approval_status().context("reading MCP approval state")?;
+    let key_present =
+        mcp_approval::approval_key_present().context("checking the MCP approval key")?;
+    let pending = entries.iter().filter(|e| !e.approved && !e.expired).count();
+    let approved_unused = entries.iter().filter(|e| e.approved && !e.expired).count();
+    let expired = entries.iter().filter(|e| e.expired).count();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&status_json()?)?);
+        return Ok(());
+    }
+
+    println!("{}", "Phantom Agent Status".bold().underline());
+    println!();
+    println!(
+        "  {} {} pending, {} approved and unused, {} expired",
+        "mcp approvals:".dimmed(),
+        pending,
+        approved_unused,
+        expired
+    );
+    println!(
+        "  {} {}",
+        "approval key:".dimmed(),
+        if key_present {
+            "present"
+        } else {
+            "not created yet"
+        }
+    );
+    for e in &entries {
+        let left = e
+            .expires_at
+            .map(|x| format!("{}s left", x.saturating_sub(now)))
+            .unwrap_or_else(|| "no expiry".to_string());
+        println!(
+            "    {} {} ({}, {})",
+            "-".dimmed(),
+            e.tool_name,
+            approval_state(e),
+            left
+        );
+    }
+    println!(
+        "  {} not available (the lease broker is not wired into the CLI)",
+        "leases:".dimmed()
+    );
+    println!();
+    println!("Approve a pending request yourself with: phantom mcp-approve <NONCE>");
+    Ok(())
+}
+
+/// The `phantom agent status --json` document, for the combined doctor.
+/// Read-only and value-free, like `status`.
+pub fn status_json() -> Result<serde_json::Value> {
+    use phantom_core::mcp_approval;
+    let entries = mcp_approval::read_approval_status().context("reading MCP approval state")?;
+    let key_present =
+        mcp_approval::approval_key_present().context("checking the MCP approval key")?;
+    let pending = entries.iter().filter(|e| !e.approved && !e.expired).count();
+    let approved_unused = entries.iter().filter(|e| e.approved && !e.expired).count();
+    let expired = entries.iter().filter(|e| e.expired).count();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let approvals: Vec<_> = entries
+        .iter()
+        .map(|e| {
+            serde_json::json!({
+                "tool_name": e.tool_name,
+                "project_id": e.project_id,
+                "state": approval_state(e),
+                "created_at": e.created_at,
+                "expires_at": e.expires_at,
+                "remaining_secs": e.expires_at.map(|x| x.saturating_sub(now)),
+                "approved_at": e.approved_at,
+            })
+        })
+        .collect();
+    Ok(serde_json::json!({
+        "approvals": {
+            "pending": pending,
+            "approved_unused": approved_unused,
+            "expired": expired,
+            "key_present": key_present,
+            "records": approvals,
+        },
+        "leases": {
+            "available": false,
+            "reason": "the lease broker is not wired into the CLI; no lease state is read",
+        },
+    }))
+}
+
+fn approval_state(e: &phantom_core::mcp_approval::ApprovalStatusEntry) -> &'static str {
+    if e.expired {
+        "expired"
+    } else if e.approved {
+        "approved_unused"
+    } else {
+        "pending"
+    }
 }
 
 pub fn doctor() -> Result<()> {
@@ -99,7 +219,7 @@ fn readiness_report(project_dir: &std::path::Path) -> AgentReadinessReport {
 fn vault_probe(project_dir: &std::path::Path) -> Option<VaultProbe> {
     let config_path = project_dir.join(".phantom.toml");
     let config = PhantomConfig::load(&config_path).ok()?;
-    let vault = match phantom_vault::try_create_vault(config.local_project_id()) {
+    let vault = match crate::util::open_vault(config.local_project_id()) {
         Ok(vault) => vault,
         Err(error) => {
             return Some(VaultProbe {
@@ -112,12 +232,33 @@ fn vault_probe(project_dir: &std::path::Path) -> Option<VaultProbe> {
     };
     let backend = vault.backend_name().to_string();
     match vault.list() {
-        Ok(names) => Some(VaultProbe {
-            accessible: true,
-            backend: Some(backend),
-            secret_count: Some(names.len()),
-            error: None,
-        }),
+        // The project's encrypted-file vault cannot be opened here, so the
+        // secrets agents run with are not reachable: not accessible, whether
+        // the keychain this process selected is empty or not.
+        Ok(names) => match crate::util::inventory_guard(
+            vault.as_ref(),
+            config.local_project_id(),
+            names.len(),
+        ) {
+            Ok(None) => Some(VaultProbe {
+                accessible: true,
+                backend: Some(backend),
+                secret_count: Some(names.len()),
+                error: None,
+            }),
+            Ok(Some(note)) => Some(VaultProbe {
+                accessible: false,
+                backend: Some(backend),
+                secret_count: Some(names.len()),
+                error: Some(note),
+            }),
+            Err(locked) => Some(VaultProbe {
+                accessible: false,
+                backend: Some(backend),
+                secret_count: None,
+                error: Some(locked.to_string()),
+            }),
+        },
         Err(err) => Some(VaultProbe {
             accessible: false,
             backend: Some(backend),
@@ -141,8 +282,19 @@ fn apply_setup(project_dir: &std::path::Path, before: &AgentReadinessReport) -> 
         );
     }
 
+    if before
+        .findings
+        .iter()
+        .any(|finding| finding.id == "invalid-config")
+    {
+        anyhow::bail!(
+            ".phantom.toml exists but could not be loaded; agent setup made no gitignore, example, config, vault, or client changes. Fix or restore it, then run `phantom doctor`"
+        );
+    }
+
     let config_path = project_dir.join(".phantom.toml");
-    let config = PhantomConfig::load(&config_path).ok();
+    let config = crate::util::load_config_if_present(&config_path)
+        .context("Failed to load .phantom.toml; agent setup made no changes")?;
     let env_path = match config.as_ref() {
         Some(config) => {
             phantom_core::managed_dotenv::resolve_dotenv(project_dir, config, &[])?.path
@@ -187,6 +339,7 @@ fn apply_setup(project_dir: &std::path::Path, before: &AgentReadinessReport) -> 
         Some(crate::commands::setup::Client::ClaudeCode),
         false,
         None,
+        false,
     )?;
 
     if project_dir.join("package.json").exists() {
@@ -257,7 +410,9 @@ fn ensure_gitignore(project_dir: &std::path::Path) -> Result<bool> {
     let config = lock
         .target(&config_path)?
         .read_regular()?
-        .and_then(|bytes| PhantomConfig::load_from_bytes(&config_path, bytes.bytes()).ok());
+        .map(|bytes| PhantomConfig::load_from_bytes(&config_path, bytes.bytes()))
+        .transpose()
+        .context("Failed to load .phantom.toml; agent setup made no changes")?;
     let (dotenv_target, dotenv_before) = agent_dotenv_guard(&lock, project_dir, config.as_ref())?;
     let target = lock.target(&path)?;
     let before = target
@@ -292,7 +447,9 @@ fn ensure_env_example(project_dir: &std::path::Path) -> Result<bool> {
     let config = lock
         .target(&config_path)?
         .read_regular()?
-        .and_then(|bytes| PhantomConfig::load_from_bytes(&config_path, bytes.bytes()).ok());
+        .map(|bytes| PhantomConfig::load_from_bytes(&config_path, bytes.bytes()))
+        .transpose()
+        .context("Failed to load .phantom.toml; agent setup made no changes")?;
     let (dotenv_target, dotenv_before) = agent_dotenv_guard(&lock, project_dir, config.as_ref())?;
     let Some(dotenv_before) = dotenv_before else {
         return Ok(false);
@@ -440,6 +597,39 @@ mod tests {
         }
     }
 
+    /// A `.phantom.toml` that exists but does not parse read as "not
+    /// initialized": `agent setup --apply` judged `./.env` and wrote
+    /// `.gitignore`. It now refuses before any change, and the helpers that
+    /// read the config under the project lock refuse too.
+    #[test]
+    fn malformed_config_blocks_all_agent_setup_mutations() {
+        let project = tempfile::tempdir().unwrap();
+        let config = b"[phantom\nversion = ";
+        std::fs::write(project.path().join(".phantom.toml"), config).unwrap();
+        std::fs::write(project.path().join(".env"), b"APP_NAME=demo\n").unwrap();
+        let report = super::readiness_report(project.path());
+        assert!(report.findings.iter().any(|f| f.id == "invalid-config"));
+
+        let error = super::apply_setup(project.path(), &report).unwrap_err();
+
+        assert!(
+            error.to_string().contains("could not be loaded"),
+            "unexpected refusal"
+        );
+        assert!(super::ensure_gitignore(project.path()).is_err());
+        assert!(super::ensure_env_example(project.path()).is_err());
+        assert_eq!(
+            std::fs::read(project.path().join(".phantom.toml")).unwrap(),
+            config
+        );
+        for path in [".gitignore", ".env.example", ".claude", ".mcp.json"] {
+            assert!(
+                !project.path().join(path).exists(),
+                "unexpected mutation: {path}"
+            );
+        }
+    }
+
     #[test]
     fn agent_writer_preserves_concurrent_owner() {
         let project = tempfile::tempdir().unwrap();
@@ -503,5 +693,23 @@ mod tests {
             std::fs::read(project.join(".gitignore")).unwrap(),
             b"decoy\n"
         );
+    }
+}
+
+#[cfg(all(test, unix))]
+mod locked_vault_tests {
+    use crate::util::test_seam::{empty_keychain, keychain_with_one, LockedProject};
+
+    /// `phantom agent report` called a locked file vault accessible (status
+    /// Protected) because the keychain it fell back to listed without error.
+    #[test]
+    fn vault_probe_reports_a_locked_file_vault_as_not_accessible() {
+        for make in [empty_keychain, keychain_with_one] {
+            let project = LockedProject::new(make);
+            let probe = super::vault_probe(&project.dir).unwrap();
+            assert!(!probe.accessible);
+            let error = probe.error.unwrap();
+            assert!(error.contains("PHANTOM_VAULT_PASSPHRASE"), "{error}");
+        }
     }
 }

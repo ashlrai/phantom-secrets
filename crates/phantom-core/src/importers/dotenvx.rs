@@ -28,7 +28,7 @@
 use anyhow::Result;
 use zeroize::Zeroizing;
 
-use super::{env_importer, Importer, SecretMap};
+use super::{env_importer, json_scalar, Importer, SecretMap};
 
 pub struct DotenvxImporter;
 
@@ -65,11 +65,8 @@ fn parse_flat_json(input: &[u8]) -> Result<SecretMap> {
 
     let mut map = SecretMap::new();
     for (key, val) in obj {
-        let value = match &val {
-            serde_json::Value::String(s) => s.clone(),
-            serde_json::Value::Number(n) => n.to_string(),
-            serde_json::Value::Bool(b) => b.to_string(),
-            _ => continue,
+        let Some(value) = json_scalar("dotenvx", &key, &val)? else {
+            continue;
         };
         if value.is_empty() {
             continue;
@@ -147,5 +144,23 @@ mod tests {
         let map = DotenvxImporter::parse(input).unwrap();
         assert_eq!(map.get("API_KEY").map(|v| v.as_str()), Some("sk-test-123"));
         assert_eq!(map.get("PORT").map(|v| v.as_str()), Some("8080"));
+    }
+
+    #[test]
+    fn json_refuses_arrays_and_objects_instead_of_dropping_them() {
+        for input in [
+            r#"{"KEEP": "kept_value", "BAD": ["one", "two"]}"#,
+            r#"{"KEEP": "kept_value", "BAD": {"nested": "v"}}"#,
+        ] {
+            let error = DotenvxImporter::parse(input.as_bytes())
+                .err()
+                .map(|error| error.to_string())
+                .unwrap_or_default();
+            assert!(error.contains("'BAD'"));
+            assert!(error.contains("nothing was imported"));
+            assert!(!error.contains("kept_value"));
+        }
+        let map = DotenvxImporter::parse(br#"{"NULL_KEY": null, "REAL_KEY": "v"}"#).unwrap();
+        assert_eq!(map.len(), 1);
     }
 }

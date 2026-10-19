@@ -1,3 +1,5 @@
+use super::setup_backup::{self, ManifestEntry};
+use super::setup_plan::{self, Action};
 use super::start::{detect_shell_syntax, format_export, ShellSyntax};
 use anyhow::{Context, Result};
 use clap::ValueEnum;
@@ -33,15 +35,19 @@ pub enum Client {
     Windsurf,
     /// Codex (OpenAI) — patches ~/.codex/config.toml
     Codex,
+    /// Gemini CLI — writes `mcpServers` in ~/.gemini/settings.json
+    #[value(name = "gemini", alias = "gemini-cli")]
+    Gemini,
 }
 
 impl Client {
-    fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             Client::ClaudeCode => "Claude Code",
             Client::Cursor => "Cursor",
             Client::Windsurf => "Windsurf",
             Client::Codex => "Codex",
+            Client::Gemini => "Gemini CLI",
         }
     }
 }
@@ -49,8 +55,18 @@ impl Client {
 /// The command spec we write into each client's MCP config.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct McpCommand {
-    command: String,
-    args: Vec<String>,
+    pub(crate) command: String,
+    pub(crate) args: Vec<String>,
+}
+
+#[cfg(test)]
+impl McpCommand {
+    pub(crate) fn for_test(command: &str, args: &[&str]) -> Self {
+        Self {
+            command: command.to_string(),
+            args: args.iter().map(|a| a.to_string()).collect(),
+        }
+    }
 }
 
 /// Remove only the two dotenv read grants emitted by older Phantom releases.
@@ -82,13 +98,23 @@ impl McpCommand {
     }
 }
 
-pub fn run(client: Option<Client>, print: bool, audit_mode: Option<AuditMode>) -> Result<()> {
+pub fn run(
+    client: Option<Client>,
+    print: bool,
+    audit_mode: Option<AuditMode>,
+    replace: bool,
+) -> Result<()> {
     // Handle --audit-mode independently of client setup.
     if let Some(mode) = audit_mode {
         return run_audit_mode_setup(mode);
     }
 
     let client = client.unwrap_or(Client::ClaudeCode);
+    if replace && client == Client::ClaudeCode {
+        anyhow::bail!(
+            "--replace applies to Cursor, Windsurf, Gemini CLI and Codex; the Claude Code setup merges into its files and does not use it"
+        );
+    }
     // Resolve the MCP executable before touching any client configuration. A
     // missing local runtime must fail closed instead of leaving a config that
     // downloads and executes whatever version a package registry serves.
@@ -113,9 +139,10 @@ pub fn run(client: Option<Client>, print: bool, audit_mode: Option<AuditMode>) -
 
     match client {
         Client::ClaudeCode => setup_claude_code(&mcp),
-        Client::Cursor => setup_cursor(&mcp),
-        Client::Windsurf => setup_windsurf(&mcp),
-        Client::Codex => setup_codex(&mcp),
+        Client::Cursor => setup_cursor(&mcp, replace),
+        Client::Windsurf => setup_windsurf(&mcp, replace),
+        Client::Codex => setup_codex(&mcp, replace),
+        Client::Gemini => setup_gemini(&mcp, replace),
     }
 }
 
@@ -615,10 +642,10 @@ pub(crate) fn print_claude_changes(plan: &ClaudeSettingsPlan, mcp: &McpCommand) 
 
 // ─────────────────────────── Cursor ────────────────────────────
 
-fn setup_cursor(mcp: &McpCommand) -> Result<()> {
+fn setup_cursor(mcp: &McpCommand, replace: bool) -> Result<()> {
     let home = home_dir()?;
     let path = home.join(".cursor/mcp.json");
-    upsert_global_mcp_servers_json(&home, Path::new(".cursor/mcp.json"), mcp, || {})?;
+    upsert_global_mcp_servers_json(&home, Path::new(".cursor/mcp.json"), mcp, replace, || {})?;
     println!(
         "\n{} Cursor configured at {}",
         "ok".green().bold(),
@@ -634,13 +661,14 @@ fn setup_cursor(mcp: &McpCommand) -> Result<()> {
 
 // ─────────────────────────── Windsurf ──────────────────────────
 
-fn setup_windsurf(mcp: &McpCommand) -> Result<()> {
+fn setup_windsurf(mcp: &McpCommand, replace: bool) -> Result<()> {
     let home = home_dir()?;
     let path = home.join(".codeium/windsurf/mcp_config.json");
     upsert_global_mcp_servers_json(
         &home,
         Path::new(".codeium/windsurf/mcp_config.json"),
         mcp,
+        replace,
         || {},
     )?;
     println!(
@@ -656,17 +684,46 @@ fn setup_windsurf(mcp: &McpCommand) -> Result<()> {
     Ok(())
 }
 
+// ────────────────────────── Gemini CLI ─────────────────────────
+
+/// Gemini CLI reads user MCP servers from the top-level `mcpServers` object
+/// in `~/.gemini/settings.json`, the same `{command, args}` shape as Cursor.
+/// Every other setting in that file is preserved.
+fn setup_gemini(mcp: &McpCommand, replace: bool) -> Result<()> {
+    let home = home_dir()?;
+    let path = home.join(".gemini/settings.json");
+    upsert_global_mcp_servers_json(
+        &home,
+        Path::new(".gemini/settings.json"),
+        mcp,
+        replace,
+        || {},
+    )?;
+    println!(
+        "\n{} Gemini CLI configured at {}",
+        "ok".green().bold(),
+        display(&path).dimmed()
+    );
+    println!(
+        "{} {} to activate (`/mcp` lists connected servers).",
+        "->".blue().bold(),
+        "Restart Gemini CLI".bold()
+    );
+    Ok(())
+}
+
 // ──────────────────────────── Codex ────────────────────────────
 
-fn setup_codex(mcp: &McpCommand) -> Result<()> {
+fn setup_codex(mcp: &McpCommand, replace: bool) -> Result<()> {
     let home = home_dir()?;
-    setup_codex_at(&home, Path::new(".codex/config.toml"), mcp, || {})
+    setup_codex_at(&home, Path::new(".codex/config.toml"), mcp, replace, || {})
 }
 
 fn setup_codex_at(
     home: &Path,
     relative: &Path,
     mcp: &McpCommand,
+    replace: bool,
     after_lock: impl FnOnce(),
 ) -> Result<()> {
     let path = home.join(relative);
@@ -692,7 +749,12 @@ fn setup_codex_at(
             anyhow::anyhow!("[mcp_servers] is not a table in ~/.codex/config.toml")
         })?;
 
-        let already = servers.contains_key("phantom");
+        let judged = setup_plan::judge(
+            servers
+                .get("phantom")
+                .map(setup_plan::entry_from_toml_value),
+            mcp,
+        );
         let mut entry = toml::Table::new();
         entry.insert(
             "command".to_string(),
@@ -711,6 +773,18 @@ fn setup_codex_at(
 
         let serialized =
             toml::to_string_pretty(&doc).context("Failed to serialize codex config")?;
+        let Some(manifest_entry) = gate_and_backup(
+            home,
+            &path,
+            "mcp_servers.phantom",
+            &judged,
+            replace,
+            before.as_ref(),
+            serialized.as_bytes(),
+        )?
+        else {
+            return Ok((Written::unchanged(), None));
+        };
         let permissions = before
             .as_ref()
             .map(AnchoredRead::permissions)
@@ -720,11 +794,13 @@ fn setup_codex_at(
             serialized.as_bytes(),
             permissions,
         )?;
-        Ok::<_, anyhow::Error>((already, effect))
+        Ok::<_, anyhow::Error>((Written::changed(manifest_entry), Some(effect)))
     })();
-    let already = finish_global_operation(capability, operation, &path)?;
+    let written = finish_global_operation(capability, operation, &path)?;
+    let unchanged = written.entry.is_none();
+    finish_manifest(home, written)?;
 
-    if already {
+    if unchanged {
         println!(
             "   {} MCP server already configured -> {}",
             "-".dimmed(),
@@ -758,19 +834,25 @@ fn setup_codex_at(
 /// Used by Cursor and Windsurf, which share the same MCP config schema.
 #[cfg(test)]
 fn upsert_mcp_servers_json(path: &Path, mcp: &McpCommand) -> Result<()> {
+    upsert_mcp_servers_json_with(path, mcp, false)
+}
+
+#[cfg(test)]
+fn upsert_mcp_servers_json_with(path: &Path, mcp: &McpCommand, replace: bool) -> Result<()> {
     let parent = path
         .parent()
         .ok_or_else(|| anyhow::anyhow!("Configuration path has no parent: {}", path.display()))?;
     let leaf = path
         .file_name()
         .ok_or_else(|| anyhow::anyhow!("Configuration path has no filename: {}", path.display()))?;
-    upsert_global_mcp_servers_json(parent, Path::new(leaf), mcp, || {})
+    upsert_global_mcp_servers_json(parent, Path::new(leaf), mcp, replace, || {})
 }
 
 fn upsert_global_mcp_servers_json(
     home: &Path,
     relative: &Path,
     mcp: &McpCommand,
+    replace: bool,
     after_lock: impl FnOnce(),
 ) -> Result<()> {
     let path = home.join(relative);
@@ -798,7 +880,12 @@ fn upsert_global_mcp_servers_json(
             .as_object_mut()
             .ok_or_else(|| anyhow::anyhow!("mcpServers is not an object in {}", path.display()))?;
 
-        let already = servers_obj.contains_key("phantom");
+        let judged = setup_plan::judge(
+            servers_obj
+                .get("phantom")
+                .map(setup_plan::entry_from_json_value),
+            mcp,
+        );
         servers_obj.insert(
             "phantom".to_string(),
             serde_json::json!({
@@ -809,6 +896,18 @@ fn upsert_global_mcp_servers_json(
 
         let content =
             serde_json::to_string_pretty(&value).context("Failed to serialize MCP config")?;
+        let Some(manifest_entry) = gate_and_backup(
+            home,
+            &path,
+            "mcpServers.phantom",
+            &judged,
+            replace,
+            before.as_ref(),
+            content.as_bytes(),
+        )?
+        else {
+            return Ok((Written::unchanged(), None));
+        };
         let permissions = before
             .as_ref()
             .map(AnchoredRead::permissions)
@@ -818,9 +917,11 @@ fn upsert_global_mcp_servers_json(
             content.as_bytes(),
             permissions,
         )?;
-        Ok::<_, anyhow::Error>((already, effect))
+        Ok::<_, anyhow::Error>((Written::changed(manifest_entry), Some(effect)))
     })();
-    let already = finish_global_operation(capability, operation, &path)?;
+    let written = finish_global_operation(capability, operation, &path)?;
+    let already = written.entry.is_none();
+    finish_manifest(home, written)?;
 
     println!(
         "   {} MCP server: {} -> {}",
@@ -1137,20 +1238,117 @@ fn cleanup_global_directories(
     Ok(())
 }
 
+/// Outcome of one config write: `entry` is `None` when nothing was written
+/// because the existing entry already matched.
+struct Written {
+    entry: Option<ManifestEntry>,
+}
+
+impl Written {
+    fn unchanged() -> Self {
+        Self { entry: None }
+    }
+    fn changed(entry: ManifestEntry) -> Self {
+        Self { entry: Some(entry) }
+    }
+}
+
+/// Decide whether a config write may proceed and, if it may, take the backup.
+///
+/// - `Unchanged`: returns `None`, nothing is written or recorded.
+/// - A differing `phantom` entry without `--replace`: refuses and names the
+///   entry. Values (including `env`) are never printed.
+/// - Otherwise, an existing file is copied byte for byte to a sibling backup
+///   first. The returned entry is recorded in the manifest after the write.
+fn gate_and_backup(
+    home: &Path,
+    path: &Path,
+    entry_name: &str,
+    action: &Action,
+    replace: bool,
+    before: Option<&AnchoredRead>,
+    new_bytes: &[u8],
+) -> Result<Option<ManifestEntry>> {
+    let action_name = match action {
+        Action::Unchanged => return Ok(None),
+        Action::Add => "add",
+        Action::Conflict { extra_keys, .. } => {
+            if !replace {
+                let extra = if extra_keys.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        " (it also has {} extra key(s) that would be dropped)",
+                        extra_keys.len()
+                    )
+                };
+                anyhow::bail!(
+                    "{entry_name} in {} already exists and differs from what Phantom would write{extra}. \
+                     Nothing was changed. Run `phantom setup --client <client> --dry-run` to see the difference, \
+                     or re-run with --replace to overwrite it (a backup is written first).",
+                    path.display()
+                );
+            }
+            "replace"
+        }
+        Action::Invalid(why) => anyhow::bail!("{}: {why}", path.display()),
+    };
+    // Validate the manifest before touching anything.
+    setup_backup::load(home)?;
+    let backup = match before {
+        Some(read) => Some(setup_backup::write_backup(path, read.bytes())?),
+        None => None,
+    };
+    Ok(Some(ManifestEntry {
+        path: path.to_path_buf(),
+        backup,
+        timestamp_ms: setup_backup::now_ms(),
+        action: action_name.to_string(),
+        sha256_before: before.map(|read| setup_backup::sha256_hex(read.bytes())),
+        sha256_after: setup_backup::sha256_hex(new_bytes),
+        undone_ms: None,
+    }))
+}
+
+/// Record the manifest entry after a committed write and say where the backup is.
+fn finish_manifest(home: &Path, written: Written) -> Result<()> {
+    let Some(entry) = written.entry else {
+        return Ok(());
+    };
+    let backup = entry.backup.clone();
+    setup_backup::record(home, entry).with_context(|| match &backup {
+        Some(b) => format!(
+            "The client config was updated and backed up to {}, but the setup manifest could not be written (--undo will not know about this change)",
+            b.display()
+        ),
+        None => "The client config was created, but the setup manifest could not be written (--undo will not know about this change)".to_string(),
+    })?;
+    if let Some(b) = backup {
+        println!("   {} backup: {}", "+".green().bold(), display(&b).dimmed());
+    }
+    println!(
+        "   {} manifest: {}",
+        "+".green().bold(),
+        display(&setup_backup::manifest_path(home)).dimmed()
+    );
+    Ok(())
+}
+
 fn finish_global_operation<T>(
     capability: GlobalConfigCapability,
-    operation: Result<(T, AnchoredEffect<AnchoredRead>)>,
+    operation: Result<(T, Option<AnchoredEffect<AnchoredRead>>)>,
     path: &Path,
 ) -> Result<T> {
     match operation {
-        Ok((value, AnchoredEffect::Durable(_))) => Ok(value),
-        Ok((value, AnchoredEffect::CommittedVerifiedButDurabilityUncertain { .. })) => {
+        Ok((value, None)) => Ok(value),
+        Ok((value, Some(AnchoredEffect::Durable(_)))) => Ok(value),
+        Ok((value, Some(AnchoredEffect::CommittedVerifiedButDurabilityUncertain { .. }))) => {
             eprintln!(
                 "warning: global client configuration replacement committed and was verified, but directory crash durability is not provable on this platform"
             );
             Ok(value)
         }
-        Ok((_, AnchoredEffect::CommittedButUncertain { error, .. })) => anyhow::bail!(
+        Ok((_, Some(AnchoredEffect::CommittedButUncertain { error, .. }))) => anyhow::bail!(
             "{} was replaced, but durability could not be verified: {error}",
             path.display()
         ),
@@ -1165,7 +1363,7 @@ fn finish_global_operation<T>(
 
 fn print_snippet(client: Client, mcp: &McpCommand) -> Result<()> {
     match client {
-        Client::ClaudeCode | Client::Cursor | Client::Windsurf => {
+        Client::ClaudeCode | Client::Cursor | Client::Windsurf | Client::Gemini => {
             let body = serde_json::json!({
                 "mcpServers": {
                     "phantom": {
@@ -1178,6 +1376,7 @@ fn print_snippet(client: Client, mcp: &McpCommand) -> Result<()> {
                 Client::ClaudeCode => ".mcp.json (project; approve this server in Claude Code)",
                 Client::Cursor => "~/.cursor/mcp.json",
                 Client::Windsurf => "~/.codeium/windsurf/mcp_config.json",
+                Client::Gemini => "~/.gemini/settings.json (merge into mcpServers)",
                 _ => unreachable!(),
             };
             println!("# {} — {}", client.label(), target);
@@ -1298,12 +1497,7 @@ fn home_dir() -> Result<PathBuf> {
 }
 
 fn display(path: &Path) -> String {
-    if let Ok(home) = home_dir() {
-        if let Ok(suffix) = path.strip_prefix(&home) {
-            return format!("~/{}", suffix.display());
-        }
-    }
-    path.display().to_string()
+    phantom_core::home::display_home_relative(path)
 }
 
 #[cfg(test)]
@@ -1355,15 +1549,40 @@ mod tests {
     }
 
     #[test]
-    fn cursor_writer_replaces_existing_phantom_entry() {
+    fn cursor_writer_refuses_a_differing_entry_and_leaves_the_file_untouched() {
         let tmp = tempdir().unwrap();
         let path = tmp.path().join("mcp.json");
-        std::fs::write(
-            &path,
-            r#"{"mcpServers": {"phantom": {"command": "/old/path", "args": ["x"]}}}"#,
-        )
-        .unwrap();
-        upsert_mcp_servers_json(&path, &fake_mcp()).unwrap();
+        let original =
+            br#"{"mcpServers": {"phantom": {"command": "/old/path", "args": ["x"], "env": {"K": "never-print"}}}}"#;
+        std::fs::write(&path, original).unwrap();
+        let error = upsert_mcp_servers_json(&path, &fake_mcp()).unwrap_err();
+        let text = format!("{error:#}");
+        assert!(text.contains("mcpServers.phantom"), "{text}");
+        assert!(text.contains("--replace"), "{text}");
+        assert!(!text.contains("never-print"), "{text}");
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        // No backup or manifest appears for a refusal.
+        assert!(!setup_backup::manifest_path(tmp.path()).exists());
+        let backups = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .filter(|e| {
+                e.as_ref()
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .contains(".phantom-bak-")
+            })
+            .count();
+        assert_eq!(backups, 0);
+    }
+
+    #[test]
+    fn cursor_writer_replaces_a_differing_entry_with_replace_after_a_backup() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("mcp.json");
+        let original = br#"{"mcpServers": {"phantom": {"command": "/old/path", "args": ["x"]}}}"#;
+        std::fs::write(&path, original).unwrap();
+        upsert_mcp_servers_json_with(&path, &fake_mcp(), true).unwrap();
         let v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(
             v["mcpServers"]["phantom"]["command"],
@@ -1372,6 +1591,85 @@ mod tests {
         assert_eq!(
             v["mcpServers"]["phantom"]["args"].as_array().unwrap().len(),
             0
+        );
+        let backups: Vec<_> = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .filter(|p| p.to_string_lossy().contains(".phantom-bak-"))
+            .collect();
+        assert_eq!(backups.len(), 1);
+        assert_eq!(std::fs::read(&backups[0]).unwrap(), original);
+        let manifest = setup_backup::load(tmp.path()).unwrap();
+        assert_eq!(manifest.entries.len(), 1);
+        let entry = &manifest.entries[0];
+        assert_eq!(entry.action, "replace");
+        assert_eq!(entry.backup.as_deref(), Some(backups[0].as_path()));
+        assert_eq!(
+            entry.sha256_before.as_deref(),
+            Some(setup_backup::sha256_hex(original).as_str())
+        );
+        assert_eq!(
+            entry.sha256_after,
+            setup_backup::sha256_hex(&std::fs::read(&path).unwrap())
+        );
+    }
+
+    #[test]
+    fn identical_entry_writes_nothing_and_records_nothing() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("mcp.json");
+        upsert_mcp_servers_json(&path, &fake_mcp()).unwrap();
+        let first = std::fs::read(&path).unwrap();
+        let manifest_before = setup_backup::load(tmp.path()).unwrap().entries.len();
+        upsert_mcp_servers_json(&path, &fake_mcp()).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), first);
+        assert_eq!(
+            setup_backup::load(tmp.path()).unwrap().entries.len(),
+            manifest_before
+        );
+    }
+
+    #[test]
+    fn adding_to_an_existing_file_backs_it_up_and_creating_records_no_backup() {
+        let tmp = tempdir().unwrap();
+        let existing = tmp.path().join("existing.json");
+        let original = br#"{"theme":"dark"}"#;
+        std::fs::write(&existing, original).unwrap();
+        upsert_mcp_servers_json(&existing, &fake_mcp()).unwrap();
+        let created = tmp.path().join("created.json");
+        upsert_mcp_servers_json(&created, &fake_mcp()).unwrap();
+        let m = setup_backup::load(tmp.path()).unwrap();
+        assert_eq!(m.entries.len(), 2);
+        assert_eq!(m.entries[0].action, "add");
+        assert!(m.entries[0].backup.is_some());
+        assert_eq!(
+            std::fs::read(m.entries[0].backup.as_ref().unwrap()).unwrap(),
+            original
+        );
+        assert!(m.entries[1].backup.is_none());
+        assert!(m.entries[1].sha256_before.is_none());
+    }
+
+    #[test]
+    fn codex_refuses_a_differing_entry_and_replaces_with_replace() {
+        let home = tempdir().unwrap();
+        let rel = Path::new(".codex/config.toml");
+        let path = home.path().join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let original = "model = \"x\"\n[mcp_servers.phantom]\ncommand = \"/old\"\nargs = []\n";
+        std::fs::write(&path, original).unwrap();
+        let error = setup_codex_at(home.path(), rel, &fake_mcp(), false, || {}).unwrap_err();
+        assert!(format!("{error:#}").contains("mcp_servers.phantom"));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+        setup_codex_at(home.path(), rel, &fake_mcp(), true, || {}).unwrap();
+        assert!(std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("/usr/local/bin/phantom-mcp"));
+        let m = setup_backup::load(home.path()).unwrap();
+        assert_eq!(m.entries.len(), 1);
+        assert_eq!(
+            std::fs::read_to_string(m.entries[0].backup.as_ref().unwrap()).unwrap(),
+            original
         );
     }
 
@@ -1515,6 +1813,7 @@ mod tests {
             home.path(),
             Path::new(".cursor/mcp.json"),
             &fake_mcp(),
+            false,
             || {
                 std::fs::rename(&cursor, &moved).unwrap();
                 std::fs::create_dir(&cursor).unwrap();
@@ -1543,6 +1842,7 @@ mod tests {
             home.path(),
             Path::new(".codeium/windsurf/mcp_config.json"),
             &fake_mcp(),
+            false,
             || {},
         )
         .unwrap();
@@ -1589,6 +1889,7 @@ mod tests {
             home.path(),
             Path::new(".codex/config.toml"),
             &fake_mcp(),
+            false,
             || {},
         )
         .unwrap();
@@ -1617,9 +1918,14 @@ mod tests {
             r"C:\outside.json",
             r"\\server\share\outside.json",
         ] {
-            assert!(
-                upsert_global_mcp_servers_json(&home, Path::new(path), &fake_mcp(), || {}).is_err()
-            );
+            assert!(upsert_global_mcp_servers_json(
+                &home,
+                Path::new(path),
+                &fake_mcp(),
+                false,
+                || {}
+            )
+            .is_err());
         }
         assert!(!outside.exists());
     }
@@ -1648,6 +1954,7 @@ mod tests {
             &home,
             Path::new(".cursor/mcp.json"),
             &fake_mcp(),
+            false,
             || {},
         )
         .is_err());
