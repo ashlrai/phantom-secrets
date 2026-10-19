@@ -92,6 +92,37 @@ In CI, on every change: `crates/phantom-proxy/tests/litellm_gateway_hermetic_tes
 
 Not tested: any real provider, streaming, tool calls, the `phantom exec` CLI end to end, the Docker image, Postgres or virtual keys, LiteLLM debug logging (it may print `api_base`, which contains the Phantom session token), the Responses API, and Claude Code, Codex, Gemini CLI or Cursor talking to LiteLLM.
 
+## LiteLLM as an upstream: key headers
+
+This section covers the other direction: a Phantom route whose upstream is a LiteLLM proxy reached over HTTPS, with the LiteLLM virtual key in the vault and only its `phm_` placeholder in the client.
+
+LiteLLM's docs (checked 2026-10-19) name these headers as places its proxy reads a key from:
+
+- [Gateway Auth Reference](https://docs.litellm.ai/docs/auth_overview), "Client to LiteLLM": "`x-litellm-api-key: Bearer sk-...` | Preferred LiteLLM Virtual Key header", "`Authorization: Bearer sk-...` | Standard fallback. Stripped of the `Bearer ` prefix before lookup.", and "`API-Key`, `x-api-key`, `x-goog-api-key`, `Ocp-Apim-Subscription-Key` | Vendor-specific aliases (Azure, Anthropic, Google AI Studio, Azure APIM)." The same page notes that LiteLLM's MCP routes do not parse the vendor aliases.
+- [Virtual Keys](https://docs.litellm.ai/docs/proxy/virtual_keys), "Pass LiteLLM Key in custom header": "Use this to make LiteLLM proxy look for the virtual key in a custom header instead of the default `"Authorization"` header", set with `general_settings: litellm_key_header_name: "X-Litellm-Key"` and sent as `X-Litellm-Key: Bearer $LITELLM_API_KEY`.
+- [config.yaml settings](https://docs.litellm.ai/docs/proxy/config_settings): "litellm_key_header_name | str | null (reads Authorization) | If set, allows passing LiteLLM keys as a custom header."
+
+A route sets one of these with `header` and `header_format` in `.phantom.toml`. Use `Bearer {secret}` for `x-litellm-api-key`, `Authorization` and a `litellm_key_header_name` header, as the docs show. The docs show no value format for the vendor aliases; the test uses the bare key (`{secret}`), which is an assumption, not a documented LiteLLM format.
+
+```toml
+[services.litellm]
+secret_key = "LITELLM_API_KEY"
+secret_type = "api_key"
+pattern = "litellm.example.internal"
+header = "x-litellm-api-key"
+header_format = "Bearer {secret}"
+```
+
+For such a route the proxy removes the client's copy of that header, injects the real key in its place, and forwards nothing else it owns. Any echo of the key in the response is scrubbed by value, whatever header or body field LiteLLM puts it in.
+
+Limits:
+
+- `phantom exec` refuses this route. It accepts only Phantom's exact built-in routes, and a self-hosted LiteLLM has no fixed host to build in. `phantom start` builds routes from `.phantom.toml` as written.
+- The route is always `https://`. A LiteLLM on plain HTTP loopback is not supported (see "Not supported").
+- Only the one configured header is swapped. A `phm_` placeholder the client puts in a different header is forwarded as is. LiteLLM then rejects a placeholder, not a real key.
+
+Tested in CI by `crates/phantom-proxy/tests/litellm_upstream_headers_test.rs` (`cargo test -p phantom-secrets-proxy --test litellm_upstream_headers_test`). For each of the seven headers above it builds the route from a `.phantom.toml`-style service, points it at a plain-HTTP mock on 127.0.0.1, and checks that the mock gets the real key exactly once in that header, never sees the placeholder or the proxy token, and that echoes of the key (whole or its last half, in a response header and a JSON body) do not reach the client. Not tested: a real LiteLLM, streaming responses for this route, and `phantom start` end to end.
+
 ## Not supported
 
 - Cursor with a loopback gateway (see "Connect an agent"). Cursor's CLI is not supported by LiteLLM.
