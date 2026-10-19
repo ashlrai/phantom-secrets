@@ -805,8 +805,10 @@ export async function observeProduction(options = {}) {
           text: response.body,
         };
       }
+      // Sitemaps may list non-page assets (for example /docs/manifest.json).
+      // Only text/html responses get page checks; others keep the status check.
       if (!contentType.toLowerCase().startsWith("text/html")) {
-        addFinding(findings, "fail", "html_route_content_type", "Public page is not text/html", route);
+        return { route, status: response.status, content_type: contentType, skipped: "non_html" };
       }
       const inspected = inspectHtml(response.body);
       if (!inspected.title) addFinding(findings, "fail", "title_missing", "Page title is missing", route);
