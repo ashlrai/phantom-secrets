@@ -146,6 +146,12 @@ jobs:
         if: needs.changes.outputs.filterset != 'none()'
         shell: bash
         run: cargo nextest run --workspace --all-targets --locked --no-fail-fast -E "${{ needs.changes.outputs.filterset }}"
+      # The X-Wing hybrid share (team_crypto_pq) and its crypto registry drift
+      # test compile only with the pq-hybrid feature. Other jobs only
+      # `cargo check --all-features`, so these tests never ran in CI.
+      - name: Run pq-hybrid feature tests
+        if: runner.os == 'Linux' && needs.changes.outputs.filterset != 'none()'
+        run: cargo test --locked -p phantom-secrets-core --features pq-hybrid --lib -- team_crypto_pq crypto_registry
       - name: Verify examples
         run: node --test scripts/examples-first-five-minutes.test.mjs scripts/agent-first-five-minutes.test.mjs scripts/examples-client-recipes.test.mjs
       - name: Verify installed CLI and MCP onboarding
