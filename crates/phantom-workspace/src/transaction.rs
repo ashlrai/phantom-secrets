@@ -2340,15 +2340,14 @@ mod descriptor_tests {
     }
 }
 
-#[cfg(test)]
+// Durable apply and recovery are Unix-only; non-Unix builds fail closed.
+#[cfg(all(test, unix))]
 mod journal_tests {
     use super::*;
     use tempfile::TempDir;
 
     fn runtime_key() -> [u8; 32] {
-        let mut key = [0_u8; 32];
-        rand::thread_rng().fill_bytes(&mut key);
-        key
+        rand::random()
     }
 
     struct Fixture {
