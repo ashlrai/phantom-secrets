@@ -548,3 +548,45 @@ fn doctor_ignores_litellm_config_not_routed_through_phantom() {
     let stdout = String::from_utf8_lossy(&output.get_output().stdout);
     assert!(!stdout.contains("LiteLLM"), "{stdout}");
 }
+
+/// `doctor --output` writes the full report to a new file and prints only a
+/// one-line summary; `--json --output` writes the same JSON `--json` prints.
+/// An existing file is never overwritten.
+#[test]
+fn doctor_output_writes_full_report_to_file_and_prints_summary() {
+    let dir = common::canonical_tempdir();
+    let json_plain = phantom(&dir).args(["doctor", "--json"]).output().unwrap();
+    let expected: serde_json::Value = serde_json::from_slice(&json_plain.stdout).unwrap();
+
+    let jpath = dir.path().join("doctor.json");
+    let out = phantom(&dir)
+        .args(["doctor", "--json", "--output", jpath.to_str().unwrap()])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    assert_eq!(stdout.lines().count(), 1, "{stdout}");
+    assert!(stdout.starts_with("Doctor: "), "{stdout}");
+    assert!(stdout.contains("Full report: "), "{stdout}");
+    let written: serde_json::Value = serde_json::from_slice(&fs::read(&jpath).unwrap()).unwrap();
+    assert_eq!(written["checks"], expected["checks"]);
+    assert_eq!(written["issues"], expected["issues"]);
+
+    let tpath = dir.path().join("doctor.txt");
+    let out = phantom(&dir)
+        .args(["doctor", "--output", tpath.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout).lines().count(), 1);
+    let text = fs::read_to_string(&tpath).unwrap();
+    assert!(!text.contains('\u{1b}'), "no ANSI colors in the file");
+    for check in expected["checks"].as_array().unwrap() {
+        assert!(text.contains(check["message"].as_str().unwrap()), "{text}");
+    }
+
+    let again = phantom(&dir)
+        .args(["doctor", "--output", tpath.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(!again.status.success());
+    assert_eq!(fs::read_to_string(&tpath).unwrap(), text);
+}
