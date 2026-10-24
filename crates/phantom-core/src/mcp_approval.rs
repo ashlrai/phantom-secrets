@@ -1220,6 +1220,117 @@ mod tests {
         });
     }
 
+    fn assert_rejected_before_persistence(tool: &str, params: &str, project: &str, needle: &str) {
+        let error = generate_pending_approval(tool, params, project).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput, "{error}");
+        assert!(error.to_string().contains(needle), "{needle}: {error}");
+        assert!(!approvals_path().unwrap().exists(), "{needle}");
+    }
+
+    #[test]
+    fn malformed_tool_and_project_identifiers_are_rejected_before_persistence() {
+        with_temp_home(|| {
+            let params = r#"{"name":"API_KEY","confirm":true}"#;
+            for tool in ["Phantom_Add_Secret", "phantom-add-secret", "phantom add"] {
+                assert_rejected_before_persistence(
+                    tool,
+                    params,
+                    "proj-1",
+                    "invalid MCP approval tool name",
+                );
+            }
+            assert_rejected_before_persistence(
+                "phantom_add_secret",
+                params,
+                "",
+                "invalid MCP approval project identifier",
+            );
+            let credential_project = format!("sk-{}", "a".repeat(24));
+            assert_rejected_before_persistence(
+                "phantom_add_secret",
+                params,
+                &credential_project,
+                "project identifier looks like credential plaintext",
+            );
+            for deprecated in ["phantom_rotate_with_candidate", "phantom_rotate_promote"] {
+                assert_rejected_before_persistence(
+                    deprecated,
+                    params,
+                    "proj-1",
+                    "deprecated hard denial",
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn oversized_or_deep_parameters_are_rejected_before_persistence() {
+        with_temp_home(|| {
+            let tool = "phantom_add_secret";
+            let deep = serde_json::json!({"a": {"a": {"a": {"a": {"a": {"a": 1}}}}}});
+            assert_rejected_before_persistence(
+                tool,
+                &deep.to_string(),
+                "proj-1",
+                "maximum nesting",
+            );
+
+            let long = serde_json::json!({"name": "x".repeat(MAX_PARAMETER_STRING_BYTES + 1)});
+            assert_rejected_before_persistence(tool, &long.to_string(), "proj-1", "exceeds");
+
+            let items = serde_json::json!({"names": vec![0; MAX_PARAMETER_COLLECTION_ITEMS + 1]});
+            assert_rejected_before_persistence(
+                tool,
+                &items.to_string(),
+                "proj-1",
+                "too many items",
+            );
+
+            let fields = (0..=MAX_PARAMETER_COLLECTION_ITEMS)
+                .map(|i| (format!("f{i}"), serde_json::json!(0)))
+                .collect::<serde_json::Map<_, _>>();
+            assert_rejected_before_persistence(
+                tool,
+                &serde_json::Value::Object(fields).to_string(),
+                "proj-1",
+                "too many fields",
+            );
+
+            // Every value within limits, but the whole summary is too large.
+            let wide = (0..20)
+                .map(|i| (format!("f{i}"), serde_json::json!("y".repeat(300))))
+                .collect::<serde_json::Map<_, _>>();
+            let wide = serde_json::Value::Object(wide).to_string();
+            assert!(wide.len() > MAX_PARAMETER_SUMMARY_BYTES);
+            assert_rejected_before_persistence(tool, &wide, "proj-1", "summary");
+        });
+    }
+
+    #[test]
+    fn inspect_refuses_expired_or_already_approved_nonces() {
+        with_temp_home(|| {
+            let params = r#"{"name":"API_KEY","confirm":true}"#;
+            let approved =
+                generate_pending_approval("phantom_add_secret", params, "proj-1").unwrap();
+            approve_nonce(&approved).unwrap();
+            let error = inspect_pending_approval(&approved).unwrap_err();
+            assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists, "{error}");
+
+            let expired =
+                generate_pending_approval("phantom_add_secret", params, "proj-1").unwrap();
+            let path = approvals_path().unwrap();
+            let mut records = load_all_records(&path).unwrap();
+            for record in records.iter_mut() {
+                if record.nonce.to_string() == expired {
+                    record.expires_at = Some(now_unix().saturating_sub(1));
+                }
+            }
+            rewrite_records(&path, &records).unwrap();
+            let error = inspect_pending_approval(&expired).unwrap_err();
+            assert_eq!(error.kind(), std::io::ErrorKind::TimedOut, "{error}");
+        });
+    }
+
     #[test]
     fn plaintext_bearing_fields_are_rejected_before_persistence() {
         with_temp_home(|| {
