@@ -1730,6 +1730,65 @@ mod tests {
     }
 
     #[test]
+    fn test_wrong_project_rejected_and_nonce_kept() {
+        with_temp_home(|| {
+            let params = r#"{"confirm":true}"#;
+            let nonce = generate_pending_approval("phantom_rotate", params, "proj-a").unwrap();
+            let outcome = approve_nonce(&nonce).unwrap();
+
+            let msg = validate_and_consume_approval(
+                &nonce,
+                &outcome.approval_token,
+                "phantom_rotate",
+                params,
+                "proj-b",
+            )
+            .unwrap_err();
+            assert!(msg.contains("issued for project"), "{msg}");
+
+            // The rejected attempt must not consume the nonce.
+            validate_and_consume_approval(
+                &nonce,
+                &outcome.approval_token,
+                "phantom_rotate",
+                params,
+                "proj-a",
+            )
+            .unwrap();
+        });
+    }
+
+    #[test]
+    fn test_pending_unapproved_nonce_rejected_even_with_correct_token() {
+        with_temp_home(|| {
+            let params = r#"{"confirm":true}"#;
+            let nonce =
+                generate_pending_approval("phantom_rotate", params, "proj-pending").unwrap();
+            // Approve to obtain the real token, then put the record back to
+            // pending: the token alone must not stand in for the approval.
+            let outcome = approve_nonce(&nonce).unwrap();
+            let path = approvals_path().unwrap();
+            let mut records = load_all_records(&path).unwrap();
+            for record in &mut records {
+                record.approved = false;
+                record.approved_at = None;
+            }
+            rewrite_records(&path, &records).unwrap();
+            let token = outcome.approval_token;
+
+            let msg = validate_and_consume_approval(
+                &nonce,
+                &token,
+                "phantom_rotate",
+                params,
+                "proj-pending",
+            )
+            .unwrap_err();
+            assert!(msg.contains("has not been approved"), "{msg}");
+        });
+    }
+
+    #[test]
     fn test_prune_stale_approvals() {
         with_temp_home(|| {
             // Write one expired + one valid pending record.
