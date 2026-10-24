@@ -8,6 +8,7 @@ pub mod copy;
 pub mod crypto;
 pub mod doctor;
 pub mod doctor_all;
+pub mod doctor_litellm;
 pub mod env;
 pub mod env_scope;
 pub mod exec;

@@ -127,3 +127,14 @@ Tested in CI by `crates/phantom-proxy/tests/litellm_upstream_headers_test.rs` (`
 
 - Cursor with a loopback gateway (see "Connect an agent"). Cursor's CLI is not supported by LiteLLM.
 - Phantom in front of LiteLLM (agent to Phantom to LiteLLM) needs a plain-HTTP loopback upstream route, which Phantom does not allow today. See the security review draft before any such change.
+
+## `phantom doctor` LiteLLM check
+
+When the project has a LiteLLM proxy config (`litellm_config.yaml`, `litellm.yaml` or a `config.yaml` with `model_list`) whose `api_base` is a loopback address or which carries a `phm_` placeholder, `phantom doctor` reports:
+
+- a warning for a LiteLLM version below 1.83.0 pinned in `requirements.txt`, `pyproject.toml`, a `Dockerfile` or a compose file (`litellm==X` or a `berriai/litellm` image tag),
+- a warning for `allow_client_side_credentials: true`,
+- a warning for an explicit non-loopback bind: `--host` with a non-loopback address, or a published Docker port without a `127.0.0.1` host IP,
+- an info line when no version pin is found.
+
+The check is report-only. It reads the files as text, never runs LiteLLM, and `--fix` changes nothing. Tests: `doctor_json_reports_risky_litellm_through_phantom_and_changes_nothing` and `doctor_litellm::tests`.
