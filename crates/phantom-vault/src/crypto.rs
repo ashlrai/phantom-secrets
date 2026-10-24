@@ -452,14 +452,54 @@ mod tests {
         assert!(decrypt(&blob, "wrong-pass").is_err());
     }
 
+    /// Test-only v3 sealer (m=19456 KiB, t=2, p=1) with random salt and nonce.
+    fn seal_v3_for_test(plaintext: &[u8], passphrase: &str) -> Vec<u8> {
+        let mut header = blob_format::MAGIC.to_vec();
+        header.extend_from_slice(&[
+            blob_format::VERSION_3,
+            blob_format::ALG_CHACHA20_POLY1305,
+            blob_format::KDF_ARGON2ID_V13,
+        ]);
+        header.extend_from_slice(&19456u32.to_le_bytes());
+        header.extend_from_slice(&[2, 1]);
+        let salt: [u8; SALT_LEN] = rand::random();
+        let nonce_bytes: [u8; NONCE_LEN] = rand::random();
+        let mut key: [u8; KEY_LEN] = Default::default();
+        Argon2::new(
+            Algorithm::Argon2id,
+            Version::V0x13,
+            Params::new(19456, 2, 1, Some(KEY_LEN)).unwrap(),
+        )
+        .hash_password_into(passphrase.as_bytes(), &salt, &mut key)
+        .unwrap();
+        let cipher = ChaCha20Poly1305::new_from_slice(&key).unwrap();
+        key.zeroize();
+        let ct = cipher
+            .encrypt(
+                Nonce::from_slice(&nonce_bytes),
+                Payload {
+                    msg: plaintext,
+                    aad: &header,
+                },
+            )
+            .unwrap();
+        let mut blob = header;
+        blob.extend_from_slice(&salt);
+        blob.extend_from_slice(&nonce_bytes);
+        blob.extend_from_slice(&ct);
+        blob
+    }
+
     #[test]
     fn v3_header_tamper_fails() {
         // Flipping t (2 to 3) or the reserved KDF id must not decrypt.
-        let blob = hex_to_bytes(V3_FIXTURE_HEX);
+        // Sealed at runtime with a random salt and nonce.
+        let blob = seal_v3_for_test(b"v3-tamper", "v3-tamper-pass");
+        assert_eq!(decrypt(&blob, "v3-tamper-pass").unwrap(), b"v3-tamper");
         for (offset, value) in [(11usize, 3u8), (7, 0x01)] {
             let mut tampered = blob.clone();
             tampered[offset] = value;
-            let err = decrypt(&tampered, "v3-fixture-pass")
+            let err = decrypt(&tampered, "v3-tamper-pass")
                 .unwrap_err()
                 .to_string();
             assert!(
