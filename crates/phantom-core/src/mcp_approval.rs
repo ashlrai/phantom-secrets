@@ -1764,10 +1764,17 @@ mod tests {
             let params = r#"{"confirm":true}"#;
             let nonce =
                 generate_pending_approval("phantom_rotate", params, "proj-pending").unwrap();
-            // An agent that somehow computed the right token still needs the
-            // trusted-terminal approval step.
-            let key = load_or_create_approval_key().unwrap();
-            let token = compute_approval_token(&nonce, &compute_arg_hash(params, &key), &key);
+            // Approve to obtain the real token, then put the record back to
+            // pending: the token alone must not stand in for the approval.
+            let outcome = approve_nonce(&nonce).unwrap();
+            let path = approvals_path().unwrap();
+            let mut records = load_all_records(&path).unwrap();
+            for record in &mut records {
+                record.approved = false;
+                record.approved_at = None;
+            }
+            rewrite_records(&path, &records).unwrap();
+            let token = outcome.approval_token;
 
             let msg = validate_and_consume_approval(
                 &nonce,
