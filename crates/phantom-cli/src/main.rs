@@ -2,6 +2,7 @@ mod broken_pipe;
 mod commands;
 #[cfg(test)]
 mod doc_facts;
+mod report_file;
 mod util;
 
 #[cfg(test)]
@@ -150,6 +151,10 @@ enum Commands {
         /// --json for machine-readable output.
         #[arg(long, conflicts_with_all = ["fix", "pq", "expiry"])]
         all: bool,
+        /// Write the full report to this new file (never overwritten) and
+        /// print only a short summary. Text by default, JSON with --json.
+        #[arg(long, value_name = "PATH", conflicts_with_all = ["pq", "all"])]
+        output: Option<std::path::PathBuf>,
     },
 
     /// Print a shell-completion script to stdout
@@ -1339,8 +1344,11 @@ fn run() -> anyhow::Result<()> {
             json,
             pq,
             all,
+            output,
         } => {
-            if all {
+            if let Some(path) = output {
+                commands::doctor::run_doctor_to_file(fix, expiry, json || global_json, &path)
+            } else if all {
                 commands::doctor_all::run(json || global_json)
             } else if pq {
                 commands::pq_report::run(json || global_json)
@@ -1461,12 +1469,14 @@ fn run() -> anyhow::Result<()> {
                 name,
                 json,
                 leaked_secrets,
+                output,
             } => commands::audit::run_show(
                 last,
                 op.as_deref(),
                 name.as_deref(),
                 json,
                 leaked_secrets,
+                output.as_deref(),
             ),
             AuditAction::Tail { op, name } => {
                 commands::audit::run_tail(op.as_deref(), name.as_deref())

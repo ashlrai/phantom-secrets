@@ -548,3 +548,102 @@ fn doctor_ignores_litellm_config_not_routed_through_phantom() {
     let stdout = String::from_utf8_lossy(&output.get_output().stdout);
     assert!(!stdout.contains("LiteLLM"), "{stdout}");
 }
+
+/// `doctor --output` writes the full report to a new file and prints only a
+/// one-line summary; `--json --output` writes the same JSON `--json` prints.
+/// An existing file is never overwritten.
+#[test]
+fn doctor_output_writes_full_report_to_file_and_prints_summary() {
+    let dir = common::canonical_tempdir();
+    let json_plain = phantom(&dir).args(["doctor", "--json"]).output().unwrap();
+    let expected: serde_json::Value = serde_json::from_slice(&json_plain.stdout).unwrap();
+
+    let jpath = dir.path().join("doctor.json");
+    let out = phantom(&dir)
+        .args(["doctor", "--json", "--output", jpath.to_str().unwrap()])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    assert_eq!(stdout.lines().count(), 1, "{stdout}");
+    assert!(stdout.starts_with("Doctor: "), "{stdout}");
+    assert!(stdout.contains("Full report: "), "{stdout}");
+    let written: serde_json::Value = serde_json::from_slice(&fs::read(&jpath).unwrap()).unwrap();
+    assert_eq!(written["checks"], expected["checks"]);
+    assert_eq!(written["issues"], expected["issues"]);
+
+    let tpath = dir.path().join("doctor.txt");
+    let out = phantom(&dir)
+        .args(["doctor", "--output", tpath.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout).lines().count(), 1);
+    let text = fs::read_to_string(&tpath).unwrap();
+    assert!(!text.contains('\u{1b}'), "no ANSI colors in the file");
+    for check in expected["checks"].as_array().unwrap() {
+        assert!(text.contains(check["message"].as_str().unwrap()), "{text}");
+    }
+
+    let again = phantom(&dir)
+        .args(["doctor", "--output", tpath.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(!again.status.success());
+    assert_eq!(fs::read_to_string(&tpath).unwrap(), text);
+}
+
+/// `doctor --output` must write only names and statuses: never a vault value
+/// and never a `phm_` token mapped to one. Seeds a real vault through
+/// `phantom init` (obvious fake value), then checks both file formats.
+#[test]
+fn doctor_output_file_holds_no_secret_value_or_phantom_token() {
+    const FAKE_VALUE: &str = "sk-FAKE0doctor1output2value3ONLY4abcdefgh";
+    let dir = common::canonical_tempdir();
+    fs::write(
+        dir.path().join(".env"),
+        format!("OPENAI_API_KEY={FAKE_VALUE}\n"),
+    )
+    .unwrap();
+    phantom(&dir)
+        .args(["init", "--from", ".env"])
+        .assert()
+        .success();
+    let env_after = fs::read_to_string(dir.path().join(".env")).unwrap();
+    let token = env_after
+        .split(|c: char| c == '=' || c.is_whitespace())
+        .find(|w| w.starts_with("phm_"))
+        .unwrap_or_else(|| panic!("init must map the key to a phm_ token: {env_after}"))
+        .to_string();
+    assert!(
+        !env_after.contains(FAKE_VALUE),
+        "precondition: value moved to the vault"
+    );
+
+    for (name, json) in [("report.txt", false), ("report.json", true)] {
+        let path = dir.path().join(name);
+        let mut args = vec!["doctor", "--output", path.to_str().unwrap()];
+        if json {
+            args.push("--json");
+        }
+        let out = phantom(&dir).args(&args).output().unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+        let file = fs::read_to_string(&path).unwrap();
+        for text in [&file, &stdout] {
+            assert!(
+                !text.contains(FAKE_VALUE),
+                "SECURITY: value in {name}: {text}"
+            );
+            assert!(
+                !text.contains(&token),
+                "SECURITY: phm_ token in {name}: {text}"
+            );
+            for i in 0..=FAKE_VALUE.len() - 12 {
+                let run = &FAKE_VALUE[i..i + 12];
+                assert!(
+                    !text.contains(run),
+                    "SECURITY: value fragment {run} in {name}"
+                );
+            }
+        }
+        assert!(file.contains("pass") || file.contains("warn"), "{file}");
+    }
+}
