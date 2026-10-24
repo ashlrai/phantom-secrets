@@ -1350,7 +1350,11 @@ mod tests {
             let nonce =
                 generate_pending_approval("phantom_add_secret", STORAGE_PARAMS, "proj-1").unwrap();
             let token = approve_nonce(&nonce).unwrap().approval_token;
-            for presented in ["", &token[..token.len() / 2], &token[..token.len() - 1]] {
+            for presented in [
+                &token[..0],
+                &token[..token.len() / 2],
+                &token[..token.len() - 1],
+            ] {
                 assert!(
                     validate_and_consume_approval(
                         &nonce,
