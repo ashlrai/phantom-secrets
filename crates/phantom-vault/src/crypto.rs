@@ -496,9 +496,10 @@ mod tests {
         // Sealed at runtime with a random salt and nonce.
         let blob = seal_v3_for_test(b"v3-tamper", "v3-tamper-pass");
         assert_eq!(decrypt(&blob, "v3-tamper-pass").unwrap(), b"v3-tamper");
-        for (offset, value) in [(11usize, 3u8), (7, 0x01)] {
+        // Offset 11 is t (2 becomes 3); offset 7 is the low byte of m_kib.
+        for offset in [11usize, 7] {
             let mut tampered = blob.clone();
-            tampered[offset] = value;
+            tampered[offset] = tampered[offset].wrapping_add(1);
             let err = decrypt(&tampered, "v3-tamper-pass")
                 .unwrap_err()
                 .to_string();
