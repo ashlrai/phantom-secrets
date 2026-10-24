@@ -219,9 +219,14 @@ fn audit_incidents_reports_leak_events_not_yet_persisted() {
             "{{\"ts\":{ts},\"op\":\"proxy.response_leak\",\"name\":\"OPENAI_API_KEY\",\"pid\":1,\"process\":\"phantom\"}}\n"
         )
     };
+    // Both events must share one hour bucket (ts / 3600) to form one
+    // incident. `now - 20` and `now - 10` split across buckets when the test
+    // runs in the first 20 seconds of an hour, so anchor them to the start of
+    // the previous hour instead.
+    let hour_start = (now / 3600 - 1) * 3600;
     std::fs::write(
         phantom_dir.join("audit.log"),
-        format!("{}{}", line(now - 20), line(now - 10)),
+        format!("{}{}", line(hour_start + 100), line(hour_start + 110)),
     )
     .unwrap();
 
