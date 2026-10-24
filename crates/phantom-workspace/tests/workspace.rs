@@ -910,3 +910,38 @@ fn apply_rejects_a_sealed_plan_whose_id_no_longer_matches_its_content() {
     );
     assert!(!workspace.path().join(".phantom.toml").exists());
 }
+
+#[cfg(unix)]
+#[test]
+fn apply_refuses_a_target_hardlinked_after_sealing() {
+    let workspace = TempDir::new().unwrap();
+    let outside = TempDir::new().unwrap();
+    write(
+        workspace.path().join(".env"),
+        "OPENAI_API_KEY=sk-late-hardlink-sentinel\n",
+    );
+    write(workspace.path().join(".gitignore"), "# original\n");
+    let key = seal_key();
+    let sealed = build_sealed_setup_plan(workspace.path(), &key).unwrap();
+
+    // Same content, so the pre-state digest cannot see the new link.
+    std::fs::hard_link(
+        workspace.path().join(".gitignore"),
+        outside.path().join("shared-ignore"),
+    )
+    .unwrap();
+
+    let error = apply_setup_plan(&sealed, &key, &mut NoopSetupParticipant).unwrap_err();
+    assert!(
+        matches!(
+            error,
+            WorkspaceError::UnsafeTarget(_) | WorkspaceError::PlanDrift { .. }
+        ),
+        "{error:?}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(outside.path().join("shared-ignore")).unwrap(),
+        "# original\n"
+    );
+    assert!(!workspace.path().join(".phantom.toml").exists());
+}
