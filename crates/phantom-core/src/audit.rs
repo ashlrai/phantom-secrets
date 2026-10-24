@@ -1094,8 +1094,21 @@ pub fn decrypt_context(encrypted_b64: &str, hmac_key: &[u8]) -> std::io::Result<
         Aes256Gcm, Nonce,
     };
 
+    // Version 2 values are `v2.` + base64 and use an HKDF-derived key.
+    // Unprefixed values are version 1 (every value written so far). `.` is
+    // not in the base64 alphabet, so the prefix cannot be a v1 value.
+    let (body_b64, enc_key) = match encrypted_b64.split_once('.') {
+        None => (encrypted_b64, derive_encryption_key(hmac_key)),
+        Some(("v2", rest)) => (rest, derive_encryption_key_v2(hmac_key)),
+        Some((version, _)) => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("unsupported encrypted_context version {version:?}"),
+            ))
+        }
+    };
     let blob = BASE64
-        .decode(encrypted_b64)
+        .decode(body_b64)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
 
     if blob.len() < 12 {
@@ -1105,7 +1118,6 @@ pub fn decrypt_context(encrypted_b64: &str, hmac_key: &[u8]) -> std::io::Result<
         ));
     }
 
-    let enc_key = derive_encryption_key(hmac_key);
     let cipher = Aes256Gcm::new_from_slice(&enc_key)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
 
@@ -1116,6 +1128,17 @@ pub fn decrypt_context(encrypted_b64: &str, hmac_key: &[u8]) -> std::io::Result<
 
     serde_json::from_slice(&plaintext)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+}
+
+/// Version 2 context key: HKDF-SHA256 (RFC 5869) with no salt and the info
+/// label `phantom-audit-context-v2`. Read-only for now; writers still use
+/// [`derive_encryption_key`].
+fn derive_encryption_key_v2(hmac_key: &[u8]) -> [u8; 32] {
+    let mut key: [u8; 32] = Default::default();
+    hkdf::Hkdf::<Sha256>::new(None, hmac_key)
+        .expand(b"phantom-audit-context-v2", &mut key)
+        .expect("32 bytes is a valid HKDF-SHA256 output length");
+    key
 }
 
 /// Derive a 32-byte AES key from the HMAC key via SHA-256 with a domain label.
@@ -3045,5 +3068,86 @@ mod tests {
                 );
             }
         });
+    }
+
+    // Hand-made fixtures, generated independently with Python `cryptography`
+    // (HKDF-SHA256 and AESGCM) from hmac key 0x11 * 32 and nonce 0x22 * 12.
+    const CTX_FIXTURE_KEY: [u8; 32] = [0x11; 32];
+    const CTX_V1_KEY_HEX: &str = "ce081e58669f834323d8b4ef678cf7a76b91a6105b55d10c699c2b55ad078b91";
+    const CTX_V2_KEY_HEX: &str = "328b49f8f7bf8b916ac61cbfb87f65009f7f01e1fcbec8e35411e65c3f0bf21e";
+    const CTX_V1_FIXTURE: &str = "IiIiIiIiIiIiIiIi3MMSCqiOjJ6xd9gQCCFHo0KRdqQvIQ25FItbErsWyY2hv6Jn3trxq5zHlKy5vSjsc2uUFnIIwN9obobbBtmcyFAi7N0RO9WjyFGYRnSkfM4KhITQsCppNWsGc3892frOd/oQF+W1";
+    const CTX_V2_FIXTURE: &str = "v2.IiIiIiIiIiIiIiIiTtiLME1O0vZZkWnRXal79vMiw+gfZvutRqNn9BtPcj3x+PpsQ2VUA8kcNIS1hEDLJHMhxVkfQ7y1BivbdrSnn4H0ni33IxNwVEH2po3J2fhmRB334fPa83vB3KcdIG5cqehVPw4b";
+
+    fn assert_fixture_context(ctx: &AuditContext) {
+        assert_eq!(ctx.process_name, "fixture-proc");
+        assert_eq!(ctx.hostname, "fixture-host");
+        assert_eq!(ctx.ppid, 4242);
+        assert_eq!(ctx.cwd, "/fixture");
+    }
+
+    #[test]
+    fn context_key_derivations_match_independent_values() {
+        assert_eq!(
+            hex::encode(derive_encryption_key(&CTX_FIXTURE_KEY)),
+            CTX_V1_KEY_HEX
+        );
+        assert_eq!(
+            hex::encode(derive_encryption_key_v2(&CTX_FIXTURE_KEY)),
+            CTX_V2_KEY_HEX
+        );
+    }
+
+    #[test]
+    fn context_v1_and_v2_fixtures_decrypt() {
+        assert_fixture_context(&decrypt_context(CTX_V1_FIXTURE, &CTX_FIXTURE_KEY).unwrap());
+        assert_fixture_context(&decrypt_context(CTX_V2_FIXTURE, &CTX_FIXTURE_KEY).unwrap());
+    }
+
+    #[test]
+    fn context_versions_do_not_cross_decrypt_and_unknown_versions_fail() {
+        // The v2 body read as v1 (prefix stripped) must fail, and the v1
+        // body labelled v2 must fail.
+        let v2_body = CTX_V2_FIXTURE.strip_prefix("v2.").unwrap();
+        assert!(decrypt_context(v2_body, &CTX_FIXTURE_KEY).is_err());
+        assert!(decrypt_context(&format!("v2.{CTX_V1_FIXTURE}"), &CTX_FIXTURE_KEY).is_err());
+        for bad in [
+            format!("v9.{v2_body}"),
+            format!("v1.{CTX_V1_FIXTURE}"),
+            ".".to_string(),
+        ] {
+            let err = decrypt_context(&bad, &CTX_FIXTURE_KEY)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                err.contains("unsupported encrypted_context version"),
+                "{bad}: {err}"
+            );
+        }
+        assert!(decrypt_context(CTX_V2_FIXTURE, &[0x12; 32]).is_err());
+    }
+
+    /// Writers must not change: the context writer still emits an unprefixed
+    /// standard-base64 `nonce(12) || ct` under the v1 key.
+    #[test]
+    fn context_writer_output_format_is_unchanged() {
+        let out = encrypt_context(&CTX_FIXTURE_KEY, AuditEventEncryption::LocalOnly).unwrap();
+        assert!(!out.contains('.'), "{out}");
+        let blob = BASE64.decode(&out).unwrap();
+        let ctx_json =
+            serde_json::to_vec(&decrypt_context(&out, &CTX_FIXTURE_KEY).unwrap()).unwrap();
+        assert_eq!(blob.len(), 12 + ctx_json.len() + 16);
+        // Decrypts with the v1 key directly, not the v2 key.
+        use aes_gcm::{
+            aead::{Aead, KeyInit},
+            Aes256Gcm, Nonce,
+        };
+        let v1 = Aes256Gcm::new_from_slice(&derive_encryption_key(&CTX_FIXTURE_KEY)).unwrap();
+        assert!(v1
+            .decrypt(Nonce::from_slice(&blob[..12]), &blob[12..])
+            .is_ok());
+        let v2 = Aes256Gcm::new_from_slice(&derive_encryption_key_v2(&CTX_FIXTURE_KEY)).unwrap();
+        assert!(v2
+            .decrypt(Nonce::from_slice(&blob[..12]), &blob[12..])
+            .is_err());
     }
 }

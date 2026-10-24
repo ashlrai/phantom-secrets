@@ -2725,6 +2725,7 @@ dependencies = [
  "fs2",
  "glob",
  "hex",
+ "hkdf",
  "hmac",
  "jsonwebtoken",
  "keyring",
