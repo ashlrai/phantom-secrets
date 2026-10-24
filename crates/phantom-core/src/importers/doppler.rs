@@ -16,6 +16,8 @@
 //!    ```
 //!
 //! Both formats are auto-detected by inspecting the first value in the object.
+//! In the object format the resolved `computed` value is imported; `raw` keeps
+//! `${OTHER}` references unresolved and is used only when `computed` is null.
 
 use anyhow::Result;
 use serde_json::Value;
@@ -45,12 +47,14 @@ impl Importer for DopplerImporter {
 
             let raw_value: Option<String> = match val {
                 // Object format: {"raw": "...", "computed": "...", ...}.
-                // Prefer a non-null "raw", then "computed"; an object with
-                // neither field is not a Doppler secret and is refused.
+                // Prefer a non-null "computed" (references like `${OTHER}`
+                // resolved, the value an app receives), then "raw"; an
+                // object with neither field is not a Doppler secret and is
+                // refused.
                 Value::Object(inner) => {
                     let mut chosen = None;
                     let mut seen = false;
-                    for field in ["raw", "computed"] {
+                    for field in ["computed", "raw"] {
                         if let Some(candidate) = inner.get(field) {
                             seen = true;
                             chosen = json_scalar("Doppler", key, candidate)?;
@@ -176,6 +180,29 @@ mod tests {
         assert_eq!(map.get("PORT").map(|v| v.as_str()), Some("3000"));
         assert_eq!(map.get("DEBUG").map(|v| v.as_str()), Some("true"));
         assert_eq!(map.get("API_KEY").map(|v| v.as_str()), Some("sk-abc"));
+    }
+
+    #[test]
+    fn imports_the_computed_value_not_the_unresolved_raw_reference() {
+        // Doppler's `raw` keeps `${OTHER}` references as typed; `computed` is
+        // the resolved value an app actually receives. Importing `raw` would
+        // store the literal reference text and break the injected value.
+        let input = r#"{
+            "DB_USER": {"raw": "app", "computed": "app", "note": ""},
+            "DATABASE_URL": {"raw": "postgres://${DB_USER}@host/db", "computed": "postgres://app@host/db", "note": ""}
+        }"#;
+        let map = DopplerImporter::parse(input.as_bytes()).unwrap();
+        assert_eq!(
+            map.get("DATABASE_URL").map(|v| v.as_str()),
+            Some("postgres://app@host/db")
+        );
+    }
+
+    #[test]
+    fn computed_null_falls_back_to_raw() {
+        let input = r#"{"REAL_KEY": {"raw": "raw_value", "computed": null, "note": ""}}"#;
+        let map = DopplerImporter::parse(input.as_bytes()).unwrap();
+        assert_eq!(map.get("REAL_KEY").map(|v| v.as_str()), Some("raw_value"));
     }
 
     #[test]
