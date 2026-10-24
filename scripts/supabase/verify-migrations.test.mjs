@@ -29,11 +29,11 @@ test("the committed migration set matches its ordered digest manifest", async ()
   const result = await verifyMigrationManifest({
     supabaseDirectory: projectSupabaseDirectory,
   });
-  assert.equal(result.count, 13);
+  assert.equal(result.count, 11);
   assert.equal(result.files[0], "001_initial.sql");
   assert.equal(
     result.files.at(-1),
-    "20261009231437_clamp_browser_table_authority.sql",
+    "20260902000000_harden_rls_and_function_paths.sql",
   );
 });
 
