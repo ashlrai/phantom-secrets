@@ -142,6 +142,62 @@ pub fn run_doctor(fix: bool, check_expiry: bool, json: bool) -> Result<()> {
     run_checks(fix, check_expiry).map(|_| ())
 }
 
+/// `phantom doctor --output <path>`: write the full report (text, or JSON
+/// with `--json`) to a new file and print a short summary.
+pub fn run_doctor_to_file(
+    fix: bool,
+    check_expiry: bool,
+    json: bool,
+    path: &std::path::Path,
+) -> Result<()> {
+    let report = collect_report(fix, check_expiry)?;
+    let body = if json {
+        serde_json::to_string_pretty(&report)? + "\n"
+    } else {
+        render_text(&report)
+    };
+    crate::report_file::write_new(path, body.as_bytes())?;
+    println!("{}", summary_line(&report, path));
+    Ok(())
+}
+
+fn summary_line(report: &DoctorReport, path: &std::path::Path) -> String {
+    let count = |s: &str| report.checks.iter().filter(|c| c.status == s).count();
+    format!(
+        "Doctor: {} issue(s); {} checks ({} fail, {} warn). Full report: {}",
+        report.issues,
+        report.checks.len(),
+        count("fail"),
+        count("warn"),
+        path.display()
+    )
+}
+
+/// Plain-text form of the report, one line per check, no colors.
+fn render_text(report: &DoctorReport) -> String {
+    let mut out = String::from("Phantom Doctor\n\n");
+    for c in &report.checks {
+        out.push_str(&format!("  {:<5} {}\n", c.status, c.message));
+        if let Some(fix) = &c.fix {
+            out.push_str(&format!("        Fix: {fix}\n"));
+        }
+        if let Some(fixed) = &c.fixed {
+            out.push_str(&format!("        Fixed: {fixed}\n"));
+        }
+    }
+    if !report.mcp_clients.is_empty() {
+        out.push_str("\nMCP clients:\n");
+        for m in &report.mcp_clients {
+            out.push_str(&format!("  {} {} ({})\n", m.client, m.state, m.path));
+        }
+    }
+    out.push_str(&format!(
+        "\n{} issue(s), {} fixed\n",
+        report.issues, report.fixed
+    ));
+    out
+}
+
 /// Run the checks and return the structured report instead of printing it.
 /// Used by `phantom doctor --json` and the combined `phantom doctor --all`.
 pub fn collect_report(fix: bool, check_expiry: bool) -> Result<DoctorReport> {
@@ -749,6 +805,20 @@ fn run_checks(fix: bool, check_expiry: bool) -> Result<(usize, usize)> {
         }
     } else if check_expiry {
         check_info("Expiry metadata not read in non-provisioning doctor mode");
+    }
+
+    // Check 13b: LiteLLM routed through Phantom (report-only, never --fix)
+    for finding in super::doctor_litellm::findings(&project_dir) {
+        let msg = finding.message();
+        if finding.is_warning() {
+            issues += 1;
+            check_warn(&msg);
+            if let Some(fix) = finding.fix() {
+                check_fix(fix);
+            }
+        } else {
+            check_info(&msg);
+        }
     }
 
     // Check 14: MCP setup status per known client

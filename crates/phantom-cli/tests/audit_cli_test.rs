@@ -219,9 +219,14 @@ fn audit_incidents_reports_leak_events_not_yet_persisted() {
             "{{\"ts\":{ts},\"op\":\"proxy.response_leak\",\"name\":\"OPENAI_API_KEY\",\"pid\":1,\"process\":\"phantom\"}}\n"
         )
     };
+    // Both events must share one hour bucket (ts / 3600) to form one
+    // incident. `now - 20` and `now - 10` split across buckets when the test
+    // runs in the first 20 seconds of an hour, so anchor them to the start of
+    // the previous hour instead.
+    let hour_start = (now / 3600 - 1) * 3600;
     std::fs::write(
         phantom_dir.join("audit.log"),
-        format!("{}{}", line(now - 20), line(now - 10)),
+        format!("{}{}", line(hour_start + 100), line(hour_start + 110)),
     )
     .unwrap();
 
@@ -381,4 +386,39 @@ fn audit_score_flags_clamp_and_refuse_nan() {
     assert!(out.status.success(), "{out:?}");
     let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(report["records"][0]["name"], "SCORED_ENTRY");
+}
+
+fn show(home: &std::path::Path, extra: &[&str]) -> std::process::Output {
+    let mut cmd = Command::cargo_bin("phantom").expect("binary not found");
+    cmd.current_dir(home)
+        .env("HOME", home)
+        .env_remove("PHANTOM_AUDIT")
+        .args(["audit", "show", "--json"])
+        .args(extra);
+    cmd.output().expect("run phantom audit show")
+}
+
+/// `audit show --output` writes exactly what stdout would have held to a new
+/// file, prints one summary line, and never overwrites an existing file.
+#[test]
+fn show_output_writes_the_full_report_to_a_new_file_and_prints_a_summary() {
+    let tmp = common::canonical_tempdir();
+    write_signed_events(tmp.path());
+    let plain = show(tmp.path(), &[]);
+    assert!(plain.status.success());
+
+    let dest = tmp.path().join("audit-report.jsonl");
+    let out = show(tmp.path(), &["--output", dest.to_str().unwrap()]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{stdout}");
+    assert_eq!(std::fs::read(&dest).unwrap(), plain.stdout);
+    assert_eq!(stdout.lines().count(), 1, "{stdout}");
+    let n = String::from_utf8_lossy(&plain.stdout).lines().count();
+    assert!(n >= 2, "fixture events missing");
+    assert!(stdout.contains(&format!("wrote {n} line(s)")), "{stdout}");
+    assert!(!stdout.contains("VERIFY_FIXTURE_KEY"), "{stdout}");
+
+    let again = show(tmp.path(), &["--output", dest.to_str().unwrap()]);
+    assert!(!again.status.success());
+    assert_eq!(std::fs::read(&dest).unwrap(), plain.stdout);
 }

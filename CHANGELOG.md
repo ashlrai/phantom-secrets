@@ -4,6 +4,17 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Added (agent doctor preflight)
+
+- `phantom agent doctor --json` prints a value-free preflight
+  (`phantom.agent.preflight`, schema version 1) with a verdict, readiness,
+  risk level, check ids and severities, and whether an agent can be started.
+  It never includes secret names, values, paths, project ids or messages. By
+  default it does not open the vault or read the keychain and writes no audit
+  lines; `--vault` opts in to the vault and cloud login probe. The exit code
+  stays 0 unless `--strict` is set (0 ready, 2 degraded, 1 blocked, 3 could
+  not evaluate). See `docs/agent-preflight-contract.md`.
+
 ### Security (proxy partial-echo redaction)
 
 - The proxy now redacts any run of 12 or more consecutive characters of a

@@ -73,6 +73,20 @@ async fn echo(
             .header("content-type", "application/json")
             .body(Full::new(Bytes::from(body)).boxed())
             .unwrap()
+    } else if path.contains("/binheader") {
+        // The key followed by a byte that is not valid UTF-8, so the header
+        // value is not text. The proxy must drop it, never pass it through.
+        let mut raw = cred.clone().into_bytes();
+        raw.push(0xff);
+        Response::builder()
+            .status(401)
+            .header("content-type", "application/json")
+            .header(
+                "x-echo-bin",
+                hyper::header::HeaderValue::from_bytes(&raw).unwrap(),
+            )
+            .body(Full::new(Bytes::from_static(br#"{"error":"unauthorized"}"#)).boxed())
+            .unwrap()
     } else if path.contains("/header") {
         Response::builder()
             .status(401)
@@ -415,4 +429,38 @@ async fn x_api_key_echo_in_streamed_sse_error_does_not_reach_child() {
         ANTHROPIC_REAL,
     )
     .await;
+}
+
+/// A response header whose value is not valid UTF-8 cannot go through the
+/// text scrubber, so the proxy drops it (server.rs, "Dropped non-text upstream
+/// response header"). Pin that fail-closed behavior: the real key echoed in
+/// such a header must not reach the child on either route.
+#[tokio::test]
+async fn non_utf8_response_header_echoing_the_key_is_dropped() {
+    for (service, header, value, real) in [
+        (
+            "openai",
+            "authorization",
+            format!("Bearer {OPENAI_PHM}"),
+            OPENAI_REAL,
+        ),
+        (
+            "anthropic",
+            "x-api-key",
+            ANTHROPIC_PHM.to_string(),
+            ANTHROPIC_REAL,
+        ),
+    ] {
+        let view = fetch_view(service, header, &value, "binheader", "full", real).await;
+        let leaks = leaked_fragments(&view, real);
+        assert!(
+            leaks.is_empty(),
+            "SECURITY: real key reached the child via a non-UTF-8 header on {service}: {leaks:?}\n{view}"
+        );
+        assert!(
+            !view.to_ascii_lowercase().contains("x-echo-bin"),
+            "non-text header must be dropped on {service}:\n{view}"
+        );
+        assert!(view.contains("unauthorized"), "{view}");
+    }
 }

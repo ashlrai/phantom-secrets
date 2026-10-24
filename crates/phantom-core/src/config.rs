@@ -1169,11 +1169,22 @@ fn is_local_or_private_host(host: &str) -> bool {
         return true;
     }
 
+    let v4_private = |ip: std::net::Ipv4Addr| {
+        ip.is_private() || ip.is_loopback() || ip.is_link_local() || ip.is_unspecified()
+    };
     match host.parse::<IpAddr>() {
-        Ok(IpAddr::V4(ip)) => {
-            ip.is_private() || ip.is_loopback() || ip.is_link_local() || ip.is_unspecified()
+        Ok(IpAddr::V4(ip)) => v4_private(ip),
+        Ok(IpAddr::V6(ip)) => {
+            let first = ip.segments()[0];
+            ip.is_loopback()
+                || ip.is_unspecified()
+                // fc00::/7 unique local
+                || (first & 0xfe00) == 0xfc00
+                // fe80::/10 link local
+                || (first & 0xffc0) == 0xfe80
+                // ::ffff:a.b.c.d maps to the IPv4 checks
+                || ip.to_ipv4_mapped().is_some_and(v4_private)
         }
-        Ok(IpAddr::V6(ip)) => ip.is_loopback() || ip.is_unspecified(),
         Err(_) => false,
     }
 }
@@ -1190,6 +1201,11 @@ fn extract_host_for_risk_check(pattern: &str) -> Option<String> {
         return without_userinfo
             .split_once(']')
             .map(|(host, _)| host.trim_start_matches('[').to_string());
+    }
+
+    // A bare IPv6 literal (no brackets, so no port) is the whole host.
+    if without_userinfo.parse::<IpAddr>().is_ok() {
+        return Some(without_userinfo.to_string());
     }
 
     let host = without_userinfo
@@ -1686,6 +1702,121 @@ header = "Authorization"
         assert!(custom
             .iter()
             .any(|risk| risk.message.contains("header_format")));
+    }
+
+    /// Each risky route-pattern form must be flagged on its own, so dropping
+    /// any single check is caught (one combined pattern hid that).
+    #[test]
+    fn service_risks_flag_each_risky_pattern_form_individually() {
+        fn risks_for(pattern: &str) -> Vec<String> {
+            let mut config = PhantomConfig::new_with_defaults("test".to_string());
+            config.services.insert(
+                "custom".to_string(),
+                ServiceConfig {
+                    secret_key: "CUSTOM_API_KEY".to_string(),
+                    pattern: Some(pattern.to_string()),
+                    header: Some("Authorization".to_string()),
+                    header_format: Some("Bearer {secret}".to_string()),
+                    secret_type: "api_key".to_string(),
+                },
+            );
+            config
+                .service_risks()
+                .into_iter()
+                .filter(|risk| risk.service == "custom")
+                .map(|risk| risk.message)
+                .collect()
+        }
+        let has = |pattern: &str, needle: &str| {
+            let risks = risks_for(pattern);
+            assert!(
+                risks.iter().any(|m| m.contains(needle)),
+                "`{pattern}` should be flagged with `{needle}`: {risks:?}"
+            );
+        };
+        for pattern in [
+            "https://api.example.com",
+            "api.example.com/v1",
+            "api.example.com?x=1",
+            "api.example.com#frag",
+            "user@api.example.com",
+            "*.example.com",
+            "",
+        ] {
+            has(pattern, "bare provider host");
+        }
+        for pattern in [
+            "localhost",
+            "127.0.0.1",
+            "10.0.0.5",
+            "192.168.1.20",
+            "169.254.169.254",
+            "0.0.0.0",
+            "[::1]:8080",
+            "[0:0:0:0:0:0:0:1]",
+            "[::]",
+            "api.example.com@127.0.0.1",
+        ] {
+            has(pattern, "localhost or a private IP");
+        }
+        assert!(risks_for("api.example.com").is_empty());
+    }
+
+    fn private_route_flagged(pattern: &str) -> bool {
+        let mut config = PhantomConfig::new_with_defaults("test".to_string());
+        config.services.insert(
+            "custom".to_string(),
+            ServiceConfig {
+                secret_key: "CUSTOM_API_KEY".to_string(),
+                pattern: Some(pattern.to_string()),
+                header: Some("Authorization".to_string()),
+                header_format: Some("Bearer {secret}".to_string()),
+                secret_type: "api_key".to_string(),
+            },
+        );
+        config.service_risks().iter().any(|risk| {
+            risk.service == "custom" && risk.message.contains("localhost or a private IP")
+        })
+    }
+
+    #[test]
+    fn service_risks_flag_ipv6_unique_local_routes() {
+        for pattern in ["fd00::1", "[fd12:3456::1]", "[fc00::5]:8443", "FD00::1"] {
+            assert!(private_route_flagged(pattern), "{pattern}");
+        }
+    }
+
+    #[test]
+    fn service_risks_flag_ipv6_link_local_routes() {
+        for pattern in ["fe80::1", "[fe80::abcd]:8080", "[febf::1]"] {
+            assert!(private_route_flagged(pattern), "{pattern}");
+        }
+    }
+
+    #[test]
+    fn service_risks_flag_ipv4_mapped_ipv6_routes() {
+        for pattern in [
+            "::ffff:10.0.0.5",
+            "[::ffff:192.168.1.20]",
+            "[::ffff:169.254.169.254]:80",
+            "[::ffff:127.0.0.1]",
+            "[::ffff:a00:5]",
+            "[::ffff:0.0.0.0]",
+        ] {
+            assert!(private_route_flagged(pattern), "{pattern}");
+        }
+    }
+
+    #[test]
+    fn service_risks_do_not_flag_public_ipv6_routes() {
+        for pattern in [
+            "[2001:4860:4860::8888]",
+            "2606:4700::1111",
+            "[::ffff:8.8.8.8]",
+            "[fec0::1]",
+        ] {
+            assert!(!private_route_flagged(pattern), "{pattern}");
+        }
     }
 
     #[test]

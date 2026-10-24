@@ -332,6 +332,39 @@ mod tests {
         assert!(err.contains("Unsupported key share version 99"), "{err}");
     }
 
+    #[test]
+    fn share_version_zero_is_rejected() {
+        let alice = MemberKeypair::generate();
+        let sym_key = generate_sym_key();
+        let mut share = seal_sym_key_with(
+            &sym_key,
+            &alice.public_b64(),
+            crate::blob_format::WriteFormat::Legacy,
+        )
+        .unwrap();
+        share.v = Some(0);
+        let err = open_sym_key(&share, &alice).unwrap_err().to_string();
+        assert!(err.contains("Unsupported key share version 0"), "{err}");
+    }
+
+    #[test]
+    fn keypair_with_one_wrong_length_half_is_rejected_without_panic() {
+        let kp = MemberKeypair::generate();
+        // Runtime-derived 31-byte halves (no constant key material).
+        let short_secret = B64.encode(&B64.decode(kp.secret_b64()).unwrap()[..31]);
+        let short_public = B64.encode(&B64.decode(kp.public_b64()).unwrap()[..31]);
+        for (public, secret) in [
+            (kp.public_b64(), short_secret),
+            (short_public, kp.secret_b64()),
+        ] {
+            let err = MemberKeypair::from_base64(&public, &secret)
+                .err()
+                .expect("wrong-length half must be rejected")
+                .to_string();
+            assert!(err.contains("32 bytes"), "{err}");
+        }
+    }
+
     /// Hand-made share JSON: a real legacy share with `alg` added by hand.
     fn share_json_with_alg(alg: &str) -> (MemberKeypair, Zeroizing<[u8; 32]>, String) {
         let alice = MemberKeypair::generate();

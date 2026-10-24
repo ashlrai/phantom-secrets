@@ -42,6 +42,7 @@ crypto_box = { version = "0.9", features = ["chacha20"] }
 chacha20poly1305 = "0.10"
 glob = "0.3"
 hmac = "0.12"
+hkdf = "0.12"
 sha2 = "0.10"
 fs2 = "0.4"
 dirs = "5"

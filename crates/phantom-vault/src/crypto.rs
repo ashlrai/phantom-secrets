@@ -125,6 +125,18 @@ pub fn decrypt(encrypted: &[u8], passphrase: &str) -> Result<Vec<u8>> {
             }
         }
     }
+    // Version 3 carries its own Argon2id parameters (read-only support).
+    if let Tag::Unsupported {
+        version: blob_format::VERSION_3,
+        ..
+    } = tag
+    {
+        if let Some((params, header, body)) = blob_format::parse_v3_header(encrypted) {
+            if let Some(pt) = decrypt_body_v3(body, passphrase, params, header)? {
+                return Ok(pt);
+            }
+        }
+    }
     // Untagged, or the magic collided with a legacy salt: legacy layout.
     if let Some(pt) = decrypt_body(encrypted, passphrase, None)? {
         return Ok(pt);
@@ -162,6 +174,43 @@ fn decrypt_body(body: &[u8], passphrase: &str, aad: Option<&[u8]>) -> Result<Opt
     Ok(None)
 }
 
+/// Decrypt a v3 body (`salt || nonce || ciphertext`) with the header's
+/// Argon2id parameters and the header as associated data.
+fn decrypt_body_v3(
+    body: &[u8],
+    passphrase: &str,
+    params: blob_format::KdfParamsV3,
+    header: &[u8],
+) -> Result<Option<Vec<u8>>> {
+    if body.len() < MIN_ENCRYPTED_LEN {
+        return Ok(None);
+    }
+    let argon2_params = Params::new(
+        params.m_kib,
+        u32::from(params.t),
+        u32::from(params.p),
+        Some(KEY_LEN),
+    )
+    .map_err(|e| PhantomError::VaultError(format!("Argon2 params: {e}")))?;
+    let mut key: [u8; KEY_LEN] = Default::default();
+    Argon2::new(Algorithm::Argon2id, Version::V0x13, argon2_params)
+        .hash_password_into(passphrase.as_bytes(), &body[..SALT_LEN], &mut key)
+        .map_err(|e| PhantomError::VaultError(format!("Key derivation failed: {e}")))?;
+    let cipher = ChaCha20Poly1305::new_from_slice(&key)
+        .map_err(|e| PhantomError::VaultError(format!("Cipher init failed: {e}")))?;
+    key.zeroize();
+    let nonce = Nonce::from_slice(&body[SALT_LEN..SALT_LEN + NONCE_LEN]);
+    Ok(cipher
+        .decrypt(
+            nonce,
+            Payload {
+                msg: &body[SALT_LEN + NONCE_LEN..],
+                aad: header,
+            },
+        )
+        .ok())
+}
+
 fn try_decrypt_with(
     derive: fn(&str, &[u8]) -> Result<[u8; KEY_LEN]>,
     passphrase: &str,
@@ -191,6 +240,36 @@ fn try_decrypt_with(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A tagged (v2) blob was never written with the legacy Argon2 defaults,
+    /// so decrypt must not fall back to them for it: that would let a
+    /// rewritten blob bypass the hardened KDF and the header binding.
+    #[test]
+    fn tagged_blob_never_decrypts_with_the_legacy_kdf() {
+        let passphrase = "obvious-fake-passphrase";
+        let plaintext = b"fake-vault-contents";
+        let real = encrypt_with_format(plaintext, passphrase, WriteFormat::Tagged).unwrap();
+        let header_len = blob_format::HEADER_LEN;
+        let salt = &real[header_len..header_len + SALT_LEN];
+        let nonce_bytes = &real[header_len + SALT_LEN..header_len + SALT_LEN + NONCE_LEN];
+
+        // Same header, salt and nonce; body sealed under the legacy KDF with
+        // no associated data, as an untagged legacy blob would be.
+        let mut key = derive_key_legacy(passphrase, salt).unwrap();
+        let cipher = ChaCha20Poly1305::new_from_slice(&key).unwrap();
+        key.zeroize();
+        let ciphertext = cipher
+            .encrypt(Nonce::from_slice(nonce_bytes), plaintext.as_slice())
+            .unwrap();
+        let mut forged = real[..header_len + SALT_LEN + NONCE_LEN].to_vec();
+        forged.extend_from_slice(&ciphertext);
+
+        assert_eq!(decrypt(&real, passphrase).unwrap(), plaintext);
+        assert!(
+            decrypt(&forged, passphrase).is_err(),
+            "tagged blob decrypted through the legacy KDF"
+        );
+    }
     use rand::RngCore;
 
     #[test]
@@ -379,6 +458,88 @@ mod tests {
         }
     }
 
+    /// Hand-made v3 fixture, generated independently with Python argon2-cffi
+    /// 25.1.0 (Argon2id v0x13, m=19456 KiB, t=2, p=1) and `cryptography`
+    /// ChaCha20Poly1305 with the 13-byte header as associated data.
+    const V3_FIXTURE_HEX: &str = "50484d42030101004c000002013541bf7ea61ca3d2ecf4906164cb526199600097bf0f985c286af53f6b4ddc7d4cfe56d967c02079f25373aed3045a3a1e9149aed817d32c1bc9e2424c04c9a6a0a65c988c757797cb5b58dad84fcc83";
+
+    #[test]
+    fn v3_fixture_with_stored_params_decrypts() {
+        let blob = hex_to_bytes(V3_FIXTURE_HEX);
+        let (params, _, _) = blob_format::parse_v3_header(&blob).unwrap();
+        assert_eq!(
+            params,
+            blob_format::KdfParamsV3 {
+                m_kib: 19456,
+                t: 2,
+                p: 1
+            }
+        );
+        assert_eq!(
+            decrypt(&blob, "v3-fixture-pass").unwrap(),
+            b"v3-fixture-plaintext"
+        );
+        assert!(decrypt(&blob, "wrong-pass").is_err());
+    }
+
+    /// Test-only v3 sealer (m=19456 KiB, t=2, p=1) with random salt and nonce.
+    fn seal_v3_for_test(plaintext: &[u8], passphrase: &str) -> Vec<u8> {
+        let mut header = blob_format::MAGIC.to_vec();
+        header.extend_from_slice(&[
+            blob_format::VERSION_3,
+            blob_format::ALG_CHACHA20_POLY1305,
+            blob_format::KDF_ARGON2ID_V13,
+        ]);
+        header.extend_from_slice(&19456u32.to_le_bytes());
+        header.extend_from_slice(&[2, 1]);
+        let salt: [u8; SALT_LEN] = rand::random();
+        let nonce_bytes: [u8; NONCE_LEN] = rand::random();
+        let mut key: [u8; KEY_LEN] = Default::default();
+        Argon2::new(
+            Algorithm::Argon2id,
+            Version::V0x13,
+            Params::new(19456, 2, 1, Some(KEY_LEN)).unwrap(),
+        )
+        .hash_password_into(passphrase.as_bytes(), &salt, &mut key)
+        .unwrap();
+        let cipher = ChaCha20Poly1305::new_from_slice(&key).unwrap();
+        key.zeroize();
+        let ct = cipher
+            .encrypt(
+                Nonce::from_slice(&nonce_bytes),
+                Payload {
+                    msg: plaintext,
+                    aad: &header,
+                },
+            )
+            .unwrap();
+        let mut blob = header;
+        blob.extend_from_slice(&salt);
+        blob.extend_from_slice(&nonce_bytes);
+        blob.extend_from_slice(&ct);
+        blob
+    }
+
+    #[test]
+    fn v3_header_tamper_fails() {
+        // Flipping t (2 to 3) or the reserved KDF id must not decrypt.
+        // Sealed at runtime with a random salt and nonce.
+        let blob = seal_v3_for_test(b"v3-tamper", "v3-tamper-pass");
+        assert_eq!(decrypt(&blob, "v3-tamper-pass").unwrap(), b"v3-tamper");
+        // Offset 11 is t (2 becomes 3); offset 7 is the low byte of m_kib.
+        for offset in [11usize, 7] {
+            let mut tampered = blob.clone();
+            tampered[offset] = tampered[offset].wrapping_add(1);
+            let err = decrypt(&tampered, "v3-tamper-pass")
+                .unwrap_err()
+                .to_string();
+            assert!(
+                err.contains("Unsupported vault format (version 3"),
+                "{offset}: {err}"
+            );
+        }
+    }
+
     #[test]
     fn legacy_params_blob_with_v2_colliding_salt_still_decrypts() {
         // Old vaults used `Argon2::default()`. The V2 attempt uses only the
@@ -391,6 +552,29 @@ mod tests {
         );
         assert!(matches!(blob_format::classify(&blob), Tag::V2(_)));
         assert_eq!(decrypt(&blob, "collide").unwrap(), b"edge");
+    }
+
+    /// Writers must not change: `encrypt` still writes the untagged layout
+    /// (or v2 only when `PHANTOM_BLOB_FORMAT=v2`), never v3.
+    #[test]
+    fn vault_writer_output_layout_is_unchanged() {
+        let legacy = encrypt_with_format(b"pin", "pin-pass", WriteFormat::Legacy).unwrap();
+        assert_eq!(legacy.len(), SALT_LEN + NONCE_LEN + 3 + 16);
+        let tagged = encrypt_with_format(b"pin", "pin-pass", WriteFormat::Tagged).unwrap();
+        assert_eq!(
+            tagged.len(),
+            blob_format::HEADER_LEN + SALT_LEN + NONCE_LEN + 3 + 16
+        );
+        assert_eq!(
+            tagged[..blob_format::HEADER_LEN],
+            [b'P', b'H', b'M', b'B', 2, 1]
+        );
+        let default = encrypt(b"pin", "pin-pass").unwrap();
+        assert!(default.len() == legacy.len() || default[..6] == tagged[..6]);
+        for blob in [&legacy, &tagged, &default] {
+            assert!(blob_format::parse_v3_header(blob).is_none());
+            assert_eq!(decrypt(blob, "pin-pass").unwrap(), b"pin");
+        }
     }
 
     #[test]

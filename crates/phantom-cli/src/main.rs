@@ -2,6 +2,7 @@ mod broken_pipe;
 mod commands;
 #[cfg(test)]
 mod doc_facts;
+mod report_file;
 mod util;
 
 #[cfg(test)]
@@ -150,6 +151,10 @@ enum Commands {
         /// --json for machine-readable output.
         #[arg(long, conflicts_with_all = ["fix", "pq", "expiry"])]
         all: bool,
+        /// Write the full report to this new file (never overwritten) and
+        /// print only a short summary. Text by default, JSON with --json.
+        #[arg(long, value_name = "PATH", conflicts_with_all = ["pq", "all"])]
+        output: Option<std::path::PathBuf>,
     },
 
     /// Print a shell-completion script to stdout
@@ -209,6 +214,11 @@ enum Commands {
     /// Start the proxy and run a command
     #[command(next_help_heading = "Daily use")]
     Exec {
+        /// Opt-in: use the custody namespace of this source checkout. Accepted
+        /// only when the current directory is a linked git worktree of it
+        /// (same git common dir) with a byte-identical `.phantom.toml`.
+        #[arg(long, value_name = "SOURCE_CHECKOUT")]
+        bind_source: Option<std::path::PathBuf>,
         /// Command and arguments to run
         #[arg(trailing_var_arg = true, required = true)]
         cmd: Vec<String>,
@@ -836,8 +846,18 @@ enum AgentAction {
         #[arg(long)]
         json: bool,
     },
-    /// Human-readable view of the readiness report
-    Doctor,
+    /// Human-readable view of the readiness report (--json: value-free preflight)
+    Doctor {
+        /// Emit the value-free preflight JSON (no vault access unless --vault)
+        #[arg(long)]
+        json: bool,
+        /// With --json: also probe the vault and the cloud login (keychain access)
+        #[arg(long)]
+        vault: bool,
+        /// With --json: exit 0 ready, 2 degraded, 1 blocked, 3 not evaluated
+        #[arg(long)]
+        strict: bool,
+    },
     /// Read-only, value-free view of MCP approval state (use --json for JSON)
     Status {
         /// Emit stable JSON
@@ -1040,6 +1060,9 @@ fn apply_global_json(command: &mut Commands) -> Result<(), &'static str> {
         | Commands::Agent {
             action: AgentAction::Report { .. },
         }
+        | Commands::Agent {
+            action: AgentAction::Doctor { .. },
+        }
         | Commands::Why { .. }
         | Commands::Crypto {
             action: CryptoAction::Inventory { .. },
@@ -1118,9 +1141,6 @@ fn apply_global_json(command: &mut Commands) -> Result<(), &'static str> {
             action: A::Tail { .. },
         } => Err("phantom audit tail"),
         Commands::Audit { action: A::Path } => Err("phantom audit path"),
-        Commands::Agent {
-            action: AgentAction::Doctor,
-        } => Err("phantom agent doctor"),
         Commands::Agent {
             action: AgentAction::Setup { .. },
         } => Err("phantom agent setup"),
@@ -1339,8 +1359,11 @@ fn run() -> anyhow::Result<()> {
             json,
             pq,
             all,
+            output,
         } => {
-            if all {
+            if let Some(path) = output {
+                commands::doctor::run_doctor_to_file(fix, expiry, json || global_json, &path)
+            } else if all {
                 commands::doctor_all::run(json || global_json)
             } else if pq {
                 commands::pq_report::run(json || global_json)
@@ -1350,11 +1373,17 @@ fn run() -> anyhow::Result<()> {
         }
         Commands::Agent { action } => match action {
             AgentAction::Report { json } => commands::agent::report(json || global_json),
-            AgentAction::Doctor => commands::agent::doctor(),
+            AgentAction::Doctor {
+                json,
+                vault,
+                strict,
+            } => commands::agent::doctor(json || global_json, vault, strict),
             AgentAction::Status { json } => commands::agent::status(json || global_json),
             AgentAction::Setup { dry_run, apply } => commands::agent::setup(dry_run, apply),
         },
-        Commands::Exec { cmd } => commands::exec::run(&cmd, None, cli.quiet),
+        Commands::Exec { cmd, bind_source } => {
+            commands::exec::run(&cmd, None, bind_source.as_deref(), cli.quiet)
+        }
         Commands::Start { daemon } => commands::start::run(daemon),
         Commands::Stop => commands::stop::run(),
         Commands::Check {
@@ -1461,12 +1490,14 @@ fn run() -> anyhow::Result<()> {
                 name,
                 json,
                 leaked_secrets,
+                output,
             } => commands::audit::run_show(
                 last,
                 op.as_deref(),
                 name.as_deref(),
                 json,
                 leaked_secrets,
+                output.as_deref(),
             ),
             AuditAction::Tail { op, name } => {
                 commands::audit::run_tail(op.as_deref(), name.as_deref())
@@ -1834,6 +1865,7 @@ mod help_tests {
     #[test]
     fn global_json_is_routed_or_rejected_for_every_command() {
         let supported: &[&str] = &[
+            "agent doctor",
             "agent report",
             "agent status",
             "audit alerts",
