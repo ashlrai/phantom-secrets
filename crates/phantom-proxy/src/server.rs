@@ -1478,6 +1478,82 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_proxy_query_token_is_stripped_before_the_upstream() {
+        // In compatibility mode the proxy token may ride in ?phantom_token=.
+        // It authenticates the child to Phantom only: the upstream must get
+        // the other parameters but never the token, in any name casing.
+        let mock = crate::test_server::MockServer::start().await;
+        let mut registry = ServiceRegistry::new();
+        registry.add_route(ServiceRoute {
+            name: "test".to_string(),
+            target_base: format!("http://127.0.0.1:{}", mock.port),
+            secret_key: "TEST_API_KEY".to_string(),
+            header: "Authorization".to_string(),
+            header_format: "Bearer {secret}".to_string(),
+            credential_profile: crate::services::CredentialProfile::Standard,
+            sdk_base_path: None,
+        });
+        let mut named = HashMap::new();
+        named.insert("TEST_API_KEY".to_string(), "real-secret-value".to_string());
+        let interceptor = Interceptor::new_with_named(HashMap::new(), named);
+        let token = ProxyServer::generate_proxy_token();
+        let proxy = ProxyServer::start(
+            ProxyConfig {
+                port: 0,
+                proxy_token: token.clone(),
+                allow_query_token_auth: true,
+                ..ProxyConfig::default()
+            },
+            registry,
+            interceptor,
+        )
+        .await
+        .unwrap();
+
+        let client = reqwest::Client::new();
+        for name in ["phantom_token", "Phantom_Token"] {
+            let resp = client
+                .get(format!(
+                    "http://127.0.0.1:{}/test/search?q=a&{name}={token}&limit=2",
+                    proxy.port()
+                ))
+                .header("x-phantom-proxy-token", token.clone())
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), 200);
+        }
+        let resp = client
+            .get(format!(
+                "http://127.0.0.1:{}/test/search?q=a&phantom_token={token}",
+                proxy.port()
+            ))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+
+        let requests = mock.get_requests();
+        assert_eq!(requests.len(), 3);
+        for request in &requests {
+            assert!(
+                !request.path.contains(token.as_str())
+                    && !request.path.to_ascii_lowercase().contains("phantom_token"),
+                "proxy token reached the upstream: {}",
+                request.path
+            );
+            assert!(request.path.contains("q=a"), "{}", request.path);
+            assert_eq!(
+                request.headers.get("authorization").unwrap(),
+                "Bearer real-secret-value"
+            );
+        }
+
+        proxy.shutdown().await;
+        mock.shutdown().await;
+    }
+
+    #[tokio::test]
     async fn test_proxy_query_token_requires_compatibility_mode() {
         let (registry, interceptor) = test_state();
         let token = ProxyServer::generate_proxy_token();
