@@ -487,3 +487,64 @@ fn doctor_pq_human_report_names_hybrid_caveat() {
         "{stdout}"
     );
 }
+
+#[test]
+fn doctor_json_reports_risky_litellm_through_phantom_and_changes_nothing() {
+    let dir = common::canonical_tempdir();
+    let config = "model_list:\n  - model_name: gpt\n    litellm_params:\n      model: openai/gpt-4o\n      api_base: http://127.0.0.1:8765/openai/v1\n      api_key: phm_0000000000000000fake\ngeneral_settings:\n  allow_client_side_credentials: true\n";
+    let compose = "services:\n  litellm:\n    image: ghcr.io/berriai/litellm:main-v1.82.6\n    ports:\n      - \"4000:4000\"\n";
+    fs::write(dir.path().join("litellm_config.yaml"), config).unwrap();
+    fs::write(dir.path().join("docker-compose.yml"), compose).unwrap();
+
+    for fix in [false, true] {
+        let mut args = vec!["doctor", "--json"];
+        if fix {
+            args.push("--fix");
+        }
+        let output = phantom(&dir).args(&args).assert();
+        let stdout = String::from_utf8_lossy(&output.get_output().stdout).to_string();
+        let report: serde_json::Value =
+            serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("{e}: {stdout}"));
+        let checks = report["checks"].as_array().unwrap();
+        let find = |needle: &str| {
+            checks
+                .iter()
+                .find(|c| c["message"].as_str().unwrap_or("").contains(needle))
+                .unwrap_or_else(|| panic!("{needle}: {stdout}"))
+                .clone()
+        };
+        assert_eq!(find("routes through Phantom")["status"], "info");
+        assert_eq!(
+            find("allow_client_side_credentials: true")["status"],
+            "warn"
+        );
+        assert_eq!(find("LiteLLM 1.82.6")["status"], "warn");
+        assert_eq!(find("on all interfaces")["status"], "warn");
+        assert!(
+            !stdout.contains("phm_0000000000000000"),
+            "never echo key material: {stdout}"
+        );
+        // Report-only: the files are untouched, even with --fix.
+        assert_eq!(
+            fs::read_to_string(dir.path().join("litellm_config.yaml")).unwrap(),
+            config
+        );
+        assert_eq!(
+            fs::read_to_string(dir.path().join("docker-compose.yml")).unwrap(),
+            compose
+        );
+    }
+}
+
+#[test]
+fn doctor_ignores_litellm_config_not_routed_through_phantom() {
+    let dir = common::canonical_tempdir();
+    fs::write(
+        dir.path().join("litellm_config.yaml"),
+        "model_list:\n  - model_name: gpt\n    litellm_params:\n      model: openai/gpt-4o\n      api_base: https://api.openai.com/v1\ngeneral_settings:\n  allow_client_side_credentials: true\n",
+    )
+    .unwrap();
+    let output = phantom(&dir).args(["doctor", "--json"]).assert();
+    let stdout = String::from_utf8_lossy(&output.get_output().stdout);
+    assert!(!stdout.contains("LiteLLM"), "{stdout}");
+}
