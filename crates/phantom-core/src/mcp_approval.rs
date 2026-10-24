@@ -1730,6 +1730,58 @@ mod tests {
     }
 
     #[test]
+    fn test_wrong_project_rejected_and_nonce_kept() {
+        with_temp_home(|| {
+            let params = r#"{"confirm":true}"#;
+            let nonce = generate_pending_approval("phantom_rotate", params, "proj-a").unwrap();
+            let outcome = approve_nonce(&nonce).unwrap();
+
+            let msg = validate_and_consume_approval(
+                &nonce,
+                &outcome.approval_token,
+                "phantom_rotate",
+                params,
+                "proj-b",
+            )
+            .unwrap_err();
+            assert!(msg.contains("issued for project"), "{msg}");
+
+            // The rejected attempt must not consume the nonce.
+            validate_and_consume_approval(
+                &nonce,
+                &outcome.approval_token,
+                "phantom_rotate",
+                params,
+                "proj-a",
+            )
+            .unwrap();
+        });
+    }
+
+    #[test]
+    fn test_pending_unapproved_nonce_rejected_even_with_correct_token() {
+        with_temp_home(|| {
+            let params = r#"{"confirm":true}"#;
+            let nonce =
+                generate_pending_approval("phantom_rotate", params, "proj-pending").unwrap();
+            // An agent that somehow computed the right token still needs the
+            // trusted-terminal approval step.
+            let key = load_or_create_approval_key().unwrap();
+            let token = compute_approval_token(&nonce, &compute_arg_hash(params, &key), &key);
+
+            let msg = validate_and_consume_approval(
+                &nonce,
+                &token,
+                "phantom_rotate",
+                params,
+                "proj-pending",
+            )
+            .unwrap_err();
+            assert!(msg.contains("has not been approved"), "{msg}");
+        });
+    }
+
+    #[test]
     fn test_prune_stale_approvals() {
         with_temp_home(|| {
             // Write one expired + one valid pending record.
