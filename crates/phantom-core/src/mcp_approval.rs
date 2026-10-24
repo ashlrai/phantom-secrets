@@ -1789,6 +1789,46 @@ mod tests {
     }
 
     #[test]
+    fn legacy_approved_record_without_summary_cannot_be_consumed() {
+        with_temp_home(|| {
+            let params = r#"{"confirm":true}"#;
+            let nonce = generate_pending_approval("phantom_rotate", params, "proj-legacy").unwrap();
+            let outcome = approve_nonce(&nonce).unwrap();
+            // An approved record in the pre-informed-consent format (no
+            // effect or parameter summary) must fail closed.
+            let path = approvals_path().unwrap();
+            let mut records = load_all_records(&path).unwrap();
+            for record in &mut records {
+                record.effect_summary.clear();
+                record.parameter_summary.clear();
+            }
+            rewrite_records(&path, &records).unwrap();
+
+            let msg = validate_and_consume_approval(
+                &nonce,
+                &outcome.approval_token,
+                "phantom_rotate",
+                params,
+                "proj-legacy",
+            )
+            .unwrap_err();
+            assert!(msg.contains("informed-consent"), "{msg}");
+        });
+    }
+
+    #[test]
+    fn approving_an_already_approved_nonce_is_refused() {
+        with_temp_home(|| {
+            let nonce =
+                generate_pending_approval("phantom_rotate", r#"{"confirm":true}"#, "proj-twice")
+                    .unwrap();
+            approve_nonce(&nonce).unwrap();
+            let err = approve_nonce(&nonce).unwrap_err();
+            assert!(err.to_string().contains("already been approved"), "{err}");
+        });
+    }
+
+    #[test]
     fn test_prune_stale_approvals() {
         with_temp_home(|| {
             // Write one expired + one valid pending record.
