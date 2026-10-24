@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import Image from "next/image";
+import Link from "next/link";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import {
   formatDeviceUserCode,
@@ -23,9 +25,10 @@ function getSupabase() {
 export default function DeviceAuthorizationClient() {
   const [code, setCode] = useState("");
   const [status, setStatus] = useState<
-    "input" | "authenticating" | "approving" | "done" | "error"
+    "input" | "authenticating" | "approving" | "done"
   >("input");
   const [error, setError] = useState("");
+  const forceFreshOAuth = useRef<boolean | null>(null);
 
   const approveDevice = async (userCode: string, accessToken: string) => {
     setStatus("approving");
@@ -47,11 +50,11 @@ export default function DeviceAuthorizationClient() {
       } else {
         const data = await response.json();
         setError(data.error || "Failed to approve device");
-        setStatus("error");
+        setStatus("input");
       }
     } catch {
       setError("Failed to connect. Please try again.");
-      setStatus("error");
+      setStatus("input");
     }
   };
 
@@ -65,29 +68,52 @@ export default function DeviceAuthorizationClient() {
     setStatus("authenticating");
     setError("");
 
-    const {
-      data: { session },
-    } = await getSupabase().auth.getSession();
-
-    if (!session) {
-      sessionStorage.setItem("phantom_device_code", code);
-      const { error: authError } = await getSupabase().auth.signInWithOAuth({
-        provider: "github",
-        options: {
-          // The one-time device code stays in tab-scoped session storage and never enters a
-          // URL, referrer, provider callback, analytics event, or server log.
-          redirectTo: `${window.location.origin}/device?oauth=1`,
-        },
-      });
-      if (authError) {
-        sessionStorage.removeItem("phantom_device_code");
-        setError(authError.message);
-        setStatus("input");
+    try {
+      // A failed new callback may leave an older account in SDK storage.
+      // Persist that intent across reloads after callback URL cleanup. Only
+      // this component's verified callback may override an unreadable marker.
+      let needsFreshOAuth = forceFreshOAuth.current;
+      if (needsFreshOAuth === null) {
+        try {
+          needsFreshOAuth = new URLSearchParams(window.location.search).get("oauth_retry") === "1"
+            || sessionStorage.getItem("phantom_device_oauth_pending") === "1";
+        } catch {
+          needsFreshOAuth = true;
+        }
       }
-      return;
-    }
+      const { data: { session }, error: sessionError } = needsFreshOAuth
+        ? { data: { session: null }, error: null }
+        : await getSupabase().auth.getSession();
+      if (sessionError) {
+        setError("Unable to read your sign-in session. Please try again.");
+        setStatus("input");
+        return;
+      }
 
-    await approveDevice(code, session.access_token);
+      if (!session) {
+        forceFreshOAuth.current = true;
+        sessionStorage.setItem("phantom_device_oauth_pending", "1");
+        sessionStorage.setItem("phantom_device_code", code);
+        const { error: authError } = await getSupabase().auth.signInWithOAuth({
+          provider: "github",
+          options: {
+            // The one-time device code stays in tab-scoped session storage and never enters a
+            // URL, referrer, provider callback, analytics event, or server log.
+            redirectTo: `${window.location.origin}/device?oauth=1`,
+          },
+        });
+        if (authError) {
+          setError("GitHub sign-in could not start. Please try again.");
+          setStatus("input");
+        }
+        return;
+      }
+
+      await approveDevice(code, session.access_token);
+    } catch {
+      setError("Unable to complete sign-in. Please try again.");
+      setStatus("input");
+    }
   };
 
   const redirectHandled = useRef(false);
@@ -95,36 +121,104 @@ export default function DeviceAuthorizationClient() {
     if (redirectHandled.current) return;
     const params = new URLSearchParams(window.location.search);
     const isOAuthReturn = params.get("oauth") === "1";
-    const storedCode = sessionStorage.getItem("phantom_device_code");
-
-    if (isOAuthReturn) {
-      redirectHandled.current = true;
-      window.history.replaceState(null, "", "/device");
+    if (!isOAuthReturn) return;
+    let storedCode: string | null = null;
+    try {
+      storedCode = sessionStorage.getItem("phantom_device_code");
+    } catch {
+      // Restricted tab storage must not prevent the SDK consuming callback tokens.
     }
 
-    if (isOAuthReturn && storedCode) {
-      setCode(storedCode);
-      sessionStorage.removeItem("phantom_device_code");
+    // Guard before awaiting: development StrictMode must not approve twice.
+    redirectHandled.current = true;
+    if (storedCode) setCode(formatDeviceUserCode(storedCode));
+    const fragment = new URLSearchParams(window.location.hash.slice(1));
+    // This client uses implicit OAuth. Initialization can succeed by restoring
+    // an older stored session, so bind completion to the actual callback bearer.
+    const callbackAccessToken = fragment.get("access_token");
+    const callbackError = [params, fragment]
+      .some((values) => ["error", "error_code", "error_description"].some((key) => values.has(key)));
 
-      getSupabase().auth.getSession().then(({ data: { session } }) => {
-        if (session) {
-          approveDevice(storedCode, session.access_token);
+    const completeOAuthReturn = async () => {
+      setStatus("authenticating");
+      forceFreshOAuth.current = true;
+      let retryIntentPersisted = true;
+      try {
+        sessionStorage.setItem("phantom_device_oauth_pending", "1");
+      } catch {
+        retryIntentPersisted = false;
+      }
+      let accessToken: string;
+      try {
+        const auth = getSupabase().auth;
+        // Implicit OAuth tokens arrive in the URL fragment. The SDK must
+        // consume it before our cleanup, and getSession alone hides errors
+        // from initialization (potentially returning an older session).
+        const { error: initializationError } = await auth.initialize();
+        if (initializationError || callbackError || !callbackAccessToken) {
+          setError("GitHub sign-in did not complete. Please try again.");
+          setStatus("input");
+          return;
         }
-      });
-    }
+        const { data: { session }, error: sessionError } = await auth.getSession();
+        if (sessionError || !session?.access_token || session.access_token !== callbackAccessToken) {
+          setError("GitHub sign-in did not complete. Please try again.");
+          setStatus("input");
+          return;
+        }
+        accessToken = session.access_token;
+        forceFreshOAuth.current = false;
+        try {
+          sessionStorage.removeItem("phantom_device_oauth_pending");
+        } catch {
+          // This callback verified the current session. An uncleared marker
+          // conservatively requires fresh OAuth on a later page reload.
+        }
+      } catch {
+        setError("Unable to complete sign-in. Please try again.");
+        setStatus("input");
+        return;
+      } finally {
+        // Clear callback data on success or failure, after SDK ingestion settles.
+        // If storage is unwritable, retain only a non-sensitive retry flag so
+        // reloading a failed callback still cannot authorize an older session.
+        const destination = forceFreshOAuth.current && !retryIntentPersisted
+          ? "/device?oauth_retry=1" : "/device";
+        window.history.replaceState(null, "", destination);
+      }
+
+      if (!storedCode || !isValidDeviceUserCode(storedCode)) {
+        setError("Sign-in completed. Enter the current code from your terminal to authorize this device.");
+        setStatus("input");
+        return;
+      }
+      try {
+        sessionStorage.removeItem("phantom_device_code");
+      } catch {
+        // The restored code is already in component state for an explicit retry.
+      }
+      await approveDevice(storedCode, accessToken);
+    };
+
+    void completeOAuthReturn();
   }, []);
 
+  const busy = status === "authenticating" || status === "approving";
+
   return (
-    <main className="min-h-screen bg-[#050508] text-[#f5f5f7] flex items-center justify-center p-6">
-      <div className="max-w-md w-full text-center">
-        <div className="flex items-center justify-center gap-2 mb-8">
-          <span className="font-bold text-sm">Phantom</span>
-        </div>
+    <main className="min-h-screen bg-bg text-t1 flex flex-col items-center justify-center px-4 py-10 sm:px-6">
+      <div className="w-full max-w-md min-w-0">
+        <Link href="/secrets" className="mb-8 flex min-h-[44px] items-center justify-center gap-3 text-t1 no-underline focus-visible:outline-2 focus-visible:outline-blue-b">
+          <Image src="/favicon.svg" alt="" width={40} height={40} />
+          <span className="text-lg font-semibold tracking-tight">Phantom Secrets</span>
+        </Link>
+        <section className="rounded-2xl border border-border bg-s1 p-5 text-center sm:p-8" aria-busy={busy}>
 
         {status === "done" ? (
-          <div>
+          <div role="status">
             <div className="w-16 h-16 bg-green-500/10 rounded-full flex items-center justify-center mx-auto mb-4">
               <svg
+                aria-hidden="true"
                 className="w-8 h-8 text-green-500"
                 fill="none"
                 stroke="currentColor"
@@ -139,43 +233,53 @@ export default function DeviceAuthorizationClient() {
               </svg>
             </div>
             <h1 className="text-2xl font-bold mb-2">Device Authorized</h1>
-            <p className="text-[#a1a1b5]">
+            <p className="text-t2">
               You can return to your terminal. The CLI will log you in
               automatically.
             </p>
             <a
               href="/dashboard"
-              className="mt-6 inline-block rounded-lg bg-blue-600 hover:bg-blue-700 px-5 py-2.5 text-sm font-semibold text-white no-underline transition-colors"
+              className="mt-6 inline-flex min-h-[44px] items-center justify-center rounded-lg bg-blue-action hover:bg-blue-action-d px-5 py-2.5 text-sm font-semibold text-white no-underline transition-colors focus-visible:outline-2 focus-visible:outline-blue-b"
             >
-              Open your dashboard →
+              Open your dashboard
             </a>
           </div>
         ) : (
           <div>
             <h1 className="text-2xl font-bold mb-2">Authorize Device</h1>
-            <p className="text-[#a1a1b5] mb-8">
+            <p className="text-t2 mb-8">
               Enter the code shown in your terminal to authorize this device
               with Phantom Cloud.
             </p>
 
             <form onSubmit={handleSubmit} className="space-y-4">
+              <label htmlFor="device-code" className="block text-left text-sm font-medium text-t1">
+                Device code
+              </label>
               <input
+                id="device-code"
+                name="device-code"
                 type="text"
+                autoComplete="off"
+                autoCapitalize="characters"
+                spellCheck={false}
+                aria-invalid={Boolean(error)}
+                aria-describedby={error ? "device-error device-help" : "device-help"}
                 value={code}
                 onChange={(event) => setCode(formatDeviceUserCode(event.target.value))}
                 placeholder="XXXX-XXXX"
-                className="w-full text-center text-3xl font-mono tracking-[0.3em] py-4 px-6 bg-[#0a0a12] border border-[#1a1a2c] rounded-lg text-[#f5f5f7] outline-none focus:border-blue-500 placeholder:text-[#333]"
+                className="w-full min-w-0 text-center text-2xl sm:text-3xl font-mono tracking-[0.12em] sm:tracking-[0.2em] py-4 px-2 bg-bg border border-border-l rounded-lg text-t1 focus-visible:outline-2 focus-visible:outline-blue-b placeholder:text-t3"
                 maxLength={9}
                 autoFocus
                 disabled={status !== "input"}
               />
 
-              {error && <p className="text-red-400 text-sm">{error}</p>}
+              {error && <p id="device-error" role="alert" className="text-red-400 text-sm leading-relaxed">{error}</p>}
 
               <button
                 type="submit"
                 disabled={status !== "input" || code.length < 9}
-                className="w-full py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-[#1a1a2c] disabled:text-[#65657a] rounded-lg font-semibold transition-colors"
+                className="w-full min-h-[48px] py-3 bg-blue-action hover:bg-blue-action-d disabled:bg-s3 disabled:text-t3 rounded-lg font-semibold transition-colors focus-visible:outline-2 focus-visible:outline-blue-b"
               >
                 {status === "authenticating"
                   ? "Signing in with GitHub..."
@@ -185,12 +289,19 @@ export default function DeviceAuthorizationClient() {
               </button>
             </form>
 
-            <p className="text-[#65657a] text-xs mt-6">
+            <p role="status" className="sr-only">
+              {busy ? status === "authenticating" ? "Signing in with GitHub." : "Approving your device." : ""}
+            </p>
+            <p id="device-help" className="text-t3 text-xs leading-relaxed mt-6">
               This will sign you in via GitHub and link this device to your
               Phantom account.
             </p>
           </div>
         )}
+        </section>
+        <Link href="/" className="mt-6 flex min-h-[44px] items-center justify-center text-sm text-t2 hover:text-t1 no-underline focus-visible:outline-2 focus-visible:outline-blue-b">
+          Back to Phantom
+        </Link>
       </div>
     </main>
   );

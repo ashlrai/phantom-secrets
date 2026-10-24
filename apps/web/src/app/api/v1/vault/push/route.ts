@@ -39,7 +39,7 @@ export async function PUT(req: Request) {
   }
 
   // Reject oversized blobs (1MB limit — more than enough for any vault)
-  if (encrypted_blob.length > 1_000_000) {
+  if (Buffer.byteLength(encrypted_blob, "utf8") > 1_000_000) {
     return Response.json(
       { error: "encrypted_blob too large (max 1MB)" },
       { status: 413 }
@@ -47,7 +47,7 @@ export async function PUT(req: Request) {
   }
   if (
     typeof expected_version !== "number" ||
-    !Number.isInteger(expected_version) ||
+    !Number.isSafeInteger(expected_version) ||
     expected_version < 0
   ) {
     return Response.json(
@@ -57,110 +57,47 @@ export async function PUT(req: Request) {
   }
 
   const supabase = createServiceClient();
+  // The database serializes all pushes for this account before checking its
+  // quota and version. Legacy plan labels never admit another cloud backup.
+  const { data, error } = await supabase.rpc("push_personal_vault", {
+    p_user_id: authResult.userId,
+    p_project_id: project_id,
+    p_encrypted_blob: encrypted_blob,
+    p_expected_version: expected_version,
+  });
 
-  // Check free tier limit: 1 vault for free users
-  if (authResult.plan !== "pro") {
-    const { count } = await supabase
-      .from("vault_blobs")
-      .select("*", { count: "exact", head: true })
-      .eq("user_id", authResult.userId);
-
-    // Check if this is a NEW vault (not an update to an existing one)
-    const { data: existing } = await supabase
-      .from("vault_blobs")
-      .select("id")
-      .eq("user_id", authResult.userId)
-      .eq("project_id", project_id)
-      .single();
-
-    if (!existing && (count ?? 0) >= 1) {
-      const proRequired = requirePro(authResult);
-      if (proRequired) return proRequired;
-    }
+  if (error || !Array.isArray(data) || data.length !== 1) {
+    return Response.json({ error: "Failed to save vault" }, { status: 500 });
   }
-
-  // Check if vault exists
-  const { data: existingVault } = await supabase
-    .from("vault_blobs")
-    .select("id, version")
-    .eq("user_id", authResult.userId)
-    .eq("project_id", project_id)
-    .single();
-
-  if (existingVault) {
-    // Update — expected_version is required so clients cannot
-    // accidentally overwrite a newer cloud copy.
-    if (expected_version === 0 || existingVault.version !== expected_version) {
-      return Response.json(
-        {
-          error: "conflict",
-          server_version: existingVault.version,
-        },
-        { status: 409 }
-      );
-    }
-
-    const newVersion = existingVault.version + 1;
-    const { data: updatedVault, error } = await supabase
-      .from("vault_blobs")
-      .update({
-        encrypted_blob,
-        version: newVersion,
-      })
-      .eq("id", existingVault.id)
-      .eq("version", expected_version)
-      .select("version")
-      .maybeSingle(); // Atomic compare-and-swap guard
-
-    if (error || !updatedVault) {
-      return Response.json(
-        { error: "conflict", server_version: existingVault.version },
-        { status: 409 }
-      );
-    }
-
-    return Response.json({ version: updatedVault.version });
-  } else {
-    if (expected_version !== 0) {
-      return Response.json(
-        {
-          error: "conflict",
-          server_version: 0,
-        },
-        { status: 409 }
-      );
-    }
-
-    // Insert new vault
-    const { data: insertedVault, error } = await supabase
-      .from("vault_blobs")
-      .insert({
-        user_id: authResult.userId,
-        project_id,
-        encrypted_blob,
-        version: 1,
-      })
-      .select("version")
-      .single();
-
-    if (error) {
-      if (error.code === "23505") {
-        const { data: racedVault } = await supabase
-          .from("vault_blobs")
-          .select("version")
-          .eq("user_id", authResult.userId)
-          .eq("project_id", project_id)
-          .maybeSingle();
-
-        return Response.json(
-          { error: "conflict", server_version: racedVault?.version ?? 1 },
-          { status: 409 }
-        );
-      }
-
-      return Response.json({ error: "Failed to create vault" }, { status: 500 });
-    }
-
-    return Response.json({ version: insertedVault.version }, { status: 201 });
+  const result = data[0];
+  if (!result || typeof result !== "object") {
+    return Response.json({ error: "Failed to save vault" }, { status: 500 });
   }
+  if (result.outcome === "quota_exceeded") {
+    return requirePro(authResult) ?? Response.json(
+      { error: "feature_unavailable" }, { status: 503 }
+    );
+  }
+  if (result.outcome === "user_missing") {
+    return Response.json({ error: "unauthorized" }, { status: 401 });
+  }
+  if (!Number.isSafeInteger(result.version) || result.version < 0) {
+    return Response.json({ error: "Failed to save vault" }, { status: 500 });
+  }
+  if (result.outcome === "conflict") {
+    return Response.json(
+      { error: "conflict", server_version: result.version },
+      { status: 409 }
+    );
+  }
+  if (
+    (result.outcome === "created" && result.version === 1) ||
+    (result.outcome === "updated" && result.version > 1)
+  ) {
+    return Response.json(
+      { version: result.version },
+      { status: result.outcome === "created" ? 201 : 200 }
+    );
+  }
+  return Response.json({ error: "Failed to save vault" }, { status: 500 });
 }

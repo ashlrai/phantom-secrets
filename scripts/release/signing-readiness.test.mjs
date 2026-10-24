@@ -204,7 +204,7 @@ test("release workflows remain unsigned with read-only attestation verification"
   assert.match(release, /^on:\n  push:\n    tags:\n      - 'v\*'$/m);
   assert.deepEqual(
     [...release.matchAll(/^  ([a-z][a-z0-9-]+):$/gm)].map((match) => match[1]),
-    ["push", "build-and-verify", "attest", "verify-attestations", "release"]
+    ["push", "build-and-verify", "attest", "verify-attestations", "release", "npm-publish"]
   );
   assert.deepEqual(
     [...build.matchAll(/^  ([a-z][a-z0-9_-]+):$/gm)].map((match) => match[1]),
@@ -212,7 +212,13 @@ test("release workflows remain unsigned with read-only attestation verification"
   );
 
   const idTokenWrites = workflows.match(/id-token:\s*write/g) ?? [];
-  assert.equal(idTokenWrites.length, 1, "only GitHub artifact attestation may request OIDC");
+  assert.equal(
+    idTokenWrites.length,
+    2,
+    "only artifact attestation and npm trusted publishing may request OIDC"
+  );
+  const npmPublish = release.slice(release.indexOf("\n  npm-publish:\n"));
+  assert.match(npmPublish, /id-token: write/);
   const attestStart = release.indexOf("\n  attest:\n");
   const verifyStart = release.indexOf("\n  verify-attestations:\n", attestStart);
   const attest = release.slice(attestStart, verifyStart);
@@ -248,4 +254,21 @@ test("release workflows remain unsigned with read-only attestation verification"
     workflows,
     /\b(?:codesign|notarytool|signtool)\b|azure\/artifact-signing|azure-artifact-signing|apple-actions|trusted-signing/i
   );
+});
+
+test("npm publish uses OIDC trusted publishing after the gated release, never a token", () => {
+  const release = readFileSync(join(repoRoot, ".github/workflows/release.yml"), "utf8");
+  const start = release.indexOf("\n  npm-publish:\n");
+  assert.ok(start > release.indexOf("\n  release:\n"), "npm-publish follows release");
+  const job = release.slice(start);
+  assert.match(job, /if: github\.event_name == 'push' && startsWith\(github\.ref, 'refs\/tags\/v'\)/);
+  assert.match(job, /needs: release/);
+  assert.match(job, /environment:\n      name: release/);
+  assert.match(job, /^    permissions:\n      contents: read\n      id-token: write$/m);
+  assert.match(job, /npm publish --provenance --access public/);
+  assert.match(job, /dir: npm, name: phantom-secrets \}/);
+  assert.match(job, /dir: npm-mcp, name: phantom-secrets-mcp \}/);
+  assert.match(job, /test "v\$\{version\}" = "\$GITHUB_REF_NAME"/);
+  assert.doesNotMatch(release, /secrets\.NPM_TOKEN|^\s+NODE_AUTH_TOKEN:/m);
+  assert.doesNotMatch(job, /registry-url|cargo publish/);
 });

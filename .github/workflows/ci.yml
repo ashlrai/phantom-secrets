@@ -8,6 +8,8 @@ on:
   # A merge queue reruns every job on the queued merge commit so CI Gate reports there.
   merge_group:
   workflow_dispatch:
+  # nightly-full.yml calls this workflow on a schedule to run the full matrix.
+  workflow_call:
 
 # Scope GITHUB_TOKEN down — CI only needs to read the repo.
 permissions:
@@ -105,7 +107,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, ubuntu-latest, windows-latest]
+        # A push to main runs Linux only: the same tree already passed the full
+        # matrix on its PR (strict up to date). nightly-full.yml runs all three.
+        os: ${{ fromJSON(github.event_name == 'push' && '["ubuntu-latest"]' || '["macos-latest", "ubuntu-latest", "windows-latest"]') }}
     env:
       # Linking the workspace's test binaries with link.exe is most of the
       # Windows Build step (86-107s vs 44s on Linux). rust-lld ships with the
@@ -286,7 +290,8 @@ jobs:
   windows-arm-source-check:
     name: Windows ARM64 source check
     needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    # Skipped on push to main (Linux only); runs on PRs and in nightly-full.yml.
+    if: needs.changes.outputs.rust == 'true' && github.event_name != 'push'
     runs-on: windows-11-vs2026-arm
     permissions:
       contents: read
@@ -575,6 +580,8 @@ jobs:
           const expect = {
             ...Object.fromEntries(always.map((j) => [j, true])),
             ...Object.fromEntries(rustJobs.map((j) => [j, rust])),
+            // Push to main runs Linux only; this job runs on PRs and nightly.
+            ...(process.env.EVENT === 'push' ? { 'windows-arm-source-check': false } : {}),
             web,
             'temporal-codec-example': temporalExample,
             'docs-commands': docsCommands,

@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { AskDocumentation } from "@/components/docs/AskDocumentation";
 import { MarkdownDocument } from "@/components/docs/MarkdownDocument";
 import { Nav } from "@/components/landing/Nav";
 import { SiteFooter } from "@/components/landing/SiteFooter";
@@ -45,7 +46,7 @@ export async function generateMetadata({
           url: "/og-image.png",
           width: 1200,
           height: 630,
-          alt: "Phantom open-source credential boundary for AI coding agents",
+          alt: "Phantom workbench and Secrets documentation",
         },
       ],
     },
@@ -150,6 +151,8 @@ export default async function PublicDocPage({ params }: PublicDocPageProps) {
             </p>
             <p>Content last reviewed {doc.modified}.</p>
             <a href={doc.sourceUrl}>View {doc.file} on GitHub</a>
+            <Link href={`/docs/${doc.slug}/markdown`}>Read raw Markdown</Link>
+            <AskDocumentation path={`/docs/${doc.slug}`} />
             <Link href="/docs">Browse all public guides</Link>
           </aside>
         </div>

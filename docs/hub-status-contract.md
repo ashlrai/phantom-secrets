@@ -50,6 +50,25 @@ It reads configuration and inspects an existing machine-local lifecycle lock.
 `--json` takes precedence over `--oneline`; operational failures such as inability
 to resolve the working directory can still produce a nonzero exit code.
 
+## Stability rules
+
+- Within `schema_version: 1` changes are additive only: new optional fields and
+  new enum values may appear. Consumers must ignore unknown fields and treat an
+  unknown enum value as `unknown`.
+- Removing or renaming a field, or changing a field's type, bumps
+  `schema_version`.
+- When JSON is printed the exit code is zero; problems are reported in `issues`.
+
+These values never appear in the output: secret values, `phm_` placeholder
+tokens, secret names, dotenv contents, configuration values (service names,
+patterns, project IDs), filesystem paths, error strings, PIDs, and hostnames.
+The output contains only the fixed vocabulary above, booleans, and small
+integers.
+
+The exact document for each configuration state (initialized, missing,
+invalid, symlinked to another project) and the canary-leak checks are pinned in
+`crates/phantom-cli/tests/status_json_test.rs`.
+
 ## Integrating with an orchestrator
 
 Launch the installed binary with an argument array and the exact project working
