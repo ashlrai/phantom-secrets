@@ -2477,6 +2477,42 @@ mod journal_tests {
     }
 
     #[test]
+    fn incomplete_journal_recovery_refuses_targets_outside_the_workspace() {
+        let outside = TempDir::new().unwrap();
+        let victim = outside.path().join("victim");
+        std::fs::write(&victim, b"outside-original\n").unwrap();
+        for escaping in [
+            format!(
+                "../{}/victim",
+                outside.path().file_name().unwrap().to_string_lossy()
+            ),
+            victim.to_string_lossy().into_owned(),
+        ] {
+            let fixture = applied_fixture();
+            let mut journal = DurableJournal::load(&fixture.config).unwrap().unwrap();
+            journal.record.files = vec![JournalFile {
+                target: escaping.clone(),
+                before: Some(b"attacker-chosen\n".to_vec()),
+                before_mode: None,
+                after: b"outside-original\n".to_vec(),
+            }];
+            journal.set_phase(JournalPhase::Prepared, None).unwrap();
+            drop(journal);
+
+            let result = recover(
+                &fixture,
+                &fixture.sealed.plan.plan_id,
+                &fixture.sealed.pre_state_id,
+            );
+            assert!(
+                matches!(result, Err(WorkspaceError::UnsafeTarget(_))),
+                "{escaping}: {result:?}"
+            );
+            assert_eq!(std::fs::read(&victim).unwrap(), b"outside-original\n");
+        }
+    }
+
+    #[test]
     fn journal_with_wrong_magic_or_truncated_header_is_invalid() {
         let fixture = applied_fixture();
         let original = std::fs::read(&fixture.config.path).unwrap();
