@@ -1333,6 +1333,55 @@ mod tests {
 
     const STORAGE_PARAMS: &str = r#"{"name":"API_KEY","confirm":true}"#;
 
+    fn set_expiry(nonce: &str, expires_at: u64) {
+        let path = approvals_path().unwrap();
+        let mut records = load_all_records(&path).unwrap();
+        for record in records.iter_mut() {
+            if record.nonce.to_string() == nonce {
+                record.expires_at = Some(expires_at);
+            }
+        }
+        rewrite_records(&path, &records).unwrap();
+    }
+
+    #[test]
+    fn pending_list_excludes_approved_and_expired_and_new_requests_prune_expired() {
+        with_temp_home(|| {
+            let approved =
+                generate_pending_approval("phantom_add_secret", STORAGE_PARAMS, "proj-1").unwrap();
+            approve_nonce(&approved).unwrap();
+            let expired =
+                generate_pending_approval("phantom_remove_secret", STORAGE_PARAMS, "proj-1")
+                    .unwrap();
+            set_expiry(&expired, now_unix().saturating_sub(1));
+            assert!(list_pending_approvals().unwrap().is_empty());
+
+            generate_pending_approval("phantom_add_secret", STORAGE_PARAMS, "proj-1").unwrap();
+            let stored = load_all_records(&approvals_path().unwrap()).unwrap();
+            assert_eq!(stored.len(), 2, "expired record was not pruned");
+            assert!(stored
+                .iter()
+                .all(|record| record.nonce.to_string() != expired));
+        });
+    }
+
+    #[test]
+    fn approval_restarts_the_use_window_from_approval_time() {
+        with_temp_home(|| {
+            let nonce =
+                generate_pending_approval("phantom_add_secret", STORAGE_PARAMS, "proj-1").unwrap();
+            set_expiry(&nonce, now_unix() + 2);
+            approve_nonce(&nonce).unwrap();
+            let stored = load_all_records(&approvals_path().unwrap()).unwrap();
+            let record = stored
+                .iter()
+                .find(|record| record.nonce.to_string() == nonce)
+                .unwrap();
+            let approved_at = record.approved_at.unwrap();
+            assert_eq!(record.expires_at, Some(approved_at + APPROVED_USE_TTL_SECS));
+        });
+    }
+
     #[test]
     fn empty_or_truncated_approval_tokens_are_rejected() {
         with_temp_home(|| {
