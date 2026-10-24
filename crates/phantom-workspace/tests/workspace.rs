@@ -2,8 +2,9 @@ use phantom_core::precommit_hook::{is_current, HOOK_BLOCK, HOOK_MARKER};
 use phantom_workspace::{
     apply_setup_plan, build_capability_card, build_sealed_setup_plan, build_setup_plan,
     inspect_workspace, rollback_workspace, AuthorityState, CapabilityScope, NoopSetupParticipant,
-    ParticipantError, ParticipantFileMutation, ParticipantPreparation, PlanSealKey, SetupAction,
-    SetupActionKind, SetupPlan, SetupTransactionParticipant, WorkspaceError,
+    ParticipantError, ParticipantFileMutation, ParticipantPreparation, PlanSealKey,
+    SealedSetupPlan, SetupAction, SetupActionKind, SetupPlan, SetupTransactionParticipant,
+    WorkspaceError,
 };
 use std::path::Path;
 use tempfile::TempDir;
@@ -942,6 +943,36 @@ fn apply_refuses_a_target_hardlinked_after_sealing() {
     assert_eq!(
         std::fs::read_to_string(outside.path().join("shared-ignore")).unwrap(),
         "# original\n"
+    );
+    assert!(!workspace.path().join(".phantom.toml").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn apply_rejects_a_validly_identified_plan_with_a_non_canonical_root() {
+    let workspace = TempDir::new().unwrap();
+    let links = TempDir::new().unwrap();
+    let original = "OPENAI_API_KEY=sk-noncanonical-root-sentinel\n";
+    write(workspace.path().join(".env"), original);
+    let alias = links.path().join("workspace-alias");
+    std::os::unix::fs::symlink(workspace.path().canonicalize().unwrap(), &alias).unwrap();
+
+    // A plan with a self-consistent id whose root is a symlink alias.
+    let mut inspection = inspect_workspace(workspace.path()).unwrap();
+    inspection.workspace_root = alias.to_string_lossy().into_owned();
+    let plan = build_setup_plan(&inspection).unwrap();
+    let key = seal_key();
+    let honest = build_sealed_setup_plan(workspace.path(), &key).unwrap();
+    let sealed = SealedSetupPlan {
+        plan,
+        pre_state_id: honest.pre_state_id,
+    };
+
+    let error = apply_setup_plan(&sealed, &key, &mut NoopSetupParticipant).unwrap_err();
+    assert!(matches!(error, WorkspaceError::InvalidPlan), "{error:?}");
+    assert_eq!(
+        std::fs::read_to_string(workspace.path().join(".env")).unwrap(),
+        original
     );
     assert!(!workspace.path().join(".phantom.toml").exists());
 }
