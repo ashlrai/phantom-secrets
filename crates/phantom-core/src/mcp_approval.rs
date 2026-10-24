@@ -1331,6 +1331,144 @@ mod tests {
         });
     }
 
+    const STORAGE_PARAMS: &str = r#"{"name":"API_KEY","confirm":true}"#;
+
+    fn set_expiry(nonce: &str, expires_at: u64) {
+        let path = approvals_path().unwrap();
+        let mut records = load_all_records(&path).unwrap();
+        for record in records.iter_mut() {
+            if record.nonce.to_string() == nonce {
+                record.expires_at = Some(expires_at);
+            }
+        }
+        rewrite_records(&path, &records).unwrap();
+    }
+
+    #[test]
+    fn empty_or_truncated_approval_tokens_are_rejected() {
+        with_temp_home(|| {
+            let nonce =
+                generate_pending_approval("phantom_add_secret", STORAGE_PARAMS, "proj-1").unwrap();
+            let token = approve_nonce(&nonce).unwrap().approval_token;
+            for presented in ["", &token[..token.len() / 2], &token[..token.len() - 1]] {
+                assert!(
+                    validate_and_consume_approval(
+                        &nonce,
+                        presented,
+                        "phantom_add_secret",
+                        STORAGE_PARAMS,
+                        "proj-1",
+                    )
+                    .is_err(),
+                    "accepted a {}-byte token",
+                    presented.len()
+                );
+            }
+            validate_and_consume_approval(
+                &nonce,
+                &token,
+                "phantom_add_secret",
+                STORAGE_PARAMS,
+                "proj-1",
+            )
+            .unwrap();
+        });
+    }
+
+    #[test]
+    fn pending_list_excludes_approved_and_expired_and_new_requests_prune_expired() {
+        with_temp_home(|| {
+            let approved =
+                generate_pending_approval("phantom_add_secret", STORAGE_PARAMS, "proj-1").unwrap();
+            approve_nonce(&approved).unwrap();
+            let expired =
+                generate_pending_approval("phantom_remove_secret", STORAGE_PARAMS, "proj-1")
+                    .unwrap();
+            set_expiry(&expired, now_unix().saturating_sub(1));
+            assert!(list_pending_approvals().unwrap().is_empty());
+
+            generate_pending_approval("phantom_add_secret", STORAGE_PARAMS, "proj-1").unwrap();
+            let stored = load_all_records(&approvals_path().unwrap()).unwrap();
+            assert_eq!(stored.len(), 2, "expired record was not pruned");
+            assert!(stored
+                .iter()
+                .all(|record| record.nonce.to_string() != expired));
+        });
+    }
+
+    #[test]
+    fn approval_restarts_the_use_window_from_approval_time() {
+        with_temp_home(|| {
+            let nonce =
+                generate_pending_approval("phantom_add_secret", STORAGE_PARAMS, "proj-1").unwrap();
+            set_expiry(&nonce, now_unix() + 2);
+            approve_nonce(&nonce).unwrap();
+            let stored = load_all_records(&approvals_path().unwrap()).unwrap();
+            let record = stored
+                .iter()
+                .find(|record| record.nonce.to_string() == nonce)
+                .unwrap();
+            let approved_at = record.approved_at.unwrap();
+            assert_eq!(record.expires_at, Some(approved_at + APPROVED_USE_TTL_SECS));
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn approval_storage_refuses_symlinks_and_tightens_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        with_temp_home(|| {
+            let home = approval_home().unwrap();
+            let outside = TempDir::new().unwrap();
+
+            // Symlinked storage directory.
+            std::os::unix::fs::symlink(outside.path(), &home).unwrap();
+            let error = generate_pending_approval("phantom_add_secret", STORAGE_PARAMS, "proj-1")
+                .unwrap_err();
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidData, "{error}");
+            assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(), 0);
+            std::fs::remove_file(&home).unwrap();
+
+            // Loose modes on a pre-existing directory and lock file are tightened.
+            std::fs::create_dir(&home).unwrap();
+            std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let lock = home.join(APPROVAL_LOCK_FILE);
+            std::fs::write(&lock, b"").unwrap();
+            std::fs::set_permissions(&lock, std::fs::Permissions::from_mode(0o644)).unwrap();
+            generate_pending_approval("phantom_add_secret", STORAGE_PARAMS, "proj-1").unwrap();
+            let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode(&home), 0o700);
+            assert_eq!(mode(&lock), 0o600);
+
+            // Symlinked records file pointing outside (empty, so it parses).
+            let records = approvals_path().unwrap();
+            let victim = outside.path().join("victim");
+            std::fs::write(&victim, b"").unwrap();
+            std::fs::remove_file(&records).unwrap();
+            std::os::unix::fs::symlink(&victim, &records).unwrap();
+            let error = generate_pending_approval("phantom_add_secret", STORAGE_PARAMS, "proj-1")
+                .unwrap_err();
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidData, "{error}");
+            assert!(std::fs::symlink_metadata(&records)
+                .unwrap()
+                .file_type()
+                .is_symlink());
+            assert_eq!(std::fs::read(&victim).unwrap(), b"");
+            std::fs::remove_file(&records).unwrap();
+
+            // Symlinked lock file pointing outside.
+            let lock_victim = outside.path().join("lock-victim");
+            std::fs::write(&lock_victim, b"").unwrap();
+            std::fs::set_permissions(&lock_victim, std::fs::Permissions::from_mode(0o644)).unwrap();
+            std::fs::remove_file(&lock).unwrap();
+            std::os::unix::fs::symlink(&lock_victim, &lock).unwrap();
+            assert!(
+                generate_pending_approval("phantom_add_secret", STORAGE_PARAMS, "proj-1").is_err()
+            );
+            assert_eq!(mode(&lock_victim), 0o644);
+        });
+    }
+
     #[test]
     fn plaintext_bearing_fields_are_rejected_before_persistence() {
         with_temp_home(|| {
