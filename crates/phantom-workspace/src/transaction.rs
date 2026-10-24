@@ -2339,3 +2339,123 @@ mod descriptor_tests {
         );
     }
 }
+
+// Durable apply and recovery are Unix-only; non-Unix builds fail closed.
+#[cfg(all(test, unix))]
+mod journal_tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn runtime_key() -> [u8; 32] {
+        rand::random()
+    }
+
+    struct Fixture {
+        workspace: TempDir,
+        _journal_dir: TempDir,
+        config: DurableJournalConfig,
+        sealed: SealedSetupPlan,
+    }
+
+    /// Apply a real plan with a durable journal so every test starts from a
+    /// journal written by production code.
+    fn applied_fixture() -> Fixture {
+        let workspace = TempDir::new().unwrap();
+        std::fs::write(
+            workspace.path().join(".env"),
+            "OPENAI_API_KEY=sk-journal-fixture-fake\n",
+        )
+        .unwrap();
+        let journal_dir = TempDir::new().unwrap();
+        let config = DurableJournalConfig::new(
+            "req-journal-test",
+            journal_dir.path().join("journal.bin"),
+            runtime_key(),
+        );
+        let seal_key = PlanSealKey::from_bytes(runtime_key());
+        let sealed = build_sealed_setup_plan(workspace.path(), &seal_key).unwrap();
+        apply_setup_plan_durable(&sealed, &seal_key, &mut NoopSetupParticipant, &config).unwrap();
+        assert!(config.path.is_file(), "durable apply left no journal");
+        Fixture {
+            workspace,
+            _journal_dir: journal_dir,
+            config,
+            sealed,
+        }
+    }
+
+    fn recover(fixture: &Fixture, plan_id: &str, pre_state_id: &str) -> Result<JournalRecovery> {
+        recover_setup_plan_journal(
+            fixture.workspace.path(),
+            plan_id,
+            pre_state_id,
+            &mut NoopSetupParticipant,
+            &fixture.config,
+        )
+    }
+
+    #[test]
+    fn recovery_requires_matching_plan_and_pre_state_ids() {
+        let fixture = applied_fixture();
+        let plan_id = fixture.sealed.plan.plan_id.clone();
+        let pre_state_id = fixture.sealed.pre_state_id.clone();
+        let other = format!("{plan_id}-other");
+
+        assert!(matches!(
+            recover(&fixture, &other, &pre_state_id),
+            Err(WorkspaceError::JournalMismatch)
+        ));
+        assert!(matches!(
+            recover(&fixture, &plan_id, &other),
+            Err(WorkspaceError::JournalMismatch)
+        ));
+        assert!(matches!(
+            recover(&fixture, &plan_id, &pre_state_id),
+            Ok(JournalRecovery::Applied(_))
+        ));
+    }
+
+    #[test]
+    fn journal_with_wrong_magic_or_truncated_header_is_invalid() {
+        let fixture = applied_fixture();
+        let original = std::fs::read(&fixture.config.path).unwrap();
+
+        let mut wrong_magic = original.clone();
+        wrong_magic[3] ^= 0x01;
+        std::fs::write(&fixture.config.path, &wrong_magic).unwrap();
+        assert!(matches!(
+            DurableJournal::load(&fixture.config),
+            Err(WorkspaceError::InvalidJournal)
+        ));
+
+        std::fs::write(&fixture.config.path, &original[..10]).unwrap();
+        assert!(matches!(
+            DurableJournal::load(&fixture.config),
+            Err(WorkspaceError::InvalidJournal)
+        ));
+    }
+
+    #[test]
+    fn authenticated_journal_with_wrong_schema_or_request_id_is_invalid() {
+        let fixture = applied_fixture();
+        let mut journal = DurableJournal::load(&fixture.config).unwrap().unwrap();
+        journal.record.schema_version = JOURNAL_SCHEMA_VERSION.wrapping_add(1);
+        journal.persist().unwrap();
+        assert!(matches!(
+            DurableJournal::load(&fixture.config),
+            Err(WorkspaceError::InvalidJournal)
+        ));
+
+        journal.record.schema_version = JOURNAL_SCHEMA_VERSION;
+        journal.record.request_id = format!("{}-other", fixture.config.request_id);
+        journal.persist().unwrap();
+        assert!(matches!(
+            DurableJournal::load(&fixture.config),
+            Err(WorkspaceError::InvalidJournal)
+        ));
+
+        journal.record.request_id = fixture.config.request_id.clone();
+        journal.persist().unwrap();
+        assert!(DurableJournal::load(&fixture.config).unwrap().is_some());
+    }
+}
