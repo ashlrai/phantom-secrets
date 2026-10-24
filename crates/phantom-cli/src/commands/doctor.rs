@@ -751,6 +751,20 @@ fn run_checks(fix: bool, check_expiry: bool) -> Result<(usize, usize)> {
         check_info("Expiry metadata not read in non-provisioning doctor mode");
     }
 
+    // Check 13b: LiteLLM routed through Phantom (report-only, never --fix)
+    for finding in super::doctor_litellm::findings(&project_dir) {
+        let msg = finding.message();
+        if finding.is_warning() {
+            issues += 1;
+            check_warn(&msg);
+            if let Some(fix) = finding.fix() {
+                check_fix(fix);
+            }
+        } else {
+            check_info(&msg);
+        }
+    }
+
     // Check 14: MCP setup status per known client
     {
         human(|| {
