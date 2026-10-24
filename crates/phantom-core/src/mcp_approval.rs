@@ -1334,6 +1334,20 @@ mod tests {
     const STORAGE_PARAMS: &str = r#"{"name":"API_KEY","confirm":true}"#;
 
     #[test]
+    fn pending_list_excludes_approved_records() {
+        with_temp_home(|| {
+            let approved =
+                generate_pending_approval("phantom_add_secret", STORAGE_PARAMS, "proj-1").unwrap();
+            approve_nonce(&approved).unwrap();
+            assert!(list_pending_approvals().unwrap().is_empty());
+            generate_pending_approval("phantom_remove_secret", STORAGE_PARAMS, "proj-1").unwrap();
+            let pending = list_pending_approvals().unwrap();
+            assert_eq!(pending.len(), 1);
+            assert_eq!(pending[0].tool_name, "phantom_remove_secret");
+        });
+    }
+
+    #[test]
     fn empty_or_truncated_approval_tokens_are_rejected() {
         with_temp_home(|| {
             let nonce =
