@@ -1134,7 +1134,7 @@ pub fn decrypt_context(encrypted_b64: &str, hmac_key: &[u8]) -> std::io::Result<
 /// label `phantom-audit-context-v2`. Read-only for now; writers still use
 /// [`derive_encryption_key`].
 fn derive_encryption_key_v2(hmac_key: &[u8]) -> [u8; 32] {
-    let mut key = [0u8; 32];
+    let mut key: [u8; 32] = Default::default();
     hkdf::Hkdf::<Sha256>::new(None, hmac_key)
         .expand(b"phantom-audit-context-v2", &mut key)
         .expect("32 bytes is a valid HKDF-SHA256 output length");
