@@ -841,8 +841,18 @@ enum AgentAction {
         #[arg(long)]
         json: bool,
     },
-    /// Human-readable view of the readiness report
-    Doctor,
+    /// Human-readable view of the readiness report (--json: value-free preflight)
+    Doctor {
+        /// Emit the value-free preflight JSON (no vault access unless --vault)
+        #[arg(long)]
+        json: bool,
+        /// With --json: also probe the vault and the cloud login (keychain access)
+        #[arg(long)]
+        vault: bool,
+        /// With --json: exit 0 ready, 2 degraded, 1 blocked, 3 not evaluated
+        #[arg(long)]
+        strict: bool,
+    },
     /// Read-only, value-free view of MCP approval state (use --json for JSON)
     Status {
         /// Emit stable JSON
@@ -1045,6 +1055,9 @@ fn apply_global_json(command: &mut Commands) -> Result<(), &'static str> {
         | Commands::Agent {
             action: AgentAction::Report { .. },
         }
+        | Commands::Agent {
+            action: AgentAction::Doctor { .. },
+        }
         | Commands::Why { .. }
         | Commands::Crypto {
             action: CryptoAction::Inventory { .. },
@@ -1123,9 +1136,6 @@ fn apply_global_json(command: &mut Commands) -> Result<(), &'static str> {
             action: A::Tail { .. },
         } => Err("phantom audit tail"),
         Commands::Audit { action: A::Path } => Err("phantom audit path"),
-        Commands::Agent {
-            action: AgentAction::Doctor,
-        } => Err("phantom agent doctor"),
         Commands::Agent {
             action: AgentAction::Setup { .. },
         } => Err("phantom agent setup"),
@@ -1358,7 +1368,11 @@ fn run() -> anyhow::Result<()> {
         }
         Commands::Agent { action } => match action {
             AgentAction::Report { json } => commands::agent::report(json || global_json),
-            AgentAction::Doctor => commands::agent::doctor(),
+            AgentAction::Doctor {
+                json,
+                vault,
+                strict,
+            } => commands::agent::doctor(json || global_json, vault, strict),
             AgentAction::Status { json } => commands::agent::status(json || global_json),
             AgentAction::Setup { dry_run, apply } => commands::agent::setup(dry_run, apply),
         },
@@ -1844,6 +1858,7 @@ mod help_tests {
     #[test]
     fn global_json_is_routed_or_rejected_for_every_command() {
         let supported: &[&str] = &[
+            "agent doctor",
             "agent report",
             "agent status",
             "audit alerts",
