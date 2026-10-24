@@ -11,10 +11,10 @@ const readRepo = (relativePath) =>
   fs.readFileSync(path.join(repoRoot, relativePath), "utf8");
 
 const trace = read("src/components/landing/RequestTrace.tsx");
-const page = read("src/app/page.tsx");
+const page = read("src/app/secrets/page.tsx");
 const styles = read("src/app/globals.css");
 
-test("request proof is a secondary module in the adoption path", () => {
+test("request proof is a secondary module in the Secrets adoption path", () => {
   assert.match(page, /import \{ RequestTrace \}/);
   assert.ok(page.indexOf("<Transformation />") < page.indexOf("<RequestTrace />"));
   assert.ok(page.indexOf("<RequestTrace />") < page.indexOf("<QuickStart />"));
