@@ -504,6 +504,7 @@ fn parse_env_source(bytes: &[u8]) -> Result<BTreeMap<String, Zeroizing<String>>>
     dotenv
         .validate_for_mutation()
         .context("Import source is malformed; no destination mutation was prepared")?;
+    phantom_core::importers::refuse_dotenvx_ciphertext(&dotenv)?;
     let mut secrets = BTreeMap::new();
     for entry in dotenv.entries() {
         if !entry.value.is_empty() {
@@ -733,6 +734,30 @@ mod fail_closed_tests {
         fn backend_name(&self) -> &str {
             "list-failing"
         }
+    }
+
+    #[test]
+    fn env_source_refuses_dotenvx_ciphertext() {
+        let ciphertext = ["encrypted:", "BFakeCipher", "PlaceholderOnly=="].concat();
+        let public = ["03", "fakepublicplaceholder"].concat();
+        let input = format!(
+            "DOTENV_PUBLIC_KEY=\"{public}\"\nPLAIN_NAME=plain_value\nSEALED_NAME=\"{ciphertext}\"\n"
+        );
+        let error = parse_competitor_source("env", input.as_bytes())
+            .err()
+            .map(|error| format!("{error:#}"))
+            .unwrap_or_default();
+        assert!(
+            error.contains("'SEALED_NAME'"),
+            "env import was not refused"
+        );
+        assert!(error.contains("dotenvx decrypt"));
+        assert!(!error.contains("BFakeCipher"));
+        assert!(!error.contains("plain_value"));
+
+        let decrypted = format!("DOTENV_PUBLIC_KEY=\"{public}\"\nSEALED_NAME=decrypted-plain\n");
+        let map = parse_competitor_source("env", decrypted.as_bytes()).unwrap();
+        assert!(map.get("SEALED_NAME").map(|v| v.as_str()) == Some("decrypted-plain"));
     }
 
     #[test]
