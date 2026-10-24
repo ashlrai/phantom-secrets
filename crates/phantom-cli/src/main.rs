@@ -1858,6 +1858,7 @@ mod help_tests {
     #[test]
     fn global_json_is_routed_or_rejected_for_every_command() {
         let supported: &[&str] = &[
+            "agent doctor",
             "agent report",
             "agent status",
             "audit alerts",
