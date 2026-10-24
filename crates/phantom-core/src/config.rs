@@ -1688,6 +1688,64 @@ header = "Authorization"
             .any(|risk| risk.message.contains("header_format")));
     }
 
+    /// Each risky route-pattern form must be flagged on its own, so dropping
+    /// any single check is caught (one combined pattern hid that).
+    #[test]
+    fn service_risks_flag_each_risky_pattern_form_individually() {
+        fn risks_for(pattern: &str) -> Vec<String> {
+            let mut config = PhantomConfig::new_with_defaults("test".to_string());
+            config.services.insert(
+                "custom".to_string(),
+                ServiceConfig {
+                    secret_key: "CUSTOM_API_KEY".to_string(),
+                    pattern: Some(pattern.to_string()),
+                    header: Some("Authorization".to_string()),
+                    header_format: Some("Bearer {secret}".to_string()),
+                    secret_type: "api_key".to_string(),
+                },
+            );
+            config
+                .service_risks()
+                .into_iter()
+                .filter(|risk| risk.service == "custom")
+                .map(|risk| risk.message)
+                .collect()
+        }
+        let has = |pattern: &str, needle: &str| {
+            let risks = risks_for(pattern);
+            assert!(
+                risks.iter().any(|m| m.contains(needle)),
+                "`{pattern}` should be flagged with `{needle}`: {risks:?}"
+            );
+        };
+        for pattern in [
+            "https://api.example.com",
+            "api.example.com/v1",
+            "api.example.com?x=1",
+            "api.example.com#frag",
+            "user@api.example.com",
+            "*.example.com",
+            "",
+        ] {
+            has(pattern, "bare provider host");
+        }
+        for pattern in [
+            "localhost",
+            "127.0.0.1",
+            "10.0.0.5",
+            "192.168.1.20",
+            "169.254.169.254",
+            "0.0.0.0",
+            "[::1]:8080",
+            "[0:0:0:0:0:0:0:1]",
+            "[::]",
+            "api.example.com@127.0.0.1",
+        ] {
+            has(pattern, "localhost or a private IP");
+        }
+        assert!(risks_for("api.example.com").is_empty());
+    }
+
     #[test]
     fn service_risks_allows_unknown_custom_provider() {
         let mut config = PhantomConfig::new_with_defaults("test".to_string());
