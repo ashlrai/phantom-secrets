@@ -240,6 +240,36 @@ fn try_decrypt_with(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A tagged (v2) blob was never written with the legacy Argon2 defaults,
+    /// so decrypt must not fall back to them for it: that would let a
+    /// rewritten blob bypass the hardened KDF and the header binding.
+    #[test]
+    fn tagged_blob_never_decrypts_with_the_legacy_kdf() {
+        let passphrase = "obvious-fake-passphrase";
+        let plaintext = b"fake-vault-contents";
+        let real = encrypt_with_format(plaintext, passphrase, WriteFormat::Tagged).unwrap();
+        let header_len = blob_format::HEADER_LEN;
+        let salt = &real[header_len..header_len + SALT_LEN];
+        let nonce_bytes = &real[header_len + SALT_LEN..header_len + SALT_LEN + NONCE_LEN];
+
+        // Same header, salt and nonce; body sealed under the legacy KDF with
+        // no associated data, as an untagged legacy blob would be.
+        let mut key = derive_key_legacy(passphrase, salt).unwrap();
+        let cipher = ChaCha20Poly1305::new_from_slice(&key).unwrap();
+        key.zeroize();
+        let ciphertext = cipher
+            .encrypt(Nonce::from_slice(nonce_bytes), plaintext.as_slice())
+            .unwrap();
+        let mut forged = real[..header_len + SALT_LEN + NONCE_LEN].to_vec();
+        forged.extend_from_slice(&ciphertext);
+
+        assert_eq!(decrypt(&real, passphrase).unwrap(), plaintext);
+        assert!(
+            decrypt(&forged, passphrase).is_err(),
+            "tagged blob decrypted through the legacy KDF"
+        );
+    }
     use rand::RngCore;
 
     #[test]
