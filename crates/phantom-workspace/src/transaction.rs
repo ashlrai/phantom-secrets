@@ -2415,6 +2415,67 @@ mod journal_tests {
         ));
     }
 
+    /// Mark the applied journal incomplete so recovery must roll it back.
+    fn reopen_as_prepared(fixture: &Fixture) {
+        let mut journal = DurableJournal::load(&fixture.config).unwrap().unwrap();
+        journal.set_phase(JournalPhase::Prepared, None).unwrap();
+    }
+
+    #[test]
+    fn incomplete_journal_recovery_refuses_to_overwrite_later_user_edits() {
+        let fixture = applied_fixture();
+        reopen_as_prepared(&fixture);
+        let journal = DurableJournal::load(&fixture.config).unwrap().unwrap();
+        let target = journal.record.files[0].target.clone();
+        let path = fixture.workspace.path().join(&target);
+        drop(journal);
+        std::fs::write(&path, b"user edit after the interrupted apply\n").unwrap();
+
+        let result = recover(
+            &fixture,
+            &fixture.sealed.plan.plan_id,
+            &fixture.sealed.pre_state_id,
+        );
+        assert!(
+            matches!(result, Err(WorkspaceError::RollbackDrift(_))),
+            "{result:?}"
+        );
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            b"user edit after the interrupted apply\n"
+        );
+        let journal = DurableJournal::load(&fixture.config).unwrap().unwrap();
+        assert!(matches!(journal.record.phase, JournalPhase::Prepared));
+    }
+
+    #[test]
+    fn incomplete_journal_recovery_restores_every_before_image() {
+        let fixture = applied_fixture();
+        reopen_as_prepared(&fixture);
+        let journal = DurableJournal::load(&fixture.config).unwrap().unwrap();
+        let expected = journal
+            .record
+            .files
+            .iter()
+            .map(|file| (file.target.clone(), file.before.clone()))
+            .collect::<Vec<_>>();
+        drop(journal);
+        assert!(!expected.is_empty());
+
+        assert!(matches!(
+            recover(
+                &fixture,
+                &fixture.sealed.plan.plan_id,
+                &fixture.sealed.pre_state_id,
+            ),
+            Ok(JournalRecovery::RolledBack)
+        ));
+        for (target, before) in expected {
+            let current = std::fs::read(fixture.workspace.path().join(&target)).ok();
+            assert_eq!(current, before, "{target}");
+        }
+    }
+
     #[test]
     fn journal_with_wrong_magic_or_truncated_header_is_invalid() {
         let fixture = applied_fixture();
