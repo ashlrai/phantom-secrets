@@ -1895,11 +1895,20 @@ mod tests {
         let tmp = tempdir().unwrap();
         let now = now_unix();
         let engine = make_engine(tmp.path());
+        // correlate() groups by calendar hour (ts / 3600). Keep both events in
+        // the current hour so a run in the first 20 s of an hour does not
+        // split them into two incidents (seen on Windows, run 39121243467).
+        let hour_start = now - now % 3600;
+        let (first, second) = if now - hour_start >= 20 {
+            (now - 20, now - 10)
+        } else {
+            (hour_start, now)
+        };
         write_audit_log(
             &engine.audit_log_path,
             &[
-                (now - 20, "proxy.response_leak", Some("OPENAI_API_KEY")),
-                (now - 10, "proxy.response_leak", Some("OPENAI_API_KEY")),
+                (first, "proxy.response_leak", Some("OPENAI_API_KEY")),
+                (second, "proxy.response_leak", Some("OPENAI_API_KEY")),
             ],
         );
 
