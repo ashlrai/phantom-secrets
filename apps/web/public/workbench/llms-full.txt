@@ -1,0 +1,333 @@
+# Phantom workbench
+
+> Engineering workbench for interactive coding-agent sessions and bounded autonomous fleet work. The workbench CLI is phm (compatible alias: ashlr), package @ashlr/phantom. Phantom Secrets uses the separate phantom executable.
+
+Documentation reviewed: 2026-10-13, upstream source 37900cb15b0b07f4f6e81b2eb7f1e99d02d13c05 (3.29.15).
+Published version record: https://phm.dev/docs/manifest.json
+Prerequisites: Node.js >=22.15.0 and Git. CLI: macOS, Linux, Windows. Resident autonomy: macOS only.
+Install changes the machine: npm install -g @ashlr/phantom@3.29.15
+Open local server: phm verse (default http://127.0.0.1:7777/verse/; private read and mutation tokens).
+Read-only discovery: phm --version; phm docs --agent --json; phm authority status --json; phm authority setup --dry-run --json; phm authority resident status --json.
+Provider accounts, subscriptions, APIs and local models keep their own costs and limits. Unknown usage is not zero usage. A configured profile is not provider readiness.
+Agents must not emulate Touch ID, sign standing grants or start resident services through agent-controlled terminals. Operator commissioning remains required.
+Saving a project does not enroll it. Saving an outcome does not activate the fleet. Tests, publication, installation, runtime admission, merge and deployment are separate evidence gates.
+
+## Public guides
+- [Phantom workbench](https://phm.dev/docs/workbench): Understand the workspaces, resources, review workflow and the boundary between interactive work and an autonomous fleet.
+- [Install and open Phantom](https://phm.dev/docs/workbench-setup): Install the workbench CLI, open its local console, check accounts and choose the correct desktop path.
+- [Agent setup quickstart](https://phm.dev/docs/workbench-agents): A machine-readable, discovery-first contract for helping users install, inspect and configure Phantom.
+- [Fleet and autonomy](https://phm.dev/docs/workbench-autonomy): Commission bounded unattended work, inspect its authority and review the evidence required for self-improvement.
+- [Workbench command reference](https://phm.dev/docs/workbench-reference): Discover commands, inspect authority and resource evidence, and use exact installed help instead of guessing integrations.
+- [Workbench troubleshooting](https://phm.dev/docs/workbench-troubleshooting): Resolve installation, local console, account, quota and resident-service problems without confusing configuration with readiness.
+
+Manifest: https://phm.dev/docs/manifest.json
+Raw Markdown: https://phm.dev/docs/{slug}/markdown (catalog slugs only)
+Full reference: https://phm.dev/workbench/llms-full.txt
+Secrets reference: https://phm.dev/llms-full.txt
+Source: https://github.com/ashlrai/phantom
+
+
+# Phantom workbench
+
+Phantom brings coding agents, projects, tools and review into one engineering workbench. Use **Work with me** to steer a conversation, or **Work for me** to define an outcome for an enrolled fleet. Both workspaces retain the same account and authority boundaries.
+
+The workbench uses `phm` and the package `@ashlr/phantom`. Phantom Secrets uses the separate `phantom` executable. Secrets protects supported credential paths; installing it does not install or activate the workbench.
+
+## Start with a useful task
+
+1. Follow [Install and open Phantom](https://phm.dev/docs/workbench-setup).
+2. Select **Work with me**, create a chat and choose a scratch project or public repository.
+3. Inspect **Resources**. Use an account already signed in through its provider CLI, or a configured tool-capable local model. Automatic selects an eligible resource; Advanced lets you select an account and model.
+4. Give the agent a concrete task with observable acceptance criteria. Ask it to inspect existing patterns before changing code.
+5. Review the diff, reported tools and context, and verification results. A successful agent message alone does not prove a delivered change.
+
+Selecting a folder creates a project context. It does not enroll that repository for unattended work. Creating a chat, saving an outcome or changing workspaces does not start the resident fleet.
+
+## Know where to look
+
+| Surface | Use it for |
+| --- | --- |
+| Chat | Interactive work, tool/context reports, reasoning and source review |
+| Fleet | Enrolled work, outcomes, tasks, proposals and recorded merge evidence |
+| Resources | Account readiness, usage freshness, reserves and capacity |
+| Needs you | Decisions, permissions and blocked work requiring an operator |
+| Changes | Inspect the current diff before accepting a result |
+| Growth and Lessons | Inspect retained learning and improvement evidence |
+
+Use Command-K to find actions and Command-J to open Needs you. Connected MCP servers and CLIs retain their own permissions; listing a tool does not establish authentication or permission to use it.
+
+## Choose an execution model
+
+Interactive chat may use subscription-backed CLI accounts, configured API engines or local models. These resources have different quotas, costs and capabilities. A saved profile is configuration, not a qualified connection. Unknown usage is not zero usage.
+
+An autonomous fleet additionally requires enrolled repositories, eligible resources and a valid standing grant. Follow [Fleet and autonomy](https://phm.dev/docs/workbench-autonomy). The [agent quickstart](https://phm.dev/docs/workbench-agents) gives coding agents a discovery-first setup contract.
+
+## Documentation evidence
+
+These public guides describe the 3.29.15 source snapshot reviewed on October 13, 2026. The site's release record identifies publication separately. They cannot report a particular user's installed version, account state or service readiness.
+
+[Upstream quickstart](https://github.com/ashlrai/phantom/blob/37900cb15b0b07f4f6e81b2eb7f1e99d02d13c05/docs/QUICKSTART.md) and [workbench guide](https://github.com/ashlrai/phantom/blob/37900cb15b0b07f4f6e81b2eb7f1e99d02d13c05/docs/VERSE.md) provide deeper details. Use the installed CLI's help for the exact command surface.
+
+
+# Install and open Phantom
+
+The supported CLI path works on macOS, Linux and Windows. Resident autonomy is macOS-only. The Apple silicon desktop app is a separate installation path.
+
+## Before installation
+
+Use Node.js 22.15 or later and Git. Check the [published workbench release](https://phm.dev) and select the matching package and desktop artifacts. Installation changes your machine; let the user choose the target environment before an agent installs software.
+
+## Install the reviewed package
+
+The guide is pinned to the 3.29.15 source and published release record:
+
+```sh
+npm install -g @ashlr/phantom@3.29.15
+phm --version
+```
+
+Expected: `phm --version` reports the selected package version. If the command is missing, inspect npm's global executable directory and your PATH. A successful npm installation does not prove desktop startup or provider readiness.
+
+## Open the local workbench
+
+From a project the user has authorized Phantom to access:
+
+```sh
+phm verse
+```
+
+This starts a local server and opens `http://127.0.0.1:7777/verse/`. It binds to loopback. Startup prints a private read token; a separate mutation token is requested before the first chat or other change. Keep both tokens out of documentation, chat transcripts and shared logs.
+
+For a server without browser opening:
+
+```sh
+phm verse --no-open
+```
+
+Use the URL printed by the selected process. If the default port is occupied, first identify the existing process; choose an unused port with `phm verse --port 7778` instead of terminating an unrelated service. Starting the workbench may refresh configured account readings; it is not a read-only inspection command.
+
+## Connect a usable resource
+
+Open **Resources** and inspect account readiness and freshness. Native Claude Code, Codex and Grok accounts sign in through their own vendor CLIs. Phantom does not need their passwords. A local model must support the tools required by the task and have available serving capacity. API engines may incur separate charges.
+
+Choose **Work with me**, create a chat, select a scratch repository, and request a small, checkable change. Automatic selects an eligible resource. Advanced lets you choose an account or model. Review the diff and checks before accepting it.
+
+## Desktop on Apple silicon Mac
+
+Inspect the installed command before selecting a matching artifact:
+
+```sh
+phm desktop --help
+phm desktop install
+```
+
+`desktop install` inspects the supported consumer installation path and downloads verified artifacts into a fresh private stage; `--apply` performs installation and requires deliberate operator authorization. Follow the [desktop installation guide](https://github.com/ashlrai/phantom/blob/37900cb15b0b07f4f6e81b2eb7f1e99d02d13c05/desktop/README.md#consumer-first-install). The current release uses a signed app archive and matching `latest.json`, rather than treating an old DMG as current. Local signing is distinct from Apple Developer ID notarization. Clean-Mac installation acceptance remains a separate qualification gate.
+
+Linux and Windows use the CLI; this snapshot has no Linux or Windows desktop package. Never bypass a platform verification failure to make installation appear successful.
+
+## Next steps
+
+Read [the workbench overview](https://phm.dev/docs/workbench), [agent setup](https://phm.dev/docs/workbench-agents) and [troubleshooting](https://phm.dev/docs/workbench-troubleshooting). Starting the console does not activate unattended work; [fleet setup](https://phm.dev/docs/workbench-autonomy) covers that path.
+
+[Source quickstart](https://github.com/ashlrai/phantom/blob/37900cb15b0b07f4f6e81b2eb7f1e99d02d13c05/docs/QUICKSTART.md) and [desktop command source](https://github.com/ashlrai/phantom/blob/37900cb15b0b07f4f6e81b2eb7f1e99d02d13c05/src/cli/desktop.ts).
+
+
+# Agent setup quickstart
+
+This guide is for coding agents helping a user adopt Phantom. First discover the installed release and actual command surface. Then distinguish inspection, installation, interactive execution and operator-only activation.
+
+## Fetch the public contract
+
+- [Documentation manifest](/docs/manifest.json): catalog, canonical URLs, raw Markdown links and published workbench record.
+- [Compact workbench context](/workbench/llms.txt).
+- [Full workbench context](/workbench/llms-full.txt).
+- [Install guide as Markdown](/docs/workbench-setup/markdown).
+
+Public documentation contains no user credentials or local state. Do not infer a user's runtime readiness from this site's publication record.
+
+## Inspect before changing anything
+
+On a machine with the workbench installed:
+
+```sh
+phm --version
+phm docs --agent --json
+phm authority status --json
+phm authority setup --dry-run --json
+phm authority resident status --json
+```
+
+These commands inspect the selected CLI and local authority state. The setup dry run returns a preparation checklist; it does not install or restart the daemon. Use help to discover exact resource and integration commands:
+
+```sh
+phm resources --help
+phm verse --help
+phm desktop --help
+```
+
+Keep private paths, account identifiers, grants and tokens out of public reports. The `ashlr` alias is compatible. The unrelated Secrets executable is `phantom`.
+
+## Installation and first turn
+
+If `phm` is missing, present the [version-pinned installation path](https://phm.dev/docs/workbench-setup) and obtain authority for installing software in the user's selected environment. Launching `phm verse` starts a local server and may refresh configured resources. Follow the printed local URL and token handoff; never publish or transcribe those tokens.
+
+Help the user choose a project and inspect Resources. Authenticate native accounts through their vendor's trusted interface. Do not read credential files or request secrets through the conversation. Use Automatic when no explicit account is required; inspect the chosen resource and costs before starting a turn.
+
+For the first task, use a small authorized repository, observable acceptance criteria and existing tests. Report the actual diff and checker results. Do not convert a configured profile or a successful process exit into verified fleet activation.
+
+## Operator-only steps
+
+Agents may explain custody setup, review dry-run blockers and prepare code for review. They must not imitate Touch ID, type a trusted-terminal ceremony through an agent-controlled shell, sign a standing grant or invoke resident start on the user's behalf. The operator completes these steps through [the autonomy setup guide](https://phm.dev/docs/workbench-autonomy).
+
+A grant limits repositories, engines, roles, spend and risk. A user request to be ambitious does not erase existing signed limits. A saved outcome does not enroll a repository or start a service. If readiness is unknown, report the unknown and its next verification step.
+
+## Suggested handoff report
+
+Report installed version; selected project; account readiness and usage freshness; requested action; diff and checks; remaining operator steps. Distinguish package installation, desktop startup, provider authentication, resident service admission, verified merges and production deployment.
+
+[CLI discovery source](https://github.com/ashlrai/phantom/blob/37900cb15b0b07f4f6e81b2eb7f1e99d02d13c05/src/cli/help.ts), [authority command source](https://github.com/ashlrai/phantom/blob/37900cb15b0b07f4f6e81b2eb7f1e99d02d13c05/src/cli/authority.ts), and [upstream documentation index](https://github.com/ashlrai/phantom/blob/37900cb15b0b07f4f6e81b2eb7f1e99d02d13c05/docs/README.md).
+
+
+# Fleet and autonomy
+
+Use **Work for me** to define a durable engineering outcome with acceptance criteria. The Leader refines priorities and tasks across enrolled repositories. An outcome's history links runs, proposals and verified merge evidence; it does not itself activate a fleet.
+
+## Inspect current readiness
+
+Use the installed workbench:
+
+```sh
+phm authority status --json
+phm authority setup --dry-run --json
+phm authority resident status --json
+```
+
+Inspect the grant, autonomy switch, Stop state, rollout stage, custody and resident service admission. In Resources, check qualified accounts, usage freshness, capacity and signed reserves. Connection is distinct from eligibility; missing usage must remain unknown.
+
+Resident autonomy is macOS-only and ships dormant. Interactive work can be available while unattended work remains blocked.
+
+## Complete operator commissioning
+
+Follow the [canonical autonomy setup procedure](https://github.com/ashlrai/phantom/blob/37900cb15b0b07f4f6e81b2eb7f1e99d02d13c05/docs/AUTONOMY-SETUP.md) for the installed release. It prepares custody, a Secure Enclave key, compiled trust roots, the GitHub App, repository protections, canary and signed authority. Setup itself never installs or restarts the daemon.
+
+The operator signs the standing grant through Touch ID and starts the resident service in their own trusted terminal. Agents must not execute or emulate these ceremonies. Missing custody, an expired grant, Stop, a disabled switch or a dirty build can hold resident work. Read the actual blocker before changing configuration.
+
+Standing grants name repository, engine, account-role, risk, size and spend limits. The effective limits combine the grant, configuration and compiled policy. Renewing an existing grant does not silently widen scope. Lowering the switch, Stop and revocation remain available to the operator.
+
+## Give the fleet a measurable outcome
+
+1. Select Work for me and create an outcome.
+2. Choose already enrolled repositories and add observable acceptance criteria.
+3. Inspect the proposed task plan, resource eligibility and budget.
+4. Review runs, proposals and Needs you as work progresses.
+5. Verify matching merge and deployment evidence before declaring delivery.
+
+Saving projects and changing workspaces does not enroll repositories. Editing an outcome does not widen a standing grant. Local models have hardware limits; provider accounts keep their own quotas and prices.
+
+## Make improvements earn their place
+
+Prefer a clear hypothesis and a reproducible comparison. Record the base and candidate source, test scope, execution time, failures, resource usage and the intended user benefit. A high-leverage proposal should still explain its blast radius, rollout and recovery path.
+
+Track a PR's proposed benefit, verified checks, merge outcome and subsequent regressions. A judge recommendation or Jev scheduling decision is advice within the existing gates, not permission to merge or deploy. Inspect `phm jev status --json` for the local decision ledger; it is not proof of a currently authenticated provider or a retrospective PR score.
+
+The published source includes proposal-oriented self-improvement. Do not describe every drafted improvement as accepted, merged, deployed or learned from production. Consult [improvement guidance](https://github.com/ashlrai/phantom/blob/37900cb15b0b07f4f6e81b2eb7f1e99d02d13c05/docs/IMPROVEMENT-BACKLOG.md) and [standing authority](https://github.com/ashlrai/phantom/blob/37900cb15b0b07f4f6e81b2eb7f1e99d02d13c05/docs/STANDING-AUTHORITY.md) for the current safeguards.
+
+## Verify delivery
+
+Separate local tests, a published package, an installed app, an admitted resident service, a head-bound verified merge and a production deployment. Record exact source identity and fresh readback at each applicable gate. A source guide cannot certify another user's live state.
+
+For held work, follow [troubleshooting](https://phm.dev/docs/workbench-troubleshooting). For commands, see [the reference](https://phm.dev/docs/workbench-reference).
+
+
+# Workbench command reference
+
+The workbench executable is `phm`, with compatible `ashlr` commands. The Secrets executable `phantom` belongs to a separate product. This page lists a small reviewed surface; the installed help and machine-readable catalog are the authoritative discovery path.
+
+## Discover the installed contract
+
+```sh
+phm --version
+phm docs --agent --json
+phm resources --help
+phm authority --help
+phm verse --help
+```
+
+The agent catalog describes selected commands, safety classes and JSON shapes. Its safety labels do not replace command-specific effects or current authorization. An exit code of zero may mean an inspection succeeded while the inspected subsystem remains held.
+
+## Reviewed commands
+
+| Command | Effect and interpretation |
+| --- | --- |
+| `phm --version` | Read selected CLI version; compare it with the matching public release |
+| `phm docs --agent --json` | Read selected agent-facing command descriptions and output contracts |
+| `phm verse` | Start the local workbench and open the browser; may refresh accounts |
+| `phm verse --no-open` | Start the local workbench without opening a browser |
+| `phm verse --port 7778` | Start on an explicitly selected local port |
+| `phm authority status --json` | Read grant, switch, Stop, rollout, ledger and custody state |
+| `phm authority setup --dry-run --json` | Read the resumable commissioning checklist without applying it |
+| `phm authority resident status --json` | Read resident service admission and configuration drift |
+| `phm companions --json` | Read companion executable inventory; availability is not activation |
+| `phm jev status --json` | Read local typed-decision ledger; no provider readiness proof |
+| `phm desktop install` | Inspect and download verified artifacts into a private stage; `--apply` mutates the installation |
+
+Use actual installed help before selecting an integration or changing settings. Do not invent flags from a historical guide. The source commands may differ from an older installed package.
+
+## Browser and tools
+
+The local console defaults to `http://127.0.0.1:7777/verse/`. Read and mutation tokens are private. Do not expose this listener directly to the internet. Phone access is a separate protected gateway described in [Remote phone](https://github.com/ashlrai/phantom/blob/37900cb15b0b07f4f6e81b2eb7f1e99d02d13c05/docs/REMOTE-PHONE.md).
+
+Configured MCP servers and CLIs preserve their account permissions. Tool names, saved profiles and provider badges are not proof of executable server identity, authentication or permission. Use the selected provider's documented setup and inspect the workbench's readiness result.
+
+## Experimental source workflows
+
+The Universe experiment kernel has an explicit-store command surface, distinct from everyday workbench setup. Discover `phm universe help` and consult [the upstream operator guide](https://github.com/ashlrai/phantom/blob/37900cb15b0b07f4f6e81b2eb7f1e99d02d13c05/docs/ASHLR-UNIVERSE.md) before executing an experiment. Starting a trial can invoke models and write private artifacts; it does not enable autonomous publication.
+
+[CLI entry point](https://github.com/ashlrai/phantom/blob/37900cb15b0b07f4f6e81b2eb7f1e99d02d13c05/src/cli/index.ts), [generated discovery catalog](https://github.com/ashlrai/phantom/blob/37900cb15b0b07f4f6e81b2eb7f1e99d02d13c05/src/cli/help.ts), [workbench launcher](https://github.com/ashlrai/phantom/blob/37900cb15b0b07f4f6e81b2eb7f1e99d02d13c05/src/cli/verse.ts), and [authority commands](https://github.com/ashlrai/phantom/blob/37900cb15b0b07f4f6e81b2eb7f1e99d02d13c05/src/cli/authority.ts).
+
+
+# Workbench troubleshooting
+
+Start with the selected installed release and its reported blocker. Keep private tokens, credentials, repository content and raw account logs out of shared reports.
+
+## `phm` is missing or the version is wrong
+
+Check Node.js 22.15+, Git, npm's global executable directory and PATH. `phm` belongs to `@ashlr/phantom`; the `phantom` command belongs to Phantom Secrets. Compare `phm --version` with the package and desktop version you selected. Review [installation](https://phm.dev/docs/workbench-setup) before reinstalling.
+
+## The local console will not open
+
+Use the address printed by `phm verse`; its default is `http://127.0.0.1:7777/verse/`. Check whether a previous workbench process occupies the port. For an authorized new server, use `phm verse --port 7778 --no-open` and open its printed address. Do not kill an unrelated listener or expose the service on a public address to solve a local problem.
+
+A browser read token does not authorize mutation. Follow the local token handoff when starting a chat or changing state. Never put tokens in a public URL, screenshot or bug report.
+
+## A resource is connected but work waits
+
+Expand Resources and inspect account, provider, model, reported usage, freshness, reset deadline, reserve and actual eligibility. Signed out, unknown usage, exhausted quota, reserved capacity, unavailable local serving slots and missing authority are distinct blockers.
+
+Native account authentication comes from the vendor CLI. API credits, subscription allowances and local hardware capacity are separate readings. A Grok Bot profile does not inherit Grok Build usage. An estimate does not establish a vendor balance. Diagnose the specific account instead of retrying every seat repeatedly.
+
+## Saving an outcome did not start the fleet
+
+Saving an outcome or changing workspace is navigation and configuration. Resident work requires enrolled repositories, eligible resources and admitted standing authority. Inspect:
+
+```sh
+phm authority status --json
+phm authority setup --dry-run --json
+phm authority resident status --json
+```
+
+Read the reported grant, switch, Stop, rollout stage, custody and service drift. Dormant, expired, revoked, held and unknown are meaningful states. The operator completes Touch ID and trusted-terminal service steps; an agent must not simulate them.
+
+## Tests pass but delivery is incomplete
+
+Local tests prove only the tested tree and scope. Check the exact PR head, required hosted checks, merge source, release artifact, installed startup and deployment readback as applicable. A release page or registry receipt is not proof that your app started, provider activated or fleet completed the outcome.
+
+## Desktop installation needs attention
+
+Match the app archive and `latest.json` to the CLI release. Follow [consumer desktop installation](https://github.com/ashlrai/phantom/blob/37900cb15b0b07f4f6e81b2eb7f1e99d02d13c05/desktop/README.md#consumer-first-install). macOS local signing and Apple notarization are different; source availability is not clean-Mac acceptance. Use the CLI on Linux and Windows in this snapshot.
+
+## Share a useful report
+
+Include OS and architecture, Node version, `phm --version`, the failed step, a redacted error category, expected behavior and whether the problem affects interactive chat or resident work. Include test names and exact public source or PR identity when relevant. Never attach credential files or unredacted account state.
+
+[Upstream quickstart](https://github.com/ashlrai/phantom/blob/37900cb15b0b07f4f6e81b2eb7f1e99d02d13c05/docs/QUICKSTART.md), [resource pools](https://github.com/ashlrai/phantom/blob/37900cb15b0b07f4f6e81b2eb7f1e99d02d13c05/docs/RESOURCE-POOLS.md), and [autonomy setup](https://github.com/ashlrai/phantom/blob/37900cb15b0b07f4f6e81b2eb7f1e99d02d13c05/docs/AUTONOMY-SETUP.md).

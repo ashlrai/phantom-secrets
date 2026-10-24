@@ -34,13 +34,18 @@ macro_rules! progress {
     };
 }
 
-pub fn run(cmd: &[String], env: Option<&str>, quiet: bool) -> Result<()> {
+pub fn run(
+    cmd: &[String],
+    env: Option<&str>,
+    bind_source: Option<&std::path::Path>,
+    quiet: bool,
+) -> Result<()> {
     if cmd.is_empty() {
         anyhow::bail!("No command specified. Usage: phantom exec -- <command>");
     }
 
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(run_async(cmd, env, quiet))
+    rt.block_on(run_async(cmd, env, bind_source, quiet))
 }
 
 /// Actionable, value-free next steps for the connection-string denial.
@@ -66,8 +71,29 @@ fn connection_string_hint(
     hint
 }
 
-async fn run_async(cmd: &[String], env_flag: Option<&str>, quiet: bool) -> Result<()> {
-    let project_dir = std::env::current_dir()?;
+async fn run_async(
+    cmd: &[String],
+    env_flag: Option<&str>,
+    bind_source: Option<&std::path::Path>,
+    quiet: bool,
+) -> Result<()> {
+    let working_dir = std::env::current_dir()?;
+    // Custody (config namespace, managed dotenv, env scope) comes from the
+    // working directory unless the caller explicitly binds a verified linked
+    // checkout. The child still runs in the working directory.
+    let project_dir = match bind_source {
+        None => working_dir.clone(),
+        Some(source) => {
+            let bound = phantom_core::linked_checkout::verify_linked_checkout(&working_dir, source)
+                .map_err(|refusal| anyhow::anyhow!("{refusal}"))?;
+            progress!(
+                quiet,
+                "   {} Bound to linked source checkout",
+                "->".dimmed()
+            );
+            bound
+        }
+    };
     let config_path = project_dir.join(".phantom.toml");
 
     if !config_path.exists() {
@@ -270,7 +296,7 @@ async fn run_async(cmd: &[String], env_flag: Option<&str>, quiet: bool) -> Resul
 
     // --- Framework auto-detection ---
     let mut framework_env_vars: Vec<(String, String)> = Vec::new();
-    let package_json_path = project_dir.join("package.json");
+    let package_json_path = working_dir.join("package.json");
     let is_node_project = package_json_path.exists();
 
     if is_node_project {

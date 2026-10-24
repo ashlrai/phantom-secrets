@@ -41,7 +41,7 @@ export default function ProjectDetailClient() {
       <div className="rounded-2xl border border-border bg-s1 p-8 text-center">
         <p className="text-[1rem] font-bold text-t1">Project not found</p>
         <p className="mt-2 text-[0.88rem] text-t3">
-          No commissioned pilot metadata was returned for{" "}
+          No backup was found for{" "}
           <code className="font-mono text-blue-b">{projectId}</code> on your
           account.
         </p>
@@ -68,9 +68,10 @@ export default function ProjectDetailClient() {
 
       <section className="rounded-2xl border border-border bg-s1 p-6">
         <p className="mb-5 rounded-lg border border-yellow-500/30 bg-yellow-500/10 px-4 py-3 text-[0.82rem] text-yellow-100 leading-[1.6]">
-          This is source-backed pilot metadata. It does not establish a public
-          cloud entitlement or prove that the hosted backend and account were
-          commissioned.
+          This is an encrypted personal backup. Restoration requires the
+          original cloud encryption key in the OS keychain of the machine that
+          created the backup. Signing in elsewhere cannot transfer or recover
+          that key.
         </p>
         <p className="text-[0.72rem] font-mono uppercase tracking-[0.1em] text-t3">
           Project
@@ -92,25 +93,15 @@ export default function ProjectDetailClient() {
           <LockIcon /> Vault contents
         </h3>
         <p className="mt-3 text-[0.88rem] text-t2 leading-[1.7] max-w-[640px]">
-          The source workflow expects a client-encrypted ciphertext payload;
-          this dashboard does not decrypt or display its secret values. The
-          row alone does not prove end-to-end operation or hosted-service
-          acceptance. In a separately commissioned pilot, use the local CLI to
-          inspect or modify the project:
+          Phantom encrypts the backup on your machine before uploading it.
+          This dashboard displays metadata, never decrypted secret values.
+          Use the local CLI from a trusted terminal on the machine that holds
+          the original encryption key:
         </p>
         <ul className="mt-4 grid gap-2 text-[0.86rem] text-t2">
           <li>
             <code className="font-mono text-blue-b">phantom list</code> — show
             secret names (still no values)
-          </li>
-          <li>
-            <code className="font-mono text-blue-b">phantom reveal &lt;KEY&gt;</code>{" "}
-            — from an attached trusted terminal, review and type the exact
-            challenge before showing one value
-          </li>
-          <li>
-            <code className="font-mono text-blue-b">phantom rotate</code> —
-            regenerate all phantom tokens (real keys unchanged)
           </li>
           <li>
             <code className="font-mono text-blue-b">phantom cloud pull</code>{" "}

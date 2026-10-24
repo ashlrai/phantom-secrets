@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { initializeCarouselMotion } from "./carousel-motion";
 
 export function CarouselPauseButton({
   controls,
@@ -10,13 +11,25 @@ export function CarouselPauseButton({
   label?: string;
 }) {
   const [paused, setPaused] = useState(false);
+  const userPaused = useRef(false);
+  const motion = useRef<ReturnType<typeof initializeCarouselMotion> | null>(null);
 
-  function toggleMotion() {
+  useEffect(() => {
     const carousel = document.getElementById(controls);
     if (!carousel) return;
+    const controller = initializeCarouselMotion(carousel, userPaused.current);
+    motion.current = controller;
+    return () => {
+      controller.dispose();
+      motion.current = null;
+    };
+  }, [controls]);
 
-    const nextPaused = !paused;
-    carousel.classList.toggle("logo-marquee--paused", nextPaused);
+  function toggleMotion() {
+    if (!motion.current) return;
+    const nextPaused = !userPaused.current;
+    userPaused.current = nextPaused;
+    motion.current.setPaused(nextPaused);
     setPaused(nextPaused);
   }
 
