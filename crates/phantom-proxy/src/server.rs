@@ -1672,6 +1672,70 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_proxy_never_forwards_its_header_token_upstream() {
+        // The local proxy token authenticates the child to Phantom only. It
+        // must never reach the upstream, on any header-name casing.
+        let mock = crate::test_server::MockServer::start().await;
+        let mut registry = ServiceRegistry::new();
+        registry.add_route(ServiceRoute {
+            name: "test".to_string(),
+            target_base: format!("http://127.0.0.1:{}", mock.port),
+            secret_key: "TEST_API_KEY".to_string(),
+            header: "Authorization".to_string(),
+            header_format: "Bearer {secret}".to_string(),
+            credential_profile: crate::services::CredentialProfile::Standard,
+            sdk_base_path: None,
+        });
+        let mut named = HashMap::new();
+        named.insert("TEST_API_KEY".to_string(), "real-secret-value".to_string());
+        let interceptor = Interceptor::new_with_named(HashMap::new(), named);
+        let token = ProxyServer::generate_proxy_token();
+        let proxy = ProxyServer::start(
+            ProxyConfig {
+                port: 0,
+                proxy_token: token.clone(),
+                ..ProxyConfig::default()
+            },
+            registry,
+            interceptor,
+        )
+        .await
+        .unwrap();
+
+        let client = reqwest::Client::new();
+        for name in ["x-phantom-proxy-token", "X-Phantom-Proxy-Token"] {
+            let resp = client
+                .get(format!("http://127.0.0.1:{}/test/headers", proxy.port()))
+                .header(name, token.clone())
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), 200);
+        }
+
+        let requests = mock.get_requests();
+        assert_eq!(requests.len(), 2);
+        for request in &requests {
+            assert_eq!(
+                request.headers.get("authorization").unwrap(),
+                "Bearer real-secret-value"
+            );
+            assert!(!request.headers.contains_key("x-phantom-proxy-token"));
+            assert!(
+                request
+                    .headers
+                    .values()
+                    .all(|v| !v.contains(token.as_str())),
+                "proxy token reached the upstream: {:?}",
+                request.headers
+            );
+        }
+
+        proxy.shutdown().await;
+        mock.shutdown().await;
+    }
+
+    #[tokio::test]
     async fn test_proxy_accepts_path_token_and_strips_before_routing() {
         let mock = crate::test_server::MockServer::start().await;
         let mut registry = ServiceRegistry::new();
