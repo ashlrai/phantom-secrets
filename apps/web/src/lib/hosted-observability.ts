@@ -12,6 +12,9 @@ import {
 
 const RELEASE_VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 const SOURCE_REVISION_PATTERN = /^[0-9a-f]{40}$/;
+// Next config replaces this direct reference with the observed build literal.
+// Runtime variables cannot repair a missing or dirty source observation.
+const BUILD_SOURCE_REVISION = process.env.PHANTOM_BUILD_SOURCE_REVISION;
 const DEPLOYMENT_ID_PATTERN = /^dpl_[0-9A-Za-z]{16,96}$/;
 const DEPLOYMENT_ENVIRONMENTS = new Set([
   "production",
@@ -118,6 +121,55 @@ function billingConfigurationReady(env: NodeJS.ProcessEnv): boolean {
   );
 }
 
+export type SourceBindingDiagnostic = {
+  build_observation: "valid" | "missing_or_invalid";
+  platform_source: "absent" | "invalid" | "matching" | "conflicting";
+};
+
+function readSourceBinding(env: NodeJS.ProcessEnv): {
+  revision: string | null;
+  diagnostic: SourceBindingDiagnostic;
+} {
+  const buildSourceRevision = validatedValue(
+    BUILD_SOURCE_REVISION,
+    SOURCE_REVISION_PATTERN,
+  );
+  const platformSourceRevision = validatedValue(
+    env.VERCEL_GIT_COMMIT_SHA,
+    SOURCE_REVISION_PATTERN,
+  );
+  // Only genuine absence may use the build observation. A present invalid or
+  // conflicting platform revision remains a failed source identity.
+  const sourceRevision =
+    buildSourceRevision &&
+    (env.VERCEL_GIT_COMMIT_SHA === undefined ||
+      platformSourceRevision === buildSourceRevision)
+      ? buildSourceRevision
+      : null;
+  return {
+    revision: sourceRevision,
+    diagnostic: {
+      build_observation: buildSourceRevision ? "valid" : "missing_or_invalid",
+      // A valid platform value with no valid build observation is unbound and
+      // therefore conflicting. Matching requires both canonical values equal.
+      platform_source:
+        env.VERCEL_GIT_COMMIT_SHA === undefined
+          ? "absent"
+          : !platformSourceRevision
+            ? "invalid"
+            : buildSourceRevision === platformSourceRevision
+              ? "matching"
+              : "conflicting",
+    },
+  };
+}
+
+export function sourceBindingDiagnostic(
+  env: NodeJS.ProcessEnv = process.env,
+): SourceBindingDiagnostic {
+  return readSourceBinding(env).diagnostic;
+}
+
 export function readBuildIdentity(
   env: NodeJS.ProcessEnv = process.env,
 ): BuildIdentity {
@@ -125,10 +177,7 @@ export function readBuildIdentity(
     packageMetadata.version,
     RELEASE_VERSION_PATTERN,
   );
-  const sourceRevision = validatedValue(
-    env.VERCEL_GIT_COMMIT_SHA,
-    SOURCE_REVISION_PATTERN,
-  );
+  const sourceRevision = readSourceBinding(env).revision;
   const deploymentId = validatedValue(
     env.VERCEL_DEPLOYMENT_ID,
     DEPLOYMENT_ID_PATTERN,

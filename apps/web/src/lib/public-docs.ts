@@ -43,10 +43,20 @@ export function getPublicDoc(slug: string): PublicDoc | undefined {
   const entry = getPublicDocConfig(slug);
   if (!entry) return undefined;
 
+  // Workbench guides are curated in this site's release branch. Bind links to
+  // the observed build source; main can lag the actual published site.
+  const isWorkbench = entry.slug === "workbench" || entry.slug.startsWith("workbench-");
+  const revision = process.env.PHANTOM_BUILD_SOURCE_REVISION;
+  const sourceUrl = isWorkbench
+    ? revision && /^[0-9a-f]{40}$/.test(revision)
+      ? `${REPOSITORY_URL}/blob/${revision}/docs/${entry.file}`
+      : `https://phm.dev/docs/${entry.slug}/markdown`
+    : `${REPOSITORY_URL}/blob/main/docs/${entry.file}`;
+
   return {
     ...entry,
     markdown: readFileSync(path.join(DOCS_ROOT, entry.file), "utf8"),
-    sourceUrl: `${REPOSITORY_URL}/blob/main/docs/${entry.file}`,
+    sourceUrl,
   };
 }
 

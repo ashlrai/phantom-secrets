@@ -23,6 +23,12 @@ const expectedSlugs = [
   "troubleshooting",
   "architecture",
   "enterprise-adoption",
+  "workbench",
+  "workbench-setup",
+  "workbench-agents",
+  "workbench-autonomy",
+  "workbench-reference",
+  "workbench-troubleshooting",
 ];
 
 test("public documentation uses an exact file-backed allowlist", () => {

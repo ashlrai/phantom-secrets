@@ -1,0 +1,27 @@
+# Phantom workbench
+
+> Engineering workbench for interactive coding-agent sessions and bounded autonomous fleet work. The workbench CLI is phm (compatible alias: ashlr), package @ashlr/phantom. Phantom Secrets uses the separate phantom executable.
+
+Documentation reviewed: 2026-10-13, upstream source 37900cb15b0b07f4f6e81b2eb7f1e99d02d13c05 (3.29.15).
+Published version record: https://phm.dev/docs/manifest.json
+Prerequisites: Node.js >=22.15.0 and Git. CLI: macOS, Linux, Windows. Resident autonomy: macOS only.
+Install changes the machine: npm install -g @ashlr/phantom@3.29.15
+Open local server: phm verse (default http://127.0.0.1:7777/verse/; private read and mutation tokens).
+Read-only discovery: phm --version; phm docs --agent --json; phm authority status --json; phm authority setup --dry-run --json; phm authority resident status --json.
+Provider accounts, subscriptions, APIs and local models keep their own costs and limits. Unknown usage is not zero usage. A configured profile is not provider readiness.
+Agents must not emulate Touch ID, sign standing grants or start resident services through agent-controlled terminals. Operator commissioning remains required.
+Saving a project does not enroll it. Saving an outcome does not activate the fleet. Tests, publication, installation, runtime admission, merge and deployment are separate evidence gates.
+
+## Public guides
+- [Phantom workbench](https://phm.dev/docs/workbench): Understand the workspaces, resources, review workflow and the boundary between interactive work and an autonomous fleet.
+- [Install and open Phantom](https://phm.dev/docs/workbench-setup): Install the workbench CLI, open its local console, check accounts and choose the correct desktop path.
+- [Agent setup quickstart](https://phm.dev/docs/workbench-agents): A machine-readable, discovery-first contract for helping users install, inspect and configure Phantom.
+- [Fleet and autonomy](https://phm.dev/docs/workbench-autonomy): Commission bounded unattended work, inspect its authority and review the evidence required for self-improvement.
+- [Workbench command reference](https://phm.dev/docs/workbench-reference): Discover commands, inspect authority and resource evidence, and use exact installed help instead of guessing integrations.
+- [Workbench troubleshooting](https://phm.dev/docs/workbench-troubleshooting): Resolve installation, local console, account, quota and resident-service problems without confusing configuration with readiness.
+
+Manifest: https://phm.dev/docs/manifest.json
+Raw Markdown: https://phm.dev/docs/{slug}/markdown (catalog slugs only)
+Full reference: https://phm.dev/workbench/llms-full.txt
+Secrets reference: https://phm.dev/llms-full.txt
+Source: https://github.com/ashlrai/phantom
