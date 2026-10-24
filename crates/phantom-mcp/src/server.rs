@@ -10528,13 +10528,15 @@ mod tests {
     /// green. With effects enabled and no token, each call must stop at the
     /// out-of-band approval step and create exactly one pending nonce for
     /// that tool, before touching the vault, files or network.
-    /// Removing the approval gate from any of these tools kept every MCP test
-    /// green. With effects enabled, confirm set and no token, each call must
-    /// stop at the out-of-band approval step and leave one pending nonce for
-    /// that tool.
-    #[test]
-    fn more_effectful_tools_stop_at_out_of_band_approval_without_a_token() {
-        let _environment = TestEnvironment::new();
+    /// Call 21 effectful tools with effects enabled and no approval token.
+    /// The caller must hold a `TestEnvironment`.
+    #[allow(clippy::type_complexity)]
+    fn call_gated_tools(
+        confirm: bool,
+    ) -> (
+        Vec<(&'static str, Result<CallToolResult, McpError>)>,
+        [TempDir; 3],
+    ) {
         let home = canonical_temp_dir();
         let project = TempDir::new().unwrap();
         let target = TempDir::new().unwrap();
@@ -10571,33 +10573,44 @@ mod tests {
         fn p<T: serde::de::DeserializeOwned>(v: serde_json::Value) -> Parameters<T> {
             Parameters(serde_json::from_value(v).unwrap())
         }
-        let c = || serde_json::json!({"confirm": true});
-        let team = || serde_json::json!({"confirm": true, "team_id": "team-test"});
-        let calls: Vec<(&str, Result<CallToolResult, McpError>)> = vec![
+        let c = || serde_json::json!({"confirm": confirm});
+        let team = || serde_json::json!({"confirm": confirm, "team_id": "team-test"});
+        let calls = vec![
             ("phantom_copy_secret", server.phantom_copy_secret(p(serde_json::json!({
-                "confirm": true, "name": "OPENAI_API_KEY",
+                "confirm": confirm, "name": "OPENAI_API_KEY",
                 "target_dir": target.path().to_string_lossy()})))),
-            ("phantom_doctor", server.phantom_doctor(p(serde_json::json!({"confirm": true, "fix": true})))),
+            ("phantom_doctor", server.phantom_doctor(p(serde_json::json!({"confirm": confirm, "fix": true})))),
             ("phantom_wrap", server.phantom_wrap(p(c()))),
             ("phantom_unwrap", server.phantom_unwrap(p(c()))),
             ("phantom_env", server.phantom_env(p(c()))),
             ("phantom_cloud_status", rt.block_on(server.phantom_cloud_status(p(c())))),
             ("phantom_team_list", rt.block_on(server.phantom_team_list(p(c())))),
-            ("phantom_team_create", rt.block_on(server.phantom_team_create(p(serde_json::json!({"confirm": true, "name": "team-test"}))))),
+            ("phantom_team_create", rt.block_on(server.phantom_team_create(p(serde_json::json!({"confirm": confirm, "name": "team-test"}))))),
             ("phantom_team_members", rt.block_on(server.phantom_team_members(p(team())))),
-            ("phantom_team_invite", rt.block_on(server.phantom_team_invite(p(serde_json::json!({"confirm": true, "team_id": "team-test", "github_login": "octocat"}))))),
+            ("phantom_team_invite", rt.block_on(server.phantom_team_invite(p(serde_json::json!({"confirm": confirm, "team_id": "team-test", "github_login": "octocat"}))))),
             ("phantom_team_key_publish", rt.block_on(server.phantom_team_key_publish(p(team())))),
             ("phantom_team_vault_push", rt.block_on(server.phantom_team_vault_push(p(team())))),
             ("phantom_team_vault_pull", rt.block_on(server.phantom_team_vault_pull(p(team())))),
-            ("phantom_rotate_with_expiry", server.phantom_rotate_with_expiry(p(serde_json::json!({"confirm": true, "days_ttl": 30})))),
-            ("phantom_audit_hotspot_alerts", server.phantom_audit_hotspot_alerts(p(serde_json::json!({"confirm": true, "secret_name": "OPENAI_API_KEY", "ack": true})))),
-            ("phantom_audit_alerts", server.phantom_audit_alerts(p(serde_json::json!({"confirm": true, "backfill": true})))),
-            ("phantom_audit_export_report", server.phantom_audit_export_report(p(serde_json::json!({"confirm": true, "save": true})))),
+            ("phantom_rotate_with_expiry", server.phantom_rotate_with_expiry(p(serde_json::json!({"confirm": confirm, "days_ttl": 30})))),
+            ("phantom_audit_hotspot_alerts", server.phantom_audit_hotspot_alerts(p(serde_json::json!({"confirm": confirm, "secret_name": "OPENAI_API_KEY", "ack": true})))),
+            ("phantom_audit_alerts", server.phantom_audit_alerts(p(serde_json::json!({"confirm": confirm, "backfill": true})))),
+            ("phantom_audit_export_report", server.phantom_audit_export_report(p(serde_json::json!({"confirm": confirm, "save": true})))),
             ("phantom_validate_all", server.phantom_validate_all(p(c()))),
-            ("phantom_validation_schedule", server.phantom_validation_schedule(p(serde_json::json!({"confirm": true, "interval": "daily"})))),
-            ("phantom_secrets_auto_rotate", server.phantom_secrets_auto_rotate(p(serde_json::json!({"confirm": true, "name": "OPENAI_API_KEY"})))),
+            ("phantom_validation_schedule", server.phantom_validation_schedule(p(serde_json::json!({"confirm": confirm, "interval": "daily"})))),
+            ("phantom_secrets_auto_rotate", server.phantom_secrets_auto_rotate(p(serde_json::json!({"confirm": confirm, "name": "OPENAI_API_KEY"})))),
             ("phantom_apply_expiry_policy", server.phantom_apply_expiry_policy(p(c()))),
         ];
+        (calls, [home, project, target])
+    }
+
+    /// Removing the approval gate from any of these tools kept every MCP test
+    /// green. With effects enabled, confirm set and no token, each call must
+    /// stop at the out-of-band approval step and leave one pending nonce for
+    /// that tool.
+    #[test]
+    fn more_effectful_tools_stop_at_out_of_band_approval_without_a_token() {
+        let _environment = TestEnvironment::new();
+        let (calls, _dirs) = call_gated_tools(true);
         let mut problems = Vec::new();
         for (tool, result) in calls {
             match result {
@@ -10613,6 +10626,30 @@ mod tests {
                     }
                 }
             }
+        }
+        assert!(problems.is_empty(), "{problems:#?}");
+    }
+
+    /// Without `confirm: true` every effectful tool must refuse before the
+    /// approval step, so an agent cannot mint pending nonces (and operator
+    /// prompts) without first asking the user.
+    #[test]
+    fn effectful_tools_require_confirm_before_minting_an_approval_nonce() {
+        let _environment = TestEnvironment::new();
+        let mut problems = Vec::new();
+        let (calls, _dirs) = call_gated_tools(false);
+        for (tool, result) in calls {
+            match result {
+                Ok(_) => problems.push(format!("{tool}: ran without confirm")),
+                Err(err) if !err.message.contains("confirm: true") => {
+                    problems.push(format!("{tool}: {}", err.message))
+                }
+                Err(_) => {}
+            }
+        }
+        let pending = phantom_core::mcp_approval::list_pending_approvals().unwrap();
+        if !pending.is_empty() {
+            problems.push(format!("pending approvals minted: {}", pending.len()));
         }
         assert!(problems.is_empty(), "{problems:#?}");
     }
