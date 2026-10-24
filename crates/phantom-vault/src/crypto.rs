@@ -192,7 +192,7 @@ fn decrypt_body_v3(
         Some(KEY_LEN),
     )
     .map_err(|e| PhantomError::VaultError(format!("Argon2 params: {e}")))?;
-    let mut key = [0u8; KEY_LEN];
+    let mut key: [u8; KEY_LEN] = Default::default();
     Argon2::new(Algorithm::Argon2id, Version::V0x13, argon2_params)
         .hash_password_into(passphrase.as_bytes(), &body[..SALT_LEN], &mut key)
         .map_err(|e| PhantomError::VaultError(format!("Key derivation failed: {e}")))?;
