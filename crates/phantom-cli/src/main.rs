@@ -214,6 +214,11 @@ enum Commands {
     /// Start the proxy and run a command
     #[command(next_help_heading = "Daily use")]
     Exec {
+        /// Opt-in: use the custody namespace of this source checkout. Accepted
+        /// only when the current directory is a linked git worktree of it
+        /// (same git common dir) with a byte-identical `.phantom.toml`.
+        #[arg(long, value_name = "SOURCE_CHECKOUT")]
+        bind_source: Option<std::path::PathBuf>,
         /// Command and arguments to run
         #[arg(trailing_var_arg = true, required = true)]
         cmd: Vec<String>,
@@ -1376,7 +1381,9 @@ fn run() -> anyhow::Result<()> {
             AgentAction::Status { json } => commands::agent::status(json || global_json),
             AgentAction::Setup { dry_run, apply } => commands::agent::setup(dry_run, apply),
         },
-        Commands::Exec { cmd } => commands::exec::run(&cmd, None, cli.quiet),
+        Commands::Exec { cmd, bind_source } => {
+            commands::exec::run(&cmd, None, bind_source.as_deref(), cli.quiet)
+        }
         Commands::Start { daemon } => commands::start::run(daemon),
         Commands::Stop => commands::stop::run(),
         Commands::Check {
