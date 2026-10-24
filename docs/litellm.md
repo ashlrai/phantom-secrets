@@ -6,6 +6,20 @@ Status: experimental. Read "What was tested" before relying on any of this.
 
 Phantom answers "who holds the real key". LiteLLM answers "which model and which budget". They are complementary. Without Phantom, LiteLLM reads real keys from its config, environment, or database, and that is exactly what a compromised LiteLLM process steals.
 
+## Quickstart
+
+- Minimum: LiteLLM 1.83.0 or newer (see "Pin and verify LiteLLM first").
+- Config: [`examples/litellm/config.yaml`](../examples/litellm/config.yaml). It holds no key: `api_base`, `api_key` and `master_key` are all `os.environ/...` references, and `allow_client_side_credentials` is `false`. A test pins this and checks that `phantom doctor` recognizes the file as routed through Phantom (`shipped_example_config_is_detected_safe_and_value_free` in `crates/phantom-cli/src/commands/doctor_litellm.rs`).
+- Command, after `phantom add OPENAI_API_KEY`:
+
+```bash
+LITELLM_MASTER_KEY=sk-<your own random value> \
+  phantom exec -- litellm --config examples/litellm/config.yaml --host 127.0.0.1 --port 4000
+```
+
+- Why `phantom exec` works here: LiteLLM uses Phantom's built-in `openai` route through the exported `OPENAI_BASE_URL`. It does not need a custom route, which `phantom exec` refuses (see "LiteLLM as an upstream" below). Putting LiteLLM upstream of Phantom is the other direction and needs `phantom start`.
+- Not tested end to end: this exact command with a real LiteLLM and a real provider. What was tested is listed under "What was tested".
+
 ## Pin and verify LiteLLM first
 
 - PyPI releases `litellm==1.82.7` and `1.82.8` were malicious. LiteLLM states they were live on 2026-03-24 from 10:39 UTC for about 40 minutes and have been removed from PyPI. They harvested environment variables, SSH keys and cloud credentials. Source: https://docs.litellm.ai/blog/security-update-march-2026 (checked 2026-10-18). GitHub advisory GHSA-5mg7-485q-xm76 (critical) covers `>=1.82.7, <=1.82.8`: https://github.com/advisories/GHSA-5mg7-485q-xm76.

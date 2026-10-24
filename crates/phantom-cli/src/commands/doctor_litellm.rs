@@ -143,9 +143,15 @@ fn routes_through_phantom(text: &str) -> bool {
         if l.contains("phm_") {
             return true;
         }
-        l.strip_prefix("api_base:")
-            .and_then(|v| url_host(unquote(v)))
-            .is_some_and(is_loopback_host)
+        let Some(v) = l.strip_prefix("api_base:").map(unquote) else {
+            return false;
+        };
+        // `phantom exec` exports `<SERVICE>_BASE_URL` pointing at the proxy;
+        // the shipped example reads it with `os.environ/OPENAI_BASE_URL`.
+        let env_base = v
+            .strip_prefix("os.environ/")
+            .is_some_and(|name| name.ends_with("_BASE_URL"));
+        env_base || url_host(v).is_some_and(is_loopback_host)
     })
 }
 
@@ -422,5 +428,33 @@ mod tests {
                 && is_loopback_host("127.0.0.2")
                 && !is_loopback_host("10.0.0.1")
         );
+    }
+
+    #[test]
+    fn shipped_example_config_is_detected_safe_and_value_free() {
+        let cfg = include_str!("../../../../examples/litellm/config.yaml");
+        let d = dir_with(&[("config.yaml", cfg)]);
+        let f = findings(d.path());
+        assert_eq!(
+            f,
+            vec![
+                Finding::Detected("config.yaml".into()),
+                Finding::VersionUnknown
+            ],
+            "{f:?}"
+        );
+        // Every credential-bearing value is an environment reference.
+        for line in cfg.lines().map(strip_comment).map(str::trim) {
+            for key in ["api_key:", "master_key:", "api_base:"] {
+                if let Some(v) = line.strip_prefix(key) {
+                    assert!(unquote(v).starts_with("os.environ/"), "{line}");
+                }
+            }
+        }
+        // No literal key material of any common shape.
+        for needle in ["sk-", "phm_", "AKIA", "ghp_", "xoxb-", "Bearer "] {
+            let hit = cfg.lines().map(strip_comment).any(|l| l.contains(needle));
+            assert!(!hit, "example config contains {needle}");
+        }
     }
 }
