@@ -69,6 +69,52 @@ pub fn header() -> [u8; HEADER_LEN] {
     h
 }
 
+/// Version 3 header (read-only: nothing writes it yet). It extends the v2
+/// header with the KDF and its parameters:
+/// `PHMB || 0x03 || alg(1) || kdf(1) || m_kib(u32 LE) || t(1) || p(1)`.
+/// The whole 13-byte header is the AEAD associated data. A v3 blob still
+/// classifies as [`Tag::Unsupported`] with version 3; readers call
+/// [`parse_v3_header`] for it and fall back to the legacy layout on failure.
+pub const VERSION_3: u8 = 3;
+/// Argon2id version 0x13.
+pub const KDF_ARGON2ID_V13: u8 = 1;
+/// Length of the v3 header.
+pub const V3_HEADER_LEN: usize = 13;
+/// Accepted Argon2id memory cost range in KiB (19 MiB to 256 MiB).
+pub const V3_M_KIB_RANGE: std::ops::RangeInclusive<u32> = 19 * 1024..=256 * 1024;
+/// Accepted Argon2id iteration range.
+pub const V3_T_RANGE: std::ops::RangeInclusive<u8> = 1..=10;
+/// Accepted Argon2id parallelism range.
+pub const V3_P_RANGE: std::ops::RangeInclusive<u8> = 1..=4;
+
+/// Argon2id parameters carried in a v3 header.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KdfParamsV3 {
+    pub m_kib: u32,
+    pub t: u8,
+    pub p: u8,
+}
+
+/// Parse a v3 header. Returns the parameters, the header bytes (the AAD) and
+/// the body after it, or `None` when the bytes are not a v3 header this build
+/// accepts: wrong magic, version, algorithm or KDF id, or parameters outside
+/// the accepted ranges (checked before any key derivation is attempted).
+pub fn parse_v3_header(bytes: &[u8]) -> Option<(KdfParamsV3, &[u8], &[u8])> {
+    if bytes.len() < V3_HEADER_LEN || bytes[..4] != MAGIC {
+        return None;
+    }
+    if bytes[4] != VERSION_3 || bytes[5] != ALG_CHACHA20_POLY1305 || bytes[6] != KDF_ARGON2ID_V13 {
+        return None;
+    }
+    let m_kib = u32::from_le_bytes([bytes[7], bytes[8], bytes[9], bytes[10]]);
+    let (t, p) = (bytes[11], bytes[12]);
+    if !V3_M_KIB_RANGE.contains(&m_kib) || !V3_T_RANGE.contains(&t) || !V3_P_RANGE.contains(&p) {
+        return None;
+    }
+    let (header, body) = bytes.split_at(V3_HEADER_LEN);
+    Some((KdfParamsV3 { m_kib, t, p }, header, body))
+}
+
 /// Result of inspecting a blob prefix.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Tag<'a> {
@@ -240,6 +286,54 @@ mod tests {
         blob.extend_from_slice(&ct);
         assert!(matches!(classify(&blob), Tag::V2(_)));
         assert_eq!(open_team_blob(&blob, &KEY).unwrap().as_slice(), b"edge");
+    }
+
+    fn v3_header(alg: u8, kdf: u8, m_kib: u32, t: u8, p: u8) -> Vec<u8> {
+        let mut h = MAGIC.to_vec();
+        h.extend_from_slice(&[VERSION_3, alg, kdf]);
+        h.extend_from_slice(&m_kib.to_le_bytes());
+        h.extend_from_slice(&[t, p]);
+        h.extend_from_slice(&[0u8; 60]);
+        h
+    }
+
+    #[test]
+    fn v3_header_parses_only_known_ids_and_bounded_params() {
+        let ok = v3_header(1, 1, 19456, 2, 1);
+        let (params, header, body) = parse_v3_header(&ok).unwrap();
+        assert_eq!(
+            params,
+            KdfParamsV3 {
+                m_kib: 19456,
+                t: 2,
+                p: 1
+            }
+        );
+        assert_eq!((header.len(), body.len()), (V3_HEADER_LEN, 60));
+        assert!(matches!(
+            classify(&ok),
+            Tag::Unsupported { version: 3, alg: 1 }
+        ));
+        for bad in [
+            v3_header(2, 1, 19456, 2, 1),
+            v3_header(1, 2, 19456, 2, 1),
+            v3_header(1, 1, 19 * 1024 - 1, 2, 1),
+            v3_header(1, 1, 256 * 1024 + 1, 2, 1),
+            v3_header(1, 1, 19456, 0, 1),
+            v3_header(1, 1, 19456, 11, 1),
+            v3_header(1, 1, 19456, 2, 0),
+            v3_header(1, 1, 19456, 2, 5),
+        ] {
+            assert!(
+                parse_v3_header(&bad).is_none(),
+                "{:?}",
+                &bad[..V3_HEADER_LEN]
+            );
+        }
+        assert!(parse_v3_header(&ok[..V3_HEADER_LEN - 1]).is_none());
+        let mut v2 = ok.clone();
+        v2[4] = VERSION_2;
+        assert!(parse_v3_header(&v2).is_none());
     }
 
     #[test]
