@@ -2,6 +2,13 @@ import { requireAuth, requirePro } from "@/lib/auth";
 import { requireHostedService } from "@/lib/commissioning";
 import { readBoundedJsonObject, requestBodyErrorResponse } from "@/lib/http-body";
 import { createServiceClient } from "@/lib/supabase-server";
+import {
+  algForStoredKey,
+  isHybridKeyShare,
+  refuseClassicOnlyPush,
+  XWING_ALG,
+  type HybridKeyShare,
+} from "@/lib/team-key";
 
 const MAX_TEAM_VAULT_PUSH_BODY_BYTES = 2_000_000;
 
@@ -11,7 +18,7 @@ type LegacyKeyShare = {
   ciphertext: string;
 };
 
-type StoredWrappedKey = string | LegacyKeyShare;
+type StoredWrappedKey = string | LegacyKeyShare | HybridKeyShare;
 
 type PushBody = {
   encrypted_blob?: string;
@@ -31,7 +38,7 @@ function isLegacyKeyShare(value: unknown): value is LegacyKeyShare {
 }
 
 function isStoredWrappedKey(value: unknown): value is StoredWrappedKey {
-  return typeof value === "string" || isLegacyKeyShare(value);
+  return typeof value === "string" || isLegacyKeyShare(value) || isHybridKeyShare(value);
 }
 
 /**
@@ -132,6 +139,13 @@ export async function GET(
  * implicitly excluded (they'll get 412 missing_key on pull until they
  * register and the next push includes them).
  *
+ * Mixed teams fail closed: if any member registered a hybrid (X-Wing) key,
+ * the push must carry a hybrid share for that member, or it is refused with
+ * 426 { error: "client_upgrade_required", min_client_version, hybrid_members,
+ * message }. Old clients never see hybrid keys, so they get this refusal
+ * instead of a silent classic-only wrapping. A hybrid share given to a
+ * classic-key member is refused with 400 share_alg_mismatch.
+ *
  * Pro plan required (matches the user-vault push semantics).
  */
 export async function POST(
@@ -219,6 +233,11 @@ export async function POST(
     .eq("team_id", team_id)
     .not("public_key", "is", null);
 
+  const refusal = refuseClassicOnlyPush(members ?? [], wrappedKeys);
+  if (refusal) {
+    return Response.json(refusal.body, { status: refusal.status });
+  }
+
   const required = (members ?? [])
     .filter((m) => m.public_key)
     .map((m) => m.user_id);
@@ -234,6 +253,20 @@ export async function POST(
         extra,
         message:
           "wrappedKeys must cover exactly the team members that have registered public keys.",
+      },
+      { status: 400 }
+    );
+  }
+
+  const misdirected = (members ?? [])
+    .filter((m) => algForStoredKey(m.public_key) !== XWING_ALG && isHybridKeyShare(wrappedKeys[m.user_id]))
+    .map((m) => m.user_id);
+  if (misdirected.length) {
+    return Response.json(
+      {
+        error: "share_alg_mismatch",
+        members: misdirected,
+        message: "A hybrid key share was given to a member whose registered key is classic.",
       },
       { status: 400 }
     );

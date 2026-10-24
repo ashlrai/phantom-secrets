@@ -87,6 +87,7 @@ fn push_failure_code(error: &PhantomError) -> &'static str {
         PhantomError::AuthRequired => "authentication_required",
         PhantomError::PlanRequired => "plan_required",
         PhantomError::VersionConflict { .. } => "version_conflict",
+        PhantomError::ClientUpgradeRequired { .. } => "client_upgrade_required",
         PhantomError::CloudError { status: 0, .. } => "provider_unreachable",
         PhantomError::CloudError { .. } => "provider_rejected",
         PhantomError::ConfigNotFound(_)
@@ -112,9 +113,29 @@ fn partial_push_error(
     receipt.failure_code = push_failure_code(&error);
     let receipt = serde_json::to_string(&receipt)
         .unwrap_or_else(|_| "{\"receipt\":\"unavailable\"}".to_string());
+    // A client-upgrade refusal carries client-built text (no server text), so
+    // it is safe and necessary to show: it names the fix.
+    let upgrade = match &error {
+        PhantomError::ClientUpgradeRequired { .. } => format!(" {error}"),
+        _ => String::new(),
+    };
     PhantomError::Other(format!(
-        "Team vault push partially succeeded: caller public-key publication is durable, but {failed_stage} failed. stage_receipt: {receipt}. The remote ciphertext was not confirmed. Do not retry automatically; inspect the registered caller key and remote vault version first."
+        "Team vault push partially succeeded: caller public-key publication is durable, but {failed_stage} failed. stage_receipt: {receipt}. The remote ciphertext was not confirmed. Do not retry automatically; inspect the registered caller key and remote vault version first.{upgrade}"
     ))
+}
+
+/// True when a push error is the explicit 426 refusal for a team with a
+/// hybrid-key member. The marker is the fixed-schema stage receipt built in
+/// [`partial_push_error`], never server text. The server refuses before any
+/// write, so callers can say nothing was written remotely.
+pub fn is_client_upgrade_refusal(error: &PhantomError) -> bool {
+    match error {
+        PhantomError::ClientUpgradeRequired { .. } => true,
+        PhantomError::Other(message) => message.contains(
+            r#""remote_ciphertext_push":"refused","failure_code":"client_upgrade_required""#,
+        ),
+        _ => false,
+    }
 }
 
 /// Result of a pull.
@@ -265,7 +286,12 @@ async fn push_inner(
     {
         Ok(version) => version,
         Err(error) => {
-            receipt.remote_ciphertext_push = "outcome_unknown";
+            // 426 is an explicit refusal before any write; every other failure
+            // here may have landed, so it stays outcome_unknown.
+            receipt.remote_ciphertext_push = match error {
+                PhantomError::ClientUpgradeRequired { .. } => "refused",
+                _ => "outcome_unknown",
+            };
             return Err(partial_push_error(
                 "remote ciphertext push",
                 &receipt,
@@ -580,6 +606,48 @@ mod tests {
         ));
         assert!(!message.contains("local version 3"));
         assert!(!message.contains("remote version 4"));
+    }
+
+    #[test]
+    fn client_upgrade_refusal_is_marked_refused_and_shows_the_fix() {
+        let mut receipt = PushStageReceipt::after_key_publication();
+        receipt.member_key_roster = "succeeded";
+        receipt.remote_version_read = "succeeded";
+        receipt.remote_ciphertext_push = "refused";
+        let error = partial_push_error(
+            "remote ciphertext push",
+            &receipt,
+            PhantomError::ClientUpgradeRequired {
+                min_client_version: None,
+            },
+        );
+        let message = error.to_string();
+        assert!(message.contains(
+            r#""remote_ciphertext_push":"refused","failure_code":"client_upgrade_required""#
+        ));
+        assert!(message.contains("caller public-key publication is durable"));
+        assert!(message.contains("never falls back to classic-only wrapping"));
+        assert!(message.contains("brew upgrade ashlrai/phantom/phantom"));
+        assert!(is_client_upgrade_refusal(&error));
+    }
+
+    #[test]
+    fn other_push_failures_are_not_upgrade_refusals_and_hide_their_text() {
+        let mut receipt = PushStageReceipt::after_key_publication();
+        receipt.remote_ciphertext_push = "outcome_unknown";
+        let error = partial_push_error(
+            "remote ciphertext push",
+            &receipt,
+            PhantomError::CloudError {
+                status: 400,
+                message: "server says client_upgrade_required".to_string(),
+            },
+        );
+        assert!(!is_client_upgrade_refusal(&error));
+        assert!(!error.to_string().contains("server says"));
+        assert!(!is_client_upgrade_refusal(&PhantomError::Other(
+            "client_upgrade_required".to_string()
+        )));
     }
 
     // ── Rotation unit tests (pure crypto, no network) ──────────────────

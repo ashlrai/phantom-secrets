@@ -209,13 +209,21 @@ fn vault_push_after_consent(
         secrets.insert(name.clone(), Zeroizing::new(String::from(value.as_str())));
     }
 
-    let outcome = rt
-        .block_on(teams_vault::push_for_project(
-            api_base, token, team_id, project_id, secrets, kp,
-        ))
-        .context(
-            "Team vault push did not return a success receipt; the remote ciphertext outcome is unknown. Do not retry automatically until the remote vault version is inspected",
-        )?;
+    let outcome = match rt.block_on(teams_vault::push_for_project(
+        api_base, token, team_id, project_id, secrets, kp,
+    )) {
+        Ok(outcome) => outcome,
+        Err(error) if teams_vault::is_client_upgrade_refusal(&error) => {
+            return Err(anyhow::Error::new(error).context(
+                "Team vault push refused by Phantom Cloud before any write: this client must be upgraded to push to this team",
+            ));
+        }
+        Err(error) => {
+            return Err(anyhow::Error::new(error).context(
+                "Team vault push did not return a success receipt; the remote ciphertext outcome is unknown. Do not retry automatically until the remote vault version is inspected",
+            ));
+        }
+    };
 
     let suffix = if outcome.skipped > 0 {
         format!(
