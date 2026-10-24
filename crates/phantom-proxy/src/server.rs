@@ -1554,6 +1554,22 @@ mod tests {
             .local_addr()
             .unwrap()
             .port();
+        // The DNS case needs a resolver that answers NXDOMAIN for `.invalid`
+        // (RFC 6761). Some sandboxes resolve every name or time out, so the
+        // proxy reports a different, also value-free, reason. Probe first and
+        // skip only that case there; CI resolvers answer NXDOMAIN, so CI
+        // still asserts it.
+        let nxdomain = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            tokio::net::lookup_host("phantom-unresolvable.invalid:80"),
+        )
+        .await
+        .is_ok_and(|r| r.is_err());
+        if !nxdomain {
+            eprintln!(
+                "skipping dns_resolution_failed case: resolver gave no NXDOMAIN for .invalid"
+            );
+        }
         let cases = [
             (format!("http://127.0.0.1:{closed}"), "connection_refused"),
             // TLS to a plain-HTTP listener: the handshake cannot complete.
@@ -1567,6 +1583,9 @@ mod tests {
             ),
         ];
         for (target_base, reason) in cases {
+            if reason == "dns_resolution_failed" && !nxdomain {
+                continue;
+            }
             let (proxy, proxy_key) = failure_probe_proxy(target_base.clone(), 1024).await;
             let response = reqwest::Client::new()
                 .get(format!("http://127.0.0.1:{}/test/v1/models", proxy.port()))
