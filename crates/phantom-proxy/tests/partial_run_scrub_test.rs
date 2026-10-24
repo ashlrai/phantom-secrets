@@ -153,3 +153,29 @@ fn legacy_carry_api_loses_no_bytes() {
     out.extend(s.flush_carry(Some("text/event-stream"), carry).0);
     assert_eq!(out, clean.as_bytes());
 }
+
+/// Keys in the base64 / URL-safe alphabet (AWS secret keys, many signing
+/// keys) contain `+ / = . ~`. They are token-like too, so their partial runs
+/// must be redacted the same way as an alphanumeric key's.
+#[test]
+fn base64_alphabet_key_partial_runs_are_redacted() {
+    const B64: &str = "FAKEaws0secret/Key+ONLY1test2abc=def.ghi~jkl/mno+pq";
+    let s = scrubber(&[("SIGNING_KEY", B64)]);
+    let half = B64.len() / 2;
+    for frag in [&B64[..half], &B64[half..], &B64[half - 6..half + 6]] {
+        let body = format!(r#"{{"message":"bad secret {frag} given"}}"#);
+        let (out, event) = s.scrub_buffered(Some("application/json"), body.as_bytes());
+        let out = String::from_utf8(out).unwrap();
+        assert!(!has_run(&out, B64, 12), "buffered: {out}");
+        assert!(event.scrubbed, "buffered: {out}");
+
+        let (header, _) = s.scrub_header("x-echo", &format!("bad secret {frag}"));
+        assert!(!has_run(&header, B64, 12), "header: {header}");
+
+        let sse = format!("data: {{\"error\":\"bad secret {frag}\"}}\n\n");
+        for chunk in [1, 5, 11, 64] {
+            let out = String::from_utf8(stream(&s, sse.as_bytes(), chunk)).unwrap();
+            assert!(!has_run(&out, B64, 12), "stream/{chunk}: {out}");
+        }
+    }
+}
