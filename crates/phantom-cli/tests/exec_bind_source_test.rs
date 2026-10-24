@@ -83,7 +83,8 @@ fn fixture() -> Fixture {
         "phantom init",
     );
     git(&source, &["add", ".phantom.toml"]);
-    git(&source, &["commit", "-q", "-m", "init"]);
+    // `phantom init` installs a pre-commit hook that needs `phantom` on PATH.
+    git(&source, &["commit", "-q", "--no-verify", "-m", "init"]);
     let worktree = root.path().join("wt");
     git(
         &source,
