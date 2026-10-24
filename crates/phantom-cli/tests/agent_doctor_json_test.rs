@@ -229,7 +229,7 @@ fn preflight_never_leaks_names_values_paths_or_project_id() {
         &["agent", "doctor", "--json", "--vault"][..],
     ] {
         let (_, _, stdout) = run(&dir, "preflight-pass", args);
-        for canary in [
+        for (index, canary) in [
             SECRET_NAME,
             "OTHER_PREFLIGHT_CANARY",
             value.as_str(),
@@ -239,8 +239,15 @@ fn preflight_never_leaks_names_values_paths_or_project_id() {
             ".env",
             "phm_",
             "phantom ",
-        ] {
-            assert!(!stdout.contains(canary), "{canary:?} leaked in {args:?}");
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            // Name the canary by index only: never print a secret-like value.
+            assert!(
+                !stdout.contains(canary),
+                "canary #{index} leaked in {args:?}"
+            );
         }
     }
 }
