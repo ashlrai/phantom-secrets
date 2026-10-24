@@ -11041,6 +11041,81 @@ mod tests {
         assert!(!dir.path().join(".phantom.toml").exists());
     }
 
+    /// request_apply and init each check confirm before the approval step, and
+    /// request_apply then requires out-of-band approval. Removing any of the
+    /// three gates kept every MCP test green.
+    #[test]
+    fn request_apply_and_init_require_confirm_then_out_of_band_approval() {
+        let _environment = TestEnvironment::new();
+        let _home = TestHome::new();
+        let (server, dir) = setup_test_project();
+        let before_env = std::fs::read(dir.path().join(".env")).unwrap();
+
+        // Propose with the test-only bypass so the seal key exists.
+        let proposed = server
+            .phantom_setup_workspace(Parameters(SetupWorkspaceParams {
+                confirm: true,
+                ..SetupWorkspaceParams::default()
+            }))
+            .unwrap();
+        let proposed: serde_json::Value =
+            serde_json::from_str(&extract_content_text(&proposed)).unwrap();
+        let plan_id = proposed["sealed_plan"]["plan"]["plan_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let pre_state_id = proposed["sealed_plan"]["pre_state_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        // SAFETY: TestEnvironment holds the env lock and restores the values.
+        unsafe {
+            std::env::remove_var("PHANTOM_MCP_SKIP_APPROVAL");
+            std::env::set_var("PHANTOM_MCP_EFFECTS", "trusted-terminal");
+        }
+        let request_apply = |confirm: bool| {
+            server.phantom_setup_workspace(Parameters(SetupWorkspaceParams {
+                phase: SetupWorkspacePhase::RequestApply,
+                plan_id: Some(plan_id.clone()),
+                pre_state_id: Some(pre_state_id.clone()),
+                request_id: None,
+                confirm,
+                approval_token: None,
+            }))
+        };
+        let pending_for = |tool: &str| {
+            phantom_core::mcp_approval::list_pending_approvals()
+                .unwrap()
+                .iter()
+                .filter(|record| record.tool_name == tool)
+                .count()
+        };
+
+        let error = request_apply(false).expect_err("request_apply ran without confirm");
+        assert!(error.message.contains("confirm: true"), "{}", error.message);
+        let error = server
+            .phantom_init(Parameters(InitParams {
+                env_path: ".env".to_string(),
+                confirm: false,
+                approval_token: None,
+            }))
+            .expect_err("init ran without confirm");
+        assert!(error.message.contains("confirm: true"), "{}", error.message);
+        assert_eq!(pending_for("phantom_setup_workspace"), 0);
+        assert_eq!(pending_for("phantom_init"), 0);
+
+        let error = request_apply(true).expect_err("request_apply ran without approval");
+        assert!(
+            error.message.contains("out-of-band approval"),
+            "{}",
+            error.message
+        );
+        assert_eq!(pending_for("phantom_setup_workspace"), 1);
+        assert_eq!(std::fs::read(dir.path().join(".env")).unwrap(), before_env);
+        assert!(!dir.path().join(".phantom.toml").exists());
+    }
+
     #[test]
     fn test_setup_workspace_request_apply_does_not_provision_missing_host_key() {
         let _environment = TestEnvironment::new();
