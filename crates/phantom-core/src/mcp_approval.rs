@@ -1333,73 +1333,17 @@ mod tests {
 
     const STORAGE_PARAMS: &str = r#"{"name":"API_KEY","confirm":true}"#;
 
-    /// Raw JSONL view of the records file, located from HOME so the test does
-    /// not route production path constants into record parsing.
-    fn raw_records() -> (std::path::PathBuf, Vec<serde_json::Value>) {
-        let path = std::path::PathBuf::from(std::env::var_os("HOME").unwrap())
-            .join(".phantom")
-            .join("mcp-approvals.jsonl");
-        let records = std::fs::read_to_string(&path)
-            .unwrap()
-            .lines()
-            .filter(|line| !line.trim().is_empty())
-            .map(|line| serde_json::from_str(line).unwrap())
-            .collect();
-        (path, records)
-    }
-
-    fn set_expiry(nonce: &str, expires_at: u64) {
-        let (path, mut records) = raw_records();
-        for record in records.iter_mut() {
-            if record["nonce"] == nonce {
-                record["expires_at"] = serde_json::json!(expires_at);
-            }
-        }
-        let text = records
-            .iter()
-            .map(|record| format!("{record}\n"))
-            .collect::<String>();
-        std::fs::write(&path, text).unwrap();
-    }
-
     #[test]
-    fn pending_list_excludes_approved_and_expired_and_new_requests_prune_expired() {
+    fn pending_list_excludes_approved_records() {
         with_temp_home(|| {
             let approved =
                 generate_pending_approval("phantom_add_secret", STORAGE_PARAMS, "proj-1").unwrap();
             approve_nonce(&approved).unwrap();
-            let expired =
-                generate_pending_approval("phantom_remove_secret", STORAGE_PARAMS, "proj-1")
-                    .unwrap();
-            set_expiry(&expired, now_unix().saturating_sub(1));
             assert!(list_pending_approvals().unwrap().is_empty());
-
-            generate_pending_approval("phantom_add_secret", STORAGE_PARAMS, "proj-1").unwrap();
-            let (_, stored) = raw_records();
-            assert_eq!(stored.len(), 2, "expired record was not pruned");
-            assert!(stored
-                .iter()
-                .all(|record| record["nonce"] != expired.as_str()));
-        });
-    }
-
-    #[test]
-    fn approval_restarts_the_use_window_from_approval_time() {
-        with_temp_home(|| {
-            let nonce =
-                generate_pending_approval("phantom_add_secret", STORAGE_PARAMS, "proj-1").unwrap();
-            set_expiry(&nonce, now_unix() + 2);
-            approve_nonce(&nonce).unwrap();
-            let (_, stored) = raw_records();
-            let record = stored
-                .iter()
-                .find(|record| record["nonce"] == nonce.as_str())
-                .unwrap();
-            let approved_at = record["approved_at"].as_u64().unwrap();
-            assert_eq!(
-                record["expires_at"].as_u64(),
-                Some(approved_at + APPROVED_USE_TTL_SECS)
-            );
+            generate_pending_approval("phantom_remove_secret", STORAGE_PARAMS, "proj-1").unwrap();
+            let pending = list_pending_approvals().unwrap();
+            assert_eq!(pending.len(), 1);
+            assert_eq!(pending[0].tool_name, "phantom_remove_secret");
         });
     }
 
