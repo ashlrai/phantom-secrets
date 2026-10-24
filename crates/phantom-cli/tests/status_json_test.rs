@@ -234,3 +234,107 @@ fn unsafe_lifecycle_metadata_remains_unknown_and_unmodified() {
         .file_type()
         .is_symlink());
 }
+
+/// Contract v1: the exact document for each config state. Any added, removed
+/// or retyped field must bump `schema_version` (see docs/status-json.md).
+#[test]
+fn schema_v1_exact_documents_and_no_canary_leaks() {
+    fn expected(initialized: bool, lock: &str, issues: Value) -> Value {
+        json!({
+            "schema_version": 1,
+            "initialized": initialized,
+            "inspection": "metadata-only",
+            "managed_dotenv": { "inspected": false },
+            "vault": { "inspected": false },
+            "proxy": { "lifecycle_lock": lock, "listener_authenticated": false },
+            "issues": issues
+        })
+    }
+    // Obvious fake values, built at runtime.
+    let project_canary = format!("status-canary-project-{}", std::process::id());
+    let secret_name = "STATUS_CANARY_SECRET_NAME";
+    let secret_value = format!("sk-test-{}", "statuscanary".repeat(3));
+    let placeholder = format!("phm_{}", "c".repeat(64));
+
+    let seed = |dir: &Path, config: bool| {
+        if config {
+            PhantomConfig::new_with_defaults(project_canary.clone())
+                .save(&dir.join(".phantom.toml"))
+                .unwrap();
+        }
+        fs::write(
+            dir.join(".env"),
+            format!("{secret_name}={secret_value}\nOTHER_CANARY={placeholder}\n"),
+        )
+        .unwrap();
+    };
+
+    let mut cases: Vec<(&str, tempfile::TempDir, Value)> = Vec::new();
+
+    let initialized = common::canonical_tempdir();
+    seed(initialized.path(), true);
+    cases.push((
+        "initialized",
+        initialized,
+        expected(true, "missing", json!([])),
+    ));
+
+    let missing = common::canonical_tempdir();
+    seed(missing.path(), false);
+    cases.push((
+        "missing",
+        missing,
+        expected(false, "not-inspected", json!(["config-missing"])),
+    ));
+
+    let invalid = common::canonical_tempdir();
+    seed(invalid.path(), false);
+    fs::write(
+        invalid.path().join(".phantom.toml"),
+        format!("[phantom]\nproject_id = '{project_canary}'\nnot toml\n"),
+    )
+    .unwrap();
+    cases.push((
+        "invalid",
+        invalid,
+        expected(false, "not-inspected", json!(["config-invalid"])),
+    ));
+
+    #[cfg(unix)]
+    let _other = {
+        let other = common::canonical_tempdir();
+        seed(other.path(), true);
+        let symlinked = common::canonical_tempdir();
+        seed(symlinked.path(), false);
+        std::os::unix::fs::symlink(
+            other.path().join(".phantom.toml"),
+            symlinked.path().join(".phantom.toml"),
+        )
+        .unwrap();
+        cases.push((
+            "symlinked",
+            symlinked,
+            expected(false, "not-inspected", json!(["config-unreadable"])),
+        ));
+        other
+    };
+
+    for (name, project, want) in &cases {
+        let home = common::canonical_tempdir();
+        let report = status(project.path(), home.path(), &["status", "--json"]);
+        assert_eq!(&report, want, "{name}");
+        let text = report.to_string();
+        for canary in [
+            project_canary.as_str(),
+            secret_name,
+            secret_value.as_str(),
+            placeholder.as_str(),
+            "phm_",
+            "OTHER_CANARY",
+            &project.path().to_string_lossy(),
+            &home.path().to_string_lossy(),
+        ] {
+            assert!(!text.contains(canary), "{name}: leaked {canary}");
+        }
+    }
+}
