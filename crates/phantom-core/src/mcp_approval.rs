@@ -1347,6 +1347,62 @@ mod tests {
         });
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn approval_storage_refuses_symlinks_and_tightens_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        with_temp_home(|| {
+            let home = std::path::PathBuf::from(std::env::var_os("HOME").unwrap()).join(".phantom");
+            let outside = TempDir::new().unwrap();
+
+            // Symlinked storage directory.
+            std::os::unix::fs::symlink(outside.path(), &home).unwrap();
+            let error = generate_pending_approval("phantom_add_secret", STORAGE_PARAMS, "proj-1")
+                .unwrap_err();
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidData, "{error}");
+            assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(), 0);
+            std::fs::remove_file(&home).unwrap();
+
+            // Loose modes on a pre-existing directory and lock file are tightened.
+            std::fs::create_dir(&home).unwrap();
+            std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let lock = home.join("mcp-approvals.lock");
+            std::fs::write(&lock, b"").unwrap();
+            std::fs::set_permissions(&lock, std::fs::Permissions::from_mode(0o644)).unwrap();
+            generate_pending_approval("phantom_add_secret", STORAGE_PARAMS, "proj-1").unwrap();
+            let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode(&home), 0o700);
+            assert_eq!(mode(&lock), 0o600);
+
+            // Symlinked records file pointing outside (empty, so it parses).
+            let records = home.join("mcp-approvals.jsonl");
+            let victim = outside.path().join("victim");
+            std::fs::write(&victim, b"").unwrap();
+            std::fs::remove_file(&records).unwrap();
+            std::os::unix::fs::symlink(&victim, &records).unwrap();
+            let error = generate_pending_approval("phantom_add_secret", STORAGE_PARAMS, "proj-1")
+                .unwrap_err();
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidData, "{error}");
+            assert!(std::fs::symlink_metadata(&records)
+                .unwrap()
+                .file_type()
+                .is_symlink());
+            assert_eq!(std::fs::read(&victim).unwrap(), b"");
+            std::fs::remove_file(&records).unwrap();
+
+            // Symlinked lock file pointing outside.
+            let lock_victim = outside.path().join("lock-victim");
+            std::fs::write(&lock_victim, b"").unwrap();
+            std::fs::set_permissions(&lock_victim, std::fs::Permissions::from_mode(0o644)).unwrap();
+            std::fs::remove_file(&lock).unwrap();
+            std::os::unix::fs::symlink(&lock_victim, &lock).unwrap();
+            assert!(
+                generate_pending_approval("phantom_add_secret", STORAGE_PARAMS, "proj-1").is_err()
+            );
+            assert_eq!(mode(&lock_victim), 0o644);
+        });
+    }
+
     #[test]
     fn empty_or_truncated_approval_tokens_are_rejected() {
         with_temp_home(|| {
