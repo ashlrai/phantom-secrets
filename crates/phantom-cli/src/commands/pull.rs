@@ -65,7 +65,9 @@ async fn run_async(
         .context("Failed to resolve the local project directory")?;
     let config_path = project_dir.join(".phantom.toml");
 
-    let platform: Platform = from.parse().context("Invalid platform")?;
+    let platform: Platform = from
+        .parse()
+        .map_err(|_| anyhow::anyhow!("Unknown --from '{from}'. Supported: vercel, railway"))?;
     let token_env = match platform {
         Platform::Vercel => "VERCEL_TOKEN",
         Platform::Railway => "RAILWAY_TOKEN",

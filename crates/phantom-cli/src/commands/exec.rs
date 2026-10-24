@@ -34,13 +34,18 @@ macro_rules! progress {
     };
 }
 
-pub fn run(cmd: &[String], env: Option<&str>, quiet: bool) -> Result<()> {
+pub fn run(
+    cmd: &[String],
+    env: Option<&str>,
+    bind_source: Option<&std::path::Path>,
+    quiet: bool,
+) -> Result<()> {
     if cmd.is_empty() {
         anyhow::bail!("No command specified. Usage: phantom exec -- <command>");
     }
 
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(run_async(cmd, env, quiet))
+    rt.block_on(run_async(cmd, env, bind_source, quiet))
 }
 
 /// Actionable, value-free next steps for the connection-string denial.
@@ -66,8 +71,29 @@ fn connection_string_hint(
     hint
 }
 
-async fn run_async(cmd: &[String], env_flag: Option<&str>, quiet: bool) -> Result<()> {
-    let project_dir = std::env::current_dir()?;
+async fn run_async(
+    cmd: &[String],
+    env_flag: Option<&str>,
+    bind_source: Option<&std::path::Path>,
+    quiet: bool,
+) -> Result<()> {
+    let working_dir = std::env::current_dir()?;
+    // Custody (config namespace, managed dotenv, env scope) comes from the
+    // working directory unless the caller explicitly binds a verified linked
+    // checkout. The child still runs in the working directory.
+    let project_dir = match bind_source {
+        None => working_dir.clone(),
+        Some(source) => {
+            let bound = phantom_core::linked_checkout::verify_linked_checkout(&working_dir, source)
+                .map_err(|refusal| anyhow::anyhow!("{refusal}"))?;
+            progress!(
+                quiet,
+                "   {} Bound to linked source checkout",
+                "->".dimmed()
+            );
+            bound
+        }
+    };
     let config_path = project_dir.join(".phantom.toml");
 
     if !config_path.exists() {
@@ -78,9 +104,7 @@ async fn run_async(cmd: &[String], env_flag: Option<&str>, quiet: bool) -> Resul
     }
 
     let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
-    config
-        .validate_agentic_proxy_routes()
-        .context("Refusing unapproved repository-controlled proxy routing")?;
+    validate_routes_for_launch(&config)?;
 
     let preflight = phantom_core::managed_dotenv::resolve_dotenv(&project_dir, &config, &[])?;
     if let Some(dotenv) = preflight.file.as_ref() {
@@ -100,14 +124,14 @@ async fn run_async(cmd: &[String], env_flag: Option<&str>, quiet: bool) -> Resul
     // protected dotenv/config contract before opening or reading the vault, so
     // a missing entry can never turn this fail-closed decision into a bypass.
     // BTreeSet: configs written by older init runs can map one key twice.
+    // The same check `phantom why` reports as exec.blocked_by, plus the
+    // ambient environment that only exec itself can see.
     let blocked_connection_strings: std::collections::BTreeSet<&str> = config
-        .connection_string_services()
-        .into_iter()
-        .filter_map(|(_, service)| {
-            (preflight_protected_keys.contains(&service.secret_key)
-                || std::env::var_os(&service.secret_key).is_some())
-            .then_some(service.secret_key.as_str())
+        .exec_connection_string_blockers(|key| {
+            preflight_protected_keys.contains(key) || std::env::var_os(key).is_some()
         })
+        .into_iter()
+        .map(|(_, key)| key)
         .collect();
     if !blocked_connection_strings.is_empty() {
         anyhow::bail!(
@@ -156,17 +180,28 @@ async fn run_async(cmd: &[String], env_flag: Option<&str>, quiet: bool) -> Resul
     let mut session_token_to_secret: HashMap<String, (String, String)> = HashMap::new();
     let mut secret_name_to_value: HashMap<String, String> = HashMap::new();
     let mut env_key_to_session_token: HashMap<String, String> = HashMap::new();
+    // Names the session hands its child, collected from the dotenv keys
+    // before any vault read, so nothing value-bearing feeds the exported list.
+    let mut session_names: Vec<String> = Vec::new();
     let mut secret_count = 0;
 
     if let Some(dotenv) = dotenv.as_ref() {
         for entry in dotenv.entries() {
             if PhantomToken::is_phantom_token(&entry.value) {
+                if !never_reintroduce.contains(&entry.key) {
+                    session_names.push(entry.key.clone());
+                }
                 // Build the vault key for this env: try namespaced first, then bare (legacy).
                 // Backend errors are distinct from a missing key and must abort
                 // before a partially mapped proxy session can start.
                 let namespaced = phantom_core::env_scope::namespaced_key(&active_env, &entry.key);
-                let real_value =
-                    retrieve_required_secret(vault.as_ref(), &namespaced, &entry.key, &active_env)?;
+                let real_value = retrieve_required_secret(
+                    vault.as_ref(),
+                    config.local_project_id(),
+                    &namespaced,
+                    &entry.key,
+                    &active_env,
+                )?;
 
                 // Generate a fresh session token for this secret.
                 let session_token = PhantomToken::generate();
@@ -186,6 +221,11 @@ async fn run_async(cmd: &[String], env_flag: Option<&str>, quiet: bool) -> Resul
 
     // Build service registry from config
     let registry = ServiceRegistry::from_config(&config.services);
+    // Export base-URL overrides only for routes this session can serve. An
+    // SDK pointed at a route without a loaded credential would receive a
+    // proxy 503 for every call instead of reaching its provider.
+    let mut exported_routes = registry.clone();
+    exported_routes.retain_routes(|route| secret_name_to_value.contains_key(&route.secret_key));
     let interceptor = Interceptor::new_scoped(session_token_to_secret, secret_name_to_value);
 
     progress!(
@@ -225,9 +265,9 @@ async fn run_async(cmd: &[String], env_flag: Option<&str>, quiet: bool) -> Resul
 
     // Print service routes
     let overrides = if header_auth_only {
-        registry.base_url_overrides(port)
+        exported_routes.base_url_overrides(port)
     } else {
-        registry.base_url_overrides_with_token(port, Some(&proxy_token))
+        exported_routes.base_url_overrides_with_token(port, Some(&proxy_token))
     };
     for (env_var, url) in &overrides {
         progress!(
@@ -235,7 +275,7 @@ async fn run_async(cmd: &[String], env_flag: Option<&str>, quiet: bool) -> Resul
             "   {} {} = {}",
             "->".dimmed(),
             env_var.bold(),
-            url.cyan()
+            redact_session_segment(url).cyan()
         );
     }
     if header_auth_only {
@@ -256,7 +296,7 @@ async fn run_async(cmd: &[String], env_flag: Option<&str>, quiet: bool) -> Resul
 
     // --- Framework auto-detection ---
     let mut framework_env_vars: Vec<(String, String)> = Vec::new();
-    let package_json_path = project_dir.join("package.json");
+    let package_json_path = working_dir.join("package.json");
     let is_node_project = package_json_path.exists();
 
     if is_node_project {
@@ -295,15 +335,33 @@ async fn run_async(cmd: &[String], env_flag: Option<&str>, quiet: bool) -> Resul
         }
     }
 
-    // Summary: proxied secrets vs injected env vars
+    // Summary: proxied secrets vs injected env vars. A protected key with
+    // no route reaches the child only as a session token that no provider
+    // accepts, so it is not counted as proxied and is named in a warning.
+    let unrouted = unrouted_session_keys(&registry, env_key_to_session_token.keys());
+    // `exported_routes` holds only routes whose credential is loaded.
+    let proxied_count = exported_routes
+        .services()
+        .into_iter()
+        .map(|(_, route)| route.secret_key.as_str())
+        .collect::<HashSet<_>>()
+        .len();
     let injected_count = framework_env_vars.len();
     progress!(
         quiet,
         "\n{} {} secret(s) proxied, {} env var(s) injected directly",
         "->".blue().bold(),
-        secret_count,
+        proxied_count,
         injected_count,
     );
+    if !unrouted.is_empty() {
+        eprintln!(
+            "{} No proxy route for {}: the child gets only a session token for {}, which no provider accepts, so calls that send it will fail. Run `phantom why <KEY>` for details.",
+            "warn".yellow(),
+            unrouted.join(", ").bold(),
+            if unrouted.len() == 1 { "it" } else { "each" },
+        );
+    }
 
     progress!(
         quiet,
@@ -331,6 +389,14 @@ async fn run_async(cmd: &[String], env_flag: Option<&str>, quiet: bool) -> Resul
         )
         .env("PHANTOM_PROXY_PORT", port.to_string())
         .env("PHANTOM_PROXY_TOKEN", &proxy_token)
+        // Names only: lets `phantom check --runtime` excuse exactly the
+        // variables this session filled and a route serves, and nothing it
+        // inherited. An unrouted key's session token reaches no provider, so
+        // it stays a finding (the warning above names it too).
+        .env(
+            phantom_core::report::SESSION_KEYS_VAR,
+            routed_session_variable_list(session_names.iter(), &unrouted),
+        )
         // A protected dotenv key may itself have this reserved name. Never
         // reintroduce either the real vault passphrase or a confusing session
         // token under Phantom's internal decryption-key variable.
@@ -338,25 +404,41 @@ async fn run_async(cmd: &[String], env_flag: Option<&str>, quiet: bool) -> Resul
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
-    let mut child = command
-        .spawn()
-        .context(format!("Failed to start command: {}", program))?;
+    // Take over termination signals before the child exists, so a SIGTERM
+    // or SIGINT aimed at phantom can no longer kill it and orphan the child
+    // (which would keep running against a proxy that is gone). The handlers
+    // reset to default in the child on exec.
+    let forwarder = SignalForwarder::install().context("Failed to install signal handlers")?;
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            // Stop the proxy first: its session tokens must not outlive a
+            // launch that never happened.
+            proxy.shutdown().await;
+            let (code, message) = spawn_failure(program, &error);
+            eprintln!("{} {message}", "error".red().bold());
+            std::process::exit(code);
+        }
+    };
 
-    // Wait for the child to exit
-    let status = child.wait().await?;
+    // Wait for the child to exit, forwarding termination signals to it.
+    let status = forwarder.wait_for(&mut child).await?;
 
     // Shut down the proxy — session tokens are now invalid
     progress!(quiet, "\n{} Shutting down proxy...", "->".blue().bold());
     proxy.shutdown().await;
 
     if !status.success() {
-        let code = status.code().unwrap_or(1);
-        progress!(
-            quiet,
-            "{} Command exited with code {}",
-            "!".yellow().bold(),
-            code
-        );
+        let (code, signal_note) = child_exit_code(&status);
+        match signal_note {
+            Some(note) => eprintln!("{} {note}", "!".yellow().bold()),
+            None => progress!(
+                quiet,
+                "{} Command exited with code {}",
+                "!".yellow().bold(),
+                code
+            ),
+        }
         std::process::exit(code);
     }
 
@@ -364,31 +446,58 @@ async fn run_async(cmd: &[String], env_flag: Option<&str>, quiet: bool) -> Resul
     Ok(())
 }
 
+/// Protected keys the child receives as session tokens that no proxy route
+/// injects, sorted. Value-free: compares names only.
+fn unrouted_session_keys<'a>(
+    registry: &ServiceRegistry,
+    session_keys: impl IntoIterator<Item = &'a String>,
+) -> Vec<String> {
+    let routed: HashSet<&str> = registry
+        .services()
+        .into_iter()
+        .map(|(_, route)| route.secret_key.as_str())
+        .collect();
+    let mut unrouted: Vec<String> = session_keys
+        .into_iter()
+        .filter(|key| !routed.contains(key.as_str()))
+        .cloned()
+        .collect();
+    unrouted.sort();
+    unrouted
+}
+
 fn retrieve_required_secret(
     vault: &dyn phantom_vault::VaultBackend,
+    project_id: &str,
     namespaced: &str,
     bare: &str,
     active_env: &str,
 ) -> Result<zeroize::Zeroizing<String>> {
+    let missing = || {
+        crate::util::missing_protected_entry(
+            vault,
+            project_id,
+            bare,
+            format!(
+                "Protected dotenv key '{bare}' has no vault entry for environment '{active_env}'"
+            ),
+            "refusing to launch the child",
+            active_env == DEFAULT_ENV,
+        )
+    };
     match vault.retrieve_for_injection(namespaced) {
         Ok(value) => Ok(value),
-        Err(phantom_core::error::PhantomError::SecretNotFound(_))
-            if active_env == DEFAULT_ENV =>
-        {
+        Err(phantom_core::error::PhantomError::SecretNotFound(_)) if active_env == DEFAULT_ENV => {
             vault
                 .retrieve_for_injection(bare)
                 .map_err(|error| match error {
-                phantom_core::error::PhantomError::SecretNotFound(_) => anyhow::anyhow!(
-                    "Protected dotenv key '{bare}' has no vault entry for environment '{active_env}'; refusing to launch the child"
-                ),
-                other => anyhow::anyhow!(
-                    "Failed to read legacy session secret '{bare}' from the vault: {other}"
-                ),
+                    phantom_core::error::PhantomError::SecretNotFound(_) => missing(),
+                    other => anyhow::anyhow!(
+                        "Failed to read legacy session secret '{bare}' from the vault: {other}"
+                    ),
                 })
         }
-        Err(phantom_core::error::PhantomError::SecretNotFound(_)) => Err(anyhow::anyhow!(
-            "Protected dotenv key '{bare}' has no vault entry for environment '{active_env}'; refusing to launch the child"
-        )),
+        Err(phantom_core::error::PhantomError::SecretNotFound(_)) => Err(missing()),
         Err(error) => Err(anyhow::anyhow!(
             "Failed to read namespaced session secret '{namespaced}' from the vault: {error}"
         )),
@@ -408,6 +517,23 @@ fn sanitized_child_command(
     command
 }
 
+/// The comma-separated, sorted variable names a session fills with its own
+/// phantom tokens, for [`phantom_core::report::SESSION_KEYS_VAR`].
+pub(crate) fn session_variable_list<'a>(names: impl Iterator<Item = &'a String>) -> String {
+    let mut names: Vec<&str> = names.map(String::as_str).collect();
+    names.sort_unstable();
+    names.dedup();
+    names.join(",")
+}
+
+/// [`session_variable_list`] without the keys no route serves.
+fn routed_session_variable_list<'a>(
+    names: impl Iterator<Item = &'a String>,
+    unrouted: &[String],
+) -> String {
+    session_variable_list(names.filter(|name| !unrouted.contains(name)))
+}
+
 fn child_environment_policy(
     config: &PhantomConfig,
     protected_env_keys: &HashSet<String>,
@@ -417,6 +543,7 @@ fn child_environment_policy(
         VAULT_PASSPHRASE_ENV.to_string(),
         "PHANTOM_PROXY_TOKEN".to_string(),
         "PHANTOM_PROXY_PORT".to_string(),
+        phantom_core::report::SESSION_KEYS_VAR.to_string(),
     ]);
     scrub.extend(
         ServiceRegistry::known_override_env_names()
@@ -438,20 +565,12 @@ fn child_environment_policy(
             .map(|service| service.secret_key.clone()),
     );
 
-    let mut never_reintroduce = HashSet::new();
-    for (_, service) in config.connection_string_services() {
-        never_reintroduce.insert(service.secret_key.clone());
-    }
-    for secret in config.phantom.secrets.values() {
-        if let Some(name) = secret
-            .rotation_provider
-            .as_ref()
-            .and_then(|provider| provider.api_key_env.as_ref())
-        {
-            never_reintroduce.insert(name.clone());
-        }
-    }
-    never_reintroduce.extend(config.sync.iter().map(|target| target.token_env.clone()));
+    // Shared with `phantom why`, which reports these keys as `withheld`.
+    let never_reintroduce: HashSet<String> = config
+        .exec_withheld_keys()
+        .into_iter()
+        .map(str::to_string)
+        .collect();
     scrub.extend(never_reintroduce.iter().cloned());
     (scrub, never_reintroduce)
 }
@@ -473,23 +592,432 @@ async fn run_command_directly(cmd: &[String], scrub_env_keys: &HashSet<String>) 
     let args = &cmd[1..];
 
     let mut command = sanitized_child_command(program, args, scrub_env_keys);
-    let status = command
+    let status = match command
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .status()
         .await
-        .context(format!("Failed to start command: {}", program))?;
+    {
+        Ok(status) => status,
+        Err(error) => {
+            let (code, message) = spawn_failure(program, &error);
+            eprintln!("{} {message}", "error".red().bold());
+            std::process::exit(code);
+        }
+    };
 
     if !status.success() {
-        std::process::exit(status.code().unwrap_or(1));
+        let (code, signal_note) = child_exit_code(&status);
+        if let Some(note) = signal_note {
+            eprintln!("{} {note}", "!".yellow().bold());
+        }
+        std::process::exit(code);
     }
 
     Ok(())
 }
 
+/// Hide the per-session proxy token in printed `*_BASE_URL` lines. The child
+/// still receives the full URL; only terminal output is redacted.
+fn redact_session_segment(url: &str) -> String {
+    const MARKER: &str = "/_phantom/";
+    let Some(start) = url.find(MARKER).map(|i| i + MARKER.len()) else {
+        return url.to_string();
+    };
+    let end = url[start..]
+        .find('/')
+        .map(|i| start + i)
+        .unwrap_or(url.len());
+    format!("{}<redacted>{}", &url[..start], &url[end..])
+}
+
+/// Refuse repository-controlled proxy routing before launch, naming the
+/// command that shows which route differs and what Phantom expects.
+pub(super) fn validate_routes_for_launch(config: &PhantomConfig) -> Result<()> {
+    config.validate_agentic_proxy_routes().context(
+        "Refusing unapproved repository-controlled proxy routing. Run `phantom doctor` to see which service in .phantom.toml blocks launch and what to restore; proxied launches run only with Phantom's built-in routes",
+    )?;
+    Ok(())
+}
+
+/// Exit code and message for a child that could not be started, following
+/// the shell convention agents already branch on: 127 when the program is not
+/// found, 126 when it exists but cannot be executed.
+fn spawn_failure(program: &str, error: &std::io::Error) -> (i32, String) {
+    match error.kind() {
+        std::io::ErrorKind::NotFound => (
+            127,
+            format!(
+                "Command not found: {program}. Check that it is installed and on PATH, or pass its full path after `--`."
+            ),
+        ),
+        std::io::ErrorKind::PermissionDenied => (
+            126,
+            format!("Command is not executable: {program}. Check its permissions."),
+        ),
+        _ => (1, format!("Failed to start command {program}: {error}")),
+    }
+}
+
+/// Exit code to propagate for a failed child, plus a note when a signal ended
+/// it. A signal death has no exit code; reporting it as 1 hid OOM kills and
+/// timeouts, so use the shell convention 128 + signal number instead.
+fn child_exit_code(status: &std::process::ExitStatus) -> (i32, Option<String>) {
+    if let Some(code) = status.code() {
+        return (code, None);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(signal) = status.signal() {
+            let code = 128 + signal;
+            return (
+                code,
+                Some(format!(
+                    "Command was terminated by signal {signal}{}; exiting with {code}",
+                    signal_name(signal)
+                        .map(|name| format!(" ({name})"))
+                        .unwrap_or_default()
+                )),
+            );
+        }
+    }
+    (1, None)
+}
+
+#[cfg(unix)]
+fn signal_name(signal: i32) -> Option<&'static str> {
+    Some(match signal {
+        1 => "SIGHUP",
+        2 => "SIGINT",
+        3 => "SIGQUIT",
+        6 => "SIGABRT",
+        9 => "SIGKILL",
+        11 => "SIGSEGV",
+        13 => "SIGPIPE",
+        15 => "SIGTERM",
+        _ => return None,
+    })
+}
+
+/// Termination signals phantom catches while the child runs, so phantom
+/// outlives the child, forwards the signal to it, and then shuts the proxy
+/// down and exits with the child's status.
+#[cfg(unix)]
+struct SignalForwarder {
+    // `None` when phantom inherited the signal as ignored (nohup, a
+    // non-interactive `&` job): installing a handler would reset it to the
+    // default in the child on exec and let the signal kill it.
+    interrupt: Option<tokio::signal::unix::Signal>,
+    terminate: Option<tokio::signal::unix::Signal>,
+    hangup: Option<tokio::signal::unix::Signal>,
+}
+
+#[cfg(unix)]
+fn inherited_as_ignored(signal: libc::c_int) -> bool {
+    // SAFETY: a null `act` only queries the current disposition.
+    unsafe {
+        let mut current: libc::sigaction = std::mem::zeroed();
+        libc::sigaction(signal, std::ptr::null(), &mut current) == 0
+            && current.sa_sigaction == libc::SIG_IGN
+    }
+}
+
+#[cfg(unix)]
+async fn next_signal(signal: &mut Option<tokio::signal::unix::Signal>) -> Option<()> {
+    match signal {
+        Some(signal) => signal.recv().await,
+        None => std::future::pending().await,
+    }
+}
+
+#[cfg(unix)]
+impl SignalForwarder {
+    fn install() -> std::io::Result<Self> {
+        use tokio::signal::unix::{signal, SignalKind};
+        let catch = |number: libc::c_int, kind: SignalKind| -> std::io::Result<_> {
+            if inherited_as_ignored(number) {
+                Ok(None)
+            } else {
+                signal(kind).map(Some)
+            }
+        };
+        Ok(Self {
+            interrupt: catch(libc::SIGINT, SignalKind::interrupt())?,
+            terminate: catch(libc::SIGTERM, SignalKind::terminate())?,
+            hangup: catch(libc::SIGHUP, SignalKind::hangup())?,
+        })
+    }
+
+    async fn wait_for(
+        mut self,
+        child: &mut tokio::process::Child,
+    ) -> std::io::Result<std::process::ExitStatus> {
+        loop {
+            let signal = tokio::select! {
+                status = child.wait() => return status,
+                Some(()) = next_signal(&mut self.interrupt) => libc::SIGINT,
+                Some(()) = next_signal(&mut self.terminate) => libc::SIGTERM,
+                Some(()) = next_signal(&mut self.hangup) => libc::SIGHUP,
+            };
+            if signal == libc::SIGINT && foreground_of_terminal() {
+                // Ctrl-C at a terminal already reached the child: the tty
+                // signals the whole foreground process group. Sending it again
+                // would read as a second Ctrl-C to tools that force-quit on one.
+                // Limitation: a SIGINT sent by another process (`kill -INT`)
+                // while phantom is the terminal's foreground group is not
+                // forwarded either; it cannot be told apart from a terminal
+                // Ctrl-C here. Phantom then keeps waiting for the child.
+                continue;
+            }
+            // exec does not give the child its own process group, so signal
+            // the child itself; tokio has not reaped it while we are here.
+            if let Some(pid) = child.id().and_then(|pid| libc::pid_t::try_from(pid).ok()) {
+                // SAFETY: kill(2) with a live child pid and a valid signal number.
+                unsafe {
+                    libc::kill(pid, signal);
+                }
+            }
+        }
+    }
+}
+
+/// Whether phantom's process group is the foreground group of its
+/// controlling terminal, i.e. a terminal-generated SIGINT reached the child
+/// too. Checks stdin, stdout and stderr so `cmd | phantom exec ...` at a
+/// terminal still counts.
+#[cfg(unix)]
+fn foreground_of_terminal() -> bool {
+    // SAFETY: tcgetpgrp and getpgrp only read process state.
+    unsafe {
+        [libc::STDIN_FILENO, libc::STDOUT_FILENO, libc::STDERR_FILENO]
+            .into_iter()
+            .map(|fd| libc::tcgetpgrp(fd))
+            .find(|&group| group != -1)
+            .is_some_and(|group| group == libc::getpgrp())
+    }
+}
+
+/// On Windows, Ctrl-C reaches every process attached to the console, the
+/// child included. Catch it so phantom does not exit first; keep waiting.
+#[cfg(windows)]
+struct SignalForwarder {
+    ctrl_c: tokio::signal::windows::CtrlC,
+}
+
+#[cfg(windows)]
+impl SignalForwarder {
+    fn install() -> std::io::Result<Self> {
+        Ok(Self {
+            ctrl_c: tokio::signal::windows::ctrl_c()?,
+        })
+    }
+
+    async fn wait_for(
+        mut self,
+        child: &mut tokio::process::Child,
+    ) -> std::io::Result<std::process::ExitStatus> {
+        loop {
+            tokio::select! {
+                status = child.wait() => return status,
+                Some(()) = self.ctrl_c.recv() => continue,
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    /// A SIGTERM delivered to phantom while the child runs used to kill
+    /// phantom by default and orphan the child. The forwarder now catches it,
+    /// passes it to the child, and returns the child's own exit status.
+    #[cfg(unix)]
+    #[test]
+    fn sigterm_to_phantom_reaches_the_child_and_its_status_is_returned() {
+        let dir = tempfile::tempdir().unwrap();
+        let ready = dir.path().join("ready");
+        let marker = dir.path().join("child-saw-term");
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let forwarder = super::SignalForwarder::install().unwrap();
+            let mut child = tokio::process::Command::new("sh")
+                .arg("-c")
+                .arg(r#"trap 'echo term > "$MARKER"; exit 42' TERM; : > "$READY"; while :; do sleep 0.05; done"#)
+                .env("READY", &ready)
+                .env("MARKER", &marker)
+                .spawn()
+                .unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while !ready.exists() {
+                assert!(std::time::Instant::now() < deadline, "child never started");
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            // SAFETY: signal this test process, which the forwarder handles.
+            unsafe {
+                libc::kill(libc::getpid(), libc::SIGTERM);
+            }
+            let status = tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                forwarder.wait_for(&mut child),
+            )
+            .await
+            .expect("phantom waited for the child")
+            .unwrap();
+            assert_eq!(status.code(), Some(42));
+            assert!(marker.exists(), "the child did not receive SIGTERM");
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn child_exit_code_reports_code_or_128_plus_signal() {
+        use std::os::unix::process::ExitStatusExt;
+        assert_eq!(
+            super::child_exit_code(&std::process::ExitStatus::from_raw(3 << 8)).0,
+            3
+        );
+        assert_eq!(
+            super::child_exit_code(&std::process::ExitStatus::from_raw(libc::SIGTERM)).0,
+            143
+        );
+        assert_eq!(
+            super::child_exit_code(&std::process::ExitStatus::from_raw(libc::SIGKILL)).0,
+            137
+        );
+    }
+
+    #[test]
+    fn session_variable_list_is_sorted_and_unique() {
+        let names = ["OPENAI_API_KEY", "DATABASE_URL", "OPENAI_API_KEY"].map(String::from);
+        assert_eq!(
+            session_variable_list(names.iter()),
+            "DATABASE_URL,OPENAI_API_KEY"
+        );
+        assert_eq!(session_variable_list(std::iter::empty()), "");
+    }
+
+    #[test]
+    fn session_variable_list_leaves_out_unrouted_names() {
+        let mut registry = ServiceRegistry::new();
+        registry.add_route(phantom_proxy::ServiceRoute {
+            name: "openai".to_string(),
+            target_base: "https://api.openai.com".to_string(),
+            secret_key: "OPENAI_API_KEY".to_string(),
+            header: "Authorization".to_string(),
+            header_format: "Bearer {secret}".to_string(),
+            credential_profile: phantom_proxy::CredentialProfile::Standard,
+            sdk_base_path: None,
+        });
+        let keys = ["OPENAI_API_KEY", "LEGACY_SERVICE_KEY"].map(String::from);
+        let unrouted = unrouted_session_keys(&registry, keys.iter());
+        assert_eq!(unrouted, ["LEGACY_SERVICE_KEY"]);
+        assert_eq!(
+            routed_session_variable_list(keys.iter(), &unrouted),
+            "OPENAI_API_KEY"
+        );
+    }
+
+    #[test]
+    fn altered_route_refusal_points_at_doctor() {
+        let mut config = PhantomConfig::new_with_defaults("route-test".to_string());
+        let service = config
+            .services
+            .get_mut("openai")
+            .expect("built-in openai route");
+        service.pattern = Some("api.openai.com.example".to_string());
+
+        let error = format!(
+            "{:#}",
+            super::validate_routes_for_launch(&config).unwrap_err()
+        );
+
+        assert!(error.contains("phantom doctor"), "{error}");
+        assert!(error.contains("`openai`"), "{error}");
+    }
+
+    /// Pins the exec/start split for custom routes (docs/litellm.md): the
+    /// `.phantom.toml` route from the LiteLLM upstream example is refused by
+    /// exec's launch check, while the registry `phantom start` builds from the
+    /// same config still serves it.
+    #[test]
+    fn custom_litellm_route_is_refused_by_exec_but_built_for_start() {
+        let mut config = PhantomConfig::new_with_defaults("route-test".to_string());
+        config.services.insert(
+            "litellm".to_string(),
+            phantom_core::config::ServiceConfig {
+                secret_key: "LITELLM_API_KEY".to_string(),
+                pattern: Some("litellm.example.internal".to_string()),
+                header: Some("x-litellm-api-key".to_string()),
+                header_format: Some("Bearer {secret}".to_string()),
+                secret_type: "api_key".to_string(),
+            },
+        );
+
+        let error = format!(
+            "{:#}",
+            super::validate_routes_for_launch(&config)
+                .expect_err("exec must refuse a custom route")
+        );
+        assert!(error.contains("`litellm`"), "{error}");
+        assert!(error.contains("built-in routes"), "{error}");
+
+        let registry = phantom_proxy::ServiceRegistry::from_config(&config.services);
+        let (route, _) = registry
+            .match_route("/litellm")
+            .expect("phantom start builds the custom route");
+        assert_eq!(route.header, "x-litellm-api-key");
+    }
+
+    #[test]
+    fn spawn_failure_uses_shell_exit_codes_and_names_the_fix() {
+        let (code, message) = super::spawn_failure(
+            "phantom-missing-tool",
+            &std::io::Error::from(std::io::ErrorKind::NotFound),
+        );
+        assert_eq!(code, 127);
+        assert!(
+            message.contains("Command not found: phantom-missing-tool"),
+            "{message}"
+        );
+        assert!(message.contains("PATH"), "{message}");
+
+        let (code, message) = super::spawn_failure(
+            "./script.sh",
+            &std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+        );
+        assert_eq!(code, 126);
+        assert!(message.contains("not executable"), "{message}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn child_killed_by_signal_exits_128_plus_signal_with_a_note() {
+        use std::os::unix::process::ExitStatusExt;
+
+        let killed = std::process::ExitStatus::from_raw(9);
+        let (code, note) = super::child_exit_code(&killed);
+        assert_eq!(code, 137);
+        let note = note.expect("signal death must be reported");
+        assert!(note.contains("signal 9 (SIGKILL)"), "{note}");
+
+        let exited = std::process::ExitStatus::from_raw(3 << 8);
+        assert_eq!(super::child_exit_code(&exited), (3, None));
+    }
+
+    #[test]
+    fn printed_base_url_hides_session_token() {
+        let token = "ab".repeat(32);
+        let url = format!("http://127.0.0.1:43179/openai/_phantom/{token}/");
+        let shown = redact_session_segment(&url);
+        assert_eq!(shown, "http://127.0.0.1:43179/openai/_phantom/<redacted>/");
+        assert!(!shown.contains(&token));
+        assert_eq!(
+            redact_session_segment("http://127.0.0.1:1/openai"),
+            "http://127.0.0.1:1/openai"
+        );
+    }
+
     use super::*;
     use phantom_core::error::{PhantomError, Result as PhantomResult};
     use zeroize::Zeroizing;
@@ -547,6 +1075,7 @@ mod tests {
     fn exec_propagates_vault_read_errors_before_starting_a_session() {
         let error = retrieve_required_secret(
             &ReadFailingVault,
+            "exec-fixture",
             "production/API_KEY",
             "API_KEY",
             "production",
@@ -562,14 +1091,130 @@ mod tests {
     }
 
     #[test]
+    fn exec_names_protected_keys_that_no_route_delivers() {
+        use phantom_core::config::ExecDelivery;
+        let mut config = PhantomConfig::new_with_defaults("a".repeat(64));
+        config.phantom.secrets.insert(
+            "STRIPE_SECRET_KEY".to_string(),
+            toml::from_str(
+                "[rotation_provider]\nprovider = \"stripe\"\napi_key_env = \"STRIPE_ROTATION_API_KEY\"\n",
+            )
+            .unwrap(),
+        );
+        // A rotation credential that also has a built-in route: exec still
+        // never hands it to the child, so `phantom why` must not say proxied.
+        config.phantom.secrets.insert(
+            "CLAUDE_KEY".to_string(),
+            toml::from_str(
+                "[rotation_provider]\nprovider = \"anthropic\"\napi_key_env = \"ANTHROPIC_API_KEY\"\n",
+            )
+            .unwrap(),
+        );
+        config.sync.push(
+            toml::from_str(
+                "platform = \"vercel\"\ntoken_env = \"VERCEL_TOKEN\"\nproject_id = \"p\"\n",
+            )
+            .unwrap(),
+        );
+        let registry = ServiceRegistry::from_config(&config.services);
+        let protected: HashSet<String> = [
+            "OPENAI_API_KEY",
+            "NEXTAUTH_SECRET",
+            "GROQ_API_KEY",
+            "ANTHROPIC_API_KEY",
+            "STRIPE_ROTATION_API_KEY",
+            "VERCEL_TOKEN",
+            "DATABASE_URL",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+        let (_, never_reintroduce) = child_environment_policy(&config, &protected);
+        // Exec hands the child a session token for every other protected key.
+        // Plain `assert!`s: nothing here formats key names into output.
+        let handed: Vec<&String> = protected
+            .iter()
+            .filter(|name| !never_reintroduce.contains(*name))
+            .collect();
+        assert!(
+            unrouted_session_keys(&registry, handed.iter().copied())
+                == ["GROQ_API_KEY", "NEXTAUTH_SECRET"]
+        );
+        for name in &protected {
+            let delivery = config.exec_delivery_for_key(name);
+            // Exec warns about exactly the keys `phantom why` calls no_route.
+            let warned = !never_reintroduce.contains(name)
+                && unrouted_session_keys(&registry, [name]).len() == 1;
+            assert!(warned == (delivery == ExecDelivery::NoRoute));
+            // Exec never hands the child exactly the keys `phantom why`
+            // reports as withheld or as connection strings it refuses.
+            assert!(
+                never_reintroduce.contains(name)
+                    == matches!(
+                        delivery,
+                        ExecDelivery::Withheld | ExecDelivery::ConnectionStringRefused { .. }
+                    )
+            );
+        }
+    }
+
+    #[test]
     fn exec_rejects_a_missing_protected_vault_entry() {
-        let error =
-            retrieve_required_secret(&MissingVault, "default/API_KEY", "API_KEY", DEFAULT_ENV)
-                .unwrap_err()
-                .to_string();
+        let error = retrieve_required_secret(
+            &MissingVault,
+            "exec-fixture",
+            "default/API_KEY",
+            "API_KEY",
+            DEFAULT_ENV,
+        )
+        .unwrap_err()
+        .to_string();
 
         assert!(error.contains("has no vault entry"));
         assert!(error.contains("refusing to launch the child"));
+        assert!(error.contains("`phantom add API_KEY`"), "{error}");
+    }
+
+    /// `phantom add` stores the default environment only, so another
+    /// environment's refusal must not send the user there.
+    #[test]
+    fn exec_missing_entry_outside_the_default_env_has_no_add_hint() {
+        let error = retrieve_required_secret(
+            &MissingVault,
+            "exec-fixture",
+            "staging/API_KEY",
+            "API_KEY",
+            "staging",
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("for environment 'staging'"), "{error}");
+        assert!(!error.contains("phantom add"), "{error}");
+    }
+
+    /// With the secrets in an encrypted-file vault this process cannot open,
+    /// exec said the protected key "has no vault entry". It still refuses,
+    /// and now names the locked vault and the unlock step.
+    #[cfg(unix)]
+    #[test]
+    fn exec_names_a_locked_file_vault_instead_of_a_missing_entry() {
+        let project =
+            crate::util::test_seam::LockedProject::new(crate::util::test_seam::empty_keychain);
+        let error = retrieve_required_secret(
+            &MissingVault,
+            &project.project_id,
+            "default/API_KEY",
+            "API_KEY",
+            DEFAULT_ENV,
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.starts_with("Vault locked:"), "{error}");
+        assert!(error.contains("refusing to launch the child"), "{error}");
+        assert!(error.contains("PHANTOM_VAULT_PASSPHRASE"), "{error}");
+        assert!(!error.contains("has no vault entry"), "{error}");
     }
 
     #[test]
@@ -616,6 +1261,7 @@ mod tests {
         for name in [
             "PHANTOM_PROXY_TOKEN",
             "PHANTOM_PROXY_PORT",
+            "PHANTOM_SESSION_KEYS",
             "OPENAI_BASE_URL",
             "OPENAI_API_KEY",
             "ROTATION_ADMIN_TOKEN",

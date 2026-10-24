@@ -119,14 +119,28 @@ impl SecretMetadata {
         }
     }
 
-    /// Returns the number of days remaining until expiry, or `None` if no
-    /// expiry is set. Returns `0` (or would be negative — clamped) when
-    /// already expired.
+    /// Returns the number of whole days remaining until expiry, or `None` if
+    /// no expiry is set.
+    ///
+    /// A non-negative value always means the secret has not expired yet; a
+    /// negative value always means it has (`is_expired()` is `true`). The
+    /// count is floored, so a secret that expired any time in the last 24 h
+    /// reports `-1`, never `0`.
     pub fn days_remaining(&self) -> Option<i64> {
+        self.days_remaining_at(now_secs())
+    }
+
+    /// [`Self::days_remaining`] evaluated at an explicit `now` (Unix seconds).
+    pub fn days_remaining_at(&self, now: Timestamp) -> Option<i64> {
         self.expires_at.map(|exp| {
-            let now = now_secs() as i64;
-            let secs_left = exp as i64 - now;
-            secs_left / 86_400
+            let secs_left = exp as i128 - now as i128;
+            if secs_left <= 0 {
+                // Matches `is_expired` (now >= expires_at): expired is
+                // always strictly negative, including the exact instant.
+                (secs_left.div_euclid(86_400) as i64).min(-1)
+            } else {
+                (secs_left / 86_400) as i64
+            }
         })
     }
 
@@ -160,9 +174,143 @@ impl SecretMetadata {
     }
 }
 
+/// One expired secret in an [`ExpiryEnforceReport`]. Name and timestamps only.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ExpiredEntry {
+    pub name: String,
+    pub expires_at: Timestamp,
+    pub secs_overdue: u64,
+    pub status: String,
+}
+
+/// One secret with no `expires_at`, listed only under `fail_closed`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NoExpiryPolicyEntry {
+    pub name: String,
+    /// Always `"no_expiry_policy"`.
+    pub status: &'static str,
+}
+
+/// The one answer of `phantom expiry enforce --json` and the
+/// `phantom_expiry_enforce` MCP tool, so the two cannot drift.
+///
+/// `expired` holds only secrets whose expiry instant has passed. Secrets with
+/// no expiry set are counted in `no_expiry_count`; with `fail_closed` they are
+/// violations and are also named in `no_expiry_policy` (empty otherwise).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ExpiryEnforceReport {
+    pub expired: Vec<ExpiredEntry>,
+    pub no_expiry_policy: Vec<NoExpiryPolicyEntry>,
+    pub ok_count: usize,
+    pub no_expiry_count: usize,
+    pub fail_closed: bool,
+    /// `true` when no action is needed: nothing expired and, under
+    /// `fail_closed`, every secret has an expiry.
+    pub pass: bool,
+}
+
+/// Build the [`ExpiryEnforceReport`] for `entries` at `now`. Reads names and
+/// lifecycle metadata only, never secret values.
+pub fn expiry_enforce_report(
+    entries: &[(String, Option<SecretMetadata>)],
+    fail_closed: bool,
+    now: Timestamp,
+) -> ExpiryEnforceReport {
+    use phantom_core::rotation_strategy::{check_expiry, ExpiryStatus};
+
+    let mut expired = Vec::new();
+    let mut no_expiry_policy = Vec::new();
+    let mut ok_count = 0usize;
+    let mut no_expiry_count = 0usize;
+    for (name, metadata) in entries {
+        match metadata.as_ref().and_then(|metadata| metadata.expires_at) {
+            None => {
+                no_expiry_count += 1;
+                if fail_closed {
+                    no_expiry_policy.push(NoExpiryPolicyEntry {
+                        name: name.clone(),
+                        status: "no_expiry_policy",
+                    });
+                }
+            }
+            Some(expires_at) => {
+                let status = check_expiry(expires_at, 0, now);
+                if let ExpiryStatus::Expired { secs_overdue } = status {
+                    expired.push(ExpiredEntry {
+                        name: name.clone(),
+                        expires_at,
+                        secs_overdue,
+                        status: status.label(),
+                    });
+                } else {
+                    ok_count += 1;
+                }
+            }
+        }
+    }
+    let pass = expired.is_empty() && no_expiry_policy.is_empty();
+    ExpiryEnforceReport {
+        expired,
+        no_expiry_policy,
+        ok_count,
+        no_expiry_count,
+        fail_closed,
+        pass,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn enforce_entries(now: Timestamp) -> Vec<(String, Option<SecretMetadata>)> {
+        let with_expiry = |expires_at| SecretMetadata {
+            expires_at: Some(expires_at),
+            ..Default::default()
+        };
+        vec![
+            ("EXPIRED_ONE".to_string(), Some(with_expiry(now - 90_000))),
+            ("FRESH_ONE".to_string(), Some(with_expiry(now + 90_000))),
+            ("NO_POLICY".to_string(), None),
+            ("EMPTY_META".to_string(), Some(SecretMetadata::default())),
+        ]
+    }
+
+    #[test]
+    fn enforce_report_keeps_expired_to_truly_expired_secrets() {
+        let now = 2_000_000_000;
+        for fail_closed in [false, true] {
+            let report = expiry_enforce_report(&enforce_entries(now), fail_closed, now);
+            let expired: Vec<&str> = report.expired.iter().map(|e| e.name.as_str()).collect();
+            assert_eq!(expired, ["EXPIRED_ONE"], "fail_closed={fail_closed}");
+            assert_eq!(report.expired[0].secs_overdue, 90_000);
+            assert_eq!(report.ok_count, 1);
+            assert_eq!(report.no_expiry_count, 2);
+            assert!(!report.pass);
+        }
+    }
+
+    #[test]
+    fn enforce_report_names_no_policy_secrets_only_when_fail_closed() {
+        let now = 2_000_000_000;
+        let open = expiry_enforce_report(&enforce_entries(now)[1..], false, now);
+        assert!(open.no_expiry_policy.is_empty());
+        assert!(open.pass, "no expired secret and not fail-closed");
+
+        let closed = expiry_enforce_report(&enforce_entries(now)[1..], true, now);
+        let names: Vec<&str> = closed
+            .no_expiry_policy
+            .iter()
+            .map(|e| e.name.as_str())
+            .collect();
+        assert_eq!(names, ["NO_POLICY", "EMPTY_META"]);
+        assert!(closed
+            .no_expiry_policy
+            .iter()
+            .all(|e| e.status == "no_expiry_policy"));
+        assert!(closed.expired.is_empty());
+        assert!(!closed.pass);
+    }
 
     #[test]
     fn new_now_sets_created_at() {
@@ -243,6 +391,37 @@ mod tests {
         };
         let days = meta.days_remaining().expect("some");
         assert!(days < 0);
+    }
+
+    #[test]
+    fn days_remaining_is_negative_for_any_expired_secret() {
+        let now = 1_700_000_000;
+        let at = |expires_at| SecretMetadata {
+            expires_at: Some(expires_at),
+            ..Default::default()
+        };
+        // Expired one hour ago: used to truncate to 0 and read as "not expired".
+        assert_eq!(at(now - 3_600).days_remaining_at(now), Some(-1));
+        // Exact expiry instant counts as expired (matches `is_expired`).
+        assert_eq!(at(now).days_remaining_at(now), Some(-1));
+        assert_eq!(at(now - 86_400).days_remaining_at(now), Some(-1));
+        assert_eq!(at(now - 86_401).days_remaining_at(now), Some(-2));
+        assert_eq!(at(now - 10 * 86_400).days_remaining_at(now), Some(-10));
+        // Not yet expired stays non-negative.
+        assert_eq!(at(now + 1).days_remaining_at(now), Some(0));
+        assert_eq!(at(now + 3_600).days_remaining_at(now), Some(0));
+        assert_eq!(at(now + 86_400).days_remaining_at(now), Some(1));
+    }
+
+    #[test]
+    fn recently_expired_is_not_expiring_soon() {
+        let meta = SecretMetadata {
+            expires_at: Some(now_secs() - 3_600),
+            ..Default::default()
+        };
+        assert!(meta.is_expired());
+        assert!(meta.days_remaining().expect("some") < 0);
+        assert!(!meta.is_expiring_soon(7));
     }
 
     #[test]

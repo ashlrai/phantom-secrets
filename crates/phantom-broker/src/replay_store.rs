@@ -190,6 +190,84 @@ pub enum ReplayUseReservation {
     Existing(ReplayUseState),
 }
 
+/// Value-free view of one persisted lease, for status displays.
+///
+/// Built field by field from the authenticated snapshot. It carries opaque
+/// identifiers, counters and the lease time window only: no digests, nonces,
+/// constraints beyond the time window, environment label, key bytes or secret
+/// values. A lease from an earlier broker generation is reported as revoked,
+/// because every new broker lifetime revokes all prior leases.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LeaseSummary {
+    pub lease_id: LeaseId,
+    pub grant_id: GrantId,
+    pub operation: Operation,
+    pub workspace_id: WorkspaceId,
+    pub broker_generation: u64,
+    pub remaining_uses: u32,
+    pub revoked: bool,
+    pub active_uses: u32,
+    /// Unix seconds; the lease is not valid before this time.
+    pub not_before: u64,
+    /// Unix seconds, exclusive: at this time the lease is expired.
+    pub expires_at: u64,
+}
+
+/// Value-free status of one listed lease, derived from a [`LeaseSummary`],
+/// the generation stored in the same snapshot, and a caller-supplied clock.
+///
+/// This is a description of the stored state for status displays only. It is
+/// never an authorization decision: `begin_use` keeps its own checks, and a
+/// `Current` lease is not usable unless a broker has an active epoch for its
+/// generation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LeaseStatus {
+    /// Issued in an earlier broker generation. Every new broker lifetime
+    /// revokes all prior leases, so this lease can never be used again.
+    RevokedByRestart,
+    /// Revoked explicitly within its own generation.
+    Revoked,
+    /// The lease time window has not started yet.
+    NotYetValid,
+    /// The lease time window has ended (`expires_at` is exclusive).
+    Expired,
+    /// No uses remain. Uses already in progress may still finish.
+    Exhausted,
+    /// Not revoked, inside its time window, with uses remaining, as of the
+    /// stored snapshot.
+    Current,
+    /// The lease claims a generation newer than the snapshot. An
+    /// authenticated snapshot should never contain this; treat it as broken.
+    Inconsistent,
+}
+
+impl LeaseSummary {
+    /// Classify this lease. `store_generation` must come from the same
+    /// snapshot (see [`DurableReplayStore::stored_generation`]); `now_unix`
+    /// is Unix seconds. Pure: reads no clock, file, key or value.
+    ///
+    /// Precedence: inconsistent, revoked by restart, revoked, not yet valid,
+    /// expired, exhausted, current.
+    pub fn status(&self, store_generation: u64, now_unix: u64) -> LeaseStatus {
+        if self.broker_generation > store_generation {
+            LeaseStatus::Inconsistent
+        } else if self.broker_generation < store_generation {
+            LeaseStatus::RevokedByRestart
+        } else if self.revoked {
+            LeaseStatus::Revoked
+        } else if now_unix < self.not_before {
+            LeaseStatus::NotYetValid
+        } else if now_unix >= self.expires_at {
+            LeaseStatus::Expired
+        } else if self.remaining_uses == 0 {
+            LeaseStatus::Exhausted
+        } else {
+            LeaseStatus::Current
+        }
+    }
+}
+
 /// A local durable ledger. The authentication key must come from a protected
 /// host facility; it is never written to disk and is zeroized on drop.
 pub struct DurableReplayStore {
@@ -797,6 +875,51 @@ impl DurableReplayStore {
         })
     }
 
+    /// List every persisted lease without exposing values or mutating state.
+    ///
+    /// Works on a store opened with `open_existing` and does not require (or
+    /// start) an epoch, so listing never revokes anything. The snapshot MAC is
+    /// verified first; a tampered snapshot returns `AuthenticationFailed`.
+    /// Leases are returned in lease id order.
+    pub fn list_leases(&self) -> Result<Vec<LeaseSummary>, ReplayStoreError> {
+        self.with_locked_state_unchecked(|state| {
+            let mut leases = Vec::with_capacity(state.leases.len());
+            for (lease_id, lease) in &state.leases {
+                let active_uses = lease
+                    .uses
+                    .values()
+                    .filter(|use_state| matches!(use_state, PersistedUseState::Active))
+                    .count();
+                leases.push(LeaseSummary {
+                    lease_id: lease_id
+                        .parse()
+                        .map_err(|_| ReplayStoreError::InvalidState)?,
+                    grant_id: lease.grant_id.clone(),
+                    operation: lease.operation,
+                    workspace_id: lease.workspace_id.clone(),
+                    broker_generation: lease.broker_generation,
+                    remaining_uses: lease.remaining_uses,
+                    revoked: lease.revoked,
+                    active_uses: u32::try_from(active_uses)
+                        .map_err(|_| ReplayStoreError::InvalidState)?,
+                    not_before: lease.constraints.time.not_before,
+                    expires_at: lease.constraints.time.expires_at,
+                });
+            }
+            Ok((leases, false))
+        })
+    }
+
+    /// The broker generation recorded in the authenticated snapshot.
+    ///
+    /// Read-only and epoch-free like [`Self::list_leases`]: it verifies the
+    /// snapshot MAC, never starts an epoch, never writes, and so never
+    /// revokes anything. Unlike `current_generation`, it does not require an
+    /// active store, and it says nothing about whether a broker is running.
+    pub fn stored_generation(&self) -> Result<u64, ReplayStoreError> {
+        self.with_locked_state_unchecked(|state| Ok((state.broker_generation, false)))
+    }
+
     fn ensure_active(&self) -> Result<(), ReplayStoreError> {
         if self.activation.load(Ordering::Acquire) != ACTIVE {
             return Err(ReplayStoreError::NotActive);
@@ -1353,6 +1476,220 @@ mod tests {
         assert!(matches!(
             store.reserve(&nonce("a"), "request-2", &lease),
             Err(ReplayStoreError::Replay)
+        ));
+    }
+
+    #[test]
+    fn list_leases_is_value_free_read_only_and_works_without_an_epoch() {
+        let (temp, store) = store();
+        let lease = binding();
+        let lease_id = lease.lease_id().clone();
+        assert!(store.list_leases().unwrap().is_empty());
+        store.reserve(&nonce("e"), "request-1", &lease).unwrap();
+        let _permit = match store.begin_use(&lease_id, "operation-1", 10).unwrap() {
+            ReplayUseReservation::New(permit) => permit,
+            ReplayUseReservation::Existing(_) => panic!("first use must mint a permit"),
+        };
+        let live = store.list_leases().unwrap();
+        assert_eq!(live.len(), 1);
+        let row = &live[0];
+        assert_eq!(row.lease_id, lease_id);
+        assert_eq!(&row.grant_id, &lease.grant_id);
+        assert_eq!(row.operation, lease.operation);
+        assert_eq!(row.broker_generation, 1);
+        assert!(!row.revoked);
+        assert_eq!(row.active_uses, 1);
+        assert_eq!(row.not_before, lease.constraints().time.not_before);
+        assert_eq!(row.expires_at, lease.constraints().time.expires_at);
+        drop(store);
+
+        // Listing from a store that was only opened (no epoch) must not revoke,
+        // rewrite or touch the snapshot.
+        let state_path = temp.path().join("broker").join(STATE_FILE_NAME);
+        let before_bytes = fs::read(&state_path).unwrap();
+        let before_mtime = fs::metadata(&state_path).unwrap().modified().unwrap();
+        let opened = reopen_store(temp.path().join("broker"), [7_u8; 32]).unwrap();
+        let listed = opened.list_leases().unwrap();
+        assert_eq!(
+            listed, live,
+            "listing before an epoch shows the stored state"
+        );
+        assert_eq!(fs::read(&state_path).unwrap(), before_bytes);
+        assert_eq!(
+            fs::metadata(&state_path).unwrap().modified().unwrap(),
+            before_mtime
+        );
+
+        // The listed store can still be activated, which revokes the old lease.
+        assert_eq!(opened.start_epoch().unwrap(), 2);
+        let after = opened.list_leases().unwrap();
+        assert!(after[0].revoked);
+        assert_eq!(after[0].active_uses, 0);
+        assert_eq!(after[0].broker_generation, 1);
+    }
+
+    #[test]
+    fn list_leases_rejects_a_tampered_or_wrong_key_snapshot() {
+        let (temp, store) = store();
+        store.reserve(&nonce("f"), "request-1", &binding()).unwrap();
+        drop(store);
+        assert!(matches!(
+            reopen_store(temp.path().join("broker"), [8_u8; 32]),
+            Err(ReplayStoreError::AuthenticationFailed)
+        ));
+        let opened = reopen_store(temp.path().join("broker"), [7_u8; 32]).unwrap();
+        let state_path = temp.path().join("broker").join(STATE_FILE_NAME);
+        let text = fs::read_to_string(&state_path).unwrap();
+        let tampered = text.replacen("\"revoked\":false", "\"revoked\":true", 1);
+        assert_ne!(text, tampered);
+        fs::write(&state_path, tampered).unwrap();
+        assert!(matches!(
+            opened.list_leases(),
+            Err(ReplayStoreError::AuthenticationFailed)
+        ));
+    }
+
+    #[test]
+    fn lease_summary_exposes_only_the_approved_fields() {
+        let (_temp, store) = store();
+        store.reserve(&nonce("0"), "request-1", &binding()).unwrap();
+        let rows = store.list_leases().unwrap();
+        let value = serde_json::to_value(&rows[0]).unwrap();
+        let mut keys: Vec<&str> = value
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "active_uses",
+                "broker_generation",
+                "expires_at",
+                "grant_id",
+                "lease_id",
+                "not_before",
+                "operation",
+                "remaining_uses",
+                "revoked",
+                "workspace_id",
+            ]
+        );
+        let text = value.to_string();
+        for excluded in [
+            "sha256",
+            "nonce",
+            "environment",
+            "network",
+            "spend",
+            "idempotency",
+            "store_id",
+            "hmac",
+        ] {
+            assert!(!text.contains(excluded), "summary leaked {excluded}");
+        }
+        assert!(!text.contains(&hex::encode([7_u8; 32])));
+    }
+
+    fn summary_for_status(generation: u64, revoked: bool, remaining_uses: u32) -> LeaseSummary {
+        let (_temp, store) = store();
+        store.reserve(&nonce("1"), "request-1", &binding()).unwrap();
+        let mut row = store.list_leases().unwrap().remove(0);
+        row.broker_generation = generation;
+        row.revoked = revoked;
+        row.remaining_uses = remaining_uses;
+        row.not_before = 100;
+        row.expires_at = 200;
+        row
+    }
+
+    #[test]
+    fn lease_status_follows_the_documented_precedence() {
+        let current = summary_for_status(3, false, 2);
+        assert_eq!(current.status(3, 100), LeaseStatus::Current);
+        assert_eq!(current.status(3, 199), LeaseStatus::Current);
+        assert_eq!(current.status(3, 99), LeaseStatus::NotYetValid);
+        assert_eq!(
+            current.status(3, 200),
+            LeaseStatus::Expired,
+            "expires_at is exclusive"
+        );
+        assert_eq!(current.status(4, 150), LeaseStatus::RevokedByRestart);
+        assert_eq!(current.status(2, 150), LeaseStatus::Inconsistent);
+
+        let exhausted = summary_for_status(3, false, 0);
+        assert_eq!(exhausted.status(3, 150), LeaseStatus::Exhausted);
+        assert_eq!(exhausted.status(3, 250), LeaseStatus::Expired);
+
+        let revoked = summary_for_status(3, true, 2);
+        assert_eq!(revoked.status(3, 150), LeaseStatus::Revoked);
+        assert_eq!(revoked.status(3, 250), LeaseStatus::Revoked);
+        assert_eq!(revoked.status(5, 150), LeaseStatus::RevokedByRestart);
+        assert_eq!(revoked.status(1, 150), LeaseStatus::Inconsistent);
+    }
+
+    #[test]
+    fn lease_status_serializes_as_value_free_snake_case() {
+        let text = serde_json::to_string(&[
+            LeaseStatus::RevokedByRestart,
+            LeaseStatus::Revoked,
+            LeaseStatus::NotYetValid,
+            LeaseStatus::Expired,
+            LeaseStatus::Exhausted,
+            LeaseStatus::Current,
+            LeaseStatus::Inconsistent,
+        ])
+        .unwrap();
+        assert_eq!(
+            text,
+            r#"["revoked_by_restart","revoked","not_yet_valid","expired","exhausted","current","inconsistent"]"#
+        );
+    }
+
+    #[test]
+    fn stored_generation_is_read_only_epoch_free_and_authenticated() {
+        let (temp, store) = store();
+        store.reserve(&nonce("2"), "request-1", &binding()).unwrap();
+        assert_eq!(store.stored_generation().unwrap(), 1);
+        drop(store);
+
+        let state_path = temp.path().join("broker").join(STATE_FILE_NAME);
+        let before_bytes = fs::read(&state_path).unwrap();
+        let before_mtime = fs::metadata(&state_path).unwrap().modified().unwrap();
+        let opened = reopen_store(temp.path().join("broker"), [7_u8; 32]).unwrap();
+        assert!(matches!(
+            opened.current_generation(),
+            Err(ReplayStoreError::NotActive)
+        ));
+        assert_eq!(opened.stored_generation().unwrap(), 1);
+        let rows = opened.list_leases().unwrap();
+        let now = rows[0].not_before;
+        assert_eq!(
+            rows[0].status(opened.stored_generation().unwrap(), now),
+            LeaseStatus::Current
+        );
+        assert_eq!(fs::read(&state_path).unwrap(), before_bytes);
+        assert_eq!(
+            fs::metadata(&state_path).unwrap().modified().unwrap(),
+            before_mtime
+        );
+
+        // After a new epoch the same lease reads as revoked by restart.
+        assert_eq!(opened.start_epoch().unwrap(), 2);
+        assert_eq!(opened.stored_generation().unwrap(), 2);
+        let after = opened.list_leases().unwrap();
+        assert_eq!(after[0].status(2, now), LeaseStatus::RevokedByRestart);
+
+        // A tampered snapshot is refused rather than read.
+        let text = fs::read_to_string(&state_path).unwrap();
+        let tampered = text.replacen("\"revoked\":true", "\"revoked\":false", 1);
+        assert_ne!(text, tampered);
+        fs::write(&state_path, tampered).unwrap();
+        assert!(matches!(
+            opened.stored_generation(),
+            Err(ReplayStoreError::AuthenticationFailed)
         ));
     }
 
@@ -1923,6 +2260,12 @@ mod tests {
         );
     }
 }
+
+/// Test-only rotation-ordering harness for the #230 design note, sections 4
+/// and 10 (risk 4). Adds no library code.
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+#[path = "replay_store_rotation_tests.rs"]
+mod rotation_ordering_tests;
 
 #[cfg(all(test, not(any(target_os = "linux", target_os = "macos"))))]
 mod unsupported_platform_tests {

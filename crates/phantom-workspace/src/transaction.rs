@@ -2339,3 +2339,220 @@ mod descriptor_tests {
         );
     }
 }
+
+// Durable apply and recovery are Unix-only; non-Unix builds fail closed.
+#[cfg(all(test, unix))]
+mod journal_tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn runtime_key() -> [u8; 32] {
+        rand::random()
+    }
+
+    struct Fixture {
+        workspace: TempDir,
+        _journal_dir: TempDir,
+        config: DurableJournalConfig,
+        sealed: SealedSetupPlan,
+    }
+
+    /// Apply a real plan with a durable journal so every test starts from a
+    /// journal written by production code.
+    fn applied_fixture() -> Fixture {
+        let workspace = TempDir::new().unwrap();
+        std::fs::write(
+            workspace.path().join(".env"),
+            "OPENAI_API_KEY=sk-journal-fixture-fake\n",
+        )
+        .unwrap();
+        let journal_dir = TempDir::new().unwrap();
+        let config = DurableJournalConfig::new(
+            "req-journal-test",
+            journal_dir.path().join("journal.bin"),
+            runtime_key(),
+        );
+        let seal_key = PlanSealKey::from_bytes(runtime_key());
+        let sealed = build_sealed_setup_plan(workspace.path(), &seal_key).unwrap();
+        apply_setup_plan_durable(&sealed, &seal_key, &mut NoopSetupParticipant, &config).unwrap();
+        assert!(config.path.is_file(), "durable apply left no journal");
+        Fixture {
+            workspace,
+            _journal_dir: journal_dir,
+            config,
+            sealed,
+        }
+    }
+
+    fn recover(fixture: &Fixture, plan_id: &str, pre_state_id: &str) -> Result<JournalRecovery> {
+        recover_setup_plan_journal(
+            fixture.workspace.path(),
+            plan_id,
+            pre_state_id,
+            &mut NoopSetupParticipant,
+            &fixture.config,
+        )
+    }
+
+    #[test]
+    fn recovery_requires_matching_plan_and_pre_state_ids() {
+        let fixture = applied_fixture();
+        let plan_id = fixture.sealed.plan.plan_id.clone();
+        let pre_state_id = fixture.sealed.pre_state_id.clone();
+        let other = format!("{plan_id}-other");
+
+        assert!(matches!(
+            recover(&fixture, &other, &pre_state_id),
+            Err(WorkspaceError::JournalMismatch)
+        ));
+        assert!(matches!(
+            recover(&fixture, &plan_id, &other),
+            Err(WorkspaceError::JournalMismatch)
+        ));
+        assert!(matches!(
+            recover(&fixture, &plan_id, &pre_state_id),
+            Ok(JournalRecovery::Applied(_))
+        ));
+    }
+
+    /// Mark the applied journal incomplete so recovery must roll it back.
+    fn reopen_as_prepared(fixture: &Fixture) {
+        let mut journal = DurableJournal::load(&fixture.config).unwrap().unwrap();
+        journal.set_phase(JournalPhase::Prepared, None).unwrap();
+    }
+
+    #[test]
+    fn incomplete_journal_recovery_refuses_to_overwrite_later_user_edits() {
+        let fixture = applied_fixture();
+        reopen_as_prepared(&fixture);
+        let journal = DurableJournal::load(&fixture.config).unwrap().unwrap();
+        let target = journal.record.files[0].target.clone();
+        let path = fixture.workspace.path().join(&target);
+        drop(journal);
+        std::fs::write(&path, b"user edit after the interrupted apply\n").unwrap();
+
+        let result = recover(
+            &fixture,
+            &fixture.sealed.plan.plan_id,
+            &fixture.sealed.pre_state_id,
+        );
+        assert!(
+            matches!(result, Err(WorkspaceError::RollbackDrift(_))),
+            "{result:?}"
+        );
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            b"user edit after the interrupted apply\n"
+        );
+        let journal = DurableJournal::load(&fixture.config).unwrap().unwrap();
+        assert!(matches!(journal.record.phase, JournalPhase::Prepared));
+    }
+
+    #[test]
+    fn incomplete_journal_recovery_restores_every_before_image() {
+        let fixture = applied_fixture();
+        reopen_as_prepared(&fixture);
+        let journal = DurableJournal::load(&fixture.config).unwrap().unwrap();
+        let expected = journal
+            .record
+            .files
+            .iter()
+            .map(|file| (file.target.clone(), file.before.clone()))
+            .collect::<Vec<_>>();
+        drop(journal);
+        assert!(!expected.is_empty());
+
+        assert!(matches!(
+            recover(
+                &fixture,
+                &fixture.sealed.plan.plan_id,
+                &fixture.sealed.pre_state_id,
+            ),
+            Ok(JournalRecovery::RolledBack)
+        ));
+        for (target, before) in expected {
+            let current = std::fs::read(fixture.workspace.path().join(&target)).ok();
+            assert_eq!(current, before, "{target}");
+        }
+    }
+
+    #[test]
+    fn incomplete_journal_recovery_refuses_targets_outside_the_workspace() {
+        let outside = TempDir::new().unwrap();
+        let victim = outside.path().join("victim");
+        std::fs::write(&victim, b"outside-original\n").unwrap();
+        for escaping in [
+            format!(
+                "../{}/victim",
+                outside.path().file_name().unwrap().to_string_lossy()
+            ),
+            victim.to_string_lossy().into_owned(),
+        ] {
+            let fixture = applied_fixture();
+            let mut journal = DurableJournal::load(&fixture.config).unwrap().unwrap();
+            journal.record.files = vec![JournalFile {
+                target: escaping.clone(),
+                before: Some(b"attacker-chosen\n".to_vec()),
+                before_mode: None,
+                after: b"outside-original\n".to_vec(),
+            }];
+            journal.set_phase(JournalPhase::Prepared, None).unwrap();
+            drop(journal);
+
+            let result = recover(
+                &fixture,
+                &fixture.sealed.plan.plan_id,
+                &fixture.sealed.pre_state_id,
+            );
+            assert!(
+                matches!(result, Err(WorkspaceError::UnsafeTarget(_))),
+                "{escaping}: {result:?}"
+            );
+            assert_eq!(std::fs::read(&victim).unwrap(), b"outside-original\n");
+        }
+    }
+
+    #[test]
+    fn journal_with_wrong_magic_or_truncated_header_is_invalid() {
+        let fixture = applied_fixture();
+        let original = std::fs::read(&fixture.config.path).unwrap();
+
+        let mut wrong_magic = original.clone();
+        wrong_magic[3] ^= 0x01;
+        std::fs::write(&fixture.config.path, &wrong_magic).unwrap();
+        assert!(matches!(
+            DurableJournal::load(&fixture.config),
+            Err(WorkspaceError::InvalidJournal)
+        ));
+
+        std::fs::write(&fixture.config.path, &original[..10]).unwrap();
+        assert!(matches!(
+            DurableJournal::load(&fixture.config),
+            Err(WorkspaceError::InvalidJournal)
+        ));
+    }
+
+    #[test]
+    fn authenticated_journal_with_wrong_schema_or_request_id_is_invalid() {
+        let fixture = applied_fixture();
+        let mut journal = DurableJournal::load(&fixture.config).unwrap().unwrap();
+        journal.record.schema_version = JOURNAL_SCHEMA_VERSION.wrapping_add(1);
+        journal.persist().unwrap();
+        assert!(matches!(
+            DurableJournal::load(&fixture.config),
+            Err(WorkspaceError::InvalidJournal)
+        ));
+
+        journal.record.schema_version = JOURNAL_SCHEMA_VERSION;
+        journal.record.request_id = format!("{}-other", fixture.config.request_id);
+        journal.persist().unwrap();
+        assert!(matches!(
+            DurableJournal::load(&fixture.config),
+            Err(WorkspaceError::InvalidJournal)
+        ));
+
+        journal.record.request_id = fixture.config.request_id.clone();
+        journal.persist().unwrap();
+        assert!(DurableJournal::load(&fixture.config).unwrap().is_some());
+    }
+}

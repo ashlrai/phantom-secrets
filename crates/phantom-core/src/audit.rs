@@ -169,6 +169,11 @@ pub struct SidecarEvent {
     pub signature: String,
     /// Hex-encoded public key (for auditor verification).
     pub pubkey: String,
+    /// Signature scheme. Absent means Ed25519, and Ed25519 events never carry
+    /// it, so their bytes match every earlier writer. No other scheme is
+    /// supported yet, so any present value fails verification (fail closed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sig_alg: Option<String>,
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -680,14 +685,28 @@ fn write_hmac_key(key_path: &Path, key: &[u8]) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Required audit HMAC key length in bytes (256-bit).
+const HMAC_KEY_LEN: usize = 32;
+
 fn read_hmac_key(key_path: &Path) -> std::io::Result<Vec<u8>> {
     let hex_str = std::fs::read_to_string(key_path)?;
-    hex::decode(hex_str.trim()).map_err(|e| {
+    // The decode error is not forwarded: it can name a character from the key file.
+    let key = hex::decode(hex_str.trim()).map_err(|_| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            format!("invalid audit HMAC key: {e}"),
+            "invalid audit HMAC key: file is not valid hex; delete audit-hmac-key to regenerate (this starts a new chain)",
         )
-    })
+    })?;
+    if key.len() != HMAC_KEY_LEN {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "invalid audit HMAC key: expected {HMAC_KEY_LEN} bytes, found {}; delete audit-hmac-key to regenerate (this starts a new chain)",
+                key.len()
+            ),
+        ));
+    }
+    Ok(key)
 }
 
 fn write_chain_marker(log_path: &Path, key: &[u8]) -> std::io::Result<()> {
@@ -1075,8 +1094,21 @@ pub fn decrypt_context(encrypted_b64: &str, hmac_key: &[u8]) -> std::io::Result<
         Aes256Gcm, Nonce,
     };
 
+    // Version 2 values are `v2.` + base64 and use an HKDF-derived key.
+    // Unprefixed values are version 1 (every value written so far). `.` is
+    // not in the base64 alphabet, so the prefix cannot be a v1 value.
+    let (body_b64, enc_key) = match encrypted_b64.split_once('.') {
+        None => (encrypted_b64, derive_encryption_key(hmac_key)),
+        Some(("v2", rest)) => (rest, derive_encryption_key_v2(hmac_key)),
+        Some((version, _)) => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("unsupported encrypted_context version {version:?}"),
+            ))
+        }
+    };
     let blob = BASE64
-        .decode(encrypted_b64)
+        .decode(body_b64)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
 
     if blob.len() < 12 {
@@ -1086,7 +1118,6 @@ pub fn decrypt_context(encrypted_b64: &str, hmac_key: &[u8]) -> std::io::Result<
         ));
     }
 
-    let enc_key = derive_encryption_key(hmac_key);
     let cipher = Aes256Gcm::new_from_slice(&enc_key)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
 
@@ -1097,6 +1128,17 @@ pub fn decrypt_context(encrypted_b64: &str, hmac_key: &[u8]) -> std::io::Result<
 
     serde_json::from_slice(&plaintext)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+}
+
+/// Version 2 context key: HKDF-SHA256 (RFC 5869) with no salt and the info
+/// label `phantom-audit-context-v2`. Read-only for now; writers still use
+/// [`derive_encryption_key`].
+fn derive_encryption_key_v2(hmac_key: &[u8]) -> [u8; 32] {
+    let mut key: [u8; 32] = Default::default();
+    hkdf::Hkdf::<Sha256>::new(None, hmac_key)
+        .expand(b"phantom-audit-context-v2", &mut key)
+        .expect("32 bytes is a valid HKDF-SHA256 output length");
+    key
 }
 
 /// Derive a 32-byte AES key from the HMAC key via SHA-256 with a domain label.
@@ -1110,6 +1152,12 @@ fn derive_encryption_key(hmac_key: &[u8]) -> [u8; 32] {
 /// Verify an ED25519 signature on a `SidecarEvent`.
 /// Returns `true` if the signature is valid, `false` otherwise.
 pub fn verify_sidecar_event(event: &SidecarEvent) -> bool {
+    // Only unlabelled Ed25519 events exist. A labelled event, including a
+    // redundant "ed25519" label, is from a newer writer and is rejected
+    // rather than verified under the wrong scheme.
+    if event.sig_alg.is_some() {
+        return false;
+    }
     use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 
     let pubkey_bytes = match hex::decode(&event.pubkey) {
@@ -1365,6 +1413,70 @@ pub fn verify_log_with_context() -> std::io::Result<(VerifyReport, Vec<VerifiedE
 // Shared helpers
 // ──────────────────────────────────────────────────────────────────────────────
 
+/// Most bytes of the audit log a "recent events" read examines: the newest
+/// ones. The log is append-only and never rotated, so reading it whole to
+/// show the last few events grows without bound. Chain verification
+/// (`verify_log`) still reads the whole log; this window is for listings.
+pub const RECENT_WINDOW_BYTES: u64 = 8 * 1024 * 1024;
+
+/// The newest complete lines of the audit log, from a bounded window.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct RecentLines {
+    /// Non-empty lines in file order, without line endings.
+    pub lines: Vec<String>,
+    /// The log is larger than the window, so older lines were not read.
+    pub window_truncated: bool,
+    /// Lines in the window that were not UTF-8 and so were skipped.
+    pub unreadable_lines: usize,
+}
+
+/// Read the newest `max_bytes` of `path` and split them into lines.
+///
+/// When the file is larger than the window, the read starts `max_bytes`
+/// before the end and the first (partial) line is dropped. Memory stays
+/// bounded by `max_bytes` whatever the log's size.
+pub fn read_recent_lines(path: &Path, max_bytes: u64) -> std::io::Result<RecentLines> {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let mut file = File::open(path)?;
+    let len = file.metadata()?.len();
+    let window_truncated = len > max_bytes;
+    // When cut, read one byte more, from just before the window: if that byte
+    // is a newline, the window starts exactly on a line and keeps it whole.
+    let read_len = if window_truncated {
+        file.seek(SeekFrom::Start(len - max_bytes - 1))?;
+        max_bytes + 1
+    } else {
+        max_bytes
+    };
+    let mut window = Vec::new();
+    file.take(read_len).read_to_end(&mut window)?;
+
+    let mut rest: &[u8] = &window;
+    if window_truncated {
+        // Everything through the first newline (possibly the extra byte
+        // itself) belongs to a line that began before the window.
+        rest = match rest.iter().position(|b| *b == b'\n') {
+            Some(end) => &rest[end + 1..],
+            None => &[],
+        };
+    }
+
+    let mut recent = RecentLines {
+        window_truncated,
+        ..RecentLines::default()
+    };
+    for raw in rest.split(|b| *b == b'\n') {
+        let raw = raw.strip_suffix(b"\r").unwrap_or(raw);
+        match std::str::from_utf8(raw) {
+            Ok(line) if line.trim().is_empty() => {}
+            Ok(line) => recent.lines.push(line.trim().to_string()),
+            Err(_) => recent.unreadable_lines += 1,
+        }
+    }
+    Ok(recent)
+}
+
 pub fn log_path() -> std::io::Result<PathBuf> {
     if let Some(home) = dirs_home_dir() {
         Ok(home.join(".phantom").join("audit.log"))
@@ -1374,6 +1486,14 @@ pub fn log_path() -> std::io::Result<PathBuf> {
             "could not resolve home directory",
         ))
     }
+}
+
+/// Path of the signed head checkpoint (`~/.phantom/audit-head.json`) that
+/// sits beside the audit log. Its presence proves a signed era existed, so a
+/// missing log next to it is a deletion to report, not a log that never
+/// started.
+pub fn head_checkpoint_path() -> std::io::Result<PathBuf> {
+    Ok(head_path(&log_path()?))
 }
 
 fn dirs_home_dir() -> Option<PathBuf> {
@@ -1912,11 +2032,63 @@ pub(crate) fn acknowledge_hotspot_alert_at(
 
 #[cfg(test)]
 mod tests {
+    /// Unsequenced signed lines rely on the prev_hmac link alone: dropping
+    /// or reordering one keeps every line's own HMAC valid, so only the link
+    /// check can catch it.
+    #[test]
+    fn verify_flags_a_broken_prev_hmac_link_without_seq() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let log_path = tmp.path().join("audit.log");
+        // Runtime-derived test key (not a constant).
+        let key: Vec<u8> = log_path
+            .to_string_lossy()
+            .bytes()
+            .cycle()
+            .take(32)
+            .collect();
+        let mut prev = "GENESIS".to_string();
+        let mut lines = vec![r#"{"hmac_chain_started_at":1}"#.to_string()];
+        for (ts, op) in [
+            (10, "vault.store"),
+            (11, "vault.retrieve"),
+            (12, "vault.remove"),
+        ] {
+            let mut v = serde_json::json!({"ts": ts, "op": op, "pid": 1, "prev_hmac": prev});
+            let hmac = compute_hmac_for_line(&v, &key);
+            v["hmac"] = serde_json::Value::String(hmac.clone());
+            lines.push(v.to_string());
+            prev = hmac;
+        }
+
+        let intact = verify_log_content(&lines.join("\n"), Some(&key), &log_path).unwrap();
+        assert_eq!((intact.verified, intact.tampered), (3, 0));
+
+        let mut dropped = lines.clone();
+        dropped.remove(2);
+        let report = verify_log_content(&dropped.join("\n"), Some(&key), &log_path).unwrap();
+        assert!(
+            report.tampered >= 1,
+            "dropped middle event passed: {report:?}"
+        );
+
+        let mut swapped = lines.clone();
+        swapped.swap(2, 3);
+        let report = verify_log_content(&swapped.join("\n"), Some(&key), &log_path).unwrap();
+        assert!(report.tampered >= 1, "reordered events passed: {report:?}");
+    }
+
     use super::*;
     use crate::test_support::ENV_LOCK;
     use serde_json::Value;
     use std::sync::{Arc, Barrier};
     use tempfile::tempdir;
+
+    #[test]
+    fn audit_keys_are_256_bits() {
+        // Grover margin: generated HMAC key and derived AES key are 32 bytes.
+        assert_eq!(generate_key().len() * 8, 256);
+        assert_eq!(derive_encryption_key(&generate_key()).len() * 8, 256);
+    }
 
     fn with_temp_home<F: FnOnce()>(env: &str, val: &str, f: F) {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -1958,6 +2130,60 @@ mod tests {
     }
 
     // ── existing tests (must still pass) ────────────────────────────────────
+
+    #[test]
+    fn recent_lines_reads_a_small_log_whole() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audit.log");
+        std::fs::write(&path, b"{\"op\":\"a\"}\r\n\n{\"op\":\"b\"}\n").unwrap();
+        let recent = read_recent_lines(&path, RECENT_WINDOW_BYTES).unwrap();
+        assert_eq!(recent.lines, [r#"{"op":"a"}"#, r#"{"op":"b"}"#]);
+        assert!(!recent.window_truncated);
+        assert_eq!(recent.unreadable_lines, 0);
+    }
+
+    #[test]
+    fn recent_lines_reads_only_the_newest_window_and_drops_the_partial_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audit.log");
+        let lines: Vec<String> = (0..100).map(|i| format!(r#"{{"op":"e{i:03}"}}"#)).collect();
+        std::fs::write(&path, format!("{}\n", lines.join("\n"))).unwrap();
+        let line_len = lines[0].len() as u64 + 1;
+
+        // Three whole lines plus part of a fourth.
+        let recent = read_recent_lines(&path, line_len * 3 + 4).unwrap();
+        assert!(recent.window_truncated);
+        assert_eq!(recent.lines, lines[97..]);
+        assert_eq!(recent.unreadable_lines, 0);
+    }
+
+    #[test]
+    fn recent_lines_keeps_a_line_that_starts_exactly_at_the_window() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audit.log");
+        let lines: Vec<String> = (0..10).map(|i| format!(r#"{{"op":"e{i:03}"}}"#)).collect();
+        std::fs::write(&path, format!("{}\n", lines.join("\n"))).unwrap();
+        let line_len = lines[0].len() as u64 + 1;
+
+        // Exactly three whole lines: the byte before the window is a newline.
+        let recent = read_recent_lines(&path, line_len * 3).unwrap();
+        assert!(recent.window_truncated);
+        assert_eq!(recent.lines, lines[7..]);
+
+        // One byte short of three lines: the first is partial and dropped.
+        let recent = read_recent_lines(&path, line_len * 3 - 1).unwrap();
+        assert_eq!(recent.lines, lines[8..]);
+    }
+
+    #[test]
+    fn recent_lines_counts_non_utf8_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audit.log");
+        std::fs::write(&path, b"{\"op\":\"a\"}\n\xff\xfe\n{\"op\":\"b\"}\n").unwrap();
+        let recent = read_recent_lines(&path, RECENT_WINDOW_BYTES).unwrap();
+        assert_eq!(recent.lines.len(), 2);
+        assert_eq!(recent.unreadable_lines, 1);
+    }
 
     #[test]
     fn disabled_by_default() {
@@ -2226,6 +2452,40 @@ mod tests {
             assert_eq!(report.malformed_lines, vec![3]);
             assert!(!report.is_clean());
         });
+    }
+
+    #[test]
+    fn read_hmac_key_requires_exactly_32_bytes() {
+        let dir = std::env::temp_dir().join(format!(
+            "phantom-hmac-len-{}-{}",
+            std::process::id(),
+            now_unix()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("audit-hmac-key");
+        for len in [0usize, 1, 31, 33, 64] {
+            std::fs::write(&path, hex::encode(vec![0xabu8; len])).unwrap();
+            let err = read_hmac_key(&path).unwrap_err();
+            assert_eq!(err.kind(), std::io::ErrorKind::InvalidData, "len {len}");
+            let msg = err.to_string();
+            assert!(msg.contains("expected 32 bytes"), "len {len}: {msg}");
+            assert!(msg.contains(&format!("found {len}")), "len {len}: {msg}");
+            assert!(
+                !msg.contains("abab"),
+                "message must not contain key material"
+            );
+        }
+        std::fs::write(&path, hex::encode([0xabu8; 32])).unwrap();
+        assert_eq!(read_hmac_key(&path).unwrap(), vec![0xabu8; 32]);
+        // Trailing newline is still accepted.
+        std::fs::write(&path, format!("{}\n", hex::encode([0xcdu8; 32]))).unwrap();
+        assert_eq!(read_hmac_key(&path).unwrap().len(), 32);
+        // Non-hex content: clear error, no echo of the content.
+        std::fs::write(&path, "zzzsecretzzz").unwrap();
+        let msg = read_hmac_key(&path).unwrap_err().to_string();
+        assert!(msg.contains("not valid hex"));
+        assert!(!msg.contains("secret"));
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -2853,5 +3113,86 @@ mod tests {
                 );
             }
         });
+    }
+
+    // Hand-made fixtures, generated independently with Python `cryptography`
+    // (HKDF-SHA256 and AESGCM) from hmac key 0x11 * 32 and nonce 0x22 * 12.
+    const CTX_FIXTURE_KEY: [u8; 32] = [0x11; 32];
+    const CTX_V1_KEY_HEX: &str = "ce081e58669f834323d8b4ef678cf7a76b91a6105b55d10c699c2b55ad078b91";
+    const CTX_V2_KEY_HEX: &str = "328b49f8f7bf8b916ac61cbfb87f65009f7f01e1fcbec8e35411e65c3f0bf21e";
+    const CTX_V1_FIXTURE: &str = "IiIiIiIiIiIiIiIi3MMSCqiOjJ6xd9gQCCFHo0KRdqQvIQ25FItbErsWyY2hv6Jn3trxq5zHlKy5vSjsc2uUFnIIwN9obobbBtmcyFAi7N0RO9WjyFGYRnSkfM4KhITQsCppNWsGc3892frOd/oQF+W1";
+    const CTX_V2_FIXTURE: &str = "v2.IiIiIiIiIiIiIiIiTtiLME1O0vZZkWnRXal79vMiw+gfZvutRqNn9BtPcj3x+PpsQ2VUA8kcNIS1hEDLJHMhxVkfQ7y1BivbdrSnn4H0ni33IxNwVEH2po3J2fhmRB334fPa83vB3KcdIG5cqehVPw4b";
+
+    fn assert_fixture_context(ctx: &AuditContext) {
+        assert_eq!(ctx.process_name, "fixture-proc");
+        assert_eq!(ctx.hostname, "fixture-host");
+        assert_eq!(ctx.ppid, 4242);
+        assert_eq!(ctx.cwd, "/fixture");
+    }
+
+    #[test]
+    fn context_key_derivations_match_independent_values() {
+        assert_eq!(
+            hex::encode(derive_encryption_key(&CTX_FIXTURE_KEY)),
+            CTX_V1_KEY_HEX
+        );
+        assert_eq!(
+            hex::encode(derive_encryption_key_v2(&CTX_FIXTURE_KEY)),
+            CTX_V2_KEY_HEX
+        );
+    }
+
+    #[test]
+    fn context_v1_and_v2_fixtures_decrypt() {
+        assert_fixture_context(&decrypt_context(CTX_V1_FIXTURE, &CTX_FIXTURE_KEY).unwrap());
+        assert_fixture_context(&decrypt_context(CTX_V2_FIXTURE, &CTX_FIXTURE_KEY).unwrap());
+    }
+
+    #[test]
+    fn context_versions_do_not_cross_decrypt_and_unknown_versions_fail() {
+        // The v2 body read as v1 (prefix stripped) must fail, and the v1
+        // body labelled v2 must fail.
+        let v2_body = CTX_V2_FIXTURE.strip_prefix("v2.").unwrap();
+        assert!(decrypt_context(v2_body, &CTX_FIXTURE_KEY).is_err());
+        assert!(decrypt_context(&format!("v2.{CTX_V1_FIXTURE}"), &CTX_FIXTURE_KEY).is_err());
+        for bad in [
+            format!("v9.{v2_body}"),
+            format!("v1.{CTX_V1_FIXTURE}"),
+            ".".to_string(),
+        ] {
+            let err = decrypt_context(&bad, &CTX_FIXTURE_KEY)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                err.contains("unsupported encrypted_context version"),
+                "{bad}: {err}"
+            );
+        }
+        assert!(decrypt_context(CTX_V2_FIXTURE, &[0x12; 32]).is_err());
+    }
+
+    /// Writers must not change: the context writer still emits an unprefixed
+    /// standard-base64 `nonce(12) || ct` under the v1 key.
+    #[test]
+    fn context_writer_output_format_is_unchanged() {
+        let out = encrypt_context(&CTX_FIXTURE_KEY, AuditEventEncryption::LocalOnly).unwrap();
+        assert!(!out.contains('.'), "{out}");
+        let blob = BASE64.decode(&out).unwrap();
+        let ctx_json =
+            serde_json::to_vec(&decrypt_context(&out, &CTX_FIXTURE_KEY).unwrap()).unwrap();
+        assert_eq!(blob.len(), 12 + ctx_json.len() + 16);
+        // Decrypts with the v1 key directly, not the v2 key.
+        use aes_gcm::{
+            aead::{Aead, KeyInit},
+            Aes256Gcm, Nonce,
+        };
+        let v1 = Aes256Gcm::new_from_slice(&derive_encryption_key(&CTX_FIXTURE_KEY)).unwrap();
+        assert!(v1
+            .decrypt(Nonce::from_slice(&blob[..12]), &blob[12..])
+            .is_ok());
+        let v2 = Aes256Gcm::new_from_slice(&derive_encryption_key_v2(&CTX_FIXTURE_KEY)).unwrap();
+        assert!(v2
+            .decrypt(Nonce::from_slice(&blob[..12]), &blob[12..])
+            .is_err());
     }
 }
