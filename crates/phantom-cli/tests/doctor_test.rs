@@ -491,7 +491,7 @@ fn doctor_pq_human_report_names_hybrid_caveat() {
 #[test]
 fn doctor_json_reports_risky_litellm_through_phantom_and_changes_nothing() {
     let dir = common::canonical_tempdir();
-    let config = "model_list:\n  - model_name: gpt\n    litellm_params:\n      model: openai/gpt-4o\n      api_base: http://127.0.0.1:8765/openai/v1\n      api_key: phm_fake0000000000000000\ngeneral_settings:\n  allow_client_side_credentials: true\n";
+    let config = "model_list:\n  - model_name: gpt\n    litellm_params:\n      model: openai/gpt-4o\n      api_base: http://127.0.0.1:8765/openai/v1\n      api_key: phm_0000000000000000fake\ngeneral_settings:\n  allow_client_side_credentials: true\n";
     let compose = "services:\n  litellm:\n    image: ghcr.io/berriai/litellm:main-v1.82.6\n    ports:\n      - \"4000:4000\"\n";
     fs::write(dir.path().join("litellm_config.yaml"), config).unwrap();
     fs::write(dir.path().join("docker-compose.yml"), compose).unwrap();
@@ -521,7 +521,7 @@ fn doctor_json_reports_risky_litellm_through_phantom_and_changes_nothing() {
         assert_eq!(find("LiteLLM 1.82.6")["status"], "warn");
         assert_eq!(find("on all interfaces")["status"], "warn");
         assert!(
-            !stdout.contains("phm_fake"),
+            !stdout.contains("phm_0000000000000000"),
             "never echo key material: {stdout}"
         );
         // Report-only: the files are untouched, even with --fix.

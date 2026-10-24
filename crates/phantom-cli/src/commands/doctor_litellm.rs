@@ -6,8 +6,8 @@
 //!
 //! - a pinned LiteLLM version below 1.83.0 (the first release after the
 //!   PyPI supply-chain compromise, GHSA-5mg7-485q-xm76),
-//! - `allow_client_side_credentials: true` (lets callers override the
-//!   upstream and credentials, GHSA-3cv6-jpf6-8222 workaround is `false`),
+//! - `general_settings.allow_client_side_credentials` set to true, which lets
+//!   callers override the upstream (GHSA-3cv6-jpf6-8222; the workaround is false),
 //! - an explicit non-loopback bind (`--host`, `0.0.0.0`, or a published
 //!   Docker port without a loopback host IP).
 //!
@@ -400,7 +400,7 @@ mod tests {
     fn placeholder_key_counts_as_routing_through_phantom() {
         let cfg = CFG
             .replace("http://127.0.0.1:8765", "https://api.openai.com")
-            .replace("os.environ/OPENAI_API_KEY", "phm_fake0000000000000000");
+            .replace("os.environ/OPENAI_API_KEY", "phm_0000000000000000fake");
         let f = findings(dir_with(&[("litellm.yaml", &cfg)]).path());
         assert_eq!(
             f,
