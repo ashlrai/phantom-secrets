@@ -1331,6 +1331,43 @@ mod tests {
         });
     }
 
+    const STORAGE_PARAMS: &str = r#"{"name":"API_KEY","confirm":true}"#;
+
+    #[test]
+    fn empty_or_truncated_approval_tokens_are_rejected() {
+        with_temp_home(|| {
+            let nonce =
+                generate_pending_approval("phantom_add_secret", STORAGE_PARAMS, "proj-1").unwrap();
+            let token = approve_nonce(&nonce).unwrap().approval_token;
+            for presented in [
+                &token[..0],
+                &token[..token.len() / 2],
+                &token[..token.len() - 1],
+            ] {
+                assert!(
+                    validate_and_consume_approval(
+                        &nonce,
+                        presented,
+                        "phantom_add_secret",
+                        STORAGE_PARAMS,
+                        "proj-1",
+                    )
+                    .is_err(),
+                    "accepted a {}-byte token",
+                    presented.len()
+                );
+            }
+            validate_and_consume_approval(
+                &nonce,
+                &token,
+                "phantom_add_secret",
+                STORAGE_PARAMS,
+                "proj-1",
+            )
+            .unwrap();
+        });
+    }
+
     #[test]
     fn plaintext_bearing_fields_are_rejected_before_persistence() {
         with_temp_home(|| {
