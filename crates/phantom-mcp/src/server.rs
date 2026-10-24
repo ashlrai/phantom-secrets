@@ -11067,6 +11067,44 @@ mod tests {
             .is_err());
     }
 
+    /// Provisioning the plan-seal key on first propose writes machine-local
+    /// state, so it must stop at out-of-band approval when effects are enabled
+    /// and no token is supplied, and must not create the key.
+    #[test]
+    fn setup_workspace_propose_without_key_stops_at_out_of_band_approval() {
+        let _environment = TestEnvironment::new();
+        let _home = TestHome::new();
+        let (server, _dir) = setup_test_project();
+        // SAFETY: TestEnvironment holds the env lock and restores the values.
+        unsafe {
+            std::env::remove_var("PHANTOM_MCP_SKIP_APPROVAL");
+            std::env::set_var("PHANTOM_MCP_EFFECTS", "trusted-terminal");
+        }
+        assert!(phantom_core::workspace_request::load_existing_workspace_plan_key().is_err());
+
+        let err = server
+            .phantom_setup_workspace(Parameters(SetupWorkspaceParams {
+                phase: SetupWorkspacePhase::Propose,
+                confirm: true,
+                ..SetupWorkspaceParams::default()
+            }))
+            .expect_err("propose provisioned the seal key without approval");
+        assert!(
+            err.message.contains("out-of-band approval"),
+            "{}",
+            err.message
+        );
+        let pending = phantom_core::mcp_approval::list_pending_approvals().unwrap();
+        assert_eq!(
+            pending
+                .iter()
+                .filter(|r| r.tool_name == "phantom_setup_workspace")
+                .count(),
+            1
+        );
+        assert!(phantom_core::workspace_request::load_existing_workspace_plan_key().is_err());
+    }
+
     #[test]
     fn test_setup_workspace_params_accept_authority_fields_and_deny_unknown_fields() {
         assert!(
