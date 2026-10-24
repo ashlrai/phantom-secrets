@@ -696,6 +696,8 @@ fn participant_prepare_failure_runs_compensation_without_changing_files() {
 enum InvalidMutationMode {
     Duplicate,
     Unauthorized,
+    UnknownActionId,
+    MutationWithoutCompletedAction,
 }
 
 struct InvalidMutationParticipant {
@@ -722,6 +724,24 @@ impl SetupTransactionParticipant for InvalidMutationParticipant {
                 ".claude/settings.local.json",
                 b"{}".to_vec(),
             )],
+            InvalidMutationMode::UnknownActionId => {
+                return Ok(ParticipantPreparation::new(
+                    [protect.id.clone(), format!("{}-forged", protect.id)],
+                    vec![ParticipantFileMutation::replace(
+                        &protect.target,
+                        b"TOKEN=phm_one\n".to_vec(),
+                    )],
+                ))
+            }
+            InvalidMutationMode::MutationWithoutCompletedAction => {
+                return Ok(ParticipantPreparation::new(
+                    Vec::<String>::new(),
+                    vec![ParticipantFileMutation::replace(
+                        &protect.target,
+                        b"TOKEN=phm_one\n".to_vec(),
+                    )],
+                ))
+            }
         };
         Ok(ParticipantPreparation::new([protect.id.clone()], mutations))
     }
@@ -742,6 +762,8 @@ fn duplicate_and_unauthorized_participant_mutations_are_rejected_and_compensated
     for mode in [
         InvalidMutationMode::Duplicate,
         InvalidMutationMode::Unauthorized,
+        InvalidMutationMode::UnknownActionId,
+        InvalidMutationMode::MutationWithoutCompletedAction,
     ] {
         let workspace = TempDir::new().unwrap();
         let original = "OPENAI_API_KEY=sk-invalid-mutation-sentinel\n";
@@ -862,5 +884,29 @@ fn filesystem_apply_fails_closed_when_safe_mutation_is_unsupported() {
 
     let error = apply_setup_plan(&sealed, &key, &mut NoopSetupParticipant).unwrap_err();
     assert!(matches!(error, WorkspaceError::SafeMutationUnsupported));
+    assert!(!workspace.path().join(".phantom.toml").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn apply_rejects_a_sealed_plan_whose_id_no_longer_matches_its_content() {
+    let workspace = TempDir::new().unwrap();
+    let original = "OPENAI_API_KEY=sk-tampered-plan-sentinel\n";
+    write(workspace.path().join(".env"), original);
+    let key = seal_key();
+    let mut sealed = build_sealed_setup_plan(workspace.path(), &key).unwrap();
+    sealed.plan.blockers.clear();
+    sealed.plan.candidate_places.clear();
+    sealed
+        .plan
+        .actions
+        .retain(|action| action.kind != SetupActionKind::ReviewPlaceBinding);
+
+    let error = apply_setup_plan(&sealed, &key, &mut NoopSetupParticipant).unwrap_err();
+    assert!(matches!(error, WorkspaceError::InvalidPlan), "{error:?}");
+    assert_eq!(
+        std::fs::read_to_string(workspace.path().join(".env")).unwrap(),
+        original
+    );
     assert!(!workspace.path().join(".phantom.toml").exists());
 }
