@@ -10524,6 +10524,208 @@ mod tests {
         assert!(!dir.path().join(".phantom.toml").exists());
     }
 
+    /// Removing the approval gate from any of these tools kept every MCP test
+    /// green. With effects enabled and no token, each call must stop at the
+    /// out-of-band approval step and create exactly one pending nonce for
+    /// that tool, before touching the vault, files or network.
+    /// Call 21 effectful tools with effects enabled and no approval token.
+    /// The caller must hold a `TestEnvironment`.
+    #[allow(clippy::type_complexity)]
+    fn call_gated_tools(
+        confirm: bool,
+    ) -> (
+        Vec<(&'static str, Result<CallToolResult, McpError>)>,
+        [TempDir; 3],
+    ) {
+        let home = canonical_temp_dir();
+        let project = TempDir::new().unwrap();
+        let target = TempDir::new().unwrap();
+        unsafe {
+            std::env::set_var("HOME", home.path());
+            std::env::set_var(
+                "PHANTOM_VAULT_PASSPHRASE",
+                "test-passphrase-do-not-use-in-prod",
+            );
+            std::env::remove_var("PHANTOM_MCP_SKIP_APPROVAL");
+            std::env::set_var("PHANTOM_MCP_EFFECTS", "trusted-terminal");
+        }
+        std::fs::write(
+            project.path().join(".env"),
+            format!("OPENAI_API_KEY={}\n", PhantomToken::generate().as_str()),
+        )
+        .unwrap();
+        let config =
+            PhantomConfig::new_with_defaults(PhantomConfig::project_id_from_path(project.path()));
+        config.save(&project.path().join(".phantom.toml")).unwrap();
+        let value = format!("stored-{}", PhantomToken::generate().as_str());
+        phantom_vault::try_create_vault(config.local_project_id())
+            .unwrap()
+            .store("OPENAI_API_KEY", &value)
+            .unwrap();
+        PhantomConfig::new_with_defaults(PhantomConfig::project_id_from_path(target.path()))
+            .save(&target.path().join(".phantom.toml"))
+            .unwrap();
+        let server = PhantomMcpServer::with_dir(project.path().to_path_buf());
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        fn p<T: serde::de::DeserializeOwned>(v: serde_json::Value) -> Parameters<T> {
+            Parameters(serde_json::from_value(v).unwrap())
+        }
+        let c = || serde_json::json!({"confirm": confirm});
+        let team = || serde_json::json!({"confirm": confirm, "team_id": "team-test"});
+        let calls = vec![
+            ("phantom_copy_secret", server.phantom_copy_secret(p(serde_json::json!({
+                "confirm": confirm, "name": "OPENAI_API_KEY",
+                "target_dir": target.path().to_string_lossy()})))),
+            ("phantom_doctor", server.phantom_doctor(p(serde_json::json!({"confirm": confirm, "fix": true})))),
+            ("phantom_wrap", server.phantom_wrap(p(c()))),
+            ("phantom_unwrap", server.phantom_unwrap(p(c()))),
+            ("phantom_env", server.phantom_env(p(c()))),
+            ("phantom_cloud_status", rt.block_on(server.phantom_cloud_status(p(c())))),
+            ("phantom_team_list", rt.block_on(server.phantom_team_list(p(c())))),
+            ("phantom_team_create", rt.block_on(server.phantom_team_create(p(serde_json::json!({"confirm": confirm, "name": "team-test"}))))),
+            ("phantom_team_members", rt.block_on(server.phantom_team_members(p(team())))),
+            ("phantom_team_invite", rt.block_on(server.phantom_team_invite(p(serde_json::json!({"confirm": confirm, "team_id": "team-test", "github_login": "octocat"}))))),
+            ("phantom_team_key_publish", rt.block_on(server.phantom_team_key_publish(p(team())))),
+            ("phantom_team_vault_push", rt.block_on(server.phantom_team_vault_push(p(team())))),
+            ("phantom_team_vault_pull", rt.block_on(server.phantom_team_vault_pull(p(team())))),
+            ("phantom_rotate_with_expiry", server.phantom_rotate_with_expiry(p(serde_json::json!({"confirm": confirm, "days_ttl": 30})))),
+            ("phantom_audit_hotspot_alerts", server.phantom_audit_hotspot_alerts(p(serde_json::json!({"confirm": confirm, "secret_name": "OPENAI_API_KEY", "ack": true})))),
+            ("phantom_audit_alerts", server.phantom_audit_alerts(p(serde_json::json!({"confirm": confirm, "backfill": true})))),
+            ("phantom_audit_export_report", server.phantom_audit_export_report(p(serde_json::json!({"confirm": confirm, "save": true})))),
+            ("phantom_validate_all", server.phantom_validate_all(p(c()))),
+            ("phantom_validation_schedule", server.phantom_validation_schedule(p(serde_json::json!({"confirm": confirm, "interval": "daily"})))),
+            ("phantom_secrets_auto_rotate", server.phantom_secrets_auto_rotate(p(serde_json::json!({"confirm": confirm, "name": "OPENAI_API_KEY"})))),
+            ("phantom_apply_expiry_policy", server.phantom_apply_expiry_policy(p(c()))),
+        ];
+        (calls, [home, project, target])
+    }
+
+    /// Removing the approval gate from any of these tools kept every MCP test
+    /// green. With effects enabled, confirm set and no token, each call must
+    /// stop at the out-of-band approval step and leave one pending nonce for
+    /// that tool.
+    #[test]
+    fn more_effectful_tools_stop_at_out_of_band_approval_without_a_token() {
+        let _environment = TestEnvironment::new();
+        let (calls, _dirs) = call_gated_tools(true);
+        let mut problems = Vec::new();
+        for (tool, result) in calls {
+            match result {
+                Ok(_) => problems.push(format!("{tool}: ran without approval")),
+                Err(err) if !err.message.contains("out-of-band approval") => {
+                    problems.push(format!("{tool}: {}", err.message))
+                }
+                Err(_) => {
+                    let pending = phantom_core::mcp_approval::list_pending_approvals().unwrap();
+                    let n = pending.iter().filter(|r| r.tool_name == tool).count();
+                    if n != 1 {
+                        problems.push(format!("{tool}: {n} pending approvals"));
+                    }
+                }
+            }
+        }
+        assert!(problems.is_empty(), "{problems:#?}");
+    }
+
+    /// Without `confirm: true` every effectful tool must refuse before the
+    /// approval step, so an agent cannot mint pending nonces (and operator
+    /// prompts) without first asking the user.
+    #[test]
+    fn effectful_tools_require_confirm_before_minting_an_approval_nonce() {
+        let _environment = TestEnvironment::new();
+        let mut problems = Vec::new();
+        let (calls, _dirs) = call_gated_tools(false);
+        for (tool, result) in calls {
+            match result {
+                Ok(_) => problems.push(format!("{tool}: ran without confirm")),
+                Err(err) if !err.message.contains("confirm: true") => {
+                    problems.push(format!("{tool}: {}", err.message))
+                }
+                Err(_) => {}
+            }
+        }
+        let pending = phantom_core::mcp_approval::list_pending_approvals().unwrap();
+        if !pending.is_empty() {
+            problems.push(format!("pending approvals minted: {}", pending.len()));
+        }
+        assert!(problems.is_empty(), "{problems:#?}");
+    }
+
+    #[test]
+    fn effectful_tools_stop_at_out_of_band_approval_without_a_token() {
+        let _environment = TestEnvironment::new();
+        let home = canonical_temp_dir();
+        let project = TempDir::new().unwrap();
+        unsafe {
+            std::env::set_var("HOME", home.path());
+            std::env::set_var(
+                "PHANTOM_VAULT_PASSPHRASE",
+                "test-passphrase-do-not-use-in-prod",
+            );
+            std::env::remove_var("PHANTOM_MCP_SKIP_APPROVAL");
+            std::env::set_var("PHANTOM_MCP_EFFECTS", "trusted-terminal");
+        }
+        std::fs::write(
+            project.path().join(".env"),
+            format!("OPENAI_API_KEY={}\n", PhantomToken::generate().as_str()),
+        )
+        .unwrap();
+        let config =
+            PhantomConfig::new_with_defaults(PhantomConfig::project_id_from_path(project.path()));
+        config.save(&project.path().join(".phantom.toml")).unwrap();
+        let value = format!("stored-{}", PhantomToken::generate().as_str());
+        phantom_vault::try_create_vault(config.local_project_id())
+            .unwrap()
+            .store("OPENAI_API_KEY", &value)
+            .unwrap();
+        let server = PhantomMcpServer::with_dir(project.path().to_path_buf());
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        fn p<T: serde::de::DeserializeOwned>(v: serde_json::Value) -> Parameters<T> {
+            Parameters(serde_json::from_value(v).unwrap())
+        }
+        let base = serde_json::json!({"name": "OPENAI_API_KEY", "confirm": true});
+        let calls: Vec<(&str, Result<CallToolResult, McpError>)> = vec![
+            (
+                "phantom_add_secret",
+                server.phantom_add_secret(p(base.clone())),
+            ),
+            (
+                "phantom_remove_secret",
+                server.phantom_remove_secret(p(base.clone())),
+            ),
+            (
+                "phantom_cloud_push",
+                rt.block_on(server.phantom_cloud_push(p(serde_json::json!({"confirm": true})))),
+            ),
+            (
+                "phantom_cloud_pull",
+                rt.block_on(server.phantom_cloud_pull(p(serde_json::json!({"confirm": true})))),
+            ),
+        ];
+        for (tool, result) in calls {
+            let err = result
+                .err()
+                .unwrap_or_else(|| panic!("{tool} ran without approval"));
+            assert!(
+                err.message.contains("out-of-band approval"),
+                "{tool}: {}",
+                err.message
+            );
+            let pending = phantom_core::mcp_approval::list_pending_approvals().unwrap();
+            assert_eq!(
+                pending.iter().filter(|r| r.tool_name == tool).count(),
+                1,
+                "{tool}: {pending:?}"
+            );
+        }
+    }
+
     #[test]
     fn test_init_requires_real_mcp_approval_and_rejects_replay() {
         let _environment = TestEnvironment::new();
@@ -10839,6 +11041,81 @@ mod tests {
         assert!(!dir.path().join(".phantom.toml").exists());
     }
 
+    /// request_apply and init each check confirm before the approval step, and
+    /// request_apply then requires out-of-band approval. Removing any of the
+    /// three gates kept every MCP test green.
+    #[test]
+    fn request_apply_and_init_require_confirm_then_out_of_band_approval() {
+        let _environment = TestEnvironment::new();
+        let _home = TestHome::new();
+        let (server, dir) = setup_test_project();
+        let before_env = std::fs::read(dir.path().join(".env")).unwrap();
+
+        // Propose with the test-only bypass so the seal key exists.
+        let proposed = server
+            .phantom_setup_workspace(Parameters(SetupWorkspaceParams {
+                confirm: true,
+                ..SetupWorkspaceParams::default()
+            }))
+            .unwrap();
+        let proposed: serde_json::Value =
+            serde_json::from_str(&extract_content_text(&proposed)).unwrap();
+        let plan_id = proposed["sealed_plan"]["plan"]["plan_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let pre_state_id = proposed["sealed_plan"]["pre_state_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        // SAFETY: TestEnvironment holds the env lock and restores the values.
+        unsafe {
+            std::env::remove_var("PHANTOM_MCP_SKIP_APPROVAL");
+            std::env::set_var("PHANTOM_MCP_EFFECTS", "trusted-terminal");
+        }
+        let request_apply = |confirm: bool| {
+            server.phantom_setup_workspace(Parameters(SetupWorkspaceParams {
+                phase: SetupWorkspacePhase::RequestApply,
+                plan_id: Some(plan_id.clone()),
+                pre_state_id: Some(pre_state_id.clone()),
+                request_id: None,
+                confirm,
+                approval_token: None,
+            }))
+        };
+        let pending_for = |tool: &str| {
+            phantom_core::mcp_approval::list_pending_approvals()
+                .unwrap()
+                .iter()
+                .filter(|record| record.tool_name == tool)
+                .count()
+        };
+
+        let error = request_apply(false).expect_err("request_apply ran without confirm");
+        assert!(error.message.contains("confirm: true"), "{}", error.message);
+        let error = server
+            .phantom_init(Parameters(InitParams {
+                env_path: ".env".to_string(),
+                confirm: false,
+                approval_token: None,
+            }))
+            .expect_err("init ran without confirm");
+        assert!(error.message.contains("confirm: true"), "{}", error.message);
+        assert_eq!(pending_for("phantom_setup_workspace"), 0);
+        assert_eq!(pending_for("phantom_init"), 0);
+
+        let error = request_apply(true).expect_err("request_apply ran without approval");
+        assert!(
+            error.message.contains("out-of-band approval"),
+            "{}",
+            error.message
+        );
+        assert_eq!(pending_for("phantom_setup_workspace"), 1);
+        assert_eq!(std::fs::read(dir.path().join(".env")).unwrap(), before_env);
+        assert!(!dir.path().join(".phantom.toml").exists());
+    }
+
     #[test]
     fn test_setup_workspace_request_apply_does_not_provision_missing_host_key() {
         let _environment = TestEnvironment::new();
@@ -10989,6 +11266,44 @@ mod tests {
                 ..SetupWorkspaceParams::default()
             }))
             .is_err());
+    }
+
+    /// Provisioning the plan-seal key on first propose writes machine-local
+    /// state, so it must stop at out-of-band approval when effects are enabled
+    /// and no token is supplied, and must not create the key.
+    #[test]
+    fn setup_workspace_propose_without_key_stops_at_out_of_band_approval() {
+        let _environment = TestEnvironment::new();
+        let _home = TestHome::new();
+        let (server, _dir) = setup_test_project();
+        // SAFETY: TestEnvironment holds the env lock and restores the values.
+        unsafe {
+            std::env::remove_var("PHANTOM_MCP_SKIP_APPROVAL");
+            std::env::set_var("PHANTOM_MCP_EFFECTS", "trusted-terminal");
+        }
+        assert!(phantom_core::workspace_request::load_existing_workspace_plan_key().is_err());
+
+        let err = server
+            .phantom_setup_workspace(Parameters(SetupWorkspaceParams {
+                phase: SetupWorkspacePhase::Propose,
+                confirm: true,
+                ..SetupWorkspaceParams::default()
+            }))
+            .expect_err("propose provisioned the seal key without approval");
+        assert!(
+            err.message.contains("out-of-band approval"),
+            "{}",
+            err.message
+        );
+        let pending = phantom_core::mcp_approval::list_pending_approvals().unwrap();
+        assert_eq!(
+            pending
+                .iter()
+                .filter(|r| r.tool_name == "phantom_setup_workspace")
+                .count(),
+            1
+        );
+        assert!(phantom_core::workspace_request::load_existing_workspace_plan_key().is_err());
     }
 
     #[test]

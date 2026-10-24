@@ -1,7 +1,7 @@
 {
-  "name": "Phantom Secrets",
+  "name": "Phantom",
   "short_name": "Phantom",
-  "description": "Local-first credential protection for supported AI coding-agent workflows.",
+  "description": "The engineering workbench for interactive agent sessions, autonomous fleet workflows and connected resources.",
   "id": "/",
   "start_url": "/",
   "scope": "/",

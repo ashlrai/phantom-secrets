@@ -1220,6 +1220,224 @@ mod tests {
         });
     }
 
+    fn assert_rejected_before_persistence(tool: &str, params: &str, project: &str, needle: &str) {
+        let error = generate_pending_approval(tool, params, project).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput, "{error}");
+        assert!(error.to_string().contains(needle), "{needle}: {error}");
+        assert!(!approvals_path().unwrap().exists(), "{needle}");
+    }
+
+    #[test]
+    fn malformed_tool_and_project_identifiers_are_rejected_before_persistence() {
+        with_temp_home(|| {
+            let params = r#"{"name":"API_KEY","confirm":true}"#;
+            for tool in ["Phantom_Add_Secret", "phantom-add-secret", "phantom add"] {
+                assert_rejected_before_persistence(
+                    tool,
+                    params,
+                    "proj-1",
+                    "invalid MCP approval tool name",
+                );
+            }
+            assert_rejected_before_persistence(
+                "phantom_add_secret",
+                params,
+                "",
+                "invalid MCP approval project identifier",
+            );
+            let credential_project = format!("sk-{}", "a".repeat(24));
+            assert_rejected_before_persistence(
+                "phantom_add_secret",
+                params,
+                &credential_project,
+                "project identifier looks like credential plaintext",
+            );
+            for deprecated in ["phantom_rotate_with_candidate", "phantom_rotate_promote"] {
+                assert_rejected_before_persistence(
+                    deprecated,
+                    params,
+                    "proj-1",
+                    "deprecated hard denial",
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn oversized_or_deep_parameters_are_rejected_before_persistence() {
+        with_temp_home(|| {
+            let tool = "phantom_add_secret";
+            let deep = serde_json::json!({"a": {"a": {"a": {"a": {"a": {"a": 1}}}}}});
+            assert_rejected_before_persistence(
+                tool,
+                &deep.to_string(),
+                "proj-1",
+                "maximum nesting",
+            );
+
+            let long = serde_json::json!({"name": "x".repeat(MAX_PARAMETER_STRING_BYTES + 1)});
+            assert_rejected_before_persistence(tool, &long.to_string(), "proj-1", "exceeds");
+
+            let items = serde_json::json!({"names": vec![0; MAX_PARAMETER_COLLECTION_ITEMS + 1]});
+            assert_rejected_before_persistence(
+                tool,
+                &items.to_string(),
+                "proj-1",
+                "too many items",
+            );
+
+            let fields = (0..=MAX_PARAMETER_COLLECTION_ITEMS)
+                .map(|i| (format!("f{i}"), serde_json::json!(0)))
+                .collect::<serde_json::Map<_, _>>();
+            assert_rejected_before_persistence(
+                tool,
+                &serde_json::Value::Object(fields).to_string(),
+                "proj-1",
+                "too many fields",
+            );
+
+            // Every value within limits, but the whole summary is too large.
+            let wide = (0..20)
+                .map(|i| (format!("f{i}"), serde_json::json!("y".repeat(300))))
+                .collect::<serde_json::Map<_, _>>();
+            let wide = serde_json::Value::Object(wide).to_string();
+            assert!(wide.len() > MAX_PARAMETER_SUMMARY_BYTES);
+            assert_rejected_before_persistence(tool, &wide, "proj-1", "summary");
+        });
+    }
+
+    #[test]
+    fn inspect_refuses_expired_or_already_approved_nonces() {
+        with_temp_home(|| {
+            let params = r#"{"name":"API_KEY","confirm":true}"#;
+            let approved =
+                generate_pending_approval("phantom_add_secret", params, "proj-1").unwrap();
+            approve_nonce(&approved).unwrap();
+            let error = inspect_pending_approval(&approved).unwrap_err();
+            assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists, "{error}");
+
+            let expired =
+                generate_pending_approval("phantom_add_secret", params, "proj-1").unwrap();
+            let path = approvals_path().unwrap();
+            let mut records = load_all_records(&path).unwrap();
+            for record in records.iter_mut() {
+                if record.nonce.to_string() == expired {
+                    record.expires_at = Some(now_unix().saturating_sub(1));
+                }
+            }
+            rewrite_records(&path, &records).unwrap();
+            let error = inspect_pending_approval(&expired).unwrap_err();
+            assert_eq!(error.kind(), std::io::ErrorKind::TimedOut, "{error}");
+        });
+    }
+
+    const STORAGE_PARAMS: &str = r#"{"name":"API_KEY","confirm":true}"#;
+
+    #[test]
+    fn pending_list_excludes_approved_records() {
+        with_temp_home(|| {
+            let approved =
+                generate_pending_approval("phantom_add_secret", STORAGE_PARAMS, "proj-1").unwrap();
+            approve_nonce(&approved).unwrap();
+            assert!(list_pending_approvals().unwrap().is_empty());
+            generate_pending_approval("phantom_remove_secret", STORAGE_PARAMS, "proj-1").unwrap();
+            let pending = list_pending_approvals().unwrap();
+            assert_eq!(pending.len(), 1);
+            assert_eq!(pending[0].tool_name, "phantom_remove_secret");
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn approval_storage_refuses_symlinks_and_tightens_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        with_temp_home(|| {
+            let home = std::path::PathBuf::from(std::env::var_os("HOME").unwrap()).join(".phantom");
+            let outside = TempDir::new().unwrap();
+
+            // Symlinked storage directory.
+            std::os::unix::fs::symlink(outside.path(), &home).unwrap();
+            let error = generate_pending_approval("phantom_add_secret", STORAGE_PARAMS, "proj-1")
+                .unwrap_err();
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidData, "{error}");
+            assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(), 0);
+            std::fs::remove_file(&home).unwrap();
+
+            // Loose modes on a pre-existing directory and lock file are tightened.
+            std::fs::create_dir(&home).unwrap();
+            std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let lock = home.join("mcp-approvals.lock");
+            std::fs::write(&lock, b"").unwrap();
+            std::fs::set_permissions(&lock, std::fs::Permissions::from_mode(0o644)).unwrap();
+            generate_pending_approval("phantom_add_secret", STORAGE_PARAMS, "proj-1").unwrap();
+            let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode(&home), 0o700);
+            assert_eq!(mode(&lock), 0o600);
+
+            // Symlinked records file pointing outside (empty, so it parses).
+            let records = home.join("mcp-approvals.jsonl");
+            let victim = outside.path().join("victim");
+            std::fs::write(&victim, b"").unwrap();
+            std::fs::remove_file(&records).unwrap();
+            std::os::unix::fs::symlink(&victim, &records).unwrap();
+            let error = generate_pending_approval("phantom_add_secret", STORAGE_PARAMS, "proj-1")
+                .unwrap_err();
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidData, "{error}");
+            assert!(std::fs::symlink_metadata(&records)
+                .unwrap()
+                .file_type()
+                .is_symlink());
+            assert_eq!(std::fs::read(&victim).unwrap(), b"");
+            std::fs::remove_file(&records).unwrap();
+
+            // Symlinked lock file pointing outside.
+            let lock_victim = outside.path().join("lock-victim");
+            std::fs::write(&lock_victim, b"").unwrap();
+            std::fs::set_permissions(&lock_victim, std::fs::Permissions::from_mode(0o644)).unwrap();
+            std::fs::remove_file(&lock).unwrap();
+            std::os::unix::fs::symlink(&lock_victim, &lock).unwrap();
+            assert!(
+                generate_pending_approval("phantom_add_secret", STORAGE_PARAMS, "proj-1").is_err()
+            );
+            assert_eq!(mode(&lock_victim), 0o644);
+        });
+    }
+
+    #[test]
+    fn empty_or_truncated_approval_tokens_are_rejected() {
+        with_temp_home(|| {
+            let nonce =
+                generate_pending_approval("phantom_add_secret", STORAGE_PARAMS, "proj-1").unwrap();
+            let token = approve_nonce(&nonce).unwrap().approval_token;
+            for presented in [
+                &token[..0],
+                &token[..token.len() / 2],
+                &token[..token.len() - 1],
+            ] {
+                assert!(
+                    validate_and_consume_approval(
+                        &nonce,
+                        presented,
+                        "phantom_add_secret",
+                        STORAGE_PARAMS,
+                        "proj-1",
+                    )
+                    .is_err(),
+                    "accepted a {}-byte token",
+                    presented.len()
+                );
+            }
+            validate_and_consume_approval(
+                &nonce,
+                &token,
+                "phantom_add_secret",
+                STORAGE_PARAMS,
+                "proj-1",
+            )
+            .unwrap();
+        });
+    }
+
     #[test]
     fn plaintext_bearing_fields_are_rejected_before_persistence() {
         with_temp_home(|| {
@@ -1726,6 +1944,105 @@ mod tests {
                 "proj-tool",
             );
             assert!(result.is_err());
+        });
+    }
+
+    #[test]
+    fn test_wrong_project_rejected_and_nonce_kept() {
+        with_temp_home(|| {
+            let params = r#"{"confirm":true}"#;
+            let nonce = generate_pending_approval("phantom_rotate", params, "proj-a").unwrap();
+            let outcome = approve_nonce(&nonce).unwrap();
+
+            let msg = validate_and_consume_approval(
+                &nonce,
+                &outcome.approval_token,
+                "phantom_rotate",
+                params,
+                "proj-b",
+            )
+            .unwrap_err();
+            assert!(msg.contains("issued for project"), "{msg}");
+
+            // The rejected attempt must not consume the nonce.
+            validate_and_consume_approval(
+                &nonce,
+                &outcome.approval_token,
+                "phantom_rotate",
+                params,
+                "proj-a",
+            )
+            .unwrap();
+        });
+    }
+
+    #[test]
+    fn test_pending_unapproved_nonce_rejected_even_with_correct_token() {
+        with_temp_home(|| {
+            let params = r#"{"confirm":true}"#;
+            let nonce =
+                generate_pending_approval("phantom_rotate", params, "proj-pending").unwrap();
+            // Approve to obtain the real token, then put the record back to
+            // pending: the token alone must not stand in for the approval.
+            let outcome = approve_nonce(&nonce).unwrap();
+            let path = approvals_path().unwrap();
+            let mut records = load_all_records(&path).unwrap();
+            for record in &mut records {
+                record.approved = false;
+                record.approved_at = None;
+            }
+            rewrite_records(&path, &records).unwrap();
+            let token = outcome.approval_token;
+
+            let msg = validate_and_consume_approval(
+                &nonce,
+                &token,
+                "phantom_rotate",
+                params,
+                "proj-pending",
+            )
+            .unwrap_err();
+            assert!(msg.contains("has not been approved"), "{msg}");
+        });
+    }
+
+    #[test]
+    fn legacy_approved_record_without_summary_cannot_be_consumed() {
+        with_temp_home(|| {
+            let params = r#"{"confirm":true}"#;
+            let nonce = generate_pending_approval("phantom_rotate", params, "proj-legacy").unwrap();
+            let outcome = approve_nonce(&nonce).unwrap();
+            // An approved record in the pre-informed-consent format (no
+            // effect or parameter summary) must fail closed.
+            let path = approvals_path().unwrap();
+            let mut records = load_all_records(&path).unwrap();
+            for record in &mut records {
+                record.effect_summary.clear();
+                record.parameter_summary.clear();
+            }
+            rewrite_records(&path, &records).unwrap();
+
+            let msg = validate_and_consume_approval(
+                &nonce,
+                &outcome.approval_token,
+                "phantom_rotate",
+                params,
+                "proj-legacy",
+            )
+            .unwrap_err();
+            assert!(msg.contains("informed-consent"), "{msg}");
+        });
+    }
+
+    #[test]
+    fn approving_an_already_approved_nonce_is_refused() {
+        with_temp_home(|| {
+            let nonce =
+                generate_pending_approval("phantom_rotate", r#"{"confirm":true}"#, "proj-twice")
+                    .unwrap();
+            approve_nonce(&nonce).unwrap();
+            let err = approve_nonce(&nonce).unwrap_err();
+            assert!(err.to_string().contains("already been approved"), "{err}");
         });
     }
 

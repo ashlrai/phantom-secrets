@@ -2032,6 +2032,51 @@ pub(crate) fn acknowledge_hotspot_alert_at(
 
 #[cfg(test)]
 mod tests {
+    /// Unsequenced signed lines rely on the prev_hmac link alone: dropping
+    /// or reordering one keeps every line's own HMAC valid, so only the link
+    /// check can catch it.
+    #[test]
+    fn verify_flags_a_broken_prev_hmac_link_without_seq() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let log_path = tmp.path().join("audit.log");
+        // Runtime-derived test key (not a constant).
+        let key: Vec<u8> = log_path
+            .to_string_lossy()
+            .bytes()
+            .cycle()
+            .take(32)
+            .collect();
+        let mut prev = "GENESIS".to_string();
+        let mut lines = vec![r#"{"hmac_chain_started_at":1}"#.to_string()];
+        for (ts, op) in [
+            (10, "vault.store"),
+            (11, "vault.retrieve"),
+            (12, "vault.remove"),
+        ] {
+            let mut v = serde_json::json!({"ts": ts, "op": op, "pid": 1, "prev_hmac": prev});
+            let hmac = compute_hmac_for_line(&v, &key);
+            v["hmac"] = serde_json::Value::String(hmac.clone());
+            lines.push(v.to_string());
+            prev = hmac;
+        }
+
+        let intact = verify_log_content(&lines.join("\n"), Some(&key), &log_path).unwrap();
+        assert_eq!((intact.verified, intact.tampered), (3, 0));
+
+        let mut dropped = lines.clone();
+        dropped.remove(2);
+        let report = verify_log_content(&dropped.join("\n"), Some(&key), &log_path).unwrap();
+        assert!(
+            report.tampered >= 1,
+            "dropped middle event passed: {report:?}"
+        );
+
+        let mut swapped = lines.clone();
+        swapped.swap(2, 3);
+        let report = verify_log_content(&swapped.join("\n"), Some(&key), &log_path).unwrap();
+        assert!(report.tampered >= 1, "reordered events passed: {report:?}");
+    }
+
     use super::*;
     use crate::test_support::ENV_LOCK;
     use serde_json::Value;

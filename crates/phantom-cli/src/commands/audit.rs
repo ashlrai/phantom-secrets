@@ -42,6 +42,10 @@ pub enum AuditAction {
         /// incidents where a real secret escaped an upstream API response.
         #[arg(long)]
         leaked_secrets: bool,
+        /// Write the events to this new file (never overwritten) and print
+        /// only a one-line summary.
+        #[arg(long, value_name = "PATH")]
+        output: Option<std::path::PathBuf>,
     },
     /// Follow the audit log (like tail -f)
     Tail {
@@ -243,8 +247,29 @@ pub fn run_show(
     name: Option<&str>,
     json: bool,
     leaked_secrets: bool,
+    output: Option<&std::path::Path>,
 ) -> Result<()> {
     let path = resolve_path()?;
+    if let Some(dest) = output {
+        let mut buf = Vec::new();
+        colored::control::set_override(false);
+        let shown = run_show_at(
+            &path,
+            last,
+            op,
+            name,
+            json,
+            leaked_secrets,
+            &mut buf,
+            &mut std::io::stderr(),
+        );
+        colored::control::unset_override();
+        shown?;
+        crate::report_file::write_new(dest, &buf)?;
+        let lines = buf.iter().filter(|b| **b == b'\n').count();
+        println!("Audit: wrote {lines} line(s) to {}", dest.display());
+        return Ok(());
+    }
     run_show_at(
         &path,
         last,
