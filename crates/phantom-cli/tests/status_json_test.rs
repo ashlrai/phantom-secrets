@@ -324,7 +324,7 @@ fn schema_v1_exact_documents_and_no_canary_leaks() {
         let report = status(project.path(), home.path(), &["status", "--json"]);
         assert_eq!(&report, want, "{name}");
         let text = report.to_string();
-        for canary in [
+        for (index, canary) in [
             project_canary.as_str(),
             secret_name,
             secret_value.as_str(),
@@ -333,8 +333,12 @@ fn schema_v1_exact_documents_and_no_canary_leaks() {
             "OTHER_CANARY",
             &project.path().to_string_lossy(),
             &home.path().to_string_lossy(),
-        ] {
-            assert!(!text.contains(canary), "{name}: leaked {canary}");
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            // Name the canary by index only: never print a secret-like value.
+            assert!(!text.contains(canary), "{name}: leaked canary #{index}");
         }
     }
 }
