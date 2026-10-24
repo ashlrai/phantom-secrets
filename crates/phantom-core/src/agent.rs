@@ -70,6 +70,10 @@ pub struct AgentReadinessOptions {
     pub vault: Option<VaultProbe>,
     pub cloud_logged_in: bool,
     pub audit_enabled: bool,
+    /// The caller deliberately did not probe the vault (metadata-only
+    /// preflight). Report `vault-not-probed` as info instead of treating the
+    /// missing probe as an inaccessible vault.
+    pub vault_probe_skipped: bool,
 }
 
 #[derive(Debug)]
@@ -355,7 +359,20 @@ pub fn build_report(project_dir: &Path, options: AgentReadinessOptions) -> Agent
         }
     }
 
-    if config.is_some() && !signals.vault_accessible {
+    if config.is_some() && options.vault.is_none() && options.vault_probe_skipped {
+        push_finding(
+            &mut findings,
+            &mut fixes,
+            &mut commands,
+            FindingSpec::new(
+                "vault-not-probed",
+                FindingSeverity::Info,
+                "Vault access was not checked; run `phantom agent doctor --json --vault` to probe it."
+                    .to_string(),
+                "phantom agent doctor --json --vault",
+            ),
+        );
+    } else if config.is_some() && !signals.vault_accessible {
         let message = options
             .vault
             .as_ref()
@@ -816,6 +833,36 @@ mod tests {
         hook
     }
 
+    #[test]
+    fn skipped_vault_probe_is_info_not_critical() {
+        let dir = tempfile::TempDir::new().unwrap();
+        PhantomConfig::new_with_defaults("probe-skip".to_string())
+            .save(&dir.path().join(".phantom.toml"))
+            .unwrap();
+        let skipped = build_report(
+            dir.path(),
+            AgentReadinessOptions {
+                vault_probe_skipped: true,
+                ..AgentReadinessOptions::default()
+            },
+        );
+        assert!(skipped
+            .findings
+            .iter()
+            .any(|f| f.id == "vault-not-probed" && f.severity == FindingSeverity::Info));
+        assert!(!skipped
+            .findings
+            .iter()
+            .any(|f| f.id == "vault-not-accessible"));
+
+        let unprobed = build_report(dir.path(), AgentReadinessOptions::default());
+        assert!(unprobed
+            .findings
+            .iter()
+            .any(|f| f.id == "vault-not-accessible" && f.severity == FindingSeverity::Critical));
+        assert!(!unprobed.findings.iter().any(|f| f.id == "vault-not-probed"));
+    }
+
     fn no_vault() -> AgentReadinessOptions {
         AgentReadinessOptions {
             vault: Some(VaultProbe {
@@ -826,6 +873,7 @@ mod tests {
             }),
             cloud_logged_in: false,
             audit_enabled: false,
+            vault_probe_skipped: false,
         }
     }
 
@@ -964,6 +1012,7 @@ mod tests {
                 }),
                 cloud_logged_in: false,
                 audit_enabled: false,
+                vault_probe_skipped: false,
             },
         );
 
@@ -997,6 +1046,7 @@ mod tests {
                 }),
                 cloud_logged_in: false,
                 audit_enabled: false,
+                vault_probe_skipped: false,
             },
         );
 
@@ -1168,6 +1218,7 @@ mod tests {
                 }),
                 cloud_logged_in: false,
                 audit_enabled: false,
+                vault_probe_skipped: false,
             },
         );
 
