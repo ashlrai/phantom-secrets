@@ -22,6 +22,11 @@
 //! Run `dotenvx decrypt --stdout > .env` first, then import the plaintext
 //! `.env` with `phantom import --from dotenvx --file .env`.
 //!
+//! **Note on encrypted `.env` files:** dotenvx 1.x can also encrypt values in
+//! place (`KEY="encrypted:..."`). Any such value refuses the whole import,
+//! because importing it would store ciphertext as the secret. Decrypt with
+//! `dotenvx decrypt --stdout` first.
+//!
 //! Format is auto-detected: if the trimmed input starts with `{`, it's JSON;
 //! otherwise it's treated as dotenv.
 
@@ -51,12 +56,38 @@ impl Importer for DotenvxImporter {
         // Auto-detect: JSON object vs dotenv
         let first_non_ws = input.iter().copied().find(|b| !b.is_ascii_whitespace());
 
-        if first_non_ws == Some(b'{') {
-            parse_flat_json(input)
+        let map = if first_non_ws == Some(b'{') {
+            parse_flat_json(input)?
         } else {
-            env_importer(input)
-        }
+            env_importer(input)?
+        };
+        refuse_encrypted_values(&map)?;
+        Ok(map)
     }
+}
+
+/// Prefix dotenvx 1.x writes in front of every value it encrypts in place.
+const DOTENVX_ENCRYPTED_PREFIX: &str = "encrypted:";
+
+/// dotenvx 1.x encrypts values inside an ordinary `.env` file
+/// (`KEY="encrypted:..."`, plus a `DOTENV_PUBLIC_KEY` header). Phantom has no
+/// private key, so such a value is ciphertext. Storing it would report success
+/// while replacing a working credential with noise that `phantom exec` and the
+/// proxy then inject. Refuse the whole import instead; the error names the
+/// entry, never a value.
+fn refuse_encrypted_values(map: &SecretMap) -> Result<()> {
+    if let Some(name) = map
+        .iter()
+        .find(|(_, value)| value.trim_start().starts_with(DOTENVX_ENCRYPTED_PREFIX))
+        .map(|(name, _)| name)
+    {
+        anyhow::bail!(
+            "dotenvx entry '{name}' is still encrypted; nothing was imported.\n\
+             Run `dotenvx decrypt --stdout > .env.decrypted` first, then:\n  \
+             phantom import --from dotenvx --file .env.decrypted"
+        );
+    }
+    Ok(())
 }
 
 fn parse_flat_json(input: &[u8]) -> Result<SecretMap> {
@@ -144,6 +175,47 @@ mod tests {
         let map = DotenvxImporter::parse(input).unwrap();
         assert_eq!(map.get("API_KEY").map(|v| v.as_str()), Some("sk-test-123"));
         assert_eq!(map.get("PORT").map(|v| v.as_str()), Some("8080"));
+    }
+
+    #[test]
+    fn refuses_dotenvx_encrypted_values_instead_of_importing_ciphertext() {
+        // dotenvx 1.x encrypts values in place inside a normal `.env` file.
+        // Without the private key those values are ciphertext, and storing
+        // them would silently replace working credentials with noise.
+        let ciphertext = ["encrypted:", "BFakeCipher", "PlaceholderOnly=="].concat();
+        let public = ["03", "fakepublicplaceholder"].concat();
+        let dotenv = format!(
+            "#/-------------------[DOTENV_PUBLIC_KEY]--------------------/\n\
+             DOTENV_PUBLIC_KEY=\"{public}\"\n\
+             PLAIN_NAME=plain_value\n\
+             SEALED_NAME=\"{ciphertext}\"\n"
+        );
+        let json = format!(r#"{{"PLAIN_NAME": "plain_value", "SEALED_NAME": "{ciphertext}"}}"#);
+        for input in [dotenv, json] {
+            let error = DotenvxImporter::parse(input.as_bytes())
+                .err()
+                .map(|error| error.to_string())
+                .unwrap_or_default();
+            assert!(error.contains("'SEALED_NAME'"), "import was not refused");
+            assert!(error.contains("dotenvx decrypt"));
+            assert!(error.contains("nothing was imported"));
+            assert!(!error.contains("BFakeCipher"));
+            assert!(!error.contains("plain_value"));
+        }
+    }
+
+    #[test]
+    fn decrypted_dotenvx_file_still_imports() {
+        let input = b"DOTENV_PUBLIC_KEY=\"03fakepublicplaceholder\"\nPLAIN_NAME=plain_value\nNOTE=mentions encrypted: mid-value\n";
+        let map = DotenvxImporter::parse(input).unwrap();
+        assert_eq!(
+            map.get("PLAIN_NAME").map(|v| v.as_str()),
+            Some("plain_value")
+        );
+        assert_eq!(
+            map.get("NOTE").map(|v| v.as_str()),
+            Some("mentions encrypted: mid-value")
+        );
     }
 
     #[test]
