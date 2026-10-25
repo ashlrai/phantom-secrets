@@ -52,7 +52,8 @@ impl MockServer {
     /// Start a mock server that answers every request with `status` and
     /// `headers`. 204 and 304 responses carry no body; every other status
     /// carries the default JSON body (hyper omits it on the wire for HEAD
-    /// while still declaring its length).
+    /// while still declaring its length). `{origin}` in a header value is
+    /// replaced with this server's own `http://127.0.0.1:<port>` origin.
     pub async fn start_with_status_and_headers(
         status: StatusCode,
         headers: &[(&str, &str)],
@@ -89,10 +90,16 @@ impl MockServer {
         response_headers: Vec<(String, String)>,
     ) -> Self {
         let echo = Arc::new(echo);
-        let response_headers = Arc::new(response_headers);
         let addr = SocketAddr::from(([127, 0, 0, 1], 0));
         let listener = TcpListener::bind(addr).await.unwrap();
         let port = listener.local_addr().unwrap().port();
+        let origin = format!("http://127.0.0.1:{port}");
+        let response_headers = Arc::new(
+            response_headers
+                .into_iter()
+                .map(|(name, value)| (name, value.replace("{origin}", &origin)))
+                .collect::<Vec<_>>(),
+        );
 
         let requests: Arc<Mutex<Vec<RecordedRequest>>> = Arc::new(Mutex::new(Vec::new()));
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
