@@ -23,6 +23,20 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   so those scripts stayed wrapped. A `NAME:raw` that matches neither form is
   still the user's and is left alone.
 
+### Fixed (agent readiness recommends `phantom wrap` only when it would wrap something)
+
+- `phantom agent report`, `phantom agent status` and `phantom agent doctor`
+  kept their own "are scripts wrapped" check, separate from the one `phantom wrap`
+  uses, so the `package-scripts-not-wrapped` finding could recommend
+  `phantom wrap` for a package.json it leaves unchanged (only lint, test or
+  typecheck scripts; a shell command line such as
+  `NODE_ENV=development next dev`; a script already run through
+  `npx phantom-secrets@latest exec`; a user-owned `dev:raw`), and stayed
+  silent when one script was wrapped but a selected `build` or `predev` was
+  not. The finding now uses the same decision as `phantom wrap`: it is
+  reported exactly when `phantom wrap` with its default selection would wrap
+  at least one script. Its message now says so.
+
 ### Fixed (`phantom validate` applies the lifecycle gates `phantom exec` applies)
 
 - `phantom validate --check-all`, `phantom validate --watch` and
@@ -51,6 +65,13 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   match the real classification, `public_prefix_with_secret_value` reports the
   public prefix as `matched_pattern`, and the CLI `Reason:` line names the exact
   key fragment or value rule. Classification itself is unchanged.
+- The MCP `phantom_why` summary text still explained a key in its own words:
+  every value rule read "the value matches known secret patterns", a public
+  prefix overridden by its value gave no rule, and non-secret config listed a
+  hand-written subset of the key fragments. The summary now prints the same
+  `Reason:` sentence as `phantom why`, from one shared explanation
+  (`phantom_core::dotenv::ClassificationReason::explanation`), so a person and
+  an agent see the same deciding rule. The JSON report is unchanged.
 
 ### Fixed (`phantom wrap` and MCP `phantom_wrap` pick the same scripts)
 
