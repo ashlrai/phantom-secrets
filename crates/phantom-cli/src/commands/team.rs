@@ -238,6 +238,9 @@ fn vault_push_after_consent(
 
 pub fn run_vault_pull(team_id: &str) -> Result<()> {
     let (project_dir, config_path, config_before, config) = load_team_project_exact()?;
+    // Judge the destination before consent, credentials, network or any value
+    // read: every pulled entry is written into this vault.
+    let vault = team_vault_pull_destination(&config)?;
     let project_id = config.portable_project_id().to_string();
     let project_path = project_dir.to_string_lossy().into_owned();
     require_trusted_terminal_team(&team_consent_plan(
@@ -261,7 +264,6 @@ pub fn run_vault_pull(team_id: &str) -> Result<()> {
     // Commit the complete remote snapshot under Phantom's project transaction
     // lock. Every target carries an exact local before-image; a later failure
     // rolls back only transaction-owned writes and never prints a value.
-    let vault = phantom_vault::try_create_vault(config.local_project_id())?;
     let written = apply_team_vault_pull_transaction(
         &project_dir,
         vault.as_ref(),
@@ -281,6 +283,25 @@ pub fn run_vault_pull(team_id: &str) -> Result<()> {
         version
     );
     Ok(())
+}
+
+/// Open the vault a `team vault-pull` writes into, listing names only. Beside
+/// an encrypted-file vault this process cannot open, the OS keychain it
+/// selects instead would take every pulled entry (splitting the project
+/// across two vaults) with before-images from the keychain alone, so an empty
+/// or keychain-only inventory is refused.
+fn team_vault_pull_destination(
+    config: &PhantomConfig,
+) -> Result<Box<dyn phantom_vault::VaultBackend>> {
+    let vault = crate::util::open_vault(config.local_project_id())?;
+    let listed = vault.list()?.len();
+    crate::util::require_complete_inventory(
+        vault.as_ref(),
+        config.local_project_id(),
+        listed,
+        "reconcile a team vault pull",
+    )?;
+    Ok(vault)
 }
 
 fn apply_team_vault_pull_transaction(
@@ -778,5 +799,51 @@ mod locked_vault_tests {
         let project = LockedProject::new(empty_keychain);
         let error = push(&project);
         assert!(error.starts_with("Vault locked:"), "{error}");
+    }
+
+    /// Entered as `run_vault_pull` does, before consent. The stub keychain
+    /// panics on any value read.
+    fn pull_destination(project: &LockedProject) -> Option<String> {
+        let config =
+            phantom_core::config::PhantomConfig::load(&project.dir.join(".phantom.toml")).unwrap();
+        super::team_vault_pull_destination(&config)
+            .err()
+            .map(|error| error.to_string())
+    }
+
+    /// A keychain-only view would take every pulled entry beside the locked
+    /// file vault, with before-images from the keychain alone.
+    #[test]
+    fn team_vault_pull_refuses_a_partial_destination_inventory() {
+        let project = LockedProject::new(keychain_with_one);
+        let refusal = pull_destination(&project).unwrap_or_default();
+        assert!(
+            refusal.starts_with("Refusing to reconcile a team vault pull from a partial inventory")
+        );
+    }
+
+    /// An empty keychain beside a locked file vault would read as a fresh
+    /// destination and receive the whole shared vault.
+    #[test]
+    fn team_vault_pull_refuses_a_locked_file_vault() {
+        let project = LockedProject::new(empty_keychain);
+        let refusal = pull_destination(&project).unwrap_or_default();
+        assert!(refusal.starts_with("Vault locked:"));
+    }
+
+    #[test]
+    fn team_vault_pull_judges_the_destination_before_consent() {
+        let source = include_str!("team.rs");
+        let destination = source
+            .find("let vault = team_vault_pull_destination(&config)?;")
+            .expect("vault-pull must judge its destination inventory");
+        let consent = source
+            .find("\"vault-pull\",")
+            .expect("vault-pull must require terminal consent");
+        let network = source
+            .find("teams_vault::pull_for_project(")
+            .expect("vault-pull must fetch the shared vault");
+        assert!(destination < consent);
+        assert!(consent < network);
     }
 }

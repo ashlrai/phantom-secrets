@@ -157,11 +157,12 @@ fn push_after_consent(
 pub fn run_pull(force: bool) -> Result<()> {
     let project_dir = std::env::current_dir()?.canonicalize()?;
     let (config_path, config_before, config) = load_cloud_config_exact(&project_dir)?;
+    // Judge the destination before consent, credentials, network or any value
+    // read: the pull decides skip/overwrite/unchanged from this vault alone.
+    let vault = cloud_pull_destination(&config)?;
     require_trusted_terminal_cloud(&cloud_consent_plan("pull", &project_dir, &config, force)?)?;
     let api_base = auth::api_base_url()?;
     let token = Zeroizing::new(auth::require_token()?);
-
-    let vault = phantom_vault::try_create_vault(config.local_project_id())?;
 
     println!("{}  Pulling from Phantom Cloud...", "->".blue().bold());
 
@@ -221,6 +222,23 @@ pub fn run_pull(force: bool) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Open the vault a `cloud pull` writes into, listing names only. Beside an
+/// encrypted-file vault this process cannot open, the OS keychain it selects
+/// instead would take every pulled entry (splitting the project across two
+/// vaults) and judge skip/overwrite/unchanged without the file vault's copies,
+/// so an empty or keychain-only inventory is refused.
+fn cloud_pull_destination(config: &PhantomConfig) -> Result<Box<dyn phantom_vault::VaultBackend>> {
+    let vault = crate::util::open_vault(config.local_project_id())?;
+    let listed = vault.list()?.len();
+    crate::util::require_complete_inventory(
+        vault.as_ref(),
+        config.local_project_id(),
+        listed,
+        "reconcile a cloud pull",
+    )?;
+    Ok(vault)
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -1087,5 +1105,48 @@ mod locked_vault_tests {
         let project = LockedProject::new(empty_keychain);
         let error = push(&project);
         assert!(error.starts_with("Vault locked:"), "{error}");
+    }
+
+    /// Entered as `run_pull` does, before consent. The stub keychain panics
+    /// on any value read.
+    fn pull_destination(project: &LockedProject) -> Option<String> {
+        let (_, _, config) = super::load_cloud_config_exact(&project.dir).unwrap();
+        super::cloud_pull_destination(&config)
+            .err()
+            .map(|error| error.to_string())
+    }
+
+    /// A keychain-only view would take every pulled entry beside the locked
+    /// file vault and judge skip/overwrite from the keychain alone.
+    #[test]
+    fn cloud_pull_refuses_a_partial_destination_inventory() {
+        let project = LockedProject::new(keychain_with_one);
+        let refusal = pull_destination(&project).unwrap_or_default();
+        assert!(refusal.starts_with("Refusing to reconcile a cloud pull from a partial inventory"));
+    }
+
+    /// An empty keychain beside a locked file vault would read as a fresh
+    /// destination and receive the whole cloud copy.
+    #[test]
+    fn cloud_pull_refuses_a_locked_file_vault() {
+        let project = LockedProject::new(empty_keychain);
+        let refusal = pull_destination(&project).unwrap_or_default();
+        assert!(refusal.starts_with("Vault locked:"));
+    }
+
+    #[test]
+    fn cloud_pull_judges_the_destination_before_consent() {
+        let source = include_str!("cloud.rs");
+        let destination = source
+            .find("let vault = cloud_pull_destination(&config)?;")
+            .expect("pull must judge its destination inventory");
+        let consent = source
+            .find("require_trusted_terminal_cloud(&cloud_consent_plan(\"pull\"")
+            .expect("pull must require terminal consent");
+        let network = source
+            .find("cloud::pull(&api_base")
+            .expect("pull must fetch the cloud copy");
+        assert!(destination < consent);
+        assert!(consent < network);
     }
 }
