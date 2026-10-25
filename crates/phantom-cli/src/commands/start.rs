@@ -1,7 +1,6 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
 use phantom_core::dotenv::DotenvFile;
-use phantom_core::env_scope::DEFAULT_ENV;
 use phantom_core::token::PhantomToken;
 use phantom_proxy::{Interceptor, ProxyConfig, ProxyServer, ServiceRegistry};
 use std::collections::HashMap;
@@ -196,43 +195,19 @@ async fn run_async() -> Result<()> {
         phantom_core::managed_dotenv::resolve_dotenv(&project_dir, &config, &vault_names)?;
     validate_start_dotenv(&resolved)
         .context("Managed dotenv is malformed; proxy start stopped before secret resolution")?;
-    super::rotation_gate::enforce_rotation_on_access(
+    let StartSecrets {
+        active_env,
+        token_to_secret,
+        secret_name_to_value,
+        session_names,
+    } = load_start_secrets(
+        &project_dir,
         &config,
         vault.as_ref(),
         &vault_names,
-        DEFAULT_ENV,
-        resolved
-            .file
-            .iter()
-            .flat_map(DotenvFile::entries)
-            .filter(|entry| PhantomToken::is_phantom_token(&entry.value))
-            .map(|entry| entry.key.as_str()),
+        resolved.file.as_ref(),
         super::rotation_gate::now_secs(),
     )?;
-
-    // Build token mapping
-    let mut token_to_secret: HashMap<String, (String, String)> = HashMap::new();
-    let mut secret_name_to_value: HashMap<String, String> = HashMap::new();
-    // Names for the session-keys export, taken from the dotenv keys before any
-    // vault read so nothing value-bearing feeds the printed line.
-    let mut session_names: Vec<String> = Vec::new();
-    if let Some(dotenv) = resolved.file {
-        for entry in dotenv.entries() {
-            if PhantomToken::is_phantom_token(&entry.value) {
-                session_names.push(entry.key.clone());
-                let real_value = retrieve_required_default_secret(
-                    vault.as_ref(),
-                    config.local_project_id(),
-                    &entry.key,
-                )?;
-                token_to_secret.insert(
-                    entry.value.clone(),
-                    (entry.key.clone(), String::from(real_value.as_str())),
-                );
-                secret_name_to_value.insert(entry.key.clone(), String::from(real_value.as_str()));
-            }
-        }
-    }
 
     if token_to_secret.is_empty() {
         anyhow::bail!(
@@ -271,9 +246,10 @@ async fn run_async() -> Result<()> {
         format!("127.0.0.1:{port}").cyan()
     );
     println!(
-        "{} {} secret(s) mapped",
+        "{} {} secret(s) mapped (env: {})",
         "ok".green().bold(),
-        token_to_secret.len()
+        token_to_secret.len(),
+        active_env.cyan()
     );
 
     // Print export commands
@@ -335,6 +311,64 @@ async fn run_async() -> Result<()> {
     Ok(())
 }
 
+/// What one foreground proxy session serves: the environment it resolved and
+/// the real values behind each protected dotenv key.
+struct StartSecrets {
+    active_env: String,
+    token_to_secret: HashMap<String, (String, String)>,
+    secret_name_to_value: HashMap<String, String>,
+    /// Names for the session-keys export, taken from the dotenv keys before
+    /// any vault read so nothing value-bearing feeds the printed line.
+    session_names: Vec<String>,
+}
+
+/// Gate and read every protected dotenv key for a foreground proxy session,
+/// from the environment `phantom exec` would serve in the same directory.
+fn load_start_secrets(
+    project_dir: &std::path::Path,
+    config: &phantom_core::config::PhantomConfig,
+    vault: &dyn phantom_vault::VaultBackend,
+    vault_names: &[String],
+    dotenv: Option<&DotenvFile>,
+    now_secs: u64,
+) -> Result<StartSecrets> {
+    let active_env = super::env_scope::effective_env(project_dir, None)?;
+    super::rotation_gate::enforce_rotation_on_access(
+        config,
+        vault,
+        vault_names,
+        &active_env,
+        dotenv
+            .into_iter()
+            .flat_map(DotenvFile::entries)
+            .filter(|entry| PhantomToken::is_phantom_token(&entry.value))
+            .map(|entry| entry.key.as_str()),
+        now_secs,
+    )?;
+
+    let mut token_to_secret: HashMap<String, (String, String)> = HashMap::new();
+    let mut secret_name_to_value: HashMap<String, String> = HashMap::new();
+    let mut session_names: Vec<String> = Vec::new();
+    for entry in dotenv.into_iter().flat_map(DotenvFile::entries) {
+        if PhantomToken::is_phantom_token(&entry.value) {
+            session_names.push(entry.key.clone());
+            let real_value =
+                retrieve_start_secret(vault, config.local_project_id(), &active_env, &entry.key)?;
+            token_to_secret.insert(
+                entry.value.clone(),
+                (entry.key.clone(), String::from(real_value.as_str())),
+            );
+            secret_name_to_value.insert(entry.key.clone(), String::from(real_value.as_str()));
+        }
+    }
+    Ok(StartSecrets {
+        active_env,
+        token_to_secret,
+        secret_name_to_value,
+        session_names,
+    })
+}
+
 fn validate_start_dotenv(resolved: &phantom_core::managed_dotenv::ResolvedDotenv) -> Result<()> {
     if let Some(dotenv) = resolved.file.as_ref() {
         dotenv.validate_for_mutation()?;
@@ -359,45 +393,27 @@ fn start_vault_names(
     Ok(names)
 }
 
-fn retrieve_required_default_secret(
+fn retrieve_start_secret(
     vault: &dyn phantom_vault::VaultBackend,
     project_id: &str,
+    active_env: &str,
     name: &str,
 ) -> Result<zeroize::Zeroizing<String>> {
-    let namespaced = phantom_core::env_scope::namespaced_key(DEFAULT_ENV, name);
-    match vault.retrieve_for_injection(&namespaced) {
-        Ok(value) => Ok(value),
-        Err(phantom_core::error::PhantomError::SecretNotFound(_)) => {
-            vault
-                .retrieve_for_injection(name)
-                .map_err(|error| match error {
-                phantom_core::error::PhantomError::SecretNotFound(_) => {
-                    crate::util::missing_protected_entry(
-                        vault,
-                        project_id,
-                        name,
-                        format!(
-                            "Protected dotenv key '{name}' has no vault entry for the default environment"
-                        ),
-                        "refusing to start a partial proxy",
-                        true,
-                    )
-                }
-                other => anyhow::anyhow!(
-                    "Failed to read legacy default secret '{name}' from the vault: {other}"
-                ),
-                })
-        }
-        Err(error) => Err(anyhow::anyhow!(
-            "Failed to read default secret '{namespaced}' from the vault: {error}"
-        )),
-    }
+    super::exec::retrieve_session_secret(
+        vault,
+        project_id,
+        &phantom_core::env_scope::namespaced_key(active_env, name),
+        name,
+        active_env,
+        "refusing to start a partial proxy",
+    )
 }
 
 #[cfg(test)]
 mod shell_tests {
     use super::*;
     use phantom_core::config::PhantomConfig;
+    use phantom_core::env_scope::DEFAULT_ENV;
     use phantom_core::error::{PhantomError, Result as PhantomResult};
     use zeroize::Zeroizing;
 
@@ -516,10 +532,14 @@ mod shell_tests {
     fn foreground_start_names_a_locked_file_vault() {
         let project =
             crate::util::test_seam::LockedProject::new(crate::util::test_seam::empty_keychain);
-        let error =
-            retrieve_required_default_secret(&MissingVault, &project.project_id, "OPENAI_API_KEY")
-                .unwrap_err()
-                .to_string();
+        let error = retrieve_start_secret(
+            &MissingVault,
+            &project.project_id,
+            DEFAULT_ENV,
+            "OPENAI_API_KEY",
+        )
+        .unwrap_err()
+        .to_string();
         assert!(error.starts_with("Vault locked:"), "{error}");
         assert!(
             error.contains("refusing to start a partial proxy"),
@@ -553,12 +573,192 @@ mod shell_tests {
 
     #[test]
     fn foreground_start_rejects_a_missing_protected_vault_entry() {
-        let error =
-            retrieve_required_default_secret(&MissingVault, "start-fixture", "OPENAI_API_KEY")
-                .unwrap_err()
-                .to_string();
+        let error = retrieve_start_secret(
+            &MissingVault,
+            "start-fixture",
+            DEFAULT_ENV,
+            "OPENAI_API_KEY",
+        )
+        .unwrap_err()
+        .to_string();
         assert!(error.contains("has no vault entry"));
         assert!(error.contains("refusing to start a partial proxy"));
         assert!(error.contains("`phantom add OPENAI_API_KEY`"), "{error}");
+    }
+
+    /// `phantom start` must serve the same environment `phantom exec` does:
+    /// the one `phantom env use` selected, read from `.phantom/env`.
+    mod active_environment {
+        use super::super::*;
+        use crate::commands::rotation_gate::fixtures::{aged_vault, enforced_config, NOW};
+        use phantom_core::config::PhantomConfig;
+        use phantom_core::env_scope::DEFAULT_ENV;
+        use phantom_vault::file::FileVault;
+        use phantom_vault::metadata::VaultMode;
+        use phantom_vault::{SecretMetadata, VaultBackend};
+
+        const KEY: &str = "OPENAI_API_KEY";
+
+        fn fixture_value(env: &str) -> String {
+            [env, "fixture", "value"].join("-")
+        }
+
+        fn project(active_env: Option<&str>) -> tempfile::TempDir {
+            let dir = tempfile::tempdir().unwrap();
+            if let Some(env) = active_env {
+                phantom_core::env_scope::write_active_env(dir.path(), env).unwrap();
+            }
+            dir
+        }
+
+        fn vault_with(dir: &tempfile::TempDir, entries: &[&str]) -> FileVault {
+            let vault = FileVault::new(
+                &crate::test_support::canonical_tempdir_path(dir),
+                "start-env-fixture",
+                format!("start-env-{}", std::process::id()),
+            )
+            .unwrap();
+            for entry in entries {
+                let env = entry.split_once('/').map_or("bare", |(env, _)| env);
+                vault.store(entry, &fixture_value(env)).unwrap();
+            }
+            vault
+        }
+
+        fn protected_dotenv() -> DotenvFile {
+            DotenvFile::parse_str(&format!("{KEY}={}\n", PhantomToken::generate().as_str()))
+        }
+
+        fn load(
+            project: &tempfile::TempDir,
+            config: &PhantomConfig,
+            vault: &dyn VaultBackend,
+        ) -> Result<StartSecrets> {
+            let names = vault.list().unwrap();
+            let dotenv = protected_dotenv();
+            load_start_secrets(project.path(), config, vault, &names, Some(&dotenv), NOW)
+        }
+
+        fn config() -> PhantomConfig {
+            PhantomConfig::new_with_defaults("start-env-fixture".to_string())
+        }
+
+        fn served_value_is(secrets: &StartSecrets, env: &str) -> bool {
+            secrets.secret_name_to_value.get(KEY).map(String::as_str)
+                == Some(fixture_value(env).as_str())
+        }
+
+        #[test]
+        fn start_serves_the_active_environment_value() {
+            let project = project(Some("prod"));
+            let store = tempfile::tempdir().unwrap();
+            let vault = vault_with(&store, &["default/OPENAI_API_KEY", "prod/OPENAI_API_KEY"]);
+            let secrets = load(&project, &config(), &vault).unwrap();
+            assert_eq!(secrets.active_env, "prod");
+            assert!(served_value_is(&secrets, "prod"));
+            assert!(!served_value_is(&secrets, "default"));
+        }
+
+        #[test]
+        fn start_accepts_a_key_held_only_by_the_active_environment() {
+            let project = project(Some("prod"));
+            let store = tempfile::tempdir().unwrap();
+            let vault = vault_with(&store, &["prod/OPENAI_API_KEY"]);
+            let secrets = load(&project, &config(), &vault);
+            assert!(secrets.is_ok_and(|secrets| served_value_is(&secrets, "prod")));
+        }
+
+        #[test]
+        fn start_never_falls_back_to_default_values_for_another_environment() {
+            let project = project(Some("prod"));
+            let store = tempfile::tempdir().unwrap();
+            let vault = vault_with(&store, &["default/OPENAI_API_KEY", "OPENAI_API_KEY"]);
+            let error = match load(&project, &config(), &vault) {
+                Ok(_) => String::new(),
+                Err(error) => format!("{error:#}"),
+            };
+            assert!(error.contains("environment 'prod'"));
+            assert!(error.contains("refusing to start a partial proxy"));
+        }
+
+        #[test]
+        fn start_default_environment_keeps_the_legacy_bare_entry() {
+            let project = project(None);
+            let store = tempfile::tempdir().unwrap();
+            let vault = vault_with(&store, &["OPENAI_API_KEY"]);
+            let secrets = load(&project, &config(), &vault).unwrap();
+            assert_eq!(secrets.active_env, DEFAULT_ENV);
+            assert!(served_value_is(&secrets, "bare"));
+        }
+
+        #[test]
+        fn start_rotation_gate_judges_the_active_environment_entry() {
+            let project = project(Some("prod"));
+            let store = tempfile::tempdir().unwrap();
+            // The default entry is fresh; the prod entry is 45 days into a
+            // 30-day enforced window.
+            let vault = aged_vault(
+                &store,
+                &[("default/OPENAI_API_KEY", 1), ("prod/OPENAI_API_KEY", 45)],
+            );
+            let error = match load(&project, &enforced_config(&[KEY]), &vault) {
+                Ok(_) => String::new(),
+                Err(error) => format!("{error:#}"),
+            };
+            assert!(error.contains(KEY));
+            assert!(error.contains("start"));
+        }
+
+        #[test]
+        fn start_refuses_a_read_only_active_environment_entry() {
+            let project = project(Some("prod"));
+            let store = tempfile::tempdir().unwrap();
+            let vault = vault_with(&store, &["default/OPENAI_API_KEY", "prod/OPENAI_API_KEY"]);
+            vault
+                .set_metadata(
+                    "prod/OPENAI_API_KEY",
+                    SecretMetadata {
+                        vault_mode: VaultMode::ReadOnly,
+                        ..SecretMetadata::default()
+                    },
+                )
+                .unwrap();
+            let error = match load(&project, &config(), &vault) {
+                Ok(_) => String::new(),
+                Err(error) => format!("{error:#}"),
+            };
+            assert!(error.contains("read-only under its lifecycle policy"));
+        }
+
+        #[test]
+        fn start_refuses_an_invalid_active_environment_name() {
+            let project = project(None);
+            std::fs::create_dir_all(project.path().join(".phantom")).unwrap();
+            std::fs::write(project.path().join(".phantom/env"), "../prod\n").unwrap();
+            let store = tempfile::tempdir().unwrap();
+            let vault = vault_with(&store, &["default/OPENAI_API_KEY"]);
+            let error = match load(&project, &config(), &vault) {
+                Ok(_) => String::new(),
+                Err(error) => format!("{error:#}"),
+            };
+            assert!(error.contains("Invalid environment name"));
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn start_refuses_a_symlinked_active_environment_selector() {
+            let project = project(None);
+            std::fs::create_dir_all(project.path().join(".phantom")).unwrap();
+            let target = project.path().join("elsewhere");
+            std::fs::write(&target, "prod\n").unwrap();
+            std::os::unix::fs::symlink(&target, project.path().join(".phantom/env")).unwrap();
+            let store = tempfile::tempdir().unwrap();
+            let vault = vault_with(&store, &["default/OPENAI_API_KEY", "prod/OPENAI_API_KEY"]);
+            let error = match load(&project, &config(), &vault) {
+                Ok(_) => String::new(),
+                Err(error) => format!("{error:#}"),
+            };
+            assert!(error.contains("active environment"));
+        }
     }
 }
