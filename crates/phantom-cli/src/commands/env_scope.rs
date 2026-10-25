@@ -696,8 +696,10 @@ fn prepare_environment_copy(
 
     // Keep every provider value in zeroizing owners from retrieval until it
     // moves into InitSecret's zeroizing transaction fields. Each source's
-    // metadata is read before its value, so the rotation anchor the
-    // destination inherits is never newer than the copied value.
+    // metadata is read before its value; the transaction then holds each
+    // source to that exact metadata and value until it commits, so a source
+    // demoted, given an expiry, or rotated after these reads refuses the
+    // copy instead of handing the destination stale, weaker protection.
     type SourceCopy = (String, String, Option<SecretMetadata>, Zeroizing<String>);
     let mut values = Vec::<SourceCopy>::with_capacity(sources.len());
     for (name, source_key) in sources {
@@ -710,26 +712,23 @@ fn prepare_environment_copy(
         values.push((name, source_key, metadata, value));
     }
 
-    let mut mutations = Vec::with_capacity(values.len() * 2);
+    let mut mutations = Vec::with_capacity(values.len());
     let mut copied_names = Vec::with_capacity(values.len());
     for (name, source_key, metadata, value) in values {
-        // A no-op exact-CAS source guard makes the snapshot part of the same
-        // locked transaction; all guards are preflighted before any write.
-        mutations.push(InitSecret::replace_if_unchanged(
-            source_key,
-            Some(value.as_str().to_string()),
-            value.as_str().to_string(),
-        ));
         // The destination keeps its source's lifecycle metadata (rotation
         // age, expiry, TTL policy and read-only mode), so the copy is never
-        // less protected than its source.
+        // less protected than its source. The binding is also the source
+        // guard: the transaction requires `source_key` to still hold this
+        // value and exactly this metadata at preflight (before any write),
+        // atomically with the inherited metadata write, and again before
+        // it commits.
         mutations.push(
             InitSecret::replace_if_unchanged(
                 namespaced_key(to, &name),
                 None::<String>,
                 value.as_str().to_string(),
             )
-            .inheriting_source_protection(metadata.as_ref()),
+            .inheriting_source_protection(source_key, metadata.as_ref()),
         );
         copied_names.push(name);
     }
@@ -1164,11 +1163,31 @@ mod tests {
         );
     }
 
+    /// A concurrent writer's effect, run once at a staged point of a copy.
+    type Interleave = Box<dyn FnOnce(&FileVault) + Send>;
+
+    /// Run `slot`'s effect once, the first time `name` reaches its point.
+    fn interleave(
+        slot: &std::sync::Mutex<Option<(String, Interleave)>>,
+        name: &str,
+        inner: &FileVault,
+    ) {
+        let mut slot = slot.lock().unwrap();
+        if slot.as_ref().is_some_and(|(staged, _)| staged == name) {
+            let (_, effect) = slot.take().unwrap();
+            effect(inner);
+        }
+    }
+
     struct FailingCasVault {
         inner: FileVault,
         cas_calls: AtomicUsize,
         retrieve_calls: AtomicUsize,
         fail_at: Option<usize>,
+        /// Runs just before the first read of the named entry's value.
+        before_retrieve: std::sync::Mutex<Option<(String, Interleave)>>,
+        /// Runs just after the CAS that creates the named entry.
+        after_create: std::sync::Mutex<Option<(String, Interleave)>>,
     }
 
     impl VaultBackend for FailingCasVault {
@@ -1178,6 +1197,7 @@ mod tests {
 
         fn retrieve(&self, name: &str) -> PhantomResult<Zeroizing<String>> {
             self.retrieve_calls.fetch_add(1, Ordering::SeqCst);
+            interleave(&self.before_retrieve, name, &self.inner);
             self.inner.retrieve(name)
         }
 
@@ -1193,6 +1213,9 @@ mod tests {
         ) -> PhantomResult<bool> {
             let call = self.cas_calls.fetch_add(1, Ordering::SeqCst);
             let result = self.inner.compare_and_swap(name, expected, replacement)?;
+            if result && expected.is_none() {
+                interleave(&self.after_create, name, &self.inner);
+            }
             if self.fail_at == Some(call) {
                 return Err(PhantomError::VaultError(
                     "injected ambiguous environment-copy CAS failure".to_string(),
@@ -1369,6 +1392,122 @@ mod tests {
         );
     }
 
+    /// Demote `entry` to read-only with an expiry, keeping its value.
+    fn demote(inner: &FileVault, entry: &str) {
+        let mut metadata = inner.get_metadata(entry).unwrap().unwrap_or_default();
+        metadata.vault_mode = phantom_vault::metadata::VaultMode::ReadOnly;
+        metadata.expires_at = Some(1_700_000_000);
+        inner.set_metadata(entry, metadata).unwrap();
+    }
+
+    /// Assert the copy left no destination and the source kept its demotion.
+    fn assert_refused_without_destination(vault: &FailingCasVault) {
+        assert!(matches!(
+            vault.retrieve("prod/API_KEY"),
+            Err(PhantomError::SecretNotFound(_))
+        ));
+        assert!(vault.inner.get_metadata("prod/API_KEY").unwrap().is_none());
+        assert_eq!(
+            vault
+                .inner
+                .get_metadata("dev/API_KEY")
+                .unwrap()
+                .unwrap_or_default()
+                .vault_mode,
+            phantom_vault::metadata::VaultMode::ReadOnly
+        );
+    }
+
+    /// The source was demoted to read-only (with an expiry) after `env copy`
+    /// read its metadata. The destination would inherit the stale read-write
+    /// metadata, so the commit is refused and nothing is created.
+    #[test]
+    fn environment_copy_refuses_a_source_demoted_before_the_commit() {
+        let (dir, vault) = vault(None);
+        vault.store("dev/API_KEY", "source-value").unwrap();
+        let keys = vault.list().unwrap();
+        let plan =
+            prepare_environment_copy(&unenforced(), &vault, &keys, "dev", "prod", 0).unwrap();
+        demote(&vault.inner, "dev/API_KEY");
+
+        let outcome = phantom_vault::commit_init(dir.path(), &vault, plan.mutations, Vec::new());
+
+        assert!(outcome.is_err());
+        assert_refused_without_destination(&vault);
+    }
+
+    /// The source was demoted while the copy transaction was committing,
+    /// after the destination value was written. The commit-time source check
+    /// refuses and rolls the destination back.
+    #[test]
+    fn environment_copy_refuses_a_source_demoted_during_the_commit() {
+        let (dir, vault) = vault(None);
+        vault.store("dev/API_KEY", "source-value").unwrap();
+        let keys = vault.list().unwrap();
+        let plan =
+            prepare_environment_copy(&unenforced(), &vault, &keys, "dev", "prod", 0).unwrap();
+        *vault.after_create.lock().unwrap() = Some((
+            "prod/API_KEY".to_string(),
+            Box::new(|inner: &FileVault| demote(inner, "dev/API_KEY")),
+        ));
+
+        let outcome = phantom_vault::commit_init(dir.path(), &vault, plan.mutations, Vec::new());
+
+        assert!(outcome.is_err());
+        assert!(vault.after_create.lock().unwrap().is_none());
+        assert_refused_without_destination(&vault);
+    }
+
+    /// The source was rotated between `env copy`'s metadata read and its
+    /// value read: the copy would pair the new value with the old rotation
+    /// stamp. The source metadata no longer matches what was inherited, so
+    /// the commit is refused.
+    #[test]
+    fn environment_copy_refuses_a_source_rotated_between_its_metadata_and_value_reads() {
+        let (dir, vault) = vault(None);
+        vault.store("dev/API_KEY", "source-value").unwrap();
+        vault
+            .inner
+            .set_metadata(
+                "dev/API_KEY",
+                phantom_vault::SecretMetadata {
+                    created_at: Some(1_000),
+                    rotated_at: Some(2_000),
+                    ..phantom_vault::SecretMetadata::default()
+                },
+            )
+            .unwrap();
+        *vault.before_retrieve.lock().unwrap() = Some((
+            "dev/API_KEY".to_string(),
+            Box::new(|inner: &FileVault| {
+                inner.store("dev/API_KEY", "rotated-value").unwrap();
+                let mut metadata = inner.get_metadata("dev/API_KEY").unwrap().unwrap();
+                metadata.rotated_at = Some(3_000);
+                inner.set_metadata("dev/API_KEY", metadata).unwrap();
+            }),
+        ));
+        let keys = vault.list().unwrap();
+        let plan =
+            prepare_environment_copy(&unenforced(), &vault, &keys, "dev", "prod", 0).unwrap();
+        assert!(vault.before_retrieve.lock().unwrap().is_none());
+
+        let outcome = phantom_vault::commit_init(dir.path(), &vault, plan.mutations, Vec::new());
+
+        assert!(outcome.is_err());
+        assert!(matches!(
+            vault.retrieve("prod/API_KEY"),
+            Err(PhantomError::SecretNotFound(_))
+        ));
+        assert_eq!(
+            vault
+                .inner
+                .get_metadata("dev/API_KEY")
+                .unwrap()
+                .and_then(|metadata| metadata.rotated_at),
+            Some(3_000)
+        );
+    }
+
     fn vault(fail_at: Option<usize>) -> (tempfile::TempDir, FailingCasVault) {
         let dir = tempfile::tempdir().unwrap();
         let inner = FileVault::new(
@@ -1384,6 +1523,8 @@ mod tests {
                 cas_calls: AtomicUsize::new(0),
                 retrieve_calls: AtomicUsize::new(0),
                 fail_at,
+                before_retrieve: std::sync::Mutex::new(None),
+                after_create: std::sync::Mutex::new(None),
             },
         )
     }
@@ -1407,7 +1548,10 @@ mod tests {
 
     #[test]
     fn nth_ambiguous_cas_rolls_back_every_destination() {
-        let (dir, vault) = vault(Some(3));
+        // CAS calls are the two destination creates (0, 1); the source
+        // guards are value/metadata checks, not writes. Failing the last
+        // one ambiguously, after it wrote, must still roll back both.
+        let (dir, vault) = vault(Some(1));
         vault.store("dev/A", "source-a").unwrap();
         vault.store("dev/B", "source-b").unwrap();
         let keys = vault.list().unwrap();
