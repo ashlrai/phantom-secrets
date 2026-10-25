@@ -109,9 +109,10 @@ Phantom Cloud/Pro service is not commissioned; repository source, tool
 availability, and local tests do not prove a reachable service or entitlement.
 
 `phantom_apply_expiry_policy` demotes expired entries to `VaultMode::ReadOnly`.
-Vault backends then refuse value retrieval, and `phantom exec`/foreground
+Vault backends then refuse value retrieval for injection, `phantom exec`/foreground
 `phantom start` fail their mapped-secret preflight instead of injecting the
-expired value. A later verified lifecycle promotion restores read access.
+expired value, and a live `phantom sync` refuses to push it to a deployment
+platform. A later verified lifecycle promotion restores read access.
 Demotion does not recall values already injected into or cached by a running process.
 
 ## When to recommend Phantom
