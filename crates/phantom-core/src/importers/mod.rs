@@ -257,6 +257,55 @@ pub(crate) fn unsupported_entry(source: &str, name: &str, kind: &str) -> anyhow:
     )
 }
 
+/// Prefix dotenvx 1.x writes in front of every value it encrypts in place.
+const DOTENVX_ENCRYPTED_PREFIX: &str = "encrypted:";
+
+/// Key (or key prefix, for `DOTENV_PUBLIC_KEY_<ENV>`) of the header dotenvx
+/// 1.x writes into every `.env` it encrypts in place.
+const DOTENVX_PUBLIC_KEY_NAME: &str = "DOTENV_PUBLIC_KEY";
+
+fn is_dotenvx_public_key_name(key: &str) -> bool {
+    key == DOTENVX_PUBLIC_KEY_NAME
+        || key
+            .strip_prefix(DOTENVX_PUBLIC_KEY_NAME)
+            .is_some_and(|rest| rest.starts_with('_'))
+}
+
+/// Refuse a dotenv source that dotenvx 1.x encrypted in place.
+///
+/// Such a file carries a `DOTENV_PUBLIC_KEY` header and `KEY="encrypted:..."`
+/// values. Phantom has no private key, so those values are ciphertext, and
+/// storing them would report success while replacing a working credential
+/// with noise that `phantom exec` and the proxy then inject. The check only
+/// fires when the header is present, so an ordinary value that happens to
+/// start with `encrypted:` keeps importing. The error names the entry, never
+/// a value.
+pub fn refuse_dotenvx_ciphertext(dotenv: &crate::dotenv::DotenvFile) -> Result<()> {
+    let entries = dotenv.entries();
+    if !entries
+        .iter()
+        .any(|entry| is_dotenvx_public_key_name(&entry.key))
+    {
+        return Ok(());
+    }
+    if let Some(entry) = entries.iter().find(|entry| {
+        entry
+            .value
+            .trim_start()
+            .starts_with(DOTENVX_ENCRYPTED_PREFIX)
+    }) {
+        anyhow::bail!(
+            "Entry '{}' is still dotenvx-encrypted (the file has a {} header); \
+             nothing was imported.\n\
+             Run `dotenvx decrypt --stdout > .env.decrypted` first, then import \
+             .env.decrypted instead.",
+            entry.key,
+            DOTENVX_PUBLIC_KEY_NAME
+        );
+    }
+    Ok(())
+}
+
 /// Reuse phantom-core's existing dotenv parser for plain `.env` files.
 pub(crate) fn env_importer(input: &[u8]) -> Result<SecretMap> {
     let content =
@@ -265,6 +314,7 @@ pub(crate) fn env_importer(input: &[u8]) -> Result<SecretMap> {
     dotenv
         .validate_for_mutation()
         .map_err(|error| anyhow::anyhow!("Malformed dotenv import refused: {error}"))?;
+    refuse_dotenvx_ciphertext(&dotenv)?;
     let mut map = SecretMap::new();
     for entry in dotenv.entries() {
         if entry.value.is_empty() {
@@ -302,6 +352,70 @@ mod secure_read_tests {
             .to_string();
         assert!(error.contains("Malformed dotenv import refused"));
         assert!(!error.contains("plaintext-must-not-escape"));
+    }
+
+    fn dotenvx_encrypted_file(sealed_value: &str) -> String {
+        let public = ["03", "fakepublicplaceholder"].concat();
+        format!(
+            "#/-------------------[DOTENV_PUBLIC_KEY]--------------------/\n\
+             DOTENV_PUBLIC_KEY=\"{public}\"\n\
+             PLAIN_NAME=plain_value\n\
+             SEALED_NAME=\"{sealed_value}\"\n"
+        )
+    }
+
+    #[test]
+    fn env_and_infisical_dotenv_refuse_dotenvx_ciphertext() {
+        // A dotenvx 1.x file encrypted in place carries a DOTENV_PUBLIC_KEY
+        // header and `encrypted:` values. Without the private key those are
+        // ciphertext; storing them would report success while replacing the
+        // credential with noise that exec and the proxy then inject.
+        let ciphertext = ["encrypted:", "BFakeCipher", "PlaceholderOnly=="].concat();
+        let input = dotenvx_encrypted_file(&ciphertext);
+        type Parser = fn(&[u8]) -> Result<SecretMap>;
+        let parsers: [(&str, Parser); 2] = [
+            ("env", env_importer),
+            ("infisical", infisical::InfisicalImporter::parse),
+        ];
+        for (label, parser) in parsers {
+            let error = parser(input.as_bytes())
+                .err()
+                .map(|error| error.to_string())
+                .unwrap_or_default();
+            assert!(
+                error.contains("'SEALED_NAME'"),
+                "{label} import was not refused"
+            );
+            assert!(error.contains("dotenvx decrypt"), "{label} gave no remedy");
+            assert!(error.contains("nothing was imported"), "{label}");
+            assert!(
+                !error.contains("BFakeCipher"),
+                "{label} error echoed a value"
+            );
+            assert!(
+                !error.contains("plain_value"),
+                "{label} error echoed a value"
+            );
+        }
+    }
+
+    #[test]
+    fn encrypted_prefix_without_dotenvx_header_still_imports() {
+        // Without the dotenvx header the prefix alone is not proof of
+        // ciphertext, so an ordinary value that happens to start with it
+        // keeps importing unchanged.
+        let value = ["encrypted:", "not-dotenvx"].concat();
+        let input = format!("LITERAL_NAME={value}\n");
+        let map = env_importer(input.as_bytes()).unwrap();
+        assert!(map.get("LITERAL_NAME").map(|v| v.as_str()) == Some(value.as_str()));
+    }
+
+    #[test]
+    fn decrypted_dotenvx_file_still_imports_through_env() {
+        let input = dotenvx_encrypted_file("decrypted-plain");
+        let map = env_importer(input.as_bytes()).unwrap();
+        assert!(map.get("SEALED_NAME").map(|v| v.as_str()) == Some("decrypted-plain"));
+        assert!(map.get("PLAIN_NAME").map(|v| v.as_str()) == Some("plain_value"));
     }
 
     #[test]
