@@ -19,6 +19,7 @@ pub mod leak_correlation;
 pub mod linked_checkout;
 pub mod managed_dotenv;
 pub mod mcp_approval;
+pub mod package_scripts;
 pub mod precommit_hook;
 mod provider_http;
 pub mod report;

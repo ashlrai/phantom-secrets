@@ -1277,7 +1277,7 @@
     },
     {
       "name": "phantom_sync",
-      "description": "Show sync configuration and what secrets would be synced to deployment platforms (Vercel, Railway). This is an informational tool that never pushes: actual sync requires platform API tokens and `phantom sync` in a terminal. platform must be `vercel` or `railway` (case-insensitive); any other value is refused with invalid params before the vault is opened. Use it to understand and explain the sync setup. Returns a summary plus JSON {configured, platform_filter, configured_platforms, vault_secret_count, targets, next_step} (also as structuredContent).",
+      "description": "Show sync configuration and what secrets would be synced to deployment platforms (Vercel, Railway). This is an informational tool that never pushes: actual sync requires platform API tokens and `phantom sync` in a terminal. platform must be `vercel` or `railway` (case-insensitive); any other value is refused with invalid params before the vault is opened. Use it to understand and explain the sync setup. live_gate_refusal is the refusal the live `phantom sync` would return for the selected names (an overdue secret under enforced rotation, a secret demoted to read-only, or unreadable lifecycle metadata; names only, judged from metadata without reading a value), or null when that gate passes. Returns a summary plus JSON {configured, platform_filter, configured_platforms, vault_secret_count, targets, live_gate_refusal, next_step} (also as structuredContent).",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
