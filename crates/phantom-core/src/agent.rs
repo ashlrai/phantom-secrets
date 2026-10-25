@@ -86,8 +86,7 @@ struct Signals {
     has_env_example: bool,
     has_gitignore_env: bool,
     has_mcp_wiring: bool,
-    has_package_scripts: bool,
-    has_wrapped_scripts: bool,
+    has_scripts_to_wrap: bool,
     has_precommit: bool,
 }
 
@@ -219,8 +218,7 @@ pub fn build_report(project_dir: &Path, options: AgentReadinessOptions) -> Agent
         has_env_example: env_example.exists(),
         has_gitignore_env: gitignore_has_env(&gitignore),
         has_mcp_wiring: has_any_mcp_wiring(project_dir),
-        has_package_scripts: package_json.exists() && package_has_scripts(&package_json),
-        has_wrapped_scripts: package_has_wrapped_scripts(&package_json),
+        has_scripts_to_wrap: package_has_scripts_to_wrap(&package_json),
         has_precommit,
     };
 
@@ -436,7 +434,7 @@ pub fn build_report(project_dir: &Path, options: AgentReadinessOptions) -> Agent
         );
     }
 
-    if signals.has_package_scripts && !signals.has_wrapped_scripts {
+    if signals.has_scripts_to_wrap {
         push_finding(
             &mut findings,
             &mut fixes,
@@ -444,7 +442,7 @@ pub fn build_report(project_dir: &Path, options: AgentReadinessOptions) -> Agent
             FindingSpec::new(
                 "package-scripts-not-wrapped",
                 FindingSeverity::Info,
-                "package.json has scripts, but none are wrapped with phantom exec.",
+                "package.json has scripts that `phantom wrap` would run through phantom exec; they run without Phantom now.",
                 "phantom wrap",
             )
             .file("package.json")
@@ -754,36 +752,22 @@ fn is_runnable_file(path: &Path) -> bool {
     }
 }
 
-fn package_has_scripts(path: &Path) -> bool {
+/// Whether `phantom wrap`, with its default selection, would wrap at least
+/// one script in `path`. The finding that recommends `phantom wrap` uses the
+/// same decision as the command itself
+/// ([`crate::package_scripts::wrap_scripts`]), so it never recommends a run
+/// that changes nothing (only tooling scripts, shell command lines, scripts
+/// already under Phantom, a user-owned `NAME:raw` conflict) and never misses
+/// a selected script left outside Phantom next to a wrapped one.
+fn package_has_scripts_to_wrap(path: &Path) -> bool {
     let Ok(content) = std::fs::read_to_string(path) else {
         return false;
     };
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) else {
+    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&content) else {
         return false;
     };
-    value
-        .get("scripts")
-        .and_then(|v| v.as_object())
-        .is_some_and(|scripts| !scripts.is_empty())
-}
-
-fn package_has_wrapped_scripts(path: &Path) -> bool {
-    let Ok(content) = std::fs::read_to_string(path) else {
-        return false;
-    };
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) else {
-        return false;
-    };
-    value
-        .get("scripts")
-        .and_then(|v| v.as_object())
-        .is_some_and(|scripts| {
-            scripts.values().any(|script| {
-                script.as_str().is_some_and(|s| {
-                    s.contains("phantom exec") || s.contains("phantom-secrets exec")
-                })
-            })
-        })
+    crate::package_scripts::wrap_scripts(&mut value, &[], &[])
+        .is_ok_and(|outcome| !outcome.wrapped.is_empty())
 }
 
 #[cfg(test)]
@@ -1232,5 +1216,96 @@ mod tests {
             .findings
             .iter()
             .any(|f| f.id == "missing-precommit-check"));
+    }
+
+    /// The `package-scripts-not-wrapped` finding recommends `phantom wrap`,
+    /// so it fires exactly when `phantom wrap` with its default selection
+    /// would wrap at least one script: never for a package whose scripts it
+    /// would leave alone, and still for a selected script left outside
+    /// Phantom next to one that is already wrapped.
+    #[test]
+    fn unwrapped_scripts_finding_matches_what_phantom_wrap_would_do() {
+        let exec = ["phantom", " exec --"].concat();
+        let cases = [
+            // Tooling only: `phantom wrap` selects none of these.
+            (
+                "tooling only",
+                serde_json::json!({"lint": "eslint .", "test": "vitest", "typecheck": "tsc"}),
+                false,
+            ),
+            // A shell command line is reported and left unchanged by wrap.
+            (
+                "shell command line",
+                serde_json::json!({"dev": "NODE_ENV=development next dev"}),
+                false,
+            ),
+            // Already runs through Phantom via a pinned npx package.
+            (
+                "pinned npx package",
+                serde_json::json!({"dev": "npx phantom-secrets@latest exec -- next dev"}),
+                false,
+            ),
+            (
+                "fully wrapped",
+                serde_json::json!({
+                    "dev": format!("{exec} next dev"),
+                    "dev:raw": "next dev",
+                    "lint": "eslint ."
+                }),
+                false,
+            ),
+            // A user-owned `dev:raw` makes `phantom wrap` refuse and change nothing.
+            (
+                "user-owned raw sibling",
+                serde_json::json!({"dev": "next dev", "dev:raw": "user-owned"}),
+                false,
+            ),
+            ("plain dev", serde_json::json!({"dev": "next dev"}), true),
+            // One wrapped script does not cover a selected one still outside.
+            (
+                "partly wrapped",
+                serde_json::json!({
+                    "dev": format!("{exec} next dev"),
+                    "dev:raw": "next dev",
+                    "build": "next build"
+                }),
+                true,
+            ),
+            // `predev` is selected by default, like `dev`.
+            (
+                "pre hook",
+                serde_json::json!({
+                    "predev": "node scripts/check-env.js",
+                    "dev": format!("{exec} next dev"),
+                    "dev:raw": "next dev"
+                }),
+                true,
+            ),
+        ];
+        let mut mismatches = Vec::new();
+        for (label, scripts, expected) in cases {
+            let dir = TempDir::new().unwrap();
+            let mut package = serde_json::json!({ "name": "demo", "scripts": scripts });
+            std::fs::write(
+                dir.path().join("package.json"),
+                serde_json::to_vec_pretty(&package).unwrap(),
+            )
+            .unwrap();
+
+            let report = build_report(dir.path(), no_vault());
+            let reported = report
+                .findings
+                .iter()
+                .any(|f| f.id == "package-scripts-not-wrapped");
+            let would_wrap = crate::package_scripts::wrap_scripts(&mut package, &[], &[])
+                .is_ok_and(|outcome| !outcome.wrapped.is_empty());
+            if would_wrap != expected {
+                mismatches.push(format!("{label}: phantom wrap would wrap = {would_wrap}"));
+            }
+            if reported != expected {
+                mismatches.push(format!("{label}: agent finding = {reported}"));
+            }
+        }
+        assert!(mismatches.is_empty(), "{mismatches:#?}");
     }
 }
