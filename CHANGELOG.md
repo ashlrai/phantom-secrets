@@ -4,6 +4,17 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (single-name lookups beside a locked file vault)
+
+- `phantom rotate --name <KEY>` and the MCP tools `phantom_remove_secret`,
+  `phantom_copy_secret` (source secret), `phantom_secrets_auto_rotate`,
+  `phantom_validate_secret` and `phantom_rotation_schedule_next` reported
+  "Secret '<KEY>' not found" when the secret was in an encrypted-file vault
+  the process could not open and the OS keychain did not hold it. They now
+  refuse with "Vault locked: …" and the unlock step (set
+  `PHANTOM_VAULT_PASSPHRASE`), and change nothing. A GitHub grant rotation no
+  longer plans a new target in the keychain beside a locked file vault.
+
 ### Added (agent doctor preflight)
 
 - `phantom agent doctor --json` prints a value-free preflight

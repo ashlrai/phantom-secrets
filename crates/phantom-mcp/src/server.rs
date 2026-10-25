@@ -426,6 +426,31 @@ impl PhantomMcpServer {
         Ok(())
     }
 
+    /// The error for a single secret `name` the opened vault does not hold:
+    /// `missing`, except beside a locked encrypted-file vault, where the name
+    /// is most likely in that file. That case names the locked vault and the
+    /// unlock step instead of claiming the secret does not exist. Names only;
+    /// no value is read.
+    fn missing_secret_err(
+        &self,
+        config: &PhantomConfig,
+        vault: &dyn phantom_vault::VaultBackend,
+        name: &str,
+        missing: String,
+    ) -> McpError {
+        if vault.backend_name() != "encrypted-file" {
+            if let Some(notice) = phantom_vault::locked_file_vault_notice(config.local_project_id())
+            {
+                return state_err(format!(
+                    "Vault locked: this project's secrets are in an encrypted-file vault this \
+                     process cannot open, so secret '{name}' could not be looked up there (the \
+                     OS keychain does not hold it). {notice}"
+                ));
+            }
+        }
+        invalid_params_err(missing)
+    }
+
     /// The vault for `config`'s project. Tests serve a stub with `TestVault`.
     fn open_project_vault(
         &self,
@@ -1229,18 +1254,34 @@ impl PhantomMcpServer {
             .ok_or_else(not_initialized_err)?;
         let config = PhantomConfig::load_from_bytes(&config_path, &config_before)
             .map_err(config_invalid_err)?;
-        let vault = phantom_vault::try_create_vault(config.local_project_id())
-            .map_err(|error| internal_err(format!("Failed to open vault: {error}")))?;
+        // Tests serve a stub with `TestVault`, as `open_project_vault` does.
+        #[cfg(test)]
+        let test_vault = TEST_VAULT.with(std::cell::Cell::get).map(|make| make());
+        #[cfg(not(test))]
+        let test_vault: Option<Box<dyn phantom_vault::VaultBackend>> = None;
+        let vault = match test_vault {
+            Some(vault) => vault,
+            None => phantom_vault::try_create_vault(config.local_project_id())
+                .map_err(|error| internal_err(format!("Failed to open vault: {error}")))?,
+        };
         let plan = phantom_vault::ManagedRemovePlan::prepare(
             &canonical_project,
             config_before,
             vault.as_ref(),
             &params.name,
         )
-        .map_err(|error| {
-            internal_err(format!(
+        .map_err(|error| match error {
+            phantom_core::error::PhantomError::SecretNotFound(_) => self.missing_secret_err(
+                &config,
+                vault.as_ref(),
+                &params.name,
+                format!(
+                    "Removal preflight failed; no secret value was read and no state changed: {error}"
+                ),
+            ),
+            error => internal_err(format!(
                 "Removal preflight failed; no secret value was read and no state changed: {error}"
-            ))
+            )),
         })?;
         let params_json = serde_json::to_string(&serde_json::json!({
             "request": &params,
@@ -1989,10 +2030,16 @@ impl PhantomMcpServer {
             &self.project_id(),
         )?;
 
-        let (_config, source_vault) = self.load_config_and_vault()?;
-        let secret_value = source_vault
-            .retrieve(&params.name)
-            .map_err(|e| invalid_params_err(format!("Secret '{}' not found: {e}", params.name)))?;
+        let (source_config, source_vault) = self.load_config_and_vault()?;
+        let secret_value = source_vault.retrieve(&params.name).map_err(|e| match e {
+            phantom_core::error::PhantomError::SecretNotFound(_) => self.missing_secret_err(
+                &source_config,
+                source_vault.as_ref(),
+                &params.name,
+                format!("Secret '{}' not found: {e}", params.name),
+            ),
+            e => invalid_params_err(format!("Secret '{}' not found: {e}", params.name)),
+        })?;
         apply_mcp_copy_transaction(
             &target_dir,
             &target_config_path,
@@ -4801,10 +4848,15 @@ impl PhantomMcpServer {
             .exists(&params.name)
             .map_err(|e| vault_read_err("Vault access failed", e))?;
         if !exists {
-            return Err(crate::tools::helpers::invalid_params_err(format!(
-                "Secret '{}' not found in vault. Call phantom_list_secrets for exact (case-sensitive) names, then retry.",
-                params.name
-            )));
+            return Err(self.missing_secret_err(
+                &config,
+                vault.as_ref(),
+                &params.name,
+                format!(
+                    "Secret '{}' not found in vault. Call phantom_list_secrets for exact (case-sensitive) names, then retry.",
+                    params.name
+                ),
+            ));
         }
 
         // A missing record means "never checked". A record that cannot be
@@ -5204,10 +5256,15 @@ impl PhantomMcpServer {
             .exists(&params.name)
             .map_err(|e| internal_err(format!("Vault access error: {e}")))?
         {
-            return Err(invalid_params_err(format!(
-                "Secret '{}' not found in vault. Call phantom_list_secrets for exact (case-sensitive) names, then retry.",
-                params.name
-            )));
+            return Err(self.missing_secret_err(
+                &config,
+                vault.as_ref(),
+                &params.name,
+                format!(
+                    "Secret '{}' not found in vault. Call phantom_list_secrets for exact (case-sensitive) names, then retry.",
+                    params.name
+                ),
+            ));
         }
 
         let env_path = resolve_env_path_anchored(
@@ -5302,10 +5359,15 @@ impl PhantomMcpServer {
             .exists(&params.name)
             .map_err(|e| vault_read_err("Vault access failed", e))?;
         if !exists {
-            return Err(crate::tools::helpers::invalid_params_err(format!(
-                "Secret '{}' not found in vault. Call phantom_list_secrets for exact (case-sensitive) names, then retry.",
-                params.name
-            )));
+            return Err(self.missing_secret_err(
+                &config,
+                vault.as_ref(),
+                &params.name,
+                format!(
+                    "Secret '{}' not found in vault. Call phantom_list_secrets for exact (case-sensitive) names, then retry.",
+                    params.name
+                ),
+            ));
         }
 
         let now = phantom_vault::metadata::now_secs();
@@ -10045,6 +10107,135 @@ mod tests {
             );
             assert_eq!(std::fs::read(target.join(".env")).unwrap(), env_before);
         }
+    }
+
+    /// A keychain holding one secret of its own, not the one asked for,
+    /// beside a locked file vault.
+    struct KeychainWithOther;
+
+    impl phantom_vault::VaultBackend for KeychainWithOther {
+        fn store(&self, _: &str, _: &str) -> phantom_core::error::Result<()> {
+            unreachable!("a refused lookup never stores")
+        }
+        fn retrieve(&self, name: &str) -> phantom_core::error::Result<zeroize::Zeroizing<String>> {
+            Err(phantom_core::error::PhantomError::SecretNotFound(
+                name.to_string(),
+            ))
+        }
+        fn delete(&self, _: &str) -> phantom_core::error::Result<()> {
+            unreachable!("a refused lookup never deletes")
+        }
+        fn list(&self) -> phantom_core::error::Result<Vec<String>> {
+            Ok(vec!["KEYCHAIN_ONLY_KEY".to_string()])
+        }
+        fn backend_name(&self) -> &str {
+            "keychain"
+        }
+    }
+
+    fn single_name_tool_calls(
+        server: &PhantomMcpServer,
+    ) -> Vec<(&'static str, Result<CallToolResult, McpError>)> {
+        let name = serde_json::json!({ "name": "OPENAI_API_KEY" });
+        vec![
+            (
+                "phantom_remove_secret",
+                server.phantom_remove_secret(params(serde_json::json!({
+                    "name": "OPENAI_API_KEY",
+                    "confirm": true
+                }))),
+            ),
+            (
+                "phantom_secrets_auto_rotate",
+                server.phantom_secrets_auto_rotate(params(serde_json::json!({
+                    "name": "OPENAI_API_KEY",
+                    "confirm": true
+                }))),
+            ),
+            (
+                "phantom_validate_secret",
+                server.phantom_validate_secret(params(name.clone())),
+            ),
+            (
+                "phantom_rotation_schedule_next",
+                server.phantom_rotation_schedule_next(params(name)),
+            ),
+        ]
+    }
+
+    /// Single-name tools answered "Secret 'OPENAI_API_KEY' not found" when
+    /// the secret was in an encrypted-file vault this process could not open
+    /// and the OS keychain did not hold it (empty, or holding other names).
+    /// Each now names the locked vault and the unlock step, and changes
+    /// nothing.
+    #[test]
+    fn single_name_tools_name_a_locked_file_vault_not_a_missing_secret() {
+        let _environment = TestEnvironment::new();
+        let _home = TestHome::new();
+        let (server, dir) = locked_file_vault_project();
+        let project = dir.path().canonicalize().unwrap();
+        let config_before = std::fs::read(project.join(".phantom.toml")).unwrap();
+        let env_before = std::fs::read(project.join(".env")).unwrap();
+        let makes: [super::MakeTestVault; 2] =
+            [|| Box::new(EmptyKeychain), || Box::new(KeychainWithOther)];
+        for make in makes {
+            let _vault = TestVault::serve(make);
+            for (tool, result) in single_name_tool_calls(&server) {
+                assert!(
+                    refused_as_locked(&result),
+                    "{tool} must name the locked vault"
+                );
+                let unlock_step = result
+                    .err()
+                    .is_some_and(|error| error.message.contains("PHANTOM_VAULT_PASSPHRASE"));
+                assert!(unlock_step, "{tool} must name the unlock step");
+            }
+            assert_eq!(
+                std::fs::read(project.join(".phantom.toml")).unwrap(),
+                config_before
+            );
+            assert_eq!(std::fs::read(project.join(".env")).unwrap(), env_before);
+        }
+    }
+
+    /// `phantom_copy_secret` answered "Secret 'OPENAI_API_KEY' not found"
+    /// when the SOURCE secret was in an encrypted-file vault this process
+    /// could not open. It now names the locked vault and the unlock step, and
+    /// the target is left unchanged.
+    #[test]
+    fn copy_secret_names_a_locked_source_vault_not_a_missing_secret() {
+        let _environment = TestEnvironment::new();
+        let _home = TestHome::new();
+        // A target with config but no vault file, so only the source is locked.
+        let (_target, target_dir) = setup_test_project();
+        let target = target_dir.path().canonicalize().unwrap();
+        PhantomConfig::new_with_defaults(PhantomConfig::project_id_from_path(&target))
+            .save(&target.join(".phantom.toml"))
+            .unwrap();
+        let (source, _source_dir) = locked_file_vault_project();
+        let config_before = std::fs::read(target.join(".phantom.toml")).unwrap();
+        let env_before = std::fs::read(target.join(".env")).unwrap();
+        let _vault = TestVault::serve(|| Box::new(EmptyKeychain));
+        let result = source.phantom_copy_secret(Parameters(CopySecretParams {
+            name: "OPENAI_API_KEY".to_string(),
+            target_dir: target.display().to_string(),
+            rename: Some("COPIED_API_KEY".to_string()),
+            confirm: true,
+            approval_token: None,
+        }));
+        assert!(
+            refused_as_locked(&result),
+            "copy from a locked source vault must name the locked vault"
+        );
+        let unlock_step = result
+            .err()
+            .is_some_and(|error| error.message.contains("PHANTOM_VAULT_PASSPHRASE"));
+        assert!(unlock_step, "copy must name the unlock step");
+        assert_eq!(
+            std::fs::read(target.join(".phantom.toml")).unwrap(),
+            config_before
+        );
+        assert_eq!(std::fs::read(target.join(".env")).unwrap(), env_before);
     }
 
     /// `phantom_env` picked the managed dotenv from an unguarded listing.

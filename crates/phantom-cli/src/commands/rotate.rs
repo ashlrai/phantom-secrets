@@ -866,7 +866,7 @@ pub fn run_with_provider(
         auto_sync_rotation_with_bootstrap, default_rotation_providers,
     };
 
-    let reviewed_project_root = std::env::current_dir()?
+    let reviewed_project_root = crate::util::project_dir()?
         .canonicalize()
         .context("Failed to resolve canonical project root for provider rotation")?;
     let reviewed_project = TrustedAnchor::open(&reviewed_project_root)
@@ -895,7 +895,7 @@ pub fn run_with_provider(
         )?;
     // Vault construction may take PROCESS_ENV_LOCK, so it must complete before
     // the project transaction lock is acquired.
-    let vault = phantom_vault::try_create_vault(&reviewed_local_project_id)
+    let vault = crate::util::open_vault(&reviewed_local_project_id)
         .context("Failed to initialize vault")?;
     let transaction_lock = acquire_reviewed_project_lock(
         &reviewed_project_root,
@@ -948,9 +948,20 @@ pub fn run_with_provider(
     if !vault
         .exists(name)
         .with_context(|| format!("Failed to check if '{name}' exists in vault"))?
-        && !is_github_grant
     {
-        anyhow::bail!("Secret '{}' not found in vault.", name);
+        // Beside a locked encrypted-file vault the name is most likely in
+        // that file: name the unlock step instead of "not found", and do not
+        // let a GitHub grant mint a successor into the OS keychain beside it.
+        let locked =
+            crate::util::locked_vault_notice(vault.as_ref(), &reviewed_local_project_id).is_some();
+        if !is_github_grant || locked {
+            return Err(crate::util::missing_secret_error(
+                vault.as_ref(),
+                &reviewed_local_project_id,
+                name,
+                format!("Secret '{name}' not found in vault."),
+            ));
+        }
     }
 
     // Determine the effective provider: explicit --provider flag, else the
@@ -1773,7 +1784,7 @@ mod token_remap_tests {
             .next()
             .unwrap();
         let anchor = provider.find("TrustedAnchor::open").unwrap();
-        let vault = provider.find("try_create_vault").unwrap();
+        let vault = provider.find("open_vault(").unwrap();
         let project_lock = provider.find("acquire_reviewed_project_lock").unwrap();
         assert!(anchor < vault && vault < project_lock);
 
@@ -2058,6 +2069,49 @@ mod token_remap_tests {
             "{error}"
         );
         assert!(error.contains("PHANTOM_VAULT_PASSPHRASE"), "{error}");
+        assert_eq!(std::fs::read(project.dir.join(".env")).unwrap(), before);
+    }
+
+    /// `phantom rotate --name <KEY>` answered "Secret '<KEY>' not found in
+    /// vault." when the secret was in an encrypted-file vault this process
+    /// could not open and the OS keychain it fell back to did not hold it.
+    /// It now names the locked vault and the unlock step.
+    #[cfg(unix)]
+    #[test]
+    fn provider_rotation_names_a_locked_file_vault_not_a_missing_secret() {
+        let project =
+            crate::util::test_seam::LockedProject::new(crate::util::test_seam::empty_keychain);
+        let before = write_locked_project_dotenv(&project.dir);
+        let error = run_with_provider(Some("stripe"), "OPENAI_API_KEY", false, true)
+            .unwrap_err()
+            .to_string();
+        assert!(error.starts_with("Vault locked:"));
+        assert!(error.contains("PHANTOM_VAULT_PASSPHRASE"));
+        assert!(!error.contains("not found"));
+        assert_eq!(std::fs::read(project.dir.join(".env")).unwrap(), before);
+    }
+
+    /// A GitHub grant may create a target the vault does not hold yet, but
+    /// beside a locked encrypted-file vault the target is most likely in that
+    /// file: the run refuses with the unlock step instead of planning a mint
+    /// into the OS keychain beside it.
+    #[cfg(unix)]
+    #[test]
+    fn github_grant_rotation_refuses_beside_a_locked_file_vault() {
+        let project =
+            crate::util::test_seam::LockedProject::new(crate::util::test_seam::empty_keychain);
+        let config_path = project.dir.join(".phantom.toml");
+        let mut config = std::fs::read_to_string(&config_path).unwrap();
+        config.push_str(
+            "\n[phantom.secrets.OPENAI_API_KEY.rotation_provider]\nprovider = \"github\"\n",
+        );
+        std::fs::write(&config_path, config).unwrap();
+        let before = write_locked_project_dotenv(&project.dir);
+        let error = run_with_provider(None, "OPENAI_API_KEY", false, true)
+            .unwrap_err()
+            .to_string();
+        assert!(error.starts_with("Vault locked:"));
+        assert!(error.contains("PHANTOM_VAULT_PASSPHRASE"));
         assert_eq!(std::fs::read(project.dir.join(".env")).unwrap(), before);
     }
 }
