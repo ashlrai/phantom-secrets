@@ -49,17 +49,50 @@ pub fn enforce_rotation_on_entries<'e>(
     action: &str,
     now_secs: u64,
 ) -> Result<(), McpError> {
-    use phantom_vault::rotation_gate::{
-        entry_targets, refusal_summary, rotation_refusals, RotationGateError,
-    };
-    let refusals =
-        rotation_refusals(config, vault, entry_targets(entries), now_secs).map_err(|error| {
-            let cause = match &error {
-                RotationGateError::Schedule(source) => source.to_string(),
-                RotationGateError::Metadata { source, .. } => source.to_string(),
-            };
-            state_err(format!("Refusing to {action}: {error}: {cause}"))
-        })?;
+    enforce_rotation_targets(
+        config,
+        vault,
+        phantom_vault::rotation_gate::entry_targets(entries),
+        action,
+        now_secs,
+    )
+}
+
+/// The same gate for MCP paths that write values of unknown age into the
+/// vault (a cloud or team vault pull): the incoming value carries no rotation anchor, so a
+/// new entry would look fresh and an overwrite would inherit the local
+/// anchor. Every written entry whose secret enforces rotation is refused.
+pub fn enforce_rotation_on_restore<'e>(
+    config: &phantom_core::config::PhantomConfig,
+    vault: &dyn phantom_vault::VaultBackend,
+    entries: impl IntoIterator<Item = &'e str>,
+    action: &str,
+    now_secs: u64,
+) -> Result<(), McpError> {
+    enforce_rotation_targets(
+        config,
+        vault,
+        phantom_vault::rotation_gate::restore_targets(entries),
+        action,
+        now_secs,
+    )
+}
+
+fn enforce_rotation_targets(
+    config: &phantom_core::config::PhantomConfig,
+    vault: &dyn phantom_vault::VaultBackend,
+    targets: Vec<phantom_vault::rotation_gate::GateTarget>,
+    action: &str,
+    now_secs: u64,
+) -> Result<(), McpError> {
+    use phantom_vault::rotation_gate::{refusal_summary, rotation_refusals, RotationGateError};
+    let refusals = rotation_refusals(config, vault, targets, now_secs).map_err(|error| {
+        let cause = match &error {
+            RotationGateError::Schedule(source) => source.to_string(),
+            RotationGateError::Metadata { source, .. } => source.to_string(),
+        };
+        state_err(format!("Refusing to {action}: {error}: {cause}"))
+    })?;
     match refusal_summary(action, &refusals) {
         Some(summary) => Err(state_err(summary)),
         None => Ok(()),

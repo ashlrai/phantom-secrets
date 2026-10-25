@@ -93,22 +93,21 @@ fn approval_home() -> std::io::Result<PathBuf> {
     Ok(home_dir()?.join(".phantom"))
 }
 
+/// The approval store is Phantom state under `~/.phantom`, so it shares the
+/// state-directory helper: symlinked or non-directory components are refused,
+/// missing `.phantom` ancestors are created 0700, and only a directory the
+/// caller owns is tightened (through a no-follow handle).
+///
+/// A refused (symlinked or non-directory) component keeps reporting
+/// `ErrorKind::InvalidData`, as this store always has.
 fn ensure_private_approval_home(path: &Path) -> std::io::Result<()> {
-    if let Ok(metadata) = std::fs::symlink_metadata(path) {
-        if metadata.file_type().is_symlink() || !metadata.is_dir() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "MCP approval storage directory is not a real directory",
-            ));
+    crate::fs::ensure_private_dir(path).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::Other {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string())
+        } else {
+            error
         }
-    }
-    std::fs::create_dir_all(path)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
-    }
-    Ok(())
+    })
 }
 
 fn require_regular_file_if_present(path: &Path, label: &str) -> std::io::Result<()> {
@@ -1174,6 +1173,81 @@ pub fn prune_stale_approvals() -> std::io::Result<usize> {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    /// The approval home directory goes through the shared state-dir helper: a
+    /// symlinked `.phantom` ancestor is refused instead of followed, so
+    /// nothing is created at the link's target.
+    #[cfg(unix)]
+    #[test]
+    fn approval_home_dir_refuses_a_symlinked_phantom_ancestor() {
+        let base = TempDir::new().unwrap();
+        let elsewhere = base.path().join("elsewhere");
+        std::fs::create_dir(&elsewhere).unwrap();
+        std::fs::create_dir(base.path().join("home")).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, base.path().join("home/.phantom")).unwrap();
+
+        let target = base.path().join("home/.phantom/nested");
+        assert!(ensure_private_approval_home(&target).is_err());
+        assert!(!elsewhere.join("nested").exists());
+    }
+
+    /// A symlink standing in for the approval home directory is refused and the
+    /// directory it points at keeps its mode.
+    #[cfg(unix)]
+    #[test]
+    fn approval_home_dir_refuses_a_symlinked_dir_and_leaves_its_target_alone() {
+        use std::os::unix::fs::PermissionsExt;
+        let base = TempDir::new().unwrap();
+        let elsewhere = base.path().join("elsewhere");
+        std::fs::create_dir(&elsewhere).unwrap();
+        std::fs::set_permissions(&elsewhere, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let link = base.path().join(".phantom");
+        std::os::unix::fs::symlink(&elsewhere, &link).unwrap();
+
+        assert!(ensure_private_approval_home(&link).is_err());
+        let mode = std::fs::metadata(&elsewhere).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o755);
+    }
+
+    /// Missing `.phantom` ancestors are created private, and an existing
+    /// group-readable directory the caller owns is tightened to 0700.
+    #[cfg(unix)]
+    #[test]
+    fn approval_home_dir_creates_private_ancestors_and_tightens_owned_dirs() {
+        use std::os::unix::fs::PermissionsExt;
+        let base = TempDir::new().unwrap();
+        let state = base.path().join("home/.phantom");
+        let nested = state.join("nested");
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        ensure_private_approval_home(&nested).unwrap();
+        assert_eq!(mode(&state), 0o700);
+        assert_eq!(mode(&nested), 0o700);
+
+        std::fs::set_permissions(&nested, std::fs::Permissions::from_mode(0o750)).unwrap();
+        ensure_private_approval_home(&nested).unwrap();
+        assert_eq!(mode(&nested), 0o700);
+    }
+
+    /// A directory owned by another user is never chmod-ed. Only root can
+    /// hand a directory to another uid, so the check runs only there.
+    #[cfg(unix)]
+    #[test]
+    fn approval_home_dir_leaves_a_foreign_owned_dir_untouched() {
+        use std::os::unix::fs::PermissionsExt;
+        // SAFETY: geteuid has no preconditions and cannot fail.
+        if unsafe { libc::geteuid() } != 0 {
+            return;
+        }
+        let base = TempDir::new().unwrap();
+        let state = base.path().join(".phantom");
+        std::fs::create_dir(&state).unwrap();
+        std::fs::set_permissions(&state, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::os::unix::fs::chown(&state, Some(65534), Some(65534)).unwrap();
+
+        ensure_private_approval_home(&state).unwrap();
+        let mode = std::fs::metadata(&state).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o755);
+    }
 
     fn with_temp_home<F: FnOnce()>(f: F) {
         // Each test gets its own HOME so approval files don't bleed.

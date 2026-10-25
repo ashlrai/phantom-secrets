@@ -48,6 +48,105 @@ publication. Everything below, down to 0.7.9, is new since v0.7.9.
   `PHANTOM_RATE_LIMIT_BURST` to restore the old burst value.
 
 The detailed entries follow.
+### Fixed (workspace-request and MCP approval state dirs use the shared private-dir helper; `.env.example` presence is never followed)
+
+- The workspace-request store (`~/.phantom/workspace-requests`, the setup
+  journal directory and its lock) and the MCP approval store kept their own
+  copies of the private-directory routine: `create_dir_all` followed a
+  symlinked `~/.phantom` ancestor and created state at its target, missing
+  `.phantom` ancestors were created with umask permissions, and the final
+  `chmod 0700` went by path to a directory of any owner. Both now call
+  `phantom_core::fs::ensure_private_dir`, like the rest of Phantom's state:
+  symlinked or non-directory components are refused, missing `.phantom`
+  ancestors are created 0700, and only a directory the caller owns is
+  tightened, through a no-follow handle. A refusal still reports
+  `ErrorKind::InvalidData`.
+- Workspace inspection judged `.env.example` with `Path::is_file`, which
+  follows symlinks. A dangling link or a directory at that name read as
+  absent, so setup planned to generate the file and the transaction's
+  no-follow writer then refused the whole plan. Presence is now judged with
+  `symlink_metadata`: any object at the name counts as present and is never
+  followed or replaced. A symlink to a shared `.env.example` still counts as
+  present, exactly as before.
+
+### Fixed (`enforce_rotation_on_access` covers team, provider and competitor imports)
+
+- The remaining inflows also gave a value of unknown age a fresh rotation
+  anchor (or kept the local one on overwrite), laundering an overdue secret:
+  `phantom team vault-pull`, MCP `phantom_team_vault_pull`, provider
+  `phantom pull --from vercel|railway`, and `phantom import --from
+  doppler|infisical|dotenvx|1password|env`. Each now refuses every entry it
+  would write whose secret has `enforce_rotation_on_access = true`, before
+  any vault or config write, with the same `Refusing to ...: rotation
+  enforcement blocked N secret(s).` wording. `phantom import --from` judges
+  names before the trusted-terminal challenge; team and provider pulls learn
+  the names only from the download, so they judge them after it. Entries
+  that are not written (an identical value, or an existing entry skipped
+  without `--force`) keep their anchor and are not judged.
+- Known limit: `phantom remove NAME` followed by `phantom add NAME` with the
+  same old value still starts a fresh age. Telling a re-added old value from
+  a genuine replacement would mean keeping a value-derived fingerprint of a
+  removed secret, so it is left as is.
+
+### Fixed (existing loose Phantom state directories are tightened to 0700)
+
+- A `~/.phantom` or project `.phantom` directory that already existed with
+  group/other permissions (for example 0755 from an older release or a loose
+  umask) was never tightened: only newly created state directories and the
+  final directory of `ensure_private_dir` were made 0700, so audit logs,
+  leak incidents, validation reports and backups written beneath an existing
+  loose `.phantom` stayed listable by other local users.
+  `phantom_core::fs::ensure_real_parent` (and so `ensure_private_dir`,
+  `atomic_write` and `write_new_file`) now chmods every existing directory
+  from the outermost `.phantom` down to the target's parent to 0700 on Unix
+  when it is a real directory owned by the current user. A symlinked
+  `.phantom` is still refused and nothing reached through it is chmod-ed;
+  directories owned by another user are left as they are; directories
+  outside a `.phantom` tree (the home directory, the project root) and paths
+  that step out with `..` are never tightened. Windows is unchanged.
+
+### Fixed (proxy resolves upstream relative references before scoping them to the route)
+
+- An upstream `Location`, `Content-Location` or `Link` target written as a
+  relative reference (`next`, `../v2/x`, `?page=2`) was forwarded unchanged,
+  so the client resolved it against its own local URL: `../` could climb out
+  of the `/<route>` prefix (onto another route of the same proxy, which a 307
+  or 308 would replay the request body to), and a route with a base path or
+  SDK version prefix landed on the wrong upstream path. The proxy now
+  resolves the reference against the upstream request URL first and maps the
+  result like an absolute one, including the relative form under the
+  `/<route>/_phantom/<session token>/` base. A same-origin reference the
+  route cannot reach (outside its base path, or one the route would forward
+  to a different upstream path) is now dropped with a warning instead of
+  forwarded; absolute URLs on other origins are still left untouched.
+- A `Link` `anchor` parameter naming the route's upstream is now mapped the
+  same way as the link target (written back as a quoted string). A `Link`
+  header with any unreachable target or anchor is dropped.
+
+### Fixed (`enforce_rotation_on_access` covers cloud push/pull and encrypted backups)
+
+- `phantom cloud push` and MCP `phantom_cloud_push` handed every vault value,
+  overdue enforced secrets included, to the cloud copy. They now apply the
+  rotation gate before consent or approval (names and metadata only) and
+  again before any value is read, refusing with the same
+  `Refusing to push to Phantom Cloud: rotation enforcement blocked N
+  secret(s).` wording as `phantom exec`.
+- `phantom export` carried overdue enforced values into a backup. It now
+  refuses them before the trusted-terminal review and again before reading.
+- A pulled or restored value carries no rotation anchor: a new entry was
+  stamped as stored now and a forced overwrite kept the local anchor, so an
+  overdue value round-tripped through the cloud or an old backup came back
+  looking fresh. `phantom cloud pull`, MCP `phantom_cloud_pull` and
+  `phantom import <backup>` now refuse to write any secret with
+  `enforce_rotation_on_access = true` (its age is unknown) before any vault
+  or config write; the encrypted restore refuses before its challenge.
+  Values identical to the local entry (cloud pull) and entries skipped
+  without `--force` are not written and are not gated.
+- `phantom copy` now applies the rotation gate before the trusted-terminal
+  challenge too, so the user is not asked to confirm a copy that will be
+  refused. The challenge is unchanged and the gate still runs again just
+  before the source value is read.
+
 ### Fixed (Phantom state ancestors are created private; discovery does not follow a `.phantom.toml` link)
 
 - Creating a nested Phantom state directory (for example

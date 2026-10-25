@@ -1746,6 +1746,16 @@ impl PhantomMcpServer {
         if names.is_empty() {
             return text_result("No secrets to push.");
         }
+        // Every machine that later pulls receives these values: refuse an
+        // overdue enforced secret before the one-use approval is requested
+        // or consumed. The check runs again before any value is read.
+        crate::tools::helpers::enforce_rotation_on_entries(
+            &config,
+            vault.as_ref(),
+            names.iter().map(String::as_str),
+            CLOUD_PUSH_ACTION,
+            phantom_vault::rotation_gate::now_secs(),
+        )?;
 
         let version = config
             .cloud
@@ -1776,6 +1786,13 @@ impl PhantomMcpServer {
         let token = phantom_core::auth::load_token()
             .ok_or_else(|| state_err("Not logged in. Next step: ask the user to run `phantom login` in a trusted terminal, then retry."))?;
         require_exact_config_before_effect(&config_path, &config_before)?;
+        crate::tools::helpers::enforce_rotation_on_entries(
+            &config,
+            vault.as_ref(),
+            names.iter().map(String::as_str),
+            CLOUD_PUSH_ACTION,
+            phantom_vault::rotation_gate::now_secs(),
+        )?;
 
         let mut secrets = BTreeMap::new();
         for name in &names {
@@ -4886,6 +4903,7 @@ impl PhantomMcpServer {
         let written = apply_team_vault_pull_transaction(
             &self.project_dir,
             &config_path,
+            &config,
             config_before,
             vault.as_ref(),
             &secrets,
@@ -6544,22 +6562,44 @@ fn apply_mcp_copy_transaction(
     Ok(())
 }
 
+/// "Refusing to ..." wording for the rotation gate on a team vault pull,
+/// shared with `phantom team vault-pull`.
+const TEAM_PULL_ACTION: &str = "pull the team vault";
+
 fn apply_team_vault_pull_transaction(
     project_dir: &Path,
     config_path: &Path,
+    config: &PhantomConfig,
     config_before: Vec<u8>,
     vault: &dyn phantom_vault::VaultBackend,
     secrets: &SensitiveSecretMap,
 ) -> Result<usize, McpError> {
     let mut mutations = Vec::with_capacity(secrets.len());
+    let mut changed = Vec::new();
     for (name, value) in secrets.iter() {
         let before = retrieve_optional_secret(vault, name, "team-vault destination")?;
+        if before.as_ref().map(|local| local.as_str()) != Some(value.as_str()) {
+            changed.push(name.as_str());
+        }
         mutations.push(phantom_vault::InitSecret::replace_if_unchanged(
             name,
             before.as_ref().map(|value| value.as_str().to_string()),
             value.as_str(),
         ));
     }
+    // The remote names are known only after the download, so this is the
+    // earliest point the gate can run. A team-pulled value carries no
+    // rotation anchor: a new entry would be stamped as stored now and an
+    // overwrite would keep the local anchor, laundering an overdue value.
+    // Refuse every enforced change before any vault or config write; an
+    // identical value keeps its anchor and is not judged.
+    crate::tools::helpers::enforce_rotation_on_restore(
+        config,
+        vault,
+        changed,
+        TEAM_PULL_ACTION,
+        phantom_vault::rotation_gate::now_secs(),
+    )?;
     let written = mutations.len();
     let config_guard = phantom_vault::InitFile::replace_if_unchanged(
         config_path,
@@ -6713,6 +6753,11 @@ fn verify_provider_issued_value(
     }
 }
 
+/// "Refusing to ..." wording for the rotation gate on cloud push and pull,
+/// shared with `phantom cloud push` / `phantom cloud pull`.
+const CLOUD_PUSH_ACTION: &str = "push to Phantom Cloud";
+const CLOUD_PULL_ACTION: &str = "pull from Phantom Cloud";
+
 #[allow(clippy::too_many_arguments)]
 fn apply_cloud_pull_transaction(
     project_dir: &Path,
@@ -6730,6 +6775,7 @@ fn apply_cloud_pull_transaction(
     // silently reconciled name.
     let mut unchanged_guards = Vec::new();
     let mut skipped = 0;
+    let mut written = Vec::new();
     for (name, value) in secrets.iter() {
         let before = retrieve_optional_secret(vault, name, "local cloud-pull destination")?;
         if let Some(local) = before.as_ref() {
@@ -6746,12 +6792,23 @@ fn apply_cloud_pull_transaction(
             skipped += 1;
             continue;
         }
+        written.push(name.as_str());
         mutations.push(phantom_vault::InitSecret::replace_if_unchanged(
             name,
             before.as_ref().map(|value| value.as_str().to_string()),
             value.as_str(),
         ));
     }
+    // A pulled value carries no rotation anchor: a new entry would be stamped
+    // as stored now and an overwrite would keep the local anchor, laundering
+    // an overdue value. Refuse every enforced write before any vault write.
+    crate::tools::helpers::enforce_rotation_on_restore(
+        &config,
+        vault,
+        written,
+        CLOUD_PULL_ACTION,
+        phantom_vault::rotation_gate::now_secs(),
+    )?;
 
     update_cloud_reconciliation_mcp(&mut config, remote_version, skipped);
     let config_after = toml::to_string_pretty(&config)
@@ -8074,6 +8131,7 @@ mod tests {
         let error = apply_team_vault_pull_transaction(
             dir.path(),
             &config_path,
+            &cloud_test_config(0),
             config_before,
             &vault,
             &secrets,
@@ -8099,6 +8157,83 @@ mod tests {
         assert!(!error.message.contains("remote-b"));
     }
 
+    /// A team-pulled value carries no rotation anchor: a new entry was stamped
+    /// as stored now and an overwrite kept the local anchor, so an overdue
+    /// value came back looking fresh. Refused before any vault or config
+    /// write; an identical enforced value is not gated.
+    #[test]
+    fn team_vault_pull_refuses_to_write_an_enforced_secret_of_unknown_age() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join(".phantom.toml");
+        let config = enforced_cloud_test_config(&["NEW_KEY", "EXISTING_KEY", "SAME_KEY"]);
+        let config_before = write_cloud_test_config(&config_path, &config);
+        let vault = phantom_vault::file::FileVault::new(
+            dir.path(),
+            "team-pull-rotation",
+            "passphrase".to_string(),
+        )
+        .unwrap();
+        phantom_vault::VaultBackend::store(&vault, "EXISTING_KEY", "local-owner").unwrap();
+        let shared = ["same", "on", "both", "sides"].join("-");
+        phantom_vault::VaultBackend::store(&vault, "SAME_KEY", &shared).unwrap();
+        let secrets = SensitiveSecretMap::new(std::collections::BTreeMap::from([
+            (
+                "EXISTING_KEY".to_string(),
+                zeroize::Zeroizing::new("remote-existing".to_string()),
+            ),
+            (
+                "NEW_KEY".to_string(),
+                zeroize::Zeroizing::new("remote-new".to_string()),
+            ),
+            (
+                "SAME_KEY".to_string(),
+                zeroize::Zeroizing::new(shared.clone()),
+            ),
+        ]));
+
+        let refused = apply_team_vault_pull_transaction(
+            dir.path(),
+            &config_path,
+            &config,
+            config_before.clone(),
+            &vault,
+            &secrets,
+        );
+        let Err(error) = refused else {
+            panic!("an enforced secret of unknown age was written");
+        };
+        assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_REQUEST);
+        assert!(error.message.starts_with(
+            "Refusing to pull the team vault: rotation enforcement blocked 2 secret(s)."
+        ));
+        assert!(!error.message.contains("'SAME_KEY'"));
+        assert!(matches!(
+            phantom_vault::VaultBackend::retrieve(&vault, "NEW_KEY"),
+            Err(phantom_core::error::PhantomError::SecretNotFound(_))
+        ));
+        assert!(
+            phantom_vault::VaultBackend::retrieve(&vault, "EXISTING_KEY")
+                .unwrap()
+                .as_str()
+                == "local-owner"
+        );
+        assert_eq!(std::fs::read(&config_path).unwrap(), config_before);
+
+        let unchanged = SensitiveSecretMap::new(std::collections::BTreeMap::from([(
+            "SAME_KEY".to_string(),
+            zeroize::Zeroizing::new(shared),
+        )]));
+        let applied = apply_team_vault_pull_transaction(
+            dir.path(),
+            &config_path,
+            &config,
+            config_before,
+            &vault,
+            &unchanged,
+        );
+        assert!(applied.is_ok());
+    }
+
     #[test]
     fn team_vault_pull_config_drift_rolls_back_every_local_secret_write() {
         let dir = TempDir::new().unwrap();
@@ -8121,6 +8256,7 @@ mod tests {
         let error = apply_team_vault_pull_transaction(
             dir.path(),
             &config_path,
+            &cloud_test_config(0),
             config_before,
             &vault,
             &secrets,
@@ -8669,6 +8805,120 @@ mod tests {
             "concurrent-owner"
         );
         assert_eq!(std::fs::read(&config_path).unwrap(), config_before);
+    }
+
+    fn enforced_cloud_test_config(names: &[&str]) -> PhantomConfig {
+        let mut config = cloud_test_config(3);
+        for name in names {
+            config.phantom.secrets.insert(
+                (*name).to_string(),
+                phantom_core::config::SecretOverride {
+                    rotate_every: Some("30d".to_string()),
+                    enforce_rotation_on_access: true,
+                    ..phantom_core::config::SecretOverride::default()
+                },
+            );
+        }
+        config
+    }
+
+    /// A pulled value carries no rotation anchor: a new entry was stamped as
+    /// stored now and a forced overwrite kept the local anchor, so an overdue
+    /// value came back looking fresh. Refused before any vault or config write.
+    #[test]
+    fn cloud_pull_refuses_to_write_an_enforced_secret_of_unknown_age() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join(".phantom.toml");
+        let config = enforced_cloud_test_config(&["NEW_KEY", "EXISTING_KEY"]);
+        let config_before = write_cloud_test_config(&config_path, &config);
+        let vault = phantom_vault::file::FileVault::new(
+            dir.path(),
+            "cloud-rotation",
+            "passphrase".to_string(),
+        )
+        .unwrap();
+        phantom_vault::VaultBackend::store(&vault, "EXISTING_KEY", "local-owner").unwrap();
+        let shared = ["same", "on", "both", "sides"].join("-");
+        phantom_vault::VaultBackend::store(&vault, "SAME_KEY", &shared).unwrap();
+        let secrets = SensitiveSecretMap::new(std::collections::BTreeMap::from([
+            (
+                "EXISTING_KEY".to_string(),
+                zeroize::Zeroizing::new("remote-existing".to_string()),
+            ),
+            (
+                "NEW_KEY".to_string(),
+                zeroize::Zeroizing::new("remote-new".to_string()),
+            ),
+        ]));
+
+        let refused = apply_cloud_pull_transaction(
+            dir.path(),
+            &config_path,
+            &vault,
+            &secrets,
+            true,
+            config_before.clone(),
+            config,
+            9,
+        );
+        let Err(error) = refused else {
+            panic!("an enforced secret of unknown age was written");
+        };
+        assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_REQUEST);
+        assert!(error.message.starts_with(
+            "Refusing to pull from Phantom Cloud: rotation enforcement blocked 2 secret(s)."
+        ));
+        assert!(matches!(
+            phantom_vault::VaultBackend::retrieve(&vault, "NEW_KEY"),
+            Err(phantom_core::error::PhantomError::SecretNotFound(_))
+        ));
+        assert!(
+            phantom_vault::VaultBackend::retrieve(&vault, "EXISTING_KEY")
+                .unwrap()
+                .as_str()
+                == "local-owner"
+        );
+        assert_eq!(std::fs::read(&config_path).unwrap(), config_before);
+
+        // Only writes are gated: an identical enforced value is not rewritten.
+        let config = enforced_cloud_test_config(&["NEW_KEY", "EXISTING_KEY", "SAME_KEY"]);
+        let config_before = write_cloud_test_config(&config_path, &config);
+        let unchanged = SensitiveSecretMap::new(std::collections::BTreeMap::from([(
+            "SAME_KEY".to_string(),
+            zeroize::Zeroizing::new(shared.clone()),
+        )]));
+        let applied = apply_cloud_pull_transaction(
+            dir.path(),
+            &config_path,
+            &vault,
+            &unchanged,
+            true,
+            config_before,
+            config,
+            10,
+        );
+        assert_eq!(applied.ok(), Some((0, 0)));
+    }
+
+    /// Cloud push hands every vault value to the cloud copy: the rotation gate
+    /// runs before the one-use approval is requested and again after it,
+    /// before any value is read.
+    #[test]
+    fn cloud_push_gates_rotation_before_approval_and_before_any_value_read() {
+        let source = include_str!("server.rs");
+        let push = &source[source.find("async fn phantom_cloud_push(").unwrap()..];
+        let push = &push[..push.find("async fn phantom_cloud_pull(").unwrap()];
+        let first_gate = push
+            .find("CLOUD_PUSH_ACTION")
+            .expect("cloud push must gate rotation");
+        let approval = push.find("require_approval_token(").unwrap();
+        let second_gate = approval
+            + push[approval..]
+                .find("CLOUD_PUSH_ACTION")
+                .expect("cloud push must re-gate after approval");
+        let read = push.find(".retrieve(name)").unwrap();
+        assert!(first_gate < approval);
+        assert!(second_gate < read);
     }
 
     #[test]
