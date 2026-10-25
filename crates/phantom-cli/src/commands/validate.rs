@@ -9,7 +9,7 @@
 //! secret according to its per-secret schedule (from `.phantom.toml`) and writes
 //! results to `~/.phantom/validation-report.json` for MCP tools to consume.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use colored::Colorize;
 use phantom_core::config::PhantomConfig;
 use phantom_core::validator::{
@@ -65,15 +65,14 @@ fn run_inner(check_all: bool, jobs: Option<usize>, json: bool, watch: bool) -> R
     let project_dir = crate::util::project_dir()?.canonicalize()?;
     let config_path = project_dir.join(".phantom.toml");
 
-    if !config_path.exists() {
-        anyhow::bail!(
-            "Not initialized. Run `phantom init` first (no .phantom.toml in {}).",
-            project_dir.display()
-        );
-    }
-
-    let config_before = phantom_core::fs::read_regular_file(&config_path)?
-        .ok_or_else(|| anyhow::anyhow!("Project is not initialized"))?;
+    let config_before = crate::util::read_config_if_present(&config_path)
+        .context("Failed to load .phantom.toml")?
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Not initialized. Run `phantom init` first (no .phantom.toml in {}).",
+                project_dir.display()
+            )
+        })?;
     let config = PhantomConfig::load_from_bytes(&config_path, &config_before)?;
     let project_id = config.local_project_id().to_string();
 

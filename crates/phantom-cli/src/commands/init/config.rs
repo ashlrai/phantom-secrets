@@ -13,9 +13,9 @@ pub fn load_or_create(
     config_before: Option<&[u8]>,
 ) -> anyhow::Result<PhantomConfig> {
     let project_id = PhantomConfig::project_id_from_path(project_dir);
-    let config = if config_before.is_some() {
+    let config = if let Some(before) = config_before {
         println!("{} Loading existing .phantom.toml", "->".blue().bold());
-        let config = PhantomConfig::load(config_path)?;
+        let config = PhantomConfig::load_from_bytes(config_path, before)?;
         let after = phantom_core::fs::read_regular_file(config_path)?;
         if after.as_deref() != config_before {
             anyhow::bail!(".phantom.toml changed while init was reading it; no changes were made");
