@@ -21,6 +21,7 @@ pub use transaction_lock::{
 };
 
 use phantom_core::error::{PhantomError, Result};
+use zeroize::Zeroizing;
 
 const PASSPHRASE_SERVICE: &str = "phantom-secrets-vault";
 
@@ -54,10 +55,13 @@ pub fn try_create_vault(project_id: &str) -> Result<Box<dyn VaultBackend>> {
 
     if !require_keychain {
         if let Ok(passphrase) = std::env::var("PHANTOM_VAULT_PASSPHRASE") {
+            let mut passphrase = Zeroizing::new(passphrase);
             if !passphrase.is_empty() {
                 let vault_dir = file_vault_dir();
                 return Ok(Box::new(file::FileVault::new(
-                    &vault_dir, project_id, passphrase,
+                    &vault_dir,
+                    project_id,
+                    take_passphrase(&mut passphrase),
                 )?));
             }
         }
@@ -82,7 +86,7 @@ pub fn try_create_vault(project_id: &str) -> Result<Box<dyn VaultBackend>> {
 
             let vault_dir = file_vault_dir();
             let encrypted_vault_exists = file::encrypted_vault_exists(&vault_dir, project_id)?;
-            let passphrase =
+            let mut passphrase =
                 get_or_create_passphrase(project_id, !encrypted_vault_exists).map_err(|error| {
                 PhantomError::VaultError(format!(
                     "OS keychain vault unavailable ({keychain_err}); encrypted-file fallback was not created because its passphrase could not be durably persisted: {error}. Set PHANTOM_VAULT_PASSPHRASE and retry"
@@ -93,7 +97,8 @@ pub fn try_create_vault(project_id: &str) -> Result<Box<dyn VaultBackend>> {
                 "phantom: WARNING — OS keychain unavailable; using encrypted file vault at {} with a passphrase verified in durable secure storage.\n  Reason: {keychain_err}\n  To hard-fail instead of falling back, set PHANTOM_REQUIRE_KEYCHAIN=1.",
                 vault_dir.display()
             );
-            let vault = file::FileVault::new(&vault_dir, project_id, passphrase)?;
+            let vault =
+                file::FileVault::new(&vault_dir, project_id, take_passphrase(&mut passphrase))?;
             drop(selection_lock);
             Ok(Box::new(vault))
         }
@@ -184,8 +189,17 @@ fn file_vault_dir() -> std::path::PathBuf {
         .unwrap_or_else(dirs_fallback)
 }
 
+/// Move a passphrase out of its scrubbing wrapper into the `String` that
+/// [`file::FileVault::new`] takes. The heap buffer is moved, not copied, so
+/// no unscrubbed duplicate is left behind; the wrapper keeps an empty string.
+fn take_passphrase(passphrase: &mut Zeroizing<String>) -> String {
+    std::mem::take(&mut **passphrase)
+}
+
+/// Durable storage for the generated encrypted-file fallback passphrase.
+/// Every value read from it is returned in a buffer scrubbed on drop.
 trait PassphraseStore {
-    fn get(&self) -> std::result::Result<Option<String>, String>;
+    fn get(&self) -> std::result::Result<Option<Zeroizing<String>>, String>;
     fn set(&self, passphrase: &str) -> std::result::Result<(), String>;
 }
 
@@ -194,9 +208,9 @@ struct KeyringPassphraseStore {
 }
 
 impl PassphraseStore for KeyringPassphraseStore {
-    fn get(&self) -> std::result::Result<Option<String>, String> {
+    fn get(&self) -> std::result::Result<Option<Zeroizing<String>>, String> {
         match self.entry.get_password() {
-            Ok(passphrase) => Ok(Some(passphrase)),
+            Ok(passphrase) => Ok(Some(Zeroizing::new(passphrase))),
             Err(keyring::Error::NoEntry) => Ok(None),
             Err(error) => Err(error.to_string()),
         }
@@ -215,8 +229,8 @@ impl PassphraseStore for KeyringPassphraseStore {
 fn resolve_persisted_passphrase(
     store: &dyn PassphraseStore,
     allow_generation: bool,
-    generate: impl FnOnce() -> String,
-) -> Result<String> {
+    generate: impl FnOnce() -> Zeroizing<String>,
+) -> Result<Zeroizing<String>> {
     match store.get() {
         Ok(Some(passphrase)) if !passphrase.is_empty() => return Ok(passphrase),
         Ok(Some(_)) => {
@@ -249,7 +263,7 @@ fn resolve_persisted_passphrase(
             "could not verify the persisted fallback passphrase: {error}"
         ))
     })?;
-    if verified.as_deref() != Some(passphrase.as_str()) {
+    if verified.as_ref().map(|value| value.as_str()) != Some(passphrase.as_str()) {
         return Err(PhantomError::VaultError(
             "secure storage did not return the generated fallback passphrase after writing it"
                 .to_string(),
@@ -258,8 +272,9 @@ fn resolve_persisted_passphrase(
     Ok(passphrase)
 }
 
-fn get_or_create_passphrase(project_id: &str, allow_generation: bool) -> Result<String> {
+fn get_or_create_passphrase(project_id: &str, allow_generation: bool) -> Result<Zeroizing<String>> {
     if let Ok(passphrase) = std::env::var("PHANTOM_VAULT_PASSPHRASE") {
+        let passphrase = Zeroizing::new(passphrase);
         if !passphrase.is_empty() {
             return Ok(passphrase);
         }
@@ -279,11 +294,11 @@ fn get_or_create_passphrase(project_id: &str, allow_generation: bool) -> Result<
     )
 }
 
-fn generate_passphrase() -> String {
+fn generate_passphrase() -> Zeroizing<String> {
     use rand::RngCore;
-    let mut bytes = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut bytes);
-    hex::encode(bytes)
+    let mut bytes = Zeroizing::new([0u8; 32]);
+    rand::thread_rng().fill_bytes(bytes.as_mut());
+    Zeroizing::new(hex::encode(bytes.as_ref()))
 }
 
 fn dirs_fallback() -> std::path::PathBuf {
@@ -367,6 +382,33 @@ mod tests {
         }
     }
 
+    /// The fallback vault passphrase is a key: every path that reads,
+    /// generates, verifies, or hands it on must keep it in a buffer that is
+    /// scrubbed on drop, never a plain `String` left behind in freed memory.
+    #[test]
+    fn fallback_passphrase_paths_hold_zeroizing_buffers() {
+        type Scrubbed = Zeroizing<String>;
+        type StoreRead = std::result::Result<Option<Scrubbed>, String>;
+        type Generator = fn() -> Scrubbed;
+        fn assert_zeroize_on_drop<T: zeroize::ZeroizeOnDrop>() {}
+        assert_zeroize_on_drop::<Scrubbed>();
+
+        let _store_get: fn(&KeyringPassphraseStore) -> StoreRead =
+            <KeyringPassphraseStore as PassphraseStore>::get;
+        let _resolve: fn(&dyn PassphraseStore, bool, Generator) -> Result<Scrubbed> =
+            resolve_persisted_passphrase;
+        let _get_or_create: fn(&str, bool) -> Result<Scrubbed> = get_or_create_passphrase;
+        let _generate: Generator = generate_passphrase;
+    }
+
+    #[test]
+    fn generated_fallback_passphrase_is_256_bits_of_hex() {
+        let generated = generate_passphrase();
+        assert_eq!(generated.len(), 64);
+        assert!(generated.bytes().all(|b| b.is_ascii_hexdigit()));
+        assert_ne!(generated.as_str(), generate_passphrase().as_str());
+    }
+
     #[test]
     fn public_vault_constructor_is_fallible() {
         let _constructor: fn(&str) -> Result<Box<dyn VaultBackend>> = create_vault;
@@ -392,12 +434,13 @@ mod tests {
     }
 
     impl PassphraseStore for ScriptedPassphraseStore {
-        fn get(&self) -> std::result::Result<Option<String>, String> {
+        fn get(&self) -> std::result::Result<Option<Zeroizing<String>>, String> {
             self.gets
                 .lock()
                 .unwrap()
                 .pop_front()
                 .expect("test must script every secure-store read")
+                .map(|value| value.map(Zeroizing::new))
         }
 
         fn set(&self, passphrase: &str) -> std::result::Result<(), String> {
@@ -429,8 +472,8 @@ mod tests {
     }
 
     impl PassphraseStore for RestartablePassphraseStore {
-        fn get(&self) -> std::result::Result<Option<String>, String> {
-            Ok(self.persisted.lock().unwrap().clone())
+        fn get(&self) -> std::result::Result<Option<Zeroizing<String>>, String> {
+            Ok(self.persisted.lock().unwrap().clone().map(Zeroizing::new))
         }
 
         fn set(&self, passphrase: &str) -> std::result::Result<(), String> {
@@ -470,8 +513,10 @@ mod tests {
                 [Ok(None)],
                 Err("secure storage rejected write".to_string()),
             );
-            let error = resolve_persisted_passphrase(&store, true, || "new-random-key".to_string())
-                .unwrap_err();
+            let error = resolve_persisted_passphrase(&store, true, || {
+                Zeroizing::new("new-random-key".to_string())
+            })
+            .unwrap_err();
             assert!(error.to_string().contains("could not persist"));
             assert_eq!(
                 store.set_calls.lock().unwrap().as_slice(),
@@ -517,10 +562,12 @@ mod tests {
             Ok(()),
         );
         assert!(
-            resolve_persisted_passphrase(&unverifiable, true, || "candidate".to_string())
-                .unwrap_err()
-                .to_string()
-                .contains("could not verify")
+            resolve_persisted_passphrase(&unverifiable, true, || Zeroizing::new(
+                "candidate".to_string()
+            ))
+            .unwrap_err()
+            .to_string()
+            .contains("could not verify")
         );
 
         let mismatched = ScriptedPassphraseStore::new(
@@ -528,16 +575,22 @@ mod tests {
             Ok(()),
         );
         assert!(
-            resolve_persisted_passphrase(&mismatched, true, || "candidate".to_string())
-                .unwrap_err()
-                .to_string()
-                .contains("did not return the generated fallback passphrase")
+            resolve_persisted_passphrase(&mismatched, true, || Zeroizing::new(
+                "candidate".to_string()
+            ))
+            .unwrap_err()
+            .to_string()
+            .contains("did not return the generated fallback passphrase")
         );
 
         let durable =
             ScriptedPassphraseStore::new([Ok(None), Ok(Some("candidate".to_string()))], Ok(()));
         assert_eq!(
-            resolve_persisted_passphrase(&durable, true, || "candidate".to_string()).unwrap(),
+            resolve_persisted_passphrase(&durable, true, || Zeroizing::new(
+                "candidate".to_string()
+            ))
+            .unwrap()
+            .as_str(),
             "candidate"
         );
     }
@@ -547,10 +600,11 @@ mod tests {
         let directory = tempdir().unwrap();
         let root = directory.path().canonicalize().unwrap();
         let first_process = RestartablePassphraseStore::new(false);
-        let passphrase =
-            resolve_persisted_passphrase(&first_process, true, || "durable-key".to_string())
-                .unwrap();
-        let vault = file::FileVault::new(&root, "restart-project", passphrase).unwrap();
+        let passphrase = resolve_persisted_passphrase(&first_process, true, || {
+            Zeroizing::new("durable-key".to_string())
+        })
+        .unwrap();
+        let vault = file::FileVault::new(&root, "restart-project", passphrase.to_string()).unwrap();
         vault.store("API_KEY", "existing-value").unwrap();
         drop(vault);
 
@@ -559,7 +613,8 @@ mod tests {
             panic!("restart must reuse the verified secure-store passphrase")
         })
         .unwrap();
-        let reopened = file::FileVault::new(&root, "restart-project", recovered).unwrap();
+        let reopened =
+            file::FileVault::new(&root, "restart-project", recovered.to_string()).unwrap();
 
         assert_eq!(
             reopened.retrieve("API_KEY").unwrap().as_str(),
@@ -574,9 +629,10 @@ mod tests {
         let first_process = RestartablePassphraseStore::new(true);
 
         for process in [first_process.clone(), first_process.restart()] {
-            let error =
-                resolve_persisted_passphrase(&process, true, || "ephemeral-key".to_string())
-                    .unwrap_err();
+            let error = resolve_persisted_passphrase(&process, true, || {
+                Zeroizing::new("ephemeral-key".to_string())
+            })
+            .unwrap_err();
             assert!(error.to_string().contains("could not persist"));
             assert!(process.persisted.lock().unwrap().is_none());
             assert!(!file::encrypted_vault_exists(&root, "failed-project").unwrap());
