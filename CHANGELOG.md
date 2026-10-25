@@ -4,6 +4,15 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (JSON imports with a repeated name)
+
+- `phantom import --from 1password|dotenvx|doppler|infisical` now refuses a
+  JSON export in which a secret name appears more than once, naming the entry
+  (never a value), and imports nothing. Flat JSON objects previously collapsed
+  the repeat to its last value with no warning, so a merged or hand-edited
+  export could silently store a stale credential; Infisical arrays only
+  warned. The dotenv path already refused duplicates.
+
 ### Fixed (audit log durability and key creation)
 
 - With `PHANTOM_AUDIT=1`, each audit line is now fsynced (and the directory

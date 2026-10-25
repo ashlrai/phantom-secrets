@@ -28,20 +28,20 @@
 use anyhow::Result;
 use zeroize::Zeroizing;
 
-use super::{json_scalar, Importer, SecretMap};
+use super::{json_scalar, parse_json_object_entries, refuse_duplicate_names, Importer, SecretMap};
 
 pub struct OnePasswordImporter;
 
 impl Importer for OnePasswordImporter {
     fn parse(input: &[u8]) -> Result<SecretMap> {
-        let obj: serde_json::Map<String, serde_json::Value> = serde_json::from_slice(input)
-            .map_err(|e| {
-                anyhow::anyhow!(
-                    "1Password JSON parse error: {e}\n\
+        let obj = parse_json_object_entries(input).map_err(|e| {
+            anyhow::anyhow!(
+                "1Password JSON parse error: {e}\n\
                 Expected a flat JSON object: {{\"KEY\": \"value\", ...}}\n\
                 See `phantom import --from 1password --help` for the expected format."
-                )
-            })?;
+            )
+        })?;
+        refuse_duplicate_names("1Password", obj.iter().map(|(key, _)| key.as_str()))?;
 
         let mut map = SecretMap::new();
         for (key, val) in obj {
@@ -50,9 +50,6 @@ impl Importer for OnePasswordImporter {
             };
             if value.is_empty() {
                 continue;
-            }
-            if map.contains_key(&key) {
-                eprintln!("warn: duplicate key '{key}' in 1Password input — last value wins");
             }
             map.insert(key, Zeroizing::new(value));
         }
