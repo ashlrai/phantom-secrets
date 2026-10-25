@@ -1,6 +1,5 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
-use phantom_core::config::PhantomConfig;
 use phantom_core::sync::{self, Platform, SyncStatus};
 use rand::RngCore;
 use serde::Serialize;
@@ -97,15 +96,15 @@ async fn run_async(
     let project_dir = crate::util::project_dir()?;
     let config_path = project_dir.join(".phantom.toml");
 
-    if !config_path.exists() {
+    let Some(config) = crate::util::load_config_if_present(&config_path)
+        .context("Failed to load .phantom.toml")?
+    else {
         anyhow::bail!(
             "No .phantom.toml found. Run {} first.\n  {}",
             "phantom init".cyan().bold(),
             crate::util::docs_url("sync")
         );
-    }
-
-    let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
+    };
     let vault = crate::util::open_vault(config.local_project_id())?;
 
     // Cheap precondition check before decrypting anything.
