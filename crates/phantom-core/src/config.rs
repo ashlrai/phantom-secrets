@@ -346,7 +346,9 @@ pub struct SecretOverride {
     /// Stored under `[phantom.secrets.{name}.validation]` in `.phantom.toml`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub validation: Option<ValidationScheduleConfig>,
-    /// When `true`, `phantom exec` and `phantom start` refuse to load this
+    /// When `true`, `phantom exec`, `phantom start`, and every other path
+    /// that hands out the real value (`reveal`, `copy`, `sync`, `env copy`,
+    /// `team vault-push`, and the MCP copy and team-push tools) refuse this
     /// secret once one period of its effective rotation schedule
     /// (`rotation_schedule`, `rotate_every`, or the global
     /// `rotation_policy`; monthly counts as 30 days) has elapsed. Age is
@@ -810,10 +812,18 @@ impl PhantomConfig {
     }
 
     /// Save config to a file path.
+    ///
+    /// The write is atomic (same-directory staging file, fsync, rename), so a
+    /// crash cannot leave a truncated `.phantom.toml`. A symlink, directory,
+    /// FIFO or other non-regular file at `path` is refused rather than
+    /// written through, an existing file keeps its permissions, and a file
+    /// that changes between the safety read and the commit is not clobbered.
+    /// A new file is created private (0600 on Unix).
     pub fn save(&self, path: &Path) -> Result<()> {
         let content = toml::to_string_pretty(self)
             .map_err(|e| PhantomError::ConfigParseError(e.to_string()))?;
-        std::fs::write(path, content)?;
+        let before = crate::fs::read_regular_file(path)?;
+        crate::fs::atomic_write_if_unchanged(path, before.as_deref(), content.as_bytes())?;
         Ok(())
     }
 
@@ -2454,5 +2464,46 @@ version = 4
         let cloud = roundtrip.cloud.unwrap();
         assert!(cloud.reconciliation_required);
         assert_eq!(cloud.reconciliation_remote_version, Some(9));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_refuses_a_symlinked_config_and_leaves_the_target_untouched() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let outside = dir.path().join("outside-file");
+        std::fs::write(&outside, b"owner content\n").unwrap();
+        let config_path = dir.path().join(".phantom.toml");
+        std::os::unix::fs::symlink(&outside, &config_path).unwrap();
+
+        let config = PhantomConfig::new_with_defaults("0123456789abcdef".to_string());
+        assert!(config.save(&config_path).is_err());
+
+        assert_eq!(std::fs::read(&outside).unwrap(), b"owner content\n");
+        let link = std::fs::symlink_metadata(&config_path).unwrap();
+        assert!(link.file_type().is_symlink(), "symlink was replaced");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_replaces_atomically_and_preserves_mode() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let dir = tempfile::TempDir::new().unwrap();
+        let config_path = dir.path().join(".phantom.toml");
+        std::fs::write(&config_path, b"# previous\n").unwrap();
+        std::fs::set_permissions(&config_path, std::fs::Permissions::from_mode(0o640)).unwrap();
+        // A second hard link observes an in-place truncate-and-write but not
+        // an atomic rename of a fresh inode over the name.
+        let witness = dir.path().join("witness");
+        std::fs::hard_link(&config_path, &witness).unwrap();
+        let before_inode = std::fs::metadata(&config_path).unwrap().ino();
+
+        let config = PhantomConfig::new_with_defaults("0123456789abcdef".to_string());
+        config.save(&config_path).unwrap();
+
+        assert_eq!(std::fs::read(&witness).unwrap(), b"# previous\n");
+        let after = std::fs::metadata(&config_path).unwrap();
+        assert_ne!(after.ino(), before_inode, "config was rewritten in place");
+        assert_eq!(after.permissions().mode() & 0o777, 0o640);
+        assert!(PhantomConfig::load(&config_path).is_ok());
     }
 }

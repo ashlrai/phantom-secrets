@@ -99,10 +99,11 @@ pub fn run(name: &str, target_dir: &Path, rename: &Option<String>) -> Result<()>
     )?;
 
     let source_vault = phantom_vault::try_create_vault(source_config.local_project_id())?;
-    let secret_value = retrieve_copy_source(
+    let secret_value = retrieve_gated_copy_source(
+        &source_config,
         source_vault.as_ref(),
-        source_config.local_project_id(),
         name,
+        super::rotation_gate::now_secs(),
     )?;
     let plan = prepare_target_plan(
         &target_dir,
@@ -160,6 +161,26 @@ fn list_copy_target_names(
         "copy a secret into the target project",
     )?;
     Ok(names)
+}
+
+/// `enforce_rotation_on_access`, then the source read: the target project
+/// does not carry this project's rotation policy, so an overdue enforced
+/// source secret is refused before its value is read, as `phantom exec`
+/// would refuse it.
+fn retrieve_gated_copy_source(
+    source_config: &PhantomConfig,
+    source_vault: &dyn phantom_vault::VaultBackend,
+    name: &str,
+    now_secs: u64,
+) -> Result<zeroize::Zeroizing<String>> {
+    super::rotation_gate::enforce_rotation_on_entries(
+        source_config,
+        source_vault,
+        [name],
+        "copy",
+        now_secs,
+    )?;
+    retrieve_copy_source(source_vault, source_config.local_project_id(), name)
 }
 
 /// Read the approved source secret. Beside a source encrypted-file vault this
@@ -281,6 +302,26 @@ mod tests {
     use phantom_core::error::PhantomError;
     use phantom_vault::file::FileVault;
     use phantom_vault::VaultBackend;
+
+    /// `phantom copy` handed an overdue enforced secret to a project without
+    /// this project's rotation policy. The source read is now gated, as
+    /// `phantom exec` is; a secret inside its window copies.
+    #[test]
+    fn copy_source_read_applies_rotation_enforcement() {
+        use crate::commands::rotation_gate::fixtures::{aged_vault, enforced_config, NOW};
+        let dir = tempfile::tempdir().unwrap();
+        let vault = aged_vault(&dir, &[("STALE_KEY", 45), ("FRESH_KEY", 1)]);
+        let config = enforced_config(&["STALE_KEY", "FRESH_KEY"]);
+
+        let refused = retrieve_gated_copy_source(&config, &vault, "STALE_KEY", NOW);
+        let message = refused
+            .err()
+            .map(|error| error.to_string())
+            .unwrap_or_default();
+        assert!(message.starts_with("Refusing to copy: rotation enforcement blocked 1 secret(s)."));
+        let fresh = retrieve_gated_copy_source(&config, &vault, "FRESH_KEY", NOW);
+        assert!(fresh.is_ok_and(|value| value.as_str() == "fixture-value"));
+    }
 
     /// Beside a target encrypted-file vault this process cannot open, the
     /// target listing came from the OS keychain alone, so a name already in

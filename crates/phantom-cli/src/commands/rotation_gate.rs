@@ -1,43 +1,35 @@
 //! `enforce_rotation_on_access`: refuse to hand a protected secret to a proxy
-//! session when its rotation schedule says it is overdue.
+//! session, a terminal, another vault, a deployment platform, or a team when
+//! its rotation schedule says it is overdue.
 //!
-//! The age of a secret is measured from machine-local vault metadata, never
-//! from `.phantom.toml`: the later of the vault entry's `created_at` (stamped
-//! when `phantom add` first stores the name, kept on overwrite, cleared by
-//! `phantom remove`) and `rotated_at` (stamped by a confirmed provider
-//! rotation). The current value can be no older than that anchor, so a secret
-//! is let through only when it is provably inside its window. A missing or
-//! future anchor, a missing schedule, or a metadata read error refuses.
+//! The decision lives in [`phantom_vault::rotation_gate`] so the MCP server
+//! applies the same gate. The age of a secret is measured from machine-local
+//! vault metadata, never from `.phantom.toml`: the later of the vault entry's
+//! `created_at` (stamped when `phantom add` first stores the name, kept on
+//! overwrite, cleared by `phantom remove`) and `rotated_at` (stamped by a
+//! confirmed provider rotation). A secret is let through only when it is
+//! provably inside its window. A missing or future anchor, a missing schedule,
+//! or a metadata read error refuses.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use phantom_core::config::PhantomConfig;
-use phantom_core::env_scope::{namespaced_key, DEFAULT_ENV};
-use phantom_core::rotation_strategy::check_rotation_enforcement;
-use phantom_vault::{SecretMetadata, VaultBackend};
+use phantom_vault::rotation_gate::{
+    entry_targets, refusal_summary, rotation_refusals, session_targets, GateTarget,
+};
+use phantom_vault::VaultBackend;
 
-/// The time the entry's current value is known to be no older than.
-fn rotation_anchor(metadata: Option<&SecretMetadata>) -> Option<u64> {
-    let metadata = metadata?;
-    match (metadata.created_at, metadata.rotated_at) {
-        (Some(created), Some(rotated)) => Some(created.max(rotated)),
-        (created, rotated) => created.or(rotated),
+fn enforce(
+    config: &PhantomConfig,
+    vault: &dyn VaultBackend,
+    targets: Vec<GateTarget>,
+    action: &str,
+    now_secs: u64,
+) -> Result<()> {
+    let refusals = rotation_refusals(config, vault, targets, now_secs)?;
+    match refusal_summary(action, &refusals) {
+        Some(summary) => Err(anyhow::anyhow!(summary)),
+        None => Ok(()),
     }
-}
-
-/// The vault entry a session would read for `key`, mirroring exec/start
-/// retrieval: the env-namespaced entry first, the bare legacy entry only in
-/// the default environment. `None` when neither is listed.
-fn injected_entry<'a>(vault_names: &'a [String], key: &str, active_env: &str) -> Option<&'a str> {
-    let namespaced = namespaced_key(active_env, key);
-    vault_names
-        .iter()
-        .find(|name| **name == namespaced)
-        .or_else(|| {
-            (active_env == DEFAULT_ENV)
-                .then(|| vault_names.iter().find(|name| name.as_str() == key))
-                .flatten()
-        })
-        .map(String::as_str)
 }
 
 /// Refuse the launch when any `keys` entry with
@@ -51,64 +43,91 @@ pub(crate) fn enforce_rotation_on_access<'k>(
     keys: impl IntoIterator<Item = &'k str>,
     now_secs: u64,
 ) -> Result<()> {
-    let mut keys: Vec<&str> = keys.into_iter().collect();
-    keys.sort_unstable();
-    keys.dedup();
+    enforce(
+        config,
+        vault,
+        session_targets(vault_names, active_env, keys),
+        "start",
+        now_secs,
+    )
+}
 
-    let mut refusals = Vec::new();
-    for key in keys {
-        let enforce = config
-            .phantom
-            .secrets
-            .get(key)
-            .is_some_and(|secret| secret.enforce_rotation_on_access);
-        if !enforce {
-            continue;
-        }
-        let schedule = config
-            .get_rotation_schedule(key)
-            .context("Rotation enforcement could not read the rotation schedule")?;
-        let anchor = match injected_entry(vault_names, key, active_env) {
-            Some(entry) => rotation_anchor(
-                vault
-                    .get_metadata(entry)
-                    .with_context(|| {
-                        format!("Rotation enforcement could not read vault metadata for '{key}'")
-                    })?
-                    .as_ref(),
-            ),
-            None => None,
-        };
-        let status = check_rotation_enforcement(true, schedule.as_ref(), anchor, now_secs);
-        if let Some(message) = status.error_message(key) {
-            refusals.push(message);
-        }
-    }
-
-    if refusals.is_empty() {
-        Ok(())
-    } else {
-        anyhow::bail!(
-            "Refusing to start: rotation enforcement blocked {} secret(s).\n{}",
-            refusals.len(),
-            refusals.join("\n")
-        )
-    }
+/// The same gate for paths that read exact vault entries and hand the value
+/// out (reveal, copy, sync, env copy, team push). `env/NAME` is judged by the
+/// `[phantom.secrets.NAME]` policy and that entry's own age. `action`
+/// completes "Refusing to ...". Runs before any secret value is read.
+pub(crate) fn enforce_rotation_on_entries<'e>(
+    config: &PhantomConfig,
+    vault: &dyn VaultBackend,
+    entries: impl IntoIterator<Item = &'e str>,
+    action: &str,
+    now_secs: u64,
+) -> Result<()> {
+    enforce(config, vault, entry_targets(entries), action, now_secs)
 }
 
 /// Current Unix time in seconds.
 pub(crate) fn now_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
+    phantom_vault::rotation_gate::now_secs()
+}
+
+/// Fixtures for the per-command rotation-gate tests.
+#[cfg(test)]
+pub(crate) mod fixtures {
+    use phantom_core::config::{PhantomConfig, SecretOverride};
+    use phantom_vault::file::FileVault;
+    use phantom_vault::{SecretMetadata, VaultBackend};
+
+    pub(crate) const DAY: u64 = 86_400;
+    pub(crate) const NOW: u64 = 1_800_000_000;
+
+    /// A config that enforces a 30-day rotation for each of `names`.
+    pub(crate) fn enforced_config(names: &[&str]) -> PhantomConfig {
+        let mut config = PhantomConfig::new_with_defaults("rotation-gate-fixture".to_string());
+        for name in names {
+            config.phantom.secrets.insert(
+                name.to_string(),
+                SecretOverride {
+                    rotate_every: Some("30d".to_string()),
+                    enforce_rotation_on_access: true,
+                    ..SecretOverride::default()
+                },
+            );
+        }
+        config
+    }
+
+    /// A file vault holding `entries`, each stored `age_days` before [`NOW`].
+    pub(crate) fn aged_vault(dir: &tempfile::TempDir, entries: &[(&str, u64)]) -> FileVault {
+        let vault = FileVault::new(
+            &crate::test_support::canonical_tempdir_path(dir),
+            "rotation-gate-fixture",
+            format!("gate-{}", std::process::id()),
+        )
+        .unwrap();
+        for (entry, age_days) in entries {
+            vault.store(entry, "fixture-value").unwrap();
+            vault
+                .set_metadata(
+                    entry,
+                    SecretMetadata {
+                        created_at: Some(NOW - age_days * DAY),
+                        ..SecretMetadata::default()
+                    },
+                )
+                .unwrap();
+        }
+        vault
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use phantom_core::config::SecretOverride;
+    use phantom_core::env_scope::{namespaced_key, DEFAULT_ENV};
     use phantom_core::error::{PhantomError, Result as PhantomResult};
+    use phantom_vault::SecretMetadata;
     use std::collections::BTreeMap;
     use zeroize::Zeroizing;
 
@@ -301,5 +320,24 @@ mod tests {
         let text = refusal_text(gate(&config, &vault, DEFAULT_ENV, &["B_KEY", "A_KEY"]));
         assert!(text.contains("blocked 2 secret(s)"));
         assert!(text.contains("'A_KEY'") && text.contains("'B_KEY'"));
+    }
+
+    #[test]
+    fn entry_gate_judges_each_exact_entry_and_names_the_action() {
+        let config = config_with(&[("API_KEY", enforced(Some("30d")))]);
+        let namespaced = namespaced_key("staging", "API_KEY");
+        let vault = MetadataVault::with(&[
+            ("API_KEY", Some(NOW - DAY), None),
+            (namespaced.as_str(), Some(NOW - 60 * DAY), None),
+        ]);
+        let refused =
+            enforce_rotation_on_entries(&config, &vault, [namespaced.as_str()], "reveal", NOW);
+        let text = refusal_text(refused);
+        assert!(text.starts_with("Refusing to reveal: rotation enforcement blocked 1 secret(s)."));
+        assert!(text.contains("'API_KEY'"));
+        assert!(enforce_rotation_on_entries(&config, &vault, ["API_KEY"], "reveal", NOW).is_ok());
+        // Session wording for exec/start is unchanged.
+        let text = refusal_text(gate(&config, &vault, "staging", &["API_KEY"]));
+        assert!(text.starts_with("Refusing to start:"));
     }
 }

@@ -20,6 +20,51 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   `atomic_write` (0600, replaces a link instead of following it), and it is
   read only as a regular file.
 
+### Fixed (library writers of `.phantom.toml` and rewritten `.env` files)
+
+- `PhantomConfig::save` wrote `.phantom.toml` with a plain truncate-and-write:
+  a crash could leave a truncated config, and a symlinked `.phantom.toml`
+  (for example one planted in a cloned repository) was followed, so the TOML
+  overwrote the file outside the project it pointed at. It now refuses a
+  symlink or other non-regular target, writes atomically (same-directory
+  staging file, fsync, rename), keeps an existing file's permissions, and
+  creates a new file private.
+- `DotenvFile::write_phantomized` replaced a symlinked `.env` with a regular
+  file, reset an existing file's mode to 0600, and overwrote a file that had
+  been edited after it was parsed with a rewrite of the stale image (silently
+  dropping the edit). It now refuses a symlink or other non-regular target,
+  keeps the existing mode, and refuses when the file no longer equals the
+  source it was parsed from. The CLI and MCP write paths already used the
+  anchored exact-before transactions and are unchanged; this hardens the
+  public `phantom-secrets-core` API.
+
+### Fixed (`enforce_rotation_on_access` was bypassable by switching commands)
+
+- Only `phantom exec` and `phantom start` applied the rotation gate, so an
+  overdue enforced secret could still be printed by `phantom reveal`, copied
+  into another project by `phantom copy` or the `phantom_copy_secret` MCP tool,
+  pushed to Vercel or Railway by `phantom sync`, sent to teammates by
+  `phantom team vault-push` or `phantom_team_vault_push`, or re-stamped as new
+  by `phantom env copy`. Each now refuses before any secret value is read, with
+  the same per-secret message as `phantom exec` ("Refusing to reveal: ...",
+  "Refusing to sync: ...", and so on). `env/NAME` entries are judged by the
+  `[phantom.secrets.NAME]` policy and that entry's own age. The MCP tools refuse
+  before a one-use approval is consumed and check again just before the read.
+- Listing, status, validation, `phantom rotate` and the rotation tools stay
+  ungated so an overdue secret can still be found and fixed.
+
+### Fixed (audit log is owner-only and never follows a symlink)
+
+- `~/.phantom/audit.log` and `audit.lock` were opened with plain
+  `OpenOptions`: a new log took the process umask (typically 0644, so other
+  local users could read secret names, process paths and pids), and a
+  symlink planted at either path was followed, redirecting audit appends or
+  locking into another file. Both are now opened with `O_NOFOLLOW` and
+  created 0600; an existing log or lock with group/other bits is tightened
+  to 0600 on the next write; a symlink, directory or FIFO at either path is
+  refused (an error under `PHANTOM_AUDIT=required`, skipped under
+  best-effort).
+
 ### Fixed (every remaining CLI command reads `.phantom.toml` only as a regular file)
 
 - `phantom list`, `reveal`, `status`, `watch`, `add` (and `copy`), `expiry`
