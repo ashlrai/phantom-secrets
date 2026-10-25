@@ -45,17 +45,19 @@ pub fn run(
     }
     validate_secret_name(name)?;
 
-    let project_dir = std::env::current_dir()?
+    let project_dir = crate::util::project_dir()?
         .canonicalize()
         .context("Failed to resolve the current project directory")?;
     let config_path = project_dir.join(".phantom.toml");
-    if !config_path.exists() {
-        anyhow::bail!(
-            "Project is not initialized. Run `phantom init --empty` first; `phantom add` will not create config, gitignore, or vault state outside its secret transaction."
-        );
-    }
-
-    let (config, config_before) = load_config_exact(&config_path)?;
+    let (config, config_before) = load_config_exact(&config_path).map_err(|error| {
+        if error.downcast_ref::<NotInitialized>().is_some() {
+            anyhow::anyhow!(
+                "Project is not initialized. Run `phantom init --empty` first; `phantom add` will not create config, gitignore, or vault state outside its secret transaction."
+            )
+        } else {
+            error
+        }
+    })?;
     validate_managed_dotenv_preflight(&project_dir, &config)?;
     let vault = phantom_vault::try_create_vault(config.local_project_id())?;
     ensure_secret_absent(vault.as_ref(), config.local_project_id(), name)?;
@@ -299,12 +301,31 @@ pub(super) fn validate_secret_name(name: &str) -> Result<()> {
     Ok(())
 }
 
+/// No `.phantom.toml` exists at the path [`load_config_exact`] was given.
+#[derive(Debug)]
+struct NotInitialized;
+
+impl std::fmt::Display for NotInitialized {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Project is not initialized. Run `phantom init --empty` first.")
+    }
+}
+
+impl std::error::Error for NotInitialized {}
+
+/// The config at `path` and its exact bytes, read only as a regular,
+/// non-symlink file (see [`crate::util::load_config_if_present`]).
 pub(super) fn load_config_exact(path: &Path) -> Result<(PhantomConfig, Vec<u8>)> {
-    let before = snapshot_regular_file(path)?.ok_or_else(|| {
-        anyhow::anyhow!("Project is not initialized. Run `phantom init --empty` first.")
-    })?;
-    let config = PhantomConfig::load(path).context("Failed to load .phantom.toml")?;
-    if snapshot_regular_file(path)?.as_deref() != Some(before.as_slice()) {
+    let before = crate::util::read_config_if_present(path)
+        .context("Failed to load .phantom.toml")?
+        .ok_or(NotInitialized)?;
+    let config =
+        PhantomConfig::load_from_bytes(path, &before).context("Failed to load .phantom.toml")?;
+    if crate::util::read_config_if_present(path)
+        .context("Failed to recheck .phantom.toml")?
+        .as_deref()
+        != Some(before.as_slice())
+    {
         anyhow::bail!(".phantom.toml changed during preflight; no secret was read or stored");
     }
     Ok((config, before))

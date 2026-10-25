@@ -44,13 +44,7 @@ pub fn run(warn_days: u64, auto_rotate: bool, sync_after: bool, json: bool) -> R
     }
 
     let project_dir = crate::util::project_dir()?;
-    let config_path = project_dir.join(".phantom.toml");
-
-    if !config_path.exists() {
-        return Err(crate::util::missing_config_error(&project_dir));
-    }
-
-    let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
+    let config = crate::util::load_project_config(&project_dir)?;
     if auto_rotate {
         crate::commands::add::validate_managed_dotenv_preflight(&project_dir, &config).context(
             "Managed dotenv is malformed; auto-rotate stopped before vault, metadata, or output effects",
@@ -236,12 +230,9 @@ pub fn run_set(key: &str, days: u64) -> Result<()> {
     let project_dir = crate::util::project_dir()?.canonicalize()?;
     let config_path = project_dir.join(".phantom.toml");
 
-    if !config_path.exists() {
-        return Err(crate::util::missing_config_error(&project_dir));
-    }
-
-    let config_before =
-        phantom_core::fs::read_regular_file(&config_path)?.context("Project is not initialized")?;
+    let config_before = crate::util::read_config_if_present(&config_path)
+        .context("Failed to load .phantom.toml")?
+        .ok_or_else(|| crate::util::missing_config_error(&project_dir))?;
     let config = PhantomConfig::load_from_bytes(&config_path, &config_before)
         .context("Failed to load exact .phantom.toml snapshot")?;
     let vault = crate::util::open_vault(config.local_project_id())?;
@@ -441,13 +432,7 @@ fn enforce_report(fail_closed: bool) -> Result<phantom_vault::metadata::ExpiryEn
 
 fn enforce_inputs(fail_closed: bool) -> Result<EnforceInputs> {
     let project_dir = crate::util::project_dir()?;
-    let config_path = project_dir.join(".phantom.toml");
-
-    if !config_path.exists() {
-        return Err(crate::util::missing_config_error(&project_dir));
-    }
-
-    let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
+    let config = crate::util::load_project_config(&project_dir)?;
     let vault = crate::util::open_vault(config.local_project_id())?;
     let now = phantom_vault::metadata::now_secs();
 
@@ -473,13 +458,7 @@ fn enforce_inputs(fail_closed: bool) -> Result<EnforceInputs> {
 /// provider credential and all expiry/rotation metadata remain unchanged.
 pub fn run_rotate(key: &str) -> Result<()> {
     let project_dir = crate::util::project_dir()?;
-    let config_path = project_dir.join(".phantom.toml");
-
-    if !config_path.exists() {
-        return Err(crate::util::missing_config_error(&project_dir));
-    }
-
-    let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
+    let config = crate::util::load_project_config(&project_dir)?;
     crate::commands::add::validate_managed_dotenv_preflight(&project_dir, &config).context(
         "Managed dotenv is malformed; expiry token remap stopped before vault, metadata, or output effects",
     )?;

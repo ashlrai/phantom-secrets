@@ -579,11 +579,11 @@ fn next_steps(logged_in: bool, has_cloud_version: bool) -> Vec<(&'static str, &'
 /// Print a contextual "what's next?" block.
 fn print_next_steps(config_path: &Path) {
     use phantom_core::auth;
-    use phantom_core::config::PhantomConfig;
 
     let logged_in = auth::load_token().is_some();
-    let has_cloud_version = PhantomConfig::load(config_path)
+    let has_cloud_version = crate::util::load_config_if_present(config_path)
         .ok()
+        .flatten()
         .and_then(|c| c.cloud)
         .is_some();
 

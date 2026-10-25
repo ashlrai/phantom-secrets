@@ -48,6 +48,24 @@ publication. Everything below, down to 0.7.9, is new since v0.7.9.
   `PHANTOM_RATE_LIMIT_BURST` to restore the old burst value.
 
 The detailed entries follow.
+### Fixed (every remaining CLI command reads `.phantom.toml` only as a regular file)
+
+- `phantom list`, `reveal`, `status`, `watch`, `add` (and `copy`), `expiry`
+  (report, `set`, `enforce`, `rotate`), `rotate --all`, `env list`/`env new`,
+  `validate` (and `schedule`, `history`), `grant list`/`status`/`revoke`,
+  `leaks plan`, the `agent` readiness vault probe and the `doctor` config
+  check still followed a `.phantom.toml` symlink or gated on `exists()`. A
+  symlink to another project's config chose which dotenv `watch` and
+  `expiry rotate` read, which vault `list`, `expiry` and `env` opened, which
+  leak-response policy `leaks plan` applied, and what doctor reported as a
+  valid config; a dangling one read as "not initialized" (or as the default
+  leak policy); a FIFO hung `list`, `expiry`, `rotate --all` and `env`. They
+  now share the regular, non-symlink read used by exec, sync and check, and
+  fail closed with a message naming only `.phantom.toml`. `cloud`, `team` and
+  `init` now parse the exact bytes they already read safely instead of
+  reading the file a second time through the path. Regular files behave as
+  before; `phantom reveal` now reports a broken config before its terminal
+  prompt instead of after it.
 
 ### Fixed (URL query credentials hidden by encoding or a fragment)
 

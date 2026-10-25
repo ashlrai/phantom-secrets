@@ -21,17 +21,15 @@ pub fn run_with_rotate(auto: bool, auto_rotate: bool) -> Result<()> {
         );
     }
 
-    let project_dir = std::env::current_dir()?;
-    let config_path = project_dir.join(".phantom.toml");
-
-    if !config_path.exists() {
+    let project_dir = crate::util::project_dir()?;
+    let Some(config) = crate::util::load_config_if_present(&project_dir.join(".phantom.toml"))
+        .context("Failed to load .phantom.toml")?
+    else {
         anyhow::bail!(
             "Not initialized. Run {} first.",
             "phantom init".cyan().bold()
         );
-    }
-
-    let config = PhantomConfig::load(&config_path)?;
+    };
     let watched = watched_dotenv_paths(&project_dir, &config)?;
 
     if watched.is_empty() {

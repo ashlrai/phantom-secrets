@@ -1303,13 +1303,7 @@ pub fn run_batch(
     }
 
     let project_dir = crate::util::project_dir()?;
-    let config_path = project_dir.join(".phantom.toml");
-
-    if !config_path.exists() {
-        return Err(crate::util::missing_config_error(&project_dir));
-    }
-
-    let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
+    let config = crate::util::load_project_config(&project_dir)?;
     let vault =
         crate::util::open_vault(config.local_project_id()).context("Failed to initialize vault")?;
 

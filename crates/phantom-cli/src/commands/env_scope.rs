@@ -308,14 +308,14 @@ pub fn run_list() -> Result<()> {
     let project_dir = crate::util::project_dir()?;
     let config_path = project_dir.join(".phantom.toml");
 
-    if !config_path.exists() {
+    let Some(config) = crate::util::load_config_if_present(&config_path)
+        .context("Failed to load .phantom.toml")?
+    else {
         anyhow::bail!(
             "No .phantom.toml found. Run {} first.",
             "phantom init".cyan().bold()
         );
-    }
-
-    let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
+    };
     let (all_keys, note) = environment_keys(config.local_project_id())?;
 
     let current = phantom_core::env_scope::read_active_env(&project_dir);
@@ -382,15 +382,16 @@ pub fn run_new(name: &str) -> Result<()> {
     let project_dir = crate::util::project_dir()?;
     let config_path = project_dir.join(".phantom.toml");
 
-    if !config_path.exists() {
+    let Some(config) = crate::util::load_config_if_present(&config_path)
+        .context("Failed to load .phantom.toml")?
+    else {
         anyhow::bail!(
             "No .phantom.toml found. Run {} first.",
             "phantom init".cyan().bold()
         );
-    }
+    };
 
     // Check if env already has any keys in vault
-    let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
     let (all_keys, note) = environment_keys(config.local_project_id())?;
     crate::util::warn_inventory_note(note.as_deref());
     let prefix = format!("{name}/");
