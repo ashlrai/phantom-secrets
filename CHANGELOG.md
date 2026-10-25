@@ -13,6 +13,33 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   export could silently store a stale credential; Infisical arrays only
   warned. The dotenv path already refused duplicates.
 
+### Fixed (Vercel sync matched variables by key only)
+
+- `phantom sync` to Vercel matched an existing variable by name alone, but
+  Vercel keeps one variable per name and environment set. When the name
+  existed only for another environment (say development), sync overwrote
+  that variable with the value meant for production and preview, reported
+  "updated", and never created it where it was configured. When production
+  and preview held separate variables, only the first one listed was
+  updated. Sync now never touches a variable whose environments are all
+  outside the configured `targets`, updates every project-wide variable
+  that applies to a configured target, creates one for the targets nothing
+  covers, and leaves Git-branch-scoped preview variables alone. A variable
+  that also applies to other environments (Vercel's default is all three)
+  is still updated, and sync prints a `warn` line naming those
+  environments, e.g. "STRIPE_KEY: also applies to development".
+
+### Fixed (pre-commit code scan under common git config)
+
+- `phantom check --staged` (the pre-commit hook) reported clean for a
+  credential added to a staged code file when git was set to
+  `color.ui = always`, used an external diff tool (`diff.external`, as
+  difftastic's setup does), had a textconv driver for the file, or when the
+  check ran from a subdirectory (with or without `diff.relative`). The
+  added-line scan now asks git for a plain, uncolored, root-relative diff
+  with external diff and textconv turned off, so those settings no longer
+  hide a staged key.
+
 ### Fixed (audit log durability and key creation)
 
 - With `PHANTOM_AUDIT=1`, each audit line is now fsynced (and the directory

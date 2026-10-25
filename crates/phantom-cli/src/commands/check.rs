@@ -33,7 +33,7 @@ pub fn run(staged_only: bool, runtime: bool, json: bool) -> Result<()> {
         scan = Some(result);
         ("runtime", findings, Vec::new())
     } else if staged_only {
-        let (findings, warnings) = staged_findings()?;
+        let (findings, warnings) = staged_findings(&std::env::current_dir()?)?;
         ("staged", findings, warnings)
     } else {
         (
@@ -105,13 +105,14 @@ fn findings_in_listed(project_dir: &Path, listed: Vec<PathBuf>) -> Result<Vec<Fi
 }
 
 /// `--staged` is the pre-commit surface. Ordinary worktree checks remain
-/// usable without a Git repository or Git binary.
-fn staged_findings() -> Result<(Vec<Finding>, Vec<ConfigWarning>)> {
+/// usable without a Git repository or Git binary. `cwd` is where git runs:
+/// the work tree root under a hook, any directory of it by hand.
+fn staged_findings(cwd: &Path) -> Result<(Vec<Finding>, Vec<ConfigWarning>)> {
     let mut findings = Vec::new();
     let mut warnings = Vec::new();
-    for file in get_staged_files()? {
+    for file in get_staged_files(cwd)? {
         if file.ends_with(".phantom.toml") {
-            let content = read_staged_file(&file)?;
+            let content = read_staged_file(cwd, &file)?;
             warnings.extend(config_risks(&file, &content));
             continue;
         }
@@ -119,7 +120,7 @@ fn staged_findings() -> Result<(Vec<Finding>, Vec<ConfigWarning>)> {
         if is_env_file(&file) {
             // Dotenv is a strict text format. Non-UTF-8 content makes its
             // protection status indeterminate and therefore fails closed.
-            let content = read_staged_file(&file)?;
+            let content = read_staged_file(cwd, &file)?;
             let dotenv = DotenvFile::parse_str(&content);
             dotenv.validate_for_mutation()?;
             let mut real_secrets = dotenv.real_secret_entries();
@@ -144,7 +145,7 @@ fn staged_findings() -> Result<(Vec<Finding>, Vec<ConfigWarning>)> {
         // Do not decode arbitrary staged blobs: PNG, PDF, and other
         // unrelated binary assets are valid. Git emits a textual binary
         // diff marker and therefore no added lines for those files.
-        let scan_content = staged_added_lines(&file)?;
+        let scan_content = staged_added_lines(cwd, &file)?;
         findings.extend(code_pattern_findings(&file, &scan_content));
     }
     Ok((findings, warnings))
@@ -476,12 +477,16 @@ fn print_runtime(findings: &[Finding], scan: &phantom_core::report::RuntimeEnvSc
     );
 }
 
-fn get_staged_files() -> Result<Vec<String>> {
+fn get_staged_files(cwd: &Path) -> Result<Vec<String>> {
+    // `--no-relative`: names are always root-relative, as `:<path>` and the
+    // `:(top)` pathspec below read them, whatever `diff.relative` says.
     let output = std::process::Command::new("git")
+        .current_dir(cwd)
         .args([
             "diff",
             "--cached",
             "--name-only",
+            "--no-relative",
             "--diff-filter=ACMR",
             "-z",
         ])
@@ -492,7 +497,7 @@ fn get_staged_files() -> Result<Vec<String>> {
             )
         })?;
     if !output.status.success() {
-        if !inside_git_work_tree() {
+        if !inside_git_work_tree(cwd) {
             anyhow::bail!(
                 "`phantom check --staged` must run inside a git work tree; clean status is indeterminate. Use `phantom check` to scan .env files here."
             );
@@ -509,8 +514,9 @@ fn get_staged_files() -> Result<Vec<String>> {
         .collect())
 }
 
-fn inside_git_work_tree() -> bool {
+fn inside_git_work_tree(cwd: &Path) -> bool {
     std::process::Command::new("git")
+        .current_dir(cwd)
         .args(["rev-parse", "--is-inside-work-tree"])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
@@ -518,8 +524,9 @@ fn inside_git_work_tree() -> bool {
         .is_ok_and(|out| out.status.success() && out.stdout.starts_with(b"true"))
 }
 
-fn read_staged_file(file: &str) -> Result<String> {
+fn read_staged_file(cwd: &Path, file: &str) -> Result<String> {
     let output = std::process::Command::new("git")
+        .current_dir(cwd)
         .args(["show", &format!(":{file}")])
         .output()
         .map_err(|_| {
@@ -533,9 +540,27 @@ fn read_staged_file(file: &str) -> Result<String> {
     })
 }
 
-fn staged_added_lines(file: &str) -> Result<String> {
+/// The staged added lines of `file`, read as plain unified diff whatever the
+/// user's git config says: `color.ui=always` would prefix each `+` line with
+/// an escape code, a `diff.external` tool (difftastic) or a textconv driver
+/// would replace the diff with its own output, and a cwd-relative pathspec
+/// or `diff.relative` would match nothing from a subdirectory. Each of those
+/// left no `+` lines, so staged credentials in code were reported clean.
+fn staged_added_lines(cwd: &Path, file: &str) -> Result<String> {
+    let pathspec = format!(":(top,literal){file}");
     let output = std::process::Command::new("git")
-        .args(["diff", "--cached", "--unified=0", "--", file])
+        .current_dir(cwd)
+        .args([
+            "diff",
+            "--cached",
+            "--no-color",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-relative",
+            "--unified=0",
+            "--",
+            &pathspec,
+        ])
         .output()
         .map_err(|_| {
             anyhow::anyhow!("Failed to inspect staged additions; clean status is indeterminate")
@@ -858,5 +883,78 @@ mod tests {
         config.phantom.dotenv_path = Some("custom.env".to_string());
         config.save(&dir.path().join(".phantom.toml")).unwrap();
         assert!(dotenv_scan_paths(dir.path()).is_err());
+    }
+
+    fn git_in(dir: &Path, args: &[&str]) {
+        let status = std::process::Command::new("git")
+            .current_dir(dir)
+            .args(args)
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {args:?}");
+    }
+
+    /// A repository with `config` set locally and one staged code file at
+    /// `path` holding a GitHub-shaped credential (built at runtime).
+    fn repo_with_staged_credential(config: &[(&str, &str)], path: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        git_in(dir.path(), &["init", "-q"]);
+        for (name, value) in config {
+            git_in(dir.path(), &["config", name, value]);
+        }
+        let file = dir.path().join(path);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        let line = format!(
+            "const key = \"{}{}\";\n",
+            "ghp_", "Q7rT2mVx9KpL4wZs8NdY3hBc6FjGu5EaR1oW"
+        );
+        std::fs::write(&file, line).unwrap();
+        git_in(dir.path(), &["add", "--", path]);
+        dir
+    }
+
+    fn staged_code_labels(cwd: &Path) -> Vec<&'static str> {
+        let (findings, _) = staged_findings(cwd).unwrap();
+        findings
+            .iter()
+            .filter(|finding| finding.kind == "staged_code")
+            .filter_map(|finding| finding.label)
+            .collect()
+    }
+
+    #[test]
+    fn staged_code_scan_reads_plain_diff_under_color_ui_always() {
+        let dir = repo_with_staged_credential(&[("color.ui", "always")], "src/app.ts");
+        assert_eq!(staged_code_labels(dir.path()), ["GitHub personal token"]);
+    }
+
+    #[test]
+    fn staged_code_scan_ignores_an_external_diff_tool() {
+        // difftastic's documented setup is `diff.external = difft`; any tool
+        // that prints its own format left no `+` lines to scan.
+        let dir = repo_with_staged_credential(&[("diff.external", "true")], "src/app.ts");
+        assert_eq!(staged_code_labels(dir.path()), ["GitHub personal token"]);
+    }
+
+    #[test]
+    fn staged_code_scan_ignores_a_textconv_driver() {
+        let dir = repo_with_staged_credential(&[("diff.hide.textconv", "true")], "src/app.ts");
+        std::fs::write(dir.path().join(".gitattributes"), "*.ts diff=hide\n").unwrap();
+        assert_eq!(staged_code_labels(dir.path()), ["GitHub personal token"]);
+    }
+
+    #[test]
+    fn staged_code_scan_from_a_subdirectory_sees_the_whole_index() {
+        // Run from `docs/` with `diff.relative` on: the listing must still
+        // name `src/app.ts`, and its diff must be read root-relative.
+        let dir = repo_with_staged_credential(&[("diff.relative", "true")], "src/app.ts");
+        let subdir = dir.path().join("docs");
+        std::fs::create_dir(&subdir).unwrap();
+        assert_eq!(staged_code_labels(&subdir), ["GitHub personal token"]);
+        let plain = repo_with_staged_credential(&[], "src/app.ts");
+        assert_eq!(
+            staged_code_labels(&plain.path().join("src")),
+            ["GitHub personal token"]
+        );
     }
 }
