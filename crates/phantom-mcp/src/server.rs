@@ -1,6 +1,7 @@
 use phantom_core::config::PhantomConfig;
 use phantom_core::dotenv::{classify, DotenvFile, SecretClassification};
 use phantom_core::fs::{AnchoredEffect, AnchoredRead, AnchoredTarget, TrustedAnchor};
+use phantom_core::package_scripts::wrapped_script_command;
 use phantom_core::precommit_hook::{self, HookChange};
 use phantom_core::report::{CheckFinding, CheckIndeterminate, CheckReport, DoctorReport};
 use phantom_core::token::{PhantomToken, TokenMap};
@@ -5758,12 +5759,16 @@ fn write_package_json_anchored_with(
     before: &AnchoredRead,
     before_commit: impl FnOnce(),
 ) -> Result<(), McpError> {
-    let pretty = serde_json::to_string_pretty(package)
-        .map_err(|error| internal_err(format!("Failed to serialize package.json: {error}")))?;
+    // Only the changed scripts are rewritten; key order, indentation and the
+    // final newline stay as the user wrote them.
+    let source = std::str::from_utf8(before.bytes())
+        .map_err(|_| internal_err("package.json is not valid UTF-8; no scripts were changed"))?;
+    let output = phantom_core::package_scripts::rewrite_scripts_in_place(source, package)
+        .map_err(|error| internal_err(format!("{error}; no scripts were changed")))?;
     before_commit();
     match target.replace_if_exact_with_permissions(
         Some(before),
-        format!("{pretty}\n").as_bytes(),
+        output.as_bytes(),
         before.permissions(),
     ) {
         Ok(AnchoredEffect::Durable(_)) => Ok(()),
@@ -5812,10 +5817,6 @@ fn write_new_anchored_output_with(
             "Output target changed while generating {display_name}; no file was overwritten: {error}"
         ))),
     }
-}
-
-fn wrapped_script_command(original: &str) -> String {
-    format!("phantom exec -- {original}")
 }
 
 /// Wrapped script names, plus selected scripts left unchanged because they
@@ -7783,6 +7784,32 @@ mod tests {
         let config_read = identity + loader[identity..].find("read_regular").unwrap();
         assert!(anchor < vault && vault < project_lock);
         assert!(project_lock < identity && identity < config_read);
+    }
+
+    #[test]
+    fn mcp_wrap_and_unwrap_leave_the_package_json_layout_alone() {
+        let original = "{\n  \"name\": \"demo\",\n  \"scripts\": {\n    \"start\": \"node server.js\",\n    \"dev\": \"next dev\",\n    \"test\": \"vitest\"\n  },\n  \"engines\": { \"node\": \">=20\" }\n}";
+        let wrapped_layout = "{\n  \"name\": \"demo\",\n  \"scripts\": {\n    \"start\": \"phantom exec -- node server.js\",\n    \"start:raw\": \"node server.js\",\n    \"dev\": \"phantom exec -- next dev\",\n    \"dev:raw\": \"next dev\",\n    \"test\": \"vitest\"\n  },\n  \"engines\": { \"node\": \">=20\" }\n}";
+        let project = canonical_temp_dir();
+        let package_path = project.path().join("package.json");
+        std::fs::write(&package_path, original).unwrap();
+        let transaction_lock =
+            phantom_vault::acquire_project_transaction_lock(project.path()).unwrap();
+        let target = transaction_lock.target(&package_path).unwrap();
+
+        let (mut package, before) = read_package_scripts_anchored(&target).unwrap();
+        let (wrapped, _) = wrap_package_scripts(&mut package, &[], &[]).unwrap();
+        assert_eq!(wrapped, vec!["dev", "start"]);
+        write_package_json_anchored(&target, &package, &before).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&package_path).unwrap(),
+            wrapped_layout
+        );
+
+        let (mut package, before) = read_package_scripts_anchored(&target).unwrap();
+        assert_eq!(unwrap_package_scripts(&mut package), vec!["dev", "start"]);
+        write_package_json_anchored(&target, &package, &before).unwrap();
+        assert_eq!(std::fs::read_to_string(&package_path).unwrap(), original);
     }
 
     #[cfg(unix)]
