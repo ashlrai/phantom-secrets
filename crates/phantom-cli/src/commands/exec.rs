@@ -150,7 +150,7 @@ async fn run_async(
             .validate_for_mutation()
             .context("Managed dotenv is malformed; child launch stopped before proxy startup")?;
     }
-    let active_env = crate::commands::env_scope::effective_env(&project_dir, env_flag);
+    let active_env = crate::commands::env_scope::effective_env(&project_dir, env_flag)?;
     let dotenv = resolved.file;
     let protected_env_keys: HashSet<String> = dotenv
         .iter()
@@ -497,6 +497,28 @@ fn retrieve_required_secret(
     bare: &str,
     active_env: &str,
 ) -> Result<zeroize::Zeroizing<String>> {
+    retrieve_session_secret(
+        vault,
+        project_id,
+        namespaced,
+        bare,
+        active_env,
+        "refusing to launch the child",
+    )
+}
+
+/// Read one protected key for a proxy session (`phantom exec` or `phantom
+/// start`) from `active_env`: the namespaced entry, and the legacy bare entry
+/// only for the default environment. Another environment never falls back to
+/// default values. `refusal` completes the missing-entry message.
+pub(super) fn retrieve_session_secret(
+    vault: &dyn phantom_vault::VaultBackend,
+    project_id: &str,
+    namespaced: &str,
+    bare: &str,
+    active_env: &str,
+    refusal: &str,
+) -> Result<zeroize::Zeroizing<String>> {
     let missing = || {
         crate::util::missing_protected_entry(
             vault,
@@ -505,7 +527,7 @@ fn retrieve_required_secret(
             format!(
                 "Protected dotenv key '{bare}' has no vault entry for environment '{active_env}'"
             ),
-            "refusing to launch the child",
+            refusal,
             active_env == DEFAULT_ENV,
         )
     };

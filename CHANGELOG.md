@@ -30,6 +30,24 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   export, and `phantom env copy`, whose copy keeps the source entry's
   read-only mode.
 
+### Fixed (`phantom start` ignored the active environment)
+
+- `phantom start` always served the default environment: after
+  `phantom env use prod` it quietly mapped the `default/` values (or the
+  legacy bare entry), and refused a key that only had a `prod/` entry, while
+  `phantom exec` in the same directory served `prod`. Start now resolves the
+  environment exactly as exec does and applies the same per-environment
+  rotation-on-access gate, read-only lifecycle check and retrieval path: the
+  `<env>/NAME` entry, with the legacy bare entry only for the default
+  environment. A non-default environment never falls back to default values.
+  The "secret(s) mapped" line now names the environment.
+- The active-environment selector `.phantom/env` is now read without
+  following a symlink, and its contents must be a name `phantom env use`
+  would accept. `phantom exec` and `phantom start` refuse a symlinked,
+  non-UTF-8 or invalid selector before reading any secret value, instead of
+  addressing vault entries under an arbitrary prefix. `phantom env use <name>`
+  rewrites a bad selector.
+
 ### Fixed (`phantom wrap` no longer breaks scripts that are a shell command line)
 
 - `phantom wrap` and MCP `phantom_wrap` prefixed each selected script with
