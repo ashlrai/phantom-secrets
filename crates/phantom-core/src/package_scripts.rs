@@ -9,6 +9,8 @@
 //! script fails), or run only its first command under the proxy while the
 //! rest runs without it. Such scripts are left unchanged and reported.
 //!
+//! [`wrap_scripts`] and [`unwrap_scripts`] are the one decision both callers
+//! apply, so a person and an agent get the same scripts wrapped.
 //! [`rewrite_scripts_in_place`] writes the result back without reformatting
 //! the rest of package.json.
 
@@ -86,6 +88,175 @@ pub const WRAP_PREFIX: &str = "phantom exec -- ";
 /// The script `phantom wrap` writes for `original`.
 pub fn wrapped_script_command(original: &str) -> String {
     format!("{WRAP_PREFIX}{original}")
+}
+
+/// Script names `phantom wrap` selects when no explicit list is given: they
+/// usually run the app and so need its credentials.
+const DEFAULT_WRAP_KEYWORDS: [&str; 5] = ["dev", "start", "serve", "build", "deploy"];
+
+/// Script names never selected by default, even when they also match a wrap
+/// keyword (`build:types`, `dev:fmt`, `test:start`): tooling that does not
+/// call a provider.
+const DEFAULT_SKIP_KEYWORDS: [&str; 12] = [
+    "lint",
+    "test",
+    "format",
+    "fmt",
+    "check",
+    "type",
+    "typecheck",
+    "prettier",
+    "eslint",
+    "clean",
+    "prepare",
+    "postinstall",
+];
+
+/// Whether `phantom wrap` selects script `name` when no explicit list is
+/// given. Case-insensitive; a skip keyword always wins over a wrap keyword.
+pub fn selected_by_default(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    !DEFAULT_SKIP_KEYWORDS.iter().any(|kw| lower.contains(kw))
+        && DEFAULT_WRAP_KEYWORDS.iter().any(|kw| lower.contains(kw))
+}
+
+/// Whether `script` already runs through Phantom, so wrapping it again would
+/// nest `phantom exec` inside itself.
+pub fn already_wrapped(script: &str) -> bool {
+    script.contains("phantom-secrets") || script.contains("phantom exec")
+}
+
+/// What [`wrap_scripts`] changed.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct WrapOutcome {
+    /// Scripts now prefixed with [`WRAP_PREFIX`], in package.json key order.
+    pub wrapped: Vec<String>,
+    /// Selected scripts left unchanged because they are a shell command line,
+    /// with the [`wrap_blocker`] reason.
+    pub unwrapped: Vec<(String, &'static str)>,
+}
+
+/// `name:raw` already exists and belongs to the user, so wrapping `name`
+/// would overwrite it. Nothing was changed.
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
+#[error(
+    "Refusing to wrap '{name}': package.json already contains user-owned script '{raw_name}'. Rename or remove that script explicitly before retrying. No scripts were changed."
+)]
+pub struct RawScriptConflict {
+    pub name: String,
+    pub raw_name: String,
+}
+
+/// The one decision both `phantom wrap` and MCP `phantom_wrap` apply to a
+/// parsed package.json: which scripts to wrap, and the edit.
+///
+/// A script is a candidate when it is a string, is not a `:raw` backup, is
+/// not [`already_wrapped`], is not in `skip`, and is either in `only` or,
+/// when `only` is empty, [`selected_by_default`]. A candidate that is a shell
+/// command line ([`wrap_blocker`]) is reported in `unwrapped` and left alone.
+/// The others are saved as `name:raw` and replaced by
+/// [`wrapped_script_command`]. If any `name:raw` already exists, nothing is
+/// changed.
+pub fn wrap_scripts(
+    pkg: &mut serde_json::Value,
+    only: &[String],
+    skip: &[String],
+) -> Result<WrapOutcome, RawScriptConflict> {
+    let Some(scripts) = pkg
+        .get_mut("scripts")
+        .and_then(serde_json::Value::as_object_mut)
+    else {
+        return Ok(WrapOutcome::default());
+    };
+    let mut candidates = Vec::new();
+    let mut unwrapped = Vec::new();
+    for (name, value) in scripts.iter() {
+        let Some(original) = value.as_str() else {
+            continue;
+        };
+        if name.ends_with(":raw")
+            || already_wrapped(original)
+            || skip.iter().any(|skipped| skipped == name)
+        {
+            continue;
+        }
+        let selected = if only.is_empty() {
+            selected_by_default(name)
+        } else {
+            only.iter().any(|chosen| chosen == name)
+        };
+        if !selected {
+            continue;
+        }
+        if let Some(reason) = wrap_blocker(original) {
+            unwrapped.push((name.clone(), reason));
+            continue;
+        }
+        let raw_name = format!("{name}:raw");
+        if scripts.contains_key(&raw_name) {
+            return Err(RawScriptConflict {
+                name: name.clone(),
+                raw_name,
+            });
+        }
+        candidates.push((name.clone(), raw_name, original.to_string()));
+    }
+    for (name, raw_name, original) in &candidates {
+        scripts.insert(
+            raw_name.clone(),
+            serde_json::Value::String(original.clone()),
+        );
+        scripts.insert(
+            name.clone(),
+            serde_json::Value::String(wrapped_script_command(original)),
+        );
+    }
+    Ok(WrapOutcome {
+        wrapped: candidates.into_iter().map(|(name, _, _)| name).collect(),
+        unwrapped,
+    })
+}
+
+/// The inverse of [`wrap_scripts`], shared by `phantom unwrap` and MCP
+/// `phantom_unwrap`: every `name:raw` whose `name` is exactly
+/// [`wrapped_script_command`] of it is restored and removed. Any other
+/// `:raw` script is the user's and is left alone. Returns the restored
+/// names in package.json key order.
+pub fn unwrap_scripts(pkg: &mut serde_json::Value) -> Vec<String> {
+    let Some(scripts) = pkg
+        .get_mut("scripts")
+        .and_then(serde_json::Value::as_object_mut)
+    else {
+        return Vec::new();
+    };
+    let owned = scripts
+        .iter()
+        .filter_map(|(raw_name, raw_value)| {
+            let base_name = raw_name.strip_suffix(":raw")?;
+            let original = raw_value.as_str()?;
+            let expected = wrapped_script_command(original);
+            (scripts.get(base_name).and_then(serde_json::Value::as_str) == Some(&expected)).then(
+                || {
+                    (
+                        base_name.to_string(),
+                        raw_name.clone(),
+                        original.to_string(),
+                    )
+                },
+            )
+        })
+        .collect::<Vec<_>>();
+    for (base_name, raw_name, original) in &owned {
+        scripts.insert(
+            base_name.clone(),
+            serde_json::Value::String(original.clone()),
+        );
+        scripts.remove(raw_name);
+    }
+    owned
+        .into_iter()
+        .map(|(base_name, _, _)| base_name)
+        .collect()
 }
 
 /// Why package.json could not be edited in place.
@@ -435,6 +606,125 @@ fn skip_value(source: &str, start: usize) -> Result<usize, PackageJsonEditError>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_selection_keeps_the_narrower_of_the_former_cli_and_mcp_rules() {
+        for name in [
+            "dev",
+            "start",
+            "serve",
+            "build",
+            "deploy",
+            "dev:local",
+            "Start",
+            "predev",
+        ] {
+            assert!(selected_by_default(name), "{name}");
+        }
+        // `preview` was CLI-only; `type` and `fmt` were CLI-only skips.
+        for name in [
+            "preview",
+            "build:types",
+            "dev:fmt",
+            "typegen:dev",
+            "test",
+            "test:start",
+            "lint",
+            "format",
+            "typecheck",
+            "check:build",
+            "clean:build",
+            "prepare",
+            "postinstall",
+            "",
+        ] {
+            assert!(!selected_by_default(name), "{name}");
+        }
+    }
+
+    #[test]
+    fn already_wrapped_scripts_are_recognized() {
+        assert!(already_wrapped("phantom exec -- next dev"));
+        assert!(already_wrapped("npx phantom-secrets exec -- next dev"));
+        assert!(!already_wrapped("next dev"));
+    }
+
+    #[test]
+    fn wrap_selects_wraps_and_never_double_wraps() {
+        let mut pkg = serde_json::json!({
+            "name": "demo",
+            "scripts": {
+                "build": "next build",
+                "dev": "next dev",
+                "lint": "eslint .",
+                "preview": "vite preview",
+                "serve": "node a.js && node b.js",
+                "start": "phantom exec -- node server.js",
+                "deploy": 7
+            }
+        });
+        let outcome = wrap_scripts(&mut pkg, &[], &[]).unwrap();
+        assert_eq!(outcome.wrapped, vec!["build", "dev"]);
+        let blocked: Vec<&str> = outcome.unwrapped.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(blocked, vec!["serve"]);
+        assert_eq!(pkg["scripts"]["dev"], "phantom exec -- next dev");
+        assert_eq!(pkg["scripts"]["dev:raw"], "next dev");
+        assert_eq!(pkg["scripts"]["preview"], "vite preview");
+        assert_eq!(pkg["scripts"]["deploy"], 7);
+        assert!(pkg["scripts"].get("start:raw").is_none());
+
+        // A second run finds nothing left to wrap.
+        let after_first = pkg.clone();
+        let again = wrap_scripts(&mut pkg, &[], &[]).unwrap();
+        assert!(again.wrapped.is_empty());
+        assert_eq!(pkg, after_first);
+        // Naming a wrapped script explicitly does not nest the prefix either.
+        let explicit = wrap_scripts(&mut pkg, &["dev".to_string()], &[]).unwrap();
+        assert!(explicit.wrapped.is_empty());
+        assert_eq!(pkg, after_first);
+    }
+
+    #[test]
+    fn explicit_only_and_skip_override_the_default_selection() {
+        let mut pkg = serde_json::json!({
+            "scripts": { "dev": "next dev", "preview": "vite preview", "test": "vitest" }
+        });
+        let only = ["preview", "test", "dev", "missing", "dev:raw"].map(String::from);
+        let outcome = wrap_scripts(&mut pkg, &only, &["dev".to_string()]).unwrap();
+        assert_eq!(outcome.wrapped, vec!["preview", "test"]);
+        assert_eq!(pkg["scripts"]["dev"], "next dev");
+    }
+
+    #[test]
+    fn raw_conflict_changes_nothing() {
+        let mut pkg = serde_json::json!({
+            "scripts": { "build": "next build", "dev": "next dev", "dev:raw": "mine" }
+        });
+        let before = pkg.clone();
+        let conflict = wrap_scripts(&mut pkg, &[], &[]).unwrap_err();
+        assert_eq!(conflict.name, "dev");
+        assert_eq!(conflict.raw_name, "dev:raw");
+        assert_eq!(pkg, before);
+    }
+
+    #[test]
+    fn unwrap_is_the_exact_inverse_and_keeps_user_raw_scripts() {
+        let original = serde_json::json!({
+            "scripts": {
+                "build": "next build",
+                "dev": "next dev",
+                "lint": "eslint .",
+                "start:raw": "user-owned",
+                "start": "node server.js"
+            }
+        });
+        let mut pkg = original.clone();
+        wrap_scripts(&mut pkg, &["build".into(), "dev".into()], &[]).unwrap();
+        assert_eq!(unwrap_scripts(&mut pkg), vec!["build", "dev"]);
+        assert_eq!(pkg, original);
+        assert!(unwrap_scripts(&mut pkg).is_empty());
+        assert!(unwrap_scripts(&mut serde_json::json!({ "name": "x" })).is_empty());
+    }
 
     #[test]
     fn simple_commands_can_be_wrapped() {
