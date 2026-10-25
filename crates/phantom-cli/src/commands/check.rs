@@ -157,6 +157,11 @@ fn staged_findings(cwd: &Path) -> Result<(Vec<Finding>, Vec<ConfigWarning>)> {
             continue;
         }
 
+        if is_direnv_file(&file) {
+            findings.extend(staged_direnv_findings(cwd, &file)?);
+            continue;
+        }
+
         // Any staged blob is valid to commit, PNG and PDF assets included,
         // so its added bytes are scanned for the ASCII credential shapes
         // whatever git thinks of the file (see `staged_added_lines`).
@@ -164,6 +169,50 @@ fn staged_findings(cwd: &Path) -> Result<(Vec<Finding>, Vec<ConfigWarning>)> {
         findings.extend(code_pattern_findings(&file, &scan_content));
     }
     Ok((findings, warnings))
+}
+
+/// A direnv `.envrc` (or the `.envrc.local` it conventionally sources) holds
+/// the same `export KEY=value` assignments as a dotenv file, so each
+/// assignment the dotenv parser reads is classified exactly as a staged
+/// `.env` entry is. It is shell, not dotenv: stdlib calls (`use nix`,
+/// `PATH_add bin`), conditionals and repeated names are not parse errors, and
+/// a value expanded when direnv loads (`$(op read ...)`, `${VAR}`, backticks)
+/// or left empty commits no credential. Lines the parser skips are still
+/// covered by the code scan of the staged additions.
+fn staged_direnv_findings(cwd: &Path, file: &str) -> Result<Vec<Finding>> {
+    let added = staged_added_lines(cwd, file)?;
+    let mut findings = code_pattern_findings(file, &added);
+    let content = read_staged_bytes(cwd, file)?;
+    let dotenv = DotenvFile::parse_str(&String::from_utf8_lossy(&content));
+    for entry in dotenv.real_secret_entries() {
+        if entry.value.is_empty() || is_shell_expansion(&entry.value) {
+            continue;
+        }
+        findings.push(Finding {
+            kind: "staged_dotenv",
+            path: Some(file.to_string()),
+            name: Some(entry.key.clone()),
+            label: None,
+            pattern: None,
+        });
+    }
+    Ok(findings)
+}
+
+fn is_direnv_file(file: &str) -> bool {
+    file.rsplit('/')
+        .next()
+        .is_some_and(|name| matches!(name, ".envrc" | ".envrc.local"))
+}
+
+/// A value the shell computes when direnv loads it rather than a literal:
+/// command substitution, a variable reference or a backtick command.
+fn is_shell_expansion(value: &str) -> bool {
+    value.starts_with('`')
+        || value.strip_prefix('$').is_some_and(|rest| {
+            rest.starts_with(['(', '{'])
+                || rest.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+        })
 }
 
 /// Credential shapes looked for in staged code: the prefix, a label for the
@@ -617,6 +666,12 @@ fn inside_git_work_tree(cwd: &Path) -> bool {
 }
 
 fn read_staged_file(cwd: &Path, file: &str) -> Result<String> {
+    String::from_utf8(read_staged_bytes(cwd, file)?).map_err(|_| {
+        anyhow::anyhow!("Staged file is not valid UTF-8; clean status is indeterminate")
+    })
+}
+
+fn read_staged_bytes(cwd: &Path, file: &str) -> Result<Vec<u8>> {
     let output = std::process::Command::new("git")
         .current_dir(cwd)
         .args(["show", &format!(":{file}")])
@@ -627,9 +682,7 @@ fn read_staged_file(cwd: &Path, file: &str) -> Result<String> {
     if !output.status.success() {
         anyhow::bail!("Failed to read staged file; clean status is indeterminate");
     }
-    String::from_utf8(output.stdout).map_err(|_| {
-        anyhow::anyhow!("Staged file is not valid UTF-8; clean status is indeterminate")
-    })
+    Ok(output.stdout)
 }
 
 /// The staged added lines of `file`, read as plain unified diff whatever the
@@ -1348,5 +1401,98 @@ mod tests {
         stage_entry(dir.path(), "120000", "/etc/hostname", ".env");
         let (findings, _) = staged_findings(dir.path()).unwrap();
         assert!(findings.is_empty());
+    }
+
+    /// Assignment lines holding real-looking values, built at runtime so no
+    /// credential-shaped literal lives in the source. The database URL and
+    /// the signing value carry no prefix the code scan knows.
+    fn direnv_assignment_lines() -> String {
+        let db_url = format!("postgres://app:{}@db.internal:5432/app", "Vq8rLm2Xz7Kt");
+        let signing = ["9f3c1a7e5b", "2d8f4c6a0e", "1b7d3f9a5c"].concat();
+        let openai = ["sk", "-proj-", "Q7rT2mVx9KpL4wZs8NdY3hBc"].concat();
+        format!(
+            "export DATABASE_URL={db_url}\nWEBHOOK_SIGNING={signing}\nexport OPENAI_API_KEY=\"{openai}\"\n"
+        )
+    }
+
+    fn staged_dotenv_names(cwd: &Path) -> Vec<String> {
+        let (findings, _) = staged_findings(cwd).unwrap();
+        let mut names: Vec<String> = findings
+            .iter()
+            .filter(|finding| finding.kind == "staged_dotenv")
+            .filter_map(|finding| finding.name.clone())
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// A direnv `.envrc` holds the same `export KEY=value` lines as a dotenv
+    /// file, mixed with direnv stdlib calls. Its assignments get the same
+    /// dotenv classification by name as `.env`, so a database URL or signing
+    /// value with no known prefix is no longer committed unreported.
+    #[test]
+    fn staged_envrc_assignments_are_classified_like_dotenv() {
+        let assignments = direnv_assignment_lines();
+        let expected = ["DATABASE_URL", "OPENAI_API_KEY", "WEBHOOK_SIGNING"];
+
+        let dotenv = repo_with_staged_bytes(".env", assignments.as_bytes());
+        assert_eq!(staged_dotenv_names(dotenv.path()), expected);
+
+        let envrc = format!(
+            "use nix\nlayout python\nPATH_add bin\nexport NODE_ENV=development\nPORT=3000\n{assignments}"
+        );
+        for path in [".envrc", ".envrc.local", "services/api/.envrc"] {
+            let dir = tempfile::tempdir().unwrap();
+            git_in(dir.path(), &["init", "-q"]);
+            let file = dir.path().join(path);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(&file, &envrc).unwrap();
+            git_in(dir.path(), &["add", "--", path]);
+            assert_eq!(staged_dotenv_names(dir.path()), expected, "{path}");
+        }
+    }
+
+    /// direnv is shell: stdlib calls, conditionals, repeated names and values
+    /// fetched at load time (`$(op read ...)`, `${VAR}`) are the documented
+    /// way to keep credentials out of `.envrc`. None of it is a finding, and
+    /// none of it fails the hook as malformed dotenv.
+    #[test]
+    fn staged_envrc_shell_lines_and_config_are_clean() {
+        let envrc = concat!(
+            "#!/usr/bin/env bash\n",
+            "use flake\n",
+            "layout python3\n",
+            "PATH_add bin\n",
+            "source_env_if_exists .envrc.local\n",
+            "dotenv_if_exists .env.local\n",
+            "watch_file flake.nix\n",
+            "if [ -f .env ]; then\n",
+            "  dotenv\n",
+            "fi\n",
+            "export NODE_ENV=production\n",
+            "export PORT=3000\n",
+            "export PORT=3001\n",
+            "export PATH=\"$PWD/node_modules/.bin:$PATH\"\n",
+            "export OPENAI_API_KEY=\"$(op read op://dev/openai/credential)\"\n",
+            "export GITHUB_TOKEN=$(gh auth token)\n",
+            "export AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}\n",
+            "export SENTRY_AUTH_TOKEN=`cat ~/.config/sentry`\n",
+            "export STRIPE_API_KEY=\n",
+        );
+        let dir = repo_with_staged_bytes(".envrc", envrc.as_bytes());
+        let (findings, _) = staged_findings(dir.path()).unwrap();
+        assert!(findings.is_empty(), "{} finding(s)", findings.len());
+    }
+
+    /// A credential on a shell line the dotenv parser cannot read is still
+    /// caught by the code scan of the staged additions.
+    #[test]
+    fn staged_envrc_still_gets_the_code_scan() {
+        let line = format!(
+            "curl -H \"Authorization: {}{}\" https://example.invalid\n",
+            "ghp_", "Q7rT2mVx9KpL4wZs8NdY3hBc6FjGu5EaR1oW"
+        );
+        let dir = repo_with_staged_bytes(".envrc", line.as_bytes());
+        assert_eq!(staged_code_labels(dir.path()), ["GitHub personal token"]);
     }
 }

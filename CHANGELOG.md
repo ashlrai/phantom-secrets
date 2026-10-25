@@ -19,6 +19,20 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   is no longer wrapped by default; select it with `phantom wrap --only
   preview`. Scripts that already run through Phantom are never wrapped again.
 
+### Fixed (`phantom check --staged` scans direnv `.envrc` assignments like `.env`)
+
+- A staged `.envrc` or `.envrc.local` holds the same `export KEY=value` lines
+  as a dotenv file, but the pre-commit scan treated it as code and looked only
+  for credential prefixes such as `sk-`. A committed
+  `export DATABASE_URL=postgres://app:<password>@host/db`, or a signing value
+  with no known prefix, was reported clean, while the same line in `.env` was
+  blocked. Each assignment in a staged `.envrc` is now classified by the same
+  dotenv rules and reported by name only, with or without `export `. The file
+  is still shell: direnv calls (`use nix`, `layout python`, `PATH_add bin`),
+  conditionals and repeated names are not errors, and values computed when
+  direnv loads (`$(op read ...)`, `${VAR}`, backticks) or left empty are not
+  findings. The credential-prefix scan of its added lines still runs.
+
 ### Fixed (`phantom check --staged` missed credentials in files git calls binary)
 
 - The pre-commit scan read each staged code file's added lines from
