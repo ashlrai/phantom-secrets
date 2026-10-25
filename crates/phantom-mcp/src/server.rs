@@ -2047,6 +2047,19 @@ impl PhantomMcpServer {
         // source name or a locked source vault is known now from names alone.
         // Refuse before the one-use approval is requested or consumed.
         self.preflight_vault_names(Some(&params.name), "copy from the source project")?;
+        // An overdue enforced source secret is known from names and metadata
+        // alone: refuse before the one-use approval is requested or consumed.
+        // The check runs again just before the value is read.
+        {
+            let (source_config, source_vault) = self.load_config_and_vault()?;
+            crate::tools::helpers::enforce_rotation_on_entries(
+                &source_config,
+                source_vault.as_ref(),
+                [params.name.as_str()],
+                "copy",
+                phantom_vault::rotation_gate::now_secs(),
+            )?;
+        }
 
         // The approval binds the human-reviewed request to the resolved target
         // vault identity and exact config before-image. Retrying after a path,
@@ -2068,6 +2081,16 @@ impl PhantomMcpServer {
         )?;
 
         let (source_config, source_vault) = self.load_config_and_vault()?;
+        // A copy hands the value to a project that does not carry this
+        // project's rotation policy: refuse an overdue enforced secret here,
+        // exactly as `phantom exec` would, before the value is read.
+        crate::tools::helpers::enforce_rotation_on_entries(
+            &source_config,
+            source_vault.as_ref(),
+            [params.name.as_str()],
+            "copy",
+            phantom_vault::rotation_gate::now_secs(),
+        )?;
         let secret_value = source_vault.retrieve(&params.name).map_err(|e| match e {
             phantom_core::error::PhantomError::SecretNotFound(_) => self.missing_secret_err(
                 &source_config,
@@ -3426,6 +3449,15 @@ impl PhantomMcpServer {
         if names.is_empty() {
             return text_result("No secrets in this project's vault to push.".to_string());
         }
+        // Refuse an overdue enforced secret before the one-use approval is
+        // requested or consumed; the check runs again before any value read.
+        crate::tools::helpers::enforce_rotation_on_entries(
+            &config,
+            vault.as_ref(),
+            names.iter().map(String::as_str),
+            "push the team vault",
+            phantom_vault::rotation_gate::now_secs(),
+        )?;
         let params_json = team_push_approval_params_json(
             &params,
             &self.project_id(),
@@ -3453,6 +3485,15 @@ impl PhantomMcpServer {
                 "Vault names changed after approval; no secret value or provider request was attempted",
             ));
         }
+        // Team members receive real values: re-judge after approval, as
+        // `phantom exec` would, immediately before any value is read.
+        crate::tools::helpers::enforce_rotation_on_entries(
+            &config,
+            vault.as_ref(),
+            names.iter().map(String::as_str),
+            "push the team vault",
+            phantom_vault::rotation_gate::now_secs(),
+        )?;
 
         let token = Zeroizing::new(
             phantom_core::auth::require_token().map_err(|e| internal_err(e.to_string()))?,
@@ -10311,6 +10352,127 @@ mod tests {
             config_before
         );
         assert_eq!(std::fs::read(target.join(".env")).unwrap(), env_before);
+    }
+
+    /// Turn on `enforce_rotation_on_access` (30d) for OPENAI_API_KEY in the
+    /// project at `dir` and stamp its vault entry `age_days` old.
+    fn enforce_rotation_aged(dir: &TempDir, age_days: u64) {
+        let config_path = dir.path().join(".phantom.toml");
+        let mut config = PhantomConfig::load(&config_path).unwrap();
+        config.phantom.secrets.insert(
+            "OPENAI_API_KEY".to_string(),
+            phantom_core::config::SecretOverride {
+                rotate_every: Some("30d".to_string()),
+                enforce_rotation_on_access: true,
+                ..phantom_core::config::SecretOverride::default()
+            },
+        );
+        config.save(&config_path).unwrap();
+        let vault = phantom_vault::try_create_vault(config.local_project_id()).unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let created_at = now - age_days * 86_400;
+        let mut stamped = 0;
+        for entry in vault.list().unwrap() {
+            let logical =
+                phantom_core::env_scope::split_key(&entry).map_or(entry.as_str(), |(_, n)| n);
+            if logical == "OPENAI_API_KEY" {
+                vault
+                    .set_metadata(
+                        &entry,
+                        phantom_vault::SecretMetadata {
+                            created_at: Some(created_at),
+                            ..phantom_vault::SecretMetadata::default()
+                        },
+                    )
+                    .unwrap();
+                stamped += 1;
+            }
+        }
+        assert!(stamped > 0, "the initialized project stores OPENAI_API_KEY");
+    }
+
+    /// `phantom_copy_secret` handed an overdue enforced secret to another
+    /// project, where `phantom exec` there would never see this project's
+    /// rotation policy. It now refuses, before approval and before the value
+    /// is read, exactly as exec would; a secret inside its window copies.
+    #[test]
+    fn copy_secret_applies_rotation_enforcement() {
+        let _environment = TestEnvironment::new();
+        let _home = TestHome::new();
+        let (source, source_dir) = setup_initialized_project();
+        let (_target, target_dir) = setup_initialized_project();
+        let target = target_dir.path().canonicalize().unwrap();
+        let target_env_before = std::fs::read(target.join(".env")).unwrap();
+        let request = || {
+            Parameters(CopySecretParams {
+                name: "OPENAI_API_KEY".to_string(),
+                target_dir: target.display().to_string(),
+                rename: Some("COPIED_API_KEY".to_string()),
+                confirm: true,
+                approval_token: None,
+            })
+        };
+
+        enforce_rotation_aged(&source_dir, 45);
+        let refused = source.phantom_copy_secret(request());
+        let Err(error) = refused else {
+            panic!("an overdue enforced secret was copied");
+        };
+        assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_REQUEST);
+        assert!(error
+            .message
+            .starts_with("Refusing to copy: rotation enforcement blocked 1 secret(s)."));
+        assert!(error.message.contains("'OPENAI_API_KEY'"));
+        assert_eq!(
+            std::fs::read(target.join(".env")).unwrap(),
+            target_env_before
+        );
+
+        enforce_rotation_aged(&source_dir, 1);
+        assert!(
+            source.phantom_copy_secret(request()).is_ok(),
+            "a secret inside its rotation window must copy"
+        );
+    }
+
+    /// `phantom_team_vault_push` handed an overdue enforced secret to every
+    /// team member. It now refuses before approval and before any value read
+    /// or provider request; a secret inside its window reaches the next step
+    /// (here the missing cloud login).
+    #[test]
+    fn team_vault_push_applies_rotation_enforcement() {
+        let _environment = TestEnvironment::new();
+        let _home = TestHome::new();
+        let (server, dir) = setup_initialized_project();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let push = || {
+            runtime.block_on(server.phantom_team_vault_push(params(serde_json::json!({
+                "team_id": "team-fixture",
+                "confirm": true,
+            }))))
+        };
+
+        enforce_rotation_aged(&dir, 45);
+        let Err(error) = push() else {
+            panic!("an overdue enforced secret was pushed");
+        };
+        assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_REQUEST);
+        assert!(error.message.starts_with(
+            "Refusing to push the team vault: rotation enforcement blocked 1 secret(s)."
+        ));
+
+        enforce_rotation_aged(&dir, 1);
+        let passed_gate = match push() {
+            Ok(_) => true,
+            Err(error) => !error.message.starts_with("Refusing to push the team vault"),
+        };
+        assert!(passed_gate, "a secret inside its window must pass the gate");
     }
 
     /// `phantom_env` picked the managed dotenv from an unguarded listing.
