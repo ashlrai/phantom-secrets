@@ -12,9 +12,9 @@ use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
 use crate::tools::helpers::{
-    config_invalid_err, internal_err, invalid_params_err, json_object_result, not_initialized_err,
-    report_result, require_approval_token, require_confirm, state_err, text_result, vault_init_err,
-    vault_read_err, NOT_INITIALIZED_NEXT_STEP,
+    config_invalid_err, internal_err, invalid_params_err, json_object_result, mcp_effects_enabled,
+    not_initialized_err, report_result, require_approval_token, require_confirm, state_err,
+    text_result, vault_init_err, vault_read_err, NOT_INITIALIZED_NEXT_STEP,
 };
 use crate::tools::params::{
     AddSecretInteractiveParams, AddSecretParams, ApplyExpiryPolicyParams, ApprovalParams,
@@ -489,6 +489,39 @@ impl PhantomMcpServer {
         let config = self.require_config()?;
         let vault = self.open_project_vault(&config)?;
         Ok((config, vault))
+    }
+
+    /// Value-blind preconditions checked BEFORE a one-use approval is
+    /// consumed, so a request that could never succeed does not burn the
+    /// operator's approval. Opens this project's vault and reads names only,
+    /// never a value: refuses a locked encrypted-file vault the way the
+    /// post-approval path would and, when `name` is given, a secret the
+    /// inventory does not hold. Everything it can answer is already answered,
+    /// without approval, by `phantom_list_secrets`. Callers keep their
+    /// authoritative re-check after approval, because state can change in
+    /// between. `what` names the action, e.g. "copy from the source project".
+    fn preflight_vault_names(&self, name: Option<&str>, what: &str) -> Result<(), McpError> {
+        if !mcp_effects_enabled() {
+            // Leave the refusal to require_approval_token's effects gate.
+            return Ok(());
+        }
+        let (config, vault) = self.load_config_and_vault()?;
+        self.require_readable_inventory(&config, vault.as_ref())?;
+        let Some(name) = name else {
+            return Ok(());
+        };
+        let names = vault
+            .list()
+            .map_err(|e| vault_read_err("Failed to list secrets", e))?;
+        if names.iter().any(|held| held == name) {
+            return Ok(());
+        }
+        // Beside a locked encrypted-file vault the name is most likely in
+        // that file: name the locked vault and the unlock step instead.
+        self.require_complete_inventory(&config, vault.as_ref(), what)?;
+        Err(invalid_params_err(format!(
+            "Secret '{name}' not found in vault; no approval was requested or consumed. Call phantom_list_secrets for exact (case-sensitive) names, then retry."
+        )))
     }
 
     fn load_config_and_vault_anchored(
@@ -1319,6 +1352,8 @@ impl PhantomMcpServer {
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_rotate", params.confirm)?;
         self.preflight_managed_dotenv_strict()?;
+        // A locked vault would be refused after approval; refuse it first.
+        self.preflight_vault_names(None, "rotate phantom tokens")?;
         let params_json = serde_json::to_string(&params).unwrap_or_default();
         require_approval_token(
             "phantom_rotate",
@@ -2010,6 +2045,11 @@ impl PhantomMcpServer {
                 "Target managed dotenv already owns '{target_name}'; copy never overwrites"
             )));
         }
+
+        // The source value is retrieved only after approval, but a missing
+        // source name or a locked source vault is known now from names alone.
+        // Refuse before the one-use approval is requested or consumed.
+        self.preflight_vault_names(Some(&params.name), "copy from the source project")?;
 
         // The approval binds the human-reviewed request to the resolved target
         // vault identity and exact config before-image. Retrying after a path,
@@ -2888,6 +2928,7 @@ impl PhantomMcpServer {
         phantom_core::fs::validate_project_filename(&params.output)
             .map_err(|error| invalid_params_err(error.to_string()))?;
         self.preflight_managed_dotenv_strict()?;
+        self.preflight_vault_names(None, "generate the environment example")?;
         let params_json = serde_json::to_string(&params).unwrap_or_default();
         require_approval_token(
             "phantom_env",
@@ -3481,6 +3522,7 @@ impl PhantomMcpServer {
             return Err(invalid_params_err("days_ttl must be > 0"));
         }
         self.preflight_managed_dotenv_strict()?;
+        self.preflight_vault_names(None, "remap phantom tokens")?;
         let params_json = serde_json::to_string(&params).unwrap_or_default();
         require_approval_token(
             "phantom_rotate_with_expiry",
@@ -5241,6 +5283,9 @@ impl PhantomMcpServer {
             ));
         }
         self.preflight_managed_dotenv_strict()?;
+        // A missing name or a locked vault would be refused after approval;
+        // refuse them first, names only.
+        self.preflight_vault_names(Some(&params.name), "remap this phantom token")?;
         let params_json = serde_json::to_string(&params).unwrap_or_default();
         require_approval_token(
             "phantom_secrets_auto_rotate",
@@ -15723,5 +15768,290 @@ mod tests {
             json["ok"].as_array().unwrap().is_empty(),
             "ok should be empty"
         );
+    }
+
+    /// Turns on the real out-of-band approval ceremony for one test: effects
+    /// enabled, the unit-test skip removed. `TestEnvironment` restores both.
+    fn live_approval_mode() {
+        // SAFETY: TestEnvironment holds the env lock and restores the values.
+        unsafe {
+            std::env::remove_var("PHANTOM_MCP_SKIP_APPROVAL");
+            std::env::set_var("PHANTOM_MCP_EFFECTS", "trusted-terminal");
+        }
+    }
+
+    /// A pending approval minted and approved as `phantom mcp-approve` would.
+    struct ApprovedRequest {
+        nonce: String,
+        approval_id: String,
+        /// The combined `nonce:token` field the tool accepts.
+        combined: String,
+    }
+
+    /// Mints and approves a pending approval for `tool` bound to
+    /// `params_json`.
+    fn approved_request(tool: &str, params_json: &str, project_id: &str) -> ApprovedRequest {
+        let nonce =
+            phantom_core::mcp_approval::generate_pending_approval(tool, params_json, project_id)
+                .unwrap();
+        let approved = phantom_core::mcp_approval::approve_nonce(&nonce).unwrap();
+        let combined = format!("{nonce}:{}", approved.approval_token);
+        ApprovedRequest {
+            nonce,
+            approval_id: approved.approval_token,
+            combined,
+        }
+    }
+
+    /// True when the approval minted by `approved_request` is still usable:
+    /// it validates and is consumed here, so it had not been consumed before.
+    fn approval_still_usable(
+        approved: &ApprovedRequest,
+        tool: &str,
+        params_json: &str,
+        project_id: &str,
+    ) -> bool {
+        phantom_core::mcp_approval::validate_and_consume_approval(
+            &approved.nonce,
+            &approved.approval_id,
+            tool,
+            params_json,
+            project_id,
+        )
+        .is_ok()
+    }
+
+    /// `phantom_copy_secret` consumed the one-use approval and only then
+    /// found the SOURCE vault locked, so the operator had to approve again
+    /// for a copy that could never have succeeded. The names-only source
+    /// check now runs first and the approval stays usable.
+    #[test]
+    fn copy_secret_keeps_its_approval_when_the_source_vault_is_locked() {
+        let _environment = TestEnvironment::new();
+        let _home = TestHome::new();
+        // A target with config but no vault file, so only the source is locked.
+        let (_target, target_dir) = setup_test_project();
+        let target = target_dir.path().canonicalize().unwrap();
+        let target_config =
+            PhantomConfig::new_with_defaults(PhantomConfig::project_id_from_path(&target));
+        target_config.save(&target.join(".phantom.toml")).unwrap();
+        let target_config_before = std::fs::read(target.join(".phantom.toml")).unwrap();
+        let target_env_before = std::fs::read(target.join(".env")).unwrap();
+        let (source, _source_dir) = locked_file_vault_project();
+        let _vault = TestVault::serve(|| Box::new(EmptyKeychain));
+        live_approval_mode();
+
+        let request = |approval_token: Option<String>| CopySecretParams {
+            name: "OPENAI_API_KEY".to_string(),
+            target_dir: target.display().to_string(),
+            rename: Some("COPIED_API_KEY".to_string()),
+            confirm: true,
+            approval_token,
+        };
+        let target_env_path =
+            phantom_core::managed_dotenv::resolve_dotenv(&target, &target_config, &[])
+                .unwrap()
+                .path;
+        let approval_params = copy_approval_params_json(
+            &request(None),
+            &target,
+            target_config.local_project_id(),
+            "COPIED_API_KEY",
+            &target_env_path,
+            &target_config_before,
+        )
+        .unwrap();
+        let approved = approved_request(
+            "phantom_copy_secret",
+            &approval_params,
+            &source.project_id(),
+        );
+
+        let result =
+            source.phantom_copy_secret(Parameters(request(Some(approved.combined.clone()))));
+        let refused = refused_as_locked(&result);
+        assert!(approval_still_usable(
+            &approved,
+            "phantom_copy_secret",
+            &approval_params,
+            &source.project_id()
+        ));
+        assert!(refused);
+        assert_eq!(
+            std::fs::read(target.join(".phantom.toml")).unwrap(),
+            target_config_before
+        );
+        assert_eq!(
+            std::fs::read(target.join(".env")).unwrap(),
+            target_env_before
+        );
+    }
+
+    /// `phantom_secrets_auto_rotate` consumed the one-use approval and only
+    /// then refused a locked vault or a name the vault does not hold.
+    #[test]
+    fn auto_rotate_keeps_its_approval_on_a_locked_vault_or_missing_name() {
+        let _environment = TestEnvironment::new();
+        let _home = TestHome::new();
+        let (server, dir) = locked_file_vault_project();
+        let project = dir.path().canonicalize().unwrap();
+        let env_before = std::fs::read(project.join(".env")).unwrap();
+        live_approval_mode();
+
+        let request = |name: &str, approval_token: Option<String>| AutoRotateParams {
+            name: name.to_string(),
+            sync: false,
+            confirm: true,
+            approval_token,
+        };
+
+        // Locked: the keychain stands in for an encrypted-file vault this
+        // process cannot open.
+        {
+            let _vault = TestVault::serve(|| Box::new(EmptyKeychain));
+            let params_json = serde_json::to_string(&request("OPENAI_API_KEY", None)).unwrap();
+            let approved = approved_request(
+                "phantom_secrets_auto_rotate",
+                &params_json,
+                &server.project_id(),
+            );
+            let result = server.phantom_secrets_auto_rotate(Parameters(request(
+                "OPENAI_API_KEY",
+                Some(approved.combined.clone()),
+            )));
+            let refused = refused_as_locked(&result);
+            assert!(approval_still_usable(
+                &approved,
+                "phantom_secrets_auto_rotate",
+                &params_json,
+                &server.project_id()
+            ));
+            assert!(refused);
+        }
+
+        // Unlocked, but the name is not in the vault.
+        // SAFETY: TestEnvironment holds the env lock and restores the value.
+        unsafe {
+            std::env::set_var(
+                "PHANTOM_VAULT_PASSPHRASE",
+                "test-passphrase-do-not-use-in-prod",
+            )
+        };
+        let params_json = serde_json::to_string(&request("MISSING_API_KEY", None)).unwrap();
+        let approved = approved_request(
+            "phantom_secrets_auto_rotate",
+            &params_json,
+            &server.project_id(),
+        );
+        let missing = server
+            .phantom_secrets_auto_rotate(Parameters(request(
+                "MISSING_API_KEY",
+                Some(approved.combined.clone()),
+            )))
+            .err()
+            .is_some_and(|error| {
+                error.code == rmcp::model::ErrorCode::INVALID_PARAMS
+                    && error.message.contains("not found in vault")
+            });
+        assert!(approval_still_usable(
+            &approved,
+            "phantom_secrets_auto_rotate",
+            &params_json,
+            &server.project_id()
+        ));
+        assert!(missing);
+        assert_eq!(std::fs::read(project.join(".env")).unwrap(), env_before);
+    }
+
+    /// A request that fails a value-blind precondition (locked vault, missing
+    /// name) is refused before any approval is requested: no nonce is minted
+    /// for the operator to approve in vain.
+    #[test]
+    fn value_blind_precondition_refusals_request_no_approval() {
+        let _environment = TestEnvironment::new();
+        let _home = TestHome::new();
+        let (_target, target_dir) = setup_test_project();
+        let target = target_dir.path().canonicalize().unwrap();
+        PhantomConfig::new_with_defaults(PhantomConfig::project_id_from_path(&target))
+            .save(&target.join(".phantom.toml"))
+            .unwrap();
+        let (server, _dir) = locked_file_vault_project();
+        live_approval_mode();
+
+        let copy = |name: &str| {
+            server.phantom_copy_secret(Parameters(CopySecretParams {
+                name: name.to_string(),
+                target_dir: target.display().to_string(),
+                rename: Some("COPIED_API_KEY".to_string()),
+                confirm: true,
+                approval_token: None,
+            }))
+        };
+        let auto_rotate = |name: &str| {
+            server.phantom_secrets_auto_rotate(params(serde_json::json!({
+                "name": name,
+                "confirm": true
+            })))
+        };
+
+        {
+            let _vault = TestVault::serve(|| Box::new(EmptyKeychain));
+            let locked: Vec<(&str, Result<CallToolResult, McpError>)> = vec![
+                (
+                    "phantom_rotate",
+                    server.phantom_rotate(params(serde_json::json!({ "confirm": true }))),
+                ),
+                (
+                    "phantom_rotate_with_expiry",
+                    server.phantom_rotate_with_expiry(params(
+                        serde_json::json!({ "days_ttl": 30, "confirm": true }),
+                    )),
+                ),
+                (
+                    "phantom_env",
+                    server.phantom_env(params(serde_json::json!({ "confirm": true }))),
+                ),
+                ("phantom_secrets_auto_rotate", auto_rotate("OPENAI_API_KEY")),
+                ("phantom_copy_secret", copy("OPENAI_API_KEY")),
+            ];
+            for (tool, result) in locked {
+                assert!(refused_as_locked(&result), "{tool} must refuse as locked");
+            }
+        }
+
+        // SAFETY: TestEnvironment holds the env lock and restores the value.
+        unsafe {
+            std::env::set_var(
+                "PHANTOM_VAULT_PASSPHRASE",
+                "test-passphrase-do-not-use-in-prod",
+            )
+        };
+        for (tool, result) in [
+            (
+                "phantom_secrets_auto_rotate",
+                auto_rotate("MISSING_API_KEY"),
+            ),
+            ("phantom_copy_secret", copy("MISSING_API_KEY")),
+        ] {
+            let missing = result.err().is_some_and(|error| {
+                error.code == rmcp::model::ErrorCode::INVALID_PARAMS
+                    && error.message.contains("not found in vault")
+            });
+            assert!(missing, "{tool} must refuse the missing name");
+        }
+
+        // With effects off, the effects gate still answers first and the
+        // preflight never opens the vault.
+        // SAFETY: TestEnvironment holds the env lock and restores the value.
+        unsafe { std::env::remove_var("PHANTOM_MCP_EFFECTS") };
+        let disabled = copy("MISSING_API_KEY").err().is_some_and(|error| {
+            error.code == rmcp::model::ErrorCode::INVALID_PARAMS
+                && error.message.contains("disabled by default")
+        });
+        assert!(disabled, "effects gate must answer before the preflight");
+
+        assert!(phantom_core::mcp_approval::list_pending_approvals()
+            .unwrap()
+            .is_empty());
     }
 }
