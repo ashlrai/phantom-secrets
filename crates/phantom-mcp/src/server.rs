@@ -1,5 +1,5 @@
 use phantom_core::config::PhantomConfig;
-use phantom_core::dotenv::{classify, DotenvFile, SecretClassification};
+use phantom_core::dotenv::{classify_with_reason, DotenvFile, SecretClassification};
 use phantom_core::fs::{AnchoredEffect, AnchoredRead, AnchoredTarget, TrustedAnchor};
 use phantom_core::precommit_hook::{self, HookChange};
 use phantom_core::report::{CheckFinding, CheckIndeterminate, CheckReport, DoctorReport};
@@ -2649,13 +2649,17 @@ impl PhantomMcpServer {
                 }
             }
         } else {
-            match classify(entry) {
+            // The reason is the rule the classifier decided by, in the same
+            // sentence `phantom why` prints.
+            let (classification, reason) = classify_with_reason(entry);
+            let reason_line = format!("Reason: {}\n", reason.explanation());
+            match classification {
                 SecretClassification::PublicKey => {
-                    let matched_prefix = report["matched_pattern"].as_str().unwrap_or("unknown");
                     output.push_str(&format!(
-                        "PUBLIC KEY: '{}' matches the framework prefix '{}'.\n",
-                        params.key, matched_prefix
+                        "PUBLIC KEY: '{}' has a framework public prefix.\n",
+                        params.key
                     ));
+                    output.push_str(&reason_line);
                     output.push_str(
                         "This is a browser-safe public key — it's designed to be \
                          embedded in client-side bundles and does not need protection.\n",
@@ -2666,21 +2670,7 @@ impl PhantomMcpServer {
                         "UNPROTECTED: '{}' is classified as a secret but does NOT have a phantom token.\n",
                         params.key
                     ));
-                    let pattern = report["matched_pattern"].as_str().unwrap_or_default();
-                    match report["reason"].as_str() {
-                        Some("key_name") => output.push_str(&format!(
-                            "Reason: key name contains '{pattern}', which indicates a secret.\n"
-                        )),
-                        Some("connection_pattern") => output.push_str(&format!(
-                            "Reason: key name matches connection pattern '{pattern}'.\n"
-                        )),
-                        Some("public_prefix_with_secret_value") => output.push_str(
-                            "Reason: has a public-key prefix, but the value matches a known secret pattern.\n",
-                        ),
-                        _ => output.push_str(
-                            "Reason: the value matches known secret patterns (prefix, connection string, or high-entropy string).\n",
-                        ),
-                    }
+                    output.push_str(&reason_line);
                     output.push_str("Run `phantom init` to protect it with a phantom token.\n");
                 }
                 SecretClassification::NotSecret => {
@@ -2688,10 +2678,7 @@ impl PhantomMcpServer {
                         "NOT SECRET: '{}' is classified as non-secret configuration.\n",
                         params.key
                     ));
-                    output.push_str(
-                        "It doesn't match any secret key patterns (KEY, SECRET, TOKEN, PASSWORD, etc.), \
-                         connection string patterns, or secret value prefixes.\n",
-                    );
+                    output.push_str(&reason_line);
                     output.push_str("Phantom leaves non-secret config values untouched in .env.\n");
                 }
             }
@@ -9915,6 +9902,78 @@ mod tests {
             .unwrap()
             .contains("phantom init"));
         assert_no_value_leak(&unprotected, &["_placeholder_value"]);
+    }
+
+    /// The summary names the rule the classifier decided by, the same
+    /// sentence `phantom why` prints. It said "the value matches known secret
+    /// patterns" for every value rule, gave no rule for a public prefix
+    /// overridden by its value, and listed a hand-written subset of the key
+    /// fragments for non-secret config.
+    #[test]
+    fn why_summary_names_the_deciding_rule() {
+        let _environment = TestEnvironment::new();
+        let (server, dir) = setup_initialized_project();
+        let mut env = std::fs::read_to_string(dir.path().join(".env")).unwrap();
+        for (key, value) in [
+            ("DB_PWD", "x1".to_string()),
+            ("SENTRY_DSN", "x".to_string()),
+            ("WEBHOOK", ["whsec", "abc"].join("_")),
+            ("CALLBACK", ["https://h/cb?", "token", "="].concat()),
+            ("BLOB", "a1B2c3D4".repeat(5)),
+            ("VITE_STRIPE_KEY", ["sk", "live", "abc"].join("_")),
+            ("VITE_SITE", "x".to_string()),
+            ("LOG_LEVEL", "debug".to_string()),
+        ] {
+            env.push_str(&format!("{key}={value}\n"));
+        }
+        std::fs::write(dir.path().join(".env"), env).unwrap();
+        let summary = |key: &str| {
+            extract_content_text(
+                &server
+                    .phantom_why(Parameters(WhyParams {
+                        key: key.to_string(),
+                    }))
+                    .unwrap(),
+            )
+        };
+        for (key, rule) in [
+            ("DB_PWD", "Key name contains \"PWD\" (secret key pattern)"),
+            (
+                "SENTRY_DSN",
+                "Key name matches connection string pattern (\"DSN\")",
+            ),
+            (
+                "WEBHOOK",
+                "Value starts with \"whsec_\", a known secret prefix",
+            ),
+            (
+                "CALLBACK",
+                "Value is a URL with an auth, token or signature parameter",
+            ),
+            ("BLOB", "Value is a long high-entropy string"),
+            (
+                "VITE_STRIPE_KEY",
+                "Key has the public prefix \"VITE_\", but its value starts with \"sk_\", a known secret prefix",
+            ),
+            (
+                "VITE_SITE",
+                "Keys with the \"VITE_\" prefix are browser-safe (shipped in client bundles)",
+            ),
+            (
+                "LOG_LEVEL",
+                "Does not match secret key patterns or value patterns",
+            ),
+        ] {
+            let text = summary(key);
+            assert!(
+                text.contains(&format!("Reason: {rule}\n")),
+                "{key}: summary does not name the deciding rule"
+            );
+        }
+        assert!(
+            !summary("LOG_LEVEL").contains("KEY, SECRET, TOKEN, PASSWORD"),
+            "non-secret summary repeats a hand-written fragment list"
+        );
     }
 
     #[test]
