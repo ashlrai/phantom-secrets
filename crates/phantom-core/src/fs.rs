@@ -15,10 +15,12 @@ use std::path::{Path, PathBuf};
 use tempfile::NamedTempFile;
 
 pub mod anchored;
+mod private_dir;
 pub use anchored::{
     AnchoredCreatedDirectory, AnchoredDirectoryCreation, AnchoredEffect, AnchoredFilePermissions,
     AnchoredLock, AnchoredRead, AnchoredTarget, FileIdentity, TrustedAnchor,
 };
+pub use private_dir::PrivateStateDir;
 
 /// Atomically write `contents` to `path`.
 ///

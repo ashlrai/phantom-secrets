@@ -24,6 +24,25 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   `commit_init_with_source_vault`. Confirmations, approvals and the
   trusted-terminal challenge are unchanged.
 
+### Fixed (session and evidence state use the shared private-directory helper)
+
+- The inactive `phantom-session` journal and the `phantom-evidence` store
+  kept their own copies of the private state-directory helpers. They created
+  `sessions/`, `~/.phantom` and `~/.phantom/evidence` with umask permissions
+  and then chmod-ed them by path after a separate symlink check, accepted a
+  directory owned by another user whenever that chmod succeeded, re-walked
+  the directory path for every later lock, state, key, log and receipt
+  operation (so a directory renamed away and replaced by a symlink after the
+  check redirected Phantom's writes outside it), and chmod-ed an existing
+  hard-linked lock or state file, changing its target. Both now use the new
+  `phantom_core::fs::PrivateStateDir`: on Unix the directory is created 0700,
+  opened without following a symlink, required to be owned by the current
+  user, tightened through that descriptor and retained, and every file is
+  created, opened, replaced (staging file plus `renameat`) and fsynced
+  relative to it. Files must be single-link regular files owned by the
+  current user. Refusals keep mapping to each crate's `UnsafeStorage` error;
+  nothing about either crate's fail-closed production posture changes.
+
 ### Fixed (proxy lifecycle lock file is opened through a verified directory descriptor)
 
 - After checking that `<data dir>/phantom-secrets/proxy-locks` was a private
