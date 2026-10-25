@@ -4,6 +4,20 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (proxy forwarded upstream cookies unscoped across routes)
+
+- Every proxy route is served from the same local origin
+  (`127.0.0.1:PORT`), but the proxy passed an upstream's `Set-Cookie`
+  through unchanged. A cookie with `Path=/` (or with no `Path`, set on a
+  request to the bare route) was therefore stored by a client cookie jar
+  for the whole proxy and sent with requests to every other route, and the
+  proxy forwards client cookies, so one provider's session cookie reached
+  another provider, and a hostile upstream could plant cookies on another
+  route. The proxy now removes the upstream's `Domain` and `Path` and sets
+  `Path=/<route>` on each `Set-Cookie`, keeping other attributes. Cookies
+  that require `Path=/` (the `__Host-` prefix) are rejected by strict
+  clients as a result, which keeps them on their route.
+
 ### Fixed (Vercel pull mixed values from different environments)
 
 - `phantom pull --from vercel` read every Vercel variable for a name and kept
