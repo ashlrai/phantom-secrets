@@ -2942,9 +2942,23 @@ impl PhantomMcpServer {
 
         let configured_platforms: Vec<String> =
             config.sync.iter().map(|t| t.platform.to_string()).collect();
+        // `phantom sync` pushes only the names a target's `only` globs select
+        // (see `filter_key_names` in the CLI); report that same selection.
+        let selections: Vec<(Vec<String>, Vec<String>)> = targets
+            .iter()
+            .map(|target| sync_target_selection(&secret_names, &target.only))
+            .collect();
         let target_reports: Vec<serde_json::Value> = targets
             .iter()
-            .map(|target| {
+            .zip(&selections)
+            .map(|(target, (selected, skipped))| {
+                let invalid_filters: Vec<serde_json::Value> =
+                    phantom_core::sync::validate_only_patterns(&target.only)
+                        .into_iter()
+                        .map(|(pattern, error)| {
+                            serde_json::json!({ "pattern": pattern, "error": error })
+                        })
+                        .collect();
                 serde_json::json!({
                     "platform": target.platform.to_string(),
                     "project_id": params.project_id.as_deref().unwrap_or(&target.project_id),
@@ -2952,7 +2966,10 @@ impl PhantomMcpServer {
                     "environments": target.targets,
                     "service_id": target.service_id,
                     "environment_id": target.environment_id,
-                    "secrets": secret_names,
+                    "filters": target.only,
+                    "invalid_filters": invalid_filters,
+                    "secrets": selected,
+                    "skipped_secrets": skipped,
                 })
             })
             .collect();
@@ -2991,7 +3008,7 @@ impl PhantomMcpServer {
             secret_names.len()
         );
 
-        for target in &targets {
+        for (target, (selected, _)) in targets.iter().zip(&selections) {
             let project_id = params.project_id.as_deref().unwrap_or(&target.project_id);
 
             output.push_str(&format!("Platform: {}\n", target.platform));
@@ -3012,11 +3029,16 @@ impl PhantomMcpServer {
                 output.push_str(&format!("  Environment ID: {}\n", env_id));
             }
 
+            if !target.only.is_empty() {
+                output.push_str(&format!("  Only filter: {}\n", target.only.join(", ")));
+            }
             output.push_str("  Secrets to sync:\n");
             if secret_names.is_empty() {
                 output.push_str("    (none — vault is empty)\n");
+            } else if selected.is_empty() {
+                output.push_str("    (none — the only filter matches no vault secret)\n");
             } else {
-                for name in &secret_names {
+                for name in selected {
                     output.push_str(&format!("    - {}\n", name));
                 }
             }
@@ -6527,6 +6549,24 @@ fn ensure_cloud_push_allowed_mcp(config: &PhantomConfig) -> Result<(), McpError>
         ));
     }
     Ok(())
+}
+
+/// Split vault names into the ones a sync target's `only` globs select and
+/// the ones it skips, exactly as `phantom sync` filters them: no patterns
+/// select every name, otherwise a name matching any valid pattern is
+/// selected. Both lists are sorted.
+fn sync_target_selection(names: &[String], only: &[String]) -> (Vec<String>, Vec<String>) {
+    let keyed: std::collections::BTreeMap<String, String> = names
+        .iter()
+        .map(|name| (name.clone(), String::new()))
+        .collect();
+    let selected = phantom_core::sync::filter_by_only(&keyed, only);
+    let skipped = keyed
+        .keys()
+        .filter(|name| !selected.contains_key(*name))
+        .cloned()
+        .collect();
+    (selected.into_keys().collect(), skipped)
 }
 
 fn resolve_env_path_anchored(
@@ -11692,6 +11732,72 @@ mod tests {
             assert!(description.contains(&format!("`{classification}`")));
             assert!(description.contains(&format!("`{reason}`")));
         }
+    }
+
+    /// A `[[sync]]` target's `only` filter narrows what `phantom sync`
+    /// pushes. The report listed every vault name as that target's secrets,
+    /// so an agent explained a sync of secrets the target never receives.
+    #[test]
+    fn sync_report_applies_each_target_only_filter() {
+        let _environment = TestEnvironment::new();
+        let (server, dir) = setup_initialized_project();
+        let config_path = dir.path().join(".phantom.toml");
+        let mut config = PhantomConfig::load(&config_path).unwrap();
+        for (platform, only) in [("vercel", "only = [\"OPENAI_*\"]\n"), ("railway", "")] {
+            config.sync.push(
+                toml::from_str(&format!(
+                    "platform = \"{platform}\"\ntoken_env = \"SYNC_TOKEN\"\nproject_id = \"demo\"\n{only}"
+                ))
+                .unwrap(),
+            );
+        }
+        config.save(&config_path).unwrap();
+
+        let result = server
+            .phantom_sync(Parameters(SyncParams {
+                platform: None,
+                project_id: None,
+            }))
+            .unwrap();
+        let report = structured_report(&result);
+        assert_eq!(report["vault_secret_count"], 2);
+        assert_eq!(
+            report["targets"][0]["filters"],
+            serde_json::json!(["OPENAI_*"])
+        );
+        assert_eq!(
+            report["targets"][0]["secrets"],
+            serde_json::json!(["OPENAI_API_KEY"])
+        );
+        assert_eq!(
+            report["targets"][0]["skipped_secrets"],
+            serde_json::json!(["DATABASE_URL"])
+        );
+        assert_eq!(report["targets"][1]["filters"], serde_json::json!([]));
+        assert_eq!(
+            report["targets"][1]["secrets"],
+            serde_json::json!(["DATABASE_URL", "OPENAI_API_KEY"])
+        );
+        let text = extract_content_text(&result);
+        let vercel = text.split("Platform: railway").next().unwrap();
+        assert!(vercel.contains("    - OPENAI_API_KEY\n"));
+        assert!(!vercel.contains("    - DATABASE_URL\n"));
+        assert!(vercel.contains("OPENAI_*"));
+
+        let mut config = PhantomConfig::load(&config_path).unwrap();
+        config.sync.truncate(1);
+        config.sync[0].only = vec!["[".to_string()];
+        config.save(&config_path).unwrap();
+        let report = structured_report(
+            &server
+                .phantom_sync(Parameters(SyncParams {
+                    platform: None,
+                    project_id: None,
+                }))
+                .unwrap(),
+        );
+        assert_eq!(report["targets"][0]["secrets"], serde_json::json!([]));
+        assert_eq!(report["targets"][0]["invalid_filters"][0]["pattern"], "[");
     }
 
     /// An unknown platform used to fall through to a "not configured" report

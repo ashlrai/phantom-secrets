@@ -160,10 +160,10 @@ pub enum AuthInjection {
     /// client's password is always discarded. Without a usable username the
     /// proxy rejects the request instead of forwarding a malformed credential.
     ///
-    /// Response scrubbing matches the literal vault value only, not the
-    /// injected `base64(username:secret)` pair. Upstreams do not echo the
-    /// request's Authorization header, and the pair is only ever sent to the
-    /// route's fixed upstream.
+    /// Response scrubbing redacts the literal vault value and, per request,
+    /// the exact injected `base64(username:secret)` pair, so an upstream that
+    /// echoes the Authorization header cannot hand the client a decodable
+    /// credential.
     BasicPassword,
 }
 
