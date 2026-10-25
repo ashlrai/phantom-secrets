@@ -202,7 +202,7 @@ fn run_in(project_dir: &std::path::Path, key: &str, json: bool) -> Result<()> {
                             key.bold(),
                             "UNPROTECTED".red().bold()
                         );
-                        println!("   Reason: {}", secret_reason_line(&reason));
+                        println!("   Reason: {}", detection_reason_line(&reason));
                         println!("   Fix: {}", "phantom init".cyan().bold());
                     }
                     SecretClassification::NotSecret => {
@@ -238,7 +238,7 @@ fn run_in(project_dir: &std::path::Path, key: &str, json: bool) -> Result<()> {
 
 /// The `Reason:` text for a secret, from the rule the classifier used.
 /// Fixed sentences and pattern constants only; never the value.
-fn secret_reason_line(reason: &ClassificationReason) -> String {
+fn detection_reason_line(reason: &ClassificationReason) -> String {
     match reason {
         ClassificationReason::KeyName(pattern) => {
             format!("Key name contains \"{pattern}\" (secret key pattern)")
@@ -276,7 +276,7 @@ mod tests {
         let line = |key: &str, value: String| {
             let (classification, reason) = classify_with_reason(&entry(key, value));
             assert_eq!(classification, SecretClassification::Secret, "{key}");
-            secret_reason_line(&reason)
+            detection_reason_line(&reason)
         };
         assert_eq!(
             line("DB_PWD", "x1".to_string()),
