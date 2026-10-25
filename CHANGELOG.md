@@ -26,6 +26,18 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   `phantom doctor` reports a symlinked or non-regular audit log as an issue.
   The JSONL schema and HMAC chain are unchanged.
 
+### Fixed (copies keep their source's rotation age)
+
+- `phantom copy`, MCP `phantom_copy_secret` and `phantom env copy` judged
+  the source against `enforce_rotation_on_access` but stored the destination
+  as new, so a secret 29 days into a 30-day window came out of the copy with
+  a fresh 30-day clock. The destination entry now inherits the source's
+  rotation anchor (`created_at` and `rotated_at`) inside the same vault
+  transaction, so the gate judges the copy overdue exactly when the source
+  is. A source with no recorded age gives a copy with no recorded age, which
+  the gate refuses for an enforced secret. Confirmations, approvals and the
+  trusted-terminal challenge are unchanged.
+
 ### Fixed (workspace-request and MCP approval state dirs use the shared private-dir helper; `.env.example` presence is never followed)
 
 - The workspace-request store (`~/.phantom/workspace-requests`, the setup
