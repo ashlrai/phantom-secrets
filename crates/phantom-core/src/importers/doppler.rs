@@ -27,14 +27,14 @@ use zeroize::Zeroizing;
 
 use super::{
     json_scalar, parse_json_object_entries, refuse_duplicate_names, refuse_invalid_names,
-    strip_utf8_bom, unsupported_entry, Importer, SecretMap,
+    unsupported_entry, utf8_export_body, Importer, SecretMap,
 };
 
 pub struct DopplerImporter;
 
 impl Importer for DopplerImporter {
     fn parse(input: &[u8]) -> Result<SecretMap> {
-        let input = strip_utf8_bom(input);
+        let input = utf8_export_body("Doppler", input)?;
         let obj = parse_json_object_entries(input)
             .map_err(|e| anyhow::anyhow!("Doppler JSON parse error: {}", e))?;
         // Meta-keys are skipped below, so only secret names must be unique.

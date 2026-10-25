@@ -26,7 +26,8 @@ use serde::Deserialize;
 use zeroize::Zeroizing;
 
 use super::{
-    env_importer, refuse_duplicate_names, refuse_invalid_names, strip_utf8_bom, Importer, SecretMap,
+    env_importer, refuse_duplicate_names, refuse_invalid_names, utf8_export_body, Importer,
+    SecretMap,
 };
 
 pub struct InfisicalImporter;
@@ -39,7 +40,7 @@ struct InfisicalEntry {
 
 impl Importer for InfisicalImporter {
     fn parse(input: &[u8]) -> Result<SecretMap> {
-        let input = strip_utf8_bom(input);
+        let input = utf8_export_body("Infisical", input)?;
         // Auto-detect format by checking if content looks like a JSON array
         let trimmed = input.iter().copied().find(|b| !b.is_ascii_whitespace());
 
