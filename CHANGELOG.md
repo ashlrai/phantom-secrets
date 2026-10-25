@@ -20,6 +20,22 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   `phantom_core::fs::open_owned_file_at` hold the shared descriptor-relative
   routine; the workspace setup lock now uses them instead of its own copy.
 
+### Fixed (copies are never less protected than their source)
+
+- `phantom copy`, MCP `phantom_copy_secret` and `phantom env copy` carried
+  only the source's rotation anchor, so the destination came out read-write,
+  with no expiry and no TTL policy even when the source was demoted to
+  read-only, past its `expires_at`, or under a rotation policy. A copy of a
+  read-only secret was therefore injectable by `phantom exec`, and an expired
+  credential's duplicate passed `phantom expiry enforce`. The destination now
+  inherits every lifecycle field of the source (`created_at`, `rotated_at`,
+  `expires_at`, `rotation_policy` and `vault_mode`) by compare-and-swap inside
+  the same create-only vault transaction (`InitSecret::inheriting_source_protection`,
+  replacing `inheriting_rotation_anchor`). Validation metadata, the last
+  provider check verdict, is deliberately not copied: the destination starts
+  never-checked like any new entry. Confirmations, approvals and the
+  trusted-terminal challenge are unchanged.
+
 ### Fixed (proxy lifecycle and workspace setup locks never follow a planted symlink)
 
 - The workspace setup lock lived in a shared temp-dir folder
