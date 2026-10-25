@@ -2714,11 +2714,23 @@ impl PhantomMcpServer {
             .target(&pkg_path)
             .map_err(|error| internal_err(format!("Failed to retain package.json: {error}")))?;
         let (mut pkg, before) = read_package_scripts_anchored(&pkg_target)?;
-        let wrapped = wrap_package_scripts(&mut pkg, &params.only, &params.skip)
+        let (wrapped, unwrapped) = wrap_package_scripts(&mut pkg, &params.only, &params.skip)
             .map_err(invalid_params_err)?;
 
+        let mut not_wrapped = String::new();
+        if !unwrapped.is_empty() {
+            not_wrapped
+                .push_str("\nNot wrapped (left unchanged; they still run without Phantom):\n");
+            for (name, reason) in &unwrapped {
+                not_wrapped.push_str(&format!("  - {name}: {reason}\n"));
+            }
+            not_wrapped.push_str(
+                "`phantom exec` runs one program without a shell, so a prefix would break these or cover only their first command. Move the command line into a script file and wrap that, or prefix the one command that needs secrets.\n",
+            );
+        }
+
         if wrapped.is_empty() {
-            return text_result("No scripts matched for wrapping.");
+            return text_result(format!("No scripts matched for wrapping.\n{not_wrapped}"));
         }
         write_package_json_anchored(&pkg_target, &pkg, &before)?;
 
@@ -2726,7 +2738,8 @@ impl PhantomMcpServer {
         for name in &wrapped {
             output.push_str(&format!("  - {name}\n"));
         }
-        output.push_str("\nOriginals saved as `script:raw` variants.");
+        output.push_str("\nOriginals saved as `script:raw` variants.\n");
+        output.push_str(&not_wrapped);
 
         text_result(output)
     }
@@ -5753,16 +5766,20 @@ fn wrapped_script_command(original: &str) -> String {
     format!("phantom exec -- {original}")
 }
 
+/// Wrapped script names, plus selected scripts left unchanged because they
+/// are a shell command line (with the reason).
+type WrapResult = (Vec<String>, Vec<(String, &'static str)>);
+
 fn wrap_package_scripts(
     pkg: &mut serde_json::Value,
     only: &[String],
     skip: &[String],
-) -> Result<Vec<String>, String> {
+) -> Result<WrapResult, String> {
     let Some(scripts) = pkg
         .get_mut("scripts")
         .and_then(serde_json::Value::as_object_mut)
     else {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), Vec::new()));
     };
     let wrap_keywords = ["dev", "start", "build", "serve", "deploy"];
     let skip_keywords = [
@@ -5778,6 +5795,7 @@ fn wrap_package_scripts(
         "postinstall",
     ];
     let mut candidates = Vec::new();
+    let mut unwrapped = Vec::new();
     for (name, value) in scripts.iter() {
         let Some(original) = value.as_str() else {
             continue;
@@ -5797,6 +5815,10 @@ fn wrap_package_scripts(
             only.iter().any(|only_name| only_name == name)
         };
         if should_wrap {
+            if let Some(reason) = phantom_core::package_scripts::wrap_blocker(original) {
+                unwrapped.push((name.clone(), reason));
+                continue;
+            }
             let raw_name = format!("{name}:raw");
             if scripts.contains_key(&raw_name) {
                 return Err(format!(
@@ -5816,7 +5838,10 @@ fn wrap_package_scripts(
             serde_json::Value::String(wrapped_script_command(original)),
         );
     }
-    Ok(candidates.into_iter().map(|(name, _, _)| name).collect())
+    Ok((
+        candidates.into_iter().map(|(name, _, _)| name).collect(),
+        unwrapped,
+    ))
 }
 
 fn unwrap_package_scripts(pkg: &mut serde_json::Value) -> Vec<String> {
@@ -7552,6 +7577,30 @@ mod tests {
         let error = wrap_package_scripts(&mut package, &[], &[]).unwrap_err();
         assert!(error.contains("user-owned script 'dev:raw'"));
         assert_eq!(package, before);
+    }
+
+    #[test]
+    fn mcp_wrap_leaves_compound_and_env_prefixed_scripts_unwrapped() {
+        let mut package = serde_json::json!({
+            "scripts": {
+                "dev": "next dev",
+                "start": "NODE_ENV=production node server.js",
+                "build": "next build && next export"
+            }
+        });
+
+        let (wrapped, unwrapped) = wrap_package_scripts(&mut package, &[], &[]).unwrap();
+        assert_eq!(wrapped, vec!["dev"]);
+        let unwrapped: Vec<&str> = unwrapped.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(unwrapped, vec!["build", "start"]);
+        assert_eq!(package["scripts"]["dev"], "phantom exec -- next dev");
+        assert_eq!(
+            package["scripts"]["start"],
+            "NODE_ENV=production node server.js"
+        );
+        assert_eq!(package["scripts"]["build"], "next build && next export");
+        assert!(package["scripts"].get("start:raw").is_none());
+        assert!(package["scripts"].get("build:raw").is_none());
     }
 
     #[test]

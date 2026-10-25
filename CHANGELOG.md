@@ -4,6 +4,22 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (`phantom wrap` no longer breaks scripts that are a shell command line)
+
+- `phantom wrap` and MCP `phantom_wrap` prefixed each selected script with
+  `phantom exec --`. `phantom exec` runs its arguments as one program without
+  a shell, so a script such as `NODE_ENV=production node server.js` became a
+  script that fails (`NODE_ENV=production` is not a program), and
+  `next build && next start` or `node server.js | pino-pretty` ran only the
+  first command under the proxy while the rest ran without it. Both now leave
+  a script unchanged, with no `:raw` copy, when it is empty, starts with a
+  `VAR=value` assignment, chains commands (`&&`, `||`, `|`, `;`, `&`, a line
+  break) or uses a subshell; quoted operators and redirections such as
+  `2>&1` do not count. The CLI warns once per skipped script (also under
+  `--quiet`) and the MCP result lists them with the reason. Simple scripts are
+  wrapped exactly as before, and `phantom unwrap` is unchanged. The MCP
+  confirmation and approval gates are unchanged.
+
 ### Fixed (`phantom sync` no longer pushes a secret demoted to read-only)
 
 - `phantom_apply_expiry_policy` demotes an expired secret to read-only so
