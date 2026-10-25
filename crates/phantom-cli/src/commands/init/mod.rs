@@ -189,6 +189,11 @@ pub fn run(env_path_arg: &str) -> Result<()> {
     dotenv
         .validate_for_mutation()
         .context("Managed dotenv is malformed; initialization made no changes")?;
+    // dotenvx 1.x in-place ciphertext cannot be decrypted here; refuse
+    // before any vault write, project file, or integration change.
+    if let Some(entry) = dotenv.dotenvx_encrypted_entry() {
+        anyhow::bail!(phantom_core::dotenv::dotenvx_ciphertext_refusal(entry));
+    }
 
     // Classify all entries
     let classified = dotenv.classified_entries();
