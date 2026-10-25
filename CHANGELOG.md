@@ -24,6 +24,16 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   fragment as before. Ordinary config such as `?ref=main` or `?lang=en`
   stays non-secret.
 
+### Fixed (encrypted-file vault kept decrypted secrets in memory unscrubbed)
+
+- Every encrypted-file vault operation, including `list` and metadata reads,
+  decrypts the whole vault. The JSON buffer was scrubbed, but the parsed
+  secret values were dropped without being zeroized, so every secret in the
+  vault was left in freed heap memory after each call. The decrypted state
+  could also be printed in full through `Debug`. Decrypted values are now
+  overwritten when they drop, `Debug` shows names and metadata only, and the
+  vault passphrase held by the backend is scrubbed when the backend drops.
+
 ### Fixed (browser-prefixed URLs carrying a query-string credential)
 
 - `phantom init` left a public-prefixed URL in plaintext when its query
