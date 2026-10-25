@@ -9648,13 +9648,8 @@ mod tests {
     }
 
     fn assert_state_error(error: McpError, needle: &str) {
-        assert_eq!(
-            error.code,
-            rmcp::model::ErrorCode::INVALID_REQUEST,
-            "{}",
-            error.message
-        );
-        assert!(error.message.contains(needle), "{}", error.message);
+        assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_REQUEST);
+        assert!(error.message.contains(needle));
     }
 
     /// Before init these returned -32603, which a client shows as a server
