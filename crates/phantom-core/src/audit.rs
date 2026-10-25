@@ -519,12 +519,8 @@ fn write_event(op: &str, name: Option<&str>, required: bool) -> std::io::Result<
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     line.push(b'\n');
 
-    // OpenOptions::append on Linux/macOS gives O_APPEND atomicity for
-    // writes <= PIPE_BUF (~4096 bytes) which our JSONL lines easily fit
-    // under, so we don't take an explicit lock. Windows append semantics
-    // are similar with FILE_APPEND_DATA.
-    let mut f = OpenOptions::new().append(true).create(true).open(&path)?;
-    f.write_all(&line)?;
+    // Writers serialize on the audit lock held above.
+    append_line(&path, &line)?;
     if let (Some(key), Some(hmac)) = (key.as_deref(), hmac_val.as_deref()) {
         write_head(&path, seq, hmac, key)?;
     }
@@ -565,6 +561,9 @@ fn acquire_log_lock_shared(log_path: &Path) -> std::io::Result<File> {
 
 /// Scan from the end of the log file to find the last `hmac` value.
 /// Returns `None` (i.e. "GENESIS") if the file is empty or has no signed lines.
+/// Malformed lines (a torn write, stray bytes) are skipped like in
+/// [`read_last_seq`], so the next event chains to the last signed event and
+/// verification reports only the malformed line, not a reset chain.
 fn read_last_hmac(path: &Path) -> Option<String> {
     let content = std::fs::read_to_string(path).ok()?;
     for raw in content.lines().rev() {
@@ -572,7 +571,9 @@ fn read_last_hmac(path: &Path) -> Option<String> {
         if trimmed.is_empty() {
             continue;
         }
-        let v: serde_json::Value = serde_json::from_str(trimmed).ok()?;
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+            continue;
+        };
         if let Some(h) = v.get("hmac").and_then(|h| h.as_str()) {
             return Some(h.to_string());
         }
@@ -719,11 +720,38 @@ fn write_chain_marker(log_path: &Path, key: &[u8]) -> std::io::Result<()> {
     let mut line = serde_json::to_vec(&marker)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     line.push(b'\n');
+    append_line(log_path, &line)
+}
+
+/// Append one newline-terminated record to the log. Callers hold the audit
+/// lock. A crash or a full disk can leave a partial last line with no
+/// newline; the record then starts on a fresh line, so it is not glued onto
+/// the fragment and lost. The fragment stays behind as a malformed line that
+/// verification still reports.
+fn append_line(log_path: &Path, line: &[u8]) -> std::io::Result<()> {
+    use std::io::{Read, Seek, SeekFrom};
+
     let mut f = OpenOptions::new()
+        .read(true)
         .append(true)
         .create(true)
         .open(log_path)?;
-    f.write_all(&line)
+    let len = f.metadata()?.len();
+    let mut torn_tail = false;
+    if len > 0 {
+        let mut last = [0u8; 1];
+        f.seek(SeekFrom::Start(len - 1))?;
+        f.read_exact(&mut last)?;
+        torn_tail = last[0] != b'\n';
+    }
+    if torn_tail {
+        let mut buf = Vec::with_capacity(line.len() + 1);
+        buf.push(b'\n');
+        buf.extend_from_slice(line);
+        f.write_all(&buf)
+    } else {
+        f.write_all(line)
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -2450,6 +2478,111 @@ mod tests {
             let report = verify_log().expect("verify_log should not error");
             assert_eq!(report.malformed, 1);
             assert_eq!(report.malformed_lines, vec![3]);
+            assert!(!report.is_clean());
+        });
+    }
+
+    /// Non-marker event lines of the log, parsed. Lines that are not JSON are
+    /// returned as `None` so a test can see exactly where the damage sits.
+    fn parsed_event_lines(log_p: &std::path::Path) -> Vec<Option<Value>> {
+        std::fs::read_to_string(log_p)
+            .unwrap()
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| serde_json::from_str::<Value>(line).ok())
+            .filter(|v| {
+                v.as_ref()
+                    .is_none_or(|v| v.get("hmac_chain_started_at").is_none())
+            })
+            .collect()
+    }
+
+    /// A crash or a full disk can leave a partial last line with no newline.
+    /// The next event must start on its own line (not be glued onto the
+    /// fragment and lost), and it must chain to the last intact event so
+    /// verification isolates the damage to the fragment itself.
+    #[test]
+    fn append_after_torn_tail_starts_a_new_line_and_keeps_the_chain() {
+        with_audit_env(|tmp| {
+            log("vault.store", Some("KEY_A"));
+            log("vault.retrieve", Some("KEY_A"));
+
+            let log_p = tmp.join(".phantom").join("audit.log");
+            let mut f = OpenOptions::new().append(true).open(&log_p).unwrap();
+            f.write_all(br#"{"seq":3,"ts":1,"op":"vault.st"#).unwrap();
+            drop(f);
+
+            log("vault.delete", Some("KEY_A"));
+            log("vault.store", Some("KEY_B"));
+
+            let events = parsed_event_lines(&log_p);
+            let ops: Vec<Option<String>> = events
+                .iter()
+                .map(|v| {
+                    v.as_ref()
+                        .and_then(|v| v.get("op"))
+                        .and_then(|o| o.as_str())
+                        .map(str::to_string)
+                })
+                .collect();
+            assert_eq!(
+                ops,
+                vec![
+                    Some("vault.store".to_string()),
+                    Some("vault.retrieve".to_string()),
+                    None,
+                    Some("vault.delete".to_string()),
+                    Some("vault.store".to_string()),
+                ]
+            );
+
+            let report = verify_log().unwrap();
+            assert_eq!(report.malformed, 1);
+            assert_eq!(report.tampered, 0);
+            assert_eq!(report.verified, 4);
+            assert_eq!(report.sequence_errors, 0);
+            assert!(!report.head_missing && !report.head_mismatch);
+            // The fragment is still evidence: the log must not verify clean.
+            assert!(!report.is_clean());
+        });
+    }
+
+    /// A complete but unparsable last line must not reset the next event's
+    /// `prev_hmac` to GENESIS: that turns one malformed line into an extra
+    /// "tampered" verdict on a genuine event.
+    #[test]
+    fn append_after_malformed_last_line_chains_to_last_signed_event() {
+        with_audit_env(|tmp| {
+            log("vault.store", Some("KEY_A"));
+
+            let log_p = tmp.join(".phantom").join("audit.log");
+            let mut f = OpenOptions::new().append(true).open(&log_p).unwrap();
+            f.write_all(b"{not json}\n").unwrap();
+            drop(f);
+
+            log("vault.retrieve", Some("KEY_A"));
+
+            let events = parsed_event_lines(&log_p);
+            let first_hmac = events[0]
+                .as_ref()
+                .and_then(|v| v.get("hmac"))
+                .and_then(|h| h.as_str())
+                .map(str::to_string);
+            let last_prev = events[2]
+                .as_ref()
+                .and_then(|v| v.get("prev_hmac"))
+                .and_then(|h| h.as_str())
+                .map(str::to_string);
+            assert!(first_hmac.is_some());
+            assert!(
+                first_hmac == last_prev,
+                "new event did not chain to the last signed event"
+            );
+
+            let report = verify_log().unwrap();
+            assert_eq!(report.malformed, 1);
+            assert_eq!(report.tampered, 0);
+            assert_eq!(report.verified, 2);
             assert!(!report.is_clean());
         });
     }
