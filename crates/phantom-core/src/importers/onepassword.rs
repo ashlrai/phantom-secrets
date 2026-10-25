@@ -23,12 +23,19 @@
 //! phantom import --from 1password --file 1p-export.json
 //! ```
 //!
+//! Every name must be an environment variable name (`[A-Za-z_][A-Za-z0-9_]*`).
+//! 1Password field labels such as `API Key` are refused, with nothing
+//! imported, so rename them to the variable your app reads (`API_KEY`).
+//!
 //! The file is read once and never written back to disk.
 
 use anyhow::Result;
 use zeroize::Zeroizing;
 
-use super::{json_scalar, parse_json_object_entries, refuse_duplicate_names, Importer, SecretMap};
+use super::{
+    json_scalar, parse_json_object_entries, refuse_duplicate_names, refuse_invalid_names, Importer,
+    SecretMap,
+};
 
 pub struct OnePasswordImporter;
 
@@ -42,6 +49,7 @@ impl Importer for OnePasswordImporter {
             )
         })?;
         refuse_duplicate_names("1Password", obj.iter().map(|(key, _)| key.as_str()))?;
+        refuse_invalid_names("1Password", obj.iter().map(|(key, _)| key.as_str()))?;
 
         let mut map = SecretMap::new();
         for (key, val) in obj {

@@ -24,8 +24,8 @@ use serde_json::Value;
 use zeroize::Zeroizing;
 
 use super::{
-    json_scalar, parse_json_object_entries, refuse_duplicate_names, unsupported_entry, Importer,
-    SecretMap,
+    json_scalar, parse_json_object_entries, refuse_duplicate_names, refuse_invalid_names,
+    unsupported_entry, Importer, SecretMap,
 };
 
 pub struct DopplerImporter;
@@ -35,12 +35,13 @@ impl Importer for DopplerImporter {
         let obj = parse_json_object_entries(input)
             .map_err(|e| anyhow::anyhow!("Doppler JSON parse error: {}", e))?;
         // Meta-keys are skipped below, so only secret names must be unique.
-        refuse_duplicate_names(
-            "Doppler",
+        let secret_names = || {
             obj.iter()
                 .map(|(key, _)| key.as_str())
-                .filter(|key| !key.starts_with("DOPPLER_")),
-        )?;
+                .filter(|key| !key.starts_with("DOPPLER_"))
+        };
+        refuse_duplicate_names("Doppler", secret_names())?;
+        refuse_invalid_names("Doppler", secret_names())?;
 
         let mut map = SecretMap::new();
 

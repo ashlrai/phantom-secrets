@@ -34,8 +34,8 @@ use anyhow::Result;
 use zeroize::Zeroizing;
 
 use super::{
-    env_importer, json_scalar, parse_json_object_entries, refuse_duplicate_names, Importer,
-    SecretMap,
+    env_importer, json_scalar, parse_json_object_entries, refuse_duplicate_names,
+    refuse_invalid_names, Importer, SecretMap,
 };
 
 pub struct DotenvxImporter;
@@ -97,6 +97,7 @@ fn parse_flat_json(input: &[u8]) -> Result<SecretMap> {
     let obj = parse_json_object_entries(input)
         .map_err(|e| anyhow::anyhow!("dotenvx JSON parse error: {}", e))?;
     refuse_duplicate_names("dotenvx", obj.iter().map(|(key, _)| key.as_str()))?;
+    refuse_invalid_names("dotenvx", obj.iter().map(|(key, _)| key.as_str()))?;
 
     let mut map = SecretMap::new();
     for (key, val) in obj {

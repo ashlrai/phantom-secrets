@@ -504,6 +504,11 @@ Each importer expects a specific file format:
 
 If the file format is wrong, the importer returns a parse error. Re-export from the source tool and retry.
 
+JSON imports also refuse the whole file when a name is not an environment
+variable name (`[A-Za-z_][A-Za-z0-9_]*`), for example a 1Password field label
+such as `API Key`. Rename the entry to the variable your app reads
+(`API_KEY`) and retry.
+
 ### Existing secrets not overwritten during import
 
 By default, `phantom import --from` excludes existing vault entries from its

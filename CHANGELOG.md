@@ -15,6 +15,16 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   (Mapbox `pk.`, Google Maps browser keys), analytics params and empty
   placeholders stay public.
 
+### Fixed (imported names that are not environment keys)
+
+- `phantom import --from doppler|infisical|dotenvx|1password` with a JSON
+  export vaulted any string as a secret name, such as a 1Password field label
+  (`API Key`), a name containing `=` or `-`, or an empty name, and reported
+  success, although `phantom exec` can never inject such a name and
+  `phantom add` refuses it. These imports now refuse the whole file when any
+  name does not match `[A-Za-z_][A-Za-z0-9_]*`; the error names the entry,
+  never a value. Doppler's `DOPPLER_*` metadata keys are still skipped first.
+
 ### Fixed (worktree check reads `.phantom.toml` only as a regular file)
 
 - `phantom check` (without `--staged`) followed a `.phantom.toml` symlink.
