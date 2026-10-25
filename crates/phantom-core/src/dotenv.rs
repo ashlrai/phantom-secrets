@@ -569,17 +569,38 @@ impl DotenvFile {
 
     /// Write the rewritten content to a file.
     ///
-    /// Uses [`crate::fs::atomic_write`]: the new content is staged in a
-    /// same-directory tempfile (mode 0o600 on POSIX), fsynced, then renamed
-    /// over the target. Prevents a crash mid-write from leaving a
-    /// half-plaintext .env on disk.
+    /// Uses [`crate::fs::atomic_write_if_unchanged`]: the new content is
+    /// staged in a same-directory tempfile, fsynced, then renamed over the
+    /// target, so a crash mid-write cannot leave a half-plaintext .env on
+    /// disk. An existing target keeps its permissions (a new one is created
+    /// 0o600 on POSIX).
+    ///
+    /// The target must be absent or a regular file whose bytes still equal
+    /// the source this value was parsed from. A symlink or other non-regular
+    /// target is refused rather than replaced, and a file edited after it was
+    /// parsed is refused rather than clobbered with a rewrite of the stale
+    /// image.
     pub fn write_phantomized(
         &self,
         token_map: &TokenMap,
         path: &Path,
     ) -> Result<BTreeMap<String, String>> {
         let (content, originals) = self.rewrite_with_phantoms(token_map)?;
-        crate::fs::atomic_write(path, content.as_bytes())?;
+        let content = Zeroizing::new(content);
+        let before = crate::fs::read_regular_file(path)?.map(Zeroizing::new);
+        if let Some(before) = before.as_deref() {
+            if before.as_slice() != self.source.as_bytes() {
+                return Err(PhantomError::Io(std::io::Error::other(format!(
+                    "{} changed after it was parsed; refusing to overwrite it",
+                    path.display()
+                ))));
+            }
+        }
+        crate::fs::atomic_write_if_unchanged(
+            path,
+            before.as_deref().map(Vec::as_slice),
+            content.as_bytes(),
+        )?;
         Ok(originals)
     }
 }
@@ -2607,5 +2628,76 @@ NEXT=ok
                 "{key} is ordinary config"
             );
         }
+    }
+
+    fn fixture_line() -> String {
+        ["API_KEY=", "plain", "-fixture-value\n"].concat()
+    }
+
+    fn api_key_map() -> TokenMap {
+        let mut map = TokenMap::new();
+        map.insert("API_KEY".to_string());
+        map
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_phantomized_refuses_a_symlinked_target_and_keeps_the_link() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let outside = dir.path().join("outside.env");
+        std::fs::write(&outside, fixture_line()).unwrap();
+        let env_path = dir.path().join(".env");
+        std::os::unix::fs::symlink(&outside, &env_path).unwrap();
+
+        let dotenv = DotenvFile::parse_str(&fixture_line());
+        assert!(dotenv.write_phantomized(&api_key_map(), &env_path).is_err());
+
+        let link = std::fs::symlink_metadata(&env_path).unwrap();
+        assert!(link.file_type().is_symlink(), "symlink was replaced");
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), fixture_line());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_phantomized_preserves_the_existing_file_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::TempDir::new().unwrap();
+        let env_path = dir.path().join(".env");
+        std::fs::write(&env_path, fixture_line()).unwrap();
+        std::fs::set_permissions(&env_path, std::fs::Permissions::from_mode(0o640)).unwrap();
+
+        let dotenv = DotenvFile::parse_str(&fixture_line());
+        dotenv.write_phantomized(&api_key_map(), &env_path).unwrap();
+
+        let mode = std::fs::metadata(&env_path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o640, "rewrite reset the dotenv mode");
+        assert!(std::fs::read_to_string(&env_path)
+            .unwrap()
+            .starts_with("API_KEY=phm_"));
+    }
+
+    #[test]
+    fn write_phantomized_refuses_a_file_edited_after_it_was_parsed() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let env_path = dir.path().join(".env");
+        std::fs::write(&env_path, fixture_line()).unwrap();
+        let dotenv = DotenvFile::parse_str(&fixture_line());
+
+        let concurrent = [fixture_line(), "ADDED_LATER=kept\n".to_string()].concat();
+        std::fs::write(&env_path, &concurrent).unwrap();
+
+        assert!(dotenv.write_phantomized(&api_key_map(), &env_path).is_err());
+        assert_eq!(std::fs::read_to_string(&env_path).unwrap(), concurrent);
+    }
+
+    #[test]
+    fn write_phantomized_creates_an_absent_target() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let env_path = dir.path().join(".env");
+        let dotenv = DotenvFile::parse_str(&fixture_line());
+        dotenv.write_phantomized(&api_key_map(), &env_path).unwrap();
+        assert!(std::fs::read_to_string(&env_path)
+            .unwrap()
+            .starts_with("API_KEY=phm_"));
     }
 }
