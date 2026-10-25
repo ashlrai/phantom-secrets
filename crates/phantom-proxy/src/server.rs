@@ -3810,14 +3810,14 @@ mod tests {
                 crate::test_server::MockServer::start_echoing("authorization", content_type).await;
             let secret_value = random_hex(16);
             let proxy = basic_route_session_proxy(mock.port, &secret_value).await;
-            let account = format!("AC{}", random_hex(16));
+            let path_owner = format!("AC{}", random_hex(16));
 
             let resp = reqwest::Client::new()
                 .get(format!(
-                    "http://127.0.0.1:{}/svc/2010-04-01/Accounts/{account}.json",
+                    "http://127.0.0.1:{}/svc/2010-04-01/Accounts/{path_owner}.json",
                     proxy.port()
                 ))
-                .header("Authorization", basic(&account, &session_token()))
+                .header("Authorization", basic(&path_owner, &session_token()))
                 .send()
                 .await
                 .unwrap();
@@ -3829,7 +3829,7 @@ mod tests {
                 .to_string();
             let body = resp.text().await.unwrap();
 
-            let injected = basic(&account, &secret_value);
+            let injected = basic(&path_owner, &secret_value);
             let recorded = mock.get_requests();
             assert!(
                 recorded[0].headers.get("authorization") == Some(&injected),
@@ -3838,7 +3838,7 @@ mod tests {
 
             let encoded = injected.strip_prefix("Basic ").unwrap();
             // Base64 characters from here on encode only vault-value bytes
-            // (the account is 34 bytes, plus ':' makes 35; 36 / 3 * 4 = 48).
+            // (the path owner is 34 bytes, plus ':' makes 35; 36 / 3 * 4 = 48).
             let secret_part = &encoded[48..];
             for (place, text) in [("header", &echoed_header), ("body", &body)] {
                 let leaked_whole = text.contains(encoded);
