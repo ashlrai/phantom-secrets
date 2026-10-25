@@ -3,9 +3,8 @@
 //! `state ∈ active | expiring | broken | manual`. Safe to surface to agents via
 //! MCP (`phantom_grant_status`): no values, ever.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use colored::Colorize;
-use phantom_core::config::PhantomConfig;
 use phantom_core::rotation_provider::RotationProviderConfig;
 use serde::Serialize;
 
@@ -57,12 +56,8 @@ fn now_unix() -> u64 {
 }
 
 pub fn run_status(provider: Option<&str>, json_output: bool) -> Result<()> {
-    let project_dir = std::env::current_dir()?;
-    let config_path = project_dir.join(".phantom.toml");
-    if !config_path.exists() {
-        return Err(crate::util::missing_config_error(&project_dir));
-    }
-    let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
+    let project_dir = crate::util::project_dir()?;
+    let config = crate::util::load_project_config(&project_dir)?;
 
     let want = provider.map(normalize_provider);
     let rows: Vec<GrantRow> = config

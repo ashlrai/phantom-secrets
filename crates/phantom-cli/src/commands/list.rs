@@ -1,7 +1,6 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
 use phantom_core::audit::AnomalyClass;
-use phantom_core::config::PhantomConfig;
 use serde::Serialize;
 
 #[derive(Serialize)]
@@ -69,13 +68,7 @@ fn meets_anomaly_level(anomalies: &AnomalyMap, name: &str, min_level: u8) -> boo
 
 pub fn run_with_expiry(json: bool, show_expiry: bool, min_anomaly_score: Option<u8>) -> Result<()> {
     let project_dir = crate::util::project_dir()?;
-    let config_path = project_dir.join(".phantom.toml");
-
-    if !config_path.exists() {
-        return Err(crate::util::missing_config_error(&project_dir));
-    }
-
-    let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
+    let config = crate::util::load_project_config(&project_dir)?;
     let vault = crate::util::open_vault(config.local_project_id())?;
 
     let (entries_with_meta, note) = read_inventory(vault.as_ref(), config.local_project_id())?;

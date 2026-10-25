@@ -7,7 +7,7 @@ use serde::Serialize;
 use std::path::Path;
 
 pub fn run(oneline: bool, json: bool) -> Result<()> {
-    let project_dir = std::env::current_dir()?;
+    let project_dir = crate::util::project_dir()?;
     if json {
         println!(
             "{}",
@@ -17,7 +17,9 @@ pub fn run(oneline: bool, json: bool) -> Result<()> {
     }
     let config_path = project_dir.join(".phantom.toml");
 
-    if !config_path.exists() {
+    let Some(config) = crate::util::load_config_if_present(&config_path)
+        .context("Failed to load .phantom.toml")?
+    else {
         if oneline {
             println!("not initialized");
         } else {
@@ -28,9 +30,7 @@ pub fn run(oneline: bool, json: bool) -> Result<()> {
             );
         }
         return Ok(());
-    }
-
-    let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
+    };
     let legacy = super::legacy_proxy::inspect(&project_dir);
     match &legacy {
         super::legacy_proxy::LegacyState::Missing => {}
