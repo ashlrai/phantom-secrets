@@ -67,12 +67,34 @@ pub const CONFIG_NOT_REGULAR: &str =
 pub fn load_config_if_present(
     path: &std::path::Path,
 ) -> phantom_core::error::Result<Option<phantom_core::config::PhantomConfig>> {
-    let bytes = phantom_core::fs::read_regular_file(path).map_err(|_| {
-        phantom_core::error::PhantomError::Io(std::io::Error::other(CONFIG_NOT_REGULAR))
-    })?;
-    bytes
+    read_config_if_present(path)?
         .map(|bytes| phantom_core::config::PhantomConfig::load_from_bytes(path, &bytes))
         .transpose()
+}
+
+/// The exact bytes of the project's `.phantom.toml` at `path`, or `None`
+/// only when nothing exists there. Read as [`load_config_if_present`] reads
+/// it, for callers that bind a later write to this before-image.
+pub fn read_config_if_present(
+    path: &std::path::Path,
+) -> phantom_core::error::Result<Option<Vec<u8>>> {
+    phantom_core::fs::read_regular_file(path).map_err(|_| {
+        phantom_core::error::PhantomError::Io(std::io::Error::other(CONFIG_NOT_REGULAR))
+    })
+}
+
+/// The `.phantom.toml` in `project_dir` for a command that needs one.
+///
+/// Absent is [`missing_config_error`]. A config that is not a readable
+/// regular, non-symlink file, or that does not parse, is an error too, never
+/// "not initialized" and never followed (see [`load_config_if_present`]).
+pub fn load_project_config(
+    project_dir: &std::path::Path,
+) -> anyhow::Result<phantom_core::config::PhantomConfig> {
+    use anyhow::Context;
+    load_config_if_present(&project_dir.join(".phantom.toml"))
+        .context("Failed to load .phantom.toml")?
+        .ok_or_else(|| missing_config_error(project_dir))
 }
 
 /// Open the vault for `project_id`. Tests install a stub backend with
@@ -581,5 +603,177 @@ mod tests {
         assert!(inventory_guard(vault.as_ref(), "another-project", 0)
             .unwrap()
             .is_none());
+    }
+}
+
+/// Every command that needs the project config reads `.phantom.toml` only as
+/// a regular, non-symlink file, through [`load_config_if_present`].
+#[cfg(all(test, unix))]
+mod config_gate_tests {
+    use super::test_seam::TestProject;
+    use super::CONFIG_NOT_REGULAR;
+    use phantom_vault::VaultBackend;
+    use std::path::{Path, PathBuf};
+
+    /// A vault that fails the test if a command reaches it: every command
+    /// here must refuse the config before it opens the vault.
+    struct UnreachableVault;
+
+    impl VaultBackend for UnreachableVault {
+        fn store(&self, _: &str, _: &str) -> phantom_core::error::Result<()> {
+            panic!("vault reached past a refused .phantom.toml")
+        }
+        fn retrieve(&self, _: &str) -> phantom_core::error::Result<zeroize::Zeroizing<String>> {
+            panic!("vault reached past a refused .phantom.toml")
+        }
+        fn delete(&self, _: &str) -> phantom_core::error::Result<()> {
+            panic!("vault reached past a refused .phantom.toml")
+        }
+        fn list(&self) -> phantom_core::error::Result<Vec<String>> {
+            panic!("vault reached past a refused .phantom.toml")
+        }
+        fn backend_name(&self) -> &str {
+            panic!("vault reached past a refused .phantom.toml")
+        }
+    }
+
+    fn unreachable_vault() -> Box<dyn VaultBackend> {
+        Box::new(UnreachableVault)
+    }
+
+    type Command = (&'static str, fn() -> anyhow::Result<()>);
+
+    /// The commands under test, each run with `project_dir()` pointing at a
+    /// project whose `.phantom.toml` is not a regular file.
+    fn commands() -> Vec<Command> {
+        use crate::commands::*;
+        vec![
+            ("list", || list::run_with_expiry(false, false, None)),
+            ("reveal", || reveal::run("FIXTURE_NAME", false, false)),
+            ("status --oneline", || status::run(true, false)),
+            ("watch", || watch::run_with_rotate(false, false)),
+            ("add", || {
+                add::run("FIXTURE_NAME", None, true, add::StdinLines::SingleOnly)
+            }),
+            ("expiry", || expiry::run(30, false, false, false)),
+            ("expiry set", || expiry::run_set("FIXTURE_NAME", 30)),
+            ("expiry enforce", || expiry::run_enforce(false, false)),
+            ("expiry rotate", || expiry::run_rotate("FIXTURE_NAME")),
+            ("rotate --all", || rotate::run_batch(30, false, false)),
+            ("env list", env_scope::run_list),
+            ("env new", || env_scope::run_new("staging")),
+            ("validate", || validate::run(false, None, false)),
+            ("validate schedule --status", || {
+                validation_scheduler::run_schedule(None, true, false, false)
+            }),
+            ("validate history", || {
+                validation_scheduler::run_history(None, false)
+            }),
+            ("grant list", || grant::list::run_list(false)),
+            ("grant status", || grant::status::run_status(None, false)),
+            ("grant revoke", || {
+                grant::revoke::run_revoke("openai", false)
+            }),
+            ("leaks plan", || leaks::run_plan(0.0, false)),
+        ]
+    }
+
+    /// Run `command` against `project` on a fresh thread and judge it: it
+    /// must fail with the non-regular refusal, without blocking (a FIFO
+    /// opened for reading waits for a writer) and without reaching the vault.
+    /// `Err` names what went wrong.
+    fn judge(project: &Path, command: fn() -> anyhow::Result<()>) -> Result<(), &'static str> {
+        let (send, receive) = std::sync::mpsc::channel();
+        let dir = project.to_path_buf();
+        std::thread::spawn(move || {
+            let _seam = TestProject::install(dir, unreachable_vault);
+            let outcome = command().map_err(|error| format!("{error:#}"));
+            let _ = send.send(outcome);
+        });
+        match receive.recv_timeout(std::time::Duration::from_secs(5)) {
+            Ok(Ok(())) => Err("accepted it"),
+            Ok(Err(message)) if message.contains(CONFIG_NOT_REGULAR) => Ok(()),
+            Ok(Err(_)) => Err("failed without the non-regular refusal"),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                // Release the blocked reader so the thread can finish.
+                drop(
+                    std::fs::OpenOptions::new()
+                        .write(true)
+                        .open(project.join(".phantom.toml")),
+                );
+                Err("blocked on it")
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                Err("panicked (reached the vault)")
+            }
+        }
+    }
+
+    fn assert_every_command_refuses(project: &Path, case: &str) {
+        let failures: Vec<String> = commands()
+            .into_iter()
+            .filter_map(|(label, command)| {
+                judge(project, command)
+                    .err()
+                    .map(|what| format!("{label}: {what}"))
+            })
+            .collect();
+        assert!(
+            failures.is_empty(),
+            ".phantom.toml as a {case}, commands that did not refuse it:\n  {}",
+            failures.join("\n  ")
+        );
+    }
+
+    fn project() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().canonicalize().unwrap();
+        (dir, path)
+    }
+
+    /// A symlink to a config outside the project used to be followed: its
+    /// `dotenv_path`, services and project id chose which dotenv, vault and
+    /// policy the command used.
+    #[test]
+    fn config_symlink_outside_the_project_is_refused_by_every_command() {
+        let outside = tempfile::tempdir().unwrap();
+        let mut config =
+            phantom_core::config::PhantomConfig::new_with_defaults("gate-outside".to_string());
+        config.phantom.dotenv_path = Some("prod.env".to_string());
+        config.save(&outside.path().join(".phantom.toml")).unwrap();
+        let (_dir, project) = project();
+        std::os::unix::fs::symlink(
+            outside.path().join(".phantom.toml"),
+            project.join(".phantom.toml"),
+        )
+        .unwrap();
+        assert_every_command_refuses(&project, "outside symlink");
+    }
+
+    /// A dangling symlink used to read as "not initialized" (or, for
+    /// `leaks plan`, as the default policy).
+    #[test]
+    fn dangling_config_symlink_is_refused_by_every_command() {
+        let (_dir, project) = project();
+        std::os::unix::fs::symlink("missing.toml", project.join(".phantom.toml")).unwrap();
+        assert_every_command_refuses(&project, "dangling symlink");
+    }
+
+    #[test]
+    fn config_fifo_is_refused_by_every_command_without_blocking() {
+        let (_dir, project) = project();
+        let status = std::process::Command::new("mkfifo")
+            .arg(project.join(".phantom.toml"))
+            .status()
+            .unwrap();
+        assert!(status.success(), "mkfifo failed");
+        assert_every_command_refuses(&project, "fifo");
+    }
+
+    #[test]
+    fn config_directory_is_refused_by_every_command() {
+        let (_dir, project) = project();
+        std::fs::create_dir(project.join(".phantom.toml")).unwrap();
+        assert_every_command_refuses(&project, "directory");
     }
 }

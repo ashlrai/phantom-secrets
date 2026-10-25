@@ -1,6 +1,5 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
-use phantom_core::config::PhantomConfig;
 use std::io::{IsTerminal, Read, Write};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
@@ -20,12 +19,8 @@ pub fn run(name: &str, clipboard: bool, yes: bool) -> Result<()> {
         );
     }
 
-    let project_dir = std::env::current_dir()?;
-    let config_path = project_dir.join(".phantom.toml");
-
-    if !config_path.exists() {
-        return Err(crate::util::missing_config_error(&project_dir));
-    }
+    let project_dir = crate::util::project_dir()?;
+    let config = crate::util::load_project_config(&project_dir)?;
 
     if !std::io::stdin().is_terminal() || !std::io::stderr().is_terminal() {
         anyhow::bail!("Refusing to reveal a secret without attached stdin and stderr terminals");
@@ -44,7 +39,6 @@ pub fn run(name: &str, clipboard: bool, yes: bool) -> Result<()> {
         anyhow::bail!("Secret reveal cancelled: typed confirmation did not match");
     }
 
-    let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
     let vault = phantom_vault::try_create_vault(config.local_project_id())?;
 
     phantom_core::audit::log_result("vault.reveal", Some(name))
