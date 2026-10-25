@@ -305,7 +305,7 @@ fn cleanup_created_directory(preparation: ProjectDirectoryPreparation) -> Result
 
 /// `phantom env list` — list known environments extracted from vault keys.
 pub fn run_list() -> Result<()> {
-    let project_dir = std::env::current_dir()?;
+    let project_dir = crate::util::project_dir()?;
     let config_path = project_dir.join(".phantom.toml");
 
     if !config_path.exists() {
@@ -316,8 +316,7 @@ pub fn run_list() -> Result<()> {
     }
 
     let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
-    let vault = phantom_vault::try_create_vault(config.local_project_id())?;
-    let all_keys = vault.list().context("Failed to list vault keys")?;
+    let (all_keys, note) = environment_keys(config.local_project_id())?;
 
     let current = phantom_core::env_scope::read_active_env(&project_dir);
     let envs = known_envs_from_keys(&all_keys, &current);
@@ -343,8 +342,36 @@ pub fn run_list() -> Result<()> {
             "phantom env new <name>".cyan()
         );
     }
+    crate::util::warn_inventory_note(note.as_deref());
 
     Ok(())
+}
+
+/// Every vault key for `project_id`, for a read-only environment view, with
+/// the [`crate::util::inventory_guard`] note when the keys come from a
+/// keychain-only view beside a locked encrypted-file vault.
+fn environment_keys(project_id: &str) -> Result<(Vec<String>, Option<String>)> {
+    let vault = crate::util::open_vault(project_id)?;
+    let all_keys = vault.list().context("Failed to list vault keys")?;
+    let note = crate::util::inventory_guard(vault.as_ref(), project_id, all_keys.len())?;
+    Ok((all_keys, note))
+}
+
+/// Open the vault for an environment copy and list every key: the inventory
+/// the copy's source set and destination collisions are decided from. A
+/// keychain-only listing beside a locked encrypted-file vault would miss
+/// collisions in that file and write the copy into the keychain, so it is
+/// refused, as is an empty one.
+fn environment_copy_inventory(project_id: &str) -> Result<(Box<dyn VaultBackend>, Vec<String>)> {
+    let vault = crate::util::open_vault(project_id)?;
+    let all_keys = vault.list().context("Failed to list vault keys")?;
+    crate::util::require_complete_inventory(
+        vault.as_ref(),
+        project_id,
+        all_keys.len(),
+        "copy between environments",
+    )?;
+    Ok((vault, all_keys))
 }
 
 /// `phantom env new <name>` — declare a new environment (no-op if it already exists).
@@ -352,7 +379,7 @@ pub fn run_list() -> Result<()> {
 pub fn run_new(name: &str) -> Result<()> {
     validate_env_name(name).map_err(|e| anyhow::anyhow!("{e}"))?;
 
-    let project_dir = std::env::current_dir()?;
+    let project_dir = crate::util::project_dir()?;
     let config_path = project_dir.join(".phantom.toml");
 
     if !config_path.exists() {
@@ -364,8 +391,8 @@ pub fn run_new(name: &str) -> Result<()> {
 
     // Check if env already has any keys in vault
     let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
-    let vault = phantom_vault::try_create_vault(config.local_project_id())?;
-    let all_keys = vault.list().context("Failed to list vault keys")?;
+    let (all_keys, note) = environment_keys(config.local_project_id())?;
+    crate::util::warn_inventory_note(note.as_deref());
     let prefix = format!("{name}/");
     let existing_count = all_keys.iter().filter(|k| k.starts_with(&prefix)).count();
 
@@ -410,8 +437,7 @@ pub fn run_copy(from: &str, to: &str) -> Result<()> {
 
     // Vault creation, listing, and especially value retrieval are deliberately
     // after the fresh trusted-terminal ceremony and exact local-state recheck.
-    let vault = phantom_vault::try_create_vault(&review.vault_id)?;
-    let all_keys = vault.list().context("Failed to list vault keys")?;
+    let (vault, all_keys) = environment_copy_inventory(&review.vault_id)?;
     let plan = prepare_environment_copy(
         vault.as_ref(),
         &all_keys,
@@ -1294,5 +1320,64 @@ mod tests {
         let error = prepare_environment_copy(&vault, &keys, "dev", "default").unwrap_err();
         assert!(error.to_string().contains("refuses overwrite"));
         assert_eq!(vault.retrieve("API_KEY").unwrap().as_str(), "legacy-owner");
+    }
+}
+
+#[cfg(all(test, unix))]
+mod locked_vault_tests {
+    use crate::util::test_seam::{empty_keychain, keychain_with_one, LockedProject};
+
+    /// `phantom env list` showed only the default environment (exit 0) and
+    /// `phantom env new` declared environments as new when the project's
+    /// secrets were in an encrypted-file vault this process could not open.
+    #[test]
+    fn environment_views_refuse_an_empty_keychain_beside_a_locked_file_vault() {
+        let project = LockedProject::new(empty_keychain);
+        let outcome = super::environment_keys(&project.project_id);
+        assert!(
+            outcome.is_err(),
+            "an empty keychain listing is not the inventory"
+        );
+        let error = outcome.err().unwrap().to_string();
+        assert!(error.starts_with("Vault locked:"));
+        for outcome in [super::run_list(), super::run_new("staging")] {
+            let error = outcome.unwrap_err().to_string();
+            assert!(error.starts_with("Vault locked:"));
+        }
+    }
+
+    /// A keychain that holds secrets of its own is listed, with the note
+    /// (printed as `warn`) that the view leaves out the locked file vault.
+    #[test]
+    fn environment_views_note_a_keychain_only_inventory() {
+        let project = LockedProject::new(keychain_with_one);
+        let (keys, note) = super::environment_keys(&project.project_id).unwrap();
+        assert_eq!(keys, ["KEYCHAIN_ONLY_KEY"]);
+        let note = note.expect("a keychain-only view carries the note");
+        assert!(note.contains("covers only the OS keychain (1 secret(s))"));
+        assert!(note.contains("PHANTOM_VAULT_PASSPHRASE"));
+    }
+
+    /// `phantom env copy` decided its source set and destination collisions
+    /// from the keychain alone, so a destination that already existed in the
+    /// locked file vault was written again into the keychain.
+    #[test]
+    fn environment_copy_refuses_an_inventory_beside_a_locked_file_vault() {
+        for make in [empty_keychain, keychain_with_one] {
+            let project = LockedProject::new(make);
+            let outcome = super::environment_copy_inventory(&project.project_id);
+            assert!(
+                outcome.is_err(),
+                "copy must not plan against a keychain beside a locked file vault"
+            );
+            let error = outcome.err().unwrap().to_string();
+            assert!(
+                error.starts_with("Vault locked:")
+                    || error.starts_with(
+                        "Refusing to copy between environments from a partial inventory"
+                    ),
+            );
+            assert!(error.contains("PHANTOM_VAULT_PASSPHRASE"));
+        }
     }
 }

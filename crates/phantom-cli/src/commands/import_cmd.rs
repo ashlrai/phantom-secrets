@@ -42,13 +42,7 @@ pub fn run(
         return Ok(());
     }
 
-    let vault = phantom_vault::try_create_vault(&project.local_project_id)?;
-    let mut vault_names = vault
-        .list()
-        .context("Failed to list destination secret names")?;
-    vault_names.sort();
-    vault_names.dedup();
-    export_cmd::validate_consent_names(&vault_names)?;
+    let (vault, vault_names) = open_import_destination(&project)?;
     let existing = vault_names.iter().cloned().collect::<BTreeSet<_>>();
     let incoming = secrets.0.keys().cloned().collect::<Vec<_>>();
     export_cmd::validate_consent_names(&incoming)?;
@@ -388,11 +382,7 @@ pub fn run_from(source: &str, file: &str, force: bool) -> Result<()> {
         return Ok(());
     }
 
-    let vault = phantom_vault::try_create_vault(&project.local_project_id)?;
-    let mut vault_names = vault.list().context("Failed to list local vault secrets")?;
-    vault_names.sort();
-    vault_names.dedup();
-    export_cmd::validate_consent_names(&vault_names)?;
+    let (vault, vault_names) = open_import_destination(&project)?;
     let env_path = phantom_core::managed_dotenv::resolve_dotenv(
         &project.project_dir,
         &project.config,
@@ -528,7 +518,7 @@ struct ImportConsentPlan {
 }
 
 fn load_import_project_exact() -> Result<ImportProject> {
-    let project_dir = std::env::current_dir()?.canonicalize()?;
+    let project_dir = crate::util::project_dir()?.canonicalize()?;
     let config_path = project_dir.join(".phantom.toml");
     let config_before = phantom_core::fs::read_regular_file(&config_path)
         .context("Failed to safely read .phantom.toml")?
@@ -552,6 +542,33 @@ fn load_import_project_exact() -> Result<ImportProject> {
     };
     recheck_project(&project)?;
     Ok(project)
+}
+
+/// Open the destination vault and list its sorted, deduplicated names: the
+/// set the import decides new, overwritten and skipped names from.
+///
+/// Beside an encrypted-file vault this process cannot open, the opened vault
+/// is the OS keychain. Its listing would treat names already in the file
+/// vault as new and store them into the keychain, splitting the project's
+/// secrets across two vaults, so an empty or keychain-only listing is refused
+/// before any review or value read.
+fn open_import_destination(
+    project: &ImportProject,
+) -> Result<(Box<dyn phantom_vault::VaultBackend>, Vec<String>)> {
+    let vault = crate::util::open_vault(&project.local_project_id)?;
+    let mut vault_names = vault
+        .list()
+        .context("Failed to list destination secret names")?;
+    vault_names.sort();
+    vault_names.dedup();
+    crate::util::require_complete_inventory(
+        vault.as_ref(),
+        &project.local_project_id,
+        vault_names.len(),
+        "import secrets",
+    )?;
+    export_cmd::validate_consent_names(&vault_names)?;
+    Ok((vault, vault_names))
 }
 
 fn recheck_project(project: &ImportProject) -> Result<()> {
@@ -948,5 +965,33 @@ project_id = "swapped-project"
         assert!(error.to_string().contains("trusted terminal"));
         assert_eq!(reader.position(), 0);
         assert!(writer.is_empty());
+    }
+}
+
+#[cfg(all(test, unix))]
+mod locked_vault_tests {
+    use crate::util::test_seam::{empty_keychain, keychain_with_one, LockedProject};
+
+    /// Beside an encrypted-file vault this process cannot open, import read
+    /// the OS keychain's listing as the destination inventory: a name already
+    /// in the file vault was planned as new and stored into the keychain,
+    /// splitting the project's secrets across two vaults.
+    #[test]
+    fn import_refuses_a_destination_beside_a_locked_file_vault() {
+        for make in [empty_keychain, keychain_with_one] {
+            let _project = LockedProject::new(make);
+            let import = super::load_import_project_exact().unwrap();
+            let outcome = super::open_import_destination(&import);
+            assert!(
+                outcome.is_err(),
+                "import must not plan against a keychain beside a locked file vault"
+            );
+            let error = outcome.err().unwrap().to_string();
+            assert!(
+                error.starts_with("Vault locked:")
+                    || error.starts_with("Refusing to import secrets from a partial inventory"),
+            );
+            assert!(error.contains("PHANTOM_VAULT_PASSPHRASE"));
+        }
     }
 }
