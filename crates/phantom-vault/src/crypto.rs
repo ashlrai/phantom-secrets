@@ -1,4 +1,4 @@
-use argon2::{Algorithm, Argon2, Params, Version};
+use argon2::{Algorithm, Argon2, Block, Params, Version};
 use chacha20poly1305::aead::Payload;
 use chacha20poly1305::{
     aead::{Aead, KeyInit},
@@ -6,7 +6,7 @@ use chacha20poly1305::{
 };
 use phantom_core::blob_format::{self, Tag, WriteFormat};
 use phantom_core::error::{PhantomError, Result};
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 const SALT_LEN: usize = 32;
 const NONCE_LEN: usize = 12;
@@ -35,26 +35,75 @@ fn hardened_argon2() -> Result<Argon2<'static>> {
     Ok(Argon2::new(Algorithm::Argon2id, Version::V0x13, params))
 }
 
+/// A derived AEAD key. Scrubbed on drop, including on every early return.
+type DerivedKey = Zeroizing<[u8; KEY_LEN]>;
+
+/// Run Argon2 into a zeroizing key buffer with zeroizing working memory.
+///
+/// `Argon2::hash_password_into` allocates its block memory internally and
+/// frees it unscrubbed; the final memory block alone determines the derived
+/// key. Supplying our own [`ScrubbedBlocks`] scrubs the whole working set
+/// (up to 64 MiB) on drop, including on the error path. The output is
+/// identical to `hash_password_into` with the same parameters.
+fn argon2_derive(
+    argon2: &Argon2<'_>,
+    passphrase: &str,
+    salt: &[u8],
+    what: &str,
+) -> Result<DerivedKey> {
+    let mut key: DerivedKey = Zeroizing::new([0u8; KEY_LEN]);
+    let mut blocks = ScrubbedBlocks(vec![Block::default(); argon2.params().block_count()]);
+    argon2
+        .hash_password_into_with_memory(
+            passphrase.as_bytes(),
+            salt,
+            key.as_mut_slice(),
+            blocks.0.as_mut_slice(),
+        )
+        .map_err(|e| PhantomError::VaultError(format!("{what} failed: {e}")))?;
+    Ok(key)
+}
+
+/// Argon2 working memory, scrubbed on drop.
+///
+/// Each block is cleared as a `[u64]` slice (zeroize's volatile bulk set)
+/// rather than through `Zeroizing<Vec<Block>>`, whose per-word iterator path
+/// is several times slower than the derivation itself in unoptimized builds.
+/// Both forms clear every word with volatile writes.
+struct ScrubbedBlocks(Vec<Block>);
+
+impl ScrubbedBlocks {
+    fn scrub(&mut self) {
+        for block in &mut self.0 {
+            let words: &mut [u64] = block.as_mut();
+            words.zeroize();
+        }
+    }
+}
+
+impl Drop for ScrubbedBlocks {
+    fn drop(&mut self) {
+        self.scrub();
+    }
+}
+
 /// Derive a key using the current (hardened) Argon2id parameters. Used for
 /// every new encryption.
-fn derive_key(passphrase: &str, salt: &[u8]) -> Result<[u8; KEY_LEN]> {
-    let mut key = [0u8; KEY_LEN];
-    hardened_argon2()?
-        .hash_password_into(passphrase.as_bytes(), salt, &mut key)
-        .map_err(|e| PhantomError::VaultError(format!("Key derivation failed: {e}")))?;
-    Ok(key)
+fn derive_key(passphrase: &str, salt: &[u8]) -> Result<DerivedKey> {
+    argon2_derive(&hardened_argon2()?, passphrase, salt, "Key derivation")
 }
 
 /// Derive a key using legacy `Argon2::default()` parameters. Tried as a
 /// fallback when [`derive_key`] produces a key that doesn't decrypt — this
 /// preserves compatibility with vaults encrypted under earlier phantom
 /// releases (m=19MiB / t=2 / p=1, the argon2 crate's default).
-fn derive_key_legacy(passphrase: &str, salt: &[u8]) -> Result<[u8; KEY_LEN]> {
-    let mut key = [0u8; KEY_LEN];
-    Argon2::default()
-        .hash_password_into(passphrase.as_bytes(), salt, &mut key)
-        .map_err(|e| PhantomError::VaultError(format!("Legacy key derivation failed: {e}")))?;
-    Ok(key)
+fn derive_key_legacy(passphrase: &str, salt: &[u8]) -> Result<DerivedKey> {
+    argon2_derive(
+        &Argon2::default(),
+        passphrase,
+        salt,
+        "Legacy key derivation",
+    )
 }
 
 /// Encrypt plaintext using ChaCha20-Poly1305 with Argon2id key derivation.
@@ -75,10 +124,13 @@ pub fn encrypt_with_format(
     let salt: [u8; SALT_LEN] = rand::random();
     let nonce_bytes: [u8; NONCE_LEN] = rand::random();
 
-    let mut key = derive_key(passphrase, &salt)?;
-    let cipher = ChaCha20Poly1305::new_from_slice(&key)
-        .map_err(|e| PhantomError::VaultError(format!("Cipher init failed: {e}")))?;
-    key.zeroize();
+    // The cipher is `ZeroizeOnDrop`; the derived key buffer drops (and is
+    // scrubbed) at the end of this block, before the plaintext is touched.
+    let cipher = {
+        let key = derive_key(passphrase, &salt)?;
+        ChaCha20Poly1305::new_from_slice(key.as_slice())
+            .map_err(|e| PhantomError::VaultError(format!("Cipher init failed: {e}")))?
+    };
 
     let nonce = Nonce::from_slice(&nonce_bytes);
     let header = blob_format::header();
@@ -109,7 +161,12 @@ pub fn encrypt_with_format(
 /// Decrypt data produced by [`encrypt`], tagged or untagged.
 ///
 /// Untagged input format: `salt (32 bytes) || nonce (12 bytes) || ciphertext`
-pub fn decrypt(encrypted: &[u8], passphrase: &str) -> Result<Vec<u8>> {
+///
+/// The plaintext is returned in a [`Zeroizing`] buffer so it is scrubbed on
+/// drop even when a caller forgets to wrap it. The AEAD writes the plaintext
+/// in place into a buffer pre-sized for the ciphertext, so no unscrubbed
+/// intermediate copy is left behind.
+pub fn decrypt(encrypted: &[u8], passphrase: &str) -> Result<Zeroizing<Vec<u8>>> {
     if encrypted.len() < MIN_ENCRYPTED_LEN {
         return Err(PhantomError::VaultError(
             "Encrypted data too small — may be corrupt".to_string(),
@@ -153,7 +210,11 @@ pub fn decrypt(encrypted: &[u8], passphrase: &str) -> Result<Vec<u8>> {
 
 /// Decrypt a `salt || nonce || ciphertext` body. With `aad` set only the
 /// hardened KDF is tried (tagged blobs never used the legacy parameters).
-fn decrypt_body(body: &[u8], passphrase: &str, aad: Option<&[u8]>) -> Result<Option<Vec<u8>>> {
+fn decrypt_body(
+    body: &[u8],
+    passphrase: &str,
+    aad: Option<&[u8]>,
+) -> Result<Option<Zeroizing<Vec<u8>>>> {
     if body.len() < MIN_ENCRYPTED_LEN {
         return Ok(None);
     }
@@ -181,7 +242,7 @@ fn decrypt_body_v3(
     passphrase: &str,
     params: blob_format::KdfParamsV3,
     header: &[u8],
-) -> Result<Option<Vec<u8>>> {
+) -> Result<Option<Zeroizing<Vec<u8>>>> {
     if body.len() < MIN_ENCRYPTED_LEN {
         return Ok(None);
     }
@@ -192,13 +253,12 @@ fn decrypt_body_v3(
         Some(KEY_LEN),
     )
     .map_err(|e| PhantomError::VaultError(format!("Argon2 params: {e}")))?;
-    let mut key: [u8; KEY_LEN] = Default::default();
-    Argon2::new(Algorithm::Argon2id, Version::V0x13, argon2_params)
-        .hash_password_into(passphrase.as_bytes(), &body[..SALT_LEN], &mut key)
-        .map_err(|e| PhantomError::VaultError(format!("Key derivation failed: {e}")))?;
-    let cipher = ChaCha20Poly1305::new_from_slice(&key)
-        .map_err(|e| PhantomError::VaultError(format!("Cipher init failed: {e}")))?;
-    key.zeroize();
+    let cipher = {
+        let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, argon2_params);
+        let key = argon2_derive(&argon2, passphrase, &body[..SALT_LEN], "Key derivation")?;
+        ChaCha20Poly1305::new_from_slice(key.as_slice())
+            .map_err(|e| PhantomError::VaultError(format!("Cipher init failed: {e}")))?
+    };
     let nonce = Nonce::from_slice(&body[SALT_LEN..SALT_LEN + NONCE_LEN]);
     Ok(cipher
         .decrypt(
@@ -208,21 +268,23 @@ fn decrypt_body_v3(
                 aad: header,
             },
         )
-        .ok())
+        .ok()
+        .map(Zeroizing::new))
 }
 
 fn try_decrypt_with(
-    derive: fn(&str, &[u8]) -> Result<[u8; KEY_LEN]>,
+    derive: fn(&str, &[u8]) -> Result<DerivedKey>,
     passphrase: &str,
     salt: &[u8],
     nonce: &Nonce,
     ciphertext: &[u8],
     aad: Option<&[u8]>,
-) -> Result<Option<Vec<u8>>> {
-    let mut key = derive(passphrase, salt)?;
-    let cipher = ChaCha20Poly1305::new_from_slice(&key)
-        .map_err(|e| PhantomError::VaultError(format!("Cipher init failed: {e}")))?;
-    key.zeroize();
+) -> Result<Option<Zeroizing<Vec<u8>>>> {
+    let cipher = {
+        let key = derive(passphrase, salt)?;
+        ChaCha20Poly1305::new_from_slice(key.as_slice())
+            .map_err(|e| PhantomError::VaultError(format!("Cipher init failed: {e}")))?
+    };
 
     Ok(match aad {
         None => cipher.decrypt(nonce, ciphertext),
@@ -234,12 +296,67 @@ fn try_decrypt_with(
             },
         ),
     }
-    .ok())
+    .ok()
+    .map(Zeroizing::new))
+}
+
+/// Serialize `value` as pretty JSON into a [`Zeroizing`] buffer.
+///
+/// `serde_json::to_string_pretty` grows a plain `Vec` by reallocation, and
+/// every superseded allocation holding a prefix of the plaintext is freed
+/// unscrubbed. [`ZeroizingWriter`] grows by copying into a fresh
+/// `Zeroizing` buffer and dropping (scrubbing) the old one, so no plaintext
+/// fragment outlives the call. The bytes are identical to
+/// `serde_json::to_vec_pretty`.
+pub fn to_json_pretty_zeroizing<T: serde::Serialize + ?Sized>(
+    value: &T,
+) -> Result<Zeroizing<Vec<u8>>> {
+    let mut writer = ZeroizingWriter::default();
+    serde_json::to_writer_pretty(&mut writer, value)
+        .map_err(|e| PhantomError::VaultError(format!("Serialization failed: {e}")))?;
+    Ok(writer.buf)
+}
+
+/// `io::Write` sink that never lets `Vec` reallocate plaintext in place.
+#[derive(Default)]
+struct ZeroizingWriter {
+    buf: Zeroizing<Vec<u8>>,
+}
+
+impl ZeroizingWriter {
+    const MIN_CAPACITY: usize = 1024;
+
+    fn reserve_scrubbed(&mut self, additional: usize) {
+        let needed = self.buf.len().saturating_add(additional);
+        if needed <= self.buf.capacity() {
+            return;
+        }
+        let capacity = needed
+            .max(self.buf.capacity().saturating_mul(2))
+            .max(Self::MIN_CAPACITY);
+        let mut next = Zeroizing::new(Vec::with_capacity(capacity));
+        next.extend_from_slice(&self.buf);
+        // The previous buffer drops here and is scrubbed over its capacity.
+        self.buf = next;
+    }
+}
+
+impl std::io::Write for ZeroizingWriter {
+    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+        self.reserve_scrubbed(data.len());
+        self.buf.extend_from_slice(data);
+        Ok(data.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
 
     /// A tagged (v2) blob was never written with the legacy Argon2 defaults,
     /// so decrypt must not fall back to them for it: that would let a
@@ -255,16 +372,16 @@ mod tests {
 
         // Same header, salt and nonce; body sealed under the legacy KDF with
         // no associated data, as an untagged legacy blob would be.
-        let mut key = derive_key_legacy(passphrase, salt).unwrap();
-        let cipher = ChaCha20Poly1305::new_from_slice(&key).unwrap();
-        key.zeroize();
+        let key = derive_key_legacy(passphrase, salt).unwrap();
+        let cipher = ChaCha20Poly1305::new_from_slice(key.as_slice()).unwrap();
+        drop(key);
         let ciphertext = cipher
             .encrypt(Nonce::from_slice(nonce_bytes), plaintext.as_slice())
             .unwrap();
         let mut forged = real[..header_len + SALT_LEN + NONCE_LEN].to_vec();
         forged.extend_from_slice(&ciphertext);
 
-        assert_eq!(decrypt(&real, passphrase).unwrap(), plaintext);
+        assert_eq!(decrypt(&real, passphrase).unwrap().as_slice(), plaintext);
         assert!(
             decrypt(&forged, passphrase).is_err(),
             "tagged blob decrypted through the legacy KDF"
@@ -288,7 +405,7 @@ mod tests {
         let encrypted = encrypt(plaintext, passphrase).unwrap();
         let decrypted = decrypt(&encrypted, passphrase).unwrap();
 
-        assert_eq!(decrypted, plaintext);
+        assert_eq!(decrypted.as_slice(), plaintext);
     }
 
     #[test]
@@ -311,8 +428,8 @@ mod tests {
         // Different random salt+nonce means different ciphertext
         assert_ne!(e1, e2);
         // But both decrypt to the same thing
-        assert_eq!(decrypt(&e1, "pass").unwrap(), plaintext);
-        assert_eq!(decrypt(&e2, "pass").unwrap(), plaintext);
+        assert_eq!(decrypt(&e1, "pass").unwrap().as_slice(), plaintext);
+        assert_eq!(decrypt(&e2, "pass").unwrap().as_slice(), plaintext);
     }
 
     /// Encrypt with the legacy KDF, then verify the current `decrypt` path
@@ -329,9 +446,9 @@ mod tests {
         rand::thread_rng().fill_bytes(&mut salt);
         rand::thread_rng().fill_bytes(&mut nonce_bytes);
 
-        let mut key = derive_key_legacy(passphrase, &salt).unwrap();
-        let cipher = ChaCha20Poly1305::new_from_slice(&key).unwrap();
-        key.zeroize();
+        let key = derive_key_legacy(passphrase, &salt).unwrap();
+        let cipher = ChaCha20Poly1305::new_from_slice(key.as_slice()).unwrap();
+        drop(key);
 
         let nonce = Nonce::from_slice(&nonce_bytes);
         let ct = cipher.encrypt(nonce, plaintext.as_ref()).unwrap();
@@ -343,7 +460,7 @@ mod tests {
 
         // Real path — should hit the legacy fallback after the hardened
         // params produce a non-matching key.
-        assert_eq!(decrypt(&blob, passphrase).unwrap(), plaintext);
+        assert_eq!(decrypt(&blob, passphrase).unwrap().as_slice(), plaintext);
     }
 
     #[test]
@@ -353,7 +470,8 @@ mod tests {
         let salt = [42u8; SALT_LEN];
         let h = derive_key("same-pass", &salt).unwrap();
         let l = derive_key_legacy("same-pass", &salt).unwrap();
-        assert_ne!(h, l);
+        // Compare without formatting key bytes into a failure message.
+        assert!(*h != *l, "hardened and legacy derivations collided");
     }
 
     /// Fixture generated by the pre-tag writer (hardened KDF, no header).
@@ -365,7 +483,7 @@ mod tests {
     fn legacy_format_is_the_default_layout() {
         let blob = untagged_blob(b"abc", "p");
         assert_eq!(blob.len(), SALT_LEN + NONCE_LEN + 3 + 16);
-        assert_eq!(decrypt(&blob, "p").unwrap(), b"abc");
+        assert_eq!(decrypt(&blob, "p").unwrap().as_slice(), b"abc");
     }
 
     #[test]
@@ -373,7 +491,7 @@ mod tests {
         let blob = encrypt_with_format(b"secret", "p", WriteFormat::Tagged).unwrap();
         assert_eq!(&blob[..4], b"PHMB");
         assert_eq!(blob.len(), 6 + SALT_LEN + NONCE_LEN + 6 + 16);
-        assert_eq!(decrypt(&blob, "p").unwrap(), b"secret");
+        assert_eq!(decrypt(&blob, "p").unwrap().as_slice(), b"secret");
         assert!(decrypt(&blob, "wrong").is_err());
     }
 
@@ -401,9 +519,9 @@ mod tests {
         let mut salt = [5u8; SALT_LEN];
         salt[..blob_format::HEADER_LEN].copy_from_slice(&blob_format::header());
         let nonce_bytes = [6u8; NONCE_LEN];
-        let mut key = derive_key(passphrase, &salt).unwrap();
-        let cipher = ChaCha20Poly1305::new_from_slice(&key).unwrap();
-        key.zeroize();
+        let key = derive_key(passphrase, &salt).unwrap();
+        let cipher = ChaCha20Poly1305::new_from_slice(key.as_slice()).unwrap();
+        drop(key);
         let ct = cipher
             .encrypt(Nonce::from_slice(&nonce_bytes), b"edge".as_ref())
             .unwrap();
@@ -411,13 +529,13 @@ mod tests {
         blob.extend_from_slice(&nonce_bytes);
         blob.extend_from_slice(&ct);
         assert!(matches!(blob_format::classify(&blob), Tag::V2(_)));
-        assert_eq!(decrypt(&blob, passphrase).unwrap(), b"edge");
+        assert_eq!(decrypt(&blob, passphrase).unwrap().as_slice(), b"edge");
     }
 
     /// Untagged blob whose salt starts with `PHMB` and the given version and
     /// algorithm bytes, sealed with `derive`.
     fn colliding_blob(
-        derive: fn(&str, &[u8]) -> Result<[u8; KEY_LEN]>,
+        derive: fn(&str, &[u8]) -> Result<DerivedKey>,
         passphrase: &str,
         version: u8,
         alg: u8,
@@ -428,9 +546,9 @@ mod tests {
         salt[4] = version;
         salt[5] = alg;
         let nonce_bytes: [u8; NONCE_LEN] = rand::random();
-        let mut key = derive(passphrase, &salt).unwrap();
-        let cipher = ChaCha20Poly1305::new_from_slice(&key).unwrap();
-        key.zeroize();
+        let key = derive(passphrase, &salt).unwrap();
+        let cipher = ChaCha20Poly1305::new_from_slice(key.as_slice()).unwrap();
+        drop(key);
         let ct = cipher
             .encrypt(Nonce::from_slice(&nonce_bytes), b"edge".as_ref())
             .unwrap();
@@ -451,7 +569,7 @@ mod tests {
                 Tag::Unsupported { .. }
             ));
             assert_eq!(
-                decrypt(&blob, "collide").unwrap(),
+                decrypt(&blob, "collide").unwrap().as_slice(),
                 b"edge",
                 "v{version} a{alg}"
             );
@@ -476,7 +594,7 @@ mod tests {
             }
         );
         assert_eq!(
-            decrypt(&blob, "v3-fixture-pass").unwrap(),
+            decrypt(&blob, "v3-fixture-pass").unwrap().as_slice(),
             b"v3-fixture-plaintext"
         );
         assert!(decrypt(&blob, "wrong-pass").is_err());
@@ -525,7 +643,10 @@ mod tests {
         // Flipping t (2 to 3) or the reserved KDF id must not decrypt.
         // Sealed at runtime with a random salt and nonce.
         let blob = seal_v3_for_test(b"v3-tamper", "v3-tamper-pass");
-        assert_eq!(decrypt(&blob, "v3-tamper-pass").unwrap(), b"v3-tamper");
+        assert_eq!(
+            decrypt(&blob, "v3-tamper-pass").unwrap().as_slice(),
+            b"v3-tamper"
+        );
         // Offset 11 is t (2 becomes 3); offset 7 is the low byte of m_kib.
         for offset in [11usize, 7] {
             let mut tampered = blob.clone();
@@ -551,7 +672,7 @@ mod tests {
             blob_format::ALG_CHACHA20_POLY1305,
         );
         assert!(matches!(blob_format::classify(&blob), Tag::V2(_)));
-        assert_eq!(decrypt(&blob, "collide").unwrap(), b"edge");
+        assert_eq!(decrypt(&blob, "collide").unwrap().as_slice(), b"edge");
     }
 
     /// Writers must not change: `encrypt` still writes the untagged layout
@@ -573,14 +694,17 @@ mod tests {
         assert!(default.len() == legacy.len() || default[..6] == tagged[..6]);
         for blob in [&legacy, &tagged, &default] {
             assert!(blob_format::parse_v3_header(blob).is_none());
-            assert_eq!(decrypt(blob, "pin-pass").unwrap(), b"pin");
+            assert_eq!(decrypt(blob, "pin-pass").unwrap().as_slice(), b"pin");
         }
     }
 
     #[test]
     fn golden_untagged_fixture_decrypts() {
         let blob = hex_to_bytes(GOLDEN_HEX);
-        assert_eq!(decrypt(&blob, "golden-pass").unwrap(), b"golden-plaintext");
+        assert_eq!(
+            decrypt(&blob, "golden-pass").unwrap().as_slice(),
+            b"golden-plaintext"
+        );
     }
 
     fn hex_to_bytes(h: &str) -> Vec<u8> {
@@ -591,4 +715,111 @@ mod tests {
     }
 
     const GOLDEN_HEX: &str = "ee34d220b0bec900e8c5cd0ee92b2217a150303e7cdb62f024cf1db0ef2d4e5894398c4e170fdede11ad00a01d8846053ae505dad2e2093c0617285bf631bc5dfd77819e82020c9c6e6353bb";
+
+    /// Type pins: plaintext and derived-key buffers must be `Zeroizing`.
+    /// Reverting any of these to a plain `Vec<u8>` / `[u8; 32]` is a compile
+    /// error, not a silent regression.
+    #[test]
+    fn decrypt_and_key_derivation_return_zeroizing_buffers() {
+        type Plaintext = Result<Zeroizing<Vec<u8>>>;
+        type Key = Result<Zeroizing<[u8; KEY_LEN]>>;
+        let _decrypt: fn(&[u8], &str) -> Plaintext = decrypt;
+        let _hardened: fn(&str, &[u8]) -> Key = derive_key;
+        let _legacy: fn(&str, &[u8]) -> Key = derive_key_legacy;
+        let _json: fn(&BTreeMap<String, String>) -> Plaintext =
+            to_json_pretty_zeroizing::<BTreeMap<String, String>>;
+    }
+
+    /// Supplying zeroizing Argon2 working memory must not change the key:
+    /// `argon2_derive` agrees with the crate's own `hash_password_into` for
+    /// both the hardened and the legacy parameters.
+    #[test]
+    fn zeroizing_argon2_memory_derives_the_same_key() {
+        let salt = [7u8; SALT_LEN];
+        for (argon2, ours) in [
+            (
+                hardened_argon2().unwrap(),
+                derive_key("same-input", &salt).unwrap(),
+            ),
+            (
+                Argon2::default(),
+                derive_key_legacy("same-input", &salt).unwrap(),
+            ),
+        ] {
+            let mut reference = [0u8; KEY_LEN];
+            argon2
+                .hash_password_into(b"same-input", &salt, &mut reference)
+                .unwrap();
+            let same = *ours == reference;
+            reference.zeroize();
+            assert!(same, "zeroizing Argon2 memory changed the derived key");
+        }
+    }
+
+    /// The Argon2 working-memory scrub clears every word of every block
+    /// after a real derivation has filled them.
+    #[test]
+    fn argon2_working_memory_scrub_clears_every_block() {
+        let argon2 = Argon2::new(
+            Algorithm::Argon2id,
+            Version::V0x13,
+            Params::new(64, 1, 1, Some(KEY_LEN)).unwrap(),
+        );
+        let mut blocks = ScrubbedBlocks(vec![Block::default(); argon2.params().block_count()]);
+        let mut out = [0u8; KEY_LEN];
+        argon2
+            .hash_password_into_with_memory(
+                b"scrub-input",
+                &[3u8; SALT_LEN],
+                &mut out,
+                &mut blocks.0,
+            )
+            .unwrap();
+        out.zeroize();
+        let filled = blocks.0.iter().all(|b| b.as_ref().iter().any(|w| *w != 0));
+        assert!(filled, "derivation did not fill the working memory");
+        blocks.scrub();
+        let cleared = blocks.0.iter().all(|b| b.as_ref().iter().all(|w| *w == 0));
+        assert!(cleared, "working memory was not scrubbed");
+    }
+
+    /// The zeroizing serializer must emit exactly the bytes the vault wrote
+    /// before (`serde_json::to_string_pretty`), so the on-disk plaintext
+    /// layout under the AEAD is unchanged.
+    #[test]
+    fn zeroizing_json_is_byte_identical_to_serde_pretty() {
+        let mut map = BTreeMap::new();
+        for i in 0..200 {
+            map.insert(format!("FIXTURE_NAME_{i:03}"), format!("fixture-value-{i}"));
+        }
+        let ours = to_json_pretty_zeroizing(&map).unwrap();
+        let reference = serde_json::to_string_pretty(&map).unwrap();
+        assert!(
+            ours.as_slice() == reference.as_bytes(),
+            "zeroizing serializer changed the JSON layout"
+        );
+    }
+
+    /// Growth goes through `reserve_scrubbed`, which always moves into a new
+    /// `Zeroizing` allocation (dropping the old one scrubbed) rather than
+    /// letting `Vec` reallocate the plaintext prefix in place.
+    #[test]
+    fn zeroizing_writer_grows_into_fresh_buffers() {
+        use std::io::Write;
+        let mut writer = ZeroizingWriter::default();
+        writer.write_all(&[b'a'; 10]).unwrap();
+        assert_eq!(writer.buf.capacity(), ZeroizingWriter::MIN_CAPACITY);
+        let chunk = [b'b'; ZeroizingWriter::MIN_CAPACITY];
+        writer.write_all(&chunk).unwrap();
+        // Policy: max(needed, 2 * old capacity, MIN_CAPACITY).
+        assert_eq!(writer.buf.capacity(), 2 * ZeroizingWriter::MIN_CAPACITY);
+        let big = vec![b'c'; 5 * ZeroizingWriter::MIN_CAPACITY];
+        writer.write_all(&big).unwrap();
+        assert_eq!(
+            writer.buf.capacity(),
+            10 + 6 * ZeroizingWriter::MIN_CAPACITY
+        );
+        assert_eq!(writer.buf.len(), 10 + 6 * ZeroizingWriter::MIN_CAPACITY);
+        assert!(writer.buf[..10].iter().all(|b| *b == b'a'));
+    }
 }

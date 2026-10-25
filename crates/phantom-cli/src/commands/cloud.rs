@@ -189,7 +189,8 @@ pub fn run_pull(force: bool) -> Result<()> {
     let encrypted = BASE64
         .decode(&pull_data.encrypted_blob)
         .context("Invalid cloud vault data")?;
-    let plaintext = Zeroizing::new(phantom_vault::crypto::decrypt(&encrypted, &passphrase)?);
+    // `decrypt` returns a Zeroizing buffer, scrubbed on drop.
+    let plaintext = phantom_vault::crypto::decrypt(&encrypted, &passphrase)?;
     let secrets = SensitiveCloudSecrets::parse_json(&plaintext)
         .context("Failed to parse cloud vault data")?;
 
