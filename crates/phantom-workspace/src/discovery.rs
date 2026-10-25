@@ -119,7 +119,10 @@ pub fn inspect_workspace(root: impl AsRef<Path>) -> Result<WorkspaceInspection> 
         schema_version: INSPECTION_SCHEMA_VERSION,
         workspace_root,
         workspace_fingerprint,
-        phantom_initialized: canonical_root.join(".phantom.toml").is_file(),
+        // Regular file only, never followed: the CLI's config reader refuses
+        // a symlinked or non-regular `.phantom.toml`, so it is not "initialized".
+        phantom_initialized: std::fs::symlink_metadata(canonical_root.join(".phantom.toml"))
+            .is_ok_and(|metadata| metadata.file_type().is_file()),
         env_example_exists: canonical_root.join(".env.example").is_file(),
         env_files,
         git,
@@ -593,6 +596,40 @@ mod tests {
             "{message}"
         );
         assert!(!message.contains("OPENAI_API_KEY"), "{message}");
+    }
+
+    /// Only a regular, non-symlink `.phantom.toml` marks the workspace as
+    /// initialized, the same rule the CLI applies when it reads the config.
+    #[cfg(unix)]
+    #[test]
+    fn initialized_requires_a_regular_config_file() {
+        let outside = tempfile::tempdir().unwrap();
+        let elsewhere = outside.path().join("elsewhere.toml");
+        std::fs::write(&elsewhere, "[phantom]\n").unwrap();
+
+        let linked = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(&elsewhere, linked.path().join(".phantom.toml")).unwrap();
+        assert!(
+            !inspect_workspace(linked.path())
+                .unwrap()
+                .phantom_initialized
+        );
+
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::create_dir(directory.path().join(".phantom.toml")).unwrap();
+        assert!(
+            !inspect_workspace(directory.path())
+                .unwrap()
+                .phantom_initialized
+        );
+
+        let regular = tempfile::tempdir().unwrap();
+        std::fs::write(regular.path().join(".phantom.toml"), "[phantom]\n").unwrap();
+        assert!(
+            inspect_workspace(regular.path())
+                .unwrap()
+                .phantom_initialized
+        );
     }
 
     #[test]
