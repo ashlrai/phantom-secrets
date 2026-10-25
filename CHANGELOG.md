@@ -48,6 +48,40 @@ publication. Everything below, down to 0.7.9, is new since v0.7.9.
   `PHANTOM_RATE_LIMIT_BURST` to restore the old burst value.
 
 The detailed entries follow.
+### Fixed (setup backups are created exclusively; leak profiles stay private)
+
+- `phantom setup --client` checked that a `<config>.phantom-bak-<ms>` name was
+  free and then renamed over it, so a backup created in between (by a second
+  setup run or anything else) could be replaced. Backups are now published
+  with a no-replace link/rename (`phantom_core::fs::write_new_file`); an
+  object already at the name, even a dangling symlink, is skipped, never
+  overwritten.
+- The leak-profile store (`~/.phantom/leak-profiles.jsonl`) created
+  `~/.phantom` with umask permissions, wrote the file with umask permissions
+  through any symlink at the path, and read it through a symlink. The state
+  directory is now created 0700 on Unix (an existing one owned by the user is
+  tightened; `phantom_core::fs::ensure_private_dir`), the file is written with
+  `atomic_write` (0600, replaces a link instead of following it), and it is
+  read only as a regular file.
+
+### Fixed (mapped upstream URIs keep the path-auth base; `Content-Location` and `Link` are mapped too)
+
+- A route reached through the `/<route>/_phantom/<session token>/` base URL
+  got its upstream redirects mapped to `/<route>/...`, which drops that base,
+  so the client's follow-up request was refused as unauthenticated. Mapped
+  URIs are now written relative to the request URL (for example
+  `../v1/files/abc`), so the client resolves them under its own
+  authenticated base and the proxy never echoes the session token, let
+  alone a vault value, in a response header. A target with no exact
+  relative form (the bare route base, or one whose dot segments would climb
+  out of the base) falls back to `/<route>/...`, which fails closed with 401.
+- `Content-Location` and every `<target>` of a `Link` header that names the
+  route's own upstream are now mapped exactly like `Location`, so an
+  upstream origin URL (for example a pagination `rel="next"` link) no longer
+  reaches the client and sends it around the proxy. Targets on other
+  origins, relative references, and `Link` parameters are left unchanged;
+  a `Link` header that does not parse is forwarded as is.
+
 ### Fixed (competitor imports: UTF-16 exports and the 1Password format)
 
 - `phantom import --from doppler|infisical|dotenvx|1password|env` failed on a

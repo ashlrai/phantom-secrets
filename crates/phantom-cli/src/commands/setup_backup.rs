@@ -112,12 +112,16 @@ pub(crate) fn write_backup(config: &Path, bytes: &[u8]) -> Result<PathBuf> {
     let mut ms = now_ms();
     loop {
         let candidate = config.with_file_name(format!("{name}.phantom-bak-{ms}"));
-        if std::fs::symlink_metadata(&candidate).is_err() {
-            phantom_core::fs::atomic_write(&candidate, bytes)
-                .with_context(|| format!("Failed to write backup {}", candidate.display()))?;
-            return Ok(candidate);
+        // Exclusive create: an object already at the name (even one made
+        // after any check we could do) is never replaced; take the next name.
+        match phantom_core::fs::write_new_file(&candidate, bytes) {
+            Ok(()) => return Ok(candidate),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => ms += 1,
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("Failed to write backup {}", candidate.display()))
+            }
         }
-        ms += 1;
     }
 }
 
@@ -176,6 +180,58 @@ mod tests {
         let m = load(home.path()).unwrap();
         assert_eq!(m.entries.len(), 2);
         assert_eq!(m.version, 1);
+    }
+
+    #[test]
+    fn concurrent_backups_never_replace_each_other() {
+        // Many writers racing for the same millisecond name must each get
+        // their own backup; none may replace another's bytes.
+        for _ in 0..20 {
+            let home = tempdir().unwrap();
+            let cfg = home.path().join("c.json");
+            let barrier = std::sync::Arc::new(std::sync::Barrier::new(16));
+            let handles: Vec<_> = (0..16u8)
+                .map(|i| {
+                    let cfg = cfg.clone();
+                    let barrier = barrier.clone();
+                    std::thread::spawn(move || {
+                        barrier.wait();
+                        (i, write_backup(&cfg, &[i; 8]).unwrap())
+                    })
+                })
+                .collect();
+            let results: Vec<(u8, PathBuf)> =
+                handles.into_iter().map(|h| h.join().unwrap()).collect();
+            let mut paths: Vec<&PathBuf> = results.iter().map(|(_, p)| p).collect();
+            paths.sort();
+            paths.dedup();
+            assert_eq!(paths.len(), results.len());
+            for (i, path) in &results {
+                assert_eq!(std::fs::read(path).unwrap(), vec![*i; 8]);
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn backup_never_replaces_a_dangling_symlink_or_its_target() {
+        let home = tempdir().unwrap();
+        let cfg = home.path().join("c.json");
+        let ms = now_ms();
+        // Occupy the next names with dangling links; the backup must skip them.
+        for n in 0..50u128 {
+            let name = home.path().join(format!("c.json.phantom-bak-{}", ms + n));
+            std::os::unix::fs::symlink(home.path().join(format!("gone-{n}")), name).unwrap();
+        }
+        let b = write_backup(&cfg, b"payload").unwrap();
+        assert!(!std::fs::symlink_metadata(&b)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(std::fs::read(&b).unwrap(), b"payload");
+        for n in 0..50u128 {
+            assert!(!home.path().join(format!("gone-{n}")).exists());
+        }
     }
 
     #[cfg(unix)]
