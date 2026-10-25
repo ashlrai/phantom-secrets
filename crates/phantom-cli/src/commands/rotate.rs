@@ -1066,7 +1066,10 @@ pub fn run_with_provider(
 
     // Capture the outgoing value BEFORE overwriting it: providers that revoke
     // the old credential at the vendor (Vercel) do so only after the new value
-    // is durably stored, authenticating with the old value itself.
+    // is durably stored, authenticating with the old value itself. This read
+    // deliberately skips the lifecycle gates: rotating is the remedy their
+    // refusals name, and the value only reaches the exact-before vault write
+    // and the provider that issued it.
     let old_value = match vault.retrieve(name) {
         Ok(value) => Some(value),
         Err(phantom_core::error::PhantomError::SecretNotFound(_)) if is_github_grant => None,
