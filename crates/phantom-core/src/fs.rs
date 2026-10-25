@@ -490,6 +490,20 @@ pub fn write_new_file(path: &Path, contents: &[u8]) -> io::Result<()> {
 /// tightened to 0700; one owned by someone else is left as it is.
 pub fn ensure_private_dir(path: &Path) -> io::Result<()> {
     ensure_real_parent(path)?;
+    ensure_private_leaf_dir(path)
+}
+
+/// Create Phantom's own directory `path` inside an existing parent and keep
+/// it private, without judging the parent chain.
+///
+/// Unlike [`ensure_private_dir`], ancestors are resolved normally, so a user
+/// whose `~/.local/share` (or `XDG_DATA_HOME`) or temp directory is itself a
+/// symlink keeps working. Only the final component is Phantom's: it is
+/// created with mode 0700 on Unix, a symlink or non-directory there is
+/// refused, and an existing directory owned by the current user is tightened
+/// to 0700 through a no-follow descriptor. One owned by someone else is left
+/// as it is; callers that need sole ownership check that themselves.
+pub fn ensure_private_leaf_dir(path: &Path) -> io::Result<()> {
     let mut builder = std::fs::DirBuilder::new();
     #[cfg(unix)]
     {

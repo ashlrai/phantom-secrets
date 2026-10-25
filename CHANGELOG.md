@@ -20,6 +20,50 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   never-checked like any new entry. Confirmations, approvals and the
   trusted-terminal challenge are unchanged.
 
+### Fixed (proxy lifecycle and workspace setup locks never follow a planted symlink)
+
+- The workspace setup lock lived in a shared temp-dir folder
+  (`phantom-workspace-locks`) created with `create_dir_all` and umask
+  permissions, and its `<digest>.lock` file was opened with `O_CREAT`
+  following symlinks. On a shared `/tmp`, another local user could pre-create
+  that folder and plant a predictable link, so Phantom would create or open an
+  arbitrary file the user can write. The folder is now created 0700 and must
+  be a real directory owned by the current user with no group or other
+  access (an owned one is tightened through a no-follow descriptor), and the
+  lock file is opened relative to that descriptor with `O_NOFOLLOW`.
+- The proxy lifecycle lock directory was chmod-ed by path after a separate
+  symlink check, and its app directory (for example
+  `~/.local/share/phantom-secrets`) was created with umask permissions and
+  followed if it was a symlink. Both Phantom-owned directories are now
+  created 0700, refused when they are symlinks or non-directories, and
+  tightened through a no-follow descriptor. A symlinked `~/.local/share` or
+  `XDG_DATA_HOME` (or temp directory) is still followed as before.
+- New `phantom_core::fs::ensure_private_leaf_dir` holds the shared
+  final-component routine; `ensure_private_dir` now calls it after its
+  parent-chain checks.
+
+### Fixed (audit tail and audit readers no longer follow a symlinked audit log or `~/.phantom`)
+
+- `phantom audit tail` and `phantom audit anomalies --realtime` created
+  `~/.phantom` with `create_dir_all` (umask permissions) and opened
+  `audit.log` with a plain create-and-append open, which follows symlinks: a
+  planted `audit.log` or `~/.phantom` symlink redirected the follow (and the
+  file creation) somewhere else, and a dangling `audit.log` link created its
+  target. Both now go through `phantom_core::audit::open_log_for_follow`,
+  which creates `~/.phantom` 0700 and the log 0600, refuses a symlinked or
+  non-directory `~/.phantom`, and refuses a symlink or non-regular file at
+  the log path, failing with a clear error.
+- `phantom audit show`, `phantom audit verify`, the analytics and windowed
+  anomaly readers, and the MCP `phantom_audit_recent` tool decided whether
+  the log existed with `Path::exists`, which follows symlinks: a dangling
+  symlink at `audit.log` read as "no audit events yet" with success, and a
+  log under a symlinked `~/.phantom` was read through the link. They now use
+  `phantom_core::audit::log_present`, which follows nothing: a symlinked
+  `~/.phantom` is refused, and anything at the log path is handed to the
+  no-follow reader, which refuses it. A missing log still reads as empty.
+  `phantom doctor` reports a symlinked or non-regular audit log as an issue.
+  The JSONL schema and HMAC chain are unchanged.
+
 ### Fixed (copies keep their source's rotation age)
 
 - `phantom copy`, MCP `phantom_copy_secret` and `phantom env copy` judged

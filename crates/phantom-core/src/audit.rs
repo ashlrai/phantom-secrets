@@ -442,7 +442,7 @@ impl VerifyReport {
 /// detected without an external checkpoint or backup.
 pub fn verify_log() -> std::io::Result<VerifyReport> {
     let path = log_path()?;
-    if !path_present(&path)? {
+    if !log_present(&path)? {
         let key = load_or_skip_hmac_key(&path)?;
         return verify_log_content("", key.as_deref(), &path);
     }
@@ -873,6 +873,42 @@ fn read_state_text(path: &Path) -> std::io::Result<String> {
             format!("audit file is not valid UTF-8: {}", path.display()),
         )
     })
+}
+
+/// Whether the audit log at `path` exists, for readers that treat a missing
+/// log as empty. Nothing is followed: a symlink or non-directory where the
+/// log's directory (`~/.phantom`) belongs is refused, so a planted link
+/// cannot redirect reads elsewhere, and anything at the final path,
+/// including a dangling symlink, counts as present so the reader that opens
+/// it (which refuses a symlink or non-regular file) reports it instead of
+/// treating it as "no log yet".
+pub fn log_present(path: &Path) -> std::io::Result<bool> {
+    match std::fs::symlink_metadata(parent_dir(path)) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "refusing audit directory that is a symlink or not a directory: {}",
+                    parent_dir(path).display()
+                ),
+            ));
+        }
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(e),
+    }
+    path_present(path)
+}
+
+/// Open the audit log for following (`phantom audit tail`, realtime anomaly
+/// alerts), creating it when absent so a follower can wait for the first
+/// event. The log's directory is created 0700 (a symlinked or non-directory
+/// `~/.phantom` is refused) and the log 0600; a symlink or non-regular file
+/// at the log path is refused, never followed. The returned handle reads
+/// from the start; callers seek to the end.
+pub fn open_log_for_follow(path: &Path) -> std::io::Result<File> {
+    crate::fs::ensure_private_dir(parent_dir(path))?;
+    open_audit_file(path, true)
 }
 
 /// Open `path` read-only as a regular file without following a final
