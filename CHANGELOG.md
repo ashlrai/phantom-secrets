@@ -16,6 +16,17 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   silently ignored, falling back to the global policy or to no schedule. It is
   now a config error naming the secret's section, without echoing the value.
 
+### Fixed (worktree check reads `.phantom.toml` only as a regular file)
+
+- `phantom check` (without `--staged`) followed a `.phantom.toml` symlink.
+  A dangling one was treated as "no config" and reported clean while a
+  credential sat in the regular file its `dotenv_path` would name; one
+  pointing outside the project had that other file choose which dotenv files
+  were scanned. A FIFO or device named `.phantom.toml` hung the check.
+  `.phantom.toml` is now read only as a regular, non-symlink file; anything
+  else fails closed with a message naming `.phantom.toml`, as dotenv scan
+  targets already did. Ordinary regular configs scan as before.
+
 ### Fixed (Vercel pull mixed values from different environments)
 
 - `phantom pull --from vercel` read every Vercel variable for a name and kept
