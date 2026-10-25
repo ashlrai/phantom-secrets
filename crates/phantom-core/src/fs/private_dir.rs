@@ -68,6 +68,34 @@ impl PrivateStateDir {
         Ok(state)
     }
 
+    /// Open the existing Phantom directory `path` without creating it or
+    /// changing its mode, for read-only callers such as verification.
+    ///
+    /// Ancestors resolve normally and the final component must be a real
+    /// directory (never a symlink) owned by the current user; anything else
+    /// is refused with `ErrorKind::InvalidData` and left as it is. A missing
+    /// directory stays `ErrorKind::NotFound`. Group or other bits are neither
+    /// judged nor repaired here: a caller that requires privacy without
+    /// repairing it checks the files it reads.
+    pub fn open_existing(path: &Path) -> io::Result<Self> {
+        #[cfg(unix)]
+        {
+            let handle =
+                super::open_owned_directory(None, path, false).map_err(|e| refusal(e, path))?;
+            Ok(Self {
+                path: path.to_path_buf(),
+                handle,
+            })
+        }
+        #[cfg(not(unix))]
+        {
+            require_real_directory(path)?;
+            Ok(Self {
+                path: path.to_path_buf(),
+            })
+        }
+    }
+
     /// Create (mode 0700) or open the private child directory `name` (one
     /// plain path component) relative to this directory, with the same
     /// checks as [`Self::ensure`]. When the child is created, this directory
@@ -137,6 +165,139 @@ impl PrivateStateDir {
                 return Err(unsafe_entry(&path));
             }
             Ok(file)
+        }
+    }
+
+    /// Open the existing regular file `name` (one plain path component)
+    /// read-only, relative to this directory, without creating it or
+    /// changing its mode. A symlink is never followed, and a non-regular,
+    /// multiply linked or foreign-owned entry is refused with
+    /// `ErrorKind::InvalidData` and left as it is; a missing entry stays
+    /// `ErrorKind::NotFound`. Callers that require mode 0600 check it on the
+    /// returned handle.
+    pub fn open_file_readonly(&self, name: &str) -> io::Result<File> {
+        let path = self.path.join(name);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            single_component(name)?;
+            let file = super::open_nofollow_at(
+                Some(&self.handle),
+                Path::new(name),
+                libc::O_RDONLY
+                    | libc::O_NOFOLLOW
+                    | libc::O_CLOEXEC
+                    | libc::O_NONBLOCK
+                    | libc::O_NOCTTY,
+                0,
+            )
+            .map_err(|e| refusal(e, &path))?;
+            let metadata = file.metadata()?;
+            // SAFETY: geteuid has no preconditions and cannot fail.
+            if !metadata.is_file() || metadata.uid() != unsafe { libc::geteuid() } {
+                return Err(unsafe_entry(&path));
+            }
+            require_single_link(&file, &path)?;
+            Ok(file)
+        }
+        #[cfg(not(unix))]
+        {
+            single_component(name)?;
+            refuse_link_entry(&path)?;
+            let mut options = std::fs::OpenOptions::new();
+            options.read(true);
+            no_reparse(&mut options);
+            let file = options.open(&path)?;
+            let metadata = file.metadata()?;
+            if !metadata.is_file() || is_reparse(&metadata) {
+                return Err(unsafe_entry(&path));
+            }
+            Ok(file)
+        }
+    }
+
+    /// Remove the entry `name` (one plain path component, never a
+    /// directory) relative to this directory. The caller fsyncs with
+    /// [`Self::sync`] when the removal must be durable.
+    pub fn remove_file(&self, name: &str) -> io::Result<()> {
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+            let c_name = single_component(name)?;
+            // SAFETY: the name is NUL-terminated and resolved relative to the
+            // descriptor owned by `self.handle`.
+            if unsafe { libc::unlinkat(self.handle.as_raw_fd(), c_name.as_ptr(), 0) } != 0 {
+                return Err(refusal(io::Error::last_os_error(), &self.path.join(name)));
+            }
+            Ok(())
+        }
+        #[cfg(not(unix))]
+        {
+            single_component(name)?;
+            std::fs::remove_file(self.path.join(name))
+        }
+    }
+
+    /// The UTF-8 names of the entries in this directory (without `.` and
+    /// `..`), read through the retained descriptor. Names that are not UTF-8
+    /// are skipped; callers still open every entry through this directory,
+    /// which judges its type.
+    pub fn file_names(&self) -> io::Result<Vec<String>> {
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+            // A fresh descriptor for "." starts at offset 0 and is handed to
+            // the directory stream below, leaving `self.handle` untouched.
+            // SAFETY: the descriptor is owned by `self.handle` and open, and
+            // the literal is NUL-terminated.
+            let fd = unsafe {
+                libc::openat(
+                    self.handle.as_raw_fd(),
+                    c".".as_ptr(),
+                    libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
+                )
+            };
+            if fd < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            // SAFETY: `fd` is an open directory descriptor whose ownership
+            // passes to the stream on success.
+            let stream = unsafe { libc::fdopendir(fd) };
+            if stream.is_null() {
+                let error = io::Error::last_os_error();
+                // SAFETY: on failure the descriptor is still ours to close.
+                unsafe { libc::close(fd) };
+                return Err(error);
+            }
+            let mut names = Vec::new();
+            loop {
+                // SAFETY: `stream` is a live directory stream used only here.
+                let entry = unsafe { libc::readdir(stream) };
+                if entry.is_null() {
+                    break;
+                }
+                // SAFETY: readdir returned a valid entry whose name is
+                // NUL-terminated and lives until the next readdir call.
+                let name = unsafe { std::ffi::CStr::from_ptr((*entry).d_name.as_ptr()) };
+                if let Ok(name) = name.to_str() {
+                    if name != "." && name != ".." {
+                        names.push(name.to_owned());
+                    }
+                }
+            }
+            // SAFETY: closes the stream and the descriptor it owns, once.
+            unsafe { libc::closedir(stream) };
+            Ok(names)
+        }
+        #[cfg(not(unix))]
+        {
+            let mut names = Vec::new();
+            for entry in std::fs::read_dir(&self.path)? {
+                if let Ok(name) = entry?.file_name().into_string() {
+                    names.push(name);
+                }
+            }
+            Ok(names)
         }
     }
 
@@ -523,6 +684,103 @@ mod tests {
 
         assert_eq!(mode(&target), 0o644);
         assert_eq!(std::fs::read(&target).unwrap(), b"sentinel");
+    }
+
+    #[test]
+    fn read_only_access_never_creates_or_changes_state() {
+        let temp = tempfile::tempdir().unwrap();
+        let missing = temp.path().join("missing");
+        assert_eq!(
+            PrivateStateDir::open_existing(&missing).unwrap_err().kind(),
+            io::ErrorKind::NotFound
+        );
+        assert!(!missing.exists());
+
+        let path = temp.path().join("state");
+        std::fs::create_dir(&path).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::write(path.join("loose"), b"bytes").unwrap();
+        std::fs::set_permissions(path.join("loose"), std::fs::Permissions::from_mode(0o644))
+            .unwrap();
+
+        let state = PrivateStateDir::open_existing(&path).unwrap();
+        let mut bytes = Vec::new();
+        std::io::Read::read_to_end(&mut state.open_file_readonly("loose").unwrap(), &mut bytes)
+            .unwrap();
+        assert_eq!(bytes, b"bytes");
+        assert_eq!(
+            state.open_file_readonly("absent").unwrap_err().kind(),
+            io::ErrorKind::NotFound
+        );
+        assert_eq!(mode(&path), 0o755);
+        assert_eq!(mode(&path.join("loose")), 0o644);
+        assert!(!path.join("absent").exists());
+
+        let outside = temp.path().join("outside");
+        std::fs::create_dir(&outside).unwrap();
+        let link = temp.path().join("linked-state");
+        symlink(&outside, &link).unwrap();
+        assert_eq!(
+            PrivateStateDir::open_existing(&link).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        std::fs::write(temp.path().join("plain"), b"").unwrap();
+        assert_eq!(
+            PrivateStateDir::open_existing(&temp.path().join("plain"))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidData
+        );
+    }
+
+    #[test]
+    fn read_only_open_refuses_links_and_non_regular_entries_without_changes() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = PrivateStateDir::ensure(&temp.path().join("state")).unwrap();
+        let target = temp.path().join("target");
+        std::fs::write(&target, b"sentinel").unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        symlink(&target, state.path().join("linked")).unwrap();
+        std::fs::hard_link(&target, state.path().join("hard")).unwrap();
+        std::fs::create_dir(state.path().join("nested")).unwrap();
+        for name in ["linked", "hard", "nested"] {
+            assert_eq!(
+                state.open_file_readonly(name).unwrap_err().kind(),
+                io::ErrorKind::InvalidData,
+                "{name}"
+            );
+        }
+        assert_eq!(mode(&target), 0o644);
+        assert_eq!(std::fs::read(&target).unwrap(), b"sentinel");
+    }
+
+    #[test]
+    fn listing_and_removal_resolve_through_the_retained_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("state");
+        let state = PrivateStateDir::ensure(&path).unwrap();
+        state.replace_file("kept", b"one").unwrap();
+        state.replace_file("dropped", b"two").unwrap();
+
+        let outside = temp.path().join("outside");
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::write(outside.join("decoy"), b"").unwrap();
+        std::fs::write(outside.join("dropped"), b"").unwrap();
+        std::fs::rename(&path, temp.path().join("moved")).unwrap();
+        symlink(&outside, &path).unwrap();
+
+        let mut names = state.file_names().unwrap();
+        names.sort();
+        assert_eq!(names, ["dropped", "kept"]);
+        state.remove_file("dropped").unwrap();
+        state.sync().unwrap();
+        assert!(!temp.path().join("moved/dropped").exists());
+        assert!(outside.join("dropped").exists());
+        assert_eq!(
+            state.remove_file("../escape").unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
     }
 
     #[test]

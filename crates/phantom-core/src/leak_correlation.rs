@@ -329,9 +329,25 @@ impl ContextualLeakProfileStore {
         if self.profiles_path == std::path::Path::new("/dev/null") {
             return Ok(());
         }
-        if let Some(parent) = self.profiles_path.parent() {
-            crate::fs::ensure_private_dir(parent)?;
-        }
+        // The profiles live in Phantom's private state directory: create and
+        // judge it, then retain it by descriptor so the replacement below is
+        // staged and renamed relative to the verified directory, never by
+        // re-walking a path that could have been swapped after the check.
+        let (Some(parent), Some(name)) = (
+            self.profiles_path
+                .parent()
+                .filter(|parent| !parent.as_os_str().is_empty()),
+            self.profiles_path
+                .file_name()
+                .and_then(|name| name.to_str()),
+        ) else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "leak profile store path must name a file inside a directory",
+            ));
+        };
+        crate::fs::ensure_private_dir(parent)?;
+        let directory = crate::fs::PrivateStateDir::ensure(parent)?;
         // Rewrite the entire file with merged observations.
         // For typical deployment (tens to low hundreds of profiles) this is
         // acceptable; a future optimisation could use a keyed update.
@@ -342,9 +358,9 @@ impl ContextualLeakProfileStore {
             line.push(b'\n');
             lines.push(line);
         }
-        // atomic_write stages a 0600 temp file and renames it over the
-        // target, so a symlink at the path is replaced, never written through.
-        crate::fs::atomic_write(&self.profiles_path, &lines.concat())
+        // replace_file stages a 0600 file and renames it over the target, so
+        // a symlink at the name is replaced, never written through.
+        directory.replace_file(name, &lines.concat())
     }
 }
 

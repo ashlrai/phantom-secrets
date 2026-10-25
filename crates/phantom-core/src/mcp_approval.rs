@@ -35,6 +35,7 @@
 //!
 //! The approval key is machine-local and is generated on first use.
 
+use crate::fs::PrivateStateDir;
 use hmac::{Hmac, Mac};
 use lazy_static::lazy_static;
 use rand::RngCore;
@@ -42,12 +43,13 @@ use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use std::collections::BTreeMap;
 use std::fmt;
-use std::fs::{File, OpenOptions};
-use std::io::{BufRead, BufReader};
+use std::fs::File;
+use std::io::{BufRead, BufReader, Read};
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
+use zeroize::Zeroizing;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -60,6 +62,8 @@ pub const APPROVAL_TTL_SECS: u64 = 300;
 pub const APPROVED_USE_TTL_SECS: u64 = 300;
 
 const APPROVAL_LOCK_FILE: &str = "mcp-approvals.lock";
+const APPROVAL_RECORDS_FILE: &str = "mcp-approvals.jsonl";
+const APPROVAL_KEY_FILE: &str = "mcp-approval-key";
 const MAX_PARAMETER_SUMMARY_BYTES: usize = 4096;
 const MAX_PARAMETER_STRING_BYTES: usize = 512;
 const MAX_PARAMETER_COLLECTION_ITEMS: usize = 64;
@@ -81,12 +85,12 @@ fn home_dir() -> std::io::Result<PathBuf> {
 
 /// Returns `~/.phantom/mcp-approvals.jsonl`.
 pub fn approvals_path() -> std::io::Result<PathBuf> {
-    Ok(home_dir()?.join(".phantom").join("mcp-approvals.jsonl"))
+    Ok(home_dir()?.join(".phantom").join(APPROVAL_RECORDS_FILE))
 }
 
 /// Returns `~/.phantom/mcp-approval-key`.
 pub fn approval_key_path() -> std::io::Result<PathBuf> {
-    Ok(home_dir()?.join(".phantom").join("mcp-approval-key"))
+    Ok(home_dir()?.join(".phantom").join(APPROVAL_KEY_FILE))
 }
 
 fn approval_home() -> std::io::Result<PathBuf> {
@@ -124,31 +128,25 @@ fn require_regular_file_if_present(path: &Path, label: &str) -> std::io::Result<
     }
 }
 
+/// Take the approval storage lock. `~/.phantom` is created and judged by
+/// [`ensure_private_approval_home`], then retained by descriptor: the lock,
+/// key and records are opened, created and replaced relative to that
+/// verified directory, so a directory renamed away and replaced after the
+/// check cannot redirect them. A symlinked, non-regular, multiply linked or
+/// foreign-owned entry is refused with `ErrorKind::InvalidData` and never
+/// chmod-ed through.
 fn acquire_storage_lock() -> std::io::Result<ApprovalStorageLock> {
     let process_guard = APPROVAL_PROCESS_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let home = approval_home()?;
     ensure_private_approval_home(&home)?;
-    let lock_path = home.join(APPROVAL_LOCK_FILE);
-    require_regular_file_if_present(&lock_path, "MCP approval lock")?;
-
-    let mut options = OpenOptions::new();
-    options.read(true).write(true).create(true).truncate(false);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
-    }
-    let file = options.open(lock_path)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-    }
+    let dir = PrivateStateDir::ensure(&home)?;
+    let file = dir.open_file(APPROVAL_LOCK_FILE, true)?;
     fs2::FileExt::lock_exclusive(&file)?;
     Ok(ApprovalStorageLock {
         file,
+        dir,
         _process_guard: process_guard,
     })
 }
@@ -347,6 +345,8 @@ impl TryFrom<ApprovalRecord> for StoredApprovalRecord {
 
 struct ApprovalStorageLock {
     file: File,
+    /// The verified `~/.phantom`, retained for every locked file operation.
+    dir: PrivateStateDir,
     _process_guard: MutexGuard<'static, ()>,
 }
 
@@ -360,34 +360,33 @@ impl Drop for ApprovalStorageLock {
 
 /// Load the approval HMAC key, generating + persisting it on first call.
 pub fn load_or_create_approval_key() -> std::io::Result<Vec<u8>> {
-    let _lock = acquire_storage_lock()?;
-    load_or_create_approval_key_locked()
+    let lock = acquire_storage_lock()?;
+    load_or_create_approval_key_locked(&lock)
 }
 
-fn load_or_create_approval_key_locked() -> std::io::Result<Vec<u8>> {
-    let key_path = approval_key_path()?;
-    require_regular_file_if_present(&key_path, "MCP approval key")?;
-    if key_path.exists() {
-        return read_key(&key_path);
+fn load_or_create_approval_key_locked(lock: &ApprovalStorageLock) -> std::io::Result<Vec<u8>> {
+    match lock.dir.open_file(APPROVAL_KEY_FILE, false) {
+        Ok(file) => read_key(file),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let key = generate_32_bytes();
+            let hex_key = Zeroizing::new(hex::encode(&key));
+            lock.dir
+                .replace_file(APPROVAL_KEY_FILE, hex_key.as_bytes())?;
+            Ok(key)
+        }
+        Err(error) => Err(error),
     }
-    let key = generate_32_bytes();
-    write_key_0600(&key_path, &key)?;
-    Ok(key)
 }
 
-fn read_key(path: &Path) -> std::io::Result<Vec<u8>> {
-    let hex_str = std::fs::read_to_string(path)?;
+fn read_key(mut file: File) -> std::io::Result<Vec<u8>> {
+    let mut hex_str = Zeroizing::new(String::new());
+    file.read_to_string(&mut hex_str)?;
     hex::decode(hex_str.trim()).map_err(|e| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             format!("invalid approval key: {e}"),
         )
     })
-}
-
-fn write_key_0600(path: &Path, key: &[u8]) -> std::io::Result<()> {
-    let hex_key = hex::encode(key);
-    crate::fs::atomic_write(path, hex_key.as_bytes())
 }
 
 // ── Canonical arg-hash ─────────────────────────────────────────────────────────
@@ -646,10 +645,9 @@ pub fn generate_pending_approval(
     }
     let effect_summary = effect_summary_for_tool(tool_name)?.to_string();
     let parameter_summary = build_parameter_summary(params_json)?;
-    let _lock = acquire_storage_lock()?;
-    let key = load_or_create_approval_key_locked()?;
-    let path = approvals_path()?;
-    let mut records = load_records_if_present(&path)?;
+    let lock = acquire_storage_lock()?;
+    let key = load_or_create_approval_key_locked(&lock)?;
+    let mut records = load_records(&lock.dir)?.unwrap_or_default();
     records.retain(|record| !record.is_expired());
 
     let nonce = loop {
@@ -675,7 +673,7 @@ pub fn generate_pending_approval(
     };
 
     records.push(record);
-    rewrite_records(&path, &records)?;
+    write_records(&lock.dir, &records)?;
     Ok(nonce.to_string())
 }
 
@@ -718,19 +716,16 @@ pub struct ApprovalOutcome {
 /// event, and returns the approval token.
 pub fn approve_nonce(nonce_hex: &str) -> std::io::Result<ApprovalOutcome> {
     let nonce = ApprovalNonce::parse(nonce_hex).map_err(invalid_approval_input)?;
-    let _lock = acquire_storage_lock()?;
-    let key = load_or_create_approval_key_locked()?;
-    let path = approvals_path()?;
+    let lock = acquire_storage_lock()?;
+    let key = load_or_create_approval_key_locked(&lock)?;
 
-    if !path.exists() {
+    // Load all records, find and validate target.
+    let Some(mut records) = load_records(&lock.dir)? else {
         return Err(std::io::Error::new(
             std::io::ErrorKind::NotFound,
             "No pending approvals found. Generate one by calling the MCP tool first.".to_string(),
         ));
-    }
-
-    // Load all records, find and validate target.
-    let mut records = load_all_records(&path)?;
+    };
     let idx = records.iter().position(|record| record.nonce == nonce);
 
     let idx = idx.ok_or_else(|| {
@@ -776,7 +771,7 @@ pub fn approve_nonce(nonce_hex: &str) -> std::io::Result<ApprovalOutcome> {
     let arg_hash = records[idx].arg_hash.clone();
 
     // Rewrite the file atomically.
-    rewrite_records(&path, &records)?;
+    write_records(&lock.dir, &records)?;
 
     // Log to audit trail.
     crate::audit::log(
@@ -798,15 +793,13 @@ pub fn approve_nonce(nonce_hex: &str) -> std::io::Result<ApprovalOutcome> {
 /// after the operator types the fresh challenge.
 pub fn inspect_pending_approval(nonce_hex: &str) -> std::io::Result<ApprovalRecord> {
     let nonce = ApprovalNonce::parse(nonce_hex).map_err(invalid_approval_input)?;
-    let _lock = acquire_storage_lock()?;
-    let path = approvals_path()?;
-    if !path.exists() {
+    let lock = acquire_storage_lock()?;
+    let Some(records) = load_records(&lock.dir)? else {
         return Err(std::io::Error::new(
             std::io::ErrorKind::NotFound,
             "No pending approvals found. Generate one by calling the MCP tool first.",
         ));
-    }
-    let records = load_all_records(&path)?;
+    };
     let record = records
         .into_iter()
         .find(|record| record.nonce == nonce)
@@ -859,21 +852,18 @@ pub fn validate_and_consume_approval(
     project_id: &str,
 ) -> Result<(), String> {
     let nonce = ApprovalNonce::parse(nonce_hex).map_err(str::to_string)?;
-    let _lock =
+    let lock =
         acquire_storage_lock().map_err(|e| format!("Failed to lock approval storage: {e}"))?;
-    let key = load_or_create_approval_key_locked()
+    let key = load_or_create_approval_key_locked(&lock)
         .map_err(|e| format!("Failed to load approval key: {e}"))?;
 
-    let path = approvals_path().map_err(|e| format!("Failed to resolve approvals path: {e}"))?;
-
-    if !path.exists() {
+    let Some(mut records) =
+        load_records(&lock.dir).map_err(|e| format!("Failed to load approvals: {e}"))?
+    else {
         return Err(
             "No pending approvals found. Run `phantom mcp-approve <NONCE>` first.".to_string(),
         );
-    }
-
-    let mut records =
-        load_all_records(&path).map_err(|e| format!("Failed to load approvals: {e}"))?;
+    };
 
     let idx = records
         .iter()
@@ -952,7 +942,7 @@ pub fn validate_and_consume_approval(
 
     // Consume the nonce (remove from storage) to prevent replay.
     records.remove(idx);
-    rewrite_records(&path, &records).map_err(|e| format!("Failed to consume nonce: {e}"))?;
+    write_records(&lock.dir, &records).map_err(|e| format!("Failed to consume nonce: {e}"))?;
 
     crate::audit::log(
         "mcp.approval.consumed",
@@ -966,26 +956,36 @@ pub fn validate_and_consume_approval(
 
 #[cfg(test)]
 fn append_record(record: &ApprovalRecord) -> std::io::Result<()> {
-    let _lock = acquire_storage_lock()?;
-    let path = approvals_path()?;
-    let mut records = load_records_if_present(&path)?;
+    let lock = acquire_storage_lock()?;
+    let mut records = load_records(&lock.dir)?.unwrap_or_default();
     let stored = StoredApprovalRecord::try_from(record.clone()).map_err(invalid_approval_input)?;
     records.push(stored);
-    rewrite_records(&path, &records)
+    write_records(&lock.dir, &records)
 }
 
-fn load_records_if_present(path: &Path) -> std::io::Result<Vec<StoredApprovalRecord>> {
-    require_regular_file_if_present(path, "MCP approval records")?;
-    if path.exists() {
-        load_all_records(path)
-    } else {
-        Ok(Vec::new())
+/// Read the records relative to the retained storage directory; `None` when
+/// the records file does not exist yet.
+fn load_records(dir: &PrivateStateDir) -> std::io::Result<Option<Vec<StoredApprovalRecord>>> {
+    match dir.open_file(APPROVAL_RECORDS_FILE, false) {
+        Ok(file) => parse_records(BufReader::new(file)).map(Some),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
     }
 }
 
+/// Test access to the records file at `path` (`~/.phantom/...`), through the
+/// same retained-directory helpers the locked writers use.
+#[cfg(test)]
 fn load_all_records(path: &Path) -> std::io::Result<Vec<StoredApprovalRecord>> {
-    require_regular_file_if_present(path, "MCP approval records")?;
-    parse_records(BufReader::new(File::open(path)?))
+    let dir = PrivateStateDir::ensure(path.parent().expect("records file has a parent"))?;
+    load_records(&dir)?
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no approval records"))
+}
+
+#[cfg(test)]
+fn rewrite_records(path: &Path, records: &[StoredApprovalRecord]) -> std::io::Result<()> {
+    let dir = PrivateStateDir::ensure(path.parent().expect("records file has a parent"))?;
+    write_records(&dir, records)
 }
 
 fn parse_records(reader: impl BufRead) -> std::io::Result<Vec<StoredApprovalRecord>> {
@@ -1007,15 +1007,21 @@ fn parse_records(reader: impl BufRead) -> std::io::Result<Vec<StoredApprovalReco
     Ok(records)
 }
 
-fn rewrite_records(path: &Path, records: &[StoredApprovalRecord]) -> std::io::Result<()> {
-    require_regular_file_if_present(path, "MCP approval records")?;
+/// Atomically replace the records file relative to the retained directory.
+/// An existing entry must be an owned, single-link regular file.
+fn write_records(dir: &PrivateStateDir, records: &[StoredApprovalRecord]) -> std::io::Result<()> {
+    match dir.open_file(APPROVAL_RECORDS_FILE, false) {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
     let mut contents = Vec::new();
     for record in records {
         serde_json::to_writer(&mut contents, record)
             .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
         contents.push(b'\n');
     }
-    crate::fs::atomic_write(path, &contents)
+    dir.replace_file(APPROVAL_RECORDS_FILE, &contents)
 }
 
 // ── Crypto helpers ─────────────────────────────────────────────────────────────
@@ -1055,12 +1061,10 @@ fn now_unix() -> u64 {
 
 /// Return all non-expired pending approval records (for status display).
 pub fn list_pending_approvals() -> std::io::Result<Vec<ApprovalRecord>> {
-    let _lock = acquire_storage_lock()?;
-    let path = approvals_path()?;
-    if !path.exists() {
+    let lock = acquire_storage_lock()?;
+    let Some(records) = load_records(&lock.dir)? else {
         return Ok(vec![]);
-    }
-    let records = load_all_records(&path)?;
+    };
     Ok(records
         .into_iter()
         .filter(|r| !r.approved && !r.is_expired())
@@ -1149,12 +1153,10 @@ fn approval_home_is_real_dir_if_present() -> std::io::Result<bool> {
 
 /// Prune expired and consumed records from the approvals file.
 pub fn prune_stale_approvals() -> std::io::Result<usize> {
-    let _lock = acquire_storage_lock()?;
-    let path = approvals_path()?;
-    if !path.exists() {
+    let lock = acquire_storage_lock()?;
+    let Some(records) = load_records(&lock.dir)? else {
         return Ok(0);
-    }
-    let records = load_all_records(&path)?;
+    };
     let kept: Vec<StoredApprovalRecord> = records
         .iter()
         .filter(|r| !r.is_expired())
@@ -1162,7 +1164,7 @@ pub fn prune_stale_approvals() -> std::io::Result<usize> {
         .collect();
     let pruned = records.len() - kept.len();
     if pruned > 0 {
-        rewrite_records(&path, &kept)?;
+        write_records(&lock.dir, &kept)?;
     }
     Ok(pruned)
 }
@@ -1419,6 +1421,59 @@ mod tests {
             assert_eq!(pending.len(), 1);
             assert_eq!(pending[0].tool_name, "phantom_remove_secret");
         });
+    }
+
+    /// Once the lock is held, the key and records resolve through the
+    /// retained `~/.phantom`, so renaming it away and putting another
+    /// directory at the path redirects nothing.
+    #[cfg(unix)]
+    #[test]
+    fn locked_operations_resolve_through_the_retained_directory() {
+        with_temp_home(|| {
+            let home = std::path::PathBuf::from(std::env::var_os("HOME").unwrap()).join(".phantom");
+            let lock = acquire_storage_lock().unwrap();
+            let moved = home.with_file_name("moved-phantom");
+            std::fs::rename(&home, &moved).unwrap();
+            std::fs::create_dir(&home).unwrap();
+
+            load_or_create_approval_key_locked(&lock).unwrap();
+            write_records(&lock.dir, &[]).unwrap();
+
+            assert_eq!(std::fs::read_dir(&home).unwrap().count(), 0);
+            assert!(moved.join(APPROVAL_KEY_FILE).is_file());
+            assert!(moved.join(APPROVAL_RECORDS_FILE).is_file());
+        });
+    }
+
+    /// A lock or key file hard-linked to an outside file is refused, and the
+    /// shared inode's mode is never changed through the link.
+    #[cfg(unix)]
+    #[test]
+    fn hard_linked_lock_or_key_is_refused_without_chmod() {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        for entry in [APPROVAL_LOCK_FILE, "mcp-approval-key"] {
+            with_temp_home(|| {
+                let home =
+                    std::path::PathBuf::from(std::env::var_os("HOME").unwrap()).join(".phantom");
+                std::fs::create_dir(&home).unwrap();
+                let outside = TempDir::new().unwrap();
+                let shared = outside.path().join("shared");
+                let contents = if entry == APPROVAL_LOCK_FILE {
+                    Vec::new()
+                } else {
+                    hex::encode(generate_32_bytes()).into_bytes()
+                };
+                std::fs::write(&shared, &contents).unwrap();
+                std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o644)).unwrap();
+                std::fs::hard_link(&shared, home.join(entry)).unwrap();
+
+                let error = load_or_create_approval_key().unwrap_err();
+                assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+                assert_eq!(mode(&shared), 0o644, "{entry}");
+                assert_eq!(std::fs::read(&shared).unwrap(), contents);
+            });
+        }
     }
 
     #[cfg(unix)]

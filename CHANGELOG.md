@@ -4,6 +4,37 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (evidence verification, MCP approval, workspace-request, leak-profile and compliance-report state resolve through a retained directory)
+
+- `phantom-evidence` receipt verification still opened the lock, integrity
+  key and log by path, so renaming `~/.phantom` or `~/.phantom/evidence` away
+  after the store opened and putting another directory there redirected the
+  reads. Verification now opens each file read-only relative to the
+  directories the store retained, through the new
+  `PrivateStateDir::open_file_readonly`: never created, never chmod-ed, a
+  symlink never followed, and a non-regular, multiply linked, foreign-owned
+  or non-0600 file refused as unsafe storage.
+- The MCP approval store and the workspace-request store opened their lock
+  files by path after checking `~/.phantom`; the approval lock was chmod-ed
+  through the handle, so a lock hard-linked to another file changed that
+  file's mode, and the workspace-request lock accepted a hard link. Their
+  keys (approval HMAC key, request HMAC key, plan-seal and journal roots),
+  approval records, request records and the request directory listing and
+  pruning were also resolved by path. Both stores now hold `~/.phantom` (and
+  `workspace-requests/`, `workspace-journals/`) as `PrivateStateDir`s and
+  open, create, replace and remove every file relative to them; a symlinked,
+  hard-linked, non-regular or foreign-owned entry is refused with
+  `InvalidData` and left unchanged. `load_existing_workspace_plan_key` opens
+  `~/.phantom` with the new `PrivateStateDir::open_existing`, which neither
+  creates nor tightens it.
+- The contextual leak-profile store and saved compliance reports now stage,
+  rename and create their files relative to the checked `~/.phantom` and
+  `~/.phantom/reports` directories instead of by path.
+- `PrivateStateDir` gains `open_existing`, `open_file_readonly`,
+  `remove_file` and `file_names`, all relative to the retained descriptor on
+  Unix; other platforms keep the path-based fallback that refuses symlinks and
+  reparse points.
+
 ### Fixed (a copy is refused when its source changes before the commit)
 
 - `phantom copy`, MCP `phantom_copy_secret` and `phantom env copy` read the
