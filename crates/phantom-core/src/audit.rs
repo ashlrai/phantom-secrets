@@ -442,14 +442,14 @@ impl VerifyReport {
 /// detected without an external checkpoint or backup.
 pub fn verify_log() -> std::io::Result<VerifyReport> {
     let path = log_path()?;
-    if !path.exists() {
+    if !path_present(&path)? {
         let key = load_or_skip_hmac_key(&path)?;
         return verify_log_content("", key.as_deref(), &path);
     }
 
     let _lock = acquire_log_lock_shared(&path)?;
     let key = load_or_skip_hmac_key(&path)?;
-    let content = std::fs::read_to_string(&path)?;
+    let content = read_state_text(&path)?;
     verify_log_content(&content, key.as_deref(), &path)
 }
 
@@ -459,9 +459,7 @@ pub fn verify_log() -> std::io::Result<VerifyReport> {
 
 fn write_event(op: &str, name: Option<&str>, required: bool) -> std::io::Result<()> {
     let path = log_path()?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
+    crate::fs::ensure_private_dir(parent_dir(&path))?;
 
     let lock_file = acquire_log_lock(&path)?;
 
@@ -611,7 +609,7 @@ fn open_audit_file(path: &Path, append: bool) -> std::io::Result<File> {
 /// [`read_last_seq`], so the next event chains to the last signed event and
 /// verification reports only the malformed line, not a reset chain.
 fn read_last_hmac(path: &Path) -> Option<String> {
-    let content = std::fs::read_to_string(path).ok()?;
+    let content = read_state_text(path).ok()?;
     for raw in content.lines().rev() {
         let trimmed = raw.trim();
         if trimmed.is_empty() {
@@ -631,7 +629,7 @@ fn read_last_hmac(path: &Path) -> Option<String> {
 /// Older signed lines did not carry `seq`; those are ignored so the first new
 /// sequenced event starts at 1 while preserving HMAC-chain compatibility.
 fn read_last_seq(path: &Path) -> u64 {
-    let Some(content) = std::fs::read_to_string(path).ok() else {
+    let Some(content) = read_state_text(path).ok() else {
         return 0;
     };
     for raw in content.lines().rev() {
@@ -674,7 +672,7 @@ fn head_path(log_path: &Path) -> PathBuf {
 /// On first generation, write the chain-started marker to the log.
 fn load_or_create_hmac_key(log_path: &Path) -> std::io::Result<Vec<u8>> {
     let key_path = hmac_key_path(log_path);
-    if key_path.exists() {
+    if path_present(&key_path)? {
         return read_hmac_key(&key_path);
     }
 
@@ -699,7 +697,7 @@ fn load_or_create_hmac_key(log_path: &Path) -> std::io::Result<Vec<u8>> {
 /// Load the key for verification; returns `None` if the file doesn't exist.
 fn load_or_skip_hmac_key(log_path: &Path) -> std::io::Result<Option<Vec<u8>>> {
     let key_path = hmac_key_path(log_path);
-    if !key_path.exists() {
+    if !path_present(&key_path)? {
         return Ok(None);
     }
     read_hmac_key(&key_path).map(Some)
@@ -754,8 +752,17 @@ fn write_hmac_key(key_path: &Path, key: &[u8]) -> std::io::Result<()> {
 const HMAC_KEY_LEN: usize = 32;
 
 fn read_hmac_key(key_path: &Path) -> std::io::Result<Vec<u8>> {
-    let hex_str = std::fs::read_to_string(key_path)?;
-    // The decode error is not forwarded: it can name a character from the key file.
+    let raw =
+        zeroize::Zeroizing::new(crate::fs::read_regular_file(key_path)?.ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::NotFound, "audit HMAC key not found")
+        })?);
+    // Neither decode error is forwarded: it can name a byte from the key file.
+    let hex_str = std::str::from_utf8(&raw).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "invalid audit HMAC key: file is not valid hex; delete audit-hmac-key to regenerate (this starts a new chain)",
+        )
+    })?;
     let key = hex::decode(hex_str.trim()).map_err(|_| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidData,
@@ -835,6 +842,61 @@ fn parent_dir(path: &Path) -> &Path {
     match path.parent() {
         Some(p) if !p.as_os_str().is_empty() => p,
         _ => Path::new("."),
+    }
+}
+
+/// Whether anything, including a dangling symlink, holds `path`. Unlike
+/// `Path::exists` this does not follow a final symlink, so a planted link is
+/// handed to the reader (which refuses it) instead of reading as "absent".
+fn path_present(path: &Path) -> std::io::Result<bool> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
+/// Read one of Phantom's audit state files (the log, the hotspot acks) as
+/// UTF-8 text. Only a regular file is read: a symlink at the final path is
+/// refused, never followed, and so is a directory, FIFO, or device. An absent
+/// file is `NotFound`, as `std::fs::read_to_string` reports it.
+fn read_state_text(path: &Path) -> std::io::Result<String> {
+    let bytes = crate::fs::read_regular_file(path)?.ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("audit file not found: {}", path.display()),
+        )
+    })?;
+    String::from_utf8(bytes).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("audit file is not valid UTF-8: {}", path.display()),
+        )
+    })
+}
+
+/// Open `path` read-only as a regular file without following a final
+/// symlink and without blocking on a FIFO.
+fn open_regular_for_read(path: &Path) -> std::io::Result<File> {
+    use crate::fs::RegularOpenError;
+    match crate::fs::open_regular_nofollow(path) {
+        Ok(Some(file)) => Ok(file),
+        Ok(None) => Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("audit file not found: {}", path.display()),
+        )),
+        Err(RegularOpenError::NotRegular) => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "refusing audit file that is a symlink or not a regular file: {}",
+                path.display()
+            ),
+        )),
+        Err(RegularOpenError::Reopen(detail)) => Err(std::io::Error::other(format!(
+            "refusing Windows reparse-point audit file ({detail}): {}",
+            path.display()
+        ))),
+        Err(RegularOpenError::Open(e) | RegularOpenError::Inspect(e)) => Err(e),
     }
 }
 
@@ -949,10 +1011,10 @@ fn write_head(log_path: &Path, last_seq: u64, last_hmac: &str, key: &[u8]) -> st
 
 fn read_head(log_path: &Path, key: &[u8]) -> std::io::Result<Option<AuditHead>> {
     let path = head_path(log_path);
-    if !path.exists() {
+    let Some(bytes) = crate::fs::read_regular_file(&path)? else {
         return Ok(None);
-    }
-    let head: AuditHead = serde_json::from_slice(&std::fs::read(&path)?)
+    };
+    let head: AuditHead = serde_json::from_slice(&bytes)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     let expected = compute_hmac_for_head(head.version, head.last_seq, &head.last_hmac, key);
     if expected == head.hmac {
@@ -1045,7 +1107,7 @@ pub struct AuditStats {
 pub fn audit_stats() -> std::io::Result<AuditStats> {
     let path = log_path()?;
 
-    if !path.exists() {
+    if !path_present(&path)? {
         let key = load_or_skip_hmac_key(&path)?;
         let verification = verify_log_content("", key.as_deref(), &path)?;
         if !verification.is_clean() {
@@ -1064,7 +1126,7 @@ pub fn audit_stats() -> std::io::Result<AuditStats> {
     }
 
     let _lock = acquire_log_lock_shared(&path)?;
-    let content = std::fs::read_to_string(&path)?;
+    let content = read_state_text(&path)?;
     let key = load_or_skip_hmac_key(&path)?;
     let verification = verify_log_content(&content, key.as_deref(), &path)?;
     if !verification.is_clean() {
@@ -1450,7 +1512,7 @@ fn verify_log_content(
         }
     }
 
-    let head_exists = head_path(log_path).exists();
+    let head_exists = path_present(&head_path(log_path))?;
     match (final_seq, final_hmac.as_deref(), key) {
         (Some(seq), Some(hmac), Some(key_bytes)) => match read_head(log_path, key_bytes)? {
             Some(head) if head.last_seq == seq && head.last_hmac == hmac => {}
@@ -1482,7 +1544,7 @@ fn verify_log_content(
 
 pub fn verify_log_with_context() -> std::io::Result<(VerifyReport, Vec<VerifiedEventWithContext>)> {
     let path = log_path()?;
-    if !path.exists() {
+    if !path_present(&path)? {
         let key = load_or_skip_hmac_key(&path)?;
         return Ok((verify_log_content("", key.as_deref(), &path)?, vec![]));
     }
@@ -1491,7 +1553,7 @@ pub fn verify_log_with_context() -> std::io::Result<(VerifyReport, Vec<VerifiedE
     // double-lock pattern that caused hangs on macOS.
     let _lock = acquire_log_lock_shared(&path)?;
     let key = load_or_skip_hmac_key(&path)?;
-    let content = std::fs::read_to_string(&path)?;
+    let content = read_state_text(&path)?;
 
     // Run the HMAC-chain verification inline (same logic as verify_log but
     // without re-acquiring the lock).
@@ -1569,7 +1631,7 @@ pub struct RecentLines {
 pub fn read_recent_lines(path: &Path, max_bytes: u64) -> std::io::Result<RecentLines> {
     use std::io::{Read, Seek, SeekFrom};
 
-    let mut file = File::open(path)?;
+    let mut file = open_regular_for_read(path)?;
     let len = file.metadata()?.len();
     let window_truncated = len > max_bytes;
     // When cut, read one byte more, from just before the window: if that byte
@@ -1903,13 +1965,13 @@ pub fn detect_hotspot_alerts() -> std::io::Result<Vec<HotspotAlert>> {
 /// Testable version of `detect_hotspot_alerts` with an injected `now` timestamp.
 pub fn detect_hotspot_alerts_at(now: u64) -> std::io::Result<Vec<HotspotAlert>> {
     let path = log_path()?;
-    if !path.exists() {
+    if !path_present(&path)? {
         return Ok(vec![]);
     }
 
     // Read all audit events.
     let _lock = acquire_log_lock_shared(&path)?;
-    let content = std::fs::read_to_string(&path)?;
+    let content = read_state_text(&path)?;
     drop(_lock);
 
     // Collect per-secret timestamps.
@@ -2086,10 +2148,9 @@ fn load_hotspot_acks() -> std::collections::BTreeMap<String, HotspotAckRecord> {
         Ok(p) => p,
         Err(_) => return std::collections::BTreeMap::new(),
     };
-    if !path.exists() {
-        return std::collections::BTreeMap::new();
-    }
-    let content = match std::fs::read_to_string(&path) {
+    // Absent, unreadable, or not a regular file (a planted symlink): no
+    // acks are trusted, so alerts stay visible.
+    let content = match read_state_text(&path) {
         Ok(c) => c,
         Err(_) => return std::collections::BTreeMap::new(),
     };
@@ -2125,9 +2186,7 @@ pub(crate) fn acknowledge_hotspot_alert_at(
     now: u64,
 ) -> std::io::Result<()> {
     let path = hotspot_acks_path()?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
+    crate::fs::ensure_private_dir(parent_dir(&path))?;
 
     let (status, snooze_until_ts) = if snooze_seconds > 0 {
         (HotspotAckStatus::Snoozed, now + snooze_seconds)
@@ -2146,7 +2205,9 @@ pub(crate) fn acknowledge_hotspot_alert_at(
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     line.push(b'\n');
 
-    let mut f = OpenOptions::new().append(true).create(true).open(&path)?;
+    // Owner-only, never through a symlink, tightened if an older release
+    // left it with umask permissions.
+    let mut f = open_audit_file(&path, true)?;
     f.write_all(&line)?;
 
     // Emit an audit event for the acknowledgement (best-effort).
@@ -3679,6 +3740,198 @@ mod tests {
             std::fs::create_dir_all(dir.join("audit.log")).unwrap();
             set_required_audit();
             assert!(log_result("vault.store", Some("KEY_A")).is_err());
+        });
+    }
+
+    // ── state files under ~/.phantom: private dir, no symlink following ─────
+
+    /// Write a log that raises a hotspot alert for `name` at `now`.
+    #[cfg(unix)]
+    fn write_spike_log(log_p: &std::path::Path, now: u64, name: &str) {
+        let mut entries: Vec<(u64, &str, &str)> = Vec::new();
+        for day in 1u64..=7 {
+            entries.push((now - day * 86400, "vault.retrieve", name));
+        }
+        for i in 0u64..30 {
+            entries.push((now - 3600 + i * 100, "vault.retrieve", name));
+        }
+        write_hotspot_log(log_p, &entries);
+    }
+
+    /// The audit writer creates `~/.phantom` itself; it must come out
+    /// owner-only, not 0755 from the umask.
+    #[cfg(unix)]
+    #[test]
+    fn audit_writer_creates_phantom_dir_owner_only() {
+        with_audit_env(|tmp| {
+            log_result("vault.store", Some("KEY_A")).unwrap();
+            assert_eq!(file_mode(&tmp.join(".phantom")), 0o700);
+        });
+    }
+
+    /// An existing owned `~/.phantom` left group/world-readable by an older
+    /// release is tightened on the next audit write.
+    #[cfg(unix)]
+    #[test]
+    fn audit_writer_tightens_existing_phantom_dir() {
+        use std::os::unix::fs::PermissionsExt;
+        with_audit_env(|tmp| {
+            let dir = tmp.join(".phantom");
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+            log_result("vault.store", Some("KEY_A")).unwrap();
+            assert_eq!(file_mode(&dir), 0o700);
+        });
+    }
+
+    /// A symlink planted at `~/.phantom` must not become the audit directory.
+    #[cfg(unix)]
+    #[test]
+    fn audit_writer_refuses_symlinked_phantom_dir() {
+        with_audit_env(|tmp| {
+            let elsewhere = tmp.join("elsewhere");
+            std::fs::create_dir_all(&elsewhere).unwrap();
+            std::os::unix::fs::symlink(&elsewhere, tmp.join(".phantom")).unwrap();
+            set_required_audit();
+            assert!(log_result("vault.store", Some("KEY_A")).is_err());
+            assert_eq!(std::fs::read_dir(&elsewhere).unwrap().count(), 0);
+        });
+    }
+
+    /// Acknowledging a hotspot creates `~/.phantom` owner-only and the acks
+    /// file 0600, whatever the umask.
+    #[cfg(unix)]
+    #[test]
+    fn hotspot_acks_dir_and_file_are_owner_only() {
+        with_audit_env(|tmp| {
+            acknowledge_hotspot_alert_at("ACK_KEY", 0, 1_704_000_000).unwrap();
+            let dir = tmp.join(".phantom");
+            assert_eq!(file_mode(&dir), 0o700);
+            assert_eq!(file_mode(&dir.join("hotspot-alerts.jsonl")), 0o600);
+        });
+    }
+
+    /// An acks file created by an older release with umask permissions is
+    /// tightened on the next acknowledgement.
+    #[cfg(unix)]
+    #[test]
+    fn existing_world_readable_hotspot_acks_file_is_tightened() {
+        use std::os::unix::fs::PermissionsExt;
+        with_audit_env(|tmp| {
+            let dir = tmp.join(".phantom");
+            std::fs::create_dir_all(&dir).unwrap();
+            let acks = dir.join("hotspot-alerts.jsonl");
+            std::fs::write(&acks, b"").unwrap();
+            std::fs::set_permissions(&acks, std::fs::Permissions::from_mode(0o644)).unwrap();
+            acknowledge_hotspot_alert_at("ACK_KEY", 0, 1_704_000_000).unwrap();
+            assert_eq!(file_mode(&acks), 0o600);
+        });
+    }
+
+    /// A symlink planted at the acks path must not redirect the append into
+    /// another file.
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_hotspot_acks_file_is_refused_and_target_untouched() {
+        with_audit_env(|tmp| {
+            let dir = tmp.join(".phantom");
+            std::fs::create_dir_all(&dir).unwrap();
+            let target = tmp.join("elsewhere.txt");
+            std::fs::write(&target, b"original\n").unwrap();
+            std::os::unix::fs::symlink(&target, dir.join("hotspot-alerts.jsonl")).unwrap();
+
+            assert!(acknowledge_hotspot_alert_at("ACK_KEY", 0, 1_704_000_000).is_err());
+            assert_eq!(std::fs::read(&target).unwrap(), b"original\n");
+        });
+    }
+
+    /// Ack records reached through a symlink are not trusted: the alert
+    /// stays unacknowledged.
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_hotspot_acks_file_is_not_read() {
+        with_audit_env(|tmp| {
+            let now: u64 = 1_704_000_000;
+            let dir = tmp.join(".phantom");
+            write_spike_log(&dir.join("audit.log"), now, "LINKED_KEY");
+            let target = tmp.join("planted-acks.jsonl");
+            let rec = HotspotAckRecord {
+                secret_name: "LINKED_KEY".to_string(),
+                ack_ts: now,
+                status: HotspotAckStatus::Acked,
+                snooze_until_ts: 0,
+            };
+            std::fs::write(&target, serde_json::to_vec(&rec).unwrap()).unwrap();
+            std::os::unix::fs::symlink(&target, dir.join("hotspot-alerts.jsonl")).unwrap();
+
+            let alerts = detect_hotspot_alerts_at(now).unwrap();
+            let alert = alerts
+                .iter()
+                .find(|a| a.secret_name == "LINKED_KEY")
+                .expect("spike should raise an alert");
+            assert_eq!(alert.ack_status, HotspotAckStatus::Unacked);
+        });
+    }
+
+    /// Move the real log (or key / head) aside and leave a symlink to it.
+    #[cfg(unix)]
+    fn replace_with_symlink(path: &std::path::Path, aside: &std::path::Path) {
+        std::fs::rename(path, aside).unwrap();
+        std::os::unix::fs::symlink(aside, path).unwrap();
+    }
+
+    /// Readers must not follow a symlink at `audit.log`: verification,
+    /// statistics, the context walk and hotspot detection all refuse it.
+    #[cfg(unix)]
+    #[test]
+    fn audit_readers_refuse_symlinked_log() {
+        with_audit_env(|tmp| {
+            log_result("vault.store", Some("KEY_A")).unwrap();
+            let log_p = tmp.join(".phantom").join("audit.log");
+            replace_with_symlink(&log_p, &tmp.join("aside.log"));
+
+            assert!(verify_log().is_err());
+            assert!(audit_stats().is_err());
+            assert!(verify_log_with_context().is_err());
+            assert!(detect_hotspot_alerts_at(now_unix()).is_err());
+            assert!(read_recent_lines(&log_p, 4096).is_err());
+        });
+    }
+
+    /// A dangling symlink at `audit.log` is not "no log yet".
+    #[cfg(unix)]
+    #[test]
+    fn verify_refuses_dangling_symlinked_log() {
+        with_audit_env(|tmp| {
+            log_result("vault.store", Some("KEY_A")).unwrap();
+            let log_p = tmp.join(".phantom").join("audit.log");
+            std::fs::remove_file(&log_p).unwrap();
+            std::os::unix::fs::symlink(tmp.join("missing.log"), &log_p).unwrap();
+            assert!(verify_log().is_err());
+        });
+    }
+
+    /// The chain key is read as a regular file only.
+    #[cfg(unix)]
+    #[test]
+    fn verify_refuses_symlinked_hmac_key() {
+        with_audit_env(|tmp| {
+            log_result("vault.store", Some("KEY_A")).unwrap();
+            let key_p = tmp.join(".phantom").join("audit-hmac-key");
+            replace_with_symlink(&key_p, &tmp.join("aside-key"));
+            assert!(verify_log().is_err());
+        });
+    }
+
+    /// The signed head checkpoint is read as a regular file only.
+    #[cfg(unix)]
+    #[test]
+    fn verify_refuses_symlinked_head_checkpoint() {
+        with_audit_env(|tmp| {
+            log_result("vault.store", Some("KEY_A")).unwrap();
+            let head_p = tmp.join(".phantom").join("audit-head.json");
+            replace_with_symlink(&head_p, &tmp.join("aside-head.json"));
+            assert!(verify_log().is_err());
         });
     }
 }
