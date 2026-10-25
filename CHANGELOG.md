@@ -20,6 +20,25 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   wrapped exactly as before, and `phantom unwrap` is unchanged. The MCP
   confirmation and approval gates are unchanged.
 
+### Fixed (expiry-policy promotion and team push of read-only secrets)
+
+- `phantom_apply_expiry_policy` promoted a read-only secret back to
+  read-write whenever `rotated_at` was later than `expires_at`, without
+  checking that this `expires_at` was still ahead. A secret rotated once
+  after an old expiry whose current expiry had also passed was promoted
+  while still expired, only to be demoted again on the next run. Promotion
+  now also requires the secret to be unexpired under the same
+  `now >= expires_at` rule that demotes it; demotion is unchanged.
+- `phantom team vault-push` and `phantom_team_vault_push` read values with a
+  plain vault retrieve, so a secret the expiry policy demoted to read-only
+  was still encrypted to every team member. Both now refuse the whole push
+  before any value read or network call (and, over MCP, before the one-use
+  approval is requested or consumed, and again after it) when any entry is
+  read-only or its lifecycle metadata cannot be read, naming entries only.
+  Values are then read with the injection check, so an entry demoted after
+  the gate is never sent. Cloud push, encrypted export, env copy and reveal
+  are unchanged.
+
 ### Fixed (`phantom sync` no longer pushes a secret demoted to read-only)
 
 - `phantom_apply_expiry_policy` demotes an expired secret to read-only so
