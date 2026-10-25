@@ -2,7 +2,7 @@
 
 A tested path for hybrid use: a local model for high-volume loops, and a frontier model for planning and merges. Everything listens on `127.0.0.1` only.
 
-What was actually run (Oct 25 2026, Linux x86_64, no GPU): Ollama 0.40.11, LiteLLM 1.103.5 in a fresh virtualenv, and the small model `Qwen/Qwen3-0.6B-GGUF` (Q8_0, 639 MB) as a stand-in. That model only proves the wiring. For real work use the larger tags in phantom's [LOCAL-INFERENCE.md](https://github.com/ashlrai/phantom/blob/master/docs/LOCAL-INFERENCE.md) (for example `qwen3.8:27b`). The frontier step at the end was not exercised.
+What was actually run (Oct 25 2026, Linux x86_64, no GPU): Ollama 0.40.11, LiteLLM 1.103.5 in a fresh virtualenv, and the small model `Qwen/Qwen3-0.6B-GGUF` (Q8_0, 639 MB) as a stand-in. That model is a smoke test that only proves the wiring. The 27B model was not run on this box. For real work use the larger tags in phantom's [LOCAL-INFERENCE.md](https://github.com/ashlrai/phantom/blob/master/docs/LOCAL-INFERENCE.md) (for example `qwen3.8:27b`). The frontier step at the end was not exercised.
 
 ## 1. Ollama on loopback
 
