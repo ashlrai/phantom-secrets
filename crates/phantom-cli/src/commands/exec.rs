@@ -142,9 +142,7 @@ async fn run_async(
     }
 
     let vault = phantom_vault::try_create_vault(config.local_project_id())?;
-    let vault_names = vault
-        .list()
-        .context("Failed to list protected vault entries before child launch")?;
+    let vault_names = launch_vault_names(vault.as_ref(), config.local_project_id())?;
     let resolved =
         phantom_core::managed_dotenv::resolve_dotenv(&project_dir, &config, &vault_names)?;
     if let Some(dotenv) = resolved.file.as_ref() {
@@ -464,6 +462,23 @@ fn unrouted_session_keys<'a>(
         .collect();
     unrouted.sort();
     unrouted
+}
+
+/// The vault's names, which decide whether the project has protected state
+/// that a token-free dotenv must not bypass. An empty OS keychain beside an
+/// encrypted-file vault this process cannot open is not "no protected
+/// state", so it is refused with the unlock step. A keychain-only listing is
+/// non-empty, and a protected key it lacks is refused at retrieval with the
+/// same step.
+fn launch_vault_names(
+    vault: &dyn phantom_vault::VaultBackend,
+    project_id: &str,
+) -> Result<Vec<String>> {
+    let names = vault
+        .list()
+        .context("Failed to list protected vault entries before child launch")?;
+    crate::util::inventory_guard(vault, project_id, names.len())?;
+    Ok(names)
 }
 
 fn retrieve_required_secret(
@@ -1215,6 +1230,30 @@ mod tests {
         assert!(error.contains("refusing to launch the child"), "{error}");
         assert!(error.contains("PHANTOM_VAULT_PASSPHRASE"), "{error}");
         assert!(!error.contains("has no vault entry"), "{error}");
+    }
+
+    /// With the secrets in an encrypted-file vault this process cannot open
+    /// and an empty OS keychain, exec read "no protected vault state", so a
+    /// token-free managed dotenv launched the child directly instead of being
+    /// refused as an unprotected direct launch.
+    #[cfg(unix)]
+    #[test]
+    fn exec_refuses_a_direct_launch_beside_a_locked_file_vault() {
+        let project =
+            crate::util::test_seam::LockedProject::new(crate::util::test_seam::empty_keychain);
+        std::fs::write(project.dir.join(".env"), "PUBLIC=yes\n").unwrap();
+        let config = PhantomConfig::load(&project.dir.join(".phantom.toml")).unwrap();
+        let vault = crate::util::open_vault(&project.project_id).unwrap();
+        let outcome = launch_vault_names(vault.as_ref(), &project.project_id).and_then(|names| {
+            phantom_core::managed_dotenv::resolve_dotenv(&project.dir, &config, &names)
+        });
+        assert!(
+            outcome.is_err(),
+            "a locked file vault must not read as no protected state"
+        );
+        let error = outcome.err().unwrap().to_string();
+        assert!(error.starts_with("Vault locked:"));
+        assert!(error.contains("PHANTOM_VAULT_PASSPHRASE"));
     }
 
     #[test]
