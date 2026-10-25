@@ -97,13 +97,11 @@ fn read_dotenv(
 /// `./.env` instead of the managed dotenv and drop the exec verdict, so a
 /// protected key read as fine while `phantom exec` refuses to start.
 fn load_config(project_dir: &std::path::Path) -> Result<Option<PhantomConfig>> {
-    match PhantomConfig::load(&project_dir.join(".phantom.toml")) {
-        Ok(config) => Ok(Some(config)),
-        Err(phantom_core::error::PhantomError::ConfigNotFound(_)) => Ok(None),
-        Err(error) => Err(anyhow::Error::new(error)).context(
+    crate::util::load_config_if_present(&project_dir.join(".phantom.toml")).map_err(|error| {
+        anyhow::Error::new(error).context(
             "Failed to load .phantom.toml; protection status is indeterminate. Fix or restore it, then retry",
-        ),
-    }
+        )
+    })
 }
 
 /// Explain why a specific key is or isn't protected by Phantom.
@@ -372,6 +370,33 @@ mod tests {
         std::fs::remove_file(project.path().join(".phantom.toml")).unwrap();
         assert!(load_config(project.path()).unwrap().is_none());
         assert!(run_in(project.path(), "OPENAI_API_KEY", true).is_ok());
+    }
+
+    /// A dangling `.phantom.toml` symlink is not "not initialized", and a
+    /// symlink to another project's config is not followed: either would
+    /// classify a dotenv this project does not manage.
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_config_is_indeterminate_not_absent() {
+        let outside = tempfile::tempdir().unwrap();
+        PhantomConfig::new_with_defaults("why-outside".to_string())
+            .save(&outside.path().join(".phantom.toml"))
+            .unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let link = project.path().join(".phantom.toml");
+        std::os::unix::fs::symlink("missing.toml", &link).unwrap();
+        assert!(load_config(project.path()).is_err());
+        std::fs::remove_file(&link).unwrap();
+        std::os::unix::fs::symlink(outside.path().join(".phantom.toml"), &link).unwrap();
+        let message = format!("{:#}", load_config(project.path()).unwrap_err());
+        assert!(
+            message.contains("protection status is indeterminate"),
+            "unexpected refusal text"
+        );
+        assert!(
+            !message.contains(&outside.path().display().to_string()),
+            "refusal names the outside path"
+        );
     }
 
     #[cfg(unix)]

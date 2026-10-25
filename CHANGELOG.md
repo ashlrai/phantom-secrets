@@ -20,6 +20,17 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   is refused instead of followed, and a dangling one is no longer reported as
   "not initialized".
 
+### Fixed (exec, start, sync, doctor and why read `.phantom.toml` only as a regular file)
+
+- `phantom exec`, `phantom start`, `phantom sync`, `phantom doctor` and
+  `phantom why` followed a `.phantom.toml` symlink. One pointing outside the
+  project had that other file's `dotenv_path` and routes choose which dotenv
+  exec protected and proxied, which file `doctor --fix` repaired, and what
+  sync pushed; a dangling one read as "not initialized", so doctor and why
+  judged `./.env` instead. A FIFO named `.phantom.toml` hung each command.
+  They now share the regular, non-symlink read `phantom check` uses; anything
+  else fails closed with a message naming `.phantom.toml` and no other path.
+
 ### Fixed (encrypted-file fallback passphrase left unscrubbed in memory)
 
 - When the OS keychain was unavailable, the generated passphrase for the

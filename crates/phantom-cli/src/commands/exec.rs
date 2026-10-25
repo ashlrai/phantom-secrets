@@ -96,14 +96,14 @@ async fn run_async(
     };
     let config_path = project_dir.join(".phantom.toml");
 
-    if !config_path.exists() {
+    let Some(config) = crate::util::load_config_if_present(&config_path)
+        .context("Failed to load .phantom.toml")?
+    else {
         anyhow::bail!(
             "No .phantom.toml found. Run {} first.",
             "phantom init".cyan().bold()
         );
-    }
-
-    let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
+    };
     validate_routes_for_launch(&config)?;
 
     let preflight = phantom_core::managed_dotenv::resolve_dotenv(&project_dir, &config, &[])?;
