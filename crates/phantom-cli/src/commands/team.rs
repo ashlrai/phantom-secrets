@@ -6,6 +6,10 @@ use std::io::{BufRead, IsTerminal, Write};
 use std::path::PathBuf;
 use zeroize::Zeroizing;
 
+/// "Refusing to ..." wording for the rotation gate on a team vault pull,
+/// shared with the MCP `phantom_team_vault_pull` tool.
+const TEAM_PULL_ACTION: &str = "pull the team vault";
+
 /// `phantom team list --json`: `{"teams":[{"id","name","role"}]}`. The
 /// service does not report an active team, so no `active` field is invented.
 fn team_list_json(team_list: &[teams::Team]) -> serde_json::Value {
@@ -291,6 +295,7 @@ pub fn run_vault_pull(team_id: &str) -> Result<()> {
     // rolls back only transaction-owned writes and never prints a value.
     let written = apply_team_vault_pull_transaction(
         &project_dir,
+        &config,
         vault.as_ref(),
         &secrets,
         vec![phantom_vault::InitFile::replace_if_unchanged(
@@ -331,11 +336,13 @@ fn team_vault_pull_destination(
 
 fn apply_team_vault_pull_transaction(
     project_dir: &std::path::Path,
+    config: &PhantomConfig,
     vault: &dyn phantom_vault::VaultBackend,
     secrets: &BTreeMap<String, Zeroizing<String>>,
     files: Vec<phantom_vault::InitFile>,
 ) -> Result<usize> {
     let mut mutations = Vec::with_capacity(secrets.len());
+    let mut changed = Vec::new();
     for (name, value) in secrets {
         let before = match vault.retrieve(name) {
             Ok(value) => Some(value),
@@ -346,12 +353,28 @@ fn apply_team_vault_pull_transaction(
                 ));
             }
         };
+        if before.as_ref().map(|local| local.as_str()) != Some(value.as_str()) {
+            changed.push(name.as_str());
+        }
         mutations.push(phantom_vault::InitSecret::replace_if_unchanged(
             name,
             before.as_ref().map(|value| value.as_str().to_string()),
             value.as_str(),
         ));
     }
+    // The remote names are known only after the download, so this is the
+    // earliest point the gate can run. A team-pulled value carries no
+    // rotation anchor: a new entry would be stamped as stored now and an
+    // overwrite would keep the local anchor, laundering an overdue value.
+    // Refuse every enforced change before any vault or config write; an
+    // identical value keeps its anchor and is not judged.
+    super::rotation_gate::enforce_rotation_on_restore(
+        config,
+        vault,
+        changed,
+        TEAM_PULL_ACTION,
+        super::rotation_gate::now_secs(),
+    )?;
     let written = mutations.len();
     phantom_vault::commit_init(project_dir, vault, mutations, files).map_err(|error| {
         anyhow::anyhow!(
@@ -687,6 +710,75 @@ mod tests {
             .collect()
     }
 
+    fn unenforced() -> phantom_core::config::PhantomConfig {
+        phantom_core::config::PhantomConfig::new_with_defaults("team-pull".to_string())
+    }
+
+    /// A team-pulled value carries no rotation anchor: a new entry was stamped
+    /// as stored now and an overwrite kept the local anchor, so an overdue
+    /// value pushed by a teammate came back looking fresh. Every enforced
+    /// write is refused before any vault or config write.
+    #[test]
+    fn team_pull_refuses_to_write_an_enforced_secret_of_unknown_age() {
+        use crate::commands::rotation_gate::fixtures::enforced_config;
+        let project = TempDir::new().unwrap();
+        let vault = fault_vault(&project, None, None);
+        vault.store("EXISTING_KEY", "local-owner").unwrap();
+        let config = enforced_config(&["NEW_KEY", "EXISTING_KEY"]);
+
+        let refused = apply_team_vault_pull_transaction(
+            project.path(),
+            &config,
+            &vault,
+            &remote(&[
+                ("EXISTING_KEY", "remote-existing"),
+                ("NEW_KEY", "remote-new"),
+            ]),
+            Vec::new(),
+        );
+        let message = refused
+            .err()
+            .map(|error| format!("{error:#}"))
+            .unwrap_or_default();
+        assert!(message.starts_with(
+            "Refusing to pull the team vault: rotation enforcement blocked 2 secret(s)."
+        ));
+        assert!(matches!(
+            vault.retrieve("NEW_KEY"),
+            Err(PhantomError::SecretNotFound(_))
+        ));
+        assert!(vault.retrieve("EXISTING_KEY").unwrap().as_str() == "local-owner");
+        assert_eq!(vault.cas_calls.load(Ordering::SeqCst), 0);
+    }
+
+    /// Only changed values are gated: an identical enforced value keeps its
+    /// anchor and an unenforced new value still lands.
+    #[test]
+    fn team_pull_lets_identical_and_unenforced_entries_through() {
+        use crate::commands::rotation_gate::fixtures::enforced_config;
+        let project = TempDir::new().unwrap();
+        let vault = fault_vault(&project, None, None);
+        let shared = ["same", "on", "both", "sides"].join("-");
+        vault.store("EXISTING_KEY", &shared).unwrap();
+        let config = enforced_config(&["EXISTING_KEY"]);
+
+        let written = apply_team_vault_pull_transaction(
+            project.path(),
+            &config,
+            &vault,
+            &remote(&[
+                ("EXISTING_KEY", shared.as_str()),
+                ("PLAIN_KEY", "remote-plain"),
+            ]),
+            Vec::new(),
+        );
+        assert!(written.is_ok());
+        assert_eq!(
+            vault.retrieve("PLAIN_KEY").unwrap().as_str(),
+            "remote-plain"
+        );
+    }
+
     #[test]
     fn team_revoke_fails_before_auth_or_network_access() {
         let error = super::run_revoke("team-test", "member-test", true).unwrap_err();
@@ -702,6 +794,7 @@ mod tests {
 
         let error = apply_team_vault_pull_transaction(
             project.path(),
+            &unenforced(),
             &vault,
             &remote(&[("A", "new-a"), ("B", "new-b")]),
             Vec::new(),
@@ -722,6 +815,7 @@ mod tests {
 
         let error = apply_team_vault_pull_transaction(
             project.path(),
+            &unenforced(),
             &vault,
             &remote(&[("A", "new-a"), ("B", "new-b")]),
             Vec::new(),
@@ -745,6 +839,7 @@ mod tests {
 
         let error = apply_team_vault_pull_transaction(
             project.path(),
+            &unenforced(),
             &vault,
             &remote(&[("A", "new-a")]),
             vec![phantom_vault::InitFile::replace_if_unchanged(

@@ -4,6 +4,25 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (`enforce_rotation_on_access` covers team, provider and competitor imports)
+
+- The remaining inflows also gave a value of unknown age a fresh rotation
+  anchor (or kept the local one on overwrite), laundering an overdue secret:
+  `phantom team vault-pull`, MCP `phantom_team_vault_pull`, provider
+  `phantom pull --from vercel|railway`, and `phantom import --from
+  doppler|infisical|dotenvx|1password|env`. Each now refuses every entry it
+  would write whose secret has `enforce_rotation_on_access = true`, before
+  any vault or config write, with the same `Refusing to ...: rotation
+  enforcement blocked N secret(s).` wording. `phantom import --from` judges
+  names before the trusted-terminal challenge; team and provider pulls learn
+  the names only from the download, so they judge them after it. Entries
+  that are not written (an identical value, or an existing entry skipped
+  without `--force`) keep their anchor and are not judged.
+- Known limit: `phantom remove NAME` followed by `phantom add NAME` with the
+  same old value still starts a fresh age. Telling a re-added old value from
+  a genuine replacement would mean keeping a value-derived fingerprint of a
+  removed secret, so it is left as is.
+
 ### Fixed (`enforce_rotation_on_access` covers cloud push/pull and encrypted backups)
 
 - `phantom cloud push` and MCP `phantom_cloud_push` handed every vault value,
