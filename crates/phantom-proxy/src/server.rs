@@ -1050,6 +1050,23 @@ async fn handle_request(
                 name_str
             );
         }
+        // Every route shares this proxy's one origin, so an upstream cookie
+        // must be confined to its own route prefix or a client cookie jar
+        // would replay it to every other route's upstream.
+        let scrubbed_value = if name == hyper::header::SET_COOKIE {
+            match scope_set_cookie_to_route(&scrubbed_value, &route.name) {
+                Some(scoped) => scoped,
+                None => {
+                    warn!(
+                        "Dropped upstream Set-Cookie for service {} that cannot be route-scoped",
+                        route.name
+                    );
+                    continue;
+                }
+            }
+        } else {
+            scrubbed_value
+        };
         builder = builder.header(name, scrubbed_value);
     }
 
@@ -1243,6 +1260,51 @@ fn connection_named_headers(headers: &hyper::HeaderMap) -> Vec<String> {
 /// on this hop.
 fn is_hop_by_hop(name: &str, connection_named: &[String]) -> bool {
     HOP_BY_HOP_HEADERS.contains(&name) || connection_named.iter().any(|named| named == name)
+}
+
+/// Confine an upstream `Set-Cookie` value to the route it came through.
+///
+/// All routes are served from the same origin (`127.0.0.1:PORT`), so the
+/// upstream's own `Path` and `Domain` describe the upstream host, not the
+/// proxy. Left alone, `Path=/` (or the default path of a request to the bare
+/// route) makes a client cookie jar send the cookie on requests to every
+/// route, and the proxy forwards client cookies, so one upstream's session
+/// cookie would reach another upstream (and a hostile upstream could plant
+/// cookies on another). Any `Domain` and `Path` attributes are removed and
+/// `Path=/<route>` is set, which covers both `/<route>/...` and the
+/// `/<route>/_phantom/<token>/...` compatibility base URL. Other attributes
+/// are kept in order. Returns `None` when the route name cannot appear in a
+/// cookie path, so the cookie is dropped rather than forwarded unscoped.
+fn scope_set_cookie_to_route(value: &str, route_name: &str) -> Option<String> {
+    if route_name.is_empty()
+        || !route_name
+            .bytes()
+            .all(|byte| byte.is_ascii_graphic() && byte != b';' && byte != b',')
+    {
+        return None;
+    }
+    let mut parts = value.split(';');
+    let pair = parts.next().unwrap_or_default().trim();
+    if pair.is_empty() {
+        return None;
+    }
+    let mut scoped = vec![pair.to_string()];
+    for attribute in parts {
+        let attribute = attribute.trim();
+        let attribute_name = attribute
+            .split_once('=')
+            .map_or(attribute, |(name, _)| name)
+            .trim();
+        if attribute.is_empty()
+            || attribute_name.eq_ignore_ascii_case("path")
+            || attribute_name.eq_ignore_ascii_case("domain")
+        {
+            continue;
+        }
+        scoped.push(attribute.to_string());
+    }
+    scoped.push(format!("Path=/{route_name}"));
+    Some(scoped.join("; "))
 }
 
 /// How many percent-decoding layers of one path segment are inspected. A
@@ -2207,6 +2269,92 @@ mod tests {
         let auth_header = received.headers.get("authorization").unwrap();
         assert_eq!(auth_header, &format!("Bearer {real_secret}"));
         assert!(!auth_header.contains("phm_"));
+
+        proxy.shutdown().await;
+        mock.shutdown().await;
+    }
+
+    #[test]
+    fn set_cookie_scoping_replaces_path_and_domain_and_keeps_other_attributes() {
+        assert_eq!(
+            scope_set_cookie_to_route("a=1; Path=/; Domain=x.test; Secure", "openai").as_deref(),
+            Some("a=1; Secure; Path=/openai")
+        );
+        assert_eq!(
+            scope_set_cookie_to_route("a=1", "openai").as_deref(),
+            Some("a=1; Path=/openai")
+        );
+        assert_eq!(
+            scope_set_cookie_to_route("a=1;  ;PATH = /x ; Max-Age=60", "r").as_deref(),
+            Some("a=1; Max-Age=60; Path=/r")
+        );
+        // A value that is only attributes has no cookie to scope.
+        assert_eq!(scope_set_cookie_to_route("; Path=/", "openai"), None);
+        // A route name that cannot sit in a cookie path drops the cookie.
+        assert_eq!(scope_set_cookie_to_route("a=1", "bad;name"), None);
+        assert_eq!(scope_set_cookie_to_route("a=1", ""), None);
+    }
+
+    /// Every route shares the proxy's one origin (`127.0.0.1:PORT`), so a
+    /// cookie an upstream sets with `Path=/` (or a `Domain`) would be stored
+    /// by a client cookie jar for the whole proxy and replayed to every other
+    /// route's upstream. Response cookies must be scoped to their route.
+    #[tokio::test]
+    async fn upstream_set_cookie_is_scoped_to_its_route_prefix() {
+        let mock = crate::test_server::MockServer::start_with_response_headers(&[
+            (
+                "set-cookie",
+                "sid=upstream-session; Path=/; Domain=example.test; Secure; HttpOnly",
+            ),
+            ("set-cookie", "pref=dark; SameSite=Lax"),
+            (
+                "set-cookie",
+                "scoped=1; path=/v1/files; DOMAIN=.example.test",
+            ),
+        ])
+        .await;
+        let fixture = route_fixture_value();
+
+        let mut registry = ServiceRegistry::new();
+        for name in ["alpha", "beta"] {
+            registry.add_route(ServiceRoute {
+                name: name.to_string(),
+                target_base: format!("http://127.0.0.1:{}", mock.port),
+                secret_key: "TEST_API_KEY".to_string(),
+                header: "Authorization".to_string(),
+                header_format: "Bearer {secret}".to_string(),
+                credential_profile: crate::services::CredentialProfile::Standard,
+                sdk_base_path: None,
+            });
+        }
+        let interceptor = Interceptor::new_scoped(
+            HashMap::new(),
+            HashMap::from([("TEST_API_KEY".to_string(), fixture)]),
+        );
+        let proxy = ProxyServer::start(ProxyConfig::default(), registry, interceptor)
+            .await
+            .unwrap();
+
+        let resp = reqwest::Client::new()
+            .get(format!("http://127.0.0.1:{}/alpha/v1/models", proxy.port()))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let cookies: Vec<String> = resp
+            .headers()
+            .get_all("set-cookie")
+            .iter()
+            .map(|value| value.to_str().unwrap().to_string())
+            .collect();
+        assert_eq!(
+            cookies,
+            vec![
+                "sid=upstream-session; Secure; HttpOnly; Path=/alpha".to_string(),
+                "pref=dark; SameSite=Lax; Path=/alpha".to_string(),
+                "scoped=1; Path=/alpha".to_string(),
+            ]
+        );
 
         proxy.shutdown().await;
         mock.shutdown().await;
