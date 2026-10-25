@@ -193,12 +193,44 @@ fn read_team_push_values(
         "push to the team vault",
         now_secs,
     )?;
+    refuse_read_only_team_push(vault, secret_names)?;
     let mut secrets: BTreeMap<String, Zeroizing<String>> = BTreeMap::new();
     for name in secret_names {
-        let value = vault.retrieve(name)?; // Zeroizing<String>
+        // The injection read re-checks the mode atomically with the value
+        // read, so an entry demoted after the preflight is never sent.
+        let value = vault.retrieve_for_injection(name)?; // Zeroizing<String>
         secrets.insert(name.clone(), Zeroizing::new(String::from(value.as_str())));
     }
     Ok(secrets)
+}
+
+/// A secret the expiry policy demoted to read-only is not handed to team
+/// members, who would inject it at runtime: the demotion exists to stop that.
+/// The whole push is refused before any value read or network call, naming
+/// entries only. Metadata that cannot be read refuses too.
+fn refuse_read_only_team_push(
+    vault: &dyn phantom_vault::VaultBackend,
+    secret_names: &[String],
+) -> Result<()> {
+    let mut read_only = Vec::new();
+    for name in secret_names {
+        let metadata = vault.get_metadata(name).map_err(|_| {
+            anyhow::anyhow!(
+                "Refusing to push to the team vault: could not read lifecycle metadata for '{name}'. No vault plaintext was read and no team request was sent."
+            )
+        })?;
+        if metadata.is_some_and(|metadata| metadata.vault_mode.is_read_only()) {
+            read_only.push(format!("'{name}'"));
+        }
+    }
+    if !read_only.is_empty() {
+        anyhow::bail!(
+            "Refusing to push to the team vault: {} secret(s) are read-only under their lifecycle policy: {}. Rotate or promote them before sharing with the team. No vault plaintext was read and no team request was sent.",
+            read_only.len(),
+            read_only.join(", ")
+        );
+    }
+    Ok(())
 }
 
 /// `team vault-push` once terminal consent is given and the bearer and team
@@ -620,6 +652,155 @@ mod tests {
         let fresh = vec!["FRESH_KEY".to_string()];
         let read = read_team_push_values(&config, &vault, &fresh, NOW);
         assert!(read.is_ok_and(|values| values.len() == 1));
+    }
+
+    /// `phantom team vault-push` read every value with a plain retrieve, so a
+    /// secret the expiry policy demoted to read-only was still handed to every
+    /// team member. The whole push is now refused before any value is read,
+    /// naming the entry only; a read-write inventory is still read.
+    #[test]
+    fn team_push_refuses_read_only_entries_before_any_value_read() {
+        use phantom_vault::metadata::VaultMode;
+        let dir = tempfile::tempdir().unwrap();
+        let inner = phantom_vault::file::FileVault::new(
+            &crate::test_support::canonical_tempdir_path(&dir),
+            "team-read-only-fixture",
+            format!("team-{}", std::process::id()),
+        )
+        .unwrap();
+        for (entry, mode) in [
+            ("DEMOTED_KEY", VaultMode::ReadOnly),
+            ("ACTIVE_KEY", VaultMode::ReadWrite),
+        ] {
+            inner.store(entry, "fixture-value").unwrap();
+            inner
+                .set_metadata(
+                    entry,
+                    phantom_vault::SecretMetadata {
+                        created_at: Some(1_800_000_000),
+                        vault_mode: mode,
+                        ..phantom_vault::SecretMetadata::default()
+                    },
+                )
+                .unwrap();
+        }
+        let vault = CountingVault {
+            inner,
+            reads: AtomicUsize::new(0),
+        };
+        let config = unenforced();
+        let names = vec!["ACTIVE_KEY".to_string(), "DEMOTED_KEY".to_string()];
+
+        let refused = read_team_push_values(&config, &vault, &names, 1_800_000_000);
+        assert!(refused.is_err());
+        let message = refused
+            .err()
+            .map(|error| error.to_string())
+            .unwrap_or_default();
+        assert!(
+            message.starts_with("Refusing to push to the team vault: 1 secret(s) are read-only")
+        );
+        assert!(message.contains("'DEMOTED_KEY'"));
+        assert!(!message.contains("'ACTIVE_KEY'"));
+        assert_eq!(vault.reads.load(Ordering::SeqCst), 0);
+
+        let active = vec!["ACTIVE_KEY".to_string()];
+        let read = read_team_push_values(&config, &vault, &active, 1_800_000_000);
+        assert!(read.is_ok_and(|values| values.len() == 1));
+    }
+
+    /// Unreadable lifecycle metadata refuses the push too, before any value
+    /// read.
+    #[test]
+    fn team_push_refuses_when_metadata_cannot_be_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let inner = phantom_vault::file::FileVault::new(
+            &crate::test_support::canonical_tempdir_path(&dir),
+            "team-metadata-fixture",
+            format!("team-meta-{}", std::process::id()),
+        )
+        .unwrap();
+        inner.store("SOME_KEY", "fixture-value").unwrap();
+        let vault = MetadataFailingVault {
+            inner,
+            reads: AtomicUsize::new(0),
+        };
+        let names = vec!["SOME_KEY".to_string()];
+        let refused = read_team_push_values(&unenforced(), &vault, &names, 1_800_000_000);
+        let message = refused
+            .err()
+            .map(|error| error.to_string())
+            .unwrap_or_default();
+        assert!(message.starts_with(
+            "Refusing to push to the team vault: could not read lifecycle metadata for 'SOME_KEY'"
+        ));
+        assert_eq!(vault.reads.load(Ordering::SeqCst), 0);
+    }
+
+    /// Counts value reads; everything else passes through.
+    struct CountingVault {
+        inner: phantom_vault::file::FileVault,
+        reads: AtomicUsize,
+    }
+
+    impl VaultBackend for CountingVault {
+        fn store(&self, name: &str, value: &str) -> PhantomResult<()> {
+            self.inner.store(name, value)
+        }
+        fn retrieve(&self, name: &str) -> PhantomResult<Zeroizing<String>> {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            self.inner.retrieve(name)
+        }
+        fn retrieve_for_injection(&self, name: &str) -> PhantomResult<Zeroizing<String>> {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            self.inner.retrieve_for_injection(name)
+        }
+        fn delete(&self, name: &str) -> PhantomResult<()> {
+            self.inner.delete(name)
+        }
+        fn list(&self) -> PhantomResult<Vec<String>> {
+            self.inner.list()
+        }
+        fn backend_name(&self) -> &str {
+            "counting"
+        }
+        fn get_metadata(&self, name: &str) -> PhantomResult<Option<phantom_vault::SecretMetadata>> {
+            self.inner.get_metadata(name)
+        }
+    }
+
+    /// Fails every metadata read and counts value reads.
+    struct MetadataFailingVault {
+        inner: phantom_vault::file::FileVault,
+        reads: AtomicUsize,
+    }
+
+    impl VaultBackend for MetadataFailingVault {
+        fn store(&self, name: &str, value: &str) -> PhantomResult<()> {
+            self.inner.store(name, value)
+        }
+        fn retrieve(&self, name: &str) -> PhantomResult<Zeroizing<String>> {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            self.inner.retrieve(name)
+        }
+        fn retrieve_for_injection(&self, name: &str) -> PhantomResult<Zeroizing<String>> {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            self.inner.retrieve_for_injection(name)
+        }
+        fn delete(&self, name: &str) -> PhantomResult<()> {
+            self.inner.delete(name)
+        }
+        fn list(&self) -> PhantomResult<Vec<String>> {
+            self.inner.list()
+        }
+        fn backend_name(&self) -> &str {
+            "metadata-failing"
+        }
+        fn get_metadata(&self, _: &str) -> PhantomResult<Option<phantom_vault::SecretMetadata>> {
+            Err(phantom_core::error::PhantomError::VaultError(
+                "metadata unavailable".to_string(),
+            ))
+        }
     }
 
     #[test]

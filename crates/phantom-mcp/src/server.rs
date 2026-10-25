@@ -3488,6 +3488,12 @@ impl PhantomMcpServer {
             "push the team vault",
             phantom_vault::rotation_gate::now_secs(),
         )?;
+        // A secret demoted to read-only is not handed to team members either.
+        crate::tools::helpers::refuse_read_only_entries(
+            vault.as_ref(),
+            names.iter().map(String::as_str),
+            "push the team vault",
+        )?;
         let params_json = team_push_approval_params_json(
             &params,
             &self.project_id(),
@@ -3524,6 +3530,11 @@ impl PhantomMcpServer {
             "push the team vault",
             phantom_vault::rotation_gate::now_secs(),
         )?;
+        crate::tools::helpers::refuse_read_only_entries(
+            vault.as_ref(),
+            names.iter().map(String::as_str),
+            "push the team vault",
+        )?;
 
         let token = Zeroizing::new(
             phantom_core::auth::require_token().map_err(|e| internal_err(e.to_string()))?,
@@ -3534,8 +3545,10 @@ impl PhantomMcpServer {
             .map_err(|e| internal_err(format!("Failed to load team keypair: {e}")))?;
         let mut secrets: BTreeMap<String, Zeroizing<String>> = BTreeMap::new();
         for name in &names {
+            // The injection read re-checks the mode atomically with the
+            // value read, so an entry demoted after the gate is never sent.
             let value = vault
-                .retrieve(name)
+                .retrieve_for_injection(name)
                 .map_err(|e| internal_err(format!("Failed to retrieve {name}: {e}")))?;
             secrets.insert(name.clone(), Zeroizing::new(String::from(value.as_str())));
         }
@@ -5556,13 +5569,17 @@ impl PhantomMcpServer {
                 continue;
             };
 
-            // Check promotion path first: was demoted but has since been rotated.
+            // Check promotion path first: was demoted but has since been
+            // rotated, and is not expired now under the same rule the
+            // demotion below applies (`now >= expires_at`). A rotation after
+            // an expiry that is still the current, passed expiry promotes
+            // nothing: the next run would only demote it again.
             if params.also_promote_rotated && meta.vault_mode.is_read_only() {
-                let rotated_after_expiry = match (meta.rotated_at, meta.expires_at) {
-                    (Some(r), Some(e)) => r > e,
+                let promotable = match (meta.rotated_at, meta.expires_at) {
+                    (Some(r), Some(e)) => r > e && now < e,
                     _ => false,
                 };
-                if rotated_after_expiry {
+                if promotable {
                     let mut new_meta = meta.clone();
                     new_meta.vault_mode = VaultMode::ReadWrite;
                     changes.push(phantom_vault::MetadataCas {
@@ -10977,6 +10994,145 @@ mod tests {
             Err(error) => !error.message.starts_with("Refusing to push the team vault"),
         };
         assert!(passed_gate, "a secret inside its window must pass the gate");
+    }
+
+    /// `phantom_team_vault_push` read values with a plain retrieve, so a
+    /// secret the expiry policy demoted to read-only was still handed to every
+    /// team member. The whole push is now refused before approval, any value
+    /// read or any provider request, naming the entry only.
+    #[test]
+    fn team_vault_push_refuses_read_only_entries() {
+        let _environment = TestEnvironment::new();
+        let _home = TestHome::new();
+        let (server, _dir) = setup_initialized_project();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let push = || {
+            runtime.block_on(server.phantom_team_vault_push(params(serde_json::json!({
+                "team_id": "team-fixture",
+                "confirm": true,
+            }))))
+        };
+        let (_config, vault) = server.load_config_and_vault().unwrap();
+        let set_mode = |mode: phantom_vault::metadata::VaultMode| {
+            let mut metadata = vault
+                .get_metadata("OPENAI_API_KEY")
+                .unwrap()
+                .unwrap_or_default();
+            metadata.vault_mode = mode;
+            vault.set_metadata("OPENAI_API_KEY", metadata).unwrap();
+        };
+
+        set_mode(phantom_vault::metadata::VaultMode::ReadOnly);
+        let Err(error) = push() else {
+            panic!("a read-only secret was pushed to the team vault");
+        };
+        assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_REQUEST);
+        assert!(error
+            .message
+            .starts_with("Refusing to push the team vault: 1 secret(s) are read-only"));
+        assert!(error.message.contains("'OPENAI_API_KEY'"));
+        assert!(!error.message.contains("'DATABASE_URL'"));
+        assert!(phantom_core::mcp_approval::list_pending_approvals()
+            .unwrap()
+            .is_empty());
+
+        set_mode(phantom_vault::metadata::VaultMode::ReadWrite);
+        let passed_gate = match push() {
+            Ok(_) => true,
+            Err(error) => !error.message.starts_with("Refusing to push the team vault"),
+        };
+        assert!(passed_gate, "read-write secrets must pass the gate");
+    }
+
+    /// `phantom_apply_expiry_policy` promoted a read-only entry back to
+    /// read-write whenever `rotated_at > expires_at`, even when that
+    /// `expires_at` had already passed: the entry was promoted while still
+    /// expired under the very rule that demotes it. It now stays read-only.
+    #[test]
+    fn apply_expiry_policy_never_promotes_a_still_expired_entry() {
+        use phantom_vault::metadata::VaultMode;
+        let _environment = TestEnvironment::new();
+        let _home = TestHome::new();
+        let (server, _dir) = setup_initialized_project();
+        let (_config, vault) = server.load_config_and_vault().unwrap();
+        let now = phantom_vault::metadata::now_secs();
+        let read_only = |rotated_at: u64, expires_at: u64| phantom_vault::SecretMetadata {
+            created_at: Some(1_000),
+            rotated_at: Some(rotated_at),
+            expires_at: Some(expires_at),
+            vault_mode: VaultMode::ReadOnly,
+            ..Default::default()
+        };
+        // Rotated once after an old expiry, and that expiry is still current
+        // and long past.
+        vault
+            .set_metadata("OPENAI_API_KEY", read_only(3_000, 2_000))
+            .unwrap();
+        // Rotated after its expiry, and that expiry is still ahead.
+        vault
+            .set_metadata("DATABASE_URL", read_only(now + 7_200, now + 3_600))
+            .unwrap();
+
+        let result = server
+            .phantom_apply_expiry_policy(Parameters(ApplyExpiryPolicyParams {
+                confirm: true,
+                approval_token: None,
+                also_promote_rotated: true,
+            }))
+            .unwrap();
+        let out = result.structured_content.clone().unwrap();
+        let promoted: Vec<&str> = out["promoted"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|entry| entry["name"].as_str())
+            .collect();
+        assert_eq!(promoted, ["DATABASE_URL"]);
+        assert_eq!(out["demoted"], serde_json::json!([]));
+        let mode = |name: &str| vault.get_metadata(name).unwrap().unwrap().vault_mode;
+        assert_eq!(mode("OPENAI_API_KEY"), VaultMode::ReadOnly);
+        assert_eq!(mode("DATABASE_URL"), VaultMode::ReadWrite);
+    }
+
+    /// Demotion is unchanged: an expired read-write entry is demoted, and a
+    /// read-write entry inside its window is left alone.
+    #[test]
+    fn apply_expiry_policy_still_demotes_expired_entries() {
+        use phantom_vault::metadata::VaultMode;
+        let _environment = TestEnvironment::new();
+        let _home = TestHome::new();
+        let (server, _dir) = setup_initialized_project();
+        let (_config, vault) = server.load_config_and_vault().unwrap();
+        let now = phantom_vault::metadata::now_secs();
+        let with_expiry = |expires_at: u64| phantom_vault::SecretMetadata {
+            created_at: Some(1_000),
+            expires_at: Some(expires_at),
+            ..Default::default()
+        };
+        vault
+            .set_metadata("OPENAI_API_KEY", with_expiry(2_000))
+            .unwrap();
+        vault
+            .set_metadata("DATABASE_URL", with_expiry(now + 3_600))
+            .unwrap();
+
+        let result = server
+            .phantom_apply_expiry_policy(Parameters(ApplyExpiryPolicyParams {
+                confirm: true,
+                approval_token: None,
+                also_promote_rotated: true,
+            }))
+            .unwrap();
+        let out = result.structured_content.clone().unwrap();
+        assert_eq!(out["demoted"][0]["name"], "OPENAI_API_KEY");
+        assert_eq!(out["demoted"].as_array().map(Vec::len), Some(1));
+        assert_eq!(out["promoted"], serde_json::json!([]));
+        let mode = |name: &str| vault.get_metadata(name).unwrap().unwrap().vault_mode;
+        assert_eq!(mode("OPENAI_API_KEY"), VaultMode::ReadOnly);
+        assert_eq!(mode("DATABASE_URL"), VaultMode::ReadWrite);
     }
 
     /// `phantom_env` picked the managed dotenv from an unguarded listing.

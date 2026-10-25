@@ -58,6 +58,39 @@ pub fn enforce_rotation_on_entries<'e>(
     )
 }
 
+/// Refuse an MCP path that hands real values to other people (a team-vault
+/// push) when any entry was demoted to read-only by the expiry policy: the
+/// recipients would inject it at runtime, which the demotion exists to stop.
+/// Metadata that cannot be read refuses too. Messages carry names only.
+pub fn refuse_read_only_entries<'e>(
+    vault: &dyn phantom_vault::VaultBackend,
+    entries: impl IntoIterator<Item = &'e str>,
+    action: &str,
+) -> Result<(), McpError> {
+    let mut read_only = Vec::new();
+    for name in entries {
+        let metadata = vault.get_metadata(name).map_err(|_| {
+            state_err(format!(
+                "Refusing to {action}: could not read lifecycle metadata for '{name}'. No vault \
+                 plaintext was read and no network request was sent."
+            ))
+        })?;
+        if metadata.is_some_and(|metadata| metadata.vault_mode.is_read_only()) {
+            read_only.push(format!("'{name}'"));
+        }
+    }
+    if read_only.is_empty() {
+        return Ok(());
+    }
+    Err(state_err(format!(
+        "Refusing to {action}: {} secret(s) are read-only under their lifecycle policy: {}. \
+         Rotate or promote them first. No vault plaintext was read and no network request \
+         was sent.",
+        read_only.len(),
+        read_only.join(", ")
+    )))
+}
+
 /// The same gate for MCP paths that write values of unknown age into the
 /// vault (a cloud or team vault pull): the incoming value carries no rotation anchor, so a
 /// new entry would look fresh and an overwrite would inherit the local
