@@ -25,7 +25,6 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   owner-only and refuses a symlinked one, writes metadata atomically (0600)
   instead of truncating through a symlink, and reads only regular files.
 
-
 ### Fixed (setup backups are created exclusively; leak profiles stay private)
 
 - `phantom setup --client` checked that a `<config>.phantom-bak-<ms>` name was
@@ -41,7 +40,6 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   tightened; `phantom_core::fs::ensure_private_dir`), the file is written with
   `atomic_write` (0600, replaces a link instead of following it), and it is
   read only as a regular file.
-
 
 ### Fixed (mapped upstream URIs keep the path-auth base; `Content-Location` and `Link` are mapped too)
 
@@ -705,7 +703,6 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   encrypted to. A new key or keypair is now created only when the keychain
   reports no entry; any other read failure is returned as an error and the
   stored key is left untouched.
-
 
 ### Added (`phantom doctor --pq`)
 
