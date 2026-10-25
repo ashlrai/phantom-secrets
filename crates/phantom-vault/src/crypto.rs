@@ -387,7 +387,6 @@ mod tests {
             "tagged blob decrypted through the legacy KDF"
         );
     }
-    use rand::RngCore;
 
     #[test]
     fn vault_key_is_256_bits() {
@@ -441,10 +440,8 @@ mod tests {
         let plaintext = b"old-vault-data";
         let passphrase = "legacy-pass";
 
-        let mut salt = [0u8; SALT_LEN];
-        let mut nonce_bytes = [0u8; NONCE_LEN];
-        rand::thread_rng().fill_bytes(&mut salt);
-        rand::thread_rng().fill_bytes(&mut nonce_bytes);
+        let salt: [u8; SALT_LEN] = rand::random();
+        let nonce_bytes: [u8; NONCE_LEN] = rand::random();
 
         let key = derive_key_legacy(passphrase, &salt).unwrap();
         let cipher = ChaCha20Poly1305::new_from_slice(key.as_slice()).unwrap();
@@ -562,7 +559,26 @@ mod tests {
     fn legacy_salt_colliding_with_an_unsupported_header_still_decrypts() {
         // A salt that looks like a future header (for example version 3)
         // must fall back to the legacy layout, not fail as unsupported.
-        for (version, alg) in [(3u8, 1u8), (blob_format::VERSION_2, 0xff), (0xff, 0xff)] {
+        // Header bytes come from the format constants or random draws that
+        // avoid them, so no literal byte is fed into a salt.
+        let other_than = |taken: &[u8]| loop {
+            let byte: u8 = rand::random();
+            if !taken.contains(&byte) {
+                break byte;
+            }
+        };
+        let cases = [
+            (blob_format::VERSION_3, blob_format::KDF_ARGON2ID_V13),
+            (
+                blob_format::VERSION_2,
+                other_than(&[blob_format::ALG_CHACHA20_POLY1305]),
+            ),
+            (
+                other_than(&[blob_format::VERSION_2, blob_format::VERSION_3]),
+                other_than(&[]),
+            ),
+        ];
+        for (version, alg) in cases {
             let blob = colliding_blob(derive_key, "collide", version, alg);
             assert!(matches!(
                 blob_format::classify(&blob),
@@ -735,7 +751,7 @@ mod tests {
     /// both the hardened and the legacy parameters.
     #[test]
     fn zeroizing_argon2_memory_derives_the_same_key() {
-        let salt = [7u8; SALT_LEN];
+        let salt: [u8; SALT_LEN] = rand::random();
         for (argon2, ours) in [
             (
                 hardened_argon2().unwrap(),
