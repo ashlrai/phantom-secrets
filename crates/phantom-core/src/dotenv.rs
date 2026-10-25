@@ -939,39 +939,138 @@ fn is_twilio_account_sid(upper_key: &str, value: &str) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
-/// Detect auth-like parameters in the query string of a URL-shaped value.
-/// Case-insensitive on the parameter name only. A hit on any of these means
-/// the URL is carrying a credential and should be treated as a secret.
+/// Query-parameter names that carry a credential whatever their value
+/// (password/secret parameters and request signatures, as in signed S3, GCS
+/// or Azure SAS URLs).
+const SECRET_QUERY_PARAMS: &[&str] = &[
+    "password",
+    "passwd",
+    "secret",
+    "client_secret",
+    "api_secret",
+    "sig",
+    "signature",
+    "x-amz-signature",
+    "x-goog-signature",
+];
+
+/// Query-parameter names that may carry a token or key. Some services use
+/// them for browser-public values (Mapbox `pk.`, Google Maps `AIza...`), so on
+/// their own they only count when the value has a known secret prefix.
+const TOKEN_QUERY_PARAMS: &[&str] = &[
+    "token",
+    "access_token",
+    "auth_token",
+    "api_key",
+    "apikey",
+    "key",
+];
+
+/// Additional auth-like names that mark a non-public URL as a secret
+/// regardless of value (the long-standing audit F11 list).
+const AUTH_QUERY_PARAMS: &[&str] = &[
+    "api_key",
+    "apikey",
+    "api-key",
+    "access_token",
+    "accesstoken",
+    "auth_token",
+    "authtoken",
+    "auth",
+    "token",
+];
+
+/// One `name=value` pair from a URL, with the name percent-decoded and
+/// lowercased and the value percent-decoded.
+struct UrlParam {
+    name: String,
+    value: String,
+}
+
+/// The parameters of a URL-shaped value (`scheme://...`), split at the first
+/// `#` into the query proper and the fragment. The fragment is split on both
+/// `&` and `?`, so it yields the parameters of a hash-routed app
+/// (`#/cb?token=...`) as well as an OAuth implicit-flow fragment
+/// (`#access_token=...`). Pairs without a `=` are skipped.
+struct UrlParams {
+    query: Vec<UrlParam>,
+    fragment: Vec<UrlParam>,
+}
+
+fn url_params(value: &str) -> Option<UrlParams> {
+    let (_, rest) = value.split_once("://")?;
+    let (before_fragment, fragment) = match rest.split_once('#') {
+        Some((head, frag)) => (head, Some(frag)),
+        None => (rest, None),
+    };
+    let query = before_fragment
+        .split_once('?')
+        .map(|(_, q)| parse_url_pairs(q))
+        .unwrap_or_default();
+    let fragment = fragment
+        .map(|frag| parse_url_pairs_split(frag, &['&', '?']))
+        .unwrap_or_default();
+    Some(UrlParams { query, fragment })
+}
+
+fn parse_url_pairs(pairs: &str) -> Vec<UrlParam> {
+    parse_url_pairs_split(pairs, &['&'])
+}
+
+fn parse_url_pairs_split(pairs: &str, separators: &[char]) -> Vec<UrlParam> {
+    pairs
+        .split(separators)
+        .filter_map(|pair| pair.split_once('='))
+        .map(|(name, value)| UrlParam {
+            name: percent_decode_lossy(name).to_ascii_lowercase(),
+            value: percent_decode_lossy(value),
+        })
+        .collect()
+}
+
+/// Decode `%XX` escapes once, as a server would. Malformed escapes are kept
+/// literally and invalid UTF-8 is replaced, so this never fails.
+fn percent_decode_lossy(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hex = |b: u8| (b as char).to_digit(16);
+            if let (Some(hi), Some(lo)) = (hex(bytes[i + 1]), hex(bytes[i + 2])) {
+                out.push((hi * 16 + lo) as u8);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// A parameter that carries a credential for both the public and non-public
+/// paths: a secret/signature name with a non-empty value, or a token/key name
+/// whose value has a known secret prefix.
+fn is_query_credential(param: &UrlParam) -> bool {
+    !param.value.is_empty()
+        && (SECRET_QUERY_PARAMS.contains(&param.name.as_str())
+            || (TOKEN_QUERY_PARAMS.contains(&param.name.as_str())
+                && has_secret_value_pattern(&param.value)))
+}
+
+/// Detect auth-like parameters in a non-public URL-shaped value: everything
+/// [`url_has_query_credential`] matches, plus any auth/token/secret-style name
+/// (even with an empty value), in the query or the fragment.
 fn url_has_auth_query_param(value: &str) -> bool {
-    // Take everything after the first `?`, then scan `&`-separated pairs.
-    let Some(query) = value.split_once('?').map(|(_, q)| q) else {
+    let Some(params) = url_params(value) else {
         return false;
     };
-    const AUTH_PARAMS: &[&str] = &[
-        "api_key",
-        "apikey",
-        "api-key",
-        "access_token",
-        "accesstoken",
-        "auth_token",
-        "authtoken",
-        "auth",
-        "token",
-        "password",
-        "secret",
-        "sig",
-        "signature",
-    ];
-    for pair in query.split('&') {
-        let Some((name, _)) = pair.split_once('=') else {
-            continue;
-        };
-        let name_lower = name.to_ascii_lowercase();
-        if AUTH_PARAMS.iter().any(|p| *p == name_lower) {
-            return true;
-        }
-    }
-    false
+    params.query.iter().chain(&params.fragment).any(|param| {
+        is_query_credential(param)
+            || AUTH_QUERY_PARAMS.contains(&param.name.as_str())
+            || SECRET_QUERY_PARAMS.contains(&param.name.as_str())
+    })
 }
 
 /// Classify an environment variable entry as Secret, PublicKey, or NotSecret.
@@ -1048,45 +1147,10 @@ fn url_has_userinfo_password(value: &str) -> bool {
 /// browser bundle: a password/secret parameter, a request signature (signed
 /// S3/GCS/Azure SAS URLs), or a token/key parameter whose value has a known
 /// secret prefix. Browser-public tokens such as Mapbox `pk.` or Google Maps
-/// `key=AIza...` and analytics params are not matched, nor are empty values.
+/// `key=AIza...` and analytics params are not matched, nor are empty values
+/// or anything in the fragment.
 fn url_has_query_credential(value: &str) -> bool {
-    const SECRET_PARAMS: &[&str] = &[
-        "password",
-        "passwd",
-        "secret",
-        "client_secret",
-        "api_secret",
-        "sig",
-        "signature",
-        "x-amz-signature",
-        "x-goog-signature",
-    ];
-    const TOKEN_PARAMS: &[&str] = &[
-        "token",
-        "access_token",
-        "auth_token",
-        "api_key",
-        "apikey",
-        "key",
-    ];
-    let Some((_, rest)) = value.split_once("://") else {
-        return false;
-    };
-    let rest = rest.split('#').next().unwrap_or(rest);
-    let Some((_, query)) = rest.split_once('?') else {
-        return false;
-    };
-    query.split('&').any(|pair| {
-        let Some((name, param)) = pair.split_once('=') else {
-            return false;
-        };
-        if param.is_empty() {
-            return false;
-        }
-        let name = name.to_ascii_lowercase();
-        SECRET_PARAMS.contains(&name.as_str())
-            || (TOKEN_PARAMS.contains(&name.as_str()) && has_secret_value_pattern(param))
-    })
+    url_params(value).is_some_and(|params| params.query.iter().any(is_query_credential))
 }
 
 /// Check if a key name is a framework public key (safe for browser bundles).
@@ -2353,6 +2417,195 @@ NEXT=ok
                 .unwrap_err()
                 .to_string();
             assert!(error.contains("unexpected UTF-8 byte order mark"));
+        }
+    }
+
+    #[test]
+    fn non_public_url_query_uses_the_shared_credential_params() {
+        // These query credentials were already caught for public-prefixed
+        // keys; a non-public key must not be weaker.
+        let client = ["https://auth.example.com/cb?client_", "secret=", "abc123"].concat();
+        let s3 = [
+            "https://bucket.s3.amazonaws.com/o.pdf?X-Amz-Expires=3600&X-Amz-",
+            "Signature=",
+            "deadbeef",
+        ]
+        .concat();
+        let short = [
+            "https://db.example.com/admin?user=app&pass",
+            "wd=",
+            "hunter2",
+        ]
+        .concat();
+        let misnamed = ["https://api.example.com/v1?ke", "y=", "sk_", "live_abc123"].concat();
+        for (key, value) in [
+            ("CALLBACK_URL", client.as_str()),
+            ("ASSET_URL", s3.as_str()),
+            ("ADMIN_URL", short.as_str()),
+            ("BACKEND_URL", misnamed.as_str()),
+        ] {
+            assert_eq!(
+                classify_kv(key, value),
+                SecretClassification::Secret,
+                "{key} carries a credential in its query string"
+            );
+        }
+    }
+
+    #[test]
+    fn url_fragment_is_split_from_the_query() {
+        // OAuth implicit-flow style: the credential follows `#`, so it is not
+        // part of the last query value.
+        let implicit = [
+            "https://app.example.com/cb?state=xyz#access_",
+            "token=",
+            "abc123",
+        ]
+        .concat();
+        // Hash-routed SPA URL: `?` appears only inside the fragment.
+        let hash_route = ["https://app.example.com/#/cb?tok", "en=", "abc123"].concat();
+        let trailing = ["https://app.example.com/p?a=1#x&tok", "en=", "abc123?b"].concat();
+        for (key, value) in [
+            ("REDIRECT_URL", implicit.as_str()),
+            ("APP_LINK", hash_route.as_str()),
+            ("APP_LINK", trailing.as_str()),
+        ] {
+            assert_eq!(
+                classify_kv(key, value),
+                SecretClassification::Secret,
+                "{key} carries a credential after its fragment marker"
+            );
+        }
+        // A fragment never feeds the public-prefixed path, and a bare anchor
+        // is not a parameter.
+        for (key, value, expected) in [
+            (
+                "NEXT_PUBLIC_DOCS",
+                "https://example.com/docs#signature=intro",
+                SecretClassification::PublicKey,
+            ),
+            (
+                "DOCS_URL",
+                "https://example.com/page?lang=en#token",
+                SecretClassification::NotSecret,
+            ),
+            (
+                "DOCS_URL",
+                "https://example.com/guide#section-2",
+                SecretClassification::NotSecret,
+            ),
+        ] {
+            assert_eq!(
+                classify_kv(key, value),
+                expected,
+                "{key} is not a credential"
+            );
+        }
+    }
+
+    #[test]
+    fn percent_encoded_query_param_names_are_decoded() {
+        let pw = ["https://db.example.com/x?pass%77", "ord=", "hunter2"].concat();
+        let api = ["https://api.example.com/v1?API%5F", "KEY=", "abc123"].concat();
+        let tok = ["https://hooks.example.com/in?%74ok", "en=", "abc123"].concat();
+        let sig = [
+            "https://cdn.example.com/f?x-amz-%53ig",
+            "nature=",
+            "deadbeef",
+        ]
+        .concat();
+        for (key, value) in [
+            ("ADMIN_URL", pw.as_str()),
+            ("SERVICE_URL", api.as_str()),
+            ("WEBHOOK_URL", tok.as_str()),
+            ("ASSET_URL", sig.as_str()),
+            ("VITE_ADMIN_URL", pw.as_str()),
+            ("NEXT_PUBLIC_ASSET", sig.as_str()),
+        ] {
+            assert_eq!(
+                classify_kv(key, value),
+                SecretClassification::Secret,
+                "{key} hides a credential behind a percent-encoded name"
+            );
+        }
+
+        // Public-prefixed token params need a known secret prefix; that check
+        // also sees through percent-encoding of the name and of the value.
+        let enc_name = [
+            "https://api.example.com/v1?api%5F",
+            "key=",
+            "sk_",
+            "live_abc123",
+        ]
+        .concat();
+        let enc_value = [
+            "https://api.example.com/v1?tok",
+            "en=",
+            "sk%5F",
+            "live_abc123",
+        ]
+        .concat();
+        for (key, value) in [
+            ("VITE_BACKEND", enc_name.as_str()),
+            ("EXPO_PUBLIC_FEED", enc_value.as_str()),
+        ] {
+            assert_eq!(
+                classify_kv(key, value),
+                SecretClassification::Secret,
+                "{key} hides a misnamed secret behind percent-encoding"
+            );
+        }
+    }
+
+    #[test]
+    fn ordinary_url_params_stay_non_secret() {
+        let mapbox = [
+            "https://api.mapbox.com/styles/v1/me/s?access%5F",
+            "token=pk.eyJ1Ijoi",
+        ]
+        .concat();
+        let gmaps = [
+            "https://maps.googleapis.com/maps/api/js?ke",
+            "y=AIzaSyExample",
+        ]
+        .concat();
+        for (key, value, expected) in [
+            (
+                "REPO_URL",
+                "https://github.com/org/repo/archive?ref=main",
+                SecretClassification::NotSecret,
+            ),
+            (
+                "LANDING_URL",
+                "https://example.com/?utm_source=x&utm_medium=y&lang=en",
+                SecretClassification::NotSecret,
+            ),
+            (
+                "MAPS_SCRIPT_URL",
+                gmaps.as_str(),
+                SecretClassification::NotSecret,
+            ),
+            (
+                "BROKEN_URL",
+                "https://example.com/?a%zz=1&b=%&%=c&d%2",
+                SecretClassification::NotSecret,
+            ),
+            (
+                "NEXT_PUBLIC_MAP_STYLE",
+                mapbox.as_str(),
+                SecretClassification::PublicKey,
+            ),
+            (
+                "VITE_SEARCH",
+                "https://example.com/s?q=100%25&ref=main",
+                SecretClassification::PublicKey,
+            ),
+        ] {
+            assert_eq!(
+                classify_kv(key, value),
+                expected,
+                "{key} is ordinary config"
+            );
         }
     }
 }

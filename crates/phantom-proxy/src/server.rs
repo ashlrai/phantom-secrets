@@ -1029,6 +1029,20 @@ async fn handle_request(
             .unwrap_or(false)
         || (may_have_body && !has_declared_length);
 
+    // A HEAD response's Content-Length is the length a GET would return
+    // (RFC 9110 section 8.6), not the length of the proxy's empty buffered
+    // body. Keep the upstream value when it is a well-formed length.
+    let head_content_length = if method == hyper::Method::HEAD {
+        response
+            .headers()
+            .get(reqwest::header::CONTENT_LENGTH)
+            .and_then(|value| value.to_str().ok())
+            .filter(|value| !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()))
+            .map(str::to_string)
+    } else {
+        None
+    };
+
     let response_connection_named = connection_named_headers(response.headers());
     for (name, value) in response.headers() {
         let name_str = name.as_str();
@@ -1064,6 +1078,11 @@ async fn handle_request(
                     continue;
                 }
             }
+        } else if name == hyper::header::LOCATION {
+            // Every route shares this proxy's one origin, so a redirect to an
+            // absolute path on the route's upstream must keep the route
+            // prefix or the client follows it to the wrong local path.
+            scope_location_to_route(&scrubbed_value, route).unwrap_or(scrubbed_value)
         } else {
             scrubbed_value
         };
@@ -1213,10 +1232,19 @@ async fn handle_request(
             );
         }
 
-        // Always set content-length from the final body (may differ after scrubbing).
+        // Set content-length from the final body (may differ after
+        // scrubbing). A HEAD response instead keeps the upstream length of
+        // the representation, or none when upstream sent none.
         let final_body = Bytes::from(final_body);
         debug!("Response: {} ({} bytes)", status, final_body.len());
-        let builder = builder.header("content-length", final_body.len().to_string());
+        let builder = if method == hyper::Method::HEAD {
+            match head_content_length {
+                Some(length) => builder.header("content-length", length),
+                None => builder,
+            }
+        } else {
+            builder.header("content-length", final_body.len().to_string())
+        };
         Ok(builder.body(BoxBody::Left(Full::new(final_body))).unwrap())
     }
 }
@@ -1305,6 +1333,61 @@ fn scope_set_cookie_to_route(value: &str, route_name: &str) -> Option<String> {
     }
     scoped.push(format!("Path=/{route_name}"));
     Some(scoped.join("; "))
+}
+
+/// Map an upstream `Location` that stays on the route's own upstream back
+/// under the route's local prefix: `/v1/files/abc` (or the same URL written
+/// absolutely against the route's upstream origin) becomes
+/// `/<route>/v1/files/abc`. When the route's upstream base carries a path,
+/// only Locations under that path are mapped. Returns `None`, leaving the
+/// value unchanged, for relative references (which already resolve under the
+/// route prefix), network-path references, other origins, and paths outside
+/// the base path, so a redirect is never rewritten to send the route's
+/// credential anywhere but its own upstream. A path the route would forward
+/// to a different upstream path (its SDK version prefix or `//` collapsing)
+/// is left unchanged too, so following the mapped Location requests exactly
+/// the upstream path the redirect named.
+fn scope_location_to_route(value: &str, route: &crate::services::ServiceRoute) -> Option<String> {
+    let route_name = route.name.as_str();
+    let base = reqwest::Url::parse(&route.target_base).ok()?;
+    let base_path = base.path().trim_end_matches('/');
+    let local = if value.starts_with('/') {
+        // `//host` and `/\host` are network-path references to another host.
+        if matches!(value.as_bytes().get(1), Some(b'/' | b'\\')) {
+            return None;
+        }
+        value.to_string()
+    } else {
+        let location = reqwest::Url::parse(value).ok()?;
+        if location.scheme() != base.scheme()
+            || location.host_str() != base.host_str()
+            || location.port_or_known_default() != base.port_or_known_default()
+        {
+            return None;
+        }
+        let mut local = location.path().to_string();
+        if let Some(query) = location.query() {
+            local.push('?');
+            local.push_str(query);
+        }
+        if let Some(fragment) = location.fragment() {
+            local.push('#');
+            local.push_str(fragment);
+        }
+        local
+    };
+    let rest = local.strip_prefix(base_path)?;
+    if !(rest.is_empty() || rest.starts_with(['/', '?', '#'])) {
+        return None;
+    }
+    if route_name.is_empty() || route_name.contains(['/', '?', '#', '\\']) {
+        return None;
+    }
+    let rest_path = rest.split(['?', '#']).next().unwrap_or_default();
+    if route.upstream_path(rest_path) != rest_path {
+        return None;
+    }
+    Some(format!("/{route_name}{rest}"))
 }
 
 /// How many percent-decoding layers of one path segment are inspected. A
@@ -2356,6 +2439,274 @@ mod tests {
             ]
         );
 
+        proxy.shutdown().await;
+        mock.shutdown().await;
+    }
+
+    /// A one-route proxy in front of `mock_port` whose upstream base is
+    /// `http://127.0.0.1:<mock_port><base_path>`.
+    async fn location_probe_proxy(mock_port: u16, base_path: &str) -> ProxyServer {
+        let mut registry = ServiceRegistry::new();
+        registry.add_route(ServiceRoute {
+            name: "alpha".to_string(),
+            target_base: format!("http://127.0.0.1:{mock_port}{base_path}"),
+            secret_key: "TEST_API_KEY".to_string(),
+            header: "Authorization".to_string(),
+            header_format: "Bearer {secret}".to_string(),
+            credential_profile: crate::services::CredentialProfile::Standard,
+            sdk_base_path: None,
+        });
+        let interceptor = Interceptor::new_scoped(
+            HashMap::new(),
+            HashMap::from([("TEST_API_KEY".to_string(), route_fixture_value())]),
+        );
+        ProxyServer::start(ProxyConfig::default(), registry, interceptor)
+            .await
+            .unwrap()
+    }
+
+    /// Every route shares the proxy's one origin, so an upstream redirect to
+    /// an absolute path (`/v1/files/abc`) would be resolved by the client
+    /// against `http://127.0.0.1:PORT/` and lose the `/<route>` prefix. A
+    /// Location that stays on the route's own upstream is mapped back under
+    /// the route prefix; anything that leaves it is passed through unchanged.
+    #[tokio::test]
+    async fn upstream_location_is_mapped_back_under_its_route_prefix() {
+        // (base path, upstream Location, Location the client must see)
+        let cases: Vec<(&str, String, String)> = vec![
+            ("", "/v1/files/abc".into(), "/alpha/v1/files/abc".into()),
+            (
+                "",
+                "/v1/files?after=f1#top".into(),
+                "/alpha/v1/files?after=f1#top".into(),
+            ),
+            ("", "/".into(), "/alpha/".into()),
+            ("/base", "/base/v1/files".into(), "/alpha/v1/files".into()),
+            // Outside the route's base path: not reachable through the route.
+            ("/base", "/basement/x".into(), "/basement/x".into()),
+            // Relative references already resolve under the route prefix.
+            ("", "next".into(), "next".into()),
+            ("", "../files/abc".into(), "../files/abc".into()),
+            // Other origins and network-path references are never rewritten
+            // to point at the route (which would send its credential there).
+            (
+                "",
+                "//other.example.test/v1".into(),
+                "//other.example.test/v1".into(),
+            ),
+            (
+                "",
+                "/\\other.example.test/v1".into(),
+                "/\\other.example.test/v1".into(),
+            ),
+            (
+                "",
+                "https://other.example.test/v1".into(),
+                "https://other.example.test/v1".into(),
+            ),
+            (
+                "",
+                "https://127.0.0.1/v1".into(),
+                "https://127.0.0.1/v1".into(),
+            ),
+        ];
+
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap();
+        for (index, (base_path, upstream, expected)) in cases.iter().enumerate() {
+            let mock = crate::test_server::MockServer::start_with_status_and_headers(
+                StatusCode::FOUND,
+                &[("location", upstream.as_str())],
+            )
+            .await;
+            let proxy = location_probe_proxy(mock.port, base_path).await;
+            let resp = client
+                .get(format!("http://127.0.0.1:{}/alpha/start", proxy.port()))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::FOUND, "case {index}");
+            let seen = resp
+                .headers()
+                .get("location")
+                .map(|value| value.to_str().unwrap().to_string());
+            assert_eq!(seen.as_deref(), Some(expected.as_str()), "case {index}");
+            drop(resp);
+            proxy.shutdown().await;
+            mock.shutdown().await;
+        }
+    }
+
+    #[test]
+    fn location_scoping_maps_only_the_routes_own_upstream() {
+        let route = |target_base: &str, sdk_base_path: Option<&str>| ServiceRoute {
+            name: "alpha".to_string(),
+            target_base: target_base.to_string(),
+            secret_key: "TEST_API_KEY".to_string(),
+            header: "Authorization".to_string(),
+            header_format: "Bearer {secret}".to_string(),
+            credential_profile: crate::services::CredentialProfile::Standard,
+            sdk_base_path: sdk_base_path.map(str::to_string),
+        };
+        let base = route("https://api.example.test", None);
+        let based = route("https://api.example.test/base", None);
+        let versioned = route("https://api.example.test", Some("/v1"));
+        let cases: [(&ServiceRoute, &str, Option<&str>); 16] = [
+            (&base, "/v1/files/abc", Some("/alpha/v1/files/abc")),
+            (
+                &base,
+                "https://api.example.test/v1/files?x=1#f",
+                Some("/alpha/v1/files?x=1#f"),
+            ),
+            (&base, "https://api.example.test:443/v1", Some("/alpha/v1")),
+            (
+                &based,
+                "https://api.example.test/base/v1",
+                Some("/alpha/v1"),
+            ),
+            (&based, "/base?x=1", Some("/alpha?x=1")),
+            (&versioned, "/v1/files", Some("/alpha/v1/files")),
+            // The route would forward these to `/v1/other` and `/x`.
+            (&versioned, "/other", None),
+            (&base, "//x", None),
+            (&based, "https://api.example.test/basement", None),
+            (&based, "/other/v1", None),
+            (&base, "http://api.example.test/v1", None),
+            (&base, "https://api.example.test:8443/v1", None),
+            (&base, "https://evil.example.test/v1", None),
+            (&base, "//evil.example.test/v1", None),
+            (&base, "/\\evil.example.test/v1", None),
+            (&base, "next", None),
+        ];
+        for (index, (route, location, expected)) in cases.iter().enumerate() {
+            assert_eq!(
+                scope_location_to_route(location, route).as_deref(),
+                *expected,
+                "case {index}"
+            );
+        }
+        let mut unnamed = route("https://api.example.test", None);
+        unnamed.name = String::new();
+        assert_eq!(scope_location_to_route("/v1", &unnamed), None);
+    }
+
+    /// Send `method target` over a raw socket and return the response head
+    /// (status line and headers, lowercased) plus any body bytes that arrive
+    /// within a short grace period after it.
+    async fn raw_response(port: u16, method: &str, target: &str) -> (String, Vec<u8>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .unwrap();
+        let head = format!(
+            "{method} {target} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
+        );
+        stream.write_all(head.as_bytes()).await.unwrap();
+        stream.flush().await.unwrap();
+        let mut response = Vec::new();
+        let mut buf = [0u8; 4096];
+        loop {
+            match tokio::time::timeout(std::time::Duration::from_millis(500), stream.read(&mut buf))
+                .await
+            {
+                Ok(Ok(0)) | Ok(Err(_)) | Err(_) => break,
+                Ok(Ok(n)) => response.extend_from_slice(&buf[..n]),
+            }
+        }
+        let split = response
+            .windows(4)
+            .position(|w| w == b"\r\n\r\n")
+            .map(|at| at + 4)
+            .unwrap_or(response.len());
+        let head = String::from_utf8_lossy(&response[..split]).to_ascii_lowercase();
+        (head, response[split..].to_vec())
+    }
+
+    fn head_header<'a>(head: &'a str, name: &str) -> Vec<&'a str> {
+        head.lines()
+            .filter_map(|line| line.split_once(':'))
+            .filter(|(field, _)| field.trim() == name)
+            .map(|(_, value)| value.trim())
+            .collect()
+    }
+
+    /// RFC 9110 section 8.6: a HEAD response's Content-Length describes the
+    /// representation a GET would return, a 304's matches the 200 it
+    /// replaces, and a 204 never carries one. The proxy must not replace the
+    /// upstream length with the length of its own (empty) buffered body.
+    #[tokio::test]
+    async fn head_response_keeps_upstream_content_length() {
+        // The mock's default JSON body, which hyper declares on HEAD too.
+        let get_length = r#"{"status":"ok","mock":true}"#.len().to_string();
+
+        let mock = crate::test_server::MockServer::start().await;
+        let proxy = location_probe_proxy(mock.port, "").await;
+        let (head, body) = raw_response(proxy.port(), "HEAD", "/alpha/v1/files/abc").await;
+        assert!(head.starts_with("http/1.1 200"), "HEAD status");
+        assert_eq!(
+            head_header(&head, "content-length"),
+            vec![get_length.as_str()],
+            "HEAD response must keep the upstream content-length"
+        );
+        assert!(body.is_empty(), "HEAD response carried a body");
+        proxy.shutdown().await;
+        mock.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn not_modified_response_keeps_upstream_content_length() {
+        let get_length = r#"{"status":"ok","mock":true}"#.len().to_string();
+        let mock = crate::test_server::MockServer::start_with_status_and_headers(
+            StatusCode::NOT_MODIFIED,
+            &[("etag", "\"v1\""), ("content-length", get_length.as_str())],
+        )
+        .await;
+        let proxy = location_probe_proxy(mock.port, "").await;
+        let (head, body) = raw_response(proxy.port(), "GET", "/alpha/v1/files/abc").await;
+        assert!(head.starts_with("http/1.1 304"), "304 status");
+        let lengths = head_header(&head, "content-length");
+        assert!(
+            lengths.is_empty() || lengths == vec![get_length.as_str()],
+            "304 response must not claim an empty representation"
+        );
+        assert!(body.is_empty(), "304 response carried a body");
+        proxy.shutdown().await;
+        mock.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn no_content_response_carries_no_content_length() {
+        let mock = crate::test_server::MockServer::start_with_status_and_headers(
+            StatusCode::NO_CONTENT,
+            &[],
+        )
+        .await;
+        let proxy = location_probe_proxy(mock.port, "").await;
+        let (head, body) = raw_response(proxy.port(), "DELETE", "/alpha/v1/files/abc").await;
+        assert!(head.starts_with("http/1.1 204"), "204 status");
+        assert!(
+            head_header(&head, "content-length").is_empty(),
+            "204 response must not carry content-length"
+        );
+        assert!(body.is_empty(), "204 response carried a body");
+        proxy.shutdown().await;
+        mock.shutdown().await;
+    }
+
+    /// A double-encoded `_phantom` segment (`%255fphantom`) decodes once to
+    /// `%5fphantom`, never to `_phantom`, at a single-decoding upstream. It is
+    /// forwarded byte-for-byte: the proxy neither strips it as path auth nor
+    /// decodes it into a different path.
+    #[tokio::test]
+    async fn double_encoded_path_auth_segment_is_forwarded_verbatim() {
+        let mock = crate::test_server::MockServer::start().await;
+        let proxy = location_probe_proxy(mock.port, "").await;
+        let (head, _) = raw_response(proxy.port(), "GET", "/alpha/v1/%255fphantom/x").await;
+        assert!(head.starts_with("http/1.1 200"), "status");
+        let paths: Vec<String> = mock.get_requests().into_iter().map(|r| r.path).collect();
+        assert_eq!(paths, vec!["/v1/%255fphantom/x".to_string()]);
         proxy.shutdown().await;
         mock.shutdown().await;
     }
