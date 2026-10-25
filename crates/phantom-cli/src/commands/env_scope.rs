@@ -14,7 +14,8 @@ use phantom_core::env_scope::{
 };
 use phantom_core::fs::{AnchoredRead, TrustedAnchor};
 use phantom_vault::{
-    InitFile, InitSecret, ProjectDirectoryPreparation, ProjectTransactionLock, VaultBackend,
+    InitFile, InitSecret, ProjectDirectoryPreparation, ProjectTransactionLock, SecretMetadata,
+    VaultBackend,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, IsTerminal, Read, Write};
@@ -694,18 +695,24 @@ fn prepare_environment_copy(
     )?;
 
     // Keep every provider value in zeroizing owners from retrieval until it
-    // moves into InitSecret's zeroizing transaction fields.
-    let mut values = Vec::<(String, String, Zeroizing<String>)>::with_capacity(sources.len());
+    // moves into InitSecret's zeroizing transaction fields. Each source's
+    // metadata is read before its value, so the rotation anchor the
+    // destination inherits is never newer than the copied value.
+    type SourceCopy = (String, String, Option<SecretMetadata>, Zeroizing<String>);
+    let mut values = Vec::<SourceCopy>::with_capacity(sources.len());
     for (name, source_key) in sources {
+        let metadata = vault
+            .get_metadata(&source_key)
+            .with_context(|| format!("Failed to read metadata for source secret '{source_key}'"))?;
         let value = vault
             .retrieve(&source_key)
             .with_context(|| format!("Failed to retrieve source secret '{source_key}'"))?;
-        values.push((name, source_key, value));
+        values.push((name, source_key, metadata, value));
     }
 
     let mut mutations = Vec::with_capacity(values.len() * 2);
     let mut copied_names = Vec::with_capacity(values.len());
-    for (name, source_key, value) in values {
+    for (name, source_key, metadata, value) in values {
         // A no-op exact-CAS source guard makes the snapshot part of the same
         // locked transaction; all guards are preflighted before any write.
         mutations.push(InitSecret::replace_if_unchanged(
@@ -713,11 +720,16 @@ fn prepare_environment_copy(
             Some(value.as_str().to_string()),
             value.as_str().to_string(),
         ));
-        mutations.push(InitSecret::replace_if_unchanged(
-            namespaced_key(to, &name),
-            None::<String>,
-            value.as_str().to_string(),
-        ));
+        // The destination keeps its source's rotation age, so the copy cannot
+        // restart the clock `enforce_rotation_on_access` measures.
+        mutations.push(
+            InitSecret::replace_if_unchanged(
+                namespaced_key(to, &name),
+                None::<String>,
+                value.as_str().to_string(),
+            )
+            .inheriting_rotation_anchor(metadata.as_ref()),
+        );
         copied_names.push(name);
     }
     Ok(EnvironmentCopyPlan {
@@ -1199,6 +1211,13 @@ mod tests {
         fn get_metadata(&self, name: &str) -> PhantomResult<Option<phantom_vault::SecretMetadata>> {
             self.inner.get_metadata(name)
         }
+
+        fn compare_and_swap_metadata_batch(
+            &self,
+            changes: &[phantom_vault::MetadataCas],
+        ) -> PhantomResult<bool> {
+            self.inner.compare_and_swap_metadata_batch(changes)
+        }
     }
 
     fn unenforced() -> PhantomConfig {
@@ -1253,6 +1272,56 @@ mod tests {
         stamp_age(&vault, "dev/API_KEY", NOW - DAY);
         let plan = prepare_environment_copy(&config, &vault, &keys, "dev", "prod", NOW).unwrap();
         assert_eq!(plan.copied_names.len(), 2);
+    }
+
+    /// `phantom env copy` stamped the destination entries as stored now, so
+    /// a secret 29 days into a 30-day enforced window got a fresh clock in
+    /// the destination environment. Each destination now inherits its
+    /// source's rotation anchor and is judged overdue when its source is; a
+    /// secret without enforcement still copies.
+    #[test]
+    fn environment_copy_destinations_inherit_the_source_rotation_anchor() {
+        const DAY: u64 = 86_400;
+        const NOW: u64 = 1_800_000_000;
+        let mut config = unenforced();
+        config.phantom.secrets.insert(
+            "API_KEY".to_string(),
+            phantom_core::config::SecretOverride {
+                rotate_every: Some("30d".to_string()),
+                enforce_rotation_on_access: true,
+                ..phantom_core::config::SecretOverride::default()
+            },
+        );
+        let (dir, vault) = vault(None);
+        vault.store("dev/API_KEY", "source-value").unwrap();
+        vault.store("dev/OTHER", "other-value").unwrap();
+        stamp_age(&vault, "dev/API_KEY", NOW - 29 * DAY);
+        stamp_age(&vault, "dev/OTHER", NOW - 400 * DAY);
+        let keys = vault.list().unwrap();
+
+        let plan = prepare_environment_copy(&config, &vault, &keys, "dev", "prod", NOW).unwrap();
+        phantom_vault::commit_init(dir.path(), &vault, plan.mutations, Vec::new()).unwrap();
+
+        let anchor = |entry: &str| {
+            phantom_vault::rotation_gate::rotation_anchor(
+                vault.get_metadata(entry).unwrap().as_ref(),
+            )
+        };
+        assert_eq!(anchor("prod/API_KEY"), Some(NOW - 29 * DAY));
+        assert_eq!(anchor("prod/OTHER"), Some(NOW - 400 * DAY));
+        assert!(vault.exists("prod/OTHER").unwrap());
+        let refusals = phantom_vault::rotation_gate::rotation_refusals(
+            &config,
+            &vault,
+            phantom_vault::rotation_gate::entry_targets(["prod/API_KEY"]),
+            NOW + 2 * DAY,
+        )
+        .unwrap();
+        assert_eq!(
+            refusals.len(),
+            1,
+            "the copy must be overdue with its source"
+        );
     }
 
     fn vault(fail_at: Option<usize>) -> (tempfile::TempDir, FailingCasVault) {
