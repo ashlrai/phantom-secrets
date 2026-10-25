@@ -14,7 +14,8 @@ pub struct FileVault {
     base_anchor: TrustedAnchor,
     names: VaultNames,
     vault_path: PathBuf,
-    passphrase: String,
+    /// Scrubbed when the backend drops; it unlocks every secret in the vault.
+    passphrase: zeroize::Zeroizing<String>,
 }
 
 struct VaultNames {
@@ -36,7 +37,9 @@ struct LoadedVault {
     before: Option<AnchoredRead>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Default, PartialEq)]
+/// The whole decrypted vault. Its values are scrubbed on drop and never
+/// formatted: `Debug` shows names and metadata only.
+#[derive(Serialize, Deserialize, Default, PartialEq)]
 struct VaultData {
     secrets: BTreeMap<String, String>,
     /// Per-secret TTL/expiry metadata. Keys match the keys in `secrets`.
@@ -49,7 +52,34 @@ struct VaultData {
     validation_metadata: BTreeMap<String, ValidationMetadata>,
 }
 
+impl std::fmt::Debug for VaultData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VaultData")
+            .field("secret_names", &self.secrets.keys().collect::<Vec<_>>())
+            .field("secret_values", &"<redacted>")
+            .field("metadata", &self.metadata)
+            .field("validation_metadata", &self.validation_metadata)
+            .finish()
+    }
+}
+
+impl Drop for VaultData {
+    fn drop(&mut self) {
+        self.scrub_secret_values();
+    }
+}
+
+impl zeroize::ZeroizeOnDrop for VaultData {}
+
 impl VaultData {
+    /// Overwrite every secret value in place. Names are not secret and stay.
+    fn scrub_secret_values(&mut self) {
+        use zeroize::Zeroize;
+        for value in self.secrets.values_mut() {
+            value.zeroize();
+        }
+    }
+
     /// Set `name` to `value`. A stored validation verdict describes the
     /// credential that was checked, so it is dropped when the value changes:
     /// the new credential reads as never checked until it is validated.
@@ -79,7 +109,7 @@ impl FileVault {
             base_anchor,
             vault_path: canonical_base.join("vaults").join(&names.encrypted),
             names,
-            passphrase,
+            passphrase: zeroize::Zeroizing::new(passphrase),
         };
 
         // Auto-migrate from the old unencrypted .json format while both the
@@ -1297,5 +1327,42 @@ mod tests {
             let got = vault.retrieve(&format!("KEY_{i}")).unwrap();
             assert_eq!(got.as_str(), expected, "KEY_{i} has wrong value");
         }
+    }
+
+    /// The decrypted vault holds every secret value. Formatting it with
+    /// `{:?}` (a stray `dbg!`, a `tracing` field, an `assert_eq!` failure)
+    /// must never reveal a value; names and metadata stay visible.
+    #[test]
+    fn decrypted_vault_debug_redacts_every_secret_value() {
+        let value = ["fixture", "-value-", "8c1f2e"].concat();
+        let mut data = VaultData::default();
+        data.replace_value("SERVICE_KEY", &value);
+
+        let rendered = format!("{data:?}");
+        assert!(!rendered.contains(&value), "Debug output exposed a value");
+        assert!(rendered.contains("SERVICE_KEY"));
+    }
+
+    /// Every load deserializes the whole vault, so its values must be
+    /// scrubbed when the decrypted state drops, not just the JSON buffer.
+    #[test]
+    fn decrypted_vault_state_scrubs_values_on_drop() {
+        fn requires_zeroize_on_drop<T: zeroize::ZeroizeOnDrop>() {}
+        requires_zeroize_on_drop::<VaultData>();
+
+        let mut data = VaultData::default();
+        data.replace_value("SERVICE_KEY", &["fixture", "-value-", "41d0"].concat());
+        data.scrub_secret_values();
+        assert!(data.secrets.contains_key("SERVICE_KEY"));
+        assert!(data.secrets.values().all(String::is_empty));
+    }
+
+    /// The vault passphrase lives as long as the backend; it must be
+    /// scrubbed when the backend drops.
+    #[test]
+    fn file_vault_passphrase_is_zeroizing() {
+        let (vault, _dir) = test_vault();
+        let held: &zeroize::Zeroizing<String> = &vault.passphrase;
+        assert!(!held.is_empty());
     }
 }
