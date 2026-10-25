@@ -37,14 +37,14 @@ use zeroize::Zeroizing;
 
 use super::{
     json_scalar, parse_json_object_entries, refuse_duplicate_names, refuse_invalid_names,
-    strip_utf8_bom, Importer, SecretMap,
+    utf8_export_body, Importer, SecretMap,
 };
 
 pub struct OnePasswordImporter;
 
 impl Importer for OnePasswordImporter {
     fn parse(input: &[u8]) -> Result<SecretMap> {
-        let input = strip_utf8_bom(input);
+        let input = utf8_export_body("1Password", input)?;
         let obj = parse_json_object_entries(input).map_err(|e| {
             anyhow::anyhow!(
                 "1Password JSON parse error: {e}\n\
@@ -52,6 +52,17 @@ impl Importer for OnePasswordImporter {
                 See `phantom import --from 1password --help` for the expected format."
             )
         })?;
+        if obj
+            .iter()
+            .any(|(key, value)| key == "fields" && value.is_array())
+        {
+            anyhow::bail!(
+                "1Password input looks like raw `op item get --format json` output \
+                 (it has a `fields` array); nothing was imported.\n\
+                 Expected a flat JSON object: {{\"KEY\": \"value\", ...}}. Flatten the item \
+                 with the jq filter shown in `phantom import --help` and retry."
+            );
+        }
         refuse_duplicate_names("1Password", obj.iter().map(|(key, _)| key.as_str()))?;
         refuse_invalid_names("1Password", obj.iter().map(|(key, _)| key.as_str()))?;
 
@@ -147,6 +158,25 @@ mod tests {
         assert_eq!(map.get("PORT").map(|v| v.as_str()), Some("3000"));
         assert_eq!(map.get("DEBUG").map(|v| v.as_str()), Some("false"));
         assert_eq!(map.get("API_KEY").map(|v| v.as_str()), Some("sk-abc"));
+    }
+
+    #[test]
+    fn raw_op_item_output_is_refused_with_the_flattening_hint() {
+        // `op item get --format json` prints the whole item (id, title,
+        // fields[]); importing it used to fail with a generic "array value"
+        // error that did not say the item still needs flattening.
+        let held = ["op", "-held-", "value"].concat();
+        let input = format!(
+            r#"{{"id":"abc","title":"My App","fields":[{{"label":"API_KEY","value":"{held}"}}]}}"#
+        );
+        let message = OnePasswordImporter::parse(input.as_bytes())
+            .err()
+            .map(|error| error.to_string())
+            .unwrap_or_default();
+        assert!(message.contains("op item get"), "no raw-item diagnosis");
+        assert!(message.contains("flat JSON object"), "no expected format");
+        assert!(message.contains("nothing was imported"));
+        assert!(!message.contains("-held-"), "refusal leaked a value");
     }
 
     #[test]
