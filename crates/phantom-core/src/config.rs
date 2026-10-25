@@ -346,11 +346,17 @@ pub struct SecretOverride {
     /// Stored under `[phantom.secrets.{name}.validation]` in `.phantom.toml`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub validation: Option<ValidationScheduleConfig>,
-    /// When `true`, `phantom exec` will hard-block if this secret's
-    /// `rotation_schedule` period has elapsed since `last_rotated`.
-    /// The user must run `phantom rotate <NAME>` to unblock, or pass
-    /// `--skip-rotation-check` (which writes an audit-log warning).
-    /// Default: `false`.
+    /// When `true`, `phantom exec` and `phantom start` refuse to load this
+    /// secret once one period of its effective rotation schedule
+    /// (`rotation_schedule`, `rotate_every`, or the global
+    /// `rotation_policy`; monthly counts as 30 days) has elapsed. Age is
+    /// measured from machine-local vault metadata: the later of when the
+    /// vault entry was stored and its last recorded provider rotation. The
+    /// schedule's `last_rotated` in this file is not trusted for this check.
+    /// A missing schedule, an unknown age, or an unreadable schedule also
+    /// refuses. To unblock, rotate the credential at its provider and replace
+    /// it with `phantom remove <NAME>` then `phantom add <NAME>`, or set this
+    /// back to `false`. There is no bypass flag. Default: `false`.
     #[serde(default, skip_serializing_if = "is_false")]
     pub enforce_rotation_on_access: bool,
     /// Grace period (in seconds) before a secret's TTL expiry at which
