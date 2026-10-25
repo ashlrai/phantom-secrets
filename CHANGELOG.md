@@ -4,6 +4,52 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-25
+
+Source candidate. Until a `v0.8.0` tag and its tag-bound release workflow
+exist, the immutable `v0.7.9` GitHub release remains the current published
+receipt; nothing here claims npm, crates.io, Homebrew or MCP Registry
+publication. Everything below, down to 0.7.9, is new since v0.7.9.
+
+### Highlights
+
+- Agent preflight: `phantom agent doctor --json` gives a value-free readiness
+  report with exit codes for automation; `--strict` turns warnings into a
+  blocking verdict and `--vault` opts in to a vault probe (#374).
+- Worktree custody: `phantom exec --bind-source` binds a linked git worktree
+  to its source checkout's vault, opt-in (#367).
+- Diagnostics: `phantom doctor --all` (#288), `--output <path>` for doctor and
+  `audit show` (#336), a report-only LiteLLM check (#329), `doctor --pq` and
+  `crypto inventory`.
+- Setup: `phantom setup --dry-run`, `--replace` with backups and a manifest,
+  and `--undo` (#290, #293, #294); read-only `setup --status` (#216).
+- Leaks: read-only `phantom leaks plan` with provider facts (#215, #289).
+- MCP: structured value-blind JSON across read-only tools, with errors that
+  name the next step (#185, #188).
+- Format readers ahead of writers: v3 vault blobs with stored Argon2id
+  parameters, v2 audit `encrypted_context`, sidecar `sig_alg` and team share
+  `alg` labels; unknown values fail closed (#321, #322, #325, #327).
+- Safety: many commands now refuse to act on a locked file vault or a partial
+  inventory instead of guessing; the proxy refuses dot-segment and multiply
+  encoded paths and strips hop-by-hop headers; dotenvx in-place ciphertext is
+  refused on import and init; Vercel pull and sync select variables by key
+  and target; audit log lines are fsynced before the chain head.
+
+### Breaking changes and migration
+
+- CLI and MCP commands that previously answered "empty" or "No secrets stored"
+  when an encrypted-file vault could not be opened now refuse with a
+  "Vault locked" message and the unlock step (#190, #212, #220). Scripts that
+  treated the old empty answer as success must handle the non-zero exit.
+- The MCP server is built on rmcp 3.5 (#132). Re-register only if your client
+  pinned an older `phantom-secrets-mcp` binary path.
+- Proxy defaults changed: the global burst guard is 100 requests (was 20) and
+  the request and buffered response body cap is 32 MiB (was 10 MiB). Set
+  `PHANTOM_RATE_LIMIT_BURST` to restore the old burst value.
+
+The detailed entries follow.
+
+
 ### Fixed (`enforce_rotation_on_access` was never enforced)
 
 - `enforce_rotation_on_access = true` under `[phantom.secrets.NAME]` was

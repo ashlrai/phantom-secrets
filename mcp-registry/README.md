@@ -25,7 +25,7 @@ publication receipt. The exact 2026-09-29 registry snapshot is:
 - the separately managed trusted Homebrew formula still publishes the previous reviewed `v0.7.8`;
 - both npm `0.7.4` wrappers are public only under `release-candidate`, while
   `latest` remains `0.6.0`, and no `0.7.9` MCP Registry record was found; and
-- local `server.json` stages version `0.7.9` and points at a `0.7.9` npm wrapper,
+- local `server.json` stages version `0.8.0` and points at a `0.8.0` npm wrapper,
   but neither that file nor its README proves the package or registry entry was
   published.
 
