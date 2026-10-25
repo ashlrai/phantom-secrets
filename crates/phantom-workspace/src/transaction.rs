@@ -2172,52 +2172,28 @@ fn acquire_workspace_lock(root: &Path) -> Result<WorkspaceLock> {
 /// followed. The temp directory itself may be a symlink.
 #[cfg(unix)]
 fn open_workspace_lock_file(lock_directory: &Path, lock_path: &Path) -> Result<File> {
-    use std::os::unix::fs::MetadataExt;
     phantom_core::fs::ensure_private_leaf_dir(lock_directory).map_err(|source| {
         WorkspaceError::Io {
             path: lock_directory.to_path_buf(),
             source,
         }
     })?;
-    let directory = open_root_directory(lock_directory)?;
-    let directory_metadata = directory.metadata().map_err(|source| WorkspaceError::Io {
-        path: lock_directory.to_path_buf(),
-        source,
-    })?;
-    // SAFETY: geteuid has no preconditions and cannot fail.
-    let effective_uid = unsafe { libc::geteuid() };
-    if directory_metadata.uid() != effective_uid || directory_metadata.mode() & 0o077 != 0 {
-        return Err(WorkspaceError::UnsafeTarget(lock_directory.to_path_buf()));
-    }
+    let unsafe_or_io = |path: &Path, source: std::io::Error| match source.kind() {
+        std::io::ErrorKind::InvalidData | std::io::ErrorKind::InvalidInput => {
+            WorkspaceError::UnsafeTarget(path.to_path_buf())
+        }
+        _ => WorkspaceError::Io {
+            path: path.to_path_buf(),
+            source,
+        },
+    };
+    let directory = phantom_core::fs::open_owned_directory(None, lock_directory, true)
+        .map_err(|source| unsafe_or_io(lock_directory, source))?;
     let name = lock_path
         .file_name()
         .ok_or_else(|| WorkspaceError::UnsafeTarget(lock_path.to_path_buf()))?;
-    let name = c_component(name, lock_path)?;
-    // SAFETY: the directory descriptor is open and `name` is NUL-terminated.
-    let descriptor = unsafe {
-        libc::openat(
-            directory.as_raw_fd(),
-            name.as_ptr(),
-            libc::O_RDWR | libc::O_CREAT | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-            0o600,
-        )
-    };
-    if descriptor < 0 {
-        return Err(WorkspaceError::Io {
-            path: lock_path.to_path_buf(),
-            source: std::io::Error::last_os_error(),
-        });
-    }
-    // SAFETY: openat returned a new owned descriptor on success.
-    let lock = unsafe { File::from_raw_fd(descriptor) };
-    let metadata = lock.metadata().map_err(|source| WorkspaceError::Io {
-        path: lock_path.to_path_buf(),
-        source,
-    })?;
-    if !metadata.is_file() || metadata.uid() != effective_uid {
-        return Err(WorkspaceError::UnsafeTarget(lock_path.to_path_buf()));
-    }
-    Ok(lock)
+    phantom_core::fs::open_owned_file_at(&directory, Path::new(name), true)
+        .map_err(|source| unsafe_or_io(lock_path, source))
 }
 
 #[cfg(not(unix))]
