@@ -3057,7 +3057,7 @@ impl PhantomMcpServer {
 
     /// Show what would be synced to deployment platforms and the current sync configuration.
     #[tool(
-        description = "Show sync configuration and what secrets would be synced to deployment platforms (Vercel, Railway). This is an informational tool that never pushes: actual sync requires platform API tokens and `phantom sync` in a terminal. platform must be `vercel` or `railway` (case-insensitive); any other value is refused with invalid params before the vault is opened. Use it to understand and explain the sync setup. Returns a summary plus JSON {configured, platform_filter, configured_platforms, vault_secret_count, targets, next_step} (also as structuredContent)."
+        description = "Show sync configuration and what secrets would be synced to deployment platforms (Vercel, Railway). This is an informational tool that never pushes: actual sync requires platform API tokens and `phantom sync` in a terminal. platform must be `vercel` or `railway` (case-insensitive); any other value is refused with invalid params before the vault is opened. Use it to understand and explain the sync setup. live_gate_refusal is the refusal the live `phantom sync` would return for the selected names (an overdue secret under enforced rotation, a secret demoted to read-only, or unreadable lifecycle metadata; names only, judged from metadata without reading a value), or null when that gate passes. Returns a summary plus JSON {configured, platform_filter, configured_platforms, vault_secret_count, targets, live_gate_refusal, next_step} (also as structuredContent)."
     )]
     fn phantom_sync(
         &self,
@@ -3127,6 +3127,7 @@ impl PhantomMcpServer {
                         "configured_platforms": [],
                         "vault_secret_count": secret_names.len(),
                         "targets": [],
+                        "live_gate_refusal": null,
                         "next_step": "Add a [[sync]] section to .phantom.toml (see summary), then run `phantom sync` in a terminal.",
                     }),
                     vault_note,
@@ -3142,6 +3143,18 @@ impl PhantomMcpServer {
             .iter()
             .map(|target| sync_target_selection(&secret_names, &target.only))
             .collect();
+        // The live `phantom sync` refuses the union of every target's
+        // selection when any entry is overdue under enforced rotation or
+        // demoted to read-only. Judge it here from metadata alone so the
+        // report never presents a selection the live run would refuse.
+        let live_gate_refusal = sync_live_gate_refusal(
+            &config,
+            vault.as_ref(),
+            selections
+                .iter()
+                .flat_map(|(selected, _)| selected.iter().map(String::as_str)),
+            phantom_vault::rotation_gate::now_secs(),
+        );
         let target_reports: Vec<serde_json::Value> = targets
             .iter()
             .zip(&selections)
@@ -3174,8 +3187,11 @@ impl PhantomMcpServer {
                 "configured_platforms": configured_platforms,
                 "vault_secret_count": secret_names.len(),
                 "targets": target_reports,
+                "live_gate_refusal": live_gate_refusal,
                 "next_step": if targets.is_empty() {
                     "Retry with one of configured_platforms, or omit platform."
+                } else if live_gate_refusal.is_some() {
+                    "The live `phantom sync` would refuse this selection (see live_gate_refusal): rotate or promote the named secrets, or narrow the target's only filter, before syncing; this tool never pushes."
                 } else {
                     "Run `phantom sync` in a terminal with the platform token env set; this tool never pushes."
                 },
@@ -3248,6 +3264,11 @@ impl PhantomMcpServer {
             output.push('\n');
         }
 
+        if let Some(refusal) = &live_gate_refusal {
+            output.push_str(&format!(
+                "Live `phantom sync` would refuse this selection:\n{refusal}\n\n"
+            ));
+        }
         output.push_str(
             "Note: Actual sync requires platform API tokens. Run `phantom sync` in the CLI to execute.",
         );
@@ -6944,6 +6965,57 @@ fn ensure_cloud_push_allowed_mcp(config: &PhantomConfig) -> Result<(), McpError>
         ));
     }
     Ok(())
+}
+
+/// The refusal the live `phantom sync` preflight gate returns for `selected`
+/// (names only), or `None` when it passes: rotation enforcement first, then
+/// entries demoted to read-only, and unreadable lifecycle metadata. Reads
+/// metadata only, never a value. Mirrors `gate_sync_selection` in the CLI.
+fn sync_live_gate_refusal<'n>(
+    config: &phantom_core::config::PhantomConfig,
+    vault: &dyn phantom_vault::VaultBackend,
+    selected: impl IntoIterator<Item = &'n str>,
+    now_secs: u64,
+) -> Option<String> {
+    use phantom_vault::rotation_gate::{entry_targets, refusal_summary, rotation_refusals};
+    let selected: std::collections::BTreeSet<&str> = selected.into_iter().collect();
+    match rotation_refusals(
+        config,
+        vault,
+        entry_targets(selected.iter().copied()),
+        now_secs,
+    ) {
+        Ok(refusals) => {
+            if let Some(summary) = refusal_summary("sync", &refusals) {
+                return Some(summary);
+            }
+        }
+        // The variant names the secret, never a value or the cause text.
+        Err(error) => return Some(format!("Refusing to sync: {error}.")),
+    }
+    let mut read_only = Vec::new();
+    for name in selected {
+        match vault.get_metadata(name) {
+            Ok(metadata) => {
+                if metadata.is_some_and(|metadata| metadata.vault_mode.is_read_only()) {
+                    read_only.push(format!("'{name}'"));
+                }
+            }
+            Err(_) => {
+                return Some(format!(
+                    "Refusing to sync: could not read lifecycle metadata for '{name}'."
+                ));
+            }
+        }
+    }
+    if read_only.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "Refusing to sync: {} secret(s) are read-only under their lifecycle policy: {}. Rotate or promote them before pushing to a deployment platform.",
+        read_only.len(),
+        read_only.join(", ")
+    ))
 }
 
 /// Split vault names into the ones a sync target's `only` globs select and
@@ -13202,6 +13274,157 @@ mod tests {
         );
         assert_eq!(report["targets"][0]["secrets"], serde_json::json!([]));
         assert_eq!(report["targets"][0]["invalid_filters"][0]["pattern"], "[");
+    }
+
+    /// `phantom_sync` listed a read-only or rotation-overdue secret under
+    /// "Secrets to sync" and told the agent to run `phantom sync`, which
+    /// then refused. The report now carries the live gate's refusal (names
+    /// only) and a next step that says the live run would refuse.
+    #[test]
+    fn sync_report_states_the_live_gate_refusal() {
+        let _environment = TestEnvironment::new();
+        let (server, dir) = setup_initialized_project();
+        let config_path = dir.path().join(".phantom.toml");
+        let mut config = PhantomConfig::load(&config_path).unwrap();
+        config.sync.push(
+            toml::from_str(
+                "platform = \"vercel\"\ntoken_env = \"SYNC_TOKEN\"\nproject_id = \"demo\"\n",
+            )
+            .unwrap(),
+        );
+        config.save(&config_path).unwrap();
+        let report_now = || {
+            structured_report(
+                &server
+                    .phantom_sync(Parameters(SyncParams {
+                        platform: None,
+                        project_id: None,
+                    }))
+                    .unwrap(),
+            )
+        };
+
+        let report = report_now();
+        assert!(report["live_gate_refusal"].is_null(), "{report}");
+
+        let (_config, vault) = server.load_config_and_vault().unwrap();
+        let mut metadata = vault
+            .get_metadata("OPENAI_API_KEY")
+            .unwrap()
+            .unwrap_or_default();
+        metadata.vault_mode = phantom_vault::metadata::VaultMode::ReadOnly;
+        vault.set_metadata("OPENAI_API_KEY", metadata).unwrap();
+        let result = server
+            .phantom_sync(Parameters(SyncParams {
+                platform: None,
+                project_id: None,
+            }))
+            .unwrap();
+        let report = structured_report(&result);
+        let refusal = report["live_gate_refusal"].as_str().unwrap_or_default();
+        assert!(refusal.starts_with("Refusing to sync: 1 secret(s) are read-only"));
+        assert!(refusal.contains("'OPENAI_API_KEY'"));
+        assert!(!refusal.contains("'DATABASE_URL'"));
+        assert!(report["next_step"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("would refuse"));
+        assert!(extract_content_text(&result).contains("Live `phantom sync` would refuse"));
+
+        let mut config = PhantomConfig::load(&config_path).unwrap();
+        config.phantom.secrets.insert(
+            "DATABASE_URL".to_string(),
+            phantom_core::config::SecretOverride {
+                rotate_every: Some("30d".to_string()),
+                enforce_rotation_on_access: true,
+                ..phantom_core::config::SecretOverride::default()
+            },
+        );
+        config.save(&config_path).unwrap();
+        let mut metadata = vault
+            .get_metadata("DATABASE_URL")
+            .unwrap()
+            .unwrap_or_default();
+        metadata.created_at = Some(100);
+        metadata.rotated_at = None;
+        vault.set_metadata("DATABASE_URL", metadata).unwrap();
+        let report = report_now();
+        let refusal = report["live_gate_refusal"].as_str().unwrap_or_default();
+        assert!(refusal.starts_with("Refusing to sync: rotation enforcement blocked 1 secret(s)."));
+        assert!(refusal.contains("DATABASE_URL"));
+    }
+
+    /// The sync report's live-gate check reads names and metadata only:
+    /// a vault whose every value read fails the test still yields the
+    /// read-only refusal, and unreadable metadata refuses.
+    #[test]
+    fn sync_live_gate_refusal_reads_no_values() {
+        struct MetadataOnly {
+            unreadable: bool,
+        }
+        impl phantom_vault::VaultBackend for MetadataOnly {
+            fn store(&self, _name: &str, _value: &str) -> phantom_core::error::Result<()> {
+                unreachable!("the sync report never writes")
+            }
+            fn retrieve(
+                &self,
+                _name: &str,
+            ) -> phantom_core::error::Result<zeroize::Zeroizing<String>> {
+                unreachable!("the sync report never reads a value")
+            }
+            fn retrieve_for_injection(
+                &self,
+                _name: &str,
+            ) -> phantom_core::error::Result<zeroize::Zeroizing<String>> {
+                unreachable!("the sync report never reads a value")
+            }
+            fn delete(&self, _name: &str) -> phantom_core::error::Result<()> {
+                unreachable!("the sync report never deletes")
+            }
+            fn list(&self) -> phantom_core::error::Result<Vec<String>> {
+                Ok(vec!["DEMOTED_KEY".to_string(), "ACTIVE_KEY".to_string()])
+            }
+            fn backend_name(&self) -> &str {
+                "metadata-only"
+            }
+            fn get_metadata(
+                &self,
+                name: &str,
+            ) -> phantom_core::error::Result<Option<phantom_vault::SecretMetadata>> {
+                if self.unreadable {
+                    return Err(phantom_core::error::PhantomError::VaultError(
+                        "metadata unavailable".to_string(),
+                    ));
+                }
+                Ok(Some(phantom_vault::SecretMetadata {
+                    created_at: Some(1_800_000_000),
+                    vault_mode: if name == "DEMOTED_KEY" {
+                        phantom_vault::metadata::VaultMode::ReadOnly
+                    } else {
+                        phantom_vault::metadata::VaultMode::ReadWrite
+                    },
+                    ..phantom_vault::SecretMetadata::default()
+                }))
+            }
+        }
+        let config = PhantomConfig::new_with_defaults("sync-gate-fixture".to_string());
+        let vault = MetadataOnly { unreadable: false };
+        let refusal = sync_live_gate_refusal(
+            &config,
+            &vault,
+            ["DEMOTED_KEY", "ACTIVE_KEY"],
+            1_800_000_000,
+        )
+        .unwrap_or_default();
+        assert!(refusal.contains("'DEMOTED_KEY'"));
+        assert!(!refusal.contains("'ACTIVE_KEY'"));
+        assert!(sync_live_gate_refusal(&config, &vault, ["ACTIVE_KEY"], 1_800_000_000).is_none());
+
+        let vault = MetadataOnly { unreadable: true };
+        let refusal = sync_live_gate_refusal(&config, &vault, ["ACTIVE_KEY"], 1_800_000_000)
+            .unwrap_or_default();
+        assert!(refusal.contains("could not read lifecycle metadata for 'ACTIVE_KEY'"));
+        assert!(!refusal.contains("metadata unavailable"));
     }
 
     /// An unknown platform used to fall through to a "not configured" report
