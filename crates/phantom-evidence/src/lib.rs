@@ -28,9 +28,11 @@ use phantom_core::fs::PrivateStateDir;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(test)]
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use zeroize::{Zeroize, Zeroizing};
@@ -325,8 +327,12 @@ pub enum SignerError {
 /// Private, crash-durable store rooted under `<home>/.phantom/evidence`.
 #[derive(Debug, Clone)]
 pub struct EvidenceStore {
+    /// Informational paths for tests; storage never re-resolves them.
+    #[cfg(test)]
     lock_path: PathBuf,
+    #[cfg(test)]
     key_path: PathBuf,
+    #[cfg(test)]
     log_path: PathBuf,
     log_name: String,
     /// `<home>/.phantom` and `<home>/.phantom/evidence`, retained by
@@ -358,7 +364,6 @@ impl EvidenceStore {
         let evidence = phantom_dir
             .ensure_child(EVIDENCE_DIR)
             .map_err(storage_error)?;
-        let phantom_home = phantom_dir.path();
         let evidence_dir = evidence.path();
         let evidence_canonical = evidence_dir
             .canonicalize()
@@ -370,8 +375,11 @@ impl EvidenceStore {
 
         let log_name = format!("{}.jsonl", session_id.as_str());
         let store = Self {
-            lock_path: phantom_home.join(LOCK_FILE),
-            key_path: phantom_home.join(KEY_FILE),
+            #[cfg(test)]
+            lock_path: phantom_dir.path().join(LOCK_FILE),
+            #[cfg(test)]
+            key_path: phantom_dir.path().join(KEY_FILE),
+            #[cfg(test)]
             log_path: evidence_dir.join(&log_name),
             log_name,
             phantom_dir: Arc::new(phantom_dir),
@@ -599,7 +607,7 @@ impl EvidenceStore {
     }
 
     fn acquire_existing_read_lock(&self) -> Result<File, EvidenceError> {
-        let lock = open_existing_private_readonly(&self.lock_path)?;
+        let lock = open_existing_private_readonly(&self.phantom_dir, LOCK_FILE)?;
         FileExt::lock_shared(&lock)?;
         Ok(lock)
     }
@@ -635,7 +643,8 @@ impl EvidenceStore {
 
     fn load_existing_key_readonly(&self) -> Result<IntegrityKey, EvidenceError> {
         parse_key(read_existing_private_file_bounded(
-            &self.key_path,
+            &self.phantom_dir,
+            KEY_FILE,
             MAX_KEY_BYTES,
         )?)
     }
@@ -652,7 +661,8 @@ impl EvidenceStore {
     }
 
     fn load_records_readonly(&self, key: &IntegrityKey) -> Result<Vec<LogRecord>, EvidenceError> {
-        let bytes = read_existing_private_file_bounded(&self.log_path, MAX_LOG_BYTES)?;
+        let bytes =
+            read_existing_private_file_bounded(&self.evidence, &self.log_name, MAX_LOG_BYTES)?;
         self.decode_records(key, &bytes)
     }
 
@@ -1195,28 +1205,15 @@ fn storage_error(error: std::io::Error) -> EvidenceError {
     }
 }
 
-fn open_existing_private_readonly(path: &Path) -> Result<File, EvidenceError> {
-    match std::fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
-            return Err(EvidenceError::UnsafeStorage);
-        }
-        Ok(_) => {}
-        Err(error) => return Err(error.into()),
-    }
-    let mut options = OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NOFOLLOW);
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt;
-        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
-        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
-    }
-    let file = options.open(path)?;
+/// Open an existing lock, key or log for verification relative to the
+/// retained directory: never created, never chmod-ed, a symlink never
+/// followed, and a non-regular, multiply linked, foreign-owned or
+/// non-0600 file refused as unsafe storage.
+fn open_existing_private_readonly(
+    directory: &PrivateStateDir,
+    name: &str,
+) -> Result<File, EvidenceError> {
+    let file = directory.open_file_readonly(name).map_err(storage_error)?;
     validate_existing_private_readonly(&file)?;
     Ok(file)
 }
@@ -1240,10 +1237,11 @@ fn validate_existing_private_readonly(file: &File) -> Result<(), EvidenceError> 
 }
 
 fn read_existing_private_file_bounded(
-    path: &Path,
+    directory: &PrivateStateDir,
+    name: &str,
     max_bytes: u64,
 ) -> Result<Vec<u8>, EvidenceError> {
-    let mut file = open_existing_private_readonly(path)?;
+    let mut file = open_existing_private_readonly(directory, name)?;
     if file.metadata()?.len() > max_bytes {
         return Err(EvidenceError::LogTooLarge);
     }
@@ -1374,6 +1372,7 @@ pub enum EvidenceError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs::OpenOptions;
     use std::sync::{
         atomic::{AtomicUsize, Ordering},
         Arc,
@@ -1663,6 +1662,54 @@ mod tests {
             );
             std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
         }
+    }
+
+    /// Verification resolves the lock, key and log through the directories
+    /// the store retained, so renaming them away and putting another
+    /// directory at the old path neither redirects the reads nor touches the
+    /// replacement.
+    #[cfg(unix)]
+    #[test]
+    fn verification_reads_through_retained_directories_after_a_swap() {
+        let fixture = Fixture::new();
+        let receipt = finalized_denied_receipt(&fixture.store);
+        let phantom = fixture.store.phantom_dir.path().to_path_buf();
+        let moved = phantom.with_file_name("moved-phantom");
+        std::fs::rename(&phantom, &moved).unwrap();
+        std::fs::create_dir(&phantom).unwrap();
+        std::fs::create_dir(phantom.join(EVIDENCE_DIR)).unwrap();
+
+        let result = fixture.store.verify_local_receipt(&receipt);
+
+        assert!(result.is_ok());
+        assert_eq!(std::fs::read_dir(&phantom).unwrap().count(), 1);
+        assert_eq!(
+            std::fs::read_dir(phantom.join(EVIDENCE_DIR))
+                .unwrap()
+                .count(),
+            0
+        );
+    }
+
+    /// Verification refuses a hard-linked log without changing it.
+    #[cfg(unix)]
+    #[test]
+    fn verification_refuses_hard_linked_storage_without_mutating_it() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let fixture = Fixture::new();
+        let receipt = finalized_denied_receipt(&fixture.store);
+        let extra = fixture._home.path().join("extra-link");
+        std::fs::hard_link(&fixture.store.log_path, &extra).unwrap();
+        let before = std::fs::metadata(&extra).unwrap();
+
+        assert!(matches!(
+            fixture.store.verify_local_receipt(&receipt),
+            Err(EvidenceError::UnsafeStorage)
+        ));
+        let after = std::fs::metadata(&extra).unwrap();
+        assert_eq!(after.permissions().mode(), before.permissions().mode());
+        assert_eq!(after.modified().unwrap(), before.modified().unwrap());
     }
 
     #[cfg(unix)]
