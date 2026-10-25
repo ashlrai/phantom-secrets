@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
+use phantom_core::config::PhantomConfig;
 use std::io::{IsTerminal, Read, Write};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
