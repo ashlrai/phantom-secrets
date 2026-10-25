@@ -46,21 +46,33 @@ pub fn missing_config_error(project_dir: &std::path::Path) -> anyhow::Error {
     }
 }
 
-/// The project's `.phantom.toml` at `path`, or `None` only when it does not
-/// exist.
+/// Refusal for a `.phantom.toml` that is not a readable regular file. It
+/// names no path: a symlink target may lie outside the project.
+pub const CONFIG_NOT_REGULAR: &str =
+    "Refusing .phantom.toml that is not a readable regular, non-symlink file";
+
+/// The project's `.phantom.toml` at `path`, or `None` only when nothing
+/// exists there.
 ///
 /// A config that exists but cannot be read or parsed is an error. Callers
 /// that report readiness or derive repairs from the config must not read it
 /// as "not initialized": that silently swaps the managed dotenv for `./.env`
 /// and drops every config-derived check.
+///
+/// The file is read only as a regular, non-symlink file (as `phantom check`
+/// does). A symlink, dangling or not, is refused rather than followed or
+/// read as absent: its target may lie outside the project and would choose
+/// the managed dotenv and routes. A FIFO or device is refused before it is
+/// opened, so it cannot block the command.
 pub fn load_config_if_present(
     path: &std::path::Path,
 ) -> phantom_core::error::Result<Option<phantom_core::config::PhantomConfig>> {
-    match phantom_core::config::PhantomConfig::load(path) {
-        Ok(config) => Ok(Some(config)),
-        Err(phantom_core::error::PhantomError::ConfigNotFound(_)) => Ok(None),
-        Err(error) => Err(error),
-    }
+    let bytes = phantom_core::fs::read_regular_file(path).map_err(|_| {
+        phantom_core::error::PhantomError::Io(std::io::Error::other(CONFIG_NOT_REGULAR))
+    })?;
+    bytes
+        .map(|bytes| phantom_core::config::PhantomConfig::load_from_bytes(path, &bytes))
+        .transpose()
 }
 
 /// Open the vault for `project_id`. Tests install a stub backend with
@@ -394,6 +406,99 @@ pub(crate) mod test_seam {
 mod tests {
     use super::test_seam::{empty_keychain, keychain_with_one, LockedProject};
     use super::*;
+
+    /// Run `load_config_if_present` on `project/.phantom.toml` in a thread
+    /// and fail instead of hanging if it blocks (a FIFO opened for reading
+    /// waits for a writer).
+    fn load_with_deadline(
+        project: &std::path::Path,
+    ) -> Result<Option<phantom_core::config::PhantomConfig>, String> {
+        let path = project.join(".phantom.toml");
+        let (send, receive) = std::sync::mpsc::channel();
+        let target = path.clone();
+        std::thread::spawn(move || {
+            let outcome = load_config_if_present(&target).map_err(|error| error.to_string());
+            let _ = send.send(outcome);
+        });
+        match receive.recv_timeout(std::time::Duration::from_secs(5)) {
+            Ok(outcome) => outcome,
+            Err(_) => {
+                // Release the blocked reader so the test process can finish.
+                drop(std::fs::OpenOptions::new().write(true).open(&path));
+                panic!("load_config_if_present blocked on .phantom.toml");
+            }
+        }
+    }
+
+    #[test]
+    fn config_loads_when_regular_and_is_none_only_when_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(load_with_deadline(dir.path()).unwrap().is_none());
+        phantom_core::config::PhantomConfig::new_with_defaults("util-regular".to_string())
+            .save(&dir.path().join(".phantom.toml"))
+            .unwrap();
+        assert!(load_with_deadline(dir.path()).unwrap().is_some());
+    }
+
+    /// A dangling `.phantom.toml` symlink used to read as "not initialized",
+    /// so doctor judged `./.env` and exec/sync said "run phantom init".
+    #[test]
+    fn dangling_config_symlink_is_an_error_not_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink("missing.toml", dir.path().join(".phantom.toml")).unwrap();
+        let message = load_with_deadline(dir.path()).unwrap_err();
+        assert!(message.contains(".phantom.toml"), "unexpected refusal text");
+        assert!(message.contains("non-symlink"), "unexpected refusal text");
+    }
+
+    /// A `.phantom.toml` symlink to a file outside the project used to be
+    /// followed: that file's `dotenv_path` and routes chose what exec
+    /// protected, what doctor --fix repaired, and what sync pushed.
+    #[test]
+    fn config_symlink_outside_the_project_is_not_followed() {
+        let outside = tempfile::tempdir().unwrap();
+        let mut config =
+            phantom_core::config::PhantomConfig::new_with_defaults("util-outside".to_string());
+        config.phantom.dotenv_path = Some("prod.env".to_string());
+        config.save(&outside.path().join(".phantom.toml")).unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(
+            outside.path().join(".phantom.toml"),
+            dir.path().join(".phantom.toml"),
+        )
+        .unwrap();
+        let message = load_with_deadline(dir.path()).unwrap_err();
+        assert!(message.contains(".phantom.toml"), "unexpected refusal text");
+        assert!(
+            !message.contains(&outside.path().display().to_string()),
+            "refusal names the outside path"
+        );
+        assert!(
+            !message.contains(&dir.path().display().to_string()),
+            "refusal names an absolute path"
+        );
+    }
+
+    #[test]
+    fn config_fifo_is_refused_without_blocking() {
+        let dir = tempfile::tempdir().unwrap();
+        let status = std::process::Command::new("mkfifo")
+            .arg(dir.path().join(".phantom.toml"))
+            .status()
+            .unwrap();
+        assert!(status.success(), "mkfifo failed");
+        let message = load_with_deadline(dir.path()).unwrap_err();
+        assert!(message.contains(".phantom.toml"), "unexpected refusal text");
+    }
+
+    #[test]
+    fn config_directory_is_an_error_not_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join(".phantom.toml")).unwrap();
+        let message = load_with_deadline(dir.path()).unwrap_err();
+        assert!(message.contains(".phantom.toml"), "unexpected refusal text");
+    }
 
     #[test]
     fn an_empty_keychain_beside_a_locked_file_vault_is_refused() {
