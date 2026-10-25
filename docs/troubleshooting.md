@@ -496,18 +496,38 @@ Each importer expects a specific file format:
 
 | Source | Expected format | Notes |
 |--------|----------------|-------|
-| `doppler` | JSON object (`{"KEY": "value", ...}`) | Use `doppler secrets download --no-file --format json > dump.json` |
-| `infisical` | `.env` key=value lines | Use `infisical export --format=dotenv > export.env` |
-| `dotenvx` | Plaintext `.env` | Encrypted `.env.vault` files are **not** supported — run `dotenvx decrypt --stdout > .env` first |
-| `1password` | JSON array of item objects | Use `op item list --format json > 1p-export.json` |
-| `env` | Plaintext `.env` key=value | Any standard dotenv format |
+| `doppler` | JSON object: flat `{"KEY": "value"}`, or `{"KEY": {"computed": "...", "raw": "..."}}` | `doppler secrets download --no-file --format json > dump.json` writes the flat form; `doppler secrets --json` writes the nested form, and its `computed` value is imported. `DOPPLER_*` metadata keys are skipped |
+| `infisical` | `.env` key=value lines, or a JSON array `[{"key": "KEY", "value": "value"}, ...]` | `infisical export --format=dotenv > export.env` or `infisical export --format=json > export.json`. A file whose first character is `[` is read as JSON |
+| `dotenvx` | Plaintext `.env`, or a flat JSON object `{"KEY": "value"}` | A file whose first character is `{` is read as JSON. Encrypted `.env.vault` files and `encrypted:` values are **not** supported: run `dotenvx decrypt --stdout > .env` first |
+| `1password` | Flat JSON object `{"KEY": "value"}` that you assemble | Phantom does not run `op`; see the example below |
+| `env` | Plaintext `.env` key=value | Any standard dotenv format, including `export KEY=value`, quotes, and CRLF line endings |
+
+In every format, empty (and JSON `null`) values are skipped, while a nested
+object or array value refuses the whole file. A leading UTF-8 byte-order mark,
+as written by Windows PowerShell 5.1, is ignored.
+
+For 1Password, collect one item's fields into a flat object with `op` and
+`jq`. The `jq` filter stops on two fields with the same label instead of
+keeping only one of them:
+
+```bash
+op item get "My App Secrets" --vault Dev --format json \
+  | jq '[.fields[] | select(.value != null and .value != "")]
+        | if (map(.label) | unique | length) != length
+          then error("duplicate field labels") else map({(.label): .value}) | add end' \
+  > 1p-export.json
+phantom import --from 1password --file 1p-export.json
+```
 
 If the file format is wrong, the importer returns a parse error. Re-export from the source tool and retry.
 
+A name that appears more than once refuses the whole file, in every format.
 JSON imports also refuse the whole file when a name is not an environment
 variable name (`[A-Za-z_][A-Za-z0-9_]*`), for example a 1Password field label
-such as `API Key`. Rename the entry to the variable your app reads
-(`API_KEY`) and retry.
+such as `API Key` or an Infisical key such as `db-host`. The error lists every
+such entry with a suggested name (`"db-host" (rename to "db_host")`); Phantom
+never renames a secret for you. Rename the entries to the variables your app
+reads and retry.
 
 ### Existing secrets not overwritten during import
 
