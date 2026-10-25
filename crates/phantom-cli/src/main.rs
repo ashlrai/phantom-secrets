@@ -436,6 +436,28 @@ enum Commands {
     ///   phantom import --from 1password  --file 1p-export.json
     ///   phantom import --from env        --file .env
     ///
+    /// Expected --file format per source (UTF-8 text; one leading UTF-8 BOM is
+    /// ignored; UTF-16/UTF-32 files are refused with a re-save hint):
+    ///   doppler    JSON object: {"KEY": "value"} or {"KEY": {"computed": "value"}}
+    ///   infisical  .env KEY=value lines, or JSON array [{"key": "KEY", "value": "value"}]
+    ///   dotenvx    plaintext .env, or flat JSON object {"KEY": "value"}
+    ///   1password  flat JSON object you assemble: {"KEY": "value"}
+    ///   env        plaintext .env KEY=value lines
+    ///
+    /// 1Password: Phantom never runs `op`. The file must be ONE flat JSON object
+    /// whose names are environment variable names ([A-Za-z_][A-Za-z0-9_]*) and
+    /// whose values are strings, numbers or booleans; empty and null values are
+    /// skipped. Raw `op item get --format json` output is refused; flatten it:
+    ///   {"STRIPE_SECRET_KEY": "value", "DATABASE_URL": "value"}
+    ///   op item get "My App Secrets" --vault Dev --format json \
+    ///     | jq '[.fields[] | select(.value != null and .value != "")]
+    ///           | if (map(.label) | unique | length) != length
+    ///             then error("duplicate field labels") else map({(.label): .value}) | add end' \
+    ///     > 1p-export.json
+    ///
+    /// In every JSON format a nested object or array value, a repeated name, or
+    /// a name that is not an environment variable name refuses the whole file.
+    ///
     /// Note: dotenvx encrypted .env.vault files are not supported — run
     ///   `dotenvx decrypt --stdout > .env` first, then import the plain .env.
     #[command(next_help_heading = "Sync & teams", verbatim_doc_comment)]

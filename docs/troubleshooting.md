@@ -499,12 +499,24 @@ Each importer expects a specific file format:
 | `doppler` | JSON object: flat `{"KEY": "value"}`, or `{"KEY": {"computed": "...", "raw": "..."}}` | `doppler secrets download --no-file --format json > dump.json` writes the flat form; `doppler secrets --json` writes the nested form, and its `computed` value is imported. `DOPPLER_*` metadata keys are skipped |
 | `infisical` | `.env` key=value lines, or a JSON array `[{"key": "KEY", "value": "value"}, ...]` | `infisical export --format=dotenv > export.env` or `infisical export --format=json > export.json`. A file whose first character is `[` is read as JSON |
 | `dotenvx` | Plaintext `.env`, or a flat JSON object `{"KEY": "value"}` | A file whose first character is `{` is read as JSON. Encrypted `.env.vault` files and `encrypted:` values are **not** supported: run `dotenvx decrypt --stdout > .env` first |
-| `1password` | Flat JSON object `{"KEY": "value"}` that you assemble | Phantom does not run `op`; see the example below |
+| `1password` | One flat JSON object `{"KEY": "value"}` that you assemble. Names must be environment variable names (`[A-Za-z_][A-Za-z0-9_]*`); values are strings, numbers or booleans | Phantom does not run `op`. Raw `op item get --format json` output (with its `fields` array) is refused; flatten it as shown below |
 | `env` | Plaintext `.env` key=value | Any standard dotenv format, including `export KEY=value`, quotes, and CRLF line endings |
 
 In every format, empty (and JSON `null`) values are skipped, while a nested
 object or array value refuses the whole file. A leading UTF-8 byte-order mark,
 as written by Windows PowerShell 5.1, is ignored.
+
+Every format must be UTF-8. A UTF-16 or UTF-32 file, which Windows PowerShell
+5.1 writes for `>` and for `Out-File` without `-Encoding`, is refused with an
+error that names the encoding; nothing is imported. Re-save it as UTF-8 and
+retry:
+
+```bash
+iconv -f UTF-16LE -t UTF-8 export.json > export-utf8.json
+# PowerShell: Get-Content export.json | Set-Content -Encoding utf8 export-utf8.json
+```
+
+`phantom import --help` lists the expected format for every source.
 
 For 1Password, collect one item's fields into a flat object with `op` and
 `jq`. The `jq` filter stops on two fields with the same label instead of

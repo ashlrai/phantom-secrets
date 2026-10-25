@@ -1043,6 +1043,10 @@ async fn handle_request(
         None
     };
 
+    // When the client authenticated with the `/<route>/_phantom/<token>/`
+    // base URL, mapped upstream URIs are written relative to the request so
+    // the client keeps that base without the proxy echoing the token.
+    let path_auth_remainder = path_token.as_ref().map(|_| remainder);
     let response_connection_named = connection_named_headers(response.headers());
     for (name, value) in response.headers() {
         let name_str = name.as_str();
@@ -1078,11 +1082,19 @@ async fn handle_request(
                     continue;
                 }
             }
-        } else if name == hyper::header::LOCATION {
-            // Every route shares this proxy's one origin, so a redirect to an
-            // absolute path on the route's upstream must keep the route
-            // prefix or the client follows it to the wrong local path.
-            scope_location_to_route(&scrubbed_value, route).unwrap_or(scrubbed_value)
+        } else if name == hyper::header::LOCATION || name == hyper::header::CONTENT_LOCATION {
+            // Every route shares this proxy's one origin, so a redirect (or
+            // a Content-Location) naming an absolute path or URL on the
+            // route's upstream must keep the route prefix, or the client
+            // follows it to the wrong local path or straight to the
+            // upstream, bypassing the proxy.
+            scope_upstream_uri_for_client(&scrubbed_value, route, path_auth_remainder)
+                .unwrap_or(scrubbed_value)
+        } else if name == hyper::header::LINK {
+            scope_link_header(&scrubbed_value, |target| {
+                scope_upstream_uri_for_client(target, route, path_auth_remainder)
+            })
+            .unwrap_or(scrubbed_value)
         } else {
             scrubbed_value
         };
@@ -1388,6 +1400,111 @@ fn scope_location_to_route(value: &str, route: &crate::services::ServiceRoute) -
         return None;
     }
     Some(format!("/{route_name}{rest}"))
+}
+
+/// Map an upstream URI reference (a `Location`, `Content-Location` or `Link`
+/// target) for the client. The mapping itself is [`scope_location_to_route`].
+/// When the request came in through the URL-carried auth base
+/// `/<route>/_phantom/<proxy token>/` (`path_auth_remainder` is the matched
+/// route remainder of that request), the mapped path is written as a
+/// reference relative to the request URL, so the client resolves it under
+/// its own authenticated base and the proxy never puts the session token
+/// (let alone a vault value) in a response header. When no exact relative
+/// form exists (the target is the bare route base, or a dot segment would
+/// let it climb out of the base), the header-auth form `/<route>/...` is
+/// returned instead: the client is then refused with 401, never misrouted.
+fn scope_upstream_uri_for_client(
+    value: &str,
+    route: &crate::services::ServiceRoute,
+    path_auth_remainder: Option<&str>,
+) -> Option<String> {
+    let mapped = scope_location_to_route(value, route)?;
+    let Some(request_remainder) = path_auth_remainder else {
+        return Some(mapped);
+    };
+    let rest = &mapped[1 + route.name.len()..];
+    Some(relative_to_path_auth_base(rest, request_remainder).unwrap_or(mapped))
+}
+
+/// The relative reference that, resolved against
+/// `/<route>/_phantom/<token><request_remainder>`, names
+/// `/<route>/_phantom/<token><target_rest>`. `None` when that cannot be
+/// written without the token.
+fn relative_to_path_auth_base(target_rest: &str, request_remainder: &str) -> Option<String> {
+    // The request's directory must sit inside the authenticated base.
+    let depth = request_remainder.matches('/').count().checked_sub(1)?;
+    let tail = target_rest.strip_prefix('/')?;
+    let tail_path = tail.split(['?', '#']).next().unwrap_or_default();
+    if tail_path.starts_with('/')
+        || path_has_dot_segment_or_encoded_separator(tail_path)
+        || path_has_path_auth_segment(tail_path)
+    {
+        return None;
+    }
+    let prefix = if depth == 0 {
+        "./".to_string()
+    } else {
+        "../".repeat(depth)
+    };
+    Some(format!("{prefix}{tail}"))
+}
+
+/// Rewrite each `<target>` of an RFC 8288 `Link` header with `map`, keeping
+/// parameters (and targets `map` leaves alone) byte-for-byte. Returns `None`
+/// when nothing was rewritten or the header does not parse, so it is
+/// forwarded unchanged.
+fn scope_link_header(value: &str, map: impl Fn(&str) -> Option<String>) -> Option<String> {
+    let mut out = String::with_capacity(value.len());
+    let mut rest = value;
+    let mut changed = false;
+    loop {
+        let trimmed = rest.trim_start();
+        out.push_str(&rest[..rest.len() - trimmed.len()]);
+        if trimmed.is_empty() {
+            break;
+        }
+        let after_open = trimmed.strip_prefix('<')?;
+        let close = after_open.find('>')?;
+        match map(&after_open[..close]) {
+            Some(mapped) => {
+                out.push('<');
+                out.push_str(&mapped);
+                out.push('>');
+                changed = true;
+            }
+            None => out.push_str(&trimmed[..close + 2]),
+        }
+        let params = &after_open[close + 1..];
+        let (mut quoted, mut escaped, mut split) = (false, false, None);
+        for (index, ch) in params.char_indices() {
+            if quoted {
+                if escaped {
+                    escaped = false;
+                } else if ch == '\\' {
+                    escaped = true;
+                } else if ch == '"' {
+                    quoted = false;
+                }
+            } else if ch == '"' {
+                quoted = true;
+            } else if ch == ',' {
+                split = Some(index);
+                break;
+            }
+        }
+        match split {
+            Some(index) => {
+                out.push_str(&params[..=index]);
+                rest = &params[index + 1..];
+            }
+            None if quoted => return None,
+            None => {
+                out.push_str(params);
+                break;
+            }
+        }
+    }
+    changed.then_some(out)
 }
 
 /// How many percent-decoding layers of one path segment are inspected. A
@@ -2590,6 +2707,245 @@ mod tests {
         let mut unnamed = route("https://api.example.test", None);
         unnamed.name = String::new();
         assert_eq!(scope_location_to_route("/v1", &unnamed), None);
+    }
+
+    /// Probe one upstream 302 through a one-route proxy (base: the mock's
+    /// origin) that requires a session key and accepts the
+    /// `/<route>/_phantom/<key>/` base URL. `{origin}` in an upstream header
+    /// value is the mock's own origin. Returns the response headers the
+    /// client sees and the session key.
+    async fn probe_mapped_headers(
+        upstream_headers: &[(&str, &str)],
+        local_path: impl Fn(&str) -> String,
+    ) -> (hyper::HeaderMap, String) {
+        let mock = crate::test_server::MockServer::start_with_status_and_headers(
+            StatusCode::FOUND,
+            upstream_headers,
+        )
+        .await;
+        let mut registry = ServiceRegistry::new();
+        registry.add_route(ServiceRoute {
+            name: "alpha".to_string(),
+            target_base: format!("http://127.0.0.1:{}", mock.port),
+            secret_key: "TEST_API_KEY".to_string(),
+            header: "Authorization".to_string(),
+            header_format: "Bearer {secret}".to_string(),
+            credential_profile: crate::services::CredentialProfile::Standard,
+            sdk_base_path: None,
+        });
+        let interceptor = Interceptor::new_scoped(
+            HashMap::new(),
+            HashMap::from([("TEST_API_KEY".to_string(), route_fixture_value())]),
+        );
+        let session_key = ProxyServer::generate_proxy_token();
+        let proxy = ProxyServer::start(
+            ProxyConfig {
+                port: 0,
+                proxy_token: session_key.clone(),
+                allow_query_token_auth: true,
+                ..ProxyConfig::default()
+            },
+            registry,
+            interceptor,
+        )
+        .await
+        .unwrap();
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap();
+        let path = local_path(&session_key);
+        let mut request = client.get(format!("http://127.0.0.1:{}{path}", proxy.port()));
+        if !path.contains("/_phantom/") {
+            request = request.header("x-phantom-proxy-token", session_key.as_str());
+        }
+        let resp = request.send().await.unwrap();
+        assert_eq!(resp.status(), StatusCode::FOUND);
+        let headers = resp.headers().clone();
+        drop(resp);
+        proxy.shutdown().await;
+        mock.shutdown().await;
+        (headers, session_key)
+    }
+
+    fn header_text(headers: &hyper::HeaderMap, name: &str) -> Option<String> {
+        headers
+            .get(name)
+            .map(|value| value.to_str().unwrap().to_string())
+    }
+
+    /// A client on the `/<route>/_phantom/<key>/` base URL resolves a mapped
+    /// redirect against its own request URL, so the Location must keep that
+    /// base. It is written relative to the request, so following it lands
+    /// on the same authenticated route path and the session key is never
+    /// echoed in a response header.
+    #[tokio::test]
+    async fn path_auth_redirects_keep_the_authenticated_base() {
+        // (request remainder, upstream Location, Location the client must see)
+        let cases = [
+            ("/v1/start", "/v1/files/abc", "../v1/files/abc"),
+            (
+                "/start",
+                "{origin}/v1/files?after=f1",
+                "./v1/files?after=f1",
+            ),
+            ("/", "/v1/files", "./v1/files"),
+            ("/a/b/c", "/", "../../"),
+        ];
+        for (index, (remainder, upstream, expected)) in cases.iter().enumerate() {
+            let (headers, session_key) = probe_mapped_headers(&[("location", upstream)], |key| {
+                format!("/alpha/_phantom/{key}{remainder}")
+            })
+            .await;
+            let seen = header_text(&headers, "location");
+            assert_eq!(seen.as_deref(), Some(*expected), "case {index}");
+            // Resolving the mapped Location against the request URL keeps
+            // the authenticated base.
+            let request_url = reqwest::Url::parse(&format!(
+                "http://127.0.0.1/alpha/_phantom/{session_key}{remainder}"
+            ))
+            .unwrap();
+            let followed = request_url.join(seen.as_deref().unwrap()).unwrap();
+            let auth_base = format!("/alpha/_phantom/{session_key}/");
+            assert!(
+                followed.path().starts_with(auth_base.as_str()),
+                "case {index}"
+            );
+            for value in headers.values() {
+                let text = value.to_str().unwrap_or_default();
+                assert!(!text.contains(session_key.as_str()), "case {index}");
+            }
+        }
+    }
+
+    /// `Content-Location` and `Link` targets naming the route's own upstream
+    /// are mapped the way `Location` is, so neither leaks the upstream
+    /// origin to the client nor sends it around the proxy. Targets on other
+    /// origins, and Link parameters, are left byte-for-byte.
+    #[tokio::test]
+    async fn content_location_and_link_targets_are_mapped_like_location() {
+        let upstream_link = concat!(
+            "<{origin}/v1/items?page=2>; rel=\"next\", ",
+            "<https://docs.example.test/x>; rel=\"help\"; title=\"a, <b>\", ",
+            "</v1/items?page=1>; rel=\"first\""
+        );
+        let upstream = [
+            ("content-location", "{origin}/v1/items/abc"),
+            ("link", upstream_link),
+        ];
+        let (headers, _) = probe_mapped_headers(&upstream, |_| "/alpha/v1/items".into()).await;
+        assert_eq!(
+            header_text(&headers, "content-location").as_deref(),
+            Some("/alpha/v1/items/abc")
+        );
+        assert_eq!(
+            header_text(&headers, "link").as_deref(),
+            Some(concat!(
+                "</alpha/v1/items?page=2>; rel=\"next\", ",
+                "<https://docs.example.test/x>; rel=\"help\"; title=\"a, <b>\", ",
+                "</alpha/v1/items?page=1>; rel=\"first\""
+            ))
+        );
+
+        // Under the path-auth base the same targets come back relative.
+        let (headers, _) =
+            probe_mapped_headers(&upstream, |key| format!("/alpha/_phantom/{key}/v1/items")).await;
+        assert_eq!(
+            header_text(&headers, "content-location").as_deref(),
+            Some("../v1/items/abc")
+        );
+        assert_eq!(
+            header_text(&headers, "link").as_deref(),
+            Some(concat!(
+                "<../v1/items?page=2>; rel=\"next\", ",
+                "<https://docs.example.test/x>; rel=\"help\"; title=\"a, <b>\", ",
+                "<../v1/items?page=1>; rel=\"first\""
+            ))
+        );
+    }
+
+    #[test]
+    fn path_auth_relative_references_stay_inside_the_authenticated_base() {
+        // (target rest, request remainder, expected reference)
+        let cases: [(&str, &str, Option<&str>); 10] = [
+            ("/v1/files", "/v1/start", Some("../v1/files")),
+            ("/v1/files", "/start", Some("./v1/files")),
+            ("/v1/files", "/", Some("./v1/files")),
+            ("/", "/a/b/c", Some("../../")),
+            ("/a:b/c", "/x", Some("./a:b/c")),
+            ("/v1?x=1#f", "/v1/", Some("../v1?x=1#f")),
+            // No exact relative form without naming the session key.
+            ("", "/v1/start", None),
+            ("?x=1", "/v1/start", None),
+            ("/v1/files", "", None),
+            // Never climb out of the authenticated base.
+            ("/v1/../../x", "/v1/start", None),
+        ];
+        for (index, (rest, remainder, expected)) in cases.iter().enumerate() {
+            assert_eq!(
+                relative_to_path_auth_base(rest, remainder).as_deref(),
+                *expected,
+                "case {index}"
+            );
+        }
+        assert_eq!(relative_to_path_auth_base("/_phantom/x", "/v1"), None);
+        assert_eq!(relative_to_path_auth_base("//x", "/v1"), None);
+    }
+
+    #[test]
+    fn path_auth_mapping_falls_back_to_the_header_auth_form() {
+        let route = ServiceRoute {
+            name: "alpha".to_string(),
+            target_base: "https://api.example.test/base".to_string(),
+            secret_key: "TEST_API_KEY".to_string(),
+            header: "Authorization".to_string(),
+            header_format: "Bearer {secret}".to_string(),
+            credential_profile: crate::services::CredentialProfile::Standard,
+            sdk_base_path: None,
+        };
+        let map = |value: &str, remainder: Option<&str>| {
+            scope_upstream_uri_for_client(value, &route, remainder)
+        };
+        assert_eq!(map("/base/v1/a", None).as_deref(), Some("/alpha/v1/a"));
+        assert_eq!(map("/base/v1/a", Some("/v1/b")).as_deref(), Some("../v1/a"));
+        assert_eq!(map("/base/?x=1", Some("/v1/b")).as_deref(), Some("../?x=1"));
+        // The bare route base has no key-free relative form: fail closed to
+        // the header-auth path (401 without the header), never misroute.
+        assert_eq!(
+            map("https://api.example.test/base?x=1", Some("/v1/b")).as_deref(),
+            Some("/alpha?x=1")
+        );
+        assert_eq!(map("https://evil.example.test/v1", Some("/v1/b")), None);
+        assert_eq!(map("next", Some("/v1/b")), None);
+    }
+
+    #[test]
+    fn link_header_targets_are_rewritten_and_parameters_kept() {
+        let map = |target: &str| target.strip_prefix("up:").map(|rest| format!("/r{rest}"));
+        let cases: [(&str, Option<&str>); 7] = [
+            ("<up:/a>; rel=next", Some("</r/a>; rel=next")),
+            (
+                "<up:/a>; rel=\"next\", <other:/b>; rel=help, <up:/c>",
+                Some("</r/a>; rel=\"next\", <other:/b>; rel=help, </r/c>"),
+            ),
+            // Quoted parameters may hold commas, angle brackets and escapes.
+            (
+                "<up:/a>; title=\"x, <up:/z> \\\" y\", <up:/c>",
+                Some("</r/a>; title=\"x, <up:/z> \\\" y\", </r/c>"),
+            ),
+            ("  <up:/a> ,", Some("  </r/a> ,")),
+            ("<other:/b>; rel=help", None),
+            // Malformed: forwarded unchanged.
+            ("up:/a; rel=next", None),
+            ("<up:/a>; title=\"open", None),
+        ];
+        for (index, (value, expected)) in cases.iter().enumerate() {
+            assert_eq!(
+                scope_link_header(value, map).as_deref(),
+                *expected,
+                "case {index}"
+            );
+        }
     }
 
     /// Send `method target` over a raw socket and return the response head

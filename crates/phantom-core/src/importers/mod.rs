@@ -384,6 +384,43 @@ fn describe_invalid_name(name: &str) -> String {
     format!("{} (rename to {})", shorten(name), shorten(&suggestion))
 }
 
+/// Refuse an export that is not UTF-8 text but UTF-16 or UTF-32, naming the
+/// encoding and how to convert it.
+///
+/// Windows PowerShell 5.1 writes UTF-16 LE with a byte-order mark for `>` and
+/// for `Out-File` without `-Encoding`, so a Windows export is often UTF-16.
+/// Every importer reads UTF-8 only, and used to fail with an unexplained JSON
+/// syntax error or "not valid UTF-8". The file is refused rather than
+/// transcoded: a silent conversion would hide which bytes were vaulted. A
+/// UTF-16/32 byte-order mark, or a NUL in either of the first two bytes
+/// (BOM-less UTF-16, which no valid UTF-8 export starts with), marks a wide
+/// encoding. The error names the source and the encoding, never a value.
+pub fn refuse_non_utf8_encoding(source: &str, input: &[u8]) -> Result<()> {
+    let encoding = match input {
+        [0x00, 0x00, 0xFE, 0xFF, ..] => "UTF-32 BE",
+        [0xFF, 0xFE, 0x00, 0x00, ..] => "UTF-32 LE",
+        [0xFE, 0xFF, ..] => "UTF-16 BE",
+        [0xFF, 0xFE, ..] => "UTF-16 LE",
+        [0x00, second, ..] if *second != 0x00 => "UTF-16 BE",
+        [first, 0x00, ..] if *first != 0x00 => "UTF-16 LE",
+        _ => return Ok(()),
+    };
+    let iconv_name = encoding.replace(' ', "");
+    anyhow::bail!(
+        "{source} file is encoded as {encoding}, not UTF-8; nothing was imported. \
+         Phantom reads UTF-8 exports only: re-save the file as UTF-8 and retry, \
+         for example `iconv -f {iconv_name} -t UTF-8 <file> > <new-file>`, or in \
+         PowerShell `Get-Content <file> | Set-Content -Encoding utf8 <new-file>`."
+    )
+}
+
+/// Refuse a UTF-16/32 export ([`refuse_non_utf8_encoding`]), then drop one
+/// leading UTF-8 byte-order mark ([`strip_utf8_bom`]).
+pub(crate) fn utf8_export_body<'a>(source: &str, input: &'a [u8]) -> Result<&'a [u8]> {
+    refuse_non_utf8_encoding(source, input)?;
+    Ok(strip_utf8_bom(input))
+}
+
 /// Drop one leading UTF-8 byte-order mark. Windows PowerShell 5.1 writes one
 /// for `Out-File -Encoding utf8`; serde_json rejects it, and the content
 /// sniffers would otherwise misread a BOM-prefixed JSON export as dotenv.
@@ -449,6 +486,7 @@ pub fn refuse_dotenvx_ciphertext(dotenv: &crate::dotenv::DotenvFile) -> Result<(
 
 /// Reuse phantom-core's existing dotenv parser for plain `.env` files.
 pub(crate) fn env_importer(input: &[u8]) -> Result<SecretMap> {
+    refuse_non_utf8_encoding("env", input)?;
     let content =
         std::str::from_utf8(input).map_err(|_| anyhow::anyhow!("File is not valid UTF-8"))?;
     let dotenv = crate::dotenv::DotenvFile::parse_str(content);
@@ -790,6 +828,145 @@ mod secure_read_tests {
             );
             assert_eq!(map.len(), 1, "{label}");
         }
+    }
+
+    fn utf16_bytes(text: &str, big_endian: bool, with_bom: bool) -> Vec<u8> {
+        let mut units: Vec<u16> = Vec::new();
+        if with_bom {
+            units.push(0xFEFF);
+        }
+        units.extend(text.encode_utf16());
+        units
+            .into_iter()
+            .flat_map(|unit| {
+                if big_endian {
+                    unit.to_be_bytes()
+                } else {
+                    unit.to_le_bytes()
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn every_source_refuses_utf16_with_a_named_encoding_and_a_remedy() {
+        // Windows PowerShell 5.1 writes UTF-16 LE with a BOM for `>` and
+        // `Out-File` by default. Every importer used to fail with an
+        // unexplained JSON syntax or "not valid UTF-8" error instead of
+        // saying what is wrong with the file and how to fix it.
+        let held = ["wide", "-held-", "value"].concat();
+        type Parser = fn(&[u8]) -> Result<SecretMap>;
+        let cases: [(&str, Parser, String); 7] = [
+            (
+                "1password",
+                onepassword::OnePasswordImporter::parse,
+                format!(r#"{{"WIDE_NAME":"{held}"}}"#),
+            ),
+            (
+                "dotenvx-json",
+                dotenvx::DotenvxImporter::parse,
+                format!(r#"{{"WIDE_NAME":"{held}"}}"#),
+            ),
+            (
+                "dotenvx-env",
+                dotenvx::DotenvxImporter::parse,
+                format!("WIDE_NAME={held}\n"),
+            ),
+            (
+                "doppler",
+                doppler::DopplerImporter::parse,
+                format!(r#"{{"WIDE_NAME":{{"computed":"{held}"}}}}"#),
+            ),
+            (
+                "infisical-json",
+                infisical::InfisicalImporter::parse,
+                format!(r#"[{{"key":"WIDE_NAME","value":"{held}"}}]"#),
+            ),
+            (
+                "infisical-env",
+                infisical::InfisicalImporter::parse,
+                format!("WIDE_NAME={held}\n"),
+            ),
+            ("env", env_importer, format!("WIDE_NAME={held}\n")),
+        ];
+        let layouts = [
+            (false, true, "UTF-16 LE"),
+            (true, true, "UTF-16 BE"),
+            (false, false, "UTF-16 LE"),
+            (true, false, "UTF-16 BE"),
+        ];
+        for (label, parser, body) in &cases {
+            for (big_endian, with_bom, encoding) in layouts {
+                let input = utf16_bytes(body, big_endian, with_bom);
+                let outcome = parser(&input);
+                assert!(outcome.is_err(), "{label} accepted {encoding}");
+                let message = outcome.err().map(|e| e.to_string()).unwrap_or_default();
+                assert!(
+                    message.contains(encoding),
+                    "{label} refusal does not name {encoding}"
+                );
+                assert!(
+                    message.contains("UTF-8") && message.contains("re-save"),
+                    "{label} refusal gives no conversion remedy"
+                );
+                assert!(
+                    message.contains("nothing was imported"),
+                    "{label} refusal does not say nothing was imported"
+                );
+                assert!(!message.contains("-held-"), "{label} leaked a value");
+            }
+        }
+    }
+
+    #[test]
+    fn every_source_refuses_utf32_with_a_named_encoding() {
+        let body = "{\"WIDE_NAME\":\"x\"}";
+        let le: Vec<u8> = std::iter::once(0xFEFF_u32)
+            .chain(body.chars().map(u32::from))
+            .flat_map(u32::to_le_bytes)
+            .collect();
+        let be: Vec<u8> = std::iter::once(0xFEFF_u32)
+            .chain(body.chars().map(u32::from))
+            .flat_map(u32::to_be_bytes)
+            .collect();
+        type Parser = fn(&[u8]) -> Result<SecretMap>;
+        let parsers: [(&str, Parser); 5] = [
+            ("1password", onepassword::OnePasswordImporter::parse),
+            ("dotenvx", dotenvx::DotenvxImporter::parse),
+            ("doppler", doppler::DopplerImporter::parse),
+            ("infisical", infisical::InfisicalImporter::parse),
+            ("env", env_importer),
+        ];
+        for (label, parser) in parsers {
+            for (input, encoding) in [(&le, "UTF-32 LE"), (&be, "UTF-32 BE")] {
+                let message = parser(input)
+                    .err()
+                    .map(|e| e.to_string())
+                    .unwrap_or_default();
+                assert!(
+                    message.contains(encoding),
+                    "{label} refusal does not name {encoding}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn utf8_input_is_not_mistaken_for_utf16() {
+        // Only a UTF-16/32 BOM, or a NUL in the first two bytes, marks a wide
+        // encoding. Ordinary UTF-8, with or without its own BOM and with
+        // non-ASCII values, keeps importing.
+        let value = ["caf\u{e9}", "-ok"].concat();
+        for prefix in ["", "\u{feff}"] {
+            let json = format!("{prefix}{{\"UTF8_NAME\":\"{value}\"}}");
+            let map = onepassword::OnePasswordImporter::parse(json.as_bytes()).unwrap();
+            assert!(map.get("UTF8_NAME").map(|v| v.as_str()) == Some(value.as_str()));
+            let env = format!("{prefix}UTF8_NAME={value}\n");
+            let map = env_importer(env.as_bytes()).unwrap();
+            assert!(map.get("UTF8_NAME").map(|v| v.as_str()) == Some(value.as_str()));
+        }
+        assert!(env_importer(b"").unwrap().is_empty());
+        assert!(env_importer(b"\n").unwrap().is_empty());
     }
 
     #[test]
