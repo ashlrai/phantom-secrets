@@ -3798,7 +3798,11 @@ impl PhantomMcpServer {
         let log_path = phantom_core::audit::log_path()
             .map_err(|e| internal_err(format!("Cannot resolve audit log path: {e}")))?;
 
-        if !log_path.exists() {
+        // Nothing is followed: a dangling symlink at the log is not "no log",
+        // and a symlinked `~/.phantom` is refused.
+        let present = phantom_core::audit::log_present(&log_path)
+            .map_err(|e| internal_err(format!("Failed to read audit log: {e}")))?;
+        if !present {
             let out = serde_json::json!({
                 "events": [],
                 "total_returned": 0,
@@ -13519,6 +13523,51 @@ mod tests {
         );
         let events = json["events"].as_array().unwrap();
         assert_eq!(events.len(), 3);
+    }
+
+    /// A dangling symlink at `audit.log` is not "no log yet": the tool must
+    /// fail instead of answering with an empty event list.
+    #[cfg(unix)]
+    #[test]
+    fn test_audit_recent_refuses_dangling_symlinked_log() {
+        let _environment = TestEnvironment::new();
+        let (server, _dir) = setup_initialized_project();
+        let home = canonical_temp_dir();
+        unsafe { std::env::set_var("HOME", home.path()) };
+        let dir = home.path().join(".phantom");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::os::unix::fs::symlink(home.path().join("missing.log"), dir.join("audit.log")).unwrap();
+
+        let result = server.phantom_audit_recent(Parameters(AuditRecentParams {
+            n: 10,
+            op_filter: None,
+            name_filter: None,
+        }));
+        assert!(result.is_err());
+    }
+
+    /// A log reached through a symlinked `~/.phantom` is refused.
+    #[cfg(unix)]
+    #[test]
+    fn test_audit_recent_refuses_log_in_symlinked_phantom_dir() {
+        let _environment = TestEnvironment::new();
+        let (server, _dir) = setup_initialized_project();
+        let home = canonical_temp_dir();
+        unsafe { std::env::set_var("HOME", home.path()) };
+        let elsewhere = home.path().join("elsewhere");
+        write_synthetic_audit_log(
+            &elsewhere,
+            &[(1_700_000_000, "vault.store", Some("OPENAI_API_KEY"))],
+        );
+        std::os::unix::fs::symlink(elsewhere.join(".phantom"), home.path().join(".phantom"))
+            .unwrap();
+
+        let result = server.phantom_audit_recent(Parameters(AuditRecentParams {
+            n: 10,
+            op_filter: None,
+            name_filter: None,
+        }));
+        assert!(result.is_err());
     }
 
     #[test]

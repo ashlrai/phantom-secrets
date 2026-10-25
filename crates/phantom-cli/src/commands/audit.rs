@@ -305,7 +305,9 @@ fn run_show_at(
         }
     };
 
-    if !path.exists() {
+    let present = phantom_core::audit::log_present(path)
+        .map_err(|error| anyhow::anyhow!("Failed to read audit log {}: {error}", path.display()))?;
+    if !present {
         hint_to(
             json,
             out,
@@ -381,20 +383,7 @@ fn run_show_at(
 
 pub fn run_tail(op: Option<&str>, name: Option<&str>) -> Result<()> {
     let path = resolve_path()?;
-
-    // Create the file + parent dirs so we can seek even before any events land.
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-
-    // Open (or create) the file and seek to end — we only show new lines.
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .append(true)
-        .create(true)
-        .open(&path)?;
-    let mut reader = BufReader::new(file);
-    reader.seek(SeekFrom::End(0))?;
+    let mut reader = open_log_for_follow(&path)?;
 
     println!(
         "{}  Tailing {} — press Ctrl-C to stop",
@@ -443,13 +432,18 @@ fn parse_min_confidence(raw: &str) -> std::result::Result<f64, String> {
 
 pub fn run_verify(with_context: bool, json: bool) -> Result<()> {
     let path = resolve_path()?;
-    let log_present = path.exists();
+    // Nothing is followed: a dangling symlink at the log is not "no log",
+    // and a symlinked `~/.phantom` is refused.
+    let log_present = phantom_core::audit::log_present(&path)
+        .map_err(|e| anyhow::anyhow!("Failed to verify audit log: {e}"))?;
     // A retained head checkpoint proves a signed era existed, so a missing log
     // beside it is a deletion: verify it (the walk reports a head mismatch)
     // instead of reporting a log that never started.
-    let head_present = phantom_core::audit::head_checkpoint_path()
-        .map(|head| head.exists())
-        .unwrap_or(false);
+    let head_present = match phantom_core::audit::head_checkpoint_path() {
+        Ok(head) => phantom_core::audit::log_present(&head)
+            .map_err(|e| anyhow::anyhow!("Failed to verify audit log: {e}"))?,
+        Err(_) => false,
+    };
     if !log_present && !head_present {
         if json {
             println!(
@@ -1335,20 +1329,7 @@ pub fn run_anomalies(
     let log_path = phantom_core::audit::log_path()
         .map_err(|e| anyhow::anyhow!("Could not resolve audit log path: {e}"))?;
 
-    if let Some(parent) = log_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .append(true)
-        .create(true)
-        .open(&log_path)?;
-
-    let mut reader = std::io::BufReader::new(file);
-    // Seek to end — only process new lines.
-    use std::io::Seek;
-    reader.seek(std::io::SeekFrom::End(0))?;
+    let mut reader = open_log_for_follow(&log_path)?;
 
     if !json_output {
         println!(
@@ -1935,6 +1916,19 @@ fn human_age(secs: u64) -> String {
 // Helpers
 // ──────────────────────────────────────────────────────────────────────────────
 
+/// Open the audit log for following (`audit tail`, `audit anomalies
+/// --realtime`), positioned at its end so only new lines are shown. The log
+/// (and a 0700 `~/.phantom`) is created 0600 when absent so a follower can
+/// wait for the first event; a symlinked or non-regular log, or a symlinked
+/// `~/.phantom`, is refused rather than followed.
+fn open_log_for_follow(path: &std::path::Path) -> Result<BufReader<std::fs::File>> {
+    let file = phantom_core::audit::open_log_for_follow(path)
+        .map_err(|error| anyhow::anyhow!("Cannot open audit log {}: {error}", path.display()))?;
+    let mut reader = BufReader::new(file);
+    reader.seek(SeekFrom::End(0))?;
+    Ok(reader)
+}
+
 fn resolve_path() -> Result<PathBuf> {
     phantom_core::audit::log_path()
         .map_err(|e| anyhow::anyhow!("Could not resolve home directory to locate audit log: {e}"))
@@ -2309,6 +2303,127 @@ mod tests {
             None,
             true,
             true,
+            &mut Vec::new(),
+            &mut Vec::new()
+        )
+        .is_err());
+    }
+
+    #[cfg(unix)]
+    fn mode_of(path: &std::path::Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::symlink_metadata(path)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777
+    }
+
+    /// A symlink planted at `audit.log` must not redirect `audit tail` (which
+    /// opens the log for append) into another file.
+    #[cfg(unix)]
+    #[test]
+    fn follow_refuses_symlinked_audit_log_and_leaves_target_untouched() {
+        let tmp = tempdir().unwrap();
+        let dir = tmp.path().join(".phantom");
+        std::fs::create_dir(&dir).unwrap();
+        let target = tmp.path().join("elsewhere.txt");
+        std::fs::write(&target, b"original\n").unwrap();
+        let log = dir.join("audit.log");
+        std::os::unix::fs::symlink(&target, &log).unwrap();
+
+        assert!(open_log_for_follow(&log).is_err());
+        assert_eq!(std::fs::read(&target).unwrap(), b"original\n");
+        assert!(std::fs::symlink_metadata(&log)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+    }
+
+    /// A dangling symlink at `audit.log` must not make `audit tail` create
+    /// the link's target.
+    #[cfg(unix)]
+    #[test]
+    fn follow_refuses_dangling_symlinked_audit_log() {
+        let tmp = tempdir().unwrap();
+        let dir = tmp.path().join(".phantom");
+        std::fs::create_dir(&dir).unwrap();
+        let target = tmp.path().join("planted.log");
+        std::os::unix::fs::symlink(&target, dir.join("audit.log")).unwrap();
+
+        assert!(open_log_for_follow(&dir.join("audit.log")).is_err());
+        assert!(std::fs::symlink_metadata(&target).is_err());
+    }
+
+    /// A symlinked `~/.phantom` must not become the directory `audit tail`
+    /// creates the log in.
+    #[cfg(unix)]
+    #[test]
+    fn follow_refuses_symlinked_phantom_dir() {
+        let tmp = tempdir().unwrap();
+        let elsewhere = tmp.path().join("elsewhere");
+        std::fs::create_dir(&elsewhere).unwrap();
+        let dir = tmp.path().join(".phantom");
+        std::os::unix::fs::symlink(&elsewhere, &dir).unwrap();
+
+        assert!(open_log_for_follow(&dir.join("audit.log")).is_err());
+        assert_eq!(std::fs::read_dir(&elsewhere).unwrap().count(), 0);
+    }
+
+    /// A fresh `~/.phantom` created by `audit tail` is 0700 and the log 0600,
+    /// whatever the umask.
+    #[cfg(unix)]
+    #[test]
+    fn follow_creates_private_dir_and_log() {
+        let tmp = tempdir().unwrap();
+        let dir = tmp.path().join(".phantom");
+        let log = dir.join("audit.log");
+
+        open_log_for_follow(&log).unwrap();
+        assert_eq!(mode_of(&dir), 0o700);
+        assert_eq!(mode_of(&log), 0o600);
+    }
+
+    /// `audit show` must not report a dangling symlinked log as "no events
+    /// yet" and exit 0.
+    #[cfg(unix)]
+    #[test]
+    fn show_refuses_dangling_symlinked_audit_log() {
+        let tmp = tempdir().unwrap();
+        let log = tmp.path().join("audit.log");
+        std::os::unix::fs::symlink(tmp.path().join("missing.log"), &log).unwrap();
+        for json in [true, false] {
+            assert!(run_show_at(
+                &log,
+                20,
+                None,
+                None,
+                json,
+                false,
+                &mut Vec::new(),
+                &mut Vec::new()
+            )
+            .is_err());
+        }
+    }
+
+    /// `audit show` must not read a log through a symlinked `~/.phantom`.
+    #[cfg(unix)]
+    #[test]
+    fn show_refuses_log_in_symlinked_phantom_dir() {
+        let tmp = tempdir().unwrap();
+        let elsewhere = tmp.path().join("elsewhere");
+        std::fs::create_dir(&elsewhere).unwrap();
+        std::fs::write(elsewhere.join("audit.log"), b"{\"op\":\"vault.store\"}\n").unwrap();
+        let dir = tmp.path().join(".phantom");
+        std::os::unix::fs::symlink(&elsewhere, &dir).unwrap();
+        assert!(run_show_at(
+            &dir.join("audit.log"),
+            20,
+            None,
+            None,
+            true,
+            false,
             &mut Vec::new(),
             &mut Vec::new()
         )
