@@ -25,7 +25,7 @@ use anyhow::Result;
 use serde::Deserialize;
 use zeroize::Zeroizing;
 
-use super::{env_importer, refuse_duplicate_names, Importer, SecretMap};
+use super::{env_importer, refuse_duplicate_names, refuse_invalid_names, Importer, SecretMap};
 
 pub struct InfisicalImporter;
 
@@ -53,6 +53,7 @@ fn parse_json_array(input: &[u8]) -> Result<SecretMap> {
     let entries: Vec<InfisicalEntry> = serde_json::from_slice(input)
         .map_err(|e| anyhow::anyhow!("Infisical JSON parse error: {}", e))?;
     refuse_duplicate_names("Infisical", entries.iter().map(|entry| entry.key.as_str()))?;
+    refuse_invalid_names("Infisical", entries.iter().map(|entry| entry.key.as_str()))?;
 
     let mut map = SecretMap::new();
     for entry in entries {

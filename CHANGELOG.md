@@ -14,6 +14,27 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   overwritten when they drop, `Debug` shows names and metadata only, and the
   vault passphrase held by the backend is scrubbed when the backend drops.
 
+### Fixed (imported names that are not environment keys)
+
+- `phantom import --from doppler|infisical|dotenvx|1password` with a JSON
+  export vaulted any string as a secret name, such as a 1Password field label
+  (`API Key`), a name containing `=` or `-`, or an empty name, and reported
+  success, although `phantom exec` can never inject such a name and
+  `phantom add` refuses it. These imports now refuse the whole file when any
+  name does not match `[A-Za-z_][A-Za-z0-9_]*`; the error names the entry,
+  never a value. Doppler's `DOPPLER_*` metadata keys are still skipped first.
+
+### Fixed (worktree check reads `.phantom.toml` only as a regular file)
+
+- `phantom check` (without `--staged`) followed a `.phantom.toml` symlink.
+  A dangling one was treated as "no config" and reported clean while a
+  credential sat in the regular file its `dotenv_path` would name; one
+  pointing outside the project had that other file choose which dotenv files
+  were scanned. A FIFO or device named `.phantom.toml` hung the check.
+  `.phantom.toml` is now read only as a regular, non-symlink file; anything
+  else fails closed with a message naming `.phantom.toml`, as dotenv scan
+  targets already did. Ordinary regular configs scan as before.
+
 ### Fixed (Vercel pull mixed values from different environments)
 
 - `phantom pull --from vercel` read every Vercel variable for a name and kept
