@@ -4,6 +4,27 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (audit, hotspot-ack and shadow state files stay private and are never read or written through a symlink)
+
+- The audit writer created `~/.phantom` with `create_dir_all`, so a fresh
+  directory came out 0755 under the usual umask. It is now created owner-only
+  (0700); an existing directory you own is tightened, and a symlink or
+  non-directory at `~/.phantom` makes the write fail instead of being used.
+- Hotspot acknowledgements (`~/.phantom/hotspot-alerts.jsonl`) were
+  appended with umask permissions through any symlink at that path and read
+  back through one. The file is now opened owner-only (0600, tightened when
+  older), never through a symlink, and only a regular file is read; ack
+  records behind a link are ignored, so the alert stays visible.
+- `phantom audit verify`, `audit stats`, the context walk, hotspot detection,
+  the recent-lines reader behind `audit tail`, and the HMAC key and head
+  checkpoint loads read their files with `std::fs` calls that followed a
+  symlink (and a dangling link read as "no log yet"). They now read regular
+  files only and refuse a symlink, directory, FIFO, or device. The audit
+  chain format and HMAC are unchanged.
+- `ShadowStore` (`~/.phantom/shadows/<project>`) now creates its directory
+  owner-only and refuses a symlinked one, writes metadata atomically (0600)
+  instead of truncating through a symlink, and reads only regular files.
+
 ### Fixed (setup backups are created exclusively; leak profiles stay private)
 
 - `phantom setup --client` checked that a `<config>.phantom-bak-<ms>` name was
