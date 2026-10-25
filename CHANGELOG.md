@@ -4,6 +4,21 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (`phantom check --staged` missed credentials in files git calls binary)
+
+- The pre-commit scan read each staged code file's added lines from
+  `git diff`, which prints only "Binary files differ" for a file with a
+  `-diff` or `binary` attribute (common for lockfiles, generated code and
+  `*.pbxproj`) or with a NUL byte in its content. A credential staged in such
+  a file was reported clean and the commit went through. The scan now reads
+  the added bytes of every staged file (`git diff --text`); unrelated binary
+  assets with no credential shape stay clean.
+- A staged text file that is not UTF-8 (Latin-1, for example) failed the
+  whole hook as "Staged diff is not valid UTF-8; clean status is
+  indeterminate", blocking ordinary commits. Every credential shape scanned
+  for is ASCII, so the added lines are now decoded lossily and scanned.
+  Staged dotenv files are still refused when they are not UTF-8.
+
 ### Fixed (cloud and team pushes refused a locked vault only after consent)
 
 - `phantom cloud push` and `phantom team vault-push` asked for the typed
