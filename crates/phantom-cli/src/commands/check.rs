@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use colored::Colorize;
 use phantom_core::config::PhantomConfig;
 use phantom_core::dotenv::{is_example_placeholder, is_example_template_file, DotenvFile};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use phantom_core::report::{
@@ -179,24 +180,48 @@ fn staged_findings(cwd: &Path) -> Result<(Vec<Finding>, Vec<ConfigWarning>)> {
 /// a value expanded when direnv loads (`$(op read ...)`, `${VAR}`, backticks)
 /// or left empty commits no credential. Lines the parser skips are still
 /// covered by the code scan of the staged additions.
+///
+/// The parser stops at an unterminated quote, and an unclosed quote can pair
+/// with the next line's opening quote and swallow that assignment, so every
+/// physical line is also parsed on its own and the names are united: a shell
+/// typo never hides a later assignment. Multi-line quoted values are still
+/// read by the whole-file parse. Each name is reported once.
 fn staged_direnv_findings(cwd: &Path, file: &str) -> Result<Vec<Finding>> {
     let added = staged_added_lines(cwd, file)?;
     let mut findings = code_pattern_findings(file, &added);
     let content = read_staged_bytes(cwd, file)?;
-    let dotenv = DotenvFile::parse_str(&String::from_utf8_lossy(&content));
-    for entry in dotenv.real_secret_entries() {
-        if entry.value.is_empty() || is_shell_expansion(&entry.value) {
+    let text = String::from_utf8_lossy(&content);
+    let mut names = BTreeSet::new();
+    collect_direnv_literal_names(&text, &mut names);
+    for line in text.split(['\n', '\r']) {
+        collect_direnv_literal_names(line, &mut names);
+    }
+    findings.extend(names.into_iter().map(|name| Finding {
+        kind: "staged_dotenv",
+        path: Some(file.to_string()),
+        name: Some(name),
+        label: None,
+        pattern: None,
+    }));
+    Ok(findings)
+}
+
+/// Add the name of each assignment in `source` whose value classifies as a
+/// real secret and is literal text: not empty, and not a shell expansion
+/// unless single quotes made it literal (`'$2b$...'`, `'$(not run)'`).
+fn collect_direnv_literal_names(source: &str, names: &mut BTreeSet<String>) {
+    let dotenv = DotenvFile::parse_str(source);
+    let real = dotenv.real_secret_entries();
+    for (entry, quote) in dotenv.entries_with_quote() {
+        if !real.iter().any(|candidate| std::ptr::eq(*candidate, entry)) {
             continue;
         }
-        findings.push(Finding {
-            kind: "staged_dotenv",
-            path: Some(file.to_string()),
-            name: Some(entry.key.clone()),
-            label: None,
-            pattern: None,
-        });
+        let expanded = quote != Some('\'') && is_shell_expansion(&entry.value);
+        if entry.value.is_empty() || expanded {
+            continue;
+        }
+        names.insert(entry.key.clone());
     }
-    Ok(findings)
 }
 
 fn is_direnv_file(file: &str) -> bool {
@@ -206,7 +231,9 @@ fn is_direnv_file(file: &str) -> bool {
 }
 
 /// A value the shell computes when direnv loads it rather than a literal:
-/// command substitution, a variable reference or a backtick command.
+/// command substitution, a variable reference or a backtick command. Only
+/// meaningful for an unquoted or double-quoted value; single quotes keep it
+/// literal.
 fn is_shell_expansion(value: &str) -> bool {
     value.starts_with('`')
         || value.strip_prefix('$').is_some_and(|rest| {
@@ -1494,5 +1521,87 @@ mod tests {
         );
         let dir = repo_with_staged_bytes(".envrc", line.as_bytes());
         assert_eq!(staged_code_labels(dir.path()), ["GitHub personal token"]);
+    }
+
+    /// An unclosed quote is a shell typo, not a reason to stop reading: an
+    /// assignment after it is still a committed credential. Unterminated to
+    /// end of file, and closed by the next line's opening quote (which
+    /// swallowed that line into the bad value), both still report.
+    #[test]
+    fn staged_envrc_assignments_after_an_unclosed_quote_are_reported() {
+        let db_url = format!("postgres://app:{}@db.internal:5432/app", "Vq8rLm2Xz7Kt");
+        let signing = ["9f3c1a7e5b", "2d8f4c6a0e", "1b7d3f9a5c"].concat();
+        let cases = [
+            format!("export BANNER=\"welcome\nexport DATABASE_URL={db_url}\n"),
+            format!("export BANNER='welcome\nexport DATABASE_URL={db_url}\n"),
+            format!("export BANNER=\"welcome\nexport WEBHOOK_SIGNING=\"{signing}\"\n"),
+            format!("export BANNER='welcome\nexport WEBHOOK_SIGNING='{signing}'\n"),
+        ];
+        let expected = [
+            ["DATABASE_URL"],
+            ["DATABASE_URL"],
+            ["WEBHOOK_SIGNING"],
+            ["WEBHOOK_SIGNING"],
+        ];
+        for (index, (envrc, expected)) in cases.iter().zip(expected).enumerate() {
+            let dir = repo_with_staged_bytes(".envrc", envrc.as_bytes());
+            assert_eq!(staged_dotenv_names(dir.path()), expected, "case {index}");
+        }
+    }
+
+    /// Single quotes stop the shell expanding anything, so a single-quoted
+    /// value that starts with `$` is the literal text committed. Unquoted and
+    /// double-quoted `$VAR`, `${VAR}` and `$(cmd)` stay unflagged.
+    #[test]
+    fn staged_envrc_single_quoted_dollar_values_are_literals() {
+        let literal = ["$Kq9vT2", "mXz7Lp4w", "Rs8NdY3h"].concat();
+        let hashed = [
+            "$argon2id$v=19$m=65536,t=3,p=1$",
+            "c2FsdHNhbHQ$",
+            "Q7rT2mVx9KpL4wZs8NdY",
+        ]
+        .concat();
+        let envrc = format!(
+            "export DB_PASSWORD='{literal}'\nexport ADMIN_PASSWORD_HASH='{hashed}'\n\
+             export API_KEY='$(not run)'\nexport OTHER_KEY=\"$OTHER_KEY\"\n\
+             export THIRD_KEY=${{THIRD_KEY}}\nexport FOURTH_KEY=$(op read op://dev/x/y)\n"
+        );
+        let dir = repo_with_staged_bytes(".envrc", envrc.as_bytes());
+        assert_eq!(
+            staged_dotenv_names(dir.path()),
+            ["ADMIN_PASSWORD_HASH", "API_KEY", "DB_PASSWORD"]
+        );
+    }
+
+    /// Plain `.env` is strict dotenv: an unclosed quote ahead of an
+    /// assignment makes the file unreadable, and both `phantom check` and
+    /// `--staged` refuse it (a failed check) rather than reporting it clean.
+    #[test]
+    fn dotenv_with_an_unclosed_quote_fails_closed_staged_and_worktree() {
+        let db_url = format!("postgres://app:{}@db.internal:5432/app", "Vq8rLm2Xz7Kt");
+        for opener in ["\"", "'"] {
+            let content = format!("BANNER={opener}welcome\nDATABASE_URL={db_url}\n");
+            let staged = repo_with_staged_bytes(".env", content.as_bytes());
+            assert!(staged_findings(staged.path()).is_err(), "staged {opener}");
+            let worktree = tempfile::tempdir().unwrap();
+            std::fs::write(worktree.path().join(".env"), &content).unwrap();
+            assert!(
+                worktree_findings(worktree.path()).is_err(),
+                "worktree {opener}"
+            );
+        }
+    }
+
+    /// A name assigned more than once (a default, then an override) is one
+    /// finding: the report names the key, so a second entry adds nothing.
+    #[test]
+    fn staged_envrc_repeated_names_are_reported_once() {
+        let first = ["9f3c1a7e5b", "2d8f4c6a0e", "1b7d3f9a5c"].concat();
+        let second = ["4e8a2c6f0b", "7d1f5b9e3a", "8c2e6a0d4f"].concat();
+        let envrc = format!(
+            "export WEBHOOK_SIGNING={first}\nif [ -n \"$CI\" ]; then\n  export WEBHOOK_SIGNING={second}\nfi\n"
+        );
+        let dir = repo_with_staged_bytes(".envrc", envrc.as_bytes());
+        assert_eq!(staged_dotenv_names(dir.path()), ["WEBHOOK_SIGNING"]);
     }
 }
