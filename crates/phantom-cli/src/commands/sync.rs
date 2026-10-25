@@ -12,6 +12,10 @@ use zeroize::{Zeroize, Zeroizing};
 /// real values, so an overdue enforced secret in any target's selection is
 /// refused before the terminal review, any vault value read, or any provider
 /// call, as `phantom exec` would refuse it.
+///
+/// A secret demoted to read-only by the expiry policy is refused the same
+/// way: deployment platforms inject the value at runtime, which the demotion
+/// exists to stop. Metadata that cannot be read refuses too.
 fn gate_sync_selection(
     config: &phantom_core::config::PhantomConfig,
     vault: &dyn phantom_vault::VaultBackend,
@@ -26,7 +30,30 @@ fn gate_sync_selection(
             .flat_map(|plan| plan.selected_keys.iter().map(String::as_str)),
         "sync",
         now_secs,
-    )
+    )?;
+    let selected: BTreeSet<&str> = plans
+        .iter()
+        .flat_map(|plan| plan.selected_keys.iter().map(String::as_str))
+        .collect();
+    let mut read_only = Vec::new();
+    for name in selected {
+        let metadata = vault.get_metadata(name).map_err(|_| {
+            anyhow::anyhow!(
+                "Refusing to sync: could not read lifecycle metadata for '{name}'. No vault plaintext was read and no provider request was sent."
+            )
+        })?;
+        if metadata.is_some_and(|metadata| metadata.vault_mode.is_read_only()) {
+            read_only.push(format!("'{name}'"));
+        }
+    }
+    if !read_only.is_empty() {
+        anyhow::bail!(
+            "Refusing to sync: {} secret(s) are read-only under their lifecycle policy: {}. Rotate or promote them before pushing to a deployment platform. No vault plaintext was read and no provider request was sent.",
+            read_only.len(),
+            read_only.join(", ")
+        );
+    }
+    Ok(())
 }
 
 fn no_sync_targets_message() -> String {
@@ -308,23 +335,8 @@ async fn run_async(
         .iter()
         .flat_map(|plan| plan.selected_keys.iter().cloned())
         .collect();
-    let mut secrets: BTreeMap<String, String> = BTreeMap::new();
-    let mut retrieval_failures = BTreeSet::new();
-    for name in &selected_names {
-        match vault.retrieve(name) {
-            Ok(value) => {
-                secrets.insert(name.clone(), String::from(value.as_str()));
-            }
-            Err(_) => {
-                retrieval_failures.insert(name.clone());
-                eprintln!(
-                    "{} Could not retrieve {} from vault; the stage receipt records the skip",
-                    "warn".yellow(),
-                    name
-                );
-            }
-        }
-    }
+    let (mut secrets, retrieval_failures) =
+        retrieve_reviewed_selection(vault.as_ref(), &selected_names);
 
     let mut target_receipts = Vec::new();
     let mut any_failure = !retrieval_failures.is_empty();
@@ -705,6 +717,34 @@ fn run_dry_run(
     }
 }
 
+/// Read the reviewed selection's values for a deployment platform. Each read
+/// applies the runtime-injection check, so an entry demoted to read-only after
+/// the preflight gate is never pushed. A name that cannot be read is recorded
+/// as a retrieval failure, and its provider call is skipped.
+fn retrieve_reviewed_selection(
+    vault: &dyn phantom_vault::VaultBackend,
+    selected_names: &BTreeSet<String>,
+) -> (BTreeMap<String, String>, BTreeSet<String>) {
+    let mut secrets: BTreeMap<String, String> = BTreeMap::new();
+    let mut retrieval_failures = BTreeSet::new();
+    for name in selected_names {
+        match vault.retrieve_for_injection(name) {
+            Ok(value) => {
+                secrets.insert(name.clone(), String::from(value.as_str()));
+            }
+            Err(_) => {
+                retrieval_failures.insert(name.clone());
+                eprintln!(
+                    "{} Could not retrieve {} from vault; the stage receipt records the skip",
+                    "warn".yellow(),
+                    name
+                );
+            }
+        }
+    }
+    (secrets, retrieval_failures)
+}
+
 fn filter_key_names(secret_names: &[String], patterns: &[String]) -> (Vec<String>, Vec<String>) {
     let dummy: BTreeMap<String, String> = secret_names
         .iter()
@@ -769,6 +809,97 @@ mod tests {
 
         let plans = [plan_selecting(&["FRESH_KEY", "PLAIN_KEY"])];
         assert!(gate_sync_selection(&config, &vault, &plans, NOW).is_ok());
+    }
+
+    /// A file vault holding `entries`, each with its `vault_mode`.
+    fn vault_with_modes(
+        dir: &tempfile::TempDir,
+        entries: &[(&str, phantom_vault::metadata::VaultMode)],
+    ) -> phantom_vault::file::FileVault {
+        use phantom_vault::VaultBackend;
+        let vault = phantom_vault::file::FileVault::new(
+            &crate::test_support::canonical_tempdir_path(dir),
+            "sync-read-only-fixture",
+            format!("sync-{}", std::process::id()),
+        )
+        .unwrap();
+        for (entry, mode) in entries {
+            vault.store(entry, "fixture-value").unwrap();
+            vault
+                .set_metadata(
+                    entry,
+                    phantom_vault::SecretMetadata {
+                        created_at: Some(1_800_000_000),
+                        vault_mode: mode.clone(),
+                        ..phantom_vault::SecretMetadata::default()
+                    },
+                )
+                .unwrap();
+        }
+        vault
+    }
+
+    /// A secret demoted to read-only by the expiry policy is refused by
+    /// `phantom exec` and `phantom start`, yet `phantom sync` pushed it to
+    /// a deployment platform. The live selection is now refused before the
+    /// terminal review, any value read, or any provider call.
+    #[test]
+    fn live_sync_selection_refuses_read_only_entries() {
+        use phantom_vault::metadata::VaultMode;
+        let dir = tempfile::tempdir().unwrap();
+        let vault = vault_with_modes(
+            &dir,
+            &[
+                ("prod/DEMOTED_KEY", VaultMode::ReadOnly),
+                ("ACTIVE_KEY", VaultMode::ReadWrite),
+            ],
+        );
+        let config = phantom_core::config::PhantomConfig::new_with_defaults(
+            "sync-read-only-fixture".to_string(),
+        );
+
+        let plans = [
+            plan_selecting(&["ACTIVE_KEY"]),
+            plan_selecting(&["prod/DEMOTED_KEY"]),
+        ];
+        let refused = gate_sync_selection(&config, &vault, &plans, 1_800_000_000);
+        assert!(refused.is_err());
+        let message = refused
+            .err()
+            .map(|error| error.to_string())
+            .unwrap_or_default();
+        assert!(message.starts_with("Refusing to sync: 1 secret(s) are read-only"));
+        assert!(message.contains("'prod/DEMOTED_KEY'"));
+        assert!(!message.contains("'ACTIVE_KEY'"));
+
+        let plans = [plan_selecting(&["ACTIVE_KEY"])];
+        assert!(gate_sync_selection(&config, &vault, &plans, 1_800_000_000).is_ok());
+    }
+
+    /// An entry demoted after the preflight gate (between the review and
+    /// the value read) is still never handed to a provider: the value read
+    /// applies the same injection check atomically.
+    #[test]
+    fn reviewed_selection_read_skips_read_only_entries() {
+        use phantom_vault::metadata::VaultMode;
+        let dir = tempfile::tempdir().unwrap();
+        let vault = vault_with_modes(
+            &dir,
+            &[
+                ("DEMOTED_KEY", VaultMode::ReadOnly),
+                ("ACTIVE_KEY", VaultMode::ReadWrite),
+            ],
+        );
+        let selected: BTreeSet<String> = ["DEMOTED_KEY", "ACTIVE_KEY"]
+            .iter()
+            .map(|name| name.to_string())
+            .collect();
+        let (values, failures) = retrieve_reviewed_selection(&vault, &selected);
+        assert_eq!(values.keys().collect::<Vec<_>>(), vec!["ACTIVE_KEY"]);
+        assert_eq!(
+            failures.into_iter().collect::<Vec<_>>(),
+            vec!["DEMOTED_KEY"]
+        );
     }
 
     #[test]
@@ -887,7 +1018,7 @@ mod tests {
             .find("require_trusted_terminal_sync(&plans)?")
             .expect("live path must require terminal confirmation");
         let retrieval = source
-            .find("for name in &selected_names")
+            .find("retrieve_reviewed_selection(vault.as_ref(), &selected_names)")
             .expect("live path must retrieve the reviewed selection");
         let provider = source
             .find("sync::sync_to_vercel(")

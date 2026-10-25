@@ -4,6 +4,21 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (`phantom sync` no longer pushes a secret demoted to read-only)
+
+- `phantom_apply_expiry_policy` demotes an expired secret to read-only so
+  that it is not injected at runtime until it is rotated or promoted, and
+  `phantom exec` and foreground `phantom start` refuse it. A live
+  `phantom sync` still read it with a plain vault retrieval and pushed it to
+  Vercel or Railway, where every deployment injects it. The live sync
+  preflight now refuses the whole run when any selected entry is read-only
+  (or its lifecycle metadata cannot be read), before the trusted-terminal
+  review, any vault value read, or any provider call; the error names the
+  entries only. The value read itself now uses the runtime-injection check,
+  so an entry demoted between the preflight and the read is recorded as a
+  retrieval failure and never sent. `--dry-run` is unchanged. Confirmations
+  and the trusted-terminal challenge are unchanged.
+
 ### Fixed (a copy is refused when its source changes before the commit)
 
 - `phantom copy`, MCP `phantom_copy_secret` and `phantom env copy` read the
