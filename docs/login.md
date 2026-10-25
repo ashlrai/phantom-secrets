@@ -99,6 +99,13 @@ Push the local vault to Phantom Cloud:
 phantom cloud push
 ```
 
+A push is refused, before the confirmation prompt and before any value is
+read, when a secret is overdue under `enforce_rotation_on_access`, has been
+demoted to read-only by the expiry policy, or has lifecycle metadata that
+cannot be read: a pulled copy is stored read-write and would undo the
+demotion. Rotate or promote the secret, then push again. The refusal names
+secrets only.
+
 Pull a personal-vault snapshot from Phantom Cloud on the machine that holds the
 original cloud encryption key:
 

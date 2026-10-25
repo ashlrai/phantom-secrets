@@ -22,38 +22,17 @@ fn gate_sync_selection(
     plans: &[LiveTargetPlan],
     now_secs: u64,
 ) -> Result<()> {
-    super::rotation_gate::enforce_rotation_on_entries(
+    super::rotation_gate::enforce_lifecycle_on_propagation(
         config,
         vault,
         plans
             .iter()
             .flat_map(|plan| plan.selected_keys.iter().map(String::as_str)),
         "sync",
+        "Rotate or promote them before pushing to a deployment platform.",
+        "No vault plaintext was read and no provider request was sent.",
         now_secs,
-    )?;
-    let selected: BTreeSet<&str> = plans
-        .iter()
-        .flat_map(|plan| plan.selected_keys.iter().map(String::as_str))
-        .collect();
-    let mut read_only = Vec::new();
-    for name in selected {
-        let metadata = vault.get_metadata(name).map_err(|_| {
-            anyhow::anyhow!(
-                "Refusing to sync: could not read lifecycle metadata for '{name}'. No vault plaintext was read and no provider request was sent."
-            )
-        })?;
-        if metadata.is_some_and(|metadata| metadata.vault_mode.is_read_only()) {
-            read_only.push(format!("'{name}'"));
-        }
-    }
-    if !read_only.is_empty() {
-        anyhow::bail!(
-            "Refusing to sync: {} secret(s) are read-only under their lifecycle policy: {}. Rotate or promote them before pushing to a deployment platform. No vault plaintext was read and no provider request was sent.",
-            read_only.len(),
-            read_only.join(", ")
-        );
-    }
-    Ok(())
+    )
 }
 
 fn no_sync_targets_message() -> String {
