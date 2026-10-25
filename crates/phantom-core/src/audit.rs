@@ -634,7 +634,14 @@ fn load_or_create_hmac_key(log_path: &Path) -> std::io::Result<Vec<u8>> {
 
     // Generate a new 32-byte key.
     let key = generate_key();
-    write_hmac_key(&key_path, &key)?;
+    match write_hmac_key(&key_path, &key) {
+        Ok(()) => {}
+        // Another writer published a key first; use it and its marker.
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            return read_hmac_key(&key_path);
+        }
+        Err(e) => return Err(e),
+    }
 
     // Write the chain-started marker into the log so `verify` knows
     // where the signed portion begins.
@@ -659,30 +666,41 @@ fn generate_key() -> Vec<u8> {
     key
 }
 
+/// Publish a new chain key without ever exposing a partial file or replacing
+/// a key that is already there.
+///
+/// The hex key goes to an owner-only staging file in the same directory,
+/// which is fsynced and then linked into place with no-clobber semantics, and
+/// the directory is fsynced. A crash leaves either no key or the whole key.
+/// An existing key yields `AlreadyExists` and is left untouched.
 fn write_hmac_key(key_path: &Path, key: &[u8]) -> std::io::Result<()> {
-    let hex_key = hex::encode(key);
+    let hex_key = zeroize::Zeroizing::new(hex::encode(key));
+    let dir = parent_dir(key_path);
 
+    let mut staged = tempfile::Builder::new()
+        .prefix(".audit-hmac-key.")
+        .tempfile_in(dir)?;
     #[cfg(unix)]
     {
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut f = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(key_path)?;
-        f.write_all(hex_key.as_bytes())?;
+        use std::os::unix::fs::PermissionsExt;
+        staged
+            .as_file()
+            .set_permissions(std::fs::Permissions::from_mode(0o600))?;
     }
-    #[cfg(not(unix))]
-    {
-        let mut f = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(key_path)?;
-        f.write_all(hex_key.as_bytes())?;
+    staged.write_all(hex_key.as_bytes())?;
+    staged.as_file().sync_all()?;
+    trace_durability("key.synced");
+
+    #[cfg(test)]
+    if FAIL_BEFORE_KEY_PUBLISH.with(|f| f.get()) {
+        // Dropping `staged` removes the staging file, as a failed write would.
+        return Err(std::io::Error::other("injected failure before key publish"));
     }
 
+    staged.persist_noclobber(key_path).map_err(|e| e.error)?;
+    trace_durability("key.published");
+    crate::fs::sync_parent_dir(dir)?;
+    trace_durability("key.dir_synced");
     Ok(())
 }
 
@@ -728,9 +746,18 @@ fn write_chain_marker(log_path: &Path, key: &[u8]) -> std::io::Result<()> {
 /// newline; the record then starts on a fresh line, so it is not glued onto
 /// the fragment and lost. The fragment stays behind as a malformed line that
 /// verification still reports.
+///
+/// The record is fsynced before this returns, and the directory is fsynced
+/// when this call created the log, so a head checkpoint written afterwards
+/// never points past durable log content.
 fn append_line(log_path: &Path, line: &[u8]) -> std::io::Result<()> {
     use std::io::{Read, Seek, SeekFrom};
 
+    let created = match std::fs::symlink_metadata(log_path) {
+        Ok(_) => false,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
+        Err(e) => return Err(e),
+    };
     let mut f = OpenOptions::new()
         .read(true)
         .append(true)
@@ -748,10 +775,40 @@ fn append_line(log_path: &Path, line: &[u8]) -> std::io::Result<()> {
         let mut buf = Vec::with_capacity(line.len() + 1);
         buf.push(b'\n');
         buf.extend_from_slice(line);
-        f.write_all(&buf)
+        f.write_all(&buf)?;
     } else {
-        f.write_all(line)
+        f.write_all(line)?;
     }
+    f.sync_data()?;
+    trace_durability("log.synced");
+    if created {
+        crate::fs::sync_parent_dir(parent_dir(log_path))?;
+        trace_durability("log.dir_synced");
+    }
+    Ok(())
+}
+
+/// The directory holding `path`; the empty parent of a bare filename is `.`.
+fn parent_dir(path: &Path) -> &Path {
+    match path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => Path::new("."),
+    }
+}
+
+// Test-only record of durability steps, in order, for this thread, plus a
+// fault seam that fails a key write after staging and before publishing.
+#[cfg(test)]
+thread_local! {
+    static DURABILITY_TRACE: std::cell::RefCell<Vec<&'static str>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    static FAIL_BEFORE_KEY_PUBLISH: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn trace_durability(step: &'static str) {
+    #[cfg(test)]
+    DURABILITY_TRACE.with(|t| t.borrow_mut().push(step));
+    let _ = step;
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -841,7 +898,11 @@ fn write_head(log_path: &Path, last_seq: u64, last_hmac: &str, key: &[u8]) -> st
     let mut bytes = serde_json::to_vec(&head)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     bytes.push(b'\n');
-    crate::fs::atomic_write(&head_path(log_path), &bytes)
+    // `atomic_write` fsyncs the staging file and the directory. The log line
+    // this head names was already fsynced by `append_line`.
+    crate::fs::atomic_write(&head_path(log_path), &bytes)?;
+    trace_durability("head.published");
+    Ok(())
 }
 
 fn read_head(log_path: &Path, key: &[u8]) -> std::io::Result<Option<AuditHead>> {
@@ -1619,11 +1680,11 @@ pub fn log_batch_item_failed(batch_id: &str, secret_name: &str, reason: &str) {
     if !enabled() {
         return;
     }
-    // Truncate reason to 120 chars to avoid bloating the audit log.
-    let safe_reason = if reason.len() > 120 {
-        &reason[..120]
-    } else {
-        reason
+    // Truncate reason to 120 chars to avoid bloating the audit log. Cut on a
+    // char boundary: a byte slice panics inside a multibyte character.
+    let safe_reason = match reason.char_indices().nth(120) {
+        Some((end, _)) => &reason[..end],
+        None => reason,
     };
     let name = format!("batch_id={batch_id} secret={secret_name} reason={safe_reason}");
     log("vault.batch_rotation.item.failed", Some(&name));
@@ -3327,5 +3388,144 @@ mod tests {
         assert!(v2
             .decrypt(Nonce::from_slice(&blob[..12]), &blob[12..])
             .is_err());
+    }
+
+    // ── durability and truncation follow-ups ────────────────────────────────
+
+    /// A long failure reason whose 120th byte falls inside a multibyte
+    /// character is cut on a character boundary instead of panicking.
+    #[test]
+    fn batch_item_failed_truncates_reason_on_a_char_boundary() {
+        with_audit_env(|tmp| {
+            // One ASCII byte, then two-byte characters: byte 120 is mid-char.
+            let reason = format!("x{}", "\u{e9}".repeat(200));
+            let outcome = std::panic::catch_unwind(|| {
+                log_batch_item_failed("batch-1", "SOME_NAME", &reason);
+            });
+            assert!(outcome.is_ok(), "multibyte reason panicked");
+
+            let path = tmp.join(".phantom").join("audit.log");
+            let content = std::fs::read_to_string(&path).unwrap_or_default();
+            let names: Vec<String> = content
+                .lines()
+                .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+                .filter(|v| v["op"] == "vault.batch_rotation.item.failed")
+                .filter_map(|v| v["name"].as_str().map(str::to_string))
+                .collect();
+            assert_eq!(names.len(), 1);
+            let logged = names[0].split("reason=").nth(1).unwrap_or_default();
+            assert_eq!(logged.chars().count(), 120);
+            assert!(reason.starts_with(logged));
+        });
+    }
+
+    /// An ASCII reason keeps the existing 120-character cap.
+    #[test]
+    fn batch_item_failed_keeps_the_ascii_reason_cap() {
+        with_audit_env(|tmp| {
+            let reason = "r".repeat(300);
+            log_batch_item_failed("batch-2", "SOME_NAME", &reason);
+            let path = tmp.join(".phantom").join("audit.log");
+            let content = std::fs::read_to_string(&path).unwrap_or_default();
+            let expected = format!("reason={}", "r".repeat(120));
+            let found = content
+                .lines()
+                .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+                .any(|v| v["name"].as_str().is_some_and(|n| n.ends_with(&expected)));
+            assert!(found, "capped reason missing");
+        });
+    }
+
+    /// Writing the chain key never replaces a key that is already in place.
+    #[test]
+    fn write_hmac_key_does_not_replace_an_existing_key() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("audit-hmac-key");
+        let first = generate_key();
+        let second = generate_key();
+        write_hmac_key(&path, &first).unwrap();
+
+        let err = write_hmac_key(&path, &second).expect_err("second write must not replace");
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        assert!(read_hmac_key(&path).unwrap() == first, "key was replaced");
+    }
+
+    /// The published key file is owner-only and leaves no staging file behind.
+    #[cfg(unix)]
+    #[test]
+    fn write_hmac_key_publishes_an_owner_only_file_and_no_staging_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("audit-hmac-key");
+        let chain = generate_key();
+        write_hmac_key(&path, &chain).unwrap();
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        assert!(
+            read_hmac_key(&path).unwrap() == chain,
+            "key did not round-trip"
+        );
+        let entries = std::fs::read_dir(dir.path()).unwrap().count();
+        assert_eq!(entries, 1, "staging file left behind");
+    }
+
+    fn take_durability_trace() -> Vec<&'static str> {
+        DURABILITY_TRACE.with(|t| std::mem::take(&mut *t.borrow_mut()))
+    }
+
+    /// A failure after the key is staged but before it is published leaves
+    /// no key file and no staging file, so the next write starts cleanly.
+    #[test]
+    fn interrupted_key_write_leaves_no_partial_key() {
+        let dir = tempdir().unwrap();
+        let log_p = dir.path().join("audit.log");
+        let key_p = hmac_key_path(&log_p);
+
+        FAIL_BEFORE_KEY_PUBLISH.with(|f| f.set(true));
+        let outcome = load_or_create_hmac_key(&log_p);
+        FAIL_BEFORE_KEY_PUBLISH.with(|f| f.set(false));
+        assert!(outcome.is_err(), "injected failure was not reported");
+        assert!(!key_p.exists(), "partial key became visible");
+        let leftovers = std::fs::read_dir(dir.path()).unwrap().count();
+        assert_eq!(leftovers, 0, "staging file or marker left behind");
+
+        let chain = load_or_create_hmac_key(&log_p).unwrap();
+        assert!(
+            read_hmac_key(&key_p).unwrap() == chain,
+            "retry key mismatch"
+        );
+    }
+
+    /// Each event's log line is fsynced before the head checkpoint that names
+    /// it is published, and a new key is durable before any log line uses it.
+    #[test]
+    fn log_line_is_durable_before_the_head_checkpoint() {
+        with_audit_env(|_| {
+            take_durability_trace();
+            log_result("vault.store", Some("FIRST_NAME")).unwrap();
+            let first = take_durability_trace();
+            assert_eq!(
+                first,
+                vec![
+                    "key.synced",
+                    "key.published",
+                    "key.dir_synced",
+                    "log.synced",
+                    "log.dir_synced",
+                    "log.synced",
+                    "head.published",
+                ]
+            );
+
+            log_result("vault.store", Some("SECOND_NAME")).unwrap();
+            assert_eq!(
+                take_durability_trace(),
+                vec!["log.synced", "head.published"]
+            );
+
+            let report = verify_log().unwrap();
+            assert!(report.is_clean(), "chain did not verify");
+        });
     }
 }

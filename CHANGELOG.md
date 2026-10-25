@@ -4,6 +4,20 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (audit log durability and key creation)
+
+- With `PHANTOM_AUDIT=1`, each audit line is now fsynced (and the directory
+  when the log is created) before the head checkpoint that names it is
+  written, so a power loss can no longer leave the checkpoint pointing past
+  durable log content and `phantom audit verify` reporting a permanent
+  mismatch.
+- The audit HMAC key is now written to an owner-only staging file, fsynced,
+  and linked into place without replacing an existing key, then the directory
+  is fsynced. A crash mid-write no longer leaves a truncated key that breaks
+  the whole chain.
+- A batch rotation failure reason longer than 120 characters is cut on a
+  character boundary; a multibyte character at the cut no longer panics.
+
 ### Fixed (single-name lookups beside a locked file vault)
 
 - `phantom rotate --name <KEY>` and the MCP tools `phantom_remove_secret`,
