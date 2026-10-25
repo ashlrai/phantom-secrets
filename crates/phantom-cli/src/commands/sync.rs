@@ -169,7 +169,7 @@ async fn run_async(
             "{}",
             serde_json::to_string_pretty(&SyncDryRunReport {
                 mode: "dry-run",
-                secret_count: 0,
+                entry_count: 0,
                 target_count: 0,
                 would_call_platform_api: false,
                 targets: Vec::new(),
@@ -218,7 +218,7 @@ async fn run_async(
                     "{}",
                     serde_json::to_string_pretty(&SyncDryRunReport {
                         mode: "dry-run",
-                        secret_count: secret_names.len(),
+                        entry_count: secret_names.len(),
                         target_count: 0,
                         would_call_platform_api: false,
                         targets: Vec::new(),
@@ -479,7 +479,10 @@ async fn run_async(
 #[derive(Debug, Serialize)]
 struct SyncDryRunReport {
     mode: &'static str,
-    secret_count: usize,
+    /// Vault entry names in scope (a count of names; never a value). The
+    /// JSON key stays `secret_count` for existing consumers.
+    #[serde(rename = "secret_count")]
+    entry_count: usize,
     target_count: usize,
     would_call_platform_api: bool,
     targets: Vec<SyncDryRunTarget>,
@@ -700,7 +703,7 @@ fn build_dry_run_report(
 
     SyncDryRunReport {
         mode: "dry-run",
-        secret_count: secret_names.len(),
+        entry_count: secret_names.len(),
         target_count: report_targets.len(),
         would_call_platform_api: false,
         targets: report_targets,
@@ -717,7 +720,7 @@ fn print_dry_run_report(report: &SyncDryRunReport, json: bool) -> Result<()> {
     println!(
         "{} Sync dry run: {} secret(s), {} target(s)",
         "->".blue().bold(),
-        report.secret_count,
+        report.entry_count,
         report.targets.len()
     );
     for target in &report.targets {
