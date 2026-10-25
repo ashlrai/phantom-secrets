@@ -8,6 +8,27 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, IsTerminal, Write};
 use zeroize::{Zeroize, Zeroizing};
 
+/// `enforce_rotation_on_access` for a live sync: deployment platforms receive
+/// real values, so an overdue enforced secret in any target's selection is
+/// refused before the terminal review, any vault value read, or any provider
+/// call, as `phantom exec` would refuse it.
+fn gate_sync_selection(
+    config: &phantom_core::config::PhantomConfig,
+    vault: &dyn phantom_vault::VaultBackend,
+    plans: &[LiveTargetPlan],
+    now_secs: u64,
+) -> Result<()> {
+    super::rotation_gate::enforce_rotation_on_entries(
+        config,
+        vault,
+        plans
+            .iter()
+            .flat_map(|plan| plan.selected_keys.iter().map(String::as_str)),
+        "sync",
+        now_secs,
+    )
+}
+
 fn no_sync_targets_message() -> String {
     format!(
         "No sync targets configured.\n\n\
@@ -274,6 +295,12 @@ async fn run_async(
         );
     }
 
+    gate_sync_selection(
+        &config,
+        vault.as_ref(),
+        &plans,
+        super::rotation_gate::now_secs(),
+    )?;
     require_trusted_terminal_sync(&plans)?;
 
     // Decrypt only the exact union reviewed in the attached terminal.
@@ -699,6 +726,50 @@ fn filter_key_names(secret_names: &[String], patterns: &[String]) -> (Vec<String
 mod tests {
     use super::*;
     use std::io::Cursor;
+
+    fn plan_selecting(keys: &[&str]) -> LiveTargetPlan {
+        LiveTargetPlan {
+            platform: "vercel".to_string(),
+            project_id: "prj_fixture".to_string(),
+            token_env: "VERCEL_TOKEN".to_string(),
+            token_present: true,
+            environments: vec!["production".to_string()],
+            service_id: None,
+            environment_id: None,
+            filters: Vec::new(),
+            selected_keys: keys.iter().map(|key| key.to_string()).collect(),
+        }
+    }
+
+    /// `phantom sync` pushed an overdue enforced secret to a deployment
+    /// platform that `phantom exec` refuses to inject. The reviewed selection
+    /// is now gated before the terminal review and any value read; a
+    /// selection inside its window passes.
+    #[test]
+    fn live_sync_selection_applies_rotation_enforcement() {
+        use crate::commands::rotation_gate::fixtures::{aged_vault, enforced_config, NOW};
+        let dir = tempfile::tempdir().unwrap();
+        let vault = aged_vault(
+            &dir,
+            &[("prod/STALE_KEY", 45), ("FRESH_KEY", 1), ("PLAIN_KEY", 400)],
+        );
+        let config = enforced_config(&["STALE_KEY", "FRESH_KEY"]);
+
+        let plans = [
+            plan_selecting(&["FRESH_KEY"]),
+            plan_selecting(&["prod/STALE_KEY", "PLAIN_KEY"]),
+        ];
+        let refused = gate_sync_selection(&config, &vault, &plans, NOW);
+        let message = refused
+            .err()
+            .map(|error| error.to_string())
+            .unwrap_or_default();
+        assert!(message.starts_with("Refusing to sync: rotation enforcement blocked 1 secret(s)."));
+        assert!(message.contains("'STALE_KEY'"));
+
+        let plans = [plan_selecting(&["FRESH_KEY", "PLAIN_KEY"])];
+        assert!(gate_sync_selection(&config, &vault, &plans, NOW).is_ok());
+    }
 
     #[test]
     fn live_sync_source_omits_decrypted_map_size_from_progress() {

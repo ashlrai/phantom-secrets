@@ -173,6 +173,30 @@ pub fn run_vault_push(team_id: &str) -> Result<()> {
     vault_push_after_consent(team_id, &project_id, &config, &token, &api_base, &kp)
 }
 
+/// Read every value a team push sends. Team members receive real values, so
+/// `enforce_rotation_on_access` refuses an overdue enforced secret first, as
+/// `phantom exec` would, before any value is read.
+fn read_team_push_values(
+    config: &phantom_core::config::PhantomConfig,
+    vault: &dyn phantom_vault::VaultBackend,
+    secret_names: &[String],
+    now_secs: u64,
+) -> Result<BTreeMap<String, Zeroizing<String>>> {
+    super::rotation_gate::enforce_rotation_on_entries(
+        config,
+        vault,
+        secret_names.iter().map(String::as_str),
+        "push to the team vault",
+        now_secs,
+    )?;
+    let mut secrets: BTreeMap<String, Zeroizing<String>> = BTreeMap::new();
+    for name in secret_names {
+        let value = vault.retrieve(name)?; // Zeroizing<String>
+        secrets.insert(name.clone(), Zeroizing::new(String::from(value.as_str())));
+    }
+    Ok(secrets)
+}
+
 /// `team vault-push` once terminal consent is given and the bearer and team
 /// keypair are read: list the local vault, judge that inventory, and only
 /// then read values and send. Split out so a test can enter here without a
@@ -203,11 +227,12 @@ fn vault_push_after_consent(
         println!("{}  No secrets to push", "warn".yellow().bold());
         return Ok(());
     }
-    let mut secrets: BTreeMap<String, Zeroizing<String>> = BTreeMap::new();
-    for name in &secret_names {
-        let value = vault.retrieve(name)?; // Zeroizing<String>
-        secrets.insert(name.clone(), Zeroizing::new(String::from(value.as_str())));
-    }
+    let secrets = read_team_push_values(
+        config,
+        vault.as_ref(),
+        &secret_names,
+        super::rotation_gate::now_secs(),
+    )?;
 
     let outcome = rt
         .block_on(teams_vault::push_for_project(
@@ -539,7 +564,7 @@ fn invitation_checklist(team_id: &str) -> String {
 mod tests {
     use super::{
         apply_team_vault_pull_transaction, confirm_team_effect, invitation_checklist,
-        team_consent_plan, team_list_json,
+        read_team_push_values, team_consent_plan, team_list_json,
     };
     use phantom_core::error::{PhantomError, Result as PhantomResult};
     use phantom_vault::{file::FileVault, VaultBackend};
@@ -547,6 +572,31 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::TempDir;
     use zeroize::Zeroizing;
+
+    /// `phantom team vault-push` sent an overdue enforced secret to every
+    /// member. The push now refuses it before reading any value, as
+    /// `phantom exec` would; an inventory inside its window is read.
+    #[test]
+    fn team_push_applies_rotation_enforcement() {
+        use crate::commands::rotation_gate::fixtures::{aged_vault, enforced_config, NOW};
+        let dir = tempfile::tempdir().unwrap();
+        let vault = aged_vault(&dir, &[("STALE_KEY", 45), ("FRESH_KEY", 1)]);
+        let config = enforced_config(&["STALE_KEY", "FRESH_KEY"]);
+        let names = vault.list().unwrap();
+
+        let refused = read_team_push_values(&config, &vault, &names, NOW);
+        let message = refused
+            .err()
+            .map(|error| error.to_string())
+            .unwrap_or_default();
+        assert!(message.starts_with(
+            "Refusing to push to the team vault: rotation enforcement blocked 1 secret(s)."
+        ));
+
+        let fresh = vec!["FRESH_KEY".to_string()];
+        let read = read_team_push_values(&config, &vault, &fresh, NOW);
+        assert!(read.is_ok_and(|values| values.len() == 1));
+    }
 
     #[test]
     fn team_list_json_wraps_teams_with_name_and_role() {

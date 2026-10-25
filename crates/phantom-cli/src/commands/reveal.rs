@@ -46,6 +46,12 @@ pub fn run(name: &str, clipboard: bool, yes: bool) -> Result<()> {
 
     let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
     let vault = phantom_vault::try_create_vault(config.local_project_id())?;
+    gate_reveal(
+        &config,
+        vault.as_ref(),
+        name,
+        super::rotation_gate::now_secs(),
+    )?;
 
     phantom_core::audit::log_result("vault.reveal", Some(name))
         .context("Failed to write audit event for secret reveal")?;
@@ -70,6 +76,18 @@ pub fn run(name: &str, clipboard: bool, yes: bool) -> Result<()> {
     // Zeroizing<String> scrubs memory on drop automatically.
 
     Ok(())
+}
+
+/// `enforce_rotation_on_access` for reveal: an overdue enforced secret is not
+/// printed or copied, exactly as `phantom exec` would not inject it. Runs
+/// before the audit event and before any value read.
+fn gate_reveal(
+    config: &PhantomConfig,
+    vault: &dyn phantom_vault::VaultBackend,
+    name: &str,
+    now_secs: u64,
+) -> Result<()> {
+    super::rotation_gate::enforce_rotation_on_entries(config, vault, [name], "reveal", now_secs)
 }
 
 /// Read the confirmed secret. Beside an encrypted-file vault this process
@@ -300,6 +318,28 @@ pub fn run_clear_after(secs: u64) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `phantom reveal` printed an overdue enforced secret that
+    /// `phantom exec` refuses to inject. The gate now refuses it before the
+    /// audit event and the read; a secret inside its window is revealed.
+    #[test]
+    fn reveal_applies_rotation_enforcement() {
+        use crate::commands::rotation_gate::fixtures::{aged_vault, enforced_config, NOW};
+        let dir = tempfile::tempdir().unwrap();
+        let vault = aged_vault(&dir, &[("STALE_KEY", 45), ("FRESH_KEY", 1)]);
+        let config = enforced_config(&["STALE_KEY", "FRESH_KEY"]);
+
+        let refused = gate_reveal(&config, &vault, "STALE_KEY", NOW);
+        let message = refused
+            .err()
+            .map(|error| error.to_string())
+            .unwrap_or_default();
+        assert!(
+            message.starts_with("Refusing to reveal: rotation enforcement blocked 1 secret(s).")
+        );
+        assert!(message.contains("'STALE_KEY'"));
+        assert!(gate_reveal(&config, &vault, "FRESH_KEY", NOW).is_ok());
+    }
 
     /// Beside an encrypted-file vault this process cannot open, the vault is
     /// an empty OS keychain: reveal reported the secret as not found.
