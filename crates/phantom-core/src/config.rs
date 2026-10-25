@@ -346,7 +346,9 @@ pub struct SecretOverride {
     /// Stored under `[phantom.secrets.{name}.validation]` in `.phantom.toml`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub validation: Option<ValidationScheduleConfig>,
-    /// When `true`, `phantom exec` and `phantom start` refuse to load this
+    /// When `true`, `phantom exec`, `phantom start`, and every other path
+    /// that hands out the real value (`reveal`, `copy`, `sync`, `env copy`,
+    /// `team vault-push`, and the MCP copy and team-push tools) refuse this
     /// secret once one period of its effective rotation schedule
     /// (`rotation_schedule`, `rotate_every`, or the global
     /// `rotation_policy`; monthly counts as 30 days) has elapsed. Age is
