@@ -655,7 +655,17 @@ fn run_checks(fix: bool, check_expiry: bool) -> Result<(usize, usize)> {
 
         if phantom_core::audit::enabled() {
             match phantom_core::audit::log_path() {
-                Ok(path) => match std::fs::metadata(&path) {
+                // Not followed: a symlink or non-regular file at the log
+                // path is refused by every audit reader and writer.
+                Ok(path) => match std::fs::symlink_metadata(&path) {
+                    Ok(meta) if !meta.is_file() => {
+                        check_warn(&format!(
+                            "Audit log is a symlink or not a regular file and will be refused: {}",
+                            path.display()
+                        ));
+                        check_fix("Remove it so Phantom can create a private audit log");
+                        issues += 1;
+                    }
                     Ok(meta) => {
                         let bytes = meta.len();
                         let size_str = if bytes >= 1024 {
