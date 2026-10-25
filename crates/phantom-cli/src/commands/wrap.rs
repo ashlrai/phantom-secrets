@@ -35,7 +35,18 @@ fn run_in(
     let content = std::str::from_utf8(before.bytes()).context("package.json is not valid UTF-8")?;
     let mut pkg: serde_json::Value =
         serde_json::from_str(content).context("Failed to parse package.json")?;
-    let wrapped = apply_wrap(&mut pkg, only, skip)?;
+    let WrapOutcome { wrapped, unwrapped } = apply_wrap(&mut pkg, only, skip)?;
+
+    // Always shown, `--quiet` included: these scripts still run without
+    // Phantom, and the user has to wrap them by hand.
+    for (name, reason) in &unwrapped {
+        eprintln!(
+            "{} Not wrapping '{}': {}. `phantom exec` runs one program without a shell, so a prefix would break it or cover only its first command. Move the command line into a script file and wrap that, or prefix the one command that needs secrets yourself.",
+            "warn".yellow(),
+            name,
+            reason
+        );
+    }
 
     if wrapped.is_empty() {
         println!(
@@ -100,19 +111,28 @@ fn replace_package_json(
     }
 }
 
+/// Scripts `apply_wrap` changed, and selected scripts it left unchanged
+/// because they are a shell command line (with the reason).
+#[derive(Debug, Default)]
+struct WrapOutcome {
+    wrapped: Vec<String>,
+    unwrapped: Vec<(String, &'static str)>,
+}
+
 fn apply_wrap(
     pkg: &mut serde_json::Value,
     only: &Option<Vec<String>>,
     skip: &Option<Vec<String>>,
-) -> Result<Vec<String>> {
+) -> Result<WrapOutcome> {
     let scripts = match pkg.get_mut("scripts").and_then(|s| s.as_object_mut()) {
         Some(s) => s,
-        None => return Ok(Vec::new()),
+        None => return Ok(WrapOutcome::default()),
     };
 
     // Collect script names to wrap
     let script_names: Vec<String> = scripts.keys().cloned().collect();
     let mut candidates = Vec::new();
+    let mut unwrapped = Vec::new();
 
     for name in &script_names {
         // Skip :raw variants
@@ -149,6 +169,11 @@ fn apply_wrap(
             continue;
         }
 
+        if let Some(reason) = phantom_core::package_scripts::wrap_blocker(&value) {
+            unwrapped.push((name.clone(), reason));
+            continue;
+        }
+
         let raw_name = format!("{}:raw", name);
         if scripts.contains_key(&raw_name) {
             anyhow::bail!(
@@ -168,7 +193,10 @@ fn apply_wrap(
             serde_json::Value::String(wrapped_script_command(original)),
         );
     }
-    Ok(candidates.into_iter().map(|(name, _, _)| name).collect())
+    Ok(WrapOutcome {
+        wrapped: candidates.into_iter().map(|(name, _, _)| name).collect(),
+        unwrapped,
+    })
 }
 
 fn wrapped_script_command(original: &str) -> String {
@@ -264,6 +292,56 @@ mod tests {
         let before = pkg.clone();
 
         apply_wrap(&mut pkg, &None, &None).unwrap_err();
+        assert_eq!(pkg, before);
+    }
+
+    #[test]
+    fn compound_and_env_prefixed_scripts_are_left_unwrapped() {
+        // `phantom exec` runs its argv directly, without a shell. Prefixing a
+        // shell command line would hand `VAR=value` to exec as the program,
+        // or cover only the first command of a `&&`/`|`/`;` chain.
+        let mut pkg = serde_json::json!({
+            "scripts": {
+                "dev": "next dev",
+                "start": "NODE_ENV=production node server.js",
+                "build": "next build && next export",
+                "serve": "node server.js | pino-pretty",
+                "preview": "vite build; vite preview",
+                "deploy": "node -e \"console.log('a && b; c | d')\""
+            }
+        });
+
+        let outcome = apply_wrap(&mut pkg, &None, &None).unwrap();
+        assert_eq!(outcome.wrapped, vec!["deploy", "dev"]);
+        let unwrapped: Vec<&str> = outcome.unwrapped.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(unwrapped, vec!["build", "preview", "serve", "start"]);
+
+        let scripts = &pkg["scripts"];
+        assert_eq!(scripts["dev"], "phantom exec -- next dev");
+        assert_eq!(scripts["start"], "NODE_ENV=production node server.js");
+        assert_eq!(scripts["build"], "next build && next export");
+        assert_eq!(scripts["serve"], "node server.js | pino-pretty");
+        assert_eq!(scripts["preview"], "vite build; vite preview");
+        for name in ["start:raw", "build:raw", "serve:raw", "preview:raw"] {
+            assert!(scripts.get(name).is_none(), "{name} must not be created");
+        }
+        // Operators inside quotes are arguments, not shell syntax.
+        assert_eq!(
+            scripts["deploy"],
+            "phantom exec -- node -e \"console.log('a && b; c | d')\""
+        );
+    }
+
+    #[test]
+    fn explicitly_selected_compound_script_is_not_wrapped() {
+        let mut pkg = serde_json::json!({
+            "scripts": { "start": "PORT=3000 node server.js" }
+        });
+        let before = pkg.clone();
+
+        let outcome = apply_wrap(&mut pkg, &Some(vec!["start".to_string()]), &None).unwrap();
+        assert!(outcome.wrapped.is_empty());
+        assert_eq!(outcome.unwrapped.len(), 1);
         assert_eq!(pkg, before);
     }
 
