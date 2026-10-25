@@ -2108,6 +2108,14 @@ impl PhantomMcpServer {
             "copy",
             phantom_vault::rotation_gate::now_secs(),
         )?;
+        // Read before the value, so the rotation anchor the destination
+        // inherits is never newer than the copied value.
+        let source_metadata = source_vault.get_metadata(&params.name).map_err(|error| {
+            internal_err(format!(
+                "Failed to read metadata for source secret '{}': {error}",
+                params.name
+            ))
+        })?;
         let secret_value = source_vault.retrieve(&params.name).map_err(|e| match e {
             phantom_core::error::PhantomError::SecretNotFound(_) => self.missing_secret_err(
                 &source_config,
@@ -2128,6 +2136,7 @@ impl PhantomMcpServer {
             target_env_before,
             target_name,
             secret_value.as_str(),
+            source_metadata.as_ref(),
         )?;
 
         text_result(format!(
@@ -6504,6 +6513,7 @@ fn apply_mcp_copy_transaction(
     env_before: Option<zeroize::Zeroizing<Vec<u8>>>,
     target_name: &str,
     value: &str,
+    source_metadata: Option<&phantom_vault::SecretMetadata>,
 ) -> Result<(), McpError> {
     let content = zeroize::Zeroizing::new(match env_before.as_deref() {
         Some(bytes) => String::from_utf8(bytes.to_vec())
@@ -6551,8 +6561,11 @@ fn apply_mcp_copy_transaction(
         )
         .commit_last(),
     ];
+    // The copy keeps the source's rotation age so a duplicate cannot restart
+    // the clock `enforce_rotation_on_access` measures.
     let mutation =
-        phantom_vault::InitSecret::replace_if_unchanged(target_name, None::<String>, value);
+        phantom_vault::InitSecret::replace_if_unchanged(target_name, None::<String>, value)
+            .inheriting_rotation_anchor(source_metadata);
     phantom_vault::commit_init(target_dir, vault, vec![mutation], files).map_err(|error| {
         internal_err(format!(
             "Target copy transaction failed: {error}. Inspect target vault/config/dotenv before retrying."
@@ -7892,6 +7905,7 @@ mod tests {
             None,
             "COPIED_KEY",
             "source-value",
+            None,
         )
         .unwrap();
 
@@ -7939,6 +7953,7 @@ mod tests {
             None,
             "COPIED_KEY",
             "source-value",
+            None,
         )
         .is_err());
         assert_eq!(std::fs::read(&config_path).unwrap(), concurrent);
@@ -7977,6 +7992,7 @@ mod tests {
             None,
             "COPIED_KEY",
             "source-value",
+            None,
         )
         .is_err());
         assert_eq!(std::fs::read(&config_path).unwrap(), config_before);
@@ -10583,6 +10599,75 @@ mod tests {
         assert!(
             source.phantom_copy_secret(request()).is_ok(),
             "a secret inside its rotation window must copy"
+        );
+    }
+
+    /// A copy stored the destination with a fresh `created_at`, so a secret
+    /// 29 days into a 30-day enforced window came out of the copy with a new
+    /// 30-day clock. The destination now inherits the source's rotation
+    /// anchor, and the gate in the target judges it overdue when the source
+    /// would be.
+    #[test]
+    fn copy_secret_destination_inherits_the_source_rotation_anchor() {
+        let _environment = TestEnvironment::new();
+        let _home = TestHome::new();
+        let (source, source_dir) = setup_initialized_project();
+        let (_target, target_dir) = setup_initialized_project();
+        let target = target_dir.path().canonicalize().unwrap();
+
+        enforce_rotation_aged(&source_dir, 29);
+        let source_config = PhantomConfig::load(&source_dir.path().join(".phantom.toml")).unwrap();
+        let source_vault =
+            phantom_vault::try_create_vault(source_config.local_project_id()).unwrap();
+        let source_anchor = phantom_vault::rotation_gate::rotation_anchor(
+            source_vault
+                .get_metadata("OPENAI_API_KEY")
+                .unwrap()
+                .as_ref(),
+        )
+        .expect("the aged source has an anchor");
+
+        source
+            .phantom_copy_secret(Parameters(CopySecretParams {
+                name: "OPENAI_API_KEY".to_string(),
+                target_dir: target.display().to_string(),
+                rename: Some("COPIED_API_KEY".to_string()),
+                confirm: true,
+                approval_token: None,
+            }))
+            .expect("a secret inside its window copies");
+
+        let target_config_path = target.join(".phantom.toml");
+        let mut target_config = PhantomConfig::load(&target_config_path).unwrap();
+        let target_vault =
+            phantom_vault::try_create_vault(target_config.local_project_id()).unwrap();
+        let copied = target_vault.get_metadata("COPIED_API_KEY").unwrap();
+        assert_eq!(
+            phantom_vault::rotation_gate::rotation_anchor(copied.as_ref()),
+            Some(source_anchor),
+            "the destination must keep the source's rotation anchor"
+        );
+
+        target_config.phantom.secrets.insert(
+            "COPIED_API_KEY".to_string(),
+            phantom_core::config::SecretOverride {
+                rotate_every: Some("30d".to_string()),
+                enforce_rotation_on_access: true,
+                ..phantom_core::config::SecretOverride::default()
+            },
+        );
+        let in_two_days = phantom_vault::rotation_gate::now_secs() + 2 * 86_400;
+        let refusals = phantom_vault::rotation_gate::rotation_refusals(
+            &target_config,
+            target_vault.as_ref(),
+            phantom_vault::rotation_gate::entry_targets(["COPIED_API_KEY"]),
+            in_two_days,
+        )
+        .unwrap();
+        assert_eq!(
+            refusals.len(),
+            1,
+            "the copy must be overdue when its source is"
         );
     }
 

@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use colored::Colorize;
 use phantom_core::config::PhantomConfig;
 use phantom_core::dotenv::DotenvFile;
-use phantom_vault::{InitFile, InitSecret};
+use phantom_vault::{InitFile, InitSecret, SecretMetadata};
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
@@ -110,7 +110,7 @@ pub fn run(name: &str, target_dir: &Path, rename: &Option<String>) -> Result<()>
         target_config.local_project_id(),
     )?;
 
-    let secret_value = retrieve_gated_copy_source(
+    let (source_metadata, secret_value) = retrieve_gated_copy_source(
         &source_config,
         source_vault.as_ref(),
         name,
@@ -126,6 +126,7 @@ pub fn run(name: &str, target_dir: &Path, rename: &Option<String>) -> Result<()>
         env_before,
         target_name,
         secret_value.as_str(),
+        source_metadata.as_ref(),
     )?;
 
     phantom_vault::commit_init(
@@ -177,13 +178,14 @@ fn list_copy_target_names(
 /// `enforce_rotation_on_access`, then the source read: the target project
 /// does not carry this project's rotation policy, so an overdue enforced
 /// source secret is refused before its value is read, as `phantom exec`
-/// would refuse it.
+/// would refuse it. The source metadata is read before the value, so the
+/// rotation anchor the copy inherits is never newer than the copied value.
 fn retrieve_gated_copy_source(
     source_config: &PhantomConfig,
     source_vault: &dyn phantom_vault::VaultBackend,
     name: &str,
     now_secs: u64,
-) -> Result<zeroize::Zeroizing<String>> {
+) -> Result<(Option<SecretMetadata>, zeroize::Zeroizing<String>)> {
     super::rotation_gate::enforce_rotation_on_entries(
         source_config,
         source_vault,
@@ -191,7 +193,11 @@ fn retrieve_gated_copy_source(
         "copy",
         now_secs,
     )?;
-    retrieve_copy_source(source_vault, source_config.local_project_id(), name)
+    let metadata = source_vault
+        .get_metadata(name)
+        .context("Failed to read source secret metadata")?;
+    let value = retrieve_copy_source(source_vault, source_config.local_project_id(), name)?;
+    Ok((metadata, value))
 }
 
 /// Read the approved source secret. Beside a source encrypted-file vault this
@@ -267,9 +273,13 @@ fn prepare_target_plan(
     env_before: Option<Vec<u8>>,
     target_name: &str,
     value: &str,
+    source_metadata: Option<&SecretMetadata>,
 ) -> Result<CopyTargetPlan> {
     let env_after = rewrite_dotenv(env_before.as_deref(), target_name)?;
-    let mutation = InitSecret::replace_if_unchanged(target_name, None::<String>, value);
+    // The copy keeps the source's rotation age so a duplicate cannot restart
+    // the clock `enforce_rotation_on_access` measures.
+    let mutation = InitSecret::replace_if_unchanged(target_name, None::<String>, value)
+        .inheriting_rotation_anchor(source_metadata);
     let config_after = if config.phantom.dotenv_path.is_none() && target_vault_names.is_empty() {
         config.phantom.dotenv_path = Some(
             phantom_core::managed_dotenv::dotenv_basename(target_dir, &env_path)
@@ -349,7 +359,100 @@ mod tests {
             .unwrap_or_default();
         assert!(message.starts_with("Refusing to copy: rotation enforcement blocked 1 secret(s)."));
         let fresh = retrieve_gated_copy_source(&config, &vault, "FRESH_KEY", NOW);
-        assert!(fresh.is_ok_and(|value| value.as_str() == "fixture-value"));
+        assert!(fresh.is_ok_and(|(_, value)| value.as_str() == "fixture-value"));
+    }
+
+    /// Commit a copy of `name` from `source` into a fresh target project and
+    /// return the target vault with the target directory that owns it.
+    fn copy_into_new_target(
+        source_config: &PhantomConfig,
+        source: &FileVault,
+        name: &str,
+        target_name: &str,
+    ) -> (tempfile::TempDir, FileVault) {
+        use crate::commands::rotation_gate::fixtures::NOW;
+        let (metadata, value) =
+            retrieve_gated_copy_source(source_config, source, name, NOW).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().canonicalize().unwrap();
+        let config_path = target.join(".phantom.toml");
+        PhantomConfig::new_with_defaults(PhantomConfig::project_id_from_path(&target))
+            .save(&config_path)
+            .unwrap();
+        let (config, config_before) = load_config_exact(&config_path).unwrap();
+        let vault = FileVault::new(
+            &crate::test_support::canonical_tempdir_path(&dir),
+            "copy-anchor-target",
+            "passphrase".to_string(),
+        )
+        .unwrap();
+        let plan = prepare_target_plan(
+            &target,
+            &config_path,
+            config,
+            config_before,
+            Vec::new(),
+            target.join(".env"),
+            None,
+            target_name,
+            value.as_str(),
+            metadata.as_ref(),
+        )
+        .unwrap();
+        phantom_vault::commit_init(&target, &vault, vec![plan.mutation], plan.files).unwrap();
+        (dir, vault)
+    }
+
+    /// `phantom copy` stored the destination as new, so a secret 29 days
+    /// into a 30-day enforced window got a fresh 30-day clock in the target.
+    /// The destination now inherits the source's rotation anchor, and the
+    /// gate judges it overdue exactly when the source is.
+    #[test]
+    fn copy_destination_inherits_the_source_rotation_anchor() {
+        use crate::commands::rotation_gate::fixtures::{aged_vault, enforced_config, DAY, NOW};
+        let source_dir = tempfile::tempdir().unwrap();
+        let source = aged_vault(&source_dir, &[("AGING_KEY", 29)]);
+        let source_config = enforced_config(&["AGING_KEY"]);
+
+        let (_target_dir, target) =
+            copy_into_new_target(&source_config, &source, "AGING_KEY", "COPIED_KEY");
+
+        let anchor = |vault: &FileVault, entry: &str| {
+            phantom_vault::rotation_gate::rotation_anchor(
+                vault.get_metadata(entry).unwrap().as_ref(),
+            )
+        };
+        assert_eq!(anchor(&target, "COPIED_KEY"), Some(NOW - 29 * DAY));
+        assert_eq!(anchor(&target, "COPIED_KEY"), anchor(&source, "AGING_KEY"));
+        let refusals = phantom_vault::rotation_gate::rotation_refusals(
+            &enforced_config(&["COPIED_KEY"]),
+            &target,
+            phantom_vault::rotation_gate::entry_targets(["COPIED_KEY"]),
+            NOW + 2 * DAY,
+        )
+        .unwrap();
+        assert_eq!(
+            refusals.len(),
+            1,
+            "the copy must be overdue with its source"
+        );
+    }
+
+    /// A secret without rotation enforcement still copies, whatever its age,
+    /// and keeps that age.
+    #[test]
+    fn copy_of_an_unenforced_secret_still_works() {
+        use crate::commands::rotation_gate::fixtures::{aged_vault, DAY, NOW};
+        let source_dir = tempfile::tempdir().unwrap();
+        let source = aged_vault(&source_dir, &[("PLAIN_KEY", 400)]);
+        let source_config = PhantomConfig::new_with_defaults("copy-unenforced".to_string());
+
+        let (_target_dir, target) =
+            copy_into_new_target(&source_config, &source, "PLAIN_KEY", "PLAIN_KEY");
+
+        assert!(target.exists("PLAIN_KEY").unwrap());
+        let copied = target.get_metadata("PLAIN_KEY").unwrap().unwrap();
+        assert_eq!(copied.created_at, Some(NOW - 400 * DAY));
     }
 
     /// Beside a target encrypted-file vault this process cannot open, the
@@ -451,6 +554,7 @@ mod tests {
             None,
             "COPIED_KEY",
             "secret-value",
+            None,
         )
         .unwrap();
         let mut concurrent_config = std::fs::read(&config_path).unwrap();
