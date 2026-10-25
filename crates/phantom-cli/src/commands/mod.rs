@@ -31,6 +31,7 @@ pub mod pull;
 pub mod remove;
 pub mod reveal;
 pub mod rotate;
+pub(crate) mod rotation_gate;
 pub mod setup;
 pub mod setup_backup;
 pub mod setup_plan;

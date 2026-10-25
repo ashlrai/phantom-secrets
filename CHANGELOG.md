@@ -23,6 +23,27 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   before; `phantom reveal` now reports a broken config before its terminal
   prompt instead of after it.
 
+### Fixed (`enforce_rotation_on_access` was never enforced)
+
+- `enforce_rotation_on_access = true` under `[phantom.secrets.NAME]` was
+  documented to block `phantom exec` once the secret was overdue for rotation,
+  but nothing called the check, so the option did nothing. `phantom exec` and
+  `phantom start` now refuse before any secret value is read when an enforced
+  secret is at least one schedule period old (`rotate_every`,
+  `rotation_schedule`, or `[phantom.rotation_policy]`; monthly is 30 days).
+  The refusal names the secret, its age and the fix, never a value.
+- Age is measured from machine-local vault metadata: the later of when the
+  vault entry was stored and its last recorded provider rotation. A
+  `last_rotated` written in `.phantom.toml` is ignored for this check, so a
+  committed edit cannot unlock it. An enforced secret with no schedule, no
+  recorded store time, or a store time in the future is refused rather than
+  let through.
+- The refusal no longer points at `phantom rotate NAME` or a
+  `--skip-rotation-check` flag, neither of which replaces a credential or
+  exists in this release. To unblock, rotate the credential at its provider
+  and replace it with `phantom remove NAME` then `phantom add NAME`, or set
+  `enforce_rotation_on_access = false`.
+
 ### Fixed (competitor imports: BOM-prefixed JSON and one-pass name fixes)
 
 - `phantom import --from doppler|infisical|dotenvx|1password` refused a JSON
