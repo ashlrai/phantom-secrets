@@ -23,6 +23,23 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   a genuine replacement would mean keeping a value-derived fingerprint of a
   removed secret, so it is left as is.
 
+### Fixed (existing loose Phantom state directories are tightened to 0700)
+
+- A `~/.phantom` or project `.phantom` directory that already existed with
+  group/other permissions (for example 0755 from an older release or a loose
+  umask) was never tightened: only newly created state directories and the
+  final directory of `ensure_private_dir` were made 0700, so audit logs,
+  leak incidents, validation reports and backups written beneath an existing
+  loose `.phantom` stayed listable by other local users.
+  `phantom_core::fs::ensure_real_parent` (and so `ensure_private_dir`,
+  `atomic_write` and `write_new_file`) now chmods every existing directory
+  from the outermost `.phantom` down to the target's parent to 0700 on Unix
+  when it is a real directory owned by the current user. A symlinked
+  `.phantom` is still refused and nothing reached through it is chmod-ed;
+  directories owned by another user are left as they are; directories
+  outside a `.phantom` tree (the home directory, the project root) and paths
+  that step out with `..` are never tightened. Windows is unchanged.
+
 ### Fixed (proxy resolves upstream relative references before scoping them to the route)
 
 - An upstream `Location`, `Content-Location` or `Link` target written as a
