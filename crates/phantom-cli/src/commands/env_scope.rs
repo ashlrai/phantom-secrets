@@ -720,15 +720,16 @@ fn prepare_environment_copy(
             Some(value.as_str().to_string()),
             value.as_str().to_string(),
         ));
-        // The destination keeps its source's rotation age, so the copy cannot
-        // restart the clock `enforce_rotation_on_access` measures.
+        // The destination keeps its source's lifecycle metadata (rotation
+        // age, expiry, TTL policy and read-only mode), so the copy is never
+        // less protected than its source.
         mutations.push(
             InitSecret::replace_if_unchanged(
                 namespaced_key(to, &name),
                 None::<String>,
                 value.as_str().to_string(),
             )
-            .inheriting_rotation_anchor(metadata.as_ref()),
+            .inheriting_source_protection(metadata.as_ref()),
         );
         copied_names.push(name);
     }
@@ -1321,6 +1322,50 @@ mod tests {
             refusals.len(),
             1,
             "the copy must be overdue with its source"
+        );
+    }
+
+    /// `phantom env copy` carried only the rotation anchor, so a source
+    /// demoted to read-only, past its expiry, or under a TTL policy came out
+    /// of the copy as an injectable read-write entry with no expiry. Each
+    /// destination now carries every protective lifecycle field of its source.
+    #[test]
+    fn environment_copy_destinations_keep_the_source_protective_metadata() {
+        const DAY: u64 = 86_400;
+        const NOW: u64 = 1_800_000_000;
+        let config = unenforced();
+        let (dir, vault) = vault(None);
+        vault.store("dev/API_KEY", "source-value").unwrap();
+        let protected = phantom_vault::SecretMetadata {
+            created_at: Some(NOW - 40 * DAY),
+            rotated_at: Some(NOW - 35 * DAY),
+            expires_at: Some(NOW - 5 * DAY),
+            rotation_policy: Some(phantom_vault::RotationPolicy {
+                days_ttl: 30,
+                auto_rotate: false,
+            }),
+            vault_mode: phantom_vault::metadata::VaultMode::ReadOnly,
+        };
+        vault
+            .inner
+            .set_metadata("dev/API_KEY", protected.clone())
+            .unwrap();
+        let keys = vault.list().unwrap();
+
+        let plan = prepare_environment_copy(&config, &vault, &keys, "dev", "prod", NOW).unwrap();
+        phantom_vault::commit_init(dir.path(), &vault, plan.mutations, Vec::new()).unwrap();
+
+        let copied = vault
+            .get_metadata("prod/API_KEY")
+            .unwrap()
+            .unwrap_or_default();
+        assert_eq!(copied.expires_at, protected.expires_at);
+        assert_eq!(copied.rotation_policy, protected.rotation_policy);
+        assert_eq!(copied.vault_mode, protected.vault_mode);
+        assert_eq!(copied, protected);
+        assert!(
+            vault.inner.retrieve_for_injection("prod/API_KEY").is_err(),
+            "a copy of a read-only secret must not be injectable"
         );
     }
 
