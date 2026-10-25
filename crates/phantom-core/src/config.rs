@@ -318,10 +318,11 @@ impl ValidationScheduleConfig {
 #[serde(deny_unknown_fields)]
 pub struct SecretOverride {
     /// Override the global rotation schedule for this specific secret.
-    /// Accepts a duration string like `"30d"`, `"7d"`, `"90d"` (days only for
-    /// now) which is converted to a `Daily`/`Weekly`/`Monthly` approximation,
-    /// or the caller can set a full `RotationSchedule` by using the structured
-    /// `rotation_schedule` field instead.
+    /// Accepts a whole number of days or weeks such as `"90d"` or `"12w"`,
+    /// kept exact (see [`parse_rotate_every`]); a value that does not parse
+    /// is a config error, never a silently dropped policy. A full
+    /// `RotationSchedule` can be set with the structured `rotation_schedule`
+    /// field instead.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rotate_every: Option<String>,
     /// Full structured rotation schedule override (takes precedence over `rotate_every`).
@@ -404,32 +405,61 @@ impl Default for SecretOverride {
 
 impl SecretOverride {
     /// Resolve this override to a `RotationSchedule`, if any.
-    pub fn resolve_schedule(&self) -> Option<RotationSchedule> {
+    ///
+    /// An unparseable `rotate_every` is an error rather than `None`, so a typo
+    /// cannot silently fall back to the global policy or to no schedule.
+    pub fn resolve_schedule(&self) -> Result<Option<RotationSchedule>> {
         if let Some(ref sched) = self.rotation_schedule {
-            return Some(sched.clone());
+            return Ok(Some(sched.clone()));
         }
-        if let Some(ref s) = self.rotate_every {
-            return parse_rotate_every(s);
+        match self.rotate_every {
+            Some(ref s) => parse_rotate_every(s).map(Some),
+            None => Ok(None),
         }
-        None
     }
 }
 
-/// Parse a `rotate_every` string like `"30d"`, `"7d"`, `"90d"` into a
-/// `RotationSchedule`.  Only day-based durations are supported.
-pub fn parse_rotate_every(s: &str) -> Option<RotationSchedule> {
-    let s = s.trim().to_ascii_lowercase();
-    let days: u64 = s.strip_suffix('d')?.parse().ok()?;
-
-    let strategy = if days <= 1 {
-        RotationStrategy::Daily
-    } else if days <= 7 {
-        RotationStrategy::Weekly
-    } else {
-        RotationStrategy::Monthly
+/// Parse a `rotate_every` value into a `RotationSchedule`, exactly.
+///
+/// Accepted: a positive whole number of days (`"90d"`) or weeks (`"12w"`).
+/// `1d` is the daily schedule and `7d`/`1w` the weekly one; every other
+/// length is an [`RotationStrategy::Interval`] of exactly that many days, so
+/// `"90d"` is never rounded to monthly. Anything else (`"3mo"`, `"90 days"`,
+/// `"0d"`) is a `ConfigParseError`. The message never echoes the value,
+/// because `.phantom.toml` may hold a pasted credential.
+pub fn parse_rotate_every(s: &str) -> Result<RotationSchedule> {
+    let invalid = || {
+        PhantomError::ConfigParseError(
+            "rotate_every must be a whole number of days or weeks, such as \"90d\" or \"12w\""
+                .to_string(),
+        )
     };
+    let s = s.trim().to_ascii_lowercase();
+    let (number, days_per_unit) = if let Some(number) = s.strip_suffix('d') {
+        (number, 1)
+    } else if let Some(number) = s.strip_suffix('w') {
+        (number, 7)
+    } else {
+        return Err(invalid());
+    };
+    if number.is_empty() || !number.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(invalid());
+    }
+    let days = number
+        .parse::<u64>()
+        .ok()
+        .and_then(|n| n.checked_mul(days_per_unit))
+        // Keep the interval representable in seconds.
+        .filter(|days| days.checked_mul(86_400).is_some())
+        .and_then(std::num::NonZeroU64::new)
+        .ok_or_else(invalid)?;
 
-    Some(RotationSchedule::from_strategy(strategy))
+    let strategy = match days.get() {
+        1 => RotationStrategy::Daily,
+        7 => RotationStrategy::Weekly,
+        _ => RotationStrategy::Interval(days),
+    };
+    Ok(RotationSchedule::from_strategy(strategy))
 }
 
 /// Configuration for how a secret maps to an API service.
@@ -849,13 +879,22 @@ impl PhantomConfig {
     ///   2. Per-secret `rotate_every` in `[phantom.secrets.{name}]`
     ///   3. Global `[phantom.rotation_policy]`
     ///   4. `None` — no schedule configured.
-    pub fn get_rotation_schedule(&self, secret_name: &str) -> Option<RotationSchedule> {
+    ///
+    /// An unparseable per-secret `rotate_every` is a `ConfigParseError` naming
+    /// the secret's section, not a silent fall-through to step 3.
+    pub fn get_rotation_schedule(&self, secret_name: &str) -> Result<Option<RotationSchedule>> {
         if let Some(ov) = self.phantom.secrets.get(secret_name) {
-            if let Some(sched) = ov.resolve_schedule() {
-                return Some(sched);
+            let resolved = ov.resolve_schedule().map_err(|error| match error {
+                PhantomError::ConfigParseError(message) => PhantomError::ConfigParseError(format!(
+                    "[phantom.secrets.{secret_name}] {message}"
+                )),
+                other => other,
+            })?;
+            if let Some(sched) = resolved {
+                return Ok(Some(sched));
             }
         }
-        self.phantom.rotation_policy.clone()
+        Ok(self.phantom.rotation_policy.clone())
     }
 
     /// Generate a collision-resistant, machine-local project ID from a directory path.
@@ -2026,7 +2065,10 @@ header = "Authorization"
             last_rotated: None,
         });
         // No per-secret override — should return global.
-        let sched = config.get_rotation_schedule("OPENAI_API_KEY").unwrap();
+        let sched = config
+            .get_rotation_schedule("OPENAI_API_KEY")
+            .unwrap()
+            .unwrap();
         assert_eq!(sched.strategy, RotationStrategy::Weekly);
     }
 
@@ -2051,21 +2093,117 @@ header = "Authorization"
                 ..Default::default()
             },
         );
-        let sched = config.get_rotation_schedule("STRIPE_KEY").unwrap();
+        let sched = config.get_rotation_schedule("STRIPE_KEY").unwrap().unwrap();
         assert_eq!(sched.strategy, RotationStrategy::Weekly);
         // Other secrets still use global.
-        let global = config.get_rotation_schedule("OTHER_KEY").unwrap();
+        let global = config.get_rotation_schedule("OTHER_KEY").unwrap().unwrap();
         assert_eq!(global.strategy, RotationStrategy::Monthly);
     }
 
     #[test]
     fn parse_rotate_every_days() {
-        assert!(parse_rotate_every("1d").is_some());
-        assert!(parse_rotate_every("7d").is_some());
-        assert!(parse_rotate_every("30d").is_some());
-        assert!(parse_rotate_every("90d").is_some());
-        assert!(parse_rotate_every("bad").is_none());
-        assert!(parse_rotate_every("30").is_none());
+        assert!(parse_rotate_every("1d").is_ok());
+        assert!(parse_rotate_every("7d").is_ok());
+        assert!(parse_rotate_every("30d").is_ok());
+        assert!(parse_rotate_every("90d").is_ok());
+        assert!(parse_rotate_every("bad").is_err());
+        assert!(parse_rotate_every("30").is_err());
+    }
+
+    /// `"90d"` and `"365d"` were both rounded to monthly. Every length is now
+    /// kept exactly; only `1d` and `7d`/`1w` map to the calendar schedules.
+    #[test]
+    fn parse_rotate_every_keeps_the_exact_interval() {
+        let strategy = |s: &str| parse_rotate_every(s).unwrap().strategy;
+        assert_eq!(strategy("1d"), RotationStrategy::Daily);
+        assert_eq!(strategy("7d"), RotationStrategy::Weekly);
+        assert_eq!(strategy("1w"), RotationStrategy::Weekly);
+        assert_eq!(strategy(" 7D "), RotationStrategy::Weekly);
+        for (input, days) in [
+            ("2d", 2),
+            ("8d", 8),
+            ("30d", 30),
+            ("90d", 90),
+            ("365d", 365),
+            ("2w", 14),
+            ("13w", 91),
+        ] {
+            assert_eq!(strategy(input).interval_days(), Some(days), "{input}");
+        }
+    }
+
+    /// A value that does not parse used to return `None`, silently disabling
+    /// the per-secret policy. It is now a config error that does not echo the
+    /// value.
+    #[test]
+    fn parse_rotate_every_rejects_unparseable_values() {
+        for input in [
+            "", "d", "w", "0d", "0w", "-5d", "+5d", "1.5d", "90 days", "90 d", "3mo", "1m", "1y",
+            "90", "monthly", "١٢d",
+        ] {
+            match parse_rotate_every(input) {
+                Err(PhantomError::ConfigParseError(message)) => {
+                    assert!(message.contains("rotate_every"), "{input}: {message}");
+                }
+                Err(_) => panic!("{input}: wrong error kind"),
+                Ok(_) => panic!("{input}: accepted"),
+            }
+        }
+        // Lengths whose seconds overflow are refused, not wrapped.
+        assert!(parse_rotate_every("213503982334602d").is_err());
+        assert!(parse_rotate_every("99999999999999999999d").is_err());
+        assert!(parse_rotate_every("3000000000000000w").is_err());
+    }
+
+    #[test]
+    fn get_rotation_schedule_reports_a_bad_rotate_every_instead_of_falling_back() {
+        let mut config = PhantomConfig::new_with_defaults("bad_every".to_string());
+        config.phantom.rotation_policy =
+            Some(RotationSchedule::from_strategy(RotationStrategy::Daily));
+        config.phantom.secrets.insert(
+            "STRIPE_KEY".to_string(),
+            SecretOverride {
+                rotate_every: Some("3mo".to_string()),
+                ..Default::default()
+            },
+        );
+        match config.get_rotation_schedule("STRIPE_KEY") {
+            Err(PhantomError::ConfigParseError(message)) => {
+                assert!(
+                    message.contains("[phantom.secrets.STRIPE_KEY] rotate_every"),
+                    "{message}"
+                );
+                assert!(!message.contains("3mo"), "{message}");
+            }
+            Err(_) => panic!("wrong error kind"),
+            Ok(_) => panic!("a bad rotate_every fell back to a schedule"),
+        }
+        // Secrets without the bad override still resolve to the global policy.
+        let global = config.get_rotation_schedule("OTHER_KEY").unwrap().unwrap();
+        assert_eq!(global.strategy, RotationStrategy::Daily);
+    }
+
+    #[test]
+    fn interval_strategy_roundtrips_in_toml() {
+        let toml_str = r#"
+[phantom]
+version = "1"
+project_id = "interval"
+
+[phantom.rotation_policy]
+strategy = { interval = 90 }
+"#;
+        let config: PhantomConfig = toml::from_str(toml_str).unwrap();
+        let policy = config.phantom.rotation_policy.clone().unwrap();
+        assert_eq!(policy.strategy.interval_days(), Some(90));
+        let reparsed: PhantomConfig =
+            toml::from_str(&toml::to_string_pretty(&config).unwrap()).unwrap();
+        assert_eq!(reparsed.phantom.rotation_policy, Some(policy));
+        // A zero-day interval is refused at load, not treated as always due.
+        assert!(toml::from_str::<PhantomConfig>(
+            &toml_str.replace("interval = 90", "interval = 0")
+        )
+        .is_err());
     }
 
     #[test]
@@ -2091,7 +2229,7 @@ header = "Authorization"
         let toml_str = toml::to_string_pretty(&config).unwrap();
         let parsed: PhantomConfig = toml::from_str(&toml_str).unwrap();
         let ov = parsed.phantom.secrets.get("MY_KEY").unwrap();
-        let sched = ov.resolve_schedule().unwrap();
+        let sched = ov.resolve_schedule().unwrap().unwrap();
         assert_eq!(sched.strategy, RotationStrategy::Daily);
         assert_eq!(sched.hour, 4);
         assert_eq!(sched.minute, 30);
@@ -2101,7 +2239,10 @@ header = "Authorization"
     #[test]
     fn get_rotation_schedule_returns_none_when_unconfigured() {
         let config = PhantomConfig::new_with_defaults("none_test".to_string());
-        assert!(config.get_rotation_schedule("OPENAI_API_KEY").is_none());
+        assert!(config
+            .get_rotation_schedule("OPENAI_API_KEY")
+            .unwrap()
+            .is_none());
     }
 
     // ── ValidationScheduleConfig tests ───────────────────────────────────────

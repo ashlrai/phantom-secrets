@@ -5384,8 +5384,9 @@ impl PhantomMcpServer {
     #[tool(
         description = "Return the next scheduled rotation time for a named secret. \
             Reads the secret's effective RotationSchedule (per-secret override or global policy) \
-            and computes when rotation is next due. \
-            Returns: { name, strategy, next_rotation_unix (u64 or null), \
+            and computes when rotation is next due. A per-secret `rotate_every` (\"90d\", \"12w\") \
+            is an exact interval: strategy \"interval\" with interval_days; an unparseable value is a config error. \
+            Returns: { name, strategy, interval_days (u64 or null), next_rotation_unix (u64 or null), \
             next_rotation_iso (ISO-8601 or null), last_rotated_unix (u64 or null), \
             last_rotated_iso (ISO-8601 or null), overdue (bool) }. \
             Read-only; no confirm required. Secret VALUES are never returned."
@@ -5417,7 +5418,10 @@ impl PhantomMcpServer {
 
         let now = phantom_vault::metadata::now_secs();
 
-        let schedule = config.get_rotation_schedule(&params.name);
+        let schedule = config
+            .get_rotation_schedule(&params.name)
+            .map_err(config_invalid_err)?;
+        let interval_days = schedule.as_ref().and_then(|s| s.strategy.interval_days());
         let (strategy_label, next_unix, last_rotated_unix, overdue) = match &schedule {
             None => ("none".to_string(), None::<u64>, None::<u64>, false),
             Some(sched) => {
@@ -5434,6 +5438,7 @@ impl PhantomMcpServer {
         let out = serde_json::json!({
             "name": params.name,
             "strategy": strategy_label,
+            "interval_days": interval_days,
             "next_rotation_unix": next_unix,
             "next_rotation_iso": next_iso,
             "last_rotated_unix": last_rotated_unix,
@@ -15340,6 +15345,70 @@ mod tests {
             !json["compliant"].as_bool().unwrap(),
             "compliant must be false when any check fails"
         );
+    }
+
+    fn set_rotate_every(dir: &TempDir, name: &str, interval: &str, global: bool) {
+        use phantom_core::rotation_strategy::{RotationSchedule, RotationStrategy};
+        let config_path = dir.path().join(".phantom.toml");
+        let mut config = PhantomConfig::load(&config_path).unwrap();
+        if global {
+            config.phantom.rotation_policy =
+                Some(RotationSchedule::from_strategy(RotationStrategy::Daily));
+        }
+        config.phantom.secrets.insert(
+            name.to_string(),
+            phantom_core::config::SecretOverride {
+                rotate_every: Some(interval.to_string()),
+                ..Default::default()
+            },
+        );
+        config.save(&config_path).unwrap();
+    }
+
+    /// `rotate_every = "90d"` was reported as a monthly schedule, so the next
+    /// rotation came about three times too often. It is now an exact 90-day
+    /// interval.
+    #[test]
+    fn rotation_schedule_next_keeps_an_exact_rotate_every_interval() {
+        let _environment = TestEnvironment::new();
+        let (server, dir) = setup_initialized_project();
+        for (interval, days) in [("90d", 90), ("365d", 365), ("13w", 91)] {
+            set_rotate_every(&dir, "OPENAI_API_KEY", interval, false);
+            let result = server
+                .phantom_rotation_schedule_next(params(
+                    serde_json::json!({ "name": "OPENAI_API_KEY" }),
+                ))
+                .unwrap();
+            let json = parse_result_json(&result);
+            assert_eq!(json["strategy"], "interval", "{interval}");
+            assert_eq!(json["interval_days"], days, "{interval}");
+        }
+    }
+
+    /// An unparseable `rotate_every` silently fell back to the global policy
+    /// (or to no schedule). It is now a config error naming the field.
+    #[test]
+    fn rotation_schedule_next_rejects_an_unparseable_rotate_every() {
+        let _environment = TestEnvironment::new();
+        let (server, dir) = setup_initialized_project();
+        for interval in ["3mo", "90 days", "0d", "d", "-5d"] {
+            for global in [false, true] {
+                set_rotate_every(&dir, "OPENAI_API_KEY", interval, global);
+                let outcome = server.phantom_rotation_schedule_next(params(
+                    serde_json::json!({ "name": "OPENAI_API_KEY" }),
+                ));
+                let error = match outcome {
+                    Ok(_) => panic!("{interval} (global {global}) was accepted"),
+                    Err(error) => error,
+                };
+                assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_REQUEST);
+                assert!(
+                    error.message.contains("rotate_every"),
+                    "{interval}: {}",
+                    error.message
+                );
+            }
+        }
     }
 
     #[test]
