@@ -332,6 +332,31 @@ impl DotenvFile {
         &self.issues
     }
 
+    /// Each entry with the quote (`'"'` or `'\''`) that delimited its value in
+    /// the source, or `None` for an unquoted value, in [`Self::entries`]
+    /// order. Shell-flavoured callers need it: a single-quoted `'$NAME'` is
+    /// literal text, an unquoted or double-quoted `$NAME` an expansion.
+    pub fn entries_with_quote(&self) -> Vec<(&EnvEntry, Option<char>)> {
+        self.records
+            .iter()
+            .map(|record| {
+                // A quoted value's inner span starts just past its opening
+                // quote; an unquoted one starts after `=` or blanks.
+                let quote = record
+                    .value_span
+                    .start
+                    .checked_sub(1)
+                    .and_then(|before| self.source.as_bytes().get(before))
+                    .and_then(|byte| match byte {
+                        b'"' => Some('"'),
+                        b'\'' => Some('\''),
+                        _ => None,
+                    });
+                (&record.entry, quote)
+            })
+            .collect()
+    }
+
     /// Require an unambiguous, fully parsed document before producing output.
     pub fn validate_for_mutation(&self) -> Result<()> {
         if let Some(issue) = self.issues.first() {
@@ -2088,6 +2113,28 @@ KEY3=unquoted
         // OTHER may be consumed into the attempted multi-line buffer; the
         // guarantee here is the parser does not panic and still returns.
         let _ = dotenv.entries();
+    }
+
+    #[test]
+    fn entries_with_quote_reports_each_values_delimiter() {
+        let content = "A=plain\nB=\"double\"\nC='single'\nD= 'spaced'\nE=\nF=\"multi\nline\"\n";
+        let dotenv = DotenvFile::parse_str(content);
+        let quotes: Vec<(&str, Option<char>)> = dotenv
+            .entries_with_quote()
+            .into_iter()
+            .map(|(entry, quote)| (entry.key.as_str(), quote))
+            .collect();
+        assert_eq!(
+            quotes,
+            [
+                ("A", None),
+                ("B", Some('"')),
+                ("C", Some('\'')),
+                ("D", Some('\'')),
+                ("E", None),
+                ("F", Some('"')),
+            ]
+        );
     }
 
     #[test]

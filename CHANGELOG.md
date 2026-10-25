@@ -4,6 +4,22 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (`phantom check --staged` reads every `.envrc` assignment)
+
+- A staged `.envrc` or `.envrc.local` with an unclosed quote stopped being
+  read at that line, and an unclosed quote could pair with the next line's
+  opening quote and swallow that assignment, so a credential assigned after a
+  shell typo was committed unreported. Each line is now also read on its own
+  and the names are combined with the whole-file read, so multi-line quoted
+  values are still covered and a typo hides nothing after it.
+- A single-quoted value starting with `$` (a `'$argon2id$...'` hash, a
+  password beginning with `$`) was skipped as a shell expansion although
+  single quotes make it literal text. It is now reported; unquoted and
+  double-quoted `$VAR`, `${VAR}`, `$(cmd)` and backticks stay unflagged.
+- A name assigned more than once in one `.envrc` is reported once.
+- Plain `.env` files are unchanged: an unclosed quote there already fails
+  `phantom check` and `phantom check --staged` as malformed dotenv.
+
 ### Fixed (agent readiness recommends `phantom wrap` only when it would wrap something)
 
 - `phantom agent report`, `phantom agent status` and `phantom agent doctor`
