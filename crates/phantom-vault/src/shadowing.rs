@@ -409,10 +409,12 @@ pub struct ShadowStore {
 }
 
 impl ShadowStore {
-    /// Create a new store backed by `dir`.  The directory is created if absent.
+    /// Create a new store backed by `dir`.  The directory is created if
+    /// absent, owner-only (0700 on Unix); an existing owned directory is
+    /// tightened, and a symlink or non-directory at `dir` is refused.
     pub fn new(dir: impl Into<PathBuf>) -> std::io::Result<Self> {
         let dir = dir.into();
-        std::fs::create_dir_all(&dir)?;
+        phantom_core::fs::ensure_private_dir(&dir)?;
         Ok(Self { dir })
     }
 
@@ -432,11 +434,10 @@ impl ShadowStore {
     /// Load shadow metadata for the named secret.  Returns `None` if no shadow
     /// exists.
     pub fn load_meta(&self, name: &str) -> std::io::Result<Option<ShadowMeta>> {
-        let path = self.meta_path(name);
-        if !path.exists() {
+        // A regular file only: a symlink or other object is refused.
+        let Some(bytes) = phantom_core::fs::read_regular_file(&self.meta_path(name))? else {
             return Ok(None);
-        }
-        let bytes = std::fs::read(&path)?;
+        };
         let meta: ShadowMeta = serde_json::from_slice(&bytes)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         Ok(Some(meta))
@@ -457,7 +458,11 @@ impl ShadowStore {
             if !fname_str.ends_with(".shadow.json") {
                 continue;
             }
-            let bytes = std::fs::read(entry.path())?;
+            // Symlinks and other non-regular entries are skipped like
+            // unparsable ones; nothing is read through a link.
+            let Ok(Some(bytes)) = phantom_core::fs::read_regular_file(&entry.path()) else {
+                continue;
+            };
             if let Ok(meta) = serde_json::from_slice::<ShadowMeta>(&bytes) {
                 out.push(meta);
             }
@@ -540,30 +545,11 @@ fn sanitise_name(name: &str) -> String {
         .collect()
 }
 
-/// Write `bytes` to `path` with mode 0600 on Unix, creating or truncating.
+/// Atomically replace `path` with `bytes`. The staging file is 0600 on Unix
+/// and the rename replaces whatever held the name (a planted symlink
+/// included) without writing through it.
 fn write_secret_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(path)?;
-        use std::io::Write;
-        f.write_all(bytes)
-    }
-    #[cfg(not(unix))]
-    {
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(path)?;
-        use std::io::Write;
-        f.write_all(bytes)
-    }
+    phantom_core::fs::atomic_write(path, bytes)
 }
 
 // ── Default shadow directory ──────────────────────────────────────────────────
@@ -934,5 +920,68 @@ mod tests {
         assert_eq!(PromotionStatus::Failed.to_string(), "failed");
         assert_eq!(PromotionStatus::Promoted.to_string(), "promoted");
         assert_eq!(PromotionStatus::Abandoned.to_string(), "abandoned");
+    }
+
+    // ── ShadowStore on-disk hardening ─────────────────────────────────────────
+
+    #[cfg(unix)]
+    fn mode_of(path: &Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::symlink_metadata(path)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_store_dir_is_created_owner_only() {
+        let root = TempDir::new().unwrap();
+        let dir = root.path().join("shadows").join("proj");
+        let store = ShadowStore::new(&dir).unwrap();
+        assert_eq!(mode_of(&dir), 0o700);
+        store.save(&make_shadow()).unwrap();
+        assert_eq!(mode_of(&dir.join("MY_KEY.shadow.json")), 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_store_refuses_symlinked_dir() {
+        let root = TempDir::new().unwrap();
+        let elsewhere = root.path().join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let dir = root.path().join("proj");
+        std::os::unix::fs::symlink(&elsewhere, &dir).unwrap();
+        assert!(ShadowStore::new(&dir).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_store_save_does_not_write_through_symlink() {
+        let root = TempDir::new().unwrap();
+        let store = ShadowStore::new(root.path().join("proj")).unwrap();
+        let target = root.path().join("elsewhere.txt");
+        std::fs::write(&target, b"original\n").unwrap();
+        let meta_p = root.path().join("proj").join("MY_KEY.shadow.json");
+        std::os::unix::fs::symlink(&target, &meta_p).unwrap();
+        let _ = store.save(&make_shadow());
+        assert_eq!(std::fs::read(&target).unwrap(), b"original\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_store_does_not_read_through_symlink() {
+        let root = TempDir::new().unwrap();
+        let other = ShadowStore::new(root.path().join("other")).unwrap();
+        other.save(&make_shadow()).unwrap();
+        let store = ShadowStore::new(root.path().join("proj")).unwrap();
+        std::os::unix::fs::symlink(
+            root.path().join("other").join("MY_KEY.shadow.json"),
+            root.path().join("proj").join("MY_KEY.shadow.json"),
+        )
+        .unwrap();
+        assert!(store.load_meta("MY_KEY").is_err());
+        assert!(store.list_all().unwrap().is_empty());
     }
 }
