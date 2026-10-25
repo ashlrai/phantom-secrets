@@ -4,6 +4,21 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (why reports the rule the classifier decided by)
+
+- `phantom why`, `phantom why --json` and the MCP `phantom_why` tool
+  explained a key with their own copies of the secret heuristics, which had
+  drifted from the classifier. `DB_PWD` was reported as `value_pattern` with
+  no pattern (the CLI printed no reason at all) although the key-name rule
+  `PWD` decided it, and a public-prefixed key such as `VITE_STRIPE_KEY` with a
+  secret-shaped value was explained by the `KEY` fragment in its name, which
+  the classifier never consults for public-prefixed keys. The classifier now
+  returns the rule it decided by (`phantom_core::dotenv::classify_with_reason`),
+  and every why surface reports that rule: `reason` and `matched_pattern` always
+  match the real classification, `public_prefix_with_secret_value` reports the
+  public prefix as `matched_pattern`, and the CLI `Reason:` line names the exact
+  key fragment or value rule. Classification itself is unchanged.
+
 ### Fixed (one hardened active-environment reader)
 
 - `phantom_core::env_scope::read_active_env` and `resolve_env` still followed

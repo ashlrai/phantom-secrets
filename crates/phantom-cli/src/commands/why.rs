@@ -1,7 +1,9 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
 use phantom_core::config::PhantomConfig;
-use phantom_core::dotenv::{classify, is_public_key, DotenvFile, EnvEntry, SecretClassification};
+use phantom_core::dotenv::{
+    classify_with_reason, is_public_key, ClassificationReason, DotenvFile, SecretClassification,
+};
 use phantom_core::why::Surface;
 
 /// Human output for how `phantom exec` treats a protected key. It prints only
@@ -176,7 +178,8 @@ fn run_in(project_dir: &std::path::Path, key: &str, json: bool) -> Result<()> {
                     }
                 }
             } else {
-                let classification = classify(entry);
+                // The reason shown is the rule the classifier decided by.
+                let (classification, reason) = classify_with_reason(entry);
                 match classification {
                     SecretClassification::PublicKey => {
                         println!(
@@ -185,18 +188,7 @@ fn run_in(project_dir: &std::path::Path, key: &str, json: bool) -> Result<()> {
                             key.bold(),
                             "NOT PROTECTED".yellow().bold()
                         );
-                        let public_prefixes = [
-                            "NEXT_PUBLIC_",
-                            "EXPO_PUBLIC_",
-                            "VITE_",
-                            "REACT_APP_",
-                            "NUXT_PUBLIC_",
-                            "GATSBY_",
-                        ];
-                        let prefix = public_prefixes
-                            .iter()
-                            .find(|p| key.starts_with(*p))
-                            .unwrap_or(&"PUBLIC_");
+                        let prefix = reason.matched_pattern().unwrap_or("PUBLIC_");
                         println!(
                             "   Reason: Keys with {} prefix are browser-safe (shipped in client bundles)",
                             prefix.cyan()
@@ -210,7 +202,7 @@ fn run_in(project_dir: &std::path::Path, key: &str, json: bool) -> Result<()> {
                             key.bold(),
                             "UNPROTECTED".red().bold()
                         );
-                        explain_why_secret(entry);
+                        println!("   Reason: {}", secret_reason_line(&reason));
                         println!("   Fix: {}", "phantom init".cyan().bold());
                     }
                     SecretClassification::NotSecret => {
@@ -244,70 +236,73 @@ fn run_in(project_dir: &std::path::Path, key: &str, json: bool) -> Result<()> {
     Ok(())
 }
 
-fn explain_why_secret(entry: &EnvEntry) {
-    let key = entry.key.to_uppercase();
-    let value = &entry.value;
-
-    let secret_key_patterns = [
-        "KEY",
-        "SECRET",
-        "TOKEN",
-        "PASSWORD",
-        "PASSWD",
-        "CREDENTIAL",
-        "AUTH",
-        "PRIVATE",
-    ];
-    let connection_patterns = ["DATABASE_URL", "REDIS_URL", "MONGO_URL"];
-
-    for pattern in &secret_key_patterns {
-        if key.contains(pattern) {
-            println!(
-                "   Reason: Key name contains \"{}\" (secret key pattern)",
-                pattern
-            );
-            return;
+/// The `Reason:` text for a secret, from the rule the classifier used.
+/// Fixed sentences and pattern constants only; never the value.
+fn secret_reason_line(reason: &ClassificationReason) -> String {
+    match reason {
+        ClassificationReason::KeyName(pattern) => {
+            format!("Key name contains \"{pattern}\" (secret key pattern)")
         }
-    }
-    for pattern in &connection_patterns {
-        if key.contains(pattern) {
-            println!(
-                "   Reason: Key name matches connection string pattern (\"{}\")",
-                pattern
-            );
-            return;
+        ClassificationReason::ConnectionPattern(pattern) => {
+            format!("Key name matches connection string pattern (\"{pattern}\")")
         }
-    }
-
-    let secret_prefixes = [
-        ("sk-", "OpenAI-style key"),
-        ("sk_", "Stripe-style key"),
-        ("ghp_", "GitHub token"),
-        ("eyJ", "JWT/base64 token"),
-    ];
-    for (prefix, label) in &secret_prefixes {
-        if value.starts_with(prefix) {
-            println!("   Reason: Value starts with \"{}\" ({})", prefix, label);
-            return;
+        ClassificationReason::Value(rule) => format!("Value {}", rule.describe()),
+        ClassificationReason::PublicPrefixWithSecretValue { prefix, rule } => format!(
+            "Key has the public prefix \"{prefix}\", but its value {}",
+            rule.describe()
+        ),
+        ClassificationReason::PublicPrefix(_) | ClassificationReason::NoSecretPattern => {
+            "Does not match secret key patterns or value patterns".to_string()
         }
-    }
-
-    if value.contains("://") && value.contains('@') {
-        println!("   Reason: Value looks like a connection string with credentials");
-        return;
-    }
-
-    if value.len() >= 32 {
-        println!(
-            "   Reason: Value is a high-entropy string ({} chars)",
-            value.len()
-        );
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The human `Reason:` line names the rule the classifier decided by. It
+    /// was a third copy of the heuristics: `DB_PWD` printed no reason, and a
+    /// public-prefixed key was explained by a name fragment the classifier
+    /// never consults for it.
+    #[test]
+    fn reason_line_names_the_deciding_rule() {
+        use phantom_core::dotenv::EnvEntry;
+        let entry = |key: &str, value: String| EnvEntry {
+            key: key.to_string(),
+            value,
+            is_phantom: false,
+        };
+        let line = |key: &str, value: String| {
+            let (classification, reason) = classify_with_reason(&entry(key, value));
+            assert_eq!(classification, SecretClassification::Secret, "{key}");
+            secret_reason_line(&reason)
+        };
+        assert_eq!(
+            line("DB_PWD", "x1".to_string()),
+            "Key name contains \"PWD\" (secret key pattern)"
+        );
+        assert_eq!(
+            line("SENTRY_DSN", "x".to_string()),
+            "Key name matches connection string pattern (\"DSN\")"
+        );
+        assert_eq!(
+            line("WEBHOOK", ["whsec", "abc"].join("_")),
+            "Value starts with \"whsec_\", a known secret prefix"
+        );
+        assert_eq!(
+            line("CALLBACK", ["https://h/cb?", "token", "="].concat()),
+            "Value is a URL with an auth, token or signature parameter"
+        );
+        assert_eq!(
+            line("BLOB", "a1B2c3D4".repeat(5)),
+            "Value is a long high-entropy string"
+        );
+        assert_eq!(
+            line("VITE_STRIPE_KEY", ["sk", "live", "abc"].join("_")),
+            "Key has the public prefix \"VITE_\", but its value starts with \"sk_\", a known secret prefix"
+        );
+    }
 
     /// Beside an encrypted-file vault this process cannot open, `why` named
     /// the OS keychain as the vault with no word that the project's secrets
