@@ -2145,24 +2145,11 @@ fn acquire_workspace_lock(root: &Path) -> Result<WorkspaceLock> {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let lock_directory = std::env::temp_dir().join("phantom-workspace-locks");
-    std::fs::create_dir_all(&lock_directory).map_err(|source| WorkspaceError::Io {
-        path: lock_directory.clone(),
-        source,
-    })?;
     let lock_path = lock_directory.join(format!(
         "{}.lock",
         digest_hex(root.to_string_lossy().as_bytes())
     ));
-    let lock = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(&lock_path)
-        .map_err(|source| WorkspaceError::Io {
-            path: lock_path.clone(),
-            source,
-        })?;
+    let lock = open_workspace_lock_file(&lock_directory, &lock_path)?;
     fs2::FileExt::lock_exclusive(&lock).map_err(|source| WorkspaceError::Io {
         path: lock_path,
         source,
@@ -2171,6 +2158,84 @@ fn acquire_workspace_lock(root: &Path) -> Result<WorkspaceLock> {
         _process: process,
         _file: lock,
     })
+}
+
+/// Open (creating if needed) the cross-process lock file inside the shared
+/// temp directory.
+///
+/// On Unix the temp directory can be shared with other local users, so the
+/// `phantom-workspace-locks` directory must be a real directory owned by the
+/// current user with no group or other access (created 0700, tightened
+/// through a no-follow descriptor when it is ours), and the lock file is
+/// opened relative to that descriptor without following a symlink. A
+/// directory or link planted by someone else is refused instead of being
+/// followed. The temp directory itself may be a symlink.
+#[cfg(unix)]
+fn open_workspace_lock_file(lock_directory: &Path, lock_path: &Path) -> Result<File> {
+    use std::os::unix::fs::MetadataExt;
+    phantom_core::fs::ensure_private_leaf_dir(lock_directory).map_err(|source| {
+        WorkspaceError::Io {
+            path: lock_directory.to_path_buf(),
+            source,
+        }
+    })?;
+    let directory = open_root_directory(lock_directory)?;
+    let directory_metadata = directory.metadata().map_err(|source| WorkspaceError::Io {
+        path: lock_directory.to_path_buf(),
+        source,
+    })?;
+    // SAFETY: geteuid has no preconditions and cannot fail.
+    let effective_uid = unsafe { libc::geteuid() };
+    if directory_metadata.uid() != effective_uid || directory_metadata.mode() & 0o077 != 0 {
+        return Err(WorkspaceError::UnsafeTarget(lock_directory.to_path_buf()));
+    }
+    let name = lock_path
+        .file_name()
+        .ok_or_else(|| WorkspaceError::UnsafeTarget(lock_path.to_path_buf()))?;
+    let name = c_component(name, lock_path)?;
+    // SAFETY: the directory descriptor is open and `name` is NUL-terminated.
+    let descriptor = unsafe {
+        libc::openat(
+            directory.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_RDWR | libc::O_CREAT | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            0o600,
+        )
+    };
+    if descriptor < 0 {
+        return Err(WorkspaceError::Io {
+            path: lock_path.to_path_buf(),
+            source: std::io::Error::last_os_error(),
+        });
+    }
+    // SAFETY: openat returned a new owned descriptor on success.
+    let lock = unsafe { File::from_raw_fd(descriptor) };
+    let metadata = lock.metadata().map_err(|source| WorkspaceError::Io {
+        path: lock_path.to_path_buf(),
+        source,
+    })?;
+    if !metadata.is_file() || metadata.uid() != effective_uid {
+        return Err(WorkspaceError::UnsafeTarget(lock_path.to_path_buf()));
+    }
+    Ok(lock)
+}
+
+#[cfg(not(unix))]
+fn open_workspace_lock_file(lock_directory: &Path, lock_path: &Path) -> Result<File> {
+    std::fs::create_dir_all(lock_directory).map_err(|source| WorkspaceError::Io {
+        path: lock_directory.to_path_buf(),
+        source,
+    })?;
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(lock_path)
+        .map_err(|source| WorkspaceError::Io {
+            path: lock_path.to_path_buf(),
+            source,
+        })
 }
 
 #[cfg(test)]
@@ -2554,5 +2619,80 @@ mod journal_tests {
         journal.record.request_id = fixture.config.request_id.clone();
         journal.persist().unwrap();
         assert!(DurableJournal::load(&fixture.config).unwrap().is_some());
+    }
+}
+
+#[cfg(all(test, unix))]
+mod workspace_lock_tests {
+    use super::*;
+    use std::os::unix::fs::{symlink, MetadataExt, PermissionsExt};
+
+    fn mode(path: &Path) -> u32 {
+        std::fs::symlink_metadata(path).unwrap().mode() & 0o777
+    }
+
+    #[test]
+    fn fresh_workspace_lock_directory_is_private() {
+        let temp = tempfile::tempdir().unwrap();
+        let directory = temp.path().join("phantom-workspace-locks");
+        let lock_path = directory.join("fresh.lock");
+        open_workspace_lock_file(&directory, &lock_path).unwrap();
+        assert_eq!(mode(&directory), 0o700);
+        assert_eq!(mode(&lock_path), 0o600);
+    }
+
+    #[test]
+    fn symlinked_workspace_lock_directory_is_refused_and_target_untouched() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("planted");
+        std::fs::create_dir(&target).unwrap();
+        std::fs::set_permissions(&target, Permissions::from_mode(0o777)).unwrap();
+        let directory = temp.path().join("phantom-workspace-locks");
+        symlink(&target, &directory).unwrap();
+        let lock_path = directory.join("redirected.lock");
+
+        assert!(open_workspace_lock_file(&directory, &lock_path).is_err());
+        assert_eq!(mode(&target), 0o777);
+        assert!(!target.join("redirected.lock").exists());
+    }
+
+    #[test]
+    fn symlinked_workspace_lock_file_is_refused_and_victim_not_created() {
+        let temp = tempfile::tempdir().unwrap();
+        let directory = temp.path().join("phantom-workspace-locks");
+        std::fs::create_dir(&directory).unwrap();
+        let victim = temp.path().join("victim-file");
+        let lock_path = directory.join("planted.lock");
+        symlink(&victim, &lock_path).unwrap();
+
+        assert!(open_workspace_lock_file(&directory, &lock_path).is_err());
+        assert!(std::fs::symlink_metadata(&victim).is_err());
+    }
+
+    #[test]
+    fn workspace_lock_directory_with_other_access_is_tightened() {
+        let temp = tempfile::tempdir().unwrap();
+        let directory = temp.path().join("phantom-workspace-locks");
+        std::fs::create_dir(&directory).unwrap();
+        std::fs::set_permissions(&directory, Permissions::from_mode(0o777)).unwrap();
+        let lock_path = directory.join("shared.lock");
+        open_workspace_lock_file(&directory, &lock_path).unwrap();
+        assert_eq!(mode(&directory), 0o700);
+    }
+
+    #[test]
+    fn workspace_lock_under_symlinked_temp_parent_still_works() {
+        let temp = tempfile::tempdir().unwrap();
+        let real_temp = temp.path().join("real-temp");
+        std::fs::create_dir(&real_temp).unwrap();
+        let linked_temp = temp.path().join("linked-temp");
+        symlink(&real_temp, &linked_temp).unwrap();
+        let directory = linked_temp.join("phantom-workspace-locks");
+        let lock_path = directory.join("linked.lock");
+        open_workspace_lock_file(&directory, &lock_path).unwrap();
+        assert!(real_temp
+            .join("phantom-workspace-locks")
+            .join("linked.lock")
+            .is_file());
     }
 }
