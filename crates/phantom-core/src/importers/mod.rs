@@ -310,6 +310,31 @@ pub(crate) fn refuse_duplicate_names<'a>(
     Ok(())
 }
 
+/// Refuse an import in which any name is not an environment variable name
+/// (`[A-Za-z_][A-Za-z0-9_]*`, the rule `phantom add` enforces). A JSON export
+/// can carry any string as a name, such as a 1Password label (`API Key`) or
+/// a name containing `=`; vaulting it would report success for a secret that
+/// `phantom exec` can never inject. The error names the entry (escaped),
+/// never a value.
+pub(crate) fn refuse_invalid_names<'a>(
+    source: &str,
+    names: impl IntoIterator<Item = &'a str>,
+) -> Result<()> {
+    for name in names {
+        let mut bytes = name.bytes();
+        let valid = matches!(bytes.next(), Some(b'A'..=b'Z' | b'a'..=b'z' | b'_'))
+            && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_');
+        if !valid {
+            anyhow::bail!(
+                "{source} entry {name:?} is not an environment variable name \
+                 ([A-Za-z_][A-Za-z0-9_]*); nothing was imported. \
+                 Rename it in the export and retry."
+            );
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn unsupported_entry(source: &str, name: &str, kind: &str) -> anyhow::Error {
     anyhow::anyhow!(
         "{source} entry '{name}' has {kind} value that cannot be imported as one secret; \
@@ -577,6 +602,57 @@ mod secure_read_tests {
                 !message.contains("-dup-"),
                 "{label} refusal leaked an input value"
             );
+        }
+    }
+
+    #[test]
+    fn json_sources_refuse_names_that_are_not_environment_keys() {
+        // A JSON export can carry any string as a name: a 1Password label
+        // ("API Key"), a hand-merged file, or a name with `=`. `phantom add`
+        // refuses such names, but the JSON importers used to vault them, so
+        // `phantom exec` could never inject them as environment variables.
+        let held = ["held", "-bad-", "value"].concat();
+        type Parser = fn(&[u8]) -> Result<SecretMap>;
+        type Render = fn(&str, &str) -> String;
+        let parsers: [(&str, Parser, Render); 4] = [
+            (
+                "1password",
+                onepassword::OnePasswordImporter::parse,
+                |name, value| format!(r#"{{"GOOD_NAME":"x",{name:?}:"{value}"}}"#),
+            ),
+            ("dotenvx", dotenvx::DotenvxImporter::parse, |name, value| {
+                format!(r#"{{"GOOD_NAME":"x",{name:?}:"{value}"}}"#)
+            }),
+            ("doppler", doppler::DopplerImporter::parse, |name, value| {
+                format!(r#"{{"GOOD_NAME":"x",{name:?}:{{"computed":"{value}"}}}}"#)
+            }),
+            (
+                "infisical",
+                infisical::InfisicalImporter::parse,
+                |name, value| {
+                    format!(
+                        r#"[{{"key":"GOOD_NAME","value":"x"}},{{"key":{name:?},"value":"{value}"}}]"#
+                    )
+                },
+            ),
+        ];
+        for (label, parser, render) in parsers {
+            for bad in ["API Key", "A=B", "9LIVES", "", "dash-name", "dot.name"] {
+                let outcome = parser(render(bad, &held).as_bytes());
+                assert!(outcome.is_err(), "{label} accepted name {bad:?}");
+                let message = outcome.err().map(|e| e.to_string()).unwrap_or_default();
+                assert!(
+                    message.contains("environment variable name")
+                        && message.contains("nothing was imported"),
+                    "{label} refusal for {bad:?} does not explain itself"
+                );
+                assert!(
+                    !message.contains("-bad-"),
+                    "{label} refusal leaked an input value"
+                );
+            }
+            let ok = parser(render("lower_ok_9", &held).as_bytes());
+            assert!(ok.is_ok(), "{label} refused a valid environment key");
         }
     }
 }
