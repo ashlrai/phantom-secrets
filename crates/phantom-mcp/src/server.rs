@@ -6472,9 +6472,23 @@ fn apply_cloud_pull_transaction(
     remote_version: u64,
 ) -> Result<(usize, usize), McpError> {
     let mut mutations = Vec::new();
+    // Local values already identical to the remote copy need no write, but
+    // they are still bound at commit so a concurrent change is drift, not a
+    // silently reconciled name.
+    let mut unchanged_guards = Vec::new();
     let mut skipped = 0;
     for (name, value) in secrets.iter() {
         let before = retrieve_optional_secret(vault, name, "local cloud-pull destination")?;
+        if let Some(local) = before.as_ref() {
+            if local.as_str().as_bytes() == value.as_bytes() {
+                unchanged_guards.push(phantom_vault::InitSecret::replace_if_unchanged(
+                    name,
+                    Some(local.as_str().to_string()),
+                    local.as_str(),
+                ));
+                continue;
+            }
+        }
         if before.is_some() && !force {
             skipped += 1;
             continue;
@@ -6495,6 +6509,7 @@ fn apply_cloud_pull_transaction(
         })?
         .into_bytes();
     let added = mutations.len();
+    mutations.extend(unchanged_guards);
     let config_file = phantom_vault::InitFile::replace_if_unchanged(
         config_path,
         Some(config_before),
@@ -8498,6 +8513,62 @@ mod tests {
         assert!(cloud.reconciliation_required);
         assert_eq!(cloud.reconciliation_remote_version, Some(10));
         assert!(ensure_cloud_push_allowed_mcp(&persisted).is_err());
+    }
+
+    /// A local value byte-identical to the remote copy needs no reconciliation.
+    /// Counting it as skipped kept the old merge base and blocked every later
+    /// push, even after pulling back exactly what this machine pushed.
+    #[test]
+    fn cloud_pull_identical_local_values_reconcile_without_force() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join(".phantom.toml");
+        let config = cloud_test_config(5);
+        let config_before = write_cloud_test_config(&config_path, &config);
+        let vault = phantom_vault::file::FileVault::new(
+            dir.path(),
+            "cloud-identical",
+            "passphrase".to_string(),
+        )
+        .unwrap();
+        let shared = ["same", "value", "on", "both", "sides"].join("-");
+        phantom_vault::VaultBackend::store(&vault, "EXISTING", &shared).unwrap();
+        let secrets = SensitiveSecretMap::new(std::collections::BTreeMap::from([
+            (
+                "EXISTING".to_string(),
+                zeroize::Zeroizing::new(shared.clone()),
+            ),
+            (
+                "NEW".to_string(),
+                zeroize::Zeroizing::new("remote-new".to_string()),
+            ),
+        ]));
+
+        assert_eq!(
+            apply_cloud_pull_transaction(
+                dir.path(),
+                &config_path,
+                &vault,
+                &secrets,
+                false,
+                config_before,
+                config,
+                12,
+            )
+            .unwrap(),
+            (1, 0)
+        );
+        assert!(
+            phantom_vault::VaultBackend::retrieve(&vault, "EXISTING")
+                .unwrap()
+                .as_str()
+                == shared
+        );
+        let persisted = PhantomConfig::load(&config_path).unwrap();
+        let cloud = persisted.cloud.as_ref().unwrap();
+        assert_eq!(cloud.version, 12);
+        assert!(!cloud.reconciliation_required);
+        assert_eq!(cloud.reconciliation_remote_version, None);
+        ensure_cloud_push_allowed_mcp(&persisted).unwrap();
     }
 
     #[test]

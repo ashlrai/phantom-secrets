@@ -388,6 +388,10 @@ fn apply_cloud_pull_transaction(
     remote_version: u64,
 ) -> Result<(usize, usize)> {
     let mut mutations = Vec::new();
+    // Local values already identical to the remote copy need no write, but
+    // they are still bound at commit so a concurrent change is drift, not a
+    // silently reconciled name.
+    let mut unchanged_guards = Vec::new();
     let mut skipped = 0usize;
     for (name, value) in &secrets.0 {
         let before = match vault.retrieve(name) {
@@ -397,6 +401,16 @@ fn apply_cloud_pull_transaction(
                 anyhow::bail!("Failed to inspect local cloud-pull destination '{name}': {error}")
             }
         };
+        if let Some(local) = before.as_ref() {
+            if local.as_str().as_bytes() == value.as_bytes() {
+                unchanged_guards.push(phantom_vault::InitSecret::replace_if_unchanged(
+                    name,
+                    Some(local.as_str().to_string()),
+                    local.as_str(),
+                ));
+                continue;
+            }
+        }
         if before.is_some() && !force {
             skipped += 1;
             continue;
@@ -413,6 +427,7 @@ fn apply_cloud_pull_transaction(
         .context("Failed to serialize cloud reconciliation state")?
         .into_bytes();
     let added = mutations.len();
+    mutations.extend(unchanged_guards);
     phantom_vault::commit_init(
         project_dir,
         vault,
@@ -883,6 +898,44 @@ mod tests {
         assert!(cloud.reconciliation_required);
         assert_eq!(cloud.reconciliation_remote_version, Some(10));
         assert!(ensure_cloud_push_allowed(&persisted).is_err());
+    }
+
+    /// A pull that finds a local value byte-identical to the remote one has
+    /// nothing to reconcile for that name. Counting it as skipped kept the old
+    /// merge base and blocked every later push, even right after this machine
+    /// pushed the same vault and pulled it back.
+    #[test]
+    fn identical_local_values_reconcile_without_force() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join(".phantom.toml");
+        let config = cloud_test_config(5);
+        let before = write_config(&config_path, &config);
+        let vault = file_vault(&dir, "cli-cloud-identical");
+        let shared = ["same", "value", "on", "both", "sides"].join("-");
+        vault.store("EXISTING", &shared).unwrap();
+
+        assert_eq!(
+            apply_cloud_pull_transaction(
+                dir.path(),
+                &config_path,
+                config,
+                before,
+                &vault,
+                &sensitive(&[("EXISTING", shared.as_str()), ("NEW", "new")]),
+                false,
+                12,
+            )
+            .unwrap(),
+            (1, 0)
+        );
+        assert!(vault.retrieve("EXISTING").unwrap().as_str() == shared);
+        assert_eq!(vault.retrieve("NEW").unwrap().as_str(), "new");
+        let persisted = PhantomConfig::load(&config_path).unwrap();
+        let cloud = persisted.cloud.as_ref().unwrap();
+        assert_eq!(cloud.version, 12);
+        assert!(!cloud.reconciliation_required);
+        assert_eq!(cloud.reconciliation_remote_version, None);
+        ensure_cloud_push_allowed(&persisted).unwrap();
     }
 
     #[test]
