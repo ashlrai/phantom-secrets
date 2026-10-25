@@ -67,7 +67,8 @@ pub(crate) fn enforce_rotation_on_entries<'e>(
 }
 
 /// The same gate for paths that write values of unknown age into the vault
-/// (cloud pull, encrypted backup restore): a restored value would get a fresh
+/// (cloud, team or provider pull, encrypted backup restore, competitor
+/// import): a restored value would get a fresh
 /// anchor (new entry) or inherit the local one (overwrite), laundering an
 /// overdue value. Each written `entries` name whose secret enforces rotation
 /// is refused as having an unknown age. Runs before any vault write.
