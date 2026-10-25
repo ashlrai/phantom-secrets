@@ -15,6 +15,17 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   They now share the regular, non-symlink read `phantom check` uses; anything
   else fails closed with a message naming `.phantom.toml` and no other path.
 
+### Fixed (encrypted-file fallback passphrase left unscrubbed in memory)
+
+- When the OS keychain was unavailable, the generated passphrase for the
+  encrypted-file fallback vault (and a `PHANTOM_VAULT_PASSPHRASE` value) was
+  read from secure storage, generated, verified and handed to the file vault
+  as plain `String`s that were freed without being scrubbed, as were the raw
+  random bytes it was generated from. Every copy on that path is now held in
+  a buffer zeroized on drop, and the value is moved, not copied, into the
+  file vault. Vault selection, read-after-write verification and the refusal
+  to generate a replacement key for an existing vault are unchanged.
+
 ### Fixed (proxy forwarded upstream cookies unscoped across routes)
 
 - Every proxy route is served from the same local origin
