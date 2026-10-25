@@ -20,6 +20,17 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   is refused instead of followed, and a dangling one is no longer reported as
   "not initialized".
 
+### Fixed (browser-prefixed URLs carrying a query-string credential)
+
+- `phantom init` left a public-prefixed URL in plaintext when its query
+  string carried a credential, such as `?password=`, `?secret=`,
+  `?client_secret=`, a request signature (`sig`, `signature`,
+  `X-Amz-Signature`, `X-Goog-Signature`, as in signed S3, GCS or Azure SAS
+  URLs), or a `token`/`key`/`api_key` parameter holding a known secret
+  prefix. Those values are now classified as secrets. Browser-public tokens
+  (Mapbox `pk.`, Google Maps browser keys), analytics params and empty
+  placeholders stay public.
+
 ### Fixed (exact `rotate_every` intervals)
 
 - A per-secret `rotate_every` longer than 7 days was rounded to monthly, so

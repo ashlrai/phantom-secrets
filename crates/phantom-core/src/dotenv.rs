@@ -985,6 +985,7 @@ pub fn classify(entry: &EnvEntry) -> SecretClassification {
         if has_secret_value_pattern(&entry.value)
             || is_pem_private_key(&entry.value)
             || url_has_userinfo_password(&entry.value)
+            || url_has_query_credential(&entry.value)
         {
             SecretClassification::Secret
         } else {
@@ -1040,6 +1041,51 @@ fn url_has_userinfo_password(value: &str) -> bool {
         userinfo
             .split_once(':')
             .is_some_and(|(_, pass)| !pass.is_empty())
+    })
+}
+
+/// A URL whose query string carries a credential that is never meant for a
+/// browser bundle: a password/secret parameter, a request signature (signed
+/// S3/GCS/Azure SAS URLs), or a token/key parameter whose value has a known
+/// secret prefix. Browser-public tokens such as Mapbox `pk.` or Google Maps
+/// `key=AIza...` and analytics params are not matched, nor are empty values.
+fn url_has_query_credential(value: &str) -> bool {
+    const SECRET_PARAMS: &[&str] = &[
+        "password",
+        "passwd",
+        "secret",
+        "client_secret",
+        "api_secret",
+        "sig",
+        "signature",
+        "x-amz-signature",
+        "x-goog-signature",
+    ];
+    const TOKEN_PARAMS: &[&str] = &[
+        "token",
+        "access_token",
+        "auth_token",
+        "api_key",
+        "apikey",
+        "key",
+    ];
+    let Some((_, rest)) = value.split_once("://") else {
+        return false;
+    };
+    let rest = rest.split('#').next().unwrap_or(rest);
+    let Some((_, query)) = rest.split_once('?') else {
+        return false;
+    };
+    query.split('&').any(|pair| {
+        let Some((name, param)) = pair.split_once('=') else {
+            return false;
+        };
+        if param.is_empty() {
+            return false;
+        }
+        let name = name.to_ascii_lowercase();
+        SECRET_PARAMS.contains(&name.as_str())
+            || (TOKEN_PARAMS.contains(&name.as_str()) && has_secret_value_pattern(param))
     })
 }
 
@@ -1582,6 +1628,82 @@ KEY3=unquoted
             .collect();
         assert_eq!(names, ["VITE_DATABASE_URL", "NEXT_PUBLIC_SIGNER"]);
         assert!(dotenv.public_key_entries().is_empty());
+    }
+
+    #[test]
+    fn public_prefix_never_exempts_a_url_with_a_query_credential() {
+        let pw = [
+            "https://api.example.com/v1?user=app&pass",
+            "word=",
+            "hunter2",
+        ]
+        .concat();
+        let client = ["https://auth.example.com/cb?client_", "secret=", "abc123"].concat();
+        let plain = ["https://hooks.example.com/in?sec", "ret=", "xyz789"].concat();
+        let s3 = [
+            "https://bucket.s3.amazonaws.com/o.pdf?X-Amz-Expires=3600&X-Amz-",
+            "Signature=",
+            "deadbeef",
+        ]
+        .concat();
+        let sas = [
+            "https://acct.blob.core.windows.net/c/b?sv=2022&s",
+            "ig=",
+            "q1w2e3",
+        ]
+        .concat();
+        let misnamed = ["https://api.example.com/v1?api_key=", "sk_", "live_abc123"].concat();
+        let gh = ["https://api.example.com/x?tok", "en=", "ghp_", "abc123"].concat();
+        for (key, value) in [
+            ("VITE_API_URL", pw.as_str()),
+            ("NEXT_PUBLIC_OAUTH_CALLBACK", client.as_str()),
+            ("REACT_APP_WEBHOOK", plain.as_str()),
+            ("NEXT_PUBLIC_REPORT_URL", s3.as_str()),
+            ("GATSBY_ASSET", sas.as_str()),
+            ("VITE_BACKEND", misnamed.as_str()),
+            ("EXPO_PUBLIC_FEED", gh.as_str()),
+        ] {
+            assert_eq!(
+                classify_kv(key, value),
+                SecretClassification::Secret,
+                "public-prefixed {key} carries a credential in its query string"
+            );
+        }
+    }
+
+    #[test]
+    fn public_prefix_keeps_urls_with_public_query_params() {
+        // Browser-public tokens (Mapbox `pk.`, Google Maps browser keys) and
+        // analytics params stay public; so do empty placeholders.
+        let mapbox = [
+            "https://api.mapbox.com/styles/v1/me/s?access_",
+            "token=pk.eyJ1Ijoi",
+        ]
+        .concat();
+        let gmaps = [
+            "https://maps.googleapis.com/maps/api/js?ke",
+            "y=AIzaSyExample",
+        ]
+        .concat();
+        for (key, value) in [
+            ("NEXT_PUBLIC_MAP_STYLE", mapbox.as_str()),
+            ("VITE_MAPS_SCRIPT", gmaps.as_str()),
+            (
+                "NEXT_PUBLIC_LANDING",
+                "https://example.com/?utm_source=x&utm_medium=y&ref=abc&lang=en",
+            ),
+            ("VITE_LOGIN_URL", "https://example.com/login?password="),
+            (
+                "NEXT_PUBLIC_DOCS",
+                "https://example.com/docs#signature=intro",
+            ),
+        ] {
+            assert_eq!(
+                classify_kv(key, value),
+                SecretClassification::PublicKey,
+                "{key} is a public browser value"
+            );
+        }
     }
 
     #[test]
