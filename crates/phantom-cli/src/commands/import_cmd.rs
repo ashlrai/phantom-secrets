@@ -13,6 +13,8 @@ use super::export_cmd::{self, PassphrasePurpose, MAX_ENCRYPTED_BACKUP_BYTES};
 
 /// "Refusing to ..." wording for the rotation gate on backup restore.
 const RESTORE_ACTION: &str = "restore the backup";
+/// "Refusing to ..." wording for the rotation gate on a competitor import.
+const IMPORT_ACTION: &str = "import secrets";
 
 /// Import Phantom's encrypted backup format (`phantom-export.enc`).
 pub fn run(
@@ -413,6 +415,18 @@ pub fn run_from(source: &str, file: &str, force: bool) -> Result<()> {
         .filter(|name| existing.contains(*name))
         .cloned()
         .collect::<Vec<_>>();
+    // An imported value carries no rotation anchor: a new entry would be
+    // stamped as stored now and an overwrite would keep the local anchor,
+    // laundering an overdue value re-exported from another manager. Every
+    // incoming name is written, so each one whose secret enforces rotation
+    // is refused from names alone, before the challenge and any vault write.
+    super::rotation_gate::enforce_rotation_on_restore(
+        &project.config,
+        vault.as_ref(),
+        incoming.iter().map(String::as_str),
+        IMPORT_ACTION,
+        super::rotation_gate::now_secs(),
+    )?;
     let consent = import_consent_plan(
         source,
         &source_snapshot,
@@ -760,6 +774,26 @@ mod fail_closed_tests {
             .unwrap();
         assert!(gate < challenge);
         assert!(gate < run.find("commit_init(").unwrap());
+    }
+
+    /// A competitor-imported value (Doppler, Infisical, dotenvx, 1Password,
+    /// .env) carries no rotation anchor: a new entry was stamped as stored
+    /// now and an overwrite kept the local anchor, so re-importing an overdue
+    /// value laundered it. The restore gate runs on every name the import
+    /// writes, before the trusted-terminal challenge and any vault write.
+    #[test]
+    fn competitor_import_gates_rotation_before_the_challenge() {
+        let source = include_str!("import_cmd.rs");
+        let run_from = &source[source.find("pub fn run_from(").unwrap()..];
+        let run_from = &run_from[..run_from.find("fn managed_dotenv_has_plaintext(").unwrap()];
+        let gate = run_from
+            .find("IMPORT_ACTION")
+            .expect("competitor import must gate rotation");
+        let challenge = run_from
+            .find("require_trusted_terminal_effect(&consent.effect")
+            .unwrap();
+        assert!(gate < challenge);
+        assert!(gate < run_from.find("commit_init(").unwrap());
     }
 
     struct ListFailingVault;
