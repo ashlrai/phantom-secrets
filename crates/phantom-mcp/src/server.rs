@@ -2136,7 +2136,11 @@ impl PhantomMcpServer {
             target_env_before,
             target_name,
             secret_value.as_str(),
-            source_metadata.as_ref(),
+            McpCopySource {
+                vault: source_vault.as_ref(),
+                name: &params.name,
+                metadata: source_metadata.as_ref(),
+            },
         )?;
 
         text_result(format!(
@@ -6506,6 +6510,15 @@ fn bounded_validation_name_plan(names: &[String]) -> Result<(String, Vec<String>
     ))
 }
 
+/// The source entry a copy duplicates: where it lives, its name, and the
+/// metadata read before its value. The copy transaction holds the source to
+/// exactly that value and metadata until it commits.
+struct McpCopySource<'a> {
+    vault: &'a dyn phantom_vault::VaultBackend,
+    name: &'a str,
+    metadata: Option<&'a phantom_vault::SecretMetadata>,
+}
+
 #[allow(clippy::too_many_arguments)]
 fn apply_mcp_copy_transaction(
     target_dir: &Path,
@@ -6518,7 +6531,7 @@ fn apply_mcp_copy_transaction(
     env_before: Option<zeroize::Zeroizing<Vec<u8>>>,
     target_name: &str,
     value: &str,
-    source_metadata: Option<&phantom_vault::SecretMetadata>,
+    source: McpCopySource<'_>,
 ) -> Result<(), McpError> {
     let content = zeroize::Zeroizing::new(match env_before.as_deref() {
         Some(bytes) => String::from_utf8(bytes.to_vec())
@@ -6568,11 +6581,19 @@ fn apply_mcp_copy_transaction(
     ];
     // The copy keeps the source's lifecycle metadata (rotation age, expiry,
     // TTL policy and read-only mode), so a duplicate is never less protected
-    // than its source.
+    // than its source. A source demoted, given an expiry, or rotated after it
+    // was read refuses the commit instead.
     let mutation =
         phantom_vault::InitSecret::replace_if_unchanged(target_name, None::<String>, value)
-            .inheriting_source_protection(source_metadata);
-    phantom_vault::commit_init(target_dir, vault, vec![mutation], files).map_err(|error| {
+            .inheriting_source_protection(source.name, source.metadata);
+    phantom_vault::commit_init_with_source_vault(
+        target_dir,
+        vault,
+        source.vault,
+        vec![mutation],
+        files,
+    )
+    .map_err(|error| {
         internal_err(format!(
             "Target copy transaction failed: {error}. Inspect target vault/config/dotenv before retrying."
         ))
@@ -7699,6 +7720,31 @@ mod tests {
         bytes
     }
 
+    /// A source project vault holding `SOURCE_KEY` = `source-value`.
+    fn copy_source_vault(dir: &TempDir) -> phantom_vault::file::FileVault {
+        let vault = phantom_vault::file::FileVault::new(
+            dir.path(),
+            "mcp-copy-source",
+            "passphrase".to_string(),
+        )
+        .unwrap();
+        vault.store("SOURCE_KEY", "source-value").unwrap();
+        // No lifecycle metadata, matching `copy_source`'s `None`.
+        let stamped = vault.get_metadata("SOURCE_KEY").unwrap();
+        assert!(vault
+            .compare_and_swap_metadata("SOURCE_KEY", stamped.as_ref(), None)
+            .unwrap());
+        vault
+    }
+
+    fn copy_source(vault: &phantom_vault::file::FileVault) -> McpCopySource<'_> {
+        McpCopySource {
+            vault,
+            name: "SOURCE_KEY",
+            metadata: None,
+        }
+    }
+
     fn write_copy_test_config(path: &Path) -> (PhantomConfig, Vec<u8>) {
         let config = PhantomConfig::new_with_defaults("copy-target-project".to_string());
         let bytes = toml::to_string_pretty(&config).unwrap().into_bytes();
@@ -7915,6 +7961,8 @@ mod tests {
         let config_path = dir.path().join(".phantom.toml");
         let env_path = dir.path().join(".env");
         let (config, config_before) = write_copy_test_config(&config_path);
+        let source_dir = TempDir::new().unwrap();
+        let source_vault = copy_source_vault(&source_dir);
         let vault = phantom_vault::file::FileVault::new(
             dir.path(),
             "mcp-copy-success",
@@ -7933,7 +7981,7 @@ mod tests {
             None,
             "COPIED_KEY",
             "source-value",
-            None,
+            copy_source(&source_vault),
         )
         .unwrap();
 
@@ -7960,6 +8008,8 @@ mod tests {
         let config_path = dir.path().join(".phantom.toml");
         let env_path = dir.path().join(".env");
         let (config, config_before) = write_copy_test_config(&config_path);
+        let source_dir = TempDir::new().unwrap();
+        let source_vault = copy_source_vault(&source_dir);
         let mut concurrent = config_before.clone();
         concurrent.extend_from_slice(b"\n# concurrent owner\n");
         std::fs::write(&config_path, &concurrent).unwrap();
@@ -7981,7 +8031,7 @@ mod tests {
             None,
             "COPIED_KEY",
             "source-value",
-            None,
+            copy_source(&source_vault),
         )
         .is_err());
         assert_eq!(std::fs::read(&config_path).unwrap(), concurrent);
@@ -7998,6 +8048,8 @@ mod tests {
         let config_path = dir.path().join(".phantom.toml");
         let env_path = dir.path().join(".env");
         let (config, config_before) = write_copy_test_config(&config_path);
+        let source_dir = TempDir::new().unwrap();
+        let source_vault = copy_source_vault(&source_dir);
         let inner = phantom_vault::file::FileVault::new(
             dir.path(),
             "mcp-copy-vault-race",
@@ -8020,7 +8072,7 @@ mod tests {
             None,
             "COPIED_KEY",
             "source-value",
-            None,
+            copy_source(&source_vault),
         )
         .is_err());
         assert_eq!(std::fs::read(&config_path).unwrap(), config_before);
@@ -8029,6 +8081,59 @@ mod tests {
             vault.retrieve("COPIED_KEY").unwrap().as_str(),
             "concurrent-owner"
         );
+    }
+
+    /// The source was demoted to read-only with an expiry after the MCP copy
+    /// read its metadata and value. The target would inherit the stale
+    /// read-write metadata, so the copy is refused with a retry hint and the
+    /// target keeps no vault entry, dotenv mapping or config change.
+    #[test]
+    fn mcp_copy_refuses_a_source_demoted_after_it_was_read() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join(".phantom.toml");
+        let env_path = dir.path().join(".env");
+        let (config, config_before) = write_copy_test_config(&config_path);
+        let source_dir = TempDir::new().unwrap();
+        let source_vault = copy_source_vault(&source_dir);
+        source_vault
+            .set_metadata(
+                "SOURCE_KEY",
+                phantom_vault::SecretMetadata {
+                    vault_mode: phantom_vault::metadata::VaultMode::ReadOnly,
+                    expires_at: Some(1_700_000_000),
+                    ..phantom_vault::SecretMetadata::default()
+                },
+            )
+            .unwrap();
+        let vault = phantom_vault::file::FileVault::new(
+            dir.path(),
+            "mcp-copy-source-demoted",
+            "passphrase".to_string(),
+        )
+        .unwrap();
+
+        let outcome = apply_mcp_copy_transaction(
+            dir.path(),
+            &config_path,
+            config,
+            config_before.clone(),
+            &vault,
+            Vec::new(),
+            env_path.clone(),
+            None,
+            "COPIED_KEY",
+            "source-value",
+            copy_source(&source_vault),
+        );
+
+        let message = outcome.err().map(|error| error.message.to_string());
+        assert!(message.is_some_and(|text| text.contains("retry the copy")));
+        assert_eq!(std::fs::read(&config_path).unwrap(), config_before);
+        assert!(!env_path.exists());
+        assert!(matches!(
+            vault.retrieve("COPIED_KEY"),
+            Err(phantom_core::error::PhantomError::SecretNotFound(_))
+        ));
     }
 
     #[test]
