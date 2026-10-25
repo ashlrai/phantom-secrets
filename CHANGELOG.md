@@ -4,6 +4,22 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (setup backups are created exclusively; leak profiles stay private)
+
+- `phantom setup --client` checked that a `<config>.phantom-bak-<ms>` name was
+  free and then renamed over it, so a backup created in between (by a second
+  setup run or anything else) could be replaced. Backups are now published
+  with a no-replace link/rename (`phantom_core::fs::write_new_file`); an
+  object already at the name, even a dangling symlink, is skipped, never
+  overwritten.
+- The leak-profile store (`~/.phantom/leak-profiles.jsonl`) created
+  `~/.phantom` with umask permissions, wrote the file with umask permissions
+  through any symlink at the path, and read it through a symlink. The state
+  directory is now created 0700 on Unix (an existing one owned by the user is
+  tightened; `phantom_core::fs::ensure_private_dir`), the file is written with
+  `atomic_write` (0600, replaces a link instead of following it), and it is
+  read only as a regular file.
+
 ### Fixed (every remaining CLI command reads `.phantom.toml` only as a regular file)
 
 - `phantom list`, `reveal`, `status`, `watch`, `add` (and `copy`), `expiry`
