@@ -49,6 +49,18 @@ struct VaultData {
     validation_metadata: BTreeMap<String, ValidationMetadata>,
 }
 
+impl VaultData {
+    /// Set `name` to `value`. A stored validation verdict describes the
+    /// credential that was checked, so it is dropped when the value changes:
+    /// the new credential reads as never checked until it is validated.
+    fn replace_value(&mut self, name: &str, value: &str) {
+        if self.secrets.get(name).map(String::as_str) != Some(value) {
+            self.validation_metadata.remove(name);
+        }
+        self.secrets.insert(name.to_string(), value.to_string());
+    }
+}
+
 impl FileVault {
     /// Create a new encrypted file vault beneath an explicitly authorized base.
     ///
@@ -328,7 +340,7 @@ impl VaultBackend for FileVault {
                 .entry(name.to_string())
                 .or_insert_with(crate::metadata::SecretMetadata::new_now);
         }
-        data.secrets.insert(name.to_string(), value.to_string());
+        data.replace_value(name, value);
         self.save(&locked, &data, before.as_ref())?;
         phantom_core::audit::log("vault.store", Some(name));
         Ok(())
@@ -393,7 +405,7 @@ impl VaultBackend for FileVault {
                         .entry(name.to_string())
                         .or_insert_with(crate::metadata::SecretMetadata::new_now);
                 }
-                data.secrets.insert(name.to_string(), value.to_string());
+                data.replace_value(name, value);
             }
             None => {
                 data.secrets.remove(name);
@@ -540,7 +552,7 @@ impl VaultBackend for FileVault {
     fn store_with_expiry(&self, name: &str, value: &str, days_ttl: u64) -> Result<()> {
         let locked = self.lock_view()?;
         let LoadedVault { mut data, before } = self.load(&locked)?;
-        data.secrets.insert(name.to_string(), value.to_string());
+        data.replace_value(name, value);
         data.metadata
             .insert(name.to_string(), SecretMetadata::with_expiry(days_ttl));
         self.save(&locked, &data, before.as_ref())?;
@@ -1181,6 +1193,67 @@ mod tests {
         assert_eq!(
             meta.rotation_policy.unwrap().days_ttl,
             back.rotation_policy.unwrap().days_ttl
+        );
+    }
+
+    /// A validation verdict describes the credential that was checked. When
+    /// the value under a name is replaced, the old verdict must not be
+    /// reported for the new credential: it reads as never checked until the
+    /// next live check.
+    #[test]
+    fn replacing_a_value_drops_the_previous_validation_verdict() {
+        use phantom_core::validator::ValidationMetadata;
+
+        let (vault, _dir) = test_vault();
+        let verdict = ValidationMetadata::mark_valid("test");
+
+        // store() overwrite
+        vault.store("API_KEY", "first-value").unwrap();
+        vault
+            .set_validation_metadata("API_KEY", verdict.clone())
+            .unwrap();
+        vault.store("API_KEY", "second-value").unwrap();
+        assert_eq!(
+            vault.get_validation_metadata_exact("API_KEY").unwrap(),
+            None
+        );
+
+        // compare_and_swap() replacement
+        vault
+            .set_validation_metadata("API_KEY", verdict.clone())
+            .unwrap();
+        assert!(vault
+            .compare_and_swap("API_KEY", Some("second-value"), Some("third-value"))
+            .unwrap());
+        assert_eq!(
+            vault.get_validation_metadata_exact("API_KEY").unwrap(),
+            None
+        );
+
+        // store_with_expiry() overwrite
+        vault
+            .set_validation_metadata("API_KEY", verdict.clone())
+            .unwrap();
+        vault
+            .store_with_expiry("API_KEY", "fourth-value", 7)
+            .unwrap();
+        assert_eq!(
+            vault.get_validation_metadata_exact("API_KEY").unwrap(),
+            None
+        );
+
+        // Rewriting the identical value keeps the verdict: the checked
+        // credential is still the one stored.
+        vault
+            .set_validation_metadata("API_KEY", verdict.clone())
+            .unwrap();
+        vault.store("API_KEY", "fourth-value").unwrap();
+        assert!(vault
+            .compare_and_swap("API_KEY", Some("fourth-value"), Some("fourth-value"))
+            .unwrap());
+        assert_eq!(
+            vault.get_validation_metadata_exact("API_KEY").unwrap(),
+            Some(verdict)
         );
     }
 

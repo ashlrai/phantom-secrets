@@ -437,7 +437,7 @@ fn commit_init_with_identity(
             }
             ensure_secret_state(vault, snapshot, true)
                 .map_err(|error| (snapshot.name.clone(), error.to_string()))?;
-            ensure_secret_metadata(vault, snapshot)
+            ensure_secret_metadata(vault, snapshot, true)
                 .map_err(|error| (snapshot.name.clone(), error.to_string()))?;
         }
 
@@ -788,11 +788,14 @@ fn ensure_secret_state(
     }
 }
 
+/// Verify lifecycle and validation metadata for the committed (`after`) or
+/// restored (`!after`) state of an entry that existed before the transaction.
 fn ensure_secret_metadata(
     vault: &dyn VaultBackend,
     snapshot: &SecretSnapshot,
+    after: bool,
 ) -> Result<(), InitTransactionError> {
-    if snapshot.after.is_none() {
+    if after && snapshot.after.is_none() {
         let metadata_absent = vault
             .get_metadata(&snapshot.name)
             .map_err(|_| InitTransactionError::Preflight {
@@ -820,6 +823,13 @@ fn ensure_secret_metadata(
     if snapshot.before.is_none() {
         return Ok(());
     }
+    // A committed replacement with a different value drops the old
+    // validation verdict; a restored entry carries its exact before-image.
+    let expected_validation = if after && value_changed(snapshot) {
+        None
+    } else {
+        snapshot.validation.clone()
+    };
     let metadata_matches =
         vault
             .get_metadata(&snapshot.name)
@@ -834,7 +844,7 @@ fn ensure_secret_metadata(
             target: snapshot.name.clone(),
             reason: "vault validation metadata verification failed".to_string(),
         })?
-        == snapshot.validation;
+        == expected_validation;
     if metadata_matches && validation_matches {
         Ok(())
     } else {
@@ -955,13 +965,17 @@ fn rollback_secrets(vault: &dyn VaultBackend, snapshots: &mut [SecretSnapshot]) 
         let replacement = snapshot.before.as_ref().map(|before| before.as_str());
         let expected_after = snapshot.after.as_ref().map(|after| after.as_str());
         let result = vault.compare_and_swap(&snapshot.name, expected_after, replacement);
-        let metadata_restored = if matches!(result, Ok(true)) && snapshot.after.is_none() {
-            restore_deleted_metadata(vault, snapshot)
-        } else {
-            matches!(result, Ok(true))
+        let metadata_restored = match result {
+            Ok(true) if snapshot.after.is_none() => restore_deleted_metadata(vault, snapshot),
+            Ok(true) if snapshot.before.is_some() && value_changed(snapshot) => {
+                restore_validation(vault, snapshot)
+            }
+            Ok(true) => true,
+            _ => false,
         };
         if !metadata_restored
-            || (snapshot.before.is_some() && ensure_secret_metadata(vault, snapshot).is_err())
+            || (snapshot.before.is_some()
+                && ensure_secret_metadata(vault, snapshot, false).is_err())
         {
             ok = false;
         } else {
@@ -986,10 +1000,24 @@ fn restore_deleted_metadata(vault: &dyn VaultBackend, snapshot: &SecretSnapshot)
     ) {
         return false;
     }
+    restore_validation(vault, snapshot)
+}
+
+fn value_changed(snapshot: &SecretSnapshot) -> bool {
+    snapshot.before.as_ref().map(|value| value.as_str())
+        != snapshot.after.as_ref().map(|value| value.as_str())
+}
+
+/// Put back the exact validation before-image after the backend dropped it
+/// because the value under the name changed.
+fn restore_validation(vault: &dyn VaultBackend, snapshot: &SecretSnapshot) -> bool {
     let current_validation = match vault.get_validation_metadata_exact(&snapshot.name) {
         Ok(metadata) => metadata,
         Err(_) => return false,
     };
+    if current_validation == snapshot.validation {
+        return true;
+    }
     matches!(
         vault.compare_and_swap_validation_metadata(
             &snapshot.name,
@@ -1800,6 +1828,57 @@ mod tests {
             Some(validation)
         );
         assert_eq!(std::fs::read(&target).unwrap(), b"A=phm_before\n");
+    }
+
+    #[test]
+    fn replacement_drops_stale_verdict_and_rollback_restores_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = vault(&dir);
+        vault.store("A", "one").unwrap();
+        let validation = ValidationMetadata::mark_valid("test");
+        vault
+            .set_validation_metadata("A", validation.clone())
+            .unwrap();
+
+        // A late file failure rolls the replacement back, verdict included.
+        let target = dir.path().join("managed.env");
+        phantom_core::fs::atomic_write(&target, b"A=phm_before\n").unwrap();
+        let error = commit_init_with(
+            dir.path(),
+            &vault,
+            vec![InitSecret::replace_if_unchanged("A", Some("one"), "two")],
+            vec![InitFile::replace_if_unchanged(
+                &target,
+                Some(b"A=phm_before\n".to_vec()),
+                b"A=phm_after\n".to_vec(),
+            )
+            .commit_last()],
+            &FailingWriter {
+                calls: AtomicUsize::new(0),
+                fail: 1,
+            },
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, InitTransactionError::Commit { .. }),
+            "unexpected replacement rollback error: {error:?}"
+        );
+        assert_eq!(vault.retrieve("A").unwrap().as_str(), "one");
+        assert_eq!(
+            vault.get_validation_metadata_exact("A").unwrap(),
+            Some(validation)
+        );
+
+        // A committed replacement no longer carries the old verdict.
+        commit_init(
+            dir.path(),
+            &vault,
+            vec![InitSecret::replace_if_unchanged("A", Some("one"), "two")],
+            vec![],
+        )
+        .unwrap();
+        assert_eq!(vault.retrieve("A").unwrap().as_str(), "two");
+        assert_eq!(vault.get_validation_metadata_exact("A").unwrap(), None);
     }
 
     #[test]
