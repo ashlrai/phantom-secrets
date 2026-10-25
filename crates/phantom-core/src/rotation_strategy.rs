@@ -341,8 +341,9 @@ pub fn seconds_overdue(schedule: &RotationSchedule, now_secs: u64) -> Option<i64
 // ── Rotation enforcement gate ─────────────────────────────────────────────────
 
 /// Period in seconds for each `RotationStrategy` variant.
-/// Used by the enforcement gate to determine how long ago `last_rotated` must
-/// have been to be considered overdue.
+/// Used by the enforcement gate to decide how old a secret may be before
+/// access is refused. `Monthly` is a fixed 30 days here, so a monthly secret
+/// is refused at most a day earlier than a calendar month would allow.
 pub fn strategy_period_secs(strategy: &RotationStrategy) -> Option<u64> {
     match strategy {
         RotationStrategy::Never => None,
@@ -358,16 +359,22 @@ pub fn strategy_period_secs(strategy: &RotationStrategy) -> Option<u64> {
 pub enum RotationEnforcementStatus {
     /// Rotation enforcement is disabled for this secret.
     Disabled,
-    /// The schedule is `Never` — enforcement is not applicable.
-    NotApplicable,
-    /// Secret has never been rotated but enforcement requires it.
-    NeverRotated,
+    /// Enforcement is on, but the secret has no rotation schedule (or its
+    /// schedule is `never`), so there is no period to enforce. Blocked: the
+    /// configuration asks for something Phantom cannot check.
+    NoSchedule,
+    /// Enforcement is on, but there is no trustworthy timestamp to measure the
+    /// secret's age from. Blocked.
+    NoAnchor,
+    /// The age anchor lies in the future (clock change or edited metadata), so
+    /// the secret's age is unknown. Blocked.
+    AnchorInFuture,
     /// Secret is within its rotation window — access is allowed.
     Ok,
     /// Secret is overdue for rotation. Contains the age in seconds and a
     /// human-readable schedule description for the error message.
     Overdue {
-        /// How many seconds ago the secret was last rotated (or 0 if never).
+        /// Seconds since the age anchor.
         last_rotated_secs_ago: u64,
         /// Human-readable schedule name, e.g. `"weekly"`.
         schedule_label: String,
@@ -375,49 +382,77 @@ pub enum RotationEnforcementStatus {
 }
 
 impl RotationEnforcementStatus {
-    /// Returns `true` when `phantom exec` must be blocked.
+    /// Returns `true` when access must be refused.
     pub fn is_blocked(&self) -> bool {
-        matches!(
+        !matches!(
             self,
-            RotationEnforcementStatus::Overdue { .. } | RotationEnforcementStatus::NeverRotated
+            RotationEnforcementStatus::Disabled | RotationEnforcementStatus::Ok
         )
     }
 
-    /// Build the error message shown to the user when blocked.
-    ///
-    /// Example: `"Secret API_KEY last rotated 40 days ago (schedule: weekly). Run \`phantom rotate API_KEY\` to unlock."`
+    /// Build the message shown when access is refused. It names the secret
+    /// and the fix, and never contains a secret value.
     pub fn error_message(&self, secret_name: &str) -> Option<String> {
-        match self {
-            RotationEnforcementStatus::NeverRotated => Some(format!(
-                "Secret '{secret_name}' has never been rotated (rotation enforcement is on). \
-                 Run `phantom rotate {secret_name}` to unlock."
-            )),
+        let fix = format!(
+            "Rotate the credential at its provider, then replace it from a trusted terminal with \
+             `phantom remove {secret_name}` followed by `phantom add {secret_name}`, or set \
+             `enforce_rotation_on_access = false` under [phantom.secrets.{secret_name}] in .phantom.toml."
+        );
+        let reason = match self {
+            RotationEnforcementStatus::Disabled | RotationEnforcementStatus::Ok => return None,
+            RotationEnforcementStatus::NoSchedule => format!(
+                "Secret '{secret_name}' has enforce_rotation_on_access = true but no rotation \
+                 schedule to enforce; set `rotate_every` (such as \"90d\") under \
+                 [phantom.secrets.{secret_name}] or a [phantom.rotation_policy]."
+            ),
+            RotationEnforcementStatus::NoAnchor => format!(
+                "Secret '{secret_name}' has rotation enforcement on, but its vault entry records \
+                 no time it was stored or rotated, so its age is unknown."
+            ),
+            RotationEnforcementStatus::AnchorInFuture => format!(
+                "Secret '{secret_name}' has rotation enforcement on, but its vault entry records \
+                 a store or rotation time in the future, so its age is unknown."
+            ),
             RotationEnforcementStatus::Overdue {
                 last_rotated_secs_ago,
                 schedule_label,
             } => {
                 let days = last_rotated_secs_ago / 86_400;
                 let unit = if days == 1 { "day" } else { "days" };
-                Some(format!(
-                    "Secret '{secret_name}' last rotated {days} {unit} ago \
-                     (schedule: {schedule_label}). \
-                     Run `phantom rotate {secret_name}` to unlock."
-                ))
+                format!(
+                    "Secret '{secret_name}' was stored or last rotated {days} {unit} ago \
+                     (schedule: {schedule_label}) and is overdue for rotation."
+                )
             }
-            _ => None,
+        };
+        if matches!(self, RotationEnforcementStatus::NoSchedule) {
+            return Some(format!(
+                "{reason} Or set `enforce_rotation_on_access = false` under \
+                 [phantom.secrets.{secret_name}] in .phantom.toml."
+            ));
         }
+        Some(format!("{reason} {fix}"))
     }
 }
 
-/// Check whether a secret with `enforce_rotation_on_access = true` should block
-/// access given its rotation schedule and current time.
+/// Check whether a secret with `enforce_rotation_on_access = true` must be
+/// refused, given its rotation schedule and age anchor.
 ///
 /// * `enforce` — the value of `SecretOverride::enforce_rotation_on_access`.
 /// * `schedule` — the effective `RotationSchedule` for this secret (if any).
+/// * `anchor` — Unix time the secret's current value is known to be no older
+///   than (the caller derives it from machine-local vault metadata). The
+///   schedule's own `last_rotated` is deliberately ignored: it lives in the
+///   committed `.phantom.toml`, no Phantom command writes it, and a hand-set
+///   value would otherwise unlock the gate.
 /// * `now_secs` — current Unix timestamp (injectable for tests).
+///
+/// Every state other than "disabled" and "provably within the window"
+/// blocks, so a missing schedule or anchor fails closed.
 pub fn check_rotation_enforcement(
     enforce: bool,
     schedule: Option<&RotationSchedule>,
+    anchor: Option<u64>,
     now_secs: u64,
 ) -> RotationEnforcementStatus {
     if !enforce {
@@ -425,19 +460,21 @@ pub fn check_rotation_enforcement(
     }
 
     let Some(sched) = schedule else {
-        return RotationEnforcementStatus::NotApplicable;
+        return RotationEnforcementStatus::NoSchedule;
     };
 
     let Some(period) = strategy_period_secs(&sched.strategy) else {
-        // Strategy::Never — enforcement not applicable.
-        return RotationEnforcementStatus::NotApplicable;
+        return RotationEnforcementStatus::NoSchedule;
     };
 
-    let Some(last_rotated) = sched.last_rotated else {
-        return RotationEnforcementStatus::NeverRotated;
+    let Some(anchor) = anchor else {
+        return RotationEnforcementStatus::NoAnchor;
     };
+    if anchor > now_secs {
+        return RotationEnforcementStatus::AnchorInFuture;
+    }
 
-    let age = now_secs.saturating_sub(last_rotated);
+    let age = now_secs - anchor;
     if age >= period {
         RotationEnforcementStatus::Overdue {
             last_rotated_secs_ago: age,
@@ -919,19 +956,128 @@ mod tests {
             strategy_period_secs(&interval(90, None).strategy),
             Some(90 * DAY_SECS)
         );
-        let ok = interval(90, Some(now - 60 * DAY_SECS));
+        let sched = interval(90, None);
         assert_eq!(
-            check_rotation_enforcement(true, Some(&ok), now),
+            check_rotation_enforcement(true, Some(&sched), Some(now - 60 * DAY_SECS), now),
             RotationEnforcementStatus::Ok
         );
-        let overdue = interval(90, Some(now - 95 * DAY_SECS));
         assert_eq!(
-            check_rotation_enforcement(true, Some(&overdue), now),
+            check_rotation_enforcement(true, Some(&sched), Some(now - 95 * DAY_SECS), now),
             RotationEnforcementStatus::Overdue {
                 last_rotated_secs_ago: 95 * DAY_SECS,
                 schedule_label: "every 90 days".to_string(),
             }
         );
+    }
+
+    /// The gate measures age from the caller's vault-derived anchor. A
+    /// `last_rotated` committed in `.phantom.toml` must not unlock it.
+    #[test]
+    fn enforcement_ignores_the_config_last_rotated() {
+        let now = base_now();
+        let committed_fresh = interval(90, Some(now));
+        let status = check_rotation_enforcement(
+            true,
+            Some(&committed_fresh),
+            Some(now - 95 * DAY_SECS),
+            now,
+        );
+        assert!(status.is_blocked(), "got {status:?}");
+        let committed_future = interval(90, Some(u64::MAX));
+        assert!(check_rotation_enforcement(
+            true,
+            Some(&committed_future),
+            Some(now - 95 * DAY_SECS),
+            now
+        )
+        .is_blocked());
+    }
+
+    #[test]
+    fn enforcement_fails_closed_without_a_schedule_or_anchor() {
+        let now = base_now();
+        let sched = interval(90, None);
+        let never = RotationSchedule::from_strategy(RotationStrategy::Never);
+        for (status, expected) in [
+            (
+                check_rotation_enforcement(true, None, Some(now), now),
+                RotationEnforcementStatus::NoSchedule,
+            ),
+            (
+                check_rotation_enforcement(true, Some(&never), Some(now), now),
+                RotationEnforcementStatus::NoSchedule,
+            ),
+            (
+                check_rotation_enforcement(true, Some(&sched), None, now),
+                RotationEnforcementStatus::NoAnchor,
+            ),
+            (
+                check_rotation_enforcement(true, Some(&sched), Some(now + 60), now),
+                RotationEnforcementStatus::AnchorInFuture,
+            ),
+        ] {
+            assert_eq!(status, expected);
+            assert!(status.is_blocked(), "{expected:?} must block");
+        }
+    }
+
+    #[test]
+    fn disabled_enforcement_never_blocks() {
+        let now = base_now();
+        let sched = interval(90, None);
+        for anchor in [None, Some(0), Some(now + 60)] {
+            let status = check_rotation_enforcement(false, Some(&sched), anchor, now);
+            assert_eq!(status, RotationEnforcementStatus::Disabled);
+            assert!(!status.is_blocked());
+            assert!(status.error_message("API_KEY").is_none());
+        }
+        assert_eq!(
+            check_rotation_enforcement(false, None, None, now),
+            RotationEnforcementStatus::Disabled
+        );
+    }
+
+    #[test]
+    fn enforcement_boundary_is_one_full_period() {
+        let now = base_now();
+        let weekly = RotationSchedule::from_strategy(RotationStrategy::Weekly);
+        let just_inside = now - 7 * DAY_SECS + 1;
+        assert_eq!(
+            check_rotation_enforcement(true, Some(&weekly), Some(just_inside), now),
+            RotationEnforcementStatus::Ok
+        );
+        assert!(
+            check_rotation_enforcement(true, Some(&weekly), Some(now - 7 * DAY_SECS), now)
+                .is_blocked()
+        );
+    }
+
+    #[test]
+    fn enforcement_messages_name_the_secret_and_a_real_fix() {
+        let now = base_now();
+        let sched = interval(90, None);
+        let overdue =
+            check_rotation_enforcement(true, Some(&sched), Some(now - 95 * DAY_SECS), now);
+        let message = overdue.error_message("API_KEY").unwrap();
+        assert!(message.contains("'API_KEY'"));
+        assert!(message.contains("95 days ago"));
+        assert!(message.contains("every 90 days"));
+        assert!(message.contains("`phantom remove API_KEY` followed by `phantom add API_KEY`"));
+        assert!(message.contains("enforce_rotation_on_access = false"));
+        // `phantom rotate NAME` does not replace a credential in this release.
+        assert!(!message.contains("phantom rotate"));
+        for status in [
+            RotationEnforcementStatus::NoAnchor,
+            RotationEnforcementStatus::AnchorInFuture,
+        ] {
+            let message = status.error_message("API_KEY").unwrap();
+            assert!(message.contains("'API_KEY'") && message.contains("phantom remove API_KEY"));
+        }
+        let message = RotationEnforcementStatus::NoSchedule
+            .error_message("API_KEY")
+            .unwrap();
+        assert!(message.contains("rotate_every"));
+        assert!(message.contains("enforce_rotation_on_access = false"));
     }
 
     #[test]
