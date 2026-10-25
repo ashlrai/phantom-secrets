@@ -4,6 +4,17 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (browser-prefixed keys holding a private key or URL password)
+
+- `phantom init` left a PEM private key or a connection URL with a password
+  (`postgres://user:pass@host`, `redis://:pass@host`) in plaintext when its
+  key had a framework public prefix (`NEXT_PUBLIC_`, `VITE_`, `REACT_APP_`,
+  `EXPO_PUBLIC_`, `NUXT_PUBLIC_`, `GATSBY_`), because only a short list of
+  vendor key prefixes overrode the public classification. Those values are
+  now classified as secrets and replaced with phantom tokens. Certificates,
+  public keys, public JWTs such as a Supabase anon key, and URLs without a
+  password stay public.
+
 ### Fixed (pre-commit scan by staged entry type)
 
 - `phantom check --staged` skipped every type-changed path (status `T`), so
