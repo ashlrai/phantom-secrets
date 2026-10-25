@@ -296,8 +296,9 @@ pub fn atomic_write_if_unchanged(
     expected_before: Option<&[u8]>,
     contents: &[u8],
 ) -> io::Result<()> {
-    let current = read_regular_file(path)?;
-    if current.as_deref() != expected_before {
+    // The before-image can be `.env` plaintext: wipe it when dropped.
+    let current = read_regular_file(path)?.map(zeroize::Zeroizing::new);
+    if current.as_ref().map(|bytes| bytes.as_slice()) != expected_before {
         return Err(io::Error::other(format!(
             "file changed after it was read; refusing to overwrite {}",
             path.display()
