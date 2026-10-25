@@ -49,7 +49,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::io::{BufRead, Write};
+use std::io::BufRead;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -216,11 +216,15 @@ impl ContextualLeakProfileStore {
 
     /// Load persisted profiles from disk into memory.
     pub fn load(&mut self) -> std::io::Result<()> {
-        if !self.profiles_path.exists() {
+        // `/dev/null` is the ephemeral store used in tests: nothing to load.
+        if self.profiles_path == std::path::Path::new("/dev/null") {
             return Ok(());
         }
-        let file = std::fs::File::open(&self.profiles_path)?;
-        let reader = std::io::BufReader::new(file);
+        // Regular files only: a symlink or device at the path is refused.
+        let Some(bytes) = crate::fs::read_regular_file(&self.profiles_path)? else {
+            return Ok(());
+        };
+        let reader = std::io::BufReader::new(bytes.as_slice());
         for line in reader.lines() {
             let line = match line {
                 Ok(l) => l,
@@ -321,12 +325,12 @@ impl ContextualLeakProfileStore {
     // ── Private ───────────────────────────────────────────────────────────────
 
     fn persist_observation_cloned(&self, _obs: &LeakPathObservation) -> std::io::Result<()> {
-        if let Some(parent) = self.profiles_path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
         // Skip persistence for /dev/null paths (ephemeral stores used in tests).
         if self.profiles_path == std::path::Path::new("/dev/null") {
             return Ok(());
+        }
+        if let Some(parent) = self.profiles_path.parent() {
+            crate::fs::ensure_private_dir(parent)?;
         }
         // Rewrite the entire file with merged observations.
         // For typical deployment (tens to low hundreds of profiles) this is
@@ -338,15 +342,9 @@ impl ContextualLeakProfileStore {
             line.push(b'\n');
             lines.push(line);
         }
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(&self.profiles_path)?;
-        for line in lines {
-            file.write_all(&line)?;
-        }
-        Ok(())
+        // atomic_write stages a 0600 temp file and renames it over the
+        // target, so a symlink at the path is replaced, never written through.
+        crate::fs::atomic_write(&self.profiles_path, &lines.concat())
     }
 }
 
@@ -1686,7 +1684,55 @@ fn is_public_alert_ip(ip: std::net::IpAddr) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
     use tempfile::tempdir;
+
+    #[cfg(unix)]
+    #[test]
+    fn leak_profiles_state_dir_and_file_are_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempdir().unwrap();
+        let state = tmp.path().join(".phantom");
+        let path = state.join("leak-profiles.jsonl");
+        let mut store = ContextualLeakProfileStore::with_path(path.clone());
+        let ctx = RequestContext::new("POST", "/v1/x", "application/json", 200);
+        store
+            .record_leak("SAMPLE_NAME", ".data.field", &ctx)
+            .unwrap();
+        let dir_mode = std::fs::metadata(&state).unwrap().permissions().mode() & 0o777;
+        assert_eq!(dir_mode, 0o700);
+        let file_mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(file_mode, 0o600);
+
+        // An existing state dir the user owns is tightened.
+        std::fs::set_permissions(&state, std::fs::Permissions::from_mode(0o755)).unwrap();
+        store
+            .record_leak("SAMPLE_NAME", ".data.other", &ctx)
+            .unwrap();
+        let dir_mode = std::fs::metadata(&state).unwrap().permissions().mode() & 0o777;
+        assert_eq!(dir_mode, 0o700);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn leak_profiles_never_follow_a_symlink() {
+        let tmp = tempdir().unwrap();
+        let state = tmp.path().join(".phantom");
+        std::fs::create_dir(&state).unwrap();
+        let victim = tmp.path().join("victim");
+        std::fs::write(&victim, b"keep").unwrap();
+        let path = state.join("leak-profiles.jsonl");
+        std::os::unix::fs::symlink(&victim, &path).unwrap();
+
+        // The reader refuses the link instead of reading through it.
+        let mut store = ContextualLeakProfileStore::with_path(path.clone());
+        assert!(store.load().is_err());
+
+        // The writer never writes through the link.
+        let ctx = RequestContext::new("POST", "/v1/x", "application/json", 200);
+        let _ = store.record_leak("SAMPLE_NAME", ".data.field", &ctx);
+        assert_eq!(std::fs::read(&victim).unwrap(), b"keep");
+    }
 
     // Mutex so concurrent test threads don't step on each other's HOME env var.
     use crate::test_support::ENV_LOCK;

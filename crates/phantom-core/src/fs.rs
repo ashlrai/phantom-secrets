@@ -296,8 +296,9 @@ pub fn atomic_write_if_unchanged(
     expected_before: Option<&[u8]>,
     contents: &[u8],
 ) -> io::Result<()> {
-    let current = read_regular_file(path)?;
-    if current.as_deref() != expected_before {
+    // The before-image can be `.env` plaintext: wipe it when dropped.
+    let current = read_regular_file(path)?.map(zeroize::Zeroizing::new);
+    if current.as_ref().map(|bytes| bytes.as_slice()) != expected_before {
         return Err(io::Error::other(format!(
             "file changed after it was read; refusing to overwrite {}",
             path.display()
@@ -359,6 +360,75 @@ pub fn ensure_real_parent(path: &Path) -> io::Result<()> {
                 }
             }
             Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
+/// Create `path` as a new file holding `contents`, never replacing anything.
+///
+/// The bytes are staged in a same-directory temp file (mode 0600 on POSIX),
+/// fsynced, then published with a no-replace link/rename. If any object,
+/// including a dangling symlink, already holds the name, this returns
+/// `ErrorKind::AlreadyExists` and leaves that object untouched.
+pub fn write_new_file(path: &Path, contents: &[u8]) -> io::Result<()> {
+    ensure_real_parent(path)?;
+    let dir = match path.parent() {
+        Some(dir) if !dir.as_os_str().is_empty() => dir,
+        _ => Path::new("."),
+    };
+    let mut tmp = NamedTempFile::new_in(dir)?;
+    tmp.write_all(contents)?;
+    tmp.as_file_mut().sync_all()?;
+    tmp.persist_noclobber(path).map_err(|e| e.error)?;
+    sync_parent_dir(dir)
+}
+
+/// Create Phantom's own state directory (for example `~/.phantom`) if it is
+/// missing and keep it private.
+///
+/// Missing ancestors are created as [`ensure_real_parent`] does; the final
+/// directory is created with mode 0700 on Unix. A symlink or non-directory at
+/// `path` is refused. An existing directory owned by the current user is
+/// tightened to 0700; one owned by someone else is left as it is.
+pub fn ensure_private_dir(path: &Path) -> io::Result<()> {
+    ensure_real_parent(path)?;
+    let mut builder = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    match builder.create(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error),
+    }
+    let metadata = std::fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(io::Error::other(format!(
+            "Phantom state directory is not a real directory: {}",
+            path.display()
+        )));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::fd::AsRawFd;
+        use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+        // Judge and repair through one handle so a swap after the lookup
+        // above cannot redirect the chmod.
+        let directory = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(path)?;
+        let metadata = directory.metadata()?;
+        // SAFETY: geteuid has no preconditions and cannot fail.
+        let owned = metadata.uid() == unsafe { libc::geteuid() };
+        if owned && metadata.mode() & 0o077 != 0 {
+            // SAFETY: the descriptor is owned by `directory` and open.
+            if unsafe { libc::fchmod(directory.as_raw_fd(), 0o700) } != 0 {
+                return Err(io::Error::last_os_error());
+            }
         }
     }
     Ok(())
@@ -445,6 +515,62 @@ pub fn sync_parent_dir(_dir: &Path) -> io::Result<()> {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn write_new_file_creates_and_never_replaces() {
+        let dir = TempDir::new().unwrap();
+        let target = dir.path().join("new");
+        write_new_file(&target, b"first").unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"first");
+        let error = write_new_file(&target, b"second").unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read(&target).unwrap(), b"first");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_new_file_is_private_and_refuses_a_dangling_symlink() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new().unwrap();
+        let target = dir.path().join("new");
+        write_new_file(&target, b"x").unwrap();
+        let mode = std::fs::metadata(&target).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+
+        let link = dir.path().join("link");
+        let pointee = dir.path().join("pointee");
+        std::os::unix::fs::symlink(&pointee, &link).unwrap();
+        let error = write_new_file(&link, b"y").unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        assert!(!pointee.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_private_dir_creates_tightens_and_refuses_links() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new().unwrap();
+        let state = dir.path().join("home/.phantom");
+        ensure_private_dir(&state).unwrap();
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&state), 0o700);
+
+        std::fs::set_permissions(&state, std::fs::Permissions::from_mode(0o755)).unwrap();
+        ensure_private_dir(&state).unwrap();
+        assert_eq!(mode(&state), 0o700);
+
+        let elsewhere = dir.path().join("elsewhere");
+        std::fs::create_dir(&elsewhere).unwrap();
+        std::fs::set_permissions(&elsewhere, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let link = dir.path().join("linked");
+        std::os::unix::fs::symlink(&elsewhere, &link).unwrap();
+        assert!(ensure_private_dir(&link).is_err());
+        assert_eq!(mode(&elsewhere), 0o755);
+
+        let file = dir.path().join("plain");
+        std::fs::write(&file, b"").unwrap();
+        assert!(ensure_private_dir(&file).is_err());
+    }
 
     /// Windows: `read_regular_file` shares the dotenv open. A plain file reads
     /// through the post-read identity check, and a file symlink is refused.

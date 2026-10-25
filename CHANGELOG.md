@@ -28,6 +28,58 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   refused. The challenge is unchanged and the gate still runs again just
   before the source value is read.
 
+### Fixed (audit, hotspot-ack and shadow state files stay private and are never read or written through a symlink)
+
+- The audit writer created `~/.phantom` with `create_dir_all`, so a fresh
+  directory came out 0755 under the usual umask. It is now created owner-only
+  (0700); an existing directory you own is tightened, and a symlink or
+  non-directory at `~/.phantom` makes the write fail instead of being used.
+- Hotspot acknowledgements (`~/.phantom/hotspot-alerts.jsonl`) were
+  appended with umask permissions through any symlink at that path and read
+  back through one. The file is now opened owner-only (0600, tightened when
+  older), never through a symlink, and only a regular file is read; ack
+  records behind a link are ignored, so the alert stays visible.
+- `phantom audit verify`, `audit stats`, the context walk, hotspot detection,
+  the recent-lines reader behind `audit tail`, and the HMAC key and head
+  checkpoint loads read their files with `std::fs` calls that followed a
+  symlink (and a dangling link read as "no log yet"). They now read regular
+  files only and refuse a symlink, directory, FIFO, or device. The audit
+  chain format and HMAC are unchanged.
+- `ShadowStore` (`~/.phantom/shadows/<project>`) now creates its directory
+  owner-only and refuses a symlinked one, writes metadata atomically (0600)
+  instead of truncating through a symlink, and reads only regular files.
+
+### Fixed (symlinked `.env` reads and `.phantom.toml` presence checks)
+
+- `DotenvFile::parse_file` read `.env` through symlinks, so a `.env` symlink
+  planted in a project made Phantom read a file outside it. It now reads the
+  file only as a regular, non-symlink file and refuses a symlink (dangling or
+  not), directory, FIFO or device with an error naming the path. A missing
+  `.env` is still reported as not found.
+- The before-image that `atomic_write_if_unchanged` reads back to compare
+  (which can be `.env` plaintext) is now zeroized when dropped.
+- `phantom init --multi` treated a directory or symlink named `.phantom.toml`
+  as "already protected", and the "run from the project root" hint followed a
+  symlinked ancestor `.phantom.toml`. Both now use the same regular-file rule
+  as the config loader: such a repo is reported as refused instead of
+  skipped, and only a regular ancestor config is named as the project root.
+
+### Fixed (setup backups are created exclusively; leak profiles stay private)
+
+- `phantom setup --client` checked that a `<config>.phantom-bak-<ms>` name was
+  free and then renamed over it, so a backup created in between (by a second
+  setup run or anything else) could be replaced. Backups are now published
+  with a no-replace link/rename (`phantom_core::fs::write_new_file`); an
+  object already at the name, even a dangling symlink, is skipped, never
+  overwritten.
+- The leak-profile store (`~/.phantom/leak-profiles.jsonl`) created
+  `~/.phantom` with umask permissions, wrote the file with umask permissions
+  through any symlink at the path, and read it through a symlink. The state
+  directory is now created 0700 on Unix (an existing one owned by the user is
+  tightened; `phantom_core::fs::ensure_private_dir`), the file is written with
+  `atomic_write` (0600, replaces a link instead of following it), and it is
+  read only as a regular file.
+
 ### Fixed (mapped upstream URIs keep the path-auth base; `Content-Location` and `Link` are mapped too)
 
 - A route reached through the `/<route>/_phantom/<session token>/` base URL
@@ -690,7 +742,6 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   encrypted to. A new key or keypair is now created only when the keychain
   reports no entry; any other read failure is returned as an error and the
   stored key is left untouched.
-
 
 ### Added (`phantom doctor --pq`)
 
