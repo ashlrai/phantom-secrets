@@ -4,6 +4,17 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (exec, start, sync, doctor and why read `.phantom.toml` only as a regular file)
+
+- `phantom exec`, `phantom start`, `phantom sync`, `phantom doctor` and
+  `phantom why` followed a `.phantom.toml` symlink. One pointing outside the
+  project had that other file's `dotenv_path` and routes choose which dotenv
+  exec protected and proxied, which file `doctor --fix` repaired, and what
+  sync pushed; a dangling one read as "not initialized", so doctor and why
+  judged `./.env` instead. A FIFO named `.phantom.toml` hung each command.
+  They now share the regular, non-symlink read `phantom check` uses; anything
+  else fails closed with a message naming `.phantom.toml` and no other path.
+
 ### Fixed (imported names that are not environment keys)
 
 - `phantom import --from doppler|infisical|dotenvx|1password` with a JSON
