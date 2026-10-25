@@ -1047,6 +1047,16 @@ async fn handle_request(
     // base URL, mapped upstream URIs are written relative to the request so
     // the client keeps that base without the proxy echoing the token.
     let path_auth_remainder = path_token.as_ref().map(|_| remainder);
+    // Upstream relative references resolve against the upstream request URL.
+    let upstream_request_url = reqwest::Url::parse(&target_url).ok();
+    let scope_uri = |value: &str| {
+        scope_upstream_uri_for_client(
+            value,
+            route,
+            upstream_request_url.as_ref(),
+            path_auth_remainder,
+        )
+    };
     let response_connection_named = connection_named_headers(response.headers());
     for (name, value) in response.headers() {
         let name_str = name.as_str();
@@ -1082,19 +1092,31 @@ async fn handle_request(
                     continue;
                 }
             }
-        } else if name == hyper::header::LOCATION || name == hyper::header::CONTENT_LOCATION {
-            // Every route shares this proxy's one origin, so a redirect (or
-            // a Content-Location) naming an absolute path or URL on the
-            // route's upstream must keep the route prefix, or the client
-            // follows it to the wrong local path or straight to the
+        } else if name == hyper::header::LOCATION
+            || name == hyper::header::CONTENT_LOCATION
+            || name == hyper::header::LINK
+        {
+            // Every route shares this proxy's one origin, so a redirect, a
+            // Content-Location or a Link naming the route's upstream must
+            // keep the route prefix, or the client follows it to the wrong
+            // local path (possibly another route) or straight to the
             // upstream, bypassing the proxy.
-            scope_upstream_uri_for_client(&scrubbed_value, route, path_auth_remainder)
-                .unwrap_or(scrubbed_value)
-        } else if name == hyper::header::LINK {
-            scope_link_header(&scrubbed_value, |target| {
-                scope_upstream_uri_for_client(target, route, path_auth_remainder)
-            })
-            .unwrap_or(scrubbed_value)
+            let scoped = if name == hyper::header::LINK {
+                scope_link_header(&scrubbed_value, scope_uri)
+            } else {
+                scope_uri(&scrubbed_value)
+            };
+            match scoped {
+                ClientUri::Mapped(mapped) => mapped,
+                ClientUri::Unchanged => scrubbed_value,
+                ClientUri::Unreachable => {
+                    warn!(
+                        "Dropped upstream {} for service {} that the route cannot reach",
+                        name_str, route.name
+                    );
+                    continue;
+                }
+            }
         } else {
             scrubbed_value
         };
@@ -1347,83 +1369,143 @@ fn scope_set_cookie_to_route(value: &str, route_name: &str) -> Option<String> {
     Some(scoped.join("; "))
 }
 
-/// Map an upstream `Location` that stays on the route's own upstream back
-/// under the route's local prefix: `/v1/files/abc` (or the same URL written
-/// absolutely against the route's upstream origin) becomes
-/// `/<route>/v1/files/abc`. When the route's upstream base carries a path,
-/// only Locations under that path are mapped. Returns `None`, leaving the
-/// value unchanged, for relative references (which already resolve under the
-/// route prefix), network-path references, other origins, and paths outside
-/// the base path, so a redirect is never rewritten to send the route's
-/// credential anywhere but its own upstream. A path the route would forward
-/// to a different upstream path (its SDK version prefix or `//` collapsing)
-/// is left unchanged too, so following the mapped Location requests exactly
-/// the upstream path the redirect named.
-fn scope_location_to_route(value: &str, route: &crate::services::ServiceRoute) -> Option<String> {
-    let route_name = route.name.as_str();
-    let base = reqwest::Url::parse(&route.target_base).ok()?;
-    let base_path = base.path().trim_end_matches('/');
-    let local = if value.starts_with('/') {
-        // `//host` and `/\host` are network-path references to another host.
-        if matches!(value.as_bytes().get(1), Some(b'/' | b'\\')) {
-            return None;
-        }
-        value.to_string()
-    } else {
-        let location = reqwest::Url::parse(value).ok()?;
-        if location.scheme() != base.scheme()
-            || location.host_str() != base.host_str()
-            || location.port_or_known_default() != base.port_or_known_default()
-        {
-            return None;
-        }
-        let mut local = location.path().to_string();
-        if let Some(query) = location.query() {
-            local.push('?');
-            local.push_str(query);
-        }
-        if let Some(fragment) = location.fragment() {
-            local.push('#');
-            local.push_str(fragment);
-        }
-        local
-    };
-    let rest = local.strip_prefix(base_path)?;
-    if !(rest.is_empty() || rest.starts_with(['/', '?', '#'])) {
-        return None;
-    }
-    if route_name.is_empty() || route_name.contains(['/', '?', '#', '\\']) {
-        return None;
-    }
-    let rest_path = rest.split(['?', '#']).next().unwrap_or_default();
-    if route.upstream_path(rest_path) != rest_path {
-        return None;
-    }
-    Some(format!("/{route_name}{rest}"))
+/// How an upstream URI reference (a `Location`, `Content-Location`, `Link`
+/// target or `Link` `anchor`) is presented to the client.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ClientUri {
+    /// Rewritten to name the same upstream resource through the route.
+    Mapped(String),
+    /// Names another origin (or the upstream outside what the route
+    /// reaches, written absolutely): forwarded unchanged, since the client
+    /// never resolves it on the proxy's origin.
+    Unchanged,
+    /// Resolves on the proxy's own origin to a path the route cannot map:
+    /// dropped, since a client following it would leave the route prefix
+    /// (possibly onto another route) or request the wrong upstream path.
+    Unreachable,
 }
 
-/// Map an upstream URI reference (a `Location`, `Content-Location` or `Link`
-/// target) for the client. The mapping itself is [`scope_location_to_route`].
-/// When the request came in through the URL-carried auth base
-/// `/<route>/_phantom/<proxy token>/` (`path_auth_remainder` is the matched
-/// route remainder of that request), the mapped path is written as a
-/// reference relative to the request URL, so the client resolves it under
-/// its own authenticated base and the proxy never puts the session token
-/// (let alone a vault value) in a response header. When no exact relative
-/// form exists (the target is the bare route base, or a dot segment would
-/// let it climb out of the base), the header-auth form `/<route>/...` is
-/// returned instead: the client is then refused with 401, never misrouted.
+/// Map an upstream URI reference that stays on the route's own upstream
+/// back under the route's local prefix: `/v1/files/abc` (or the same URL
+/// written absolutely against the route's upstream origin) becomes
+/// `/<route>/v1/files/abc`.
+///
+/// A relative reference (`next`, `../v2/x`, `?page=2`, `/v1/x`) is relative
+/// to the upstream request URL `upstream_request`, not to the client's local
+/// URL, so it is resolved there first (RFC 3986 section 5) and the resolved
+/// URL is mapped. When the route's upstream base carries a path, only
+/// targets under that path are mapped. A path the route would forward to a
+/// different upstream path (its SDK version prefix or `//` collapsing) is
+/// not mapped either, so following a mapped reference requests exactly the
+/// upstream path the upstream named.
+///
+/// Absolute URLs on other origins (and absolute URLs on the upstream origin
+/// that the route cannot reach) are [`ClientUri::Unchanged`]: they never
+/// resolve on the proxy, and are never rewritten to point at the route
+/// (which would send its credential somewhere else). A relative reference
+/// whose resolved URL is on another origin (a network-path reference such
+/// as `//host/x`) is likewise unchanged. A relative reference that stays on
+/// the upstream origin but cannot be mapped is [`ClientUri::Unreachable`].
+fn scope_location_to_route(
+    value: &str,
+    route: &crate::services::ServiceRoute,
+    upstream_request: Option<&reqwest::Url>,
+) -> ClientUri {
+    let Ok(base) = reqwest::Url::parse(&route.target_base) else {
+        return ClientUri::Unchanged;
+    };
+    let relative = !starts_with_uri_scheme(value);
+    let parsed = if relative {
+        match upstream_request.map(|request| request.join(value)) {
+            Some(Ok(location)) => Ok(location),
+            _ => Err(ClientUri::Unreachable),
+        }
+    } else {
+        reqwest::Url::parse(value).map_err(|_| ClientUri::Unchanged)
+    };
+    let location = match parsed {
+        Ok(location) => location,
+        Err(outcome) => return outcome,
+    };
+    // What a reference the route cannot map becomes.
+    let unmapped = if relative {
+        ClientUri::Unreachable
+    } else {
+        ClientUri::Unchanged
+    };
+    if location.scheme() != base.scheme()
+        || location.host_str() != base.host_str()
+        || location.port_or_known_default() != base.port_or_known_default()
+    {
+        return ClientUri::Unchanged;
+    }
+    let route_name = route.name.as_str();
+    if route_name.is_empty() || route_name.contains(['/', '?', '#', '\\']) {
+        return unmapped;
+    }
+    let base_path = base.path().trim_end_matches('/');
+    let Some(rest_path) = location.path().strip_prefix(base_path) else {
+        return unmapped;
+    };
+    if !(rest_path.is_empty() || rest_path.starts_with('/'))
+        || route.upstream_path(rest_path) != rest_path
+    {
+        return unmapped;
+    }
+    let mut local = format!("/{route_name}{rest_path}");
+    if let Some(query) = location.query() {
+        local.push('?');
+        local.push_str(query);
+    }
+    if let Some(fragment) = location.fragment() {
+        local.push('#');
+        local.push_str(fragment);
+    }
+    ClientUri::Mapped(local)
+}
+
+/// Whether a URI reference starts with a scheme (`scheme:` per RFC 3986
+/// section 3.1), so it is an absolute URI rather than a relative reference.
+/// Leading C0 controls and spaces are skipped, as URL parsers do.
+fn starts_with_uri_scheme(value: &str) -> bool {
+    let value = value.trim_start_matches(|ch: char| ch <= ' ');
+    let Some(colon) = value.find(':') else {
+        return false;
+    };
+    let scheme = &value[..colon];
+    scheme.starts_with(|ch: char| ch.is_ascii_alphabetic())
+        && scheme
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '+' | '-' | '.'))
+}
+
+/// Map an upstream URI reference (a `Location`, `Content-Location`, `Link`
+/// target or `Link` `anchor`) for the client. The mapping itself is
+/// [`scope_location_to_route`]. When the request came in through the
+/// URL-carried auth base `/<route>/_phantom/<proxy token>/`
+/// (`path_auth_remainder` is the matched route remainder of that request),
+/// the mapped path is written as a reference relative to the request URL,
+/// so the client resolves it under its own authenticated base and the proxy
+/// never puts the session token (let alone a vault value) in a response
+/// header. When no exact relative form exists (the target is the bare route
+/// base, or a dot segment would let it climb out of the base), the
+/// header-auth form `/<route>/...` is returned instead: the client is then
+/// refused with 401, never misrouted.
 fn scope_upstream_uri_for_client(
     value: &str,
     route: &crate::services::ServiceRoute,
+    upstream_request: Option<&reqwest::Url>,
     path_auth_remainder: Option<&str>,
-) -> Option<String> {
-    let mapped = scope_location_to_route(value, route)?;
+) -> ClientUri {
+    let mapped = match scope_location_to_route(value, route, upstream_request) {
+        ClientUri::Mapped(mapped) => mapped,
+        other => return other,
+    };
     let Some(request_remainder) = path_auth_remainder else {
-        return Some(mapped);
+        return ClientUri::Mapped(mapped);
     };
     let rest = &mapped[1 + route.name.len()..];
-    Some(relative_to_path_auth_base(rest, request_remainder).unwrap_or(mapped))
+    ClientUri::Mapped(relative_to_path_auth_base(rest, request_remainder).unwrap_or(mapped))
 }
 
 /// The relative reference that, resolved against
@@ -1449,11 +1531,106 @@ fn relative_to_path_auth_base(target_rest: &str, request_remainder: &str) -> Opt
     Some(format!("{prefix}{tail}"))
 }
 
-/// Rewrite each `<target>` of an RFC 8288 `Link` header with `map`, keeping
-/// parameters (and targets `map` leaves alone) byte-for-byte. Returns `None`
-/// when nothing was rewritten or the header does not parse, so it is
-/// forwarded unchanged.
-fn scope_link_header(value: &str, map: impl Fn(&str) -> Option<String>) -> Option<String> {
+/// Index of the first `delimiter` outside a quoted string, and whether the
+/// text ends inside an unterminated quoted string.
+fn find_unquoted(text: &str, delimiter: char) -> (Option<usize>, bool) {
+    let (mut quoted, mut escaped) = (false, false);
+    for (index, ch) in text.char_indices() {
+        if quoted {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                quoted = false;
+            }
+        } else if ch == '"' {
+            quoted = true;
+        } else if ch == delimiter {
+            return (Some(index), false);
+        }
+    }
+    (None, quoted)
+}
+
+/// Rewrite the `anchor` parameter of one link-value's parameter list
+/// (`; rel="next"; anchor="..."`) with `map`. Every other parameter, and an
+/// anchor `map` leaves unchanged, is kept byte-for-byte; a mapped anchor is
+/// written as a quoted string.
+fn scope_link_params(params: &str, map: &impl Fn(&str) -> ClientUri) -> ClientUri {
+    let mut out = String::with_capacity(params.len());
+    let mut rest = params;
+    let mut changed = false;
+    loop {
+        let (end, _) = find_unquoted(rest, ';');
+        let param = &rest[..end.unwrap_or(rest.len())];
+        let mut written = false;
+        if let Some((name, raw)) = param.split_once('=') {
+            if name.trim().eq_ignore_ascii_case("anchor") {
+                let raw_value = raw.trim();
+                let anchor = match raw_value
+                    .strip_prefix('"')
+                    .and_then(|inner| inner.strip_suffix('"'))
+                {
+                    Some(inner) => {
+                        let mut unescaped = String::with_capacity(inner.len());
+                        let mut chars = inner.chars();
+                        while let Some(ch) = chars.next() {
+                            unescaped.push(if ch == '\\' {
+                                chars.next().unwrap_or('\\')
+                            } else {
+                                ch
+                            });
+                        }
+                        unescaped
+                    }
+                    None => raw_value.to_string(),
+                };
+                match map(&anchor) {
+                    ClientUri::Mapped(mapped) => {
+                        let lead = &raw[..raw.len() - raw.trim_start().len()];
+                        let trail = &raw[raw.trim_end().len()..];
+                        let quoted = mapped.replace('\\', "\\\\").replace('"', "\\\"");
+                        out.push_str(name);
+                        out.push('=');
+                        out.push_str(lead);
+                        out.push('"');
+                        out.push_str(&quoted);
+                        out.push('"');
+                        out.push_str(trail);
+                        written = true;
+                        changed = true;
+                    }
+                    ClientUri::Unreachable => return ClientUri::Unreachable,
+                    ClientUri::Unchanged => {}
+                }
+            }
+        }
+        if !written {
+            out.push_str(param);
+        }
+        match end {
+            Some(index) => {
+                out.push(';');
+                rest = &rest[index + 1..];
+            }
+            None => break,
+        }
+    }
+    if changed {
+        ClientUri::Mapped(out)
+    } else {
+        ClientUri::Unchanged
+    }
+}
+
+/// Rewrite each `<target>` and `anchor` parameter of an RFC 8288 `Link`
+/// header with `map`, keeping the other parameters (and references `map`
+/// leaves unchanged) byte-for-byte. [`ClientUri::Unchanged`] when nothing
+/// was rewritten or the header does not parse, so it is forwarded as is;
+/// [`ClientUri::Unreachable`] when any reference is, so the header is
+/// dropped.
+fn scope_link_header(value: &str, map: impl Fn(&str) -> ClientUri) -> ClientUri {
     let mut out = String::with_capacity(value.len());
     let mut rest = value;
     let mut changed = false;
@@ -1463,48 +1640,49 @@ fn scope_link_header(value: &str, map: impl Fn(&str) -> Option<String>) -> Optio
         if trimmed.is_empty() {
             break;
         }
-        let after_open = trimmed.strip_prefix('<')?;
-        let close = after_open.find('>')?;
+        let Some(after_open) = trimmed.strip_prefix('<') else {
+            return ClientUri::Unchanged;
+        };
+        let Some(close) = after_open.find('>') else {
+            return ClientUri::Unchanged;
+        };
         match map(&after_open[..close]) {
-            Some(mapped) => {
+            ClientUri::Mapped(mapped) => {
                 out.push('<');
                 out.push_str(&mapped);
                 out.push('>');
                 changed = true;
             }
-            None => out.push_str(&trimmed[..close + 2]),
+            ClientUri::Unreachable => return ClientUri::Unreachable,
+            ClientUri::Unchanged => out.push_str(&trimmed[..close + 2]),
         }
         let params = &after_open[close + 1..];
-        let (mut quoted, mut escaped, mut split) = (false, false, None);
-        for (index, ch) in params.char_indices() {
-            if quoted {
-                if escaped {
-                    escaped = false;
-                } else if ch == '\\' {
-                    escaped = true;
-                } else if ch == '"' {
-                    quoted = false;
-                }
-            } else if ch == '"' {
-                quoted = true;
-            } else if ch == ',' {
-                split = Some(index);
-                break;
+        let (split, unterminated) = find_unquoted(params, ',');
+        if unterminated {
+            return ClientUri::Unchanged;
+        }
+        let end = split.unwrap_or(params.len());
+        match scope_link_params(&params[..end], &map) {
+            ClientUri::Mapped(scoped) => {
+                out.push_str(&scoped);
+                changed = true;
             }
+            ClientUri::Unreachable => return ClientUri::Unreachable,
+            ClientUri::Unchanged => out.push_str(&params[..end]),
         }
         match split {
             Some(index) => {
-                out.push_str(&params[..=index]);
+                out.push(',');
                 rest = &params[index + 1..];
             }
-            None if quoted => return None,
-            None => {
-                out.push_str(params);
-                break;
-            }
+            None => break,
         }
     }
-    changed.then_some(out)
+    if changed {
+        ClientUri::Mapped(out)
+    } else {
+        ClientUri::Unchanged
+    }
 }
 
 /// How many percent-decoding layers of one path segment are inspected. A
@@ -2599,11 +2777,12 @@ mod tests {
             ),
             ("", "/".into(), "/alpha/".into()),
             ("/base", "/base/v1/files".into(), "/alpha/v1/files".into()),
-            // Outside the route's base path: not reachable through the route.
-            ("/base", "/basement/x".into(), "/basement/x".into()),
-            // Relative references already resolve under the route prefix.
-            ("", "next".into(), "next".into()),
-            ("", "../files/abc".into(), "../files/abc".into()),
+            // Relative references are resolved against the upstream request
+            // (`/start`) first. Same-origin references outside the route's
+            // base path are dropped (see
+            // `unreachable_same_origin_references_are_dropped`).
+            ("", "next".into(), "/alpha/next".into()),
+            ("", "../files/abc".into(), "/alpha/files/abc".into()),
             // Other origins and network-path references are never rewritten
             // to point at the route (which would send its credential there).
             (
@@ -2670,43 +2849,133 @@ mod tests {
         let base = route("https://api.example.test", None);
         let based = route("https://api.example.test/base", None);
         let versioned = route("https://api.example.test", Some("/v1"));
-        let cases: [(&ServiceRoute, &str, Option<&str>); 16] = [
-            (&base, "/v1/files/abc", Some("/alpha/v1/files/abc")),
+        let mapped = |local: &str| ClientUri::Mapped(local.to_string());
+        let (unchanged, unreachable) = (ClientUri::Unchanged, ClientUri::Unreachable);
+        let request = |url: &str| reqwest::Url::parse(url).unwrap();
+        // The upstream request each route's references are relative to.
+        let base_request = request("https://api.example.test/v1/items/abc");
+        let based_request = request("https://api.example.test/base/v1/items/abc");
+        let versioned_request = request("https://api.example.test/v1/chat");
+        let cases: Vec<(&ServiceRoute, &reqwest::Url, &str, ClientUri)> = vec![
             (
                 &base,
-                "https://api.example.test/v1/files?x=1#f",
-                Some("/alpha/v1/files?x=1#f"),
+                &base_request,
+                "/v1/files/abc",
+                mapped("/alpha/v1/files/abc"),
             ),
-            (&base, "https://api.example.test:443/v1", Some("/alpha/v1")),
+            (
+                &base,
+                &base_request,
+                "https://api.example.test/v1/files?x=1#f",
+                mapped("/alpha/v1/files?x=1#f"),
+            ),
+            (
+                &base,
+                &base_request,
+                "https://api.example.test:443/v1",
+                mapped("/alpha/v1"),
+            ),
             (
                 &based,
+                &based_request,
                 "https://api.example.test/base/v1",
-                Some("/alpha/v1"),
+                mapped("/alpha/v1"),
             ),
-            (&based, "/base?x=1", Some("/alpha?x=1")),
-            (&versioned, "/v1/files", Some("/alpha/v1/files")),
-            // The route would forward these to `/v1/other` and `/x`.
-            (&versioned, "/other", None),
-            (&base, "//x", None),
-            (&based, "https://api.example.test/basement", None),
-            (&based, "/other/v1", None),
-            (&base, "http://api.example.test/v1", None),
-            (&base, "https://api.example.test:8443/v1", None),
-            (&base, "https://evil.example.test/v1", None),
-            (&base, "//evil.example.test/v1", None),
-            (&base, "/\\evil.example.test/v1", None),
-            (&base, "next", None),
+            (&based, &based_request, "/base?x=1", mapped("/alpha?x=1")),
+            (
+                &versioned,
+                &versioned_request,
+                "/v1/files",
+                mapped("/alpha/v1/files"),
+            ),
+            // Relative references resolve against the upstream request.
+            (&base, &base_request, "next", mapped("/alpha/v1/items/next")),
+            (&base, &base_request, "../v2/x", mapped("/alpha/v1/v2/x")),
+            (&base, &base_request, "../../../../x", mapped("/alpha/x")),
+            (
+                &base,
+                &base_request,
+                "?p=2",
+                mapped("/alpha/v1/items/abc?p=2"),
+            ),
+            (&base, &base_request, "#f", mapped("/alpha/v1/items/abc#f")),
+            (&based, &based_request, "../b", mapped("/alpha/v1/b")),
+            (
+                &versioned,
+                &versioned_request,
+                "models",
+                mapped("/alpha/v1/models"),
+            ),
+            // The route would forward these to `/v1/other` and `/x`, or
+            // cannot reach them at all: they would resolve on the proxy.
+            (
+                &versioned,
+                &versioned_request,
+                "/other",
+                unreachable.clone(),
+            ),
+            (&versioned, &versioned_request, "../x", unreachable.clone()),
+            (&based, &based_request, "/other/v1", unreachable.clone()),
+            (&based, &based_request, "../../../x", unreachable.clone()),
+            (&based, &based_request, "/basement", unreachable.clone()),
+            // Absolute URLs and network-path references never resolve on the
+            // proxy origin and are never pointed at the route.
+            (&base, &base_request, "//x", unchanged.clone()),
+            (
+                &based,
+                &based_request,
+                "https://api.example.test/basement",
+                unchanged.clone(),
+            ),
+            (
+                &base,
+                &base_request,
+                "http://api.example.test/v1",
+                unchanged.clone(),
+            ),
+            (
+                &base,
+                &base_request,
+                "https://api.example.test:8443/v1",
+                unchanged.clone(),
+            ),
+            (
+                &base,
+                &base_request,
+                "https://evil.example.test/v1",
+                unchanged.clone(),
+            ),
+            (
+                &base,
+                &base_request,
+                "//evil.example.test/v1",
+                unchanged.clone(),
+            ),
+            (
+                &base,
+                &base_request,
+                "/\\evil.example.test/v1",
+                unchanged.clone(),
+            ),
+            (&base, &base_request, "urn:example:x", unchanged.clone()),
+            (&base, &base_request, "https://[bad", unchanged.clone()),
         ];
-        for (index, (route, location, expected)) in cases.iter().enumerate() {
+        for (index, (route, upstream_request, location, expected)) in cases.iter().enumerate() {
             assert_eq!(
-                scope_location_to_route(location, route).as_deref(),
+                scope_location_to_route(location, route, Some(upstream_request)),
                 *expected,
                 "case {index}"
             );
         }
+        // Without an upstream request URL a relative reference cannot be
+        // resolved, so it is never forwarded.
+        assert_eq!(scope_location_to_route("next", &base, None), unreachable);
         let mut unnamed = route("https://api.example.test", None);
         unnamed.name = String::new();
-        assert_eq!(scope_location_to_route("/v1", &unnamed), None);
+        assert_eq!(
+            scope_location_to_route("/v1", &unnamed, Some(&base_request)),
+            unreachable
+        );
     }
 
     /// Probe one upstream 302 through a one-route proxy (base: the mock's
@@ -2903,26 +3172,59 @@ mod tests {
             credential_profile: crate::services::CredentialProfile::Standard,
             sdk_base_path: None,
         };
-        let map = |value: &str, remainder: Option<&str>| {
-            scope_upstream_uri_for_client(value, &route, remainder)
+        let upstream_request = reqwest::Url::parse("https://api.example.test/base/v1/b").unwrap();
+        let map = |value: &str, remainder: Option<&str>| match scope_upstream_uri_for_client(
+            value,
+            &route,
+            Some(&upstream_request),
+            remainder,
+        ) {
+            ClientUri::Mapped(mapped) => Some(mapped),
+            _ => None,
         };
         assert_eq!(map("/base/v1/a", None).as_deref(), Some("/alpha/v1/a"));
         assert_eq!(map("/base/v1/a", Some("/v1/b")).as_deref(), Some("../v1/a"));
         assert_eq!(map("/base/?x=1", Some("/v1/b")).as_deref(), Some("../?x=1"));
+        // A relative reference is resolved upstream, then written relative
+        // to the client's request again.
+        assert_eq!(map("next", Some("/v1/b")).as_deref(), Some("../v1/next"));
+        assert_eq!(map("../a", Some("/v1/b")).as_deref(), Some("../a"));
         // The bare route base has no key-free relative form: fail closed to
         // the header-auth path (401 without the header), never misroute.
         assert_eq!(
             map("https://api.example.test/base?x=1", Some("/v1/b")).as_deref(),
             Some("/alpha?x=1")
         );
+        assert_eq!(
+            map("../../base?x=1", Some("/v1/b")).as_deref(),
+            Some("/alpha?x=1")
+        );
         assert_eq!(map("https://evil.example.test/v1", Some("/v1/b")), None);
-        assert_eq!(map("next", Some("/v1/b")), None);
+        assert_eq!(
+            scope_upstream_uri_for_client(
+                "../../x",
+                &route,
+                Some(&upstream_request),
+                Some("/v1/b")
+            ),
+            ClientUri::Unreachable
+        );
     }
 
     #[test]
     fn link_header_targets_are_rewritten_and_parameters_kept() {
-        let map = |target: &str| target.strip_prefix("up:").map(|rest| format!("/r{rest}"));
-        let cases: [(&str, Option<&str>); 7] = [
+        let map = |target: &str| {
+            if target.starts_with("bad:") {
+                ClientUri::Unreachable
+            } else {
+                target
+                    .strip_prefix("up:")
+                    .map_or(ClientUri::Unchanged, |rest| {
+                        ClientUri::Mapped(format!("/r{rest}"))
+                    })
+            }
+        };
+        let cases: [(&str, Option<&str>); 12] = [
             ("<up:/a>; rel=next", Some("</r/a>; rel=next")),
             (
                 "<up:/a>; rel=\"next\", <other:/b>; rel=help, <up:/c>",
@@ -2934,18 +3236,163 @@ mod tests {
                 Some("</r/a>; title=\"x, <up:/z> \\\" y\", </r/c>"),
             ),
             ("  <up:/a> ,", Some("  </r/a> ,")),
-            ("<other:/b>; rel=help", None),
+            // `anchor` (quoted, token, any case) is mapped like a target and
+            // always written back quoted; other parameters are kept.
+            (
+                "<other:/b>; rel=up; anchor=\"up:/x\"; title=\"anchor=up:/y\"",
+                Some("<other:/b>; rel=up; anchor=\"/r/x\"; title=\"anchor=up:/y\""),
+            ),
+            (
+                "<up:/a>; ANCHOR = up:/x ; rel=y",
+                Some("</r/a>; ANCHOR = \"/r/x\" ; rel=y"),
+            ),
+            (
+                "<other:/b>; anchor=\"up:/q\\\"\"",
+                Some("<other:/b>; anchor=\"/r/q\\\"\""),
+            ),
+            ("<other:/b>; rel=help; anchor=\"other:/c\"", None),
             // Malformed: forwarded unchanged.
             ("up:/a; rel=next", None),
             ("<up:/a>; title=\"open", None),
+            // Any unreachable target or anchor drops the whole header.
+            ("<up:/a>, <bad:/b>", Some("dropped")),
+            ("<up:/a>; anchor=\"bad:/b\"", Some("dropped")),
         ];
         for (index, (value, expected)) in cases.iter().enumerate() {
+            let seen = match scope_link_header(value, map) {
+                ClientUri::Mapped(mapped) => Some(mapped),
+                ClientUri::Unchanged => None,
+                ClientUri::Unreachable => Some("dropped".to_string()),
+            };
+            assert_eq!(seen.as_deref(), *expected, "case {index}");
+        }
+    }
+
+    /// An upstream relative reference is relative to the upstream request
+    /// URL, not to the client's local one, so it is resolved there first and
+    /// then mapped like an absolute path. Left alone, `../` could climb out
+    /// of the route prefix (onto another route of this same origin) and an
+    /// SDK version prefix or base path would make it name the wrong path.
+    #[tokio::test]
+    async fn relative_upstream_references_are_resolved_before_scoping() {
+        // (request remainder, upstream Location, Location the client must see)
+        let cases = [
+            ("/v1/items/abc", "next", "/alpha/v1/items/next"),
+            ("/v1/items/abc", "../v2/x", "/alpha/v1/v2/x"),
+            ("/v1/items/abc", "../../../../x", "/alpha/x"),
+            ("/v1/items/abc", "?page=2", "/alpha/v1/items/abc?page=2"),
+            ("/v1/items/", "./a/../b#f", "/alpha/v1/items/b#f"),
+        ];
+        for (index, (remainder, upstream, expected)) in cases.iter().enumerate() {
+            let (headers, _) =
+                probe_mapped_headers(&[("location", upstream)], |_| format!("/alpha{remainder}"))
+                    .await;
             assert_eq!(
-                scope_link_header(value, map).as_deref(),
-                *expected,
+                header_text(&headers, "location").as_deref(),
+                Some(*expected),
                 "case {index}"
             );
         }
+
+        // Under the path-auth base the resolved target comes back relative
+        // to the request and never climbs out of the authenticated base.
+        let path_auth_cases = [
+            ("/v1/items/abc", "../v2/x", "../../v1/v2/x"),
+            ("/v1/items/abc", "../../../x", "../../x"),
+            ("/v1/items/abc", "next", "../../v1/items/next"),
+        ];
+        for (index, (remainder, upstream, expected)) in path_auth_cases.iter().enumerate() {
+            let (headers, session_key) = probe_mapped_headers(&[("location", upstream)], |key| {
+                format!("/alpha/_phantom/{key}{remainder}")
+            })
+            .await;
+            let seen = header_text(&headers, "location");
+            assert_eq!(seen.as_deref(), Some(*expected), "case {index}");
+            let request_url = reqwest::Url::parse(&format!(
+                "http://127.0.0.1/alpha/_phantom/{session_key}{remainder}"
+            ))
+            .unwrap();
+            let followed = request_url.join(seen.as_deref().unwrap()).unwrap();
+            let auth_base = format!("/alpha/_phantom/{session_key}/");
+            assert!(
+                followed.path().starts_with(auth_base.as_str()),
+                "case {index}"
+            );
+        }
+    }
+
+    /// A same-origin reference the route cannot reach (outside its base
+    /// path) would resolve on the proxy's own origin, possibly onto another
+    /// route, so it is dropped rather than forwarded.
+    #[tokio::test]
+    async fn unreachable_same_origin_references_are_dropped() {
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap();
+        // (upstream Location, Location the client must see)
+        let cases: [(&str, Option<&str>); 4] = [
+            ("../b", Some("/alpha/b")),
+            ("../../b", None),
+            ("/basement/x", None),
+            // An absolute URL never resolves on the proxy origin: as before,
+            // it is forwarded unchanged.
+            (
+                "https://other.example.test/v1",
+                Some("https://other.example.test/v1"),
+            ),
+        ];
+        for (index, (upstream, expected)) in cases.iter().enumerate() {
+            let mock = crate::test_server::MockServer::start_with_status_and_headers(
+                StatusCode::FOUND,
+                &[("location", upstream)],
+            )
+            .await;
+            let proxy = location_probe_proxy(mock.port, "/base").await;
+            let resp = client
+                .get(format!("http://127.0.0.1:{}/alpha/v1/a", proxy.port()))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::FOUND, "case {index}");
+            let seen = header_text(resp.headers(), "location");
+            assert_eq!(seen.as_deref(), *expected, "case {index}");
+            drop(resp);
+            proxy.shutdown().await;
+            mock.shutdown().await;
+        }
+    }
+
+    /// A Link `anchor` names the link context; when it is a URI on the
+    /// route's own upstream it is mapped exactly like a target, and relative
+    /// targets are resolved against the upstream request first.
+    #[tokio::test]
+    async fn link_anchor_and_relative_targets_are_scoped() {
+        let upstream_link = concat!(
+            "<{origin}/v1/items/abc/replies>; rel=\"replies\"; anchor=\"{origin}/v1/items/abc\", ",
+            "<next>; rel=next; anchor=\"https://docs.example.test/x\", ",
+            "<../help>; rel=help; anchor=../items/abc"
+        );
+        let (headers, _) =
+            probe_mapped_headers(&[("link", upstream_link)], |_| "/alpha/v1/items/abc".into())
+                .await;
+        assert_eq!(
+            header_text(&headers, "link").as_deref(),
+            Some(concat!(
+                "</alpha/v1/items/abc/replies>; rel=\"replies\"; anchor=\"/alpha/v1/items/abc\", ",
+                "</alpha/v1/items/next>; rel=next; anchor=\"https://docs.example.test/x\", ",
+                "</alpha/v1/help>; rel=help; anchor=\"/alpha/v1/items/abc\""
+            ))
+        );
+
+        let (headers, session_key) = probe_mapped_headers(&[("link", upstream_link)], |key| {
+            format!("/alpha/_phantom/{key}/v1/items/abc")
+        })
+        .await;
+        let seen = header_text(&headers, "link").unwrap_or_default();
+        assert!(!seen.contains(session_key.as_str()));
+        assert!(!seen.contains("127.0.0.1"));
+        assert!(seen.contains("anchor=\"../../v1/items/abc\""));
     }
 
     /// Send `method target` over a raw socket and return the response head
