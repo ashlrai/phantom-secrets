@@ -15404,8 +15404,7 @@ mod tests {
                 assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_REQUEST);
                 assert!(
                     error.message.contains("rotate_every"),
-                    "{interval}: {}",
-                    error.message
+                    "{interval}: refusal does not name rotate_every"
                 );
             }
         }
