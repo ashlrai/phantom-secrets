@@ -16,6 +16,63 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   the gate refuses for an enforced secret. Confirmations, approvals and the
   trusted-terminal challenge are unchanged.
 
+### Fixed (workspace-request and MCP approval state dirs use the shared private-dir helper; `.env.example` presence is never followed)
+
+- The workspace-request store (`~/.phantom/workspace-requests`, the setup
+  journal directory and its lock) and the MCP approval store kept their own
+  copies of the private-directory routine: `create_dir_all` followed a
+  symlinked `~/.phantom` ancestor and created state at its target, missing
+  `.phantom` ancestors were created with umask permissions, and the final
+  `chmod 0700` went by path to a directory of any owner. Both now call
+  `phantom_core::fs::ensure_private_dir`, like the rest of Phantom's state:
+  symlinked or non-directory components are refused, missing `.phantom`
+  ancestors are created 0700, and only a directory the caller owns is
+  tightened, through a no-follow handle. A refusal still reports
+  `ErrorKind::InvalidData`.
+- Workspace inspection judged `.env.example` with `Path::is_file`, which
+  follows symlinks. A dangling link or a directory at that name read as
+  absent, so setup planned to generate the file and the transaction's
+  no-follow writer then refused the whole plan. Presence is now judged with
+  `symlink_metadata`: any object at the name counts as present and is never
+  followed or replaced. A symlink to a shared `.env.example` still counts as
+  present, exactly as before.
+
+### Fixed (`enforce_rotation_on_access` covers team, provider and competitor imports)
+
+- The remaining inflows also gave a value of unknown age a fresh rotation
+  anchor (or kept the local one on overwrite), laundering an overdue secret:
+  `phantom team vault-pull`, MCP `phantom_team_vault_pull`, provider
+  `phantom pull --from vercel|railway`, and `phantom import --from
+  doppler|infisical|dotenvx|1password|env`. Each now refuses every entry it
+  would write whose secret has `enforce_rotation_on_access = true`, before
+  any vault or config write, with the same `Refusing to ...: rotation
+  enforcement blocked N secret(s).` wording. `phantom import --from` judges
+  names before the trusted-terminal challenge; team and provider pulls learn
+  the names only from the download, so they judge them after it. Entries
+  that are not written (an identical value, or an existing entry skipped
+  without `--force`) keep their anchor and are not judged.
+- Known limit: `phantom remove NAME` followed by `phantom add NAME` with the
+  same old value still starts a fresh age. Telling a re-added old value from
+  a genuine replacement would mean keeping a value-derived fingerprint of a
+  removed secret, so it is left as is.
+
+### Fixed (existing loose Phantom state directories are tightened to 0700)
+
+- A `~/.phantom` or project `.phantom` directory that already existed with
+  group/other permissions (for example 0755 from an older release or a loose
+  umask) was never tightened: only newly created state directories and the
+  final directory of `ensure_private_dir` were made 0700, so audit logs,
+  leak incidents, validation reports and backups written beneath an existing
+  loose `.phantom` stayed listable by other local users.
+  `phantom_core::fs::ensure_real_parent` (and so `ensure_private_dir`,
+  `atomic_write` and `write_new_file`) now chmods every existing directory
+  from the outermost `.phantom` down to the target's parent to 0700 on Unix
+  when it is a real directory owned by the current user. A symlinked
+  `.phantom` is still refused and nothing reached through it is chmod-ed;
+  directories owned by another user are left as they are; directories
+  outside a `.phantom` tree (the home directory, the project root) and paths
+  that step out with `..` are never tightened. Windows is unchanged.
+
 ### Fixed (proxy resolves upstream relative references before scoping them to the route)
 
 - An upstream `Location`, `Content-Location` or `Link` target written as a

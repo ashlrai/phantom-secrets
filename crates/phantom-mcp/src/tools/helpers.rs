@@ -59,7 +59,7 @@ pub fn enforce_rotation_on_entries<'e>(
 }
 
 /// The same gate for MCP paths that write values of unknown age into the
-/// vault (a cloud pull): the incoming value carries no rotation anchor, so a
+/// vault (a cloud or team vault pull): the incoming value carries no rotation anchor, so a
 /// new entry would look fresh and an overwrite would inherit the local
 /// anchor. Every written entry whose secret enforces rotation is refused.
 pub fn enforce_rotation_on_restore<'e>(
