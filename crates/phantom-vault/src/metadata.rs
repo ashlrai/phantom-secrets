@@ -33,7 +33,8 @@ pub struct RotationPolicy {
 /// `ReadOnly` is set by `phantom_apply_expiry_policy` when a secret has
 /// expired its TTL.  While in `ReadOnly` mode the secret can be read for
 /// inspection but `phantom exec` will refuse to inject it into the
-/// environment until it is rotated (which resets the mode to `ReadWrite`).
+/// environment, and `phantom sync` will refuse to push it to a deployment
+/// platform, until it is rotated (which resets the mode to `ReadWrite`).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum VaultMode {

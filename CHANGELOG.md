@@ -23,6 +23,39 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   the gate is never sent. Cloud push, encrypted export, env copy and reveal
   are unchanged.
 
+### Fixed (`phantom sync` no longer pushes a secret demoted to read-only)
+
+- `phantom_apply_expiry_policy` demotes an expired secret to read-only so
+  that it is not injected at runtime until it is rotated or promoted, and
+  `phantom exec` and foreground `phantom start` refuse it. A live
+  `phantom sync` still read it with a plain vault retrieval and pushed it to
+  Vercel or Railway, where every deployment injects it. The live sync
+  preflight now refuses the whole run when any selected entry is read-only
+  (or its lifecycle metadata cannot be read), before the trusted-terminal
+  review, any vault value read, or any provider call; the error names the
+  entries only. The value read itself now uses the runtime-injection check,
+  so an entry demoted between the preflight and the read is recorded as a
+  retrieval failure and never sent. `--dry-run` is unchanged. Confirmations
+  and the trusted-terminal challenge are unchanged.
+
+### Fixed (a cross-project copy holds its source project's lock until it commits)
+
+- `phantom copy` and MCP `phantom_copy_secret` verified the source project's
+  entry before and after the destination writes but did not hold the source
+  project's transaction lock, so a source change that landed and was reverted
+  between the checks, or landed after the final check, was not excluded. The
+  copy transaction now holds both projects' locks for the whole commit, taken
+  in one global order (process-local shards by index, then each project's
+  filesystem locks by the digest of its canonical path), so two copies in
+  opposite directions wait for each other instead of deadlocking, and a
+  source and destination that are one canonical project take its lock once.
+  The before/after source checks stay as defence in depth.
+  `commit_init_with_source_vault` now takes the source project directory, and
+  a source change caught mid-commit is reported as
+  `InitTransactionError::SourceChangedDuringCommit` with the same message the
+  generic commit error carried. Confirmations, approvals and the
+  trusted-terminal challenge are unchanged.
+
 ### Fixed (evidence verification, MCP approval, workspace-request, leak-profile and compliance-report state resolve through a retained directory)
 
 - `phantom-evidence` receipt verification still opened the lock, integrity

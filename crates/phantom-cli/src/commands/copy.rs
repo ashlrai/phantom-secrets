@@ -17,9 +17,10 @@ struct CopyTargetPlan {
 }
 
 /// Copy the source value observed during preflight into a distinct target
-/// project. Only the target is mutated, so only its canonical project lock is
-/// acquired; avoiding simultaneous source/target locks removes reverse-copy
-/// deadlock risk. The source snapshot remains zeroizing through target commit.
+/// project. Only the target is mutated; the commit holds both projects'
+/// canonical locks in one global order, so a reverse copy waits instead of
+/// deadlocking and a cooperating source writer cannot change the source
+/// mid-commit. The source snapshot remains zeroizing through target commit.
 pub fn run(name: &str, target_dir: &Path, rename: &Option<String>) -> Result<()> {
     validate_secret_name(name)?;
     let target_name = rename.as_deref().unwrap_or(name);
@@ -130,11 +131,14 @@ pub fn run(name: &str, target_dir: &Path, rename: &Option<String>) -> Result<()>
         source_metadata.as_ref(),
     )?;
 
-    // The source vault is passed so the transaction holds the source entry
-    // to the exact value and metadata read above until the copy commits.
+    // The source project and vault are passed so the transaction holds the
+    // source project's lock (with the target's, in Phantom's global lock
+    // order) and the source entry to the exact value and metadata read above
+    // until the copy commits.
     phantom_vault::commit_init_with_source_vault(
         &target_dir,
         target_vault.as_ref(),
+        &source_dir,
         source_vault.as_ref(),
         vec![plan.mutation],
         plan.files,
@@ -374,6 +378,7 @@ mod tests {
     /// return the target vault with the target directory that owns it.
     fn copy_into_new_target(
         source_config: &PhantomConfig,
+        source_dir: &Path,
         source: &FileVault,
         name: &str,
         target_name: &str,
@@ -384,6 +389,7 @@ mod tests {
         phantom_vault::commit_init_with_source_vault(
             &target,
             &vault,
+            source_dir,
             source,
             vec![plan.mutation],
             plan.files,
@@ -455,6 +461,7 @@ mod tests {
         let outcome = phantom_vault::commit_init_with_source_vault(
             &target_path,
             &target,
+            source_dir.path(),
             &source,
             vec![plan.mutation],
             plan.files,
@@ -481,8 +488,13 @@ mod tests {
         let source = aged_vault(&source_dir, &[("AGING_KEY", 29)]);
         let source_config = enforced_config(&["AGING_KEY"]);
 
-        let (_target_dir, target) =
-            copy_into_new_target(&source_config, &source, "AGING_KEY", "COPIED_KEY");
+        let (_target_dir, target) = copy_into_new_target(
+            &source_config,
+            source_dir.path(),
+            &source,
+            "AGING_KEY",
+            "COPIED_KEY",
+        );
 
         let anchor = |vault: &FileVault, entry: &str| {
             phantom_vault::rotation_gate::rotation_anchor(
@@ -514,8 +526,13 @@ mod tests {
         let source = aged_vault(&source_dir, &[("PLAIN_KEY", 400)]);
         let source_config = PhantomConfig::new_with_defaults("copy-unenforced".to_string());
 
-        let (_target_dir, target) =
-            copy_into_new_target(&source_config, &source, "PLAIN_KEY", "PLAIN_KEY");
+        let (_target_dir, target) = copy_into_new_target(
+            &source_config,
+            source_dir.path(),
+            &source,
+            "PLAIN_KEY",
+            "PLAIN_KEY",
+        );
 
         assert!(target.exists("PLAIN_KEY").unwrap());
         let copied = target.get_metadata("PLAIN_KEY").unwrap().unwrap();
@@ -546,8 +563,13 @@ mod tests {
             .unwrap();
         let source_config = PhantomConfig::new_with_defaults("copy-protected".to_string());
 
-        let (_target_dir, target) =
-            copy_into_new_target(&source_config, &source, "DEMOTED_KEY", "COPIED_KEY");
+        let (_target_dir, target) = copy_into_new_target(
+            &source_config,
+            source_dir.path(),
+            &source,
+            "DEMOTED_KEY",
+            "COPIED_KEY",
+        );
 
         let copied = target
             .get_metadata("COPIED_KEY")
@@ -677,6 +699,7 @@ mod tests {
         let outcome = phantom_vault::commit_init_with_source_vault(
             &target,
             &vault,
+            source_dir.path(),
             &source,
             vec![plan.mutation],
             plan.files,
