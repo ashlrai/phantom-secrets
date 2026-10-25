@@ -48,6 +48,18 @@ publication. Everything below, down to 0.7.9, is new since v0.7.9.
   `PHANTOM_RATE_LIMIT_BURST` to restore the old burst value.
 
 The detailed entries follow.
+### Fixed (audit log is owner-only and never follows a symlink)
+
+- `~/.phantom/audit.log` and `audit.lock` were opened with plain
+  `OpenOptions`: a new log took the process umask (typically 0644, so other
+  local users could read secret names, process paths and pids), and a
+  symlink planted at either path was followed, redirecting audit appends or
+  locking into another file. Both are now opened with `O_NOFOLLOW` and
+  created 0600; an existing log or lock with group/other bits is tightened
+  to 0600 on the next write; a symlink, directory or FIFO at either path is
+  refused (an error under `PHANTOM_AUDIT=required`, skipped under
+  best-effort).
+
 ### Fixed (every remaining CLI command reads `.phantom.toml` only as a regular file)
 
 - `phantom list`, `reveal`, `status`, `watch`, `add` (and `copy`), `expiry`
