@@ -15780,31 +15780,40 @@ mod tests {
         }
     }
 
+    /// A pending approval minted and approved as `phantom mcp-approve` would.
+    struct ApprovedRequest {
+        nonce: String,
+        approval_id: String,
+        /// The combined `nonce:token` field the tool accepts.
+        combined: String,
+    }
+
     /// Mints and approves a pending approval for `tool` bound to
-    /// `params_json`, as `phantom mcp-approve` would. Returns the nonce and
-    /// the combined `nonce:token` field the tool accepts.
-    fn approved_request(tool: &str, params_json: &str, project_id: &str) -> (String, String) {
+    /// `params_json`.
+    fn approved_request(tool: &str, params_json: &str, project_id: &str) -> ApprovedRequest {
         let nonce =
             phantom_core::mcp_approval::generate_pending_approval(tool, params_json, project_id)
                 .unwrap();
         let approved = phantom_core::mcp_approval::approve_nonce(&nonce).unwrap();
         let combined = format!("{nonce}:{}", approved.approval_token);
-        (nonce, combined)
+        ApprovedRequest {
+            nonce,
+            approval_id: approved.approval_token,
+            combined,
+        }
     }
 
     /// True when the approval minted by `approved_request` is still usable:
     /// it validates and is consumed here, so it had not been consumed before.
     fn approval_still_usable(
-        nonce: &str,
-        combined: &str,
+        approved: &ApprovedRequest,
         tool: &str,
         params_json: &str,
         project_id: &str,
     ) -> bool {
-        let approval_id = combined.split_once(':').map(|(_, rest)| rest).unwrap();
         phantom_core::mcp_approval::validate_and_consume_approval(
-            nonce,
-            approval_id,
+            &approved.nonce,
+            &approved.approval_id,
             tool,
             params_json,
             project_id,
@@ -15852,17 +15861,17 @@ mod tests {
             &target_config_before,
         )
         .unwrap();
-        let (nonce, combined) = approved_request(
+        let approved = approved_request(
             "phantom_copy_secret",
             &approval_params,
             &source.project_id(),
         );
 
-        let result = source.phantom_copy_secret(Parameters(request(Some(combined.clone()))));
+        let result =
+            source.phantom_copy_secret(Parameters(request(Some(approved.combined.clone()))));
         let refused = refused_as_locked(&result);
         assert!(approval_still_usable(
-            &nonce,
-            &combined,
+            &approved,
             "phantom_copy_secret",
             &approval_params,
             &source.project_id()
@@ -15901,19 +15910,18 @@ mod tests {
         {
             let _vault = TestVault::serve(|| Box::new(EmptyKeychain));
             let params_json = serde_json::to_string(&request("OPENAI_API_KEY", None)).unwrap();
-            let (nonce, combined) = approved_request(
+            let approved = approved_request(
                 "phantom_secrets_auto_rotate",
                 &params_json,
                 &server.project_id(),
             );
             let result = server.phantom_secrets_auto_rotate(Parameters(request(
                 "OPENAI_API_KEY",
-                Some(combined.clone()),
+                Some(approved.combined.clone()),
             )));
             let refused = refused_as_locked(&result);
             assert!(approval_still_usable(
-                &nonce,
-                &combined,
+                &approved,
                 "phantom_secrets_auto_rotate",
                 &params_json,
                 &server.project_id()
@@ -15930,7 +15938,7 @@ mod tests {
             )
         };
         let params_json = serde_json::to_string(&request("MISSING_API_KEY", None)).unwrap();
-        let (nonce, combined) = approved_request(
+        let approved = approved_request(
             "phantom_secrets_auto_rotate",
             &params_json,
             &server.project_id(),
@@ -15938,7 +15946,7 @@ mod tests {
         let missing = server
             .phantom_secrets_auto_rotate(Parameters(request(
                 "MISSING_API_KEY",
-                Some(combined.clone()),
+                Some(approved.combined.clone()),
             )))
             .err()
             .is_some_and(|error| {
@@ -15946,8 +15954,7 @@ mod tests {
                     && error.message.contains("not found in vault")
             });
         assert!(approval_still_usable(
-            &nonce,
-            &combined,
+            &approved,
             "phantom_secrets_auto_rotate",
             &params_json,
             &server.project_id()
