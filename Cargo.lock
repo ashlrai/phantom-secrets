@@ -2756,6 +2756,7 @@ dependencies = [
  "hmac",
  "libc",
  "phantom-secrets-authority",
+ "phantom-secrets-core",
  "rand 0.8.6",
  "serde",
  "serde_json",
@@ -2859,13 +2860,13 @@ dependencies = [
  "hmac",
  "libc",
  "phantom-secrets-authority",
+ "phantom-secrets-core",
  "rand 0.8.6",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
  "thiserror 2.0.18",
- "windows-sys 0.61.2",
  "zeroize",
 ]
 
