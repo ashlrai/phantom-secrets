@@ -1,6 +1,5 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
-use phantom_core::config::PhantomConfig;
 use phantom_core::dotenv::DotenvFile;
 use phantom_core::env_scope::DEFAULT_ENV;
 use phantom_core::token::PhantomToken;
@@ -144,11 +143,11 @@ async fn run_async() -> Result<()> {
     let project_dir = std::env::current_dir()?;
     let config_path = project_dir.join(".phantom.toml");
 
-    if !config_path.exists() {
+    let Some(config) = crate::util::load_config_if_present(&config_path)
+        .context("Failed to load .phantom.toml")?
+    else {
         return Err(crate::util::missing_config_error(&project_dir));
-    }
-
-    let config = PhantomConfig::load(&config_path)?;
+    };
     super::exec::validate_routes_for_launch(&config)?;
 
     let preflight = phantom_core::managed_dotenv::resolve_dotenv(&project_dir, &config, &[])?;
@@ -398,6 +397,7 @@ fn retrieve_required_default_secret(
 #[cfg(test)]
 mod shell_tests {
     use super::*;
+    use phantom_core::config::PhantomConfig;
     use phantom_core::error::{PhantomError, Result as PhantomResult};
     use zeroize::Zeroizing;
 

@@ -25,6 +25,42 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   and replace it with `phantom remove NAME` then `phantom add NAME`, or set
   `enforce_rotation_on_access = false`.
 
+### Fixed (exec, start, sync, doctor and why read `.phantom.toml` only as a regular file)
+
+- `phantom exec`, `phantom start`, `phantom sync`, `phantom doctor` and
+  `phantom why` followed a `.phantom.toml` symlink. One pointing outside the
+  project had that other file's `dotenv_path` and routes choose which dotenv
+  exec protected and proxied, which file `doctor --fix` repaired, and what
+  sync pushed; a dangling one read as "not initialized", so doctor and why
+  judged `./.env` instead. A FIFO named `.phantom.toml` hung each command.
+  They now share the regular, non-symlink read `phantom check` uses; anything
+  else fails closed with a message naming `.phantom.toml` and no other path.
+
+### Fixed (encrypted-file fallback passphrase left unscrubbed in memory)
+
+- When the OS keychain was unavailable, the generated passphrase for the
+  encrypted-file fallback vault (and a `PHANTOM_VAULT_PASSPHRASE` value) was
+  read from secure storage, generated, verified and handed to the file vault
+  as plain `String`s that were freed without being scrubbed, as were the raw
+  random bytes it was generated from. Every copy on that path is now held in
+  a buffer zeroized on drop, and the value is moved, not copied, into the
+  file vault. Vault selection, read-after-write verification and the refusal
+  to generate a replacement key for an existing vault are unchanged.
+
+### Fixed (proxy forwarded upstream cookies unscoped across routes)
+
+- Every proxy route is served from the same local origin
+  (`127.0.0.1:PORT`), but the proxy passed an upstream's `Set-Cookie`
+  through unchanged. A cookie with `Path=/` (or with no `Path`, set on a
+  request to the bare route) was therefore stored by a client cookie jar
+  for the whole proxy and sent with requests to every other route, and the
+  proxy forwards client cookies, so one provider's session cookie reached
+  another provider, and a hostile upstream could plant cookies on another
+  route. The proxy now removes the upstream's `Domain` and `Path` and sets
+  `Path=/<route>` on each `Set-Cookie`, keeping other attributes. Cookies
+  that require `Path=/` (the `__Host-` prefix) are rejected by strict
+  clients as a result, which keeps them on their route.
+
 ### Fixed (encrypted-file vault kept decrypted secrets in memory unscrubbed)
 
 - Every encrypted-file vault operation, including `list` and metadata reads,
