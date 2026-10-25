@@ -658,14 +658,15 @@ fn parse_vercel_pull_response(
             }
             continue;
         }
-        if variables.iter().all(|(_, value)| value.is_none()) {
+        // A variable with no readable value (empty, or sensitive and not
+        // returned decrypted) carries nothing to choose between; only the
+        // readable values must agree.
+        let mut readable = variables.iter().filter_map(|(_, value)| value.as_ref());
+        let Some(first) = readable.next() else {
             continue;
-        }
-        let first = variables[0].1.as_deref();
-        if first.is_some() && variables.iter().all(|(_, value)| value.as_deref() == first) {
-            if let Some(value) = variables.swap_remove(0).1 {
-                secrets.insert(key, value);
-            }
+        };
+        if readable.all(|value| value.as_str() == first.as_str()) {
+            secrets.insert(key, first.clone());
             continue;
         }
         let mut environments: Vec<&str> = Vec::new();
@@ -951,6 +952,19 @@ mod tests {
 
     fn fixture_value(environment: &str) -> String {
         ["stripe", environment, "fixture"].join("-")
+    }
+
+    #[test]
+    fn vercel_pull_ignores_an_unreadable_copy_beside_a_readable_value() {
+        let bytes = vercel_pull_fixture(serde_json::json!([
+            {"id": "env_prod", "key": "STRIPE_KEY", "target": ["production"],
+             "value": fixture_value("production")},
+            {"id": "env_prev", "key": "STRIPE_KEY", "target": ["preview"]},
+        ]));
+        let pulled = parse_vercel_pull_response(&bytes, &production_and_preview()).unwrap();
+        assert!(pulled
+            .get("STRIPE_KEY")
+            .is_some_and(|value| value.as_str() == fixture_value("production")));
     }
 
     #[test]
