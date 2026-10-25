@@ -82,6 +82,30 @@ pub(crate) fn enforce_rotation_on_restore<'e>(
     enforce(config, vault, restore_targets(entries), action, now_secs)
 }
 
+/// The lifecycle gate for paths that hand real values to new places (a
+/// deployment platform, team members, the cloud copy): the rotation gate of
+/// [`enforce_rotation_on_entries`], then a refusal when any entry was demoted
+/// to read-only by the expiry policy or its lifecycle metadata cannot be read
+/// ([`phantom_vault::rotation_gate::read_only_refusal`]). `remedy` follows
+/// the read-only names and `unsent` ends that refusal, e.g. "No vault
+/// plaintext was read and no provider request was sent.". Reads names and
+/// metadata only, never a value; messages carry names only.
+pub(crate) fn enforce_lifecycle_on_propagation<'e>(
+    config: &PhantomConfig,
+    vault: &dyn VaultBackend,
+    entries: impl IntoIterator<Item = &'e str> + Clone,
+    action: &str,
+    remedy: &str,
+    unsent: &str,
+    now_secs: u64,
+) -> Result<()> {
+    enforce_rotation_on_entries(config, vault, entries.clone(), action, now_secs)?;
+    match phantom_vault::rotation_gate::read_only_refusal(vault, entries, action, remedy) {
+        Some(refusal) => Err(anyhow::anyhow!("{refusal} {unsent}")),
+        None => Ok(()),
+    }
+}
+
 /// Current Unix time in seconds.
 pub(crate) fn now_secs() -> u64 {
     phantom_vault::rotation_gate::now_secs()

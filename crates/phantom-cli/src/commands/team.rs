@@ -166,6 +166,19 @@ pub fn run_vault_push(team_id: &str) -> Result<()> {
     let (project_dir, _config_path, _config_before, config) = load_team_project_exact()?;
     let project_id = config.portable_project_id().to_string();
     let project_path = project_dir.to_string_lossy().into_owned();
+    // An overdue enforced, read-only or unjudgeable entry is known from names
+    // and metadata alone: refuse before asking for consent, so the user never
+    // confirms a push that cannot run. Judged again before any value read.
+    {
+        let vault = crate::util::open_vault(config.local_project_id())?;
+        let names = vault.list()?;
+        gate_team_push(
+            &config,
+            vault.as_ref(),
+            &names,
+            super::rotation_gate::now_secs(),
+        )?;
+    }
     require_trusted_terminal_team(&team_consent_plan(
         "vault-push",
         &[team_id, &project_id, &project_path],
@@ -177,23 +190,40 @@ pub fn run_vault_push(team_id: &str) -> Result<()> {
     vault_push_after_consent(team_id, &project_id, &config, &token, &api_base, &kp)
 }
 
-/// Read every value a team push sends. Team members receive real values, so
-/// `enforce_rotation_on_access` refuses an overdue enforced secret first, as
-/// `phantom exec` would, before any value is read.
+/// "Refusing to ..." wording for the lifecycle gate on a team vault push.
+const TEAM_PUSH_ACTION: &str = "push to the team vault";
+
+/// Team members receive real values and inject them at runtime: refuse an
+/// overdue enforced secret, as `phantom exec` would, and an entry the expiry
+/// policy demoted to read-only (the demotion exists to stop that) or whose
+/// lifecycle metadata cannot be read. Names and metadata only; the whole push
+/// is refused, naming entries only.
+fn gate_team_push(
+    config: &phantom_core::config::PhantomConfig,
+    vault: &dyn phantom_vault::VaultBackend,
+    secret_names: &[String],
+    now_secs: u64,
+) -> Result<()> {
+    super::rotation_gate::enforce_lifecycle_on_propagation(
+        config,
+        vault,
+        secret_names.iter().map(String::as_str),
+        TEAM_PUSH_ACTION,
+        "Rotate or promote them before sharing with the team.",
+        "No vault plaintext was read and no team request was sent.",
+        now_secs,
+    )
+}
+
+/// Read every value a team push sends, after [`gate_team_push`] judges the
+/// inventory again immediately before any value is read.
 fn read_team_push_values(
     config: &phantom_core::config::PhantomConfig,
     vault: &dyn phantom_vault::VaultBackend,
     secret_names: &[String],
     now_secs: u64,
 ) -> Result<BTreeMap<String, Zeroizing<String>>> {
-    super::rotation_gate::enforce_rotation_on_entries(
-        config,
-        vault,
-        secret_names.iter().map(String::as_str),
-        "push to the team vault",
-        now_secs,
-    )?;
-    refuse_read_only_team_push(vault, secret_names)?;
+    gate_team_push(config, vault, secret_names, now_secs)?;
     let mut secrets: BTreeMap<String, Zeroizing<String>> = BTreeMap::new();
     for name in secret_names {
         // The injection read re-checks the mode atomically with the value
@@ -202,35 +232,6 @@ fn read_team_push_values(
         secrets.insert(name.clone(), Zeroizing::new(String::from(value.as_str())));
     }
     Ok(secrets)
-}
-
-/// A secret the expiry policy demoted to read-only is not handed to team
-/// members, who would inject it at runtime: the demotion exists to stop that.
-/// The whole push is refused before any value read or network call, naming
-/// entries only. Metadata that cannot be read refuses too.
-fn refuse_read_only_team_push(
-    vault: &dyn phantom_vault::VaultBackend,
-    secret_names: &[String],
-) -> Result<()> {
-    let mut read_only = Vec::new();
-    for name in secret_names {
-        let metadata = vault.get_metadata(name).map_err(|_| {
-            anyhow::anyhow!(
-                "Refusing to push to the team vault: could not read lifecycle metadata for '{name}'. No vault plaintext was read and no team request was sent."
-            )
-        })?;
-        if metadata.is_some_and(|metadata| metadata.vault_mode.is_read_only()) {
-            read_only.push(format!("'{name}'"));
-        }
-    }
-    if !read_only.is_empty() {
-        anyhow::bail!(
-            "Refusing to push to the team vault: {} secret(s) are read-only under their lifecycle policy: {}. Rotate or promote them before sharing with the team. No vault plaintext was read and no team request was sent.",
-            read_only.len(),
-            read_only.join(", ")
-        );
-    }
-    Ok(())
 }
 
 /// `team vault-push` once terminal consent is given and the bearer and team
@@ -585,7 +586,7 @@ fn confirm_team_effect(
 }
 
 fn load_team_project_exact() -> Result<(PathBuf, PathBuf, Vec<u8>, PhantomConfig)> {
-    let project_dir = std::env::current_dir()?.canonicalize()?;
+    let project_dir = crate::util::project_dir()?.canonicalize()?;
     let config_path = project_dir.join(".phantom.toml");
     let config_before = phantom_core::fs::read_regular_file(&config_path)
         .context("Failed to safely read .phantom.toml")?
@@ -801,6 +802,34 @@ mod tests {
                 "metadata unavailable".to_string(),
             ))
         }
+    }
+
+    /// `phantom team vault-push` asked for trusted-terminal consent and only
+    /// then refused a read-only entry or unreadable lifecycle metadata, so the
+    /// user typed the confirmation for a push that could never run. The
+    /// refusal now comes first, from names and metadata alone.
+    #[test]
+    fn team_push_refuses_read_only_entries_before_consent() {
+        use crate::util::test_seam::{demoted_vault, SeamProject};
+        let _project = SeamProject::new(demoted_vault);
+        let refusal = super::run_vault_push("team-fixture")
+            .map(|()| String::new())
+            .unwrap_or_else(|error| error.to_string());
+        assert!(
+            refusal.starts_with("Refusing to push to the team vault: 1 secret(s) are read-only")
+        );
+        assert!(refusal.contains("'DEMOTED_KEY'"));
+    }
+
+    #[test]
+    fn team_push_refuses_unreadable_metadata_before_consent() {
+        use crate::util::test_seam::{metadata_unreadable_vault, SeamProject};
+        let _project = SeamProject::new(metadata_unreadable_vault);
+        let refusal = super::run_vault_push("team-fixture")
+            .map(|()| String::new())
+            .unwrap_or_else(|error| error.to_string());
+        assert!(refusal.starts_with("Refusing to push to the team vault:"));
+        assert!(refusal.contains("'DEMOTED_KEY'"));
     }
 
     #[test]
