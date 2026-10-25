@@ -1339,10 +1339,10 @@ mod locked_vault_tests {
             "an empty keychain listing is not the inventory"
         );
         let error = outcome.err().unwrap().to_string();
-        assert!(error.starts_with("Vault locked:"), "{error}");
+        assert!(error.starts_with("Vault locked:"));
         for outcome in [super::run_list(), super::run_new("staging")] {
             let error = outcome.unwrap_err().to_string();
-            assert!(error.starts_with("Vault locked:"), "{error}");
+            assert!(error.starts_with("Vault locked:"));
         }
     }
 
@@ -1354,11 +1354,8 @@ mod locked_vault_tests {
         let (keys, note) = super::environment_keys(&project.project_id).unwrap();
         assert_eq!(keys, ["KEYCHAIN_ONLY_KEY"]);
         let note = note.expect("a keychain-only view carries the note");
-        assert!(
-            note.contains("covers only the OS keychain (1 secret(s))"),
-            "{note}"
-        );
-        assert!(note.contains("PHANTOM_VAULT_PASSPHRASE"), "{note}");
+        assert!(note.contains("covers only the OS keychain (1 secret(s))"));
+        assert!(note.contains("PHANTOM_VAULT_PASSPHRASE"));
     }
 
     /// `phantom env copy` decided its source set and destination collisions
@@ -1379,9 +1376,8 @@ mod locked_vault_tests {
                     || error.starts_with(
                         "Refusing to copy between environments from a partial inventory"
                     ),
-                "{error}"
             );
-            assert!(error.contains("PHANTOM_VAULT_PASSPHRASE"), "{error}");
+            assert!(error.contains("PHANTOM_VAULT_PASSPHRASE"));
         }
     }
 }

@@ -990,9 +990,8 @@ mod locked_vault_tests {
             assert!(
                 error.starts_with("Vault locked:")
                     || error.starts_with("Refusing to import secrets from a partial inventory"),
-                "{error}"
             );
-            assert!(error.contains("PHANTOM_VAULT_PASSPHRASE"), "{error}");
+            assert!(error.contains("PHANTOM_VAULT_PASSPHRASE"));
         }
     }
 }

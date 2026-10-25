@@ -1252,8 +1252,8 @@ mod tests {
             "a locked file vault must not read as no protected state"
         );
         let error = outcome.err().unwrap().to_string();
-        assert!(error.starts_with("Vault locked:"), "{error}");
-        assert!(error.contains("PHANTOM_VAULT_PASSPHRASE"), "{error}");
+        assert!(error.starts_with("Vault locked:"));
+        assert!(error.contains("PHANTOM_VAULT_PASSPHRASE"));
     }
 
     #[test]
