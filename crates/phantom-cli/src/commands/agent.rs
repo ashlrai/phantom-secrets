@@ -226,7 +226,7 @@ fn readiness_report(project_dir: &std::path::Path) -> AgentReadinessReport {
 
 fn vault_probe(project_dir: &std::path::Path) -> Option<VaultProbe> {
     let config_path = project_dir.join(".phantom.toml");
-    let config = PhantomConfig::load(&config_path).ok()?;
+    let config = crate::util::load_config_if_present(&config_path).ok()??;
     let vault = match crate::util::open_vault(config.local_project_id()) {
         Ok(vault) => vault,
         Err(error) => {
@@ -311,7 +311,7 @@ fn apply_setup(project_dir: &std::path::Path, before: &AgentReadinessReport) -> 
     };
 
     if env_path.exists()
-        && (!config_path.exists()
+        && (config.is_none()
             || before
                 .findings
                 .iter()
@@ -586,6 +586,31 @@ fn print_human_report(report: &AgentReadinessReport) {
 
 #[cfg(test)]
 mod tests {
+    /// The readiness vault probe used to follow a `.phantom.toml` symlink and
+    /// open the vault of whatever project the outside config named.
+    #[cfg(unix)]
+    #[test]
+    fn vault_probe_does_not_follow_a_config_symlink() {
+        let outside = tempfile::tempdir().unwrap();
+        phantom_core::config::PhantomConfig::new_with_defaults("agent-outside".to_string())
+            .save(&outside.path().join(".phantom.toml"))
+            .unwrap();
+        let project = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(
+            outside.path().join(".phantom.toml"),
+            project.path().join(".phantom.toml"),
+        )
+        .unwrap();
+        let _seam = crate::util::test_seam::TestProject::install(
+            project.path().to_path_buf(),
+            crate::util::test_seam::empty_keychain,
+        );
+        assert!(
+            super::vault_probe(project.path()).is_none(),
+            "vault probe opened a vault through a symlinked config"
+        );
+    }
+
     #[test]
     fn malformed_dotenv_blocks_all_agent_setup_mutations() {
         let project = tempfile::tempdir().unwrap();

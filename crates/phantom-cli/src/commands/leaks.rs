@@ -8,7 +8,7 @@
 
 use anyhow::Result;
 use colored::Colorize;
-use phantom_core::config::{LeakResponseConfig, OnLeak, PhantomConfig};
+use phantom_core::config::{LeakResponseConfig, OnLeak};
 use phantom_core::leak_correlation::{LeakCorrelationEngine, LeakIncident};
 use phantom_core::rotation_provider::default_rotation_providers;
 use serde::Serialize;
@@ -118,12 +118,12 @@ fn provider_name_for(secret_name: &str) -> Option<String> {
 /// Read the `[leak_response]` policy from `./.phantom.toml`. No file means the
 /// default policy (`plan`). A present but invalid policy is an error.
 fn load_policy() -> Result<OnLeak> {
-    let path = std::path::Path::new(".phantom.toml");
-    if !path.exists() {
+    let path = crate::util::project_dir()?.join(".phantom.toml");
+    let Some(config) = crate::util::load_config_if_present(&path)
+        .map_err(|e| anyhow::anyhow!("Cannot read .phantom.toml: {e}"))?
+    else {
         return Ok(OnLeak::default());
-    }
-    let config =
-        PhantomConfig::load(path).map_err(|e| anyhow::anyhow!("Cannot read .phantom.toml: {e}"))?;
+    };
     config
         .leak_response
         .effective()

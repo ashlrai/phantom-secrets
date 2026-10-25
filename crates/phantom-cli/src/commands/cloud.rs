@@ -326,7 +326,8 @@ fn load_cloud_config_exact(project_dir: &Path) -> Result<(PathBuf, Vec<u8>, Phan
     let before = phantom_core::fs::read_regular_file(&path)
         .context("Failed to safely read .phantom.toml")?
         .ok_or_else(|| anyhow::anyhow!("No .phantom.toml found. Run `phantom init` first."))?;
-    let config = PhantomConfig::load(&path).context("Failed to load .phantom.toml")?;
+    let config =
+        PhantomConfig::load_from_bytes(&path, &before).context("Failed to load .phantom.toml")?;
     if phantom_core::fs::read_regular_file(&path)
         .context("Failed to recheck .phantom.toml")?
         .as_deref()
