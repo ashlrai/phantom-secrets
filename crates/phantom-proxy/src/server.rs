@@ -607,6 +607,27 @@ async fn handle_request(
         ));
     }
 
+    // Refuse any path the outbound URL parser would rewrite. `url`/reqwest
+    // resolve `.`/`..` segments, including percent-encoded forms such as
+    // `%2e%2e`, so `/openai/../admin` would otherwise leave the route base
+    // and carry the route-owned credential to another path on the same
+    // upstream host. Encoded separators (`%2f`, `%5c`) and backslashes are
+    // refused too, since upstream servers may decode them into segments.
+    // This runs before routing, rate accounting and credential lookup, so a
+    // refused request never touches the vault or the network.
+    if path_has_dot_segment_or_encoded_separator(&path) {
+        warn!("Rejected request path containing dot segments or encoded separators");
+        return Ok(error_response(
+            StatusCode::BAD_REQUEST,
+            serde_json::json!({
+                "error": "request path contains dot segments or encoded separators",
+                "source": "phantom-proxy",
+                "hint": "Phantom refuses paths with '.', '..', '%2e', '%2f', '%5c' or '\\' segments so a request can never leave its route's base path. Send the normalized path instead.",
+            })
+            .to_string(),
+        ));
+    }
+
     // Match the route
     let (route, remainder) = match state.registry.match_route(&path) {
         Some(matched) => matched,
@@ -796,18 +817,14 @@ async fn handle_request(
     // prevents client-controlled headers (including Cookie/X-API-Key) from
     // turning an otherwise legitimate upstream route into an exfiltration
     // channel.
+    let request_connection_named = connection_named_headers(req.headers());
     for (name, value) in req.headers() {
         let name_str = name.as_str();
         if matches!(
             name_str,
-            "host"
-                | "connection"
-                | "transfer-encoding"
-                | "te"
-                | "accept-encoding"
-                | "x-phantom-proxy-token"
-                | "content-length"
-        ) {
+            "host" | "accept-encoding" | "x-phantom-proxy-token" | "content-length"
+        ) || is_hop_by_hop(name_str, &request_connection_named)
+        {
             continue;
         }
         // The client never controls the route-owned auth header. A missing
@@ -995,14 +1012,14 @@ async fn handle_request(
             .unwrap_or(false)
         || (may_have_body && !has_declared_length);
 
+    let response_connection_named = connection_named_headers(response.headers());
     for (name, value) in response.headers() {
         let name_str = name.as_str();
         // Drop content-length: streaming uses chunked transfer, non-streaming may need
         // recalculation after response scrubbing (phantom tokens differ in length)
-        if matches!(
-            name_str,
-            "transfer-encoding" | "connection" | "content-length" | "content-encoding"
-        ) {
+        if matches!(name_str, "content-length" | "content-encoding")
+            || is_hop_by_hop(name_str, &response_connection_named)
+        {
             continue;
         }
         let Ok(value_text) = value.to_str() else {
@@ -1177,6 +1194,66 @@ enum BodyReadError {
     Budget,
 }
 
+/// Hop-by-hop headers (RFC 9110 section 7.6.1, plus the de facto
+/// `Proxy-Connection` and `Keep-Alive`). They describe one connection and are
+/// never forwarded across the proxy in either direction.
+const HOP_BY_HOP_HEADERS: &[&str] = &[
+    "connection",
+    "keep-alive",
+    "proxy-connection",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+];
+
+/// Lowercased header names listed in every `Connection` header value. RFC
+/// 9110 makes each of them hop-by-hop for this connection.
+fn connection_named_headers(headers: &hyper::HeaderMap) -> Vec<String> {
+    headers
+        .get_all(hyper::header::CONNECTION)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .map(|name| name.trim().to_ascii_lowercase())
+        .filter(|name| !name.is_empty())
+        .collect()
+}
+
+/// Whether `name` (lowercase, as `HeaderName::as_str` returns it) must stay
+/// on this hop.
+fn is_hop_by_hop(name: &str, connection_named: &[String]) -> bool {
+    HOP_BY_HOP_HEADERS.contains(&name) || connection_named.iter().any(|named| named == name)
+}
+
+/// Whether a request path carries a `.` or `..` segment (literal or
+/// percent-encoded, in any case), a percent-encoded `/` or `\`, or a literal
+/// `\`. The outbound URL parser resolves dot segments and treats `\` as a
+/// separator for http(s), so any of these could move the forwarded request
+/// outside the matched route's base path.
+fn path_has_dot_segment_or_encoded_separator(path: &str) -> bool {
+    if path.contains('\\') {
+        return true;
+    }
+    path.split('/').any(|segment| {
+        let decoded = percent_decode(segment, false);
+        // WHATWG URL parsing removes ASCII tab and newline, so a segment
+        // that is only dots once they are removed is treated as a dot
+        // segment (conservatively, even when they arrived encoded).
+        let significant: Vec<u8> = decoded
+            .iter()
+            .copied()
+            .filter(|byte| !matches!(byte, b'\t' | b'\n' | b'\r'))
+            .collect();
+        significant == b"."
+            || significant == b".."
+            || decoded.contains(&b'/')
+            || decoded.contains(&b'\\')
+    })
+}
+
 /// Rebuild the query string for the upstream, dropping `phantom_token` and
 /// every route-owned credential parameter. Names are compared ASCII
 /// case-insensitively after percent-decoding. Other parameters are forwarded
@@ -1213,6 +1290,13 @@ fn carries_phantom_token(value: &[u8]) -> bool {
 /// Decode `%XX` escapes and `+` in a query component. Malformed escapes are
 /// kept literally, matching how lenient servers treat them.
 fn percent_decode_query_component(component: &str) -> Vec<u8> {
+    percent_decode(component, true)
+}
+
+/// Decode `%XX` escapes, and `+` as a space when `plus_as_space` is set
+/// (query components only; `+` is literal in a path). Malformed escapes are
+/// kept literally.
+fn percent_decode(component: &str, plus_as_space: bool) -> Vec<u8> {
     fn hex(byte: u8) -> Option<u8> {
         match byte {
             b'0'..=b'9' => Some(byte - b'0'),
@@ -1239,7 +1323,7 @@ fn percent_decode_query_component(component: &str) -> Vec<u8> {
                     _ => out.push(b'%'),
                 }
             }
-            b'+' => out.push(b' '),
+            b'+' if plus_as_space => out.push(b' '),
             byte => out.push(byte),
         }
         i += 1;
@@ -4126,5 +4210,213 @@ mod tests {
         use base64::Engine as _;
         let no_colon = base64::engine::general_purpose::STANDARD.encode("nocolon");
         assert_eq!(parse(&format!("Basic {no_colon}")), None);
+    }
+
+    /// Send one raw HTTP/1.1 request so the request target reaches the proxy
+    /// exactly as written (reqwest/url would normalize dot segments first).
+    /// Returns the response status code.
+    async fn send_raw_request(port: u16, target: &str, extra_headers: &[(&str, &str)]) -> u16 {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .unwrap();
+        let mut head = format!("GET {target} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n");
+        for (name, value) in extra_headers {
+            head.push_str(&format!("{name}: {value}\r\n"));
+        }
+        if !extra_headers
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case("connection"))
+        {
+            head.push_str("Connection: close\r\n");
+        }
+        head.push_str("\r\n");
+        stream.write_all(head.as_bytes()).await.unwrap();
+        stream.flush().await.unwrap();
+        let mut response = Vec::new();
+        let mut buf = [0u8; 4096];
+        loop {
+            match tokio::time::timeout(std::time::Duration::from_secs(5), stream.read(&mut buf))
+                .await
+            {
+                Ok(Ok(0)) | Ok(Err(_)) | Err(_) => break,
+                Ok(Ok(n)) => {
+                    response.extend_from_slice(&buf[..n]);
+                    if response.windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+            }
+        }
+        let text = String::from_utf8_lossy(&response);
+        text.split_whitespace()
+            .nth(1)
+            .and_then(|code| code.parse().ok())
+            .unwrap_or(0)
+    }
+
+    async fn traversal_probe_proxy(mock_port: u16) -> ProxyServer {
+        let mut registry = ServiceRegistry::new();
+        registry.add_route(ServiceRoute {
+            name: "openai".to_string(),
+            target_base: format!("http://127.0.0.1:{mock_port}"),
+            secret_key: "OPENAI_API_KEY".to_string(),
+            header: "Authorization".to_string(),
+            header_format: "Bearer {secret}".to_string(),
+            credential_profile: crate::services::CredentialProfile::Standard,
+            sdk_base_path: Some("/v1".to_string()),
+        });
+        let fixture = format!("{}{}", "sk", "-traversal-fixture-0123456789");
+        let interceptor = Interceptor::new_with_named(
+            HashMap::new(),
+            HashMap::from([("OPENAI_API_KEY".to_string(), fixture)]),
+        );
+        ProxyServer::start(
+            ProxyConfig {
+                port: 0,
+                proxy_token: String::new(),
+                ..ProxyConfig::default()
+            },
+            registry,
+            interceptor,
+        )
+        .await
+        .unwrap()
+    }
+
+    #[test]
+    fn path_guard_flags_every_dot_segment_and_encoded_separator_form() {
+        for escaping in [
+            "/svc/..",
+            "/svc/../x",
+            "/svc/./x",
+            "/svc/%2E%2E/x",
+            "/svc/%2e./x",
+            "/svc/.%2E/x",
+            "/svc/%2e/x",
+            "/svc/a%2Fb",
+            "/svc/a%5Cb",
+            "/svc/a\\b",
+            "/svc/.%09./x",
+        ] {
+            assert!(
+                path_has_dot_segment_or_encoded_separator(escaping),
+                "not flagged: {escaping}"
+            );
+        }
+        for ordinary in [
+            "/svc",
+            "/svc/",
+            "/svc/v1/chat/completions",
+            "/svc/a..b",
+            "/svc/...",
+            "/svc/.well-known/x",
+            "/svc/file.json",
+            "/svc/a+b",
+            "/svc/%41",
+            "/svc//v1/x",
+        ] {
+            assert!(
+                !path_has_dot_segment_or_encoded_separator(ordinary),
+                "wrongly flagged: {ordinary}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn dot_segment_paths_never_reach_upstream_with_the_route_credential() {
+        let mock = crate::test_server::MockServer::start().await;
+        let proxy = traversal_probe_proxy(mock.port).await;
+
+        let escapes = [
+            "/openai/../admin",
+            "/openai/v1/../../admin",
+            "/openai/%2e%2e/admin",
+            "/openai/%2E%2e/admin",
+            "/openai/.%2e/admin",
+            "/openai/%2e./admin",
+            "/openai/..%2fadmin",
+            "/openai/%2e%2e%2fadmin",
+            "/openai/v1%2f..%2f..%2fadmin",
+            "/openai/..%5cadmin",
+            "/openai/./admin",
+            "/openai/%2e/admin",
+            "/openai/v1/chat/..",
+            "/openai/v1/chat/%2e%2e",
+            "/openai/v1/chat/%2e%2e?q=1",
+        ];
+        for target in escapes {
+            let status = send_raw_request(proxy.port(), target, &[]).await;
+            assert_eq!(status, 400, "dot-segment path was not refused: {target}");
+        }
+        assert_eq!(
+            mock.get_requests().len(),
+            0,
+            "a dot-segment path reached the upstream"
+        );
+
+        // Ordinary paths, including dots inside a segment, still work.
+        for target in ["/openai/chat/completions", "/openai/v1/files/a..b.jsonl"] {
+            let status = send_raw_request(proxy.port(), target, &[]).await;
+            assert_eq!(status, 200, "ordinary path was refused: {target}");
+        }
+        let paths: Vec<String> = mock.get_requests().into_iter().map(|r| r.path).collect();
+        assert_eq!(
+            paths,
+            vec![
+                "/v1/chat/completions".to_string(),
+                "/v1/files/a..b.jsonl".to_string()
+            ]
+        );
+
+        proxy.shutdown().await;
+        mock.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn hop_by_hop_request_headers_are_not_forwarded_upstream() {
+        let mock = crate::test_server::MockServer::start().await;
+        let proxy = traversal_probe_proxy(mock.port).await;
+
+        let status = send_raw_request(
+            proxy.port(),
+            "/openai/models",
+            &[
+                ("Connection", "close, X-Hop-Named"),
+                ("X-Hop-Named", "named-by-connection"),
+                ("Keep-Alive", "timeout=5"),
+                ("Upgrade", "websocket"),
+                ("Proxy-Authorization", "Basic cHJveHk6cHJveHk="),
+                ("Proxy-Connection", "keep-alive"),
+                ("Trailer", "X-Trailer-Field"),
+                ("X-End-To-End", "kept"),
+            ],
+        )
+        .await;
+        assert_eq!(status, 200);
+
+        let requests = mock.get_requests();
+        assert_eq!(requests.len(), 1);
+        let forwarded = &requests[0].headers;
+        for hop in [
+            "x-hop-named",
+            "keep-alive",
+            "upgrade",
+            "proxy-authorization",
+            "proxy-connection",
+            "trailer",
+        ] {
+            assert!(
+                !forwarded.contains_key(hop),
+                "hop-by-hop header forwarded upstream: {hop}"
+            );
+        }
+        assert_eq!(
+            forwarded.get("x-end-to-end").map(String::as_str),
+            Some("kept")
+        );
+
+        proxy.shutdown().await;
+        mock.shutdown().await;
     }
 }
