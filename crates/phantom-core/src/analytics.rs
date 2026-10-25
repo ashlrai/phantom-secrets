@@ -165,7 +165,7 @@ pub fn compute_windowed_anomalies(
     global_threshold: f64,
 ) -> std::io::Result<Vec<WindowedAnomalyResult>> {
     let path = crate::audit::log_path()?;
-    if !path.exists() {
+    if !crate::audit::log_present(&path)? {
         return Ok(vec![]);
     }
 
@@ -357,7 +357,7 @@ pub fn export_analytics(
 /// log does not exist.
 fn read_window(period: Period, now: u64) -> std::io::Result<Vec<RawEvent>> {
     let path = crate::audit::log_path()?;
-    if !path.exists() {
+    if !crate::audit::log_present(&path)? {
         return Ok(Vec::new());
     }
     read_events_from_path(&path, period.cutoff_ts_at(now))
@@ -813,6 +813,36 @@ mod tests {
 
         assert!(read_events_from_path(&path, 0).is_err());
         assert_eq!(std::fs::read(owner).unwrap(), b"{}\n");
+    }
+
+    /// A dangling symlink at `audit.log` is not "no log yet": analytics and
+    /// windowed anomalies must fail instead of answering from no events.
+    #[cfg(unix)]
+    #[test]
+    fn analytics_refuses_dangling_symlinked_audit_log() {
+        with_audit_home(|home| {
+            let dir = home.join(".phantom");
+            std::fs::create_dir(&dir).unwrap();
+            std::os::unix::fs::symlink(home.join("missing.log"), dir.join("audit.log")).unwrap();
+            assert!(compute_analytics_at(Period::All, 1_700_000_000).is_err());
+            assert!(compute_windowed_anomalies(None, None, 0.5).is_err());
+        });
+    }
+
+    /// A log reached through a symlinked `~/.phantom` is refused.
+    #[cfg(unix)]
+    #[test]
+    fn analytics_refuses_log_in_symlinked_phantom_dir() {
+        with_audit_home(|home| {
+            let elsewhere = home.join("elsewhere");
+            write_synthetic_log(
+                &elsewhere.join("audit.log"),
+                &[(1_699_999_000, "vault.retrieve", Some("KEY_A"))],
+            );
+            std::os::unix::fs::symlink(&elsewhere, home.join(".phantom")).unwrap();
+            assert!(compute_analytics_at(Period::All, 1_700_000_000).is_err());
+            assert!(compute_windowed_anomalies(None, None, 0.5).is_err());
+        });
     }
 
     // ── Period ────────────────────────────────────────────────────────────────

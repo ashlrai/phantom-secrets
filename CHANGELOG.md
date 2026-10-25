@@ -4,6 +4,28 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (audit tail and audit readers no longer follow a symlinked audit log or `~/.phantom`)
+
+- `phantom audit tail` and `phantom audit anomalies --realtime` created
+  `~/.phantom` with `create_dir_all` (umask permissions) and opened
+  `audit.log` with a plain create-and-append open, which follows symlinks: a
+  planted `audit.log` or `~/.phantom` symlink redirected the follow (and the
+  file creation) somewhere else, and a dangling `audit.log` link created its
+  target. Both now go through `phantom_core::audit::open_log_for_follow`,
+  which creates `~/.phantom` 0700 and the log 0600, refuses a symlinked or
+  non-directory `~/.phantom`, and refuses a symlink or non-regular file at
+  the log path, failing with a clear error.
+- `phantom audit show`, `phantom audit verify`, the analytics and windowed
+  anomaly readers, and the MCP `phantom_audit_recent` tool decided whether
+  the log existed with `Path::exists`, which follows symlinks: a dangling
+  symlink at `audit.log` read as "no audit events yet" with success, and a
+  log under a symlinked `~/.phantom` was read through the link. They now use
+  `phantom_core::audit::log_present`, which follows nothing: a symlinked
+  `~/.phantom` is refused, and anything at the log path is handed to the
+  no-follow reader, which refuses it. A missing log still reads as empty.
+  `phantom doctor` reports a symlinked or non-regular audit log as an issue.
+  The JSONL schema and HMAC chain are unchanged.
+
 ### Fixed (existing loose Phantom state directories are tightened to 0700)
 
 - A `~/.phantom` or project `.phantom` directory that already existed with
