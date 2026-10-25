@@ -4,6 +4,27 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (workspace-request and MCP approval state dirs use the shared private-dir helper; `.env.example` presence is never followed)
+
+- The workspace-request store (`~/.phantom/workspace-requests`, the setup
+  journal directory and its lock) and the MCP approval store kept their own
+  copies of the private-directory routine: `create_dir_all` followed a
+  symlinked `~/.phantom` ancestor and created state at its target, missing
+  `.phantom` ancestors were created with umask permissions, and the final
+  `chmod 0700` went by path to a directory of any owner. Both now call
+  `phantom_core::fs::ensure_private_dir`, like the rest of Phantom's state:
+  symlinked or non-directory components are refused, missing `.phantom`
+  ancestors are created 0700, and only a directory the caller owns is
+  tightened, through a no-follow handle. A refusal still reports
+  `ErrorKind::InvalidData`.
+- Workspace inspection judged `.env.example` with `Path::is_file`, which
+  follows symlinks. A dangling link or a directory at that name read as
+  absent, so setup planned to generate the file and the transaction's
+  no-follow writer then refused the whole plan. Presence is now judged with
+  `symlink_metadata`: any object at the name counts as present and is never
+  followed or replaced. A symlink to a shared `.env.example` still counts as
+  present, exactly as before.
+
 ### Fixed (proxy resolves upstream relative references before scoping them to the route)
 
 - An upstream `Location`, `Content-Location` or `Link` target written as a
