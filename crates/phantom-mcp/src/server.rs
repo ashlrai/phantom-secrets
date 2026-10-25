@@ -1766,8 +1766,11 @@ impl PhantomMcpServer {
         require_confirm("phantom_cloud_pull", params.confirm)?;
         let config_path = self.config_path();
         let (config, config_before) = load_mcp_config_exact(&config_path)?;
-        let vault =
-            phantom_vault::try_create_vault(config.local_project_id()).map_err(vault_init_err)?;
+        let vault = self.open_project_vault(&config)?;
+        // Pulled entries must not land in the keychain beside a locked
+        // encrypted-file vault (a split vault), and the skip/overwrite
+        // decisions must see the whole local inventory.
+        self.require_complete_inventory(&config, vault.as_ref(), "pull from Phantom Cloud")?;
         let params_json = serde_json::to_string(&serde_json::json!({
             "force": params.force,
             "confirm": params.confirm,
@@ -1924,8 +1927,16 @@ impl PhantomMcpServer {
             })?;
         }
 
-        let target_vault = phantom_vault::try_create_vault(target_config.local_project_id())
-            .map_err(|error| internal_err(format!("Failed to initialize target vault: {error}")))?;
+        let target_vault = self.open_project_vault(&target_config)?;
+        // The collision check below and the write it guards must see the
+        // target's whole inventory: beside a locked encrypted-file vault the
+        // keychain would receive the copy (a split vault) and miss names the
+        // file vault owns, so a keychain-only target is refused, empty or not.
+        self.require_complete_inventory(
+            &target_config,
+            target_vault.as_ref(),
+            "copy into the target project",
+        )?;
         let target_vault_names = target_vault
             .list()
             .map_err(|error| internal_err(format!("Failed to list target vault: {error}")))?;
@@ -2853,6 +2864,10 @@ impl PhantomMcpServer {
                 params.output
             )));
         }
+        // The vault listing decides whether an unprotected dotenv is refused;
+        // an empty keychain beside a locked encrypted-file vault would accept
+        // one. A keychain-only listing is non-empty, so it decides the same.
+        let vault_note = self.require_readable_inventory(&config, vault.as_ref())?;
         let vault_names = vault
             .list()
             .map_err(|error| internal_err(format!("Failed to list vault secrets: {error}")))?;
@@ -2884,9 +2899,12 @@ impl PhantomMcpServer {
         let secret_count = dotenv.real_secret_entries().len()
             + dotenv.entries().iter().filter(|e| e.is_phantom).count();
 
-        text_result(format!(
-            "Generated {} with {} entries ({} secrets replaced with placeholders).",
-            params.output, entry_count, secret_count
+        text_result(with_text_note(
+            format!(
+                "Generated {} with {} entries ({} secrets replaced with placeholders).",
+                params.output, entry_count, secret_count
+            ),
+            vault_note,
         ))
     }
 
@@ -4697,8 +4715,10 @@ impl PhantomMcpServer {
         }
         let config_path = self.config_path();
         let (config, config_before) = load_mcp_config_exact(&config_path)?;
-        let vault =
-            phantom_vault::try_create_vault(config.local_project_id()).map_err(vault_init_err)?;
+        let vault = self.open_project_vault(&config)?;
+        // As for cloud pull: the team copy must not be written into the
+        // keychain beside a locked encrypted-file vault.
+        self.require_complete_inventory(&config, vault.as_ref(), "pull the team vault")?;
         let project_id = config.portable_project_id().to_string();
         let params_json = serde_json::to_string(&serde_json::json!({
             "team_id": &params.team_id,
@@ -9977,6 +9997,122 @@ mod tests {
             noted,
             "phantom_sync must carry the keychain-only vault_note"
         );
+    }
+
+    /// True when `result` is the locked-vault refusal (INVALID_REQUEST whose
+    /// message starts "Vault locked:").
+    fn refused_as_locked(result: &Result<CallToolResult, McpError>) -> bool {
+        matches!(
+            result,
+            Err(error) if error.code == rmcp::model::ErrorCode::INVALID_REQUEST
+                && error.message.starts_with("Vault locked:")
+        )
+    }
+
+    /// `phantom_copy_secret` listed the TARGET vault without the inventory
+    /// guard. Beside a locked encrypted-file vault the target keychain answers
+    /// for the collision check and receives the write, so the copy lands in a
+    /// split vault and a name the file vault already owns is not seen as a
+    /// collision. A write decision refuses a keychain-only target inventory,
+    /// empty or not, before approval and before the source value is read.
+    #[test]
+    fn copy_secret_refuses_a_partial_target_inventory() {
+        let _environment = TestEnvironment::new();
+        let _home = TestHome::new();
+        let (source, _source_dir) = setup_initialized_project();
+        let (_target, target_dir) = locked_file_vault_project();
+        let target = target_dir.path().canonicalize().unwrap();
+        let config_before = std::fs::read(target.join(".phantom.toml")).unwrap();
+        let env_before = std::fs::read(target.join(".env")).unwrap();
+        let makes: [super::MakeTestVault; 2] =
+            [|| Box::new(EmptyKeychain), || Box::new(KeychainWithOne)];
+        for make in makes {
+            let _vault = TestVault::serve(make);
+            let result = source.phantom_copy_secret(Parameters(CopySecretParams {
+                name: "OPENAI_API_KEY".to_string(),
+                target_dir: target.display().to_string(),
+                rename: Some("COPIED_API_KEY".to_string()),
+                confirm: true,
+                approval_token: None,
+            }));
+            assert!(
+                refused_as_locked(&result),
+                "copy into a keychain-only target inventory must be refused"
+            );
+            assert_eq!(
+                std::fs::read(target.join(".phantom.toml")).unwrap(),
+                config_before
+            );
+            assert_eq!(std::fs::read(target.join(".env")).unwrap(), env_before);
+        }
+    }
+
+    /// `phantom_env` picked the managed dotenv from an unguarded listing.
+    /// With an empty keychain beside a locked encrypted-file vault the
+    /// protected-state check saw no vault entries, so a dotenv without
+    /// Phantom tokens was accepted and an example file was written, where the
+    /// readable vault refuses that unprotected file. It now refuses with the
+    /// unlock step and writes nothing.
+    #[test]
+    fn env_refuses_a_locked_file_vault() {
+        let _environment = TestEnvironment::new();
+        let _home = TestHome::new();
+        let (server, dir) = locked_file_vault_project();
+        let _vault = TestVault::serve(|| Box::new(EmptyKeychain));
+        let result = server.phantom_env(params(serde_json::json!({
+            "output": ".env.example",
+            "confirm": true,
+        })));
+        assert!(
+            refused_as_locked(&result),
+            "phantom_env must refuse a locked file vault"
+        );
+        assert!(!dir.path().join(".env.example").exists());
+    }
+
+    /// `phantom_cloud_pull` and `phantom_team_vault_pull` write local vault
+    /// entries. Beside a locked encrypted-file vault those writes land in the
+    /// keychain (a split vault), and the pull's collision and overwrite
+    /// decisions see only the keychain. Both refuse a keychain-only
+    /// inventory, empty or not, before approval.
+    #[test]
+    fn pulls_refuse_a_partial_inventory_beside_a_locked_file_vault() {
+        let _environment = TestEnvironment::new();
+        let _home = TestHome::new();
+        let (server, _dir) = locked_file_vault_project();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let makes: [super::MakeTestVault; 2] =
+            [|| Box::new(EmptyKeychain), || Box::new(KeychainWithOne)];
+        for make in makes {
+            let _vault = TestVault::serve(make);
+            let calls = [
+                (
+                    "phantom_cloud_pull",
+                    runtime.block_on(
+                        server.phantom_cloud_pull(params(serde_json::json!({ "confirm": true }))),
+                    ),
+                ),
+                (
+                    "phantom_team_vault_pull",
+                    runtime.block_on(server.phantom_team_vault_pull(params(serde_json::json!({
+                        "team_id": "team-fixture",
+                        "confirm": true,
+                    })))),
+                ),
+            ];
+            let not_refused: Vec<&str> = calls
+                .iter()
+                .filter(|(_, result)| !refused_as_locked(result))
+                .map(|(tool, _)| *tool)
+                .collect();
+            assert!(
+                not_refused.is_empty(),
+                "these pulls must refuse a partial inventory: {not_refused:?}"
+            );
+        }
     }
 
     /// A readable vault whose stored validation results cannot be read.
