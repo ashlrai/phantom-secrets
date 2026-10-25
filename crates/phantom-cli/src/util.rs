@@ -31,7 +31,7 @@ pub fn missing_config_error(project_dir: &std::path::Path) -> anyhow::Error {
     let root = project_dir
         .ancestors()
         .skip(1)
-        .find(|dir| dir.join(".phantom.toml").is_file());
+        .find(|dir| config_presence(&dir.join(".phantom.toml")) == ConfigPresence::Regular);
     match root {
         Some(root) => anyhow::anyhow!(
             "No .phantom.toml in {}. Phantom commands run from the project root; this directory is inside the project at {}. Run {} first.",
@@ -43,6 +43,35 @@ pub fn missing_config_error(project_dir: &std::path::Path) -> anyhow::Error {
             "No .phantom.toml found. Run {} first.",
             "phantom init".cyan().bold()
         ),
+    }
+}
+
+/// What is at a `.phantom.toml` path, judged as [`read_config_if_present`]
+/// judges it, without reading it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigPresence {
+    /// Nothing is there.
+    Absent,
+    /// A regular, non-symlink file.
+    Regular,
+    /// Something that is refused: a symlink (dangling or not), directory,
+    /// FIFO or device, or a path whose metadata cannot be read.
+    NotRegular,
+}
+
+/// Classify the `.phantom.toml` at `path` without following a symlink.
+///
+/// Only [`ConfigPresence::Absent`] means "not initialized"; anything else
+/// that exists and is not a regular file is refused by
+/// [`load_project_config`], so callers must not treat it as either a
+/// project or a missing config.
+pub fn config_presence(path: &std::path::Path) -> ConfigPresence {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if !metadata.file_type().is_symlink() && metadata.is_file() => {
+            ConfigPresence::Regular
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => ConfigPresence::Absent,
+        _ => ConfigPresence::NotRegular,
     }
 }
 
@@ -603,6 +632,75 @@ mod tests {
         assert!(inventory_guard(vault.as_ref(), "another-project", 0)
             .unwrap()
             .is_none());
+    }
+
+    /// The ancestor search names a project root only when that root holds a
+    /// regular, non-symlink `.phantom.toml`, the same file `load_project_config`
+    /// would accept there. Fails on main, where `is_file()` followed an
+    /// ancestor symlink and sent the user to a root whose config is refused.
+    #[cfg(unix)]
+    #[test]
+    fn missing_config_error_ignores_a_symlinked_ancestor_config() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let target = outside.path().join("phantom.toml");
+        std::fs::write(&target, "[phantom]\n").unwrap();
+        std::os::unix::fs::symlink(&target, root.path().join(".phantom.toml")).unwrap();
+        let sub = root.path().join("sub");
+        std::fs::create_dir(&sub).unwrap();
+
+        let rendered = missing_config_error(&sub).to_string();
+        assert!(!rendered.contains("inside the project"));
+    }
+
+    /// A directory named `.phantom.toml` in an ancestor is not a project root.
+    #[test]
+    fn missing_config_error_ignores_a_directory_ancestor_config() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join(".phantom.toml")).unwrap();
+        let sub = root.path().join("sub");
+        std::fs::create_dir(&sub).unwrap();
+
+        let rendered = missing_config_error(&sub).to_string();
+        assert!(!rendered.contains("inside the project"));
+    }
+
+    /// A regular ancestor `.phantom.toml` is still named as the project root.
+    #[test]
+    fn missing_config_error_names_a_regular_ancestor_config() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join(".phantom.toml"), "[phantom]\n").unwrap();
+        let sub = root.path().join("sub");
+        std::fs::create_dir(&sub).unwrap();
+
+        let rendered = missing_config_error(&sub).to_string();
+        assert!(rendered.contains("inside the project"));
+    }
+
+    /// `config_presence` agrees with `read_config_if_present`: absent is
+    /// absent, a regular file is present, and anything else that exists
+    /// (directory, symlink, dangling symlink) is a refusal, never absent.
+    #[cfg(unix)]
+    #[test]
+    fn config_presence_matches_the_regular_file_reader() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".phantom.toml");
+        assert_eq!(config_presence(&path), ConfigPresence::Absent);
+        assert!(matches!(read_config_if_present(&path), Ok(None)));
+
+        std::os::unix::fs::symlink(dir.path().join("absent.toml"), &path).unwrap();
+        assert_eq!(config_presence(&path), ConfigPresence::NotRegular);
+        assert!(read_config_if_present(&path).is_err());
+        std::fs::remove_file(&path).unwrap();
+
+        std::fs::create_dir(&path).unwrap();
+        assert_eq!(config_presence(&path), ConfigPresence::NotRegular);
+        assert!(read_config_if_present(&path).is_err());
+        std::fs::remove_dir(&path).unwrap();
+
+        std::fs::write(&path, "[phantom]\n").unwrap();
+        assert_eq!(config_presence(&path), ConfigPresence::Regular);
+        assert!(matches!(read_config_if_present(&path), Ok(Some(_))));
     }
 }
 
