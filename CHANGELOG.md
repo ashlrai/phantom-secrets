@@ -16,6 +16,44 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   refused (an error under `PHANTOM_AUDIT=required`, skipped under
   best-effort).
 
+### Fixed (`enforce_rotation_on_access` was never enforced)
+
+- `enforce_rotation_on_access = true` under `[phantom.secrets.NAME]` was
+  documented to block `phantom exec` once the secret was overdue for rotation,
+  but nothing called the check, so the option did nothing. `phantom exec` and
+  `phantom start` now refuse before any secret value is read when an enforced
+  secret is at least one schedule period old (`rotate_every`,
+  `rotation_schedule`, or `[phantom.rotation_policy]`; monthly is 30 days).
+  The refusal names the secret, its age and the fix, never a value.
+- Age is measured from machine-local vault metadata: the later of when the
+  vault entry was stored and its last recorded provider rotation. A
+  `last_rotated` written in `.phantom.toml` is ignored for this check, so a
+  committed edit cannot unlock it. An enforced secret with no schedule, no
+  recorded store time, or a store time in the future is refused rather than
+  let through.
+- The refusal no longer points at `phantom rotate NAME` or a
+  `--skip-rotation-check` flag, neither of which replaces a credential or
+  exists in this release. To unblock, rotate the credential at its provider
+  and replace it with `phantom remove NAME` then `phantom add NAME`, or set
+  `enforce_rotation_on_access = false`.
+
+### Fixed (competitor imports: BOM-prefixed JSON and one-pass name fixes)
+
+- `phantom import --from doppler|infisical|dotenvx|1password` refused a JSON
+  export that started with a UTF-8 byte-order mark, as Windows PowerShell 5.1
+  writes with `Out-File -Encoding utf8`; Infisical and dotenvx then misread
+  the JSON as a malformed `.env`. A single leading BOM is now ignored.
+- A JSON export with several names that are not environment keys (such as
+  Infisical keys `db-host` and `app.port`) was refused one name at a time.
+  The refusal now lists every such entry (up to 10, then a count) with a
+  suggested name, for example `"db-host" (rename to "db_host")`. Nothing is
+  renamed automatically and nothing is imported until the export is fixed.
+- The import format table in `docs/troubleshooting.md` described 1Password
+  input as `op item list` output (it is a flat `{"KEY": "value"}` object) and
+  left out Infisical's JSON array and dotenvx's JSON object. The 1Password
+  `jq` recipe produced several objects instead of one; it now builds one
+  object and stops on duplicate field labels.
+
 ### Fixed (MCP tools read `.phantom.toml` only as a regular file)
 
 - The MCP compliance `env_clean` check and `phantom_check` worktree scan

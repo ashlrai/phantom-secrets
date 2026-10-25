@@ -504,18 +504,21 @@ Migrate secrets from Doppler, Infisical, dotenvx, 1Password, or a plain `.env` f
 # Doppler: export secrets as JSON first, then import
 phantom import --from doppler --file dump.json
 
-# Infisical: export as .env, then import
+# Infisical: export as .env (or --format=json), then import
 phantom import --from infisical --file export.env
 
 # dotenvx: import a plaintext .env (not an encrypted .env.vault)
 phantom import --from dotenvx --file .env
 
-# 1Password: export as JSON, then import
+# 1Password: collect fields into a flat {"KEY": "value"} JSON object, then import
 phantom import --from 1password --file 1p-export.json
 
 # Plain .env file (same heuristics as phantom init)
 phantom import --from env --file .env
 ```
+
+See [Troubleshooting](troubleshooting.md#importing-from-other-secret-managers)
+for each source's exact file format.
 
 After importing, run `phantom init` to replace any remaining plaintext secrets in your `.env` with phantom tokens.
 
