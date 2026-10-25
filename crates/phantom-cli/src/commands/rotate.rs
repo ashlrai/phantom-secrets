@@ -304,9 +304,18 @@ fn prepare_local_token_remap(project_dir: &Path) -> Result<Option<LocalTokenRema
         .context("Failed to load exact .phantom.toml snapshot")?;
     crate::commands::add::validate_managed_dotenv_preflight(&project_dir, &config)?;
     let local_project_id = config.local_project_id().to_string();
-    let vault =
-        phantom_vault::try_create_vault(&local_project_id).context("Failed to initialize vault")?;
+    let vault = crate::util::open_vault(&local_project_id).context("Failed to initialize vault")?;
     let names = sorted_names(vault.as_ref())?;
+    // The remap claims to invalidate every persistent phm_ mapping for the
+    // project. Beside an encrypted-file vault this process cannot open, an
+    // empty keychain listing is not "nothing to remap" and a keychain-only
+    // listing would leave every file-vault entry's token unchanged.
+    crate::util::require_complete_inventory(
+        vault.as_ref(),
+        &local_project_id,
+        names.len(),
+        "remap Phantom tokens",
+    )?;
     if names.is_empty() {
         return Ok(None);
     }
@@ -1994,5 +2003,61 @@ mod token_remap_tests {
         let error = run_batch(30, false, true).unwrap_err().to_string();
         assert!(error.starts_with("Vault locked:"), "{error}");
         assert!(error.contains("PHANTOM_VAULT_PASSPHRASE"), "{error}");
+    }
+
+    /// Write a managed dotenv holding a protected placeholder for the
+    /// file-vault entry and for the keychain stub's entry.
+    #[cfg(unix)]
+    fn write_locked_project_dotenv(dir: &Path) -> Vec<u8> {
+        let body = format!(
+            "OPENAI_API_KEY={}\nKEYCHAIN_ONLY_KEY={}\nPUBLIC=yes\n",
+            phantom_core::token::PhantomToken::generate().as_str(),
+            phantom_core::token::PhantomToken::generate().as_str(),
+        );
+        std::fs::write(dir.join(".env"), &body).unwrap();
+        body.into_bytes()
+    }
+
+    /// `phantom rotate` answered "No Phantom tokens to remap." with exit 0
+    /// when the project's secrets were in an encrypted-file vault this
+    /// process could not open and the OS keychain it fell back to was empty.
+    #[cfg(unix)]
+    #[test]
+    fn token_remap_refuses_an_empty_keychain_beside_a_locked_file_vault() {
+        let project =
+            crate::util::test_seam::LockedProject::new(crate::util::test_seam::empty_keychain);
+        let before = write_locked_project_dotenv(&project.dir);
+        let outcome = prepare_local_token_remap(&project.dir);
+        assert!(
+            outcome.is_err(),
+            "remap planning must refuse a locked file vault"
+        );
+        let error = outcome.err().unwrap().to_string();
+        assert!(error.starts_with("Vault locked:"), "{error}");
+        assert!(error.contains("PHANTOM_VAULT_PASSPHRASE"), "{error}");
+        assert_eq!(std::fs::read(project.dir.join(".env")).unwrap(), before);
+    }
+
+    /// A keychain-only listing beside a locked file vault planned a remap of
+    /// the keychain names alone while the challenge claimed every mapping is
+    /// invalidated, leaving the file-vault entries' tokens unchanged.
+    #[cfg(unix)]
+    #[test]
+    fn token_remap_refuses_a_keychain_only_inventory_beside_a_locked_file_vault() {
+        let project =
+            crate::util::test_seam::LockedProject::new(crate::util::test_seam::keychain_with_one);
+        let before = write_locked_project_dotenv(&project.dir);
+        let outcome = prepare_local_token_remap(&project.dir);
+        assert!(
+            outcome.is_err(),
+            "remap planning must refuse a keychain-only inventory"
+        );
+        let error = outcome.err().unwrap().to_string();
+        assert!(
+            error.starts_with("Refusing to remap Phantom tokens from a partial inventory"),
+            "{error}"
+        );
+        assert!(error.contains("PHANTOM_VAULT_PASSPHRASE"), "{error}");
+        assert_eq!(std::fs::read(project.dir.join(".env")).unwrap(), before);
     }
 }
