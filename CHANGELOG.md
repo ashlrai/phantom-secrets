@@ -4,6 +4,20 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (`phantom validate` applies the lifecycle gates `phantom exec` applies)
+
+- `phantom validate --check-all`, `phantom validate --watch` and
+  `phantom_validate_all` read every vault value with a plain retrieve and
+  sent it to its provider, so a secret demoted to read-only by the expiry
+  policy, or overdue under `enforce_rotation_on_access`, still went over the
+  network although `phantom exec` refuses both. Validation now refuses with
+  the same "Refusing to validate: ..." lifecycle refusals (names only) before
+  the trusted-terminal consent or MCP approval, judges again before any value
+  is read, and reads values through the runtime-injection check, so an entry
+  demoted in between is never sent. A watch judges every round and ends when
+  a secret goes overdue or is demoted. `phantom rotate` still reads the
+  outgoing value: rotating is the remedy these refusals name.
+
 ### Fixed (`phantom check --staged` missed credentials in files git calls binary)
 
 - The pre-commit scan read each staged code file's added lines from
