@@ -863,7 +863,7 @@ fn unescape_double_quoted(s: &str) -> String {
 
 /// Key-name fragments that mark an entry as a secret. `PWD` covers short
 /// forms like `DB_PWD=hunter2` that would otherwise miss (audit F11).
-const SECRET_KEY_PATTERNS: [&str; 12] = [
+const NAME_RULE_FRAGMENTS: [&str; 12] = [
     "KEY",
     "SECRET",
     "TOKEN",
@@ -895,7 +895,7 @@ const CONNECTION_KEY_PATTERNS: [&str; 10] = [
 
 /// Value prefixes of known secret formats. These alone override a public key
 /// prefix (see [`classify`]).
-const SECRET_VALUE_PREFIXES: [&str; 14] = [
+const KNOWN_VALUE_PREFIXES: [&str; 14] = [
     "sk-",
     "sk_",
     "pk_",
@@ -915,7 +915,7 @@ const SECRET_VALUE_PREFIXES: [&str; 14] = [
 /// Further value prefixes that mark a non-public key as a secret: JWT-style
 /// base64 and a PEM armor header (audit F11; multi-line PEM bodies depend on
 /// F12 quoted parsing).
-const NON_PUBLIC_SECRET_VALUE_PREFIXES: [&str; 2] = ["eyJ", "-----BEGIN "];
+const NON_PUBLIC_VALUE_PREFIXES: [&str; 2] = ["eyJ", "-----BEGIN "];
 
 /// Framework prefixes whose keys are shipped in browser bundles.
 const PUBLIC_KEY_PREFIXES: [&str; 6] = [
@@ -932,7 +932,7 @@ const PUBLIC_KEY_PREFIXES: [&str; 6] = [
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ValueRule {
     /// The value starts with this known secret prefix.
-    SecretPrefix(&'static str),
+    KnownPrefix(&'static str),
     /// A PEM block whose armor header names a private key.
     PemPrivateKey,
     /// A URL carrying credentials in its userinfo (`scheme://user:pass@host`).
@@ -947,7 +947,7 @@ impl ValueRule {
     /// A fixed, value-free sentence fragment for human output.
     pub fn describe(&self) -> String {
         match self {
-            ValueRule::SecretPrefix(prefix) => {
+            ValueRule::KnownPrefix(prefix) => {
                 format!(
                     "starts with \"{}\", a known secret prefix",
                     prefix.trim_end()
@@ -1018,17 +1018,17 @@ impl ClassificationReason {
 /// Checks both the key name and value patterns.
 #[cfg(test)]
 fn looks_like_secret(entry: &EnvEntry) -> bool {
-    secret_rule(entry).is_some()
+    deciding_rule(entry).is_some()
 }
 
 /// The rule that makes a non-public entry a secret, or `None` when it is not
 /// one. Rules are tried in order and the first match decides.
-fn secret_rule(entry: &EnvEntry) -> Option<ClassificationReason> {
+fn deciding_rule(entry: &EnvEntry) -> Option<ClassificationReason> {
     let key = entry.key.to_uppercase();
     let value = &entry.value;
 
     // Check key name
-    if let Some(pattern) = SECRET_KEY_PATTERNS.iter().find(|p| key.contains(*p)) {
+    if let Some(pattern) = NAME_RULE_FRAGMENTS.iter().find(|p| key.contains(*p)) {
         return Some(ClassificationReason::KeyName(pattern));
     }
 
@@ -1038,12 +1038,12 @@ fn secret_rule(entry: &EnvEntry) -> Option<ClassificationReason> {
     }
 
     // Check value patterns
-    if let Some(prefix) = secret_value_prefix(value).or_else(|| {
-        NON_PUBLIC_SECRET_VALUE_PREFIXES
+    if let Some(prefix) = known_value_prefix(value).or_else(|| {
+        NON_PUBLIC_VALUE_PREFIXES
             .into_iter()
             .find(|p| value.starts_with(p))
     }) {
-        return Some(ClassificationReason::Value(ValueRule::SecretPrefix(prefix)));
+        return Some(ClassificationReason::Value(ValueRule::KnownPrefix(prefix)));
     }
 
     // Connection string URLs with credentials in userinfo (postgres://u:p@host)
@@ -1247,7 +1247,7 @@ pub fn classify_with_reason(entry: &EnvEntry) -> (SecretClassification, Classifi
                 ClassificationReason::PublicPrefix(prefix),
             ),
         }
-    } else if let Some(reason) = secret_rule(entry) {
+    } else if let Some(reason) = deciding_rule(entry) {
         (SecretClassification::Secret, reason)
     } else {
         (
@@ -1259,8 +1259,8 @@ pub fn classify_with_reason(entry: &EnvEntry) -> (SecretClassification, Classifi
 
 /// The value rule that overrides a public key prefix, if any.
 fn public_value_rule(value: &str) -> Option<ValueRule> {
-    if let Some(prefix) = secret_value_prefix(value) {
-        Some(ValueRule::SecretPrefix(prefix))
+    if let Some(prefix) = known_value_prefix(value) {
+        Some(ValueRule::KnownPrefix(prefix))
     } else if is_pem_private_key(value) {
         Some(ValueRule::PemPrivateKey)
     } else if url_has_userinfo_password(value) {
@@ -1273,15 +1273,15 @@ fn public_value_rule(value: &str) -> Option<ValueRule> {
 }
 
 /// The known secret prefix `value` starts with (independent of key name).
-fn secret_value_prefix(value: &str) -> Option<&'static str> {
-    SECRET_VALUE_PREFIXES
+fn known_value_prefix(value: &str) -> Option<&'static str> {
+    KNOWN_VALUE_PREFIXES
         .into_iter()
         .find(|p| value.starts_with(p))
 }
 
 /// Check if a value matches known secret prefixes (independent of key name).
 fn has_secret_value_pattern(value: &str) -> bool {
-    secret_value_prefix(value).is_some()
+    known_value_prefix(value).is_some()
 }
 
 /// A PEM block whose armor header names a private key (`PRIVATE KEY`,
@@ -1852,7 +1852,7 @@ KEY3=unquoted
         );
         assert_eq!(
             reason_kv("CERT", &pem),
-            ClassificationReason::Value(ValueRule::SecretPrefix("-----BEGIN "))
+            ClassificationReason::Value(ValueRule::KnownPrefix("-----BEGIN "))
         );
         assert_eq!(
             reason_kv("PRIMARY", &userinfo),
