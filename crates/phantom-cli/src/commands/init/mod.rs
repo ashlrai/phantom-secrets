@@ -380,8 +380,21 @@ pub fn run(env_path_arg: &str) -> Result<()> {
     if let Some(prepared) = &claude_setup {
         files.extend(prepared.transaction_files());
     }
-    let vault = phantom_vault::try_create_vault(phantom_config.local_project_id()).context(
+    let vault = crate::util::open_vault(phantom_config.local_project_id()).context(
         "Vault provisioning failed before any project files were changed. Set PHANTOM_VAULT_PASSPHRASE to a durable secret value and retry",
+    )?;
+    // Beside an encrypted-file vault this process cannot open, the vault is
+    // the OS keychain: storing the new secrets there would split the project
+    // across two vaults and miss names the locked file already holds.
+    let listed = vault
+        .list()
+        .context("Failed to list protected secrets")?
+        .len();
+    crate::util::require_complete_inventory(
+        vault.as_ref(),
+        phantom_config.local_project_id(),
+        listed,
+        "protect new secrets",
     )?;
     let mut guidance = docs::prepare_guidance(&project_dir, Some(vault.backend_name()))?;
     files.extend(guidance.take_files());
@@ -1003,6 +1016,51 @@ mod tests {
                 vault.retrieve(name),
                 Err(PhantomError::SecretNotFound(_))
             ));
+        }
+    }
+
+    /// A real value for a new dotenv entry, built at runtime so no
+    /// credential-shaped literal lands in history.
+    #[cfg(unix)]
+    fn locked_fixture_value() -> String {
+        let generated = phantom_core::token::PhantomToken::generate();
+        ["fixture", generated.as_str().trim_start_matches("phm_")].join("-")
+    }
+
+    /// Rerunning `phantom init` to protect a new dotenv value beside an
+    /// encrypted-file vault this process cannot open stored the new secret in
+    /// the OS keychain, splitting the project across two vaults. It now
+    /// refuses with the unlock step and changes no project file, as
+    /// `phantom add` does.
+    #[cfg(unix)]
+    #[test]
+    fn init_beside_a_locked_file_vault_refuses_before_any_change() {
+        use crate::util::test_seam::{empty_keychain, keychain_with_one, LockedProject, MakeVault};
+        for (make, lead) in [
+            (empty_keychain as MakeVault, "Vault locked:"),
+            (
+                keychain_with_one,
+                "Refusing to protect new secrets from a partial inventory",
+            ),
+        ] {
+            let project = LockedProject::new(make);
+            let env_path = project.dir.join(".env");
+            let body = format!("NEW_SERVICE_API_KEY={}\n", locked_fixture_value());
+            std::fs::write(&env_path, &body).unwrap();
+            let config_before = std::fs::read(project.dir.join(".phantom.toml")).unwrap();
+
+            let outcome = run(env_path.to_str().unwrap());
+
+            assert!(outcome.is_err(), "init must refuse a locked file vault");
+            let message = outcome.err().unwrap().to_string();
+            assert!(message.starts_with(lead));
+            assert!(message.contains("PHANTOM_VAULT_PASSPHRASE"));
+            assert_eq!(std::fs::read_to_string(&env_path).unwrap(), body);
+            assert_eq!(
+                std::fs::read(project.dir.join(".phantom.toml")).unwrap(),
+                config_before
+            );
+            assert!(!project.dir.join(".env.example").exists());
         }
     }
 }

@@ -18,6 +18,17 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 - A batch rotation failure reason longer than 120 characters is cut on a
   character boundary; a multibyte character at the cut no longer panics.
 
+### Fixed (init and workspace apply beside a locked file vault)
+
+- Rerunning `phantom init` to protect a new dotenv value, and
+  `phantom workspace apply`, stored the new secrets in the OS keychain when the
+  project's secrets were in an encrypted-file vault the process could not open,
+  splitting the project across two vaults. They now refuse before any vault or
+  project file change: "Vault locked: …" when the keychain is empty, or
+  "Refusing to … from a partial inventory" when it holds only some secrets,
+  with the unlock step (set `PHANTOM_VAULT_PASSPHRASE`), as `phantom add`,
+  `phantom cloud pull` and `phantom import` already do.
+
 ### Fixed (single-name lookups beside a locked file vault)
 
 - `phantom rotate --name <KEY>` and the MCP tools `phantom_remove_secret`,

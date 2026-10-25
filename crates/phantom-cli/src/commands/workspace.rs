@@ -552,6 +552,22 @@ impl VaultSetupParticipant {
         // from this canonical path spelling.
         let project_id = PhantomConfig::project_id_from_path(&workspace_root);
         let vault = create_vault(&project_id)?;
+        if strict_dotenv_preflight {
+            // Beside an encrypted-file vault this process cannot open, the
+            // vault is the OS keychain: a new setup would store the workspace
+            // secrets there and split the project across two vaults. Recovery
+            // keeps the backend its journal wrote to.
+            let listed = vault
+                .list()
+                .context("Failed to list protected secrets")?
+                .len();
+            crate::util::require_complete_inventory(
+                vault.as_ref(),
+                &project_id,
+                listed,
+                "set up workspace secrets",
+            )?;
+        }
         let project_lock = phantom_vault::acquire_project_transaction_lock(&workspace_root)
             .context("Workspace project lock could not be acquired")?;
         if project_lock.project_identity_at_acquisition() != reviewed_root.identity() {
@@ -1913,5 +1929,42 @@ mod tests {
             std::fs::read_to_string(workspace.path().join(".env")).unwrap(),
             original_env
         );
+    }
+
+    /// `phantom workspace apply` beside an encrypted-file vault this process
+    /// cannot open would store the workspace secrets in the OS keychain,
+    /// splitting the project across two vaults. Participant construction now
+    /// refuses with the unlock step before any vault or file effect.
+    #[cfg(unix)]
+    #[test]
+    fn participant_refuses_beside_a_locked_file_vault() {
+        use crate::util::test_seam::{empty_keychain, keychain_with_one, LockedProject, MakeVault};
+        for (make, lead) in [
+            (empty_keychain as MakeVault, "Vault locked:"),
+            (
+                keychain_with_one,
+                "Refusing to set up workspace secrets from a partial inventory",
+            ),
+        ] {
+            let project = LockedProject::new(make);
+            let generated = phantom_core::token::PhantomToken::generate();
+            let value = ["fixture", generated.as_str().trim_start_matches("phm_")].join("-");
+            let body = format!("NEW_SERVICE_API_KEY={value}\n");
+            write(project.dir.join(".env"), &body);
+
+            let outcome =
+                VaultSetupParticipant::new_with_vault_factory(&project.dir, |_| Ok(make()));
+
+            let message = match outcome {
+                Ok(_) => panic!("workspace setup must refuse a locked file vault"),
+                Err(error) => error.to_string(),
+            };
+            assert!(message.starts_with(lead));
+            assert!(message.contains("PHANTOM_VAULT_PASSPHRASE"));
+            assert_eq!(
+                std::fs::read_to_string(project.dir.join(".env")).unwrap(),
+                body
+            );
+        }
     }
 }
