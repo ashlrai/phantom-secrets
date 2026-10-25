@@ -88,6 +88,18 @@ pub fn run(name: &str, target_dir: &Path, rename: &Option<String>) -> Result<()>
         );
     }
 
+    // An overdue enforced source secret is known from names and metadata
+    // alone: refuse before the challenge so the user is never asked to
+    // confirm a copy that will be refused. Judged again before the read.
+    let source_vault = phantom_vault::try_create_vault(source_config.local_project_id())?;
+    super::rotation_gate::enforce_rotation_on_entries(
+        &source_config,
+        source_vault.as_ref(),
+        [name],
+        "copy",
+        super::rotation_gate::now_secs(),
+    )?;
+
     // Consent is bound to the exact canonical path, names, and machine-local
     // vault identity observed during target preflight. The config exact-before
     // file guard below prevents that approved identity from drifting at commit.
@@ -98,7 +110,6 @@ pub fn run(name: &str, target_dir: &Path, rename: &Option<String>) -> Result<()>
         target_config.local_project_id(),
     )?;
 
-    let source_vault = phantom_vault::try_create_vault(source_config.local_project_id())?;
     let secret_value = retrieve_gated_copy_source(
         &source_config,
         source_vault.as_ref(),
@@ -302,6 +313,24 @@ mod tests {
     use phantom_core::error::PhantomError;
     use phantom_vault::file::FileVault;
     use phantom_vault::VaultBackend;
+
+    /// The overdue-source refusal came only after the trusted-terminal
+    /// challenge, so the user typed a confirmation for a copy that was then
+    /// refused. The gate now also runs before the challenge (names and
+    /// metadata only); the challenge itself is unchanged and the gate runs
+    /// again just before the value is read.
+    #[test]
+    fn copy_gates_rotation_before_the_challenge_and_before_the_read() {
+        let source = include_str!("copy.rs");
+        let run = &source[source.find("pub fn run(").unwrap()..];
+        let run = &run[..run.find("fn list_copy_target_names(").unwrap()];
+        let gate = run
+            .find("enforce_rotation_on_entries(")
+            .expect("copy must gate rotation before the challenge");
+        let challenge = run.find("require_trusted_terminal_copy(").unwrap();
+        let read = run.find("retrieve_gated_copy_source(").unwrap();
+        assert!(gate < challenge && challenge < read);
+    }
 
     /// `phantom copy` handed an overdue enforced secret to a project without
     /// this project's rotation policy. The source read is now gated, as

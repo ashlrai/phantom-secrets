@@ -90,6 +90,22 @@ pub fn entry_targets<'e>(entries: impl IntoIterator<Item = &'e str>) -> Vec<Gate
         .collect()
 }
 
+/// Targets for paths that write values of unknown age into the vault (a
+/// cloud pull, an encrypted backup restore). The incoming value carries no
+/// rotation anchor: a new entry would be stamped as stored now and an
+/// overwritten one would keep the local entry's anchor, so either way the
+/// value's real age is lost. Each written entry is judged with no anchor,
+/// which refuses it whenever its secret enforces rotation on access.
+pub fn restore_targets<'e>(entries: impl IntoIterator<Item = &'e str>) -> Vec<GateTarget> {
+    entries
+        .into_iter()
+        .map(|entry| GateTarget {
+            key: split_key(entry).map_or(entry, |(_, name)| name).to_string(),
+            entry: None,
+        })
+        .collect()
+}
+
 /// One refusal message per target with `enforce_rotation_on_access = true`
 /// that is overdue or has an unknown age; empty when access may proceed.
 /// Runs before any secret value is read.
@@ -240,6 +256,27 @@ mod tests {
         let config = enforced_config();
         assert!(
             rotation_refusals(&config, &vault, entry_targets(["OTHER_KEY"]), now)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_restored_entry_is_refused_even_when_the_local_entry_is_fresh() {
+        let now = 1_800_000_000;
+        let dir = tempfile::tempdir().unwrap();
+        let vault = vault_with(&dir, &[("API_KEY", now - DAY)]);
+        let config = enforced_config();
+
+        let targets = restore_targets(["API_KEY", "staging/API_KEY", "OTHER_KEY"]);
+        assert!(targets.iter().all(|target| target.entry.is_none()));
+        let refused = rotation_refusals(&config, &vault, targets, now).unwrap();
+        assert_eq!(refused.len(), 1);
+        assert!(refused[0].contains("'API_KEY'"));
+        assert!(refused[0].contains("age is unknown"));
+
+        assert!(
+            rotation_refusals(&config, &vault, restore_targets(["OTHER_KEY"]), now)
                 .unwrap()
                 .is_empty()
         );

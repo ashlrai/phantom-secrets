@@ -300,6 +300,9 @@ impl Drop for SecretMap {
     }
 }
 
+/// "Refusing to ..." wording for the rotation gate on backup export.
+const EXPORT_ACTION: &str = "export a backup";
+
 struct ExportPlan {
     project_dir: PathBuf,
     output_request: String,
@@ -337,6 +340,15 @@ fn prepare_export(output: &str) -> Result<ExportPlan> {
     names.sort();
     names.dedup();
     validate_consent_names(&names)?;
+    // A backup carries every value out, and a later restore would stamp it
+    // fresh: refuse an overdue enforced secret before the review.
+    super::rotation_gate::enforce_rotation_on_entries(
+        &config,
+        vault.as_ref(),
+        names.iter().map(String::as_str),
+        EXPORT_ACTION,
+        super::rotation_gate::now_secs(),
+    )?;
     let names_digest = digest_names(&names);
     let rendered_names = render_names(&names)?;
     let config_digest = digest_bytes(&config_before);
@@ -391,6 +403,15 @@ fn run_encrypted(plan: &ExportPlan, passphrase: &str) -> Result<()> {
 
     verify_export_plan(plan)?;
     let vault = phantom_vault::try_create_vault(&plan.local_project_id)?;
+    let config = PhantomConfig::load_from_bytes(&plan.config_path, &plan.config_before)
+        .context("Failed to parse the reviewed .phantom.toml snapshot")?;
+    super::rotation_gate::enforce_rotation_on_entries(
+        &config,
+        vault.as_ref(),
+        plan.names.iter().map(String::as_str),
+        EXPORT_ACTION,
+        super::rotation_gate::now_secs(),
+    )?;
 
     let mut secrets = SecretMap(BTreeMap::new());
     for name in &plan.names {
@@ -730,6 +751,27 @@ fn sync_directory(_path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An encrypted backup carried every vault value out, overdue enforced
+    /// secrets included, and a later restore stamped them fresh. Export now
+    /// applies the rotation gate before the trusted-terminal review and again
+    /// before any value is read.
+    #[test]
+    fn export_gates_rotation_before_review_and_before_any_value_read() {
+        let source = include_str!("export_cmd.rs");
+        let prepare = &source[source.find("fn prepare_export(").unwrap()..];
+        let prepare = &prepare[..prepare.find("fn verify_export_plan(").unwrap()];
+        let gate = prepare
+            .find("EXPORT_ACTION")
+            .expect("export must gate rotation before review");
+        assert!(gate < prepare.find("Ok(ExportPlan {").unwrap());
+
+        let encrypted = &source[source.find("fn run_encrypted(").unwrap()..];
+        let gate = encrypted
+            .find("EXPORT_ACTION")
+            .expect("export must re-gate before reading values");
+        assert!(gate < encrypted.find(".retrieve(name)").unwrap());
+    }
     use tempfile::tempdir;
 
     #[test]

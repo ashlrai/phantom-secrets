@@ -22,6 +22,30 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   same way as the link target (written back as a quoted string). A `Link`
   header with any unreachable target or anchor is dropped.
 
+### Fixed (`enforce_rotation_on_access` covers cloud push/pull and encrypted backups)
+
+- `phantom cloud push` and MCP `phantom_cloud_push` handed every vault value,
+  overdue enforced secrets included, to the cloud copy. They now apply the
+  rotation gate before consent or approval (names and metadata only) and
+  again before any value is read, refusing with the same
+  `Refusing to push to Phantom Cloud: rotation enforcement blocked N
+  secret(s).` wording as `phantom exec`.
+- `phantom export` carried overdue enforced values into a backup. It now
+  refuses them before the trusted-terminal review and again before reading.
+- A pulled or restored value carries no rotation anchor: a new entry was
+  stamped as stored now and a forced overwrite kept the local anchor, so an
+  overdue value round-tripped through the cloud or an old backup came back
+  looking fresh. `phantom cloud pull`, MCP `phantom_cloud_pull` and
+  `phantom import <backup>` now refuse to write any secret with
+  `enforce_rotation_on_access = true` (its age is unknown) before any vault
+  or config write; the encrypted restore refuses before its challenge.
+  Values identical to the local entry (cloud pull) and entries skipped
+  without `--force` are not written and are not gated.
+- `phantom copy` now applies the rotation gate before the trusted-terminal
+  challenge too, so the user is not asked to confirm a copy that will be
+  refused. The challenge is unchanged and the gate still runs again just
+  before the source value is read.
+
 ### Fixed (Phantom state ancestors are created private; discovery does not follow a `.phantom.toml` link)
 
 - Creating a nested Phantom state directory (for example

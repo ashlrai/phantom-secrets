@@ -14,7 +14,7 @@
 use anyhow::Result;
 use phantom_core::config::PhantomConfig;
 use phantom_vault::rotation_gate::{
-    entry_targets, refusal_summary, rotation_refusals, session_targets, GateTarget,
+    entry_targets, refusal_summary, restore_targets, rotation_refusals, session_targets, GateTarget,
 };
 use phantom_vault::VaultBackend;
 
@@ -64,6 +64,21 @@ pub(crate) fn enforce_rotation_on_entries<'e>(
     now_secs: u64,
 ) -> Result<()> {
     enforce(config, vault, entry_targets(entries), action, now_secs)
+}
+
+/// The same gate for paths that write values of unknown age into the vault
+/// (cloud pull, encrypted backup restore): a restored value would get a fresh
+/// anchor (new entry) or inherit the local one (overwrite), laundering an
+/// overdue value. Each written `entries` name whose secret enforces rotation
+/// is refused as having an unknown age. Runs before any vault write.
+pub(crate) fn enforce_rotation_on_restore<'e>(
+    config: &PhantomConfig,
+    vault: &dyn VaultBackend,
+    entries: impl IntoIterator<Item = &'e str>,
+    action: &str,
+    now_secs: u64,
+) -> Result<()> {
+    enforce(config, vault, restore_targets(entries), action, now_secs)
 }
 
 /// Current Unix time in seconds.
@@ -320,6 +335,31 @@ mod tests {
         let text = refusal_text(gate(&config, &vault, DEFAULT_ENV, &["B_KEY", "A_KEY"]));
         assert!(text.contains("blocked 2 secret(s)"));
         assert!(text.contains("'A_KEY'") && text.contains("'B_KEY'"));
+    }
+
+    #[test]
+    fn restore_gate_refuses_enforced_writes_whatever_the_local_age() {
+        let config = config_with(&[("API_KEY", enforced(Some("30d")))]);
+        let vault = MetadataVault::with(&[("API_KEY", Some(NOW - DAY), None)]);
+        let text = refusal_text(enforce_rotation_on_restore(
+            &config,
+            &vault,
+            ["API_KEY", "OTHER_KEY"],
+            "restore the backup",
+            NOW,
+        ));
+        assert!(text.starts_with(
+            "Refusing to restore the backup: rotation enforcement blocked 1 secret(s)."
+        ));
+        assert!(text.contains("age is unknown"));
+        assert!(enforce_rotation_on_restore(
+            &config,
+            &vault,
+            ["OTHER_KEY"],
+            "restore the backup",
+            NOW
+        )
+        .is_ok());
     }
 
     #[test]
