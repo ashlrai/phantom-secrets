@@ -4,10 +4,16 @@
 //!   - `daily@HH:MM`           — rotate every day at the given UTC time
 //!   - `weekly@WEEKDAY:HH:MM`  — rotate once a week on the given day/time
 //!   - `monthly@DDth:HH:MM`    — rotate once a month on the given day of month
+//!   - `interval`              — rotate a fixed number of days after the last
+//!     rotation (from a per-secret `rotate_every = "90d"`)
 //!
 //! The `never` strategy disables automatic rotation.
 
 use serde::{Deserialize, Serialize};
+use std::num::NonZeroU64;
+
+/// Seconds in one day.
+const DAY_SECS: u64 = 86_400;
 
 /// Top-level rotation strategy variant.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -17,6 +23,9 @@ pub enum RotationStrategy {
     Daily,
     Weekly,
     Monthly,
+    /// Rotate a fixed number of days after `last_rotated` (a never-rotated
+    /// secret is due now). Written in TOML as `strategy = { interval = 90 }`.
+    Interval(NonZeroU64),
 }
 
 impl RotationStrategy {
@@ -38,6 +47,24 @@ impl RotationStrategy {
             Self::Daily => "daily",
             Self::Weekly => "weekly",
             Self::Monthly => "monthly",
+            Self::Interval(_) => "interval",
+        }
+    }
+
+    /// Human-readable label: the strategy name, or `every N days`.
+    pub fn to_label(&self) -> String {
+        match self {
+            Self::Interval(days) if days.get() == 1 => "every 1 day".to_string(),
+            Self::Interval(days) => format!("every {days} days"),
+            other => other.as_str().to_string(),
+        }
+    }
+
+    /// The exact interval in days for [`RotationStrategy::Interval`].
+    pub fn interval_days(&self) -> Option<u64> {
+        match self {
+            Self::Interval(days) => Some(days.get()),
+            _ => None,
         }
     }
 }
@@ -167,7 +194,23 @@ impl RotationSchedule {
                 day_of_month: 1,
                 last_rotated: None,
             },
+            RotationStrategy::Interval(days) => Self {
+                strategy: RotationStrategy::Interval(days),
+                hour: 0,
+                minute: 0,
+                weekday: Weekday::Monday,
+                day_of_month: 1,
+                last_rotated: None,
+            },
         }
+    }
+
+    /// When an interval schedule falls due: `interval` days after
+    /// `last_rotated`, or after the epoch when never rotated (so it is due).
+    fn interval_due_at(&self, days: NonZeroU64) -> u64 {
+        self.last_rotated
+            .unwrap_or(0)
+            .saturating_add(days.get().saturating_mul(DAY_SECS))
     }
 
     /// Returns `true` if the schedule requires rotation right now, given
@@ -198,6 +241,15 @@ impl RotationSchedule {
     pub fn last_boundary_before(&self, now_secs: u64) -> Option<u64> {
         match self.strategy {
             RotationStrategy::Never => None,
+            RotationStrategy::Interval(days) => {
+                let due = self.interval_due_at(days);
+                if due <= now_secs {
+                    Some(due)
+                } else {
+                    // Not due yet: the last boundary is the rotation itself.
+                    Some(self.last_rotated.unwrap_or(0))
+                }
+            }
             RotationStrategy::Daily => {
                 // Slot fires every day at self.hour:self.minute UTC.
                 let slot_secs = (self.hour as u64) * 3600 + (self.minute as u64) * 60;
@@ -269,6 +321,7 @@ impl RotationSchedule {
                     self.day_of_month, self.hour, self.minute
                 )
             }
+            RotationStrategy::Interval(_) => self.strategy.to_label(),
         }
     }
 }
@@ -296,6 +349,7 @@ pub fn strategy_period_secs(strategy: &RotationStrategy) -> Option<u64> {
         RotationStrategy::Daily => Some(86_400),
         RotationStrategy::Weekly => Some(7 * 86_400),
         RotationStrategy::Monthly => Some(30 * 86_400),
+        RotationStrategy::Interval(days) => Some(days.get().saturating_mul(DAY_SECS)),
     }
 }
 
@@ -387,7 +441,7 @@ pub fn check_rotation_enforcement(
     if age >= period {
         RotationEnforcementStatus::Overdue {
             last_rotated_secs_ago: age,
-            schedule_label: sched.strategy.as_str().to_string(),
+            schedule_label: sched.strategy.to_label(),
         }
     } else {
         RotationEnforcementStatus::Ok
@@ -476,6 +530,8 @@ pub fn compute_new_expires_at(rotation_window_days: u64, now_secs: u64) -> u64 {
 pub fn next_rotation_after(schedule: &RotationSchedule, now_secs: u64) -> Option<u64> {
     match schedule.strategy {
         RotationStrategy::Never => None,
+        // An overdue interval schedule is due now.
+        RotationStrategy::Interval(days) => Some(schedule.interval_due_at(days).max(now_secs)),
         RotationStrategy::Daily => {
             let slot_secs = (schedule.hour as u64) * 3600 + (schedule.minute as u64) * 60;
             let today_midnight = (now_secs / 86_400) * 86_400;
@@ -814,5 +870,75 @@ mod tests {
             s.contains("past schedule"),
             "expected 'past schedule' in: {s}"
         );
+    }
+
+    fn interval(days: u64, last_rotated: Option<u64>) -> RotationSchedule {
+        RotationSchedule {
+            last_rotated,
+            ..RotationSchedule::from_strategy(RotationStrategy::Interval(
+                NonZeroU64::new(days).unwrap(),
+            ))
+        }
+    }
+
+    #[test]
+    fn interval_is_due_exactly_after_its_length() {
+        let now = base_now();
+        // Rotated 89 days ago on a 90-day interval: one day left.
+        let sched = interval(90, Some(now - 89 * DAY_SECS));
+        assert!(!sched.should_rotate_now(now));
+        assert_eq!(next_rotation_after(&sched, now), Some(now + DAY_SECS));
+        assert!(overdue_description(&sched, now).is_none());
+        // A monthly schedule would have been due after 30 days; this one is not.
+        assert!(!interval(90, Some(now - 31 * DAY_SECS)).should_rotate_now(now));
+        // Rotated 92 days ago: two days past schedule.
+        let late = interval(90, Some(now - 92 * DAY_SECS));
+        assert!(late.should_rotate_now(now));
+        assert_eq!(next_rotation_after(&late, now), Some(now));
+        assert_eq!(
+            overdue_description(&late, now).as_deref(),
+            Some("2 days past schedule")
+        );
+    }
+
+    #[test]
+    fn never_rotated_interval_is_due() {
+        let now = base_now();
+        let sched = interval(365, None);
+        assert!(sched.should_rotate_now(now));
+        assert_eq!(next_rotation_after(&sched, now), Some(now));
+    }
+
+    #[test]
+    fn interval_describes_and_enforces_its_exact_length() {
+        let now = base_now();
+        assert_eq!(interval(90, None).describe(), "every 90 days");
+        assert_eq!(interval(1, None).describe(), "every 1 day");
+        assert_eq!(interval(90, None).strategy.as_str(), "interval");
+        assert_eq!(
+            strategy_period_secs(&interval(90, None).strategy),
+            Some(90 * DAY_SECS)
+        );
+        let ok = interval(90, Some(now - 60 * DAY_SECS));
+        assert_eq!(
+            check_rotation_enforcement(true, Some(&ok), now),
+            RotationEnforcementStatus::Ok
+        );
+        let overdue = interval(90, Some(now - 95 * DAY_SECS));
+        assert_eq!(
+            check_rotation_enforcement(true, Some(&overdue), now),
+            RotationEnforcementStatus::Overdue {
+                last_rotated_secs_ago: 95 * DAY_SECS,
+                schedule_label: "every 90 days".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn huge_interval_saturates_instead_of_wrapping() {
+        let now = base_now();
+        let sched = interval(u64::MAX, Some(now));
+        assert!(!sched.should_rotate_now(now));
+        assert_eq!(next_rotation_after(&sched, now), Some(u64::MAX));
     }
 }

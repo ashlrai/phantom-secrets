@@ -18,6 +18,18 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   that require `Path=/` (the `__Host-` prefix) are rejected by strict
   clients as a result, which keeps them on their route.
 
+### Fixed (exact `rotate_every` intervals)
+
+- A per-secret `rotate_every` longer than 7 days was rounded to monthly, so
+  `rotate_every = "90d"` (or `"365d"`) made `phantom_rotation_schedule_next`
+  report a monthly schedule and a rotation due about three times too often.
+  Every length is now kept exactly as an interval schedule (`strategy =
+  "interval"`, new `interval_days` field); `1d` and `7d`/`1w` keep the daily
+  and weekly schedules. Weeks (`"12w"`) are accepted alongside days (`"90d"`).
+- A `rotate_every` that did not parse (`"3mo"`, `"90 days"`, `"0d"`) was
+  silently ignored, falling back to the global policy or to no schedule. It is
+  now a config error naming the secret's section, without echoing the value.
+
 ### Fixed (imported names that are not environment keys)
 
 - `phantom import --from doppler|infisical|dotenvx|1password` with a JSON

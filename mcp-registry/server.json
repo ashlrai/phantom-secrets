@@ -1109,7 +1109,7 @@
     },
     {
       "name": "phantom_rotation_schedule_next",
-      "description": "Return the next scheduled rotation time for a named secret. Reads the secret's effective RotationSchedule (per-secret override or global policy) and computes when rotation is next due. Returns: { name, strategy, next_rotation_unix (u64 or null), next_rotation_iso (ISO-8601 or null), last_rotated_unix (u64 or null), last_rotated_iso (ISO-8601 or null), overdue (bool) }. Read-only; no confirm required. Secret VALUES are never returned.",
+      "description": "Return the next scheduled rotation time for a named secret. Reads the secret's effective RotationSchedule (per-secret override or global policy) and computes when rotation is next due. A per-secret `rotate_every` (\"90d\", \"12w\") is an exact interval: strategy \"interval\" with interval_days; an unparseable value is a config error. Returns: { name, strategy, interval_days (u64 or null), next_rotation_unix (u64 or null), next_rotation_iso (ISO-8601 or null), last_rotated_unix (u64 or null), last_rotated_iso (ISO-8601 or null), overdue (bool) }. Read-only; no confirm required. Secret VALUES are never returned.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
