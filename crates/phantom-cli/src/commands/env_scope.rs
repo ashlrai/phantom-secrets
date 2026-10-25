@@ -319,7 +319,7 @@ pub fn run_list() -> Result<()> {
     };
     let (all_keys, note) = environment_keys(config.local_project_id())?;
 
-    let current = phantom_core::env_scope::read_active_env(&project_dir);
+    let current = effective_env(&project_dir, None)?;
     let envs = known_envs_from_keys(&all_keys, &current);
 
     println!("{} Known environments:\n", "->".blue().bold());
@@ -757,38 +757,14 @@ pub fn run_default(current: &str) -> Result<()> {
 }
 
 /// Resolve the environment a proxy session serves: the flag when given,
-/// otherwise the `.phantom/env` selector `phantom env use` writes, otherwise
-/// the default. Fails closed: the selector is read without following a
-/// symlink, and the resolved name must be one `phantom env use` would accept,
-/// so it can never address vault entries outside its own `<env>/` namespace.
+/// otherwise the `.phantom/env` selector, otherwise the default. A thin
+/// `anyhow` wrapper over [`phantom_core::env_scope::resolve_env`], the one
+/// selector reader: it never follows a symlink and only returns a name
+/// [`validate_env_name`] accepts, so it can never address vault entries
+/// outside its own `<env>/` namespace.
 pub fn effective_env(project_dir: &std::path::Path, flag: Option<&str>) -> Result<String> {
-    let name = match flag {
-        Some(flag) => flag.to_string(),
-        None => {
-            let selector = project_dir.join(".phantom").join("env");
-            let bytes = phantom_core::fs::read_regular_file(&selector).map_err(|error| {
-                anyhow::anyhow!(
-                    "Cannot read the active environment selector {}: {error}. Run `phantom env use <name>` to rewrite it.",
-                    selector.display()
-                )
-            })?;
-            let text = match bytes {
-                Some(bytes) => String::from_utf8(bytes).map_err(|_| {
-                    anyhow::anyhow!(
-                        "The active environment selector {} is not UTF-8. Run `phantom env use <name>` to rewrite it.",
-                        selector.display()
-                    )
-                })?,
-                None => String::new(),
-            };
-            match text.trim() {
-                "" => DEFAULT_ENV.to_string(),
-                name => name.to_string(),
-            }
-        }
-    };
-    validate_env_name(&name).map_err(|error| anyhow::anyhow!("{error}"))?;
-    Ok(name)
+    phantom_core::env_scope::resolve_env(project_dir, flag)
+        .map_err(|error| anyhow::anyhow!("{error}"))
 }
 
 #[cfg(test)]
@@ -1101,7 +1077,10 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(phantom_core::env_scope::read_active_env(dir.path()), "prod");
+        assert_eq!(
+            phantom_core::env_scope::read_active_env(dir.path()).unwrap(),
+            "prod"
+        );
     }
 
     #[test]
@@ -1119,7 +1098,7 @@ mod tests {
 
         assert!(error.to_string().contains("atomically update"));
         assert_eq!(
-            phantom_core::env_scope::read_active_env(dir.path()),
+            phantom_core::env_scope::read_active_env(dir.path()).unwrap(),
             "concurrent"
         );
     }

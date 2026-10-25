@@ -4,6 +4,20 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (one hardened active-environment reader)
+
+- `phantom_core::env_scope::read_active_env` and `resolve_env` still followed
+  a symlinked `.phantom/env` and returned any name, including `../prod`, so
+  only the CLI's own copy of the reader was hardened. They now are the one
+  reader: the selector is read without following a symlink, must be UTF-8,
+  and must hold a valid environment name; both return an error instead of a
+  name, and `resolve_env` validates an explicit environment argument too. `phantom exec` and
+  `phantom start` use this reader.
+- The refusal for a symlinked, non-UTF-8 or invalid selector told users to
+  run `phantom env use <name>`, which the CLI does not accept. It now names
+  the working fix: replace `.phantom/env` with a regular file holding one
+  valid name, or remove it to serve the default environment.
+
 ### Fixed (cloud and team pushes refused a locked vault only after consent)
 
 - `phantom cloud push` and `phantom team vault-push` asked for the typed
@@ -45,8 +59,8 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 ### Fixed (`phantom start` ignored the active environment)
 
 - `phantom start` always served the default environment: after
-  `phantom env use prod` it quietly mapped the `default/` values (or the
-  legacy bare entry), and refused a key that only had a `prod/` entry, while
+  `.phantom/env` selected `prod` it quietly mapped the `default/` values (or
+  the legacy bare entry), and refused a key that only had a `prod/` entry, while
   `phantom exec` in the same directory served `prod`. Start now resolves the
   environment exactly as exec does and applies the same per-environment
   rotation-on-access gate, read-only lifecycle check and retrieval path: the
@@ -54,11 +68,10 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   environment. A non-default environment never falls back to default values.
   The "secret(s) mapped" line now names the environment.
 - The active-environment selector `.phantom/env` is now read without
-  following a symlink, and its contents must be a name `phantom env use`
-  would accept. `phantom exec` and `phantom start` refuse a symlinked,
+  following a symlink, and its contents must be a valid environment name
+  (letters, digits, `-`, `_`). `phantom exec` and `phantom start` refuse a symlinked,
   non-UTF-8 or invalid selector before reading any secret value, instead of
-  addressing vault entries under an arbitrary prefix. `phantom env use <name>`
-  rewrites a bad selector.
+  addressing vault entries under an arbitrary prefix.
 
 ### Fixed (`phantom wrap` no longer breaks scripts that are a shell command line)
 
