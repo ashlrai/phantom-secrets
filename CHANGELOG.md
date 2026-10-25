@@ -18,6 +18,26 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   `argon2` `zeroize` feature scrubs its internal hash state. On-disk format,
   KDF parameters, and the legacy-parameter fallback are unchanged.
 
+### Fixed (URL query credentials hidden by encoding or a fragment)
+
+- `phantom init` missed a credential in a URL's query string when the
+  parameter name was percent-encoded (`?pass%77ord=`, `?api%5Fkey=sk_...`),
+  for both public-prefixed and ordinary keys. Parameter names (and the
+  values checked for a known secret prefix) are now percent-decoded once
+  before matching, case-insensitively.
+- A non-public URL checked an older, shorter parameter list than
+  public-prefixed URLs, so `?client_secret=`, `?passwd=`,
+  `?X-Amz-Signature=`, `?X-Goog-Signature=` and `?key=` holding a known
+  secret prefix were left in plaintext under keys such as `CALLBACK_URL`.
+  Both paths now share one parser and one credential list; non-public URLs
+  keep the broader `auth`/`token`/`api_key` names.
+- A non-public URL's `#fragment` was read as part of the last query value,
+  so an OAuth implicit-flow credential (`?state=x#access_token=...`) was
+  missed. The fragment is now split from the query and its parameters are
+  checked on their own for non-public keys; public-prefixed keys ignore the
+  fragment as before. Ordinary config such as `?ref=main` or `?lang=en`
+  stays non-secret.
+
 ### Fixed (proxy redirects lost their route prefix; HEAD responses claimed an empty body)
 
 - An upstream `Location` naming an absolute path, such as a `302` to
