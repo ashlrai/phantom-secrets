@@ -19,6 +19,35 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   public prefix as `matched_pattern`, and the CLI `Reason:` line names the exact
   key fragment or value rule. Classification itself is unchanged.
 
+### Fixed (`phantom wrap` and MCP `phantom_wrap` pick the same scripts)
+
+- The CLI and the MCP tool each kept their own copy of the script selection,
+  so the same package.json wrapped differently for a person and an agent:
+  `phantom wrap` also wrapped `preview`, while `phantom_wrap` also wrapped
+  names containing `type` or `fmt` (`build:types`, `dev:fmt`) that the CLI
+  leaves alone, and the two reported a user-owned `NAME:raw` conflict in
+  different words. Both now call one shared decision
+  (`phantom_core::package_scripts::wrap_scripts` and `unwrap_scripts`) that
+  keeps the narrower rule of each: by default only `dev`, `start`, `serve`,
+  `build` and `deploy` scripts are wrapped, and lint, test, format, `fmt`,
+  `type`, check, clean, prepare and postinstall scripts are not. `preview`
+  is no longer wrapped by default; select it with `phantom wrap --only
+  preview`. Scripts that already run through Phantom are never wrapped again.
+
+### Fixed (`phantom check --staged` scans direnv `.envrc` assignments like `.env`)
+
+- A staged `.envrc` or `.envrc.local` holds the same `export KEY=value` lines
+  as a dotenv file, but the pre-commit scan treated it as code and looked only
+  for credential prefixes such as `sk-`. A committed
+  `export DATABASE_URL=postgres://app:<password>@host/db`, or a signing value
+  with no known prefix, was reported clean, while the same line in `.env` was
+  blocked. Each assignment in a staged `.envrc` is now classified by the same
+  dotenv rules and reported by name only, with or without `export `. The file
+  is still shell: direnv calls (`use nix`, `layout python`, `PATH_add bin`),
+  conditionals and repeated names are not errors, and values computed when
+  direnv loads (`$(op read ...)`, `${VAR}`, backticks) or left empty are not
+  findings. The credential-prefix scan of its added lines still runs.
+
 ### Fixed (`phantom check --staged` missed credentials in files git calls binary)
 
 - The pre-commit scan read each staged code file's added lines from
