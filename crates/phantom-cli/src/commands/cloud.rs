@@ -7,10 +7,27 @@ use std::io::{BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use zeroize::{Zeroize, Zeroizing};
 
+/// "Refusing to ..." wording for the rotation gate on cloud push and pull.
+const CLOUD_PUSH_ACTION: &str = "push to Phantom Cloud";
+const CLOUD_PULL_ACTION: &str = "pull from Phantom Cloud";
+
 pub fn run_push() -> Result<()> {
     let project_dir = std::env::current_dir()?.canonicalize()?;
     let (config_path, config_before, config) = load_cloud_config_exact(&project_dir)?;
     ensure_cloud_push_allowed(&config)?;
+    // An overdue enforced secret is known from names and metadata alone:
+    // refuse before asking for consent. Judged again before any value read.
+    {
+        let vault = crate::util::open_vault(config.local_project_id())?;
+        let names = vault.list()?;
+        super::rotation_gate::enforce_rotation_on_entries(
+            &config,
+            vault.as_ref(),
+            names.iter().map(String::as_str),
+            CLOUD_PUSH_ACTION,
+            super::rotation_gate::now_secs(),
+        )?;
+    }
     require_trusted_terminal_cloud(&cloud_consent_plan("push", &project_dir, &config, false)?)?;
     // Refuse an unreconciled push and require terminal consent before reading
     // cloud credentials or any vault value.
@@ -54,6 +71,17 @@ fn push_after_consent(
         println!("{}  No secrets to push", "warn".yellow().bold());
         return Ok(());
     }
+
+    // The cloud copy is handed to every machine that later pulls it: refuse
+    // an overdue enforced secret, as `phantom exec` would, before any value
+    // is read, the cloud passphrase is fetched, or anything is sent.
+    super::rotation_gate::enforce_rotation_on_entries(
+        &config,
+        vault.as_ref(),
+        secret_names.iter().map(String::as_str),
+        CLOUD_PUSH_ACTION,
+        super::rotation_gate::now_secs(),
+    )?;
 
     phantom_core::audit::log_result("cloud.push", None)
         .context("Failed to write audit event for cloud push")?;
@@ -412,6 +440,7 @@ fn apply_cloud_pull_transaction(
     // silently reconciled name.
     let mut unchanged_guards = Vec::new();
     let mut skipped = 0usize;
+    let mut written = Vec::new();
     for (name, value) in &secrets.0 {
         let before = match vault.retrieve(name) {
             Ok(value) => Some(value),
@@ -434,12 +463,23 @@ fn apply_cloud_pull_transaction(
             skipped += 1;
             continue;
         }
+        written.push(name.as_str());
         mutations.push(phantom_vault::InitSecret::replace_if_unchanged(
             name,
             before.as_ref().map(|value| value.as_str().to_string()),
             value.as_str(),
         ));
     }
+    // A pulled value carries no rotation anchor: a new entry would be stamped
+    // as stored now and an overwrite would keep the local anchor, laundering
+    // an overdue value. Refuse every enforced write before any vault write.
+    super::rotation_gate::enforce_rotation_on_restore(
+        &config,
+        vault,
+        written,
+        CLOUD_PULL_ACTION,
+        super::rotation_gate::now_secs(),
+    )?;
 
     update_cloud_reconciliation(&mut config, remote_version, skipped);
     let config_after = toml::to_string_pretty(&config)
@@ -988,6 +1028,101 @@ mod tests {
         assert!(!cloud.reconciliation_required);
         assert_eq!(cloud.reconciliation_remote_version, None);
         ensure_cloud_push_allowed(&persisted).unwrap();
+    }
+
+    fn enforced_cloud_config(names: &[&str]) -> PhantomConfig {
+        let mut config = crate::commands::rotation_gate::fixtures::enforced_config(names);
+        config.cloud.get_or_insert_default().version = 2;
+        config
+    }
+
+    /// A pulled value carries no rotation anchor: a new entry was stamped as
+    /// stored now and a forced overwrite kept the local anchor, so an overdue
+    /// value pushed earlier came back looking fresh. Both are refused before
+    /// any vault or config write.
+    #[test]
+    fn cloud_pull_refuses_to_write_an_enforced_secret_of_unknown_age() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join(".phantom.toml");
+        let config = enforced_cloud_config(&["NEW_KEY", "EXISTING_KEY"]);
+        let before = write_config(&config_path, &config);
+        let vault = file_vault(&dir, "cli-cloud-rotation");
+        vault.store("EXISTING_KEY", "local-owner").unwrap();
+
+        let refused = apply_cloud_pull_transaction(
+            dir.path(),
+            &config_path,
+            config,
+            before.clone(),
+            &vault,
+            &sensitive(&[("EXISTING_KEY", "remote"), ("NEW_KEY", "new")]),
+            true,
+            7,
+        );
+        let message = refused
+            .err()
+            .map(|error| format!("{error:#}"))
+            .unwrap_or_default();
+        assert!(message.starts_with(
+            "Refusing to pull from Phantom Cloud: rotation enforcement blocked 2 secret(s)."
+        ));
+        assert!(message.contains("'NEW_KEY'") && message.contains("'EXISTING_KEY'"));
+        assert!(matches!(
+            vault.retrieve("NEW_KEY"),
+            Err(phantom_core::error::PhantomError::SecretNotFound(_))
+        ));
+        assert!(vault.retrieve("EXISTING_KEY").unwrap().as_str() == "local-owner");
+        assert_eq!(std::fs::read(&config_path).unwrap(), before);
+    }
+
+    /// Only writes are gated: an identical enforced value is not rewritten
+    /// and an unenforced new value still lands.
+    #[test]
+    fn cloud_pull_lets_unchanged_and_unenforced_entries_through() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join(".phantom.toml");
+        let config = enforced_cloud_config(&["EXISTING_KEY"]);
+        let before = write_config(&config_path, &config);
+        let vault = file_vault(&dir, "cli-cloud-rotation-ok");
+        let shared = ["same", "on", "both", "sides"].join("-");
+        vault.store("EXISTING_KEY", &shared).unwrap();
+
+        let applied = apply_cloud_pull_transaction(
+            dir.path(),
+            &config_path,
+            config,
+            before,
+            &vault,
+            &sensitive(&[("EXISTING_KEY", shared.as_str()), ("PLAIN_KEY", "new")]),
+            false,
+            8,
+        );
+        assert_eq!(applied.ok(), Some((1, 0)));
+        assert_eq!(vault.retrieve("PLAIN_KEY").unwrap().as_str(), "new");
+    }
+
+    /// Cloud push hands every vault value to the cloud copy. The rotation
+    /// gate runs before the trusted-terminal consent (names and metadata
+    /// only) and again after it, before any value is read or sent.
+    #[test]
+    fn cloud_push_gates_rotation_before_consent_and_before_any_value_read() {
+        let source = include_str!("cloud.rs");
+        let run_push = &source[source.find("pub fn run_push()").unwrap()..];
+        let pre_gate = run_push
+            .find("CLOUD_PUSH_ACTION")
+            .expect("push must gate rotation before consent");
+        let consent = run_push
+            .find("require_trusted_terminal_cloud(&cloud_consent_plan(\"push\"")
+            .unwrap();
+        assert!(pre_gate < consent);
+
+        let after = &source[source.find("fn push_after_consent(").unwrap()..];
+        let gate = after
+            .find("CLOUD_PUSH_ACTION")
+            .expect("push must gate rotation after consent");
+        let read = after.find("vault.retrieve(name)").unwrap();
+        let audit = after.find("audit::log_result(\"cloud.push\"").unwrap();
+        assert!(gate < audit && gate < read);
     }
 
     #[test]

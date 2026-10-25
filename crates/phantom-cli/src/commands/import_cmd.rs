@@ -11,6 +11,9 @@ use zeroize::{Zeroize, Zeroizing};
 
 use super::export_cmd::{self, PassphrasePurpose, MAX_ENCRYPTED_BACKUP_BYTES};
 
+/// "Refusing to ..." wording for the rotation gate on backup restore.
+const RESTORE_ACTION: &str = "restore the backup";
+
 /// Import Phantom's encrypted backup format (`phantom-export.enc`).
 pub fn run(
     file: &str,
@@ -61,6 +64,17 @@ pub fn run(
         .filter(|name| !force && existing.contains(*name))
         .cloned()
         .collect::<Vec<_>>();
+    // A restored value carries no rotation anchor: a new entry would be
+    // stamped as stored now and a forced overwrite would keep the local
+    // anchor, laundering an overdue value from an old backup. Refuse every
+    // enforced write before the challenge and before any vault write.
+    super::rotation_gate::enforce_rotation_on_restore(
+        &project.config,
+        vault.as_ref(),
+        destination_names.iter().map(String::as_str),
+        RESTORE_ACTION,
+        super::rotation_gate::now_secs(),
+    )?;
     let consent = import_consent_plan(
         "encrypted-backup",
         &source,
@@ -727,6 +741,26 @@ mod fail_closed_tests {
     use super::*;
     use phantom_core::error::{PhantomError, Result as PhantomResult};
     use zeroize::Zeroizing;
+
+    /// A restored backup value carries no rotation anchor: a new entry was
+    /// stamped as stored now and a forced overwrite kept the local anchor, so
+    /// restoring an old backup laundered an overdue value. The restore gate
+    /// runs on every entry the restore would write, before the
+    /// trusted-terminal challenge and before any vault write.
+    #[test]
+    fn backup_restore_gates_rotation_before_the_challenge() {
+        let source = include_str!("import_cmd.rs");
+        let run = &source[source.find("pub fn run(").unwrap()..];
+        let run = &run[..run.find("struct ParsedImportedSecret").unwrap()];
+        let gate = run
+            .find("RESTORE_ACTION")
+            .expect("backup restore must gate rotation");
+        let challenge = run
+            .find("require_trusted_terminal_effect(&consent.effect")
+            .unwrap();
+        assert!(gate < challenge);
+        assert!(gate < run.find("commit_init(").unwrap());
+    }
 
     struct ListFailingVault;
 
