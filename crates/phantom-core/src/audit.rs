@@ -536,27 +536,73 @@ fn lock_path(log_path: &Path) -> PathBuf {
 }
 
 fn acquire_log_lock(log_path: &Path) -> std::io::Result<File> {
-    let lock_path = lock_path(log_path);
-    let lock_file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(lock_path)?;
+    let lock_file = open_audit_file(&lock_path(log_path), false)?;
     lock_file.lock_exclusive()?;
     Ok(lock_file)
 }
 
 fn acquire_log_lock_shared(log_path: &Path) -> std::io::Result<File> {
-    let lock_path = lock_path(log_path);
-    let lock_file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(lock_path)?;
+    let lock_file = open_audit_file(&lock_path(log_path), false)?;
     lock_file.lock_shared()?;
     Ok(lock_file)
+}
+
+/// Open (creating when absent) one of the audit files the writer owns: the
+/// log or its lock. The log names secrets, process paths and pids, so it is
+/// kept owner-only: a new file is created 0600 whatever the umask, and an
+/// existing file with group or other bits (older releases inherited the
+/// umask) is tightened to 0600. A symlink at the final path is refused, never
+/// followed, so a planted link cannot redirect appends or locking into
+/// another file. Anything other than a regular file (a directory, a FIFO) is
+/// refused too; `O_NONBLOCK` keeps a FIFO from blocking the open.
+fn open_audit_file(path: &Path, append: bool) -> std::io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.read(true).create(true);
+    if append {
+        options.append(true);
+    } else {
+        options.write(true).truncate(false);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    let refused = || {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "refusing audit file that is a symlink or not a regular file: {}",
+                path.display()
+            ),
+        )
+    };
+    let file = match options.open(path) {
+        Ok(file) => file,
+        #[cfg(unix)]
+        Err(e) if e.raw_os_error() == Some(libc::ELOOP) => return Err(refused()),
+        Err(e) => return Err(e),
+    };
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
+        return Err(refused());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o077 != 0 {
+            file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        }
+    }
+    Ok(file)
 }
 
 /// Scan from the end of the log file to find the last `hmac` value.
@@ -758,11 +804,7 @@ fn append_line(log_path: &Path, line: &[u8]) -> std::io::Result<()> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
         Err(e) => return Err(e),
     };
-    let mut f = OpenOptions::new()
-        .read(true)
-        .append(true)
-        .create(true)
-        .open(log_path)?;
+    let mut f = open_audit_file(log_path, true)?;
     let len = f.metadata()?.len();
     let mut torn_tail = false;
     if len > 0 {
@@ -3526,6 +3568,117 @@ mod tests {
 
             let report = verify_log().unwrap();
             assert!(report.is_clean(), "chain did not verify");
+        });
+    }
+
+    // ── audit file hardening: owner-only, no symlink following ──────────────
+
+    /// Switch the enclosing `with_audit_env` to fail-closed mode so a refused
+    /// write surfaces as an error. `with_audit_env` restores the variable.
+    #[cfg(unix)]
+    fn set_required_audit() {
+        // SAFETY: called only inside `with_audit_env`, which holds ENV_LOCK.
+        unsafe {
+            std::env::set_var("PHANTOM_AUDIT", "required");
+        }
+    }
+
+    #[cfg(unix)]
+    fn file_mode(path: &std::path::Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::symlink_metadata(path)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777
+    }
+
+    /// The log records secret names, process paths, and pids. A fresh log
+    /// must be owner-only regardless of the process umask.
+    #[cfg(unix)]
+    #[test]
+    fn new_audit_log_and_lock_are_owner_only() {
+        with_audit_env(|tmp| {
+            log_result("vault.store", Some("KEY_A")).unwrap();
+            let dir = tmp.join(".phantom");
+            assert_eq!(file_mode(&dir.join("audit.log")), 0o600);
+            assert_eq!(file_mode(&dir.join("audit.lock")), 0o600);
+        });
+    }
+
+    /// Logs created by older releases inherited the umask (often 0644).
+    /// The next append must tighten them to owner-only.
+    #[cfg(unix)]
+    #[test]
+    fn existing_world_readable_audit_log_is_tightened_on_append() {
+        use std::os::unix::fs::PermissionsExt;
+        with_audit_env(|tmp| {
+            let dir = tmp.join(".phantom");
+            std::fs::create_dir_all(&dir).unwrap();
+            let log_p = dir.join("audit.log");
+            let lock_p = dir.join("audit.lock");
+            std::fs::write(&log_p, b"").unwrap();
+            std::fs::write(&lock_p, b"").unwrap();
+            std::fs::set_permissions(&log_p, std::fs::Permissions::from_mode(0o644)).unwrap();
+            std::fs::set_permissions(&lock_p, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+            log_result("vault.store", Some("KEY_A")).unwrap();
+            assert_eq!(file_mode(&log_p), 0o600);
+            assert_eq!(file_mode(&lock_p), 0o600);
+            assert!(verify_log().unwrap().is_clean());
+        });
+    }
+
+    /// A symlink planted at `audit.log` must not redirect audit appends into
+    /// another file, and the write must fail rather than silently succeed.
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_audit_log_is_refused_and_target_untouched() {
+        with_audit_env(|tmp| {
+            let dir = tmp.join(".phantom");
+            std::fs::create_dir_all(&dir).unwrap();
+            let target = tmp.join("elsewhere.txt");
+            std::fs::write(&target, b"original\n").unwrap();
+            std::os::unix::fs::symlink(&target, dir.join("audit.log")).unwrap();
+
+            set_required_audit();
+            assert!(log_result("vault.store", Some("KEY_A")).is_err());
+            assert_eq!(std::fs::read(&target).unwrap(), b"original\n");
+            assert!(std::fs::symlink_metadata(dir.join("audit.log"))
+                .unwrap()
+                .file_type()
+                .is_symlink());
+        });
+    }
+
+    /// The same applies to the lock file: a planted symlink must not be
+    /// followed (and created or locked) on the writer path.
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_audit_lock_is_refused() {
+        with_audit_env(|tmp| {
+            let dir = tmp.join(".phantom");
+            std::fs::create_dir_all(&dir).unwrap();
+            let target = tmp.join("lock-target");
+            std::os::unix::fs::symlink(&target, dir.join("audit.lock")).unwrap();
+
+            set_required_audit();
+            assert!(log_result("vault.store", Some("KEY_A")).is_err());
+            assert!(!target.exists());
+            assert!(!dir.join("audit.log").exists());
+        });
+    }
+
+    /// A FIFO or other non-regular file at `audit.log` must be refused
+    /// instead of blocking or writing into it.
+    #[cfg(unix)]
+    #[test]
+    fn non_regular_audit_log_is_refused() {
+        with_audit_env(|tmp| {
+            let dir = tmp.join(".phantom");
+            std::fs::create_dir_all(dir.join("audit.log")).unwrap();
+            set_required_audit();
+            assert!(log_result("vault.store", Some("KEY_A")).is_err());
         });
     }
 }

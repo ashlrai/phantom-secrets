@@ -439,11 +439,15 @@ pub fn run_copy(from: &str, to: &str) -> Result<()> {
     // Vault creation, listing, and especially value retrieval are deliberately
     // after the fresh trusted-terminal ceremony and exact local-state recheck.
     let (vault, all_keys) = environment_copy_inventory(&review.vault_id)?;
+    let config = PhantomConfig::load_from_bytes(&review.config_path, review.config_before.bytes())
+        .context("Failed to load the reviewed .phantom.toml snapshot")?;
     let plan = prepare_environment_copy(
+        &config,
         vault.as_ref(),
         &all_keys,
         review.from.as_str(),
         review.to.as_str(),
+        super::rotation_gate::now_secs(),
     )?;
     validate_environment_copy_review(&review).context(
         "Environment copy authority changed after source values were prepared; no destination was written",
@@ -632,10 +636,12 @@ fn validate_environment_copy_review(review: &EnvironmentCopyReview) -> Result<()
 }
 
 fn prepare_environment_copy(
+    config: &PhantomConfig,
     vault: &dyn VaultBackend,
     all_keys: &[String],
     from: &str,
     to: &str,
+    now_secs: u64,
 ) -> Result<EnvironmentCopyPlan> {
     let mut sources = BTreeMap::<String, String>::new();
     for key in all_keys {
@@ -675,6 +681,17 @@ fn prepare_environment_copy(
             collisions.len()
         );
     }
+
+    // The copy stamps fresh vault entries in `to`, which would restart the
+    // age `enforce_rotation_on_access` measures: refuse an overdue enforced
+    // source before any value is read, as `phantom exec` would.
+    super::rotation_gate::enforce_rotation_on_entries(
+        config,
+        vault,
+        sources.values().map(String::as_str),
+        "copy the environment",
+        now_secs,
+    )?;
 
     // Keep every provider value in zeroizing owners from retrieval until it
     // moves into InitSecret's zeroizing transaction fields.
@@ -1178,6 +1195,64 @@ mod tests {
         fn backend_name(&self) -> &str {
             "failing-env-copy"
         }
+
+        fn get_metadata(&self, name: &str) -> PhantomResult<Option<phantom_vault::SecretMetadata>> {
+            self.inner.get_metadata(name)
+        }
+    }
+
+    fn unenforced() -> PhantomConfig {
+        PhantomConfig::new_with_defaults("env-copy".to_string())
+    }
+
+    fn stamp_age(vault: &FailingCasVault, entry: &str, created_at: u64) {
+        vault
+            .inner
+            .set_metadata(
+                entry,
+                phantom_vault::SecretMetadata {
+                    created_at: Some(created_at),
+                    ..phantom_vault::SecretMetadata::default()
+                },
+            )
+            .unwrap();
+    }
+
+    /// `phantom env copy` stamped fresh entries in the destination, so an
+    /// overdue enforced secret came out of the copy looking new and
+    /// `phantom exec --env <to>` let it through. The copy now refuses it
+    /// before reading any value; a secret inside its window copies.
+    #[test]
+    fn an_overdue_enforced_source_is_not_copied_between_environments() {
+        const DAY: u64 = 86_400;
+        const NOW: u64 = 1_800_000_000;
+        let mut config = unenforced();
+        config.phantom.secrets.insert(
+            "API_KEY".to_string(),
+            phantom_core::config::SecretOverride {
+                rotate_every: Some("30d".to_string()),
+                enforce_rotation_on_access: true,
+                ..phantom_core::config::SecretOverride::default()
+            },
+        );
+        let (_dir, vault) = vault(None);
+        vault.store("dev/API_KEY", "source-value").unwrap();
+        vault.store("dev/OTHER", "other-value").unwrap();
+        stamp_age(&vault, "dev/API_KEY", NOW - 45 * DAY);
+        let keys = vault.list().unwrap();
+
+        let refused = prepare_environment_copy(&config, &vault, &keys, "dev", "prod", NOW);
+        let Err(error) = refused else {
+            panic!("an overdue enforced secret was copied between environments");
+        };
+        assert!(error.to_string().starts_with(
+            "Refusing to copy the environment: rotation enforcement blocked 1 secret(s)."
+        ));
+        assert_eq!(vault.retrieve_calls.load(Ordering::SeqCst), 0);
+
+        stamp_age(&vault, "dev/API_KEY", NOW - DAY);
+        let plan = prepare_environment_copy(&config, &vault, &keys, "dev", "prod", NOW).unwrap();
+        assert_eq!(plan.copied_names.len(), 2);
     }
 
     fn vault(fail_at: Option<usize>) -> (tempfile::TempDir, FailingCasVault) {
@@ -1205,7 +1280,8 @@ mod tests {
         vault.store("dev/API_KEY", "source-value").unwrap();
         vault.store("prod/API_KEY", "destination-owner").unwrap();
         let keys = vault.list().unwrap();
-        let error = prepare_environment_copy(&vault, &keys, "dev", "prod").unwrap_err();
+        let error =
+            prepare_environment_copy(&unenforced(), &vault, &keys, "dev", "prod", 0).unwrap_err();
 
         assert!(error.to_string().contains("refuses overwrite"));
         assert_eq!(vault.retrieve_calls.load(Ordering::SeqCst), 0);
@@ -1221,7 +1297,8 @@ mod tests {
         vault.store("dev/A", "source-a").unwrap();
         vault.store("dev/B", "source-b").unwrap();
         let keys = vault.list().unwrap();
-        let plan = prepare_environment_copy(&vault, &keys, "dev", "prod").unwrap();
+        let plan =
+            prepare_environment_copy(&unenforced(), &vault, &keys, "dev", "prod", 0).unwrap();
 
         assert!(
             phantom_vault::commit_init(dir.path(), &vault, plan.mutations, Vec::new()).is_err()
@@ -1243,7 +1320,8 @@ mod tests {
         let (dir, vault) = vault(None);
         vault.store("dev/API_KEY", "source-value").unwrap();
         let keys = vault.list().unwrap();
-        let plan = prepare_environment_copy(&vault, &keys, "dev", "prod").unwrap();
+        let plan =
+            prepare_environment_copy(&unenforced(), &vault, &keys, "dev", "prod", 0).unwrap();
         vault.store("prod/API_KEY", "concurrent-owner").unwrap();
 
         assert!(
@@ -1261,7 +1339,8 @@ mod tests {
         vault.store("dev/A", "source-a").unwrap();
         vault.store("dev/B", "source-b").unwrap();
         let keys = vault.list().unwrap();
-        let plan = prepare_environment_copy(&vault, &keys, "dev", "prod").unwrap();
+        let plan =
+            prepare_environment_copy(&unenforced(), &vault, &keys, "dev", "prod", 0).unwrap();
         vault.store("dev/B", "concurrent-source-owner").unwrap();
 
         assert!(
@@ -1288,7 +1367,8 @@ mod tests {
         vault.store("default/API_KEY", "namespaced").unwrap();
         let keys = vault.list().unwrap();
 
-        let error = prepare_environment_copy(&vault, &keys, "default", "prod").unwrap_err();
+        let error = prepare_environment_copy(&unenforced(), &vault, &keys, "default", "prod", 0)
+            .unwrap_err();
         assert!(error.to_string().contains("ambiguous duplicate ownership"));
         assert_eq!(vault.retrieve_calls.load(Ordering::SeqCst), 0);
     }
@@ -1298,7 +1378,8 @@ mod tests {
         let (dir, vault) = vault(None);
         vault.store("dev/API_KEY", "source-value").unwrap();
         let keys = vault.list().unwrap();
-        let plan = prepare_environment_copy(&vault, &keys, "dev", "default").unwrap();
+        let plan =
+            prepare_environment_copy(&unenforced(), &vault, &keys, "dev", "default", 0).unwrap();
         phantom_vault::commit_init(dir.path(), &vault, plan.mutations, Vec::new()).unwrap();
 
         assert_eq!(
@@ -1318,7 +1399,8 @@ mod tests {
         vault.store("API_KEY", "legacy-owner").unwrap();
         let keys = vault.list().unwrap();
 
-        let error = prepare_environment_copy(&vault, &keys, "dev", "default").unwrap_err();
+        let error = prepare_environment_copy(&unenforced(), &vault, &keys, "dev", "default", 0)
+            .unwrap_err();
         assert!(error.to_string().contains("refuses overwrite"));
         assert_eq!(vault.retrieve("API_KEY").unwrap().as_str(), "legacy-owner");
     }
