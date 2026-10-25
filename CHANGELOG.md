@@ -4,6 +4,16 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (encrypted-file vault kept decrypted secrets in memory unscrubbed)
+
+- Every encrypted-file vault operation, including `list` and metadata reads,
+  decrypts the whole vault. The JSON buffer was scrubbed, but the parsed
+  secret values were dropped without being zeroized, so every secret in the
+  vault was left in freed heap memory after each call. The decrypted state
+  could also be printed in full through `Debug`. Decrypted values are now
+  overwritten when they drop, `Debug` shows names and metadata only, and the
+  vault passphrase held by the backend is scrubbed when the backend drops.
+
 ### Fixed (Vercel pull mixed values from different environments)
 
 - `phantom pull --from vercel` read every Vercel variable for a name and kept
