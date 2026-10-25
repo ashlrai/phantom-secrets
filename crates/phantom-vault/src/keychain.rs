@@ -1103,6 +1103,13 @@ impl KeychainVault {
         let before_credential = read_credential(&entry, "secret before-image")?;
         let before_index = self.load_index()?;
         let before_metadata = self.load_meta_map()?;
+        let before_validation = self.load_validation_meta_map()?;
+        // A validation verdict describes the credential that was checked;
+        // a different value reads as never checked until it is validated.
+        let mut after_validation = before_validation.clone();
+        if before_credential.as_ref().map(|current| current.as_str()) != Some(value) {
+            after_validation.remove(name);
+        }
         let mut after_index = before_index.clone();
         if !after_index.iter().any(|indexed| indexed == name) {
             after_index.push(name.to_string());
@@ -1130,6 +1137,9 @@ impl KeychainVault {
             if after_metadata != before_metadata {
                 self.save_meta_map(&after_metadata)?;
             }
+            if after_validation != before_validation {
+                self.save_validation_meta_map(&after_validation)?;
+            }
             Ok(())
         })();
         if let Err(error) = commit {
@@ -1140,6 +1150,7 @@ impl KeychainVault {
                     restore_credential(&entry, before_credential.as_ref(), "secret before-image"),
                     self.save_index(&before_index),
                     self.save_meta_map(&before_metadata),
+                    self.save_validation_meta_map(&before_validation),
                 ],
             ));
         }
