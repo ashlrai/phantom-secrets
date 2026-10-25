@@ -18,7 +18,8 @@ pub use managed_remove::ManagedRemovePlan;
 pub use metadata::{RotationPolicy, SecretMetadata};
 pub use traits::{MetadataCas, ValidationMetadataCas, VaultBackend};
 pub use transaction_lock::{
-    acquire_project_transaction_lock, ProjectDirectoryPreparation, ProjectTransactionLock,
+    acquire_project_transaction_lock, acquire_project_transaction_locks,
+    ProjectDirectoryPreparation, ProjectTransactionLock, ProjectTransactionLockPair,
 };
 
 use phantom_core::error::{PhantomError, Result};
