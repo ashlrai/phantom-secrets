@@ -66,6 +66,29 @@ fn default_targets() -> Vec<String> {
     vec!["production".to_string(), "preview".to_string()]
 }
 
+/// The Vercel environments `phantom pull --from vercel --project <id>` reads:
+/// the `targets` of every Vercel `[[sync]]` entry for that project (the same
+/// list `phantom sync` writes to), or sync's default (production and
+/// preview) when no entry names the project.
+pub fn vercel_pull_targets(configured: &[SyncTarget], project_id: &str) -> Vec<String> {
+    let mut targets: Vec<String> = Vec::new();
+    for entry in configured
+        .iter()
+        .filter(|entry| entry.platform == Platform::Vercel && entry.project_id == project_id)
+    {
+        for target in &entry.targets {
+            if !targets.contains(target) {
+                targets.push(target.clone());
+            }
+        }
+    }
+    if targets.is_empty() {
+        default_targets()
+    } else {
+        targets
+    }
+}
+
 /// Result of a sync operation for a single secret.
 #[derive(Debug)]
 pub struct SyncResult {
@@ -310,6 +333,10 @@ struct VercelEnvMetadataResponse {
 #[derive(Deserialize)]
 struct VercelEnvVar {
     key: String,
+    #[serde(default)]
+    target: VercelTargets,
+    #[serde(default, rename = "gitBranch")]
+    git_branch: Option<String>,
     #[serde(default)]
     value: Option<PulledSecret>,
 }
@@ -561,6 +588,7 @@ fn parse_railway_mutation_response(bytes: &[u8]) -> std::result::Result<(), Stri
 pub async fn pull_from_vercel(
     token: &str,
     project_id: &str,
+    targets: &[String],
 ) -> std::result::Result<BTreeMap<String, Zeroizing<String>>, String> {
     let client = provider_http::async_client()?;
 
@@ -580,19 +608,87 @@ pub async fn pull_from_vercel(
     }
 
     let bytes = provider_http::read_bounded_response(resp, "Vercel pull").await?;
-    let data: VercelEnvListResponse = serde_json::from_slice(&bytes)
+    parse_vercel_pull_response(&bytes, targets)
+}
+
+/// Vercel keeps one variable per name *and* environment set, so a name can
+/// be listed several times with different values (say production and
+/// development). Keep only project-wide variables that apply to a
+/// configured target; Git-branch-scoped preview variables are skipped as
+/// sync skips them. When several such variables for one name do not all
+/// carry the same non-empty value there is no way to choose, so the pull is
+/// refused naming the key and its environments, never a value.
+fn parse_vercel_pull_response(
+    bytes: &[u8],
+    targets: &[String],
+) -> std::result::Result<BTreeMap<String, Zeroizing<String>>, String> {
+    let data: VercelEnvListResponse = serde_json::from_slice(bytes)
         .map_err(|_| "Vercel pull response was invalid".to_string())?;
 
-    let mut secrets = BTreeMap::new();
+    // Per name: every applicable variable's environments and value
+    // (`None` when Vercel returned no readable value).
+    type Applicable = Vec<(Vec<String>, Option<Zeroizing<String>>)>;
+    let mut by_key: BTreeMap<String, Applicable> = BTreeMap::new();
     for env_var in data.envs {
-        if let Some(value) = env_var.value {
-            let value = value.into_zeroizing();
-            if !value.is_empty() {
-                secrets.insert(env_var.key, value);
-            }
+        let branch_scoped = env_var
+            .git_branch
+            .as_deref()
+            .is_some_and(|branch| !branch.is_empty());
+        let environments = env_var.target.as_slice();
+        if branch_scoped || !environments.iter().any(|target| targets.contains(target)) {
+            continue;
         }
+        let environments = environments.to_vec();
+        let value = env_var
+            .value
+            .map(PulledSecret::into_zeroizing)
+            .filter(|value| !value.is_empty());
+        by_key
+            .entry(env_var.key)
+            .or_default()
+            .push((environments, value));
     }
 
+    let mut secrets = BTreeMap::new();
+    let mut conflicts = Vec::new();
+    for (key, mut variables) in by_key {
+        if variables.len() == 1 {
+            if let Some(value) = variables.pop().and_then(|(_, value)| value) {
+                secrets.insert(key, value);
+            }
+            continue;
+        }
+        if variables.iter().all(|(_, value)| value.is_none()) {
+            continue;
+        }
+        let first = variables[0].1.as_deref();
+        if first.is_some() && variables.iter().all(|(_, value)| value.as_deref() == first) {
+            if let Some(value) = variables.swap_remove(0).1 {
+                secrets.insert(key, value);
+            }
+            continue;
+        }
+        let mut environments: Vec<&str> = Vec::new();
+        for (variable_environments, _) in &variables {
+            for environment in variable_environments {
+                if !environments.contains(&environment.as_str()) {
+                    environments.push(environment);
+                }
+            }
+        }
+        conflicts.push(format!(
+            "{key} (separate variables for {})",
+            environments.join(", ")
+        ));
+    }
+
+    if !conflicts.is_empty() {
+        return Err(format!(
+            "Vercel pull refused: {} differ between the configured environments ({}) and Phantom cannot choose one. Make the values match on Vercel, or narrow the [[sync]] targets for this project.",
+            conflicts.join("; "),
+            targets.join(", ")
+        ));
+    }
     Ok(secrets)
 }
 
@@ -844,6 +940,124 @@ mod tests {
                 create_targets: Vec::new(),
                 warning: Some("STRIPE_KEY: also applies to development".to_string()),
             }
+        );
+    }
+
+    /// Builds a Vercel `?decrypt=true` list response. Values are joined
+    /// from fragments so no credential-shaped literal sits in the source.
+    fn vercel_pull_fixture(envs: serde_json::Value) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({ "envs": envs })).unwrap()
+    }
+
+    fn fixture_value(environment: &str) -> String {
+        ["stripe", environment, "fixture"].join("-")
+    }
+
+    #[test]
+    fn vercel_pull_never_takes_another_environments_value() {
+        // One name, two Vercel variables: production listed first, then a
+        // different development value. Pulling for production and preview
+        // must yield the production value, never the development one.
+        let bytes = vercel_pull_fixture(serde_json::json!([
+            {"id": "env_prod", "key": "STRIPE_KEY", "target": ["production"],
+             "value": fixture_value("production")},
+            {"id": "env_dev", "key": "STRIPE_KEY", "target": ["development"],
+             "value": fixture_value("development")},
+        ]));
+        let pulled = parse_vercel_pull_response(&bytes, &production_and_preview()).unwrap();
+        assert!(pulled
+            .get("STRIPE_KEY")
+            .is_some_and(|value| value.as_str() == fixture_value("production")));
+    }
+
+    #[test]
+    fn vercel_pull_ignores_git_branch_preview_variables() {
+        let bytes = vercel_pull_fixture(serde_json::json!([
+            {"id": "env_prev", "key": "STRIPE_KEY", "target": ["preview"],
+             "value": fixture_value("preview")},
+            {"id": "env_branch", "key": "STRIPE_KEY", "target": ["preview"],
+             "gitBranch": "feature", "value": fixture_value("branch")},
+        ]));
+        let pulled = parse_vercel_pull_response(&bytes, &production_and_preview()).unwrap();
+        assert!(pulled
+            .get("STRIPE_KEY")
+            .is_some_and(|value| value.as_str() == fixture_value("preview")));
+    }
+
+    #[test]
+    fn vercel_pull_refuses_a_name_with_conflicting_values_in_the_targets() {
+        let bytes = vercel_pull_fixture(serde_json::json!([
+            {"id": "env_prod", "key": "STRIPE_KEY", "target": ["production"],
+             "value": fixture_value("production")},
+            {"id": "env_prev", "key": "STRIPE_KEY", "target": "preview",
+             "value": fixture_value("preview")},
+            {"id": "env_other", "key": "OTHER_KEY", "target": ["production"],
+             "value": fixture_value("other")},
+        ]));
+        let refusal = parse_vercel_pull_response(&bytes, &production_and_preview())
+            .err()
+            .unwrap_or_default();
+        assert!(refusal.contains("STRIPE_KEY"));
+        assert!(refusal.contains("production") && refusal.contains("preview"));
+        assert!(!refusal.contains("OTHER_KEY"));
+        assert!(!refusal.contains("fixture"), "refusal must not echo values");
+    }
+
+    #[test]
+    fn vercel_pull_accepts_per_environment_variables_with_one_value() {
+        // `phantom sync` writes the same value to each per-environment
+        // variable, so a round trip must not be refused.
+        let bytes = vercel_pull_fixture(serde_json::json!([
+            {"id": "env_prod", "key": "STRIPE_KEY", "target": ["production"],
+             "value": fixture_value("shared")},
+            {"id": "env_prev", "key": "STRIPE_KEY", "target": ["preview"],
+             "value": fixture_value("shared")},
+        ]));
+        let pulled = parse_vercel_pull_response(&bytes, &production_and_preview()).unwrap();
+        assert!(pulled
+            .get("STRIPE_KEY")
+            .is_some_and(|value| value.as_str() == fixture_value("shared")));
+    }
+
+    #[test]
+    fn vercel_pull_single_variable_case_is_unchanged() {
+        let bytes = vercel_pull_fixture(serde_json::json!([
+            {"id": "env_all", "key": "STRIPE_KEY",
+             "target": ["production", "preview", "development"],
+             "value": fixture_value("all")},
+            {"id": "env_empty", "key": "EMPTY_KEY", "target": ["production"], "value": ""},
+            {"id": "env_hidden", "key": "HIDDEN_KEY", "target": ["production"]},
+        ]));
+        let pulled = parse_vercel_pull_response(&bytes, &production_and_preview()).unwrap();
+        assert_eq!(pulled.len(), 1);
+        assert!(pulled
+            .get("STRIPE_KEY")
+            .is_some_and(|value| value.as_str() == fixture_value("all")));
+    }
+
+    #[test]
+    fn vercel_pull_targets_follow_the_projects_sync_entries() {
+        let entry = |platform: Platform, project: &str, targets: &[&str]| SyncTarget {
+            platform,
+            token_env: "VERCEL_TOKEN".to_string(),
+            project_id: project.to_string(),
+            targets: targets.iter().map(|target| target.to_string()).collect(),
+            service_id: None,
+            environment_id: None,
+            only: Vec::new(),
+        };
+        let configured = vec![
+            entry(Platform::Vercel, "prj_other", &["development"]),
+            entry(Platform::Railway, "prj_web", &["staging"]),
+            entry(Platform::Vercel, "prj_web", &["production"]),
+        ];
+        assert_eq!(
+            vercel_pull_targets(&configured, "prj_web"),
+            vec!["production".to_string()]
+        );
+        assert_eq!(
+            vercel_pull_targets(&configured, "prj_unlisted"),
+            production_and_preview()
         );
     }
 

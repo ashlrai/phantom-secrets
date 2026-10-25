@@ -4,6 +4,22 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (Vercel pull mixed values from different environments)
+
+- `phantom pull --from vercel` read every Vercel variable for a name and kept
+  whichever was listed last, so when a name existed as separate variables
+  for several environments (say production and development) a pull could
+  store the development value where production was expected, with no
+  warning. Pull now keeps only project-wide variables that apply to the
+  configured `targets` (those of the Vercel `[[sync]]` entry for the
+  project, or production and preview when none names it, the same default
+  `phantom sync` uses), and skips Git-branch-scoped preview variables. If
+  several such variables for one name do not carry the same value, the pull
+  is refused before any local change, naming the key and its environments,
+  never a value. The approval plan now lists those `targets`. A name with a
+  single matching variable is pulled as before; a name that exists only for
+  environments outside the targets is no longer pulled.
+
 ### Fixed (JSON imports with a repeated name)
 
 - `phantom import --from 1password|dotenvx|doppler|infisical` now refuses a

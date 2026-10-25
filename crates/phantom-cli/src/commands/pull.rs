@@ -19,6 +19,9 @@ struct PullPlan {
     platform: String,
     provider_project: String,
     environment: Option<String>,
+    /// Vercel environments a pulled variable must apply to, taken from the
+    /// `targets` of the matching `[[sync]]` entry. Empty for Railway.
+    targets: Vec<String>,
     service: Option<String>,
     force: bool,
     local_project: String,
@@ -87,10 +90,15 @@ async fn run_async(
     parse_pull_dotenv(env_before.as_deref()).context(
         "Managed dotenv is malformed; pull stopped before vault, approval, credential, or provider access",
     )?;
+    let vercel_targets = match platform {
+        Platform::Vercel => sync::vercel_pull_targets(&config.sync, project),
+        Platform::Railway => Vec::new(),
+    };
     let plan = PullPlan {
         platform: platform.to_string(),
         provider_project: project.to_string(),
         environment: environment.clone(),
+        targets: vercel_targets.clone(),
         service: service.clone(),
         force,
         local_project: project_dir.display().to_string(),
@@ -139,7 +147,7 @@ async fn run_async(
 
     // Pull secrets from platform
     let pulled = match platform {
-        Platform::Vercel => sync::pull_from_vercel(token.as_str(), project).await,
+        Platform::Vercel => sync::pull_from_vercel(token.as_str(), project, &vercel_targets).await,
         Platform::Railway => {
             let env_id = environment.as_deref().unwrap_or("production");
             sync::pull_from_railway(token.as_str(), project, env_id, service.as_deref()).await
@@ -512,6 +520,7 @@ mod tests {
             platform: "vercel".into(),
             provider_project: "provider-project".into(),
             environment: Some("production".into()),
+            targets: vec!["production".into(), "preview".into()],
             service: Some("api".into()),
             force: false,
             local_project: "/canonical/project".into(),
@@ -536,6 +545,9 @@ mod tests {
         variants.push(changed);
         let mut changed = original.clone();
         changed.environment = Some("preview".into());
+        variants.push(changed);
+        let mut changed = original.clone();
+        changed.targets = vec!["development".into()];
         variants.push(changed);
         let mut changed = original.clone();
         changed.service = Some("worker".into());
