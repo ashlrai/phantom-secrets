@@ -123,7 +123,11 @@ pub fn inspect_workspace(root: impl AsRef<Path>) -> Result<WorkspaceInspection> 
         // a symlinked or non-regular `.phantom.toml`, so it is not "initialized".
         phantom_initialized: std::fs::symlink_metadata(canonical_root.join(".phantom.toml"))
             .is_ok_and(|metadata| metadata.file_type().is_file()),
-        env_example_exists: canonical_root.join(".env.example").is_file(),
+        // Never followed: any object holding the name (a regular file, a
+        // symlink to a shared contract, even a dangling link or a directory)
+        // counts as present, so setup never plans a write the transaction's
+        // no-follow writer would refuse, and never stats a link's target.
+        env_example_exists: std::fs::symlink_metadata(canonical_root.join(".env.example")).is_ok(),
         env_files,
         git,
         place_hints,
@@ -630,6 +634,64 @@ mod tests {
                 .unwrap()
                 .phantom_initialized
         );
+    }
+
+    /// `.env.example` presence is judged without following a link: any object
+    /// holding the name counts, so setup never plans to generate over it.
+    /// A symlink to a shared contract stays "present" as before; a dangling
+    /// link or a directory is present too, rather than planned for a write
+    /// the transaction would refuse.
+    #[cfg(unix)]
+    #[test]
+    fn env_example_presence_is_judged_without_following_links() {
+        let present = |root: &Path| inspect_workspace(root).unwrap().env_example_exists;
+
+        let outside = tempfile::tempdir().unwrap();
+        let shared = outside.path().join("shared.env.example");
+        std::fs::write(&shared, "OPENAI_API_KEY=\n").unwrap();
+        let linked = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(&shared, linked.path().join(".env.example")).unwrap();
+        assert!(present(linked.path()));
+
+        let dangling = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(
+            outside.path().join("missing"),
+            dangling.path().join(".env.example"),
+        )
+        .unwrap();
+        assert!(present(dangling.path()));
+
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::create_dir(directory.path().join(".env.example")).unwrap();
+        assert!(present(directory.path()));
+
+        let regular = tempfile::tempdir().unwrap();
+        std::fs::write(regular.path().join(".env.example"), "OPENAI_API_KEY=\n").unwrap();
+        assert!(present(regular.path()));
+
+        let absent = tempfile::tempdir().unwrap();
+        assert!(!present(absent.path()));
+    }
+
+    /// A dangling `.env.example` link next to a protected `.env` must not
+    /// produce a GenerateEnvExample action: the transaction would refuse to
+    /// write through the link and the whole setup would fail.
+    #[cfg(unix)]
+    #[test]
+    fn dangling_env_example_link_is_not_planned_for_generation() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join(".env"), "NODE_ENV=development\n").unwrap();
+        std::os::unix::fs::symlink(
+            root.path().join("nowhere"),
+            root.path().join(".env.example"),
+        )
+        .unwrap();
+        let inspection = inspect_workspace(root.path()).unwrap();
+        let plan = crate::build_setup_plan(&inspection).unwrap();
+        assert!(!plan
+            .actions
+            .iter()
+            .any(|action| action.kind == crate::SetupActionKind::GenerateEnvExample));
     }
 
     #[test]
