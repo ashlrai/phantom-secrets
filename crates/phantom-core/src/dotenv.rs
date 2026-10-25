@@ -861,90 +861,201 @@ fn unescape_double_quoted(s: &str) -> String {
     out
 }
 
+/// Key-name fragments that mark an entry as a secret. `PWD` covers short
+/// forms like `DB_PWD=hunter2` that would otherwise miss (audit F11).
+const NAME_RULE_FRAGMENTS: [&str; 12] = [
+    "KEY",
+    "SECRET",
+    "TOKEN",
+    "PASSWORD",
+    "PASSWD",
+    "PWD",
+    "CREDENTIAL",
+    "AUTH",
+    "PRIVATE",
+    "API_KEY",
+    "ACCESS_KEY",
+    "SIGNING",
+];
+
+/// Key-name fragments that indicate connection strings (which contain
+/// credentials).
+const CONNECTION_KEY_PATTERNS: [&str; 10] = [
+    "DATABASE_URL",
+    "REDIS_URL",
+    "MONGO_URL",
+    "POSTGRES_URL",
+    "MYSQL_URL",
+    "AMQP_URL",
+    "RABBITMQ_URL",
+    "ELASTICSEARCH_URL",
+    "CONNECTION_STRING",
+    "DSN",
+];
+
+/// Value prefixes of known secret formats. These alone override a public key
+/// prefix (see [`classify`]).
+const KNOWN_VALUE_PREFIXES: [&str; 14] = [
+    "sk-",
+    "sk_",
+    "pk_",
+    "rk_",
+    "whsec_",
+    "Bearer ",
+    "ghp_",
+    "gho_",
+    "github_pat_",
+    "glpat-",
+    "xoxb-",
+    "xoxp-",
+    "AKIA",
+    "shpat_",
+];
+
+/// Further value prefixes that mark a non-public key as a secret: JWT-style
+/// base64 and a PEM armor header (audit F11; multi-line PEM bodies depend on
+/// F12 quoted parsing).
+const NON_PUBLIC_VALUE_PREFIXES: [&str; 2] = ["eyJ", "-----BEGIN "];
+
+/// Framework prefixes whose keys are shipped in browser bundles.
+const PUBLIC_KEY_PREFIXES: [&str; 6] = [
+    "NEXT_PUBLIC_",
+    "EXPO_PUBLIC_",
+    "VITE_",
+    "REACT_APP_",
+    "NUXT_PUBLIC_",
+    "GATSBY_",
+];
+
+/// The value rule that decided an entry is a secret. Holds fixed labels and
+/// pattern constants only, never any part of the value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ValueRule {
+    /// The value starts with this known secret prefix.
+    KnownPrefix(&'static str),
+    /// A PEM block whose armor header names a private key.
+    PemPrivateKey,
+    /// A URL carrying credentials in its userinfo (`scheme://user:pass@host`).
+    UrlCredentials,
+    /// A URL carrying an auth, token, key or signature parameter.
+    UrlAuthParam,
+    /// A long high-entropy string.
+    HighEntropy,
+}
+
+impl ValueRule {
+    /// A fixed, value-free sentence fragment for human output.
+    pub fn describe(&self) -> String {
+        match self {
+            ValueRule::KnownPrefix(prefix) => {
+                format!(
+                    "starts with \"{}\", a known secret prefix",
+                    prefix.trim_end()
+                )
+            }
+            ValueRule::PemPrivateKey => "is a PEM private key".to_string(),
+            ValueRule::UrlCredentials => "is a URL with embedded credentials".to_string(),
+            ValueRule::UrlAuthParam => {
+                "is a URL with an auth, token or signature parameter".to_string()
+            }
+            ValueRule::HighEntropy => "is a long high-entropy string".to_string(),
+        }
+    }
+}
+
+/// The rule [`classify`] used to reach its verdict. Explanations (`phantom
+/// why`, MCP `phantom_why`) report this instead of re-deriving a reason, so
+/// the reason shown is always the one that decided.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClassificationReason {
+    /// A framework public prefix, with no secret-shaped value.
+    PublicPrefix(&'static str),
+    /// A framework public prefix overridden by a secret-shaped value. Key
+    /// names are never consulted for public-prefixed keys.
+    PublicPrefixWithSecretValue {
+        prefix: &'static str,
+        rule: ValueRule,
+    },
+    /// The key name contains this secret fragment.
+    KeyName(&'static str),
+    /// The key name contains this connection-string fragment.
+    ConnectionPattern(&'static str),
+    /// The value alone matched this rule.
+    Value(ValueRule),
+    /// No rule matched.
+    NoSecretPattern,
+}
+
+impl ClassificationReason {
+    /// The stable label the why report uses as `reason`.
+    pub fn label(&self) -> &'static str {
+        match self {
+            ClassificationReason::PublicPrefix(_) => "public_prefix",
+            ClassificationReason::PublicPrefixWithSecretValue { .. } => {
+                "public_prefix_with_secret_value"
+            }
+            ClassificationReason::KeyName(_) => "key_name",
+            ClassificationReason::ConnectionPattern(_) => "connection_pattern",
+            ClassificationReason::Value(_) => "value_pattern",
+            ClassificationReason::NoSecretPattern => "no_secret_pattern",
+        }
+    }
+
+    /// The matched key fragment or public prefix, if the rule matched one.
+    /// Value rules report none: the report stays value-blind.
+    pub fn matched_pattern(&self) -> Option<&'static str> {
+        match self {
+            ClassificationReason::PublicPrefix(prefix)
+            | ClassificationReason::PublicPrefixWithSecretValue { prefix, .. }
+            | ClassificationReason::KeyName(prefix)
+            | ClassificationReason::ConnectionPattern(prefix) => Some(prefix),
+            ClassificationReason::Value(_) | ClassificationReason::NoSecretPattern => None,
+        }
+    }
+}
+
 /// Heuristic to determine if an env entry is likely a secret.
 /// Checks both the key name and value patterns.
+#[cfg(test)]
 fn looks_like_secret(entry: &EnvEntry) -> bool {
+    deciding_rule(entry).is_some()
+}
+
+/// The rule that makes a non-public entry a secret, or `None` when it is not
+/// one. Rules are tried in order and the first match decides.
+fn deciding_rule(entry: &EnvEntry) -> Option<ClassificationReason> {
     let key = entry.key.to_uppercase();
     let value = &entry.value;
 
-    // Key-name patterns that indicate secrets. `PWD` covers short forms like
-    // `DB_PWD=hunter2` that would otherwise miss (audit F11).
-    let secret_key_patterns = [
-        "KEY",
-        "SECRET",
-        "TOKEN",
-        "PASSWORD",
-        "PASSWD",
-        "PWD",
-        "CREDENTIAL",
-        "AUTH",
-        "PRIVATE",
-        "API_KEY",
-        "ACCESS_KEY",
-        "SIGNING",
-    ];
-
-    // Key-name patterns that indicate connection strings (which contain credentials)
-    let connection_patterns = [
-        "DATABASE_URL",
-        "REDIS_URL",
-        "MONGO_URL",
-        "POSTGRES_URL",
-        "MYSQL_URL",
-        "AMQP_URL",
-        "RABBITMQ_URL",
-        "ELASTICSEARCH_URL",
-        "CONNECTION_STRING",
-        "DSN",
-    ];
-
-    // Value patterns that indicate secrets
-    let secret_value_prefixes = [
-        "sk-",
-        "sk_",
-        "pk_",
-        "rk_",
-        "whsec_",
-        "Bearer ",
-        "ghp_",
-        "gho_",
-        "github_pat_",
-        "glpat-",
-        "xoxb-",
-        "xoxp-",
-        "AKIA",
-        "shpat_",
-        "eyJ",
-        // PEM-encoded private keys — the armor header is a clear marker
-        // (audit F11). Multi-line PEM bodies depend on F12 quoted parsing.
-        "-----BEGIN ",
-    ];
-
     // Check key name
-    if secret_key_patterns.iter().any(|p| key.contains(p)) {
-        return true;
+    if let Some(pattern) = NAME_RULE_FRAGMENTS.iter().find(|p| key.contains(*p)) {
+        return Some(ClassificationReason::KeyName(pattern));
     }
 
     // Check connection string keys
-    if connection_patterns.iter().any(|p| key.contains(p)) {
-        return true;
+    if let Some(pattern) = CONNECTION_KEY_PATTERNS.iter().find(|p| key.contains(*p)) {
+        return Some(ClassificationReason::ConnectionPattern(pattern));
     }
 
     // Check value patterns
-    if secret_value_prefixes.iter().any(|p| value.starts_with(p)) {
-        return true;
+    if let Some(prefix) = known_value_prefix(value).or_else(|| {
+        NON_PUBLIC_VALUE_PREFIXES
+            .into_iter()
+            .find(|p| value.starts_with(p))
+    }) {
+        return Some(ClassificationReason::Value(ValueRule::KnownPrefix(prefix)));
     }
 
     // Connection string URLs with credentials in userinfo (postgres://u:p@host)
     if value.contains("://") && value.contains('@') {
-        return true;
+        return Some(ClassificationReason::Value(ValueRule::UrlCredentials));
     }
 
     // URLs carrying auth material in the query string, e.g.
     // `https://host/endpoint?api_key=xxx` (audit F11). Bare `://` alone is
     // not enough — that matches harmless public endpoints.
     if value.contains("://") && url_has_auth_query_param(value) {
-        return true;
+        return Some(ClassificationReason::Value(ValueRule::UrlAuthParam));
     }
 
     // A Twilio Account SID is a public account identifier, not a credential:
@@ -954,7 +1065,7 @@ fn looks_like_secret(entry: &EnvEntry) -> bool {
     // (`AC` + 32 lowercase hex) under an `*ACCOUNT_SID` key is exempt from the
     // entropy heuristic.
     if is_twilio_account_sid(&key, value) {
-        return false;
+        return None;
     }
 
     // High-entropy long strings are likely secrets (32+ chars of hex/base64)
@@ -963,10 +1074,10 @@ fn looks_like_secret(entry: &EnvEntry) -> bool {
             c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '+' || c == '/' || c == '='
         })
     {
-        return true;
+        return Some(ClassificationReason::Value(ValueRule::HighEntropy));
     }
 
-    false
+    None
 }
 
 fn is_twilio_account_sid(upper_key: &str, value: &str) -> bool {
@@ -1117,44 +1228,60 @@ fn url_has_auth_query_param(value: &str) -> bool {
 /// known secret patterns (sk_live_, ghp_, etc.), it's classified as Secret to prevent
 /// accidental exposure of misnamed keys.
 pub fn classify(entry: &EnvEntry) -> SecretClassification {
-    if is_public_key(&entry.key) {
+    classify_with_reason(entry).0
+}
+
+/// [`classify`], with the rule that decided. This is the one decision path:
+/// `classify` is this verdict, and explanations report this reason.
+pub fn classify_with_reason(entry: &EnvEntry) -> (SecretClassification, ClassificationReason) {
+    if let Some(prefix) = public_key_prefix(&entry.key) {
         // Safety check: if the value looks like a real secret despite the public prefix,
         // classify as Secret to prevent leaking misnamed keys (e.g., VITE_STRIPE_SECRET_KEY=sk_live_...)
-        if has_secret_value_pattern(&entry.value)
-            || is_pem_private_key(&entry.value)
-            || url_has_userinfo_password(&entry.value)
-            || url_has_query_credential(&entry.value)
-        {
-            SecretClassification::Secret
-        } else {
-            SecretClassification::PublicKey
+        match public_value_rule(&entry.value) {
+            Some(rule) => (
+                SecretClassification::Secret,
+                ClassificationReason::PublicPrefixWithSecretValue { prefix, rule },
+            ),
+            None => (
+                SecretClassification::PublicKey,
+                ClassificationReason::PublicPrefix(prefix),
+            ),
         }
-    } else if looks_like_secret(entry) {
-        SecretClassification::Secret
+    } else if let Some(reason) = deciding_rule(entry) {
+        (SecretClassification::Secret, reason)
     } else {
-        SecretClassification::NotSecret
+        (
+            SecretClassification::NotSecret,
+            ClassificationReason::NoSecretPattern,
+        )
     }
+}
+
+/// The value rule that overrides a public key prefix, if any.
+fn public_value_rule(value: &str) -> Option<ValueRule> {
+    if let Some(prefix) = known_value_prefix(value) {
+        Some(ValueRule::KnownPrefix(prefix))
+    } else if is_pem_private_key(value) {
+        Some(ValueRule::PemPrivateKey)
+    } else if url_has_userinfo_password(value) {
+        Some(ValueRule::UrlCredentials)
+    } else if url_has_query_credential(value) {
+        Some(ValueRule::UrlAuthParam)
+    } else {
+        None
+    }
+}
+
+/// The known secret prefix `value` starts with (independent of key name).
+fn known_value_prefix(value: &str) -> Option<&'static str> {
+    KNOWN_VALUE_PREFIXES
+        .into_iter()
+        .find(|p| value.starts_with(p))
 }
 
 /// Check if a value matches known secret prefixes (independent of key name).
 fn has_secret_value_pattern(value: &str) -> bool {
-    let secret_value_prefixes = [
-        "sk-",
-        "sk_",
-        "pk_",
-        "rk_",
-        "whsec_",
-        "Bearer ",
-        "ghp_",
-        "gho_",
-        "github_pat_",
-        "glpat-",
-        "xoxb-",
-        "xoxp-",
-        "AKIA",
-        "shpat_",
-    ];
-    secret_value_prefixes.iter().any(|p| value.starts_with(p))
+    known_value_prefix(value).is_some()
 }
 
 /// A PEM block whose armor header names a private key (`PRIVATE KEY`,
@@ -1194,15 +1321,14 @@ fn url_has_query_credential(value: &str) -> bool {
 
 /// Check if a key name is a framework public key (safe for browser bundles).
 pub fn is_public_key(key: &str) -> bool {
-    let public_prefixes = [
-        "NEXT_PUBLIC_",
-        "EXPO_PUBLIC_",
-        "VITE_",
-        "REACT_APP_",
-        "NUXT_PUBLIC_",
-        "GATSBY_",
-    ];
-    public_prefixes.iter().any(|prefix| key.starts_with(prefix))
+    public_key_prefix(key).is_some()
+}
+
+/// The framework public prefix `key` starts with, if any.
+pub fn public_key_prefix(key: &str) -> Option<&'static str> {
+    PUBLIC_KEY_PREFIXES
+        .into_iter()
+        .find(|prefix| key.starts_with(prefix))
 }
 
 /// Committable dotenv template basenames (`.env.example`, `.env.sample`,
@@ -1697,6 +1823,68 @@ KEY3=unquoted
             value: value.into(),
             is_phantom: false,
         })
+    }
+
+    fn reason_kv(key: &str, value: &str) -> ClassificationReason {
+        classify_with_reason(&EnvEntry {
+            key: key.into(),
+            value: value.into(),
+            is_phantom: false,
+        })
+        .1
+    }
+
+    /// `classify_with_reason` names the rule that decided, in the order the
+    /// classifier tries them.
+    #[test]
+    fn classification_reason_is_the_deciding_rule() {
+        let pem = ["-----BEGIN ", "PRIVATE KEY-----\nabc"].concat();
+        let userinfo = ["postgres://u:", "pw", "@db.example.com/app"].concat();
+        let sid = ["AC", &"0123456789abcdef".repeat(2)].concat();
+        assert_eq!(
+            reason_kv("DB_PWD", "x1"),
+            ClassificationReason::KeyName("PWD")
+        );
+        // `KEY` comes first in the key-name list, so it decides `API_KEY`.
+        assert_eq!(
+            reason_kv("OPENAI_API_KEY", "x"),
+            ClassificationReason::KeyName("KEY")
+        );
+        assert_eq!(
+            reason_kv("CERT", &pem),
+            ClassificationReason::Value(ValueRule::KnownPrefix("-----BEGIN "))
+        );
+        assert_eq!(
+            reason_kv("PRIMARY", &userinfo),
+            ClassificationReason::Value(ValueRule::UrlCredentials)
+        );
+        assert_eq!(
+            reason_kv("VITE_CERT", &pem),
+            ClassificationReason::PublicPrefixWithSecretValue {
+                prefix: "VITE_",
+                rule: ValueRule::PemPrivateKey,
+            }
+        );
+        assert_eq!(
+            reason_kv("VITE_DB", &userinfo),
+            ClassificationReason::PublicPrefixWithSecretValue {
+                prefix: "VITE_",
+                rule: ValueRule::UrlCredentials,
+            }
+        );
+        // The Twilio SID exemption leaves no reason behind.
+        assert_eq!(
+            reason_kv("TWILIO_ACCOUNT_SID", &sid),
+            ClassificationReason::NoSecretPattern
+        );
+        assert_eq!(
+            classify_kv("TWILIO_ACCOUNT_SID", &sid),
+            SecretClassification::NotSecret
+        );
+        for reason in [reason_kv("CERT", &pem), reason_kv("VITE_DB", &userinfo)] {
+            assert!(!format!("{reason:?}").contains("pw@"));
+            assert!(!format!("{reason:?}").contains("abc"));
+        }
     }
 
     #[test]
