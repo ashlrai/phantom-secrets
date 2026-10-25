@@ -804,10 +804,23 @@ impl Interceptor {
     /// token→secret mapping.  The scrubber adds audit logging and stderr warnings on
     /// top of the basic byte-replacement already performed by [`scrub_response_bytes`].
     pub fn to_response_scrubber(&self) -> crate::response_scrubber::ResponseScrubber {
+        self.to_response_scrubber_with_injected(None)
+    }
+
+    /// Like [`Self::to_response_scrubber`], plus one request-specific value
+    /// the proxy derived from a vault value and sent upstream, as
+    /// `(secret_key_name, derived_value)`. Used for the encoded
+    /// `base64(username:secret)` of a Basic route: an upstream that echoes
+    /// it would otherwise hand the client a trivially decodable credential.
+    pub fn to_response_scrubber_with_injected(
+        &self,
+        injected: Option<(&str, &str)>,
+    ) -> crate::response_scrubber::ResponseScrubber {
         crate::response_scrubber::ResponseScrubber::from_token_secret_pairs(
             self.token_map
                 .iter()
-                .map(|(token, secret)| (token.as_str(), secret.as_str())),
+                .map(|(token, secret)| (token.as_str(), secret.as_str()))
+                .chain(injected.filter(|(_, value)| !value.is_empty())),
         )
     }
 }

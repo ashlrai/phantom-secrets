@@ -836,7 +836,21 @@ async fn handle_request(
         route.header, route.name
     );
     outgoing = outgoing.header(route.header.as_str(), configured_auth_header.as_str());
+    // A Basic route sends `base64(username:secret)`, not the literal vault
+    // value, so exact and partial-run matching on the vault value alone never
+    // sees an upstream echo of it. Scrub the encoded pair this request sent
+    // as a managed value too, in response headers and every body path.
+    let injected_basic_pair = (route.auth_injection() == AuthInjection::BasicPassword)
+        .then(|| configured_auth_header.strip_prefix("Basic "))
+        .flatten()
+        .map(|encoded| Zeroizing::new(encoded.to_string()));
     drop(configured_auth_header);
+    let resp_scrubber = state.interceptor.to_response_scrubber_with_injected(
+        injected_basic_pair
+            .as_deref()
+            .map(|encoded| (route.secret_key.as_str(), encoded.as_str())),
+    );
+    drop(injected_basic_pair);
 
     // Response scrubbing is defined over identity bytes. Never forward the
     // client's compression preferences to the upstream.
@@ -981,7 +995,6 @@ async fn handle_request(
             .unwrap_or(false)
         || (may_have_body && !has_declared_length);
 
-    let resp_scrubber = state.interceptor.to_response_scrubber();
     for (name, value) in response.headers() {
         let name_str = name.as_str();
         // Drop content-length: streaming uses chunked transfer, non-streaming may need
@@ -1013,7 +1026,6 @@ async fn handle_request(
         debug!("Streaming response: {}", status);
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<Frame<Bytes>, std::io::Error>>(32);
 
-        let resp_scrubber = state.interceptor.to_response_scrubber();
         let resp_ct = response_content_type.clone();
         let byte_stream = response.bytes_stream();
         tokio::spawn(async move {
@@ -3751,6 +3763,102 @@ mod tests {
             .all(|value| !value.contains("phm_") && !value.contains(&basic(&second_user, &token))));
         proxy.shutdown().await;
         mock.shutdown().await;
+    }
+
+    /// Basic-route proxy as `phantom exec` builds it: the vault value is in
+    /// both the session-token map (response scrubbing) and the named map
+    /// (header injection).
+    async fn basic_route_session_proxy(upstream_port: u16, secret: &str) -> ProxyServer {
+        let mut registry = ServiceRegistry::new();
+        registry.add_route(crate::services::ServiceRoute {
+            name: "svc".to_string(),
+            target_base: format!("http://127.0.0.1:{upstream_port}"),
+            secret_key: "SVC_SECRET".to_string(),
+            header: "Authorization".to_string(),
+            header_format: "Basic {secret}".to_string(),
+            credential_profile: crate::services::CredentialProfile::BasicPassword,
+            sdk_base_path: None,
+        });
+        let interceptor = Interceptor::new_scoped(
+            HashMap::from([(
+                session_token(),
+                ("SVC_SECRET".to_string(), secret.to_string()),
+            )]),
+            HashMap::from([("SVC_SECRET".to_string(), secret.to_string())]),
+        );
+        ProxyServer::start(
+            ProxyConfig {
+                port: 0,
+                proxy_token: String::new(),
+                ..ProxyConfig::default()
+            },
+            registry,
+            interceptor,
+        )
+        .await
+        .unwrap()
+    }
+
+    /// An upstream that reflects the injected `Authorization: Basic` value
+    /// hands the child `base64(username:vault_value)`, which decodes straight
+    /// to the vault value. The encoded pair must be redacted from response
+    /// headers and from buffered and streamed bodies, like a raw echo.
+    #[tokio::test]
+    async fn basic_route_echo_of_injected_pair_never_reaches_the_client() {
+        for content_type in ["application/json", "text/event-stream"] {
+            let mock =
+                crate::test_server::MockServer::start_echoing("authorization", content_type).await;
+            let secret_value = random_hex(16);
+            let proxy = basic_route_session_proxy(mock.port, &secret_value).await;
+            let account = format!("AC{}", random_hex(16));
+
+            let resp = reqwest::Client::new()
+                .get(format!(
+                    "http://127.0.0.1:{}/svc/2010-04-01/Accounts/{account}.json",
+                    proxy.port()
+                ))
+                .header("Authorization", basic(&account, &session_token()))
+                .send()
+                .await
+                .unwrap();
+            let echoed_header = resp
+                .headers()
+                .get("x-echo")
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or("")
+                .to_string();
+            let body = resp.text().await.unwrap();
+
+            let injected = basic(&account, &secret_value);
+            let recorded = mock.get_requests();
+            assert!(
+                recorded[0].headers.get("authorization") == Some(&injected),
+                "upstream must receive the injected Basic credential"
+            );
+
+            let encoded = injected.strip_prefix("Basic ").unwrap();
+            // Base64 characters from here on encode only vault-value bytes
+            // (the account is 34 bytes, plus ':' makes 35; 36 / 3 * 4 = 48).
+            let secret_part = &encoded[48..];
+            for (place, text) in [("header", &echoed_header), ("body", &body)] {
+                let leaked_whole = text.contains(encoded);
+                let leaked_run = secret_part
+                    .as_bytes()
+                    .windows(12)
+                    .any(|window| text.as_bytes().windows(12).any(|seen| seen == window));
+                assert!(
+                    !leaked_whole && !leaked_run,
+                    "encoded Basic credential echoed in the {place} ({content_type}) reached the client"
+                );
+                assert!(
+                    text.contains("[REDACTED:"),
+                    "echo in the {place} ({content_type}) was not marked redacted"
+                );
+            }
+
+            proxy.shutdown().await;
+            mock.shutdown().await;
+        }
     }
 
     #[tokio::test]
