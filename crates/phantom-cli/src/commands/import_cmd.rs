@@ -489,6 +489,7 @@ fn parse_competitor_source(
 }
 
 fn parse_env_source(bytes: &[u8]) -> Result<BTreeMap<String, Zeroizing<String>>> {
+    phantom_core::importers::refuse_non_utf8_encoding("env", bytes)?;
     let content = std::str::from_utf8(bytes).context("File is not valid UTF-8")?;
     let dotenv = phantom_core::dotenv::DotenvFile::parse_str(content);
     dotenv
@@ -775,6 +776,24 @@ mod fail_closed_tests {
         let decrypted = format!("DOTENV_PUBLIC_KEY=\"{public}\"\nSEALED_NAME=decrypted-plain\n");
         let map = parse_competitor_source("env", decrypted.as_bytes()).unwrap();
         assert!(map.get("SEALED_NAME").map(|v| v.as_str()) == Some("decrypted-plain"));
+    }
+
+    #[test]
+    fn every_cli_source_refuses_a_utf16_export_by_name() {
+        // The CLI routes `--from env` through its own dotenv parser, so the
+        // encoding refusal must hold here too, not only in phantom-core.
+        for source in ["doppler", "infisical", "dotenvx", "1password", "env"] {
+            let mut input = vec![0xFF, 0xFE];
+            input.extend("WIDE_NAME=x\n".encode_utf16().flat_map(u16::to_le_bytes));
+            let error = parse_competitor_source(source, &input)
+                .err()
+                .map(|error| format!("{error:#}"))
+                .unwrap_or_default();
+            assert!(
+                error.contains("UTF-16 LE") && error.contains("re-save"),
+                "{source} did not name the encoding"
+            );
+        }
     }
 
     #[test]
