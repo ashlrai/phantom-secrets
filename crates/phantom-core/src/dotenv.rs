@@ -121,17 +121,35 @@ impl Drop for DotenvFile {
 
 impl DotenvFile {
     /// Parse a .env file from a path.
+    ///
+    /// The file is read only as a regular, non-symlink file (see
+    /// [`crate::fs::read_regular_file`]): a `.env` symlink planted in a project
+    /// may point outside it, so it is refused rather than followed, and a
+    /// dangling one is refused rather than reported as missing. Nothing at
+    /// `path` is [`PhantomError::DotenvNotFound`].
     pub fn parse_file(path: &Path) -> Result<Self> {
-        let mut content = std::fs::read_to_string(path).map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                PhantomError::DotenvNotFound(path.display().to_string())
+        let shown = path.display().to_string();
+        let bytes = crate::fs::read_regular_file(path).map_err(|error| {
+            if error.to_string().contains(&shown) {
+                PhantomError::Io(error)
             } else {
-                PhantomError::Io(e)
+                PhantomError::Io(std::io::Error::new(
+                    error.kind(),
+                    format!("cannot read .env file {shown}: {error}"),
+                ))
             }
         })?;
-        let parsed = Self::parse_str(&content);
-        content.zeroize();
-        Ok(parsed)
+        let Some(bytes) = bytes else {
+            return Err(PhantomError::DotenvNotFound(shown));
+        };
+        let content = Zeroizing::new(String::from_utf8(bytes).map_err(|error| {
+            error.into_bytes().zeroize();
+            PhantomError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(".env file is not valid UTF-8: {shown}"),
+            ))
+        })?);
+        Ok(Self::parse_str(&content))
     }
 
     /// Parse a .env file from a string.
@@ -2699,5 +2717,71 @@ NEXT=ok
         assert!(std::fs::read_to_string(&env_path)
             .unwrap()
             .starts_with("API_KEY=phm_"));
+    }
+
+    /// A `.env` symlink planted in a project points outside it. Parsing must
+    /// refuse it, naming the path, instead of reading the target. Fails on
+    /// main, where `parse_file` followed the link and returned the target's
+    /// entries.
+    #[cfg(unix)]
+    #[test]
+    fn parse_file_refuses_a_symlinked_env() {
+        let project = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let target = outside.path().join("elsewhere.env");
+        std::fs::write(&target, "OUTSIDE_ONLY=1\n").unwrap();
+        let env_path = project.path().join(".env");
+        std::os::unix::fs::symlink(&target, &env_path).unwrap();
+
+        let outcome = DotenvFile::parse_file(&env_path);
+        let Err(error) = outcome else {
+            panic!("a symlinked .env was read");
+        };
+        let rendered = error.to_string();
+        assert!(rendered.contains(&env_path.display().to_string()));
+        assert!(!rendered.contains("OUTSIDE_ONLY"));
+    }
+
+    /// A dangling `.env` symlink is refused too, not reported as a missing
+    /// file (which callers treat as "nothing to import").
+    #[cfg(unix)]
+    #[test]
+    fn parse_file_refuses_a_dangling_env_symlink() {
+        let project = tempfile::tempdir().unwrap();
+        let env_path = project.path().join(".env");
+        std::os::unix::fs::symlink(project.path().join("absent.env"), &env_path).unwrap();
+
+        let outcome = DotenvFile::parse_file(&env_path);
+        assert!(matches!(outcome, Err(PhantomError::Io(_))));
+    }
+
+    /// A directory named `.env` is refused with an error naming the path.
+    #[test]
+    fn parse_file_refuses_a_directory_env() {
+        let project = tempfile::tempdir().unwrap();
+        let env_path = project.path().join(".env");
+        std::fs::create_dir(&env_path).unwrap();
+
+        let outcome = DotenvFile::parse_file(&env_path);
+        let Err(error) = outcome else {
+            panic!("a directory .env was parsed");
+        };
+        assert!(error.to_string().contains(&env_path.display().to_string()));
+    }
+
+    /// A missing `.env` keeps its `DotenvNotFound` error, and a regular file
+    /// still parses.
+    #[test]
+    fn parse_file_keeps_missing_and_regular_behaviour() {
+        let project = tempfile::tempdir().unwrap();
+        let env_path = project.path().join(".env");
+        assert!(matches!(
+            DotenvFile::parse_file(&env_path),
+            Err(PhantomError::DotenvNotFound(_))
+        ));
+
+        std::fs::write(&env_path, "NODE_ENV=development\n").unwrap();
+        let parsed = DotenvFile::parse_file(&env_path).unwrap();
+        assert_eq!(parsed.entries().len(), 1);
     }
 }

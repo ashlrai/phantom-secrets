@@ -4,6 +4,21 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (symlinked `.env` reads and `.phantom.toml` presence checks)
+
+- `DotenvFile::parse_file` read `.env` through symlinks, so a `.env` symlink
+  planted in a project made Phantom read a file outside it. It now reads the
+  file only as a regular, non-symlink file and refuses a symlink (dangling or
+  not), directory, FIFO or device with an error naming the path. A missing
+  `.env` is still reported as not found.
+- The before-image that `atomic_write_if_unchanged` reads back to compare
+  (which can be `.env` plaintext) is now zeroized when dropped.
+- `phantom init --multi` treated a directory or symlink named `.phantom.toml`
+  as "already protected", and the "run from the project root" hint followed a
+  symlinked ancestor `.phantom.toml`. Both now use the same regular-file rule
+  as the config loader: such a repo is reported as refused instead of
+  skipped, and only a regular ancestor config is named as the project root.
+
 ### Fixed (setup backups are created exclusively; leak profiles stay private)
 
 - `phantom setup --client` checked that a `<config>.phantom-bak-<ms>` name was
