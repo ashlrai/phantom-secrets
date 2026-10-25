@@ -5100,6 +5100,11 @@ impl PhantomMcpServer {
             .map_err(|e| vault_read_err("Failed to list secrets", e))?;
         names.sort();
         let (names_digest, names_sample) = bounded_validation_name_plan(&names)?;
+        // Validation sends each value to its provider, as a `phantom exec`
+        // session would: refuse an overdue enforced secret and a secret
+        // demoted to read-only before the one-use approval is requested or
+        // consumed. The check runs again before any value is read.
+        gate_validation_mcp(&config, vault.as_ref(), &names)?;
         let mut metadata_before = std::collections::BTreeMap::new();
         for name in &names {
             metadata_before.insert(
@@ -5145,16 +5150,16 @@ impl PhantomMcpServer {
             return json_object_result(&out);
         }
 
-        // Retrieve all secrets for validation (zeroized after use).
+        gate_validation_mcp(&config, vault.as_ref(), &names)?;
+        // Retrieve all secrets for validation (zeroized after use). The
+        // injection read re-checks the mode atomically with the value read,
+        // so an entry demoted after the gate is never sent.
         let mut secrets: Vec<(String, zeroize::Zeroizing<String>)> = Vec::new();
         for name in &names {
             let value = vault
-                .retrieve(name)
+                .retrieve_for_injection(name)
                 .map_err(|e| internal_err(format!("Failed to retrieve secret '{name}': {e}")))?;
-            secrets.push((
-                name.clone(),
-                zeroize::Zeroizing::new(String::from(value.as_str())),
-            ));
+            secrets.push((name.clone(), value));
         }
 
         let timeout = std::time::Duration::from_secs(timeout_secs);
@@ -5963,6 +5968,32 @@ fn ensure_doctor_dotenv_unchanged(
         ));
     }
     Ok(())
+}
+
+/// "Refusing to ..." wording for the lifecycle gate on `phantom_validate_all`,
+/// shared with `phantom validate`.
+const VALIDATE_ACTION: &str = "validate";
+
+/// The lifecycle gate `phantom validate` applies: exec's rotation gate, then
+/// a refusal for a secret demoted to read-only or whose lifecycle metadata
+/// cannot be read. Names and metadata only.
+fn gate_validation_mcp(
+    config: &PhantomConfig,
+    vault: &dyn phantom_vault::VaultBackend,
+    names: &[String],
+) -> Result<(), McpError> {
+    crate::tools::helpers::enforce_rotation_on_entries(
+        config,
+        vault,
+        names.iter().map(String::as_str),
+        VALIDATE_ACTION,
+        phantom_vault::rotation_gate::now_secs(),
+    )?;
+    crate::tools::helpers::refuse_read_only_entries(
+        vault,
+        names.iter().map(String::as_str),
+        VALIDATE_ACTION,
+    )
 }
 
 fn retrieve_optional_secret(
@@ -13404,6 +13435,69 @@ mod tests {
         let refusal = report["live_gate_refusal"].as_str().unwrap_or_default();
         assert!(refusal.starts_with("Refusing to sync: rotation enforcement blocked 1 secret(s)."));
         assert!(refusal.contains("DATABASE_URL"));
+    }
+
+    /// `phantom_validate_all` read every value with a plain retrieve and
+    /// sent it to its provider, so a secret demoted to read-only or overdue
+    /// under an enforced rotation policy (both refused by `phantom exec`)
+    /// still went over the network. Both now refuse from names and metadata
+    /// alone, before the one-use approval is requested or consumed.
+    #[test]
+    fn validate_all_refuses_read_only_and_overdue_secrets_before_approval() {
+        let _environment = TestEnvironment::new();
+        let (server, dir) = setup_initialized_project();
+        let validate_now = || {
+            server
+                .phantom_validate_all(Parameters(ValidateAllParams {
+                    jobs: 1,
+                    confirm: true,
+                    approval_token: None,
+                }))
+                .map(|_| String::new())
+                .unwrap_or_else(|error| error.message.to_string())
+        };
+        let before = validate_now();
+        assert!(!before.starts_with("Refusing to validate"));
+
+        let (_config, vault) = server.load_config_and_vault().unwrap();
+        let mut metadata = vault
+            .get_metadata("OPENAI_API_KEY")
+            .unwrap()
+            .unwrap_or_default();
+        metadata.vault_mode = phantom_vault::metadata::VaultMode::ReadOnly;
+        vault
+            .set_metadata("OPENAI_API_KEY", metadata.clone())
+            .unwrap();
+        let refused = validate_now();
+        assert!(refused.starts_with("Refusing to validate: 1 secret(s) are read-only"));
+        assert!(refused.contains("'OPENAI_API_KEY'"));
+        assert!(refused.contains("no network request was sent"));
+        metadata.vault_mode = phantom_vault::metadata::VaultMode::ReadWrite;
+        vault.set_metadata("OPENAI_API_KEY", metadata).unwrap();
+
+        let config_path = dir.path().join(".phantom.toml");
+        let mut config = PhantomConfig::load(&config_path).unwrap();
+        config.phantom.secrets.insert(
+            "DATABASE_URL".to_string(),
+            phantom_core::config::SecretOverride {
+                rotate_every: Some("30d".to_string()),
+                enforce_rotation_on_access: true,
+                ..phantom_core::config::SecretOverride::default()
+            },
+        );
+        config.save(&config_path).unwrap();
+        let mut metadata = vault
+            .get_metadata("DATABASE_URL")
+            .unwrap()
+            .unwrap_or_default();
+        metadata.created_at = Some(100);
+        metadata.rotated_at = None;
+        vault.set_metadata("DATABASE_URL", metadata).unwrap();
+        let refused = validate_now();
+        assert!(
+            refused.starts_with("Refusing to validate: rotation enforcement blocked 1 secret(s).")
+        );
+        assert!(refused.contains("DATABASE_URL"));
     }
 
     /// The sync report's live-gate check reads names and metadata only:

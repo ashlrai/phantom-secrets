@@ -29,6 +29,43 @@ const DEFAULT_TIMEOUT_SECS: u64 = 10;
 /// Default number of concurrent validation jobs.
 const DEFAULT_JOBS: usize = 4;
 
+/// "Refusing to ..." wording for the lifecycle gate on validation.
+const VALIDATE_ACTION: &str = "validate";
+
+/// Validation sends each value to its provider, as a `phantom exec` session
+/// would: refuse an overdue secret whose policy enforces rotation on access
+/// (exec's rotation gate), an entry the expiry policy demoted to read-only
+/// (which exec refuses to inject), and an entry whose lifecycle metadata
+/// cannot be read. Names and metadata only; runs before any value is read.
+fn gate_validation(
+    config: &PhantomConfig,
+    vault: &dyn phantom_vault::VaultBackend,
+    names: &[String],
+) -> Result<()> {
+    super::rotation_gate::enforce_lifecycle_on_propagation(
+        config,
+        vault,
+        names.iter().map(String::as_str),
+        VALIDATE_ACTION,
+        "Rotate or promote them before validating.",
+        "No vault plaintext was read and no provider request was sent.",
+        super::rotation_gate::now_secs(),
+    )
+}
+
+/// Read the values to validate through the runtime-injection check `phantom
+/// exec` uses, so an entry demoted to read-only after [`gate_validation`]
+/// is never sent to a provider.
+fn retrieve_validation_values(
+    vault: &dyn phantom_vault::VaultBackend,
+    names: &[String],
+) -> Result<Vec<(String, zeroize::Zeroizing<String>)>> {
+    names
+        .iter()
+        .map(|name| Ok((name.clone(), vault.retrieve_for_injection(name)?)))
+        .collect()
+}
+
 /// Path to the validation report file written by `--watch`.
 pub fn watch_report_path() -> PathBuf {
     let base = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
@@ -115,6 +152,8 @@ fn run_inner(check_all: bool, jobs: Option<usize>, json: bool, watch: bool) -> R
     let n_jobs = jobs.unwrap_or(DEFAULT_JOBS).clamp(1, 16);
     let timeout = Duration::from_secs(DEFAULT_TIMEOUT_SECS);
     let metadata_before = snapshot_validation_metadata(vault.as_ref(), &names)?;
+    // Known from names and metadata alone: refuse before asking for consent.
+    gate_validation(&config, vault.as_ref(), &names)?;
     require_trusted_terminal_validation(
         &project_dir,
         &project_id,
@@ -128,14 +167,10 @@ fn run_inner(check_all: bool, jobs: Option<usize>, json: bool, watch: bool) -> R
     // Collect secrets, apply per-secret timeout override where configured.
     // For one-shot mode, we use the global default timeout but respect the
     // per-secret validation config's timeout_secs when building the pipeline.
-    let mut secrets: Vec<(String, zeroize::Zeroizing<String>)> = Vec::new();
-    for name in &names {
-        let value = vault.retrieve(name)?;
-        secrets.push((
-            name.clone(),
-            zeroize::Zeroizing::new(String::from(value.as_str())),
-        ));
-    }
+    // Judged again after consent: an entry may have been demoted or gone
+    // overdue while the prompt was open.
+    gate_validation(&config, vault.as_ref(), &names)?;
+    let secrets = retrieve_validation_values(vault.as_ref(), &names)?;
 
     if !json {
         println!(
@@ -192,6 +227,7 @@ fn run_watch_loop(
         crate::util::inventory_guard(initial_vault.as_ref(), project_id, authorized_names.len())?;
     crate::util::warn_inventory_note(note.as_deref());
     validate_consent_names(&authorized_names)?;
+    gate_validation(config, initial_vault.as_ref(), &authorized_names)?;
     let watch_timeout_secs = authorized_names
         .iter()
         .filter_map(|name| {
@@ -277,11 +313,11 @@ fn run_watch_loop(
 
         if !due_names.is_empty() {
             let metadata_before = snapshot_validation_metadata(vault.as_ref(), &due_names)?;
-            let mut due_secrets: Vec<(String, zeroize::Zeroizing<String>)> = Vec::new();
-            for name in &due_names {
-                let value = vault.retrieve(name)?;
-                due_secrets.push((name.clone(), value));
-            }
+            // A watch outlives its consent: each round is judged as exec
+            // would judge a launch, so a secret that goes overdue or is
+            // demoted mid-watch ends the watch instead of being sent.
+            gate_validation(config, vault.as_ref(), &due_names)?;
+            let due_secrets = retrieve_validation_values(vault.as_ref(), &due_names)?;
             let now_ts = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -639,5 +675,172 @@ mod locked_vault_tests {
         let _project = LockedProject::new(empty_keychain);
         let error = super::run_watch(None, true).unwrap_err();
         assert!(error.to_string().starts_with("Vault locked:"), "{error:#}");
+    }
+}
+
+#[cfg(test)]
+mod lifecycle_gate_tests {
+    use crate::util::test_seam::{
+        demoted_vault, metadata_unreadable_vault, SeamProject, TestProject,
+    };
+    use phantom_vault::VaultBackend;
+
+    fn refusal(result: anyhow::Result<()>) -> String {
+        result
+            .map(|()| String::new())
+            .unwrap_or_else(|error| error.to_string())
+    }
+
+    /// `phantom validate --check-all` read every value with a plain
+    /// retrieve and sent it to its provider, so an entry the expiry policy
+    /// demoted to read-only (which `phantom exec` refuses to inject) still
+    /// went over the network. It is now refused from metadata alone, before
+    /// the trusted-terminal consent, naming the entry only.
+    #[test]
+    fn validate_refuses_a_read_only_entry_before_consent() {
+        let _project = SeamProject::new(demoted_vault);
+        for json in [true, false] {
+            let refused = refusal(super::run(true, None, json));
+            assert!(refused.starts_with("Refusing to validate: 1 secret(s) are read-only"));
+            assert!(refused.contains("'DEMOTED_KEY'"));
+            assert!(refused.contains("no provider request was sent"));
+        }
+    }
+
+    #[test]
+    fn validate_watch_refuses_a_read_only_entry_before_consent() {
+        let _project = SeamProject::new(demoted_vault);
+        let refused = refusal(super::run_watch(None, true));
+        assert!(refused.starts_with("Refusing to validate: 1 secret(s) are read-only"));
+        assert!(refused.contains("'DEMOTED_KEY'"));
+    }
+
+    #[test]
+    fn validate_refuses_unreadable_lifecycle_metadata_before_consent() {
+        let _project = SeamProject::new(metadata_unreadable_vault);
+        let refused = refusal(super::run(true, None, true));
+        assert!(refused.starts_with("Refusing to validate:"));
+        assert!(refused.contains("'DEMOTED_KEY'"));
+    }
+
+    /// Names and metadata only: an entry stored long ago under an enforced
+    /// 30-day rotation. Any value read fails the test.
+    struct OverdueVault;
+
+    impl VaultBackend for OverdueVault {
+        fn store(&self, _: &str, _: &str) -> phantom_core::error::Result<()> {
+            unreachable!("a refused validation never stores")
+        }
+        fn retrieve(&self, _: &str) -> phantom_core::error::Result<zeroize::Zeroizing<String>> {
+            panic!("a value was read from an overdue entry")
+        }
+        fn retrieve_for_injection(
+            &self,
+            _: &str,
+        ) -> phantom_core::error::Result<zeroize::Zeroizing<String>> {
+            panic!("a value was read from an overdue entry")
+        }
+        fn delete(&self, _: &str) -> phantom_core::error::Result<()> {
+            unreachable!("a refused validation never deletes")
+        }
+        fn list(&self) -> phantom_core::error::Result<Vec<String>> {
+            Ok(vec!["STALE_KEY".to_string()])
+        }
+        fn backend_name(&self) -> &str {
+            "encrypted-file"
+        }
+        fn get_metadata(
+            &self,
+            _: &str,
+        ) -> phantom_core::error::Result<Option<phantom_vault::SecretMetadata>> {
+            Ok(Some(phantom_vault::SecretMetadata {
+                created_at: Some(1_000),
+                ..phantom_vault::SecretMetadata::default()
+            }))
+        }
+    }
+
+    fn overdue_vault() -> Box<dyn VaultBackend> {
+        Box::new(OverdueVault)
+    }
+
+    /// `phantom exec` refuses to start with an overdue secret whose policy
+    /// sets `enforce_rotation_on_access`; `phantom validate` sent the same
+    /// value to its provider. It now refuses before consent, as exec does.
+    #[test]
+    fn validate_refuses_an_overdue_enforced_secret_before_consent() {
+        let project = tempfile::tempdir().unwrap();
+        let dir = project.path().canonicalize().unwrap();
+        let mut config = phantom_core::config::PhantomConfig::new_with_defaults(
+            phantom_core::config::PhantomConfig::project_id_from_path(&dir),
+        );
+        config.phantom.secrets.insert(
+            "STALE_KEY".to_string(),
+            phantom_core::config::SecretOverride {
+                rotate_every: Some("30d".to_string()),
+                enforce_rotation_on_access: true,
+                ..phantom_core::config::SecretOverride::default()
+            },
+        );
+        config.save(&dir.join(".phantom.toml")).unwrap();
+        let _seam = TestProject::install(dir, overdue_vault);
+
+        let refused = refusal(super::run(true, None, true));
+        assert!(
+            refused.starts_with("Refusing to validate: rotation enforcement blocked 1 secret(s).")
+        );
+        assert!(refused.contains("STALE_KEY"));
+        let refused = refusal(super::run_watch(None, true));
+        assert!(
+            refused.starts_with("Refusing to validate: rotation enforcement blocked 1 secret(s).")
+        );
+    }
+
+    /// The value read after consent applies exec's runtime-injection check,
+    /// so an entry demoted between the gate and the read is never returned.
+    #[test]
+    fn validation_values_are_read_through_the_injection_check() {
+        use crate::commands::rotation_gate::fixtures::aged_vault;
+        let store = tempfile::tempdir().unwrap();
+        let vault = aged_vault(&store, &[("ACTIVE_KEY", 1), ("DEMOTED_KEY", 1)]);
+        let mut demoted = vault.get_metadata("DEMOTED_KEY").unwrap().unwrap();
+        demoted.vault_mode = phantom_vault::metadata::VaultMode::ReadOnly;
+        vault.set_metadata("DEMOTED_KEY", demoted).unwrap();
+
+        let read = super::retrieve_validation_values(&vault, &["ACTIVE_KEY".to_string()]).unwrap();
+        assert_eq!(read.len(), 1);
+        assert_eq!(read[0].0, "ACTIVE_KEY");
+        let refused = super::retrieve_validation_values(
+            &vault,
+            &["ACTIVE_KEY".to_string(), "DEMOTED_KEY".to_string()],
+        )
+        .map(|_| String::new())
+        .unwrap_or_else(|error| error.to_string());
+        assert!(refused.contains("read-only under its lifecycle policy"));
+    }
+
+    /// Every path that reads values to validate gates first, and no plain
+    /// `retrieve` remains: one-shot before consent and again before the read,
+    /// watch before consent and on every round before the read.
+    #[test]
+    fn every_validation_read_is_gated() {
+        let source = include_str!("validate.rs");
+        let production = &source[..source.find("#[cfg(test)]").unwrap()];
+        assert!(!production.contains("vault.retrieve("));
+
+        let once = &production[production.find("fn run_inner(").unwrap()..];
+        let once = &once[..once.find("fn run_watch_loop(").unwrap()];
+        let consent = once.find("require_trusted_terminal_validation(").unwrap();
+        let read = once.find("retrieve_validation_values(").unwrap();
+        assert!(once.find("gate_validation(").unwrap() < consent);
+        assert!(once.rfind("gate_validation(").unwrap() > consent);
+        assert!(once.rfind("gate_validation(").unwrap() < read);
+
+        let watch = &production[production.find("fn run_watch_loop(").unwrap()..];
+        let consent = watch.find("require_trusted_terminal_validation(").unwrap();
+        let read = watch.find("retrieve_validation_values(").unwrap();
+        assert!(watch.find("gate_validation(").unwrap() < consent);
+        let round = &watch[watch.find("loop {").unwrap()..read];
+        assert!(round.contains("gate_validation("));
     }
 }
