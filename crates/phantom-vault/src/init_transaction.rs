@@ -32,6 +32,16 @@ pub struct InitSecret {
     name: String,
     replacement: Option<Zeroizing<String>>,
     expected_before: Option<Option<Zeroizing<String>>>,
+    inherited_anchor: Option<InheritedAnchor>,
+}
+
+/// The rotation-age fields a duplicated value carries over from its source
+/// entry, so a copy cannot restart the clock `enforce_rotation_on_access`
+/// measures.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct InheritedAnchor {
+    created_at: Option<u64>,
+    rotated_at: Option<u64>,
 }
 
 impl InitSecret {
@@ -40,6 +50,7 @@ impl InitSecret {
             name: name.into(),
             replacement: Some(Zeroizing::new(value.into())),
             expected_before: None,
+            inherited_anchor: None,
         }
     }
 
@@ -57,6 +68,7 @@ impl InitSecret {
             name: name.into(),
             replacement: Some(Zeroizing::new(value.into())),
             expected_before: Some(expected_before.map(|value| Zeroizing::new(value.into()))),
+            inherited_anchor: None,
         }
     }
 
@@ -71,7 +83,22 @@ impl InitSecret {
             name: name.into(),
             replacement: None,
             expected_before: Some(Some(Zeroizing::new(expected_before.into()))),
+            inherited_anchor: None,
         }
+    }
+
+    /// Give a newly created entry its source's rotation age instead of the
+    /// backend's "stored now" stamp: the destination's `created_at` and
+    /// `rotated_at` become the source's, inside the same transaction. A source
+    /// without metadata leaves the destination with no known age, which the
+    /// rotation gate refuses for an enforced secret. Only valid on a create;
+    /// the transaction refuses it for an existing destination.
+    pub fn inheriting_rotation_anchor(mut self, source: Option<&SecretMetadata>) -> Self {
+        self.inherited_anchor = Some(InheritedAnchor {
+            created_at: source.and_then(|metadata| metadata.created_at),
+            rotated_at: source.and_then(|metadata| metadata.rotated_at),
+        });
+        self
     }
 }
 
@@ -207,6 +234,7 @@ struct SecretSnapshot {
     metadata: Option<SecretMetadata>,
     validation: Option<ValidationMetadata>,
     after: Option<Zeroizing<String>>,
+    inherited_anchor: Option<InheritedAnchor>,
     touched: bool,
 }
 
@@ -368,6 +396,13 @@ fn commit_init_with_identity(
                 });
             }
         }
+        if secret.inherited_anchor.is_some() && (before.is_some() || secret.replacement.is_none()) {
+            return Err(InitTransactionError::Preflight {
+                target: secret.name,
+                reason: "an inherited rotation anchor applies only to a newly created entry"
+                    .to_string(),
+            });
+        }
         let metadata = vault
             .get_metadata(&secret.name)
             .map_err(|error| preflight_vault(&secret.name, error))?;
@@ -380,6 +415,7 @@ fn commit_init_with_identity(
             metadata,
             validation,
             after: secret.replacement,
+            inherited_anchor: secret.inherited_anchor,
             touched: false,
         });
     }
@@ -437,6 +473,10 @@ fn commit_init_with_identity(
             }
             ensure_secret_state(vault, snapshot, true)
                 .map_err(|error| (snapshot.name.clone(), error.to_string()))?;
+            if let Some(anchor) = snapshot.inherited_anchor {
+                apply_inherited_anchor(vault, &snapshot.name, anchor)
+                    .map_err(|error| (snapshot.name.clone(), error.to_string()))?;
+            }
             ensure_secret_metadata(vault, snapshot, true)
                 .map_err(|error| (snapshot.name.clone(), error.to_string()))?;
         }
@@ -790,6 +830,35 @@ fn ensure_secret_state(
 
 /// Verify lifecycle and validation metadata for the committed (`after`) or
 /// restored (`!after`) state of an entry that existed before the transaction.
+/// Replace the backend's creation stamp on a just-created entry with the
+/// source's rotation anchor. Rolling the entry back deletes this metadata
+/// with it.
+fn apply_inherited_anchor(
+    vault: &dyn VaultBackend,
+    name: &str,
+    anchor: InheritedAnchor,
+) -> Result<(), InitTransactionError> {
+    let current = vault
+        .get_metadata(name)
+        .map_err(|_| InitTransactionError::Preflight {
+            target: name.to_string(),
+            reason: "vault metadata read failed".to_string(),
+        })?;
+    let mut inherited = current.clone().unwrap_or_default();
+    inherited.created_at = anchor.created_at;
+    inherited.rotated_at = anchor.rotated_at;
+    match vault.compare_and_swap_metadata(name, current.as_ref(), Some(inherited)) {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(InitTransactionError::ConcurrentChange {
+            target: name.to_string(),
+        }),
+        Err(_) => Err(InitTransactionError::Preflight {
+            target: name.to_string(),
+            reason: "inherited rotation anchor could not be written".to_string(),
+        }),
+    }
+}
+
 fn ensure_secret_metadata(
     vault: &dyn VaultBackend,
     snapshot: &SecretSnapshot,
@@ -1232,6 +1301,62 @@ mod tests {
             "passphrase".to_string(),
         )
         .unwrap()
+    }
+
+    /// A duplicated value must keep its source's rotation age: the created
+    /// entry carries the source's `created_at`/`rotated_at`, not "now".
+    #[test]
+    fn created_entry_inherits_the_source_rotation_anchor() {
+        let dir = TempDir::new().unwrap();
+        let vault = vault(&dir);
+        let source = SecretMetadata {
+            created_at: Some(1_000),
+            rotated_at: Some(2_000),
+            ..SecretMetadata::default()
+        };
+        commit_init(
+            dir.path(),
+            &vault,
+            vec![
+                InitSecret::replace_if_unchanged("COPY_A", None::<String>, "fixture-a")
+                    .inheriting_rotation_anchor(Some(&source)),
+                InitSecret::replace_if_unchanged("COPY_B", None::<String>, "fixture-b")
+                    .inheriting_rotation_anchor(None),
+                InitSecret::new("PLAIN", "fixture-c"),
+            ],
+            Vec::new(),
+        )
+        .unwrap();
+
+        let copied = vault.get_metadata("COPY_A").unwrap().unwrap();
+        assert_eq!(copied.created_at, Some(1_000));
+        assert_eq!(copied.rotated_at, Some(2_000));
+        let unknown = vault.get_metadata("COPY_B").unwrap().unwrap_or_default();
+        assert_eq!((unknown.created_at, unknown.rotated_at), (None, None));
+        let plain = vault.get_metadata("PLAIN").unwrap().unwrap();
+        assert!(plain.created_at.is_some_and(|created| created > 2_000));
+    }
+
+    #[test]
+    fn inherited_anchor_is_refused_for_an_existing_entry() {
+        let dir = TempDir::new().unwrap();
+        let vault = vault(&dir);
+        vault.store("EXISTING", "fixture-old").unwrap();
+        let before = vault.get_metadata("EXISTING").unwrap();
+        let error = commit_init(
+            dir.path(),
+            &vault,
+            vec![
+                InitSecret::replace_if_unchanged("EXISTING", Some("fixture-old"), "fixture-new")
+                    .inheriting_rotation_anchor(None),
+            ],
+            Vec::new(),
+        )
+        .unwrap_err();
+
+        assert!(matches!(error, InitTransactionError::Preflight { .. }));
+        assert!(vault.exists("EXISTING").unwrap());
+        assert_eq!(vault.get_metadata("EXISTING").unwrap(), before);
     }
 
     #[test]
