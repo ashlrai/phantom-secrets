@@ -47,6 +47,20 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   refused. The challenge is unchanged and the gate still runs again just
   before the source value is read.
 
+### Fixed (Phantom state ancestors are created private; discovery does not follow a `.phantom.toml` link)
+
+- Creating a nested Phantom state directory (for example
+  `~/.phantom/shadows/<project>`) made the final directory 0700 but created
+  missing ancestors such as `~/.phantom` and `~/.phantom/shadows` with umask
+  permissions (usually 0755). `phantom_core::fs::ensure_real_parent`, and so
+  `ensure_private_dir` and `write_new_file`, now create any missing directory
+  named `.phantom` or beneath one with mode 0700 on Unix. Directories outside
+  a `.phantom` tree keep ordinary permissions, and existing directories (the
+  home directory included) are never chmod-ed by this path.
+- Workspace discovery reported `phantom_initialized` for a `.phantom.toml`
+  that was a symlink (followed to its target) or a directory. It now uses the
+  CLI's rule: only a regular, non-symlink file counts.
+
 ### Fixed (audit, hotspot-ack and shadow state files stay private and are never read or written through a symlink)
 
 - The audit writer created `~/.phantom` with `create_dir_all`, so a fresh
