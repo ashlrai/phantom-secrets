@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
-use phantom_core::package_scripts::wrapped_script_command;
+use phantom_core::package_scripts::{wrap_scripts, WrapOutcome};
 
 /// Rewrite package.json scripts to auto-prefix with the installed local `phantom` binary.
 /// Original scripts are saved as `*:raw` variants for escape-hatch usage.
@@ -115,129 +115,25 @@ fn replace_package_json(
     }
 }
 
-/// Scripts `apply_wrap` changed, and selected scripts it left unchanged
-/// because they are a shell command line (with the reason).
-#[derive(Debug, Default)]
-struct WrapOutcome {
-    wrapped: Vec<String>,
-    unwrapped: Vec<(String, &'static str)>,
-}
-
+/// The shared `phantom wrap` decision (the MCP `phantom_wrap` tool applies
+/// the same one). `--only` absent means the default selection.
 fn apply_wrap(
     pkg: &mut serde_json::Value,
     only: &Option<Vec<String>>,
     skip: &Option<Vec<String>>,
 ) -> Result<WrapOutcome> {
-    let scripts = match pkg.get_mut("scripts").and_then(|s| s.as_object_mut()) {
-        Some(s) => s,
-        None => return Ok(WrapOutcome::default()),
-    };
-
-    // Collect script names to wrap
-    let script_names: Vec<String> = scripts.keys().cloned().collect();
-    let mut candidates = Vec::new();
-    let mut unwrapped = Vec::new();
-
-    for name in &script_names {
-        // Skip :raw variants
-        if name.ends_with(":raw") {
-            continue;
-        }
-
-        let value = match scripts.get(name).and_then(|v| v.as_str()) {
-            Some(v) => v.to_string(),
-            None => continue,
-        };
-
-        // Skip if already wrapped
-        if value.contains("phantom-secrets") || value.contains("phantom exec") {
-            continue;
-        }
-
-        // Apply --only filter
-        if let Some(only_list) = only {
-            if !only_list.iter().any(|o| o == name) {
-                continue;
-            }
-        }
-
-        // Apply --skip filter
-        if let Some(skip_list) = skip {
-            if skip_list.iter().any(|s| s == name) {
-                continue;
-            }
-        }
-
-        // Default heuristic: wrap scripts that likely need secrets
-        if only.is_none() && !should_wrap_script(name) {
-            continue;
-        }
-
-        if let Some(reason) = phantom_core::package_scripts::wrap_blocker(&value) {
-            unwrapped.push((name.clone(), reason));
-            continue;
-        }
-
-        let raw_name = format!("{}:raw", name);
-        if scripts.contains_key(&raw_name) {
-            anyhow::bail!(
-                "Refusing to wrap '{name}': package.json already contains user-owned script '{raw_name}'. Rename or remove that script explicitly before retrying. No scripts were changed."
-            );
-        }
-        candidates.push((name.clone(), raw_name, value));
-    }
-
-    for (name, raw_name, original) in &candidates {
-        scripts.insert(
-            raw_name.clone(),
-            serde_json::Value::String(original.clone()),
-        );
-        scripts.insert(
-            name.clone(),
-            serde_json::Value::String(wrapped_script_command(original)),
-        );
-    }
-    Ok(WrapOutcome {
-        wrapped: candidates.into_iter().map(|(name, _, _)| name).collect(),
-        unwrapped,
-    })
-}
-
-/// Heuristic: should this script name be wrapped with phantom exec?
-fn should_wrap_script(name: &str) -> bool {
-    let name_lower = name.to_lowercase();
-
-    // Scripts that typically need secrets
-    let wrap_patterns = ["dev", "start", "serve", "build", "deploy", "preview"];
-
-    // Scripts that typically don't need secrets
-    let skip_patterns = [
-        "lint",
-        "test",
-        "format",
-        "fmt",
-        "check",
-        "type",
-        "typecheck",
-        "prettier",
-        "eslint",
-        "clean",
-        "prepare",
-        "postinstall",
-    ];
-
-    // Skip if matches a skip pattern
-    if skip_patterns.iter().any(|p| name_lower.contains(p)) {
-        return false;
-    }
-
-    // Wrap if matches a wrap pattern
-    wrap_patterns.iter().any(|p| name_lower.contains(p))
+    Ok(wrap_scripts(
+        pkg,
+        only.as_deref().unwrap_or_default(),
+        skip.as_deref().unwrap_or_default(),
+    )?)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use phantom_core::package_scripts::{selected_by_default, wrapped_script_command};
 
     #[test]
     fn generated_script_uses_installed_local_binary() {
@@ -248,21 +144,100 @@ mod tests {
     }
 
     #[test]
-    fn test_should_wrap_script() {
-        assert!(should_wrap_script("dev"));
-        assert!(should_wrap_script("start"));
-        assert!(should_wrap_script("build"));
-        assert!(should_wrap_script("deploy"));
-        assert!(should_wrap_script("serve"));
-        assert!(should_wrap_script("preview"));
-        assert!(should_wrap_script("dev:local"));
+    fn test_selected_by_default() {
+        assert!(selected_by_default("dev"));
+        assert!(selected_by_default("start"));
+        assert!(selected_by_default("build"));
+        assert!(selected_by_default("deploy"));
+        assert!(selected_by_default("serve"));
+        // Only the MCP tool's narrower list was kept when the two were
+        // merged: `preview` runs only with an explicit `--only preview`.
+        assert!(!selected_by_default("preview"));
+        assert!(selected_by_default("dev:local"));
 
-        assert!(!should_wrap_script("lint"));
-        assert!(!should_wrap_script("test"));
-        assert!(!should_wrap_script("format"));
-        assert!(!should_wrap_script("typecheck"));
-        assert!(!should_wrap_script("test:unit"));
-        assert!(!should_wrap_script("lint:fix"));
+        assert!(!selected_by_default("lint"));
+        assert!(!selected_by_default("test"));
+        assert!(!selected_by_default("format"));
+        assert!(!selected_by_default("typecheck"));
+        assert!(!selected_by_default("test:unit"));
+        assert!(!selected_by_default("lint:fix"));
+    }
+
+    /// One package.json, every rule the default selection applies. The MCP
+    /// `phantom_wrap` tests hold the same corpus and expectation, so a person
+    /// running `phantom wrap` and an agent calling the tool get the same
+    /// scripts wrapped.
+    fn selection_corpus() -> serde_json::Value {
+        serde_json::json!({
+            "scripts": {
+                "build": "next build",
+                "build:types": "tsc -p tsconfig.types.json",
+                "clean": "rimraf dist",
+                "deploy": "vercel deploy",
+                "dev": "next dev",
+                "dev:fmt": "dprint fmt --watch",
+                "format": "prettier -w .",
+                "lint": "eslint .",
+                "postinstall": "patch-package",
+                "predev": "node scripts/check-env.js",
+                "preview": "vite preview",
+                "serve": "node server.js",
+                "start": "phantom exec -- node server.js",
+                "start:prod": "npx phantom-secrets exec -- node server.js",
+                "test": "vitest",
+                "typecheck": "tsc --noEmit"
+            }
+        })
+    }
+
+    #[test]
+    fn default_selection_matches_the_mcp_tool() {
+        let mut pkg = selection_corpus();
+        let outcome = apply_wrap(&mut pkg, &None, &None).unwrap();
+        assert_eq!(
+            outcome.wrapped,
+            vec!["build", "deploy", "dev", "predev", "serve"]
+        );
+        assert!(outcome.unwrapped.is_empty());
+        let scripts = &pkg["scripts"];
+        for name in ["preview", "build:types", "dev:fmt"] {
+            assert!(
+                scripts.get(format!("{name}:raw")).is_none(),
+                "{name} must not be selected by default"
+            );
+        }
+        // Already wrapped scripts are never wrapped a second time.
+        assert_eq!(scripts["start"], "phantom exec -- node server.js");
+        assert!(scripts.get("start:raw").is_none());
+        assert!(scripts.get("start:prod:raw").is_none());
+    }
+
+    #[test]
+    fn explicit_selection_matches_the_mcp_tool() {
+        let mut pkg = selection_corpus();
+        let only = Some(vec![
+            "preview".to_string(),
+            "build:types".to_string(),
+            "start".to_string(),
+            "dev".to_string(),
+        ]);
+        let skip = Some(vec!["dev".to_string()]);
+        let outcome = apply_wrap(&mut pkg, &only, &skip).unwrap();
+        assert_eq!(outcome.wrapped, vec!["build:types", "preview"]);
+        assert_eq!(pkg["scripts"]["start"], "phantom exec -- node server.js");
+        assert_eq!(pkg["scripts"]["dev"], "next dev");
+    }
+
+    #[test]
+    fn raw_collision_message_matches_the_mcp_tool() {
+        let mut pkg = serde_json::json!({
+            "scripts": { "dev": "next dev", "dev:raw": "user-owned" }
+        });
+        let error = apply_wrap(&mut pkg, &None, &None).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Refusing to wrap 'dev': package.json already contains user-owned script 'dev:raw'. Rename or remove that script explicitly before retrying. No scripts were changed."
+        );
     }
 
     #[test]
@@ -306,7 +281,7 @@ mod tests {
                 "start": "NODE_ENV=production node server.js",
                 "build": "next build && next export",
                 "serve": "node server.js | pino-pretty",
-                "preview": "vite build; vite preview",
+                "deploy:preview": "vite build; vite preview",
                 "deploy": "node -e \"console.log('a && b; c | d')\""
             }
         });
@@ -314,15 +289,15 @@ mod tests {
         let outcome = apply_wrap(&mut pkg, &None, &None).unwrap();
         assert_eq!(outcome.wrapped, vec!["deploy", "dev"]);
         let unwrapped: Vec<&str> = outcome.unwrapped.iter().map(|(n, _)| n.as_str()).collect();
-        assert_eq!(unwrapped, vec!["build", "preview", "serve", "start"]);
+        assert_eq!(unwrapped, vec!["build", "deploy:preview", "serve", "start"]);
 
         let scripts = &pkg["scripts"];
         assert_eq!(scripts["dev"], "phantom exec -- next dev");
         assert_eq!(scripts["start"], "NODE_ENV=production node server.js");
         assert_eq!(scripts["build"], "next build && next export");
         assert_eq!(scripts["serve"], "node server.js | pino-pretty");
-        assert_eq!(scripts["preview"], "vite build; vite preview");
-        for name in ["start:raw", "build:raw", "serve:raw", "preview:raw"] {
+        assert_eq!(scripts["deploy:preview"], "vite build; vite preview");
+        for name in ["start:raw", "build:raw", "serve:raw", "deploy:preview:raw"] {
             assert!(scripts.get(name).is_none(), "{name} must not be created");
         }
         // Operators inside quotes are arguments, not shell syntax.

@@ -1,7 +1,6 @@
 use phantom_core::config::PhantomConfig;
 use phantom_core::dotenv::{classify, DotenvFile, SecretClassification};
 use phantom_core::fs::{AnchoredEffect, AnchoredRead, AnchoredTarget, TrustedAnchor};
-use phantom_core::package_scripts::wrapped_script_command;
 use phantom_core::precommit_hook::{self, HookChange};
 use phantom_core::report::{CheckFinding, CheckIndeterminate, CheckReport, DoctorReport};
 use phantom_core::token::{PhantomToken, TokenMap};
@@ -5823,115 +5822,22 @@ fn write_new_anchored_output_with(
 /// are a shell command line (with the reason).
 type WrapResult = (Vec<String>, Vec<(String, &'static str)>);
 
+/// The shared `phantom wrap` decision, so an agent and a person running the
+/// CLI get the same scripts wrapped. An empty `only` means the default
+/// selection.
 fn wrap_package_scripts(
     pkg: &mut serde_json::Value,
     only: &[String],
     skip: &[String],
 ) -> Result<WrapResult, String> {
-    let Some(scripts) = pkg
-        .get_mut("scripts")
-        .and_then(serde_json::Value::as_object_mut)
-    else {
-        return Ok((Vec::new(), Vec::new()));
-    };
-    let wrap_keywords = ["dev", "start", "build", "serve", "deploy"];
-    let skip_keywords = [
-        "lint",
-        "test",
-        "format",
-        "check",
-        "typecheck",
-        "prettier",
-        "eslint",
-        "clean",
-        "prepare",
-        "postinstall",
-    ];
-    let mut candidates = Vec::new();
-    let mut unwrapped = Vec::new();
-    for (name, value) in scripts.iter() {
-        let Some(original) = value.as_str() else {
-            continue;
-        };
-        if name.ends_with(":raw")
-            || original.contains("phantom-secrets")
-            || original.contains("phantom exec")
-            || skip.iter().any(|skip_name| skip_name == name)
-        {
-            continue;
-        }
-        let should_wrap = if only.is_empty() {
-            let lower = name.to_lowercase();
-            wrap_keywords.iter().any(|keyword| lower.contains(keyword))
-                && !skip_keywords.iter().any(|keyword| lower.contains(keyword))
-        } else {
-            only.iter().any(|only_name| only_name == name)
-        };
-        if should_wrap {
-            if let Some(reason) = phantom_core::package_scripts::wrap_blocker(original) {
-                unwrapped.push((name.clone(), reason));
-                continue;
-            }
-            let raw_name = format!("{name}:raw");
-            if scripts.contains_key(&raw_name) {
-                return Err(format!(
-                    "Refusing to wrap '{name}': package.json already contains user-owned script '{raw_name}'. No scripts were changed."
-                ));
-            }
-            candidates.push((name.clone(), raw_name, original.to_string()));
-        }
-    }
-    for (name, raw_name, original) in &candidates {
-        scripts.insert(
-            raw_name.clone(),
-            serde_json::Value::String(original.clone()),
-        );
-        scripts.insert(
-            name.clone(),
-            serde_json::Value::String(wrapped_script_command(original)),
-        );
-    }
-    Ok((
-        candidates.into_iter().map(|(name, _, _)| name).collect(),
-        unwrapped,
-    ))
+    let outcome = phantom_core::package_scripts::wrap_scripts(pkg, only, skip)
+        .map_err(|conflict| conflict.to_string())?;
+    Ok((outcome.wrapped, outcome.unwrapped))
 }
 
+/// The shared `phantom unwrap` decision.
 fn unwrap_package_scripts(pkg: &mut serde_json::Value) -> Vec<String> {
-    let Some(scripts) = pkg
-        .get_mut("scripts")
-        .and_then(serde_json::Value::as_object_mut)
-    else {
-        return Vec::new();
-    };
-    let owned = scripts
-        .iter()
-        .filter_map(|(raw_name, raw_value)| {
-            let base_name = raw_name.strip_suffix(":raw")?;
-            let original = raw_value.as_str()?;
-            let expected = wrapped_script_command(original);
-            (scripts.get(base_name).and_then(serde_json::Value::as_str) == Some(&expected)).then(
-                || {
-                    (
-                        base_name.to_string(),
-                        raw_name.clone(),
-                        original.to_string(),
-                    )
-                },
-            )
-        })
-        .collect::<Vec<_>>();
-    for (base_name, raw_name, original) in &owned {
-        scripts.insert(
-            base_name.clone(),
-            serde_json::Value::String(original.clone()),
-        );
-        scripts.remove(raw_name);
-    }
-    owned
-        .into_iter()
-        .map(|(base_name, _, _)| base_name)
-        .collect()
+    phantom_core::package_scripts::unwrap_scripts(pkg)
 }
 
 struct SensitiveSecretMap(std::collections::BTreeMap<String, zeroize::Zeroizing<String>>);
@@ -7648,6 +7554,76 @@ mod tests {
         let (digest, sample) = bounded_validation_name_plan(&["A".into(), "B".into()]).unwrap();
         assert_eq!(digest.len(), 64);
         assert_eq!(sample, vec!["A", "B"]);
+    }
+
+    /// The same corpus and expectation as the CLI `phantom wrap` tests, so an
+    /// agent calling `phantom_wrap` and a person running `phantom wrap` get the
+    /// same scripts wrapped.
+    fn mcp_wrap_selection_corpus() -> serde_json::Value {
+        serde_json::json!({
+            "scripts": {
+                "build": "next build",
+                "build:types": "tsc -p tsconfig.types.json",
+                "clean": "rimraf dist",
+                "deploy": "vercel deploy",
+                "dev": "next dev",
+                "dev:fmt": "dprint fmt --watch",
+                "format": "prettier -w .",
+                "lint": "eslint .",
+                "postinstall": "patch-package",
+                "predev": "node scripts/check-env.js",
+                "preview": "vite preview",
+                "serve": "node server.js",
+                "start": "phantom exec -- node server.js",
+                "start:prod": "npx phantom-secrets exec -- node server.js",
+                "test": "vitest",
+                "typecheck": "tsc --noEmit"
+            }
+        })
+    }
+
+    #[test]
+    fn mcp_wrap_default_selection_matches_the_cli() {
+        let mut package = mcp_wrap_selection_corpus();
+        let (wrapped, unwrapped) = wrap_package_scripts(&mut package, &[], &[]).unwrap();
+        assert_eq!(wrapped, vec!["build", "deploy", "dev", "predev", "serve"]);
+        assert!(unwrapped.is_empty());
+        let scripts = &package["scripts"];
+        for name in ["preview", "build:types", "dev:fmt"] {
+            assert!(
+                scripts.get(format!("{name}:raw")).is_none(),
+                "{name} must not be selected by default"
+            );
+        }
+        assert_eq!(scripts["start"], "phantom exec -- node server.js");
+        assert!(scripts.get("start:raw").is_none());
+        assert!(scripts.get("start:prod:raw").is_none());
+    }
+
+    #[test]
+    fn mcp_wrap_explicit_selection_matches_the_cli() {
+        let mut package = mcp_wrap_selection_corpus();
+        let only = ["preview", "build:types", "start", "dev"].map(String::from);
+        let skip = ["dev".to_string()];
+        let (wrapped, _) = wrap_package_scripts(&mut package, &only, &skip).unwrap();
+        assert_eq!(wrapped, vec!["build:types", "preview"]);
+        assert_eq!(
+            package["scripts"]["start"],
+            "phantom exec -- node server.js"
+        );
+        assert_eq!(package["scripts"]["dev"], "next dev");
+    }
+
+    #[test]
+    fn mcp_wrap_raw_collision_message_matches_the_cli() {
+        let mut package = serde_json::json!({
+            "scripts": { "dev": "next dev", "dev:raw": "user-owned" }
+        });
+        let error = wrap_package_scripts(&mut package, &[], &[]).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Refusing to wrap 'dev': package.json already contains user-owned script 'dev:raw'. Rename or remove that script explicitly before retrying. No scripts were changed."
+        );
     }
 
     #[test]
@@ -12129,7 +12105,7 @@ mod tests {
 
     #[test]
     fn mcp_wrap_generator_uses_installed_local_binary() {
-        let wrapped = wrapped_script_command("next dev");
+        let wrapped = phantom_core::package_scripts::wrapped_script_command("next dev");
         assert_eq!(wrapped, "phantom exec -- next dev");
         assert!(!wrapped.contains("npx"));
         assert!(!wrapped.contains("npm"));

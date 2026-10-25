@@ -1,6 +1,5 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
-use phantom_core::package_scripts::wrapped_script_command;
 
 /// Reverse `phantom wrap` — restore original scripts from `:raw` variants.
 ///
@@ -78,43 +77,10 @@ fn run_in(project_dir: &std::path::Path, quiet: bool, after_lock: impl FnOnce())
     Ok(())
 }
 
+/// The shared `phantom unwrap` decision (the MCP `phantom_unwrap` tool
+/// applies the same one).
 fn apply_unwrap(pkg: &mut serde_json::Value) -> Vec<String> {
-    let scripts = match pkg.get_mut("scripts").and_then(|s| s.as_object_mut()) {
-        Some(s) => s,
-        None => return Vec::new(),
-    };
-
-    // Find all :raw variants
-    let raw_names: Vec<String> = scripts
-        .keys()
-        .filter(|k| k.ends_with(":raw"))
-        .cloned()
-        .collect();
-
-    let mut owned_pairs = Vec::new();
-
-    for raw_name in &raw_names {
-        let base_name = raw_name.strip_suffix(":raw").unwrap().to_string();
-        let Some(raw_value) = scripts.get(raw_name).and_then(|value| value.as_str()) else {
-            continue;
-        };
-        let expected_wrapped = wrapped_script_command(raw_value);
-        if scripts.get(&base_name).and_then(|value| value.as_str()) == Some(&expected_wrapped) {
-            owned_pairs.push((base_name, raw_name.clone(), raw_value.to_string()));
-        }
-    }
-
-    for (base_name, raw_name, raw_value) in &owned_pairs {
-        scripts.insert(
-            base_name.clone(),
-            serde_json::Value::String(raw_value.clone()),
-        );
-        scripts.remove(raw_name);
-    }
-    owned_pairs
-        .into_iter()
-        .map(|(base_name, _, _)| base_name)
-        .collect()
+    phantom_core::package_scripts::unwrap_scripts(pkg)
 }
 
 #[cfg(test)]
