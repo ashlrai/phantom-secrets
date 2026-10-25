@@ -15,6 +15,33 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   (Mapbox `pk.`, Google Maps browser keys), analytics params and empty
   placeholders stay public.
 
+### Fixed (worktree check reads `.phantom.toml` only as a regular file)
+
+- `phantom check` (without `--staged`) followed a `.phantom.toml` symlink.
+  A dangling one was treated as "no config" and reported clean while a
+  credential sat in the regular file its `dotenv_path` would name; one
+  pointing outside the project had that other file choose which dotenv files
+  were scanned. A FIFO or device named `.phantom.toml` hung the check.
+  `.phantom.toml` is now read only as a regular, non-symlink file; anything
+  else fails closed with a message naming `.phantom.toml`, as dotenv scan
+  targets already did. Ordinary regular configs scan as before.
+
+### Fixed (Vercel pull mixed values from different environments)
+
+- `phantom pull --from vercel` read every Vercel variable for a name and kept
+  whichever was listed last, so when a name existed as separate variables
+  for several environments (say production and development) a pull could
+  store the development value where production was expected, with no
+  warning. Pull now keeps only project-wide variables that apply to the
+  configured `targets` (those of the Vercel `[[sync]]` entry for the
+  project, or production and preview when none names it, the same default
+  `phantom sync` uses), and skips Git-branch-scoped preview variables. If
+  several such variables for one name do not carry the same value, the pull
+  is refused before any local change, naming the key and its environments,
+  never a value. The approval plan now lists those `targets`. A name with a
+  single matching variable is pulled as before; a name that exists only for
+  environments outside the targets is no longer pulled.
+
 ### Fixed (browser-prefixed keys holding a private key or URL password)
 
 - `phantom init` left a PEM private key or a connection URL with a password
