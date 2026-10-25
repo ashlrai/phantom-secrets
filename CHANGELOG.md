@@ -4,6 +4,21 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (`enforce_rotation_on_access` was bypassable by switching commands)
+
+- Only `phantom exec` and `phantom start` applied the rotation gate, so an
+  overdue enforced secret could still be printed by `phantom reveal`, copied
+  into another project by `phantom copy` or the `phantom_copy_secret` MCP tool,
+  pushed to Vercel or Railway by `phantom sync`, sent to teammates by
+  `phantom team vault-push` or `phantom_team_vault_push`, or re-stamped as new
+  by `phantom env copy`. Each now refuses before any secret value is read, with
+  the same per-secret message as `phantom exec` ("Refusing to reveal: ...",
+  "Refusing to sync: ...", and so on). `env/NAME` entries are judged by the
+  `[phantom.secrets.NAME]` policy and that entry's own age. The MCP tools refuse
+  before a one-use approval is consumed and check again just before the read.
+- Listing, status, validation, `phantom rotate` and the rotation tools stay
+  ungated so an overdue secret can still be found and fixed.
+
 ### Fixed (audit log is owner-only and never follows a symlink)
 
 - `~/.phantom/audit.log` and `audit.lock` were opened with plain
