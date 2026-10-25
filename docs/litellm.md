@@ -106,6 +106,32 @@ In CI, on every change: `crates/phantom-proxy/tests/litellm_gateway_hermetic_tes
 
 Not tested: any real provider, streaming, tool calls, the `phantom exec` CLI end to end, the Docker image, Postgres or virtual keys, LiteLLM debug logging (it may print `api_base`, which contains the Phantom session token), the Responses API, and Claude Code, Codex, Gemini CLI or Cursor talking to LiteLLM.
 
+## Local models behind LiteLLM (no provider key)
+
+A loopback recipe for putting LiteLLM in front of a local Ollama server, so agents get one OpenAI-style endpoint for local and hosted models. The local route needs no provider key, so there is nothing for Phantom to inject on it; do not run it under `phantom exec` with real keys it does not need.
+
+```yaml
+model_list:
+  - model_name: local-coder
+    litellm_params:
+      model: ollama_chat/qwen3.8:27b       # ollama_chat sends requests to Ollama's /api/chat
+      api_base: http://127.0.0.1:11434
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  allow_client_side_credentials: false
+```
+
+```bash
+LITELLM_MASTER_KEY=sk-<your own random value> \
+  litellm --config local.yaml --host 127.0.0.1 --port 4000
+```
+
+- The `ollama_chat/` prefix and `api_base` form come from LiteLLM's [Ollama provider docs](https://docs.litellm.ai/docs/providers/ollama) (checked 2026-10-25). Pin LiteLLM as described in "Pin and verify LiteLLM first".
+- Keep both Ollama and LiteLLM on `127.0.0.1`. Local servers can log prompts, so keep `phm_` placeholders in prompts.
+- To mix in a hosted model, add its entry from the Quickstart config and start LiteLLM under `phantom exec` as shown there.
+- Not tested: this config was not run against a real LiteLLM or Ollama here.
+
 ## LiteLLM as an upstream: key headers
 
 This section covers the other direction: a Phantom route whose upstream is a LiteLLM proxy reached over HTTPS, with the LiteLLM virtual key in the vault and only its `phm_` placeholder in the client.
