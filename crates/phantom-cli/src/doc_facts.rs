@@ -310,8 +310,8 @@ fn readme_command_reference_matches_the_cli() {
     );
 }
 
-#[test]
-fn import_source_lists_match_the_importer_dispatcher() {
+/// Import sources as the importer dispatcher names them.
+fn import_sources() -> BTreeSet<String> {
     let unknown = phantom_core::importers::import_from(
         "__doc_facts_unknown__",
         std::path::Path::new("missing"),
@@ -322,7 +322,12 @@ fn import_source_lists_match_the_importer_dispatcher() {
         .split_once("Supported: ")
         .expect("unknown-source error names the supported sources")
         .1;
-    let truth = words(supported, &[',']);
+    words(supported, &[','])
+}
+
+#[test]
+fn import_source_lists_match_the_importer_dispatcher() {
+    let truth = import_sources();
     for source in &truth {
         let error = phantom_core::importers::import_from(
             source,
@@ -392,6 +397,69 @@ fn import_source_lists_match_the_importer_dispatcher() {
         "{rel}:{header} format table repeats a source"
     );
     assert_list(rel, header, claimed, &truth);
+}
+
+#[test]
+fn import_help_states_each_source_format_and_a_1password_example_that_parses() {
+    // `phantom import --help` is where the 1Password parse error sends users,
+    // so it must state the expected format for every source, and the
+    // 1Password example it shows must be accepted by the real parser.
+    use phantom_core::importers::Importer;
+
+    let truth = import_sources();
+    let mut command = Cli::command();
+    let help = command
+        .find_subcommand_mut("import")
+        .expect("phantom import exists")
+        .render_long_help()
+        .to_string();
+    let rel = "phantom import --help";
+    let (header, _) = unique_line(rel, &help, "Expected --file format per source");
+    let listed: BTreeSet<String> = help
+        .lines()
+        .skip(header + 1)
+        .take_while(|line| line.starts_with("  ") && !line.trim().is_empty())
+        .filter_map(|line| line.split_whitespace().next())
+        .map(str::to_ascii_lowercase)
+        .collect();
+    assert_list(rel, header, listed, &truth);
+
+    let (no, line) = unique_line(rel, &help, "{\"STRIPE_SECRET_KEY\"");
+    let parsed =
+        phantom_core::importers::onepassword::OnePasswordImporter::parse(line.trim().as_bytes());
+    assert!(
+        parsed.is_ok_and(|map| map.len() == 2),
+        "{rel}:{no} shows a 1Password example the importer refuses; fix it"
+    );
+    for fact in ["[A-Za-z_][A-Za-z0-9_]*", "op item get", "UTF-16"] {
+        assert!(help.contains(fact), "{rel} no longer states {fact:?}");
+    }
+
+    // The jq flattening filter is printed in the help and in
+    // docs/troubleshooting.md; the two copies must not drift apart.
+    let jq_marker = "map({(.label): .value})";
+    let (_, help_jq) = unique_line(rel, &help, jq_marker);
+    let doc = "docs/troubleshooting.md";
+    let troubleshooting = read_doc(doc);
+    let (no, doc_jq) = unique_line(doc, &troubleshooting, jq_marker);
+    assert_eq!(
+        help_jq.trim(),
+        doc_jq.trim(),
+        "{doc}:{no} jq filter differs from `phantom import --help`"
+    );
+
+    // The troubleshooting 1Password row states the same contract.
+    let (no, row) = unique_line(doc, &troubleshooting, "| `1password` |");
+    for fact in [
+        "{\"KEY\": \"value\"}",
+        "[A-Za-z_][A-Za-z0-9_]*",
+        "op item get",
+    ] {
+        assert!(
+            row.contains(fact),
+            "{doc}:{no} 1password row lacks {fact:?}"
+        );
+    }
 }
 
 #[test]
