@@ -58,7 +58,7 @@ pub fn run(
     let (config, config_before) = load_config_exact(&config_path)?;
     validate_managed_dotenv_preflight(&project_dir, &config)?;
     let vault = phantom_vault::try_create_vault(config.local_project_id())?;
-    ensure_secret_absent(vault.as_ref(), name)?;
+    ensure_secret_absent(vault.as_ref(), config.local_project_id(), name)?;
 
     // Existing-name authority is resolved from value-blind vault metadata
     // before stdin or the hidden prompt is touched. A second check in
@@ -112,8 +112,13 @@ pub(super) fn validate_managed_dotenv_preflight(
     Ok(())
 }
 
-fn ensure_secret_absent(vault: &dyn VaultBackend, name: &str) -> Result<()> {
+/// Refuse a name the vault already holds, before any value is read. Beside an
+/// encrypted-file vault this process cannot open, the listing covers only the
+/// OS keychain, so absence cannot be established: the name may be in that
+/// file, and storing it would split the project's secrets across two vaults.
+fn ensure_secret_absent(vault: &dyn VaultBackend, project_id: &str, name: &str) -> Result<()> {
     let vault_names = vault.list().context("Failed to list protected secrets")?;
+    crate::util::require_complete_inventory(vault, project_id, vault_names.len(), "add a secret")?;
     if vault_names.iter().any(|existing| existing == name) {
         anyhow::bail!(
             "Secret '{name}' is already protected. `phantom add` creates new names only and refuses replacement before reading a value. Use the trusted-terminal `phantom remove {name}` ceremony first if you explicitly intend a separate, non-atomic remove-and-add sequence."
@@ -417,6 +422,35 @@ mod tests {
         )
         .unwrap();
         (config_path, config, before, vault)
+    }
+
+    /// Beside an encrypted-file vault this process cannot open, the vault is
+    /// the OS keychain: add read the name as absent and would store it there,
+    /// beside the copy in the locked file.
+    #[cfg(unix)]
+    #[test]
+    fn add_beside_a_locked_file_vault_refuses_before_reading_a_value() {
+        use crate::util::test_seam::{empty_keychain, keychain_with_one, LockedProject};
+        for (make, lead) in [
+            (
+                empty_keychain as crate::util::test_seam::MakeVault,
+                "Vault locked:",
+            ),
+            (
+                keychain_with_one,
+                "Refusing to add a secret from a partial inventory",
+            ),
+        ] {
+            let project = LockedProject::new(make);
+            let vault = crate::util::open_vault(&project.project_id).unwrap();
+
+            let outcome = ensure_secret_absent(vault.as_ref(), &project.project_id, "NEW_KEY");
+
+            assert!(outcome.is_err(), "absence cannot be established");
+            let message = outcome.err().unwrap().to_string();
+            assert!(message.starts_with(lead));
+            assert!(message.contains("PHANTOM_VAULT_PASSPHRASE"));
+        }
     }
 
     #[test]

@@ -107,7 +107,7 @@ async fn run_async(
     require_trusted_terminal_pull(&plan)?;
 
     let vault = phantom_vault::try_create_vault(config.local_project_id())?;
-    let vault_names = vault.list().context("Failed to list local vault names")?;
+    let vault_names = local_pull_names(vault.as_ref(), config.local_project_id())?;
     let provider_edge =
         phantom_core::managed_dotenv::resolve_dotenv(&project_dir, &config, &vault_names)
             .context("Failed to re-resolve the managed dotenv before provider access")?;
@@ -264,6 +264,23 @@ async fn run_async(
         "ok".green().bold()
     );
     Ok(())
+}
+
+/// The local vault's names, listed after approval and before any provider
+/// credential or network access. Beside an encrypted-file vault this process
+/// cannot open, the listing covers only the OS keychain: names already in the
+/// locked file would be pulled as new into the keychain beside them (and an
+/// existing value would be skipped or overwritten unseen), so the pull is
+/// refused before the provider is contacted.
+fn local_pull_names(vault: &dyn VaultBackend, project_id: &str) -> Result<Vec<String>> {
+    let names = vault.list().context("Failed to list local vault names")?;
+    crate::util::require_complete_inventory(
+        vault,
+        project_id,
+        names.len(),
+        "pull provider secrets into the local vault",
+    )?;
+    Ok(names)
 }
 
 fn pull_plan_digest(plan: &PullPlan) -> Result<String> {
@@ -445,6 +462,35 @@ fn snapshot_regular_file(path: &Path) -> Result<Option<Vec<u8>>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Beside an encrypted-file vault this process cannot open, the local
+    /// listing came from the OS keychain alone, so names already in the
+    /// locked file would be pulled as new into the keychain.
+    #[cfg(unix)]
+    #[test]
+    fn pull_beside_a_locked_file_vault_is_refused_before_provider_access() {
+        use crate::util::test_seam::{empty_keychain, keychain_with_one, LockedProject};
+        for (make, lead) in [
+            (
+                empty_keychain as crate::util::test_seam::MakeVault,
+                "Vault locked:",
+            ),
+            (
+                keychain_with_one,
+                "Refusing to pull provider secrets into the local vault from a partial inventory",
+            ),
+        ] {
+            let project = LockedProject::new(make);
+            let vault = crate::util::open_vault(&project.project_id).unwrap();
+
+            let outcome = local_pull_names(vault.as_ref(), &project.project_id);
+
+            assert!(outcome.is_err(), "a partial local inventory must refuse");
+            let message = outcome.err().unwrap().to_string();
+            assert!(message.starts_with(lead));
+            assert!(message.contains("PHANTOM_VAULT_PASSPHRASE"));
+        }
+    }
     use phantom_core::error::{PhantomError, Result as PhantomResult};
     use std::io::Cursor;
     use zeroize::Zeroizing;

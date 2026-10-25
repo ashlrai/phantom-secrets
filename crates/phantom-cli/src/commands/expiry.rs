@@ -233,7 +233,7 @@ fn run_token_remap(expiring: &[ExpiryEntry], config: &PhantomConfig, json: bool)
 /// Stores `expires_at` and the rotation policy atomically with the secret's
 /// existing lifecycle metadata.
 pub fn run_set(key: &str, days: u64) -> Result<()> {
-    let project_dir = std::env::current_dir()?.canonicalize()?;
+    let project_dir = crate::util::project_dir()?.canonicalize()?;
     let config_path = project_dir.join(".phantom.toml");
 
     if !config_path.exists() {
@@ -244,16 +244,10 @@ pub fn run_set(key: &str, days: u64) -> Result<()> {
         phantom_core::fs::read_regular_file(&config_path)?.context("Project is not initialized")?;
     let config = PhantomConfig::load_from_bytes(&config_path, &config_before)
         .context("Failed to load exact .phantom.toml snapshot")?;
-    let vault = phantom_vault::try_create_vault(config.local_project_id())?;
-    if !vault
-        .exists(key)
-        .with_context(|| format!("Failed to check whether '{key}' exists in the vault"))?
-    {
-        anyhow::bail!(
-            "Secret '{}' not found in vault; no policy was written.",
-            key
-        );
-    }
+    let vault = crate::util::open_vault(config.local_project_id())?;
+    crate::util::require_listed_secret(vault.as_ref(), config.local_project_id(), key, || {
+        format!("Secret '{key}' not found in vault; no policy was written.")
+    })?;
     let before = vault
         .get_metadata(key)
         .context("Failed to snapshot expiry metadata")?;
@@ -478,7 +472,7 @@ fn enforce_inputs(fail_closed: bool) -> Result<EnforceInputs> {
 /// Deprecated compatibility command. Remaps the local Phantom token only; the
 /// provider credential and all expiry/rotation metadata remain unchanged.
 pub fn run_rotate(key: &str) -> Result<()> {
-    let project_dir = std::env::current_dir()?;
+    let project_dir = crate::util::project_dir()?;
     let config_path = project_dir.join(".phantom.toml");
 
     if !config_path.exists() {
@@ -489,15 +483,13 @@ pub fn run_rotate(key: &str) -> Result<()> {
     crate::commands::add::validate_managed_dotenv_preflight(&project_dir, &config).context(
         "Managed dotenv is malformed; expiry token remap stopped before vault, metadata, or output effects",
     )?;
-    let vault = phantom_vault::try_create_vault(config.local_project_id())?;
+    let vault = crate::util::open_vault(config.local_project_id())?;
 
-    // Ensure the secret exists.
-    if !vault
-        .exists(key)
-        .with_context(|| format!("Failed to check whether '{key}' exists in the vault"))?
-    {
-        anyhow::bail!("Secret '{}' not found in vault.", key);
-    }
+    // Ensure the secret exists (beside a locked file vault, refuse with the
+    // unlock step rather than report it as not found).
+    crate::util::require_listed_secret(vault.as_ref(), config.local_project_id(), key, || {
+        format!("Secret '{key}' not found in vault.")
+    })?;
 
     let metadata_before = vault
         .get_metadata(key)
@@ -526,6 +518,24 @@ pub fn run_rotate(key: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Beside an encrypted-file vault this process cannot open, the vault is
+    /// an empty OS keychain: `expiry set` and `expiry rotate` reported the
+    /// secret as not found.
+    #[cfg(unix)]
+    #[test]
+    fn expiry_set_and_rotate_beside_a_locked_file_vault_name_the_lock() {
+        let _project =
+            crate::util::test_seam::LockedProject::new(crate::util::test_seam::empty_keychain);
+
+        for outcome in [run_set("OPENAI_API_KEY", 30), run_rotate("OPENAI_API_KEY")] {
+            assert!(outcome.is_err(), "a locked vault must refuse the change");
+            let chain = format!("{:#}", outcome.err().unwrap());
+            assert!(chain.contains("Vault locked:"));
+            assert!(chain.contains("PHANTOM_VAULT_PASSPHRASE"));
+            assert!(!chain.contains("not found"));
+        }
+    }
 
     #[test]
     fn headless_expiry_consent_denies_without_write_authority() {

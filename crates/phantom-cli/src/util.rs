@@ -139,6 +139,59 @@ pub fn missing_protected_entry(
     }
 }
 
+/// Require that the opened vault lists `name`, judged from names only (no
+/// value is read). When it does not, `missing` is the error, except beside a
+/// locked encrypted-file vault: the name is most likely in that file, so the
+/// error names the locked vault and the unlock step instead of claiming the
+/// secret does not exist.
+pub fn require_listed_secret(
+    vault: &dyn VaultBackend,
+    project_id: &str,
+    name: &str,
+    missing: impl FnOnce() -> String,
+) -> anyhow::Result<()> {
+    if vault.exists(name)? {
+        return Ok(());
+    }
+    Err(missing_secret_error(vault, project_id, name, missing()))
+}
+
+/// Retrieve `name`. A name the opened vault lacks is `missing`, except beside
+/// a locked encrypted-file vault, where the error names the locked vault and
+/// the unlock step (see [`missing_secret_error`]). Other read errors keep
+/// their cause under `missing` as context.
+pub fn retrieve_secret(
+    vault: &dyn VaultBackend,
+    project_id: &str,
+    name: &str,
+    missing: impl FnOnce() -> String,
+) -> anyhow::Result<zeroize::Zeroizing<String>> {
+    match vault.retrieve(name) {
+        Ok(value) => Ok(value),
+        Err(phantom_core::error::PhantomError::SecretNotFound(_)) => {
+            Err(missing_secret_error(vault, project_id, name, missing()))
+        }
+        Err(error) => Err(anyhow::Error::new(error).context(missing())),
+    }
+}
+
+/// The error for a secret `name` the opened vault does not hold: `missing`,
+/// or the locked-vault refusal when this process selected the OS keychain
+/// beside an encrypted-file vault it cannot open.
+pub fn missing_secret_error(
+    vault: &dyn VaultBackend,
+    project_id: &str,
+    name: &str,
+    missing: String,
+) -> anyhow::Error {
+    match locked_vault_notice(vault, project_id) {
+        Some(notice) => anyhow::anyhow!(
+            "{VAULT_LOCKED}, so secret '{name}' could not be looked up there (the OS keychain does not hold it). {notice}"
+        ),
+        None => anyhow::anyhow!(missing),
+    }
+}
+
 /// [`inventory_guard`] for a use that must see every secret: a push that
 /// replaces a remote copy with the local inventory (which would drop every
 /// secret in the locked file vault), or a gate such as `expiry enforce` (which

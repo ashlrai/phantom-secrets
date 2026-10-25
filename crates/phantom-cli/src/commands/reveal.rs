@@ -50,9 +50,7 @@ pub fn run(name: &str, clipboard: bool, yes: bool) -> Result<()> {
     phantom_core::audit::log_result("vault.reveal", Some(name))
         .context("Failed to write audit event for secret reveal")?;
 
-    let value: Zeroizing<String> = vault
-        .retrieve(name)
-        .context(format!("Secret '{}' not found in vault", name))?;
+    let value = retrieve_revealed(vault.as_ref(), config.local_project_id(), name)?;
 
     if clipboard {
         validate_clipboard_handoff(value.as_bytes(), CLIPBOARD_CLEAR_DELAY)?;
@@ -72,6 +70,19 @@ pub fn run(name: &str, clipboard: bool, yes: bool) -> Result<()> {
     // Zeroizing<String> scrubs memory on drop automatically.
 
     Ok(())
+}
+
+/// Read the confirmed secret. Beside an encrypted-file vault this process
+/// cannot open, a name the OS keychain lacks is refused with the unlock step
+/// instead of being reported as not found.
+fn retrieve_revealed(
+    vault: &dyn phantom_vault::VaultBackend,
+    project_id: &str,
+    name: &str,
+) -> Result<Zeroizing<String>> {
+    crate::util::retrieve_secret(vault, project_id, name, || {
+        format!("Secret '{name}' not found in vault")
+    })
 }
 
 fn require_clipboard_copy(copied: bool) -> Result<()> {
@@ -289,6 +300,24 @@ pub fn run_clear_after(secs: u64) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Beside an encrypted-file vault this process cannot open, the vault is
+    /// an empty OS keychain: reveal reported the secret as not found.
+    #[cfg(unix)]
+    #[test]
+    fn reveal_beside_a_locked_file_vault_names_the_lock_not_a_missing_secret() {
+        let project =
+            crate::util::test_seam::LockedProject::new(crate::util::test_seam::empty_keychain);
+        let vault = crate::util::open_vault(&project.project_id).unwrap();
+
+        let outcome = retrieve_revealed(vault.as_ref(), &project.project_id, "OPENAI_API_KEY");
+
+        assert!(outcome.is_err(), "a locked vault must not reveal anything");
+        let chain = format!("{:#}", outcome.err().unwrap());
+        assert!(chain.starts_with("Vault locked:"));
+        assert!(chain.contains("PHANTOM_VAULT_PASSPHRASE"));
+        assert!(!chain.contains("not found"));
+    }
 
     #[derive(Default)]
     struct FakeClipboard {
