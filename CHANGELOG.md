@@ -4,6 +4,21 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (`phantom wrap` / `phantom unwrap` no longer reformat package.json)
+
+- `phantom wrap`, `phantom unwrap`, `phantom_wrap` and `phantom_unwrap`
+  re-serialized the whole package.json, which sorted every key alphabetically,
+  switched the indent to two spaces and always added a final newline, so one
+  wrap produced a diff across unrelated fields. They now edit only the
+  affected `scripts` members in the original text: a wrapped script keeps its
+  position, its `NAME:raw` copy goes directly after it with the same layout,
+  and key order, indentation (spaces or tabs, any width), line endings, string
+  escapes and the trailing newline (or its absence) are kept. `phantom unwrap`
+  is the exact inverse and restores the file byte for byte. The edited text is
+  parsed again and must match the intended change; a package.json the editor
+  cannot place the change in (for example a duplicate `scripts` key) is
+  refused with no change written.
+
 ### Fixed (one hardened active-environment reader)
 
 - `phantom_core::env_scope::read_active_env` and `resolve_env` still followed

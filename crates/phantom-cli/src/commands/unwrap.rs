@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
+use phantom_core::package_scripts::wrapped_script_command;
 
 /// Reverse `phantom wrap` — restore original scripts from `:raw` variants.
 ///
@@ -33,10 +34,14 @@ fn run_in(project_dir: &std::path::Path, quiet: bool, after_lock: impl FnOnce())
         return Ok(());
     }
 
-    let output = serde_json::to_string_pretty(&pkg).context("Failed to serialize package.json")?;
+    // The exact inverse of `phantom wrap`: each restored script gets its
+    // `:raw` literal back and the `:raw` member is removed with its
+    // separator; nothing else in the file is reformatted.
+    let output = phantom_core::package_scripts::rewrite_scripts_in_place(content, &pkg)
+        .context("No scripts were restored")?;
     match target.replace_if_exact_with_permissions(
         Some(&before),
-        format!("{output}\n").as_bytes(),
+        output.as_bytes(),
         before.permissions(),
     )? {
         phantom_core::fs::AnchoredEffect::Durable(_) => {}
@@ -112,10 +117,6 @@ fn apply_unwrap(pkg: &mut serde_json::Value) -> Vec<String> {
         .collect()
 }
 
-fn wrapped_script_command(original: &str) -> String {
-    format!("phantom exec -- {original}")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -149,6 +150,23 @@ mod tests {
         assert_eq!(pkg["scripts"]["build"], "next build");
         assert!(pkg["scripts"].get("build:raw").is_none());
         assert_eq!(pkg["scripts"]["dev:raw"], "user-owned");
+    }
+
+    #[test]
+    fn unwrap_restores_the_package_json_layout_exactly() {
+        // Tab indent, unsorted keys, trailing newline: what `phantom wrap`
+        // leaves for a user who wrote their package.json that way.
+        let wrapped = "{\n\t\"name\": \"demo\",\n\t\"scripts\": {\n\t\t\"start\": \"phantom exec -- node server.js\",\n\t\t\"start:raw\": \"node server.js\",\n\t\t\"lint\": \"eslint .\"\n\t},\n\t\"private\": true\n}\n";
+        let original = "{\n\t\"name\": \"demo\",\n\t\"scripts\": {\n\t\t\"start\": \"node server.js\",\n\t\t\"lint\": \"eslint .\"\n\t},\n\t\"private\": true\n}\n";
+        let project = tempfile::tempdir().unwrap();
+        std::fs::write(project.path().join("package.json"), wrapped).unwrap();
+
+        run_in(project.path(), true, || {}).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(project.path().join("package.json")).unwrap(),
+            original
+        );
     }
 
     #[cfg(unix)]
