@@ -35,7 +35,18 @@ impl MockServer {
     /// Start a mock server on an ephemeral port.
     /// Responds to all requests with 200 OK and a JSON body.
     pub async fn start() -> Self {
-        Self::start_inner(None).await
+        Self::start_inner(None, Vec::new()).await
+    }
+
+    /// Start a mock server that answers every request with 200 OK, the
+    /// default JSON body, and `headers` added to the response (repeated
+    /// names are sent as separate header lines).
+    pub async fn start_with_response_headers(headers: &[(&str, &str)]) -> Self {
+        let headers = headers
+            .iter()
+            .map(|(name, value)| (name.to_string(), value.to_string()))
+            .collect();
+        Self::start_inner(None, headers).await
     }
 
     /// Start a mock server that echoes the value of the request header
@@ -43,15 +54,19 @@ impl MockServer {
     /// served with `content_type`. Models a careless or hostile upstream that
     /// reflects the credential it received.
     pub async fn start_echoing(header: &str, content_type: &str) -> Self {
-        Self::start_inner(Some(Echo {
-            header: header.to_ascii_lowercase(),
-            content_type: content_type.to_string(),
-        }))
+        Self::start_inner(
+            Some(Echo {
+                header: header.to_ascii_lowercase(),
+                content_type: content_type.to_string(),
+            }),
+            Vec::new(),
+        )
         .await
     }
 
-    async fn start_inner(echo: Option<Echo>) -> Self {
+    async fn start_inner(echo: Option<Echo>, response_headers: Vec<(String, String)>) -> Self {
         let echo = Arc::new(echo);
+        let response_headers = Arc::new(response_headers);
         let addr = SocketAddr::from(([127, 0, 0, 1], 0));
         let listener = TcpListener::bind(addr).await.unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -61,7 +76,7 @@ impl MockServer {
 
         let reqs = requests.clone();
         let handle = tokio::spawn(async move {
-            run_mock(listener, reqs, echo, shutdown_rx).await;
+            run_mock(listener, reqs, echo, response_headers, shutdown_rx).await;
         });
 
         Self {
@@ -94,6 +109,7 @@ async fn run_mock(
     listener: TcpListener,
     requests: Arc<Mutex<Vec<RecordedRequest>>>,
     echo: Arc<Option<Echo>>,
+    response_headers: Arc<Vec<(String, String)>>,
     mut shutdown_rx: watch::Receiver<bool>,
 ) {
     loop {
@@ -103,6 +119,7 @@ async fn run_mock(
                     Ok((stream, _)) => {
                         let reqs = requests.clone();
                         let echo = echo.clone();
+                        let response_headers = response_headers.clone();
                         tokio::spawn(async move {
                             let io = TokioIo::new(stream);
                             let _ = http1::Builder::new()
@@ -111,8 +128,10 @@ async fn run_mock(
                                     service_fn(move |req| {
                                         let reqs = reqs.clone();
                                         let echo = echo.clone();
+                                        let response_headers = response_headers.clone();
                                         async move {
-                                            handle_mock_request(req, reqs, echo).await
+                                            handle_mock_request(req, reqs, echo, &response_headers)
+                                                .await
                                         }
                                     }),
                                 )
@@ -135,6 +154,7 @@ async fn handle_mock_request(
     req: Request<Incoming>,
     requests: Arc<Mutex<Vec<RecordedRequest>>>,
     echo: Arc<Option<Echo>>,
+    response_headers: &[(String, String)],
 ) -> Result<Response<Full<Bytes>>, hyper::Error> {
     use http_body_util::BodyExt;
 
@@ -175,9 +195,13 @@ async fn handle_mock_request(
             .unwrap());
     }
 
-    Ok(Response::builder()
+    let mut builder = Response::builder()
         .status(StatusCode::OK)
-        .header("content-type", "application/json")
+        .header("content-type", "application/json");
+    for (name, value) in response_headers {
+        builder = builder.header(name.as_str(), value.as_str());
+    }
+    Ok(builder
         .body(Full::new(Bytes::from(r#"{"status":"ok","mock":true}"#)))
         .unwrap())
 }
