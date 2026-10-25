@@ -46,7 +46,22 @@ impl MockServer {
             .iter()
             .map(|(name, value)| (name.to_string(), value.to_string()))
             .collect();
-        Self::start_inner(None, headers).await
+        Self::start_inner_with_status(None, StatusCode::OK, headers).await
+    }
+
+    /// Start a mock server that answers every request with `status` and
+    /// `headers`. 204 and 304 responses carry no body; every other status
+    /// carries the default JSON body (hyper omits it on the wire for HEAD
+    /// while still declaring its length).
+    pub async fn start_with_status_and_headers(
+        status: StatusCode,
+        headers: &[(&str, &str)],
+    ) -> Self {
+        let headers = headers
+            .iter()
+            .map(|(name, value)| (name.to_string(), value.to_string()))
+            .collect();
+        Self::start_inner_with_status(None, status, headers).await
     }
 
     /// Start a mock server that echoes the value of the request header
@@ -65,6 +80,14 @@ impl MockServer {
     }
 
     async fn start_inner(echo: Option<Echo>, response_headers: Vec<(String, String)>) -> Self {
+        Self::start_inner_with_status(echo, StatusCode::OK, response_headers).await
+    }
+
+    async fn start_inner_with_status(
+        echo: Option<Echo>,
+        status: StatusCode,
+        response_headers: Vec<(String, String)>,
+    ) -> Self {
         let echo = Arc::new(echo);
         let response_headers = Arc::new(response_headers);
         let addr = SocketAddr::from(([127, 0, 0, 1], 0));
@@ -76,7 +99,7 @@ impl MockServer {
 
         let reqs = requests.clone();
         let handle = tokio::spawn(async move {
-            run_mock(listener, reqs, echo, response_headers, shutdown_rx).await;
+            run_mock(listener, reqs, echo, status, response_headers, shutdown_rx).await;
         });
 
         Self {
@@ -109,6 +132,7 @@ async fn run_mock(
     listener: TcpListener,
     requests: Arc<Mutex<Vec<RecordedRequest>>>,
     echo: Arc<Option<Echo>>,
+    status: StatusCode,
     response_headers: Arc<Vec<(String, String)>>,
     mut shutdown_rx: watch::Receiver<bool>,
 ) {
@@ -130,7 +154,13 @@ async fn run_mock(
                                         let echo = echo.clone();
                                         let response_headers = response_headers.clone();
                                         async move {
-                                            handle_mock_request(req, reqs, echo, &response_headers)
+                                            handle_mock_request(
+                                                req,
+                                                reqs,
+                                                echo,
+                                                status,
+                                                &response_headers,
+                                            )
                                                 .await
                                         }
                                     }),
@@ -154,6 +184,7 @@ async fn handle_mock_request(
     req: Request<Incoming>,
     requests: Arc<Mutex<Vec<RecordedRequest>>>,
     echo: Arc<Option<Echo>>,
+    status: StatusCode,
     response_headers: &[(String, String)],
 ) -> Result<Response<Full<Bytes>>, hyper::Error> {
     use http_body_util::BodyExt;
@@ -195,13 +226,18 @@ async fn handle_mock_request(
             .unwrap());
     }
 
-    let mut builder = Response::builder()
-        .status(StatusCode::OK)
-        .header("content-type", "application/json");
+    let mut builder = Response::builder().status(status);
+    let bodiless = status == StatusCode::NO_CONTENT || status == StatusCode::NOT_MODIFIED;
+    if !bodiless {
+        builder = builder.header("content-type", "application/json");
+    }
     for (name, value) in response_headers {
         builder = builder.header(name.as_str(), value.as_str());
     }
-    Ok(builder
-        .body(Full::new(Bytes::from(r#"{"status":"ok","mock":true}"#)))
-        .unwrap())
+    let body = if bodiless {
+        Bytes::new()
+    } else {
+        Bytes::from(r#"{"status":"ok","mock":true}"#)
+    };
+    Ok(builder.body(Full::new(body)).unwrap())
 }
