@@ -4,6 +4,18 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (`phantom sync --dry-run` reports the refusal the live run would return)
+
+- `phantom sync --dry-run` exited 0 and reported a ready plan for a
+  selection that the live run refuses: it skipped the rotation-enforcement
+  gate and the read-only lifecycle gate. The dry run now applies the same
+  gate over the same per-target selection, from vault metadata alone (no
+  value read, no prompt, no provider call). When the live run would refuse,
+  the report's new `live_gate_refusal` field carries the refusal (names
+  only), and the dry run exits non-zero. The `phantom_sync` MCP tool reports
+  the same `live_gate_refusal` and says in `next_step` that the live run
+  would refuse, instead of telling the agent to run `phantom sync`.
+
 ### Fixed (`phantom sync` no longer pushes a secret demoted to read-only)
 
 - `phantom_apply_expiry_policy` demotes an expired secret to read-only so

@@ -173,6 +173,7 @@ async fn run_async(
                 target_count: 0,
                 would_call_platform_api: false,
                 targets: Vec::new(),
+                live_gate_refusal: None,
                 exit_code: 1,
             })?
         );
@@ -221,6 +222,7 @@ async fn run_async(
                         target_count: 0,
                         would_call_platform_api: false,
                         targets: Vec::new(),
+                        live_gate_refusal: None,
                         exit_code: 1,
                     })?
                 );
@@ -266,7 +268,15 @@ async fn run_async(
     }
 
     if dry_run {
-        return run_dry_run(&secret_names, &targets, &cli_only, json);
+        return run_dry_run(
+            &config,
+            vault.as_ref(),
+            super::rotation_gate::now_secs(),
+            &secret_names,
+            &targets,
+            &cli_only,
+            json,
+        );
     }
 
     let plans = build_live_plans(&secret_names, &targets, &cli_only);
@@ -473,6 +483,10 @@ struct SyncDryRunReport {
     target_count: usize,
     would_call_platform_api: bool,
     targets: Vec<SyncDryRunTarget>,
+    /// The refusal the live path's rotation-enforcement and read-only
+    /// lifecycle gate would return for this selection (names only), or
+    /// `null` when that gate passes.
+    live_gate_refusal: Option<String>,
     exit_code: i32,
 }
 
@@ -593,11 +607,36 @@ fn run_sync_confirmation(
 }
 
 fn run_dry_run(
+    config: &phantom_core::config::PhantomConfig,
+    vault: &dyn phantom_vault::VaultBackend,
+    now_secs: u64,
     secret_names: &[String],
     targets: &[SyncTargetSpec],
     cli_only: &[String],
     json: bool,
 ) -> Result<()> {
+    let report = build_dry_run_report(config, vault, now_secs, secret_names, targets, cli_only);
+    print_dry_run_report(&report, json)?;
+    if report.exit_code == 0 {
+        Ok(())
+    } else {
+        anyhow::bail!("Sync dry run found one or more blocking target conditions.");
+    }
+}
+
+/// The value-blind preview of a live sync. It applies every preflight check
+/// the live path applies before the terminal review, including the
+/// rotation-enforcement and read-only lifecycle gate, so a preview never
+/// reports success for a run the live path would refuse. It reads names and
+/// metadata only: no vault value, no prompt, no provider call.
+fn build_dry_run_report(
+    config: &phantom_core::config::PhantomConfig,
+    vault: &dyn phantom_vault::VaultBackend,
+    now_secs: u64,
+    secret_names: &[String],
+    targets: &[SyncTargetSpec],
+    cli_only: &[String],
+) -> SyncDryRunReport {
     let mut report_targets = Vec::new();
 
     for target in targets {
@@ -640,81 +679,93 @@ fn run_dry_run(
         });
     }
 
-    let exit_code = if report_targets.iter().any(|target| {
-        !target.token_present
-            || target.selected_keys.is_empty()
-            || !target.invalid_filters.is_empty()
-    }) {
+    // The live path's rotation-enforcement and read-only lifecycle gate,
+    // judged over the same per-target selection the live run would review.
+    // Metadata only: the gate never reads a value.
+    let plans = build_live_plans(secret_names, targets, cli_only);
+    let live_gate_refusal = gate_sync_selection(config, vault, &plans, now_secs)
+        .err()
+        .map(|refusal| refusal.to_string());
+
+    let exit_code = if live_gate_refusal.is_some()
+        || report_targets.iter().any(|target| {
+            !target.token_present
+                || target.selected_keys.is_empty()
+                || !target.invalid_filters.is_empty()
+        }) {
         1
     } else {
         0
     };
 
-    let report = SyncDryRunReport {
+    SyncDryRunReport {
         mode: "dry-run",
         secret_count: secret_names.len(),
         target_count: report_targets.len(),
         would_call_platform_api: false,
         targets: report_targets,
+        live_gate_refusal,
         exit_code,
-    };
+    }
+}
 
+fn print_dry_run_report(report: &SyncDryRunReport, json: bool) -> Result<()> {
     if json {
-        println!("{}", serde_json::to_string_pretty(&report)?);
-    } else {
+        println!("{}", serde_json::to_string_pretty(report)?);
+        return Ok(());
+    }
+    println!(
+        "{} Sync dry run: {} secret(s), {} target(s)",
+        "->".blue().bold(),
+        report.secret_count,
+        report.targets.len()
+    );
+    for target in &report.targets {
         println!(
-            "{} Sync dry run: {} secret(s), {} target(s)",
-            "->".blue().bold(),
-            report.secret_count,
-            report.targets.len()
+            "\n{} {} (project: {})",
+            "target".blue().bold(),
+            target.platform.cyan().bold(),
+            target.project_id.dimmed()
         );
-        for target in &report.targets {
+        println!(
+            "   token: {} ({})",
+            if target.token_present {
+                "present".green()
+            } else {
+                "missing".yellow()
+            },
+            target.token_env
+        );
+        if !target.filters.is_empty() {
+            println!("   filters: {}", target.filters.join(", "));
+        }
+        for invalid in &target.invalid_filters {
             println!(
-                "\n{} {} (project: {})",
-                "target".blue().bold(),
-                target.platform.cyan().bold(),
-                target.project_id.dimmed()
+                "   {} invalid filter {} ({})",
+                "warn".yellow().bold(),
+                invalid.pattern,
+                invalid.error
             );
-            println!(
-                "   token: {} ({})",
-                if target.token_present {
-                    "present".green()
-                } else {
-                    "missing".yellow()
-                },
-                target.token_env
-            );
-            if !target.filters.is_empty() {
-                println!("   filters: {}", target.filters.join(", "));
-            }
-            if !target.invalid_filters.is_empty() {
-                for invalid in &target.invalid_filters {
-                    println!(
-                        "   {} invalid filter {} ({})",
-                        "warn".yellow().bold(),
-                        invalid.pattern,
-                        invalid.error
-                    );
-                }
-            }
-            println!("   selected: {}", target.selected_count);
-            for key in &target.selected_keys {
-                println!("      {}", key);
-            }
-            if !target.skipped_keys.is_empty() {
-                println!("   skipped by filters: {}", target.skipped_keys.len());
-            }
-            for warning in &target.warnings {
-                println!("   {} {}", "warn".yellow().bold(), warning);
-            }
+        }
+        println!("   selected: {}", target.selected_count);
+        for key in &target.selected_keys {
+            println!("      {}", key);
+        }
+        if !target.skipped_keys.is_empty() {
+            println!("   skipped by filters: {}", target.skipped_keys.len());
+        }
+        for warning in &target.warnings {
+            println!("   {} {}", "warn".yellow().bold(), warning);
         }
     }
-
-    if exit_code == 0 {
-        Ok(())
-    } else {
-        anyhow::bail!("Sync dry run found one or more blocking target conditions.");
+    if let Some(refusal) = &report.live_gate_refusal {
+        println!(
+            "\n{} The live sync would refuse this selection:\n   {}",
+            "!".red().bold(),
+            refusal.replace('\n', "\n   ")
+        );
     }
+    Ok(())
 }
 
 /// Read the reviewed selection's values for a deployment platform. Each read
@@ -900,6 +951,182 @@ mod tests {
             failures.into_iter().collect::<Vec<_>>(),
             vec!["DEMOTED_KEY"]
         );
+    }
+
+    /// Names and metadata pass through; any value read, write or delete
+    /// fails the test, so a dry run that touched a value cannot pass.
+    struct ValueBlindVault<'v>(&'v dyn phantom_vault::VaultBackend);
+
+    impl phantom_vault::VaultBackend for ValueBlindVault<'_> {
+        fn store(&self, _name: &str, _value: &str) -> phantom_core::error::Result<()> {
+            unreachable!("a sync dry run never writes")
+        }
+        fn retrieve(&self, _name: &str) -> phantom_core::error::Result<Zeroizing<String>> {
+            unreachable!("a sync dry run never reads a value")
+        }
+        fn retrieve_for_injection(
+            &self,
+            _name: &str,
+        ) -> phantom_core::error::Result<Zeroizing<String>> {
+            unreachable!("a sync dry run never reads a value")
+        }
+        fn delete(&self, _name: &str) -> phantom_core::error::Result<()> {
+            unreachable!("a sync dry run never deletes")
+        }
+        fn list(&self) -> phantom_core::error::Result<Vec<String>> {
+            self.0.list()
+        }
+        fn backend_name(&self) -> &str {
+            "value-blind"
+        }
+        fn get_metadata(
+            &self,
+            name: &str,
+        ) -> phantom_core::error::Result<Option<phantom_vault::SecretMetadata>> {
+            self.0.get_metadata(name)
+        }
+    }
+
+    /// A ready target (credential env set) selecting `only`.
+    fn ready_target(only: &[&str]) -> SyncTargetSpec {
+        SyncTargetSpec {
+            platform: Platform::Vercel,
+            token: Zeroizing::new("set".to_string()),
+            token_env: "VERCEL_TOKEN".to_string(),
+            project_id: "prj_fixture".to_string(),
+            environments: vec!["production".to_string()],
+            service_id: None,
+            environment_id: None,
+            only: only.iter().map(|pattern| pattern.to_string()).collect(),
+        }
+    }
+
+    /// `phantom sync --dry-run` reported exit 0 for a selection holding a
+    /// secret demoted to read-only, which the live path refuses. The preview
+    /// now applies the same gate, names the entry, and exits non-zero,
+    /// without reading a single value.
+    #[test]
+    fn dry_run_reports_the_live_read_only_refusal_value_blind() {
+        use phantom_vault::metadata::VaultMode;
+        use phantom_vault::VaultBackend;
+        let dir = tempfile::tempdir().unwrap();
+        let inner = vault_with_modes(
+            &dir,
+            &[
+                ("DEMOTED_KEY", VaultMode::ReadOnly),
+                ("ACTIVE_KEY", VaultMode::ReadWrite),
+            ],
+        );
+        let vault = ValueBlindVault(&inner);
+        let config = phantom_core::config::PhantomConfig::new_with_defaults(
+            "sync-read-only-fixture".to_string(),
+        );
+        let names = vault.list().unwrap();
+        let targets = [ready_target(&[])];
+
+        let report = build_dry_run_report(&config, &vault, 1_800_000_000, &names, &targets, &[]);
+        assert_eq!(report.exit_code, 1);
+        let refusal = report.live_gate_refusal.clone().unwrap_or_default();
+        assert!(refusal.starts_with("Refusing to sync: 1 secret(s) are read-only"));
+        assert!(refusal.contains("'DEMOTED_KEY'"));
+        assert!(!refusal.contains("'ACTIVE_KEY'"));
+        let json = serde_json::to_value(&report).unwrap();
+        assert!(json["live_gate_refusal"].is_string());
+
+        // The live gate refuses the same selection.
+        let plans = build_live_plans(&names, &targets, &[]);
+        assert!(gate_sync_selection(&config, &vault, &plans, 1_800_000_000).is_err());
+
+        // A selection the live gate accepts previews as ready.
+        let report = build_dry_run_report(
+            &config,
+            &vault,
+            1_800_000_000,
+            &names,
+            &targets,
+            &["ACTIVE_*".to_string()],
+        );
+        assert_eq!(report.exit_code, 0);
+        assert!(report.live_gate_refusal.is_none());
+        assert!(serde_json::to_value(&report).unwrap()["live_gate_refusal"].is_null());
+    }
+
+    /// The dry run applied no rotation enforcement, so it previewed a sync of
+    /// an overdue enforced secret as ready while the live path refused it.
+    #[test]
+    fn dry_run_reports_the_live_rotation_refusal_value_blind() {
+        use crate::commands::rotation_gate::fixtures::{aged_vault, enforced_config, NOW};
+        use phantom_vault::VaultBackend;
+        let dir = tempfile::tempdir().unwrap();
+        let inner = aged_vault(&dir, &[("prod/STALE_KEY", 45), ("FRESH_KEY", 1)]);
+        let vault = ValueBlindVault(&inner);
+        let config = enforced_config(&["STALE_KEY", "FRESH_KEY"]);
+        let names = vault.list().unwrap();
+
+        // The overdue entry is selected by the second target only; the
+        // union is judged, as the live path judges it.
+        let targets = [ready_target(&["FRESH_*"]), ready_target(&[])];
+        let report = build_dry_run_report(&config, &vault, NOW, &names, &targets, &[]);
+        assert_eq!(report.exit_code, 1);
+        let refusal = report.live_gate_refusal.clone().unwrap_or_default();
+        assert!(refusal.starts_with("Refusing to sync: rotation enforcement blocked 1 secret(s)."));
+        assert!(refusal.contains("'STALE_KEY'"));
+        let plans = build_live_plans(&names, &targets, &[]);
+        assert!(gate_sync_selection(&config, &vault, &plans, NOW).is_err());
+
+        let targets = [ready_target(&["FRESH_*"])];
+        let report = build_dry_run_report(&config, &vault, NOW, &names, &targets, &[]);
+        assert_eq!(report.exit_code, 0);
+        assert!(report.live_gate_refusal.is_none());
+    }
+
+    /// Lifecycle metadata the live gate cannot read refuses the live run, so
+    /// the preview reports that refusal too instead of a ready plan.
+    #[test]
+    fn dry_run_reports_unreadable_lifecycle_metadata_as_a_refusal() {
+        struct UnreadableMetadata;
+        impl phantom_vault::VaultBackend for UnreadableMetadata {
+            fn store(&self, _name: &str, _value: &str) -> phantom_core::error::Result<()> {
+                unreachable!("a sync dry run never writes")
+            }
+            fn retrieve(&self, _name: &str) -> phantom_core::error::Result<Zeroizing<String>> {
+                unreachable!("a sync dry run never reads a value")
+            }
+            fn delete(&self, _name: &str) -> phantom_core::error::Result<()> {
+                unreachable!("a sync dry run never deletes")
+            }
+            fn list(&self) -> phantom_core::error::Result<Vec<String>> {
+                Ok(vec!["SOME_KEY".to_string()])
+            }
+            fn backend_name(&self) -> &str {
+                "unreadable-metadata"
+            }
+            fn get_metadata(
+                &self,
+                _name: &str,
+            ) -> phantom_core::error::Result<Option<phantom_vault::SecretMetadata>> {
+                Err(phantom_core::error::PhantomError::VaultError(
+                    "metadata unavailable".to_string(),
+                ))
+            }
+        }
+        let config = phantom_core::config::PhantomConfig::new_with_defaults(
+            "sync-unreadable-fixture".to_string(),
+        );
+        let names = vec!["SOME_KEY".to_string()];
+        let report = build_dry_run_report(
+            &config,
+            &UnreadableMetadata,
+            1_800_000_000,
+            &names,
+            &[ready_target(&[])],
+            &[],
+        );
+        assert_eq!(report.exit_code, 1);
+        assert!(report
+            .live_gate_refusal
+            .unwrap_or_default()
+            .contains("could not read lifecycle metadata for 'SOME_KEY'"));
     }
 
     #[test]
