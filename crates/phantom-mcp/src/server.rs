@@ -160,6 +160,16 @@ impl PhantomMcpServer {
         self.project_dir.join(".phantom.toml")
     }
 
+    /// Whether anything sits at `.phantom.toml`. A dangling symlink, FIFO or
+    /// directory there is present, not "not initialized": the tool then reads
+    /// it through [`read_project_config`] and refuses it.
+    fn config_present(&self) -> bool {
+        !matches!(
+            std::fs::symlink_metadata(self.config_path()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound
+        )
+    }
+
     /// Before `phantom init` there is no project vault to list, which is a
     /// state with a next step, not a server failure: the listing tools used to
     /// return -32603 "Not initialized". Returns `None` once `.phantom.toml`
@@ -169,7 +179,7 @@ impl PhantomMcpServer {
         &self,
         mut empty: serde_json::Value,
     ) -> Option<Result<CallToolResult, McpError>> {
-        if self.config_path().exists() {
+        if self.config_present() {
             return None;
         }
         let next_step = NOT_INITIALIZED_NEXT_STEP;
@@ -183,19 +193,17 @@ impl PhantomMcpServer {
     /// configured). Names only, never values, and the vault is not opened. A
     /// file that cannot be read safely (a symlink, a parse error) makes the
     /// result indeterminate, which fails the check rather than passing it.
+    /// `.phantom.toml` itself is read only as a regular, non-symlink file, as
+    /// `phantom check` reads it, so the two agree on the scan list.
     fn env_clean_check(&self) -> (bool, String) {
-        let configured = if self.config_path().exists() {
-            match self.load_config() {
-                Ok(config) => config.phantom.dotenv_path.clone(),
-                Err(error) => {
-                    return (
-                        false,
-                        format!("Config could not be read; clean status is indeterminate: {error}"),
-                    )
-                }
+        let configured = match read_project_config(&self.config_path()) {
+            Ok(config) => config.and_then(|config| config.phantom.dotenv_path),
+            Err(error) => {
+                return (
+                    false,
+                    format!("Config could not be read; clean status is indeterminate: {error}"),
+                )
             }
-        } else {
-            None
         };
         let files = match phantom_core::managed_dotenv::known_regular_dotenvs(
             &self.project_dir,
@@ -261,7 +269,7 @@ impl PhantomMcpServer {
                 format!("Not verified: every secret must be readable here. {reason}"),
             )
         };
-        if !self.config_path().exists() {
+        if !self.config_present() {
             return ComplianceVaultProbe {
                 accessible: Err("Vault not accessible — run phantom init.".to_string()),
                 ttl: (
@@ -346,28 +354,14 @@ impl PhantomMcpServer {
         }
     }
 
-    fn load_config(&self) -> Result<PhantomConfig, String> {
-        let path = self.config_path();
-        if !path.exists() {
-            return Err("Not initialized. Run `phantom init` first.".to_string());
-        }
-        PhantomConfig::load(&path).map_err(|e| {
-            format!(
-                "Failed to load config: {e}. Next step: run phantom_doctor (it does not open \
-                 the vault) to see the failing check, then fix .phantom.toml and retry."
-            )
-        })
-    }
-
-    /// [`Self::load_config`] for a tool reply: before init, or with a config
-    /// that will not load, the error is a state the user can fix and names the
-    /// next step, not an internal error.
+    /// The project config for a tool reply, read by [`read_project_config`]:
+    /// before init, or with a config that will not load (or is a symlink or
+    /// other non-regular file), the error is a state the user can fix and
+    /// names the next step, not an internal error.
     fn require_config(&self) -> Result<PhantomConfig, McpError> {
-        let path = self.config_path();
-        if !path.exists() {
-            return Err(not_initialized_err());
-        }
-        PhantomConfig::load(&path).map_err(config_invalid_err)
+        read_project_config(&self.config_path())
+            .map_err(config_invalid_err)?
+            .ok_or_else(not_initialized_err)
     }
 
     /// A tool that reports on the vault's inventory must not answer from an
@@ -972,7 +966,7 @@ impl PhantomMcpServer {
         description = "Read repository-local Phantom status without opening or provisioning a vault: project ID, managed dotenv protection counts, and configured service mappings. Vault backend and stored-secret inventory are deliberately not inspected; use phantom_list_secrets for the latter. Returns a summary plus JSON {initialized, project_id, vault_inspected, dotenv: {path, entries, phantom_tokens, unprotected} | null, services, next_step} (also as structuredContent)."
     )]
     fn phantom_status(&self) -> Result<CallToolResult, McpError> {
-        if !self.config_path().exists() {
+        if !self.config_present() {
             return report_result(
                 "Phantom is not initialized in this directory.\nRun `phantom init` to get started.",
                 &serde_json::json!({
@@ -1136,8 +1130,11 @@ impl PhantomMcpServer {
             .map_err(|error| internal_err(format!("Failed to safely read config: {error}")))?;
         let project_id = PhantomConfig::project_id_from_path(&self.project_dir);
         let mut config = if config_before.is_some() {
-            let config = PhantomConfig::load(&config_path)
-                .map_err(|e| internal_err(format!("Config error: {e}")))?;
+            let config = PhantomConfig::load_from_bytes(
+                &config_path,
+                config_before.as_deref().unwrap_or_default(),
+            )
+            .map_err(|e| internal_err(format!("Config error: {e}")))?;
             if phantom_core::fs::read_regular_file(&config_path)
                 .map_err(|error| internal_err(format!("Failed to recheck config: {error}")))?
                 .as_deref()
@@ -2471,7 +2468,7 @@ impl PhantomMcpServer {
         // shapes only, never the vault. Before `phantom init` there is no
         // config, so classify the project's `.env` exactly as `phantom why`
         // does; that is when an agent most needs to know what init would do.
-        let config = if self.config_path().exists() {
+        let config = if self.config_present() {
             Some(self.require_config()?)
         } else {
             None
@@ -2802,14 +2799,9 @@ impl PhantomMcpServer {
             let mut indeterminate: Vec<CheckIndeterminate> = Vec::new();
             let mut output = String::new();
 
-            let configured = if self.config_path().exists() {
-                match self.load_config() {
-                    Ok(config) => Ok(config.phantom.dotenv_path.clone()),
-                    Err(error) => Err(format!("config could not be read: {error}")),
-                }
-            } else {
-                Ok(None)
-            };
+            let configured = read_project_config(&self.config_path())
+                .map(|config| config.and_then(|config| config.phantom.dotenv_path))
+                .map_err(|error| format!("config could not be read: {error}"));
             let env_files = configured.and_then(|configured| {
                 phantom_core::managed_dotenv::scanned_dotenv_names(configured.as_deref())
                     .map_err(|error| format!("{error:#}"))
@@ -6111,6 +6103,44 @@ fn validate_mcp_secret_name(name: &str) -> Result<(), McpError> {
     Ok(())
 }
 
+/// `.phantom.toml` that is not a readable regular, non-symlink file. The text
+/// is fixed so a refusal never names an absolute or outside path.
+const UNSAFE_CONFIG_REFUSAL: &str =
+    "Refusing .phantom.toml that is not a readable regular, non-symlink file";
+
+/// Why [`read_project_config`] refused `.phantom.toml`.
+enum ProjectConfigError {
+    /// A symlink (dangling or not), FIFO, device, directory or unreadable file.
+    Unsafe,
+    /// A regular file that does not parse as a Phantom config.
+    Invalid(phantom_core::error::PhantomError),
+}
+
+impl std::fmt::Display for ProjectConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unsafe => f.write_str(UNSAFE_CONFIG_REFUSAL),
+            Self::Invalid(error) => error.fmt(f),
+        }
+    }
+}
+
+/// Reads `.phantom.toml` only as a regular, non-symlink file, the way
+/// `phantom check` does. Absent is `Ok(None)`. A symlink is never "no config"
+/// and never followed (its target may lie outside the project and would choose
+/// what is scanned or which dotenv is used); a FIFO or device is refused
+/// before it is opened, so it cannot hang the tool.
+fn read_project_config(path: &Path) -> Result<Option<PhantomConfig>, ProjectConfigError> {
+    let Some(bytes) =
+        phantom_core::fs::read_regular_file(path).map_err(|_| ProjectConfigError::Unsafe)?
+    else {
+        return Ok(None);
+    };
+    PhantomConfig::load_from_bytes(path, &bytes)
+        .map(Some)
+        .map_err(ProjectConfigError::Invalid)
+}
+
 fn load_mcp_config_exact(path: &Path) -> Result<(PhantomConfig, Vec<u8>), McpError> {
     let before = phantom_core::fs::read_regular_file(path)
         .map_err(|error| internal_err(format!("Failed to safely read config: {error}")))?
@@ -7218,9 +7248,9 @@ fn cloud_account_status_text(
 /// parsed is reported, because its sync version and any blocked push are
 /// unknown rather than absent.
 fn local_cloud_sync_status_text(config_path: &Path) -> String {
-    let config = match PhantomConfig::load(config_path) {
-        Ok(config) => config,
-        Err(phantom_core::error::PhantomError::ConfigNotFound(_)) => return String::new(),
+    let config = match read_project_config(config_path) {
+        Ok(Some(config)) => config,
+        Ok(None) => return String::new(),
         Err(_) => {
             return "\n.phantom.toml exists but could not be loaded; last synced version and \
                     reconciliation state are unknown. Run phantom_doctor (it does not open the \
@@ -11999,7 +12029,7 @@ mod tests {
         assert!(validate.message.contains("confirm: true"));
 
         let schedule_path = phantom_core::validation_scheduler::state_file_path(
-            server.load_config().unwrap().local_project_id(),
+            server.require_config().unwrap().local_project_id(),
         );
         let schedule = server
             .phantom_validation_schedule(Parameters(ValidationScheduleParams {
@@ -16120,5 +16150,214 @@ mod tests {
         assert!(phantom_core::mcp_approval::list_pending_approvals()
             .unwrap()
             .is_empty());
+    }
+
+    // ── .phantom.toml read as a regular, non-symlink file ─────────────
+
+    /// A project holding `custom.env` with a plaintext secret, the file a
+    /// config's `dotenv_path` would name. Without that config nothing scans it.
+    fn project_with_unscanned_plaintext() -> (PhantomMcpServer, TempDir) {
+        let dir = TempDir::new().unwrap();
+        let project = dir.path().canonicalize().unwrap();
+        let value = plaintext_value();
+        std::fs::write(
+            project.join("custom.env"),
+            format!("STRIPE_SECRET_KEY={value}\n"),
+        )
+        .unwrap();
+        (PhantomMcpServer::with_dir(project), dir)
+    }
+
+    /// A config outside the project that names `dotenv_path`, for a
+    /// `.phantom.toml` symlink to point at.
+    fn outside_config() -> TempDir {
+        let outside = TempDir::new().unwrap();
+        let path = outside.path().canonicalize().unwrap().join(".phantom.toml");
+        let mut config = PhantomConfig::new_with_defaults("mcp-outside".to_string());
+        config.phantom.dotenv_path = Some("clean.env".to_string());
+        config.save(&path).unwrap();
+        outside
+    }
+
+    #[cfg(unix)]
+    fn make_fifo(path: &Path) {
+        let status = std::process::Command::new("mkfifo")
+            .arg(path)
+            .status()
+            .unwrap();
+        assert!(status.success(), "mkfifo failed");
+    }
+
+    /// Runs `work` on a thread; if it does not finish in time (blocked opening
+    /// a FIFO), opens the FIFO for writing to release it and fails the test.
+    #[cfg(unix)]
+    fn run_unblocked<T: Send + 'static>(
+        fifo: &Path,
+        work: impl FnOnce() -> T + Send + 'static,
+    ) -> T {
+        let (send, receive) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = send.send(work());
+        });
+        match receive.recv_timeout(std::time::Duration::from_secs(5)) {
+            Ok(outcome) => outcome,
+            Err(_) => {
+                drop(std::fs::OpenOptions::new().write(true).open(fifo));
+                panic!("blocked on a FIFO .phantom.toml");
+            }
+        }
+    }
+
+    /// A dangling `.phantom.toml` symlink is not "no config": the
+    /// `dotenv_path` it would name is unknown, so compliance cannot pass.
+    #[cfg(unix)]
+    #[test]
+    fn compliance_env_clean_fails_closed_on_a_dangling_config_symlink() {
+        let _environment = TestEnvironment::new();
+        let (server, _dir) = project_with_unscanned_plaintext();
+        std::os::unix::fs::symlink("missing.toml", server.config_path()).unwrap();
+        let (pass, detail) = server.env_clean_check();
+        assert!(!pass, "dangling config symlink must not pass env_clean");
+        assert!(detail.contains("indeterminate"), "unexpected detail text");
+        assert!(detail.contains(".phantom.toml"), "unexpected detail text");
+        let (pass, _) = env_clean(&server);
+        assert!(!pass, "compliance tool must agree with env_clean_check");
+    }
+
+    /// A `.phantom.toml` symlink to another project's config is not read:
+    /// its `dotenv_path` would choose what compliance scans.
+    #[cfg(unix)]
+    #[test]
+    fn compliance_env_clean_does_not_read_a_config_outside_the_project() {
+        let _environment = TestEnvironment::new();
+        let (server, _dir) = project_with_unscanned_plaintext();
+        let outside = outside_config();
+        let outside_path = outside.path().canonicalize().unwrap();
+        std::os::unix::fs::symlink(outside_path.join(".phantom.toml"), server.config_path())
+            .unwrap();
+        let (pass, detail) = server.env_clean_check();
+        assert!(!pass, "outside config symlink must not pass env_clean");
+        assert!(detail.contains("indeterminate"), "unexpected detail text");
+        assert!(
+            !detail.contains(&outside_path.display().to_string()),
+            "detail names the outside path"
+        );
+        assert!(
+            !detail.contains(&server.project_dir.display().to_string()),
+            "detail names an absolute path"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn compliance_env_clean_refuses_a_fifo_config_without_blocking() {
+        let _environment = TestEnvironment::new();
+        let (server, _dir) = project_with_unscanned_plaintext();
+        let fifo = server.config_path();
+        make_fifo(&fifo);
+        let (pass, detail) = run_unblocked(&fifo, move || server.env_clean_check());
+        assert!(!pass, "FIFO config must not pass env_clean");
+        assert!(detail.contains("indeterminate"), "unexpected detail text");
+    }
+
+    /// MCP `phantom_check` agrees with `phantom check`: a dangling config
+    /// symlink makes the worktree scan indeterminate, never clean.
+    #[cfg(unix)]
+    #[test]
+    fn check_worktree_is_indeterminate_for_a_dangling_config_symlink() {
+        let _environment = TestEnvironment::new();
+        let (server, _dir) = project_with_unscanned_plaintext();
+        std::os::unix::fs::symlink("missing.toml", server.config_path()).unwrap();
+        let result = server
+            .phantom_check(Parameters(CheckParams { runtime: false }))
+            .unwrap();
+        let report = structured_report(&result);
+        assert_eq!(report["clean"], false);
+        let indeterminate = report["indeterminate"].as_array().unwrap();
+        assert_eq!(indeterminate.len(), 1, "expected one indeterminate entry");
+        assert_eq!(indeterminate[0]["path"], ".phantom.toml");
+        assert!(
+            !indeterminate[0]["reason"]
+                .as_str()
+                .unwrap()
+                .contains(&server.project_dir.display().to_string()),
+            "reason names an absolute path"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn check_worktree_does_not_read_a_config_outside_the_project() {
+        let _environment = TestEnvironment::new();
+        let (server, _dir) = project_with_unscanned_plaintext();
+        let outside = outside_config();
+        let outside_path = outside.path().canonicalize().unwrap();
+        std::os::unix::fs::symlink(outside_path.join(".phantom.toml"), server.config_path())
+            .unwrap();
+        let result = server
+            .phantom_check(Parameters(CheckParams { runtime: false }))
+            .unwrap();
+        let report = structured_report(&result);
+        assert_eq!(report["clean"], false);
+        assert_eq!(report["indeterminate"][0]["path"], ".phantom.toml");
+        assert!(
+            !report
+                .to_string()
+                .contains(&outside_path.display().to_string()),
+            "report names the outside path"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn check_worktree_refuses_a_fifo_config_without_blocking() {
+        let _environment = TestEnvironment::new();
+        let (server, _dir) = project_with_unscanned_plaintext();
+        let fifo = server.config_path();
+        make_fifo(&fifo);
+        let report = run_unblocked(&fifo, move || {
+            structured_report(
+                &server
+                    .phantom_check(Parameters(CheckParams { runtime: false }))
+                    .unwrap(),
+            )
+        });
+        assert_eq!(report["clean"], false);
+        assert_eq!(report["indeterminate"][0]["path"], ".phantom.toml");
+    }
+
+    /// Tools that load the config to decide what to read (status, why, every
+    /// vault tool via `require_config`) refuse a symlinked `.phantom.toml`
+    /// instead of following it, and do not report "not initialized" for a
+    /// dangling one.
+    #[cfg(unix)]
+    #[test]
+    fn config_loading_tools_refuse_a_symlinked_config() {
+        let _environment = TestEnvironment::new();
+        let (server, _dir) = project_with_unscanned_plaintext();
+        let outside = outside_config();
+        let outside_path = outside.path().canonicalize().unwrap();
+        std::os::unix::fs::symlink(outside_path.join(".phantom.toml"), server.config_path())
+            .unwrap();
+        let Err(error) = server.require_config() else {
+            panic!("a symlinked config must be refused");
+        };
+        assert!(
+            error.message.contains(".phantom.toml"),
+            "unexpected refusal"
+        );
+        assert!(
+            !error.message.contains(&outside_path.display().to_string()),
+            "refusal names the outside path"
+        );
+        assert!(server.phantom_status().is_err(), "status must refuse");
+
+        std::fs::remove_file(server.config_path()).unwrap();
+        std::os::unix::fs::symlink("missing.toml", server.config_path()).unwrap();
+        assert!(
+            server.phantom_status().is_err(),
+            "a dangling config symlink is not an uninitialized project"
+        );
+        assert!(server.require_config().is_err(), "dangling must refuse");
     }
 }

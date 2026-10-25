@@ -18,6 +18,22 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   `argon2` `zeroize` feature scrubs its internal hash state. On-disk format,
   KDF parameters, and the legacy-parameter fallback are unchanged.
 
+### Fixed (MCP tools read `.phantom.toml` only as a regular file)
+
+- The MCP compliance `env_clean` check and `phantom_check` worktree scan
+  treated a dangling `.phantom.toml` symlink as "no config" and could report
+  clean while the configured `dotenv_path` went unscanned; followed a symlink
+  to another project's config, whose `dotenv_path` then chose what was
+  scanned; and blocked forever on a FIFO named `.phantom.toml`. They now read
+  the config the way `phantom check` does: only as a regular, non-symlink
+  file, with anything else making the result indeterminate (failing, never
+  clean). The refusal text names `.phantom.toml` only, never an absolute or
+  outside path.
+- The same read now backs every MCP tool that loads the project config
+  (status, why, cloud status, the vault tools and init), so a symlinked config
+  is refused instead of followed, and a dangling one is no longer reported as
+  "not initialized".
+
 ### Fixed (exec, start, sync, doctor and why read `.phantom.toml` only as a regular file)
 
 - `phantom exec`, `phantom start`, `phantom sync`, `phantom doctor` and
