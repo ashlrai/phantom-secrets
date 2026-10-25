@@ -170,6 +170,15 @@ async fn run_async(
         return run_command_directly(cmd, &child_scrub_env).await;
     }
 
+    crate::commands::rotation_gate::enforce_rotation_on_access(
+        &config,
+        vault.as_ref(),
+        &vault_names,
+        &active_env,
+        protected_env_keys.iter().map(String::as_str),
+        crate::commands::rotation_gate::now_secs(),
+    )?;
+
     // Session-scoped token rotation:
     // Instead of using the persistent phantom tokens from .env directly,
     // we generate FRESH session tokens for this exec session.

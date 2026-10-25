@@ -197,6 +197,19 @@ async fn run_async() -> Result<()> {
         phantom_core::managed_dotenv::resolve_dotenv(&project_dir, &config, &vault_names)?;
     validate_start_dotenv(&resolved)
         .context("Managed dotenv is malformed; proxy start stopped before secret resolution")?;
+    super::rotation_gate::enforce_rotation_on_access(
+        &config,
+        vault.as_ref(),
+        &vault_names,
+        DEFAULT_ENV,
+        resolved
+            .file
+            .iter()
+            .flat_map(DotenvFile::entries)
+            .filter(|entry| PhantomToken::is_phantom_token(&entry.value))
+            .map(|entry| entry.key.as_str()),
+        super::rotation_gate::now_secs(),
+    )?;
 
     // Build token mapping
     let mut token_to_secret: HashMap<String, (String, String)> = HashMap::new();
