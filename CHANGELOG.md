@@ -4,6 +4,19 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (pre-commit scan by staged entry type)
+
+- `phantom check --staged` skipped every type-changed path (status `T`), so
+  a symlink replaced by a regular file holding a credential, or a symlinked
+  `.env` replaced by a real one, was reported clean. Type changes are now
+  listed and scanned by their staged mode.
+- A staged symlink whose name looks like a dotenv or `.phantom.toml` had its
+  target path parsed as dotenv text and failed the hook on a commit holding
+  no secret; its staged blob is now scanned for credential shapes like code.
+  A staged submodule (gitlink) named like a dotenv or `.phantom.toml` made
+  the hook fail reading a blob that does not exist; gitlinks are now skipped.
+  The check reads only the staged index, never a symlink's target.
+
 ### Fixed (pre-commit code scan under common git config)
 
 - `phantom check --staged` (the pre-commit hook) reported clean for a
