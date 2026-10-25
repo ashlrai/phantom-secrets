@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
+use phantom_core::package_scripts::wrapped_script_command;
 
 /// Rewrite package.json scripts to auto-prefix with the installed local `phantom` binary.
 /// Original scripts are saved as `*:raw` variants for escape-hatch usage.
@@ -56,8 +57,11 @@ fn run_in(
         return Ok(());
     }
 
-    let output = serde_json::to_string_pretty(&pkg).context("Failed to serialize package.json")?;
-    replace_package_json(&target, &before, format!("{output}\n").as_bytes())
+    // Only the wrapped scripts change; key order, indentation and the final
+    // newline stay as the user wrote them.
+    let output = phantom_core::package_scripts::rewrite_scripts_in_place(content, &pkg)
+        .context("No scripts were wrapped")?;
+    replace_package_json(&target, &before, output.as_bytes())
         .context("package.json changed after it was read; no scripts were wrapped")?;
 
     if quiet {
@@ -197,10 +201,6 @@ fn apply_wrap(
         wrapped: candidates.into_iter().map(|(name, _, _)| name).collect(),
         unwrapped,
     })
-}
-
-fn wrapped_script_command(original: &str) -> String {
-    format!("phantom exec -- {original}")
 }
 
 /// Heuristic: should this script name be wrapped with phantom exec?
@@ -343,6 +343,24 @@ mod tests {
         assert!(outcome.wrapped.is_empty());
         assert_eq!(outcome.unwrapped.len(), 1);
         assert_eq!(pkg, before);
+    }
+
+    /// A package.json laid out the way a user wrote it: unsorted keys,
+    /// four-space indent, no trailing newline.
+    const USER_LAYOUT: &str = "{\n    \"name\": \"demo\",\n    \"version\": \"1.0.0\",\n    \"scripts\": {\n        \"dev\": \"next dev\",\n        \"lint\": \"eslint .\",\n        \"build\": \"next build\"\n    },\n    \"dependencies\": {\n        \"next\": \"14.0.0\"\n    }\n}";
+
+    #[test]
+    fn wrap_changes_only_the_wrapped_scripts_in_package_json() {
+        let project = tempfile::tempdir().unwrap();
+        std::fs::write(project.path().join("package.json"), USER_LAYOUT).unwrap();
+
+        run_in(project.path(), &None, &None, true, || {}).unwrap();
+
+        let expected = "{\n    \"name\": \"demo\",\n    \"version\": \"1.0.0\",\n    \"scripts\": {\n        \"dev\": \"phantom exec -- next dev\",\n        \"dev:raw\": \"next dev\",\n        \"lint\": \"eslint .\",\n        \"build\": \"phantom exec -- next build\",\n        \"build:raw\": \"next build\"\n    },\n    \"dependencies\": {\n        \"next\": \"14.0.0\"\n    }\n}";
+        assert_eq!(
+            std::fs::read_to_string(project.path().join("package.json")).unwrap(),
+            expected
+        );
     }
 
     #[cfg(unix)]
