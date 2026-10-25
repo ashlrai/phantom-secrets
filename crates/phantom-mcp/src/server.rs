@@ -106,6 +106,14 @@ fn with_vault_note(mut report: serde_json::Value, note: Option<String>) -> serde
     report
 }
 
+/// Add the guard's keychain-only note to a text reply.
+fn with_text_note(mut text: String, note: Option<String>) -> String {
+    if let Some(note) = note {
+        text.push_str(&format!("\nNote: {note}"));
+    }
+    text
+}
+
 /// Empty-inventory text that stays honest when the secrets live in an
 /// encrypted-file vault this process cannot open (no passphrase in its env).
 fn empty_vault_message(
@@ -507,8 +515,16 @@ impl PhantomMcpServer {
                 "Reviewed config did not bind to the canonical local project identity; no project payload was used.",
             ));
         }
-        let vault =
-            phantom_vault::try_create_vault(&reviewed_local_project_id).map_err(vault_init_err)?;
+        // Tests serve a stub with `TestVault`, as `open_project_vault` does.
+        #[cfg(test)]
+        let test_vault = TEST_VAULT.with(std::cell::Cell::get).map(|make| make());
+        #[cfg(not(test))]
+        let test_vault: Option<Box<dyn phantom_vault::VaultBackend>> = None;
+        let vault = match test_vault {
+            Some(vault) => vault,
+            None => phantom_vault::try_create_vault(&reviewed_local_project_id)
+                .map_err(vault_init_err)?,
+        };
 
         before_project_lock();
         let transaction_lock = phantom_vault::acquire_project_transaction_lock(
@@ -1270,6 +1286,9 @@ impl PhantomMcpServer {
             &self.project_id(),
         )?;
         let (transaction_lock, config, vault) = self.load_config_and_vault_anchored()?;
+        // Beside a locked encrypted-file vault an empty keychain listing would
+        // read as "No secrets to rotate"; refuse with the unlock step instead.
+        let vault_note = self.require_readable_inventory(&config, vault.as_ref())?;
         let names = vault
             .list()
             .map_err(|e| vault_read_err("Failed to list secrets", e))?;
@@ -1282,9 +1301,12 @@ impl PhantomMcpServer {
         let env_path = resolve_env_path_anchored(&transaction_lock, project_root, &config, &names)?;
         remap_phantom_tokens_locked(&transaction_lock, &env_path, &names)?;
 
-        text_result(format!(
-            "Rotated {} phantom token(s). Old tokens are now invalid.",
-            names.len()
+        text_result(with_text_note(
+            format!(
+                "Rotated {} phantom token(s). Old tokens are now invalid.",
+                names.len()
+            ),
+            vault_note,
         ))
     }
 
@@ -2894,6 +2916,10 @@ impl PhantomMcpServer {
             ),
         };
         let (config, vault) = self.load_config_and_vault()?;
+        // An empty keychain beside a locked encrypted-file vault would report
+        // "0 secret(s) in vault" and no secrets per target, as `phantom sync`
+        // refuses to; a keychain-only listing is served with a vault_note.
+        let vault_note = self.require_readable_inventory(&config, vault.as_ref())?;
         let secret_names = vault
             .list()
             .map_err(|e| vault_read_err("Failed to list secrets", e))?;
@@ -2928,15 +2954,18 @@ impl PhantomMcpServer {
                 ));
             }
             return report_result(
-                output,
-                &serde_json::json!({
-                    "configured": false,
-                    "platform_filter": platform_filter,
-                    "configured_platforms": [],
-                    "vault_secret_count": secret_names.len(),
-                    "targets": [],
-                    "next_step": "Add a [[sync]] section to .phantom.toml (see summary), then run `phantom sync` in a terminal.",
-                }),
+                with_text_note(output, vault_note.clone()),
+                &with_vault_note(
+                    serde_json::json!({
+                        "configured": false,
+                        "platform_filter": platform_filter,
+                        "configured_platforms": [],
+                        "vault_secret_count": secret_names.len(),
+                        "targets": [],
+                        "next_step": "Add a [[sync]] section to .phantom.toml (see summary), then run `phantom sync` in a terminal.",
+                    }),
+                    vault_note,
+                ),
             );
         }
 
@@ -2973,30 +3002,36 @@ impl PhantomMcpServer {
                 })
             })
             .collect();
-        let report = serde_json::json!({
-            "configured": true,
-            "platform_filter": platform_filter,
-            "configured_platforms": configured_platforms,
-            "vault_secret_count": secret_names.len(),
-            "targets": target_reports,
-            "next_step": if targets.is_empty() {
-                "Retry with one of configured_platforms, or omit platform."
-            } else {
-                "Run `phantom sync` in a terminal with the platform token env set; this tool never pushes."
-            },
-        });
+        let report = with_vault_note(
+            serde_json::json!({
+                "configured": true,
+                "platform_filter": platform_filter,
+                "configured_platforms": configured_platforms,
+                "vault_secret_count": secret_names.len(),
+                "targets": target_reports,
+                "next_step": if targets.is_empty() {
+                    "Retry with one of configured_platforms, or omit platform."
+                } else {
+                    "Run `phantom sync` in a terminal with the platform token env set; this tool never pushes."
+                },
+            }),
+            vault_note.clone(),
+        );
 
         if targets.is_empty() {
             return report_result(
-                format!(
-                    "No sync targets match platform '{}'. Configured platforms: {}",
-                    platform_filter.as_deref().unwrap_or(""),
-                    config
-                        .sync
-                        .iter()
-                        .map(|t| t.platform.to_string())
-                        .collect::<Vec<_>>()
-                        .join(", ")
+                with_text_note(
+                    format!(
+                        "No sync targets match platform '{}'. Configured platforms: {}",
+                        platform_filter.as_deref().unwrap_or(""),
+                        config
+                            .sync
+                            .iter()
+                            .map(|t| t.platform.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                    vault_note.clone(),
                 ),
                 &report,
             );
@@ -3007,6 +3042,9 @@ impl PhantomMcpServer {
             targets.len(),
             secret_names.len()
         );
+        if let Some(note) = &vault_note {
+            output.push_str(&format!("Note: {note}\n\n"));
+        }
 
         for (target, (selected, _)) in targets.iter().zip(&selections) {
             let project_id = params.project_id.as_deref().unwrap_or(&target.project_id);
@@ -3387,6 +3425,9 @@ impl PhantomMcpServer {
         )?;
 
         let (transaction_lock, config, vault) = self.load_config_and_vault_anchored()?;
+        // Same guard as phantom_rotate: no "nothing to remap" from a keychain
+        // that stands in for a locked encrypted-file vault.
+        let vault_note = self.require_readable_inventory(&config, vault.as_ref())?;
         let names = vault
             .list()
             .map_err(|e| vault_read_err("Failed to list secrets", e))?;
@@ -3402,9 +3443,12 @@ impl PhantomMcpServer {
             phantom_core::audit::log("secret.token_remapped", Some(name));
         }
 
-        text_result(format!(
-            "Remapped {} local Phantom token(s). Provider credentials and all expiry/rotation metadata are unchanged; days_ttl={} was retained only for legacy schema compatibility.",
-            names.len(), params.days_ttl
+        text_result(with_text_note(
+            format!(
+                "Remapped {} local Phantom token(s). Provider credentials and all expiry/rotation metadata are unchanged; days_ttl={} was retained only for legacy schema compatibility.",
+                names.len(), params.days_ttl
+            ),
+            vault_note,
         ))
     }
 
@@ -4801,8 +4845,12 @@ impl PhantomMcpServer {
             .ok_or_else(not_initialized_err)?;
         let config = PhantomConfig::load_from_bytes(&config_path, &config_before)
             .map_err(config_invalid_err)?;
-        let vault = phantom_vault::try_create_vault(config.local_project_id())
-            .map_err(|error| internal_err(format!("Failed to open vault: {error}")))?;
+        let vault = self.open_project_vault(&config)?;
+        // Beside a locked encrypted-file vault an empty keychain listing would
+        // answer "Vault is empty"; refuse before approval with the unlock step.
+        // A keychain-only listing is validated and the report says so, as
+        // `phantom validate` warns.
+        let vault_note = self.require_readable_inventory(&config, vault.as_ref())?;
         let mut names = vault
             .list()
             .map_err(|e| vault_read_err("Failed to list secrets", e))?;
@@ -4918,7 +4966,9 @@ impl PhantomMcpServer {
             ));
         }
 
-        json_object_result(&report)
+        let report = serde_json::to_value(&report)
+            .map_err(|error| internal_err(format!("Serialization error: {error}")))?;
+        json_object_result(&with_vault_note(report, vault_note))
     }
 
     // ── Validation scheduler tools ────────────────────────────────────────
@@ -9854,6 +9904,79 @@ mod tests {
             assert!(error.message.contains("partial inventory"));
             assert!(error.message.contains("covers only the OS keychain"));
         }
+    }
+
+    /// `phantom_sync`, `phantom_validate_all`, `phantom_rotate` and
+    /// `phantom_rotate_with_expiry` listed the vault without the inventory
+    /// guard. Beside a locked encrypted-file vault the empty keychain answer
+    /// read as "0 secret(s) in vault", "Vault is empty", "No secrets to
+    /// rotate" or "No Phantom tokens to remap". Each now refuses with the
+    /// unlock step, as `phantom sync`, `phantom validate` and
+    /// `phantom rotate --due` do in the CLI.
+    #[test]
+    fn vault_listing_effects_refuse_a_locked_file_vault() {
+        let _environment = TestEnvironment::new();
+        let _home = TestHome::new();
+        let (server, _dir) = locked_file_vault_project();
+        let _vault = TestVault::serve(|| Box::new(EmptyKeychain));
+        let calls: Vec<(&str, Result<CallToolResult, McpError>)> = vec![
+            (
+                "phantom_sync",
+                server.phantom_sync(params(serde_json::json!({}))),
+            ),
+            (
+                "phantom_validate_all",
+                server.phantom_validate_all(params(serde_json::json!({ "confirm": true }))),
+            ),
+            (
+                "phantom_rotate",
+                server.phantom_rotate(params(serde_json::json!({ "confirm": true }))),
+            ),
+            (
+                "phantom_rotate_with_expiry",
+                server.phantom_rotate_with_expiry(params(serde_json::json!({
+                    "confirm": true,
+                    "days_ttl": 30,
+                }))),
+            ),
+        ];
+        let not_refused: Vec<&str> = calls
+            .into_iter()
+            .filter(|(_, result)| {
+                !matches!(
+                    result,
+                    Err(error) if error.code == rmcp::model::ErrorCode::INVALID_REQUEST
+                        && error.message.starts_with("Vault locked:")
+                )
+            })
+            .map(|(tool, _)| tool)
+            .collect();
+        assert!(
+            not_refused.is_empty(),
+            "these tools must refuse a locked file vault: {not_refused:?}"
+        );
+    }
+
+    /// With keychain entries beside a locked file vault, `phantom_sync`
+    /// answers but its report says the count covers only the keychain.
+    #[test]
+    fn sync_notes_a_keychain_only_inventory() {
+        let _environment = TestEnvironment::new();
+        let _home = TestHome::new();
+        let (server, _dir) = locked_file_vault_project();
+        let _vault = TestVault::serve(|| Box::new(KeychainWithOne));
+        let report = server
+            .phantom_sync(params(serde_json::json!({})))
+            .expect("phantom_sync over a keychain-only inventory")
+            .structured_content
+            .unwrap_or_default();
+        let noted = report["vault_note"]
+            .as_str()
+            .is_some_and(|note| note.contains("covers only the OS keychain"));
+        assert!(
+            noted,
+            "phantom_sync must carry the keychain-only vault_note"
+        );
     }
 
     /// A readable vault whose stored validation results cannot be read.
