@@ -4,6 +4,23 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (competitor imports: UTF-16 exports and the 1Password format)
+
+- `phantom import --from doppler|infisical|dotenvx|1password|env` failed on a
+  UTF-16 export, which Windows PowerShell 5.1 writes for `>` and `Out-File`
+  by default, with an unexplained JSON syntax or "not valid UTF-8" error. A
+  UTF-16 or UTF-32 file (with a byte-order mark, or BOM-less UTF-16) is now
+  refused with an error that names the encoding and how to re-save it as
+  UTF-8; nothing is imported and nothing is transcoded silently.
+- `phantom import --help`, where the 1Password parse error points, now
+  states the expected `--file` format for every source, including the exact
+  1Password contract (one flat JSON object of environment variable names) and
+  the `op`/`jq` flattening command. Raw `op item get --format json` output is
+  refused with that hint instead of a generic "array value" error, and
+  `docs/troubleshooting.md` states the same contract. A doc-facts test keeps
+  the help, its 1Password example, and the troubleshooting copy in sync with
+  the parser.
+
 ### Fixed (library writers of `.phantom.toml` and rewritten `.env` files)
 
 - `PhantomConfig::save` wrote `.phantom.toml` with a plain truncate-and-write:
