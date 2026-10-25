@@ -36,6 +36,36 @@ pub fn state_err(msg: impl Into<String>) -> McpError {
     McpError::new(rmcp::model::ErrorCode::INVALID_REQUEST, msg.into(), None)
 }
 
+/// `enforce_rotation_on_access` for MCP paths that hand a real vault value out
+/// (a copy into another project, a team-vault push): the same decision and
+/// wording as `phantom exec`/`start`, judged per exact vault entry before any
+/// value is read. A blocked secret is a project state the user fixes (rotate,
+/// then replace from a trusted terminal); an unreadable schedule or metadata
+/// refuses too. Messages carry names only.
+pub fn enforce_rotation_on_entries<'e>(
+    config: &phantom_core::config::PhantomConfig,
+    vault: &dyn phantom_vault::VaultBackend,
+    entries: impl IntoIterator<Item = &'e str>,
+    action: &str,
+    now_secs: u64,
+) -> Result<(), McpError> {
+    use phantom_vault::rotation_gate::{
+        entry_targets, refusal_summary, rotation_refusals, RotationGateError,
+    };
+    let refusals =
+        rotation_refusals(config, vault, entry_targets(entries), now_secs).map_err(|error| {
+            let cause = match &error {
+                RotationGateError::Schedule(source) => source.to_string(),
+                RotationGateError::Metadata { source, .. } => source.to_string(),
+            };
+            state_err(format!("Refusing to {action}: {error}: {cause}"))
+        })?;
+    match refusal_summary(action, &refusals) {
+        Some(summary) => Err(state_err(summary)),
+        None => Ok(()),
+    }
+}
+
 /// The next step before `phantom init`, shared with the listing tools.
 pub const NOT_INITIALIZED_NEXT_STEP: &str = "Phantom is not initialized in this project. Ask the \
      user to run `phantom init` in a trusted terminal (or call phantom_init with confirm plus \
@@ -327,5 +357,97 @@ mod tests {
             "{message}"
         );
         assert!(message.contains("`confirm: true`"), "{message}");
+    }
+
+    mod rotation_gate {
+        use super::super::enforce_rotation_on_entries;
+        use phantom_core::config::{PhantomConfig, SecretOverride};
+        use phantom_vault::file::FileVault;
+        use phantom_vault::{SecretMetadata, VaultBackend};
+
+        const DAY: u64 = 86_400;
+        const NOW: u64 = 1_800_000_000;
+
+        fn enforced_config() -> PhantomConfig {
+            let mut config = PhantomConfig::new_with_defaults("mcp-rotation-gate".to_string());
+            config.phantom.secrets.insert(
+                "API_KEY".to_string(),
+                SecretOverride {
+                    rotate_every: Some("30d".to_string()),
+                    enforce_rotation_on_access: true,
+                    ..SecretOverride::default()
+                },
+            );
+            config
+        }
+
+        fn vault_with(dir: &tempfile::TempDir, entries: &[(&str, u64)]) -> FileVault {
+            let vault = FileVault::new(
+                dir.path(),
+                "mcp-rotation-gate",
+                format!("gate-{}", std::process::id()),
+            )
+            .expect("file vault");
+            for (entry, created_at) in entries {
+                vault.store(entry, "placeholder").expect("store");
+                vault
+                    .set_metadata(
+                        entry,
+                        SecretMetadata {
+                            created_at: Some(*created_at),
+                            ..SecretMetadata::default()
+                        },
+                    )
+                    .expect("metadata");
+            }
+            vault
+        }
+
+        #[test]
+        fn an_overdue_enforced_entry_is_refused_as_project_state() {
+            let dir = tempfile::tempdir().unwrap();
+            let vault = vault_with(&dir, &[("API_KEY", NOW - 45 * DAY)]);
+            let refused =
+                enforce_rotation_on_entries(&enforced_config(), &vault, ["API_KEY"], "copy", NOW);
+            let Err(error) = refused else {
+                panic!("an overdue enforced secret was let through");
+            };
+            assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_REQUEST);
+            assert!(error
+                .message
+                .starts_with("Refusing to copy: rotation enforcement blocked 1 secret(s)."));
+            assert!(error.message.contains("'API_KEY'"));
+            assert!(error.message.contains("phantom remove API_KEY"));
+        }
+
+        #[test]
+        fn a_fresh_or_unenforced_entry_passes() {
+            let dir = tempfile::tempdir().unwrap();
+            let vault = vault_with(&dir, &[("API_KEY", NOW - DAY), ("OTHER", NOW - 400 * DAY)]);
+            let config = enforced_config();
+            assert!(enforce_rotation_on_entries(
+                &config,
+                &vault,
+                ["API_KEY", "OTHER"],
+                "copy",
+                NOW
+            )
+            .is_ok());
+        }
+
+        #[test]
+        fn a_namespaced_entry_is_judged_by_its_own_age() {
+            let dir = tempfile::tempdir().unwrap();
+            let vault = vault_with(&dir, &[("API_KEY", NOW), ("prod/API_KEY", NOW - 90 * DAY)]);
+            let config = enforced_config();
+            assert!(enforce_rotation_on_entries(
+                &config,
+                &vault,
+                ["API_KEY", "prod/API_KEY"],
+                "push the team vault",
+                NOW
+            )
+            .is_err());
+        }
     }
 }

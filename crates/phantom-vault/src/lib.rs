@@ -5,6 +5,7 @@ pub mod keychain;
 pub mod lease_key;
 pub mod managed_remove;
 pub mod metadata;
+pub mod rotation_gate;
 pub mod shadowing;
 pub mod traits;
 pub mod transaction_lock;
