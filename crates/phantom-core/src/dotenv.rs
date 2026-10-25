@@ -982,7 +982,10 @@ pub fn classify(entry: &EnvEntry) -> SecretClassification {
     if is_public_key(&entry.key) {
         // Safety check: if the value looks like a real secret despite the public prefix,
         // classify as Secret to prevent leaking misnamed keys (e.g., VITE_STRIPE_SECRET_KEY=sk_live_...)
-        if has_secret_value_pattern(&entry.value) {
+        if has_secret_value_pattern(&entry.value)
+            || is_pem_private_key(&entry.value)
+            || url_has_userinfo_password(&entry.value)
+        {
             SecretClassification::Secret
         } else {
             SecretClassification::PublicKey
@@ -1013,6 +1016,31 @@ fn has_secret_value_pattern(value: &str) -> bool {
         "shpat_",
     ];
     secret_value_prefixes.iter().any(|p| value.starts_with(p))
+}
+
+/// A PEM block whose armor header names a private key (`PRIVATE KEY`,
+/// `RSA PRIVATE KEY`, `OPENSSH PRIVATE KEY`, ...). Certificates and public
+/// keys are not matched.
+fn is_pem_private_key(value: &str) -> bool {
+    value
+        .strip_prefix("-----BEGIN ")
+        .and_then(|rest| rest.lines().next())
+        .is_some_and(|header| header.contains("PRIVATE KEY"))
+}
+
+/// A `scheme://user:pass@host` URL whose userinfo carries a password
+/// component (`redis://:pass@host` included). A bare `user@host` is not
+/// matched.
+fn url_has_userinfo_password(value: &str) -> bool {
+    let Some((_, rest)) = value.split_once("://") else {
+        return false;
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+    authority.rsplit_once('@').is_some_and(|(userinfo, _)| {
+        userinfo
+            .split_once(':')
+            .is_some_and(|(_, pass)| !pass.is_empty())
+    })
 }
 
 /// Check if a key name is a framework public key (safe for browser bundles).
@@ -1512,6 +1540,77 @@ KEY3=unquoted
         assert_eq!(public.len(), 2);
         assert_eq!(public[0].key, "NEXT_PUBLIC_SUPABASE_URL");
         assert_eq!(public[1].key, "EXPO_PUBLIC_KEY");
+    }
+
+    fn classify_kv(key: &str, value: &str) -> SecretClassification {
+        classify(&EnvEntry {
+            key: key.into(),
+            value: value.into(),
+            is_phantom: false,
+        })
+    }
+
+    #[test]
+    fn public_prefix_never_exempts_a_private_key_or_url_credentials() {
+        let pem_header = ["-----BEGIN ", "PRIVATE KEY-----"].concat();
+        let rsa_header = ["-----BEGIN RSA ", "PRIVATE KEY-----"].concat();
+        let pem =
+            format!("{pem_header}\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n-----END PRIVATE KEY-----");
+        let rsa = format!("{rsa_header}\nMIIEowIBAAKCAQEA\n-----END RSA PRIVATE KEY-----");
+        let pg = ["postgres://app:", "hunter2", "@db.internal:5432/app"].concat();
+        let redis = ["redis://:", "s3cr3t", "@cache.internal:6379"].concat();
+        for (key, value) in [
+            ("NEXT_PUBLIC_SIGNER", pem.as_str()),
+            ("VITE_JWT_SIGNER", rsa.as_str()),
+            ("VITE_DATABASE_URL", pg.as_str()),
+            ("REACT_APP_CACHE", redis.as_str()),
+        ] {
+            assert_eq!(
+                classify_kv(key, value),
+                SecretClassification::Secret,
+                "public-prefixed {key} must not keep credential material in plaintext"
+            );
+        }
+
+        // A full rewrite replaces them, so no credential stays in the file.
+        let content = format!("VITE_DATABASE_URL={pg}\nNEXT_PUBLIC_SIGNER=\"{pem}\"\n");
+        let dotenv = DotenvFile::parse_str(&content);
+        let names: Vec<&str> = dotenv
+            .real_secret_entries()
+            .iter()
+            .map(|entry| entry.key.as_str())
+            .collect();
+        assert_eq!(names, ["VITE_DATABASE_URL", "NEXT_PUBLIC_SIGNER"]);
+        assert!(dotenv.public_key_entries().is_empty());
+    }
+
+    #[test]
+    fn public_prefix_still_keeps_genuinely_public_values() {
+        let cert = [
+            "-----BEGIN ",
+            "CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----",
+        ]
+        .concat();
+        let pubkey = [
+            "-----BEGIN ",
+            "PUBLIC KEY-----\nMFkw\n-----END PUBLIC KEY-----",
+        ]
+        .concat();
+        let anon_jwt = ["eyJhbGciOi", "JIUzI1NiJ9"].concat();
+        for (key, value) in [
+            ("NEXT_PUBLIC_SUPABASE_URL", "https://example.supabase.co"),
+            ("VITE_API_URL", "https://api.example.com/v1?region=us"),
+            ("VITE_CDN", "https://user@cdn.example.com/assets"),
+            ("NEXT_PUBLIC_SUPABASE_ANON_KEY", anon_jwt.as_str()),
+            ("VITE_ROOT_CA", cert.as_str()),
+            ("NEXT_PUBLIC_VERIFY_KEY", pubkey.as_str()),
+        ] {
+            assert_eq!(
+                classify_kv(key, value),
+                SecretClassification::PublicKey,
+                "{key} is a public browser value"
+            );
+        }
     }
 
     #[test]
