@@ -465,17 +465,14 @@ impl AuditExporter {
         let json = serde_json::to_string_pretty(report)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         crate::fs::ensure_real_parent(&path)?;
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let mut file = options.open(&path)?;
+        // Retain the checked reports directory and create the report relative
+        // to it (mode 0600, never replacing an existing entry), so a directory
+        // swapped after the check cannot redirect the write.
+        let reports = crate::fs::PrivateStateDir::ensure(&self.reports_dir)?;
+        let mut file = reports.create_new_file(&filename)?;
         file.write_all(json.as_bytes())?;
         file.sync_all()?;
-        crate::fs::sync_parent_dir(&self.reports_dir)?;
+        reports.sync()?;
 
         Ok(path)
     }
