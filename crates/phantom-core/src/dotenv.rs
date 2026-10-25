@@ -1026,6 +1026,31 @@ impl ClassificationReason {
         }
     }
 
+    /// The one-sentence, value-free explanation `phantom why` and MCP
+    /// `phantom_why` both print as `Reason:`. Fixed sentences and pattern
+    /// constants only; never any part of the value.
+    pub fn explanation(&self) -> String {
+        match self {
+            ClassificationReason::PublicPrefix(prefix) => {
+                format!("Keys with the \"{prefix}\" prefix are browser-safe (shipped in client bundles)")
+            }
+            ClassificationReason::PublicPrefixWithSecretValue { prefix, rule } => format!(
+                "Key has the public prefix \"{prefix}\", but its value {}",
+                rule.describe()
+            ),
+            ClassificationReason::KeyName(pattern) => {
+                format!("Key name contains \"{pattern}\" (secret key pattern)")
+            }
+            ClassificationReason::ConnectionPattern(pattern) => {
+                format!("Key name matches connection string pattern (\"{pattern}\")")
+            }
+            ClassificationReason::Value(rule) => format!("Value {}", rule.describe()),
+            ClassificationReason::NoSecretPattern => {
+                "Does not match secret key patterns or value patterns".to_string()
+            }
+        }
+    }
+
     /// The matched key fragment or public prefix, if the rule matched one.
     /// Value rules report none: the report stays value-blind.
     pub fn matched_pattern(&self) -> Option<&'static str> {
@@ -1857,6 +1882,50 @@ KEY3=unquoted
             is_phantom: false,
         })
         .1
+    }
+
+    /// The shared `Reason:` sentence names the deciding rule, with fixed text
+    /// and pattern constants only. `phantom why` and MCP `phantom_why` both
+    /// print it, so they cannot explain one entry differently.
+    #[test]
+    fn explanation_names_the_deciding_rule() {
+        let cases = [
+            (
+                reason_kv("DB_PWD", "x1"),
+                "Key name contains \"PWD\" (secret key pattern)",
+            ),
+            (
+                reason_kv("SENTRY_DSN", "x"),
+                "Key name matches connection string pattern (\"DSN\")",
+            ),
+            (
+                reason_kv("WEBHOOK", &["whsec", "abc"].join("_")),
+                "Value starts with \"whsec_\", a known secret prefix",
+            ),
+            (
+                reason_kv("CALLBACK", &["https://h/cb?", "token", "="].concat()),
+                "Value is a URL with an auth, token or signature parameter",
+            ),
+            (
+                reason_kv("BLOB", &"a1B2c3D4".repeat(5)),
+                "Value is a long high-entropy string",
+            ),
+            (
+                reason_kv("VITE_STRIPE_KEY", &["sk", "live", "abc"].join("_")),
+                "Key has the public prefix \"VITE_\", but its value starts with \"sk_\", a known secret prefix",
+            ),
+            (
+                reason_kv("VITE_SITE", "x"),
+                "Keys with the \"VITE_\" prefix are browser-safe (shipped in client bundles)",
+            ),
+            (
+                reason_kv("LOG_LEVEL", "debug"),
+                "Does not match secret key patterns or value patterns",
+            ),
+        ];
+        for (reason, expected) in cases {
+            assert_eq!(reason.explanation(), expected, "{}", reason.label());
+        }
     }
 
     /// `classify_with_reason` names the rule that decided, in the order the

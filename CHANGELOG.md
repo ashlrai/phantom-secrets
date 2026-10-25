@@ -62,6 +62,13 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   match the real classification, `public_prefix_with_secret_value` reports the
   public prefix as `matched_pattern`, and the CLI `Reason:` line names the exact
   key fragment or value rule. Classification itself is unchanged.
+- The MCP `phantom_why` summary text still explained a key in its own words:
+  every value rule read "the value matches known secret patterns", a public
+  prefix overridden by its value gave no rule, and non-secret config listed a
+  hand-written subset of the key fragments. The summary now prints the same
+  `Reason:` sentence as `phantom why`, from one shared explanation
+  (`phantom_core::dotenv::ClassificationReason::explanation`), so a person and
+  an agent see the same deciding rule. The JSON report is unchanged.
 
 ### Fixed (`phantom wrap` and MCP `phantom_wrap` pick the same scripts)
 
