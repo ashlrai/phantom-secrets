@@ -607,6 +607,23 @@ async fn handle_request(
         ));
     }
 
+    // A `_phantom` segment left after stripping the defined-position pair
+    // is misplaced URL auth. Refuse it rather than cut it out of the path
+    // (which would reach a different upstream endpoint) or forward it (which
+    // could carry the proxy session token upstream).
+    if path_has_path_auth_segment(&path) {
+        warn!("Rejected request path with a misplaced proxy auth segment");
+        return Ok(error_response(
+            StatusCode::BAD_REQUEST,
+            serde_json::json!({
+                "error": "request path contains a misplaced proxy auth segment",
+                "source": "phantom-proxy",
+                "hint": "URL-carried proxy auth is accepted only as /<route>/_phantom/<PHANTOM_PROXY_TOKEN>/ at the start of the path. Use the base URL phantom exec set, or send x-phantom-proxy-token instead.",
+            })
+            .to_string(),
+        ));
+    }
+
     // Refuse any path the outbound URL parser would rewrite. `url`/reqwest
     // resolve `.`/`..` segments, including percent-encoded forms such as
     // `%2e%2e`, so `/openai/../admin` would otherwise leave the route base
@@ -1228,30 +1245,54 @@ fn is_hop_by_hop(name: &str, connection_named: &[String]) -> bool {
     HOP_BY_HOP_HEADERS.contains(&name) || connection_named.iter().any(|named| named == name)
 }
 
+/// How many percent-decoding layers of one path segment are inspected. A
+/// segment that still changes when decoded after this many layers is refused.
+const MAX_PATH_DECODE_LAYERS: usize = 4;
+
 /// Whether a request path carries a `.` or `..` segment (literal or
 /// percent-encoded, in any case), a percent-encoded `/` or `\`, or a literal
 /// `\`. The outbound URL parser resolves dot segments and treats `\` as a
 /// separator for http(s), so any of these could move the forwarded request
 /// outside the matched route's base path.
+///
+/// Every decoding layer is checked, not only the first: reqwest forwards
+/// `%252e%252e` verbatim, and an upstream (or an intermediary in front of
+/// it) that decodes twice would see `..`. A segment still encoded after
+/// [`MAX_PATH_DECODE_LAYERS`] layers is refused as well.
 fn path_has_dot_segment_or_encoded_separator(path: &str) -> bool {
     if path.contains('\\') {
         return true;
     }
     path.split('/').any(|segment| {
-        let decoded = percent_decode(segment, false);
-        // WHATWG URL parsing removes ASCII tab and newline, so a segment
-        // that is only dots once they are removed is treated as a dot
-        // segment (conservatively, even when they arrived encoded).
-        let significant: Vec<u8> = decoded
-            .iter()
-            .copied()
-            .filter(|byte| !matches!(byte, b'\t' | b'\n' | b'\r'))
-            .collect();
-        significant == b"."
-            || significant == b".."
-            || decoded.contains(&b'/')
-            || decoded.contains(&b'\\')
+        let mut layer = segment.as_bytes().to_vec();
+        for _ in 0..MAX_PATH_DECODE_LAYERS {
+            let decoded = percent_decode_bytes(&layer, false);
+            if is_dot_segment_or_has_separator(&decoded) {
+                return true;
+            }
+            if decoded == layer {
+                return false;
+            }
+            layer = decoded;
+        }
+        true
     })
+}
+
+/// Whether one decoded path segment is a dot segment or contains a separator.
+fn is_dot_segment_or_has_separator(decoded: &[u8]) -> bool {
+    // WHATWG URL parsing removes ASCII tab and newline, so a segment
+    // that is only dots once they are removed is treated as a dot
+    // segment (conservatively, even when they arrived encoded).
+    let significant: Vec<u8> = decoded
+        .iter()
+        .copied()
+        .filter(|byte| !matches!(byte, b'\t' | b'\n' | b'\r'))
+        .collect();
+    significant == b"."
+        || significant == b".."
+        || decoded.contains(&b'/')
+        || decoded.contains(&b'\\')
 }
 
 /// Rebuild the query string for the upstream, dropping `phantom_token` and
@@ -1297,6 +1338,12 @@ fn percent_decode_query_component(component: &str) -> Vec<u8> {
 /// (query components only; `+` is literal in a path). Malformed escapes are
 /// kept literally.
 fn percent_decode(component: &str, plus_as_space: bool) -> Vec<u8> {
+    percent_decode_bytes(component.as_bytes(), plus_as_space)
+}
+
+/// [`percent_decode`] over raw bytes, so already-decoded (possibly
+/// non-UTF-8) path segments can be decoded again.
+fn percent_decode_bytes(bytes: &[u8], plus_as_space: bool) -> Vec<u8> {
     fn hex(byte: u8) -> Option<u8> {
         match byte {
             b'0'..=b'9' => Some(byte - b'0'),
@@ -1305,7 +1352,6 @@ fn percent_decode(component: &str, plus_as_space: bool) -> Vec<u8> {
             _ => None,
         }
     }
-    let bytes = component.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
@@ -1363,22 +1409,36 @@ fn basic_auth_username(value: &hyper::header::HeaderValue) -> Option<String> {
     Some(String::from_utf8_lossy(username).into_owned())
 }
 
+/// The local path segment that introduces URL-carried proxy auth.
+const PATH_AUTH_SEGMENT: &str = "_phantom";
+
+/// Split the URL-carried proxy auth pair off a request path. The pair is
+/// recognized only at its defined position, directly after the route prefix:
+/// `/<route>/_phantom/<proxy token>[/rest]`. A `_phantom` segment anywhere
+/// else is left in place, and [`path_has_path_auth_segment`] then refuses the
+/// request, so a misplaced pair is never accepted as auth, never silently cut
+/// out of the forwarded path, and never forwarded upstream.
 fn strip_path_proxy_token(path: &str) -> (String, Option<String>) {
     let mut parts: Vec<&str> = path.split('/').collect();
-    if let Some(idx) = parts.iter().position(|part| *part == "_phantom") {
-        if let Some(token) = parts.get(idx + 1).copied() {
-            let token = token.to_string();
-            parts.drain(idx..=idx + 1);
-            let stripped = parts.join("/");
-            let stripped = if stripped.is_empty() {
-                "/".to_string()
-            } else {
-                stripped
-            };
-            return (stripped, Some(token));
-        }
+    if parts.len() >= 4
+        && parts[0].is_empty()
+        && !parts[1].is_empty()
+        && parts[2] == PATH_AUTH_SEGMENT
+    {
+        let token = parts[3].to_string();
+        parts.drain(2..=3);
+        return (parts.join("/"), Some(token));
     }
     (path.to_string(), None)
+}
+
+/// Whether a path (after the defined-position pair was stripped) still has a
+/// `_phantom` segment, compared ASCII case-insensitively after
+/// percent-decoding.
+fn path_has_path_auth_segment(path: &str) -> bool {
+    path.split('/').any(|segment| {
+        percent_decode(segment, false).eq_ignore_ascii_case(PATH_AUTH_SEGMENT.as_bytes())
+    })
 }
 
 /// Constant-time string compare for the proxy-auth token. Length mismatch
@@ -4418,5 +4478,245 @@ mod tests {
 
         proxy.shutdown().await;
         mock.shutdown().await;
+    }
+
+    async fn path_auth_probe_proxy(mock_port: u16, session_auth: &str) -> ProxyServer {
+        let mut registry = ServiceRegistry::new();
+        registry.add_route(ServiceRoute {
+            name: "openai".to_string(),
+            target_base: format!("http://127.0.0.1:{mock_port}"),
+            secret_key: "OPENAI_API_KEY".to_string(),
+            header: "Authorization".to_string(),
+            header_format: "Bearer {secret}".to_string(),
+            credential_profile: crate::services::CredentialProfile::Standard,
+            sdk_base_path: Some("/v1".to_string()),
+        });
+        let fixture = format!("{}{}", "sk", "-path-auth-fixture-0123456789");
+        let interceptor = Interceptor::new_with_named(
+            HashMap::new(),
+            HashMap::from([("OPENAI_API_KEY".to_string(), fixture)]),
+        );
+        ProxyServer::start(
+            ProxyConfig {
+                port: 0,
+                proxy_token: session_auth.to_string(),
+                allow_query_token_auth: true,
+                ..ProxyConfig::default()
+            },
+            registry,
+            interceptor,
+        )
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn path_auth_segment_is_accepted_only_directly_after_the_route_prefix() {
+        let mock = crate::test_server::MockServer::start().await;
+        let session_auth = ProxyServer::generate_proxy_token();
+        let proxy = path_auth_probe_proxy(mock.port, &session_auth).await;
+
+        // The defined position: `/<route>/_phantom/<session auth>/...`.
+        let defined = format!("/openai/_phantom/{session_auth}/models");
+        assert_eq!(send_raw_request(proxy.port(), &defined, &[]).await, 200);
+
+        // Anywhere else the pair is never accepted as session auth: with no
+        // other auth the request is unauthenticated.
+        let misplaced_only = [
+            format!("/_phantom/{session_auth}/openai/models"),
+            format!("/openai/v1/_phantom/{session_auth}/models"),
+            format!("/openai/models/_phantom/{session_auth}"),
+        ];
+        for (index, target) in misplaced_only.iter().enumerate() {
+            let status = send_raw_request(proxy.port(), target, &[]).await;
+            assert_eq!(
+                status, 401,
+                "misplaced path auth segment was accepted: case {index}"
+            );
+        }
+
+        // An authenticated request with a further `_phantom` segment is
+        // refused before routing: the segment is neither silently cut out of
+        // the path (which would reach a different upstream endpoint) nor
+        // forwarded (where it could carry the session auth upstream).
+        let authenticated_with_extra = [
+            format!("/openai/_phantom/{session_auth}/_phantom/{session_auth}/models"),
+            format!("/openai/_phantom/{session_auth}/v1/%5Fphantom/{session_auth}/models"),
+            format!("/openai/_phantom/{session_auth}/v1/_PHANTOM/x/models"),
+            format!("/openai/_phantom/{session_auth}/models/_phantom"),
+        ];
+        for (index, target) in authenticated_with_extra.iter().enumerate() {
+            let status = send_raw_request(proxy.port(), target, &[]).await;
+            assert_eq!(
+                status, 400,
+                "extra path auth segment not refused: case {index}"
+            );
+        }
+
+        let paths: Vec<String> = mock.get_requests().into_iter().map(|r| r.path).collect();
+        // Compared without printing: a forwarded path could carry the
+        // session auth value.
+        assert!(
+            paths == vec!["/v1/models".to_string()],
+            "unexpected upstream paths"
+        );
+        assert!(
+            !paths
+                .iter()
+                .any(|path| path.contains(session_auth.as_str())),
+            "proxy session auth reached the upstream in a path"
+        );
+
+        proxy.shutdown().await;
+        mock.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn header_auth_requests_never_have_a_path_auth_segment_cut_out() {
+        // Header-only auth (no URL auth): a `_phantom/<x>` pair deeper in the
+        // path used to be removed, so the upstream received `/v1/files` for a
+        // request to `/v1/_phantom/<x>/files`. The path is refused instead.
+        let mock = crate::test_server::MockServer::start().await;
+        let proxy = traversal_probe_proxy(mock.port).await;
+
+        for target in [
+            "/openai/v1/_phantom/path_owner/files",
+            "/openai/files/_phantom/path_owner",
+            "/openai/files/_phantom",
+        ] {
+            let status = send_raw_request(proxy.port(), target, &[]).await;
+            assert_eq!(status, 400, "path auth segment not refused: {target}");
+        }
+        assert_eq!(
+            mock.get_requests().len(),
+            0,
+            "a rewritten path reached the upstream"
+        );
+
+        // Segments that merely contain the marker are ordinary.
+        let status = send_raw_request(proxy.port(), "/openai/files/my_phantom_notes", &[]).await;
+        assert_eq!(status, 200);
+        let paths: Vec<String> = mock.get_requests().into_iter().map(|r| r.path).collect();
+        assert_eq!(paths, vec!["/v1/files/my_phantom_notes".to_string()]);
+
+        proxy.shutdown().await;
+        mock.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn multiply_encoded_dot_segments_never_reach_upstream() {
+        // An upstream (or an intermediary in front of it) that decodes the
+        // path more than once would turn `%252e%252e` into `..`. reqwest
+        // forwards it verbatim, so the proxy refuses every decoding layer.
+        let mock = crate::test_server::MockServer::start().await;
+        let proxy = traversal_probe_proxy(mock.port).await;
+
+        for target in [
+            "/openai/%252e%252e/admin",
+            "/openai/%252E%252E/admin",
+            "/openai/.%252e/admin",
+            "/openai/%252e/admin",
+            "/openai/%25252e%25252e/admin",
+            "/openai/v1%252f..%252fadmin",
+            "/openai/a%255cb",
+            "/openai/a%25252Fb",
+            "/openai/%2525252525252e%2525252525252e/admin",
+        ] {
+            let status = send_raw_request(proxy.port(), target, &[]).await;
+            assert_eq!(status, 400, "multiply encoded path not refused: {target}");
+        }
+        assert_eq!(
+            mock.get_requests().len(),
+            0,
+            "a multiply encoded dot segment reached the upstream"
+        );
+
+        // A single encoded `%` and other double-encoded bytes stay ordinary.
+        for target in ["/openai/files/100%25", "/openai/files/%2541"] {
+            let status = send_raw_request(proxy.port(), target, &[]).await;
+            assert_eq!(status, 200, "ordinary path was refused: {target}");
+        }
+        let paths: Vec<String> = mock.get_requests().into_iter().map(|r| r.path).collect();
+        assert_eq!(
+            paths,
+            vec![
+                "/v1/files/100%25".to_string(),
+                "/v1/files/%2541".to_string()
+            ]
+        );
+
+        proxy.shutdown().await;
+        mock.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn hop_by_hop_response_headers_are_not_forwarded_to_the_client() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        // A raw upstream so the response can carry hop-by-hop headers that a
+        // hyper server would refuse to send.
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let upstream_port = listener.local_addr().unwrap().port();
+        let upstream = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 4096];
+            let mut seen = Vec::new();
+            while !seen.windows(4).any(|w| w == b"\r\n\r\n") {
+                let n = stream.read(&mut buf).await.unwrap();
+                if n == 0 {
+                    break;
+                }
+                seen.extend_from_slice(&buf[..n]);
+            }
+            let body = "{}";
+            let response = format!(
+                "HTTP/1.1 200 OK\r\n\
+                 Content-Type: application/json\r\n\
+                 Content-Length: {}\r\n\
+                 Connection: keep-alive, X-Hop-Named\r\n\
+                 X-Hop-Named: named-by-connection\r\n\
+                 Keep-Alive: timeout=5\r\n\
+                 Proxy-Authenticate: Basic realm=upstream\r\n\
+                 Proxy-Connection: keep-alive\r\n\
+                 Upgrade: h2c\r\n\
+                 Trailer: X-Trailer-Field\r\n\
+                 X-End-To-End: kept\r\n\
+                 \r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+            stream.flush().await.unwrap();
+        });
+        let proxy = traversal_probe_proxy(upstream_port).await;
+
+        let resp = reqwest::Client::new()
+            .get(format!("http://127.0.0.1:{}/openai/models", proxy.port()))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let headers = resp.headers().clone();
+        for hop in [
+            "x-hop-named",
+            "keep-alive",
+            "proxy-authenticate",
+            "proxy-connection",
+            "upgrade",
+            "trailer",
+        ] {
+            assert!(
+                !headers.contains_key(hop),
+                "hop-by-hop header forwarded to the client: {hop}"
+            );
+        }
+        assert_eq!(
+            headers.get("x-end-to-end").and_then(|v| v.to_str().ok()),
+            Some("kept")
+        );
+        assert_eq!(resp.bytes().await.unwrap().as_ref(), b"{}");
+
+        upstream.await.unwrap();
+        proxy.shutdown().await;
     }
 }

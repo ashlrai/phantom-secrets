@@ -15,6 +15,18 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   stays 0 unless `--strict` is set (0 ready, 2 degraded, 1 blocked, 3 could
   not evaluate). See `docs/agent-preflight-contract.md`.
 
+### Security (proxy path auth position and multiply encoded paths)
+
+- URL-carried proxy auth (`/_phantom/<token>/`) is accepted only directly
+  after the route prefix, as the URLs `phantom exec` sets place it. A
+  `_phantom` segment anywhere else is no longer silently cut out of the path
+  (which sent the request to a different upstream endpoint) and can no longer
+  ride upstream in the forwarded path; the request is refused with 400 before
+  routing.
+- Path segments are checked for dot segments and encoded separators at every
+  percent-decoding layer, so `%252e%252e` or `%252f` is refused with 400
+  instead of reaching an upstream that decodes twice.
+
 ### Security (proxy partial-echo redaction)
 
 - The proxy now redacts any run of 12 or more consecutive characters of a
