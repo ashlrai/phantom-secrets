@@ -12,14 +12,21 @@ const CLOUD_PUSH_ACTION: &str = "push to Phantom Cloud";
 const CLOUD_PULL_ACTION: &str = "pull from Phantom Cloud";
 
 pub fn run_push() -> Result<()> {
-    let project_dir = std::env::current_dir()?.canonicalize()?;
+    let project_dir = crate::util::project_dir()?.canonicalize()?;
     let (config_path, config_before, config) = load_cloud_config_exact(&project_dir)?;
     ensure_cloud_push_allowed(&config)?;
-    // An overdue enforced secret is known from names and metadata alone:
-    // refuse before asking for consent. Judged again before any value read.
+    // A locked or partial inventory and an overdue enforced secret are known
+    // from names and metadata alone: refuse before asking for consent. Both
+    // are judged again after consent, before any value read.
     {
         let vault = crate::util::open_vault(config.local_project_id())?;
         let names = vault.list()?;
+        crate::util::require_complete_inventory(
+            vault.as_ref(),
+            config.local_project_id(),
+            names.len(),
+            "push to the cloud vault",
+        )?;
         super::rotation_gate::enforce_rotation_on_entries(
             &config,
             vault.as_ref(),
@@ -1268,6 +1275,35 @@ mod locked_vault_tests {
         let project = LockedProject::new(empty_keychain);
         let refusal = pull_destination(&project).unwrap_or_default();
         assert!(refusal.starts_with("Vault locked:"));
+    }
+
+    /// Entered as the CLI does, before consent. Tests run without a trusted
+    /// terminal, so a run that reached the consent prompt fails there instead.
+    fn run_push_refusal() -> String {
+        super::run_push().unwrap_err().to_string()
+    }
+
+    /// A locked file vault was refused only after typed consent was spent.
+    #[test]
+    fn cloud_push_refuses_a_locked_file_vault_before_consent() {
+        let _project = LockedProject::new(empty_keychain);
+        let refusal = run_push_refusal();
+        assert!(
+            refusal.starts_with("Vault locked:"),
+            "cloud push reached consent before refusing the locked vault"
+        );
+    }
+
+    /// A keychain-only view beside a locked file vault was refused only after
+    /// typed consent was spent.
+    #[test]
+    fn cloud_push_refuses_a_partial_inventory_before_consent() {
+        let _project = LockedProject::new(keychain_with_one);
+        let refusal = run_push_refusal();
+        assert!(
+            refusal.starts_with("Refusing to push to the cloud vault from a partial inventory"),
+            "cloud push reached consent before refusing the partial inventory"
+        );
     }
 
     #[test]

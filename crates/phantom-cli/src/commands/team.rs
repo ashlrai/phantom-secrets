@@ -164,6 +164,18 @@ pub fn run_key_publish(team_id: &str) -> Result<()> {
 
 pub fn run_vault_push(team_id: &str) -> Result<()> {
     let (project_dir, _config_path, _config_before, config) = load_team_project_exact()?;
+    // A locked or partial inventory is known from names alone: refuse before
+    // asking for consent. Judged again after consent, before any value read.
+    {
+        let vault = crate::util::open_vault(config.local_project_id())?;
+        let listed = vault.list()?.len();
+        crate::util::require_complete_inventory(
+            vault.as_ref(),
+            config.local_project_id(),
+            listed,
+            "push to the team vault",
+        )?;
+    }
     let project_id = config.portable_project_id().to_string();
     let project_path = project_dir.to_string_lossy().into_owned();
     require_trusted_terminal_team(&team_consent_plan(
@@ -585,7 +597,7 @@ fn confirm_team_effect(
 }
 
 fn load_team_project_exact() -> Result<(PathBuf, PathBuf, Vec<u8>, PhantomConfig)> {
-    let project_dir = std::env::current_dir()?.canonicalize()?;
+    let project_dir = crate::util::project_dir()?.canonicalize()?;
     let config_path = project_dir.join(".phantom.toml");
     let config_before = phantom_core::fs::read_regular_file(&config_path)
         .context("Failed to safely read .phantom.toml")?
@@ -1126,6 +1138,37 @@ mod locked_vault_tests {
         let project = LockedProject::new(empty_keychain);
         let error = push(&project);
         assert!(error.starts_with("Vault locked:"), "{error}");
+    }
+
+    /// Entered as the CLI does, before consent. Tests run without a trusted
+    /// terminal, so a run that reached the consent prompt fails there instead.
+    fn run_push_refusal() -> String {
+        super::run_vault_push("team-fixture")
+            .unwrap_err()
+            .to_string()
+    }
+
+    /// A locked file vault was refused only after typed consent was spent.
+    #[test]
+    fn team_vault_push_refuses_a_locked_file_vault_before_consent() {
+        let _project = LockedProject::new(empty_keychain);
+        let refusal = run_push_refusal();
+        assert!(
+            refusal.starts_with("Vault locked:"),
+            "team vault-push reached consent before refusing the locked vault"
+        );
+    }
+
+    /// A keychain-only view beside a locked file vault was refused only after
+    /// typed consent was spent.
+    #[test]
+    fn team_vault_push_refuses_a_partial_inventory_before_consent() {
+        let _project = LockedProject::new(keychain_with_one);
+        let refusal = run_push_refusal();
+        assert!(
+            refusal.starts_with("Refusing to push to the team vault from a partial inventory"),
+            "team vault-push reached consent before refusing the partial inventory"
+        );
     }
 
     /// Entered as `run_vault_pull` does, before consent. The stub keychain

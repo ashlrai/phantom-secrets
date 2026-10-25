@@ -4,6 +4,18 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (cloud and team pushes refused a locked vault only after consent)
+
+- `phantom cloud push` and `phantom team vault-push` asked for the typed
+  trusted-terminal confirmation before noticing that the project's
+  encrypted-file vault was locked (passphrase absent or wrong) or that only a
+  partial, keychain-only inventory was visible, so the consent was spent on a
+  push that could never succeed. Both now refuse before any consent prompt,
+  with the same "Vault locked:" / "Refusing to push ... from a partial
+  inventory" errors as before; the check still runs again after consent,
+  before any value is read. The MCP `phantom_cloud_push` and
+  `phantom_team_vault_push` tools already refused before approval.
+
 ### Fixed (`phantom start` ignored the active environment)
 
 - `phantom start` always served the default environment: after
