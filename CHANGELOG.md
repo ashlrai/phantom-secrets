@@ -23,6 +23,27 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   before; `phantom reveal` now reports a broken config before its terminal
   prompt instead of after it.
 
+### Fixed (proxy redirects lost their route prefix; HEAD responses claimed an empty body)
+
+- An upstream `Location` naming an absolute path, such as a `302` to
+  `/v1/files/abc` or a `201` pointing at a new resource, was passed through
+  unchanged. Every route shares the proxy's one origin, so the client
+  resolved it to `http://127.0.0.1:PORT/v1/files/abc`, dropped the
+  `/<route>` prefix and got "no route". A `Location` on the route's own
+  upstream (an absolute path, or an absolute URL with the route's scheme,
+  host and port, under its base path) is now mapped back to
+  `/<route>/...`. Relative references, other hosts, `//host` references and
+  paths outside the base path are left unchanged, so a redirect is never
+  rewritten to carry the route's credential anywhere else; so is a path the
+  route would forward to a different upstream path (its SDK version
+  prefix). Upstream redirects are still not followed by the proxy.
+- A response to `HEAD` was sent with `content-length: 0`, the length of the
+  proxy's empty buffered body, instead of the upstream length of the
+  representation a `GET` would return (RFC 9110 section 8.6), so clients
+  probing a file's size saw zero. The proxy now forwards the upstream
+  `content-length` for `HEAD`, or none when upstream sent none. 204 and 304
+  responses were already correct and are now covered by tests.
+
 ### Fixed (`enforce_rotation_on_access` was never enforced)
 
 - `enforce_rotation_on_access = true` under `[phantom.secrets.NAME]` was
