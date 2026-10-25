@@ -15,9 +15,12 @@
 //!
 //! **How to create this file** (recommended workflow):
 //! ```sh
-//! # Read individual secrets and build the JSON manually, or use jq:
+//! # Read individual secrets and build the JSON manually, or use jq
+//! # (it stops on duplicate labels rather than keeping only one value):
 //! op item get "My App Secrets" --vault Dev --format json \
-//!   | jq '{ (.fields[] | select(.value != null) | .label): .fields[] | select(.value != null) | .value }' \
+//!   | jq '[.fields[] | select(.value != null and .value != "")]
+//!         | if (map(.label) | unique | length) != length
+//!           then error("duplicate field labels") else map({(.label): .value}) | add end' \
 //!   > 1p-export.json
 //!
 //! phantom import --from 1password --file 1p-export.json
@@ -33,14 +36,15 @@ use anyhow::Result;
 use zeroize::Zeroizing;
 
 use super::{
-    json_scalar, parse_json_object_entries, refuse_duplicate_names, refuse_invalid_names, Importer,
-    SecretMap,
+    json_scalar, parse_json_object_entries, refuse_duplicate_names, refuse_invalid_names,
+    strip_utf8_bom, Importer, SecretMap,
 };
 
 pub struct OnePasswordImporter;
 
 impl Importer for OnePasswordImporter {
     fn parse(input: &[u8]) -> Result<SecretMap> {
+        let input = strip_utf8_bom(input);
         let obj = parse_json_object_entries(input).map_err(|e| {
             anyhow::anyhow!(
                 "1Password JSON parse error: {e}\n\
