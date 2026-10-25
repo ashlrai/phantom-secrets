@@ -510,7 +510,8 @@ fn load_team_project_exact() -> Result<(PathBuf, PathBuf, Vec<u8>, PhantomConfig
     let config_before = phantom_core::fs::read_regular_file(&config_path)
         .context("Failed to safely read .phantom.toml")?
         .ok_or_else(|| anyhow::anyhow!("No .phantom.toml found. Run `phantom init` first."))?;
-    let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
+    let config = PhantomConfig::load_from_bytes(&config_path, &config_before)
+        .context("Failed to load .phantom.toml")?;
     if phantom_core::fs::read_regular_file(&config_path)
         .context("Failed to recheck .phantom.toml")?
         .as_deref()

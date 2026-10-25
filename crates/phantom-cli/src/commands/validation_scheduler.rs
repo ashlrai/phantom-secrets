@@ -5,7 +5,7 @@
 //! `schedule --disable`  — turn off the scheduler.
 //! `history`             — display past validation runs.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use colored::Colorize;
 use phantom_core::config::PhantomConfig;
 use phantom_core::validation_scheduler::{state_file_path, Schedule, SchedulerState, MAX_HISTORY};
@@ -14,18 +14,17 @@ use std::io::{IsTerminal, Write};
 
 /// Run `phantom validate schedule [interval] [--status] [--disable]`.
 pub fn run_schedule(interval: Option<&str>, status: bool, disable: bool, json: bool) -> Result<()> {
-    let project_dir = std::env::current_dir()?.canonicalize()?;
+    let project_dir = crate::util::project_dir()?.canonicalize()?;
     let config_path = project_dir.join(".phantom.toml");
 
-    if !config_path.exists() {
-        anyhow::bail!(
-            "Not initialized. Run `phantom init` first (no .phantom.toml in {}).",
-            project_dir.display()
-        );
-    }
-
-    let config_before = phantom_core::fs::read_regular_file(&config_path)?
-        .ok_or_else(|| anyhow::anyhow!("Project is not initialized"))?;
+    let config_before = crate::util::read_config_if_present(&config_path)
+        .context("Failed to load .phantom.toml")?
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Not initialized. Run `phantom init` first (no .phantom.toml in {}).",
+                project_dir.display()
+            )
+        })?;
     let config = PhantomConfig::load_from_bytes(&config_path, &config_before)?;
     let state_path = state_file_path(config.local_project_id());
     let (mut state, before) = SchedulerState::load_exact(&state_path)?;
@@ -134,18 +133,17 @@ fn require_trusted_terminal_schedule(
 
 /// Run `phantom validate history [--last N] [--json]`.
 pub fn run_history(last: Option<usize>, json: bool) -> Result<()> {
-    let project_dir = std::env::current_dir()?.canonicalize()?;
+    let project_dir = crate::util::project_dir()?.canonicalize()?;
     let config_path = project_dir.join(".phantom.toml");
 
-    if !config_path.exists() {
-        anyhow::bail!(
-            "Not initialized. Run `phantom init` first (no .phantom.toml in {}).",
-            project_dir.display()
-        );
-    }
-
-    let config_before = phantom_core::fs::read_regular_file(&config_path)?
-        .ok_or_else(|| anyhow::anyhow!("Project is not initialized"))?;
+    let config_before = crate::util::read_config_if_present(&config_path)
+        .context("Failed to load .phantom.toml")?
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Not initialized. Run `phantom init` first (no .phantom.toml in {}).",
+                project_dir.display()
+            )
+        })?;
     let config = PhantomConfig::load_from_bytes(&config_path, &config_before)?;
     let state_path = state_file_path(config.local_project_id());
     let state = SchedulerState::load(&state_path)?;
