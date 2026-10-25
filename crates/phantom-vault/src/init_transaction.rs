@@ -32,16 +32,48 @@ pub struct InitSecret {
     name: String,
     replacement: Option<Zeroizing<String>>,
     expected_before: Option<Option<Zeroizing<String>>>,
-    inherited_anchor: Option<InheritedAnchor>,
+    inherited_protection: Option<InheritedProtection>,
 }
 
-/// The rotation-age fields a duplicated value carries over from its source
-/// entry, so a copy cannot restart the clock `enforce_rotation_on_access`
-/// measures.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct InheritedAnchor {
-    created_at: Option<u64>,
-    rotated_at: Option<u64>,
+/// The lifecycle metadata a duplicated value carries over from its source
+/// entry, so a copy is never less protected than the entry it duplicates.
+///
+/// Every field of [`SecretMetadata`] gates behavior and is inherited:
+/// - `created_at` / `rotated_at`: the rotation age `enforce_rotation_on_access`
+///   measures; a fresh stamp would restart that clock.
+/// - `expires_at`: the deadline `phantom expiry enforce` fails closed on and
+///   `phantom_apply_expiry_policy` demotes at; dropping it would make an
+///   expired credential look unbounded.
+/// - `rotation_policy`: the TTL that recomputes `expires_at` after a rotation;
+///   dropping it would let the copy drift off its expiry schedule.
+/// - `vault_mode`: a `ReadOnly` source is refused by
+///   `retrieve_for_injection`; a `ReadWrite` copy would bypass that demotion.
+///
+/// Validation metadata (the last provider check verdict) is deliberately not
+/// inherited: it is an observation about a past check, not a protection, and
+/// the destination starts as never-checked like any new entry.
+#[derive(Debug, Clone, PartialEq)]
+struct InheritedProtection(SecretMetadata);
+
+impl InheritedProtection {
+    fn from_source(source: Option<&SecretMetadata>) -> Self {
+        // Destructure exhaustively so a new `SecretMetadata` field fails to
+        // compile here until someone decides whether a copy inherits it.
+        let SecretMetadata {
+            created_at,
+            rotated_at,
+            expires_at,
+            rotation_policy,
+            vault_mode,
+        } = source.cloned().unwrap_or_default();
+        Self(SecretMetadata {
+            created_at,
+            rotated_at,
+            expires_at,
+            rotation_policy,
+            vault_mode,
+        })
+    }
 }
 
 impl InitSecret {
@@ -50,7 +82,7 @@ impl InitSecret {
             name: name.into(),
             replacement: Some(Zeroizing::new(value.into())),
             expected_before: None,
-            inherited_anchor: None,
+            inherited_protection: None,
         }
     }
 
@@ -68,7 +100,7 @@ impl InitSecret {
             name: name.into(),
             replacement: Some(Zeroizing::new(value.into())),
             expected_before: Some(expected_before.map(|value| Zeroizing::new(value.into()))),
-            inherited_anchor: None,
+            inherited_protection: None,
         }
     }
 
@@ -83,21 +115,21 @@ impl InitSecret {
             name: name.into(),
             replacement: None,
             expected_before: Some(Some(Zeroizing::new(expected_before.into()))),
-            inherited_anchor: None,
+            inherited_protection: None,
         }
     }
 
-    /// Give a newly created entry its source's rotation age instead of the
-    /// backend's "stored now" stamp: the destination's `created_at` and
-    /// `rotated_at` become the source's, inside the same transaction. A source
-    /// without metadata leaves the destination with no known age, which the
-    /// rotation gate refuses for an enforced secret. Only valid on a create;
-    /// the transaction refuses it for an existing destination.
-    pub fn inheriting_rotation_anchor(mut self, source: Option<&SecretMetadata>) -> Self {
-        self.inherited_anchor = Some(InheritedAnchor {
-            created_at: source.and_then(|metadata| metadata.created_at),
-            rotated_at: source.and_then(|metadata| metadata.rotated_at),
-        });
+    /// Give a newly created entry its source's lifecycle metadata instead of
+    /// the backend's fresh "stored now", read-write defaults: the rotation
+    /// age (`created_at`, `rotated_at`), `expires_at`, `rotation_policy` and
+    /// `vault_mode` become the source's, written by compare-and-swap inside
+    /// the same transaction, so a copy is never less protected than its
+    /// source. A source without metadata leaves the destination with no known
+    /// age, which the rotation gate refuses for an enforced secret. Only
+    /// valid on a create; the transaction refuses it for an existing
+    /// destination.
+    pub fn inheriting_source_protection(mut self, source: Option<&SecretMetadata>) -> Self {
+        self.inherited_protection = Some(InheritedProtection::from_source(source));
         self
     }
 }
@@ -234,7 +266,7 @@ struct SecretSnapshot {
     metadata: Option<SecretMetadata>,
     validation: Option<ValidationMetadata>,
     after: Option<Zeroizing<String>>,
-    inherited_anchor: Option<InheritedAnchor>,
+    inherited_protection: Option<InheritedProtection>,
     touched: bool,
 }
 
@@ -396,10 +428,12 @@ fn commit_init_with_identity(
                 });
             }
         }
-        if secret.inherited_anchor.is_some() && (before.is_some() || secret.replacement.is_none()) {
+        if secret.inherited_protection.is_some()
+            && (before.is_some() || secret.replacement.is_none())
+        {
             return Err(InitTransactionError::Preflight {
                 target: secret.name,
-                reason: "an inherited rotation anchor applies only to a newly created entry"
+                reason: "inherited source metadata applies only to a newly created entry"
                     .to_string(),
             });
         }
@@ -415,7 +449,7 @@ fn commit_init_with_identity(
             metadata,
             validation,
             after: secret.replacement,
-            inherited_anchor: secret.inherited_anchor,
+            inherited_protection: secret.inherited_protection,
             touched: false,
         });
     }
@@ -473,8 +507,8 @@ fn commit_init_with_identity(
             }
             ensure_secret_state(vault, snapshot, true)
                 .map_err(|error| (snapshot.name.clone(), error.to_string()))?;
-            if let Some(anchor) = snapshot.inherited_anchor {
-                apply_inherited_anchor(vault, &snapshot.name, anchor)
+            if let Some(protection) = snapshot.inherited_protection.clone() {
+                apply_inherited_protection(vault, &snapshot.name, protection)
                     .map_err(|error| (snapshot.name.clone(), error.to_string()))?;
             }
             ensure_secret_metadata(vault, snapshot, true)
@@ -830,13 +864,13 @@ fn ensure_secret_state(
 
 /// Verify lifecycle and validation metadata for the committed (`after`) or
 /// restored (`!after`) state of an entry that existed before the transaction.
-/// Replace the backend's creation stamp on a just-created entry with the
-/// source's rotation anchor. Rolling the entry back deletes this metadata
+/// Replace the backend's fresh metadata on a just-created entry with the
+/// source's lifecycle metadata. Rolling the entry back deletes this metadata
 /// with it.
-fn apply_inherited_anchor(
+fn apply_inherited_protection(
     vault: &dyn VaultBackend,
     name: &str,
-    anchor: InheritedAnchor,
+    protection: InheritedProtection,
 ) -> Result<(), InitTransactionError> {
     let current = vault
         .get_metadata(name)
@@ -844,17 +878,14 @@ fn apply_inherited_anchor(
             target: name.to_string(),
             reason: "vault metadata read failed".to_string(),
         })?;
-    let mut inherited = current.clone().unwrap_or_default();
-    inherited.created_at = anchor.created_at;
-    inherited.rotated_at = anchor.rotated_at;
-    match vault.compare_and_swap_metadata(name, current.as_ref(), Some(inherited)) {
+    match vault.compare_and_swap_metadata(name, current.as_ref(), Some(protection.0)) {
         Ok(true) => Ok(()),
         Ok(false) => Err(InitTransactionError::ConcurrentChange {
             target: name.to_string(),
         }),
         Err(_) => Err(InitTransactionError::Preflight {
             target: name.to_string(),
-            reason: "inherited rotation anchor could not be written".to_string(),
+            reason: "inherited source metadata could not be written".to_string(),
         }),
     }
 }
@@ -1319,9 +1350,9 @@ mod tests {
             &vault,
             vec![
                 InitSecret::replace_if_unchanged("COPY_A", None::<String>, "fixture-a")
-                    .inheriting_rotation_anchor(Some(&source)),
+                    .inheriting_source_protection(Some(&source)),
                 InitSecret::replace_if_unchanged("COPY_B", None::<String>, "fixture-b")
-                    .inheriting_rotation_anchor(None),
+                    .inheriting_source_protection(None),
                 InitSecret::new("PLAIN", "fixture-c"),
             ],
             Vec::new(),
@@ -1337,8 +1368,41 @@ mod tests {
         assert!(plain.created_at.is_some_and(|created| created > 2_000));
     }
 
+    /// A duplicated value must be no less protected than its source: the
+    /// created entry carries the source's expiry, TTL policy and read-only
+    /// mode, not the backend's fresh read-write defaults.
     #[test]
-    fn inherited_anchor_is_refused_for_an_existing_entry() {
+    fn created_entry_inherits_the_source_protective_metadata() {
+        let dir = TempDir::new().unwrap();
+        let vault = vault(&dir);
+        let source = SecretMetadata {
+            created_at: Some(1_000),
+            rotated_at: Some(2_000),
+            expires_at: Some(3_000),
+            rotation_policy: Some(crate::RotationPolicy {
+                days_ttl: 30,
+                auto_rotate: false,
+            }),
+            vault_mode: crate::metadata::VaultMode::ReadOnly,
+        };
+        commit_init(
+            dir.path(),
+            &vault,
+            vec![
+                InitSecret::replace_if_unchanged("COPY_A", None::<String>, "fixture-a")
+                    .inheriting_source_protection(Some(&source)),
+            ],
+            Vec::new(),
+        )
+        .unwrap();
+
+        let copied = vault.get_metadata("COPY_A").unwrap().unwrap_or_default();
+        assert_eq!(copied, source);
+        assert!(vault.retrieve_for_injection("COPY_A").is_err());
+    }
+
+    #[test]
+    fn inherited_protection_is_refused_for_an_existing_entry() {
         let dir = TempDir::new().unwrap();
         let vault = vault(&dir);
         vault.store("EXISTING", "fixture-old").unwrap();
@@ -1348,7 +1412,7 @@ mod tests {
             &vault,
             vec![
                 InitSecret::replace_if_unchanged("EXISTING", Some("fixture-old"), "fixture-new")
-                    .inheriting_rotation_anchor(None),
+                    .inheriting_source_protection(None),
             ],
             Vec::new(),
         )

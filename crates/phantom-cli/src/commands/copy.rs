@@ -276,10 +276,11 @@ fn prepare_target_plan(
     source_metadata: Option<&SecretMetadata>,
 ) -> Result<CopyTargetPlan> {
     let env_after = rewrite_dotenv(env_before.as_deref(), target_name)?;
-    // The copy keeps the source's rotation age so a duplicate cannot restart
-    // the clock `enforce_rotation_on_access` measures.
+    // The copy keeps the source's lifecycle metadata (rotation age, expiry,
+    // TTL policy and read-only mode), so a duplicate is never less protected
+    // than its source.
     let mutation = InitSecret::replace_if_unchanged(target_name, None::<String>, value)
-        .inheriting_rotation_anchor(source_metadata);
+        .inheriting_source_protection(source_metadata);
     let config_after = if config.phantom.dotenv_path.is_none() && target_vault_names.is_empty() {
         config.phantom.dotenv_path = Some(
             phantom_core::managed_dotenv::dotenv_basename(target_dir, &env_path)
@@ -453,6 +454,47 @@ mod tests {
         assert!(target.exists("PLAIN_KEY").unwrap());
         let copied = target.get_metadata("PLAIN_KEY").unwrap().unwrap();
         assert_eq!(copied.created_at, Some(NOW - 400 * DAY));
+    }
+
+    /// `phantom copy` carried only the rotation anchor, so a source demoted
+    /// to read-only, past its expiry, or under a TTL policy came out of the
+    /// copy as an injectable read-write entry with no expiry. The destination
+    /// now carries every protective lifecycle field of its source.
+    #[test]
+    fn copy_destination_keeps_the_source_protective_metadata() {
+        use crate::commands::rotation_gate::fixtures::{aged_vault, DAY, NOW};
+        let source_dir = tempfile::tempdir().unwrap();
+        let source = aged_vault(&source_dir, &[("DEMOTED_KEY", 40)]);
+        let protected = phantom_vault::SecretMetadata {
+            created_at: Some(NOW - 40 * DAY),
+            rotated_at: Some(NOW - 35 * DAY),
+            expires_at: Some(NOW - 5 * DAY),
+            rotation_policy: Some(phantom_vault::RotationPolicy {
+                days_ttl: 30,
+                auto_rotate: false,
+            }),
+            vault_mode: phantom_vault::metadata::VaultMode::ReadOnly,
+        };
+        source
+            .set_metadata("DEMOTED_KEY", protected.clone())
+            .unwrap();
+        let source_config = PhantomConfig::new_with_defaults("copy-protected".to_string());
+
+        let (_target_dir, target) =
+            copy_into_new_target(&source_config, &source, "DEMOTED_KEY", "COPIED_KEY");
+
+        let copied = target
+            .get_metadata("COPIED_KEY")
+            .unwrap()
+            .unwrap_or_default();
+        assert_eq!(copied.expires_at, protected.expires_at);
+        assert_eq!(copied.rotation_policy, protected.rotation_policy);
+        assert_eq!(copied.vault_mode, protected.vault_mode);
+        assert_eq!(copied, protected);
+        assert!(
+            target.retrieve_for_injection("COPIED_KEY").is_err(),
+            "a copy of a read-only secret must not be injectable"
+        );
     }
 
     /// Beside a target encrypted-file vault this process cannot open, the

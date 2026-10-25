@@ -6566,11 +6566,12 @@ fn apply_mcp_copy_transaction(
         )
         .commit_last(),
     ];
-    // The copy keeps the source's rotation age so a duplicate cannot restart
-    // the clock `enforce_rotation_on_access` measures.
+    // The copy keeps the source's lifecycle metadata (rotation age, expiry,
+    // TTL policy and read-only mode), so a duplicate is never less protected
+    // than its source.
     let mutation =
         phantom_vault::InitSecret::replace_if_unchanged(target_name, None::<String>, value)
-            .inheriting_rotation_anchor(source_metadata);
+            .inheriting_source_protection(source_metadata);
     phantom_vault::commit_init(target_dir, vault, vec![mutation], files).map_err(|error| {
         internal_err(format!(
             "Target copy transaction failed: {error}. Inspect target vault/config/dotenv before retrying."
@@ -10774,6 +10775,65 @@ mod tests {
             refusals.len(),
             1,
             "the copy must be overdue when its source is"
+        );
+    }
+
+    /// `phantom_copy_secret` carried only the rotation anchor, so a source
+    /// demoted to read-only, past its expiry, or under a TTL policy came out
+    /// of the copy as an injectable read-write entry with no expiry. The
+    /// destination now carries every protective lifecycle field of its source.
+    #[test]
+    fn copy_secret_destination_keeps_the_source_protective_metadata() {
+        let _environment = TestEnvironment::new();
+        let _home = TestHome::new();
+        let (source, source_dir) = setup_initialized_project();
+        let (_target, target_dir) = setup_initialized_project();
+        let target = target_dir.path().canonicalize().unwrap();
+
+        let source_config = PhantomConfig::load(&source_dir.path().join(".phantom.toml")).unwrap();
+        let source_vault =
+            phantom_vault::try_create_vault(source_config.local_project_id()).unwrap();
+        let now = phantom_vault::rotation_gate::now_secs();
+        let protected = phantom_vault::SecretMetadata {
+            created_at: Some(now - 40 * 86_400),
+            rotated_at: Some(now - 35 * 86_400),
+            expires_at: Some(now - 5 * 86_400),
+            rotation_policy: Some(phantom_vault::RotationPolicy {
+                days_ttl: 30,
+                auto_rotate: false,
+            }),
+            vault_mode: phantom_vault::metadata::VaultMode::ReadOnly,
+        };
+        source_vault
+            .set_metadata("OPENAI_API_KEY", protected.clone())
+            .unwrap();
+
+        source
+            .phantom_copy_secret(Parameters(CopySecretParams {
+                name: "OPENAI_API_KEY".to_string(),
+                target_dir: target.display().to_string(),
+                rename: Some("COPIED_API_KEY".to_string()),
+                confirm: true,
+                approval_token: None,
+            }))
+            .expect("an unenforced secret copies");
+
+        let target_config = PhantomConfig::load(&target.join(".phantom.toml")).unwrap();
+        let target_vault =
+            phantom_vault::try_create_vault(target_config.local_project_id()).unwrap();
+        let copied = target_vault
+            .get_metadata("COPIED_API_KEY")
+            .unwrap()
+            .unwrap_or_default();
+        assert_eq!(copied.expires_at, protected.expires_at);
+        assert_eq!(copied.rotation_policy, protected.rotation_policy);
+        assert_eq!(copied.vault_mode, protected.vault_mode);
+        assert_eq!(copied, protected);
+        assert!(
+            target_vault
+                .retrieve_for_injection("COPIED_API_KEY")
+                .is_err(),
+            "a copy of a read-only secret must not be injectable"
         );
     }
 
