@@ -32,8 +32,9 @@ pub trait Importer {
     /// - Empty (and JSON `null`) values are skipped silently.
     /// - An entry whose value cannot be one secret (a JSON array or nested
     ///   object) refuses the whole import rather than being dropped.
-    /// - Duplicate keys within the same input emit a warning to stderr;
-    ///   the last value wins.
+    /// - A name that appears more than once refuses the whole import (the
+    ///   dotenv path already did); picking one of two values silently could
+    ///   store the wrong credential.
     fn parse(input: &[u8]) -> Result<SecretMap>;
 }
 
@@ -248,6 +249,65 @@ pub(crate) fn json_scalar(
         serde_json::Value::Array(_) => Err(unsupported_entry(source, name, "an array")),
         serde_json::Value::Object(_) => Err(unsupported_entry(source, name, "a nested object")),
     }
+}
+
+/// Parse a top-level JSON object keeping every entry in source order,
+/// including repeated names. `serde_json::Map` collapses a repeated key to
+/// its last value, which would hide an ambiguous export from
+/// [`refuse_duplicate_names`].
+pub(crate) fn parse_json_object_entries(
+    input: &[u8],
+) -> serde_json::Result<Vec<(String, serde_json::Value)>> {
+    struct Entries(Vec<(String, serde_json::Value)>);
+
+    impl<'de> serde::Deserialize<'de> for Entries {
+        fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+            struct EntriesVisitor;
+
+            impl<'de> serde::de::Visitor<'de> for EntriesVisitor {
+                type Value = Entries;
+
+                fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                    f.write_str("a JSON object at the top level")
+                }
+
+                fn visit_map<A: serde::de::MapAccess<'de>>(
+                    self,
+                    mut access: A,
+                ) -> Result<Entries, A::Error> {
+                    let mut entries = Vec::new();
+                    while let Some(entry) = access.next_entry::<String, serde_json::Value>()? {
+                        entries.push(entry);
+                    }
+                    Ok(Entries(entries))
+                }
+            }
+
+            deserializer.deserialize_map(EntriesVisitor)
+        }
+    }
+
+    serde_json::from_slice::<Entries>(input).map(|entries| entries.0)
+}
+
+/// Refuse an import in which any name appears more than once. Two values for
+/// one name are ambiguous: importing either one silently could replace a
+/// working credential with a stale one. The error names the entry, never a
+/// value.
+pub(crate) fn refuse_duplicate_names<'a>(
+    source: &str,
+    names: impl IntoIterator<Item = &'a str>,
+) -> Result<()> {
+    let mut seen = std::collections::BTreeSet::new();
+    for name in names {
+        if !seen.insert(name) {
+            anyhow::bail!(
+                "{source} input has duplicate entry '{name}'; nothing was imported. \
+                 Keep one value for each name and retry."
+            );
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn unsupported_entry(source: &str, name: &str, kind: &str) -> anyhow::Error {
@@ -470,5 +530,53 @@ mod secure_read_tests {
         assert!(source.contains("nFileIndexHigh"));
         assert!(source.contains("nFileIndexLow"));
         assert!(source.contains("FILE_ATTRIBUTE_REPARSE_POINT"));
+    }
+
+    #[test]
+    fn json_sources_refuse_duplicate_keys_instead_of_silently_picking_one() {
+        // serde_json collapses a repeated object key to its last value, so a
+        // hand-assembled or merged export with two different values for one
+        // name used to import whichever came last, with no warning. The
+        // dotenv path already refuses duplicates; every JSON path must too.
+        let first = ["first", "-dup-", "value"].concat();
+        let second = ["second", "-dup-", "value"].concat();
+        type Parser = fn(&[u8]) -> Result<SecretMap>;
+        let cases: [(&str, Parser, String); 4] = [
+            (
+                "1password",
+                onepassword::OnePasswordImporter::parse,
+                format!(r#"{{"DUP_NAME":"{first}","OTHER_NAME":"x","DUP_NAME":"{second}"}}"#),
+            ),
+            (
+                "dotenvx",
+                dotenvx::DotenvxImporter::parse,
+                format!(r#"{{"DUP_NAME":"{first}","DUP_NAME":"{second}"}}"#),
+            ),
+            (
+                "doppler",
+                doppler::DopplerImporter::parse,
+                format!(r#"{{"DUP_NAME":{{"raw":"{first}"}},"DUP_NAME":{{"raw":"{second}"}}}}"#),
+            ),
+            (
+                "infisical",
+                infisical::InfisicalImporter::parse,
+                format!(
+                    r#"[{{"key":"DUP_NAME","value":"{first}"}},{{"key":"DUP_NAME","value":"{second}"}}]"#
+                ),
+            ),
+        ];
+        for (label, parser, input) in cases {
+            let outcome = parser(input.as_bytes());
+            assert!(outcome.is_err(), "{label} accepted a duplicate key");
+            let message = outcome.err().map(|e| e.to_string()).unwrap_or_default();
+            assert!(
+                message.contains("duplicate") && message.contains("DUP_NAME"),
+                "{label} refusal does not name the duplicate entry"
+            );
+            assert!(
+                !message.contains("-dup-"),
+                "{label} refusal leaked an input value"
+            );
+        }
     }
 }

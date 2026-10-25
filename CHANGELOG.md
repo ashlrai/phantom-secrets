@@ -17,6 +17,31 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   the hook fail reading a blob that does not exist; gitlinks are now skipped.
   The check reads only the staged index, never a symlink's target.
 
+### Fixed (JSON imports with a repeated name)
+
+- `phantom import --from 1password|dotenvx|doppler|infisical` now refuses a
+  JSON export in which a secret name appears more than once, naming the entry
+  (never a value), and imports nothing. Flat JSON objects previously collapsed
+  the repeat to its last value with no warning, so a merged or hand-edited
+  export could silently store a stale credential; Infisical arrays only
+  warned. The dotenv path already refused duplicates.
+
+### Fixed (Vercel sync matched variables by key only)
+
+- `phantom sync` to Vercel matched an existing variable by name alone, but
+  Vercel keeps one variable per name and environment set. When the name
+  existed only for another environment (say development), sync overwrote
+  that variable with the value meant for production and preview, reported
+  "updated", and never created it where it was configured. When production
+  and preview held separate variables, only the first one listed was
+  updated. Sync now never touches a variable whose environments are all
+  outside the configured `targets`, updates every project-wide variable
+  that applies to a configured target, creates one for the targets nothing
+  covers, and leaves Git-branch-scoped preview variables alone. A variable
+  that also applies to other environments (Vercel's default is all three)
+  is still updated, and sync prints a `warn` line naming those
+  environments, e.g. "STRIPE_KEY: also applies to development".
+
 ### Fixed (pre-commit code scan under common git config)
 
 - `phantom check --staged` (the pre-commit hook) reported clean for a

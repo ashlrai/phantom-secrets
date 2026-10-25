@@ -23,18 +23,24 @@ use anyhow::Result;
 use serde_json::Value;
 use zeroize::Zeroizing;
 
-use super::{json_scalar, unsupported_entry, Importer, SecretMap};
+use super::{
+    json_scalar, parse_json_object_entries, refuse_duplicate_names, unsupported_entry, Importer,
+    SecretMap,
+};
 
 pub struct DopplerImporter;
 
 impl Importer for DopplerImporter {
     fn parse(input: &[u8]) -> Result<SecretMap> {
-        let root: Value = serde_json::from_slice(input)
+        let obj = parse_json_object_entries(input)
             .map_err(|e| anyhow::anyhow!("Doppler JSON parse error: {}", e))?;
-
-        let obj = root
-            .as_object()
-            .ok_or_else(|| anyhow::anyhow!("Expected a JSON object at the top level"))?;
+        // Meta-keys are skipped below, so only secret names must be unique.
+        refuse_duplicate_names(
+            "Doppler",
+            obj.iter()
+                .map(|(key, _)| key.as_str())
+                .filter(|key| !key.starts_with("DOPPLER_")),
+        )?;
 
         let mut map = SecretMap::new();
 
@@ -84,9 +90,6 @@ impl Importer for DopplerImporter {
                 continue;
             }
 
-            if map.contains_key(key) {
-                eprintln!("warn: duplicate key '{key}' in Doppler input — last value wins");
-            }
             map.insert(key.clone(), Zeroizing::new(value));
         }
 

@@ -33,7 +33,10 @@
 use anyhow::Result;
 use zeroize::Zeroizing;
 
-use super::{env_importer, json_scalar, Importer, SecretMap};
+use super::{
+    env_importer, json_scalar, parse_json_object_entries, refuse_duplicate_names, Importer,
+    SecretMap,
+};
 
 pub struct DotenvxImporter;
 
@@ -91,8 +94,9 @@ fn refuse_encrypted_values(map: &SecretMap) -> Result<()> {
 }
 
 fn parse_flat_json(input: &[u8]) -> Result<SecretMap> {
-    let obj: serde_json::Map<String, serde_json::Value> = serde_json::from_slice(input)
+    let obj = parse_json_object_entries(input)
         .map_err(|e| anyhow::anyhow!("dotenvx JSON parse error: {}", e))?;
+    refuse_duplicate_names("dotenvx", obj.iter().map(|(key, _)| key.as_str()))?;
 
     let mut map = SecretMap::new();
     for (key, val) in obj {
@@ -101,9 +105,6 @@ fn parse_flat_json(input: &[u8]) -> Result<SecretMap> {
         };
         if value.is_empty() {
             continue;
-        }
-        if map.contains_key(&key) {
-            eprintln!("warn: duplicate key '{key}' in dotenvx input — last value wins");
         }
         map.insert(key, Zeroizing::new(value));
     }

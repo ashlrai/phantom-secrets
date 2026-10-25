@@ -389,6 +389,9 @@ async fn run_async(
                     });
                 }
             }
+            if let Some(warning) = &result.warning {
+                eprintln!("   {} {}", "warn".yellow(), warning);
+            }
         }
         for value in filtered_secrets.values_mut() {
             value.zeroize();
