@@ -362,6 +362,81 @@ pub(crate) mod test_seam {
         Box::new(EmptyKeychain)
     }
 
+    /// An opened encrypted-file vault holding one entry, `DEMOTED_KEY`, whose
+    /// lifecycle metadata is read-only (`demoted: true`) or cannot be read
+    /// (`demoted: false`). A plain `retrieve` panics: a path that propagates
+    /// values must refuse from metadata alone.
+    pub(crate) struct LifecycleBlockedVault {
+        demoted: bool,
+    }
+
+    impl VaultBackend for LifecycleBlockedVault {
+        fn store(&self, _: &str, _: &str) -> phantom_core::error::Result<()> {
+            unreachable!("a refused push never stores")
+        }
+        fn retrieve(&self, _: &str) -> phantom_core::error::Result<zeroize::Zeroizing<String>> {
+            panic!("a value was read from a lifecycle-blocked entry")
+        }
+        fn delete(&self, _: &str) -> phantom_core::error::Result<()> {
+            unreachable!("a refused push never deletes")
+        }
+        fn list(&self) -> phantom_core::error::Result<Vec<String>> {
+            Ok(vec!["DEMOTED_KEY".to_string()])
+        }
+        fn backend_name(&self) -> &str {
+            "encrypted-file"
+        }
+        fn get_metadata(
+            &self,
+            _: &str,
+        ) -> phantom_core::error::Result<Option<phantom_vault::SecretMetadata>> {
+            if !self.demoted {
+                return Err(phantom_core::error::PhantomError::VaultError(
+                    "metadata unavailable".to_string(),
+                ));
+            }
+            Ok(Some(phantom_vault::SecretMetadata {
+                created_at: Some(1_800_000_000),
+                vault_mode: phantom_vault::metadata::VaultMode::ReadOnly,
+                ..phantom_vault::SecretMetadata::default()
+            }))
+        }
+    }
+
+    pub(crate) fn demoted_vault() -> Box<dyn VaultBackend> {
+        Box::new(LifecycleBlockedVault { demoted: true })
+    }
+
+    pub(crate) fn metadata_unreadable_vault() -> Box<dyn VaultBackend> {
+        Box::new(LifecycleBlockedVault { demoted: false })
+    }
+
+    /// An initialized project (default `.phantom.toml`) with `vault` standing
+    /// in for the opened vault on this thread until dropped.
+    pub(crate) struct SeamProject {
+        pub(crate) dir: PathBuf,
+        _project: tempfile::TempDir,
+        _seam: TestProject,
+    }
+
+    impl SeamProject {
+        pub(crate) fn new(vault: MakeVault) -> Self {
+            let project = tempfile::tempdir().unwrap();
+            let dir = project.path().canonicalize().unwrap();
+            phantom_core::config::PhantomConfig::new_with_defaults(
+                phantom_core::config::PhantomConfig::project_id_from_path(&dir),
+            )
+            .save(&dir.join(".phantom.toml"))
+            .unwrap();
+            let seam = TestProject::install(dir.clone(), vault);
+            SeamProject {
+                dir,
+                _project: project,
+                _seam: seam,
+            }
+        }
+    }
+
     #[cfg(unix)]
     pub(crate) fn keychain_with_one() -> Box<dyn VaultBackend> {
         Box::new(KeychainWithOne)
