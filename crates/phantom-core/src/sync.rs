@@ -163,42 +163,44 @@ pub async fn sync_to_vercel(
     };
 
     for (key, value) in secrets {
-        let target_array: Vec<&str> = targets.iter().map(|s| s.as_str()).collect();
-
-        // Check if this key already exists
-        let existing_id = existing
-            .iter()
-            .find(|variable| variable.key == *key)
-            .map(|variable| variable.id.clone());
-
-        let result = if let Some(env_id) = existing_id {
-            // Update existing
-            match update_vercel_env_var(&client, token, project_id, &env_id, value).await {
-                Ok(()) => SyncResult {
+        let plan = match plan_vercel_upsert(&existing, key, targets) {
+            Ok(plan) => plan,
+            Err(error) => {
+                results.push(SyncResult {
                     key: key.clone(),
-                    status: SyncStatus::Updated,
-                },
-                Err(e) => SyncResult {
-                    key: key.clone(),
-                    status: SyncStatus::Error(e),
-                },
-            }
-        } else {
-            // Create new
-            match create_vercel_env_var(&client, token, project_id, key, value, &target_array).await
-            {
-                Ok(()) => SyncResult {
-                    key: key.clone(),
-                    status: SyncStatus::Created,
-                },
-                Err(e) => SyncResult {
-                    key: key.clone(),
-                    status: SyncStatus::Error(e),
-                },
+                    status: SyncStatus::Error(error),
+                });
+                continue;
             }
         };
 
-        results.push(result);
+        let mut failure = None;
+        for env_id in &plan.update_ids {
+            if let Err(error) =
+                update_vercel_env_var(&client, token, project_id, env_id, value).await
+            {
+                failure = Some(error);
+                break;
+            }
+        }
+        if failure.is_none() && !plan.create_targets.is_empty() {
+            let target_array: Vec<&str> = plan.create_targets.iter().map(String::as_str).collect();
+            if let Err(error) =
+                create_vercel_env_var(&client, token, project_id, key, value, &target_array).await
+            {
+                failure = Some(error);
+            }
+        }
+
+        let status = match failure {
+            Some(error) => SyncStatus::Error(error),
+            None if plan.update_ids.is_empty() => SyncStatus::Created,
+            None => SyncStatus::Updated,
+        };
+        results.push(SyncResult {
+            key: key.clone(),
+            status,
+        });
     }
 
     results
@@ -208,6 +210,97 @@ pub async fn sync_to_vercel(
 struct VercelEnvVarMetadata {
     id: String,
     key: String,
+    /// Environments this variable applies to. Vercel returns an array, and
+    /// older records may carry a single string.
+    #[serde(default)]
+    target: VercelTargets,
+    /// A preview variable scoped to one Git branch. It is not the
+    /// project-wide value for its target, so sync never updates it.
+    #[serde(default, rename = "gitBranch")]
+    git_branch: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(untagged)]
+enum VercelTargets {
+    #[default]
+    None,
+    One(String),
+    Many(Vec<String>),
+}
+
+impl VercelTargets {
+    fn as_slice(&self) -> &[String] {
+        match self {
+            VercelTargets::None => &[],
+            VercelTargets::One(target) => std::slice::from_ref(target),
+            VercelTargets::Many(targets) => targets,
+        }
+    }
+}
+
+/// What one key needs on Vercel to hold the synced value in exactly the
+/// configured environments.
+#[derive(Debug, PartialEq)]
+struct VercelUpsertPlan {
+    /// Existing project-wide variables to update, all inside the targets.
+    update_ids: Vec<String>,
+    /// Configured targets no existing variable covers yet.
+    create_targets: Vec<String>,
+}
+
+/// Vercel keeps one variable per key *and* environment set, so a key can
+/// exist several times (say a development value and a production value).
+/// Match on the configured targets, not on the key alone: update every
+/// project-wide variable whose environments lie inside the targets, create
+/// one for the targets nothing covers, and refuse a variable that would
+/// also change an environment outside the targets. The error names the
+/// key and environments, never a value.
+fn plan_vercel_upsert(
+    existing: &[VercelEnvVarMetadata],
+    key: &str,
+    targets: &[String],
+) -> std::result::Result<VercelUpsertPlan, String> {
+    let mut update_ids = Vec::new();
+    let mut covered: Vec<&str> = Vec::new();
+    for variable in existing.iter().filter(|variable| {
+        variable.key == key
+            && variable
+                .git_branch
+                .as_deref()
+                .is_none_or(|branch| branch.is_empty())
+    }) {
+        let variable_targets = variable.target.as_slice();
+        if !variable_targets
+            .iter()
+            .any(|target| targets.contains(target))
+        {
+            continue;
+        }
+        let outside: Vec<&str> = variable_targets
+            .iter()
+            .filter(|target| !targets.contains(target))
+            .map(String::as_str)
+            .collect();
+        if !outside.is_empty() {
+            return Err(format!(
+                "existing Vercel variable for {key} also applies to {}, outside the configured targets; nothing was changed for this key",
+                outside.join(", ")
+            ));
+        }
+        update_ids.push(variable.id.clone());
+        covered.extend(variable_targets.iter().map(String::as_str));
+    }
+    let mut create_targets: Vec<String> = Vec::new();
+    for target in targets {
+        if !covered.contains(&target.as_str()) && !create_targets.contains(target) {
+            create_targets.push(target.clone());
+        }
+    }
+    Ok(VercelUpsertPlan {
+        update_ids,
+        create_targets,
+    })
 }
 
 #[derive(Debug, Deserialize)]
@@ -662,6 +755,86 @@ mod tests {
         let patterns = vec!["RAILWAY_*".to_string()];
         let filtered = filter_by_only(&secrets, &patterns);
         assert!(filtered.is_empty());
+    }
+
+    fn vercel_inventory(json: &str) -> Vec<VercelEnvVarMetadata> {
+        serde_json::from_str::<VercelEnvMetadataResponse>(json)
+            .unwrap()
+            .envs
+    }
+
+    fn production_and_preview() -> Vec<String> {
+        vec!["production".to_string(), "preview".to_string()]
+    }
+
+    #[test]
+    fn vercel_sync_does_not_overwrite_another_environments_variable() {
+        // The key exists only as a development variable. Updating it by key
+        // would push the production value into development and report
+        // "updated" while production and preview never received it.
+        let existing = vercel_inventory(
+            r#"{"envs":[{"id":"env_dev","key":"STRIPE_KEY","target":["development"]}]}"#,
+        );
+        let plan = plan_vercel_upsert(&existing, "STRIPE_KEY", &production_and_preview()).unwrap();
+        assert_eq!(
+            plan,
+            VercelUpsertPlan {
+                update_ids: Vec::new(),
+                create_targets: production_and_preview(),
+            }
+        );
+    }
+
+    #[test]
+    fn vercel_sync_updates_every_per_environment_variable_of_a_key() {
+        // Production and preview hold separate variables for the same key.
+        // Updating only the first match left the other environment stale.
+        let existing = vercel_inventory(
+            r#"{"envs":[
+                {"id":"env_dev","key":"STRIPE_KEY","target":["development"]},
+                {"id":"env_prev","key":"STRIPE_KEY","target":["preview"]},
+                {"id":"env_prod","key":"STRIPE_KEY","target":"production"},
+                {"id":"env_branch","key":"STRIPE_KEY","target":["preview"],"gitBranch":"feature"},
+                {"id":"env_other","key":"OTHER_KEY","target":["production","preview"]}
+            ]}"#,
+        );
+        let plan = plan_vercel_upsert(&existing, "STRIPE_KEY", &production_and_preview()).unwrap();
+        assert_eq!(
+            plan,
+            VercelUpsertPlan {
+                update_ids: vec!["env_prev".to_string(), "env_prod".to_string()],
+                create_targets: Vec::new(),
+            }
+        );
+    }
+
+    #[test]
+    fn vercel_sync_creates_only_the_uncovered_targets() {
+        let existing = vercel_inventory(
+            r#"{"envs":[{"id":"env_prod","key":"STRIPE_KEY","target":["production"]}]}"#,
+        );
+        let plan = plan_vercel_upsert(&existing, "STRIPE_KEY", &production_and_preview()).unwrap();
+        assert_eq!(
+            plan,
+            VercelUpsertPlan {
+                update_ids: vec!["env_prod".to_string()],
+                create_targets: vec!["preview".to_string()],
+            }
+        );
+    }
+
+    #[test]
+    fn vercel_sync_refuses_a_variable_spanning_unconfigured_environments() {
+        // One variable shared by development and production: patching it to
+        // sync production would silently change development too.
+        let existing = vercel_inventory(
+            r#"{"envs":[{"id":"env_shared","key":"STRIPE_KEY","target":["development","production"]}]}"#,
+        );
+        let error =
+            plan_vercel_upsert(&existing, "STRIPE_KEY", &["production".to_string()]).unwrap_err();
+        assert!(error.contains("STRIPE_KEY"));
+        assert!(error.contains("development"));
+        assert!(error.contains("nothing was changed"));
     }
 
     #[test]

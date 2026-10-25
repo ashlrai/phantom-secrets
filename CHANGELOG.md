@@ -4,6 +4,20 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (Vercel sync matched variables by key only)
+
+- `phantom sync` to Vercel matched an existing variable by name alone, but
+  Vercel keeps one variable per name and environment set. When the name
+  existed only for another environment (say development), sync overwrote
+  that variable with the value meant for production and preview, reported
+  "updated", and never created it where it was configured. When production
+  and preview held separate variables, only the first one listed was
+  updated. Sync now updates every project-wide variable whose environments
+  lie inside the configured `targets`, creates one for the targets nothing
+  covers, leaves Git-branch-scoped preview variables alone, and refuses a
+  key (changing nothing for it) whose existing variable also applies to an
+  environment outside the targets.
+
 ### Fixed (audit log durability and key creation)
 
 - With `PHANTOM_AUDIT=1`, each audit line is now fsynced (and the directory
