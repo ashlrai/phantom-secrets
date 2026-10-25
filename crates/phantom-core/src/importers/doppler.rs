@@ -2,7 +2,7 @@
 //!
 //! Accepts two export formats produced by the Doppler CLI:
 //!
-//! 1. **Object format** (`doppler secrets download --no-file --format json`):
+//! 1. **Object format** (`doppler secrets --json`):
 //!    ```json
 //!    {
 //!      "STRIPE_KEY": {"raw": "sk_live_...", "computed": "sk_live_...", "note": ""},
@@ -10,12 +10,14 @@
 //!    }
 //!    ```
 //!
-//! 2. **Flat format** (also accepted — plain `{"KEY": "value"}` mapping):
+//! 2. **Flat format** (`doppler secrets download --no-file --format json`, a
+//!    plain `{"KEY": "value"}` mapping):
 //!    ```json
 //!    {"STRIPE_KEY": "sk_live_...", "DATABASE_URL": "postgres://..."}
 //!    ```
 //!
-//! Both formats are auto-detected by inspecting the first value in the object.
+//! The shape is recognised per entry: an object value is the nested form,
+//! a string, number or bool is the flat form.
 //! In the object format the resolved `computed` value is imported; `raw` keeps
 //! `${OTHER}` references unresolved and is used only when `computed` is null.
 
@@ -25,13 +27,14 @@ use zeroize::Zeroizing;
 
 use super::{
     json_scalar, parse_json_object_entries, refuse_duplicate_names, refuse_invalid_names,
-    unsupported_entry, Importer, SecretMap,
+    strip_utf8_bom, unsupported_entry, Importer, SecretMap,
 };
 
 pub struct DopplerImporter;
 
 impl Importer for DopplerImporter {
     fn parse(input: &[u8]) -> Result<SecretMap> {
+        let input = strip_utf8_bom(input);
         let obj = parse_json_object_entries(input)
             .map_err(|e| anyhow::anyhow!("Doppler JSON parse error: {}", e))?;
         // Meta-keys are skipped below, so only secret names must be unique.

@@ -18,6 +18,23 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   `argon2` `zeroize` feature scrubs its internal hash state. On-disk format,
   KDF parameters, and the legacy-parameter fallback are unchanged.
 
+### Fixed (competitor imports: BOM-prefixed JSON and one-pass name fixes)
+
+- `phantom import --from doppler|infisical|dotenvx|1password` refused a JSON
+  export that started with a UTF-8 byte-order mark, as Windows PowerShell 5.1
+  writes with `Out-File -Encoding utf8`; Infisical and dotenvx then misread
+  the JSON as a malformed `.env`. A single leading BOM is now ignored.
+- A JSON export with several names that are not environment keys (such as
+  Infisical keys `db-host` and `app.port`) was refused one name at a time.
+  The refusal now lists every such entry (up to 10, then a count) with a
+  suggested name, for example `"db-host" (rename to "db_host")`. Nothing is
+  renamed automatically and nothing is imported until the export is fixed.
+- The import format table in `docs/troubleshooting.md` described 1Password
+  input as `op item list` output (it is a flat `{"KEY": "value"}` object) and
+  left out Infisical's JSON array and dotenvx's JSON object. The 1Password
+  `jq` recipe produced several objects instead of one; it now builds one
+  object and stops on duplicate field labels.
+
 ### Fixed (MCP tools read `.phantom.toml` only as a regular file)
 
 - The MCP compliance `env_clean` check and `phantom_check` worktree scan

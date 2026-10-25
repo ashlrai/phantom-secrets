@@ -312,27 +312,83 @@ pub(crate) fn refuse_duplicate_names<'a>(
 
 /// Refuse an import in which any name is not an environment variable name
 /// (`[A-Za-z_][A-Za-z0-9_]*`, the rule `phantom add` enforces). A JSON export
-/// can carry any string as a name, such as a 1Password label (`API Key`) or
-/// a name containing `=`; vaulting it would report success for a secret that
-/// `phantom exec` can never inject. The error names the entry (escaped),
-/// never a value.
+/// can carry any string as a name, such as a 1Password label (`API Key`), an
+/// Infisical key with `-` or `.`, or a name containing `=`; vaulting it would
+/// report success for a secret that `phantom exec` can never inject.
+///
+/// The error lists every offending entry (escaped, bounded) with a suggested
+/// environment-safe name so one rename pass fixes the export. Nothing is
+/// renamed here: a silent rename could collide with, or shadow, another
+/// entry. The error names entries, never a value.
 pub(crate) fn refuse_invalid_names<'a>(
     source: &str,
     names: impl IntoIterator<Item = &'a str>,
 ) -> Result<()> {
-    for name in names {
-        let mut bytes = name.bytes();
-        let valid = matches!(bytes.next(), Some(b'A'..=b'Z' | b'a'..=b'z' | b'_'))
-            && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_');
-        if !valid {
-            anyhow::bail!(
-                "{source} entry {name:?} is not an environment variable name \
-                 ([A-Za-z_][A-Za-z0-9_]*); nothing was imported. \
-                 Rename it in the export and retry."
-            );
-        }
+    const MAX_LISTED: usize = 10;
+    let invalid: Vec<&str> = names
+        .into_iter()
+        .filter(|name| !is_env_var_name(name))
+        .collect();
+    if invalid.is_empty() {
+        return Ok(());
     }
-    Ok(())
+    let listed = invalid
+        .iter()
+        .take(MAX_LISTED)
+        .map(|name| describe_invalid_name(name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let more = match invalid.len().saturating_sub(MAX_LISTED) {
+        0 => String::new(),
+        extra => format!(", and {extra} more"),
+    };
+    let count = match invalid.len() {
+        1 => "1 entry".to_string(),
+        many => format!("{many} entries"),
+    };
+    anyhow::bail!(
+        "{source} has {count} whose name is not an environment variable name \
+         ([A-Za-z_][A-Za-z0-9_]*); nothing was imported: {listed}{more}. \
+         Rename them in the export to the variable your app reads and retry."
+    )
+}
+
+fn is_env_var_name(name: &str) -> bool {
+    let mut bytes = name.bytes();
+    matches!(bytes.next(), Some(b'A'..=b'Z' | b'a'..=b'z' | b'_'))
+        && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+}
+
+/// `"name" (rename to "suggestion")`, with long names shortened so a
+/// malformed export cannot produce an unbounded error message.
+fn describe_invalid_name(name: &str) -> String {
+    const MAX_SHOWN_CHARS: usize = 64;
+    let shorten = |text: &str| -> String {
+        if text.chars().count() > MAX_SHOWN_CHARS {
+            let head: String = text.chars().take(MAX_SHOWN_CHARS).collect();
+            format!("{head:?}...")
+        } else {
+            format!("{text:?}")
+        }
+    };
+    if name.is_empty() {
+        return "\"\" (give it a name)".to_string();
+    }
+    let mut suggestion: String = name
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    if suggestion.starts_with(|c: char| c.is_ascii_digit()) {
+        suggestion.insert(0, '_');
+    }
+    format!("{} (rename to {})", shorten(name), shorten(&suggestion))
+}
+
+/// Drop one leading UTF-8 byte-order mark. Windows PowerShell 5.1 writes one
+/// for `Out-File -Encoding utf8`; serde_json rejects it, and the content
+/// sniffers would otherwise misread a BOM-prefixed JSON export as dotenv.
+pub(crate) fn strip_utf8_bom(input: &[u8]) -> &[u8] {
+    input.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(input)
 }
 
 pub(crate) fn unsupported_entry(source: &str, name: &str, kind: &str) -> anyhow::Error {
@@ -405,12 +461,7 @@ pub(crate) fn env_importer(input: &[u8]) -> Result<SecretMap> {
         if entry.value.is_empty() {
             continue;
         }
-        if map.contains_key(&entry.key) {
-            eprintln!(
-                "warn: duplicate key '{}' in input — last value wins",
-                entry.key
-            );
-        }
+        // `validate_for_mutation` already refused any repeated name.
         map.insert(entry.key.clone(), Zeroizing::new(entry.value.clone()));
     }
     Ok(map)
@@ -654,5 +705,111 @@ mod secure_read_tests {
             let ok = parser(render("lower_ok_9", &held).as_bytes());
             assert!(ok.is_ok(), "{label} refused a valid environment key");
         }
+    }
+
+    #[test]
+    fn invalid_name_refusal_lists_every_offending_name_with_a_rename() {
+        // Infisical allows `-` and `.` in secret keys, so one export can hold
+        // many names that are not environment keys. Naming only the first one
+        // made users fix and retry once per entry; the refusal lists all of
+        // them (in source order) and suggests an environment-safe rename,
+        // without renaming anything itself.
+        let held = ["held", "-bad-", "value"].concat();
+        let input = format!(
+            r#"[{{"key":"GOOD_NAME","value":"x"}},{{"key":"db-host","value":"{held}"}},{{"key":"app.port","value":"{held}"}},{{"key":"9LIVES","value":"{held}"}}]"#
+        );
+        let outcome = infisical::InfisicalImporter::parse(input.as_bytes());
+        assert!(outcome.is_err(), "infisical accepted invalid names");
+        let message = outcome.err().map(|e| e.to_string()).unwrap_or_default();
+        for expected in [
+            "\"db-host\" (rename to \"db_host\")",
+            "\"app.port\" (rename to \"app_port\")",
+            "\"9LIVES\" (rename to \"_9LIVES\")",
+            "nothing was imported",
+            "3 entries",
+        ] {
+            assert!(message.contains(expected), "refusal lacks {expected:?}");
+        }
+        assert!(
+            !message.contains("GOOD_NAME"),
+            "refusal named a valid entry"
+        );
+        assert!(!message.contains("-bad-"), "refusal leaked an input value");
+    }
+
+    #[test]
+    fn invalid_name_refusal_is_bounded_for_huge_exports() {
+        let names: Vec<String> = (0..50).map(|index| format!("bad-{index}")).collect();
+        let error = refuse_invalid_names("Infisical", names.iter().map(String::as_str))
+            .err()
+            .map(|e| e.to_string())
+            .unwrap_or_default();
+        assert!(error.contains("50 entries"), "count missing");
+        assert!(error.contains("\"bad-0\""), "first name missing");
+        assert!(error.contains("and 40 more"), "overflow note missing");
+        assert!(!error.contains("\"bad-49\""), "list was not bounded");
+    }
+
+    #[test]
+    fn json_sources_accept_a_leading_utf8_bom() {
+        // Windows PowerShell 5.1 (`Out-File -Encoding utf8`, `Set-Content
+        // -Encoding UTF8`) writes a UTF-8 BOM. serde_json rejects it, and
+        // the infisical/dotenvx sniffers then misread a JSON export as dotenv.
+        let held = ["bom", "-held-", "value"].concat();
+        type Parser = fn(&[u8]) -> Result<SecretMap>;
+        let cases: [(&str, Parser, String); 4] = [
+            (
+                "1password",
+                onepassword::OnePasswordImporter::parse,
+                format!(r#"{{"BOM_NAME":"{held}"}}"#),
+            ),
+            (
+                "dotenvx",
+                dotenvx::DotenvxImporter::parse,
+                format!(r#"{{"BOM_NAME":"{held}"}}"#),
+            ),
+            (
+                "doppler",
+                doppler::DopplerImporter::parse,
+                format!(r#"{{"BOM_NAME":{{"computed":"{held}"}}}}"#),
+            ),
+            (
+                "infisical",
+                infisical::InfisicalImporter::parse,
+                format!(r#"[{{"key":"BOM_NAME","value":"{held}"}}]"#),
+            ),
+        ];
+        for (label, parser, body) in cases {
+            let input = format!("\u{feff}{body}");
+            let map = parser(input.as_bytes());
+            assert!(map.is_ok(), "{label} refused a BOM-prefixed export");
+            let map = map.unwrap_or_default();
+            assert!(
+                map.get("BOM_NAME").map(|v| v.as_str()) == Some(held.as_str()),
+                "{label} did not import the BOM-prefixed entry"
+            );
+            assert_eq!(map.len(), 1, "{label}");
+        }
+    }
+
+    #[test]
+    fn env_import_accepts_bom_crlf_and_export_prefix() {
+        let held = ["crlf", "-held-", "value"].concat();
+        let input = format!(
+            "\u{feff}export FIRST_NAME={held}\r\nSECOND_NAME=\"{held}\"\r\nEMPTY_NAME=\r\n"
+        );
+        let map = env_importer(input.as_bytes()).unwrap();
+        assert!(map.get("FIRST_NAME").map(|v| v.as_str()) == Some(held.as_str()));
+        assert!(map.get("SECOND_NAME").map(|v| v.as_str()) == Some(held.as_str()));
+        assert!(!map.contains_key("EMPTY_NAME"));
+    }
+
+    #[test]
+    fn env_import_refuses_duplicate_names() {
+        let error = env_importer(b"DUP_NAME=one\nDUP_NAME=two\n")
+            .err()
+            .map(|e| e.to_string())
+            .unwrap_or_default();
+        assert!(error.contains("duplicate") && error.contains("DUP_NAME"));
     }
 }

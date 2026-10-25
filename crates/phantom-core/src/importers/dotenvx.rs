@@ -35,13 +35,14 @@ use zeroize::Zeroizing;
 
 use super::{
     env_importer, json_scalar, parse_json_object_entries, refuse_duplicate_names,
-    refuse_invalid_names, Importer, SecretMap,
+    refuse_invalid_names, strip_utf8_bom, Importer, SecretMap,
 };
 
 pub struct DotenvxImporter;
 
 impl Importer for DotenvxImporter {
     fn parse(input: &[u8]) -> Result<SecretMap> {
+        let input = strip_utf8_bom(input);
         // Check if this looks like an encrypted .env.vault — refuse gracefully.
         if let Ok(text) = std::str::from_utf8(input) {
             let trimmed = text.trim_start();
