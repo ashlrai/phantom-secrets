@@ -4,6 +4,20 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (agent readiness recommends `phantom wrap` only when it would wrap something)
+
+- `phantom agent report`, `phantom agent status` and `phantom agent doctor`
+  kept their own "are scripts wrapped" check, separate from the one `phantom wrap`
+  uses, so the `package-scripts-not-wrapped` finding could recommend
+  `phantom wrap` for a package.json it leaves unchanged (only lint, test or
+  typecheck scripts; a shell command line such as
+  `NODE_ENV=development next dev`; a script already run through
+  `npx phantom-secrets@latest exec`; a user-owned `dev:raw`), and stayed
+  silent when one script was wrapped but a selected `build` or `predev` was
+  not. The finding now uses the same decision as `phantom wrap`: it is
+  reported exactly when `phantom wrap` with its default selection would wrap
+  at least one script. Its message now says so.
+
 ### Fixed (`phantom wrap` and MCP `phantom_wrap` pick the same scripts)
 
 - The CLI and the MCP tool each kept their own copy of the script selection,
