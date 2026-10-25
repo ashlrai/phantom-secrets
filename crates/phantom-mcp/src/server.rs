@@ -12,9 +12,9 @@ use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
 use crate::tools::helpers::{
-    config_invalid_err, internal_err, invalid_params_err, json_object_result, not_initialized_err,
-    report_result, require_approval_token, require_confirm, state_err, text_result, vault_init_err,
-    vault_read_err, NOT_INITIALIZED_NEXT_STEP,
+    config_invalid_err, internal_err, invalid_params_err, json_object_result, mcp_effects_enabled,
+    not_initialized_err, report_result, require_approval_token, require_confirm, state_err,
+    text_result, vault_init_err, vault_read_err, NOT_INITIALIZED_NEXT_STEP,
 };
 use crate::tools::params::{
     AddSecretInteractiveParams, AddSecretParams, ApplyExpiryPolicyParams, ApprovalParams,
@@ -476,6 +476,10 @@ impl PhantomMcpServer {
     /// authoritative re-check after approval, because state can change in
     /// between. `what` names the action, e.g. "copy from the source project".
     fn preflight_vault_names(&self, name: Option<&str>, what: &str) -> Result<(), McpError> {
+        if !mcp_effects_enabled() {
+            // Leave the refusal to require_approval_token's effects gate.
+            return Ok(());
+        }
         let (config, vault) = self.load_config_and_vault()?;
         self.require_readable_inventory(&config, vault.as_ref())?;
         let Some(name) = name else {
@@ -15842,6 +15846,16 @@ mod tests {
             });
             assert!(missing, "{tool} must refuse the missing name");
         }
+
+        // With effects off, the effects gate still answers first and the
+        // preflight never opens the vault.
+        // SAFETY: TestEnvironment holds the env lock and restores the value.
+        unsafe { std::env::remove_var("PHANTOM_MCP_EFFECTS") };
+        let disabled = copy("MISSING_API_KEY").err().is_some_and(|error| {
+            error.code == rmcp::model::ErrorCode::INVALID_PARAMS
+                && error.message.contains("disabled by default")
+        });
+        assert!(disabled, "effects gate must answer before the preflight");
 
         assert!(phantom_core::mcp_approval::list_pending_approvals()
             .unwrap()

@@ -9,6 +9,17 @@ fn effect_execution_enabled(value: Option<&str>) -> bool {
     value == Some(TRUSTED_TERMINAL_MODE)
 }
 
+/// Whether `require_approval_token` would get past its effects gate. Value-
+/// blind preflights call this first so a disabled server still answers with
+/// "disabled by default" and never opens the vault.
+pub fn mcp_effects_enabled() -> bool {
+    #[cfg(test)]
+    if std::env::var("PHANTOM_MCP_SKIP_APPROVAL").as_deref() == Ok("1") {
+        return true;
+    }
+    effect_execution_enabled(std::env::var(MCP_EFFECTS_ENV).ok().as_deref())
+}
+
 pub fn internal_err(msg: impl Into<String>) -> McpError {
     McpError::new(rmcp::model::ErrorCode::INTERNAL_ERROR, msg.into(), None)
 }
