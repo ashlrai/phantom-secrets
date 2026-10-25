@@ -4,6 +4,17 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (pre-commit code scan under common git config)
+
+- `phantom check --staged` (the pre-commit hook) reported clean for a
+  credential added to a staged code file when git was set to
+  `color.ui = always`, used an external diff tool (`diff.external`, as
+  difftastic's setup does), had a textconv driver for the file, or when the
+  check ran from a subdirectory (with or without `diff.relative`). The
+  added-line scan now asks git for a plain, uncolored, root-relative diff
+  with external diff and textconv turned off, so those settings no longer
+  hide a staged key.
+
 ### Fixed (init and workspace apply beside a locked file vault)
 
 - Rerunning `phantom init` to protect a new dotenv value, and
