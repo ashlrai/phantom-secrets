@@ -318,7 +318,12 @@ pub fn atomic_write_if_unchanged(
 /// A directory this call creates inside Phantom's state tree (one named
 /// `.phantom`, or any directory beneath one, such as `~/.phantom/shadows`) is
 /// created 0700 on Unix; other missing directories get ordinary umask
-/// permissions. Directories that already exist are never chmod-ed here.
+/// permissions. An existing Phantom state directory on the way to `path`
+/// that is a real directory owned by the current user is tightened to 0700
+/// if it has group or other bits; one owned by someone else, or any state
+/// directory reached through a symlinked `.phantom` ancestor, is left as it
+/// is. Existing directories outside a `.phantom` tree (the home directory or
+/// project root) are never chmod-ed.
 pub fn ensure_real_parent(path: &Path) -> io::Result<()> {
     let parent = path.parent().ok_or_else(|| {
         io::Error::new(
@@ -373,6 +378,8 @@ pub fn ensure_real_parent(path: &Path) -> io::Result<()> {
             Err(error) => return Err(error),
         }
     }
+    #[cfg(unix)]
+    tighten_phantom_state_dirs(parent)?;
     Ok(())
 }
 
@@ -383,6 +390,73 @@ fn is_phantom_state_path(path: &Path) -> bool {
     path.components().any(
         |component| matches!(component, std::path::Component::Normal(name) if name == ".phantom"),
     )
+}
+
+/// Tighten every existing Phantom state directory from the outermost
+/// `.phantom` down to `directory` (inclusive) to 0700, so state written by an
+/// older release under a 0755 `~/.phantom` stops being listable by other
+/// local users. Walks top-down and stops at the first symlink or
+/// non-directory, so nothing reached through a redirected `.phantom` tree is
+/// chmod-ed. Directories above the `.phantom` component are never touched.
+#[cfg(unix)]
+fn tighten_phantom_state_dirs(directory: &Path) -> io::Result<()> {
+    // `~/.phantom/..` names the home directory, not Phantom state.
+    if directory
+        .components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return Ok(());
+    }
+    let mut chain: Vec<&Path> = directory
+        .ancestors()
+        .take_while(|ancestor| is_phantom_state_path(ancestor))
+        .collect();
+    chain.reverse();
+    for state_directory in chain {
+        match std::fs::symlink_metadata(state_directory) {
+            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+            _ => return Ok(()),
+        }
+        match tighten_owned_directory(state_directory) {
+            Ok(()) => {}
+            // Swapped for a symlink or non-directory since the lookup: stop
+            // without chmod-ing anything beneath it.
+            Err(error)
+                if matches!(
+                    error.raw_os_error(),
+                    Some(libc::ELOOP) | Some(libc::ENOTDIR)
+                ) =>
+            {
+                return Ok(())
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
+/// Chmod `path` to 0700 if it is a real directory owned by the current user
+/// with any group or other bits. The check and the chmod go through one
+/// `O_NOFOLLOW` handle so a swap after the caller's lookup cannot redirect
+/// the chmod; a directory owned by someone else is left as it is.
+#[cfg(unix)]
+fn tighten_owned_directory(path: &Path) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    let directory = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(path)?;
+    let metadata = directory.metadata()?;
+    // SAFETY: geteuid has no preconditions and cannot fail.
+    let owned = metadata.uid() == unsafe { libc::geteuid() };
+    if owned && metadata.mode() & 0o077 != 0 {
+        // SAFETY: the descriptor is owned by `directory` and open.
+        if unsafe { libc::fchmod(directory.as_raw_fd(), 0o700) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok(())
 }
 
 /// Create `path` as a new file holding `contents`, never replacing anything.
@@ -409,7 +483,8 @@ pub fn write_new_file(path: &Path, contents: &[u8]) -> io::Result<()> {
 ///
 /// Missing ancestors are created as [`ensure_real_parent`] does (0700 when
 /// they are inside a `.phantom` tree, so `~/.phantom/shadows/<project>`
-/// leaves `~/.phantom` and `~/.phantom/shadows` private too); the final
+/// leaves `~/.phantom` and `~/.phantom/shadows` private too, and existing
+/// owned ones are tightened); the final
 /// directory is created with mode 0700 on Unix. A symlink or non-directory at
 /// `path` is refused. An existing directory owned by the current user is
 /// tightened to 0700; one owned by someone else is left as it is.
@@ -433,26 +508,10 @@ pub fn ensure_private_dir(path: &Path) -> io::Result<()> {
             path.display()
         )));
     }
+    // Judge and repair through one handle so a swap after the lookup above
+    // cannot redirect the chmod.
     #[cfg(unix)]
-    {
-        use std::os::fd::AsRawFd;
-        use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
-        // Judge and repair through one handle so a swap after the lookup
-        // above cannot redirect the chmod.
-        let directory = std::fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
-            .open(path)?;
-        let metadata = directory.metadata()?;
-        // SAFETY: geteuid has no preconditions and cannot fail.
-        let owned = metadata.uid() == unsafe { libc::geteuid() };
-        if owned && metadata.mode() & 0o077 != 0 {
-            // SAFETY: the descriptor is owned by `directory` and open.
-            if unsafe { libc::fchmod(directory.as_raw_fd(), 0o700) } != 0 {
-                return Err(io::Error::last_os_error());
-            }
-        }
-    }
+    tighten_owned_directory(path)?;
     Ok(())
 }
 
@@ -836,6 +895,113 @@ mod tests {
         let lookalike = dir.path().join("x.phantom").join("sub");
         ensure_real_parent(&lookalike.join("f")).unwrap();
         assert_eq!(mode(&lookalike), ordinary);
+    }
+
+    /// An existing Phantom state directory left group/other accessible (by an
+    /// older release or a loose umask) is tightened to 0700 when a file is
+    /// written beneath it. The directory above the `.phantom` tree (the home
+    /// or project root) keeps its mode.
+    #[cfg(unix)]
+    #[test]
+    fn ensure_real_parent_tightens_existing_phantom_state_parents() {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        let dir = TempDir::new().unwrap();
+        let home = dir.path().join("home");
+        let state = home.join(".phantom");
+        let backups = state.join("backups");
+        std::fs::create_dir_all(&backups).unwrap();
+        std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o751)).unwrap();
+        std::fs::set_permissions(&state, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(&backups, std::fs::Permissions::from_mode(0o775)).unwrap();
+
+        ensure_real_parent(&backups.join("manifest.json")).unwrap();
+        assert_eq!(mode(&home), 0o751);
+        assert_eq!(mode(&state), 0o700);
+        assert_eq!(mode(&backups), 0o700);
+
+        // A file directly inside an existing project `.phantom`.
+        let project = dir.path().join("project");
+        let project_state = project.join(".phantom");
+        std::fs::create_dir_all(&project_state).unwrap();
+        std::fs::set_permissions(&project, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(&project_state, std::fs::Permissions::from_mode(0o755)).unwrap();
+        atomic_write(&project_state.join("env"), b"dev").unwrap();
+        assert_eq!(mode(&project), 0o755);
+        assert_eq!(mode(&project_state), 0o700);
+
+        // A `..` step out of the state tree never tightens what it names.
+        let sibling = home.join("x");
+        std::fs::create_dir(&sibling).unwrap();
+        std::fs::set_permissions(&sibling, std::fs::Permissions::from_mode(0o755)).unwrap();
+        ensure_real_parent(&state.join("..").join("x").join("f")).unwrap();
+        assert_eq!(mode(&home), 0o751);
+        assert_eq!(mode(&sibling), 0o755);
+
+        // Directories outside a `.phantom` tree are never tightened.
+        let plain = dir.path().join("plain");
+        std::fs::create_dir(&plain).unwrap();
+        std::fs::set_permissions(&plain, std::fs::Permissions::from_mode(0o755)).unwrap();
+        ensure_real_parent(&plain.join("report.txt")).unwrap();
+        assert_eq!(mode(&plain), 0o755);
+    }
+
+    /// `ensure_private_dir` tightens an existing loose `~/.phantom` (and an
+    /// intermediate state directory) on the way to a nested store, not only
+    /// the final directory.
+    #[cfg(unix)]
+    #[test]
+    fn ensure_private_dir_tightens_existing_phantom_ancestors() {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        let dir = TempDir::new().unwrap();
+        let home = dir.path().join("home");
+        let state = home.join(".phantom");
+        let shadows = state.join("shadows");
+        std::fs::create_dir_all(&shadows).unwrap();
+        std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(&state, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(&shadows, std::fs::Permissions::from_mode(0o750)).unwrap();
+
+        let store = shadows.join("project");
+        ensure_private_dir(&store).unwrap();
+        assert_eq!(mode(&home), 0o755);
+        assert_eq!(mode(&state), 0o700);
+        assert_eq!(mode(&shadows), 0o700);
+        assert_eq!(mode(&store), 0o700);
+    }
+
+    /// A symlinked `.phantom` is still refused and its target is never
+    /// chmod-ed, whether it is the file's parent or a further ancestor.
+    #[cfg(unix)]
+    #[test]
+    fn existing_phantom_state_symlink_is_refused_and_target_untouched() {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        let dir = TempDir::new().unwrap();
+        let elsewhere = dir.path().join("elsewhere");
+        std::fs::create_dir_all(elsewhere.join("sub")).unwrap();
+        std::fs::set_permissions(&elsewhere, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(
+            elsewhere.join("sub"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+        let home = dir.path().join("home");
+        std::fs::create_dir(&home).unwrap();
+        let state = home.join(".phantom");
+        std::os::unix::fs::symlink(&elsewhere, &state).unwrap();
+
+        assert!(ensure_real_parent(&state.join("audit.log")).is_err());
+        assert!(ensure_private_dir(&state).is_err());
+        assert_eq!(mode(&elsewhere), 0o755);
+
+        // Below a symlinked `.phantom`, nothing in the redirected tree is
+        // tightened either.
+        let _ = ensure_real_parent(&state.join("sub").join("f"));
+        let _ = ensure_private_dir(&state.join("sub"));
+        assert_eq!(mode(&elsewhere), 0o755);
+        assert_eq!(mode(&elsewhere.join("sub")), 0o755);
     }
 
     #[test]
