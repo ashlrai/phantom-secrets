@@ -1036,6 +1036,11 @@ impl PhantomMcpServer {
                 "Managed dotenv is malformed; initialization made no changes: {error}"
             ))
         })?;
+        if let Some(entry) = dotenv.dotenvx_encrypted_entry() {
+            return Err(invalid_params_err(
+                phantom_core::dotenv::dotenvx_ciphertext_refusal(entry),
+            ));
+        }
 
         let params_json = serde_json::to_string(&params).unwrap_or_default();
         require_approval_token(
@@ -10573,6 +10578,35 @@ mod tests {
         assert!(!env_content.contains("sk-test-key"));
         // NODE_ENV should be unchanged
         assert!(env_content.contains("NODE_ENV=production"));
+    }
+
+    #[test]
+    fn test_init_refuses_dotenvx_ciphertext_without_mutation() {
+        let _environment = TestEnvironment::new();
+        let (server, dir) = setup_test_project();
+        let public = ["03", "fakepublicplaceholder"].concat();
+        let sealed = ["encrypted:", "BFakeCipher", "PlaceholderOnly=="].concat();
+        let original = format!("DOTENV_PUBLIC_KEY=\"{public}\"\nOPENAI_API_KEY=\"{sealed}\"\n");
+        std::fs::write(dir.path().join(".env"), &original).unwrap();
+
+        let error = server
+            .phantom_init(Parameters(InitParams {
+                env_path: ".env".to_string(),
+                confirm: true,
+                approval_token: None,
+            }))
+            .unwrap_err();
+
+        assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        assert!(error.message.contains("'OPENAI_API_KEY'"));
+        assert!(error.message.contains("dotenvx decrypt"));
+        assert!(!error.message.contains("BFakeCipher"));
+        assert!(!error.message.contains("fakepublicplaceholder"));
+        assert!(
+            std::fs::read_to_string(dir.path().join(".env")).unwrap() == original,
+            "encrypted dotenv was rewritten"
+        );
+        assert!(!dir.path().join(".phantom.toml").exists());
     }
 
     #[test]

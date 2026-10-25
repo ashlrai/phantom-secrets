@@ -712,6 +712,9 @@ impl SetupTransactionParticipant for VaultSetupParticipant {
             dotenv
                 .validate_for_mutation()
                 .map_err(|_| ParticipantError::new("approved_env_malformed"))?;
+            if dotenv.dotenvx_encrypted_entry().is_some() {
+                return Err(ParticipantError::new("approved_env_dotenvx_encrypted"));
+            }
             let approved_names = action.key_names.iter().collect::<BTreeSet<_>>();
             let mut found = BTreeSet::new();
             for entry in dotenv.entries() {
@@ -1505,6 +1508,46 @@ mod tests {
         let verify = FileVault::new(
             &crate::test_support::canonical_tempdir_path(&vault_dir),
             "divergent",
+            "workspace-test-passphrase".to_string(),
+        )
+        .unwrap();
+        assert!(verify.list().unwrap().is_empty());
+    }
+
+    #[test]
+    fn dotenvx_encrypted_env_fails_without_vault_or_file_changes() {
+        // dotenvx 1.x in-place ciphertext cannot be decrypted by Phantom;
+        // vaulting it would replace the encrypted file with tokens that
+        // resolve to noise. Fake values are joined from fragments.
+        let workspace = TempDir::new().unwrap();
+        let vault_dir = TempDir::new().unwrap();
+        let public = ["03", "fakepublicplaceholder"].concat();
+        let sealed = ["encrypted:", "BFakeCipher", "PlaceholderOnly=="].concat();
+        let content = format!("DOTENV_PUBLIC_KEY=\"{public}\"\nOPENAI_API_KEY=\"{sealed}\"\n");
+        write(workspace.path().join(".env"), &content);
+        let key = seal_key();
+        let sealed_plan = build_sealed_setup_plan(workspace.path(), &key).unwrap();
+        let mut participant = VaultSetupParticipant::with_vault(
+            workspace.path(),
+            test_vault(vault_dir.path(), "dotenvx"),
+            false,
+        );
+
+        let error = apply_setup_plan(&sealed_plan, &key, &mut participant).unwrap_err();
+        assert!(matches!(
+            error,
+            WorkspaceError::Participant {
+                code: "approved_env_dotenvx_encrypted",
+                ..
+            }
+        ));
+        assert!(
+            std::fs::read_to_string(workspace.path().join(".env")).unwrap() == content,
+            "encrypted dotenv was rewritten"
+        );
+        let verify = FileVault::new(
+            &crate::test_support::canonical_tempdir_path(&vault_dir),
+            "dotenvx",
             "workspace-test-passphrase".to_string(),
         )
         .unwrap();

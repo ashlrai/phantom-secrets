@@ -334,6 +334,34 @@ impl DotenvFile {
         Ok(())
     }
 
+    /// Return the key of the first value dotenvx 1.x encrypted in place.
+    ///
+    /// dotenvx writes a `DOTENV_PUBLIC_KEY` (or `DOTENV_PUBLIC_KEY_<ENV>`)
+    /// header and `KEY="encrypted:..."` values. Phantom has no private key,
+    /// so those values are ciphertext: vaulting them would replace a working
+    /// encrypted file with phm_ tokens that resolve to noise at exec/proxy
+    /// time. The check is header-gated, so an ordinary value that merely
+    /// starts with `encrypted:` is not flagged. Only the key is returned,
+    /// never a value.
+    pub fn dotenvx_encrypted_entry(&self) -> Option<&str> {
+        let entries = self.entries();
+        if !entries
+            .iter()
+            .any(|entry| is_dotenvx_public_key_name(&entry.key))
+        {
+            return None;
+        }
+        entries
+            .into_iter()
+            .find(|entry| {
+                entry
+                    .value
+                    .trim_start()
+                    .starts_with(DOTENVX_ENCRYPTED_PREFIX)
+            })
+            .map(|entry| entry.key.as_str())
+    }
+
     /// Remove exactly one Phantom-owned mapping while preserving every other
     /// safely round-trippable source line byte-for-byte. Plaintext entries,
     /// duplicate keys, and unrelated entries whose raw representation cannot
@@ -558,6 +586,32 @@ impl DotenvFile {
 
 /// Canonical portable environment-variable name accepted for newly appended
 /// mappings and provider-returned secret names.
+/// Prefix dotenvx 1.x writes in front of every value it encrypts in place.
+const DOTENVX_ENCRYPTED_PREFIX: &str = "encrypted:";
+
+/// Key (or key prefix, for `DOTENV_PUBLIC_KEY_<ENV>`) of the header dotenvx
+/// 1.x writes into every `.env` it encrypts in place.
+pub const DOTENVX_PUBLIC_KEY_NAME: &str = "DOTENV_PUBLIC_KEY";
+
+fn is_dotenvx_public_key_name(key: &str) -> bool {
+    key == DOTENVX_PUBLIC_KEY_NAME
+        || key
+            .strip_prefix(DOTENVX_PUBLIC_KEY_NAME)
+            .is_some_and(|rest| rest.starts_with('_'))
+}
+
+/// Value-free refusal for a dotenv that dotenvx 1.x encrypted in place.
+/// Names the entry (from [`DotenvFile::dotenvx_encrypted_entry`]) and the
+/// remedy; never a value.
+pub fn dotenvx_ciphertext_refusal(entry: &str) -> String {
+    format!(
+        "Entry '{entry}' is still dotenvx-encrypted (the file has a \
+         {DOTENVX_PUBLIC_KEY_NAME} header); initialization made no changes.\n\
+         Run `dotenvx decrypt` first (or `dotenvx decrypt --stdout > .env.decrypted` \
+         and initialize from that file), then run Phantom again."
+    )
+}
+
 pub fn is_canonical_env_name(name: &str) -> bool {
     let mut bytes = name.bytes();
     matches!(bytes.next(), Some(b'A'..=b'Z' | b'a'..=b'z' | b'_'))
@@ -1030,6 +1084,52 @@ fn generate_placeholder(key: &str, config: Option<&crate::config::PhantomConfig>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn dotenvx_source(header_key: &str, sealed_key: &str) -> String {
+        let public = ["03", "fakepublicplaceholder"].concat();
+        let sealed = ["encrypted:", "BFakeCipher", "PlaceholderOnly=="].concat();
+        format!(
+            "#/---[DOTENV_PUBLIC_KEY]---/\n\
+             {header_key}=\"{public}\"\n\
+             NODE_ENV=development\n\
+             {sealed_key}=\"{sealed}\"\n"
+        )
+    }
+
+    #[test]
+    fn dotenvx_encrypted_entry_names_the_sealed_key_under_a_header() {
+        for header in ["DOTENV_PUBLIC_KEY", "DOTENV_PUBLIC_KEY_PRODUCTION"] {
+            let dotenv = DotenvFile::parse_str(&dotenvx_source(header, "OPENAI_API_KEY"));
+            assert_eq!(
+                dotenv.dotenvx_encrypted_entry(),
+                Some("OPENAI_API_KEY"),
+                "header {header} not recognized"
+            );
+        }
+    }
+
+    #[test]
+    fn dotenvx_encrypted_entry_is_header_gated() {
+        // Without the dotenvx header the prefix alone is not proof of
+        // ciphertext, and a look-alike header name does not count.
+        let sealed = ["encrypted:", "Fake", "Placeholder"].concat();
+        let plain = DotenvFile::parse_str(&format!("OPENAI_API_KEY={sealed}\n"));
+        assert_eq!(plain.dotenvx_encrypted_entry(), None);
+        let lookalike = DotenvFile::parse_str(&dotenvx_source("DOTENV_PUBLIC_KEYS", "API_KEY"));
+        assert_eq!(lookalike.dotenvx_encrypted_entry(), None);
+        // A header with only decrypted values is fine.
+        let decrypted = DotenvFile::parse_str("DOTENV_PUBLIC_KEY=\"03abc\"\nAPI_KEY=value\n");
+        assert_eq!(decrypted.dotenvx_encrypted_entry(), None);
+    }
+
+    #[test]
+    fn dotenvx_ciphertext_refusal_names_entry_and_remedy_only() {
+        let message = dotenvx_ciphertext_refusal("OPENAI_API_KEY");
+        assert!(message.contains("'OPENAI_API_KEY'"));
+        assert!(message.contains("dotenvx decrypt"));
+        assert!(message.contains("made no changes"));
+        assert!(!message.contains("encrypted:"));
+    }
 
     #[test]
     fn generated_example_placeholders_are_recognized() {
