@@ -4,6 +4,32 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (cloud push no longer copies a secret demoted to read-only; team push refuses before consent)
+
+- `phantom cloud push` and `phantom_cloud_push` read every value with a plain
+  vault retrieve, so a secret the expiry policy demoted to read-only was
+  copied into the cloud snapshot, and every machine that later pulled it
+  stored it read-write, where `phantom exec` injects it. Both now refuse the
+  whole push when any entry is read-only or its lifecycle metadata cannot be
+  read, naming entries only: the CLI before the trusted-terminal prompt and
+  again after it, and MCP before the one-use approval is requested or
+  consumed and again after it, in both cases before any value read, cloud
+  passphrase access or network call. Values are then read with the injection
+  check, so an entry demoted after the gate is never sent. Rotate or promote
+  the entry, then push again.
+- `phantom team vault-push` asked for the trusted-terminal confirmation and
+  only then refused an overdue enforced secret, a read-only entry or
+  unreadable lifecycle metadata, so the user typed the confirmation for a push
+  that could not run. These refusals now come before the prompt, from names
+  and metadata alone, and run again after it before any value read.
+- The read-only lifecycle refusal is one shared function in
+  `phantom_vault::rotation_gate` used by `phantom sync`, `phantom_sync`'s
+  `live_gate_refusal`, team push and cloud push in the CLI and MCP, so their
+  wording cannot drift. Messages are unchanged for sync and team push.
+- Unchanged: `phantom reveal` (a trusted-terminal human read), encrypted
+  export, and `phantom env copy`, whose copy keeps the source entry's
+  read-only mode.
+
 ### Fixed (`phantom wrap` no longer breaks scripts that are a shell command line)
 
 - `phantom wrap` and MCP `phantom_wrap` prefixed each selected script with

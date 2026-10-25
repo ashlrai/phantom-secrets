@@ -1756,6 +1756,13 @@ impl PhantomMcpServer {
             CLOUD_PUSH_ACTION,
             phantom_vault::rotation_gate::now_secs(),
         )?;
+        // A pulled copy is stored read-write: a secret demoted to read-only
+        // must not reach the cloud snapshot either.
+        crate::tools::helpers::refuse_read_only_entries(
+            vault.as_ref(),
+            names.iter().map(String::as_str),
+            CLOUD_PUSH_ACTION,
+        )?;
 
         let version = config
             .cloud
@@ -1793,11 +1800,18 @@ impl PhantomMcpServer {
             CLOUD_PUSH_ACTION,
             phantom_vault::rotation_gate::now_secs(),
         )?;
+        crate::tools::helpers::refuse_read_only_entries(
+            vault.as_ref(),
+            names.iter().map(String::as_str),
+            CLOUD_PUSH_ACTION,
+        )?;
 
         let mut secrets = BTreeMap::new();
         for name in &names {
+            // The injection read re-checks the mode atomically with the
+            // value read, so an entry demoted after the gate is never sent.
             let value = vault
-                .retrieve(name)
+                .retrieve_for_injection(name)
                 .map_err(|e| internal_err(format!("Failed to retrieve secret: {e}")))?;
             secrets.insert(name.clone(), String::from(value.as_str()));
         }
@@ -6993,29 +7007,12 @@ fn sync_live_gate_refusal<'n>(
         // The variant names the secret, never a value or the cause text.
         Err(error) => return Some(format!("Refusing to sync: {error}.")),
     }
-    let mut read_only = Vec::new();
-    for name in selected {
-        match vault.get_metadata(name) {
-            Ok(metadata) => {
-                if metadata.is_some_and(|metadata| metadata.vault_mode.is_read_only()) {
-                    read_only.push(format!("'{name}'"));
-                }
-            }
-            Err(_) => {
-                return Some(format!(
-                    "Refusing to sync: could not read lifecycle metadata for '{name}'."
-                ));
-            }
-        }
-    }
-    if read_only.is_empty() {
-        return None;
-    }
-    Some(format!(
-        "Refusing to sync: {} secret(s) are read-only under their lifecycle policy: {}. Rotate or promote them before pushing to a deployment platform.",
-        read_only.len(),
-        read_only.join(", ")
-    ))
+    phantom_vault::rotation_gate::read_only_refusal(
+        vault,
+        selected,
+        "sync",
+        "Rotate or promote them before pushing to a deployment platform.",
+    )
 }
 
 /// Split vault names into the ones a sync target's `only` globs select and
@@ -9188,7 +9185,7 @@ mod tests {
             + push[approval..]
                 .find("CLOUD_PUSH_ACTION")
                 .expect("cloud push must re-gate after approval");
-        let read = push.find(".retrieve(name)").unwrap();
+        let read = push.find(".retrieve_for_injection(name)").unwrap();
         assert!(first_gate < approval);
         assert!(second_gate < read);
     }
@@ -11172,6 +11169,58 @@ mod tests {
         let passed_gate = match push() {
             Ok(_) => true,
             Err(error) => !error.message.starts_with("Refusing to push the team vault"),
+        };
+        assert!(passed_gate, "read-write secrets must pass the gate");
+    }
+
+    /// `phantom_cloud_push` read values with a plain retrieve, so a secret
+    /// the expiry policy demoted to read-only was copied into the cloud
+    /// snapshot and came back read-write on every machine that pulled it. The
+    /// push is now refused before approval or any value read, naming the
+    /// entry only; unreadable lifecycle metadata refuses too.
+    #[test]
+    fn cloud_push_refuses_read_only_entries() {
+        let _environment = TestEnvironment::new();
+        let _home = TestHome::new();
+        let (server, _dir) = setup_initialized_project();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let push = || {
+            runtime
+                .block_on(server.phantom_cloud_push(params(serde_json::json!({ "confirm": true }))))
+        };
+        let (_config, vault) = server.load_config_and_vault().unwrap();
+        let set_mode = |mode: phantom_vault::metadata::VaultMode| {
+            let mut metadata = vault
+                .get_metadata("OPENAI_API_KEY")
+                .unwrap()
+                .unwrap_or_default();
+            metadata.vault_mode = mode;
+            vault.set_metadata("OPENAI_API_KEY", metadata).unwrap();
+        };
+
+        set_mode(phantom_vault::metadata::VaultMode::ReadOnly);
+        let Err(error) = push() else {
+            panic!("a read-only secret was pushed to the cloud vault");
+        };
+        assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_REQUEST);
+        assert!(error
+            .message
+            .starts_with("Refusing to push to Phantom Cloud: 1 secret(s) are read-only"));
+        assert!(error.message.contains("'OPENAI_API_KEY'"));
+        assert!(!error.message.contains("'DATABASE_URL'"));
+        assert!(phantom_core::mcp_approval::list_pending_approvals()
+            .unwrap()
+            .is_empty());
+
+        set_mode(phantom_vault::metadata::VaultMode::ReadWrite);
+        let passed_gate = match push() {
+            Ok(_) => true,
+            Err(error) => !error
+                .message
+                .starts_with("Refusing to push to Phantom Cloud"),
         };
         assert!(passed_gate, "read-write secrets must pass the gate");
     }
