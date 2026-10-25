@@ -4,6 +4,24 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (mapped upstream URIs keep the path-auth base; `Content-Location` and `Link` are mapped too)
+
+- A route reached through the `/<route>/_phantom/<session token>/` base URL
+  got its upstream redirects mapped to `/<route>/...`, which drops that base,
+  so the client's follow-up request was refused as unauthenticated. Mapped
+  URIs are now written relative to the request URL (for example
+  `../v1/files/abc`), so the client resolves them under its own
+  authenticated base and the proxy never echoes the session token, let
+  alone a vault value, in a response header. A target with no exact
+  relative form (the bare route base, or one whose dot segments would climb
+  out of the base) falls back to `/<route>/...`, which fails closed with 401.
+- `Content-Location` and every `<target>` of a `Link` header that names the
+  route's own upstream are now mapped exactly like `Location`, so an
+  upstream origin URL (for example a pagination `rel="next"` link) no longer
+  reaches the client and sends it around the proxy. Targets on other
+  origins, relative references, and `Link` parameters are left unchanged;
+  a `Link` header that does not parse is forwarded as is.
+
 ### Fixed (every remaining CLI command reads `.phantom.toml` only as a regular file)
 
 - `phantom list`, `reveal`, `status`, `watch`, `add` (and `copy`), `expiry`
