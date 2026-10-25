@@ -4,6 +4,28 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (proxy lifecycle and workspace setup locks never follow a planted symlink)
+
+- The workspace setup lock lived in a shared temp-dir folder
+  (`phantom-workspace-locks`) created with `create_dir_all` and umask
+  permissions, and its `<digest>.lock` file was opened with `O_CREAT`
+  following symlinks. On a shared `/tmp`, another local user could pre-create
+  that folder and plant a predictable link, so Phantom would create or open an
+  arbitrary file the user can write. The folder is now created 0700 and must
+  be a real directory owned by the current user with no group or other
+  access (an owned one is tightened through a no-follow descriptor), and the
+  lock file is opened relative to that descriptor with `O_NOFOLLOW`.
+- The proxy lifecycle lock directory was chmod-ed by path after a separate
+  symlink check, and its app directory (for example
+  `~/.local/share/phantom-secrets`) was created with umask permissions and
+  followed if it was a symlink. Both Phantom-owned directories are now
+  created 0700, refused when they are symlinks or non-directories, and
+  tightened through a no-follow descriptor. A symlinked `~/.local/share` or
+  `XDG_DATA_HOME` (or temp directory) is still followed as before.
+- New `phantom_core::fs::ensure_private_leaf_dir` holds the shared
+  final-component routine; `ensure_private_dir` now calls it after its
+  parent-chain checks.
+
 ### Fixed (workspace-request and MCP approval state dirs use the shared private-dir helper; `.env.example` presence is never followed)
 
 - The workspace-request store (`~/.phantom/workspace-requests`, the setup
