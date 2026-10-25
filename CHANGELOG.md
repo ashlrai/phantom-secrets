@@ -16,6 +16,33 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   silently ignored, falling back to the global policy or to no schedule. It is
   now a config error naming the secret's section, without echoing the value.
 
+### Fixed (Vercel pull mixed values from different environments)
+
+- `phantom pull --from vercel` read every Vercel variable for a name and kept
+  whichever was listed last, so when a name existed as separate variables
+  for several environments (say production and development) a pull could
+  store the development value where production was expected, with no
+  warning. Pull now keeps only project-wide variables that apply to the
+  configured `targets` (those of the Vercel `[[sync]]` entry for the
+  project, or production and preview when none names it, the same default
+  `phantom sync` uses), and skips Git-branch-scoped preview variables. If
+  several such variables for one name do not carry the same value, the pull
+  is refused before any local change, naming the key and its environments,
+  never a value. The approval plan now lists those `targets`. A name with a
+  single matching variable is pulled as before; a name that exists only for
+  environments outside the targets is no longer pulled.
+
+### Fixed (browser-prefixed keys holding a private key or URL password)
+
+- `phantom init` left a PEM private key or a connection URL with a password
+  (`postgres://user:pass@host`, `redis://:pass@host`) in plaintext when its
+  key had a framework public prefix (`NEXT_PUBLIC_`, `VITE_`, `REACT_APP_`,
+  `EXPO_PUBLIC_`, `NUXT_PUBLIC_`, `GATSBY_`), because only a short list of
+  vendor key prefixes overrode the public classification. Those values are
+  now classified as secrets and replaced with phantom tokens. Certificates,
+  public keys, public JWTs such as a Supabase anon key, and URLs without a
+  password stay public.
+
 ### Fixed (pre-commit scan by staged entry type)
 
 - `phantom check --staged` skipped every type-changed path (status `T`), so
