@@ -387,12 +387,25 @@ fn print_findings(findings: &[Finding]) {
 /// The same scan list as the MCP compliance `env_clean` check
 /// ([`phantom_core::managed_dotenv::SCANNED_DOTENV_NAMES`] plus the configured
 /// `dotenv_path`), so the two cannot disagree about which files exist.
+///
+/// `.phantom.toml` is read only as a regular, non-symlink file. A symlink
+/// (dangling or not) is never "no config": the `dotenv_path` it would name is
+/// unknown, and following it reads a file that may lie outside the project. A
+/// FIFO or device is refused before it is opened, so it cannot hang the check.
 fn dotenv_scan_paths(project_dir: &Path) -> Result<Vec<PathBuf>> {
     let config_path = project_dir.join(".phantom.toml");
-    let configured = if config_path.exists() {
-        PhantomConfig::load(&config_path)?.phantom.dotenv_path
-    } else {
-        None
+    let bytes = phantom_core::fs::read_regular_file(&config_path).map_err(|_| {
+        anyhow::anyhow!(
+            "Refusing .phantom.toml that is not a readable regular, non-symlink file; clean status is indeterminate"
+        )
+    })?;
+    let configured = match bytes {
+        Some(bytes) => {
+            PhantomConfig::load_from_bytes(&config_path, &bytes)?
+                .phantom
+                .dotenv_path
+        }
+        None => None,
     };
     phantom_core::managed_dotenv::scanned_dotenv_paths(project_dir, configured.as_deref())
 }
@@ -962,6 +975,89 @@ mod tests {
         config.phantom.dotenv_path = Some("custom.env".to_string());
         config.save(&dir.path().join(".phantom.toml")).unwrap();
         assert!(dotenv_scan_paths(dir.path()).is_err());
+    }
+
+    /// A `.phantom.toml` symlink, even a dangling one, is not "no config":
+    /// the configured `dotenv_path` it may name is unknown, so a credential in
+    /// that regular file would be missed by a clean report.
+    #[cfg(unix)]
+    #[test]
+    fn dangling_config_symlink_is_refused_not_treated_as_absent() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("prod.env"),
+            "OPENAI_API_KEY=example-value\n",
+        )
+        .unwrap();
+        symlink("missing.toml", dir.path().join(".phantom.toml")).unwrap();
+        let message = format!("{:#}", dotenv_scan_paths(dir.path()).unwrap_err());
+        assert!(message.contains(".phantom.toml"), "unexpected refusal text");
+        assert!(message.contains("non-symlink"), "unexpected refusal text");
+    }
+
+    /// A `.phantom.toml` symlink to another project's config must not be read:
+    /// that file lies outside this project and would choose the scan list.
+    #[cfg(unix)]
+    #[test]
+    fn config_symlink_outside_the_project_is_not_read() {
+        use std::os::unix::fs::symlink;
+        let outside = tempfile::tempdir().unwrap();
+        let mut config = PhantomConfig::new_with_defaults("check-outside".to_string());
+        config.phantom.dotenv_path = Some("prod.env".to_string());
+        config.save(&outside.path().join(".phantom.toml")).unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("prod.env"), "PORT=3000\n").unwrap();
+        symlink(
+            outside.path().join(".phantom.toml"),
+            dir.path().join(".phantom.toml"),
+        )
+        .unwrap();
+        let message = format!("{:#}", dotenv_scan_paths(dir.path()).unwrap_err());
+        assert!(message.contains(".phantom.toml"), "unexpected refusal text");
+        assert!(
+            !message.contains(&outside.path().display().to_string()),
+            "refusal names the outside path"
+        );
+    }
+
+    /// A FIFO named `.phantom.toml` is refused at once; opening it for a
+    /// plain read would block until a writer appeared, hanging the check.
+    #[cfg(unix)]
+    #[test]
+    fn config_fifo_is_refused_without_blocking() {
+        let dir = tempfile::tempdir().unwrap();
+        let fifo = dir.path().join(".phantom.toml");
+        let status = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap();
+        assert!(status.success(), "mkfifo failed");
+
+        let (send, receive) = std::sync::mpsc::channel();
+        let project = dir.path().to_path_buf();
+        std::thread::spawn(move || {
+            let outcome = dotenv_scan_paths(&project).map_err(|error| format!("{error:#}"));
+            let _ = send.send(outcome);
+        });
+        let outcome = receive.recv_timeout(std::time::Duration::from_secs(5));
+        if outcome.is_err() {
+            // Release the blocked reader so the test process can finish.
+            drop(std::fs::OpenOptions::new().write(true).open(&fifo));
+            panic!("dotenv_scan_paths blocked on a FIFO .phantom.toml");
+        }
+        let message = outcome.unwrap().unwrap_err();
+        assert!(message.contains(".phantom.toml"), "unexpected refusal text");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn config_directory_is_refused_with_its_name() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join(".phantom.toml")).unwrap();
+        let message = format!("{:#}", dotenv_scan_paths(dir.path()).unwrap_err());
+        assert!(message.contains(".phantom.toml"), "unexpected refusal text");
     }
 
     fn git_in(dir: &Path, args: &[&str]) {
