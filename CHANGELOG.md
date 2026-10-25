@@ -48,6 +48,23 @@ publication. Everything below, down to 0.7.9, is new since v0.7.9.
   `PHANTOM_RATE_LIMIT_BURST` to restore the old burst value.
 
 The detailed entries follow.
+### Fixed (library writers of `.phantom.toml` and rewritten `.env` files)
+
+- `PhantomConfig::save` wrote `.phantom.toml` with a plain truncate-and-write:
+  a crash could leave a truncated config, and a symlinked `.phantom.toml`
+  (for example one planted in a cloned repository) was followed, so the TOML
+  overwrote the file outside the project it pointed at. It now refuses a
+  symlink or other non-regular target, writes atomically (same-directory
+  staging file, fsync, rename), keeps an existing file's permissions, and
+  creates a new file private.
+- `DotenvFile::write_phantomized` replaced a symlinked `.env` with a regular
+  file, reset an existing file's mode to 0600, and overwrote a file that had
+  been edited after it was parsed with a rewrite of the stale image (silently
+  dropping the edit). It now refuses a symlink or other non-regular target,
+  keeps the existing mode, and refuses when the file no longer equals the
+  source it was parsed from. The CLI and MCP write paths already used the
+  anchored exact-before transactions and are unchanged; this hardens the
+  public `phantom-secrets-core` API.
 
 ### Fixed (`enforce_rotation_on_access` was bypassable by switching commands)
 
