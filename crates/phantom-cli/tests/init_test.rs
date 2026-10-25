@@ -564,3 +564,63 @@ fn init_claude_md_describes_the_vault_backend_it_used() {
         assert!(!claude.contains("OS keychain"), "{backend}: {claude}");
     }
 }
+
+/// A dotenvx 1.x file encrypted in place: a `DOTENV_PUBLIC_KEY` header and
+/// `encrypted:` values. Fake values are joined from fragments so no
+/// credential-shaped literal appears in source.
+fn dotenvx_encrypted_source() -> String {
+    let public = ["03", "fakepublicplaceholder"].concat();
+    let sealed = ["encrypted:", "BFakeCipher", "PlaceholderOnly=="].concat();
+    format!(
+        "#/-------------------[DOTENV_PUBLIC_KEY]--------------------/\n\
+         DOTENV_PUBLIC_KEY=\"{public}\"\n\
+         NODE_ENV=development\n\
+         OPENAI_API_KEY=\"{sealed}\"\n"
+    )
+}
+
+/// Phantom has no dotenvx private key, so `encrypted:` values are ciphertext.
+/// Vaulting them would replace the encrypted file with phm_ tokens that
+/// resolve to noise at `phantom exec` / proxy time. Init must refuse before
+/// any vault or project mutation, name the entry, and never echo a value.
+#[test]
+fn init_refuses_dotenvx_encrypted_dotenv_without_mutating() {
+    let dir = common::canonical_tempdir();
+    let source = dotenvx_encrypted_source();
+    fs::write(dir.path().join(".env"), &source).unwrap();
+
+    let output = Command::cargo_bin("phantom")
+        .expect("binary not found")
+        .args(["init", "--from", ".env"])
+        .current_dir(dir.path())
+        .env("PHANTOM_VAULT_PASSPHRASE", VAULT_PASS)
+        .env("HOME", dir.path())
+        .assert()
+        .failure();
+
+    let stderr = String::from_utf8_lossy(&output.get_output().stderr);
+    let stdout = String::from_utf8_lossy(&output.get_output().stdout);
+    assert!(stderr.contains("'OPENAI_API_KEY'"), "entry not named");
+    assert!(stderr.contains("dotenvx decrypt"), "no remedy given");
+    assert!(stderr.contains("no changes"), "did not say nothing changed");
+    for stream in [&stderr, &stdout] {
+        assert!(!stream.contains("BFakeCipher"), "output echoed a value");
+        assert!(
+            !stream.contains("fakepublicplaceholder"),
+            "output echoed a value"
+        );
+    }
+    assert_eq!(fs::read_to_string(dir.path().join(".env")).unwrap(), source);
+    for path in [
+        ".phantom.toml",
+        ".env.example",
+        ".gitignore",
+        ".claude/settings.local.json",
+    ] {
+        assert!(
+            !dir.path().join(path).exists(),
+            "unexpected mutation: {path}"
+        );
+    }
+    assert!(!dir.path().join(".phantom").exists());
+}
