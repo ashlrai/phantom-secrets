@@ -157,9 +157,9 @@ fn staged_findings(cwd: &Path) -> Result<(Vec<Finding>, Vec<ConfigWarning>)> {
             continue;
         }
 
-        // Do not decode arbitrary staged blobs: PNG, PDF, and other
-        // unrelated binary assets are valid. Git emits a textual binary
-        // diff marker and therefore no added lines for those files.
+        // Any staged blob is valid to commit, PNG and PDF assets included,
+        // so its added bytes are scanned for the ASCII credential shapes
+        // whatever git thinks of the file (see `staged_added_lines`).
         let scan_content = staged_added_lines(cwd, &file)?;
         findings.extend(code_pattern_findings(&file, &scan_content));
     }
@@ -638,6 +638,13 @@ fn read_staged_file(cwd: &Path, file: &str) -> Result<String> {
 /// would replace the diff with its own output, and a cwd-relative pathspec
 /// or `diff.relative` would match nothing from a subdirectory. Each of those
 /// left no `+` lines, so staged credentials in code were reported clean.
+///
+/// `--text` keeps a file git calls binary (a `-diff` or `binary` attribute,
+/// or a NUL byte in its content) from collapsing to "Binary files differ"
+/// with no `+` lines, which also reported its credentials clean. Every shape
+/// in [`CODE_PATTERNS`] is ASCII, so the diff is decoded lossily: a Latin-1
+/// or binary line still yields its ASCII runs, and a non-UTF-8 byte is not
+/// an indeterminate scan.
 fn staged_added_lines(cwd: &Path, file: &str) -> Result<String> {
     let pathspec = format!(":(top,literal){file}");
     let output = std::process::Command::new("git")
@@ -649,6 +656,7 @@ fn staged_added_lines(cwd: &Path, file: &str) -> Result<String> {
             "--no-ext-diff",
             "--no-textconv",
             "--no-relative",
+            "--text",
             "--unified=0",
             "--",
             &pathspec,
@@ -660,9 +668,7 @@ fn staged_added_lines(cwd: &Path, file: &str) -> Result<String> {
     if !output.status.success() {
         anyhow::bail!("Failed to inspect staged additions; clean status is indeterminate");
     }
-    let diff = String::from_utf8(output.stdout).map_err(|_| {
-        anyhow::anyhow!("Staged diff is not valid UTF-8; clean status is indeterminate")
-    })?;
+    let diff = String::from_utf8_lossy(&output.stdout);
     Ok(diff
         .lines()
         .filter_map(|line| {
@@ -1115,6 +1121,58 @@ mod tests {
     fn staged_code_scan_ignores_a_textconv_driver() {
         let dir = repo_with_staged_credential(&[("diff.hide.textconv", "true")], "src/app.ts");
         std::fs::write(dir.path().join(".gitattributes"), "*.ts diff=hide\n").unwrap();
+        assert_eq!(staged_code_labels(dir.path()), ["GitHub personal token"]);
+    }
+
+    /// A `-diff` or `binary` attribute (common for lockfiles, generated
+    /// code and `*.pbxproj`) made git print "Binary files differ" with no
+    /// `+` lines, so a credential staged in such a file was reported clean.
+    #[test]
+    fn staged_code_scan_ignores_binary_and_no_diff_attributes() {
+        for attributes in ["*.ts -diff\n", "*.ts binary\n", "*.ts -text -diff\n"] {
+            let dir = repo_with_staged_credential(&[], "src/app.ts");
+            std::fs::write(dir.path().join(".gitattributes"), attributes).unwrap();
+            assert_eq!(
+                staged_code_labels(dir.path()),
+                ["GitHub personal token"],
+                "attributes {attributes:?}"
+            );
+        }
+    }
+
+    /// Stage `bytes` at `path` in a fresh repository.
+    fn repo_with_staged_bytes(path: &str, bytes: &[u8]) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        git_in(dir.path(), &["init", "-q"]);
+        std::fs::write(dir.path().join(path), bytes).unwrap();
+        git_in(dir.path(), &["add", "--", path]);
+        dir
+    }
+
+    fn credential_line() -> Vec<u8> {
+        format!("key={}{}\n", "ghp_", "Q7rT2mVx9KpL4wZs8NdY3hBc6FjGu5EaR1oW").into_bytes()
+    }
+
+    /// A NUL byte makes git treat a file as binary by content, which hid a
+    /// credential beside it from the scan.
+    #[test]
+    fn staged_code_scan_reads_a_file_git_detects_as_binary() {
+        let mut bytes = b"header\0\n".to_vec();
+        bytes.extend(credential_line());
+        let dir = repo_with_staged_bytes("dump.dat", &bytes);
+        assert_eq!(staged_code_labels(dir.path()), ["GitHub personal token"]);
+    }
+
+    /// A Latin-1 text file is valid to commit. Its diff is not UTF-8, which
+    /// failed the whole hook as indeterminate even though every credential
+    /// shape scanned for is ASCII.
+    #[test]
+    fn staged_code_scan_reads_non_utf8_text() {
+        let dir = repo_with_staged_bytes("notes.txt", b"caf\xe9 au lait\n");
+        assert!(staged_code_labels(dir.path()).is_empty());
+        let mut bytes = b"caf\xe9 au lait\n".to_vec();
+        bytes.extend(credential_line());
+        let dir = repo_with_staged_bytes("notes.txt", &bytes);
         assert_eq!(staged_code_labels(dir.path()), ["GitHub personal token"]);
     }
 

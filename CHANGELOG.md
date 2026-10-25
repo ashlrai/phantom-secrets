@@ -19,6 +19,36 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   public prefix as `matched_pattern`, and the CLI `Reason:` line names the exact
   key fragment or value rule. Classification itself is unchanged.
 
+### Fixed (`phantom check --staged` missed credentials in files git calls binary)
+
+- The pre-commit scan read each staged code file's added lines from
+  `git diff`, which prints only "Binary files differ" for a file with a
+  `-diff` or `binary` attribute (common for lockfiles, generated code and
+  `*.pbxproj`) or with a NUL byte in its content. A credential staged in such
+  a file was reported clean and the commit went through. The scan now reads
+  the added bytes of every staged file (`git diff --text`); unrelated binary
+  assets with no credential shape stay clean.
+- A staged text file that is not UTF-8 (Latin-1, for example) failed the
+  whole hook as "Staged diff is not valid UTF-8; clean status is
+  indeterminate", blocking ordinary commits. Every credential shape scanned
+  for is ASCII, so the added lines are now decoded lossily and scanned.
+  Staged dotenv files are still refused when they are not UTF-8.
+
+### Fixed (`phantom wrap` / `phantom unwrap` no longer reformat package.json)
+
+- `phantom wrap`, `phantom unwrap`, `phantom_wrap` and `phantom_unwrap`
+  re-serialized the whole package.json, which sorted every key alphabetically,
+  switched the indent to two spaces and always added a final newline, so one
+  wrap produced a diff across unrelated fields. They now edit only the
+  affected `scripts` members in the original text: a wrapped script keeps its
+  position, its `NAME:raw` copy goes directly after it with the same layout,
+  and key order, indentation (spaces or tabs, any width), line endings, string
+  escapes and the trailing newline (or its absence) are kept. `phantom unwrap`
+  is the exact inverse and restores the file byte for byte. The edited text is
+  parsed again and must match the intended change; a package.json the editor
+  cannot place the change in (for example a duplicate `scripts` key) is
+  refused with no change written.
+
 ### Fixed (one hardened active-environment reader)
 
 - `phantom_core::env_scope::read_active_env` and `resolve_env` still followed
