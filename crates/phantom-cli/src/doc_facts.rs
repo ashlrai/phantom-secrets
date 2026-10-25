@@ -372,6 +372,26 @@ fn import_source_lists_match_the_importer_dispatcher() {
         ),
         &truth,
     );
+
+    // The troubleshooting format table has exactly one row per source.
+    let rel = "docs/troubleshooting.md";
+    let troubleshooting = read_doc(rel);
+    let (header, _) = unique_line(rel, &troubleshooting, "| Source | Expected format |");
+    let rows: Vec<String> = troubleshooting
+        .lines()
+        .skip(header + 1)
+        .take_while(|line| line.starts_with('|'))
+        .filter_map(|line| line.split('|').nth(1))
+        .map(|cell| cell.trim().trim_matches('`').to_ascii_lowercase())
+        .filter(|cell| !cell.is_empty() && !cell.starts_with('-'))
+        .collect();
+    let claimed: BTreeSet<String> = rows.iter().cloned().collect();
+    assert_eq!(
+        rows.len(),
+        claimed.len(),
+        "{rel}:{header} format table repeats a source"
+    );
+    assert_list(rel, header, claimed, &truth);
 }
 
 #[test]
