@@ -47,6 +47,22 @@ fn print_exec_verdict(verdict: &phantom_core::why::ExecVerdict<'_>) {
     );
 }
 
+/// The `Vault:` line for a protected key. Beside an encrypted-file vault this
+/// process cannot open, the selected backend is the OS keychain, and naming
+/// it alone read as "the value is in the keychain" next to a proxied exec
+/// verdict; a warning line names the locked vault and the unlock step.
+fn vault_lines(vault: &dyn phantom_vault::VaultBackend, project_id: &str) -> Vec<String> {
+    let mut lines = vec![format!("   Vault:  {}", vault.backend_name().cyan())];
+    if let Some(notice) = crate::util::locked_vault_notice(vault, project_id) {
+        lines.push(format!(
+            "   {} {}; this key may be stored there, and `phantom exec` refuses a protected key it cannot read. {notice}",
+            "!".yellow().bold(),
+            crate::util::VAULT_LOCKED
+        ));
+    }
+    lines
+}
+
 /// Refuse an empty or whitespace-only key. It can never match a dotenv
 /// entry, so answering "not found" (exit 0) sent agents chasing spelling.
 fn validate_key_argument(key: &str) -> Result<()> {
@@ -156,12 +172,10 @@ fn run_in(project_dir: &std::path::Path, key: &str, json: bool) -> Result<()> {
                         }
                     }
                     print_exec_verdict(&phantom_core::why::ExecVerdict::new(key, &dotenv, cfg));
-                    println!(
-                        "   Vault:  {}",
-                        phantom_vault::try_create_vault(cfg.local_project_id())?
-                            .backend_name()
-                            .cyan()
-                    );
+                    let vault = crate::util::open_vault(cfg.local_project_id())?;
+                    for line in vault_lines(vault.as_ref(), cfg.local_project_id()) {
+                        println!("{line}");
+                    }
                 }
             } else {
                 let classification = classify(entry);
@@ -296,6 +310,25 @@ fn explain_why_secret(entry: &EnvEntry) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Beside an encrypted-file vault this process cannot open, `why` named
+    /// the OS keychain as the vault with no word that the project's secrets
+    /// are in a locked file `phantom exec` cannot read.
+    #[cfg(unix)]
+    #[test]
+    fn why_names_a_locked_file_vault_beside_the_keychain() {
+        let project =
+            crate::util::test_seam::LockedProject::new(crate::util::test_seam::empty_keychain);
+        let vault = crate::util::open_vault(&project.project_id).unwrap();
+
+        let lines = vault_lines(vault.as_ref(), &project.project_id);
+
+        assert_eq!(lines.len(), 2);
+        assert!(lines[1].contains("Vault locked:"));
+        assert!(lines[1].contains("PHANTOM_VAULT_PASSPHRASE"));
+        // Another project id has no file vault: only the backend line.
+        assert_eq!(vault_lines(vault.as_ref(), "another-project").len(), 1);
+    }
 
     #[test]
     fn empty_or_blank_key_is_refused_with_an_example() {

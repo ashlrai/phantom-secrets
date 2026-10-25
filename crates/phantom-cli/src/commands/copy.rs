@@ -63,9 +63,8 @@ pub fn run(name: &str, target_dir: &Path, rename: &Option<String>) -> Result<()>
     // Complete every target collision and filesystem check before retrieving
     // the source plaintext. Copy has no overwrite flag, so any existing target
     // ownership is an explicit hard refusal rather than a silent clobber.
-    let target_vault_names = target_vault
-        .list()
-        .context("Failed to list target vault entries")?;
+    let target_vault_names =
+        list_copy_target_names(target_vault.as_ref(), target_config.local_project_id())?;
     if snapshot_secret(target_vault.as_ref(), target_name)?.is_some() {
         anyhow::bail!(
             "Target secret '{target_name}' already exists. Copy refuses ambiguous overwrite; remove it explicitly or choose --rename."
@@ -100,9 +99,11 @@ pub fn run(name: &str, target_dir: &Path, rename: &Option<String>) -> Result<()>
     )?;
 
     let source_vault = phantom_vault::try_create_vault(source_config.local_project_id())?;
-    let secret_value = source_vault
-        .retrieve(name)
-        .with_context(|| format!("Secret '{name}' not found in source vault"))?;
+    let secret_value = retrieve_copy_source(
+        source_vault.as_ref(),
+        source_config.local_project_id(),
+        name,
+    )?;
     let plan = prepare_target_plan(
         &target_dir,
         &target_config_path,
@@ -138,6 +139,40 @@ pub fn run(name: &str, target_dir: &Path, rename: &Option<String>) -> Result<()>
             .cyan()
     );
     Ok(())
+}
+
+/// The target vault's names, which decide collisions and the target dotenv.
+/// Beside a target encrypted-file vault this process cannot open, the listing
+/// covers only the OS keychain: a name in the locked file would read as free
+/// and the copy would store it in the keychain beside it, so the copy is
+/// refused before the trusted-terminal challenge.
+fn list_copy_target_names(
+    target_vault: &dyn phantom_vault::VaultBackend,
+    target_project_id: &str,
+) -> Result<Vec<String>> {
+    let names = target_vault
+        .list()
+        .context("Failed to list target vault entries")?;
+    crate::util::require_complete_inventory(
+        target_vault,
+        target_project_id,
+        names.len(),
+        "copy a secret into the target project",
+    )?;
+    Ok(names)
+}
+
+/// Read the approved source secret. Beside a source encrypted-file vault this
+/// process cannot open, a name the OS keychain lacks is refused with the
+/// unlock step instead of being reported as not found.
+fn retrieve_copy_source(
+    source_vault: &dyn phantom_vault::VaultBackend,
+    source_project_id: &str,
+    name: &str,
+) -> Result<zeroize::Zeroizing<String>> {
+    crate::util::retrieve_secret(source_vault, source_project_id, name, || {
+        format!("Secret '{name}' not found in source vault")
+    })
 }
 
 fn require_trusted_terminal_copy(
@@ -246,6 +281,52 @@ mod tests {
     use phantom_core::error::PhantomError;
     use phantom_vault::file::FileVault;
     use phantom_vault::VaultBackend;
+
+    /// Beside a target encrypted-file vault this process cannot open, the
+    /// target listing came from the OS keychain alone, so a name already in
+    /// the locked file read as free to create.
+    #[cfg(unix)]
+    #[test]
+    fn copy_into_a_locked_target_vault_is_refused_before_the_challenge() {
+        use crate::util::test_seam::{empty_keychain, keychain_with_one, LockedProject};
+        for (make, lead) in [
+            (
+                empty_keychain as crate::util::test_seam::MakeVault,
+                "Vault locked:",
+            ),
+            (
+                keychain_with_one,
+                "Refusing to copy a secret into the target project from a partial inventory",
+            ),
+        ] {
+            let project = LockedProject::new(make);
+            let vault = crate::util::open_vault(&project.project_id).unwrap();
+
+            let outcome = list_copy_target_names(vault.as_ref(), &project.project_id);
+
+            assert!(outcome.is_err(), "a partial target inventory must refuse");
+            let message = outcome.err().unwrap().to_string();
+            assert!(message.starts_with(lead));
+            assert!(message.contains("PHANTOM_VAULT_PASSPHRASE"));
+        }
+    }
+
+    /// The source secret beside a locked source file vault was reported as
+    /// not found in the source vault.
+    #[cfg(unix)]
+    #[test]
+    fn copy_from_a_locked_source_vault_names_the_lock_not_a_missing_secret() {
+        let project =
+            crate::util::test_seam::LockedProject::new(crate::util::test_seam::empty_keychain);
+        let vault = crate::util::open_vault(&project.project_id).unwrap();
+
+        let outcome = retrieve_copy_source(vault.as_ref(), &project.project_id, "OPENAI_API_KEY");
+
+        assert!(outcome.is_err(), "a locked source must not be read");
+        let message = format!("{:#}", outcome.err().unwrap());
+        assert!(message.starts_with("Vault locked:"));
+        assert!(!message.contains("not found"));
+    }
 
     #[test]
     fn target_key_detection_is_exact() {
