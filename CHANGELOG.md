@@ -20,6 +20,19 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   single matching variable is pulled as before; a name that exists only for
   environments outside the targets is no longer pulled.
 
+### Fixed (pre-commit scan by staged entry type)
+
+- `phantom check --staged` skipped every type-changed path (status `T`), so
+  a symlink replaced by a regular file holding a credential, or a symlinked
+  `.env` replaced by a real one, was reported clean. Type changes are now
+  listed and scanned by their staged mode.
+- A staged symlink whose name looks like a dotenv or `.phantom.toml` had its
+  target path parsed as dotenv text and failed the hook on a commit holding
+  no secret; its staged blob is now scanned for credential shapes like code.
+  A staged submodule (gitlink) named like a dotenv or `.phantom.toml` made
+  the hook fail reading a blob that does not exist; gitlinks are now skipped.
+  The check reads only the staged index, never a symlink's target.
+
 ### Fixed (JSON imports with a repeated name)
 
 - `phantom import --from 1password|dotenvx|doppler|infisical` now refuses a

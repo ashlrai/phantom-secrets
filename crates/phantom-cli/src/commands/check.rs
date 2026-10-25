@@ -110,7 +110,22 @@ fn findings_in_listed(project_dir: &Path, listed: Vec<PathBuf>) -> Result<Vec<Fi
 fn staged_findings(cwd: &Path) -> Result<(Vec<Finding>, Vec<ConfigWarning>)> {
     let mut findings = Vec::new();
     let mut warnings = Vec::new();
-    for file in get_staged_files(cwd)? {
+    for StagedEntry { path: file, mode } in get_staged_entries(cwd)? {
+        match mode {
+            // A gitlink records a submodule commit: no blob to read or scan.
+            StagedMode::Gitlink => continue,
+            // A symlink's blob is its target path, never the dotenv or
+            // config text its name suggests, so it is not parsed as either
+            // (that failed the hook on commits holding no secret). Its
+            // staged diff is still scanned for credential shapes like code.
+            StagedMode::Symlink => {
+                let scan_content = staged_added_lines(cwd, &file)?;
+                findings.extend(code_pattern_findings(&file, &scan_content));
+                continue;
+            }
+            StagedMode::Regular => {}
+        }
+
         if file.ends_with(".phantom.toml") {
             let content = read_staged_file(cwd, &file)?;
             warnings.extend(config_risks(&file, &content));
@@ -477,7 +492,27 @@ fn print_runtime(findings: &[Finding], scan: &phantom_core::report::RuntimeEnvSc
     );
 }
 
-fn get_staged_files(cwd: &Path) -> Result<Vec<String>> {
+/// The staged mode of an index entry, which decides how it is scanned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StagedMode {
+    /// `100644` or `100755`: a file whose blob is its content.
+    Regular,
+    /// `120000`: the blob is the link's target path.
+    Symlink,
+    /// `160000`: a submodule commit, with no blob in this repository.
+    Gitlink,
+}
+
+#[derive(Debug)]
+struct StagedEntry {
+    path: String,
+    mode: StagedMode,
+}
+
+/// Every added, copied, modified, renamed or type-changed staged path with
+/// its staged mode. `T` is listed: a symlink replaced by a regular file
+/// holding a credential was otherwise never scanned.
+fn get_staged_entries(cwd: &Path) -> Result<Vec<StagedEntry>> {
     // `--no-relative`: names are always root-relative, as `:<path>` and the
     // `:(top)` pathspec below read them, whatever `diff.relative` says.
     let output = std::process::Command::new("git")
@@ -485,9 +520,9 @@ fn get_staged_files(cwd: &Path) -> Result<Vec<String>> {
         .args([
             "diff",
             "--cached",
-            "--name-only",
+            "--raw",
             "--no-relative",
-            "--diff-filter=ACMR",
+            "--diff-filter=ACMRT",
             "-z",
         ])
         .output()
@@ -504,14 +539,58 @@ fn get_staged_files(cwd: &Path) -> Result<Vec<String>> {
         }
         anyhow::bail!("Failed to inspect staged paths; clean status is indeterminate");
     }
-    let paths = String::from_utf8(output.stdout).map_err(|_| {
+    let raw = String::from_utf8(output.stdout).map_err(|_| {
         anyhow::anyhow!("Staged path list is not valid UTF-8; clean status is indeterminate")
     })?;
-    Ok(paths
-        .split('\0')
-        .filter(|path| !path.is_empty())
-        .map(String::from)
-        .collect())
+    parse_raw_entries(&raw)
+}
+
+/// Parse `git diff --raw -z`: `:<src mode> <dst mode> <src> <dst> <status>`
+/// then one path, or two (source, destination) for a rename or copy.
+/// Anything unexpected fails closed.
+fn parse_raw_entries(raw: &str) -> Result<Vec<StagedEntry>> {
+    let malformed =
+        || anyhow::anyhow!("Unexpected staged path listing; clean status is indeterminate");
+    let mut fields = raw.split('\0');
+    let mut entries = Vec::new();
+    while let Some(header) = fields.next() {
+        if header.is_empty() {
+            // Only the trailing terminator may be empty.
+            if fields.next().is_some() {
+                return Err(malformed());
+            }
+            break;
+        }
+        let parts: Vec<&str> = header
+            .strip_prefix(':')
+            .ok_or_else(malformed)?
+            .split(' ')
+            .collect();
+        let [_, dst_mode, _, _, status] = parts[..] else {
+            return Err(malformed());
+        };
+        let mut path = fields
+            .next()
+            .filter(|p| !p.is_empty())
+            .ok_or_else(malformed)?;
+        if status.starts_with('R') || status.starts_with('C') {
+            path = fields
+                .next()
+                .filter(|p| !p.is_empty())
+                .ok_or_else(malformed)?;
+        }
+        let mode = match dst_mode {
+            "100644" | "100755" => StagedMode::Regular,
+            "120000" => StagedMode::Symlink,
+            "160000" => StagedMode::Gitlink,
+            _ => return Err(malformed()),
+        };
+        entries.push(StagedEntry {
+            path: path.to_string(),
+            mode,
+        });
+    }
+    Ok(entries)
 }
 
 fn inside_git_work_tree(cwd: &Path) -> bool {
@@ -956,5 +1035,164 @@ mod tests {
             staged_code_labels(&plain.path().join("src")),
             ["GitHub personal token"]
         );
+    }
+
+    fn git_out(dir: &Path, args: &[&str], stdin: &str) -> String {
+        use std::io::Write;
+        let mut child = std::process::Command::new("git")
+            .current_dir(dir)
+            .args(args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(stdin.as_bytes())
+            .unwrap();
+        let out = child.wait_with_output().unwrap();
+        assert!(out.status.success(), "git {args:?}");
+        String::from_utf8(out.stdout).unwrap().trim().to_string()
+    }
+
+    /// Stage `path` with `mode` and blob `content` straight into the index,
+    /// so symlinks and gitlinks need no filesystem support or submodule.
+    fn stage_entry(dir: &Path, mode: &str, content: &str, path: &str) {
+        let object = if mode == "160000" {
+            // A gitlink names a commit; any 40-hex object name will do.
+            "c84e8522009cc00c7dfce17118514b9dc1c58779".to_string()
+        } else {
+            git_out(dir, &["hash-object", "-w", "--stdin"], content)
+        };
+        let cacheinfo = format!("{mode},{object},{path}");
+        git_in(dir, &["update-index", "--add", "--cacheinfo", &cacheinfo]);
+    }
+
+    fn commit_all(dir: &Path) {
+        git_in(
+            dir,
+            &[
+                "-c",
+                "user.name=Phantom Test",
+                "-c",
+                "user.email=test@example.invalid",
+                "commit",
+                "-q",
+                "-m",
+                "base",
+            ],
+        );
+    }
+
+    #[test]
+    fn staged_type_change_to_a_regular_file_is_scanned() {
+        // `app.ts` was committed as a symlink and is now staged as a regular
+        // file holding a credential: status `T`, which the listing skipped.
+        let dir = tempfile::tempdir().unwrap();
+        git_in(dir.path(), &["init", "-q"]);
+        stage_entry(dir.path(), "120000", "other.ts", "app.ts");
+        commit_all(dir.path());
+        let line = format!(
+            "const key = \"{}{}\";\n",
+            "ghp_", "Q7rT2mVx9KpL4wZs8NdY3hBc6FjGu5EaR1oW"
+        );
+        stage_entry(dir.path(), "100644", &line, "app.ts");
+        assert_eq!(staged_code_labels(dir.path()), ["GitHub personal token"]);
+    }
+
+    #[test]
+    fn staged_type_change_to_a_regular_dotenv_is_scanned() {
+        let dir = tempfile::tempdir().unwrap();
+        git_in(dir.path(), &["init", "-q"]);
+        stage_entry(dir.path(), "120000", "shared/.env", ".env");
+        commit_all(dir.path());
+        stage_entry(
+            dir.path(),
+            "100644",
+            "OPENAI_API_KEY=example-real-value-xyz\n",
+            ".env",
+        );
+        let (findings, _) = staged_findings(dir.path()).unwrap();
+        let names: Vec<_> = findings
+            .iter()
+            .filter(|finding| finding.kind == "staged_dotenv")
+            .filter_map(|finding| finding.name.as_deref())
+            .collect();
+        assert_eq!(names, ["OPENAI_API_KEY"]);
+    }
+
+    #[test]
+    fn staged_dotenv_named_symlink_is_not_parsed_as_dotenv() {
+        // The staged blob of a symlink is its target path, not dotenv text;
+        // parsing it failed the hook on a commit that holds no secret.
+        let dir = tempfile::tempdir().unwrap();
+        git_in(dir.path(), &["init", "-q"]);
+        stage_entry(dir.path(), "120000", "../outside/.env", ".env");
+        stage_entry(dir.path(), "120000", "/etc/hostname", ".phantom.toml");
+        let (findings, warnings) = staged_findings(dir.path()).unwrap();
+        assert!(findings.is_empty());
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn staged_symlink_target_text_is_still_scanned_as_code() {
+        // Skipping dotenv parsing must not hide a credential-shaped target.
+        let dir = tempfile::tempdir().unwrap();
+        git_in(dir.path(), &["init", "-q"]);
+        let target = format!("{}{}", "ghp_", "Q7rT2mVx9KpL4wZs8NdY3hBc6FjGu5EaR1oW");
+        stage_entry(dir.path(), "120000", &target, "prod.env");
+        assert_eq!(staged_code_labels(dir.path()), ["GitHub personal token"]);
+    }
+
+    #[test]
+    fn staged_gitlinks_are_skipped_whatever_their_name() {
+        // `git show :<gitlink>` has no blob to print; a submodule named like
+        // a dotenv or `.phantom.toml` made the hook fail on a clean commit.
+        let dir = tempfile::tempdir().unwrap();
+        git_in(dir.path(), &["init", "-q"]);
+        stage_entry(dir.path(), "160000", "", "vendor.env");
+        stage_entry(dir.path(), "160000", "", ".phantom.toml");
+        stage_entry(dir.path(), "160000", "", "deps/lib");
+        let (findings, warnings) = staged_findings(dir.path()).unwrap();
+        assert!(findings.is_empty());
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn raw_listing_takes_the_destination_of_renames_and_fails_closed() {
+        let raw = ":100644 100644 aaaaaaa bbbbbbb R087\0old.ts\0new.ts\0\
+                   :000000 120000 0000000 ccccccc A\0link\0";
+        let entries = parse_raw_entries(raw).unwrap();
+        let got: Vec<_> = entries.iter().map(|e| (e.path.as_str(), e.mode)).collect();
+        assert_eq!(
+            got,
+            [
+                ("new.ts", StagedMode::Regular),
+                ("link", StagedMode::Symlink)
+            ]
+        );
+        assert!(parse_raw_entries("").unwrap().is_empty());
+        for bad in [
+            "100644 100644 a b M\0x\0",
+            ":100644 100644 a b M\0",
+            ":100644 040000 a b M\0x\0",
+            ":100644 100644 a b R100\0only-source\0",
+            ":100644 100644 a b M\0x\0\0junk",
+        ] {
+            assert!(parse_raw_entries(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn staged_type_change_from_dotenv_to_symlink_is_not_parsed() {
+        let dir = tempfile::tempdir().unwrap();
+        git_in(dir.path(), &["init", "-q"]);
+        stage_entry(dir.path(), "100644", "NODE_ENV=development\n", ".env");
+        commit_all(dir.path());
+        stage_entry(dir.path(), "120000", "/etc/hostname", ".env");
+        let (findings, _) = staged_findings(dir.path()).unwrap();
+        assert!(findings.is_empty());
     }
 }
