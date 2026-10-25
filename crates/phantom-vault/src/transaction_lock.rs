@@ -9,6 +9,16 @@
 //! outside the coordination guarantee. Current writers coordinate on a stable
 //! direct child of the trusted app-data anchor and also take the historical
 //! descendant lock as a one-release compatibility bridge.
+//!
+//! A cross-project transaction (a copy from one project into another) holds
+//! both projects' locks through [`acquire_project_transaction_locks`]. Every
+//! acquisition, single or paired, follows one global order so two copies in
+//! opposite directions cannot deadlock: first the process-local shard
+//! mutexes in ascending shard index (each shard once), then each project's
+//! filesystem locks in ascending stable lock name (the digest of the
+//! canonical project path, identical in every process sharing the anchor),
+//! stable before legacy within a project. Two spellings of one canonical
+//! project resolve to one lock, which is taken once.
 
 use phantom_core::error::{PhantomError, Result};
 use phantom_core::fs::{
@@ -25,7 +35,10 @@ const PROCESS_LOCK_SHARDS: usize = 64;
 /// An advisory project lock shared by init and token-remap transactions.
 /// Keeping the guard alive spans snapshot, commit, verification, and rollback.
 pub struct ProjectTransactionLock {
-    _process: MutexGuard<'static, ()>,
+    /// Process-local shard guards, held in ascending shard index. The second
+    /// project of a [`ProjectTransactionLockPair`] holds none: the pair's
+    /// primary holds every shard both projects need.
+    _process: Vec<MutexGuard<'static, ()>>,
     _stable: AnchoredLock,
     _legacy: AnchoredLock,
     project: TrustedAnchor,
@@ -74,15 +87,28 @@ struct ProjectFilesystemLocks {
     legacy: AnchoredLock,
 }
 
-fn process_lock_for(identity: &Path) -> MutexGuard<'static, ()> {
-    static LOCKS: OnceLock<Vec<Mutex<()>>> = OnceLock::new();
-    let locks = LOCKS.get_or_init(|| (0..PROCESS_LOCK_SHARDS).map(|_| Mutex::new(())).collect());
+fn process_lock_index(identity: &Path) -> usize {
     let mut hasher = DefaultHasher::new();
     identity.hash(&mut hasher);
-    let index = hasher.finish() as usize % locks.len();
+    hasher.finish() as usize % PROCESS_LOCK_SHARDS
+}
+
+fn process_lock_shard(index: usize) -> MutexGuard<'static, ()> {
+    static LOCKS: OnceLock<Vec<Mutex<()>>> = OnceLock::new();
+    let locks = LOCKS.get_or_init(|| (0..PROCESS_LOCK_SHARDS).map(|_| Mutex::new(())).collect());
     locks[index]
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Lock every distinct shard in ascending index order. Distinct projects can
+/// share a shard, and a shard mutex is not reentrant, so each is taken once.
+fn process_locks_for(identities: &[&Path]) -> Vec<MutexGuard<'static, ()>> {
+    let indices: std::collections::BTreeSet<usize> = identities
+        .iter()
+        .map(|identity| process_lock_index(identity))
+        .collect();
+    indices.into_iter().map(process_lock_shard).collect()
 }
 
 fn lock_anchor() -> PathBuf {
@@ -195,23 +221,37 @@ fn acquire_filesystem_locks(paths: &ProjectLockPaths) -> Result<ProjectFilesyste
     Ok(ProjectFilesystemLocks { stable, legacy })
 }
 
-fn acquire_project_transaction_lock_at(paths: ProjectLockPaths) -> Result<ProjectTransactionLock> {
-    let process = process_lock_for(&paths.identity);
+fn retain_project_root(paths: &ProjectLockPaths) -> Result<TrustedAnchor> {
     let project = TrustedAnchor::open(&paths.identity).map_err(|error| {
         PhantomError::VaultError(format!(
             "Cannot retain canonical project root {}: {error}",
             paths.identity.display()
         ))
     })?;
-    let filesystem = acquire_filesystem_locks(&paths)?;
-    Ok(ProjectTransactionLock {
+    Ok(project)
+}
+
+fn assemble_lock(
+    process: Vec<MutexGuard<'static, ()>>,
+    filesystem: ProjectFilesystemLocks,
+    project: TrustedAnchor,
+    paths: ProjectLockPaths,
+) -> ProjectTransactionLock {
+    ProjectTransactionLock {
         _process: process,
         _stable: filesystem.stable,
         _legacy: filesystem.legacy,
         project,
         requested_root: paths.requested_root,
         canonical_root: paths.identity,
-    })
+    }
+}
+
+fn acquire_project_transaction_lock_at(paths: ProjectLockPaths) -> Result<ProjectTransactionLock> {
+    let process = process_locks_for(&[&paths.identity]);
+    let project = retain_project_root(&paths)?;
+    let filesystem = acquire_filesystem_locks(&paths)?;
+    Ok(assemble_lock(process, filesystem, project, paths))
 }
 
 impl ProjectTransactionLock {
@@ -327,6 +367,87 @@ impl ProjectTransactionLock {
     }
 }
 
+/// Both project locks of a cross-project transaction, held together.
+///
+/// The primary is the project the transaction writes; its retained root is
+/// the payload capability. The secondary (the project a copy reads from) is
+/// held only to exclude its cooperating writers until the pair is dropped.
+/// When both directories resolve to one canonical project there is one lock
+/// and no secondary.
+pub struct ProjectTransactionLockPair {
+    // Field order is drop order: the secondary's filesystem locks are
+    // released before the primary releases the shard guards it holds for
+    // both projects. Release order cannot deadlock either way.
+    secondary: Option<ProjectTransactionLock>,
+    primary: ProjectTransactionLock,
+}
+
+impl ProjectTransactionLockPair {
+    pub(crate) fn single(primary: ProjectTransactionLock) -> Self {
+        Self {
+            secondary: None,
+            primary,
+        }
+    }
+
+    /// The lock of the project the transaction writes.
+    pub fn primary(&self) -> &ProjectTransactionLock {
+        &self.primary
+    }
+
+    /// The other project's lock, or `None` when both directories are the
+    /// same canonical project and its lock was taken once.
+    pub fn secondary(&self) -> Option<&ProjectTransactionLock> {
+        self.secondary.as_ref()
+    }
+}
+
+/// Acquire the transaction locks of two projects in Phantom's global lock
+/// order (see the module documentation), so a concurrent pair acquisition in
+/// the opposite direction waits instead of deadlocking. Every lock is a
+/// blocking cooperative lock on every platform; the deterministic order, not
+/// a timeout, is what excludes deadlock.
+pub fn acquire_project_transaction_locks(
+    primary: &Path,
+    secondary: &Path,
+) -> Result<ProjectTransactionLockPair> {
+    let anchor = lock_anchor();
+    let primary = lock_paths_at(primary, &anchor)?;
+    let secondary = lock_paths_at(secondary, &anchor)?;
+    acquire_project_transaction_locks_at(primary, secondary)
+}
+
+fn acquire_project_transaction_locks_at(
+    primary: ProjectLockPaths,
+    secondary: ProjectLockPaths,
+) -> Result<ProjectTransactionLockPair> {
+    // The stable lock name is derived from the canonical identity, so equal
+    // names are one project, and one lock that must be taken exactly once.
+    if primary.stable == secondary.stable {
+        return acquire_project_transaction_lock_at(primary)
+            .map(ProjectTransactionLockPair::single);
+    }
+    let process = process_locks_for(&[&primary.identity, &secondary.identity]);
+    let primary_root = retain_project_root(&primary)?;
+    let secondary_root = retain_project_root(&secondary)?;
+    let (primary_filesystem, secondary_filesystem) = if primary.stable < secondary.stable {
+        let first = acquire_filesystem_locks(&primary)?;
+        (first, acquire_filesystem_locks(&secondary)?)
+    } else {
+        let first = acquire_filesystem_locks(&secondary)?;
+        (acquire_filesystem_locks(&primary)?, first)
+    };
+    Ok(ProjectTransactionLockPair {
+        secondary: Some(assemble_lock(
+            Vec::new(),
+            secondary_filesystem,
+            secondary_root,
+            secondary,
+        )),
+        primary: assemble_lock(process, primary_filesystem, primary_root, primary),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -358,6 +479,155 @@ mod tests {
             worker.join().unwrap();
         }
         assert_eq!(peak.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    /// Run `work` on its own thread and fail instead of hanging when it does
+    /// not finish in time, which is how a lock-order deadlock shows up.
+    fn finishes_within<T: Send + 'static>(
+        limit: std::time::Duration,
+        work: impl FnOnce() -> T + Send + 'static,
+    ) -> T {
+        let (done, finished) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = done.send(work());
+        });
+        finished
+            .recv_timeout(limit)
+            .expect("work must finish within its bound (no lock-order deadlock)")
+    }
+
+    fn pair_at(primary: &Path, secondary: &Path, root: &Path) -> ProjectTransactionLockPair {
+        acquire_project_transaction_locks_at(
+            lock_paths_at(primary, root).unwrap(),
+            lock_paths_at(secondary, root).unwrap(),
+        )
+        .unwrap()
+    }
+
+    /// Two threads repeatedly take the same two projects' locks in opposite
+    /// argument orders. The global order makes them serialize instead of
+    /// each holding one project while waiting for the other.
+    #[test]
+    fn paired_locks_in_opposite_directions_serialize_without_deadlock() {
+        let first = tempdir().unwrap();
+        let second = tempdir().unwrap();
+        let lock_root = tempdir().unwrap();
+        let root = lock_root.path().canonicalize().unwrap();
+        let barrier = Arc::new(Barrier::new(2));
+        let active = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let peak = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let worker = |primary: PathBuf, secondary: PathBuf| {
+            let (root, barrier, active, peak) = (
+                root.clone(),
+                Arc::clone(&barrier),
+                Arc::clone(&active),
+                Arc::clone(&peak),
+            );
+            move || {
+                barrier.wait();
+                for _ in 0..50 {
+                    let pair = pair_at(&primary, &secondary, &root);
+                    assert!(pair.secondary().is_some());
+                    let now = active.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                    peak.fetch_max(now, std::sync::atomic::Ordering::SeqCst);
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                    active.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                }
+            }
+        };
+        let forward = worker(first.path().to_path_buf(), second.path().to_path_buf());
+        let backward = worker(second.path().to_path_buf(), first.path().to_path_buf());
+
+        finishes_within(std::time::Duration::from_secs(60), move || {
+            let forward = std::thread::spawn(forward);
+            let backward = std::thread::spawn(backward);
+            forward.join().unwrap();
+            backward.join().unwrap();
+        });
+        assert_eq!(peak.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    /// A pair holds each project against a single-project writer until the
+    /// pair is dropped, for the secondary project as well as the primary.
+    #[test]
+    fn paired_lock_excludes_single_project_writers_on_both_projects() {
+        let primary = tempdir().unwrap();
+        let secondary = tempdir().unwrap();
+        let lock_root = tempdir().unwrap();
+        let root = lock_root.path().canonicalize().unwrap();
+        let pair = pair_at(primary.path(), secondary.path(), &root);
+
+        let mut writers = Vec::new();
+        for project in [primary.path().to_path_buf(), secondary.path().to_path_buf()] {
+            let root = root.clone();
+            let (entered, entered_signal) = std::sync::mpsc::channel();
+            let handle = std::thread::spawn(move || {
+                let _lock =
+                    acquire_project_transaction_lock_at(lock_paths_at(&project, &root).unwrap())
+                        .unwrap();
+                let _ = entered.send(());
+            });
+            writers.push((handle, entered_signal));
+        }
+        for (_, entered_signal) in &writers {
+            assert!(entered_signal
+                .recv_timeout(std::time::Duration::from_millis(300))
+                .is_err());
+        }
+
+        drop(pair);
+        for (handle, entered_signal) in writers {
+            assert!(entered_signal
+                .recv_timeout(std::time::Duration::from_secs(30))
+                .is_ok());
+            handle.join().unwrap();
+        }
+    }
+
+    /// Two spellings of one canonical project are one lock, taken once: the
+    /// pair neither waits on itself nor holds a second lock.
+    #[test]
+    fn paired_lock_of_one_project_is_taken_once() {
+        let project = tempdir().unwrap();
+        let lock_root = tempdir().unwrap();
+        let root = lock_root.path().canonicalize().unwrap();
+        let primary = project.path().to_path_buf();
+        let spelling = project.path().join(".");
+
+        let held_once = finishes_within(std::time::Duration::from_secs(30), move || {
+            let pair = pair_at(&primary, &spelling, &root);
+            pair.secondary().is_none()
+                && pair.primary().project_root_at_acquisition() == primary.canonicalize().unwrap()
+        });
+        assert!(held_once);
+    }
+
+    /// Distinct projects can hash to one process shard. That shard mutex is
+    /// not reentrant, so the pair must take it once rather than wait on
+    /// itself.
+    #[test]
+    fn distinct_projects_sharing_a_process_shard_pair_without_self_deadlock() {
+        // With more directories than shards, two must share one.
+        let projects: Vec<_> = (0..=PROCESS_LOCK_SHARDS)
+            .map(|_| tempdir().unwrap())
+            .collect();
+        let mut by_shard = std::collections::HashMap::new();
+        let (first, second) = projects
+            .iter()
+            .find_map(|project| {
+                let canonical = project.path().canonicalize().unwrap();
+                by_shard
+                    .insert(process_lock_index(&canonical), canonical.clone())
+                    .map(|earlier| (earlier, canonical))
+            })
+            .expect("pigeonhole guarantees a shared shard");
+        let lock_root = tempdir().unwrap();
+        let root = lock_root.path().canonicalize().unwrap();
+
+        let paired = finishes_within(std::time::Duration::from_secs(30), move || {
+            pair_at(&first, &second, &root).secondary().is_some()
+        });
+        assert!(paired);
     }
 
     #[test]

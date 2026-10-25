@@ -2137,6 +2137,7 @@ impl PhantomMcpServer {
             target_name,
             secret_value.as_str(),
             McpCopySource {
+                project_dir: &self.project_dir,
                 vault: source_vault.as_ref(),
                 name: &params.name,
                 metadata: source_metadata.as_ref(),
@@ -6514,6 +6515,8 @@ fn bounded_validation_name_plan(names: &[String]) -> Result<(String, Vec<String>
 /// metadata read before its value. The copy transaction holds the source to
 /// exactly that value and metadata until it commits.
 struct McpCopySource<'a> {
+    /// The source project root; the copy holds its transaction lock.
+    project_dir: &'a Path,
     vault: &'a dyn phantom_vault::VaultBackend,
     name: &'a str,
     metadata: Option<&'a phantom_vault::SecretMetadata>,
@@ -6589,6 +6592,7 @@ fn apply_mcp_copy_transaction(
     phantom_vault::commit_init_with_source_vault(
         target_dir,
         vault,
+        source.project_dir,
         source.vault,
         vec![mutation],
         files,
@@ -7737,8 +7741,12 @@ mod tests {
         vault
     }
 
-    fn copy_source(vault: &phantom_vault::file::FileVault) -> McpCopySource<'_> {
+    fn copy_source<'a>(
+        dir: &'a TempDir,
+        vault: &'a phantom_vault::file::FileVault,
+    ) -> McpCopySource<'a> {
         McpCopySource {
+            project_dir: dir.path(),
             vault,
             name: "SOURCE_KEY",
             metadata: None,
@@ -7981,7 +7989,7 @@ mod tests {
             None,
             "COPIED_KEY",
             "source-value",
-            copy_source(&source_vault),
+            copy_source(&source_dir, &source_vault),
         )
         .unwrap();
 
@@ -8031,7 +8039,7 @@ mod tests {
             None,
             "COPIED_KEY",
             "source-value",
-            copy_source(&source_vault),
+            copy_source(&source_dir, &source_vault),
         )
         .is_err());
         assert_eq!(std::fs::read(&config_path).unwrap(), concurrent);
@@ -8072,7 +8080,7 @@ mod tests {
             None,
             "COPIED_KEY",
             "source-value",
-            copy_source(&source_vault),
+            copy_source(&source_dir, &source_vault),
         )
         .is_err());
         assert_eq!(std::fs::read(&config_path).unwrap(), config_before);
@@ -8123,7 +8131,7 @@ mod tests {
             None,
             "COPIED_KEY",
             "source-value",
-            copy_source(&source_vault),
+            copy_source(&source_dir, &source_vault),
         );
 
         let message = outcome.err().map(|error| error.message.to_string());
