@@ -4,6 +4,22 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (proxy lifecycle lock file is opened through a verified directory descriptor)
+
+- After checking that `<data dir>/phantom-secrets/proxy-locks` was a private
+  real directory, the proxy lifecycle lock file was still opened by path, so
+  swapping either directory for a link in that window redirected where the
+  lock file was created and opened. On Unix the app directory and
+  `proxy-locks` are now opened without following a symlink, must be owned by
+  the current user (and private when acquiring), and the lock file is opened
+  relative to that descriptor with `O_NOFOLLOW | O_CLOEXEC` (created 0600)
+  and must be a regular file owned by the current user. `phantom status`
+  inspection uses the same chain and still never creates anything.
+  Non-Unix behavior is unchanged.
+- New `phantom_core::fs::open_owned_directory` and
+  `phantom_core::fs::open_owned_file_at` hold the shared descriptor-relative
+  routine; the workspace setup lock now uses them instead of its own copy.
+
 ### Fixed (proxy lifecycle and workspace setup locks never follow a planted symlink)
 
 - The workspace setup lock lived in a shared temp-dir folder
