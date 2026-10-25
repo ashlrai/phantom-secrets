@@ -10,7 +10,7 @@ use phantom_core::config::PhantomConfig;
 #[cfg(test)]
 use phantom_core::env_scope::write_active_env_if_unchanged;
 use phantom_core::env_scope::{
-    known_envs_from_keys, namespaced_key, resolve_env, split_key, validate_env_name, DEFAULT_ENV,
+    known_envs_from_keys, namespaced_key, split_key, validate_env_name, DEFAULT_ENV,
 };
 use phantom_core::fs::{AnchoredRead, TrustedAnchor};
 use phantom_vault::{
@@ -756,9 +756,39 @@ pub fn run_default(current: &str) -> Result<()> {
     Ok(())
 }
 
-/// Resolve env from flag or persisted file, used by vault call sites.
-pub fn effective_env(project_dir: &std::path::Path, flag: Option<&str>) -> String {
-    resolve_env(project_dir, flag)
+/// Resolve the environment a proxy session serves: the flag when given,
+/// otherwise the `.phantom/env` selector `phantom env use` writes, otherwise
+/// the default. Fails closed: the selector is read without following a
+/// symlink, and the resolved name must be one `phantom env use` would accept,
+/// so it can never address vault entries outside its own `<env>/` namespace.
+pub fn effective_env(project_dir: &std::path::Path, flag: Option<&str>) -> Result<String> {
+    let name = match flag {
+        Some(flag) => flag.to_string(),
+        None => {
+            let selector = project_dir.join(".phantom").join("env");
+            let bytes = phantom_core::fs::read_regular_file(&selector).map_err(|error| {
+                anyhow::anyhow!(
+                    "Cannot read the active environment selector {}: {error}. Run `phantom env use <name>` to rewrite it.",
+                    selector.display()
+                )
+            })?;
+            let text = match bytes {
+                Some(bytes) => String::from_utf8(bytes).map_err(|_| {
+                    anyhow::anyhow!(
+                        "The active environment selector {} is not UTF-8. Run `phantom env use <name>` to rewrite it.",
+                        selector.display()
+                    )
+                })?,
+                None => String::new(),
+            };
+            match text.trim() {
+                "" => DEFAULT_ENV.to_string(),
+                name => name.to_string(),
+            }
+        }
+    };
+    validate_env_name(&name).map_err(|error| anyhow::anyhow!("{error}"))?;
+    Ok(name)
 }
 
 #[cfg(test)]
@@ -784,6 +814,44 @@ mod tests {
             .unwrap();
         let review = prepare_environment_copy_review(dir.path(), "dev", "prod").unwrap();
         (dir, review)
+    }
+
+    #[test]
+    fn effective_env_follows_the_selector_and_defaults_when_absent_or_blank() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(effective_env(dir.path(), None).unwrap(), DEFAULT_ENV);
+        phantom_core::env_scope::write_active_env(dir.path(), "staging").unwrap();
+        assert_eq!(effective_env(dir.path(), None).unwrap(), "staging");
+        assert_eq!(effective_env(dir.path(), Some("prod")).unwrap(), "prod");
+        std::fs::write(dir.path().join(".phantom/env"), " \n").unwrap();
+        assert_eq!(effective_env(dir.path(), None).unwrap(), DEFAULT_ENV);
+    }
+
+    #[test]
+    fn effective_env_rejects_names_env_use_would_refuse() {
+        let dir = tempfile::tempdir().unwrap();
+        for bad in ["../prod", "prod/x", "a b", ""] {
+            assert!(
+                effective_env(dir.path(), Some(bad)).is_err(),
+                "flag {bad:?}"
+            );
+        }
+        std::fs::create_dir_all(dir.path().join(".phantom")).unwrap();
+        std::fs::write(dir.path().join(".phantom/env"), "../prod\n").unwrap();
+        let error = effective_env(dir.path(), None).unwrap_err().to_string();
+        assert!(error.contains("Invalid environment name"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn effective_env_does_not_follow_a_symlinked_selector() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".phantom")).unwrap();
+        let target = dir.path().join("elsewhere");
+        std::fs::write(&target, "prod\n").unwrap();
+        std::os::unix::fs::symlink(&target, dir.path().join(".phantom/env")).unwrap();
+        let error = effective_env(dir.path(), None).unwrap_err().to_string();
+        assert!(error.contains("active environment selector"));
     }
 
     #[test]
