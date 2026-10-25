@@ -313,6 +313,11 @@ pub fn atomic_write_if_unchanged(
 
 /// Create missing parent directories one component at a time while rejecting
 /// symlinks or non-directory objects at every path that is inspected.
+///
+/// A directory this call creates inside Phantom's state tree (one named
+/// `.phantom`, or any directory beneath one, such as `~/.phantom/shadows`) is
+/// created 0700 on Unix; other missing directories get ordinary umask
+/// permissions. Directories that already exist are never chmod-ed here.
 pub fn ensure_real_parent(path: &Path) -> io::Result<()> {
     let parent = path.parent().ok_or_else(|| {
         io::Error::new(
@@ -347,7 +352,13 @@ pub fn ensure_real_parent(path: &Path) -> io::Result<()> {
     }
     missing.reverse();
     for directory in missing {
-        match std::fs::create_dir(&directory) {
+        let mut builder = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        if is_phantom_state_path(&directory) {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        match builder.create(&directory) {
             Ok(()) => {}
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
                 let metadata = std::fs::symlink_metadata(&directory)?;
@@ -362,6 +373,15 @@ pub fn ensure_real_parent(path: &Path) -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Whether `path` is a `.phantom` directory or lies beneath one: Phantom's
+/// own state tree, whose newly created directories are kept private.
+#[cfg(unix)]
+fn is_phantom_state_path(path: &Path) -> bool {
+    path.components().any(
+        |component| matches!(component, std::path::Component::Normal(name) if name == ".phantom"),
+    )
 }
 
 /// Create `path` as a new file holding `contents`, never replacing anything.
@@ -386,7 +406,9 @@ pub fn write_new_file(path: &Path, contents: &[u8]) -> io::Result<()> {
 /// Create Phantom's own state directory (for example `~/.phantom`) if it is
 /// missing and keep it private.
 ///
-/// Missing ancestors are created as [`ensure_real_parent`] does; the final
+/// Missing ancestors are created as [`ensure_real_parent`] does (0700 when
+/// they are inside a `.phantom` tree, so `~/.phantom/shadows/<project>`
+/// leaves `~/.phantom` and `~/.phantom/shadows` private too); the final
 /// directory is created with mode 0700 on Unix. A symlink or non-directory at
 /// `path` is refused. An existing directory owned by the current user is
 /// tightened to 0700; one owned by someone else is left as it is.
@@ -755,6 +777,64 @@ mod tests {
         let error = read_regular_file(&target).unwrap_err();
         assert!(error.to_string().contains("symlink"));
         assert_eq!(std::fs::read(&owner).unwrap(), b"owner");
+    }
+
+    /// Phantom state directories created on the way to a private directory
+    /// (`~/.phantom`, `~/.phantom/shadows`) are 0700 like the final one. An
+    /// existing ancestor (the home directory) keeps its mode, and a missing
+    /// ancestor outside the Phantom state tree gets ordinary permissions.
+    #[cfg(unix)]
+    #[test]
+    fn ensure_private_dir_creates_phantom_ancestors_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        let dir = TempDir::new().unwrap();
+        let reference = dir.path().join("reference");
+        std::fs::create_dir(&reference).unwrap();
+        let ordinary = mode(&reference);
+
+        let home = dir.path().join("home");
+        std::fs::create_dir(&home).unwrap();
+        std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o751)).unwrap();
+        let store = home.join(".phantom").join("shadows").join("project");
+        ensure_private_dir(&store).unwrap();
+        assert_eq!(mode(&home), 0o751);
+        assert_eq!(mode(&home.join(".phantom")), 0o700);
+        assert_eq!(mode(&home.join(".phantom").join("shadows")), 0o700);
+        assert_eq!(mode(&store), 0o700);
+
+        let missing_home = dir.path().join("fresh-home");
+        ensure_private_dir(&missing_home.join(".phantom").join("reports")).unwrap();
+        assert_eq!(mode(&missing_home), ordinary);
+        assert_eq!(mode(&missing_home.join(".phantom")), 0o700);
+    }
+
+    /// `ensure_real_parent` applies the same rule to a file target's missing
+    /// parents: inside a `.phantom` tree they are 0700, elsewhere ordinary.
+    #[cfg(unix)]
+    #[test]
+    fn ensure_real_parent_creates_phantom_state_parents_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        let dir = TempDir::new().unwrap();
+        let reference = dir.path().join("reference");
+        std::fs::create_dir(&reference).unwrap();
+        let ordinary = mode(&reference);
+
+        let state = dir.path().join("home").join(".phantom");
+        ensure_real_parent(&state.join("backups").join("manifest.json")).unwrap();
+        assert_eq!(mode(&dir.path().join("home")), ordinary);
+        assert_eq!(mode(&state), 0o700);
+        assert_eq!(mode(&state.join("backups")), 0o700);
+
+        let plain = dir.path().join("project").join("out");
+        ensure_real_parent(&plain.join("report.txt")).unwrap();
+        assert_eq!(mode(&dir.path().join("project")), ordinary);
+        assert_eq!(mode(&plain), ordinary);
+
+        let lookalike = dir.path().join("x.phantom").join("sub");
+        ensure_real_parent(&lookalike.join("f")).unwrap();
+        assert_eq!(mode(&lookalike), ordinary);
     }
 
     #[test]
