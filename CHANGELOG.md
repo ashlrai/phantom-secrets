@@ -4,6 +4,24 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (proxy resolves upstream relative references before scoping them to the route)
+
+- An upstream `Location`, `Content-Location` or `Link` target written as a
+  relative reference (`next`, `../v2/x`, `?page=2`) was forwarded unchanged,
+  so the client resolved it against its own local URL: `../` could climb out
+  of the `/<route>` prefix (onto another route of the same proxy, which a 307
+  or 308 would replay the request body to), and a route with a base path or
+  SDK version prefix landed on the wrong upstream path. The proxy now
+  resolves the reference against the upstream request URL first and maps the
+  result like an absolute one, including the relative form under the
+  `/<route>/_phantom/<session token>/` base. A same-origin reference the
+  route cannot reach (outside its base path, or one the route would forward
+  to a different upstream path) is now dropped with a warning instead of
+  forwarded; absolute URLs on other origins are still left untouched.
+- A `Link` `anchor` parameter naming the route's upstream is now mapped the
+  same way as the link target (written back as a quoted string). A `Link`
+  header with any unreachable target or anchor is dropped.
+
 ### Fixed (`enforce_rotation_on_access` covers cloud push/pull and encrypted backups)
 
 - `phantom cloud push` and MCP `phantom_cloud_push` handed every vault value,
