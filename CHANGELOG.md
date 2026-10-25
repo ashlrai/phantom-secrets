@@ -19,6 +19,66 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 - Listing, status, validation, `phantom rotate` and the rotation tools stay
   ungated so an overdue secret can still be found and fixed.
 
+### Fixed (every remaining CLI command reads `.phantom.toml` only as a regular file)
+
+- `phantom list`, `reveal`, `status`, `watch`, `add` (and `copy`), `expiry`
+  (report, `set`, `enforce`, `rotate`), `rotate --all`, `env list`/`env new`,
+  `validate` (and `schedule`, `history`), `grant list`/`status`/`revoke`,
+  `leaks plan`, the `agent` readiness vault probe and the `doctor` config
+  check still followed a `.phantom.toml` symlink or gated on `exists()`. A
+  symlink to another project's config chose which dotenv `watch` and
+  `expiry rotate` read, which vault `list`, `expiry` and `env` opened, which
+  leak-response policy `leaks plan` applied, and what doctor reported as a
+  valid config; a dangling one read as "not initialized" (or as the default
+  leak policy); a FIFO hung `list`, `expiry`, `rotate --all` and `env`. They
+  now share the regular, non-symlink read used by exec, sync and check, and
+  fail closed with a message naming only `.phantom.toml`. `cloud`, `team` and
+  `init` now parse the exact bytes they already read safely instead of
+  reading the file a second time through the path. Regular files behave as
+  before; `phantom reveal` now reports a broken config before its terminal
+  prompt instead of after it.
+
+### Fixed (URL query credentials hidden by encoding or a fragment)
+
+- `phantom init` missed a credential in a URL's query string when the
+  parameter name was percent-encoded (`?pass%77ord=`, `?api%5Fkey=sk_...`),
+  for both public-prefixed and ordinary keys. Parameter names (and the
+  values checked for a known secret prefix) are now percent-decoded once
+  before matching, case-insensitively.
+- A non-public URL checked an older, shorter parameter list than
+  public-prefixed URLs, so `?client_secret=`, `?passwd=`,
+  `?X-Amz-Signature=`, `?X-Goog-Signature=` and `?key=` holding a known
+  secret prefix were left in plaintext under keys such as `CALLBACK_URL`.
+  Both paths now share one parser and one credential list; non-public URLs
+  keep the broader `auth`/`token`/`api_key` names.
+- A non-public URL's `#fragment` was read as part of the last query value,
+  so an OAuth implicit-flow credential (`?state=x#access_token=...`) was
+  missed. The fragment is now split from the query and its parameters are
+  checked on their own for non-public keys; public-prefixed keys ignore the
+  fragment as before. Ordinary config such as `?ref=main` or `?lang=en`
+  stays non-secret.
+
+### Fixed (proxy redirects lost their route prefix; HEAD responses claimed an empty body)
+
+- An upstream `Location` naming an absolute path, such as a `302` to
+  `/v1/files/abc` or a `201` pointing at a new resource, was passed through
+  unchanged. Every route shares the proxy's one origin, so the client
+  resolved it to `http://127.0.0.1:PORT/v1/files/abc`, dropped the
+  `/<route>` prefix and got "no route". A `Location` on the route's own
+  upstream (an absolute path, or an absolute URL with the route's scheme,
+  host and port, under its base path) is now mapped back to
+  `/<route>/...`. Relative references, other hosts, `//host` references and
+  paths outside the base path are left unchanged, so a redirect is never
+  rewritten to carry the route's credential anywhere else; so is a path the
+  route would forward to a different upstream path (its SDK version
+  prefix). Upstream redirects are still not followed by the proxy.
+- A response to `HEAD` was sent with `content-length: 0`, the length of the
+  proxy's empty buffered body, instead of the upstream length of the
+  representation a `GET` would return (RFC 9110 section 8.6), so clients
+  probing a file's size saw zero. The proxy now forwards the upstream
+  `content-length` for `HEAD`, or none when upstream sent none. 204 and 304
+  responses were already correct and are now covered by tests.
+
 ### Fixed (`enforce_rotation_on_access` was never enforced)
 
 - `enforce_rotation_on_access = true` under `[phantom.secrets.NAME]` was

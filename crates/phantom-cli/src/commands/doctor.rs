@@ -1,7 +1,6 @@
 use crate::commands::upgrade::{detect_install_source, InstallSource};
 use anyhow::{Context, Result};
 use colored::Colorize;
-use phantom_core::config::PhantomConfig;
 use phantom_core::dotenv::DotenvFile;
 use phantom_core::precommit_hook::{self, HookChange};
 use phantom_core::report::{DoctorMcpClient as McpClientState, DoctorReport};
@@ -222,15 +221,16 @@ fn run_checks(fix: bool, check_expiry: bool) -> Result<(usize, usize)> {
     // A config that exists but cannot be read or parsed is not "no config":
     // the managed dotenv it names is unknown, so doctor reports the dotenv
     // as unchecked instead of judging `./.env`, and --fix makes no repairs.
-    let (loaded_config, config_broken) = match crate::util::load_config_if_present(&config_path) {
-        Ok(config) => (config, false),
+    let (loaded_config, config_error) = match crate::util::load_config_if_present(&config_path) {
+        Ok(config) => (config, None),
         Err(error) if fix => {
             return Err(anyhow::Error::new(error).context(
                 ".phantom.toml exists but could not be loaded; doctor --fix made no repairs. Fix or restore it, then run `phantom doctor`",
             ))
         }
-        Err(_) => (None, true),
+        Err(error) => (None, Some(error)),
     };
+    let config_broken = config_error.is_some();
     let env_path = match loaded_config.as_ref() {
         Some(config) => {
             match phantom_core::managed_dotenv::resolve_dotenv(&project_dir, config, &[]) {
@@ -264,9 +264,16 @@ fn run_checks(fix: bool, check_expiry: bool) -> Result<(usize, usize)> {
     });
 
     // Check 1: .phantom.toml exists
-    if config_broken || config_path.exists() {
+    // Judge the config read above, never a second read through the path: a
+    // symlink is refused there and must not be followed here.
+    let config_check = match (loaded_config.as_ref(), config_error.as_ref()) {
+        (Some(config), _) => Some(Ok(config)),
+        (None, Some(error)) => Some(Err(error)),
+        (None, None) => None,
+    };
+    if let Some(config_check) = config_check {
         check_pass(".phantom.toml found");
-        match PhantomConfig::load(&config_path) {
+        match config_check {
             Ok(config) => {
                 check_pass(&format!(
                     "Config valid (project: {})",
@@ -619,7 +626,7 @@ fn run_checks(fix: bool, check_expiry: bool) -> Result<(usize, usize)> {
     // config exists, but surfaced unconditionally here so it's always visible)
     {
         if doctor_can_open_vault(fix) {
-            if let Ok(config) = PhantomConfig::load(&config_path) {
+            if let Some(config) = loaded_config.as_ref() {
                 let vault = phantom_vault::try_create_vault(config.local_project_id())?;
                 check_info(&format!("Vault backend: {}", vault.backend_name()));
             } else {
@@ -692,7 +699,7 @@ fn run_checks(fix: bool, check_expiry: bool) -> Result<(usize, usize)> {
     // Check 14 (optional): Validation metadata — surface invalid credentials
     {
         if doctor_can_open_vault(fix) {
-            if let Ok(config) = PhantomConfig::load(&config_path) {
+            if let Some(config) = loaded_config.as_ref() {
                 let vault = phantom_vault::try_create_vault(config.local_project_id())?;
                 if let Ok(names) = vault.list() {
                     let mut invalid_count = 0usize;
@@ -753,7 +760,7 @@ fn run_checks(fix: bool, check_expiry: bool) -> Result<(usize, usize)> {
 
     // Check 15 (optional): Secret TTL / expiry status
     if check_expiry && doctor_can_open_vault(fix) {
-        if let Ok(config) = PhantomConfig::load(&config_path) {
+        if let Some(config) = loaded_config.as_ref() {
             let vault = phantom_vault::try_create_vault(config.local_project_id())?;
             match vault.list_with_metadata() {
                 Ok(entries) => {
@@ -1148,6 +1155,43 @@ mod tests {
             .map(|check| (check.status, check.message, check.fix))
             .collect();
         (issues, lines)
+    }
+
+    /// A `.phantom.toml` symlink to a config outside the project used to be
+    /// followed by check 1: doctor reported that config as valid and judged
+    /// its services, although exec, sync and --fix refuse it.
+    #[cfg(unix)]
+    #[test]
+    fn config_symlink_outside_the_project_is_not_judged_as_valid() {
+        let outside = tempfile::tempdir().unwrap();
+        phantom_core::config::PhantomConfig::new_with_defaults("doctor-outside".to_string())
+            .save(&outside.path().join(".phantom.toml"))
+            .unwrap();
+        let project = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(
+            outside.path().join(".phantom.toml"),
+            project.path().join(".phantom.toml"),
+        )
+        .unwrap();
+        let _seam = crate::util::test_seam::TestProject::install(
+            project.path().to_path_buf(),
+            crate::util::test_seam::empty_keychain,
+        );
+
+        let report = super::collect_report(false, false).unwrap();
+
+        assert!(
+            !report
+                .checks
+                .iter()
+                .any(|check| check.message.starts_with("Config valid")),
+            "doctor judged the symlinked config as valid"
+        );
+        assert!(
+            report.checks.iter().any(|check| check.status == "fail"
+                && check.message.contains(crate::util::CONFIG_NOT_REGULAR)),
+            "doctor did not report the symlinked config as refused"
+        );
     }
 
     #[cfg(unix)]
