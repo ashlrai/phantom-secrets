@@ -4,6 +4,26 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (a copy is refused when its source changes before the commit)
+
+- `phantom copy`, MCP `phantom_copy_secret` and `phantom env copy` read the
+  source's metadata before its value, outside the copy transaction, and only
+  the source value was checked again at commit (`phantom copy` and MCP copy,
+  which write into another project's vault, did not recheck the source at
+  all). A source demoted to read-only, given an expiry, or rotated between
+  that read and the commit left the copy with stale, weaker metadata, or a
+  rotation stamp that did not match its value. The inherited protection is
+  now bound to its source entry: the transaction requires the source to
+  still hold the copied value and exactly the metadata that was read, at
+  preflight, atomically with the destination's inherited-metadata write when
+  both live in one vault, and again after every vault write before the final
+  dotenv commit. Any drift refuses the copy, rolls the destination back, and
+  says to retry. `phantom env copy`'s source guard, which only re-wrote the
+  same value, is replaced by this check. `InitSecret::inheriting_source_protection`
+  now takes the source entry's name, and cross-project copies commit through
+  `commit_init_with_source_vault`. Confirmations, approvals and the
+  trusted-terminal challenge are unchanged.
+
 ### Fixed (session and evidence state use the shared private-directory helper)
 
 - The inactive `phantom-session` journal and the `phantom-evidence` store
