@@ -2179,6 +2179,8 @@ impl PhantomMcpServer {
         }
         let mut log = DoctorLog::default();
         let mut issues = 0u32;
+        // Findings only a manual edit clears, which fix=true cannot repair.
+        let mut manual_issues = 0u32;
         let mut fixed = 0u32;
         let mut doctor_files = Vec::new();
         let mut hook_changed = false;
@@ -2294,7 +2296,14 @@ impl PhantomMcpServer {
                             log.fail(format!("Managed dotenv parse error: {error}"));
                             issues += 1;
                         } else if real_secrets.is_empty() {
-                            log.pass(format!(".env has {} entries, all protected", entries.len()));
+                            // A commented-out secret is still plaintext, so
+                            // no "all protected" pass for the file then.
+                            if dotenv.commented_secret_assignments().is_empty() {
+                                log.pass(format!(
+                                    ".env has {} entries, all protected",
+                                    entries.len()
+                                ));
+                            }
                         } else {
                             let names: Vec<&str> =
                                 real_secrets.iter().map(|e| e.key.as_str()).collect();
@@ -2305,6 +2314,23 @@ impl PhantomMcpServer {
                             ));
                             log.fix("Run `phantom init`");
                             issues += 1;
+                        }
+                        // `phantom init` never edits comments, so a
+                        // commented-out credential stays as plaintext. Key
+                        // names and line numbers only; nothing is changed.
+                        let file_label = env_path
+                            .file_name()
+                            .and_then(|name| name.to_str())
+                            .unwrap_or(".env");
+                        for (key_name, line) in dotenv.commented_secret_assignments() {
+                            log.warn(format!(
+                                "{file_label} line {line}: commented-out {key_name} still holds a plaintext secret"
+                            ));
+                            log.fix(format!(
+                                "Delete line {line} from {file_label}; if the value is still needed, store it under an unused name with `phantom add <NAME> --stdin` in a trusted terminal"
+                            ));
+                            issues += 1;
+                            manual_issues += 1;
                         }
                     }
                     Err(_) => {
@@ -2511,7 +2537,7 @@ impl PhantomMcpServer {
         if issues == 0 {
             log.summary("All checks passed!");
         } else {
-            let suffix = if !params.fix {
+            let suffix = if !params.fix && issues > manual_issues {
                 " — use fix=true to auto-fix"
             } else {
                 ""
@@ -9644,6 +9670,87 @@ mod tests {
         let text = extract_content_text(&result);
         assert!(text.contains("No .phantom.toml found"), "{text}");
         assert!(text.contains("unprotected secret"), "{text}");
+    }
+
+    #[test]
+    fn doctor_names_commented_out_secrets_without_values() {
+        let _environment = TestEnvironment::new();
+        let (server, dir) = setup_test_project();
+        let old = ["sk", "-proj-", "McpC0mmentedValue0123456789abcdefghi"].concat();
+        std::fs::write(
+            dir.path().join(".env"),
+            format!("NODE_ENV=production\n# PORT=8080\n# OPENAI_API_KEY={old}\n"),
+        )
+        .unwrap();
+        let result = server
+            .phantom_doctor(Parameters(DoctorParams {
+                fix: false,
+                confirm: false,
+                approval_token: None,
+            }))
+            .unwrap();
+        let report = structured_report(&result);
+        let checks = report["checks"].as_array().unwrap();
+        let finding = checks
+            .iter()
+            .find(|check| {
+                check["message"]
+                    .as_str()
+                    .is_some_and(|message| message.contains("OPENAI_API_KEY"))
+            })
+            .unwrap_or_else(|| panic!("no commented-secret finding: {checks:?}"));
+        assert_eq!(finding["status"], "warn");
+        assert!(finding["message"].as_str().unwrap().contains("line 3"));
+        assert!(
+            !checks.iter().any(|check| check["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("all protected"))),
+            "{checks:?}"
+        );
+        assert!(finding["fix"].as_str().unwrap().contains("phantom add"));
+        assert_no_value_leak(&result, &[old.as_str()]);
+    }
+
+    #[test]
+    fn doctor_does_not_offer_fix_true_for_commented_out_secrets() {
+        // fix=true never deletes a comment line, so a commented-out credential
+        // alone must not turn the summary into "use fix=true to auto-fix".
+        let _environment = TestEnvironment::new();
+        let (server, dir) = setup_test_project();
+        let run = |fix: bool| {
+            server
+                .phantom_doctor(Parameters(DoctorParams {
+                    fix,
+                    confirm: fix,
+                    approval_token: None,
+                }))
+                .unwrap()
+        };
+        PhantomConfig::new_with_defaults("doctor-summary-test".to_string())
+            .save(&dir.path().join(".phantom.toml"))
+            .unwrap();
+        std::fs::write(dir.path().join(".env"), "NODE_ENV=production\n").unwrap();
+        run(true);
+        let clean = run(false);
+        assert_eq!(
+            structured_report(&clean)["issues"],
+            0,
+            "{}",
+            extract_content_text(&clean)
+        );
+
+        let old = ["sk", "-proj-", "McpSummaryC0mmentValue0123456789abcd"].concat();
+        std::fs::write(
+            dir.path().join(".env"),
+            format!("NODE_ENV=production\n# OPENAI_API_KEY={old}\n"),
+        )
+        .unwrap();
+        let result = run(false);
+        let text = extract_content_text(&result);
+        assert_eq!(structured_report(&result)["issues"], 1, "{text}");
+        assert!(text.contains("1 issue(s) found"), "{text}");
+        assert!(!text.contains("use fix=true"), "{text}");
+        assert_no_value_leak(&result, &[old.as_str()]);
     }
 
     fn structured_report(result: &CallToolResult) -> serde_json::Value {

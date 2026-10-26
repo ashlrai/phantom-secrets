@@ -104,6 +104,8 @@ availability or local tests do not commission those capabilities.
 - Security, compliance, platform, or support guarantees inferred from source.
 - Dates or adoption claims that lack an accountable owner and acceptance evidence.
 
-Historical planning documents such as [PLAN.md](PLAN.md) record earlier design
-thinking and are not the current roadmap. Current behavior is defined by code,
+The earlier DX plan (public key awareness, `.env.example` generation, README
+onboarding, pre-commit hook, `wrap`/`unwrap`, `copy`, enhanced `doctor`, CI/CD
+detection, `why`, `status --oneline`) has shipped and was removed from the
+repository; see git history for it. Current behavior is defined by code,
 closed schemas, tests, the [changelog](CHANGELOG.md), and canonical documentation.
