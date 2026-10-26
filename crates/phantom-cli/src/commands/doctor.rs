@@ -110,10 +110,14 @@ fn check_managed_dotenv(project_dir: &std::path::Path, env_path: &std::path::Pat
         check_fail(&format!(".env parse error: {error}"));
         1
     } else if real_secrets.is_empty() {
-        check_pass(&format!(
-            ".env has {} entries, all protected",
-            entries.len()
-        ));
+        // A commented-out secret below is still plaintext, so no "all
+        // protected" pass for the file then.
+        if dotenv.commented_secret_assignments().is_empty() {
+            check_pass(&format!(
+                ".env has {} entries, all protected",
+                entries.len()
+            ));
+        }
         0
     } else {
         check_warn(&format!(
@@ -1276,9 +1280,9 @@ mod tests {
         let (issues, lines) = dotenv_check_lines(project.path());
 
         assert_eq!(issues, 2, "{lines:?}");
-        assert_eq!(lines.len(), 3, "{lines:?}");
-        assert_eq!(lines[0].0, "pass");
-        for (line, (key, number)) in lines[1..]
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(lines.iter().all(|line| line.0 != "pass"), "{lines:?}");
+        for (line, (key, number)) in lines
             .iter()
             .zip([("OPENAI_API_KEY", 2), ("GITHUB_TOKEN", 4)])
         {

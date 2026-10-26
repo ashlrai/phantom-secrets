@@ -2296,7 +2296,14 @@ impl PhantomMcpServer {
                             log.fail(format!("Managed dotenv parse error: {error}"));
                             issues += 1;
                         } else if real_secrets.is_empty() {
-                            log.pass(format!(".env has {} entries, all protected", entries.len()));
+                            // A commented-out secret is still plaintext, so
+                            // no "all protected" pass for the file then.
+                            if dotenv.commented_secret_assignments().is_empty() {
+                                log.pass(format!(
+                                    ".env has {} entries, all protected",
+                                    entries.len()
+                                ));
+                            }
                         } else {
                             let names: Vec<&str> =
                                 real_secrets.iter().map(|e| e.key.as_str()).collect();
@@ -9694,6 +9701,12 @@ mod tests {
             .unwrap_or_else(|| panic!("no commented-secret finding: {checks:?}"));
         assert_eq!(finding["status"], "warn");
         assert!(finding["message"].as_str().unwrap().contains("line 3"));
+        assert!(
+            !checks.iter().any(|check| check["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("all protected"))),
+            "{checks:?}"
+        );
         assert!(finding["fix"].as_str().unwrap().contains("phantom add"));
         assert_no_value_leak(&result, &[old.as_str()]);
     }
