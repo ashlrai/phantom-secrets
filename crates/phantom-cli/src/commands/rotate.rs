@@ -1318,7 +1318,13 @@ pub fn run_batch(
         crate::util::inventory_guard(vault.as_ref(), config.local_project_id(), names.len())?;
     crate::util::warn_inventory_note(note.as_deref());
     if names.is_empty() {
-        println!("{} No secrets in vault.", "!".yellow().bold());
+        println!(
+            "{}",
+            empty_batch_stdout(
+                json_output,
+                format!("{} No secrets in vault.", "!".yellow().bold())
+            )
+        );
         return Ok(());
     }
 
@@ -1350,9 +1356,15 @@ pub fn run_batch(
 
     if due_items.is_empty() {
         println!(
-            "{} No secrets are due for rotation within the next {} day(s).",
-            "ok".green().bold(),
-            rotation_window_days
+            "{}",
+            empty_batch_stdout(
+                json_output,
+                format!(
+                    "{} No secrets are due for rotation within the next {} day(s).",
+                    "ok".green().bold(),
+                    rotation_window_days
+                )
+            )
         );
         return Ok(());
     }
@@ -1363,13 +1375,19 @@ pub fn run_batch(
         );
     }
 
-    println!(
+    let found = format!(
         "{} Found {} secret(s) due for rotation within {} day(s).",
         "->".blue().bold(),
         due_items.len(),
         rotation_window_days
     );
-    println!();
+    if json_output {
+        // stdout carries only the JSON array.
+        eprintln!("{found}");
+    } else {
+        println!("{found}");
+        println!();
+    }
 
     // Execute the batch.
     let (batch_id, outcomes) = execute_batch_rotation(&due_items, &providers, now);
@@ -1464,6 +1482,16 @@ pub fn run_batch(
     }
 
     Ok(())
+}
+
+/// What `rotate --batch` prints on stdout when there is nothing to rotate:
+/// an empty JSON array under `--json`, so scripts can parse every outcome.
+fn empty_batch_stdout(json_output: bool, notice: String) -> String {
+    if json_output {
+        "[]".to_string()
+    } else {
+        notice
+    }
 }
 
 #[cfg(test)]
@@ -2110,5 +2138,17 @@ mod token_remap_tests {
         assert!(error.starts_with("Vault locked:"));
         assert!(error.contains("PHANTOM_VAULT_PASSPHRASE"));
         assert_eq!(std::fs::read(project.dir.join(".env")).unwrap(), before);
+    }
+
+    #[test]
+    fn empty_batch_json_stdout_is_an_empty_array() {
+        let json: serde_json::Value =
+            serde_json::from_str(&empty_batch_stdout(true, "ok nothing due".to_string()))
+                .expect("--json stdout parses");
+        assert_eq!(json, serde_json::json!([]));
+        assert_eq!(
+            empty_batch_stdout(false, "ok nothing due".to_string()),
+            "ok nothing due"
+        );
     }
 }
