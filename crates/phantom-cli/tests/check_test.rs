@@ -106,12 +106,15 @@ fn check_staged_extended_shapes_allow_public_material_and_identifiers() {
     let body = "Ab9+/Q".repeat(11);
     let public = ["-----BEGIN ", "PUBLIC KEY-----"].concat();
     let certificate = ["-----BEGIN ", "CERTIFICATE-----"].concat();
+    // Build credential-shaped near misses without changing the detector inputs.
+    let function_identifier = ["ghu_", "refresh_access_flow_for_device_tokens"].concat();
+    let region_identifier = ["ASIA", "PACIFICNORTHEAST"].concat();
     fs::write(
         dir.path().join("source.txt"),
         format!(
             "{public}\n{body}\n{certificate}\n{body}\n\
-             fn ghu_refresh_access_flow_for_device_tokens() {{}} // FAKE fixture: inert function identifier\n\
-             const region = ASIAPACIFICNORTHEAST; // FAKE fixture: inert region identifier\n\
+             fn {function_identifier}() {{}}\n\
+             const region = {region_identifier};\n\
              rk_live_short whsec_short shpat_short\n"
         ),
     )

@@ -1792,7 +1792,7 @@ mod tests {
         let cert = ["-----BEGIN ", "CERTIFICATE-----"].concat();
         for text in [
             "gho_short and ghs_also_short".to_string(),
-            "fn ghu_refresh_access_flow_for_device_tokens() {}".to_string(),
+            concat!("fn ghu_", "refresh_access_flow_for_device_tokens() {}").to_string(),
             "rk_live_x whsec_test shpat_abc".to_string(),
             format!("REGION_{}{} = 1", "ASIA", "PACIFICNORTHEAST"),
             format!("{}{}", "ASIA", "PACIFICNORTHEAST"),
