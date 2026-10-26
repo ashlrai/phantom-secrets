@@ -17,22 +17,11 @@ const VAULT_PASS: &str = "test-integration-passphrase-add-remove";
 fn init_project(dir: &TempDir) {
     fs::write(dir.path().join(".env"), "SEED_SECRET=sk-seed-value\n").expect("write seed .env");
 
-    Command::cargo_bin("phantom")
-        .expect("binary not found")
-        .args(["init", "--from", ".env"])
-        .current_dir(dir.path())
-        .env("PHANTOM_VAULT_PASSPHRASE", VAULT_PASS)
-        .env("HOME", dir.path())
-        .assert()
-        .success();
+    common::init_project(dir, VAULT_PASS);
 }
 
 fn phantom(dir: &TempDir) -> Command {
-    let mut cmd = Command::cargo_bin("phantom").expect("binary not found");
-    cmd.current_dir(dir.path())
-        .env("PHANTOM_VAULT_PASSPHRASE", VAULT_PASS)
-        .env("HOME", dir.path());
-    cmd
+    common::phantom(dir, VAULT_PASS)
 }
 
 #[test]

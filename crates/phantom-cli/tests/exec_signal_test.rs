@@ -8,7 +8,7 @@ mod common;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 const VAULT_PASS: &str = "exec-signal-integration-unlock-phrase";
 
@@ -109,17 +109,12 @@ fn exec_and_signal(run: Run<'_>) -> Outcome {
         .stderr(fs::File::create(&stderr_path).unwrap())
         .spawn()
         .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(30);
-    let child_pid: libc::pid_t = loop {
-        if let Some(pid) = fs::read_to_string(&ready)
+    let child_pid: libc::pid_t = common::poll(Duration::from_secs(30), || {
+        fs::read_to_string(&ready)
             .ok()
             .and_then(|text| text.trim().parse().ok())
-        {
-            break pid;
-        }
-        assert!(Instant::now() < deadline, "child never started");
-        std::thread::sleep(Duration::from_millis(20));
-    };
+    })
+    .expect("child never started");
     let phantom_pid = libc::pid_t::try_from(phantom.id()).unwrap();
     // SAFETY: signal the phantom process (and its child) this test spawned.
     assert_eq!(unsafe { libc::kill(phantom_pid, run.signal) }, 0);
@@ -127,17 +122,11 @@ fn exec_and_signal(run: Run<'_>) -> Outcome {
         assert_eq!(unsafe { libc::kill(child_pid, run.signal) }, 0);
     }
 
-    let deadline = Instant::now() + Duration::from_secs(30);
-    let status = loop {
-        if let Some(status) = phantom.try_wait().unwrap() {
-            break status;
-        }
-        if Instant::now() >= deadline {
+    let status = common::poll(Duration::from_secs(30), || phantom.try_wait().unwrap())
+        .unwrap_or_else(|| {
             let _ = phantom.kill();
-            break phantom.wait().unwrap();
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    };
+            phantom.wait().unwrap()
+        });
     // SAFETY: best-effort cleanup of a child that outlived phantom.
     unsafe {
         libc::kill(child_pid, libc::SIGKILL);
