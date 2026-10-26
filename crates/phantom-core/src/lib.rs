@@ -12,6 +12,7 @@ pub mod dotenv;
 pub mod env_scope;
 pub mod error;
 pub mod fs;
+pub mod gitignore;
 pub mod home;
 pub mod importers;
 pub mod issuance;

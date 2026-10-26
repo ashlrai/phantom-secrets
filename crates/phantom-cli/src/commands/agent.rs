@@ -432,7 +432,9 @@ fn ensure_gitignore(project_dir: &std::path::Path) -> Result<bool> {
         }
         None => String::new(),
     };
-    if content.lines().any(|line| line.trim() == ".env") {
+    if phantom_core::gitignore::dotenv_ignore_state(&content, ".env")
+        == phantom_core::gitignore::DotenvIgnore::Ignored
+    {
         return Ok(false);
     }
     if !content.is_empty() && !content.ends_with('\n') {

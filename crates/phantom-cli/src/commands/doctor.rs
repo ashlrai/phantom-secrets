@@ -413,10 +413,19 @@ fn run_checks(fix: bool, check_expiry: bool) -> Result<(usize, usize)> {
     if let Some(bytes) = gitignore_before.as_deref() {
         let content = String::from_utf8(bytes.to_vec())
             .map_err(|_| anyhow::anyhow!("Refusing to rewrite non-UTF-8 .gitignore"))?;
-        if content.lines().any(|l| l.trim() == ".env") {
+        let state = phantom_core::gitignore::dotenv_ignore_state(&content, ".env");
+        if state == phantom_core::gitignore::DotenvIgnore::Ignored {
             check_pass(".env is in .gitignore");
         } else {
-            check_warn(".env is NOT in .gitignore — secrets could be committed!");
+            if state == phantom_core::gitignore::DotenvIgnore::Negated {
+                check_warn(
+                    ".env is un-ignored by a later `!` rule in .gitignore — secrets could be committed!",
+                );
+            } else {
+                check_warn(".env is NOT in .gitignore — secrets could be committed!");
+            }
+            // Git applies the last matching rule, so an appended `.env` also
+            // overrides an earlier negation.
             check_fix("Run: echo '.env' >> .gitignore");
             if fix && !mutation_applied {
                 ensure_dotenv_repair_guard(repair_dotenv_guard.as_ref())?;
@@ -1545,6 +1554,52 @@ mod tests {
         assert!(format!("{error:#}").contains("made no repairs"));
         assert!(!dir.join(".gitignore").exists());
         assert!(!dir.join(".env.example").exists());
+    }
+
+    /// Doctor judged `.gitignore` by one literal `.env` line: `/.env` and
+    /// `.env*` (which Git honours) drew a warning, and a later `!.env` (which
+    /// un-ignores it) passed.
+    #[test]
+    fn gitignore_check_follows_git_rules_not_one_literal_line() {
+        let cases: [(&str, &str, &str); 4] = [
+            ("/.env\n", "pass", ".env is in .gitignore"),
+            (".env*\n", "pass", ".env is in .gitignore"),
+            (".env\n!.env\n", "warn", ".env is un-ignored"),
+            ("node_modules\n", "warn", ".env is NOT in .gitignore"),
+        ];
+        for (body, status, message) in cases {
+            let project = tempfile::tempdir().unwrap();
+            let dir = project.path().canonicalize().unwrap();
+            std::fs::write(dir.join(".gitignore"), body).unwrap();
+            let _seam = crate::util::test_seam::TestProject::install(
+                dir.clone(),
+                crate::util::test_seam::empty_keychain,
+            );
+
+            super::REPORT.with(|report| {
+                *report.borrow_mut() = Some(phantom_core::report::DoctorReport::default())
+            });
+            let outcome = super::run_checks(false, false);
+            let report = super::REPORT
+                .with(|report| report.borrow_mut().take())
+                .unwrap();
+            outcome.expect("doctor must report, not abort");
+            let line = report
+                .checks
+                .iter()
+                .find(|check| check.message.contains(".gitignore"))
+                .unwrap_or_else(|| panic!("no .gitignore finding for {body:?}"));
+            assert_eq!(line.status, status, "{body:?}: {}", line.message);
+            assert!(
+                line.message.starts_with(message),
+                "{body:?}: {}",
+                line.message
+            );
+            assert_eq!(
+                std::fs::read_to_string(dir.join(".gitignore")).unwrap(),
+                body
+            );
+        }
     }
 
     /// The `.env.example` repair derives from the bytes the guard read, not a
