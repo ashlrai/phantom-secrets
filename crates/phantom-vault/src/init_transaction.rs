@@ -185,6 +185,12 @@ pub struct InitFile {
 }
 
 impl InitFile {
+    /// Path this plan would write. The bytes stay private so a preview cannot
+    /// print file contents.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
     pub fn replace(path: impl Into<PathBuf>, content: impl Into<Vec<u8>>) -> Self {
         Self {
             path: path.into(),

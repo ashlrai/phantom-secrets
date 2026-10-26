@@ -36,6 +36,7 @@ pub fn run(
     value_arg: Option<String>,
     from_stdin: bool,
     lines: StdinLines,
+    dry_run: bool,
 ) -> Result<()> {
     if let Some(mut value) = value_arg {
         value.zeroize();
@@ -59,7 +60,10 @@ pub fn run(
         }
     })?;
     validate_managed_dotenv_preflight(&project_dir, &config)?;
-    let vault = phantom_vault::try_create_vault(config.local_project_id())?;
+    if dry_run {
+        return dry_run_add(&project_dir, &config_path, &config, name);
+    }
+    let vault = crate::util::open_vault(config.local_project_id())?;
     ensure_secret_absent(vault.as_ref(), config.local_project_id(), name)?;
 
     // Existing-name authority is resolved from value-blind vault metadata
@@ -96,6 +100,31 @@ pub fn run(
             .and_then(|part| part.to_str())
             .unwrap_or("managed dotenv")
             .cyan()
+    );
+    Ok(())
+}
+
+/// Plan an add from the config and dotenv only. Vault membership is not
+/// listed: opening the vault can take the project lock and create app-data
+/// directories.
+fn dry_run_add(
+    project_dir: &Path,
+    config_path: &Path,
+    config: &PhantomConfig,
+    name: &str,
+) -> Result<()> {
+    let resolved = phantom_core::managed_dotenv::resolve_dotenv(project_dir, config, &[])
+        .context("Failed to resolve the managed dotenv")?;
+    crate::commands::plan_print::print_plan(
+        "add",
+        &[name.to_string()],
+        &[],
+        &[config_path.to_path_buf(), resolved.path],
+        project_dir,
+        false,
+        &[],
+        true,
+        false,
     );
     Ok(())
 }
@@ -391,6 +420,82 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::TempDir;
 
+    struct EnvRestore {
+        previous: Vec<(&'static str, Option<std::ffi::OsString>)>,
+    }
+
+    impl EnvRestore {
+        fn apply(home: &Path) -> Self {
+            let keys = [
+                "HOME",
+                "XDG_DATA_HOME",
+                "XDG_CONFIG_HOME",
+                "XDG_STATE_HOME",
+                "XDG_CACHE_HOME",
+                "PHANTOM_VAULT_PASSPHRASE",
+                "PHANTOM_REQUIRE_KEYCHAIN",
+            ];
+            let previous = keys
+                .into_iter()
+                .map(|key| (key, std::env::var_os(key)))
+                .collect();
+            unsafe {
+                std::env::set_var("HOME", home);
+                std::env::set_var("XDG_DATA_HOME", home.join("xdg-data"));
+                std::env::set_var("XDG_CONFIG_HOME", home.join("xdg-config"));
+                std::env::set_var("XDG_STATE_HOME", home.join("xdg-state"));
+                std::env::set_var("XDG_CACHE_HOME", home.join("xdg-cache"));
+                std::env::remove_var("PHANTOM_VAULT_PASSPHRASE");
+                std::env::remove_var("PHANTOM_REQUIRE_KEYCHAIN");
+            }
+            Self { previous }
+        }
+    }
+
+    impl Drop for EnvRestore {
+        fn drop(&mut self) {
+            for (key, value) in &self.previous {
+                unsafe {
+                    match value {
+                        Some(value) => std::env::set_var(key, value),
+                        None => std::env::remove_var(key),
+                    }
+                }
+            }
+        }
+    }
+
+    fn tree_snapshot(root: &Path) -> std::collections::BTreeMap<String, Vec<u8>> {
+        fn walk(root: &Path, dir: &Path, files: &mut std::collections::BTreeMap<String, Vec<u8>>) {
+            let mut entries: Vec<_> = std::fs::read_dir(dir)
+                .unwrap()
+                .map(|entry| entry.unwrap())
+                .collect();
+            entries.sort_by_key(|entry| entry.file_name());
+            for entry in entries {
+                let path = entry.path();
+                let relative = path
+                    .strip_prefix(root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                let file_type = std::fs::symlink_metadata(&path).unwrap().file_type();
+                if file_type.is_symlink() {
+                    let target = std::fs::read_link(&path).unwrap();
+                    files.insert(relative, target.to_string_lossy().into_owned().into_bytes());
+                } else if file_type.is_dir() {
+                    files.insert(format!("{relative}/"), Vec::new());
+                    walk(root, &path, files);
+                } else {
+                    files.insert(relative, std::fs::read(&path).unwrap());
+                }
+            }
+        }
+        let mut files = std::collections::BTreeMap::new();
+        walk(root, root, &mut files);
+        files
+    }
+
     struct AmbiguousCasVault {
         inner: FileVault,
         calls: AtomicUsize,
@@ -667,13 +772,67 @@ mod tests {
             .find("validate_managed_dotenv_preflight(&project_dir, &config)?")
             .unwrap();
         let vault = source
-            .find("phantom_vault::try_create_vault(config.local_project_id())?")
+            .find("crate::util::open_vault(config.local_project_id())?")
             .unwrap();
         let input = source
             .find("let value = read_secret_value(name, from_stdin, lines)?")
             .unwrap();
         assert!(validate < vault);
         assert!(validate < input);
+        let dry = source.find("if dry_run {").unwrap();
+        assert!(
+            dry < vault,
+            "dry-run must return before the vault is opened"
+        );
+        let dry_fn = source
+            .split("fn dry_run_add(")
+            .nth(1)
+            .unwrap()
+            .split("pub(super) fn validate_managed_dotenv_preflight(")
+            .next()
+            .unwrap();
+        assert!(!dry_fn.contains("try_create_vault"));
+        assert!(!dry_fn.contains("open_vault"));
+        assert!(!dry_fn.contains("acquire_project_lock"));
+        assert!(!dry_fn.contains("get_or_create_passphrase"));
+        assert!(!dry_fn.contains("if from_stdin"));
+    }
+
+    #[test]
+    fn dry_run_add_does_not_reach_the_keychain_or_create_app_data() {
+        let _guard = crate::test_support::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let home = TempDir::new().unwrap();
+        let project = home.path().canonicalize().unwrap();
+        let restore = EnvRestore::apply(&project);
+        std::fs::create_dir(project.join("empty-meta")).unwrap();
+        std::fs::write(project.join(".hidden-lock"), b"lock").unwrap();
+        std::fs::write(project.join("project.lock"), b"lock").unwrap();
+        PhantomConfig::new_with_defaults(PhantomConfig::project_id_from_path(&project))
+            .save(&project.join(".phantom.toml"))
+            .unwrap();
+        std::fs::write(project.join(".env"), "PORT=3000\n").unwrap();
+        let _seam = crate::util::test_seam::TestProject::install(
+            project.clone(),
+            crate::util::test_seam::untouched_keychain,
+        );
+        let before = tree_snapshot(&project);
+
+        run(
+            "NEW_SERVICE_TOKEN",
+            None,
+            false,
+            StdinLines::SingleOnly,
+            true,
+        )
+        .unwrap();
+
+        assert_eq!(before, tree_snapshot(&project));
+        assert!(!project.join("xdg-data").exists());
+        assert!(!project.join(".local").exists());
+        drop(_seam);
+        drop(restore);
     }
 
     #[test]

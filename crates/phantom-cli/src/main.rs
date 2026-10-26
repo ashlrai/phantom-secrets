@@ -70,8 +70,9 @@ enum Commands {
         /// Skips repos that already have .phantom.toml.
         #[arg(long, value_name = "DIR")]
         all: Option<std::path::PathBuf>,
-        /// With --all: scan and report what would change without modifying anything.
-        #[arg(long, requires = "all")]
+        /// Report the keys and files this init would write, without changing anything.
+        /// With --all, scan and report what would change without modifying anything.
+        #[arg(long)]
         dry_run: bool,
         /// With --all: number of repos to initialise concurrently.
         /// Defaults to PHANTOM_INIT_JOBS env var, then 4.
@@ -79,7 +80,7 @@ enum Commands {
         jobs: Option<usize>,
         /// Create a valid .phantom.toml and empty vault without requiring a .env file.
         /// Use this to bootstrap a brand-new project before any secrets exist.
-        #[arg(long, conflicts_with_all = ["all", "dry_run"])]
+        #[arg(long, conflicts_with = "all")]
         empty: bool,
     },
 
@@ -291,6 +292,9 @@ enum Commands {
         /// With --stdin: store only the first line (pass/gopass put metadata after it)
         #[arg(long, requires = "stdin")]
         first_line: bool,
+        /// Report the key and files this add would write, without reading a value or changing anything
+        #[arg(long, conflicts_with_all = ["stdin", "multiline", "first_line"])]
+        dry_run: bool,
     },
 
     /// Remove a secret transactionally after an exact trusted-terminal challenge
@@ -298,6 +302,9 @@ enum Commands {
     Remove {
         /// Secret name to remove
         name: String,
+        /// Report the key and files this removal would write, without deleting anything
+        #[arg(long)]
+        dry_run: bool,
     },
 
     /// Reveal a secret value (print to stdout or copy to clipboard)
@@ -1272,7 +1279,9 @@ fn run() -> anyhow::Result<()> {
             jobs,
             empty,
         } => {
-            if empty {
+            if empty && dry_run {
+                commands::init::dry_run::run_empty()
+            } else if empty {
                 commands::init::run_empty()
             } else {
                 match all {
@@ -1282,6 +1291,7 @@ fn run() -> anyhow::Result<()> {
                             .unwrap_or(commands::init::multi::DEFAULT_JOBS);
                         commands::init::multi::run(root, dry_run, j)
                     }
+                    None if dry_run => commands::init::dry_run::run(&from),
                     None => commands::init::run(&from),
                 }
             }
@@ -1297,6 +1307,7 @@ fn run() -> anyhow::Result<()> {
             stdin,
             multiline,
             first_line,
+            dry_run,
         } => {
             let lines = if multiline {
                 commands::add::StdinLines::Multiline
@@ -1305,9 +1316,9 @@ fn run() -> anyhow::Result<()> {
             } else {
                 commands::add::StdinLines::SingleOnly
             };
-            commands::add::run(&name, value, stdin, lines)
+            commands::add::run(&name, value, stdin, lines, dry_run)
         }
-        Commands::Remove { name } => commands::remove::run(&name),
+        Commands::Remove { name, dry_run } => commands::remove::run(&name, dry_run),
         Commands::Reveal {
             name,
             clipboard,

@@ -362,6 +362,35 @@ pub(crate) mod test_seam {
         Box::new(EmptyKeychain)
     }
 
+    /// Keychain stand-in that panics on every read or write. A dry run that
+    /// reaches the vault fails the test instead of creating a passphrase entry.
+    pub(crate) struct UntouchedKeychain;
+
+    impl VaultBackend for UntouchedKeychain {
+        fn store(&self, _: &str, _: &str) -> phantom_core::error::Result<()> {
+            panic!("keychain write path reached");
+        }
+        fn retrieve(&self, _: &str) -> phantom_core::error::Result<zeroize::Zeroizing<String>> {
+            panic!("keychain read path reached");
+        }
+        fn delete(&self, _: &str) -> phantom_core::error::Result<()> {
+            panic!("keychain write path reached");
+        }
+        fn list(&self) -> phantom_core::error::Result<Vec<String>> {
+            panic!("keychain read path reached");
+        }
+        fn exists(&self, _: &str) -> phantom_core::error::Result<bool> {
+            panic!("keychain read path reached");
+        }
+        fn backend_name(&self) -> &str {
+            "keychain"
+        }
+    }
+
+    pub(crate) fn untouched_keychain() -> Box<dyn VaultBackend> {
+        Box::new(UntouchedKeychain)
+    }
+
     /// An opened encrypted-file vault holding one entry, `DEMOTED_KEY`, whose
     /// lifecycle metadata is read-only (`demoted: true`) or cannot be read
     /// (`demoted: false`). A plain `retrieve` panics: a path that propagates
@@ -826,7 +855,13 @@ mod config_gate_tests {
             ("status --oneline", || status::run(true, false)),
             ("watch", || watch::run_with_rotate(false, false)),
             ("add", || {
-                add::run("FIXTURE_NAME", None, true, add::StdinLines::SingleOnly)
+                add::run(
+                    "FIXTURE_NAME",
+                    None,
+                    true,
+                    add::StdinLines::SingleOnly,
+                    false,
+                )
             }),
             ("expiry", || expiry::run(30, false, false, false)),
             ("expiry set", || expiry::run_set("FIXTURE_NAME", 30)),
