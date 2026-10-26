@@ -9,6 +9,54 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::process::Stdio;
 
+/// Stable, value-free classification attached at refusal boundaries.
+#[derive(Debug)]
+pub(crate) struct ExecRefusal(pub &'static str, anyhow::Error);
+
+impl std::fmt::Display for ExecRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} [{}]", self.1, self.0)
+    }
+}
+impl std::error::Error for ExecRefusal {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.1.as_ref())
+    }
+}
+
+pub(crate) fn classify(error: anyhow::Error, code: &'static str) -> anyhow::Error {
+    ExecRefusal(code, error).into()
+}
+
+#[derive(Debug)]
+pub(crate) struct JsonExecError(pub String);
+impl std::fmt::Display for JsonExecError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+impl std::error::Error for JsonExecError {}
+
+/// JSON contains only fixed vocabulary; underlying errors may contain paths,
+/// command arguments, or repository-controlled text and must not be serialized.
+pub fn run_json(cmd: &[String], bind_source: Option<&Path>) -> Result<()> {
+    run(cmd, None, bind_source, true).map_err(json_error)
+}
+
+fn json_error(error: anyhow::Error) -> anyhow::Error {
+    let code = error
+        .downcast_ref::<ExecRefusal>()
+        .map_or("exec_failed", |refusal| refusal.0);
+    JsonExecError(
+        serde_json::json!({
+            "schema": "phantom.exec.error.v1",
+            "error": { "code": code, "message": "Phantom refused to launch the command." }
+        })
+        .to_string(),
+    )
+    .into()
+}
+
 const VAULT_PASSPHRASE_ENV: &str = "PHANTOM_VAULT_PASSPHRASE";
 
 fn header_auth_only() -> bool {
@@ -106,7 +154,8 @@ async fn run_async(
     };
     validate_routes_for_launch(&config)?;
 
-    let preflight = phantom_core::managed_dotenv::resolve_dotenv(&project_dir, &config, &[])?;
+    let preflight = phantom_core::managed_dotenv::resolve_dotenv(&project_dir, &config, &[])
+        .map_err(|error| classify(error, "placeholder_mismatch"))?;
     if let Some(dotenv) = preflight.file.as_ref() {
         dotenv
             .validate_for_mutation()
@@ -144,7 +193,8 @@ async fn run_async(
     let vault = phantom_vault::try_create_vault(config.local_project_id())?;
     let vault_names = launch_vault_names(vault.as_ref(), config.local_project_id())?;
     let resolved =
-        phantom_core::managed_dotenv::resolve_dotenv(&project_dir, &config, &vault_names)?;
+        phantom_core::managed_dotenv::resolve_dotenv(&project_dir, &config, &vault_names)
+            .map_err(|error| classify(error, "placeholder_mismatch"))?;
     if let Some(dotenv) = resolved.file.as_ref() {
         dotenv
             .validate_for_mutation()
@@ -260,7 +310,8 @@ async fn run_async(
         interceptor,
     )
     .await
-    .map_err(|e| anyhow::anyhow!("Failed to start proxy: {e}"))?;
+    .map_err(|e| anyhow::anyhow!("Failed to start proxy: {e}"))
+    .map_err(|error| classify(error, "proxy_not_running"))?;
 
     let port = proxy.port();
     progress!(
@@ -520,15 +571,18 @@ pub(super) fn retrieve_session_secret(
     refusal: &str,
 ) -> Result<zeroize::Zeroizing<String>> {
     let missing = || {
-        crate::util::missing_protected_entry(
-            vault,
-            project_id,
-            bare,
-            format!(
+        classify(
+            crate::util::missing_protected_entry(
+                vault,
+                project_id,
+                bare,
+                format!(
                 "Protected dotenv key '{bare}' has no vault entry for environment '{active_env}'"
             ),
-            refusal,
-            active_env == DEFAULT_ENV,
+                refusal,
+                active_env == DEFAULT_ENV,
+            ),
+            "missing_secret",
         )
     };
     match vault.retrieve_for_injection(namespaced) {
@@ -683,7 +737,7 @@ fn redact_session_segment(url: &str) -> String {
 pub(super) fn validate_routes_for_launch(config: &PhantomConfig) -> Result<()> {
     config.validate_agentic_proxy_routes().context(
         "Refusing unapproved repository-controlled proxy routing. Run `phantom doctor` to see which service in .phantom.toml blocks launch and what to restore; proxied launches run only with Phantom's built-in routes",
-    )?;
+    ).map_err(|error| classify(error, "unknown_route"))?;
     Ok(())
 }
 
@@ -1342,5 +1396,28 @@ mod tests {
         assert!(never.contains("DATABASE_URL"));
         assert!(never.contains("ROTATION_ADMIN_TOKEN"));
         assert!(never.contains("DEPLOY_TOKEN"));
+    }
+}
+
+#[cfg(test)]
+mod json_error_tests {
+    use super::*;
+
+    #[test]
+    fn refusal_codes_survive_context_without_serializing_diagnostics() {
+        for code in [
+            "unknown_route",
+            "placeholder_mismatch",
+            "missing_secret",
+            "proxy_not_running",
+        ] {
+            let error =
+                classify(anyhow::anyhow!("sensitive diagnostic"), code).context("outer context");
+            let report = json_error(error).to_string();
+            let parsed: serde_json::Value = serde_json::from_str(&report).unwrap();
+            assert_eq!(parsed["error"]["code"], code);
+            assert!(!report.contains("sensitive diagnostic"));
+            assert!(!report.contains("outer context"));
+        }
     }
 }
