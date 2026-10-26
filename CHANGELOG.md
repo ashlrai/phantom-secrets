@@ -4,6 +4,14 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Deprecated (inactive crates removed from the repository)
+
+- `phantom-secrets-evidence`, `phantom-secrets-session` and
+  `phantom-secrets-locus-contract` are no longer maintained in this
+  repository. They had no in-workspace or ashlrai consumers and were never
+  wired into active execution. Existing crates.io versions stay available;
+  nothing is yanked, and no new versions will be published.
+
 ### Fixed (commented-out secret detection: docs placeholders and quoted PEM headers)
 
 - Commented-out assignments whose value is a docs-style placeholder, such as

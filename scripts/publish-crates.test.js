@@ -14,10 +14,7 @@ const crates = [
   'phantom-secrets-authority',
   'phantom-secrets-core',
   'phantom-secrets-broker',
-  'phantom-secrets-evidence',
-  'phantom-secrets-locus-contract',
   'phantom-secrets-proxy',
-  'phantom-secrets-session',
   'phantom-secrets-vault',
   'phantom-secrets-workspace',
   'phantom-secrets-runtime',
@@ -29,10 +26,7 @@ const dependencies = {
   'phantom-secrets-authority': [],
   'phantom-secrets-core': [],
   'phantom-secrets-broker': ['phantom-secrets-authority'],
-  'phantom-secrets-evidence': ['phantom-secrets-authority'],
-  'phantom-secrets-locus-contract': ['phantom-secrets-authority'],
   'phantom-secrets-proxy': ['phantom-secrets-core', 'phantom-secrets-proxy'],
-  'phantom-secrets-session': ['phantom-secrets-authority'],
   'phantom-secrets-vault': ['phantom-secrets-core'],
   'phantom-secrets-workspace': ['phantom-secrets-core'],
   'phantom-secrets-runtime': ['phantom-secrets-authority', 'phantom-secrets-broker'],
@@ -285,14 +279,14 @@ test('verify-only packages the complete dependency-ordered set without registry 
   const harness = makeHarness();
   const result = harness.run(['--verify-only', '--version', version, '--allow-dirty']);
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /Verified 12 local crate packages/);
+  assert.match(result.stdout, /Verified 9 local crate packages/);
   const log = readFileSync(harness.cargoLog, 'utf8');
   const packaged = [...log.matchAll(/^package .* -p ([^ ]+)/gm)].map((match) => match[1]);
   assert.deepEqual(packaged, crates);
-  assert.equal(log.match(/^package --registry crates-io /gm)?.length, 12);
+  assert.equal(log.match(/^package --registry crates-io /gm)?.length, 9);
   assert.equal(
     log.match(/--config patch\.crates-io\.phantom-secrets-authority\.path="crates\/phantom-authority"/g)?.length,
-    12,
+    9,
   );
   assert.doesNotMatch(log, /^publish /m);
   assert.throws(() => readFileSync(harness.curlLog));
@@ -306,7 +300,7 @@ test('dry-run skips byte-identical versions and never invokes cargo publish', ()
     { PHANTOM_TEST_REMOTE_MODE: 'matching' },
   );
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /12 identical already published, 0 would publish, 0 uploaded/);
+  assert.match(result.stdout, /9 identical already published, 0 would publish, 0 uploaded/);
   assert.doesNotMatch(readFileSync(harness.cargoLog, 'utf8'), /^publish /m);
 });
 
@@ -355,15 +349,15 @@ test('publish requires exact authorization and uploads every missing crate in or
     },
   );
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /Publication complete: 12 published, 0 identical already present/);
+  assert.match(result.stdout, /Publication complete: 9 published, 0 identical already present/);
   const published = readFileSync(harness.cargoLog, 'utf8')
     .split('\n')
     .filter((line) => line.startsWith('publish '))
     .map((line) => line.match(/ -p ([^ ]+)$/)?.[1]);
   assert.deepEqual(published, crates);
-  assert.equal(readFileSync(harness.cargoLog, 'utf8').match(/^publish --registry crates-io /gm)?.length, 12);
+  assert.equal(readFileSync(harness.cargoLog, 'utf8').match(/^publish --registry crates-io /gm)?.length, 9);
   const tokenStates = readFileSync(harness.tokenLog, 'utf8').trim().split('\n');
-  assert.equal(tokenStates.filter((line) => line === 'publish\tpresent').length, 12);
+  assert.equal(tokenStates.filter((line) => line === 'publish\tpresent').length, 9);
   assert.equal(tokenStates.filter((line) => line !== 'publish\tpresent' && line.endsWith('\tpresent')).length, 0);
   const ghLog = readFileSync(harness.ghLog, 'utf8');
   assert.match(ghLog, /release view v0\.7\.3.*isImmutable.*\tpresent/);
@@ -483,10 +477,10 @@ test('verify-only --skip-source-gates packages every crate without re-running fm
   const harness = makeHarness();
   const result = harness.run(['--verify-only', '--skip-source-gates', '--version', version, '--allow-dirty']);
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /Verified 12 local crate packages/);
+  assert.match(result.stdout, /Verified 9 local crate packages/);
   const log = readFileSync(harness.cargoLog, 'utf8');
   assert.doesNotMatch(log, /^(fmt|clippy|test) /m);
-  assert.equal(log.match(/^package --registry crates-io /gm)?.length, 12);
+  assert.equal(log.match(/^package --registry crates-io /gm)?.length, 9);
   assert.doesNotMatch(log, /^publish /m);
 });
 

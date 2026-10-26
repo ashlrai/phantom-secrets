@@ -628,11 +628,8 @@ The Rust workspace is organized as product crates plus fail-closed execution-ker
 | Local effect layer | `phantom-core::fs`, `phantom-vault` transactions | Retained project/config directory capabilities, exact identity/content/permission before-images, no-follow targets, single-link checks, and typed durable, committed-verified-with-durability-warning, or `CommittedButUncertain` (**Partial**) effects. |
 | Setup kernel | `phantom-workspace` | Value-blind discovery, sealed planning, and recoverable trusted-terminal setup transactions. Non-Unix durable mutation fails closed. |
 | Inactive foundation | `phantom-authority` | Closed authority contracts and deny-all production verification boundary. No live Locus verifier. |
-| Inactive foundation | `phantom-locus-contract` | Value-free compatibility contract describing requirements for a future Phantom/Locus integration. |
 | Inactive foundation | `phantom-broker` | Bounded broker protocol and durable replay/accounting primitives. No active transport, lease issuer, or runtime connection. |
 | Inactive foundation | `phantom-runtime` | Closed engineering action schemas with a deny-all production executor. |
-| Inactive foundation | `phantom-session` | Crash-explicit session journal. Not wired into active execution. |
-| Inactive foundation | `phantom-evidence` | Value-free evidence and receipt primitives. Not externally anchored or wired into active execution. |
 
 Project-local effects resolve from the retained root acquired with the project
 transaction lock; global editor configuration is separately bounded beneath a
