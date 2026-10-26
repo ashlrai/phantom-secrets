@@ -9,7 +9,11 @@
     "lint": "eslint . --max-warnings=0",
     "test": "node --test tests/*.test.cjs",
     "test:billing-auth": "node --test tests/billing-auth.test.cjs",
-    "test:claims": "node --test tests/public-claims.test.cjs"
+    "test:claims": "node --test tests/public-claims.test.cjs",
+    "typecheck": "tsc --noEmit",
+    "generate:agents": "node scripts/generate-agent-references.mjs",
+    "check:agents": "node scripts/generate-agent-references.mjs --check",
+    "test:discoverability": "node --test tests/discoverability.test.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2",
@@ -28,6 +32,8 @@
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "15.5.27",
+    "fast-xml-parser": "5.11.2",
+    "parse5": "8.0.1",
     "postcss": "^8",
     "tailwindcss": "^4",
     "typescript": "^5"
