@@ -303,8 +303,13 @@ mod tests {
         // this exact test in a bounded child process so the same production
         // locks are exercised without unrelated test-harness interference.
         if std::env::var(ISOLATED_CHILD_ENV).as_deref() != Ok("1") {
+            // A sibling test may temporarily override the parent's HOME.
+            // Retain a dedicated home through child exit so the child's
+            // restored HOME cannot point at a sibling's deleted fixture.
+            let child_home = TempDir::new().unwrap();
             let mut child = Command::new(std::env::current_exe().unwrap())
                 .args(["--exact", TEST_NAME, "--nocapture"])
+                .env("HOME", child_home.path().canonicalize().unwrap())
                 .env(ISOLATED_CHILD_ENV, "1")
                 .spawn()
                 .unwrap();
