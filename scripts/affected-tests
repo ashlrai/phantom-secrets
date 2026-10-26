@@ -1,0 +1,94 @@
+#!/usr/bin/env python3
+"""Print affected Cargo packages, one per line, or ALL; optionally run tests."""
+
+import argparse
+import json
+from pathlib import Path
+import subprocess
+import sys
+
+
+GLOBAL_FILES = {
+    "Cargo.toml", "Cargo.lock", "rust-toolchain", "rust-toolchain.toml",
+    "deny.toml", "clippy.toml", ".clippy.toml", "rustfmt.toml", ".rustfmt.toml",
+    "Makefile", "scripts/affected-tests",
+}
+
+
+def select_packages(files, metadata):
+    """Return sorted reverse dependency closure, or None for the whole workspace."""
+    if any(f in GLOBAL_FILES or f.startswith((".cargo/", ".github/", ".config/"))
+           or (f.endswith(".rs") and not f.startswith("crates/")) for f in files):
+        return None
+    root = Path(metadata["workspace_root"])
+    members = set(metadata["workspace_members"])
+    packages = {p["id"]: p for p in metadata["packages"] if p["id"] in members}
+    directories = {
+        ident: Path(p["manifest_path"]).parent.relative_to(root).as_posix()
+        for ident, p in packages.items()
+    }
+    hit = set()
+    for filename in files:
+        if filename.endswith(".md") or filename.startswith("docs/"):
+            continue
+        owners = [ident for ident, directory in directories.items()
+                  if directory == "." or filename == directory
+                  or filename.startswith(directory + "/")]
+        if owners:
+            hit.add(max(owners, key=lambda ident: len(directories[ident])))
+        elif filename.startswith("crates/"):
+            return None  # A deleted/unknown crate cannot be safely narrowed.
+    reverse = {}
+    for node in metadata["resolve"]["nodes"]:
+        for dependency in node["deps"]:
+            reverse.setdefault(dependency["pkg"], set()).add(node["id"])
+    pending = list(hit)
+    while pending:
+        for dependent in reverse.get(pending.pop(), ()):
+            if dependent not in hit:
+                hit.add(dependent)
+                pending.append(dependent)
+    return sorted(packages[ident]["name"] for ident in hit if ident in packages)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("base", nargs="?", help="compare BASE...HEAD; default: tracked changes against HEAD")
+    parser.add_argument("head", nargs="?", default="HEAD")
+    parser.add_argument("--run", action="store_true", help="run cargo test for the selection")
+    args = parser.parse_args()
+    root = Path(__file__).resolve().parent.parent
+    diff = ["git", "diff", "--name-only", "--no-renames", "-z",
+            f"{args.base}...{args.head}" if args.base else "HEAD", "--"]
+    try:
+        files = subprocess.check_output(diff, cwd=root).decode().split("\0")
+        files = [f for f in files if f]
+    except (OSError, UnicodeError, subprocess.CalledProcessError):
+        parser.exit(1, "Unable to read changed paths from git.\n")
+    selected = []
+    if files:
+        try:
+            result = subprocess.check_output(
+                ["cargo", "metadata", "--format-version", "1", "--locked", "--all-features"],
+                cwd=root, stderr=subprocess.DEVNULL)
+            selected = select_packages(files, json.loads(result))
+        except (OSError, ValueError, KeyError, TypeError, subprocess.CalledProcessError):
+            print("Cargo graph unavailable; selecting the full workspace.", file=sys.stderr)
+            selected = None
+    if not args.run:
+        print("ALL" if selected is None else "\n".join(selected), end="\n" if selected is None or selected else "")
+        return 0
+    if selected == []:
+        print("No affected Rust packages.")
+        return 0
+    command = ["cargo", "test", "--locked", "--all-targets", "--no-fail-fast"]
+    if selected is None:
+        command.append("--workspace")
+    else:
+        for package in selected:
+            command.extend(["--package", package])
+    return subprocess.call(command, cwd=root)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -199,3 +199,18 @@ is a separate maintainer and legal-policy decision, not an implied requirement.
 ## Questions
 
 Use [GitHub Discussions](https://github.com/ashlrai/phantom-secrets/discussions) for design and usage questions, [GitHub Issues](https://github.com/ashlrai/phantom-secrets/issues) for reproducible defects and accepted work, and [SUPPORT.md](SUPPORT.md) to choose the right public or private route.
+
+### Testing affected Rust packages
+
+`scripts/affected-tests BASE [HEAD]` prints Cargo package names, one per line,
+for changed workspace crates and their transitive dependents. It uses Cargo's
+resolved graph, including build, development, renamed and optional dependencies.
+An empty list means no Rust packages are affected. Workspace configuration
+changes, unknown crate paths, and unavailable metadata select `ALL`.
+
+Run `make test-affected BASE=main` to test that selection, or `make test-affected`
+to inspect tracked staged and unstaged changes against HEAD. Untracked files are
+excluded; add new files to Git before using this shortcut. This is a local
+iteration aid; the full workspace checks above remain required before merging.
+Cargo and Python 3 must be on PATH. Run the selector's fixture tests with
+`python3 scripts/affected-tests.test.py`.
