@@ -334,7 +334,12 @@ fn is_identifier_tail(tail: &[u8]) -> bool {
 fn contains_credential(text: &str, pattern: &CodePattern) -> bool {
     let bytes = text.as_bytes();
     text.match_indices(pattern.prefix).any(|(start, _)| {
-        if start > 0 && bytes[start - 1].is_ascii_alphanumeric() {
+        // A PEM header is not a word, and in escaped text it follows the
+        // `n` of a literal `\n`, so only the other shapes need the boundary.
+        if pattern.shape != Shape::PemPrivateKey
+            && start > 0
+            && bytes[start - 1].is_ascii_alphanumeric()
+        {
             return false;
         }
         let rest = &bytes[start + pattern.prefix.len()..];
@@ -387,7 +392,9 @@ fn pem_private_key_body_len(rest: &[u8]) -> usize {
         .iter()
         .find_map(|newline| after.strip_prefix(*newline));
     body.map_or(0, |body| {
+        // YAML block scalars and heredocs indent the body.
         body.iter()
+            .skip_while(|b| matches!(**b, b' ' | b'\t'))
             .take_while(|b| b.is_ascii_alphanumeric() || **b == b'+' || **b == b'/')
             .count()
     })
@@ -1736,6 +1743,13 @@ mod tests {
                 "-----BEGIN ",
             ),
             (format!("{ssh_header}\r\n{body}"), "-----BEGIN "),
+            // An indented body (YAML block scalar), and an escaped key that
+            // follows another block's `\n`.
+            (format!("key: |\n  {header}\n  {body}\n"), "-----BEGIN "),
+            (
+                format!("\"chain\": \"-----END CERTIFICATE-----\\n{header}\\n{body}\""),
+                "-----BEGIN ",
+            ),
         ];
         for (text, prefix) in cases {
             let findings = code_pattern_findings("src/a.ts", &text);

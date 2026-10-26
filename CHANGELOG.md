@@ -17,7 +17,7 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   all-caps word starting with `ASIA`, code that only names a PEM header, and
   public keys or certificates are not flagged. Findings still report the
   label and prefix only. A test now fails when the classifier learns a prefix
-  the scan does not cover. Google `AIza` keys stay unflagged in code because
+  that the scan neither covers nor explicitly excludes with a reason. Google `AIza` keys stay unflagged in code because
   they are commonly browser-public.
 
 ### Fixed (.env.example no longer copies credentials in prose comments)
