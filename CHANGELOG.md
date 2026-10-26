@@ -13,8 +13,12 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   The rest of the JSON is unchanged, and the human output is unchanged.
   Reports still omit secret values. Names appear only where the human
   output already prints them. The new `schema` key is additive, so a
-  consumer that requires an exact key set must accept it. Exit status is
-  the same with or without `--json`.
+  consumer that requires an exact key set must accept it. Existing exit statuses
+  are preserved without `--strict`. For a missing key, `phantom why` exits 1
+  in the human view; the JSON view exits 0 by default or 2 with `--strict`.
+  The human `phantom agent doctor` view uses the readiness report's exit code,
+  while its JSON view exits 0 by default or 2 for a non-ready verdict with
+  `--strict`.
 
   `phantom doctor --strict`, `phantom why --strict`, and
   `phantom agent doctor --json --strict` share one exit table:

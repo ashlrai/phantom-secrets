@@ -12,7 +12,7 @@ use std::fs;
 use std::process::Output;
 
 const KEY: &str = "OPENAI_API_KEY";
-const CANARY: &str = "sk-strict-exit-canary-7f3a9c1e5b";
+const CANARY: &str = concat!("sk-", "strict-exit-canary-7f3a9c1e5b");
 const TOKEN: &str = "phm_strictplaceholdertokenvalue";
 
 fn phantom(dir: &std::path::Path, args: &[&str]) -> Output {

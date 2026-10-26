@@ -1,5 +1,5 @@
 //! `--json` reports for doctor, why, check, and agent doctor carry a schema
-//! id, keep the command's exit status, and never print a planted secret value.
+//! id, preserve existing exit behavior, and never print a planted secret value.
 mod common;
 
 use assert_cmd::Command;
@@ -8,7 +8,7 @@ use std::fs;
 use std::process::Output;
 
 const KEY: &str = "OPENAI_API_KEY";
-const CANARY: &str = "sk-json-schema-canary-7f3a9c1e5b";
+const CANARY: &str = concat!("sk-", "json-schema-canary-7f3a9c1e5b");
 
 fn project() -> tempfile::TempDir {
     let dir = common::canonical_tempdir();
@@ -29,6 +29,8 @@ fn phantom(dir: &std::path::Path, args: &[&str]) -> Output {
         .env("PHANTOM_VAULT_PASSPHRASE", "test-passphrase-json-schema")
         .env("NO_COLOR", "1")
         .env_remove("PHANTOM_AUDIT")
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
         .output()
         .expect("run phantom")
 }
@@ -109,4 +111,34 @@ fn agent_doctor_json_schema_hides_the_value_on_stdout_and_stderr() {
     assert_eq!(json.status.code(), Some(0));
     assert!(!report.to_string().contains(CANARY));
     assert!(!report.to_string().contains(KEY));
+}
+
+/// Fixture source must pass the same scanner that runs in the commit hook.
+#[test]
+fn credential_shape_fixtures_pass_the_staged_source_check() {
+    let dir = common::canonical_tempdir();
+    for (name, source) in [
+        (
+            "json_schema_leak_test.rs",
+            include_str!("json_schema_leak_test.rs"),
+        ),
+        ("strict_exit_test.rs", include_str!("strict_exit_test.rs")),
+    ] {
+        fs::write(dir.path().join(name), source).unwrap();
+    }
+    for args in [vec!["init", "--quiet"], vec!["add", "--", "."]] {
+        assert!(std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir.path())
+            .env("HOME", dir.path())
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .status()
+            .unwrap()
+            .success());
+    }
+    let output = phantom(dir.path(), &["check", "--staged", "--json"]);
+    assert_canary_absent(&output);
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(json_stdout(&output)["clean"], true);
 }
