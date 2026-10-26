@@ -4,6 +4,17 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (.env.example masks every name the project config declares secret)
+
+- Example generation decided what to mask only from name and value
+  heuristics, so a key that `.phantom.toml` lists as a secret (a
+  `[phantom.secrets.NAME]` entry or a service's `secret_key`) but whose name
+  and value look ordinary, such as `MY_SERVICE_CRED=<short value>`, was copied
+  verbatim into the shareable `.env.example`. Those names are now always
+  replaced with a placeholder, in live, `export`, quoted and commented-out
+  assignments alike. Output for every other entry is unchanged, and without a
+  config the heuristics alone decide as before.
+
 ### Fixed (.env.example no longer copies credentials in prose comments)
 
 - Example generation masked commented-out assignments and inline comments
