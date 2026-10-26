@@ -242,7 +242,7 @@ fn run_inner(check_all: bool, jobs: Option<usize>, json: bool, watch: bool) -> R
         }
 
         let validators = default_validators();
-        validated_from = Some(phantom_vault::metadata::now_secs());
+        validated_from = (sending > 0).then(phantom_vault::metadata::now_secs);
         let report = run_validation_pipeline(secrets, &validators, n_jobs, timeout);
         persist_validation_metadata(vault.as_ref(), &report, &metadata_before)?;
         report
@@ -250,8 +250,8 @@ fn run_inner(check_all: bool, jobs: Option<usize>, json: bool, watch: bool) -> R
     for (name, reason) in &refused {
         report.push_refused(name, reason);
     }
-    // A run the gate refused entirely sent nothing, so only a run that
-    // checked values is history.
+    // A run the gate refused entirely, before or after consent, sent
+    // nothing, so only a run that checked values is history.
     if let Some(started_at) = validated_from {
         record_validation_run(&state_file_path(&project_id), started_at, &report);
     }

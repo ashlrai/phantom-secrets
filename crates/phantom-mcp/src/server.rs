@@ -5256,14 +5256,19 @@ impl PhantomMcpServer {
         for (name, reason) in &refused {
             report.push_refused(name, reason);
         }
-        let history_error = phantom_core::validation_scheduler::record_run(
-            &phantom_core::validation_scheduler::state_file_path(config.local_project_id()),
-            phantom_core::validation_scheduler::ValidationRunRecord::from_report(
-                started_at, &report,
-            ),
-        )
-        .err()
-        .map(|error| format!("This run was not added to validation history: {error:#}"));
+        // A run the gate refused entirely after approval checked nothing.
+        let history_error = if allowed.is_empty() {
+            None
+        } else {
+            phantom_core::validation_scheduler::record_run(
+                &phantom_core::validation_scheduler::state_file_path(config.local_project_id()),
+                phantom_core::validation_scheduler::ValidationRunRecord::from_report(
+                    started_at, &report,
+                ),
+            )
+            .err()
+            .map(|error| format!("This run was not added to validation history: {error:#}"))
+        };
         validation_report_result(report, &[], vault_note, history_error)
     }
 
