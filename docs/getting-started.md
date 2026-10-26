@@ -65,6 +65,7 @@ plus the aggregate [`SHA256SUMS`](https://github.com/ashlrai/phantom-secrets/rel
 file. All six release targets passed native acceptance before publication in
 [workflow 34153902556](https://github.com/ashlrai/phantom-secrets/actions/runs/34153902556).
 
+<!-- fresh:begin docs-release-asset-table -->
 | Platform | `v0.7.9` archive | Published checksum |
 |---|---|---|
 | macOS Apple silicon | [`phantom-aarch64-apple-darwin.tar.gz`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9/phantom-aarch64-apple-darwin.tar.gz) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9/phantom-aarch64-apple-darwin.tar.gz.sha256) |
@@ -73,6 +74,7 @@ file. All six release targets passed native acceptance before publication in
 | Linux ARM64 | [`phantom-aarch64-unknown-linux-gnu.tar.gz`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9/phantom-aarch64-unknown-linux-gnu.tar.gz) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9/phantom-aarch64-unknown-linux-gnu.tar.gz.sha256) |
 | Windows x64 | [`phantom-x86_64-pc-windows-msvc.zip`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9/phantom-x86_64-pc-windows-msvc.zip) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9/phantom-x86_64-pc-windows-msvc.zip.sha256) |
 | Windows ARM64 | [`phantom-aarch64-pc-windows-msvc.zip`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9/phantom-aarch64-pc-windows-msvc.zip) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9/phantom-aarch64-pc-windows-msvc.zip.sha256) |
+<!-- fresh:end -->
 
 Download the archive and its sidecar, then verify before extraction. Use
 `sha256sum -c <archive>.sha256` on Linux. On Windows, compare
@@ -96,12 +98,14 @@ crates.io remains on `0.5.1`.
 
 ### Verify
 
+<!-- fresh:begin docs-verify-version-output -->
 ```bash
 phantom --version
 phantom-mcp --version
 # phantom 0.7.9
 # phantom-mcp 0.7.9
 ```
+<!-- fresh:end -->
 
 A Homebrew install prints `0.7.8` until the formula is bumped.
 

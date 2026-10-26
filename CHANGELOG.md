@@ -2820,7 +2820,9 @@ remain separate evidence gates.
 
 For older release notes and downloadable artifacts, see [GitHub Releases](https://github.com/ashlrai/phantom-secrets/releases).
 
+<!-- fresh:begin changelog-unreleased-compare -->
 [Unreleased]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.9...HEAD
+<!-- fresh:end -->
 [0.7.9]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.8...v0.7.9
 [0.7.8]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.7...v0.7.8
 [0.7.7]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.6...v0.7.7
