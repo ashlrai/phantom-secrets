@@ -67,6 +67,18 @@ fn meets_anomaly_level(anomalies: &AnomalyMap, name: &str, min_level: u8) -> boo
 }
 
 pub fn run_with_expiry(json: bool, show_expiry: bool, min_anomaly_score: Option<u8>) -> Result<()> {
+    run_with_scope(json, show_expiry, min_anomaly_score, None)
+}
+
+pub fn run_with_scope(
+    json: bool,
+    show_expiry: bool,
+    min_anomaly_score: Option<u8>,
+    scope: Option<&str>,
+) -> Result<()> {
+    if let Some(scope) = scope {
+        phantom_core::env_scope::validate_env_name(scope)?;
+    }
     let project_dir = crate::util::project_dir()?;
     let config = crate::util::load_project_config(&project_dir)?;
     let vault = crate::util::open_vault(config.local_project_id())?;
@@ -80,11 +92,14 @@ pub fn run_with_expiry(json: bool, show_expiry: bool, min_anomaly_score: Option<
         std::collections::HashMap::new()
     };
 
-    // Apply min_anomaly_score filter
+    // Filter names only; never retrieve values or change the active selector.
     let filtered: Vec<_> = entries_with_meta
         .iter()
         .filter(|(name, _)| {
-            min_anomaly_score.is_none_or(|level| meets_anomaly_level(&anomalies, name, level))
+            scope.is_none_or(|scope| match phantom_core::env_scope::split_key(name) {
+                Some((env, _)) => env == scope,
+                None => scope == phantom_core::env_scope::DEFAULT_ENV,
+            }) && min_anomaly_score.is_none_or(|level| meets_anomaly_level(&anomalies, name, level))
         })
         .collect();
 
@@ -249,6 +264,8 @@ mod locked_vault_tests {
         for json in [true, false] {
             let error = super::run_with_expiry(json, false, None).unwrap_err();
             assert!(error.to_string().starts_with("Vault locked:"), "{error:#}");
+            let error = super::run_with_scope(json, false, None, Some("dev")).unwrap_err();
+            assert!(error.to_string().starts_with("Vault locked:"));
         }
     }
 
@@ -268,6 +285,17 @@ mod locked_vault_tests {
         );
         assert!(note.contains("PHANTOM_VAULT_PASSPHRASE"), "{note}");
         super::run_with_expiry(true, false, None).unwrap();
+    }
+
+    #[test]
+    fn scoped_list_never_retrieves_or_mutates_vault_entries() {
+        // This backend panics on value retrieval, store, or delete.
+        let _project = LockedProject::new(keychain_with_one);
+        for json in [true, false] {
+            for scope in ["default", "dev", "staging", "prod"] {
+                super::run_with_scope(json, true, None, Some(scope)).unwrap();
+            }
+        }
     }
 
     /// `phantom list --min-anomaly-score N` answered from an empty map when
