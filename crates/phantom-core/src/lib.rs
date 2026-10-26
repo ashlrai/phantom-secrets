@@ -15,6 +15,7 @@ pub mod fs;
 pub mod home;
 pub mod importers;
 pub mod issuance;
+pub mod keyring;
 pub mod leak_correlation;
 pub mod linked_checkout;
 pub mod managed_dotenv;

@@ -10,8 +10,9 @@
 //! - The key lives only in a durable OS credential store (macOS Keychain,
 //!   Windows Credential Manager). There is no file fallback and no derivation
 //!   from a vault passphrase.
-//! - Linux fails closed until a durable Secret Service store exists, because
-//!   kernel keyutils does not survive a reboot.
+//! - Linux fails closed until lease-key provisioning explicitly supports a
+//!   durable Secret Service store, because kernel keyutils does not survive a
+//!   reboot.
 //! - Provisioning is an explicit call. It never overwrites an existing entry,
 //!   and loading never provisions.
 //! - The key is exactly 32 bytes from the OS CSPRNG, is never accepted from a
@@ -112,7 +113,7 @@ pub trait LeaseKeyBackend {
 }
 
 /// The platform credential store, through the vault's `credential_entry`
-/// helper so the keyring 4 migration (#242) touches one call site.
+/// helper so native store selection remains shared with the vault.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct OsLeaseKeyBackend;
 
@@ -144,7 +145,7 @@ impl LeaseKeyBackend for OsLeaseKeyBackend {
         let entry = os_entry(account, "read")?;
         match entry.get_password() {
             Ok(value) => Ok(Some(Zeroizing::new(value))),
-            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(keyring_core::Error::NoEntry) => Ok(None),
             Err(error) => Err(credential_error("read", &error)),
         }
     }
@@ -158,32 +159,23 @@ impl LeaseKeyBackend for OsLeaseKeyBackend {
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
-fn os_entry(account: &str, operation: &'static str) -> Result<keyring::Entry, LeaseKeyError> {
+fn os_entry(account: &str, operation: &'static str) -> Result<keyring_core::Entry, LeaseKeyError> {
     crate::keychain::os_keychain_entry(LEASE_KEY_SERVICE, account)
         .map_err(|error| credential_error(operation, &error))
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-fn os_entry(account: &str, operation: &'static str) -> Result<keyring::Entry, LeaseKeyError> {
+fn os_entry(account: &str, operation: &'static str) -> Result<keyring_core::Entry, LeaseKeyError> {
     let _ = (account, operation);
     Err(LeaseKeyError::NoDurableStore(
-        "no durable store is wired here; on Linux, keyutils is not reboot-durable and Secret Service waits on keyring 4",
+        "no durable lease-key store is wired here; Linux keyutils is not reboot-durable and Secret Service lease-key provisioning is not enabled",
     ))
 }
 
 /// Map a keyring error to a fixed, value-free category. The inner error is
 /// never formatted because some variants carry raw credential bytes.
-fn credential_error(operation: &'static str, error: &keyring::Error) -> LeaseKeyError {
-    let kind = match error {
-        keyring::Error::PlatformFailure(_) => "platform failure",
-        keyring::Error::NoStorageAccess(_) => "credential store is locked or unavailable",
-        keyring::Error::NoEntry => "no entry",
-        keyring::Error::BadEncoding(_) => "bad encoding",
-        keyring::Error::TooLong(_, _) => "attribute too long",
-        keyring::Error::Invalid(_, _) => "invalid attribute",
-        keyring::Error::Ambiguous(_) => "ambiguous entry",
-        _ => "unknown credential store error",
-    };
+fn credential_error(operation: &'static str, error: &keyring_core::Error) -> LeaseKeyError {
+    let kind = phantom_core::keyring::error_kind(error);
     LeaseKeyError::CredentialStore { operation, kind }
 }
 
@@ -559,13 +551,56 @@ mod tests {
             LeaseKeyError::ReadBackMismatch,
             credential_error(
                 "read",
-                &keyring::Error::BadEncoding(hex_key.clone().into_bytes()),
+                &keyring_core::Error::BadEncoding(hex_key.clone().into_bytes()),
             ),
             LeaseKeyError::Descriptor("x"),
         ];
         for error in errors {
             let text = format!("{error} {error:?}");
             assert!(!text.contains(&hex_key), "error leaked key: {text}");
+        }
+    }
+
+    #[test]
+    fn keyring_store_errors_are_categorized_without_rendering_inner_data() {
+        const SENTINEL: &str = "credential-payload-must-stay-private";
+        let errors = [
+            (
+                keyring_core::Error::BadDataFormat(
+                    SENTINEL.as_bytes().to_vec(),
+                    std::io::Error::other(SENTINEL).into(),
+                ),
+                "malformed credential data",
+            ),
+            (
+                keyring_core::Error::BadStoreFormat(SENTINEL.to_string()),
+                "malformed credential store",
+            ),
+            (
+                keyring_core::Error::NoDefaultStore,
+                "no default credential store",
+            ),
+            (
+                keyring_core::Error::NotSupportedByStore(SENTINEL.to_string()),
+                "unsupported credential store operation",
+            ),
+        ];
+        for (source, kind) in errors {
+            let error = credential_error("read", &source);
+            assert_eq!(
+                error,
+                LeaseKeyError::CredentialStore {
+                    operation: "read",
+                    kind,
+                }
+            );
+            let display = error.to_string();
+            let debug = format!("{error:?}");
+            let raw_bytes = format!("{:?}", SENTINEL.as_bytes());
+            for rendered in [display, debug] {
+                assert!(!rendered.contains(SENTINEL));
+                assert!(!rendered.contains(&raw_bytes));
+            }
         }
     }
 

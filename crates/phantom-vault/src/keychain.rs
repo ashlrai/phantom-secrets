@@ -2,6 +2,7 @@ use crate::metadata::SecretMetadata;
 use crate::traits::{MetadataCas, ValidationMetadataCas, VaultBackend};
 use phantom_core::error::{PhantomError, Result};
 use phantom_core::fs::{AnchoredEffect, AnchoredLock, AnchoredRead, AnchoredTarget, TrustedAnchor};
+use phantom_core::keyring::error_kind;
 use phantom_core::validator::ValidationMetadata;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -33,41 +34,45 @@ fn credential_entry(
     store: CredentialStore,
     service: &str,
     account: &str,
-) -> keyring::Result<keyring::Entry> {
-    #[cfg(target_os = "linux")]
-    {
-        let credential: Box<keyring::Credential> = match store {
-            CredentialStore::LinuxKeyutils => Box::new(
-                keyring::keyutils::KeyutilsCredential::new_with_target(None, service, account)?,
-            ),
-            CredentialStore::LinuxSecretService => Box::new(
-                keyring::secret_service::SsCredential::new_with_target(None, service, account)?,
-            ),
-        };
-        Ok(keyring::Entry::new_with_credential(credential))
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    {
-        match store {
-            CredentialStore::OsKeychain => keyring::Entry::new(service, account),
+) -> keyring_core::Result<keyring_core::Entry> {
+    match store {
+        #[cfg(target_os = "linux")]
+        CredentialStore::LinuxSecretService => {
+            use keyring_core::api::CredentialStoreApi;
+            // keyring 3's new_with_target(None, ...) used target=default.
+            // Preserve that search boundary instead of matching other collections.
+            dbus_secret_service_keyring_store::Store::new()?.build(
+                service,
+                account,
+                Some(&std::collections::HashMap::from([("target", "default")])),
+            )
         }
+        #[cfg(target_os = "linux")]
+        CredentialStore::LinuxKeyutils => phantom_core::keyring::native_entry(service, account),
+        #[cfg(not(target_os = "linux"))]
+        CredentialStore::OsKeychain => phantom_core::keyring::native_entry(service, account),
     }
 }
 
 /// Platform credential entry for non-vault keys (the lease store key in
-/// `lease_key.rs`). Goes through `credential_entry` so the keyring 4
-/// migration (#242) changes one call site. Not available on Linux, where the
+/// `lease_key.rs`). Uses the same explicit store as the vault. Not available
+/// on Linux, where the
 /// lease key fails closed.
 #[cfg(any(target_os = "macos", target_os = "windows"))]
-pub(crate) fn os_keychain_entry(service: &str, account: &str) -> keyring::Result<keyring::Entry> {
+pub(crate) fn os_keychain_entry(
+    service: &str,
+    account: &str,
+) -> keyring_core::Result<keyring_core::Entry> {
     credential_entry(CredentialStore::OsKeychain, service, account)
 }
 
 /// Construct the platform store used before any explicit per-project Linux
 /// migration. This also prevents Cargo feature unification from redirecting
 /// fallback-passphrase entries when Secret Service support is compiled in.
-pub(crate) fn unmigrated_os_entry(service: &str, account: &str) -> keyring::Result<keyring::Entry> {
+pub(crate) fn unmigrated_os_entry(
+    service: &str,
+    account: &str,
+) -> keyring_core::Result<keyring_core::Entry> {
     #[cfg(target_os = "linux")]
     let store = CredentialStore::LinuxKeyutils;
     #[cfg(not(target_os = "linux"))]
@@ -202,7 +207,7 @@ fn hash_secret_name(project_id: &str, name: &str) -> String {
     hex::encode(&out[..8])
 }
 
-/// Vault backend that uses the platform credential store selected by `keyring`.
+/// Vault backend using Phantom's explicitly selected platform credential store.
 ///
 /// The current Linux feature selects kernel keyutils. Unlike macOS Keychain and
 /// Windows Credential Manager, that store is not durable across a reboot. Keep
@@ -342,13 +347,18 @@ fn linux_backend_decision(state: LinuxMigrationState) -> Result<bool> {
 fn linux_migration_sentinel_entry(
     project_id: &str,
     store: CredentialStore,
-) -> Result<keyring::Entry> {
+) -> Result<keyring_core::Entry> {
     credential_entry(
         store,
         &format!("{SERVICE_PREFIX}:{project_id}"),
         &format!("{SERVICE_PREFIX}:{project_id}:{LINUX_MIGRATION_SENTINEL_SUFFIX}"),
     )
-    .map_err(|error| PhantomError::VaultError(format!("Linux migration sentinel error: {error}")))
+    .map_err(|error| {
+        PhantomError::VaultError(format!(
+            "Linux migration sentinel error: {}",
+            error_kind(&error)
+        ))
+    })
 }
 
 #[cfg(target_os = "linux")]
@@ -716,33 +726,35 @@ fn require_durable_sidecar_effect<T>(outcome: AnchoredEffect<T>, operation: &str
 // validation state (last_check_ts, is_valid, failure_reason). No secret
 // values are ever written here.
 
-fn read_credential(entry: &keyring::Entry, label: &str) -> Result<Option<Zeroizing<String>>> {
+fn read_credential(entry: &keyring_core::Entry, label: &str) -> Result<Option<Zeroizing<String>>> {
     match entry.get_password() {
         Ok(value) => Ok(Some(Zeroizing::new(value))),
-        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(keyring_core::Error::NoEntry) => Ok(None),
         Err(error) => Err(PhantomError::VaultError(format!(
-            "Failed to read {label}: {error}"
+            "Failed to read {label}: {}",
+            error_kind(&error)
         ))),
     }
 }
 
-fn remove_credential(entry: &keyring::Entry, label: &str) -> Result<()> {
+fn remove_credential(entry: &keyring_core::Entry, label: &str) -> Result<()> {
     match entry.delete_credential() {
-        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Ok(()) | Err(keyring_core::Error::NoEntry) => Ok(()),
         Err(error) => Err(PhantomError::VaultError(format!(
-            "Failed to delete {label}: {error}"
+            "Failed to delete {label}: {}",
+            error_kind(&error)
         ))),
     }
 }
 
 fn restore_credential(
-    entry: &keyring::Entry,
+    entry: &keyring_core::Entry,
     value: Option<&Zeroizing<String>>,
     label: &str,
 ) -> Result<()> {
     match value {
         Some(value) => entry.set_password(value.as_str()).map_err(|error| {
-            PhantomError::VaultError(format!("Failed to restore {label}: {error}"))
+            PhantomError::VaultError(format!("Failed to restore {label}: {}", error_kind(&error)))
         }),
         None => remove_credential(entry, label),
     }
@@ -786,8 +798,8 @@ trait LegacyMigrationBackend {
 
 struct KeychainLegacyMigration<'a> {
     vault: &'a KeychainVault,
-    hashed: &'a keyring::Entry,
-    legacy: &'a keyring::Entry,
+    hashed: &'a keyring_core::Entry,
+    legacy: &'a keyring_core::Entry,
 }
 
 impl LegacyMigrationBackend for KeychainLegacyMigration<'_> {
@@ -797,7 +809,10 @@ impl LegacyMigrationBackend for KeychainLegacyMigration<'_> {
 
     fn write_hashed(&self, value: &str) -> Result<()> {
         self.hashed.set_password(value).map_err(|error| {
-            PhantomError::VaultError(format!("Failed to migrate legacy secret: {error}"))
+            PhantomError::VaultError(format!(
+                "Failed to migrate legacy secret: {}",
+                error_kind(&error)
+            ))
         })
     }
 
@@ -819,7 +834,10 @@ impl LegacyMigrationBackend for KeychainLegacyMigration<'_> {
 
     fn write_legacy(&self, value: &str) -> Result<()> {
         self.legacy.set_password(value).map_err(|error| {
-            PhantomError::VaultError(format!("Failed to restore legacy secret: {error}"))
+            PhantomError::VaultError(format!(
+                "Failed to restore legacy secret: {}",
+                error_kind(&error)
+            ))
         })
     }
 
@@ -958,16 +976,21 @@ impl KeychainVault {
 
         // Test that keychain is accessible by trying a no-op
         let test_entry = credential_entry(store, SERVICE_PREFIX, "__phantom_test__")
-            .map_err(|e| PhantomError::VaultError(format!("Keychain not available: {e}")))
+            .map_err(|e| {
+                PhantomError::VaultError(format!("Keychain not available: {}", error_kind(&e)))
+            })
             .map_err(|error| classify_keychain_probe_error(store, error))?;
 
         // Try to access it (will fail with NotFound, which is fine)
         match test_entry.get_password() {
-            Ok(_) | Err(keyring::Error::NoEntry) => {}
+            Ok(_) | Err(keyring_core::Error::NoEntry) => {}
             Err(e) => {
                 return Err(classify_keychain_probe_error(
                     store,
-                    PhantomError::VaultError(format!("Keychain not accessible: {e}")),
+                    PhantomError::VaultError(format!(
+                        "Keychain not accessible: {}",
+                        error_kind(&e)
+                    )),
                 ));
             }
         }
@@ -1031,16 +1054,16 @@ impl KeychainVault {
         format!("{SERVICE_PREFIX}:{}:{}", self.project_id, name)
     }
 
-    fn entry_for(&self, name: &str) -> Result<keyring::Entry> {
-        // Use the hashed name for the account field too — `keyring::Entry`
+    fn entry_for(&self, name: &str) -> Result<keyring_core::Entry> {
+        // Use the hashed name for the account field too — `keyring_core::Entry`
         // uses (service, account) as the lookup key on most backends, and we
         // want neither to leak the plaintext name.
         let account = self.hash_name(name);
         credential_entry(self.store, &self.entry_key(name), &account)
-            .map_err(|e| PhantomError::VaultError(format!("Keychain error: {e}")))
+            .map_err(|e| PhantomError::VaultError(format!("Keychain error: {}", error_kind(&e))))
     }
 
-    fn legacy_entry_for(&self, name: &str) -> Option<keyring::Entry> {
+    fn legacy_entry_for(&self, name: &str) -> Option<keyring_core::Entry> {
         credential_entry(self.store, &self.legacy_entry_key(name), name).ok()
     }
 
@@ -1060,7 +1083,7 @@ impl KeychainVault {
             &format!("{SERVICE_PREFIX}:{}", self.project_id),
             &self.index_key,
         )
-        .map_err(|e| PhantomError::VaultError(format!("Keychain error: {e}")))?;
+        .map_err(|e| PhantomError::VaultError(format!("Keychain error: {}", error_kind(&e))))?;
 
         match entry.get_password() {
             Ok(data) => serde_json::from_str(&data).map_err(|e| {
@@ -1068,9 +1091,10 @@ impl KeychainVault {
                     "Corrupt keychain index (try `phantom init` to rebuild): {e}"
                 ))
             }),
-            Err(keyring::Error::NoEntry) => Ok(Vec::new()),
+            Err(keyring_core::Error::NoEntry) => Ok(Vec::new()),
             Err(e) => Err(PhantomError::VaultError(format!(
-                "Failed to read index: {e}"
+                "Failed to read index: {}",
+                error_kind(&e)
             ))),
         }
     }
@@ -1082,12 +1106,12 @@ impl KeychainVault {
             &format!("{SERVICE_PREFIX}:{}", self.project_id),
             &self.index_key,
         )
-        .map_err(|e| PhantomError::VaultError(format!("Keychain error: {e}")))?;
+        .map_err(|e| PhantomError::VaultError(format!("Keychain error: {}", error_kind(&e))))?;
         let data = serde_json::to_string(names)
             .map_err(|e| PhantomError::VaultError(format!("Serialize error: {e}")))?;
-        entry
-            .set_password(&data)
-            .map_err(|e| PhantomError::VaultError(format!("Failed to save index: {e}")))?;
+        entry.set_password(&data).map_err(|e| {
+            PhantomError::VaultError(format!("Failed to save index: {}", error_kind(&e)))
+        })?;
         Ok(())
     }
 
@@ -1128,7 +1152,7 @@ impl KeychainVault {
         }
 
         entry.set_password(value).map_err(|error| {
-            PhantomError::VaultError(format!("Failed to store secret: {error}"))
+            PhantomError::VaultError(format!("Failed to store secret: {}", error_kind(&error)))
         })?;
         let commit = (|| {
             if after_index != before_index {
@@ -1340,7 +1364,7 @@ fn reconcile_destination(
 
 #[cfg(target_os = "linux")]
 fn reconcile_destination_entry(
-    destination: &keyring::Entry,
+    destination: &keyring_core::Entry,
     source: &str,
     label: &str,
 ) -> Result<()> {
@@ -1350,7 +1374,10 @@ fn reconcile_destination_entry(
         || read_credential(destination, label),
         |value| {
             destination.set_password(value).map_err(|error| {
-                PhantomError::VaultError(format!("Failed to write persistent {label}: {error}"))
+                PhantomError::VaultError(format!(
+                    "Failed to write persistent {label}: {}",
+                    error_kind(&error)
+                ))
             })
         },
     )
@@ -1486,7 +1513,7 @@ pub fn migrate_linux_to_secret_service(
             )
             .map_err(|error| {
                 PhantomError::VaultError(format!(
-                    "Secret Service is unavailable; migration stopped before backend selection changed: {error}"
+                    "Secret Service is unavailable; migration stopped before backend selection changed: {}", error_kind(&error)
                 ))
             })?;
             reconcile_destination_entry(&destination, source_value.as_str(), "secret")?;
@@ -1501,7 +1528,7 @@ pub fn migrate_linux_to_secret_service(
         )
         .map_err(|error| {
             PhantomError::VaultError(format!(
-                "Secret Service is unavailable; migration stopped before backend selection changed: {error}"
+                "Secret Service is unavailable; migration stopped before backend selection changed: {}", error_kind(&error)
             ))
         })?;
         reconcile_destination_entry(&destination_index, &index_json, "secret index")?;
@@ -1561,7 +1588,7 @@ impl VaultBackend for KeychainVault {
                 phantom_core::audit::log("vault.retrieve", Some(name));
                 Ok(zeroize::Zeroizing::new(value))
             }
-            Err(keyring::Error::NoEntry) => {
+            Err(keyring_core::Error::NoEntry) => {
                 // F13 migration: older phantom versions stored entries under
                 // the plaintext name. The migration spans the hashed entry,
                 // index, and legacy deletion as one compensated transaction.
@@ -1578,7 +1605,8 @@ impl VaultBackend for KeychainVault {
                 Ok(value)
             }
             Err(e) => Err(PhantomError::VaultError(format!(
-                "Failed to retrieve secret: {e}"
+                "Failed to retrieve secret: {}",
+                error_kind(&e)
             ))),
         }
     }
@@ -1781,6 +1809,51 @@ const fn backend_name_for_store(store: CredentialStore) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn mock_credential_entry() -> keyring_core::Entry {
+        use keyring_core::api::CredentialStoreApi;
+        keyring_core::mock::Store::new()
+            .unwrap()
+            .build("phantom-test-vault", "test-account", None)
+            .unwrap()
+    }
+
+    #[test]
+    fn credential_adapter_preserves_missing_and_idempotent_delete_semantics() {
+        let entry = mock_credential_entry();
+        assert!(read_credential(&entry, "test credential")
+            .unwrap()
+            .is_none());
+        remove_credential(&entry, "test credential").unwrap();
+        entry.set_password("synthetic-test-value").unwrap();
+        assert!(read_credential(&entry, "test credential")
+            .unwrap()
+            .is_some());
+        remove_credential(&entry, "test credential").unwrap();
+        assert!(read_credential(&entry, "test credential")
+            .unwrap()
+            .is_none());
+        remove_credential(&entry, "test credential").unwrap();
+    }
+
+    #[test]
+    fn credential_adapter_never_treats_store_failure_as_absence() {
+        let entry = mock_credential_entry();
+        entry.set_password("synthetic-test-value").unwrap();
+        let credential = entry
+            .as_any()
+            .downcast_ref::<keyring_core::mock::Cred>()
+            .unwrap();
+        credential.set_error(keyring_core::Error::NoStorageAccess(
+            "test store locked".into(),
+        ));
+        assert!(read_credential(&entry, "test credential").is_err());
+        credential.set_error(keyring_core::Error::BadStoreFormat(
+            "test malformed store".into(),
+        ));
+        assert!(remove_credential(&entry, "test credential").is_err());
+        assert!(entry.get_password().unwrap() == "synthetic-test-value");
+    }
     use std::cell::RefCell;
     use std::collections::BTreeSet;
     use std::sync::{Arc, Barrier};
@@ -2657,7 +2730,7 @@ mod tests {
 
     /// End-to-end round-trip against the real OS keychain. Ignored by
     /// default because it touches the user's actual keychain (and CI
-    /// may not have one without `keyring`'s mock backend). Run with
+    /// may not have an available platform credential store). Run with
     /// `cargo test -p phantom-secrets-vault -- --ignored` on each
     /// platform (macOS Keychain, Linux kernel keyutils, Windows
     /// Credential Manager) to confirm the backend is wired up.

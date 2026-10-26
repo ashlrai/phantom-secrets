@@ -44,6 +44,9 @@ zeroize = { version = "1", features = ["derive"] }
 base64 = "0.22"
 cap-std = "=3.4.6"
 cap-fs-ext = "=3.4.6"
+# Keyring 4's explicit-store API; the `keyring` facade is for applications
+# that want its automatic, process-global store selection.
+keyring-core = "1.0.1"
 
 # Internal crates — version + path is required so crates.io publishes
 # work (path is used during local dev, version is what crates.io resolves).
