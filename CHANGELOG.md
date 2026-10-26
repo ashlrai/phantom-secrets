@@ -11,8 +11,9 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   `/.env`, `**/.env` or `.env*` drew a warning (and `--fix` appended a
   duplicate line), while one that ignored `.env` and then un-ignored it with
   a later `!.env` passed. The checks now apply the last matching rule as Git
-  does, and a negated `.env` gets its own warning. Patterns the reader does
-  not understand still count as not covering `.env`.
+  does, and a negated `.env` gets its own warning; `phantom agent` adds its
+  env patterns again when a later `!.env` cancelled them. Patterns the
+  reader does not understand still count as not covering `.env`.
 
 ### Fixed (commented-out secret detection: docs placeholders and quoted PEM headers)
 

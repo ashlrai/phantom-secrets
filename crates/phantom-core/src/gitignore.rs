@@ -75,8 +75,8 @@ fn covers_root_file(pattern: &str, name: &str) -> bool {
 pub fn dotenv_ignore_state(content: &str, name: &str) -> DotenvIgnore {
     let mut state = DotenvIgnore::NotCovered;
     for line in content.lines() {
-        // Trailing whitespace is not part of a pattern unless escaped.
-        let line = line.trim_end();
+        // Git drops trailing spaces (not tabs) unless escaped.
+        let line = line.trim_end_matches(' ');
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
@@ -163,6 +163,7 @@ mod tests {
             "env\n",
             "[.]env\n",
             "\\.env\n",
+            ".env\t\n",
         ] {
             assert_eq!(
                 dotenv_ignore_state(body, ".env"),
