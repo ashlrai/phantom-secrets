@@ -86,13 +86,13 @@ jobs:
           if printf '%s\n' "$files" | grep -Eq '^(README\.md$|docs/[^/]+\.md$|apps/web/src/|apps/web/public/llms[^/]*\.txt$|\.github/workflows/)'; then docs_commands=true; fi
           echo "docs_commands=$docs_commands" >> "$GITHUB_OUTPUT"
           echo "rust=$rust web=$webc temporal_example=$temporal docs_commands=$docs_commands"
-      # macOS/Windows legs: every non-PR event, the `ci:full-os` label, or a
+      # macOS/Windows legs: every non-PR event (merge_group, push, nightly), the `ci:full-os` or `full-ci` label, a Tier-1 path, or a
       # platform-relevant change (OS-gated Rust, build/toolchain, installers,
       # npm wrappers, CI itself). Ubuntu always runs; CI Gate checks the rest.
       - id: platform
         env:
           EVENT: ${{ github.event_name }}
-          FULL_OS: ${{ contains(github.event.pull_request.labels.*.name, 'ci:full-os') }}
+          FULL_OS: ${{ contains(github.event.pull_request.labels.*.name, 'ci:full-os') || contains(github.event.pull_request.labels.*.name, 'full-ci') }}
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
@@ -102,6 +102,14 @@ jobs:
           else
             files="$(git diff --name-only "$BASE...$HEAD")"
             if printf '%s\n' "$files" | grep -Eq '(^|/)(Cargo\.toml|Cargo\.lock|rust-toolchain(\.toml)?|build\.rs)$|^\.cargo/|^\.github/workflows/|^scripts/(install\.(sh|ps1)|check-platform-installers\.mjs|installers\.test\.js|release/)|^npm(-mcp)?/|^apps/web/public/install\.|(^|/)(windows|macos|unix|platform)[^/]*(/|\.rs$)'; then p=true; fi
+            # Tier-1 paths (CODEOWNERS from the base ref, when present) keep the full OS matrix on the PR.
+            if owners="$(git show "$BASE:.github/CODEOWNERS" 2>/dev/null)"; then
+              while IFS= read -r pat; do
+                pre="${pat#/}"; pre="${pre%%\**}"
+                [ -n "$pre" ] || continue
+                if printf '%s\n' "$files" | grep -qF -- "$pre"; then p=true; fi
+              done < <(printf '%s\n' "$owners" | grep -Ev '^[[:space:]]*(#|$)' | awk '{print $1}')
+            fi
             while IFS= read -r f; do
               case "$f" in *.rs) [ -f "$f" ] && grep -Eq 'cfg\((not\()?(windows|unix|target_os|target_family)|cfg!\((windows|unix|target_os)' "$f" && p=true ;; esac
             done <<< "$files"
