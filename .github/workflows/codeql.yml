@@ -51,7 +51,8 @@ jobs:
           docs='^(docs/|.*\.md$|LICENSE|\.github/ISSUE_TEMPLATE/|\.github/PULL_REQUEST_TEMPLATE)'
           code=false
           # Capture first: an early-exit grep -q under pipefail can SIGPIPE grep -Ev and skip analysis.
-          code_paths="$(printf '%s\n' "$files" | grep -Ev "$docs" || true)"
+          # grep exits 1 when every path is docs (fine); exit 2 is a real error and fails the job.
+          code_paths="$(printf '%s\n' "$files" | grep -Ev "$docs" || [ $? -eq 1 ])"
           if [ -n "$code_paths" ]; then code=true; fi
           echo "code=$code" >> "$GITHUB_OUTPUT"
           echo "code=$code"
