@@ -10,7 +10,8 @@
   "separateMajorMinor": true,
   "vulnerabilityAlerts": {
     "enabled": true,
-    "automerge": false
+    "automerge": false,
+    "minimumReleaseAge": null
   },
   "packageRules": [
     {

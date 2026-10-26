@@ -157,17 +157,18 @@ jobs:
       - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2
         with:
           tool: cargo-nextest
-      # Coverage tools install only on Linux push-to-main and merge_group.
-      # This repo has no merge queue, so push to main is the run that fires.
-      # Pull requests skip these steps.
+      # Coverage tools install only on Linux merge_group and the nightly run
+      # (nightly-full.yml calls this workflow, so event_name is schedule).
+      # Pull requests and pushes to main skip these steps, so a merge does not
+      # pay for a second, uncached instrumented build.
       - name: Install coverage tools
-        if: runner.os == 'Linux' && (github.event_name == 'merge_group' || github.event_name == 'push')
+        if: runner.os == 'Linux' && (github.event_name == 'merge_group' || github.event_name == 'schedule')
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (2026-04-24)
         with:
           toolchain: 1.95.0
           components: llvm-tools-preview
       - name: Install cargo-llvm-cov
-        if: runner.os == 'Linux' && (github.event_name == 'merge_group' || github.event_name == 'push')
+        if: runner.os == 'Linux' && (github.event_name == 'merge_group' || github.event_name == 'schedule')
         uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2
         with:
           tool: cargo-llvm-cov@0.9.1
@@ -180,16 +181,16 @@ jobs:
       # them (nextest rdeps filterset); workspace-wide changes (manifests,
       # lockfile, toolchain, CI) select all(). Pushes to main always run the
       # complete suite on every OS.
-      # Linux push-to-main and merge_group call the same nextest binary with
+      # Linux nightly and merge_group call the same nextest binary with
       # the same flags. show-env only exports coverage variables.
       - name: Run tests
         # PRs test only crates the diff touches plus their reverse deps
         # (computed in `changes`); main pushes always run all().
-        if: needs.changes.outputs.filterset != 'none()' && (runner.os != 'Linux' || (github.event_name != 'merge_group' && github.event_name != 'push'))
+        if: needs.changes.outputs.filterset != 'none()' && (runner.os != 'Linux' || (github.event_name != 'merge_group' && github.event_name != 'schedule'))
         shell: bash
         run: cargo nextest run --workspace --all-targets --locked --no-fail-fast -E "${{ needs.changes.outputs.filterset }}"
       - name: Run tests with coverage
-        if: runner.os == 'Linux' && (github.event_name == 'merge_group' || github.event_name == 'push') && needs.changes.outputs.filterset != 'none()'
+        if: runner.os == 'Linux' && (github.event_name == 'merge_group' || github.event_name == 'schedule') && needs.changes.outputs.filterset != 'none()'
         shell: bash
         env:
           # Outside ./target so rust-cache does not save the instrumented
@@ -208,7 +209,7 @@ jobs:
             exit 1
           fi
       - name: Upload coverage report
-        if: runner.os == 'Linux' && (github.event_name == 'merge_group' || github.event_name == 'push') && needs.changes.outputs.filterset != 'none()'
+        if: runner.os == 'Linux' && (github.event_name == 'merge_group' || github.event_name == 'schedule') && needs.changes.outputs.filterset != 'none()'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coverage-lcov
@@ -287,7 +288,7 @@ jobs:
 
   # Not part of CI Gate, so a Codecov outage does not become a required check.
   # This is the only job in this workflow with id-token: write. It runs on
-  # push to main and merge_group, never on pull_request.
+  # the nightly schedule and merge_group, never on pull_request or push.
   # A newer push to the same ref cancels an in-progress coverage upload.
   # Workflow concurrency still leaves the rest of a main push running.
   coverage:
@@ -296,11 +297,10 @@ jobs:
     concurrency:
       group: coverage-${{ github.workflow }}-${{ github.ref }}
       cancel-in-progress: true
-    if: (github.event_name == 'merge_group' || github.event_name == 'push') && needs.test.result == 'success'
+    if: (github.event_name == 'merge_group' || github.event_name == 'schedule') && needs.test.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
-      actions: read
       contents: read
       id-token: write
     steps:

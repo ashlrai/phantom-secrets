@@ -18,6 +18,10 @@ concurrency:
 jobs:
   ci:
     uses: ./.github/workflows/ci.yml
+    # id-token: write is only for ci.yml's coverage job (Codecov OIDC upload).
+    permissions:
+      contents: read
+      id-token: write
 
   summary:
     name: Nightly summary
