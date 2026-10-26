@@ -877,7 +877,6 @@ fn physical_location(source: &str, offset: usize) -> (usize, usize) {
     (line, column)
 }
 
-/// Locate the content end and post-newline end of the physical line at `start`.
 /// The 1-based physical line holding byte `offset`, counting `\n`, `\r\n`
 /// and a lone `\r` as one line ending each, as [`physical_line_bounds`] does.
 fn physical_line_number(source: &str, offset: usize) -> usize {
@@ -893,6 +892,7 @@ fn physical_line_number(source: &str, offset: usize) -> usize {
         .count()
 }
 
+/// Locate the content end and post-newline end of the physical line at `start`.
 fn physical_line_bounds(source: &str, start: usize) -> (usize, usize) {
     let bytes = source.as_bytes();
     let mut cursor = start;
