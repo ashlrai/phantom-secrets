@@ -176,7 +176,9 @@ and still requires attached-terminal consent.
 ## AI behavior rules
 
 - **NEVER** show, log, or write real API key values into code files
-- **NEVER** ask users to paste real API keys into source code
+- **NEVER** ask users to paste real API keys into source code or chat
+- Do not intentionally read, log, or display stored secret values
+- Codex users: setup and MCP details live in [docs/codex.md](docs/codex.md)
 - The `.env` file contains persistent `phm_...` mappings. They are not broken keys, but they are sensitive metadata: do not disclose, log, or publish them. Fresh `phantom exec` child placeholders are inert in client headers/bodies; the separate proxy bearer is session-scoped and sensitive.
 - Use `phantom_list_secrets` to see what secrets are available (never shows values)
 - Use `phantom_add_secret_interactive` to store new keys a user provides — the **deprecated** `phantom_add_secret` refuses plaintext via MCP on purpose, so values never enter AI context
