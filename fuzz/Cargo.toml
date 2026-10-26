@@ -1,0 +1,31 @@
+[package]
+name = "phantom-secrets-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+# Keep instrumentation and fuzz-only dependencies out of the release workspace.
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+serde_json = "1"
+phantom-core = { package = "phantom-secrets-core", path = "../crates/phantom-core" }
+phantom-proxy = { package = "phantom-secrets-proxy", path = "../crates/phantom-proxy" }
+
+[[bin]]
+name = "placeholder_parsing"
+path = "fuzz_targets/placeholder_parsing.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "body_injection"
+path = "fuzz_targets/body_injection.rs"
+test = false
+doc = false
+bench = false
