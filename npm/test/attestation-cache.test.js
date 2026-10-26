@@ -12,19 +12,25 @@ const {
   setAttestationClockForTest, validateCachedBinary, writePrivateFile,
 } = require("../bin/cli.js");
 
-// Injectable clock: fixtures are written "now", so by default the clock runs
-// 10 s ahead to model a settled binary. Racy cases use the real clock.
-let skewMs = 10_000;
-const clockNs = () => BigInt(Date.now() + skewMs) * 1_000_000n;
+// Pin time to fixture metadata so scheduling delays cannot settle a fresh key.
+const SETTLE_NS = 2_000_000_000n;
+let nowNs;
+const clockNs = () => nowNs;
+
+function pinClock(binaryPath, ageNs = 10_000_000_000n) {
+  const { mtimeNs, ctimeNs } = lstatSync(binaryPath, { bigint: true });
+  nowNs = (mtimeNs > ctimeNs ? mtimeNs : ctimeNs) + ageNs;
+}
 setAttestationClockForTest(clockNs);
 
 const okVersion = () => Buffer.from("phantom 0.7.9\n");
 const noSpawn = () => { throw new Error("must not spawn"); };
 
-function writePair(paths, contents) {
+function writePair(paths, contents, ageNs) {
   writePrivateFile(paths.binaryPath, contents, 0o700);
   const sha256 = crypto.createHash("sha256").update(contents).digest("hex");
   writePrivateFile(paths.manifestPath, `${JSON.stringify({ version: "0.7.9", sha256 })}\n`, 0o600);
+  pinClock(paths.binaryPath, ageNs);
   return sha256;
 }
 
@@ -89,6 +95,7 @@ try {
     assert.strictEqual(validateCachedBinary(paths.binaryPath, paths.manifestPath, { execFileSyncImpl: noSpawn }), false, label);
   };
   rmSync(att, { force: true });
+  pinClock(paths.binaryPath);
   forge(paths, cSha);
   assert.ok(readVerifiedManifest(paths.binaryPath, paths.manifestPath), "control: a secure, matching forged record is trusted");
   rmSync(att);
@@ -132,9 +139,8 @@ try {
 
   // Racy stat: a just-written or just-rewritten binary is never attested, and
   // a sidecar recorded before its key settled is never accepted.
-  skewMs = 0;
   rmSync(paths.binaryPath); rmSync(paths.manifestPath); rmSync(att, { force: true });
-  writePair(paths, "FFFFFFFFFFFFFFFF");
+  writePair(paths, "FFFFFFFFFFFFFFFF", SETTLE_NS - 1n);
   let racySpawns = 0;
   const countSpawn = () => { racySpawns += 1; return okVersion(); };
   for (let i = 0; i < 3; i += 1) {
@@ -145,14 +151,14 @@ try {
   const fSha = crypto.createHash("sha256").update("FFFFFFFFFFFFFFFF").digest("hex");
   writeFileSync(paths.binaryPath, "GGGGGGGGGGGGGGGG");
   assert.strictEqual(readVerifiedManifest(paths.binaryPath, paths.manifestPath), null, "just-rewritten binary caught");
+  pinClock(paths.binaryPath, SETTLE_NS - 1n);
   forge(paths, fSha);
   refused("sidecar written before key settled");
   rmSync(att, { force: true });
 
   // Settled again: the same pair attests and then hits from cache.
   rmSync(paths.binaryPath); rmSync(paths.manifestPath);
-  writePair(paths, "HHHHHHHHHHHHHHHH");
-  skewMs = 10_000;
+  writePair(paths, "HHHHHHHHHHHHHHHH", SETTLE_NS);
   assert.strictEqual(validateCachedBinary(paths.binaryPath, paths.manifestPath, { execFileSyncImpl: okVersion }), true);
   assert.ok(lstatSync(att).isFile(), "settled binary attests");
   assert.strictEqual(validateCachedBinary(paths.binaryPath, paths.manifestPath, { execFileSyncImpl: noSpawn }), true);
