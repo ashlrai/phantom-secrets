@@ -4,6 +4,21 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (one refused secret no longer aborts `phantom validate --check-all`)
+
+- `phantom validate --check-all` and MCP `phantom_validate_all` stopped the
+  whole run at the first secret the lifecycle gate refused (overdue under
+  enforced rotation, demoted to read-only, or unreadable lifecycle metadata),
+  so every other secret went unvalidated and no per-secret report came back.
+  Each secret is now judged on its own: a refused one is never read or sent
+  and appears in the report with status `refused` and its reason (name only),
+  a new `refused` count is added to the report, and the rest go on to the
+  trusted-terminal consent (CLI) or approval (MCP) and are validated. The run
+  still fails when anything was refused: the CLI exits non-zero with each
+  refusal, and the MCP result is flagged as an error. The consent challenge
+  and the MCP approval bind only the names that will be sent. `--watch`
+  keeps refusing the whole name set, since its consent covers a fixed set.
+
 ### Fixed (.env.example no longer copies commented-out secrets)
 
 - `phantom init`, `phantom env`, `phantom doctor --fix`, `phantom agent` and
