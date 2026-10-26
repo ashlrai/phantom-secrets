@@ -1,0 +1,14 @@
+# Growth-only CODEOWNERS (Security Hardening Engineer, approved by the Engineering Orchestrator 2026-10-25).
+# Covers CI workflows and the files that make keyed, network or loopback requests.
+# Only add owners here; never remove or narrow an entry.
+/.github/workflows/ @masonwyatt23
+/.github/CODEOWNERS @masonwyatt23
+/crates/phantom-vault/ @masonwyatt23
+/crates/phantom-proxy/ @masonwyatt23
+/crates/phantom-broker/ @masonwyatt23
+/crates/phantom-authority/ @masonwyatt23
+/crates/phantom-session/ @masonwyatt23
+/apps/web/src/app/api/ @masonwyatt23
+/apps/web/src/lib/auth.ts @masonwyatt23
+/apps/web/src/lib/supabase-server.ts @masonwyatt23
+/apps/web/supabase/migrations/ @masonwyatt23
