@@ -25,7 +25,10 @@ use anyhow::Result;
 use serde::Deserialize;
 use zeroize::Zeroizing;
 
-use super::{env_importer, Importer, SecretMap};
+use super::{
+    env_importer, refuse_duplicate_names, refuse_invalid_names, utf8_export_body, Importer,
+    SecretMap,
+};
 
 pub struct InfisicalImporter;
 
@@ -37,6 +40,7 @@ struct InfisicalEntry {
 
 impl Importer for InfisicalImporter {
     fn parse(input: &[u8]) -> Result<SecretMap> {
+        let input = utf8_export_body("Infisical", input)?;
         // Auto-detect format by checking if content looks like a JSON array
         let trimmed = input.iter().copied().find(|b| !b.is_ascii_whitespace());
 
@@ -52,17 +56,13 @@ impl Importer for InfisicalImporter {
 fn parse_json_array(input: &[u8]) -> Result<SecretMap> {
     let entries: Vec<InfisicalEntry> = serde_json::from_slice(input)
         .map_err(|e| anyhow::anyhow!("Infisical JSON parse error: {}", e))?;
+    refuse_duplicate_names("Infisical", entries.iter().map(|entry| entry.key.as_str()))?;
+    refuse_invalid_names("Infisical", entries.iter().map(|entry| entry.key.as_str()))?;
 
     let mut map = SecretMap::new();
     for entry in entries {
         if entry.value.is_empty() {
             continue;
-        }
-        if map.contains_key(&entry.key) {
-            eprintln!(
-                "warn: duplicate key '{}' in Infisical input — last value wins",
-                entry.key
-            );
         }
         map.insert(entry.key, Zeroizing::new(entry.value));
     }

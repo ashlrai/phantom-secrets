@@ -21,6 +21,7 @@ certification, or customer acceptance.
 |------|-------|
 | Protect a project for the first time | [Getting started](getting-started.md) |
 | Delegate one bounded task to an AI coding client | [Safe delegation quickstart](delegation-quickstart.md) |
+| Keep personal, company, and client keys separate | [Multi-project key separation](multi-project-keys.md) |
 | Plan a team or enterprise pilot | [Enterprise adoption](enterprise-adoption.md) |
 | Understand open-source rights and paid evaluation paths | [Commercial offerings](commercial-offerings.md) |
 | Plan a public-sector evaluation | [Government evaluation](government-evaluation.md) |
@@ -28,6 +29,8 @@ certification, or customer acceptance.
 | Understand commercial support boundaries | [Commercial support](commercial-support.md) |
 | Use the project name or logo accurately | [Project name and logo use](trademark-policy.md) |
 | Diagnose an install, vault, proxy, or cloud problem | [Troubleshooting](troubleshooting.md) |
+| Run LiteLLM as an optional gateway that never holds a real key (experimental) | [LiteLLM gateway](litellm.md) |
+| Use Phantom with AI agents: exec, the proxy, LiteLLM, Temporal and post-quantum TLS, each claim tied to a test | [Phantom with agents](phantom-with-agents.md) |
 | Understand the provider-grant design and 0.7.9 universal hard denial | [Provider grants](grants-spec.md) |
 | Understand components, trust boundaries, and activation status | [Architecture](architecture.md) |
 | Plug this repo into the Phantom workbench/orchestrator (delegation model, trust boundaries) | [Integration](../INTEGRATION.md) |
@@ -51,6 +54,7 @@ These guides cover installation, MCP setup, the value-blind tool model, and dail
 - [Codex](codex.md)
 - [Cursor](cursor.md)
 - [Windsurf](windsurf.md)
+- [Temporal workers with no secrets on disk](temporal.md) (optional guidance, untested design)
 - [Copyable agent policy, task brief, and pilot templates](../examples/agent-delegation/README.md)
 - [Examples index](../examples/README.md), including status and safety notes
 

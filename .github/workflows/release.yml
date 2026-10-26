@@ -242,3 +242,65 @@ jobs:
           gh release download "$GITHUB_REF_NAME" --dir "$hosted_dir"
           node scripts/release/verify-release-artifacts.mjs "$hosted_dir"
           node scripts/release/compare-release-artifacts.mjs artifacts "$hosted_dir"
+
+  npm-publish:
+    name: Publish npm packages (trusted publishing)
+    # Release tags only. Runs after the GitHub Release is created and
+    # re-verified, behind the same human-reviewed `release` environment.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: release
+    runs-on: ubuntu-latest
+    environment:
+      name: release
+    # OIDC trusted publishing: npm exchanges the GitHub id-token for a
+    # short-lived publish credential. No NPM_TOKEN secret is used.
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      max-parallel: 1
+      matrix:
+        package:
+          - { dir: npm, name: phantom-secrets }
+          - { dir: npm-mcp, name: phantom-secrets-mcp }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+
+      - name: Use an npm with trusted publishing support (>= 11.5.1)
+        run: |
+          set -euo pipefail
+          npm install --global npm@11.6.2
+          npm --version
+
+      - name: Verify package name and version match the tag
+        env:
+          PKG_DIR: ${{ matrix.package.dir }}
+          PKG_NAME: ${{ matrix.package.name }}
+        run: |
+          set -euo pipefail
+          name=$(node -p "require('./${PKG_DIR}/package.json').name")
+          version=$(node -p "require('./${PKG_DIR}/package.json').version")
+          test "$name" = "$PKG_NAME"
+          test "v${version}" = "$GITHUB_REF_NAME"
+          if [ -n "${NODE_AUTH_TOKEN:-}" ] || [ -n "${NPM_TOKEN:-}" ]; then
+            echo "::error::token-based npm auth must not be configured"; exit 1
+          fi
+
+      - name: Publish with provenance
+        working-directory: ${{ matrix.package.dir }}
+        env:
+          PKG_NAME: ${{ matrix.package.name }}
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./package.json').version")
+          if npm view "${PKG_NAME}@${version}" version >/dev/null 2>&1; then
+            echo "${PKG_NAME}@${version} is already published; skipping."
+            exit 0
+          fi
+          npm publish --provenance --access public

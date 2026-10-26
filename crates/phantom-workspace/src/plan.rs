@@ -233,3 +233,85 @@ fn action(
         reason: reason.to_string(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::discovery::PlaceHintConfidence;
+
+    fn hint(label: &str) -> PlaceHint {
+        PlaceHint {
+            label: label.to_string(),
+            source: "git_remote".to_string(),
+            confidence: PlaceHintConfidence::Medium,
+            reason: "test hint".to_string(),
+        }
+    }
+
+    fn inspection() -> WorkspaceInspection {
+        WorkspaceInspection {
+            schema_version: 1,
+            workspace_root: "/tmp/phantom-plan-test".to_string(),
+            workspace_fingerprint: "f".repeat(64),
+            phantom_initialized: true,
+            env_example_exists: true,
+            env_files: Vec::new(),
+            git: None,
+            place_hints: vec![hint("acme/web")],
+            warnings: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn every_action_requires_out_of_band_approval() {
+        let mut inspection = inspection();
+        inspection.phantom_initialized = false;
+        let plan = build_setup_plan(&inspection).unwrap();
+        assert!(!plan.actions.is_empty());
+        assert!(plan.actions.iter().all(|a| a.requires_out_of_band_approval));
+    }
+
+    #[test]
+    fn inspection_warnings_become_blockers() {
+        let mut inspection = inspection();
+        inspection.warnings = vec!["dotenv symlink refused".to_string()];
+        let plan = build_setup_plan(&inspection).unwrap();
+        assert!(plan
+            .blockers
+            .contains(&"dotenv symlink refused".to_string()));
+    }
+
+    #[test]
+    fn two_distinct_place_hints_require_a_human_choice() {
+        let mut inspection = inspection();
+        inspection.place_hints = vec![hint("acme/web"), hint("acme/api")];
+        let plan = build_setup_plan(&inspection).unwrap();
+        assert!(plan.blockers.iter().any(|b| b.contains("multiple places")));
+        inspection.place_hints = vec![hint("acme/web"), hint("acme/web")];
+        let plan = build_setup_plan(&inspection).unwrap();
+        assert!(!plan.blockers.iter().any(|b| b.contains("multiple places")));
+    }
+
+    #[test]
+    fn plan_id_binds_schema_blockers_and_places() {
+        let plan = build_setup_plan(&inspection()).unwrap();
+        assert!(plan_has_valid_id(&plan).unwrap());
+
+        let mut tampered = plan.clone();
+        tampered.schema_version = PLAN_SCHEMA_VERSION.wrapping_add(1);
+        assert!(!plan_has_valid_id(&tampered).unwrap());
+
+        let mut tampered = plan.clone();
+        tampered.blockers.clear();
+        tampered.blockers.push("forged".to_string());
+        assert!(!plan_has_valid_id(&tampered).unwrap());
+
+        let mut tampered = plan.clone();
+        tampered.candidate_places = vec![hint("evil/other")];
+        assert!(!plan_has_valid_id(&tampered).unwrap());
+
+        let mut tampered = plan;
+        tampered.actions[0].requires_out_of_band_approval = false;
+        assert!(!plan_has_valid_id(&tampered).unwrap());
+    }
+}

@@ -321,7 +321,7 @@ function loadMeRoute() {
               eq() {
                 return this;
               },
-              async single() {
+              async maybeSingle() {
                 return {
                   data:
                     table === "users"
@@ -386,6 +386,7 @@ test("device authorization routes and UI share the server-only cloud gate", () =
   }
 
   const page = fs.readFileSync(path.join(webDir, "src/app/device/page.tsx"), "utf8");
+  assert.match(page, /export const dynamic = "force-dynamic"/);
   assert.match(page, /isHostedServiceCommissioned\("personal_vaults"\)/);
   assert.match(page, /Cloud device sign-in is not commissioned/);
   assert.match(page, /will not issue, approve, or exchange device codes/);
@@ -411,4 +412,40 @@ test("dashboard hosted data clients are guarded by server-only exact gates", () 
   const commissioning = fs.readFileSync(commissioningPath, "utf8");
   assert.match(commissioning, /^import "server-only";/);
   assert.match(commissioning, /process\.env\[HOSTED_SERVICES\[service\]\.env\] === "true"/);
+});
+
+test("device and overview pages re-evaluate runtime admission after a closed build", async () => {
+  for (const [pagePath, clientImport] of [
+    ["src/app/device/page.tsx", "./device-authorization-client"],
+    ["src/app/dashboard/page.tsx", "./overview-client"],
+  ]) {
+    const pageSource = fs.readFileSync(path.join(webDir, pagePath), "utf8");
+    const compiled = ts.transpileModule(pageSource, {
+      compilerOptions: {
+        esModuleInterop: true,
+        jsx: ts.JsxEmit.ReactJSX,
+        module: ts.ModuleKind.CommonJS,
+        target: ts.ScriptTarget.ES2022,
+      },
+    }).outputText;
+    const module = { exports: {} };
+    const client = () => null;
+    const commissioning = loadCommissioning();
+    new Function("exports", "require", "module", compiled)(module.exports, (specifier) => {
+      if (specifier === "@/lib/commissioning") return commissioning;
+      if (specifier === clientImport) return client;
+      return require(specifier);
+    }, module);
+
+    assert.equal(module.exports.dynamic, "force-dynamic", pagePath);
+    await withOnlyGate("personal_vaults", "false", () => {
+      assert.notEqual(module.exports.default().type, client, pagePath);
+    });
+    await withOnlyGate("personal_vaults", "true", () => {
+      assert.equal(module.exports.default().type, client, pagePath);
+    });
+    await withOnlyGate("personal_vaults", "false", () => {
+      assert.notEqual(module.exports.default().type, client, pagePath);
+    });
+  }
 });

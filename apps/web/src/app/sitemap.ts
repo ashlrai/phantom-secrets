@@ -4,8 +4,12 @@ import { PUBLIC_DOCS } from "@/lib/public-docs";
 const SITE_URL = "https://phm.dev";
 
 const pages = [
-  { path: "/", modified: "2026-09-29" },
-  { path: "/docs", modified: "2026-09-29" },
+  { path: "/", modified: "2026-10-06" },
+  { path: "/secrets", modified: "2026-10-06" },
+  { path: "/docs", modified: "2026-10-13" },
+  { path: "/docs/manifest.json", modified: "2026-10-13" },
+  { path: "/workbench/llms.txt", modified: "2026-10-13" },
+  { path: "/workbench/llms-full.txt", modified: "2026-10-13" },
   { path: "/pricing", modified: "2026-09-03" },
   { path: "/enterprise", modified: "2026-09-03" },
   { path: "/government", modified: "2026-09-03" },

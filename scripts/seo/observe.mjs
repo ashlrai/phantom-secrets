@@ -29,9 +29,11 @@ const REQUIRED_SECURITY_HEADERS = [
   "x-content-type-options",
   "x-frame-options",
 ];
+// Product guidance schema may live on the homepage or, since phm.dev became the
+// Phantom umbrella homepage, on the Secrets product page.
+const REQUIRED_PRODUCT_GUIDE_SCHEMA = ["FAQPage", "HowTo"];
+const PRODUCT_GUIDE_ROUTES = new Set(["/", "/secrets"]);
 const REQUIRED_HOME_SCHEMA = [
-  "FAQPage",
-  "HowTo",
   "Organization",
   "SoftwareApplication",
   "SoftwareSourceCode",
@@ -686,7 +688,9 @@ function canonicalMatches(candidate, expected, siteOrigin) {
   }
 }
 
-function findSoftwareVersion(jsonLd) {
+// Only a SoftwareApplication for `repositoryUrl` (or one naming no repository)
+// counts, so another product's app on the same page is not compared.
+function findSoftwareVersion(jsonLd, repositoryUrl) {
   const stack = [...jsonLd];
   while (stack.length) {
     const value = stack.pop();
@@ -698,7 +702,8 @@ function findSoftwareVersion(jsonLd) {
     const type = value["@type"];
     if (
       (type === "SoftwareApplication" || (Array.isArray(type) && type.includes("SoftwareApplication"))) &&
-      typeof value.softwareVersion === "string"
+      typeof value.softwareVersion === "string" &&
+      (value.codeRepository === undefined || value.codeRepository === repositoryUrl)
     ) {
       return value.softwareVersion;
     }
@@ -783,6 +788,7 @@ export async function observeProduction(options = {}) {
     addFinding(findings, "fail", "robots_blocks_site", "robots.txt blocks the public site");
   }
 
+  const productGuideTypes = new Set();
   const routeResults = await mapWithConcurrency(sitemapPaths, 5, async (route) => {
     try {
       const response = await requestWithinBoundary(new URL(route, siteOrigin), requestOptions);
@@ -802,8 +808,10 @@ export async function observeProduction(options = {}) {
           text: response.body,
         };
       }
+      // Sitemaps may list non-page assets (for example /docs/manifest.json).
+      // Only text/html responses get page checks; others keep the status check.
       if (!contentType.toLowerCase().startsWith("text/html")) {
-        addFinding(findings, "fail", "html_route_content_type", "Public page is not text/html", route);
+        return { route, status: response.status, content_type: contentType, skipped: "non_html" };
       }
       const inspected = inspectHtml(response.body);
       if (!inspected.title) addFinding(findings, "fail", "title_missing", "Page title is missing", route);
@@ -830,6 +838,9 @@ export async function observeProduction(options = {}) {
       }
       if (inspected.structured_data_errors.length) {
         addFinding(findings, "fail", "structured_data_invalid", "Page contains invalid JSON-LD", route);
+      }
+      if (PRODUCT_GUIDE_ROUTES.has(route)) {
+        for (const type of inspected.structured_data_types) productGuideTypes.add(type);
       }
       if (route === "/") {
         for (const type of REQUIRED_HOME_SCHEMA) {
@@ -875,6 +886,18 @@ export async function observeProduction(options = {}) {
       return { route, status: null, error: "request_failed" };
     }
   });
+
+  for (const type of REQUIRED_PRODUCT_GUIDE_SCHEMA) {
+    if (!productGuideTypes.has(type)) {
+      addFinding(
+        findings,
+        "fail",
+        "home_schema_missing",
+        `Neither the homepage nor /secrets has ${type} JSON-LD`,
+        "/",
+      );
+    }
+  }
 
   const titles = new Map();
   for (const route of routeResults) {
@@ -963,7 +986,16 @@ export async function observeProduction(options = {}) {
         "Latest GitHub release is not an immutable final release",
       );
     }
-    const liveVersion = home?.json_ld ? findSoftwareVersion(home.json_ld) : null;
+    const repositoryPath = new URL(githubRepositoryApi).pathname.match(/\/repos\/([^/]+\/[^/]+)\/?$/)?.[1];
+    const repositoryUrl = repositoryPath ? `https://github.com/${repositoryPath}` : null;
+    const versionSource = [...PRODUCT_GUIDE_ROUTES]
+      .map((path) => routeResults.find((result) => result.route === path))
+      .map((result) => ({
+        route: result?.route,
+        version: result?.json_ld ? findSoftwareVersion(result.json_ld, repositoryUrl) : null,
+      }))
+      .find((candidate) => candidate.version);
+    const liveVersion = versionSource?.version ?? null;
     const releaseVersion = release.tag_name.slice(1);
     if (!liveVersion) {
       addFinding(findings, "warn", "live_release_version_missing", "Homepage SoftwareApplication has no softwareVersion");
@@ -972,8 +1004,8 @@ export async function observeProduction(options = {}) {
         findings,
         "warn",
         "live_release_version_drift",
-        `Homepage reports ${liveVersion}; latest GitHub release is ${releaseVersion}`,
-        "/",
+        `${versionSource.route} reports ${liveVersion}; latest GitHub release is ${releaseVersion}`,
+        versionSource.route,
       );
     }
     if (llms && !llms.text.includes(`\`${release.tag_name}\``)) {

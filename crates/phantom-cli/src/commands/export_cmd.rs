@@ -300,6 +300,9 @@ impl Drop for SecretMap {
     }
 }
 
+/// "Refusing to ..." wording for the rotation gate on backup export.
+const EXPORT_ACTION: &str = "export a backup";
+
 struct ExportPlan {
     project_dir: PathBuf,
     output_request: String,
@@ -314,21 +317,38 @@ struct ExportPlan {
 }
 
 fn prepare_export(output: &str) -> Result<ExportPlan> {
-    let project_dir = std::env::current_dir()?.canonicalize()?;
+    let project_dir = crate::util::project_dir()?.canonicalize()?;
     let config_path = project_dir.join(".phantom.toml");
     let config_before = phantom_core::fs::read_regular_file(&config_path)
         .context("Failed to safely read .phantom.toml")?
-        .ok_or_else(|| anyhow::anyhow!("No .phantom.toml found. Run `phantom init` first."))?;
+        .ok_or_else(|| crate::util::missing_config_error(&project_dir))?;
     let config = PhantomConfig::load_from_bytes(&config_path, &config_before)
         .context("Failed to parse the reviewed .phantom.toml snapshot")?;
     recheck_exact_file(&config_path, &config_before, ".phantom.toml")?;
     let local_project_id = config.local_project_id().to_string();
     let output_path = resolve_export_destination(&project_dir, output)?;
-    let vault = phantom_vault::try_create_vault(&local_project_id)?;
+    let vault = crate::util::open_vault(&local_project_id)?;
     let mut names = vault.list().context("Failed to list secrets")?;
+    // A backup taken from a keychain-only view would silently leave out every
+    // secret in a locked encrypted-file vault.
+    crate::util::require_complete_inventory(
+        vault.as_ref(),
+        &local_project_id,
+        names.len(),
+        "export a backup",
+    )?;
     names.sort();
     names.dedup();
     validate_consent_names(&names)?;
+    // A backup carries every value out, and a later restore would stamp it
+    // fresh: refuse an overdue enforced secret before the review.
+    super::rotation_gate::enforce_rotation_on_entries(
+        &config,
+        vault.as_ref(),
+        names.iter().map(String::as_str),
+        EXPORT_ACTION,
+        super::rotation_gate::now_secs(),
+    )?;
     let names_digest = digest_names(&names);
     let rendered_names = render_names(&names)?;
     let config_digest = digest_bytes(&config_before);
@@ -383,6 +403,15 @@ fn run_encrypted(plan: &ExportPlan, passphrase: &str) -> Result<()> {
 
     verify_export_plan(plan)?;
     let vault = phantom_vault::try_create_vault(&plan.local_project_id)?;
+    let config = PhantomConfig::load_from_bytes(&plan.config_path, &plan.config_before)
+        .context("Failed to parse the reviewed .phantom.toml snapshot")?;
+    super::rotation_gate::enforce_rotation_on_entries(
+        &config,
+        vault.as_ref(),
+        plan.names.iter().map(String::as_str),
+        EXPORT_ACTION,
+        super::rotation_gate::now_secs(),
+    )?;
 
     let mut secrets = SecretMap(BTreeMap::new());
     for name in &plan.names {
@@ -722,6 +751,27 @@ fn sync_directory(_path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An encrypted backup carried every vault value out, overdue enforced
+    /// secrets included, and a later restore stamped them fresh. Export now
+    /// applies the rotation gate before the trusted-terminal review and again
+    /// before any value is read.
+    #[test]
+    fn export_gates_rotation_before_review_and_before_any_value_read() {
+        let source = include_str!("export_cmd.rs");
+        let prepare = &source[source.find("fn prepare_export(").unwrap()..];
+        let prepare = &prepare[..prepare.find("fn verify_export_plan(").unwrap()];
+        let gate = prepare
+            .find("EXPORT_ACTION")
+            .expect("export must gate rotation before review");
+        assert!(gate < prepare.find("Ok(ExportPlan {").unwrap());
+
+        let encrypted = &source[source.find("fn run_encrypted(").unwrap()..];
+        let gate = encrypted
+            .find("EXPORT_ACTION")
+            .expect("export must re-gate before reading values");
+        assert!(gate < encrypted.find(".retrieve(name)").unwrap());
+    }
     use tempfile::tempdir;
 
     #[test]
@@ -929,5 +979,28 @@ mod tests {
                 .all(|name| !name.starts_with(".phantom-backup-")),
             "staging files remained: {names:?}"
         );
+    }
+
+    /// A backup prepared from the OS keychain beside a locked encrypted-file
+    /// vault would leave out every secret in that file while reporting a
+    /// complete-looking name set, so the export is refused before review.
+    #[cfg(unix)]
+    #[test]
+    fn export_refuses_a_partial_inventory_beside_a_locked_file_vault() {
+        use crate::util::test_seam::{empty_keychain, keychain_with_one, LockedProject};
+        for make in [empty_keychain, keychain_with_one] {
+            let project = LockedProject::new(make);
+            let error = match prepare_export("backup.phantom") {
+                Ok(_) => panic!("export prepared from a partial inventory"),
+                Err(error) => error.to_string(),
+            };
+            assert!(
+                error.starts_with("Vault locked:")
+                    || error.starts_with("Refusing to export a backup from a partial inventory"),
+                "{error}"
+            );
+            assert!(error.contains("PHANTOM_VAULT_PASSPHRASE"), "{error}");
+            assert!(!project.dir.join("backup.phantom").exists());
+        }
     }
 }

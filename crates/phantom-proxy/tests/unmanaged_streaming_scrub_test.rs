@@ -470,5 +470,15 @@ fn overlap_len_never_understates_the_typed_streaming_bound() {
         long_secret.clone(),
     )]));
     assert_eq!(managed.overlap_len(), managed.stream_buffer_bound());
-    assert_eq!(managed.overlap_len(), long_secret.len() - 1);
+    // Exact-prefix carry (len - 1) plus the partial-run tail (12 - 1) that a
+    // token-like managed value adds.
+    assert_eq!(managed.overlap_len(), long_secret.len() - 1 + 11);
+
+    // A value that does not qualify for partial matching adds no tail.
+    let url = format!("postgres://app:{}@localhost:5432/db", "x".repeat(200));
+    let not_token = ResponseScrubber::from_token_map(&HashMap::from([(
+        "phm_managed_placeholder".to_string(),
+        url.clone(),
+    )]));
+    assert_eq!(not_token.overlap_len(), url.len() - 1);
 }

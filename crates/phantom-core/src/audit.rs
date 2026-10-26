@@ -169,6 +169,11 @@ pub struct SidecarEvent {
     pub signature: String,
     /// Hex-encoded public key (for auditor verification).
     pub pubkey: String,
+    /// Signature scheme. Absent means Ed25519, and Ed25519 events never carry
+    /// it, so their bytes match every earlier writer. No other scheme is
+    /// supported yet, so any present value fails verification (fail closed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sig_alg: Option<String>,
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -437,14 +442,14 @@ impl VerifyReport {
 /// detected without an external checkpoint or backup.
 pub fn verify_log() -> std::io::Result<VerifyReport> {
     let path = log_path()?;
-    if !path.exists() {
+    if !log_present(&path)? {
         let key = load_or_skip_hmac_key(&path)?;
         return verify_log_content("", key.as_deref(), &path);
     }
 
     let _lock = acquire_log_lock_shared(&path)?;
     let key = load_or_skip_hmac_key(&path)?;
-    let content = std::fs::read_to_string(&path)?;
+    let content = read_state_text(&path)?;
     verify_log_content(&content, key.as_deref(), &path)
 }
 
@@ -454,9 +459,7 @@ pub fn verify_log() -> std::io::Result<VerifyReport> {
 
 fn write_event(op: &str, name: Option<&str>, required: bool) -> std::io::Result<()> {
     let path = log_path()?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
+    crate::fs::ensure_private_dir(parent_dir(&path))?;
 
     let lock_file = acquire_log_lock(&path)?;
 
@@ -514,12 +517,8 @@ fn write_event(op: &str, name: Option<&str>, required: bool) -> std::io::Result<
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     line.push(b'\n');
 
-    // OpenOptions::append on Linux/macOS gives O_APPEND atomicity for
-    // writes <= PIPE_BUF (~4096 bytes) which our JSONL lines easily fit
-    // under, so we don't take an explicit lock. Windows append semantics
-    // are similar with FILE_APPEND_DATA.
-    let mut f = OpenOptions::new().append(true).create(true).open(&path)?;
-    f.write_all(&line)?;
+    // Writers serialize on the audit lock held above.
+    append_line(&path, &line)?;
     if let (Some(key), Some(hmac)) = (key.as_deref(), hmac_val.as_deref()) {
         write_head(&path, seq, hmac, key)?;
     }
@@ -535,39 +534,90 @@ fn lock_path(log_path: &Path) -> PathBuf {
 }
 
 fn acquire_log_lock(log_path: &Path) -> std::io::Result<File> {
-    let lock_path = lock_path(log_path);
-    let lock_file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(lock_path)?;
+    let lock_file = open_audit_file(&lock_path(log_path), false)?;
     lock_file.lock_exclusive()?;
     Ok(lock_file)
 }
 
 fn acquire_log_lock_shared(log_path: &Path) -> std::io::Result<File> {
-    let lock_path = lock_path(log_path);
-    let lock_file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(lock_path)?;
+    let lock_file = open_audit_file(&lock_path(log_path), false)?;
     lock_file.lock_shared()?;
     Ok(lock_file)
 }
 
+/// Open (creating when absent) one of the audit files the writer owns: the
+/// log or its lock. The log names secrets, process paths and pids, so it is
+/// kept owner-only: a new file is created 0600 whatever the umask, and an
+/// existing file with group or other bits (older releases inherited the
+/// umask) is tightened to 0600. A symlink at the final path is refused, never
+/// followed, so a planted link cannot redirect appends or locking into
+/// another file. Anything other than a regular file (a directory, a FIFO) is
+/// refused too; `O_NONBLOCK` keeps a FIFO from blocking the open.
+fn open_audit_file(path: &Path, append: bool) -> std::io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.read(true).create(true);
+    if append {
+        options.append(true);
+    } else {
+        options.write(true).truncate(false);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    let refused = || {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "refusing audit file that is a symlink or not a regular file: {}",
+                path.display()
+            ),
+        )
+    };
+    let file = match options.open(path) {
+        Ok(file) => file,
+        #[cfg(unix)]
+        Err(e) if e.raw_os_error() == Some(libc::ELOOP) => return Err(refused()),
+        Err(e) => return Err(e),
+    };
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
+        return Err(refused());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o077 != 0 {
+            file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        }
+    }
+    Ok(file)
+}
+
 /// Scan from the end of the log file to find the last `hmac` value.
 /// Returns `None` (i.e. "GENESIS") if the file is empty or has no signed lines.
+/// Malformed lines (a torn write, stray bytes) are skipped like in
+/// [`read_last_seq`], so the next event chains to the last signed event and
+/// verification reports only the malformed line, not a reset chain.
 fn read_last_hmac(path: &Path) -> Option<String> {
-    let content = std::fs::read_to_string(path).ok()?;
+    let content = read_state_text(path).ok()?;
     for raw in content.lines().rev() {
         let trimmed = raw.trim();
         if trimmed.is_empty() {
             continue;
         }
-        let v: serde_json::Value = serde_json::from_str(trimmed).ok()?;
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+            continue;
+        };
         if let Some(h) = v.get("hmac").and_then(|h| h.as_str()) {
             return Some(h.to_string());
         }
@@ -579,7 +629,7 @@ fn read_last_hmac(path: &Path) -> Option<String> {
 /// Older signed lines did not carry `seq`; those are ignored so the first new
 /// sequenced event starts at 1 while preserving HMAC-chain compatibility.
 fn read_last_seq(path: &Path) -> u64 {
-    let Some(content) = std::fs::read_to_string(path).ok() else {
+    let Some(content) = read_state_text(path).ok() else {
         return 0;
     };
     for raw in content.lines().rev() {
@@ -622,13 +672,20 @@ fn head_path(log_path: &Path) -> PathBuf {
 /// On first generation, write the chain-started marker to the log.
 fn load_or_create_hmac_key(log_path: &Path) -> std::io::Result<Vec<u8>> {
     let key_path = hmac_key_path(log_path);
-    if key_path.exists() {
+    if path_present(&key_path)? {
         return read_hmac_key(&key_path);
     }
 
     // Generate a new 32-byte key.
     let key = generate_key();
-    write_hmac_key(&key_path, &key)?;
+    match write_hmac_key(&key_path, &key) {
+        Ok(()) => {}
+        // Another writer published a key first; use it and its marker.
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            return read_hmac_key(&key_path);
+        }
+        Err(e) => return Err(e),
+    }
 
     // Write the chain-started marker into the log so `verify` knows
     // where the signed portion begins.
@@ -640,7 +697,7 @@ fn load_or_create_hmac_key(log_path: &Path) -> std::io::Result<Vec<u8>> {
 /// Load the key for verification; returns `None` if the file doesn't exist.
 fn load_or_skip_hmac_key(log_path: &Path) -> std::io::Result<Option<Vec<u8>>> {
     let key_path = hmac_key_path(log_path);
-    if !key_path.exists() {
+    if !path_present(&key_path)? {
         return Ok(None);
     }
     read_hmac_key(&key_path).map(Some)
@@ -653,41 +710,75 @@ fn generate_key() -> Vec<u8> {
     key
 }
 
+/// Publish a new chain key without ever exposing a partial file or replacing
+/// a key that is already there.
+///
+/// The hex key goes to an owner-only staging file in the same directory,
+/// which is fsynced and then linked into place with no-clobber semantics, and
+/// the directory is fsynced. A crash leaves either no key or the whole key.
+/// An existing key yields `AlreadyExists` and is left untouched.
 fn write_hmac_key(key_path: &Path, key: &[u8]) -> std::io::Result<()> {
-    let hex_key = hex::encode(key);
+    let hex_key = zeroize::Zeroizing::new(hex::encode(key));
+    let dir = parent_dir(key_path);
 
+    let mut staged = tempfile::Builder::new()
+        .prefix(".audit-hmac-key.")
+        .tempfile_in(dir)?;
     #[cfg(unix)]
     {
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut f = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(key_path)?;
-        f.write_all(hex_key.as_bytes())?;
+        use std::os::unix::fs::PermissionsExt;
+        staged
+            .as_file()
+            .set_permissions(std::fs::Permissions::from_mode(0o600))?;
     }
-    #[cfg(not(unix))]
-    {
-        let mut f = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(key_path)?;
-        f.write_all(hex_key.as_bytes())?;
+    staged.write_all(hex_key.as_bytes())?;
+    staged.as_file().sync_all()?;
+    trace_durability("key.synced");
+
+    #[cfg(test)]
+    if FAIL_BEFORE_KEY_PUBLISH.with(|f| f.get()) {
+        // Dropping `staged` removes the staging file, as a failed write would.
+        return Err(std::io::Error::other("injected failure before key publish"));
     }
 
+    staged.persist_noclobber(key_path).map_err(|e| e.error)?;
+    trace_durability("key.published");
+    crate::fs::sync_parent_dir(dir)?;
+    trace_durability("key.dir_synced");
     Ok(())
 }
 
+/// Required audit HMAC key length in bytes (256-bit).
+const HMAC_KEY_LEN: usize = 32;
+
 fn read_hmac_key(key_path: &Path) -> std::io::Result<Vec<u8>> {
-    let hex_str = std::fs::read_to_string(key_path)?;
-    hex::decode(hex_str.trim()).map_err(|e| {
+    let raw =
+        zeroize::Zeroizing::new(crate::fs::read_regular_file(key_path)?.ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::NotFound, "audit HMAC key not found")
+        })?);
+    // Neither decode error is forwarded: it can name a byte from the key file.
+    let hex_str = std::str::from_utf8(&raw).map_err(|_| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            format!("invalid audit HMAC key: {e}"),
+            "invalid audit HMAC key: file is not valid hex; delete audit-hmac-key to regenerate (this starts a new chain)",
         )
-    })
+    })?;
+    let key = hex::decode(hex_str.trim()).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "invalid audit HMAC key: file is not valid hex; delete audit-hmac-key to regenerate (this starts a new chain)",
+        )
+    })?;
+    if key.len() != HMAC_KEY_LEN {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "invalid audit HMAC key: expected {HMAC_KEY_LEN} bytes, found {}; delete audit-hmac-key to regenerate (this starts a new chain)",
+                key.len()
+            ),
+        ));
+    }
+    Ok(key)
 }
 
 fn write_chain_marker(log_path: &Path, key: &[u8]) -> std::io::Result<()> {
@@ -700,11 +791,164 @@ fn write_chain_marker(log_path: &Path, key: &[u8]) -> std::io::Result<()> {
     let mut line = serde_json::to_vec(&marker)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     line.push(b'\n');
-    let mut f = OpenOptions::new()
-        .append(true)
-        .create(true)
-        .open(log_path)?;
-    f.write_all(&line)
+    append_line(log_path, &line)
+}
+
+/// Append one newline-terminated record to the log. Callers hold the audit
+/// lock. A crash or a full disk can leave a partial last line with no
+/// newline; the record then starts on a fresh line, so it is not glued onto
+/// the fragment and lost. The fragment stays behind as a malformed line that
+/// verification still reports.
+///
+/// The record is fsynced before this returns, and the directory is fsynced
+/// when this call created the log, so a head checkpoint written afterwards
+/// never points past durable log content.
+fn append_line(log_path: &Path, line: &[u8]) -> std::io::Result<()> {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let created = match std::fs::symlink_metadata(log_path) {
+        Ok(_) => false,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
+        Err(e) => return Err(e),
+    };
+    let mut f = open_audit_file(log_path, true)?;
+    let len = f.metadata()?.len();
+    let mut torn_tail = false;
+    if len > 0 {
+        let mut last = [0u8; 1];
+        f.seek(SeekFrom::Start(len - 1))?;
+        f.read_exact(&mut last)?;
+        torn_tail = last[0] != b'\n';
+    }
+    if torn_tail {
+        let mut buf = Vec::with_capacity(line.len() + 1);
+        buf.push(b'\n');
+        buf.extend_from_slice(line);
+        f.write_all(&buf)?;
+    } else {
+        f.write_all(line)?;
+    }
+    f.sync_data()?;
+    trace_durability("log.synced");
+    if created {
+        crate::fs::sync_parent_dir(parent_dir(log_path))?;
+        trace_durability("log.dir_synced");
+    }
+    Ok(())
+}
+
+/// The directory holding `path`; the empty parent of a bare filename is `.`.
+fn parent_dir(path: &Path) -> &Path {
+    match path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => Path::new("."),
+    }
+}
+
+/// Whether anything, including a dangling symlink, holds `path`. Unlike
+/// `Path::exists` this does not follow a final symlink, so a planted link is
+/// handed to the reader (which refuses it) instead of reading as "absent".
+fn path_present(path: &Path) -> std::io::Result<bool> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
+/// Read one of Phantom's audit state files (the log, the hotspot acks) as
+/// UTF-8 text. Only a regular file is read: a symlink at the final path is
+/// refused, never followed, and so is a directory, FIFO, or device. An absent
+/// file is `NotFound`, as `std::fs::read_to_string` reports it.
+fn read_state_text(path: &Path) -> std::io::Result<String> {
+    let bytes = crate::fs::read_regular_file(path)?.ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("audit file not found: {}", path.display()),
+        )
+    })?;
+    String::from_utf8(bytes).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("audit file is not valid UTF-8: {}", path.display()),
+        )
+    })
+}
+
+/// Whether the audit log at `path` exists, for readers that treat a missing
+/// log as empty. Nothing is followed: a symlink or non-directory where the
+/// log's directory (`~/.phantom`) belongs is refused, so a planted link
+/// cannot redirect reads elsewhere, and anything at the final path,
+/// including a dangling symlink, counts as present so the reader that opens
+/// it (which refuses a symlink or non-regular file) reports it instead of
+/// treating it as "no log yet".
+pub fn log_present(path: &Path) -> std::io::Result<bool> {
+    match std::fs::symlink_metadata(parent_dir(path)) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "refusing audit directory that is a symlink or not a directory: {}",
+                    parent_dir(path).display()
+                ),
+            ));
+        }
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(e),
+    }
+    path_present(path)
+}
+
+/// Open the audit log for following (`phantom audit tail`, realtime anomaly
+/// alerts), creating it when absent so a follower can wait for the first
+/// event. The log's directory is created 0700 (a symlinked or non-directory
+/// `~/.phantom` is refused) and the log 0600; a symlink or non-regular file
+/// at the log path is refused, never followed. The returned handle reads
+/// from the start; callers seek to the end.
+pub fn open_log_for_follow(path: &Path) -> std::io::Result<File> {
+    crate::fs::ensure_private_dir(parent_dir(path))?;
+    open_audit_file(path, true)
+}
+
+/// Open `path` read-only as a regular file without following a final
+/// symlink and without blocking on a FIFO.
+fn open_regular_for_read(path: &Path) -> std::io::Result<File> {
+    use crate::fs::RegularOpenError;
+    match crate::fs::open_regular_nofollow(path) {
+        Ok(Some(file)) => Ok(file),
+        Ok(None) => Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("audit file not found: {}", path.display()),
+        )),
+        Err(RegularOpenError::NotRegular) => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "refusing audit file that is a symlink or not a regular file: {}",
+                path.display()
+            ),
+        )),
+        Err(RegularOpenError::Reopen(detail)) => Err(std::io::Error::other(format!(
+            "refusing Windows reparse-point audit file ({detail}): {}",
+            path.display()
+        ))),
+        Err(RegularOpenError::Open(e) | RegularOpenError::Inspect(e)) => Err(e),
+    }
+}
+
+// Test-only record of durability steps, in order, for this thread, plus a
+// fault seam that fails a key write after staging and before publishing.
+#[cfg(test)]
+thread_local! {
+    static DURABILITY_TRACE: std::cell::RefCell<Vec<&'static str>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    static FAIL_BEFORE_KEY_PUBLISH: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn trace_durability(step: &'static str) {
+    #[cfg(test)]
+    DURABILITY_TRACE.with(|t| t.borrow_mut().push(step));
+    let _ = step;
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -794,15 +1038,19 @@ fn write_head(log_path: &Path, last_seq: u64, last_hmac: &str, key: &[u8]) -> st
     let mut bytes = serde_json::to_vec(&head)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     bytes.push(b'\n');
-    crate::fs::atomic_write(&head_path(log_path), &bytes)
+    // `atomic_write` fsyncs the staging file and the directory. The log line
+    // this head names was already fsynced by `append_line`.
+    crate::fs::atomic_write(&head_path(log_path), &bytes)?;
+    trace_durability("head.published");
+    Ok(())
 }
 
 fn read_head(log_path: &Path, key: &[u8]) -> std::io::Result<Option<AuditHead>> {
     let path = head_path(log_path);
-    if !path.exists() {
+    let Some(bytes) = crate::fs::read_regular_file(&path)? else {
         return Ok(None);
-    }
-    let head: AuditHead = serde_json::from_slice(&std::fs::read(&path)?)
+    };
+    let head: AuditHead = serde_json::from_slice(&bytes)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     let expected = compute_hmac_for_head(head.version, head.last_seq, &head.last_hmac, key);
     if expected == head.hmac {
@@ -895,7 +1143,7 @@ pub struct AuditStats {
 pub fn audit_stats() -> std::io::Result<AuditStats> {
     let path = log_path()?;
 
-    if !path.exists() {
+    if !path_present(&path)? {
         let key = load_or_skip_hmac_key(&path)?;
         let verification = verify_log_content("", key.as_deref(), &path)?;
         if !verification.is_clean() {
@@ -914,7 +1162,7 @@ pub fn audit_stats() -> std::io::Result<AuditStats> {
     }
 
     let _lock = acquire_log_lock_shared(&path)?;
-    let content = std::fs::read_to_string(&path)?;
+    let content = read_state_text(&path)?;
     let key = load_or_skip_hmac_key(&path)?;
     let verification = verify_log_content(&content, key.as_deref(), &path)?;
     if !verification.is_clean() {
@@ -1075,8 +1323,21 @@ pub fn decrypt_context(encrypted_b64: &str, hmac_key: &[u8]) -> std::io::Result<
         Aes256Gcm, Nonce,
     };
 
+    // Version 2 values are `v2.` + base64 and use an HKDF-derived key.
+    // Unprefixed values are version 1 (every value written so far). `.` is
+    // not in the base64 alphabet, so the prefix cannot be a v1 value.
+    let (body_b64, enc_key) = match encrypted_b64.split_once('.') {
+        None => (encrypted_b64, derive_encryption_key(hmac_key)),
+        Some(("v2", rest)) => (rest, derive_encryption_key_v2(hmac_key)),
+        Some((version, _)) => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("unsupported encrypted_context version {version:?}"),
+            ))
+        }
+    };
     let blob = BASE64
-        .decode(encrypted_b64)
+        .decode(body_b64)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
 
     if blob.len() < 12 {
@@ -1086,7 +1347,6 @@ pub fn decrypt_context(encrypted_b64: &str, hmac_key: &[u8]) -> std::io::Result<
         ));
     }
 
-    let enc_key = derive_encryption_key(hmac_key);
     let cipher = Aes256Gcm::new_from_slice(&enc_key)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
 
@@ -1097,6 +1357,17 @@ pub fn decrypt_context(encrypted_b64: &str, hmac_key: &[u8]) -> std::io::Result<
 
     serde_json::from_slice(&plaintext)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+}
+
+/// Version 2 context key: HKDF-SHA256 (RFC 5869) with no salt and the info
+/// label `phantom-audit-context-v2`. Read-only for now; writers still use
+/// [`derive_encryption_key`].
+fn derive_encryption_key_v2(hmac_key: &[u8]) -> [u8; 32] {
+    let mut key: [u8; 32] = Default::default();
+    hkdf::Hkdf::<Sha256>::new(None, hmac_key)
+        .expand(b"phantom-audit-context-v2", &mut key)
+        .expect("32 bytes is a valid HKDF-SHA256 output length");
+    key
 }
 
 /// Derive a 32-byte AES key from the HMAC key via SHA-256 with a domain label.
@@ -1110,6 +1381,12 @@ fn derive_encryption_key(hmac_key: &[u8]) -> [u8; 32] {
 /// Verify an ED25519 signature on a `SidecarEvent`.
 /// Returns `true` if the signature is valid, `false` otherwise.
 pub fn verify_sidecar_event(event: &SidecarEvent) -> bool {
+    // Only unlabelled Ed25519 events exist. A labelled event, including a
+    // redundant "ed25519" label, is from a newer writer and is rejected
+    // rather than verified under the wrong scheme.
+    if event.sig_alg.is_some() {
+        return false;
+    }
     use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 
     let pubkey_bytes = match hex::decode(&event.pubkey) {
@@ -1271,7 +1548,7 @@ fn verify_log_content(
         }
     }
 
-    let head_exists = head_path(log_path).exists();
+    let head_exists = path_present(&head_path(log_path))?;
     match (final_seq, final_hmac.as_deref(), key) {
         (Some(seq), Some(hmac), Some(key_bytes)) => match read_head(log_path, key_bytes)? {
             Some(head) if head.last_seq == seq && head.last_hmac == hmac => {}
@@ -1303,7 +1580,7 @@ fn verify_log_content(
 
 pub fn verify_log_with_context() -> std::io::Result<(VerifyReport, Vec<VerifiedEventWithContext>)> {
     let path = log_path()?;
-    if !path.exists() {
+    if !path_present(&path)? {
         let key = load_or_skip_hmac_key(&path)?;
         return Ok((verify_log_content("", key.as_deref(), &path)?, vec![]));
     }
@@ -1312,7 +1589,7 @@ pub fn verify_log_with_context() -> std::io::Result<(VerifyReport, Vec<VerifiedE
     // double-lock pattern that caused hangs on macOS.
     let _lock = acquire_log_lock_shared(&path)?;
     let key = load_or_skip_hmac_key(&path)?;
-    let content = std::fs::read_to_string(&path)?;
+    let content = read_state_text(&path)?;
 
     // Run the HMAC-chain verification inline (same logic as verify_log but
     // without re-acquiring the lock).
@@ -1365,6 +1642,70 @@ pub fn verify_log_with_context() -> std::io::Result<(VerifyReport, Vec<VerifiedE
 // Shared helpers
 // ──────────────────────────────────────────────────────────────────────────────
 
+/// Most bytes of the audit log a "recent events" read examines: the newest
+/// ones. The log is append-only and never rotated, so reading it whole to
+/// show the last few events grows without bound. Chain verification
+/// (`verify_log`) still reads the whole log; this window is for listings.
+pub const RECENT_WINDOW_BYTES: u64 = 8 * 1024 * 1024;
+
+/// The newest complete lines of the audit log, from a bounded window.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct RecentLines {
+    /// Non-empty lines in file order, without line endings.
+    pub lines: Vec<String>,
+    /// The log is larger than the window, so older lines were not read.
+    pub window_truncated: bool,
+    /// Lines in the window that were not UTF-8 and so were skipped.
+    pub unreadable_lines: usize,
+}
+
+/// Read the newest `max_bytes` of `path` and split them into lines.
+///
+/// When the file is larger than the window, the read starts `max_bytes`
+/// before the end and the first (partial) line is dropped. Memory stays
+/// bounded by `max_bytes` whatever the log's size.
+pub fn read_recent_lines(path: &Path, max_bytes: u64) -> std::io::Result<RecentLines> {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let mut file = open_regular_for_read(path)?;
+    let len = file.metadata()?.len();
+    let window_truncated = len > max_bytes;
+    // When cut, read one byte more, from just before the window: if that byte
+    // is a newline, the window starts exactly on a line and keeps it whole.
+    let read_len = if window_truncated {
+        file.seek(SeekFrom::Start(len - max_bytes - 1))?;
+        max_bytes + 1
+    } else {
+        max_bytes
+    };
+    let mut window = Vec::new();
+    file.take(read_len).read_to_end(&mut window)?;
+
+    let mut rest: &[u8] = &window;
+    if window_truncated {
+        // Everything through the first newline (possibly the extra byte
+        // itself) belongs to a line that began before the window.
+        rest = match rest.iter().position(|b| *b == b'\n') {
+            Some(end) => &rest[end + 1..],
+            None => &[],
+        };
+    }
+
+    let mut recent = RecentLines {
+        window_truncated,
+        ..RecentLines::default()
+    };
+    for raw in rest.split(|b| *b == b'\n') {
+        let raw = raw.strip_suffix(b"\r").unwrap_or(raw);
+        match std::str::from_utf8(raw) {
+            Ok(line) if line.trim().is_empty() => {}
+            Ok(line) => recent.lines.push(line.trim().to_string()),
+            Err(_) => recent.unreadable_lines += 1,
+        }
+    }
+    Ok(recent)
+}
+
 pub fn log_path() -> std::io::Result<PathBuf> {
     if let Some(home) = dirs_home_dir() {
         Ok(home.join(".phantom").join("audit.log"))
@@ -1374,6 +1715,14 @@ pub fn log_path() -> std::io::Result<PathBuf> {
             "could not resolve home directory",
         ))
     }
+}
+
+/// Path of the signed head checkpoint (`~/.phantom/audit-head.json`) that
+/// sits beside the audit log. Its presence proves a signed era existed, so a
+/// missing log next to it is a deletion to report, not a log that never
+/// started.
+pub fn head_checkpoint_path() -> std::io::Result<PathBuf> {
+    Ok(head_path(&log_path()?))
 }
 
 fn dirs_home_dir() -> Option<PathBuf> {
@@ -1471,11 +1820,11 @@ pub fn log_batch_item_failed(batch_id: &str, secret_name: &str, reason: &str) {
     if !enabled() {
         return;
     }
-    // Truncate reason to 120 chars to avoid bloating the audit log.
-    let safe_reason = if reason.len() > 120 {
-        &reason[..120]
-    } else {
-        reason
+    // Truncate reason to 120 chars to avoid bloating the audit log. Cut on a
+    // char boundary: a byte slice panics inside a multibyte character.
+    let safe_reason = match reason.char_indices().nth(120) {
+        Some((end, _)) => &reason[..end],
+        None => reason,
     };
     let name = format!("batch_id={batch_id} secret={secret_name} reason={safe_reason}");
     log("vault.batch_rotation.item.failed", Some(&name));
@@ -1652,13 +2001,13 @@ pub fn detect_hotspot_alerts() -> std::io::Result<Vec<HotspotAlert>> {
 /// Testable version of `detect_hotspot_alerts` with an injected `now` timestamp.
 pub fn detect_hotspot_alerts_at(now: u64) -> std::io::Result<Vec<HotspotAlert>> {
     let path = log_path()?;
-    if !path.exists() {
+    if !path_present(&path)? {
         return Ok(vec![]);
     }
 
     // Read all audit events.
     let _lock = acquire_log_lock_shared(&path)?;
-    let content = std::fs::read_to_string(&path)?;
+    let content = read_state_text(&path)?;
     drop(_lock);
 
     // Collect per-secret timestamps.
@@ -1835,10 +2184,9 @@ fn load_hotspot_acks() -> std::collections::BTreeMap<String, HotspotAckRecord> {
         Ok(p) => p,
         Err(_) => return std::collections::BTreeMap::new(),
     };
-    if !path.exists() {
-        return std::collections::BTreeMap::new();
-    }
-    let content = match std::fs::read_to_string(&path) {
+    // Absent, unreadable, or not a regular file (a planted symlink): no
+    // acks are trusted, so alerts stay visible.
+    let content = match read_state_text(&path) {
         Ok(c) => c,
         Err(_) => return std::collections::BTreeMap::new(),
     };
@@ -1874,9 +2222,7 @@ pub(crate) fn acknowledge_hotspot_alert_at(
     now: u64,
 ) -> std::io::Result<()> {
     let path = hotspot_acks_path()?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
+    crate::fs::ensure_private_dir(parent_dir(&path))?;
 
     let (status, snooze_until_ts) = if snooze_seconds > 0 {
         (HotspotAckStatus::Snoozed, now + snooze_seconds)
@@ -1895,7 +2241,9 @@ pub(crate) fn acknowledge_hotspot_alert_at(
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     line.push(b'\n');
 
-    let mut f = OpenOptions::new().append(true).create(true).open(&path)?;
+    // Owner-only, never through a symlink, tightened if an older release
+    // left it with umask permissions.
+    let mut f = open_audit_file(&path, true)?;
     f.write_all(&line)?;
 
     // Emit an audit event for the acknowledgement (best-effort).
@@ -1912,11 +2260,63 @@ pub(crate) fn acknowledge_hotspot_alert_at(
 
 #[cfg(test)]
 mod tests {
+    /// Unsequenced signed lines rely on the prev_hmac link alone: dropping
+    /// or reordering one keeps every line's own HMAC valid, so only the link
+    /// check can catch it.
+    #[test]
+    fn verify_flags_a_broken_prev_hmac_link_without_seq() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let log_path = tmp.path().join("audit.log");
+        // Runtime-derived test key (not a constant).
+        let key: Vec<u8> = log_path
+            .to_string_lossy()
+            .bytes()
+            .cycle()
+            .take(32)
+            .collect();
+        let mut prev = "GENESIS".to_string();
+        let mut lines = vec![r#"{"hmac_chain_started_at":1}"#.to_string()];
+        for (ts, op) in [
+            (10, "vault.store"),
+            (11, "vault.retrieve"),
+            (12, "vault.remove"),
+        ] {
+            let mut v = serde_json::json!({"ts": ts, "op": op, "pid": 1, "prev_hmac": prev});
+            let hmac = compute_hmac_for_line(&v, &key);
+            v["hmac"] = serde_json::Value::String(hmac.clone());
+            lines.push(v.to_string());
+            prev = hmac;
+        }
+
+        let intact = verify_log_content(&lines.join("\n"), Some(&key), &log_path).unwrap();
+        assert_eq!((intact.verified, intact.tampered), (3, 0));
+
+        let mut dropped = lines.clone();
+        dropped.remove(2);
+        let report = verify_log_content(&dropped.join("\n"), Some(&key), &log_path).unwrap();
+        assert!(
+            report.tampered >= 1,
+            "dropped middle event passed: {report:?}"
+        );
+
+        let mut swapped = lines.clone();
+        swapped.swap(2, 3);
+        let report = verify_log_content(&swapped.join("\n"), Some(&key), &log_path).unwrap();
+        assert!(report.tampered >= 1, "reordered events passed: {report:?}");
+    }
+
     use super::*;
     use crate::test_support::ENV_LOCK;
     use serde_json::Value;
     use std::sync::{Arc, Barrier};
     use tempfile::tempdir;
+
+    #[test]
+    fn audit_keys_are_256_bits() {
+        // Grover margin: generated HMAC key and derived AES key are 32 bytes.
+        assert_eq!(generate_key().len() * 8, 256);
+        assert_eq!(derive_encryption_key(&generate_key()).len() * 8, 256);
+    }
 
     fn with_temp_home<F: FnOnce()>(env: &str, val: &str, f: F) {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -1958,6 +2358,60 @@ mod tests {
     }
 
     // ── existing tests (must still pass) ────────────────────────────────────
+
+    #[test]
+    fn recent_lines_reads_a_small_log_whole() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audit.log");
+        std::fs::write(&path, b"{\"op\":\"a\"}\r\n\n{\"op\":\"b\"}\n").unwrap();
+        let recent = read_recent_lines(&path, RECENT_WINDOW_BYTES).unwrap();
+        assert_eq!(recent.lines, [r#"{"op":"a"}"#, r#"{"op":"b"}"#]);
+        assert!(!recent.window_truncated);
+        assert_eq!(recent.unreadable_lines, 0);
+    }
+
+    #[test]
+    fn recent_lines_reads_only_the_newest_window_and_drops_the_partial_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audit.log");
+        let lines: Vec<String> = (0..100).map(|i| format!(r#"{{"op":"e{i:03}"}}"#)).collect();
+        std::fs::write(&path, format!("{}\n", lines.join("\n"))).unwrap();
+        let line_len = lines[0].len() as u64 + 1;
+
+        // Three whole lines plus part of a fourth.
+        let recent = read_recent_lines(&path, line_len * 3 + 4).unwrap();
+        assert!(recent.window_truncated);
+        assert_eq!(recent.lines, lines[97..]);
+        assert_eq!(recent.unreadable_lines, 0);
+    }
+
+    #[test]
+    fn recent_lines_keeps_a_line_that_starts_exactly_at_the_window() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audit.log");
+        let lines: Vec<String> = (0..10).map(|i| format!(r#"{{"op":"e{i:03}"}}"#)).collect();
+        std::fs::write(&path, format!("{}\n", lines.join("\n"))).unwrap();
+        let line_len = lines[0].len() as u64 + 1;
+
+        // Exactly three whole lines: the byte before the window is a newline.
+        let recent = read_recent_lines(&path, line_len * 3).unwrap();
+        assert!(recent.window_truncated);
+        assert_eq!(recent.lines, lines[7..]);
+
+        // One byte short of three lines: the first is partial and dropped.
+        let recent = read_recent_lines(&path, line_len * 3 - 1).unwrap();
+        assert_eq!(recent.lines, lines[8..]);
+    }
+
+    #[test]
+    fn recent_lines_counts_non_utf8_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audit.log");
+        std::fs::write(&path, b"{\"op\":\"a\"}\n\xff\xfe\n{\"op\":\"b\"}\n").unwrap();
+        let recent = read_recent_lines(&path, RECENT_WINDOW_BYTES).unwrap();
+        assert_eq!(recent.lines.len(), 2);
+        assert_eq!(recent.unreadable_lines, 1);
+    }
 
     #[test]
     fn disabled_by_default() {
@@ -2226,6 +2680,145 @@ mod tests {
             assert_eq!(report.malformed_lines, vec![3]);
             assert!(!report.is_clean());
         });
+    }
+
+    /// Non-marker event lines of the log, parsed. Lines that are not JSON are
+    /// returned as `None` so a test can see exactly where the damage sits.
+    fn parsed_event_lines(log_p: &std::path::Path) -> Vec<Option<Value>> {
+        std::fs::read_to_string(log_p)
+            .unwrap()
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| serde_json::from_str::<Value>(line).ok())
+            .filter(|v| {
+                v.as_ref()
+                    .is_none_or(|v| v.get("hmac_chain_started_at").is_none())
+            })
+            .collect()
+    }
+
+    /// A crash or a full disk can leave a partial last line with no newline.
+    /// The next event must start on its own line (not be glued onto the
+    /// fragment and lost), and it must chain to the last intact event so
+    /// verification isolates the damage to the fragment itself.
+    #[test]
+    fn append_after_torn_tail_starts_a_new_line_and_keeps_the_chain() {
+        with_audit_env(|tmp| {
+            log("vault.store", Some("KEY_A"));
+            log("vault.retrieve", Some("KEY_A"));
+
+            let log_p = tmp.join(".phantom").join("audit.log");
+            let mut f = OpenOptions::new().append(true).open(&log_p).unwrap();
+            f.write_all(br#"{"seq":3,"ts":1,"op":"vault.st"#).unwrap();
+            drop(f);
+
+            log("vault.delete", Some("KEY_A"));
+            log("vault.store", Some("KEY_B"));
+
+            let events = parsed_event_lines(&log_p);
+            let ops: Vec<Option<String>> = events
+                .iter()
+                .map(|v| {
+                    v.as_ref()
+                        .and_then(|v| v.get("op"))
+                        .and_then(|o| o.as_str())
+                        .map(str::to_string)
+                })
+                .collect();
+            assert_eq!(
+                ops,
+                vec![
+                    Some("vault.store".to_string()),
+                    Some("vault.retrieve".to_string()),
+                    None,
+                    Some("vault.delete".to_string()),
+                    Some("vault.store".to_string()),
+                ]
+            );
+
+            let report = verify_log().unwrap();
+            assert_eq!(report.malformed, 1);
+            assert_eq!(report.tampered, 0);
+            assert_eq!(report.verified, 4);
+            assert_eq!(report.sequence_errors, 0);
+            assert!(!report.head_missing && !report.head_mismatch);
+            // The fragment is still evidence: the log must not verify clean.
+            assert!(!report.is_clean());
+        });
+    }
+
+    /// A complete but unparsable last line must not reset the next event's
+    /// `prev_hmac` to GENESIS: that turns one malformed line into an extra
+    /// "tampered" verdict on a genuine event.
+    #[test]
+    fn append_after_malformed_last_line_chains_to_last_signed_event() {
+        with_audit_env(|tmp| {
+            log("vault.store", Some("KEY_A"));
+
+            let log_p = tmp.join(".phantom").join("audit.log");
+            let mut f = OpenOptions::new().append(true).open(&log_p).unwrap();
+            f.write_all(b"{not json}\n").unwrap();
+            drop(f);
+
+            log("vault.retrieve", Some("KEY_A"));
+
+            let events = parsed_event_lines(&log_p);
+            let first_hmac = events[0]
+                .as_ref()
+                .and_then(|v| v.get("hmac"))
+                .and_then(|h| h.as_str())
+                .map(str::to_string);
+            let last_prev = events[2]
+                .as_ref()
+                .and_then(|v| v.get("prev_hmac"))
+                .and_then(|h| h.as_str())
+                .map(str::to_string);
+            assert!(first_hmac.is_some());
+            assert!(
+                first_hmac == last_prev,
+                "new event did not chain to the last signed event"
+            );
+
+            let report = verify_log().unwrap();
+            assert_eq!(report.malformed, 1);
+            assert_eq!(report.tampered, 0);
+            assert_eq!(report.verified, 2);
+            assert!(!report.is_clean());
+        });
+    }
+
+    #[test]
+    fn read_hmac_key_requires_exactly_32_bytes() {
+        let dir = std::env::temp_dir().join(format!(
+            "phantom-hmac-len-{}-{}",
+            std::process::id(),
+            now_unix()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("audit-hmac-key");
+        for len in [0usize, 1, 31, 33, 64] {
+            std::fs::write(&path, hex::encode(vec![0xabu8; len])).unwrap();
+            let err = read_hmac_key(&path).unwrap_err();
+            assert_eq!(err.kind(), std::io::ErrorKind::InvalidData, "len {len}");
+            let msg = err.to_string();
+            assert!(msg.contains("expected 32 bytes"), "len {len}: {msg}");
+            assert!(msg.contains(&format!("found {len}")), "len {len}: {msg}");
+            assert!(
+                !msg.contains("abab"),
+                "message must not contain key material"
+            );
+        }
+        std::fs::write(&path, hex::encode([0xabu8; 32])).unwrap();
+        assert_eq!(read_hmac_key(&path).unwrap(), vec![0xabu8; 32]);
+        // Trailing newline is still accepted.
+        std::fs::write(&path, format!("{}\n", hex::encode([0xcdu8; 32]))).unwrap();
+        assert_eq!(read_hmac_key(&path).unwrap().len(), 32);
+        // Non-hex content: clear error, no echo of the content.
+        std::fs::write(&path, "zzzsecretzzz").unwrap();
+        let msg = read_hmac_key(&path).unwrap_err().to_string();
+        assert!(msg.contains("not valid hex"));
+        assert!(!msg.contains("secret"));
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -2852,6 +3445,529 @@ mod tests {
                     "secret_name must be a plain key name, not a value"
                 );
             }
+        });
+    }
+
+    // Hand-made fixtures, generated independently with Python `cryptography`
+    // (HKDF-SHA256 and AESGCM) from hmac key 0x11 * 32 and nonce 0x22 * 12.
+    const CTX_FIXTURE_KEY: [u8; 32] = [0x11; 32];
+    const CTX_V1_KEY_HEX: &str = "ce081e58669f834323d8b4ef678cf7a76b91a6105b55d10c699c2b55ad078b91";
+    const CTX_V2_KEY_HEX: &str = "328b49f8f7bf8b916ac61cbfb87f65009f7f01e1fcbec8e35411e65c3f0bf21e";
+    const CTX_V1_FIXTURE: &str = "IiIiIiIiIiIiIiIi3MMSCqiOjJ6xd9gQCCFHo0KRdqQvIQ25FItbErsWyY2hv6Jn3trxq5zHlKy5vSjsc2uUFnIIwN9obobbBtmcyFAi7N0RO9WjyFGYRnSkfM4KhITQsCppNWsGc3892frOd/oQF+W1";
+    const CTX_V2_FIXTURE: &str = "v2.IiIiIiIiIiIiIiIiTtiLME1O0vZZkWnRXal79vMiw+gfZvutRqNn9BtPcj3x+PpsQ2VUA8kcNIS1hEDLJHMhxVkfQ7y1BivbdrSnn4H0ni33IxNwVEH2po3J2fhmRB334fPa83vB3KcdIG5cqehVPw4b";
+
+    fn assert_fixture_context(ctx: &AuditContext) {
+        assert_eq!(ctx.process_name, "fixture-proc");
+        assert_eq!(ctx.hostname, "fixture-host");
+        assert_eq!(ctx.ppid, 4242);
+        assert_eq!(ctx.cwd, "/fixture");
+    }
+
+    #[test]
+    fn context_key_derivations_match_independent_values() {
+        assert_eq!(
+            hex::encode(derive_encryption_key(&CTX_FIXTURE_KEY)),
+            CTX_V1_KEY_HEX
+        );
+        assert_eq!(
+            hex::encode(derive_encryption_key_v2(&CTX_FIXTURE_KEY)),
+            CTX_V2_KEY_HEX
+        );
+    }
+
+    #[test]
+    fn context_v1_and_v2_fixtures_decrypt() {
+        assert_fixture_context(&decrypt_context(CTX_V1_FIXTURE, &CTX_FIXTURE_KEY).unwrap());
+        assert_fixture_context(&decrypt_context(CTX_V2_FIXTURE, &CTX_FIXTURE_KEY).unwrap());
+    }
+
+    #[test]
+    fn context_versions_do_not_cross_decrypt_and_unknown_versions_fail() {
+        // The v2 body read as v1 (prefix stripped) must fail, and the v1
+        // body labelled v2 must fail.
+        let v2_body = CTX_V2_FIXTURE.strip_prefix("v2.").unwrap();
+        assert!(decrypt_context(v2_body, &CTX_FIXTURE_KEY).is_err());
+        assert!(decrypt_context(&format!("v2.{CTX_V1_FIXTURE}"), &CTX_FIXTURE_KEY).is_err());
+        for bad in [
+            format!("v9.{v2_body}"),
+            format!("v1.{CTX_V1_FIXTURE}"),
+            ".".to_string(),
+        ] {
+            let err = decrypt_context(&bad, &CTX_FIXTURE_KEY)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                err.contains("unsupported encrypted_context version"),
+                "{bad}: {err}"
+            );
+        }
+        assert!(decrypt_context(CTX_V2_FIXTURE, &[0x12; 32]).is_err());
+    }
+
+    /// Writers must not change: the context writer still emits an unprefixed
+    /// standard-base64 `nonce(12) || ct` under the v1 key.
+    #[test]
+    fn context_writer_output_format_is_unchanged() {
+        let out = encrypt_context(&CTX_FIXTURE_KEY, AuditEventEncryption::LocalOnly).unwrap();
+        assert!(!out.contains('.'), "{out}");
+        let blob = BASE64.decode(&out).unwrap();
+        let ctx_json =
+            serde_json::to_vec(&decrypt_context(&out, &CTX_FIXTURE_KEY).unwrap()).unwrap();
+        assert_eq!(blob.len(), 12 + ctx_json.len() + 16);
+        // Decrypts with the v1 key directly, not the v2 key.
+        use aes_gcm::{
+            aead::{Aead, KeyInit},
+            Aes256Gcm, Nonce,
+        };
+        let v1 = Aes256Gcm::new_from_slice(&derive_encryption_key(&CTX_FIXTURE_KEY)).unwrap();
+        assert!(v1
+            .decrypt(Nonce::from_slice(&blob[..12]), &blob[12..])
+            .is_ok());
+        let v2 = Aes256Gcm::new_from_slice(&derive_encryption_key_v2(&CTX_FIXTURE_KEY)).unwrap();
+        assert!(v2
+            .decrypt(Nonce::from_slice(&blob[..12]), &blob[12..])
+            .is_err());
+    }
+
+    // ── durability and truncation follow-ups ────────────────────────────────
+
+    /// A long failure reason whose 120th byte falls inside a multibyte
+    /// character is cut on a character boundary instead of panicking.
+    #[test]
+    fn batch_item_failed_truncates_reason_on_a_char_boundary() {
+        with_audit_env(|tmp| {
+            // One ASCII byte, then two-byte characters: byte 120 is mid-char.
+            let reason = format!("x{}", "\u{e9}".repeat(200));
+            let outcome = std::panic::catch_unwind(|| {
+                log_batch_item_failed("batch-1", "SOME_NAME", &reason);
+            });
+            assert!(outcome.is_ok(), "multibyte reason panicked");
+
+            let path = tmp.join(".phantom").join("audit.log");
+            let content = std::fs::read_to_string(&path).unwrap_or_default();
+            let names: Vec<String> = content
+                .lines()
+                .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+                .filter(|v| v["op"] == "vault.batch_rotation.item.failed")
+                .filter_map(|v| v["name"].as_str().map(str::to_string))
+                .collect();
+            assert_eq!(names.len(), 1);
+            let logged = names[0].split("reason=").nth(1).unwrap_or_default();
+            assert_eq!(logged.chars().count(), 120);
+            assert!(reason.starts_with(logged));
+        });
+    }
+
+    /// An ASCII reason keeps the existing 120-character cap.
+    #[test]
+    fn batch_item_failed_keeps_the_ascii_reason_cap() {
+        with_audit_env(|tmp| {
+            let reason = "r".repeat(300);
+            log_batch_item_failed("batch-2", "SOME_NAME", &reason);
+            let path = tmp.join(".phantom").join("audit.log");
+            let content = std::fs::read_to_string(&path).unwrap_or_default();
+            let expected = format!("reason={}", "r".repeat(120));
+            let found = content
+                .lines()
+                .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+                .any(|v| v["name"].as_str().is_some_and(|n| n.ends_with(&expected)));
+            assert!(found, "capped reason missing");
+        });
+    }
+
+    /// Writing the chain key never replaces a key that is already in place.
+    #[test]
+    fn write_hmac_key_does_not_replace_an_existing_key() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("audit-hmac-key");
+        let first = generate_key();
+        let second = generate_key();
+        write_hmac_key(&path, &first).unwrap();
+
+        let err = write_hmac_key(&path, &second).expect_err("second write must not replace");
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        assert!(read_hmac_key(&path).unwrap() == first, "key was replaced");
+    }
+
+    /// The published key file is owner-only and leaves no staging file behind.
+    #[cfg(unix)]
+    #[test]
+    fn write_hmac_key_publishes_an_owner_only_file_and_no_staging_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("audit-hmac-key");
+        let chain = generate_key();
+        write_hmac_key(&path, &chain).unwrap();
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        assert!(
+            read_hmac_key(&path).unwrap() == chain,
+            "key did not round-trip"
+        );
+        let entries = std::fs::read_dir(dir.path()).unwrap().count();
+        assert_eq!(entries, 1, "staging file left behind");
+    }
+
+    fn take_durability_trace() -> Vec<&'static str> {
+        DURABILITY_TRACE.with(|t| std::mem::take(&mut *t.borrow_mut()))
+    }
+
+    /// A failure after the key is staged but before it is published leaves
+    /// no key file and no staging file, so the next write starts cleanly.
+    #[test]
+    fn interrupted_key_write_leaves_no_partial_key() {
+        let dir = tempdir().unwrap();
+        let log_p = dir.path().join("audit.log");
+        let key_p = hmac_key_path(&log_p);
+
+        FAIL_BEFORE_KEY_PUBLISH.with(|f| f.set(true));
+        let outcome = load_or_create_hmac_key(&log_p);
+        FAIL_BEFORE_KEY_PUBLISH.with(|f| f.set(false));
+        assert!(outcome.is_err(), "injected failure was not reported");
+        assert!(!key_p.exists(), "partial key became visible");
+        let leftovers = std::fs::read_dir(dir.path()).unwrap().count();
+        assert_eq!(leftovers, 0, "staging file or marker left behind");
+
+        let chain = load_or_create_hmac_key(&log_p).unwrap();
+        assert!(
+            read_hmac_key(&key_p).unwrap() == chain,
+            "retry key mismatch"
+        );
+    }
+
+    /// Each event's log line is fsynced before the head checkpoint that names
+    /// it is published, and a new key is durable before any log line uses it.
+    #[test]
+    fn log_line_is_durable_before_the_head_checkpoint() {
+        with_audit_env(|_| {
+            take_durability_trace();
+            log_result("vault.store", Some("FIRST_NAME")).unwrap();
+            let first = take_durability_trace();
+            assert_eq!(
+                first,
+                vec![
+                    "key.synced",
+                    "key.published",
+                    "key.dir_synced",
+                    "log.synced",
+                    "log.dir_synced",
+                    "log.synced",
+                    "head.published",
+                ]
+            );
+
+            log_result("vault.store", Some("SECOND_NAME")).unwrap();
+            assert_eq!(
+                take_durability_trace(),
+                vec!["log.synced", "head.published"]
+            );
+
+            let report = verify_log().unwrap();
+            assert!(report.is_clean(), "chain did not verify");
+        });
+    }
+
+    // ── audit file hardening: owner-only, no symlink following ──────────────
+
+    /// Switch the enclosing `with_audit_env` to fail-closed mode so a refused
+    /// write surfaces as an error. `with_audit_env` restores the variable.
+    #[cfg(unix)]
+    fn set_required_audit() {
+        // SAFETY: called only inside `with_audit_env`, which holds ENV_LOCK.
+        unsafe {
+            std::env::set_var("PHANTOM_AUDIT", "required");
+        }
+    }
+
+    #[cfg(unix)]
+    fn file_mode(path: &std::path::Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::symlink_metadata(path)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777
+    }
+
+    /// The log records secret names, process paths, and pids. A fresh log
+    /// must be owner-only regardless of the process umask.
+    #[cfg(unix)]
+    #[test]
+    fn new_audit_log_and_lock_are_owner_only() {
+        with_audit_env(|tmp| {
+            log_result("vault.store", Some("KEY_A")).unwrap();
+            let dir = tmp.join(".phantom");
+            assert_eq!(file_mode(&dir.join("audit.log")), 0o600);
+            assert_eq!(file_mode(&dir.join("audit.lock")), 0o600);
+        });
+    }
+
+    /// Logs created by older releases inherited the umask (often 0644).
+    /// The next append must tighten them to owner-only.
+    #[cfg(unix)]
+    #[test]
+    fn existing_world_readable_audit_log_is_tightened_on_append() {
+        use std::os::unix::fs::PermissionsExt;
+        with_audit_env(|tmp| {
+            let dir = tmp.join(".phantom");
+            std::fs::create_dir_all(&dir).unwrap();
+            let log_p = dir.join("audit.log");
+            let lock_p = dir.join("audit.lock");
+            std::fs::write(&log_p, b"").unwrap();
+            std::fs::write(&lock_p, b"").unwrap();
+            std::fs::set_permissions(&log_p, std::fs::Permissions::from_mode(0o644)).unwrap();
+            std::fs::set_permissions(&lock_p, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+            log_result("vault.store", Some("KEY_A")).unwrap();
+            assert_eq!(file_mode(&log_p), 0o600);
+            assert_eq!(file_mode(&lock_p), 0o600);
+            assert!(verify_log().unwrap().is_clean());
+        });
+    }
+
+    /// A symlink planted at `audit.log` must not redirect audit appends into
+    /// another file, and the write must fail rather than silently succeed.
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_audit_log_is_refused_and_target_untouched() {
+        with_audit_env(|tmp| {
+            let dir = tmp.join(".phantom");
+            std::fs::create_dir_all(&dir).unwrap();
+            let target = tmp.join("elsewhere.txt");
+            std::fs::write(&target, b"original\n").unwrap();
+            std::os::unix::fs::symlink(&target, dir.join("audit.log")).unwrap();
+
+            set_required_audit();
+            assert!(log_result("vault.store", Some("KEY_A")).is_err());
+            assert_eq!(std::fs::read(&target).unwrap(), b"original\n");
+            assert!(std::fs::symlink_metadata(dir.join("audit.log"))
+                .unwrap()
+                .file_type()
+                .is_symlink());
+        });
+    }
+
+    /// The same applies to the lock file: a planted symlink must not be
+    /// followed (and created or locked) on the writer path.
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_audit_lock_is_refused() {
+        with_audit_env(|tmp| {
+            let dir = tmp.join(".phantom");
+            std::fs::create_dir_all(&dir).unwrap();
+            let target = tmp.join("lock-target");
+            std::os::unix::fs::symlink(&target, dir.join("audit.lock")).unwrap();
+
+            set_required_audit();
+            assert!(log_result("vault.store", Some("KEY_A")).is_err());
+            assert!(!target.exists());
+            assert!(!dir.join("audit.log").exists());
+        });
+    }
+
+    /// A FIFO or other non-regular file at `audit.log` must be refused
+    /// instead of blocking or writing into it.
+    #[cfg(unix)]
+    #[test]
+    fn non_regular_audit_log_is_refused() {
+        with_audit_env(|tmp| {
+            let dir = tmp.join(".phantom");
+            std::fs::create_dir_all(dir.join("audit.log")).unwrap();
+            set_required_audit();
+            assert!(log_result("vault.store", Some("KEY_A")).is_err());
+        });
+    }
+
+    // ── state files under ~/.phantom: private dir, no symlink following ─────
+
+    /// Write a log that raises a hotspot alert for `name` at `now`.
+    #[cfg(unix)]
+    fn write_spike_log(log_p: &std::path::Path, now: u64, name: &str) {
+        let mut entries: Vec<(u64, &str, &str)> = Vec::new();
+        for day in 1u64..=7 {
+            entries.push((now - day * 86400, "vault.retrieve", name));
+        }
+        for i in 0u64..30 {
+            entries.push((now - 3600 + i * 100, "vault.retrieve", name));
+        }
+        write_hotspot_log(log_p, &entries);
+    }
+
+    /// The audit writer creates `~/.phantom` itself; it must come out
+    /// owner-only, not 0755 from the umask.
+    #[cfg(unix)]
+    #[test]
+    fn audit_writer_creates_phantom_dir_owner_only() {
+        with_audit_env(|tmp| {
+            log_result("vault.store", Some("KEY_A")).unwrap();
+            assert_eq!(file_mode(&tmp.join(".phantom")), 0o700);
+        });
+    }
+
+    /// An existing owned `~/.phantom` left group/world-readable by an older
+    /// release is tightened on the next audit write.
+    #[cfg(unix)]
+    #[test]
+    fn audit_writer_tightens_existing_phantom_dir() {
+        use std::os::unix::fs::PermissionsExt;
+        with_audit_env(|tmp| {
+            let dir = tmp.join(".phantom");
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+            log_result("vault.store", Some("KEY_A")).unwrap();
+            assert_eq!(file_mode(&dir), 0o700);
+        });
+    }
+
+    /// A symlink planted at `~/.phantom` must not become the audit directory.
+    #[cfg(unix)]
+    #[test]
+    fn audit_writer_refuses_symlinked_phantom_dir() {
+        with_audit_env(|tmp| {
+            let elsewhere = tmp.join("elsewhere");
+            std::fs::create_dir_all(&elsewhere).unwrap();
+            std::os::unix::fs::symlink(&elsewhere, tmp.join(".phantom")).unwrap();
+            set_required_audit();
+            assert!(log_result("vault.store", Some("KEY_A")).is_err());
+            assert_eq!(std::fs::read_dir(&elsewhere).unwrap().count(), 0);
+        });
+    }
+
+    /// Acknowledging a hotspot creates `~/.phantom` owner-only and the acks
+    /// file 0600, whatever the umask.
+    #[cfg(unix)]
+    #[test]
+    fn hotspot_acks_dir_and_file_are_owner_only() {
+        with_audit_env(|tmp| {
+            acknowledge_hotspot_alert_at("ACK_KEY", 0, 1_704_000_000).unwrap();
+            let dir = tmp.join(".phantom");
+            assert_eq!(file_mode(&dir), 0o700);
+            assert_eq!(file_mode(&dir.join("hotspot-alerts.jsonl")), 0o600);
+        });
+    }
+
+    /// An acks file created by an older release with umask permissions is
+    /// tightened on the next acknowledgement.
+    #[cfg(unix)]
+    #[test]
+    fn existing_world_readable_hotspot_acks_file_is_tightened() {
+        use std::os::unix::fs::PermissionsExt;
+        with_audit_env(|tmp| {
+            let dir = tmp.join(".phantom");
+            std::fs::create_dir_all(&dir).unwrap();
+            let acks = dir.join("hotspot-alerts.jsonl");
+            std::fs::write(&acks, b"").unwrap();
+            std::fs::set_permissions(&acks, std::fs::Permissions::from_mode(0o644)).unwrap();
+            acknowledge_hotspot_alert_at("ACK_KEY", 0, 1_704_000_000).unwrap();
+            assert_eq!(file_mode(&acks), 0o600);
+        });
+    }
+
+    /// A symlink planted at the acks path must not redirect the append into
+    /// another file.
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_hotspot_acks_file_is_refused_and_target_untouched() {
+        with_audit_env(|tmp| {
+            let dir = tmp.join(".phantom");
+            std::fs::create_dir_all(&dir).unwrap();
+            let target = tmp.join("elsewhere.txt");
+            std::fs::write(&target, b"original\n").unwrap();
+            std::os::unix::fs::symlink(&target, dir.join("hotspot-alerts.jsonl")).unwrap();
+
+            assert!(acknowledge_hotspot_alert_at("ACK_KEY", 0, 1_704_000_000).is_err());
+            assert_eq!(std::fs::read(&target).unwrap(), b"original\n");
+        });
+    }
+
+    /// Ack records reached through a symlink are not trusted: the alert
+    /// stays unacknowledged.
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_hotspot_acks_file_is_not_read() {
+        with_audit_env(|tmp| {
+            let now: u64 = 1_704_000_000;
+            let dir = tmp.join(".phantom");
+            write_spike_log(&dir.join("audit.log"), now, "LINKED_KEY");
+            let target = tmp.join("planted-acks.jsonl");
+            let rec = HotspotAckRecord {
+                secret_name: "LINKED_KEY".to_string(),
+                ack_ts: now,
+                status: HotspotAckStatus::Acked,
+                snooze_until_ts: 0,
+            };
+            std::fs::write(&target, serde_json::to_vec(&rec).unwrap()).unwrap();
+            std::os::unix::fs::symlink(&target, dir.join("hotspot-alerts.jsonl")).unwrap();
+
+            let alerts = detect_hotspot_alerts_at(now).unwrap();
+            let alert = alerts
+                .iter()
+                .find(|a| a.secret_name == "LINKED_KEY")
+                .expect("spike should raise an alert");
+            assert_eq!(alert.ack_status, HotspotAckStatus::Unacked);
+        });
+    }
+
+    /// Move the real log (or key / head) aside and leave a symlink to it.
+    #[cfg(unix)]
+    fn replace_with_symlink(path: &std::path::Path, aside: &std::path::Path) {
+        std::fs::rename(path, aside).unwrap();
+        std::os::unix::fs::symlink(aside, path).unwrap();
+    }
+
+    /// Readers must not follow a symlink at `audit.log`: verification,
+    /// statistics, the context walk and hotspot detection all refuse it.
+    #[cfg(unix)]
+    #[test]
+    fn audit_readers_refuse_symlinked_log() {
+        with_audit_env(|tmp| {
+            log_result("vault.store", Some("KEY_A")).unwrap();
+            let log_p = tmp.join(".phantom").join("audit.log");
+            replace_with_symlink(&log_p, &tmp.join("aside.log"));
+
+            assert!(verify_log().is_err());
+            assert!(audit_stats().is_err());
+            assert!(verify_log_with_context().is_err());
+            assert!(detect_hotspot_alerts_at(now_unix()).is_err());
+            assert!(read_recent_lines(&log_p, 4096).is_err());
+        });
+    }
+
+    /// A dangling symlink at `audit.log` is not "no log yet".
+    #[cfg(unix)]
+    #[test]
+    fn verify_refuses_dangling_symlinked_log() {
+        with_audit_env(|tmp| {
+            log_result("vault.store", Some("KEY_A")).unwrap();
+            let log_p = tmp.join(".phantom").join("audit.log");
+            std::fs::remove_file(&log_p).unwrap();
+            std::os::unix::fs::symlink(tmp.join("missing.log"), &log_p).unwrap();
+            assert!(verify_log().is_err());
+        });
+    }
+
+    /// The chain key is read as a regular file only.
+    #[cfg(unix)]
+    #[test]
+    fn verify_refuses_symlinked_hmac_key() {
+        with_audit_env(|tmp| {
+            log_result("vault.store", Some("KEY_A")).unwrap();
+            let key_p = tmp.join(".phantom").join("audit-hmac-key");
+            replace_with_symlink(&key_p, &tmp.join("aside-key"));
+            assert!(verify_log().is_err());
+        });
+    }
+
+    /// The signed head checkpoint is read as a regular file only.
+    #[cfg(unix)]
+    #[test]
+    fn verify_refuses_symlinked_head_checkpoint() {
+        with_audit_env(|tmp| {
+            log_result("vault.store", Some("KEY_A")).unwrap();
+            let head_p = tmp.join(".phantom").join("audit-head.json");
+            replace_with_symlink(&head_p, &tmp.join("aside-head.json"));
+            assert!(verify_log().is_err());
         });
     }
 }

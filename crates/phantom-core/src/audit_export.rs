@@ -31,7 +31,7 @@ use std::collections::BTreeMap;
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 
-use crate::analytics::unix_to_iso8601;
+use crate::analytics::{csv_escape, unix_to_iso8601};
 use crate::leak_correlation::LeakIncident;
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -465,17 +465,14 @@ impl AuditExporter {
         let json = serde_json::to_string_pretty(report)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         crate::fs::ensure_real_parent(&path)?;
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let mut file = options.open(&path)?;
+        // Retain the checked reports directory and create the report relative
+        // to it (mode 0600, never replacing an existing entry), so a directory
+        // swapped after the check cannot redirect the write.
+        let reports = crate::fs::PrivateStateDir::ensure(&self.reports_dir)?;
+        let mut file = reports.create_new_file(&filename)?;
         file.write_all(json.as_bytes())?;
         file.sync_all()?;
-        crate::fs::sync_parent_dir(&self.reports_dir)?;
+        reports.sync()?;
 
         Ok(path)
     }
@@ -796,14 +793,6 @@ fn now_unix() -> u64 {
         .unwrap_or(0)
 }
 
-fn csv_escape(s: &str) -> String {
-    if s.contains(',') || s.contains('"') || s.contains('\n') {
-        format!("\"{}\"", s.replace('"', "\"\""))
-    } else {
-        s.to_string()
-    }
-}
-
 /// Parse `YYYY-MM-DD` into a Unix timestamp at midnight UTC.
 /// Returns 0 on parse failure or empty string.
 pub fn parse_date_to_ts(s: &str) -> u64 {
@@ -822,6 +811,33 @@ pub fn parse_date_to_ts_end(s: &str) -> u64 {
     parse_date_inner(s).map(|ts| ts + 86399).unwrap_or(0)
 }
 
+/// Parse an optional `from`/`to` pair of `YYYY-MM-DD` dates into
+/// `(from_ts, to_ts)` bounds, where an empty string means unbounded (0).
+///
+/// Unlike [`parse_date_to_ts`], a malformed date or a `from` after `to` is an
+/// error: silently treating "2026-13-45" as "no bound" turns a scoped audit
+/// export or compliance report into a whole-history one.
+pub fn parse_date_range(from: &str, to: &str) -> Result<(u64, u64), String> {
+    let bound = |label: &str, s: &str| -> Result<Option<u64>, String> {
+        if s.is_empty() {
+            return Ok(None);
+        }
+        parse_date_inner(s).map(Some).ok_or_else(|| {
+            format!("Invalid '{label}' date '{s}': expected YYYY-MM-DD, e.g. 2026-01-31")
+        })
+    };
+    let from_ts = bound("from", from)?;
+    let to_ts = bound("to", to)?.map(|ts| ts + 86399);
+    if let (Some(f), Some(t)) = (from_ts, to_ts) {
+        if f > t {
+            return Err(format!(
+                "Invalid date range: 'from' {from} is after 'to' {to}"
+            ));
+        }
+    }
+    Ok((from_ts.unwrap_or(0), to_ts.unwrap_or(0)))
+}
+
 fn parse_date_inner(s: &str) -> Option<u64> {
     let parts: Vec<&str> = s.splitn(3, '-').collect();
     if parts.len() != 3 {
@@ -830,7 +846,15 @@ fn parse_date_inner(s: &str) -> Option<u64> {
     let year: i64 = parts[0].parse().ok()?;
     let month: i64 = parts[1].parse().ok()?;
     let day: i64 = parts[2].parse().ok()?;
-    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+    let leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+    let days_in_month = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        2 => 28,
+        _ => return None,
+    };
+    if !(1..=days_in_month).contains(&day) {
         return None;
     }
     // Algorithm: http://howardhinnant.github.io/date_algorithms.html (ymd_to_days)
@@ -1021,6 +1045,24 @@ mod tests {
         assert!(csv.contains("myhost"));
     }
 
+    #[test]
+    fn rows_to_csv_quotes_carriage_returns_in_hostname() {
+        let rows = vec![AuditExportRow {
+            timestamp: 1_750_000_000,
+            datetime: "2025-06-15T06:13:20Z".to_string(),
+            operation: "vault.retrieve".to_string(),
+            secret_name: "DEMO_NAME".to_string(),
+            pid: 42,
+            hostname: "host\rforged".to_string(),
+            severity: ExportSeverity::Low,
+        }];
+        let csv = AuditExporter::rows_to_csv(&rows);
+        assert!(
+            csv.contains(",42,\"host\rforged\",low\n"),
+            "a hostname with a bare CR must be quoted: {csv:?}"
+        );
+    }
+
     // ── Test 6: compliance report heatmap correctness ─────────────────────────
 
     #[test]
@@ -1186,6 +1228,39 @@ mod tests {
     fn parse_date_empty_returns_zero() {
         assert_eq!(parse_date_to_ts(""), 0);
         assert_eq!(parse_date_to_ts_end(""), 0);
+    }
+
+    #[test]
+    fn parse_date_range_rejects_malformed_and_inverted_bounds() {
+        assert_eq!(parse_date_range("", ""), Ok((0, 0)));
+        assert_eq!(
+            parse_date_range("2023-11-14", "2023-11-14"),
+            Ok((
+                parse_date_to_ts("2023-11-14"),
+                parse_date_to_ts_end("2023-11-14")
+            ))
+        );
+        assert_eq!(
+            parse_date_range("2024-02-29", ""),
+            Ok((parse_date_to_ts("2024-02-29"), 0))
+        );
+        for bad in [
+            "notadate",
+            "2026-13-01",
+            "2026-02-30",
+            "2025-02-29",
+            "2026-01-01T00:00",
+        ] {
+            let err = parse_date_range(bad, "").unwrap_err();
+            assert!(
+                err.contains("'from'") && err.contains("YYYY-MM-DD"),
+                "{err}"
+            );
+            let err = parse_date_range("", bad).unwrap_err();
+            assert!(err.contains("'to'"), "{err}");
+        }
+        let err = parse_date_range("2026-05-01", "2026-01-01").unwrap_err();
+        assert!(err.contains("after"), "{err}");
     }
 
     // ── Test 11: save_report creates file ────────────────────────────────────

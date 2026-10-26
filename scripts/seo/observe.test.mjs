@@ -28,6 +28,7 @@ const publicPaths = new Set([
   "/docs",
   "/docs/guide",
   "/security",
+  "/secrets",
   "/llms.txt",
   "/llms-full.txt",
 ]);
@@ -91,14 +92,17 @@ test("machine-readable links require exact canonical URLs", () => {
 });
 
 function html(origin, route, options = {}) {
+  const guide = options.guideSchema ?? route === "/";
   const schema = route === "/"
     ? [
         jsonLd("SoftwareApplication", { softwareVersion: "9.8.7" }),
         jsonLd("SoftwareSourceCode"),
         jsonLd("Organization"),
-        jsonLd("HowTo"),
-        jsonLd("FAQPage"),
+        guide ? jsonLd("HowTo") : "",
+        guide ? jsonLd("FAQPage") : "",
       ].join("")
+    : guide
+      ? `${jsonLd("HowTo")}${jsonLd("FAQPage")}`
     : route.startsWith("/docs/")
       ? `${jsonLd("TechArticle")}${jsonLd("BreadcrumbList")}`
       : "";
@@ -380,6 +384,39 @@ test("canonical, structured-data, and off-origin redirect failures stay visible"
   );
 });
 
+test("product guide schema may move from the umbrella homepage to /secrets", async () => {
+  const serve = (route, guideSchema) => (response, origin) => {
+    response.setHeader("content-type", "text/html");
+    for (const [name, value] of [
+      ["content-security-policy", "default-src 'self'"],
+      ["permissions-policy", "camera=()"],
+      ["referrer-policy", "strict-origin-when-cross-origin"],
+      ["strict-transport-security", "max-age=63072000"],
+      ["x-content-type-options", "nosniff"],
+      ["x-frame-options", "DENY"],
+    ]) {
+      response.setHeader(name, value);
+    }
+    response.end(html(origin, route, { guideSchema }));
+  };
+  await withFixtureServer(
+    async ({ options }) => {
+      const report = await observeProduction(options);
+      assert.ok(!report.findings.some((finding) => finding.code === "home_schema_missing"));
+    },
+    { "/": serve("/", false), "/secrets": serve("/secrets", true) },
+  );
+  await withFixtureServer(
+    async ({ options }) => {
+      const report = await observeProduction(options);
+      const missing = report.findings.filter((finding) => finding.code === "home_schema_missing");
+      assert.equal(missing.length, 2);
+      assert.equal(report.verdict, "FAIL");
+    },
+    { "/": serve("/", false) },
+  );
+});
+
 test("Search Console input accepts finalized page aggregates and rejects raw queries", () => {
   const value = {
     schema_version: "phantom-seo-gsc-v1",
@@ -652,4 +689,73 @@ test("workflow policy rejects expanded authority and every secret context syntax
   for (const unsafe of unsafeVariants) {
     assert.throws(() => assertReadOnlyWorkflowPolicy(unsafe));
   }
+});
+
+test("non-HTML sitemap entries such as /docs/manifest.json are skipped, not HTML-checked", async () => {
+  await withFixtureServer(
+    async ({ options }) => {
+      const report = await observeProduction(options);
+      const manifestFindings = report.findings.filter(
+        (finding) => finding.route === "/docs/manifest.json",
+      );
+      assert.deepEqual(manifestFindings, []);
+      assert.equal(report.technical.sitemap.route_count, publicPaths.size + 1);
+    },
+    {
+      "/sitemap.xml": (response, origin) => {
+        response.setHeader("content-type", "application/xml");
+        response.end(
+          `<?xml version="1.0"?><urlset>${[...publicPaths, "/docs/manifest.json"]
+            .map((route) => `<url><loc>${origin}${route}</loc></url>`)
+            .join("")}</urlset>`,
+        );
+      },
+      "/docs/manifest.json": (response) => {
+        response.setHeader("content-type", "application/json");
+        response.end('{"name":"Phantom docs"}');
+      },
+    },
+  );
+});
+
+test("release drift compares the Phantom Secrets SoftwareApplication, not the umbrella app", async () => {
+  const umbrella = (response, origin) => {
+    response.setHeader("content-type", "text/html");
+    response.end(
+      html(origin, "/").replace(
+        /"softwareVersion":"9\.8\.7"/,
+        '"softwareVersion":"3.29.15","codeRepository":"https://github.com/ashlrai/phantom"',
+      ),
+    );
+  };
+  const secrets = (version) => (response, origin) => {
+    response.setHeader("content-type", "text/html");
+    response.end(
+      html(origin, "/secrets").replace(
+        "</body>",
+        `${jsonLd("SoftwareApplication", {
+          softwareVersion: version,
+          codeRepository: "https://github.com/ashlrai/phantom-secrets",
+        })}</body>`,
+      ),
+    );
+  };
+  const versionFindings = (report) =>
+    report.findings.filter((finding) => finding.code.startsWith("live_release_version"));
+
+  await withFixtureServer(
+    async ({ options }) => {
+      assert.deepEqual(versionFindings(await observeProduction(options)), []);
+    },
+    { "/": umbrella, "/secrets": secrets("9.8.7") },
+  );
+  await withFixtureServer(
+    async ({ options }) => {
+      const drift = versionFindings(await observeProduction(options));
+      assert.equal(drift.length, 1);
+      assert.equal(drift[0].code, "live_release_version_drift");
+      assert.match(drift[0].message, /0\.0\.1/);
+    },
+    { "/": umbrella, "/secrets": secrets("0.0.1") },
+  );
 });

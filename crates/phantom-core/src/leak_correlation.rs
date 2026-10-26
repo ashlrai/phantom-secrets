@@ -25,6 +25,11 @@
 //! Incidents with `first_seen_ts` older than 24 h are excluded from
 //! `LeakCorrelationEngine::active_incidents()`.
 //!
+//! The proxy only appends audit events; incidents are persisted by an explicit
+//! backfill. `LeakCorrelationEngine::uncorrelated_incidents()` correlates the
+//! same window in memory, without writing, so read-only queries can report
+//! leak events that no backfill has persisted yet.
+//!
 //! ## Rotation clearing
 //!
 //! When a secret is rotated (a `vault.store` event is appended after a
@@ -44,7 +49,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::io::{BufRead, Write};
+use std::io::BufRead;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -59,6 +64,19 @@ use reqwest;
 /// Minimum observation count before a (secret, path) combination is considered
 /// a high-confidence leak profile and triggers aggressive path-targeted scrubbing.
 pub const PROFILE_CONFIDENCE_THRESHOLD: u32 = 3;
+
+/// Check a caller-supplied `min_confidence` filter. Confidence scores lie in
+/// 0.0..=1.0, so a value above 1.0 hides every incident and reads as "no
+/// active leaks"; reject it (and NaN or negatives) instead.
+pub fn check_min_confidence(value: f64) -> Result<f64, String> {
+    if value.is_finite() && (0.0..=1.0).contains(&value) {
+        Ok(value)
+    } else {
+        Err(format!(
+            "min_confidence must be between 0.0 and 1.0 (got {value}); 0.5 is one leak event, 0.95 a repeated leak"
+        ))
+    }
+}
 
 /// HTTP request metadata captured alongside each proxy response for enriching
 /// leak profiles.  This is passed by the proxy on every response scrub.
@@ -198,11 +216,15 @@ impl ContextualLeakProfileStore {
 
     /// Load persisted profiles from disk into memory.
     pub fn load(&mut self) -> std::io::Result<()> {
-        if !self.profiles_path.exists() {
+        // `/dev/null` is the ephemeral store used in tests: nothing to load.
+        if self.profiles_path == std::path::Path::new("/dev/null") {
             return Ok(());
         }
-        let file = std::fs::File::open(&self.profiles_path)?;
-        let reader = std::io::BufReader::new(file);
+        // Regular files only: a symlink or device at the path is refused.
+        let Some(bytes) = crate::fs::read_regular_file(&self.profiles_path)? else {
+            return Ok(());
+        };
+        let reader = std::io::BufReader::new(bytes.as_slice());
         for line in reader.lines() {
             let line = match line {
                 Ok(l) => l,
@@ -303,13 +325,29 @@ impl ContextualLeakProfileStore {
     // ── Private ───────────────────────────────────────────────────────────────
 
     fn persist_observation_cloned(&self, _obs: &LeakPathObservation) -> std::io::Result<()> {
-        if let Some(parent) = self.profiles_path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
         // Skip persistence for /dev/null paths (ephemeral stores used in tests).
         if self.profiles_path == std::path::Path::new("/dev/null") {
             return Ok(());
         }
+        // The profiles live in Phantom's private state directory: create and
+        // judge it, then retain it by descriptor so the replacement below is
+        // staged and renamed relative to the verified directory, never by
+        // re-walking a path that could have been swapped after the check.
+        let (Some(parent), Some(name)) = (
+            self.profiles_path
+                .parent()
+                .filter(|parent| !parent.as_os_str().is_empty()),
+            self.profiles_path
+                .file_name()
+                .and_then(|name| name.to_str()),
+        ) else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "leak profile store path must name a file inside a directory",
+            ));
+        };
+        crate::fs::ensure_private_dir(parent)?;
+        let directory = crate::fs::PrivateStateDir::ensure(parent)?;
         // Rewrite the entire file with merged observations.
         // For typical deployment (tens to low hundreds of profiles) this is
         // acceptable; a future optimisation could use a keyed update.
@@ -320,15 +358,9 @@ impl ContextualLeakProfileStore {
             line.push(b'\n');
             lines.push(line);
         }
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(&self.profiles_path)?;
-        for line in lines {
-            file.write_all(&line)?;
-        }
-        Ok(())
+        // replace_file stages a 0600 file and renames it over the target, so
+        // a symlink at the name is replaced, never written through.
+        directory.replace_file(name, &lines.concat())
     }
 }
 
@@ -463,20 +495,63 @@ struct RawLeakEvent {
 // Engine
 // ──────────────────────────────────────────────────────────────────────────────
 
+/// Incidents are correlated from, and reported for, this look-back window.
+const INCIDENT_WINDOW_SECS: u64 = 24 * 3600;
+
+/// One parse of the audit log: the `proxy.response_leak` events of the last
+/// 24 h and the latest `vault.store` time of each secret name. Memory is
+/// bounded by the window's leak events plus one entry per stored name; no
+/// other line is retained.
+#[derive(Debug, Default)]
+pub struct AuditLeakScan {
+    now: u64,
+    events: Vec<RawLeakEvent>,
+    rotation_ts: HashMap<String, u64>,
+    audit_log_present: bool,
+}
+
+impl AuditLeakScan {
+    /// Whether the audit log existed when it was scanned.
+    pub fn audit_log_present(&self) -> bool {
+        self.audit_log_present
+    }
+
+    /// `proxy.response_leak` events inside the window.
+    pub fn leak_event_count(&self) -> usize {
+        self.events.len()
+    }
+}
+
+/// Everything a read-only incident query reports, from one audit-log parse.
+#[derive(Debug, Default)]
+pub struct IncidentView {
+    /// Persisted incidents that are still active.
+    pub persisted: Vec<LeakIncident>,
+    /// The window's leak events that no backfill has persisted, correlated in
+    /// memory.
+    pub uncorrelated: Vec<LeakIncident>,
+    /// Whether the audit log existed when it was scanned.
+    pub audit_log_present: bool,
+}
+
 /// Correlates `proxy.response_leak` audit events into incidents.
 pub struct LeakCorrelationEngine {
     audit_log_path: PathBuf,
     incidents_path: PathBuf,
+    /// How many times the audit log was opened, so tests can pin one parse
+    /// per query.
+    #[cfg(test)]
+    audit_log_reads: std::sync::atomic::AtomicUsize,
 }
 
 impl LeakCorrelationEngine {
     /// Create a new engine using paths derived from the current `HOME`.
     pub fn new() -> std::io::Result<Self> {
         let home = home_dir()?;
-        Ok(Self {
-            audit_log_path: home.join(".phantom").join("audit.log"),
-            incidents_path: home.join(".phantom").join("leak-incidents.jsonl"),
-        })
+        Ok(Self::with_paths(
+            home.join(".phantom").join("audit.log"),
+            home.join(".phantom").join("leak-incidents.jsonl"),
+        ))
     }
 
     /// Create an engine pointing at custom paths (used in tests).
@@ -484,6 +559,8 @@ impl LeakCorrelationEngine {
         Self {
             audit_log_path,
             incidents_path,
+            #[cfg(test)]
+            audit_log_reads: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 
@@ -494,14 +571,11 @@ impl LeakCorrelationEngine {
     /// For each high-confidence incident (confidence ≥ 0.7) a warning line is
     /// written to stderr.
     pub fn run(&self) -> std::io::Result<Vec<LeakIncident>> {
-        let now = now_unix();
-        let window_secs = 24 * 3600_u64; // 24 h look-back
-
-        // 1. Read events from the audit log.
-        let events = self.read_leak_events(now, window_secs)?;
+        // 1. Read the last 24 h of leak events from the audit log.
+        let scan = self.scan_audit_log()?;
 
         // 2. Group by (secret_name, location_label, 1-hour bucket).
-        let incidents = correlate(events, now);
+        let incidents = correlate(scan.events, scan.now);
 
         // 3. Load existing incidents for deduplication.
         let existing_ids = self.load_existing_incident_ids()?;
@@ -536,49 +610,108 @@ impl LeakCorrelationEngine {
     /// rotated (no `vault.store` event newer than the incident's `last_seen_ts`
     /// exists in the audit log).
     pub fn active_incidents(&self, min_confidence: f64) -> std::io::Result<Vec<LeakIncident>> {
-        let now = now_unix();
-        let window_secs = 24 * 3600_u64;
-
-        // Load rotation timestamps for cleared secrets.
-        let rotation_ts = self.load_rotation_timestamps()?;
-
-        let incidents = self.load_all_incidents()?;
-        let active: Vec<LeakIncident> = incidents
-            .into_iter()
-            .filter(|inc| {
-                // Must be within 24 h.
-                if !inc.is_within_window(now, window_secs) {
-                    return false;
-                }
-                // Must meet minimum confidence.
-                if inc.confidence < min_confidence {
-                    return false;
-                }
-                // Cleared if there is a vault.store event newer than the incident.
-                if let Some(&rotated_at) = rotation_ts.get(&inc.secret_name) {
-                    if rotated_at > inc.last_seen_ts {
-                        return false; // secret has been rotated
-                    }
-                }
-                true
-            })
-            .collect();
-
-        Ok(active)
+        let scan = self.scan_audit_log()?;
+        self.active_incidents_in(&scan, min_confidence)
     }
 
-    // ── Private helpers ───────────────────────────────────────────────────────
+    /// [`Self::active_incidents`] against an audit log already parsed by
+    /// [`Self::scan_audit_log`].
+    pub fn active_incidents_in(
+        &self,
+        scan: &AuditLeakScan,
+        min_confidence: f64,
+    ) -> std::io::Result<Vec<LeakIncident>> {
+        Ok(self
+            .load_all_incidents()?
+            .into_iter()
+            .filter(|inc| {
+                is_active_incident(
+                    inc,
+                    scan.now,
+                    INCIDENT_WINDOW_SECS,
+                    min_confidence,
+                    &scan.rotation_ts,
+                )
+            })
+            .collect())
+    }
 
-    fn read_leak_events(&self, now: u64, window_secs: u64) -> std::io::Result<Vec<RawLeakEvent>> {
-        if !self.audit_log_path.exists() {
-            return Ok(vec![]);
+    /// Correlate the last 24 h of `proxy.response_leak` audit events in
+    /// memory and return the incidents that [`Self::run`] would persist but
+    /// that are not in the incident store yet, filtered exactly like
+    /// [`Self::active_incidents`].
+    ///
+    /// The proxy only appends `proxy.response_leak` audit events; incidents
+    /// are persisted by an explicit, approval-gated backfill. Without this, a
+    /// read-only incident query answers "no active incidents" while fresh leak
+    /// events sit in the audit log. Read-only: it never writes the incident
+    /// store and never prints. An incident already persisted whose hour
+    /// bucket gained more events since is not reported again here.
+    pub fn uncorrelated_incidents(
+        &self,
+        min_confidence: f64,
+    ) -> std::io::Result<Vec<LeakIncident>> {
+        let scan = self.scan_audit_log()?;
+        self.uncorrelated_incidents_in(&scan, min_confidence)
+    }
+
+    /// [`Self::uncorrelated_incidents`] against an audit log already parsed
+    /// by [`Self::scan_audit_log`].
+    pub fn uncorrelated_incidents_in(
+        &self,
+        scan: &AuditLeakScan,
+        min_confidence: f64,
+    ) -> std::io::Result<Vec<LeakIncident>> {
+        if scan.events.is_empty() {
+            return Ok(Vec::new());
         }
+        let existing_ids = self.load_existing_incident_ids()?;
+        Ok(correlate(scan.events.clone(), scan.now)
+            .into_iter()
+            .filter(|inc| !existing_ids.contains(&inc.incident_id))
+            .filter(|inc| {
+                is_active_incident(
+                    inc,
+                    scan.now,
+                    INCIDENT_WINDOW_SECS,
+                    min_confidence,
+                    &scan.rotation_ts,
+                )
+            })
+            .collect())
+    }
 
+    /// Persisted active incidents and not-yet-persisted ones, from a single
+    /// parse of the audit log. Read-only.
+    pub fn incident_view(&self, min_confidence: f64) -> std::io::Result<IncidentView> {
+        let scan = self.scan_audit_log()?;
+        Ok(IncidentView {
+            persisted: self.active_incidents_in(&scan, min_confidence)?,
+            uncorrelated: self.uncorrelated_incidents_in(&scan, min_confidence)?,
+            audit_log_present: scan.audit_log_present,
+        })
+    }
+
+    /// Parse the audit log once, keeping only the last 24 h of
+    /// `proxy.response_leak` events and each secret's latest `vault.store`
+    /// time. A missing log is an empty scan.
+    pub fn scan_audit_log(&self) -> std::io::Result<AuditLeakScan> {
+        let now = now_unix();
+        let mut scan = AuditLeakScan {
+            now,
+            ..AuditLeakScan::default()
+        };
+        if !self.audit_log_path.exists() {
+            return Ok(scan);
+        }
+        #[cfg(test)]
+        self.audit_log_reads
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let file = std::fs::File::open(&self.audit_log_path)?;
+        scan.audit_log_present = true;
         let reader = std::io::BufReader::new(file);
-        let cutoff = now.saturating_sub(window_secs);
+        let cutoff = now.saturating_sub(INCIDENT_WINDOW_SECS);
 
-        let mut events = Vec::new();
         for line in reader.lines() {
             let line = match line {
                 Ok(l) => l,
@@ -592,32 +725,45 @@ impl LeakCorrelationEngine {
                 Ok(v) => v,
                 Err(_) => continue,
             };
-            if v.get("op").and_then(|o| o.as_str()) != Some("proxy.response_leak") {
-                continue;
+            let ts = v.get("ts").and_then(|t| t.as_u64());
+            match v.get("op").and_then(|o| o.as_str()) {
+                Some("proxy.response_leak") => {
+                    let ts = ts.unwrap_or(0);
+                    if ts < cutoff {
+                        continue;
+                    }
+                    let secret_name = v.get("name").and_then(|n| n.as_str()).map(String::from);
+                    // Derive a stable location label: use the `location`
+                    // field if present (written by the response scrubber as a
+                    // LeakEvent embedded in the JSONL context); fall back to
+                    // "body".
+                    let location_label = v
+                        .get("location")
+                        .and_then(|l| l.as_str())
+                        .unwrap_or("body")
+                        .to_string();
+                    scan.events.push(RawLeakEvent {
+                        ts,
+                        secret_name,
+                        location_label,
+                    });
+                }
+                Some("vault.store") => {
+                    if let (Some(name), Some(ts)) = (v.get("name").and_then(|n| n.as_str()), ts) {
+                        let entry = scan.rotation_ts.entry(name.to_string()).or_insert(0);
+                        if ts > *entry {
+                            *entry = ts;
+                        }
+                    }
+                }
+                _ => {}
             }
-            let ts = v.get("ts").and_then(|t| t.as_u64()).unwrap_or(0);
-            if ts < cutoff {
-                continue;
-            }
-            let secret_name = v.get("name").and_then(|n| n.as_str()).map(String::from);
-            // Derive a stable location label: use the `location` field if
-            // present (written by the response scrubber as a LeakEvent embedded
-            // in the JSONL context); fall back to "body".
-            let location_label = v
-                .get("location")
-                .and_then(|l| l.as_str())
-                .unwrap_or("body")
-                .to_string();
-
-            events.push(RawLeakEvent {
-                ts,
-                secret_name,
-                location_label,
-            });
         }
 
-        Ok(events)
+        Ok(scan)
     }
+
+    // ── Private helpers ───────────────────────────────────────────────────────
 
     fn load_existing_incident_ids(&self) -> std::io::Result<std::collections::HashSet<String>> {
         let mut ids = std::collections::HashSet::new();
@@ -679,49 +825,30 @@ impl LeakCorrelationEngine {
         contents.extend_from_slice(&line);
         crate::fs::atomic_write_if_unchanged(&self.incidents_path, before.as_deref(), &contents)
     }
-
-    /// Load the most-recent `vault.store` timestamp for each secret name that
-    /// has at least one such event in the audit log.
-    fn load_rotation_timestamps(&self) -> std::io::Result<HashMap<String, u64>> {
-        let mut map: HashMap<String, u64> = HashMap::new();
-        if !self.audit_log_path.exists() {
-            return Ok(map);
-        }
-        let file = std::fs::File::open(&self.audit_log_path)?;
-        let reader = std::io::BufReader::new(file);
-        for line in reader.lines() {
-            let line = match line {
-                Ok(l) => l,
-                Err(_) => continue,
-            };
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            let v: serde_json::Value = match serde_json::from_str(trimmed) {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
-            if v.get("op").and_then(|o| o.as_str()) != Some("vault.store") {
-                continue;
-            }
-            if let (Some(name), Some(ts)) = (
-                v.get("name").and_then(|n| n.as_str()),
-                v.get("ts").and_then(|t| t.as_u64()),
-            ) {
-                let entry = map.entry(name.to_string()).or_insert(0);
-                if ts > *entry {
-                    *entry = ts;
-                }
-            }
-        }
-        Ok(map)
-    }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Correlation logic
 // ──────────────────────────────────────────────────────────────────────────────
+
+/// The filter `active_incidents` applies: first seen within `window_secs`,
+/// at least `min_confidence`, and not cleared by a `vault.store` of the same
+/// secret after the incident's last event.
+fn is_active_incident(
+    inc: &LeakIncident,
+    now: u64,
+    window_secs: u64,
+    min_confidence: f64,
+    rotation_ts: &HashMap<String, u64>,
+) -> bool {
+    if !inc.is_within_window(now, window_secs) || inc.confidence < min_confidence {
+        return false;
+    }
+    match rotation_ts.get(&inc.secret_name) {
+        Some(&rotated_at) => rotated_at <= inc.last_seen_ts,
+        None => true,
+    }
+}
 
 /// Group raw events into incidents.
 ///
@@ -1318,12 +1445,75 @@ impl LeakIncidentAlerter {
 
     /// Load all alerts, returning at most `last` most-recent ones (by `alerted_at`).
     pub fn load_recent_alerts(&self, last: usize) -> std::io::Result<Vec<LeakAlert>> {
-        let mut alerts = self.load_all_alerts()?;
-        alerts.sort_by_key(|alert| std::cmp::Reverse(alert.alerted_at));
-        alerts.truncate(last);
-        // Restore chronological order for display.
-        alerts.reverse();
-        Ok(alerts)
+        Ok(self.scan_recent_alerts(last)?.alerts)
+    }
+
+    /// The newest `last` alerts (by `alerted_at`, then file order) in
+    /// chronological order, plus the exact number of alerts in the file.
+    ///
+    /// Streams the file once: memory holds at most `last` alerts and one line
+    /// of at most [`MAX_ALERT_LINE_BYTES`], whatever the file's size. A longer
+    /// line, or one that is not an alert, is counted in `unparsable_lines`
+    /// and skipped.
+    pub fn scan_recent_alerts(&self, last: usize) -> std::io::Result<RecentAlerts> {
+        use std::cmp::Reverse;
+        use std::collections::BinaryHeap;
+
+        let mut recent = RecentAlerts::default();
+        let file = match crate::fs::open_regular_nofollow(&self.alerts_path) {
+            Ok(Some(file)) => file,
+            Ok(None) => return Ok(recent),
+            Err(crate::fs::RegularOpenError::Open(error))
+            | Err(crate::fs::RegularOpenError::Inspect(error)) => return Err(error),
+            Err(_) => {
+                return Err(std::io::Error::other(format!(
+                    "refusing non-regular or symlink file target: {}",
+                    self.alerts_path.display()
+                )))
+            }
+        };
+        let mut reader = std::io::BufReader::new(file);
+        // Min-heap on (alerted_at, line index): the root is the oldest kept.
+        let mut kept: BinaryHeap<Reverse<RankedAlert>> = BinaryHeap::new();
+        let mut line = Vec::new();
+        let mut index = 0usize;
+        while let Some(complete) = read_bounded_line(&mut reader, &mut line, MAX_ALERT_LINE_BYTES)?
+        {
+            index += 1;
+            if line.iter().all(u8::is_ascii_whitespace) && complete {
+                continue;
+            }
+            let alert = complete
+                .then(|| serde_json::from_slice::<LeakAlert>(&line).ok())
+                .flatten();
+            let Some(alert) = alert else {
+                recent.unparsable_lines += 1;
+                continue;
+            };
+            recent.total += 1;
+            if last == 0 {
+                continue;
+            }
+            let ranked = RankedAlert {
+                alerted_at: alert.alerted_at,
+                index,
+                alert,
+            };
+            if kept.len() < last {
+                kept.push(Reverse(ranked));
+            } else if kept
+                .peek()
+                .is_some_and(|Reverse(oldest)| oldest.key() < ranked.key())
+            {
+                kept.pop();
+                kept.push(Reverse(ranked));
+            }
+        }
+        // Ascending (alerted_at, index) is chronological order for display.
+        let mut ordered: Vec<RankedAlert> = kept.into_iter().map(|Reverse(r)| r).collect();
+        ordered.sort_by_key(RankedAlert::key);
+        recent.alerts = ordered.into_iter().map(|r| r.alert).collect();
+        Ok(recent)
     }
 
     // ── Private ───────────────────────────────────────────────────────────────
@@ -1373,6 +1563,102 @@ impl LeakIncidentAlerter {
     }
 }
 
+/// Longest line [`LeakIncidentAlerter::scan_recent_alerts`] parses as an
+/// alert, in bytes. A real alert line is a few hundred bytes: fixed fields,
+/// a secret name and a short remediation template.
+pub const MAX_ALERT_LINE_BYTES: usize = 64 * 1024;
+
+/// Result of [`LeakIncidentAlerter::scan_recent_alerts`].
+#[derive(Debug, Default)]
+pub struct RecentAlerts {
+    /// The newest alerts kept, in chronological order.
+    pub alerts: Vec<LeakAlert>,
+    /// Every alert in the file, kept or not.
+    pub total: usize,
+    /// Non-blank lines that were not an alert (or were too long) and so were
+    /// skipped.
+    pub unparsable_lines: usize,
+}
+
+struct RankedAlert {
+    alerted_at: u64,
+    index: usize,
+    alert: LeakAlert,
+}
+
+impl RankedAlert {
+    fn key(&self) -> (u64, usize) {
+        (self.alerted_at, self.index)
+    }
+}
+
+impl PartialEq for RankedAlert {
+    fn eq(&self, other: &Self) -> bool {
+        self.key() == other.key()
+    }
+}
+
+impl Eq for RankedAlert {}
+
+impl PartialOrd for RankedAlert {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for RankedAlert {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.key().cmp(&other.key())
+    }
+}
+
+/// Read the next line into `line` (without its `\n` or `\r\n`), keeping at
+/// most `max` bytes. `Ok(None)` at end of file; `Ok(Some(false))` when the
+/// line was longer than `max` (the rest of it is consumed and dropped).
+fn read_bounded_line(
+    reader: &mut impl BufRead,
+    line: &mut Vec<u8>,
+    max: usize,
+) -> std::io::Result<Option<bool>> {
+    line.clear();
+    let mut complete = true;
+    let mut read_any = false;
+    loop {
+        let buf = match reader.fill_buf() {
+            Ok(buf) => buf,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        };
+        if buf.is_empty() {
+            break;
+        }
+        read_any = true;
+        let (chunk, used, done) = match buf.iter().position(|b| *b == b'\n') {
+            Some(end) => (&buf[..end], end + 1, true),
+            None => (buf, buf.len(), false),
+        };
+        if complete {
+            if line.len() + chunk.len() <= max {
+                line.extend_from_slice(chunk);
+            } else {
+                complete = false;
+                line.clear();
+            }
+        }
+        reader.consume(used);
+        if done {
+            break;
+        }
+    }
+    if !read_any {
+        return Ok(None);
+    }
+    if line.last() == Some(&b'\r') {
+        line.pop();
+    }
+    Ok(Some(complete))
+}
+
 fn is_public_alert_ip(ip: std::net::IpAddr) -> bool {
     match ip {
         std::net::IpAddr::V4(ip) => {
@@ -1414,7 +1700,55 @@ fn is_public_alert_ip(ip: std::net::IpAddr) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
     use tempfile::tempdir;
+
+    #[cfg(unix)]
+    #[test]
+    fn leak_profiles_state_dir_and_file_are_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempdir().unwrap();
+        let state = tmp.path().join(".phantom");
+        let path = state.join("leak-profiles.jsonl");
+        let mut store = ContextualLeakProfileStore::with_path(path.clone());
+        let ctx = RequestContext::new("POST", "/v1/x", "application/json", 200);
+        store
+            .record_leak("SAMPLE_NAME", ".data.field", &ctx)
+            .unwrap();
+        let dir_mode = std::fs::metadata(&state).unwrap().permissions().mode() & 0o777;
+        assert_eq!(dir_mode, 0o700);
+        let file_mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(file_mode, 0o600);
+
+        // An existing state dir the user owns is tightened.
+        std::fs::set_permissions(&state, std::fs::Permissions::from_mode(0o755)).unwrap();
+        store
+            .record_leak("SAMPLE_NAME", ".data.other", &ctx)
+            .unwrap();
+        let dir_mode = std::fs::metadata(&state).unwrap().permissions().mode() & 0o777;
+        assert_eq!(dir_mode, 0o700);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn leak_profiles_never_follow_a_symlink() {
+        let tmp = tempdir().unwrap();
+        let state = tmp.path().join(".phantom");
+        std::fs::create_dir(&state).unwrap();
+        let victim = tmp.path().join("victim");
+        std::fs::write(&victim, b"keep").unwrap();
+        let path = state.join("leak-profiles.jsonl");
+        std::os::unix::fs::symlink(&victim, &path).unwrap();
+
+        // The reader refuses the link instead of reading through it.
+        let mut store = ContextualLeakProfileStore::with_path(path.clone());
+        assert!(store.load().is_err());
+
+        // The writer never writes through the link.
+        let ctx = RequestContext::new("POST", "/v1/x", "application/json", 200);
+        let _ = store.record_leak("SAMPLE_NAME", ".data.field", &ctx);
+        assert_eq!(std::fs::read(&victim).unwrap(), b"keep");
+    }
 
     // Mutex so concurrent test threads don't step on each other's HOME env var.
     use crate::test_support::ENV_LOCK;
@@ -1613,6 +1947,146 @@ mod tests {
             active.is_empty(),
             "after rotation, incident should be cleared"
         );
+    }
+
+    // ── Uncorrelated incidents: leak events not yet persisted ────────────────
+
+    #[test]
+    fn uncorrelated_incidents_reports_unpersisted_events_without_writing() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempdir().unwrap();
+        let now = now_unix();
+        let engine = make_engine(tmp.path());
+        // correlate() groups by calendar hour (ts / 3600). Keep both events in
+        // the current hour so a run in the first 20 s of an hour does not
+        // split them into two incidents (seen on Windows, run 39121243467).
+        let hour_start = now - now % 3600;
+        let (first, second) = if now - hour_start >= 20 {
+            (now - 20, now - 10)
+        } else {
+            (hour_start, now)
+        };
+        write_audit_log(
+            &engine.audit_log_path,
+            &[
+                (first, "proxy.response_leak", Some("OPENAI_API_KEY")),
+                (second, "proxy.response_leak", Some("OPENAI_API_KEY")),
+            ],
+        );
+
+        // Nothing persisted yet: the read-only query sees no incident...
+        assert!(engine.active_incidents(0.0).unwrap().is_empty());
+        // ...but the uncorrelated view does, and writes nothing.
+        let pending = engine.uncorrelated_incidents(0.0).unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].secret_name, "OPENAI_API_KEY");
+        assert_eq!(pending[0].event_count, 2);
+        assert!(
+            !engine.incidents_path.exists(),
+            "the uncorrelated view must not persist incidents"
+        );
+
+        // The same min_confidence filter as active_incidents applies.
+        assert!(engine.uncorrelated_incidents(0.9).unwrap().is_empty());
+
+        // After a backfill persists it, it is active and no longer pending.
+        engine.run().unwrap();
+        assert_eq!(engine.active_incidents(0.0).unwrap().len(), 1);
+        assert!(engine.uncorrelated_incidents(0.0).unwrap().is_empty());
+    }
+
+    #[test]
+    fn uncorrelated_incidents_honours_window_and_rotation_clearing() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempdir().unwrap();
+        let now = now_unix();
+        let engine = make_engine(tmp.path());
+        write_audit_log(
+            &engine.audit_log_path,
+            &[
+                // Older than the 24 h window: never reported.
+                (now - 30 * 3600, "proxy.response_leak", Some("OLD_KEY")),
+                // Leaked, then stored again afterwards: cleared.
+                (now - 200, "proxy.response_leak", Some("ROTATED_KEY")),
+                (now - 100, "vault.store", Some("ROTATED_KEY")),
+                // Leaked after the last store: still pending.
+                (now - 300, "vault.store", Some("LIVE_KEY")),
+                (now - 50, "proxy.response_leak", Some("LIVE_KEY")),
+            ],
+        );
+
+        let pending = engine.uncorrelated_incidents(0.0).unwrap();
+        let names: Vec<&str> = pending.iter().map(|i| i.secret_name.as_str()).collect();
+        assert_eq!(names, vec!["LIVE_KEY"]);
+    }
+
+    /// A read-only incident query must parse the audit log once and give the
+    /// same answer as the two separate queries.
+    #[test]
+    fn incident_view_parses_the_audit_log_once() {
+        use std::sync::atomic::Ordering;
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempdir().unwrap();
+        let now = now_unix();
+        let engine = make_engine(tmp.path());
+        write_audit_log(
+            &engine.audit_log_path,
+            &[
+                (now - 7200, "proxy.response_leak", Some("SAVED_KEY")),
+                (now - 30, "proxy.response_leak", Some("PENDING_KEY")),
+            ],
+        );
+        // Persist only the first incident, as an earlier backfill would have.
+        let saved = engine.run().unwrap();
+        assert_eq!(saved.len(), 2);
+        let pending_id = saved
+            .iter()
+            .find(|inc| inc.secret_name == "PENDING_KEY")
+            .unwrap()
+            .incident_id
+            .clone();
+        let kept: Vec<String> = std::fs::read_to_string(&engine.incidents_path)
+            .unwrap()
+            .lines()
+            .filter(|line| !line.contains(&pending_id))
+            .map(|line| format!("{line}\n"))
+            .collect();
+        std::fs::write(&engine.incidents_path, kept.concat()).unwrap();
+
+        engine.audit_log_reads.store(0, Ordering::SeqCst);
+        let view = engine.incident_view(0.0).unwrap();
+        assert_eq!(
+            engine.audit_log_reads.load(Ordering::SeqCst),
+            1,
+            "one query, one audit-log parse"
+        );
+        assert!(view.audit_log_present);
+        assert_eq!(view.persisted, engine.active_incidents(0.0).unwrap());
+        assert_eq!(
+            view.uncorrelated,
+            engine.uncorrelated_incidents(0.0).unwrap()
+        );
+        let persisted: Vec<&str> = view
+            .persisted
+            .iter()
+            .map(|i| i.secret_name.as_str())
+            .collect();
+        let pending: Vec<&str> = view
+            .uncorrelated
+            .iter()
+            .map(|i| i.secret_name.as_str())
+            .collect();
+        assert_eq!(persisted, vec!["SAVED_KEY"]);
+        assert_eq!(pending, vec!["PENDING_KEY"]);
+    }
+
+    #[test]
+    fn uncorrelated_incidents_without_audit_log_is_empty() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempdir().unwrap();
+        let engine = make_engine(tmp.path());
+        assert!(engine.uncorrelated_incidents(0.0).unwrap().is_empty());
+        assert!(!engine.incidents_path.exists());
     }
 
     // ── Deduplication: re-running does not create duplicate incidents ──────────
@@ -1935,6 +2409,99 @@ mod tests {
         // Should be the 3 most recent (alerted_at values), in chronological order.
         assert!(recent[0].alerted_at <= recent[1].alerted_at);
         assert!(recent[1].alerted_at <= recent[2].alerted_at);
+    }
+
+    fn plain_alert(i: u64, alerted_at: u64) -> LeakAlert {
+        LeakAlert {
+            incident_id: format!("inc_{i}"),
+            secret_name: format!("KEY_{i}"),
+            location_label: "body".to_string(),
+            confidence: 0.95,
+            event_count: 1,
+            alerted_at,
+            backends_notified: vec![],
+            remediation: String::new(),
+        }
+    }
+
+    #[test]
+    fn scan_recent_alerts_counts_every_alert_and_keeps_the_newest() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("leak-alerts.jsonl");
+        let mut contents = String::new();
+        // Out of order on disk; two share alerted_at 500.
+        for (i, at) in [(0u64, 300u64), (1, 500), (2, 100), (3, 500), (4, 200)] {
+            contents.push_str(&serde_json::to_string(&plain_alert(i, at)).unwrap());
+            contents.push('\n');
+        }
+        contents.push_str("not an alert\n\n   \n");
+        contents.push_str(&"x".repeat(MAX_ALERT_LINE_BYTES + 1));
+        contents.push('\n');
+        contents.push_str(&serde_json::to_string(&plain_alert(5, 400)).unwrap());
+        std::fs::write(&path, contents).unwrap();
+        let alerter = LeakIncidentAlerter::with_path(
+            AlertingConfig::default(),
+            path,
+            Box::new(SpyDispatch::default()),
+        );
+
+        let recent = alerter.scan_recent_alerts(3).unwrap();
+        assert_eq!(recent.total, 6);
+        assert_eq!(recent.unparsable_lines, 2);
+        let ids: Vec<&str> = recent
+            .alerts
+            .iter()
+            .map(|a| a.incident_id.as_str())
+            .collect();
+        // Newest three, chronological; the later line wins a tie.
+        assert_eq!(ids, ["inc_5", "inc_1", "inc_3"]);
+
+        let none = alerter.scan_recent_alerts(0).unwrap();
+        assert_eq!(none.total, 6);
+        assert!(none.alerts.is_empty());
+
+        let all = alerter.scan_recent_alerts(usize::MAX).unwrap();
+        assert_eq!(all.alerts.len(), 6);
+        assert_eq!(alerter.load_recent_alerts(2).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn bounded_line_reader_drops_long_lines_and_strips_endings() {
+        let data = b"abc\r\ntoolong\nok";
+        let mut reader = std::io::BufReader::with_capacity(2, &data[..]);
+        let mut line = Vec::new();
+        assert_eq!(
+            read_bounded_line(&mut reader, &mut line, 4).unwrap(),
+            Some(true)
+        );
+        assert_eq!(line, b"abc");
+        assert_eq!(
+            read_bounded_line(&mut reader, &mut line, 4).unwrap(),
+            Some(false)
+        );
+        assert!(line.is_empty());
+        assert_eq!(
+            read_bounded_line(&mut reader, &mut line, 4).unwrap(),
+            Some(true)
+        );
+        assert_eq!(line, b"ok");
+        assert_eq!(read_bounded_line(&mut reader, &mut line, 4).unwrap(), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn scan_recent_alerts_refuses_a_symlink() {
+        let tmp = tempdir().unwrap();
+        let target = tmp.path().join("target.jsonl");
+        std::fs::write(&target, "").unwrap();
+        let link = tmp.path().join("leak-alerts.jsonl");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let alerter = LeakIncidentAlerter::with_path(
+            AlertingConfig::default(),
+            link,
+            Box::new(SpyDispatch::default()),
+        );
+        assert!(alerter.scan_recent_alerts(10).is_err());
     }
 
     // Test 10: multiple backends called for same incident

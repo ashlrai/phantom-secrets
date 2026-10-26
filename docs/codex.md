@@ -37,8 +37,8 @@ This patches `~/.codex/config.toml` with an `[mcp_servers.phantom]` entry:
 
 ```toml
 [mcp_servers.phantom]
-command = "phantom-mcp"
-args = []
+command = "/absolute/path/to/phantom"
+args = ["mcp", "serve"]
 ```
 
 Install both `v0.7.9` release binaries before setup. Version `0.7.9` records the
@@ -86,14 +86,14 @@ migration guidance and never kills a process or deletes the record.
 
 ## MCP tools Codex can use
 
-Once `phantom-secrets-mcp` is registered, Codex can call the same runtime
+Once the `phantom` server is registered, Codex can call the same runtime
 catalog as other MCP clients. See the [core tool examples in the Claude Code
 guide](./claude-code.md#core-mcp-tools-claude-can-use), and use MCP `tools/list`
 for the canonical catalog.
 
 Tools most relevant to Codex task execution:
 
-- `phantom_status` — check vault state before a task starts
+- `phantom_status` — check `.env` protection and service mappings before a task starts (does not open the vault)
 - `phantom_list_secrets` — let Codex know which secrets exist without exposing values
 - `phantom_add_secret_interactive` — return the terminal command to enter a secret out-of-band; useful when Codex identifies a missing key mid-task
 - `phantom_check` — scan `.env` or runtime environment for unprotected secrets
@@ -131,6 +131,10 @@ credential or an approved secret-manager integration. Phantom's local proxy
 does not deploy or authorize production credentials.
 
 ---
+
+## Gateway mode (optional, experimental)
+
+To route Codex through a local LiteLLM gateway that holds no real keys, see [Connect an agent](litellm.md#connect-an-agent) in the LiteLLM guide. Without the gateway, the direct Phantom route above stays the default.
 
 ## Troubleshooting
 

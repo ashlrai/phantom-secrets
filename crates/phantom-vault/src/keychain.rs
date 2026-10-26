@@ -55,6 +55,15 @@ fn credential_entry(
     }
 }
 
+/// Platform credential entry for non-vault keys (the lease store key in
+/// `lease_key.rs`). Goes through `credential_entry` so the keyring 4
+/// migration (#242) changes one call site. Not available on Linux, where the
+/// lease key fails closed.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+pub(crate) fn os_keychain_entry(service: &str, account: &str) -> keyring::Result<keyring::Entry> {
+    credential_entry(CredentialStore::OsKeychain, service, account)
+}
+
 /// Construct the platform store used before any explicit per-project Linux
 /// migration. This also prevents Cargo feature unification from redirecting
 /// fallback-passphrase entries when Secret Service support is compiled in.
@@ -1094,6 +1103,13 @@ impl KeychainVault {
         let before_credential = read_credential(&entry, "secret before-image")?;
         let before_index = self.load_index()?;
         let before_metadata = self.load_meta_map()?;
+        let before_validation = self.load_validation_meta_map()?;
+        // A validation verdict describes the credential that was checked;
+        // a different value reads as never checked until it is validated.
+        let mut after_validation = before_validation.clone();
+        if before_credential.as_ref().map(|current| current.as_str()) != Some(value) {
+            after_validation.remove(name);
+        }
         let mut after_index = before_index.clone();
         if !after_index.iter().any(|indexed| indexed == name) {
             after_index.push(name.to_string());
@@ -1121,6 +1137,9 @@ impl KeychainVault {
             if after_metadata != before_metadata {
                 self.save_meta_map(&after_metadata)?;
             }
+            if after_validation != before_validation {
+                self.save_validation_meta_map(&after_validation)?;
+            }
             Ok(())
         })();
         if let Err(error) = commit {
@@ -1131,6 +1150,7 @@ impl KeychainVault {
                     restore_credential(&entry, before_credential.as_ref(), "secret before-image"),
                     self.save_index(&before_index),
                     self.save_meta_map(&before_metadata),
+                    self.save_validation_meta_map(&before_validation),
                 ],
             ));
         }

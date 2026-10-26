@@ -41,6 +41,69 @@ pub struct PhantomConfig {
     /// proxy response leak incidents detected by the correlation engine.
     #[serde(default, skip_serializing_if = "alerting_is_default")]
     pub alerting: AlertingConfig,
+    /// Leak response policy (`[leak_response]` section). Default is dry-run
+    /// planning only.
+    #[serde(default, skip_serializing_if = "LeakResponseConfig::is_default")]
+    pub leak_response: LeakResponseConfig,
+}
+
+/// What to do when a leak incident is detected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OnLeak {
+    /// Do nothing beyond existing alerting.
+    Off,
+    /// Show the planned response (dry run). This is the default.
+    #[default]
+    Plan,
+    /// Respond automatically. Requires `allow_revoke = true`. Live revoke is
+    /// disabled in shipped builds, so this still only plans today.
+    Revoke,
+}
+
+impl OnLeak {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            OnLeak::Off => "off",
+            OnLeak::Plan => "plan",
+            OnLeak::Revoke => "revoke",
+        }
+    }
+}
+
+/// `[leak_response]` section of `.phantom.toml`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct LeakResponseConfig {
+    /// `off`, `plan` (default) or `revoke`.
+    pub on_leak: OnLeak,
+    /// Explicit opt-in required for `on_leak = "revoke"`. Default false.
+    pub allow_revoke: bool,
+}
+
+impl LeakResponseConfig {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// Validate the policy. `revoke` without the explicit opt-in key is an
+    /// error (fail closed) rather than silently downgrading.
+    pub fn effective(&self) -> Result<OnLeak> {
+        if self.on_leak == OnLeak::Revoke && !self.allow_revoke {
+            return Err(PhantomError::ConfigParseError(
+                "[leak_response] on_leak = \"revoke\" requires allow_revoke = true. \
+                 Set on_leak = \"plan\" for a dry run."
+                    .to_string(),
+            ));
+        }
+        Ok(self.on_leak)
+    }
+
+    /// Whether this build can perform a live revoke. Always false in shipped
+    /// builds: no provider has a wired authenticated revocation.
+    pub const fn live_revoke_available() -> bool {
+        false
+    }
 }
 
 fn alerting_is_default(cfg: &AlertingConfig) -> bool {
@@ -52,6 +115,55 @@ fn alerting_is_default(cfg: &AlertingConfig) -> bool {
 /// Generated IDs are hexadecimal. Legacy IDs may additionally use `-` and
 /// `_`, but separators, URL metacharacters, whitespace, and Unicode are
 /// rejected so repository config cannot alter an endpoint path or query shape.
+/// Describe a TOML parse failure without echoing configuration content.
+///
+/// `toml::de::Error`'s `Display` quotes the offending source line, and serde
+/// messages quote rejected values (`invalid type: string "..."`, `unknown
+/// variant `...``). A pasted credential in `.phantom.toml` must never reach
+/// diagnostics, so only the message with every quoted literal redacted and
+/// the 1-based line/column are reported.
+fn value_blind_toml_error(content: &str, error: &toml::de::Error) -> PhantomError {
+    let message = redact_quoted_literals(error.message());
+    let location = error
+        .span()
+        .map(|span| {
+            let start = span.start.min(content.len());
+            let before = content.as_bytes()[..start].to_vec();
+            let line = before.iter().filter(|&&b| b == b'\n').count() + 1;
+            let line_start = before
+                .iter()
+                .rposition(|&b| b == b'\n')
+                .map_or(0, |index| index + 1);
+            let column = String::from_utf8_lossy(&before[line_start..])
+                .chars()
+                .count()
+                + 1;
+            format!(" at line {line}, column {column}")
+        })
+        .unwrap_or_default();
+    PhantomError::ConfigParseError(format!("TOML parse error{location}: {message}"))
+}
+
+/// Replace every `"..."`, `'...'`, and `` `...` `` literal with `<redacted>`.
+/// An unterminated quote redacts the rest of the message.
+fn redact_quoted_literals(message: &str) -> String {
+    let mut out = String::with_capacity(message.len());
+    let mut chars = message.chars();
+    while let Some(c) = chars.next() {
+        if matches!(c, '"' | '\'' | '`') {
+            out.push_str("<redacted>");
+            for next in chars.by_ref() {
+                if next == c {
+                    break;
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out.trim_end().to_string()
+}
+
 fn validate_portable_project_id(project_id: &str) -> Result<()> {
     let valid = !project_id.is_empty()
         && project_id.len() <= 128
@@ -206,10 +318,11 @@ impl ValidationScheduleConfig {
 #[serde(deny_unknown_fields)]
 pub struct SecretOverride {
     /// Override the global rotation schedule for this specific secret.
-    /// Accepts a duration string like `"30d"`, `"7d"`, `"90d"` (days only for
-    /// now) which is converted to a `Daily`/`Weekly`/`Monthly` approximation,
-    /// or the caller can set a full `RotationSchedule` by using the structured
-    /// `rotation_schedule` field instead.
+    /// Accepts a whole number of days or weeks such as `"90d"` or `"12w"`,
+    /// kept exact (see [`parse_rotate_every`]); a value that does not parse
+    /// is a config error, never a silently dropped policy. A full
+    /// `RotationSchedule` can be set with the structured `rotation_schedule`
+    /// field instead.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rotate_every: Option<String>,
     /// Full structured rotation schedule override (takes precedence over `rotate_every`).
@@ -233,11 +346,19 @@ pub struct SecretOverride {
     /// Stored under `[phantom.secrets.{name}.validation]` in `.phantom.toml`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub validation: Option<ValidationScheduleConfig>,
-    /// When `true`, `phantom exec` will hard-block if this secret's
-    /// `rotation_schedule` period has elapsed since `last_rotated`.
-    /// The user must run `phantom rotate <NAME>` to unblock, or pass
-    /// `--skip-rotation-check` (which writes an audit-log warning).
-    /// Default: `false`.
+    /// When `true`, `phantom exec`, `phantom start`, and every other path
+    /// that hands out the real value (`reveal`, `copy`, `sync`, `env copy`,
+    /// `team vault-push`, and the MCP copy and team-push tools) refuse this
+    /// secret once one period of its effective rotation schedule
+    /// (`rotation_schedule`, `rotate_every`, or the global
+    /// `rotation_policy`; monthly counts as 30 days) has elapsed. Age is
+    /// measured from machine-local vault metadata: the later of when the
+    /// vault entry was stored and its last recorded provider rotation. The
+    /// schedule's `last_rotated` in this file is not trusted for this check.
+    /// A missing schedule, an unknown age, or an unreadable schedule also
+    /// refuses. To unblock, rotate the credential at its provider and replace
+    /// it with `phantom remove <NAME>` then `phantom add <NAME>`, or set this
+    /// back to `false`. There is no bypass flag. Default: `false`.
     #[serde(default, skip_serializing_if = "is_false")]
     pub enforce_rotation_on_access: bool,
     /// Grace period (in seconds) before a secret's TTL expiry at which
@@ -292,32 +413,61 @@ impl Default for SecretOverride {
 
 impl SecretOverride {
     /// Resolve this override to a `RotationSchedule`, if any.
-    pub fn resolve_schedule(&self) -> Option<RotationSchedule> {
+    ///
+    /// An unparseable `rotate_every` is an error rather than `None`, so a typo
+    /// cannot silently fall back to the global policy or to no schedule.
+    pub fn resolve_schedule(&self) -> Result<Option<RotationSchedule>> {
         if let Some(ref sched) = self.rotation_schedule {
-            return Some(sched.clone());
+            return Ok(Some(sched.clone()));
         }
-        if let Some(ref s) = self.rotate_every {
-            return parse_rotate_every(s);
+        match self.rotate_every {
+            Some(ref s) => parse_rotate_every(s).map(Some),
+            None => Ok(None),
         }
-        None
     }
 }
 
-/// Parse a `rotate_every` string like `"30d"`, `"7d"`, `"90d"` into a
-/// `RotationSchedule`.  Only day-based durations are supported.
-pub fn parse_rotate_every(s: &str) -> Option<RotationSchedule> {
-    let s = s.trim().to_ascii_lowercase();
-    let days: u64 = s.strip_suffix('d')?.parse().ok()?;
-
-    let strategy = if days <= 1 {
-        RotationStrategy::Daily
-    } else if days <= 7 {
-        RotationStrategy::Weekly
-    } else {
-        RotationStrategy::Monthly
+/// Parse a `rotate_every` value into a `RotationSchedule`, exactly.
+///
+/// Accepted: a positive whole number of days (`"90d"`) or weeks (`"12w"`).
+/// `1d` is the daily schedule and `7d`/`1w` the weekly one; every other
+/// length is an [`RotationStrategy::Interval`] of exactly that many days, so
+/// `"90d"` is never rounded to monthly. Anything else (`"3mo"`, `"90 days"`,
+/// `"0d"`) is a `ConfigParseError`. The message never echoes the value,
+/// because `.phantom.toml` may hold a pasted credential.
+pub fn parse_rotate_every(s: &str) -> Result<RotationSchedule> {
+    let invalid = || {
+        PhantomError::ConfigParseError(
+            "rotate_every must be a whole number of days or weeks, such as \"90d\" or \"12w\""
+                .to_string(),
+        )
     };
+    let s = s.trim().to_ascii_lowercase();
+    let (number, days_per_unit) = if let Some(number) = s.strip_suffix('d') {
+        (number, 1)
+    } else if let Some(number) = s.strip_suffix('w') {
+        (number, 7)
+    } else {
+        return Err(invalid());
+    };
+    if number.is_empty() || !number.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(invalid());
+    }
+    let days = number
+        .parse::<u64>()
+        .ok()
+        .and_then(|n| n.checked_mul(days_per_unit))
+        // Keep the interval representable in seconds.
+        .filter(|days| days.checked_mul(86_400).is_some())
+        .and_then(std::num::NonZeroU64::new)
+        .ok_or_else(invalid)?;
 
-    Some(RotationSchedule::from_strategy(strategy))
+    let strategy = match days.get() {
+        1 => RotationStrategy::Daily,
+        7 => RotationStrategy::Weekly,
+        _ => RotationStrategy::Interval(days),
+    };
+    Ok(RotationSchedule::from_strategy(strategy))
 }
 
 /// Configuration for how a secret maps to an API service.
@@ -339,6 +489,98 @@ pub struct ServiceConfig {
     /// Type of secret: "api_key" (default) or "connection_string"
     #[serde(default = "default_secret_type")]
     pub secret_type: String,
+}
+
+/// How `phantom exec` hands a protected dotenv key to the child process.
+/// See [`PhantomConfig::exec_delivery_for_key`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecDelivery<'a> {
+    /// A trusted built-in route injects the real value into requests the
+    /// child sends through the proxy to `upstream`.
+    Proxied { service: &'a str, upstream: &'a str },
+    /// No route injects this key. The child gets a session token that no
+    /// provider accepts.
+    NoRoute,
+    /// A connection string: `phantom exec` refuses to launch while it is
+    /// protected, because it needs a protocol-aware broker.
+    ConnectionStringRefused { service: &'a str },
+    /// A repository-authored route that is not Phantom's exact built-in
+    /// definition: `phantom exec` refuses to launch with it configured.
+    CustomRouteRefused { service: &'a str },
+    /// A key `phantom exec` never hands the child, not even as a session
+    /// token: a rotation provider's `api_key_env` or a sync `token_env`.
+    Withheld,
+}
+
+/// A configuration-wide reason `phantom exec` refuses to start at all, so no
+/// protected key reaches a child. See [`PhantomConfig::exec_blocker`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecBlocker<'a> {
+    /// A built-in service whose definition differs from Phantom's.
+    AlteredBuiltinRoute { service: &'a str },
+    /// A repository-authored `api_key` service with a host pattern.
+    CustomRoute { service: &'a str },
+    /// A connection-string service whose key is protected in the dotenv.
+    ConnectionString { service: &'a str, key: &'a str },
+}
+
+impl ExecBlocker<'_> {
+    /// Stable machine-readable reason used in value-free reports.
+    pub fn reason(&self) -> &'static str {
+        match self {
+            Self::AlteredBuiltinRoute { .. } => "altered_builtin_route",
+            Self::CustomRoute { .. } => "custom_route",
+            Self::ConnectionString { .. } => "connection_string",
+        }
+    }
+
+    /// The service that blocks exec.
+    pub fn service(&self) -> &str {
+        match self {
+            Self::AlteredBuiltinRoute { service }
+            | Self::CustomRoute { service }
+            | Self::ConnectionString { service, .. } => service,
+        }
+    }
+
+    /// The dotenv key involved, for a connection-string blocker.
+    pub fn key(&self) -> Option<&str> {
+        match self {
+            Self::ConnectionString { key, .. } => Some(key),
+            _ => None,
+        }
+    }
+}
+
+impl ExecDelivery<'_> {
+    /// Stable machine-readable label used in value-free reports.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Proxied { .. } => "proxied",
+            Self::NoRoute => "no_route",
+            Self::ConnectionStringRefused { .. } => "connection_string_refused",
+            Self::CustomRouteRefused { .. } => "custom_route_refused",
+            Self::Withheld => "withheld",
+        }
+    }
+
+    /// The service name owning this key, when one does.
+    pub fn service(&self) -> Option<&str> {
+        match self {
+            Self::Proxied { service, .. }
+            | Self::ConnectionStringRefused { service }
+            | Self::CustomRouteRefused { service } => Some(service),
+            Self::NoRoute | Self::Withheld => None,
+        }
+    }
+
+    /// The upstream host the proxy injects into, for a proxied key.
+    pub fn upstream(&self) -> Option<&str> {
+        match self {
+            Self::Proxied { upstream, .. } => Some(upstream),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -548,7 +790,7 @@ impl PhantomConfig {
         let content = std::str::from_utf8(content)
             .map_err(|error| PhantomError::ConfigParseError(error.to_string()))?;
         let mut config: Self =
-            toml::from_str(content).map_err(|e| PhantomError::ConfigParseError(e.to_string()))?;
+            toml::from_str(content).map_err(|e| value_blind_toml_error(content, &e))?;
         validate_portable_project_id(&config.phantom.project_id)?;
 
         // `.phantom.toml` is repository-controlled. Its portable project_id is
@@ -570,10 +812,18 @@ impl PhantomConfig {
     }
 
     /// Save config to a file path.
+    ///
+    /// The write is atomic (same-directory staging file, fsync, rename), so a
+    /// crash cannot leave a truncated `.phantom.toml`. A symlink, directory,
+    /// FIFO or other non-regular file at `path` is refused rather than
+    /// written through, an existing file keeps its permissions, and a file
+    /// that changes between the safety read and the commit is not clobbered.
+    /// A new file is created private (0600 on Unix).
     pub fn save(&self, path: &Path) -> Result<()> {
         let content = toml::to_string_pretty(self)
             .map_err(|e| PhantomError::ConfigParseError(e.to_string()))?;
-        std::fs::write(path, content)?;
+        let before = crate::fs::read_regular_file(path)?;
+        crate::fs::atomic_write_if_unchanged(path, before.as_deref(), content.as_bytes())?;
         Ok(())
     }
 
@@ -634,6 +884,7 @@ impl PhantomConfig {
             cloud: None,
             public_keys: Vec::new(),
             alerting: AlertingConfig::default(),
+            leak_response: LeakResponseConfig::default(),
         }
     }
 
@@ -644,13 +895,22 @@ impl PhantomConfig {
     ///   2. Per-secret `rotate_every` in `[phantom.secrets.{name}]`
     ///   3. Global `[phantom.rotation_policy]`
     ///   4. `None` — no schedule configured.
-    pub fn get_rotation_schedule(&self, secret_name: &str) -> Option<RotationSchedule> {
+    ///
+    /// An unparseable per-secret `rotate_every` is a `ConfigParseError` naming
+    /// the secret's section, not a silent fall-through to step 3.
+    pub fn get_rotation_schedule(&self, secret_name: &str) -> Result<Option<RotationSchedule>> {
         if let Some(ov) = self.phantom.secrets.get(secret_name) {
-            if let Some(sched) = ov.resolve_schedule() {
-                return Some(sched);
+            let resolved = ov.resolve_schedule().map_err(|error| match error {
+                PhantomError::ConfigParseError(message) => PhantomError::ConfigParseError(format!(
+                    "[phantom.secrets.{secret_name}] {message}"
+                )),
+                other => other,
+            })?;
+            if let Some(sched) = resolved {
+                return Ok(Some(sched));
             }
         }
-        self.phantom.rotation_policy.clone()
+        Ok(self.phantom.rotation_policy.clone())
     }
 
     /// Generate a collision-resistant, machine-local project ID from a directory path.
@@ -727,29 +987,136 @@ impl PhantomConfig {
             .collect()
     }
 
+    /// The route refusal `phantom exec` applies to one configured service:
+    /// an altered built-in, or a custom `api_key` route with a host pattern.
+    fn exec_route_refusal<'a>(name: &'a str, service: &ServiceConfig) -> Option<ExecBlocker<'a>> {
+        if let Some(expected) = Self::trusted_builtin_proxy_service(name) {
+            return (service != &expected)
+                .then_some(ExecBlocker::AlteredBuiltinRoute { service: name });
+        }
+        (service.pattern.is_some() && service.secret_type == "api_key")
+            .then_some(ExecBlocker::CustomRoute { service: name })
+    }
+
+    /// The first route refusal `phantom exec` hits, in config order. This is
+    /// the check behind [`Self::validate_agentic_proxy_routes`].
+    pub fn exec_route_blocker(&self) -> Option<ExecBlocker<'_>> {
+        self.services
+            .iter()
+            .find_map(|(name, service)| Self::exec_route_refusal(name, service))
+    }
+
+    /// Connection-string services whose key `is_exposed` says would reach
+    /// the child, as `(service, key)` in config order. `phantom exec` passes
+    /// "protected in the dotenv, or set in its own environment" and refuses
+    /// to start when this is non-empty.
+    pub fn exec_connection_string_blockers(
+        &self,
+        is_exposed: impl Fn(&str) -> bool,
+    ) -> Vec<(&str, &str)> {
+        self.connection_string_services()
+            .into_iter()
+            .filter(|(_, service)| is_exposed(&service.secret_key))
+            .map(|(name, service)| (name, service.secret_key.as_str()))
+            .collect()
+    }
+
+    /// The first configuration-wide reason `phantom exec` refuses to start,
+    /// checked in exec's order: routes, then connection strings protected in
+    /// the dotenv (`is_protected`). Value-free. A connection-string key set
+    /// in exec's own shell environment also blocks it; that is not visible
+    /// statically and is not reported here.
+    pub fn exec_blocker(&self, is_protected: impl Fn(&str) -> bool) -> Option<ExecBlocker<'_>> {
+        self.exec_route_blocker().or_else(|| {
+            self.exec_connection_string_blockers(is_protected)
+                .into_iter()
+                .next()
+                .map(|(service, key)| ExecBlocker::ConnectionString { service, key })
+        })
+    }
+
+    /// Keys `phantom exec` never hands the child, not even as a session
+    /// token: connection strings, rotation providers' `api_key_env` and sync
+    /// `token_env` names.
+    pub fn exec_withheld_keys(&self) -> std::collections::BTreeSet<&str> {
+        let mut withheld: std::collections::BTreeSet<&str> = self
+            .connection_string_services()
+            .into_iter()
+            .map(|(_, service)| service.secret_key.as_str())
+            .collect();
+        withheld.extend(self.phantom.secrets.values().filter_map(|secret| {
+            secret
+                .rotation_provider
+                .as_ref()
+                .and_then(|provider| provider.api_key_env.as_deref())
+        }));
+        withheld.extend(self.sync.iter().map(|target| target.token_env.as_str()));
+        withheld
+    }
+
+    /// How `phantom exec` delivers the protected dotenv key `dotenv_key`,
+    /// judged for this key alone. A configuration-wide refusal
+    /// ([`Self::exec_blocker`]) stops exec before any key is delivered.
+    ///
+    /// The child process only ever receives a per-session `phm_` token for a
+    /// protected key. That token works only where a proxy route injects the
+    /// real value, so a key with no route reaches no provider. Value-free:
+    /// this reads the configuration only.
+    pub fn exec_delivery_for_key(&self, dotenv_key: &str) -> ExecDelivery<'_> {
+        let mapped = || {
+            self.services
+                .iter()
+                .filter(move |(_, service)| service.secret_key == dotenv_key)
+        };
+        // Exec checks connection strings first and stops before any proxy
+        // route is considered, so that answer wins.
+        if let Some((name, _)) =
+            mapped().find(|(_, service)| service.secret_type == "connection_string")
+        {
+            return ExecDelivery::ConnectionStringRefused { service: name };
+        }
+        // Any service for this key that exec's route check refuses.
+        if let Some((name, _)) =
+            mapped().find(|(name, service)| Self::exec_route_refusal(name, service).is_some())
+        {
+            return ExecDelivery::CustomRouteRefused { service: name };
+        }
+        // Exec never puts a withheld key in the child's environment, even
+        // when a built-in route exists for it, so this answer beats proxied.
+        if self.exec_withheld_keys().contains(dotenv_key) {
+            return ExecDelivery::Withheld;
+        }
+        // Same filter as `ServiceRegistry::from_config`: only an api_key
+        // service with a host pattern becomes a proxy route.
+        if let Some((name, service)) = mapped()
+            .find(|(_, service)| service.secret_type == "api_key" && service.pattern.is_some())
+        {
+            return ExecDelivery::Proxied {
+                service: name,
+                upstream: service.pattern.as_deref().unwrap_or_default(),
+            };
+        }
+        ExecDelivery::NoRoute
+    }
+
     /// Reject repository-authored proxy destinations that have not passed a
     /// machine-local trust decision. The v1 config format has no such approval
     /// ledger, so agentic proxy sessions are restricted to Phantom's exact
     /// built-in route definitions. Custom gateways can be added in a future
     /// format only with a value-blind, local approval record.
     pub fn validate_agentic_proxy_routes(&self) -> Result<()> {
-        for (name, service) in &self.services {
-            if let Some(expected) = Self::trusted_builtin_proxy_service(name) {
-                if service != &expected {
-                    return Err(PhantomError::ConfigParseError(format!(
-                        "proxy service `{name}` differs from Phantom's trusted built-in route"
-                    )));
-                }
-                continue;
+        match self.exec_route_blocker() {
+            None => Ok(()),
+            Some(ExecBlocker::AlteredBuiltinRoute { service }) => {
+                Err(PhantomError::ConfigParseError(format!(
+                    "proxy service `{service}` differs from Phantom's trusted built-in route"
+                )))
             }
-
-            if service.pattern.is_some() && service.secret_type == "api_key" {
-                return Err(PhantomError::ConfigParseError(format!(
-                    "custom proxy service `{name}` is not approved for agentic execution"
-                )));
-            }
+            Some(blocker) => Err(PhantomError::ConfigParseError(format!(
+                "custom proxy service `{}` is not approved for agentic execution",
+                blocker.service()
+            ))),
         }
-        Ok(())
     }
 
     /// Advisory risk analysis for service routing.
@@ -857,11 +1224,22 @@ fn is_local_or_private_host(host: &str) -> bool {
         return true;
     }
 
+    let v4_private = |ip: std::net::Ipv4Addr| {
+        ip.is_private() || ip.is_loopback() || ip.is_link_local() || ip.is_unspecified()
+    };
     match host.parse::<IpAddr>() {
-        Ok(IpAddr::V4(ip)) => {
-            ip.is_private() || ip.is_loopback() || ip.is_link_local() || ip.is_unspecified()
+        Ok(IpAddr::V4(ip)) => v4_private(ip),
+        Ok(IpAddr::V6(ip)) => {
+            let first = ip.segments()[0];
+            ip.is_loopback()
+                || ip.is_unspecified()
+                // fc00::/7 unique local
+                || (first & 0xfe00) == 0xfc00
+                // fe80::/10 link local
+                || (first & 0xffc0) == 0xfe80
+                // ::ffff:a.b.c.d maps to the IPv4 checks
+                || ip.to_ipv4_mapped().is_some_and(v4_private)
         }
-        Ok(IpAddr::V6(ip)) => ip.is_loopback() || ip.is_unspecified(),
         Err(_) => false,
     }
 }
@@ -880,6 +1258,11 @@ fn extract_host_for_risk_check(pattern: &str) -> Option<String> {
             .map(|(host, _)| host.trim_start_matches('[').to_string());
     }
 
+    // A bare IPv6 literal (no brackets, so no port) is the whole host.
+    if without_userinfo.parse::<IpAddr>().is_ok() {
+        return Some(without_userinfo.to_string());
+    }
+
     let host = without_userinfo
         .split(':')
         .next()
@@ -894,6 +1277,83 @@ fn extract_host_for_risk_check(pattern: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    fn leak_cfg(extra: &str) -> PhantomConfig {
+        let toml = format!("[phantom]\nversion = \"1\"\nproject_id = \"abc123\"\n{extra}");
+        toml::from_str(&toml).expect("parse")
+    }
+
+    #[test]
+    fn leak_response_defaults_to_plan() {
+        let c = leak_cfg("");
+        assert_eq!(c.leak_response.effective().unwrap(), OnLeak::Plan);
+        assert!(!c.leak_response.allow_revoke);
+    }
+
+    #[test]
+    fn leak_response_parses_all_values() {
+        for (v, want) in [("off", OnLeak::Off), ("plan", OnLeak::Plan)] {
+            let c = leak_cfg(&format!("[leak_response]\non_leak = \"{v}\"\n"));
+            assert_eq!(c.leak_response.effective().unwrap(), want);
+        }
+        let c = leak_cfg("[leak_response]\non_leak = \"revoke\"\nallow_revoke = true\n");
+        assert_eq!(c.leak_response.effective().unwrap(), OnLeak::Revoke);
+    }
+
+    #[test]
+    fn leak_response_revoke_requires_opt_in() {
+        let c = leak_cfg("[leak_response]\non_leak = \"revoke\"\n");
+        let err = c.leak_response.effective().unwrap_err().to_string();
+        assert!(err.contains("allow_revoke"));
+    }
+
+    #[test]
+    fn leak_response_rejects_unknown_value_and_key() {
+        let bad = "[phantom]\nversion = \"1\"\nproject_id = \"abc123\"\n[leak_response]\non_leak = \"nuke\"\n";
+        assert!(toml::from_str::<PhantomConfig>(bad).is_err());
+        let bad = "[phantom]\nversion = \"1\"\nproject_id = \"abc123\"\n[leak_response]\nallow_revok = true\n";
+        assert!(toml::from_str::<PhantomConfig>(bad).is_err());
+    }
+
+    #[test]
+    fn leak_response_default_not_serialized_and_live_revoke_off() {
+        let c = leak_cfg("");
+        let out = toml::to_string_pretty(&c).unwrap();
+        assert!(!out.contains("leak_response"));
+        assert!(!LeakResponseConfig::live_revoke_available());
+    }
+
+    #[test]
+    fn toml_parse_errors_never_echo_config_values() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".phantom.toml");
+        // Assembled at compile time so source scanners never see a credential-shaped literal.
+        let secret = concat!("sk", "-live-", "MUSTNOTLEAK0123456789");
+        for content in [
+            format!("[phantom]\nproject_id = \"p\"\ntoken = \"{secret}\" oops\n"),
+            format!("[phantom]\nproject_id = \"p\"\n[[sync]]\nplatform = \"{secret}\"\n"),
+            format!("[phantom]\nproject_id = 7\nnote = \"{secret}\"\n"),
+            format!("[phantom]\nproject_id = \"{secret}\n"),
+        ] {
+            let message = PhantomConfig::load_from_bytes(&path, content.as_bytes())
+                .unwrap_err()
+                .to_string();
+            assert!(!message.contains("MUSTNOTLEAK"), "{message}");
+            assert!(message.contains("TOML parse error at line"), "{message}");
+        }
+    }
+
+    #[test]
+    fn redaction_covers_every_quote_style() {
+        assert_eq!(
+            redact_quoted_literals("invalid type: string \"x\", expected `y` or 'z'"),
+            "invalid type: string <redacted>, expected <redacted> or <redacted>"
+        );
+        assert_eq!(
+            redact_quoted_literals("bad \"unterminated"),
+            "bad <redacted>"
+        );
+    }
+
     use super::*;
 
     #[test]
@@ -1299,6 +1759,121 @@ header = "Authorization"
             .any(|risk| risk.message.contains("header_format")));
     }
 
+    /// Each risky route-pattern form must be flagged on its own, so dropping
+    /// any single check is caught (one combined pattern hid that).
+    #[test]
+    fn service_risks_flag_each_risky_pattern_form_individually() {
+        fn risks_for(pattern: &str) -> Vec<String> {
+            let mut config = PhantomConfig::new_with_defaults("test".to_string());
+            config.services.insert(
+                "custom".to_string(),
+                ServiceConfig {
+                    secret_key: "CUSTOM_API_KEY".to_string(),
+                    pattern: Some(pattern.to_string()),
+                    header: Some("Authorization".to_string()),
+                    header_format: Some("Bearer {secret}".to_string()),
+                    secret_type: "api_key".to_string(),
+                },
+            );
+            config
+                .service_risks()
+                .into_iter()
+                .filter(|risk| risk.service == "custom")
+                .map(|risk| risk.message)
+                .collect()
+        }
+        let has = |pattern: &str, needle: &str| {
+            let risks = risks_for(pattern);
+            assert!(
+                risks.iter().any(|m| m.contains(needle)),
+                "`{pattern}` should be flagged with `{needle}`: {risks:?}"
+            );
+        };
+        for pattern in [
+            "https://api.example.com",
+            "api.example.com/v1",
+            "api.example.com?x=1",
+            "api.example.com#frag",
+            "user@api.example.com",
+            "*.example.com",
+            "",
+        ] {
+            has(pattern, "bare provider host");
+        }
+        for pattern in [
+            "localhost",
+            "127.0.0.1",
+            "10.0.0.5",
+            "192.168.1.20",
+            "169.254.169.254",
+            "0.0.0.0",
+            "[::1]:8080",
+            "[0:0:0:0:0:0:0:1]",
+            "[::]",
+            "api.example.com@127.0.0.1",
+        ] {
+            has(pattern, "localhost or a private IP");
+        }
+        assert!(risks_for("api.example.com").is_empty());
+    }
+
+    fn private_route_flagged(pattern: &str) -> bool {
+        let mut config = PhantomConfig::new_with_defaults("test".to_string());
+        config.services.insert(
+            "custom".to_string(),
+            ServiceConfig {
+                secret_key: "CUSTOM_API_KEY".to_string(),
+                pattern: Some(pattern.to_string()),
+                header: Some("Authorization".to_string()),
+                header_format: Some("Bearer {secret}".to_string()),
+                secret_type: "api_key".to_string(),
+            },
+        );
+        config.service_risks().iter().any(|risk| {
+            risk.service == "custom" && risk.message.contains("localhost or a private IP")
+        })
+    }
+
+    #[test]
+    fn service_risks_flag_ipv6_unique_local_routes() {
+        for pattern in ["fd00::1", "[fd12:3456::1]", "[fc00::5]:8443", "FD00::1"] {
+            assert!(private_route_flagged(pattern), "{pattern}");
+        }
+    }
+
+    #[test]
+    fn service_risks_flag_ipv6_link_local_routes() {
+        for pattern in ["fe80::1", "[fe80::abcd]:8080", "[febf::1]"] {
+            assert!(private_route_flagged(pattern), "{pattern}");
+        }
+    }
+
+    #[test]
+    fn service_risks_flag_ipv4_mapped_ipv6_routes() {
+        for pattern in [
+            "::ffff:10.0.0.5",
+            "[::ffff:192.168.1.20]",
+            "[::ffff:169.254.169.254]:80",
+            "[::ffff:127.0.0.1]",
+            "[::ffff:a00:5]",
+            "[::ffff:0.0.0.0]",
+        ] {
+            assert!(private_route_flagged(pattern), "{pattern}");
+        }
+    }
+
+    #[test]
+    fn service_risks_do_not_flag_public_ipv6_routes() {
+        for pattern in [
+            "[2001:4860:4860::8888]",
+            "2606:4700::1111",
+            "[::ffff:8.8.8.8]",
+            "[fec0::1]",
+        ] {
+            assert!(!private_route_flagged(pattern), "{pattern}");
+        }
+    }
+
     #[test]
     fn service_risks_allows_unknown_custom_provider() {
         let mut config = PhantomConfig::new_with_defaults("test".to_string());
@@ -1317,6 +1892,155 @@ header = "Authorization"
             .service_risks()
             .iter()
             .all(|risk| risk.service != "gateway"));
+    }
+
+    #[test]
+    fn exec_delivery_names_the_route_or_its_absence() {
+        let mut config = PhantomConfig::new_with_defaults("test".to_string());
+        assert_eq!(
+            config.exec_delivery_for_key("OPENAI_API_KEY"),
+            ExecDelivery::Proxied {
+                service: "openai",
+                upstream: "api.openai.com",
+            }
+        );
+        // A key nothing routes: exec hands the child a session token only.
+        let unrouted = config.exec_delivery_for_key("GROQ_API_KEY");
+        assert_eq!(unrouted, ExecDelivery::NoRoute);
+        assert_eq!(unrouted.label(), "no_route");
+        assert_eq!(unrouted.service(), None);
+        assert_eq!(
+            config.exec_delivery_for_key("DATABASE_URL"),
+            ExecDelivery::ConnectionStringRefused {
+                service: "database"
+            }
+        );
+
+        // An api_key service without a host pattern is not a route.
+        config.services.insert(
+            "signing".to_string(),
+            ServiceConfig {
+                secret_key: "SIGNING_SECRET".to_string(),
+                pattern: None,
+                header: None,
+                header_format: None,
+                secret_type: "api_key".to_string(),
+            },
+        );
+        assert_eq!(
+            config.exec_delivery_for_key("SIGNING_SECRET"),
+            ExecDelivery::NoRoute
+        );
+
+        // A custom route, or an altered built-in, is refused by exec.
+        config.services.insert(
+            "gateway".to_string(),
+            ServiceConfig {
+                secret_key: "GATEWAY_API_KEY".to_string(),
+                pattern: Some("gateway.example.com".to_string()),
+                header: Some("Authorization".to_string()),
+                header_format: Some("Bearer {secret}".to_string()),
+                secret_type: "api_key".to_string(),
+            },
+        );
+        assert_eq!(
+            config.exec_delivery_for_key("GATEWAY_API_KEY"),
+            ExecDelivery::CustomRouteRefused { service: "gateway" }
+        );
+        config.services.get_mut("openai").unwrap().header = Some("x-api-key".to_string());
+        assert_eq!(
+            config.exec_delivery_for_key("OPENAI_API_KEY"),
+            ExecDelivery::CustomRouteRefused { service: "openai" }
+        );
+        // An altered built-in with no host pattern is still refused by exec.
+        config.services.get_mut("anthropic").unwrap().pattern = None;
+        assert_eq!(
+            config.exec_delivery_for_key("ANTHROPIC_API_KEY"),
+            ExecDelivery::CustomRouteRefused {
+                service: "anthropic"
+            }
+        );
+    }
+
+    #[test]
+    fn exec_blocker_mirrors_execs_config_wide_refusals() {
+        let mut config = PhantomConfig::new_with_defaults("test".to_string());
+        assert_eq!(config.exec_blocker(|_| false), None);
+        assert_eq!(config.exec_blocker(|key| key == "OPENAI_API_KEY"), None);
+        // A protected connection string stops exec for every key.
+        let blocker = config
+            .exec_blocker(|key| key == "OPENAI_API_KEY" || key == "DATABASE_URL")
+            .unwrap();
+        assert_eq!(
+            blocker,
+            ExecBlocker::ConnectionString {
+                service: "database",
+                key: "DATABASE_URL"
+            }
+        );
+        assert_eq!(blocker.reason(), "connection_string");
+        assert!(config.validate_agentic_proxy_routes().is_ok());
+
+        // Routes are checked first, exactly as exec does.
+        config.services.insert(
+            "gateway".to_string(),
+            ServiceConfig {
+                secret_key: "GATEWAY_API_KEY".to_string(),
+                pattern: Some("gateway.example.com".to_string()),
+                header: Some("Authorization".to_string()),
+                header_format: Some("Bearer {secret}".to_string()),
+                secret_type: "api_key".to_string(),
+            },
+        );
+        let blocker = config.exec_blocker(|key| key == "DATABASE_URL").unwrap();
+        assert_eq!(blocker, ExecBlocker::CustomRoute { service: "gateway" });
+        assert_eq!(blocker.reason(), "custom_route");
+        assert!(config.validate_agentic_proxy_routes().is_err());
+        config.services.remove("gateway");
+
+        // An altered built-in blocks exec even without a host pattern.
+        config.services.get_mut("anthropic").unwrap().pattern = None;
+        assert_eq!(
+            config.exec_blocker(|_| false),
+            Some(ExecBlocker::AlteredBuiltinRoute {
+                service: "anthropic"
+            })
+        );
+        assert!(config.validate_agentic_proxy_routes().is_err());
+    }
+
+    #[test]
+    fn keys_exec_never_hands_the_child_are_withheld() {
+        let mut config = PhantomConfig::new_with_defaults("test".to_string());
+        config.phantom.secrets.insert(
+            "STRIPE_SECRET_KEY".to_string(),
+            toml::from_str(
+                "[rotation_provider]\nprovider = \"stripe\"\napi_key_env = \"STRIPE_ROTATION_API_KEY\"\n",
+            )
+            .unwrap(),
+        );
+        config.sync.push(
+            toml::from_str(
+                "platform = \"vercel\"\ntoken_env = \"VERCEL_TOKEN\"\nproject_id = \"p\"\n",
+            )
+            .unwrap(),
+        );
+        let withheld = config.exec_withheld_keys();
+        assert!(withheld.contains("DATABASE_URL"));
+        assert!(withheld.contains("STRIPE_ROTATION_API_KEY"));
+        assert!(withheld.contains("VERCEL_TOKEN"));
+        assert_eq!(
+            config.exec_delivery_for_key("STRIPE_ROTATION_API_KEY"),
+            ExecDelivery::Withheld
+        );
+        assert_eq!(
+            config.exec_delivery_for_key("VERCEL_TOKEN").label(),
+            "withheld"
+        );
+        assert_eq!(
+            config.exec_delivery_for_key("GROQ_API_KEY"),
+            ExecDelivery::NoRoute
+        );
     }
 
     // ── Rotation policy config tests ──────────────────────────────────────────
@@ -1357,7 +2081,10 @@ header = "Authorization"
             last_rotated: None,
         });
         // No per-secret override — should return global.
-        let sched = config.get_rotation_schedule("OPENAI_API_KEY").unwrap();
+        let sched = config
+            .get_rotation_schedule("OPENAI_API_KEY")
+            .unwrap()
+            .unwrap();
         assert_eq!(sched.strategy, RotationStrategy::Weekly);
     }
 
@@ -1382,21 +2109,117 @@ header = "Authorization"
                 ..Default::default()
             },
         );
-        let sched = config.get_rotation_schedule("STRIPE_KEY").unwrap();
+        let sched = config.get_rotation_schedule("STRIPE_KEY").unwrap().unwrap();
         assert_eq!(sched.strategy, RotationStrategy::Weekly);
         // Other secrets still use global.
-        let global = config.get_rotation_schedule("OTHER_KEY").unwrap();
+        let global = config.get_rotation_schedule("OTHER_KEY").unwrap().unwrap();
         assert_eq!(global.strategy, RotationStrategy::Monthly);
     }
 
     #[test]
     fn parse_rotate_every_days() {
-        assert!(parse_rotate_every("1d").is_some());
-        assert!(parse_rotate_every("7d").is_some());
-        assert!(parse_rotate_every("30d").is_some());
-        assert!(parse_rotate_every("90d").is_some());
-        assert!(parse_rotate_every("bad").is_none());
-        assert!(parse_rotate_every("30").is_none());
+        assert!(parse_rotate_every("1d").is_ok());
+        assert!(parse_rotate_every("7d").is_ok());
+        assert!(parse_rotate_every("30d").is_ok());
+        assert!(parse_rotate_every("90d").is_ok());
+        assert!(parse_rotate_every("bad").is_err());
+        assert!(parse_rotate_every("30").is_err());
+    }
+
+    /// `"90d"` and `"365d"` were both rounded to monthly. Every length is now
+    /// kept exactly; only `1d` and `7d`/`1w` map to the calendar schedules.
+    #[test]
+    fn parse_rotate_every_keeps_the_exact_interval() {
+        let strategy = |s: &str| parse_rotate_every(s).unwrap().strategy;
+        assert_eq!(strategy("1d"), RotationStrategy::Daily);
+        assert_eq!(strategy("7d"), RotationStrategy::Weekly);
+        assert_eq!(strategy("1w"), RotationStrategy::Weekly);
+        assert_eq!(strategy(" 7D "), RotationStrategy::Weekly);
+        for (input, days) in [
+            ("2d", 2),
+            ("8d", 8),
+            ("30d", 30),
+            ("90d", 90),
+            ("365d", 365),
+            ("2w", 14),
+            ("13w", 91),
+        ] {
+            assert_eq!(strategy(input).interval_days(), Some(days), "{input}");
+        }
+    }
+
+    /// A value that does not parse used to return `None`, silently disabling
+    /// the per-secret policy. It is now a config error that does not echo the
+    /// value.
+    #[test]
+    fn parse_rotate_every_rejects_unparseable_values() {
+        for input in [
+            "", "d", "w", "0d", "0w", "-5d", "+5d", "1.5d", "90 days", "90 d", "3mo", "1m", "1y",
+            "90", "monthly", "١٢d",
+        ] {
+            match parse_rotate_every(input) {
+                Err(PhantomError::ConfigParseError(message)) => {
+                    assert!(message.contains("rotate_every"), "{input}: {message}");
+                }
+                Err(_) => panic!("{input}: wrong error kind"),
+                Ok(_) => panic!("{input}: accepted"),
+            }
+        }
+        // Lengths whose seconds overflow are refused, not wrapped.
+        assert!(parse_rotate_every("213503982334602d").is_err());
+        assert!(parse_rotate_every("99999999999999999999d").is_err());
+        assert!(parse_rotate_every("3000000000000000w").is_err());
+    }
+
+    #[test]
+    fn get_rotation_schedule_reports_a_bad_rotate_every_instead_of_falling_back() {
+        let mut config = PhantomConfig::new_with_defaults("bad_every".to_string());
+        config.phantom.rotation_policy =
+            Some(RotationSchedule::from_strategy(RotationStrategy::Daily));
+        config.phantom.secrets.insert(
+            "STRIPE_KEY".to_string(),
+            SecretOverride {
+                rotate_every: Some("3mo".to_string()),
+                ..Default::default()
+            },
+        );
+        match config.get_rotation_schedule("STRIPE_KEY") {
+            Err(PhantomError::ConfigParseError(message)) => {
+                assert!(
+                    message.contains("[phantom.secrets.STRIPE_KEY] rotate_every"),
+                    "{message}"
+                );
+                assert!(!message.contains("3mo"), "{message}");
+            }
+            Err(_) => panic!("wrong error kind"),
+            Ok(_) => panic!("a bad rotate_every fell back to a schedule"),
+        }
+        // Secrets without the bad override still resolve to the global policy.
+        let global = config.get_rotation_schedule("OTHER_KEY").unwrap().unwrap();
+        assert_eq!(global.strategy, RotationStrategy::Daily);
+    }
+
+    #[test]
+    fn interval_strategy_roundtrips_in_toml() {
+        let toml_str = r#"
+[phantom]
+version = "1"
+project_id = "interval"
+
+[phantom.rotation_policy]
+strategy = { interval = 90 }
+"#;
+        let config: PhantomConfig = toml::from_str(toml_str).unwrap();
+        let policy = config.phantom.rotation_policy.clone().unwrap();
+        assert_eq!(policy.strategy.interval_days(), Some(90));
+        let reparsed: PhantomConfig =
+            toml::from_str(&toml::to_string_pretty(&config).unwrap()).unwrap();
+        assert_eq!(reparsed.phantom.rotation_policy, Some(policy));
+        // A zero-day interval is refused at load, not treated as always due.
+        assert!(toml::from_str::<PhantomConfig>(
+            &toml_str.replace("interval = 90", "interval = 0")
+        )
+        .is_err());
     }
 
     #[test]
@@ -1422,7 +2245,7 @@ header = "Authorization"
         let toml_str = toml::to_string_pretty(&config).unwrap();
         let parsed: PhantomConfig = toml::from_str(&toml_str).unwrap();
         let ov = parsed.phantom.secrets.get("MY_KEY").unwrap();
-        let sched = ov.resolve_schedule().unwrap();
+        let sched = ov.resolve_schedule().unwrap().unwrap();
         assert_eq!(sched.strategy, RotationStrategy::Daily);
         assert_eq!(sched.hour, 4);
         assert_eq!(sched.minute, 30);
@@ -1432,7 +2255,10 @@ header = "Authorization"
     #[test]
     fn get_rotation_schedule_returns_none_when_unconfigured() {
         let config = PhantomConfig::new_with_defaults("none_test".to_string());
-        assert!(config.get_rotation_schedule("OPENAI_API_KEY").is_none());
+        assert!(config
+            .get_rotation_schedule("OPENAI_API_KEY")
+            .unwrap()
+            .is_none());
     }
 
     // ── ValidationScheduleConfig tests ───────────────────────────────────────
@@ -1638,5 +2464,46 @@ version = 4
         let cloud = roundtrip.cloud.unwrap();
         assert!(cloud.reconciliation_required);
         assert_eq!(cloud.reconciliation_remote_version, Some(9));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_refuses_a_symlinked_config_and_leaves_the_target_untouched() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let outside = dir.path().join("outside-file");
+        std::fs::write(&outside, b"owner content\n").unwrap();
+        let config_path = dir.path().join(".phantom.toml");
+        std::os::unix::fs::symlink(&outside, &config_path).unwrap();
+
+        let config = PhantomConfig::new_with_defaults("0123456789abcdef".to_string());
+        assert!(config.save(&config_path).is_err());
+
+        assert_eq!(std::fs::read(&outside).unwrap(), b"owner content\n");
+        let link = std::fs::symlink_metadata(&config_path).unwrap();
+        assert!(link.file_type().is_symlink(), "symlink was replaced");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_replaces_atomically_and_preserves_mode() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let dir = tempfile::TempDir::new().unwrap();
+        let config_path = dir.path().join(".phantom.toml");
+        std::fs::write(&config_path, b"# previous\n").unwrap();
+        std::fs::set_permissions(&config_path, std::fs::Permissions::from_mode(0o640)).unwrap();
+        // A second hard link observes an in-place truncate-and-write but not
+        // an atomic rename of a fresh inode over the name.
+        let witness = dir.path().join("witness");
+        std::fs::hard_link(&config_path, &witness).unwrap();
+        let before_inode = std::fs::metadata(&config_path).unwrap().ino();
+
+        let config = PhantomConfig::new_with_defaults("0123456789abcdef".to_string());
+        config.save(&config_path).unwrap();
+
+        assert_eq!(std::fs::read(&witness).unwrap(), b"# previous\n");
+        let after = std::fs::metadata(&config_path).unwrap();
+        assert_ne!(after.ino(), before_inode, "config was rewritten in place");
+        assert_eq!(after.permissions().mode() & 0o777, 0o640);
+        assert!(PhantomConfig::load(&config_path).is_ok());
     }
 }

@@ -103,7 +103,7 @@ export async function GET(
       {
         error: "no_share",
         message:
-          "This team vault has no key share for you yet. Ask a member who can read it to run `phantom team vault push` again.",
+          "This team vault has no key share for you yet. Ask a member who can read it to run `phantom team vault-push <TEAM_ID>` again.",
       },
       { status: 412 }
     );

@@ -29,6 +29,7 @@ const claimPaths = [
   "src/app/layout.tsx",
   "src/app/manifest.ts",
   "src/app/page.tsx",
+  "src/app/secrets/page.tsx",
   "src/app/pricing/page.tsx",
   "src/app/enterprise/page.tsx",
   "src/app/government/page.tsx",
@@ -37,7 +38,13 @@ const claimPaths = [
   "src/lib/public-release.ts",
   ...filesUnder("src/app/dashboard", [".tsx"]),
   ...filesUnder("src/components/landing", [".tsx"]),
-  ...filesUnder("public", [".json", ".txt"]),
+  // Unmodified legal notices are attribution, not product capability claims.
+  ...filesUnder("public", [".json", ".txt"]).filter((file) => ![
+    "public/phantom-world/phantom-mark.LICENSE.txt",
+    "public/phantom-world/provider-marks-LICENSE.txt",
+    "public/fonts/inter-tight-OFL.txt",
+    "public/fonts/jetbrains-mono-OFL.txt",
+  ].includes(file)),
 ];
 
 function read(relativePath) {
@@ -114,7 +121,13 @@ const repositoryGuidanceClaims = {
 };
 
 const machineReadablePaths = [
-  ...filesUnder("public", [".json", ".txt"]),
+  // Unmodified legal notices are attribution, not product capability claims.
+  ...filesUnder("public", [".json", ".txt"]).filter((file) => ![
+    "public/phantom-world/phantom-mark.LICENSE.txt",
+    "public/phantom-world/provider-marks-LICENSE.txt",
+    "public/fonts/inter-tight-OFL.txt",
+    "public/fonts/jetbrains-mono-OFL.txt",
+  ].includes(file)),
   "src/app/layout.tsx",
   "src/app/manifest.ts",
   "src/app/sitemap.ts",
@@ -130,7 +143,9 @@ for (const relativePath of ["docs/llms.txt", "docs/llms-full.txt", "docs/sitemap
 }
 
 const machineReadableGuides = Object.entries(machineReadableClaims).filter(
-  ([file]) => /llms(?:-full)?\.txt$/.test(file),
+  // These contracts describe the Secrets executable; workbench references
+  // are covered separately in workbench-docs.test.cjs and remain in allClaims.
+  ([file]) => /llms(?:-full)?\.txt$/.test(file) && !file.startsWith("apps/web/public/workbench/"),
 );
 
 const publicReleaseEvidencePaths = [
@@ -646,7 +661,7 @@ test("HowTo and delegation guidance avoid timing and unpinned quickstart claims"
   assert.doesNotMatch(delegation, /npx(?:\s+-y)?\s+phantom-secrets\s+agent setup/i);
 });
 
-test("dashboard surfaces describe uncommissioned pilot metadata, not live entitlements", () => {
+test("personal backup copy follows server admission and explains recovery limits", () => {
   const dashboardPaths = filesUnder("src/app/dashboard", [".tsx"]);
   const dashboardClaims = dashboardPaths.map((file) => read(file)).join("\n");
   const dashboardLayout = read("src/app/dashboard/layout.tsx");
@@ -655,14 +670,13 @@ test("dashboard surfaces describe uncommissioned pilot metadata, not live entitl
     /\b1\s+cloud\s+vault\b/i,
     /Pro tier required/i,
     /View your cloud vaults, billing, and team membership/i,
-    /No cloud vaults yet/i,
-    /upload an encrypted backup/i,
+    /cross-machine sync/i,
+    /recover your encryption key with GitHub/i,
   ]) {
     assert.doesNotMatch(dashboardClaims, forbidden);
   }
 
   for (const file of [
-    "src/app/dashboard/layout.tsx",
     "src/app/dashboard/page.tsx",
     "src/app/dashboard/team/page.tsx",
     "src/app/dashboard/projects/[id]/page.tsx",
@@ -675,14 +689,27 @@ test("dashboard surfaces describe uncommissioned pilot metadata, not live entitl
   }
 
   assert.match(dashboardLayout, /"unavailable"/);
-  assert.match(dashboardLayout, /Hosted boundary closed/);
-  assert.match(dashboardLayout, /browser-auth configuration/);
+  assert.match(dashboardLayout, /We could not complete GitHub sign-in/);
+  assert.match(dashboardLayout, /Try GitHub sign-in again/);
+  assert.match(dashboardLayout, /Team\s+sharing and paid plans are not available/);
+  const overview = read("src/app/dashboard/overview-client.tsx");
+  const detail = read("src/app/dashboard/projects/[id]/project-client.tsx");
+  for (const source of [overview, detail]) {
+    assert.doesNotMatch(source, /Uncommissioned|pilot metadata|written pilot scope/i);
+    assert.match(source, /original[\s\S]*keychain/i);
+    assert.match(source, /phantom cloud (?:push|pull)/);
+  }
+  assert.match(overview, /one project per account/);
+  assert.match(detail, /machine that\s+created the backup/);
+  assert.match(detail, /Signing in elsewhere cannot transfer or recover\s+that key/);
+  assert.doesNotMatch(detail, /phantom (?:reveal|rotate)/);
 });
 
 test("current SoftwareApplication and HowTo metadata point at the verified release", () => {
   const layout = claims["src/app/layout.tsx"];
   const publicRelease = claims["src/lib/public-release.ts"];
-  const softwareApplication = structuredMetadataBlock(layout, "SoftwareApplication");
+  const softwareApplication = structuredMetadataBlock(claims["src/components/landing/LandingStructuredData.tsx"], "SoftwareApplication");
+  assert.doesNotMatch(layout, /"@type": "SoftwareApplication"|"@type": "SoftwareSourceCode"/);
   const installHowTo = claims["src/components/landing/LandingStructuredData.tsx"];
 
   assert.match(publicRelease, /PUBLIC_RELEASE_VERSION\s*=\s*"0\.7\.9"/);
@@ -725,22 +752,24 @@ test("public release references bind v0.7.9 to its immutable publication receipt
   assert.match(workflowUrl, /\/actions\/runs\/\d+$/);
   assert.match(sourceCommit, /^[a-f0-9]{40}$/);
 
+  // Repository docs and the deployed site's llms files carry different
+  // verification dates until the repository docs refresh lands.
   const releaseGuides = [
-    readRepo("docs/llms.txt"),
-    readRepo("docs/llms-full.txt"),
-    readRepo("apps/web/public/llms.txt"),
-    readRepo("apps/web/public/llms-full.txt"),
-    readRepo("docs/platform-support.md"),
+    { source: readRepo("docs/llms.txt"), site: false },
+    { source: readRepo("docs/llms-full.txt"), site: false },
+    { source: readRepo("apps/web/public/llms.txt"), site: true },
+    { source: readRepo("apps/web/public/llms-full.txt"), site: true },
+    { source: readRepo("docs/platform-support.md"), site: false },
   ];
 
-  for (const source of releaseGuides) {
-    assert.match(source, /2026-09-29/);
+  for (const { source, site } of releaseGuides) {
+    assert.match(source, site ? /2026-10-06/ : /2026-09-29/);
     assert.ok(source.includes(sourceCommit));
     assert.match(source, /19[-\s]assets/i);
     assert.match(source, /all six native|six-row native/i);
     assert.match(source, /attestations/i);
-    // Homebrew intentionally still names v0.7.8 until the tap is bumped.
-    assert.match(source, /Homebrew[^\n]*v0\.7\.8/i);
+    // The site reflects the bumped tap; repository docs still name v0.7.8.
+    assert.match(source, site ? /Homebrew[^\n]*v0\.7\.9/i : /Homebrew[^\n]*v0\.7\.8/i);
     assert.ok(source.includes(workflowUrl));
   }
 
@@ -957,7 +986,8 @@ test("scanner copy names the staged and bounded behavior", () => {
 test("enterprise claims remain explicitly unavailable or contractual", () => {
   for (const [file, source] of Object.entries(claims)) {
     for (const line of source.split("\n")) {
-      if (/SSO|SAML|on-prem/i.test(line)) {
+      // Match capability names, not JSX crossOrigin or legal "associated" text.
+      if (/\b(?:SSO|SAML|on-prem)\b/i.test(line)) {
         assert.match(
           line,
           /not shipped|planned|no\b.*\b(?:available|offered)|not (?:available|offered|represented)/i,
@@ -1140,6 +1170,8 @@ test("contributor templates keep secrets and evidence layers separated", () => {
   assert.match(bug, /persistent `phm_` mappings; mappings are sensitive metadata/i);
   assert.doesNotMatch(bug, /phm_ tokens are safe to share/i);
   assert.match(bug, /private vulnerability reporting/i);
+  assert.match(bug, /phantom doctor --all --json/);
+  assert.match(bug, /read-only, value-free report/);
 
   const feature = readRepo(".github/ISSUE_TEMPLATE/feature_request.yml");
   assert.match(feature, /Source, artifact, publication, deployment, provider activation, and user acceptance are separate outcomes/i);
