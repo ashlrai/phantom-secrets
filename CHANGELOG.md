@@ -4,6 +4,19 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (.env.example no longer copies credentials in prose comments)
+
+- Example generation masked commented-out assignments and inline comments
+  that held a credential, but a full-line prose comment such as
+  `# old key: <key>` or `# rotated from <old key> on 2026-01-02` was still
+  copied verbatim into the shareable `.env.example`. Every full-line comment
+  that is not a commented-out assignment is now judged by the same rule as
+  inline comments and, when it holds a credential, replaced with
+  `# [comment removed by Phantom: it held a credential]`, keeping its
+  indentation and line ending. Commented-out assignments keep their own
+  masking, lines inside multi-line quoted values stay part of the value, and
+  ordinary prose comments, plain URLs and the generated header are kept.
+
 ### Fixed (one refused secret no longer aborts `phantom validate --check-all`)
 
 - `phantom validate --check-all` and MCP `phantom_validate_all` stopped the
