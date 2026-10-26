@@ -8,7 +8,7 @@
 # (rulesets) unioned with classic branch protection contexts. Fail closed:
 # - no required checks discovered: fail
 # - only GitHub Actions check runs (app id 15368) count; every latest run with
-#   a required name must be completed + success; statuses use the latest state
+#   a required name must be completed + success; commit statuses never count
 # - a required check missing, queued or in progress: bounded wait (~9.5 min),
 #   then no tag (notice on the push trigger, which workflow_run re-evaluates;
 #   failure on workflow_run)
@@ -40,7 +40,6 @@ jobs:
     permissions:
       contents: read
       checks: read     # read check-runs for the exact commit
-      statuses: read   # read legacy commit statuses for the exact commit
     env:
       GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
@@ -91,11 +90,10 @@ jobs:
           fi
           # One evaluation pass. Check runs: only GitHub Actions (app id
           # $ACTIONS_APP_ID) counts, and EVERY latest run with the required name
-          # must be completed + success. Statuses: the combined-status API
-          # returns the latest status per context, which must be success.
+          # must be completed + success. Commit statuses are ignored: a required
+          # name with no app-15368 check run is missing.
           evaluate() {
             runs=$(gh api --paginate "repos/$REPO/commits/$SHA/check-runs?filter=latest&app_id=$ACTIONS_APP_ID&per_page=100"               -q '.check_runs[] | select(.app.id == '"$ACTIONS_APP_ID"') | [.name, .status, (.conclusion // "")] | @tsv')
-            statuses=$(gh api "repos/$REPO/commits/$SHA/status" -q '.statuses[] | [.context, .state] | @tsv')
             pending=0; bad=0
             while IFS= read -r name; do
               rows=$(awk -F'	' -v n="$name" '$1==n' <<<"$runs")
@@ -108,13 +106,7 @@ jobs:
                 done <<<"$rows"
                 continue
               fi
-              state=$(awk -F'	' -v n="$name" '$1==n {print $2; exit}' <<<"$statuses")
-              case "$state" in
-                success) echo "green: $name (status)";;
-                pending) echo "pending: $name (status)"; pending=1;;
-                "") echo "missing: $name"; pending=1;;
-                *) echo "::error::not green: $name ($state)"; bad=1;;
-              esac
+              echo "missing: $name (no GitHub Actions check run; commit statuses never satisfy a required check)"; pending=1
             done <<<"$required"
           }
           # Bounded wait while checks are pending or not yet reported:
