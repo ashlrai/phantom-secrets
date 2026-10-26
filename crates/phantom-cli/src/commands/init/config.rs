@@ -156,6 +156,7 @@ mod tests {
             ("COHERE_API_KEY", "cohere"),
             ("HUGGINGFACE_API_KEY", "huggingface"),
             ("GEMINI_API_KEY", "google_ai"),
+            ("POSTHOG_API_KEY", "posthog_fleet"),
         ];
         let entries: Vec<EnvEntry> = expected
             .iter()
