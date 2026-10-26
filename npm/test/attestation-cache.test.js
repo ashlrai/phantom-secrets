@@ -9,8 +9,14 @@ const { join } = require("path");
 
 const {
   attestationPath, ensurePrivateCacheDir, pathSet, readVerifiedManifest,
-  validateCachedBinary, writePrivateFile,
+  setAttestationClockForTest, validateCachedBinary, writePrivateFile,
 } = require("../bin/cli.js");
+
+// Injectable clock: fixtures are written "now", so by default the clock runs
+// 10 s ahead to model a settled binary. Racy cases use the real clock.
+let skewMs = 10_000;
+const clockNs = () => BigInt(Date.now() + skewMs) * 1_000_000n;
+setAttestationClockForTest(clockNs);
 
 const okVersion = () => Buffer.from("phantom 0.7.9\n");
 const noSpawn = () => { throw new Error("must not spawn"); };
@@ -32,7 +38,7 @@ function identity(path) {
 // so each refusal case below proves the forged record is ignored and the full
 // hash then rejects the tampered binary.
 function forge(paths, sha256, mode = 0o600) {
-  const record = { schema: 1, version: "0.7.9", sha256, versionChecked: true, identity: identity(paths.binaryPath) };
+  const record = { schema: 1, version: "0.7.9", sha256, versionChecked: true, identity: identity(paths.binaryPath), attestedAtNs: `${clockNs()}` };
   writePrivateFile(attestationPath(paths.binaryPath), `${JSON.stringify(record)}\n`, 0o600);
   if (mode !== 0o600) chmodSync(attestationPath(paths.binaryPath), mode);
 }
@@ -124,6 +130,33 @@ try {
     rmSync(att, { force: true });
   }
 
+  // Racy stat: a just-written or just-rewritten binary is never attested, and
+  // a sidecar recorded before its key settled is never accepted.
+  skewMs = 0;
+  rmSync(paths.binaryPath); rmSync(paths.manifestPath); rmSync(att, { force: true });
+  writePair(paths, "FFFFFFFFFFFFFFFF");
+  let racySpawns = 0;
+  const countSpawn = () => { racySpawns += 1; return okVersion(); };
+  for (let i = 0; i < 3; i += 1) {
+    assert.strictEqual(validateCachedBinary(paths.binaryPath, paths.manifestPath, { execFileSyncImpl: countSpawn }), true);
+  }
+  assert.strictEqual(racySpawns, 3, "fresh binary must be fully verified every call");
+  assert.throws(() => lstatSync(att), /ENOENT/, "fresh binary must not be attested");
+  const fSha = crypto.createHash("sha256").update("FFFFFFFFFFFFFFFF").digest("hex");
+  writeFileSync(paths.binaryPath, "GGGGGGGGGGGGGGGG");
+  assert.strictEqual(readVerifiedManifest(paths.binaryPath, paths.manifestPath), null, "just-rewritten binary caught");
+  forge(paths, fSha);
+  refused("sidecar written before key settled");
+  rmSync(att, { force: true });
+
+  // Settled again: the same pair attests and then hits from cache.
+  rmSync(paths.binaryPath); rmSync(paths.manifestPath);
+  writePair(paths, "HHHHHHHHHHHHHHHH");
+  skewMs = 10_000;
+  assert.strictEqual(validateCachedBinary(paths.binaryPath, paths.manifestPath, { execFileSyncImpl: okVersion }), true);
+  assert.ok(lstatSync(att).isFile(), "settled binary attests");
+  assert.strictEqual(validateCachedBinary(paths.binaryPath, paths.manifestPath, { execFileSyncImpl: noSpawn }), true);
+
   // Changed expectation: a new manifest digest invalidates an existing attestation.
   rmSync(paths.binaryPath); rmSync(paths.manifestPath);
   writePair(paths, "EEEEEEEEEEEEEEEE");
@@ -134,5 +167,6 @@ try {
 } finally {
   chmodSync(dir, 0o700);
   rmSync(dir, { recursive: true, force: true });
+  setAttestationClockForTest(null);
 }
 console.log("npm CLI wrapper attestation cache tests passed");

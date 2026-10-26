@@ -15,6 +15,7 @@ const { join } = require("path");
 const {
   attestationPath,
   ensurePrivateCacheDir,
+  setAttestationClockForTest,
   isCachedBinaryStale,
   parseBinaryVersion,
   pathSet,
@@ -64,6 +65,8 @@ try {
   rmSync(paths.binaryPath);
 
   writePair(paths.binaryPath, paths.manifestPath, "old-binary");
+  // Treat the fixture as settled (10 s old) so the attestation path is used.
+  setAttestationClockForTest(() => BigInt(Date.now() + 10_000) * 1_000_000n);
   assert.ok(readVerifiedManifest(paths.binaryPath, paths.manifestPath));
   assert.strictEqual(isCachedBinaryStale(paths.binaryPath, {
     execFileSyncImpl: () => Buffer.from("phantom 0.7.9\n"),
@@ -76,6 +79,7 @@ try {
     execFileSyncImpl: () => { throw new Error("attested binary must not re-run --version"); },
   }), true);
   rmSync(attestationPath(paths.binaryPath));
+  setAttestationClockForTest(null);
 
   let observedTimeout;
   assert.strictEqual(validateCachedBinary(paths.binaryPath, paths.manifestPath, {

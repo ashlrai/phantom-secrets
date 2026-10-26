@@ -316,6 +316,22 @@ function sha256File(path) {
 // already succeeded for the identical file.
 const ATTESTATION_SCHEMA = 1;
 const ATTESTATION_MAX_BYTES = 1024;
+// Racy-stat guard (same idea as git's racy index entries): on filesystems with
+// coarse timestamps, a same-size rewrite or an unlink plus recreate that reuses
+// the inode within the same tick can leave every key field unchanged. Only a
+// key whose newest timestamp is at least this old when attested is trusted.
+const ATTESTATION_SETTLE_NS = 2_000_000_000n;
+let attestationClockNs = () => BigInt(Date.now()) * 1_000_000n;
+
+function setAttestationClockForTest(clock) {
+  attestationClockNs = clock || (() => BigInt(Date.now()) * 1_000_000n);
+}
+
+function identitySettledAt(identity, atNs) {
+  const newest = BigInt(identity.mtimeNs) > BigInt(identity.ctimeNs)
+    ? BigInt(identity.mtimeNs) : BigInt(identity.ctimeNs);
+  return atNs - newest >= ATTESTATION_SETTLE_NS;
+}
 
 function attestationPath(binaryPath) {
   return `${binaryPath}.verified.json`;
@@ -352,7 +368,7 @@ function readAttestation(binaryPath, manifest, platform = process.platform) {
     const record = JSON.parse(readFileSync(path, "utf8"));
     if (
       !record || typeof record !== "object" ||
-      Object.keys(record).sort().join(",") !== "identity,schema,sha256,version,versionChecked" ||
+      Object.keys(record).sort().join(",") !== "attestedAtNs,identity,schema,sha256,version,versionChecked" ||
       record.schema !== ATTESTATION_SCHEMA ||
       record.version !== VERSION ||
       record.sha256 !== manifest.sha256 ||
@@ -361,6 +377,8 @@ function readAttestation(binaryPath, manifest, platform = process.platform) {
       !record.identity || typeof record.identity !== "object" ||
       Object.keys(record.identity).sort().join(",") !== "ctimeNs,dev,ino,mtimeNs,size" ||
       !Object.values(record.identity).every((v) => typeof v === "string" && /^[0-9]{1,40}$/.test(v)) ||
+      typeof record.attestedAtNs !== "string" || !/^[0-9]{1,40}$/.test(record.attestedAtNs) ||
+      !identitySettledAt(record.identity, BigInt(record.attestedAtNs)) ||
       !sameIdentity(record.identity, binaryIdentity(binaryPath))
     ) return null;
     return record;
@@ -372,9 +390,13 @@ function readAttestation(binaryPath, manifest, platform = process.platform) {
 function writeAttestation(binaryPath, manifest, identity, versionChecked, platform = process.platform) {
   // Best effort: a failed write only costs a full hash on the next call.
   if (manifest.version !== VERSION) return;
+  const attestedAtNs = attestationClockNs();
+  // A key that is not yet settled could be shared by a same-tick rewrite, so
+  // it is verified in full every time until it settles.
+  if (!identitySettledAt(identity, attestedAtNs)) return;
   try {
     validateOwnedPath(dirname(binaryPath), "directory", platform);
-    const record = { schema: ATTESTATION_SCHEMA, version: VERSION, sha256: manifest.sha256, versionChecked, identity };
+    const record = { schema: ATTESTATION_SCHEMA, version: VERSION, sha256: manifest.sha256, versionChecked, identity, attestedAtNs: attestedAtNs.toString() };
     writeAtomicPrivateFile(attestationPath(binaryPath), JSON.stringify(record) + "\n", 0o600, platform);
   } catch {
     // Fail closed: no attestation means full verification next time.
@@ -1059,6 +1081,7 @@ module.exports = {
   recoverInterruptedInstall,
   replaceCachedBinary,
   sameWindowsFilesystemObject,
+  setAttestationClockForTest,
   validateCachedBinary,
   validateWindowsPathAncestors,
   writePrivateFile,
