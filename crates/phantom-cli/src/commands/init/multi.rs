@@ -68,20 +68,34 @@ pub fn run(root: PathBuf, dry_run: bool, jobs: usize) -> Result<()> {
     // ── dry-run: no concurrency needed, just print ────────────────────────
     if dry_run {
         let mut skipped = 0usize;
+        let mut refused = 0usize;
         for repo in &candidates {
             let display = repo_display(repo, &root);
-            if repo.join(".phantom.toml").exists() {
-                println!("  {} {} (already protected)", "·".dimmed(), display);
-                skipped += 1;
-            } else {
-                println!("  {} {} (would protect)", "+".cyan().bold(), display);
+            match repo_state(repo) {
+                RepoState::AlreadyProtected => {
+                    println!("  {} {} (already protected)", "·".dimmed(), display);
+                    skipped += 1;
+                }
+                RepoState::Refused => {
+                    println!(
+                        "  {} {}: {}",
+                        "!".yellow().bold(),
+                        display,
+                        crate::util::CONFIG_NOT_REGULAR
+                    );
+                    refused += 1;
+                }
+                RepoState::NeedsInit => {
+                    println!("  {} {} (would protect)", "+".cyan().bold(), display);
+                }
             }
         }
         println!(
-            "\n{} {} repo(s) would be protected · {} already protected",
+            "\n{} {} repo(s) would be protected · {} already protected · {} refused",
             "done".green().bold(),
-            candidates.len() - skipped,
-            skipped
+            candidates.len() - skipped - refused,
+            skipped,
+            refused
         );
         return Ok(());
     }
@@ -136,11 +150,21 @@ pub fn run(root: PathBuf, dry_run: bool, jobs: usize) -> Result<()> {
 
             let display = repo_display(&repo, &root);
 
-            let line = if repo.join(".phantom.toml").exists() {
-                skipped.fetch_add(1, Ordering::Relaxed);
-                format!("  {} {} (already protected)", "·".dimmed(), display)
-            } else {
-                match run_init_for(&repo) {
+            let line = match repo_state(&repo) {
+                RepoState::AlreadyProtected => {
+                    skipped.fetch_add(1, Ordering::Relaxed);
+                    format!("  {} {} (already protected)", "·".dimmed(), display)
+                }
+                RepoState::Refused => {
+                    errored.fetch_add(1, Ordering::Relaxed);
+                    format!(
+                        "  {} {}: {}",
+                        "FAIL".red().bold(),
+                        display,
+                        crate::util::CONFIG_NOT_REGULAR
+                    )
+                }
+                RepoState::NeedsInit => match run_init_for(&repo) {
                     Ok(count) => {
                         protected.fetch_add(1, Ordering::Relaxed);
                         format!(
@@ -155,7 +179,7 @@ pub fn run(root: PathBuf, dry_run: bool, jobs: usize) -> Result<()> {
                         errored.fetch_add(1, Ordering::Relaxed);
                         format!("  {} {}: {}", "FAIL".red().bold(), display, e)
                     }
-                }
+                },
             };
 
             mp.println(&line).ok();
@@ -248,6 +272,27 @@ fn walk(dir: &Path, depth_remaining: usize, out: &mut Vec<PathBuf>) {
                 walk(&path, depth_remaining - 1, out);
             }
         }
+    }
+}
+
+/// What `--multi` does with a candidate repo, judged by its `.phantom.toml`
+/// with the regular-file semantics of [`crate::util::load_project_config`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RepoState {
+    /// No `.phantom.toml`: run `phantom init`.
+    NeedsInit,
+    /// A regular `.phantom.toml`: skip.
+    AlreadyProtected,
+    /// A symlink, directory or other non-regular `.phantom.toml`: neither
+    /// protected nor safe to initialize over; reported as a failure.
+    Refused,
+}
+
+fn repo_state(repo: &Path) -> RepoState {
+    match crate::util::config_presence(&repo.join(".phantom.toml")) {
+        crate::util::ConfigPresence::Absent => RepoState::NeedsInit,
+        crate::util::ConfigPresence::Regular => RepoState::AlreadyProtected,
+        crate::util::ConfigPresence::NotRegular => RepoState::Refused,
     }
 }
 
@@ -427,7 +472,7 @@ mod tests {
                 match repo {
                     None => break,
                     Some(r) => {
-                        if r.join(".phantom.toml").exists() {
+                        if repo_state(&r) == RepoState::AlreadyProtected {
                             s.fetch_add(1, Ordering::Relaxed);
                         } else {
                             match run_init_for(&r) {
@@ -450,5 +495,33 @@ mod tests {
         assert_eq!(skipped_count.load(Ordering::Relaxed), 3);
         assert_eq!(protected_count.load(Ordering::Relaxed), 0);
         assert_eq!(errored_count.load(Ordering::Relaxed), 0);
+    }
+
+    /// A directory or symlink named `.phantom.toml` is not "already
+    /// protected": `load_project_config` refuses it, so `--multi` must report
+    /// it instead of skipping the repo as done. Fails on main, where
+    /// `exists()` counted both as protected.
+    #[cfg(unix)]
+    #[test]
+    fn non_regular_config_is_not_already_protected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let target = outside.path().join("phantom.toml");
+        std::fs::write(&target, "[phantom]\n").unwrap();
+
+        let dir_repo = tmp.path().join("dir");
+        std::fs::create_dir_all(dir_repo.join(".phantom.toml")).unwrap();
+        let link_repo = tmp.path().join("link");
+        std::fs::create_dir_all(&link_repo).unwrap();
+        std::os::unix::fs::symlink(&target, link_repo.join(".phantom.toml")).unwrap();
+        let regular_repo = tmp.path().join("regular");
+        touch(&regular_repo.join(".phantom.toml"));
+        let fresh_repo = tmp.path().join("fresh");
+        std::fs::create_dir_all(&fresh_repo).unwrap();
+
+        assert_eq!(repo_state(&dir_repo), RepoState::Refused);
+        assert_eq!(repo_state(&link_repo), RepoState::Refused);
+        assert_eq!(repo_state(&regular_repo), RepoState::AlreadyProtected);
+        assert_eq!(repo_state(&fresh_repo), RepoState::NeedsInit);
     }
 }

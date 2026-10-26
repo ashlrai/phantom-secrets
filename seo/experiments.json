@@ -1,0 +1,5 @@
+{
+  "schema_version": "phantom-seo-experiments-v1",
+  "default_observation_days": 28,
+  "experiments": []
+}

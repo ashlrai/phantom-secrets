@@ -23,7 +23,7 @@ audit, import/export, cloud sync, team vaults, and safe MCP setup for Codex.
 
 ### Step 1: install Phantom
 
-Install the reviewed `v0.7.5` binary using the platform-specific, checksum-
+Install the reviewed `v0.7.9` binary using the platform-specific, checksum-
 verified path in [getting started](./getting-started.md#install), then run
 `phantom init` in the project.
 
@@ -37,11 +37,11 @@ This patches `~/.codex/config.toml` with an `[mcp_servers.phantom]` entry:
 
 ```toml
 [mcp_servers.phantom]
-command = "phantom-mcp"
-args = []
+command = "/absolute/path/to/phantom"
+args = ["mcp", "serve"]
 ```
 
-Install both `v0.7.5` release binaries before setup. Version `0.7.5` records the
+Install both `v0.7.9` release binaries before setup. Version `0.7.9` records the
 running `phantom` executable with `mcp serve` when it can resolve that runtime,
 otherwise it looks for a local `phantom-mcp`. Setup has no network
 package-runner fallback and fails closed when neither local runtime is
@@ -86,14 +86,14 @@ migration guidance and never kills a process or deletes the record.
 
 ## MCP tools Codex can use
 
-Once `phantom-secrets-mcp` is registered, Codex can call the same runtime
+Once the `phantom` server is registered, Codex can call the same runtime
 catalog as other MCP clients. See the [core tool examples in the Claude Code
 guide](./claude-code.md#core-mcp-tools-claude-can-use), and use MCP `tools/list`
 for the canonical catalog.
 
 Tools most relevant to Codex task execution:
 
-- `phantom_status` — check vault state before a task starts
+- `phantom_status` — check `.env` protection and service mappings before a task starts (does not open the vault)
 - `phantom_list_secrets` — let Codex know which secrets exist without exposing values
 - `phantom_add_secret_interactive` — return the terminal command to enter a secret out-of-band; useful when Codex identifies a missing key mid-task
 - `phantom_check` — scan `.env` or runtime environment for unprotected secrets
@@ -132,17 +132,35 @@ does not deploy or authorize production credentials.
 
 ---
 
+## Gateway mode (optional, experimental)
+
+To route Codex through a local LiteLLM gateway that holds no real keys, see [Connect an agent](litellm.md#connect-an-agent) in the LiteLLM guide. Without the gateway, the direct Phantom route above stays the default.
+
 ## Troubleshooting
 
 **Codex does not list Phantom in its available tools**
 
-Check that `~/.codex/config.toml` contains the `[mcp_servers.phantom]` block:
+First confirm that the installed runtime responds, then preview only the
+Phantom entry that setup would generate:
 
 ```bash
-cat ~/.codex/config.toml
+phantom --version
+phantom setup --client codex --print
 ```
 
-If missing, re-run `phantom setup --client codex`. If present, restart Codex — MCP servers are read at startup.
+The preview does not inspect your existing Codex configuration. In your local
+editor, locate only `[mcp_servers.phantom]` in `~/.codex/config.toml` and compare
+its `command` and `args` with the preview. Do not paste or print the whole config:
+other server entries can contain credentials or private service configuration.
+If the Phantom entry is absent or stale, re-run `phantom setup --client codex`,
+which merges that entry, then restart Codex. A generated entry alone does not
+prove that the client connected; confirm Phantom's tools appear in Codex.
+
+To test the installed CLI and both MCP launch paths independently of your
+project and client configuration, run the
+[disposable runtime smoke example](../examples/agent-first-five-minutes/README.md)
+from a Phantom source checkout. It reports missing prerequisites as skipped
+and does not read a real vault or contact a provider.
 
 **Phantom proxy not active during Codex task execution**
 

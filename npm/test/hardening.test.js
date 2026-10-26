@@ -15,7 +15,7 @@ const {
   utimesSync,
 } = require("fs");
 const { tmpdir } = require("os");
-const { basename, dirname, join } = require("path");
+const { basename, dirname, join, posix: posixPath, win32: win32Path } = require("path");
 
 const {
   acquireInstallLock,
@@ -30,6 +30,8 @@ const {
   pathSet,
   propagateChildFailure,
   readVerifiedManifest,
+  sameWindowsFilesystemObject,
+  validateWindowsPathAncestors,
   writePrivateFile,
 } = require("../bin/cli.js");
 
@@ -73,7 +75,7 @@ async function assertPreviousVersionCachePreserved(stage) {
     const archiveExt = process.platform === "win32" ? "zip" : "tar.gz";
     const archiveName = `phantom-${target}.${archiveExt}`;
     const archiveUrl =
-      `https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.6/${archiveName}`;
+      `https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9/${archiveName}`;
     const archiveBytes = Buffer.from(`verified archive for ${stage}`);
     const archiveSha = crypto.createHash("sha256").update(archiveBytes).digest("hex");
     const observedUrls = [];
@@ -108,7 +110,7 @@ async function assertPreviousVersionCachePreserved(stage) {
         },
       }),
       stage === "version"
-        ? /did not report exact version 0\.7\.6/
+        ? /did not report exact version 0\.7\.9/
         : (error) => error === stagedFailure
     );
 
@@ -131,6 +133,46 @@ async function assertPreviousVersionCachePreserved(stage) {
   assert.throws(
     () => getCacheDir({ env: {}, homedirImpl: () => "relative-home" }),
     /absolute private home/
+  );
+  assert.strictEqual(
+    getCacheDir({
+      env: { HOME: "/c/Users/msys-user", USERPROFILE: "C:\\Users\\native-user" },
+      homedirImpl: () => "C:\\Users\\platform-user",
+      platform: "win32",
+    }),
+    win32Path.join("C:\\Users\\native-user", ".phantom-secrets", "bin")
+  );
+  assert.strictEqual(
+    getCacheDir({
+      env: { USERPROFILE: "C:\\Users\\service-user" },
+      homedirImpl: () => { throw new Error("OS home unavailable"); },
+      platform: "win32",
+    }),
+    win32Path.join("C:\\Users\\service-user", ".phantom-secrets", "bin")
+  );
+  assert.strictEqual(
+    getCacheDir({
+      env: { HOME: "/c/Users/msys-user" },
+      homedirImpl: () => "D:\\Users\\platform-user",
+      platform: "win32",
+    }),
+    win32Path.join("D:\\Users\\platform-user", ".phantom-secrets", "bin")
+  );
+  assert.throws(
+    () => getCacheDir({
+      env: { HOME: "/c/Users/msys-user" },
+      homedirImpl: () => "/c/Users/msys-platform-user",
+      platform: "win32",
+    }),
+    /absolute private home/
+  );
+  assert.strictEqual(
+    getCacheDir({
+      env: { HOME: "/unix/home", USERPROFILE: "/native/windows-user" },
+      homedirImpl: () => "/platform/home",
+      platform: "linux",
+    }),
+    posixPath.join("/unix/home", ".phantom-secrets", "bin")
   );
   assert.strictEqual(
     parseSha256File(Buffer.from(`${"a".repeat(64)}  phantom-linux.tar.gz\n`), "phantom-linux.tar.gz"),
@@ -160,6 +202,32 @@ async function assertPreviousVersionCachePreserved(stage) {
   assert.strictEqual(fsyncOpenMode, "r+");
   assert.strictEqual(fsyncDescriptor, 41);
   assert.strictEqual(closedDescriptor, 41);
+
+  const identities = new Map([
+    ["short", { dev: 7n, ino: 42n }],
+    ["long", { dev: 7n, ino: 42n }],
+    ["junction", { dev: 7n, ino: 43n }],
+    ["unknown", { dev: 7n, ino: 0n }],
+  ]);
+  const fakeBigintLstat = (path, options) => {
+    assert.deepStrictEqual(options, { bigint: true });
+    return identities.get(path);
+  };
+  assert.strictEqual(
+    sameWindowsFilesystemObject("short", "long", fakeBigintLstat),
+    true,
+    "lexical aliases with the same Windows file identity are accepted"
+  );
+  assert.strictEqual(
+    sameWindowsFilesystemObject("junction", "long", fakeBigintLstat),
+    false,
+    "a reparse object and its target do not share lstat identity"
+  );
+  assert.strictEqual(
+    sameWindowsFilesystemObject("unknown", "unknown", fakeBigintLstat),
+    false,
+    "an unavailable Windows file index fails closed"
+  );
 
   const fsyncFailure = Object.assign(new Error("simulated durable write failure"), { code: "EIO" });
   let failureClosedDescriptor;
@@ -236,6 +304,26 @@ async function assertPreviousVersionCachePreserved(stage) {
 
   const fixtureDir = mkdtempSync(join(tmpdir(), "phantom-cli-hardening-"));
   try {
+    if (process.platform === "win32") {
+      const nativeAlias = [fixtureDir, tmpdir(), process.env.USERPROFILE]
+        .filter(Boolean)
+        .find((candidate) =>
+          candidate.includes("~") &&
+          win32Path.normalize(realpathSync.native(candidate)).toLowerCase() !==
+            win32Path.normalize(candidate).toLowerCase()
+        );
+      if (process.env.GITHUB_ACTIONS === "true") {
+        assert.ok(nativeAlias, "GitHub Windows runners must exercise their native 8.3 alias");
+      }
+      if (nativeAlias) {
+        assert.strictEqual(
+          sameWindowsFilesystemObject(nativeAlias, realpathSync.native(nativeAlias)),
+          true
+        );
+        assert.doesNotThrow(() => validateWindowsPathAncestors(nativeAlias, "win32"));
+      }
+    }
+
     const windowsReal = join(realpathSync(fixtureDir), "windows-real");
     const windowsLink = join(realpathSync(fixtureDir), "windows-link");
     mkdirSync(windowsReal, { mode: 0o700 });
@@ -310,6 +398,9 @@ async function assertPreviousVersionCachePreserved(stage) {
     assert.notStrictEqual(staleOwner.ownerToken, successor.ownerToken);
     assert.strictEqual(staleOwner(), false, "old owner must not remove successor lock");
     assert.strictEqual(existsSync(paths.lockPath), true);
+    // Refresh synchronously before the contention assertion: timer scheduling
+    // granularity differs across supported Node releases.
+    successor.heartbeat();
     await assert.rejects(
       acquireInstallLock(paths.lockPath, {
         waitMs: 10,
@@ -339,11 +430,40 @@ async function assertPreviousVersionCachePreserved(stage) {
       },
       execFileSyncImpl: (_path, _args, options) => {
         assert.ok(options.timeout > 0 && options.timeout < 120_000);
-        return Buffer.from("phantom 0.7.6\n");
+        return Buffer.from("phantom 0.7.9\n");
       },
     });
     assert.ok(dirname(observedArchivePath).startsWith(join(fixtureDir, ".install-")));
     assert.ok(readVerifiedManifest(installed, `${installed}.manifest.json`));
+
+    const versionFailureCache = join(fixtureDir, "version-failure-cache");
+    ensurePrivateCacheDir(versionFailureCache);
+    const versionFailureBytes = Buffer.from("version-failure-archive");
+    const versionFailureSha = crypto.createHash("sha256").update(versionFailureBytes).digest("hex");
+    let versionFailure;
+    try {
+      await ensureBinary({
+        cacheDir: versionFailureCache,
+        runtime: { platform: process.platform, arch: process.arch },
+        downloadImpl: async (url) => url.endsWith(".sha256")
+          ? Buffer.from(`${versionFailureSha}  ${basename(url.slice(0, -7))}\n`)
+          : versionFailureBytes,
+        extractImpl: (_archivePath, candidatePath) => {
+          writePrivateFile(candidatePath, "version-failure-candidate", 0o700);
+        },
+        execFileSyncImpl: () => {
+          throw Object.assign(new Error("sensitive output /private/candidate"), { status: 23 });
+        },
+      });
+    } catch (error) {
+      versionFailure = error;
+    }
+    assert.strictEqual(
+      versionFailure?.message,
+      "downloaded phantom version check failed with exit status 23"
+    );
+    assert.doesNotMatch(versionFailure?.message ?? "", /sensitive|private|candidate/i);
+
     const priorBinary = readFileSync(installed);
     const priorManifest = readFileSync(`${installed}.manifest.json`);
     await assert.rejects(
@@ -379,17 +499,105 @@ async function assertPreviousVersionCachePreserved(stage) {
       cacheDir: windowsFixtureDir,
       platform: "win32",
       execFileSyncImpl: (executable, args, options) => {
-        assert.strictEqual(executable, "powershell");
+        assert.strictEqual(executable, "pwsh.exe");
         assert.ok(options.timeout > 0 && options.timeout < 120_000);
-        assert.match(args[3], /phantom\.exe','phantom-mcp\.exe/);
-        assert.match(args[3], /GetEntry\('phantom\.exe'\)/);
-        assert.match(args[3], /ExternalAttributes/);
-        assert.match(args[3], /ReparsePoint/);
-        assert.match(args[3], /non-regular entry/);
+        assert.strictEqual(args[5], "-File");
+        const extractionScript = readFileSync(args[6], "utf8");
+        assert.match(extractionScript, /phantom\.exe','phantom-mcp\.exe/);
+        assert.match(extractionScript, /GetEntry\('phantom\.exe'\)/);
+        assert.match(extractionScript, /ExternalAttributes/);
+        assert.match(extractionScript, /ReparsePoint/);
+        assert.match(extractionScript, /non-regular entry/);
+        assert.match(extractionScript, /Sort-Object -CaseSensitive/);
+        assert.match(extractionScript, /-cne/);
+        assert.strictEqual(args[7], windowsArchive);
         writePrivateFile(args[args.length - 1], "cli-windows", 0o700, "win32");
       },
     });
     assert.strictEqual(readFileSync(windowsOutput, "utf8"), "cli-windows");
+
+    const fallbackArchive = join(windowsFixtureDir, "fallback.zip");
+    writePrivateFile(fallbackArchive, "zip-fallback-fixture", 0o600);
+    const fallbackOutput = join(windowsFixtureDir, "phantom-fallback.exe");
+    const fallbackAttempts = [];
+    const fallbackTimes = [100, 125];
+    extractBinaryFromArchive(fallbackArchive, fallbackOutput, {
+      cacheDir: windowsFixtureDir,
+      platform: "win32",
+      execTimeoutMs: 30_000,
+      monotonicNow: () => fallbackTimes.shift(),
+      execFileSyncImpl: (executable, args, options) => {
+        fallbackAttempts.push(executable);
+        if (executable === "pwsh.exe") {
+          assert.strictEqual(options.timeout, 30_000);
+          throw Object.assign(new Error("pwsh is unavailable"), { code: "ENOENT" });
+        }
+        assert.strictEqual(executable, "powershell.exe");
+        assert.strictEqual(options.timeout, 29_975);
+        writePrivateFile(args[args.length - 1], "cli-fallback", 0o700, "win32");
+      },
+    });
+    assert.deepStrictEqual(fallbackAttempts, ["pwsh.exe", "powershell.exe"]);
+    assert.deepStrictEqual(fallbackTimes, []);
+    assert.strictEqual(readFileSync(fallbackOutput, "utf8"), "cli-fallback");
+
+    const timeoutArchive = join(windowsFixtureDir, "timeout.zip");
+    writePrivateFile(timeoutArchive, "zip-timeout-fixture", 0o600);
+    let timeoutAttempts = 0;
+    assert.throws(
+      () => extractBinaryFromArchive(timeoutArchive, join(windowsFixtureDir, "timeout.exe"), {
+        cacheDir: windowsFixtureDir,
+        platform: "win32",
+        execTimeoutMs: 7,
+        execFileSyncImpl: () => {
+          timeoutAttempts += 1;
+          throw Object.assign(new Error("spawnSync powershell.exe ETIMEDOUT"), {
+            code: "ETIMEDOUT",
+            signal: "SIGTERM",
+          });
+        },
+      }),
+      /Windows ZIP extraction timed out after 7ms/
+    );
+    assert.strictEqual(timeoutAttempts, 1, "timeouts must not retry in another PowerShell host");
+
+    const statusArchive = join(windowsFixtureDir, "status.zip");
+    writePrivateFile(statusArchive, "zip-status-fixture", 0o600);
+    let sanitizedFailure;
+    let statusAttempts = 0;
+    try {
+      extractBinaryFromArchive(statusArchive, join(windowsFixtureDir, "status.exe"), {
+        cacheDir: windowsFixtureDir,
+        platform: "win32",
+        execFileSyncImpl: () => {
+          statusAttempts += 1;
+          throw Object.assign(new Error("sensitive child output C:\\secret\\path"), { status: 17 });
+        },
+      });
+    } catch (error) {
+      sanitizedFailure = error;
+    }
+    assert.strictEqual(statusAttempts, 1, "nonzero exits must not retry in another PowerShell host");
+    assert.strictEqual(sanitizedFailure?.message, "Windows ZIP extraction failed with exit status 17");
+    assert.doesNotMatch(sanitizedFailure?.message ?? "", /sensitive|secret|path/i);
+
+    if (process.platform === "win32") {
+      const nativeZipSource = join(windowsFixtureDir, "native-zip-source");
+      mkdirSync(nativeZipSource, { mode: 0o700 });
+      writePrivateFile(join(nativeZipSource, "phantom.exe"), "native-cli", 0o700, "win32");
+      writePrivateFile(join(nativeZipSource, "phantom-mcp.exe"), "native-mcp", 0o700, "win32");
+      const nativeZip = join(windowsFixtureDir, "native-wrapper.zip");
+      execFileSync("tar.exe", [
+        "-a", "-cf", nativeZip, "-C", nativeZipSource, "phantom.exe", "phantom-mcp.exe",
+      ]);
+      const nativeOutput = join(windowsFixtureDir, "native-wrapper-phantom.exe");
+      extractBinaryFromArchive(nativeZip, nativeOutput, {
+        cacheDir: windowsFixtureDir,
+        platform: "win32",
+        execTimeoutMs: 15_000,
+      });
+      assert.strictEqual(readFileSync(nativeOutput, "utf8"), "native-cli");
+    }
 
     if (process.platform !== "win32") {
       const source = join(fixtureDir, "archive-source");
@@ -403,17 +611,33 @@ async function assertPreviousVersionCachePreserved(stage) {
       chmodSync(archive, 0o600);
       const output = join(fixtureDir, "extracted-cli");
       let extractionCalls = 0;
+      const extractionArgs = [];
       extractBinaryFromArchive(archive, output, {
         cacheDir: fixtureDir,
         execFileSyncImpl: (executable, args, options) => {
           extractionCalls += 1;
+          extractionArgs.push(args);
           assert.ok(options.timeout > 0 && options.timeout < 120_000);
           return execFileSync(executable, args, options);
         },
       });
       assert.strictEqual(extractionCalls, 2);
+      // Root would otherwise keep the release runner's uid on the extracted file.
+      assert.ok(extractionArgs[1].includes("--no-same-owner"));
       assert.strictEqual(readFileSync(output, "utf8"), "cli");
       assert.strictEqual(lstatSync(output).mode & 0o777, 0o700);
+      if (process.getuid() === 0) {
+        // Release archives carry the CI runner's uid; a root install must still succeed.
+        const foreignArchive = join(fixtureDir, "foreign-owner.tar.gz");
+        execFileSync("tar", [
+          "--owner=4242", "--group=4242", "-czf", foreignArchive, "-C", source, "phantom", "phantom-mcp",
+        ]);
+        chmodSync(foreignArchive, 0o600);
+        const foreignOutput = join(fixtureDir, "foreign-owner-cli");
+        extractBinaryFromArchive(foreignArchive, foreignOutput, { cacheDir: fixtureDir });
+        assert.strictEqual(readFileSync(foreignOutput, "utf8"), "cli");
+        assert.strictEqual(lstatSync(foreignOutput).uid, 0);
+      }
       const archiveSymlink = join(fixtureDir, "archive-link.tar.gz");
       symlinkSync(archive, archiveSymlink);
       assert.throws(

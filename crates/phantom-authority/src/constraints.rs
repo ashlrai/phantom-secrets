@@ -464,6 +464,59 @@ mod tests {
     }
 
     #[test]
+    fn intersection_refuses_a_different_environment() {
+        let left = constraints();
+        let mut right = constraints();
+        right.environment = "staging".into();
+        assert!(matches!(
+            left.intersect(&right),
+            Err(ConstraintError::EnvironmentMismatch)
+        ));
+    }
+
+    #[test]
+    fn intersection_narrows_ports_and_methods() {
+        let left = constraints();
+        let mut right = constraints();
+        right.network.ports = ExactScope::Exact(vec![8443]);
+        right.network.methods = ExactScope::Exact(vec![HttpMethod::Get]);
+        let narrowed = left.intersect(&right).unwrap();
+        assert_eq!(narrowed.network.ports, ExactScope::Exact(vec![8443]));
+        assert_eq!(
+            narrowed.network.methods,
+            ExactScope::Exact(vec![HttpMethod::Get])
+        );
+        // The other order narrows the same way.
+        let narrowed = right.intersect(&left).unwrap();
+        assert_eq!(narrowed.network.ports, ExactScope::Exact(vec![8443]));
+        assert_eq!(
+            narrowed.network.methods,
+            ExactScope::Exact(vec![HttpMethod::Get])
+        );
+    }
+
+    #[test]
+    fn path_prefix_intersection_respects_segment_boundaries() {
+        // `/v10` is not inside `/v1`: a shared string prefix is not a path
+        // prefix, so the intersection is denied rather than widened.
+        let mut left = constraints();
+        left.network.path_prefixes = ExactScope::Exact(vec!["/v1".into()]);
+        let mut right = constraints();
+        right.network.path_prefixes = ExactScope::Exact(vec!["/v10".into()]);
+        assert_eq!(
+            left.intersect(&right).unwrap().network.path_prefixes,
+            ExactScope::Denied
+        );
+        // A trailing-slash parent still contains its children.
+        left.network.path_prefixes = ExactScope::Exact(vec!["/v1/".into()]);
+        right.network.path_prefixes = ExactScope::Exact(vec!["/v1/jobs".into()]);
+        assert_eq!(
+            left.intersect(&right).unwrap().network.path_prefixes,
+            ExactScope::Exact(vec!["/v1/jobs".into()])
+        );
+    }
+
+    #[test]
     fn intersection_only_narrows() {
         let left = constraints();
         let mut right = constraints();

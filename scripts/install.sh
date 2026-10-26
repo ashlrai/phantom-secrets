@@ -16,7 +16,7 @@ warn() { printf "  \033[1;33m!\033[0m phantom: %s\n" "$1" >&2; }
 die()  { printf "  \033[1;31m✗\033[0m phantom: %s\n" "$1" >&2; exit 1; }
 
 CANONICAL_REPO="ashlrai/phantom-secrets"
-CANDIDATE_TAG="v0.7.6"
+CANDIDATE_TAG="v0.7.9"
 REPO="$CANONICAL_REPO"
 RELEASES_URL="https://github.com/ashlrai/phantom-secrets/releases"
 INSTALL_DIR="${PHANTOM_INSTALL_DIR:-$HOME/.phantom-secrets/bin}"
@@ -451,7 +451,8 @@ member_types="$(tar -tvzf "$archive_path" | awk '{ print substr($1, 1, 1) }')" \
   || die "could not inspect release archive member types"
 [ "$member_types" = $'-\n-' ] || die "release archive members must be regular files"
 
-tar -xzf "$archive_path" -C "$candidate_dir" || die "could not extract release archive"
+# --no-same-owner: as root, tar would otherwise keep the release runner's uid on the installed binaries.
+tar --no-same-owner -xzf "$archive_path" -C "$candidate_dir" || die "could not extract release archive"
 [ "$(find "$candidate_dir" -mindepth 1 -maxdepth 1 -print | wc -l | tr -d '[:space:]')" = "2" ] \
   || die "candidate contains unexpected files"
 [ -f "$candidate_dir/phantom" ] && [ ! -L "$candidate_dir/phantom" ] \

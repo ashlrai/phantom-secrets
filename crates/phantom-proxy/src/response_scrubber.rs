@@ -27,7 +27,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use crate::interceptor::ResponseLeakAnalyzer;
+use crate::interceptor::{ResponseLeakAnalyzer, PARTIAL_MIN_RUN};
 use phantom_core::audit::{LeakEvent, LeakLocation, LeakSeverity};
 use phantom_core::leak_correlation::{
     extract_json_path, value_at_json_path, ContextualLeakProfileStore, RequestContext,
@@ -370,20 +370,42 @@ pub struct StreamingScrubState {
     pending: Vec<u8>,
     suppressing: Option<usize>,
     suppression_prefix: Vec<u8>,
+    /// Partial-run stage: at most `PARTIAL_MIN_RUN - 1` already-scrubbed
+    /// bytes, held back only while they could still start a run.
+    partial_tail: Vec<u8>,
+    /// Leading bytes of `partial_tail` already known to be inside a run, and
+    /// the managed value that run belongs to.
+    partial_tail_marked: usize,
+    partial_tail_index: usize,
+    /// Whether the last emitted byte was redacted, so a run that continues
+    /// into the next chunk gets one marker, not two.
+    partial_in_run: bool,
 }
 
 impl StreamingScrubState {
     pub fn new() -> Self {
+        Self::with_carry(Vec::new(), None, Vec::new())
+    }
+
+    fn with_carry(
+        pending: Vec<u8>,
+        suppressing: Option<usize>,
+        suppression_prefix: Vec<u8>,
+    ) -> Self {
         Self {
-            pending: Vec::new(),
-            suppressing: None,
-            suppression_prefix: Vec::new(),
+            pending,
+            suppressing,
+            suppression_prefix,
+            partial_tail: Vec::new(),
+            partial_tail_marked: 0,
+            partial_tail_index: 0,
+            partial_in_run: false,
         }
     }
 
     /// Number of response bytes currently retained by the incremental scanner.
     pub fn buffered_len(&self) -> usize {
-        self.pending.len() + self.suppression_prefix.len()
+        self.pending.len() + self.suppression_prefix.len() + self.partial_tail.len()
     }
 
     /// Whether continuation bytes for an already-redacted unbounded credential
@@ -399,17 +421,9 @@ impl StreamingScrubState {
                 && spec.complete_prefix_len(&carry) == Some(carry.len())
         });
         if suppressing.is_some() {
-            Self {
-                pending: Vec::new(),
-                suppressing,
-                suppression_prefix: carry,
-            }
+            Self::with_carry(Vec::new(), suppressing, carry)
         } else {
-            Self {
-                pending: carry,
-                suppressing: None,
-                suppression_prefix: Vec::new(),
-            }
+            Self::with_carry(carry, None, Vec::new())
         }
     }
 
@@ -438,6 +452,7 @@ impl Drop for StreamingScrubState {
     fn drop(&mut self) {
         self.pending.zeroize();
         self.suppression_prefix.zeroize();
+        self.partial_tail.zeroize();
     }
 }
 
@@ -496,10 +511,19 @@ impl ResponseScrubber {
             .map(|spec| spec.minimum_match_len())
             .max()
             .unwrap_or(0);
-        self.analyzer
+        let exact_bound = self
+            .analyzer
             .max_managed_value_len()
             .saturating_sub(1)
-            .max(unmanaged_bound)
+            .max(unmanaged_bound);
+        // The partial-run stage holds at most PARTIAL_MIN_RUN - 1 bytes after
+        // the exact stage, only when some managed value qualifies.
+        let partial_bound = if self.analyzer.has_partial_matching() {
+            PARTIAL_MIN_RUN - 1
+        } else {
+            0
+        };
+        exact_bound + partial_bound
     }
 
     // ── Buffered scrub ────────────────────────────────────────────────────────
@@ -555,9 +579,19 @@ impl ResponseScrubber {
         chunk: &[u8],
     ) -> (Vec<u8>, ScrubEvent) {
         let mut state = StreamingScrubState::from_legacy_carry(std::mem::take(carry));
-        let result = self.scrub_stream_chunk(content_type, &mut state, chunk);
+        let (mut output, mut event) = self.scrub_stream_chunk(content_type, &mut state, chunk);
+        // The legacy carry has no room for the partial-run tail, so this API
+        // flushes it per call (cross-chunk partial runs need the typed API).
+        let mut events = Vec::new();
+        output.extend(self.partial_stage(&mut state, Vec::new(), true, &mut events));
+        if !events.is_empty() {
+            emit_leak_warnings(&events, content_type);
+            let mut all = event.leak_events.clone();
+            all.extend(events);
+            event = ScrubEvent::from_events(all);
+        }
         *carry = state.into_legacy_carry();
-        result
+        (output, event)
     }
 
     /// Flush the remaining carry buffer at end-of-stream.
@@ -627,7 +661,85 @@ impl ResponseScrubber {
             self.drain_stream_pending(state, &mut output, &mut events, true);
         }
 
+        let output = self.partial_stage(state, output, finish, &mut events);
         (output, events)
+    }
+
+    /// Redact partial runs of managed values in exact-stage output. Holds back
+    /// at most `PARTIAL_MIN_RUN - 1` trailing bytes, and only those that could
+    /// still begin a run (plus how many are already known to be in one), so
+    /// runs split across chunks are caught without delaying clean output.
+    fn partial_stage(
+        &self,
+        state: &mut StreamingScrubState,
+        input: Vec<u8>,
+        finish: bool,
+        events: &mut Vec<LeakEvent>,
+    ) -> Vec<u8> {
+        if !self.analyzer.has_partial_matching() {
+            return input;
+        }
+        let mut input = input;
+        let mut buf = std::mem::take(&mut state.partial_tail);
+        buf.extend_from_slice(&input);
+        input.zeroize();
+
+        let mut runs = Vec::new();
+        if state.partial_tail_marked > 0 {
+            runs.push((0, state.partial_tail_marked, state.partial_tail_index));
+        }
+        for run in self.analyzer.partial_runs(&buf) {
+            match runs.last_mut() {
+                Some(last) if run.0 <= last.1 => last.1 = last.1.max(run.1),
+                _ => runs.push(run),
+            }
+        }
+
+        let final_len = if finish {
+            buf.len()
+        } else {
+            self.analyzer.partial_hold_start(&buf)
+        };
+        if final_len == 0 {
+            // Nothing is final yet: keep the whole buffer and the marks
+            // already carried for its leading bytes (windows that started in
+            // bytes emitted earlier cannot be recomputed).
+            state.partial_tail = buf;
+            return Vec::new();
+        }
+
+        // Runs starting at or after `final_len` are recomputed from the tail
+        // on the next call; a run that starts before it and extends past it
+        // carries its marks forward.
+        let mut output = Vec::with_capacity(final_len);
+        let mut cursor = 0;
+        let mut carried = (0, 0);
+        let mut last_marked = false;
+        for &(start, end, index) in &runs {
+            if start >= final_len {
+                break;
+            }
+            output.extend_from_slice(&buf[cursor..start]);
+            if !(start == 0 && state.partial_in_run) {
+                output.extend_from_slice(b"[REDACTED:vault-secret]");
+                record_partial_event(events, self.analyzer.vault_name(index));
+            }
+            cursor = end.min(final_len);
+            last_marked = end >= final_len;
+            if end > final_len {
+                carried = (end - final_len, index);
+            }
+        }
+        if cursor < final_len {
+            output.extend_from_slice(&buf[cursor..final_len]);
+            last_marked = false;
+        }
+        state.partial_in_run = last_marked;
+        state.partial_tail = buf[final_len..].to_vec();
+        state.partial_tail_marked = carried.0.min(state.partial_tail.len());
+        state.partial_tail_index = carried.1;
+        buf.zeroize();
+        output
     }
 
     fn drain_stream_pending(
@@ -798,6 +910,26 @@ fn redact_pending_prefix(
             severity,
             secret_name,
             pattern: pattern.to_string(),
+            match_count: 1,
+        });
+    }
+}
+
+fn record_partial_event(events: &mut Vec<LeakEvent>, name: &str) {
+    if let Some(event) = events.iter_mut().find(|event| {
+        event.location == LeakLocation::Body
+            && event.severity == LeakSeverity::High
+            && event.pattern == "vault-secret"
+            && event.secret_name.as_deref() == Some(name)
+    }) {
+        event.match_count += 1;
+    } else {
+        events.push(LeakEvent {
+            ts: stream_now_unix(),
+            location: LeakLocation::Body,
+            severity: LeakSeverity::High,
+            secret_name: Some(name.to_string()),
+            pattern: "vault-secret".to_string(),
             match_count: 1,
         });
     }

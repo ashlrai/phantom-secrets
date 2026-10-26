@@ -165,7 +165,7 @@ pub fn compute_windowed_anomalies(
     global_threshold: f64,
 ) -> std::io::Result<Vec<WindowedAnomalyResult>> {
     let path = crate::audit::log_path()?;
-    if !path.exists() {
+    if !crate::audit::log_present(&path)? {
         return Ok(vec![]);
     }
 
@@ -259,6 +259,9 @@ pub struct AccessRecord {
 pub enum Period {
     Days7,
     Days30,
+    /// The last `n` days (`n * 86400` seconds before now), for any `n` that
+    /// is not one of the named windows.
+    LastDays(u32),
     /// All available history.
     All,
 }
@@ -274,12 +277,31 @@ impl Period {
         }
     }
 
+    /// The exact lookback for a `--window DAYS` / `window_days` argument:
+    /// `0` is all history and any other `n` is the last `n` days. Never
+    /// rounds to a neighbouring window, so a reported window matches the
+    /// events it covers.
+    pub fn from_window_days(days: u32) -> Period {
+        match days {
+            0 => Period::All,
+            7 => Period::Days7,
+            30 => Period::Days30,
+            n => Period::LastDays(n),
+        }
+    }
+
     /// Minimum Unix timestamp for events to be included (0 = no cutoff).
     pub fn cutoff_ts(self) -> u64 {
-        let now = now_unix();
+        self.cutoff_ts_at(now_unix())
+    }
+
+    /// [`Period::cutoff_ts`] against a caller-supplied `now`, so several
+    /// reads of one report share a single clock reading.
+    pub fn cutoff_ts_at(self, now: u64) -> u64 {
         match self {
             Period::Days7 => now.saturating_sub(7 * 86400),
             Period::Days30 => now.saturating_sub(30 * 86400),
+            Period::LastDays(n) => now.saturating_sub(u64::from(n) * 86400),
             Period::All => 0,
         }
     }
@@ -294,19 +316,51 @@ impl Period {
 ///
 /// Returns `Ok(AnalyticsReport)` even when the log file does not exist.
 pub fn compute_analytics(period: Period) -> std::io::Result<AnalyticsReport> {
+    compute_analytics_at(period, now_unix())
+}
+
+/// [`compute_analytics`] with the window measured back from `now`, which is
+/// also the report's `generated_at`.
+pub fn compute_analytics_at(period: Period, now: u64) -> std::io::Result<AnalyticsReport> {
+    let raw = read_window(period, now)?;
+    Ok(build_report(raw, now))
+}
+
+/// Per-secret analytics and the access records behind them, from one read
+/// of the audit log against one clock reading.
+#[derive(Debug)]
+pub struct AnalyticsExport {
+    /// Analytics for every secret in the window (not filtered by score).
+    pub report: AnalyticsReport,
+    /// Records in the window, sorted by `ts` ascending, filtered to secrets
+    /// whose score is at or above the requested `min_anomaly_score`.
+    pub records: Vec<AccessRecord>,
+}
+
+/// Compute the analytics summary and export the access records together:
+/// the log is read once and both use the same `now`, so an event can never
+/// sit in the records but not the summary (or the reverse) because the
+/// clock moved or the log grew between two reads.
+pub fn export_analytics(
+    period: Period,
+    min_anomaly_score: Option<f64>,
+    now: u64,
+) -> std::io::Result<AnalyticsExport> {
+    let raw = read_window(period, now)?;
+    let report = build_report(raw.clone(), now);
+    let allowed = min_anomaly_score.map(|min| names_at_or_above(&report, min));
+    let records = records_from_events(raw, allowed.as_ref());
+    Ok(AnalyticsExport { report, records })
+}
+
+/// The audit events in `period` measured back from `now`; empty when the
+/// log does not exist.
+fn read_window(period: Period, now: u64) -> std::io::Result<Vec<RawEvent>> {
     let path = crate::audit::log_path()?;
-
-    if !path.exists() {
-        return Ok(AnalyticsReport {
-            generated_at: iso8601_now(),
-            secrets: vec![],
-        });
+    if !crate::audit::log_present(&path)? {
+        return Ok(Vec::new());
     }
-
-    let cutoff = period.cutoff_ts();
-    let raw = read_events_from_path(&path, cutoff)?;
-    let report = build_report(raw);
-    Ok(report)
+    read_events_from_path(&path, period.cutoff_ts_at(now))
 }
 
 /// Read all access events from `path` that are at or after `cutoff_ts`.
@@ -404,7 +458,7 @@ fn read_events_from_path(path: &Path, cutoff_ts: u64) -> std::io::Result<Vec<Raw
 }
 
 /// Build the analytics report from raw events.
-fn build_report(events: Vec<RawEvent>) -> AnalyticsReport {
+fn build_report(events: Vec<RawEvent>, now: u64) -> AnalyticsReport {
     // Group by secret name — only events that carry a name contribute.
     // BTreeMap<name, Vec<ts>>
     let mut by_name: BTreeMap<String, Vec<u64>> = BTreeMap::new();
@@ -432,7 +486,7 @@ fn build_report(events: Vec<RawEvent>) -> AnalyticsReport {
     });
 
     AnalyticsReport {
-        generated_at: iso8601_now(),
+        generated_at: unix_to_iso8601(now),
         secrets: analytics,
     }
 }
@@ -532,36 +586,43 @@ pub fn export_records(
     period: Period,
     min_anomaly_score: Option<f64>,
 ) -> std::io::Result<Vec<AccessRecord>> {
-    let path = crate::audit::log_path()?;
+    export_records_at(period, min_anomaly_score, now_unix())
+}
 
-    if !path.exists() {
-        return Ok(vec![]);
-    }
+/// [`export_records`] with the window measured back from `now`.
+pub fn export_records_at(
+    period: Period,
+    min_anomaly_score: Option<f64>,
+    now: u64,
+) -> std::io::Result<Vec<AccessRecord>> {
+    let raw = read_window(period, now)?;
+    // Scores are computed only when they are needed to filter.
+    let allowed =
+        min_anomaly_score.map(|min| names_at_or_above(&build_report(raw.clone(), now), min));
+    Ok(records_from_events(raw, allowed.as_ref()))
+}
 
-    let cutoff = period.cutoff_ts();
-    let raw = read_events_from_path(&path, cutoff)?;
+/// Names of the secrets in `report` whose anomaly score is at or above `min`.
+fn names_at_or_above(report: &AnalyticsReport, min: f64) -> std::collections::HashSet<String> {
+    report
+        .secrets
+        .iter()
+        .filter(|s| s.anomaly_score >= min)
+        .map(|s| s.name.clone())
+        .collect()
+}
 
-    // If min_anomaly_score is set, first compute analytics to get scores.
-    let allowed_names: Option<std::collections::HashSet<String>> =
-        if let Some(min_score) = min_anomaly_score {
-            let report = build_report(raw.clone());
-            Some(
-                report
-                    .secrets
-                    .into_iter()
-                    .filter(|s| s.anomaly_score >= min_score)
-                    .map(|s| s.name)
-                    .collect(),
-            )
-        } else {
-            None
-        };
-
-    let mut records: Vec<AccessRecord> = raw
+/// Access records for `events` (only those that name a secret), sorted by
+/// `ts` ascending; with `allowed_names`, only those secrets are kept.
+fn records_from_events(
+    events: Vec<RawEvent>,
+    allowed_names: Option<&std::collections::HashSet<String>>,
+) -> Vec<AccessRecord> {
+    let mut records: Vec<AccessRecord> = events
         .into_iter()
         .filter_map(|ev| {
             let name = ev.name?; // skip events without a name
-            if let Some(ref allowed) = allowed_names {
+            if let Some(allowed) = allowed_names {
                 if !allowed.contains(&name) {
                     return None;
                 }
@@ -577,7 +638,20 @@ pub fn export_records(
         .collect();
 
     records.sort_by_key(|r| r.ts);
-    Ok(records)
+    records
+}
+
+/// Normalize an anomaly-score threshold (`min_anomaly_score`, `min_score`,
+/// `threshold`) the same way for every audit tool and command: NaN is
+/// refused, because every comparison with it is false and it would silently
+/// match nothing; any other value is clamped to the score range 0.0..=1.0.
+pub fn score_threshold(value: f64) -> Result<f64, String> {
+    if value.is_nan() {
+        return Err(
+            "anomaly score threshold must be a number between 0.0 and 1.0 (got NaN)".to_string(),
+        );
+    }
+    Ok(value.clamp(0.0, 1.0))
 }
 
 /// Render a `Vec<AccessRecord>` as RFC 4180 CSV (header + data rows).
@@ -585,7 +659,7 @@ pub fn export_records(
 pub fn records_to_csv(records: &[AccessRecord]) -> String {
     let mut out = String::from("ts,datetime,op,name,process\n");
     for r in records {
-        // CSV-escape: wrap in double-quotes if the field contains comma/quote/newline.
+        // CSV-escape: quote any field containing a comma, quote, CR or LF.
         let name = csv_escape(&r.name);
         let op = csv_escape(&r.op);
         let process = csv_escape(&r.process);
@@ -595,8 +669,13 @@ pub fn records_to_csv(records: &[AccessRecord]) -> String {
     out
 }
 
-fn csv_escape(s: &str) -> String {
-    if s.contains(',') || s.contains('"') || s.contains('\n') {
+/// RFC 4180 field escaping shared by every Phantom CSV writer: a field
+/// containing a comma, a double quote, a line feed or a carriage return is
+/// wrapped in double quotes with inner quotes doubled. A bare `\r` must be
+/// quoted too: spreadsheet and CSV readers treat it as a record break, so an
+/// unquoted one splits a single audit row into two.
+pub(crate) fn csv_escape(s: &str) -> String {
+    if s.contains([',', '"', '\n', '\r']) {
         format!("\"{}\"", s.replace('"', "\"\""))
     } else {
         s.to_string()
@@ -620,10 +699,6 @@ fn now_unix() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
-}
-
-fn iso8601_now() -> String {
-    unix_to_iso8601(now_unix())
 }
 
 /// Format a Unix epoch (seconds) as `YYYY-MM-DDTHH:MM:SSZ`.
@@ -740,6 +815,36 @@ mod tests {
         assert_eq!(std::fs::read(owner).unwrap(), b"{}\n");
     }
 
+    /// A dangling symlink at `audit.log` is not "no log yet": analytics and
+    /// windowed anomalies must fail instead of answering from no events.
+    #[cfg(unix)]
+    #[test]
+    fn analytics_refuses_dangling_symlinked_audit_log() {
+        with_audit_home(|home| {
+            let dir = home.join(".phantom");
+            std::fs::create_dir(&dir).unwrap();
+            std::os::unix::fs::symlink(home.join("missing.log"), dir.join("audit.log")).unwrap();
+            assert!(compute_analytics_at(Period::All, 1_700_000_000).is_err());
+            assert!(compute_windowed_anomalies(None, None, 0.5).is_err());
+        });
+    }
+
+    /// A log reached through a symlinked `~/.phantom` is refused.
+    #[cfg(unix)]
+    #[test]
+    fn analytics_refuses_log_in_symlinked_phantom_dir() {
+        with_audit_home(|home| {
+            let elsewhere = home.join("elsewhere");
+            write_synthetic_log(
+                &elsewhere.join("audit.log"),
+                &[(1_699_999_000, "vault.retrieve", Some("KEY_A"))],
+            );
+            std::os::unix::fs::symlink(&elsewhere, home.join(".phantom")).unwrap();
+            assert!(compute_analytics_at(Period::All, 1_700_000_000).is_err());
+            assert!(compute_windowed_anomalies(None, None, 0.5).is_err());
+        });
+    }
+
     // ── Period ────────────────────────────────────────────────────────────────
 
     #[test]
@@ -762,6 +867,24 @@ mod tests {
         let diff = now.saturating_sub(cutoff);
         // Should be within 1s of 7 days
         assert!((diff as i64 - 7 * 86400).abs() <= 1, "diff={diff}");
+    }
+
+    #[test]
+    fn window_days_maps_to_the_exact_lookback() {
+        assert_eq!(Period::from_window_days(0), Period::All);
+        assert_eq!(Period::from_window_days(7), Period::Days7);
+        assert_eq!(Period::from_window_days(30), Period::Days30);
+        for days in [1_u32, 3, 14, 31, 90, 365] {
+            let period = Period::from_window_days(days);
+            assert_eq!(period, Period::LastDays(days));
+            let diff = now_unix().saturating_sub(period.cutoff_ts());
+            assert!(
+                (diff as i64 - i64::from(days) * 86400).abs() <= 1,
+                "days={days} diff={diff}"
+            );
+        }
+        // The largest window saturates at the epoch instead of overflowing.
+        assert_eq!(Period::from_window_days(u32::MAX).cutoff_ts(), 0);
     }
 
     // ── Anomaly detection ─────────────────────────────────────────────────────
@@ -1087,6 +1210,78 @@ mod tests {
         });
     }
 
+    /// The summary and the records share one clock reading: an event exactly
+    /// at the cutoff is in both or neither, and generated_at is that `now`.
+    #[test]
+    fn export_analytics_uses_one_now_for_summary_and_records() {
+        with_audit_home(|tmp| {
+            let log_path = tmp.join(".phantom/audit.log");
+            // A fixed instant in the past, so the real clock cannot move it.
+            let now = 1_700_000_000_u64;
+            let cutoff = now - 7 * 86400;
+            let entries = vec![
+                (cutoff - 1, "vault.retrieve", Some("BEFORE_CUTOFF")),
+                (cutoff, "vault.retrieve", Some("AT_CUTOFF")),
+                (now, "vault.retrieve", Some("AT_NOW")),
+            ];
+            write_synthetic_log(&log_path, &entries);
+
+            let export = export_analytics(Period::Days7, None, now).unwrap();
+            assert_eq!(export.report.generated_at, unix_to_iso8601(now));
+            let mut summary: Vec<&str> = export
+                .report
+                .secrets
+                .iter()
+                .map(|s| s.name.as_str())
+                .collect();
+            summary.sort_unstable();
+            let mut records: Vec<&str> = export.records.iter().map(|r| r.name.as_str()).collect();
+            records.sort_unstable();
+            assert_eq!(summary, ["AT_CUTOFF", "AT_NOW"]);
+            assert_eq!(records, summary);
+
+            // The separate entry points agree with it for the same `now`.
+            let report = compute_analytics_at(Period::Days7, now).unwrap();
+            assert_eq!(report.generated_at, unix_to_iso8601(now));
+            assert_eq!(report.secrets.len(), 2);
+            assert_eq!(
+                export_records_at(Period::Days7, None, now).unwrap().len(),
+                2
+            );
+        });
+    }
+
+    #[test]
+    fn export_analytics_filters_records_by_the_same_scores() {
+        with_audit_home(|tmp| {
+            let log_path = tmp.join(".phantom/audit.log");
+            let now = 1_700_000_000_u64;
+            let entries = vec![
+                (now - 11 * 86400, "vault.retrieve", Some("DORMANT_KEY")),
+                (now - 86400, "vault.retrieve", Some("DORMANT_KEY")),
+                (now - 100, "vault.retrieve", Some("STEADY_KEY")),
+            ];
+            write_synthetic_log(&log_path, &entries);
+
+            let export = export_analytics(Period::All, Some(0.5), now).unwrap();
+            // The summary is unfiltered; the records follow the threshold.
+            assert_eq!(export.report.secrets.len(), 2);
+            assert!(export.records.iter().all(|r| r.name == "DORMANT_KEY"));
+            assert_eq!(export.records.len(), 2);
+        });
+    }
+
+    #[test]
+    fn score_threshold_clamps_and_refuses_nan() {
+        assert_eq!(score_threshold(0.4), Ok(0.4));
+        assert_eq!(score_threshold(-3.0), Ok(0.0));
+        assert_eq!(score_threshold(7.5), Ok(1.0));
+        assert_eq!(score_threshold(f64::INFINITY), Ok(1.0));
+        assert_eq!(score_threshold(f64::NEG_INFINITY), Ok(0.0));
+        let error = score_threshold(f64::NAN).unwrap_err();
+        assert!(error.contains("NaN"), "{error}");
+    }
+
     // ── CSV ───────────────────────────────────────────────────────────────────
 
     #[test]
@@ -1119,6 +1314,43 @@ mod tests {
             csv.contains("\"KEY,WITH,COMMAS\""),
             "commas should be CSV-escaped"
         );
+    }
+
+    #[test]
+    fn records_to_csv_quotes_carriage_returns_so_rows_never_split() {
+        let records = vec![AccessRecord {
+            ts: 1_700_000_000,
+            datetime: "2023-11-14T22:13:20Z".to_string(),
+            op: "vault.retrieve".to_string(),
+            name: "DEMO_NAME".to_string(),
+            process: "run\rforged".to_string(),
+        }];
+        let csv = records_to_csv(&records);
+        assert!(
+            csv.contains(",\"run\rforged\"\n"),
+            "a field with a bare CR must be quoted: {csv:?}"
+        );
+        // Outside quoted fields only LF record breaks remain: header + 1 row.
+        let mut in_quotes = false;
+        let mut breaks = 0;
+        for c in csv.chars() {
+            match c {
+                '"' => in_quotes = !in_quotes,
+                '\r' | '\n' if !in_quotes => breaks += 1,
+                _ => {}
+            }
+        }
+        assert_eq!(breaks, 2, "exactly two record breaks: {csv:?}");
+    }
+
+    #[test]
+    fn csv_escape_quotes_every_rfc4180_special_and_nothing_else() {
+        assert_eq!(csv_escape("plain"), "plain");
+        assert_eq!(csv_escape("a,b"), "\"a,b\"");
+        assert_eq!(csv_escape("a\"b"), "\"a\"\"b\"");
+        assert_eq!(csv_escape("a\nb"), "\"a\nb\"");
+        assert_eq!(csv_escape("a\rb"), "\"a\rb\"");
+        assert_eq!(csv_escape("a\r\nb"), "\"a\r\nb\"");
     }
 
     #[test]

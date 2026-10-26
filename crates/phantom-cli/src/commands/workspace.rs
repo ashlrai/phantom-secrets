@@ -552,6 +552,22 @@ impl VaultSetupParticipant {
         // from this canonical path spelling.
         let project_id = PhantomConfig::project_id_from_path(&workspace_root);
         let vault = create_vault(&project_id)?;
+        if strict_dotenv_preflight {
+            // Beside an encrypted-file vault this process cannot open, the
+            // vault is the OS keychain: a new setup would store the workspace
+            // secrets there and split the project across two vaults. Recovery
+            // keeps the backend its journal wrote to.
+            let listed = vault
+                .list()
+                .context("Failed to list protected secrets")?
+                .len();
+            crate::util::require_complete_inventory(
+                vault.as_ref(),
+                &project_id,
+                listed,
+                "set up workspace secrets",
+            )?;
+        }
         let project_lock = phantom_vault::acquire_project_transaction_lock(&workspace_root)
             .context("Workspace project lock could not be acquired")?;
         if project_lock.project_identity_at_acquisition() != reviewed_root.identity() {
@@ -712,6 +728,9 @@ impl SetupTransactionParticipant for VaultSetupParticipant {
             dotenv
                 .validate_for_mutation()
                 .map_err(|_| ParticipantError::new("approved_env_malformed"))?;
+            if dotenv.dotenvx_encrypted_entry().is_some() {
+                return Err(ParticipantError::new("approved_env_dotenvx_encrypted"));
+            }
             let approved_names = action.key_names.iter().collect::<BTreeSet<_>>();
             let mut found = BTreeSet::new();
             for entry in dotenv.entries() {
@@ -1335,6 +1354,10 @@ mod tests {
         );
     }
 
+    /// Upper bound for the contender in
+    /// `participant_resolves_vault_authority_before_project_transaction_lock`.
+    const VAULT_AUTHORITY_CONTENDER_BOUND: Duration = Duration::from_secs(120);
+
     #[test]
     fn participant_resolves_vault_authority_before_project_transaction_lock() {
         let workspace = TempDir::new().unwrap();
@@ -1357,7 +1380,20 @@ mod tests {
                     let _ = acquired_tx.send(());
                 });
 
-                if acquired_rx.recv_timeout(Duration::from_secs(10)).is_err() {
+                // The bound only matters when the regression is present (the
+                // constructor holding the project lock while it resolves the
+                // vault would block the contender forever). In a healthy run
+                // the contender returns as soon as it acquires the lock. That
+                // acquisition shares PROCESS_ENV_LOCK and the 64-way process
+                // lock shards with other tests in this binary, so under
+                // a loaded full-workspace run it can legitimately wait on
+                // unrelated tests for well over 10 s. A generous bound keeps
+                // the regression detectable without turning contention into
+                // a false failure.
+                if acquired_rx
+                    .recv_timeout(VAULT_AUTHORITY_CONTENDER_BOUND)
+                    .is_err()
+                {
                     *delayed_contender_from_factory.lock().unwrap() = Some(contender);
                     return Err(PhantomError::VaultError(
                         "vault construction ran while the project transaction lock was held"
@@ -1488,6 +1524,46 @@ mod tests {
         let verify = FileVault::new(
             &crate::test_support::canonical_tempdir_path(&vault_dir),
             "divergent",
+            "workspace-test-passphrase".to_string(),
+        )
+        .unwrap();
+        assert!(verify.list().unwrap().is_empty());
+    }
+
+    #[test]
+    fn dotenvx_encrypted_env_fails_without_vault_or_file_changes() {
+        // dotenvx 1.x in-place ciphertext cannot be decrypted by Phantom;
+        // vaulting it would replace the encrypted file with tokens that
+        // resolve to noise. Fake values are joined from fragments.
+        let workspace = TempDir::new().unwrap();
+        let vault_dir = TempDir::new().unwrap();
+        let public = ["03", "fakepublicplaceholder"].concat();
+        let sealed = ["encrypted:", "BFakeCipher", "PlaceholderOnly=="].concat();
+        let content = format!("DOTENV_PUBLIC_KEY=\"{public}\"\nOPENAI_API_KEY=\"{sealed}\"\n");
+        write(workspace.path().join(".env"), &content);
+        let key = seal_key();
+        let sealed_plan = build_sealed_setup_plan(workspace.path(), &key).unwrap();
+        let mut participant = VaultSetupParticipant::with_vault(
+            workspace.path(),
+            test_vault(vault_dir.path(), "dotenvx"),
+            false,
+        );
+
+        let error = apply_setup_plan(&sealed_plan, &key, &mut participant).unwrap_err();
+        assert!(matches!(
+            error,
+            WorkspaceError::Participant {
+                code: "approved_env_dotenvx_encrypted",
+                ..
+            }
+        ));
+        assert!(
+            std::fs::read_to_string(workspace.path().join(".env")).unwrap() == content,
+            "encrypted dotenv was rewritten"
+        );
+        let verify = FileVault::new(
+            &crate::test_support::canonical_tempdir_path(&vault_dir),
+            "dotenvx",
             "workspace-test-passphrase".to_string(),
         )
         .unwrap();
@@ -1853,5 +1929,42 @@ mod tests {
             std::fs::read_to_string(workspace.path().join(".env")).unwrap(),
             original_env
         );
+    }
+
+    /// `phantom workspace apply` beside an encrypted-file vault this process
+    /// cannot open would store the workspace secrets in the OS keychain,
+    /// splitting the project across two vaults. Participant construction now
+    /// refuses with the unlock step before any vault or file effect.
+    #[cfg(unix)]
+    #[test]
+    fn participant_refuses_beside_a_locked_file_vault() {
+        use crate::util::test_seam::{empty_keychain, keychain_with_one, LockedProject, MakeVault};
+        for (make, lead) in [
+            (empty_keychain as MakeVault, "Vault locked:"),
+            (
+                keychain_with_one,
+                "Refusing to set up workspace secrets from a partial inventory",
+            ),
+        ] {
+            let project = LockedProject::new(make);
+            let generated = phantom_core::token::PhantomToken::generate();
+            let value = ["fixture", generated.as_str().trim_start_matches("phm_")].join("-");
+            let body = format!("NEW_SERVICE_API_KEY={value}\n");
+            write(project.dir.join(".env"), &body);
+
+            let outcome =
+                VaultSetupParticipant::new_with_vault_factory(&project.dir, |_| Ok(make()));
+
+            let message = match outcome {
+                Ok(_) => panic!("workspace setup must refuse a locked file vault"),
+                Err(error) => error.to_string(),
+            };
+            assert!(message.starts_with(lead));
+            assert!(message.contains("PHANTOM_VAULT_PASSPHRASE"));
+            assert_eq!(
+                std::fs::read_to_string(project.dir.join(".env")).unwrap(),
+                body
+            );
+        }
     }
 }

@@ -23,9 +23,10 @@ const {
 } = require("fs");
 const https = require("https");
 const { homedir } = require("os");
-const { basename, dirname, isAbsolute, join, resolve } = require("path");
+const { basename, dirname, join, posix: posixPath, resolve, win32: win32Path } = require("path");
+const { performance } = require("perf_hooks");
 
-const VERSION = "0.7.6";
+const VERSION = "0.7.9";
 const REPO = "ashlrai/phantom-secrets";
 const BINARY_NAME = "phantom-mcp";
 const REVIEWED_RELEASE_URL = `https://github.com/${REPO}/releases/tag/v${VERSION}`;
@@ -72,13 +73,33 @@ function getBinaryFilename(platform = process.platform) {
   return platform === "win32" ? `${BINARY_NAME}.exe` : BINARY_NAME;
 }
 
-function getCacheDir({ env = process.env, homedirImpl = homedir } = {}) {
-  const home = env.HOME || env.USERPROFILE || homedirImpl();
-  if (!home || !isAbsolute(home)) {
+function getCacheDir({ env = process.env, homedirImpl = homedir, platform = process.platform } = {}) {
+  // Native Windows tools cannot safely consume MSYS-style HOME values such as
+  // /c/Users/name. Prefer the native profile there so npm, PowerShell, and the
+  // Rust binary share one cache; retain HOME-first behavior on Unix.
+  let platformHome;
+  try {
+    platformHome = homedirImpl();
+  } catch {
+    // A valid explicit native profile remains sufficient when OS lookup is
+    // unavailable (for example under a constrained service account).
+  }
+  const pathApi = platform === "win32" ? win32Path : posixPath;
+  const candidates = platform === "win32"
+    ? [env.USERPROFILE, platformHome, env.HOME]
+    : [env.HOME, platformHome, env.USERPROFILE];
+  const home = candidates.find((candidate) => {
+    if (!candidate || !pathApi.isAbsolute(candidate)) return false;
+    // path.win32 treats `/c/Users/name` as rooted on the current drive, even
+    // though native Node would resolve it to `C:\\c\\Users\\name`. Require an
+    // explicit local drive so an MSYS HOME can never redirect the cache.
+    return platform !== "win32" || /^[A-Za-z]:[\\/]/.test(candidate);
+  });
+  if (!home) {
     throw new Error("cannot determine an absolute private home directory for phantom-mcp cache");
   }
   // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- home is required to be absolute and is resolved before fixed components are appended.
-  return join(resolve(home), ".phantom-secrets", "bin");
+  return pathApi.join(pathApi.resolve(home), ".phantom-secrets", "bin");
 }
 
 function pathSet(cacheDir, platform = process.platform) {
@@ -120,6 +141,14 @@ function validateOwnedPath(path, kind, platform = process.platform) {
   return stat;
 }
 
+function sameWindowsFilesystemObject(firstPath, secondPath, lstatSyncImpl = lstatSync) {
+  const first = lstatSyncImpl(firstPath, { bigint: true });
+  const second = lstatSyncImpl(secondPath, { bigint: true });
+  // Windows exposes the volume serial number as dev and the stable file index
+  // as ino. A zero file index cannot establish identity, so fail closed.
+  return first.ino !== 0n && first.dev === second.dev && first.ino === second.ino;
+}
+
 function validateWindowsPathAncestors(path, platform = process.platform) {
   if (platform !== "win32") return;
   // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- resolving the candidate is the first step in checking every ancestor for reparse points before any filesystem mutation.
@@ -157,8 +186,13 @@ function validateWindowsPathAncestors(path, platform = process.platform) {
         .replace(/\\+$/, "")
         .toLowerCase();
       const expected = normalize(ancestor);
-      const actual = normalize(realpathSync.native(ancestor));
-      if (actual !== expected) {
+      const canonical = realpathSync.native(ancestor);
+      const actual = normalize(canonical);
+      // realpath expands harmless 8.3 aliases such as RUNNER~1. Accept the
+      // spelling change only when lstat proves that both names identify the
+      // exact same directory object. A junction or other reparse redirect has
+      // a distinct lstat identity and remains rejected.
+      if (actual !== expected && !sameWindowsFilesystemObject(ancestor, canonical)) {
         throw new Error(`${ancestor} must not resolve through a Windows reparse point`);
       }
     }
@@ -334,6 +368,57 @@ function runBoundedExec(
   }
 }
 
+function describeBoundedExecFailure(error, timeoutMs) {
+  if (!error || typeof error !== "object") return "failed before completion";
+  if (error.code === "ETIMEDOUT") return `timed out after ${timeoutMs}ms`;
+  if (Number.isInteger(error.status)) return `failed with exit status ${error.status}`;
+  if (typeof error.signal === "string" && /^[A-Z0-9]{1,24}$/.test(error.signal)) {
+    return `terminated by signal ${error.signal}`;
+  }
+  return "failed before completion";
+}
+
+function runInternalPhase(label, execFileSyncImpl, executable, args, options, execution) {
+  try {
+    return runBoundedExec(execFileSyncImpl, executable, args, options, execution);
+  } catch (error) {
+    throw new Error(`${label} ${describeBoundedExecFailure(error, execution.timeoutMs)}`);
+  }
+}
+
+function runWindowsPowerShellScript(
+  execFileSyncImpl,
+  args,
+  options,
+  execution,
+  monotonicNow = performance.now.bind(performance)
+) {
+  const startedAt = monotonicNow();
+  try {
+    return runBoundedExec(execFileSyncImpl, "pwsh.exe", args, options, execution);
+  } catch (error) {
+    if (!error || typeof error !== "object" || error.code !== "ENOENT") {
+      throw new Error(
+        `Windows ZIP extraction ${describeBoundedExecFailure(error, execution.timeoutMs)}`
+      );
+    }
+  }
+  const remainingMs = Math.floor(execution.timeoutMs - (monotonicNow() - startedAt));
+  if (remainingMs < 1) {
+    throw new Error(`Windows ZIP extraction timed out after ${execution.timeoutMs}ms`);
+  }
+  try {
+    return runBoundedExec(execFileSyncImpl, "powershell.exe", args, options, {
+      ...execution,
+      timeoutMs: remainingMs,
+    });
+  } catch (error) {
+    throw new Error(
+      `Windows ZIP extraction ${describeBoundedExecFailure(error, execution.timeoutMs)}`
+    );
+  }
+}
+
 function validateCachedBinary(binaryPath, manifestPath, {
   execFileSyncImpl = execFileSync,
   platform = process.platform,
@@ -452,6 +537,7 @@ function extractBinaryFromArchive(archivePath, binaryPath, {
   execFileSyncImpl = execFileSync,
   execTimeoutMs = EXEC_TIMEOUT_MS,
   heartbeat = () => {},
+  monotonicNow = performance.now.bind(performance),
 } = {}) {
   validateOwnedPath(archivePath, "file", platform);
   // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- mkdtemp receives a fixed prefix under the validated private cache root.
@@ -463,13 +549,14 @@ function extractBinaryFromArchive(archivePath, binaryPath, {
   try {
     if (platform === "win32") {
       const script = [
-        "& { param($archive, $output)",
+        "param([Parameter(Mandatory=$true)][string]$archive, [Parameter(Mandatory=$true)][string]$output)",
+        "$ErrorActionPreference = 'Stop';",
         "Add-Type -AssemblyName System.IO.Compression.FileSystem;",
         "$zip = [IO.Compression.ZipFile]::OpenRead($archive);",
         "try {",
         "$names = @($zip.Entries | ForEach-Object { $_.FullName });",
         "$expected = @('phantom.exe','phantom-mcp.exe');",
-        "if ($names.Count -ne 2 -or (@($names | Sort-Object) -join ',') -ne (@($expected | Sort-Object) -join ',')) { throw 'unexpected ZIP content' };",
+        "if ($names.Count -ne 2 -or (@($names | Sort-Object -CaseSensitive) -join ',') -cne (@($expected | Sort-Object -CaseSensitive) -join ',')) { throw 'unexpected ZIP content' };",
         "$entry = $zip.GetEntry('phantom-mcp.exe');",
         "foreach ($candidate in $zip.Entries) {",
         "if ($candidate.Name -cne $candidate.FullName -or -not $candidate.Name) { throw 'ZIP contains a path or directory entry' };",
@@ -479,19 +566,32 @@ function extractBinaryFromArchive(archivePath, binaryPath, {
         "$isReparsePoint = (($dosAttributes -band [int][IO.FileAttributes]::ReparsePoint) -ne 0);",
         "if (($unixType -ne 0 -and $unixType -ne 0x8000) -or $isDirectory -or $isReparsePoint) { throw 'ZIP contains a link or non-regular entry' };",
         "}",
+        "if ($null -eq $entry) { throw 'ZIP is missing phantom-mcp.exe' };",
         "[IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $output, $false);",
         "} finally { $zip.Dispose() }",
-        "}",
-      ].join(" ");
-      runBoundedExec(
+      ].join("\r\n");
+      const extractionScriptPath = join(stagingDir, "extract.ps1");
+      writePrivateFile(extractionScriptPath, script, 0o600, platform);
+      runWindowsPowerShellScript(
         execFileSyncImpl,
-        "powershell",
-        ["-NoProfile", "-NonInteractive", "-Command", script, archivePath, extractedBinaryPath],
+        [
+          "-NoLogo",
+          "-NoProfile",
+          "-NonInteractive",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-File",
+          extractionScriptPath,
+          archivePath,
+          extractedBinaryPath,
+        ],
         { stdio: "pipe" },
-        { timeoutMs: execTimeoutMs, heartbeat }
+        { timeoutMs: execTimeoutMs, heartbeat },
+        monotonicNow
       );
     } else {
-      const listing = runBoundedExec(
+      const listing = runInternalPhase(
+        "archive member inspection",
         execFileSyncImpl,
         "tar",
         ["tzf", archivePath],
@@ -503,10 +603,13 @@ function extractBinaryFromArchive(archivePath, binaryPath, {
       if (JSON.stringify(entries) !== JSON.stringify(expected)) {
         throw new Error(`archive contains unexpected entries: ${entries.join(", ")}`);
       }
-      runBoundedExec(
+      runInternalPhase(
+        "archive extraction",
         execFileSyncImpl,
         "tar",
-        ["xzf", archivePath, "-C", stagingDir, binaryFilename],
+        // --no-same-owner: as root, tar would otherwise keep the release
+        // runner's uid and the owned-path check below would refuse the file.
+        ["--no-same-owner", "-xzf", archivePath, "-C", stagingDir, binaryFilename],
         { stdio: "pipe" },
         { timeoutMs: execTimeoutMs, heartbeat }
       );
@@ -777,7 +880,8 @@ async function ensureBinary({
         execTimeoutMs,
         heartbeat,
       });
-      const candidateVersion = runBoundedExec(
+      const candidateVersion = runInternalPhase(
+        `downloaded ${BINARY_NAME} version check`,
         execFileSyncImpl,
         candidatePath,
         ["--version"],
@@ -844,6 +948,7 @@ module.exports = {
   readVerifiedManifest,
   recoverInterruptedInstall,
   replaceCachedBinary,
+  sameWindowsFilesystemObject,
   validateCachedBinary,
   validateWindowsPathAncestors,
   writePrivateFile,

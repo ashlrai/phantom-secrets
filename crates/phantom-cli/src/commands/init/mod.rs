@@ -189,6 +189,11 @@ pub fn run(env_path_arg: &str) -> Result<()> {
     dotenv
         .validate_for_mutation()
         .context("Managed dotenv is malformed; initialization made no changes")?;
+    // dotenvx 1.x in-place ciphertext cannot be decrypted here; refuse
+    // before any vault write, project file, or integration change.
+    if let Some(entry) = dotenv.dotenvx_encrypted_entry() {
+        anyhow::bail!(phantom_core::dotenv::dotenvx_ciphertext_refusal(entry));
+    }
 
     // Classify all entries
     let classified = dotenv.classified_entries();
@@ -216,7 +221,9 @@ pub fn run(env_path_arg: &str) -> Result<()> {
         None
     };
 
+    let env_label = env_name.to_string_lossy().into_owned();
     if real_entries.is_empty() {
+        let commented_notes = commented_entry_notes(&dotenv, &env_label);
         println!(
             "{} No real secrets found in {} (all values are already phantom tokens, public keys, or config)",
             "!".yellow().bold(),
@@ -252,13 +259,12 @@ pub fn run(env_path_arg: &str) -> Result<()> {
             }
             let mut prepared_hook = hooks::prepare_precommit_hook(&project_dir)?;
             if let Some(prepared) = &claude_setup {
-                if let Some(file) = prepared.transaction_file() {
-                    files.push(file);
-                }
+                files.extend(prepared.transaction_files());
             }
-            let mut guidance = docs::prepare_guidance(&project_dir)?;
-            files.extend(guidance.take_files());
             let vault = phantom_vault::try_create_vault(&vault_project_id);
+            let backend = vault.as_ref().ok().map(|vault| vault.backend_name());
+            let mut guidance = docs::prepare_guidance(&project_dir, backend)?;
+            files.extend(guidance.take_files());
             commit_after_vault_provisioning(
                 &project_dir,
                 reviewed_project_identity,
@@ -282,6 +288,7 @@ pub fn run(env_path_arg: &str) -> Result<()> {
                 "ok".green().bold()
             );
         }
+        print_commented_entry_notes(&commented_notes);
         return Ok(());
     }
 
@@ -314,6 +321,8 @@ pub fn run(env_path_arg: &str) -> Result<()> {
     )?;
     phantom_config.phantom.dotenv_path = Some(dotenv_basename);
     config::apply_detected_services(&mut phantom_config, &real_entries);
+    let connection_string_keys =
+        config::protected_connection_string_keys(&phantom_config, &real_entries);
 
     // Persist public key classifications
     if !public_entries.is_empty() {
@@ -333,6 +342,10 @@ pub fn run(env_path_arg: &str) -> Result<()> {
         value.zeroize();
     }
     originals.clear();
+    // Line numbers are taken from the rewritten text, which is what the
+    // file holds once init commits: a multi-line value becomes one token line.
+    let commented_notes =
+        commented_entry_notes(&DotenvFile::parse_str(&phantomized_env), &env_label);
 
     let mut files = vec![
         InitFile::replace_if_exact_snapshot(
@@ -356,24 +369,43 @@ pub fn run(env_path_arg: &str) -> Result<()> {
         .context("Managed dotenv cannot be used to generate a plaintext-safe example")?;
     let example_before = phantom_core::fs::read_regular_file(&example_path)
         .with_context(|| format!("Failed to safely inspect {}", example_path.display()))?;
-    files.push(InitFile::replace_if_unchanged(
-        &example_path,
-        example_before,
-        example_content.into_bytes(),
-    ));
+    // An existing .env.example belongs to the project, is often hand-written
+    // and committed, and replacing it with a generated stub silently destroys
+    // it. Only create one where none exists; the absent snapshot makes the
+    // transaction refuse if one appears before commit. `phantom check --staged`
+    // still scans an existing example for real values before it is committed.
+    let example_kept = example_before.is_some();
+    if !example_kept {
+        files.push(InitFile::replace_if_unchanged(
+            &example_path,
+            None::<Vec<u8>>,
+            example_content.into_bytes(),
+        ));
+    }
 
     let mut prepared_hook = hooks::prepare_precommit_hook(&project_dir)?;
     if let Some(prepared) = &claude_setup {
-        if let Some(file) = prepared.transaction_file() {
-            files.push(file);
-        }
+        files.extend(prepared.transaction_files());
     }
-    let mut guidance = docs::prepare_guidance(&project_dir)?;
-    files.extend(guidance.take_files());
-
-    let vault = phantom_vault::try_create_vault(phantom_config.local_project_id()).context(
+    let vault = crate::util::open_vault(phantom_config.local_project_id()).context(
         "Vault provisioning failed before any project files were changed. Set PHANTOM_VAULT_PASSPHRASE to a durable secret value and retry",
     )?;
+    // Beside an encrypted-file vault this process cannot open, the vault is
+    // the OS keychain: storing the new secrets there would split the project
+    // across two vaults and miss names the locked file already holds.
+    let listed = vault
+        .list()
+        .context("Failed to list protected secrets")?
+        .len();
+    crate::util::require_complete_inventory(
+        vault.as_ref(),
+        phantom_config.local_project_id(),
+        listed,
+        "protect new secrets",
+    )?;
+    let mut guidance = docs::prepare_guidance(&project_dir, Some(vault.backend_name()))?;
+    files.extend(guidance.take_files());
+
     let secrets = real_entries
         .iter()
         .map(|entry| {
@@ -424,11 +456,22 @@ pub fn run(env_path_arg: &str) -> Result<()> {
         env_path.display()
     );
     println!("{} Saved .phantom.toml", "ok".green().bold());
-    println!(
-        "{} Generated {} (commit this for team onboarding)",
-        "ok".green().bold(),
-        ".env.example".cyan()
-    );
+    if example_kept {
+        println!(
+            "{} Left the existing {} unchanged; `phantom env --output <file>` writes a generated example to a new file",
+            "->".blue().bold(),
+            ".env.example".cyan()
+        );
+        if let Some(warning) = example_before.as_deref().and_then(kept_example_warning) {
+            println!("{} {}", "warn".yellow().bold(), warning);
+        }
+    } else {
+        println!(
+            "{} Generated {} (commit this for team onboarding)",
+            "ok".green().bold(),
+            ".env.example".cyan()
+        );
+    }
 
     prepared_hook.commit().with_context(|| {
         "Project files and vault entries were committed, but the separate Git pre-commit hook transaction is incomplete; project changes were not rolled back"
@@ -440,6 +483,25 @@ pub fn run(env_path_arg: &str) -> Result<()> {
         "done".green().bold(),
         real_entries.len()
     );
+    if !connection_string_keys.is_empty() {
+        // Say this now rather than letting the first `phantom exec` be the
+        // surprise: connection strings are vaulted but not proxied.
+        println!(
+            "{} {} {} a connection string. It is vaulted, but {} will not start in this project while it is protected (no database broker yet). See https://phm.dev/docs/getting-started before relying on it.",
+            "note".yellow().bold(),
+            connection_string_keys.join(", ").bold(),
+            if connection_string_keys.len() == 1 { "is" } else { "are each" },
+            "phantom exec".cyan()
+        );
+    }
+
+    if let Some([headline, desktop, headless]) = volatile_backend_notice(&backend_name) {
+        println!("{} {}", "warn".yellow().bold(), headline);
+        println!("{}", desktop.dimmed());
+        println!("{}", headless.dimmed());
+    }
+
+    print_commented_entry_notes(&commented_notes);
 
     if let Some(prepared) = &claude_setup {
         prompts::finish_auto_setup_claude_code(prepared);
@@ -454,64 +516,188 @@ pub fn run(env_path_arg: &str) -> Result<()> {
     Ok(())
 }
 
-/// Print a contextual "what's next?" block. Items are conditional on
-/// state — e.g., we don't suggest `phantom login` if the user is already
-/// authenticated, and we promote `phantom cloud push` instead if they
-/// have credentials but no cloud version yet.
+/// One warning line per commented-out assignment in `dotenv` that still holds
+/// a secret. init protects live entries only and never edits comments, so
+/// such a value stays as plaintext in the file. Key names and line numbers
+/// only; the values are never printed.
+fn commented_entry_notes(dotenv: &DotenvFile, file_label: &str) -> Vec<String> {
+    dotenv
+        .commented_secret_assignments()
+        .into_iter()
+        .map(|(key_name, line)| {
+            format!(
+                "{file_label} line {line}: commented-out {key_name} is still plaintext; delete the line, or store the value under an unused name with `phantom add <NAME> --stdin`"
+            )
+        })
+        .collect()
+}
+
+fn print_commented_entry_notes(lines: &[String]) {
+    for line in lines {
+        println!("{} {}", "warn".yellow().bold(), line);
+    }
+}
+
+/// init keeps an existing `.env.example`, so it must not keep it quietly when
+/// it holds what `phantom check --staged` would refuse to commit. Same rule as
+/// that check: a real-looking value that is not an empty or `your_<name>_here`
+/// placeholder. Names only; the values are never printed.
+fn kept_example_warning(content: &[u8]) -> Option<String> {
+    let Ok(text) = std::str::from_utf8(content) else {
+        return Some(format!(
+            "The kept {} is not UTF-8 text, so it could not be scanned for real values; check it before committing (`phantom check --staged` refuses it)",
+            ".env.example".cyan()
+        ));
+    };
+    let example = DotenvFile::parse_str(text);
+    if example.validate_for_mutation().is_err() {
+        return Some(format!(
+            "The kept {} could not be parsed, so it could not be scanned for real values; check it before committing (`phantom check --staged` refuses it)",
+            ".env.example".cyan()
+        ));
+    }
+    let names: Vec<&str> = example
+        .real_secret_entries()
+        .into_iter()
+        .filter(|entry| !phantom_core::dotenv::is_example_placeholder(&entry.value))
+        .map(|entry| entry.key.as_str())
+        .collect();
+    if names.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "The kept {} has values that look like real secrets: {}. Replace them with placeholders; `phantom check --staged` refuses to commit them",
+        ".env.example".cyan(),
+        names.join(", ")
+    ))
+}
+
+/// Printed right after the backend line when init landed on Linux keyutils.
+/// The kernel keyring is cleared on reboot, and init has just replaced the
+/// dotenv values with tokens, so this is the moment the user must decide.
+fn volatile_backend_notice(backend_name: &str) -> Option<[&'static str; 3]> {
+    backend_name.contains("keyutils").then_some([
+        "The Linux kernel keyring does not survive a reboot. Keep your provider or password-manager copy of these secrets until you switch to a persistent backend:",
+        "  desktop with an unlocked Secret Service:  phantom vault migrate-linux",
+        "  headless, WSL, or CI:  export PHANTOM_VAULT_PASSPHRASE before `phantom init` to use the encrypted-file vault (https://phm.dev/docs/troubleshooting)",
+    ])
+}
+
+/// First-run next steps. Ordered by what a new user needs first: verify the
+/// boundary, connect an AI client, then run work through the proxy. Cloud
+/// backup is suggested only to users who already chose to sign in.
+fn next_steps(logged_in: bool, has_cloud_version: bool) -> Vec<(&'static str, &'static str)> {
+    let mut steps = vec![
+        (
+            "Check that this repo is ready for AI agents:",
+            "phantom agent doctor",
+        ),
+        (
+            "Connect your AI client (writes its MCP config):",
+            "phantom setup --client claude|cursor|windsurf|codex|gemini   # --print to stdout",
+        ),
+        (
+            "Run your app or agent with secret injection:",
+            "phantom exec -- <your-command>",
+        ),
+    ];
+    if logged_in && !has_cloud_version {
+        steps.push(("Back up this vault to Phantom Cloud:", "phantom cloud push"));
+    }
+    steps
+}
+
+/// Print a contextual "what's next?" block.
 fn print_next_steps(config_path: &Path) {
     use phantom_core::auth;
-    use phantom_core::config::PhantomConfig;
 
     let logged_in = auth::load_token().is_some();
-    let has_cloud_version = PhantomConfig::load(config_path)
+    let has_cloud_version = crate::util::load_config_if_present(config_path)
         .ok()
+        .flatten()
         .and_then(|c| c.cloud)
         .is_some();
 
     println!("\n{}", "What's next?".bold());
-
-    let mut step = 1;
-    let mut item = |label: &str, command: &str| {
+    for (index, (label, command)) in next_steps(logged_in, has_cloud_version)
+        .into_iter()
+        .enumerate()
+    {
         println!(
             "  {}. {}\n     {}",
-            step.to_string().bold(),
+            (index + 1).to_string().bold(),
             label,
             command.cyan().bold()
         );
-        step += 1;
-    };
-
-    item(
-        "Run code with secret injection:",
-        "phantom exec -- <your-command>",
-    );
-    item("Verify everything looks healthy:", "phantom doctor");
-
-    if !logged_in {
-        item(
-            "Sign in to Phantom Cloud (optional, for E2E-encrypted backups):",
-            "phantom login",
-        );
-    } else if !has_cloud_version {
-        item("Back up this vault to Phantom Cloud:", "phantom cloud push");
     }
-
-    item("Open your dashboard:", "phantom open");
-    item(
-        "Block raw-secret commits (recommended for teams):",
-        "pre-commit install   # uses .pre-commit-hooks.yaml shipped with phantom",
-    );
-    item(
-        "Other AI tools (Cursor, Windsurf, Codex):",
-        "phantom setup --client cursor|windsurf|codex|claude   # --print to stdout",
-    );
-
     println!();
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn init_warns_about_commented_out_secrets_by_key_and_line() {
+        // init leaves comments alone, so a commented-out credential would
+        // stay as plaintext with nothing said about it.
+        let old = ["sk", "-proj-", "1n1tC0mmentedValue0123456789abcdefgh"].concat();
+        let text = format!("OPENAI_API_KEY=phm_x\n\n# OPENAI_API_KEY={old}\n# PORT=8080\n");
+        let dotenv = DotenvFile::parse_str(&text);
+        let lines = commented_entry_notes(&dotenv, ".env");
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].contains("OPENAI_API_KEY"), "{}", lines[0]);
+        assert!(lines[0].contains(".env line 3"), "{}", lines[0]);
+        assert!(!lines[0].contains(&old));
+        assert!(commented_entry_notes(&DotenvFile::parse_str("PORT=1\n"), ".env").is_empty());
+    }
+
+    #[test]
+    fn first_run_next_steps_lead_with_local_checks_not_hosted_surfaces() {
+        let steps = next_steps(false, false);
+        let commands: Vec<&str> = steps.iter().map(|(_, command)| *command).collect();
+        assert_eq!(commands[0], "phantom agent doctor");
+        assert!(commands[1].starts_with("phantom setup --client "));
+        assert_eq!(commands[2], "phantom exec -- <your-command>");
+        for command in &commands {
+            // Init already installed the native hook; the dashboard and
+            // cloud sign-in are hosted surfaces a first run cannot rely on.
+            assert!(!command.contains("pre-commit install"), "{command}");
+            assert!(!command.contains("phantom open"), "{command}");
+            assert!(!command.contains("phantom login"), "{command}");
+        }
+    }
+
+    #[test]
+    fn cloud_push_is_suggested_only_to_signed_in_users_without_a_cloud_copy() {
+        let has_push = |logged_in, has_cloud| {
+            next_steps(logged_in, has_cloud)
+                .iter()
+                .any(|(_, command)| *command == "phantom cloud push")
+        };
+        assert!(!has_push(false, false));
+        assert!(has_push(true, false));
+        assert!(!has_push(true, true));
+    }
+
+    #[test]
+    fn volatile_keyutils_backend_gets_a_persistence_warning() {
+        let notice = volatile_backend_notice("linux-keyutils (volatile across reboot)")
+            .expect("keyutils must warn");
+        assert!(notice[0].contains("does not survive a reboot"));
+        assert!(notice[1].contains("phantom vault migrate-linux"));
+        assert!(notice[2].contains("PHANTOM_VAULT_PASSPHRASE"));
+        for persistent in [
+            "os-keychain",
+            "encrypted-file",
+            "linux-secret-service (persistent)",
+        ] {
+            assert!(
+                volatile_backend_notice(persistent).is_none(),
+                "{persistent}"
+            );
+        }
+    }
     use phantom_core::error::{PhantomError, Result as PhantomResult};
     use phantom_vault::file::FileVault;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -579,11 +765,12 @@ mod tests {
         assert!(regular.contains("TrustedAnchor::open(&project_dir)"));
         assert!(regular.contains("prepare_auto_setup_claude_code(&project_dir)"));
         assert_eq!(
-            regular.matches("prepare_guidance(&project_dir)").count(),
+            regular.matches("prepare_guidance(&project_dir, ").count(),
             2,
             "both init branches must keep mutating guidance inside the reviewed project"
         );
         assert!(!regular.contains("prepare_guidance(&project_dir, &cwd)"));
+        assert!(!regular.contains("prepare_guidance(&cwd"));
         assert_eq!(
             regular.matches("reviewed_project_identity,").count(),
             2,
@@ -875,6 +1062,51 @@ mod tests {
                 vault.retrieve(name),
                 Err(PhantomError::SecretNotFound(_))
             ));
+        }
+    }
+
+    /// A real value for a new dotenv entry, built at runtime so no
+    /// credential-shaped literal lands in history.
+    #[cfg(unix)]
+    fn locked_fixture_value() -> String {
+        let generated = phantom_core::token::PhantomToken::generate();
+        ["fixture", generated.as_str().trim_start_matches("phm_")].join("-")
+    }
+
+    /// Rerunning `phantom init` to protect a new dotenv value beside an
+    /// encrypted-file vault this process cannot open stored the new secret in
+    /// the OS keychain, splitting the project across two vaults. It now
+    /// refuses with the unlock step and changes no project file, as
+    /// `phantom add` does.
+    #[cfg(unix)]
+    #[test]
+    fn init_beside_a_locked_file_vault_refuses_before_any_change() {
+        use crate::util::test_seam::{empty_keychain, keychain_with_one, LockedProject, MakeVault};
+        for (make, lead) in [
+            (empty_keychain as MakeVault, "Vault locked:"),
+            (
+                keychain_with_one,
+                "Refusing to protect new secrets from a partial inventory",
+            ),
+        ] {
+            let project = LockedProject::new(make);
+            let env_path = project.dir.join(".env");
+            let body = format!("NEW_SERVICE_API_KEY={}\n", locked_fixture_value());
+            std::fs::write(&env_path, &body).unwrap();
+            let config_before = std::fs::read(project.dir.join(".phantom.toml")).unwrap();
+
+            let outcome = run(env_path.to_str().unwrap());
+
+            assert!(outcome.is_err(), "init must refuse a locked file vault");
+            let message = outcome.err().unwrap().to_string();
+            assert!(message.starts_with(lead));
+            assert!(message.contains("PHANTOM_VAULT_PASSPHRASE"));
+            assert_eq!(std::fs::read_to_string(&env_path).unwrap(), body);
+            assert_eq!(
+                std::fs::read(project.dir.join(".phantom.toml")).unwrap(),
+                config_before
+            );
+            assert!(!project.dir.join(".env.example").exists());
         }
     }
 }

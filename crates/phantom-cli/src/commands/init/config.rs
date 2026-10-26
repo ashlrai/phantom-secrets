@@ -13,9 +13,9 @@ pub fn load_or_create(
     config_before: Option<&[u8]>,
 ) -> anyhow::Result<PhantomConfig> {
     let project_id = PhantomConfig::project_id_from_path(project_dir);
-    let config = if config_before.is_some() {
+    let config = if let Some(before) = config_before {
         println!("{} Loading existing .phantom.toml", "->".blue().bold());
-        let config = PhantomConfig::load(config_path)?;
+        let config = PhantomConfig::load_from_bytes(config_path, before)?;
         let after = phantom_core::fs::read_regular_file(config_path)?;
         if after.as_deref() != config_before {
             anyhow::bail!(".phantom.toml changed while init was reading it; no changes were made");
@@ -43,6 +43,27 @@ pub fn apply_detected_services(config: &mut PhantomConfig, real_entries: &[&EnvE
             entry.insert(svc);
         }
     }
+}
+
+/// Protected keys that `phantom exec` and `phantom start` will refuse to
+/// launch with, because connection strings are not proxied yet.
+pub fn protected_connection_string_keys(
+    config: &PhantomConfig,
+    real_entries: &[&EnvEntry],
+) -> Vec<String> {
+    let blocked: std::collections::BTreeSet<&str> = config
+        .connection_string_services()
+        .into_iter()
+        .map(|(_, service)| service.secret_key.as_str())
+        .collect();
+    let mut keys: Vec<String> = real_entries
+        .iter()
+        .filter(|entry| blocked.contains(entry.key.as_str()))
+        .map(|entry| entry.key.clone())
+        .collect();
+    keys.sort();
+    keys.dedup();
+    keys
 }
 
 /// Auto-detect service configurations from .env key names.
@@ -78,7 +99,16 @@ fn auto_detect_services(
 
         // Check connection strings
         for conn_key in &conn_string_keys {
+            // Built-in defaults already map some keys (for example the
+            // `database` service owns DATABASE_URL). Adding a second service
+            // for the same key only duplicated it in config and diagnostics.
+            let already_mapped = existing_config
+                .services
+                .values()
+                .chain(detected.values())
+                .any(|service| service.secret_key == entry.key);
             if entry.key == *conn_key
+                && !already_mapped
                 && !existing_config
                     .services
                     .contains_key(&entry.key.to_lowercase())
@@ -155,5 +185,60 @@ mod tests {
 
         config.services.get_mut("resend").unwrap().pattern = Some("attacker.example".to_string());
         assert!(config.validate_agentic_proxy_routes().is_err());
+    }
+
+    fn entry(key: &str) -> EnvEntry {
+        EnvEntry {
+            key: key.to_string(),
+            value: "test-value".to_string(),
+            is_phantom: false,
+        }
+    }
+
+    #[test]
+    fn default_database_service_is_not_duplicated_by_auto_detection() {
+        let entries = [entry("DATABASE_URL"), entry("REDIS_URL")];
+        let refs: Vec<&EnvEntry> = entries.iter().collect();
+        let mut config = PhantomConfig::new_with_defaults("test".to_string());
+        apply_detected_services(&mut config, &refs);
+
+        let database_url_services: Vec<&str> = config
+            .connection_string_services()
+            .into_iter()
+            .filter(|(_, service)| service.secret_key == "DATABASE_URL")
+            .map(|(name, _)| name)
+            .collect();
+        assert_eq!(database_url_services, vec!["database"]);
+        assert!(!config.services.contains_key("database_url"));
+        // Keys without a default mapping are still detected.
+        assert_eq!(
+            config
+                .services
+                .get("redis_url")
+                .map(|s| s.secret_key.as_str()),
+            Some("REDIS_URL")
+        );
+    }
+
+    #[test]
+    fn protected_connection_string_keys_are_sorted_and_unique() {
+        let entries = [
+            entry("OPENAI_API_KEY"),
+            entry("REDIS_URL"),
+            entry("DATABASE_URL"),
+        ];
+        let refs: Vec<&EnvEntry> = entries.iter().collect();
+        let mut config = PhantomConfig::new_with_defaults("test".to_string());
+        apply_detected_services(&mut config, &refs);
+        // A config written by an older init can still carry a duplicate.
+        config.services.insert(
+            "database_url".to_string(),
+            config.services["database"].clone(),
+        );
+
+        assert_eq!(
+            protected_connection_string_keys(&config, &refs),
+            vec!["DATABASE_URL".to_string(), "REDIS_URL".to_string()]
+        );
     }
 }

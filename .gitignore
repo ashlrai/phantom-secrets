@@ -8,3 +8,9 @@
 .phantom.start.lock
 .DS_Store
 .claude/
+
+# SEO observation inputs may be operator-provided aggregates. Keep all local
+# inputs and generated reports out of source control; CI publishes only the
+# sanitized report from its temporary directory.
+seo/private/
+seo/reports/

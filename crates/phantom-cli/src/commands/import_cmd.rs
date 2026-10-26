@@ -11,6 +11,11 @@ use zeroize::{Zeroize, Zeroizing};
 
 use super::export_cmd::{self, PassphrasePurpose, MAX_ENCRYPTED_BACKUP_BYTES};
 
+/// "Refusing to ..." wording for the rotation gate on backup restore.
+const RESTORE_ACTION: &str = "restore the backup";
+/// "Refusing to ..." wording for the rotation gate on a competitor import.
+const IMPORT_ACTION: &str = "import secrets";
+
 /// Import Phantom's encrypted backup format (`phantom-export.enc`).
 pub fn run(
     file: &str,
@@ -42,13 +47,7 @@ pub fn run(
         return Ok(());
     }
 
-    let vault = phantom_vault::try_create_vault(&project.local_project_id)?;
-    let mut vault_names = vault
-        .list()
-        .context("Failed to list destination secret names")?;
-    vault_names.sort();
-    vault_names.dedup();
-    export_cmd::validate_consent_names(&vault_names)?;
+    let (vault, vault_names) = open_import_destination(&project)?;
     let existing = vault_names.iter().cloned().collect::<BTreeSet<_>>();
     let incoming = secrets.0.keys().cloned().collect::<Vec<_>>();
     export_cmd::validate_consent_names(&incoming)?;
@@ -67,6 +66,17 @@ pub fn run(
         .filter(|name| !force && existing.contains(*name))
         .cloned()
         .collect::<Vec<_>>();
+    // A restored value carries no rotation anchor: a new entry would be
+    // stamped as stored now and a forced overwrite would keep the local
+    // anchor, laundering an overdue value from an old backup. Refuse every
+    // enforced write before the challenge and before any vault write.
+    super::rotation_gate::enforce_rotation_on_restore(
+        &project.config,
+        vault.as_ref(),
+        destination_names.iter().map(String::as_str),
+        RESTORE_ACTION,
+        super::rotation_gate::now_secs(),
+    )?;
     let consent = import_consent_plan(
         "encrypted-backup",
         &source,
@@ -388,11 +398,7 @@ pub fn run_from(source: &str, file: &str, force: bool) -> Result<()> {
         return Ok(());
     }
 
-    let vault = phantom_vault::try_create_vault(&project.local_project_id)?;
-    let mut vault_names = vault.list().context("Failed to list local vault secrets")?;
-    vault_names.sort();
-    vault_names.dedup();
-    export_cmd::validate_consent_names(&vault_names)?;
+    let (vault, vault_names) = open_import_destination(&project)?;
     let env_path = phantom_core::managed_dotenv::resolve_dotenv(
         &project.project_dir,
         &project.config,
@@ -409,6 +415,18 @@ pub fn run_from(source: &str, file: &str, force: bool) -> Result<()> {
         .filter(|name| existing.contains(*name))
         .cloned()
         .collect::<Vec<_>>();
+    // An imported value carries no rotation anchor: a new entry would be
+    // stamped as stored now and an overwrite would keep the local anchor,
+    // laundering an overdue value re-exported from another manager. Every
+    // incoming name is written, so each one whose secret enforces rotation
+    // is refused from names alone, before the challenge and any vault write.
+    super::rotation_gate::enforce_rotation_on_restore(
+        &project.config,
+        vault.as_ref(),
+        incoming.iter().map(String::as_str),
+        IMPORT_ACTION,
+        super::rotation_gate::now_secs(),
+    )?;
     let consent = import_consent_plan(
         source,
         &source_snapshot,
@@ -449,27 +467,36 @@ pub fn run_from(source: &str, file: &str, force: bool) -> Result<()> {
     );
 
     // Suggest phantom init if the managed dotenv contains plaintext secrets.
-    if env_path.exists() {
-        if let Ok(dotenv) = phantom_core::dotenv::DotenvFile::parse_file(&env_path) {
-            if !dotenv.real_secret_entries().is_empty() {
-                println!(
-                    "\n{} Your {} still contains plaintext secrets.",
-                    "!".yellow().bold(),
-                    env_path
-                        .file_name()
-                        .and_then(|name| name.to_str())
-                        .unwrap_or("managed dotenv")
-                        .cyan()
-                );
-                println!(
-                    "   Run {} to replace them with phantom tokens.",
-                    "phantom init".cyan().bold()
-                );
-            }
-        }
+    if managed_dotenv_has_plaintext(&project.project_dir, &env_path) {
+        println!(
+            "\n{} Your {} still contains plaintext secrets.",
+            "!".yellow().bold(),
+            env_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("managed dotenv")
+                .cyan()
+        );
+        println!(
+            "   Run {} to replace them with phantom tokens.",
+            "phantom init".cyan().bold()
+        );
     }
 
     Ok(())
+}
+
+/// Whether the managed dotenv (`env_path`, beside `.phantom.toml`) still holds
+/// plaintext secrets. It is opened without following a symlink and judged on
+/// the opened handle; a link, a missing file or a read error gives no hint.
+fn managed_dotenv_has_plaintext(project_dir: &Path, env_path: &Path) -> bool {
+    let Some(name) = env_path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    matches!(
+        phantom_core::managed_dotenv::parse_regular_dotenv(project_dir, name),
+        Ok(Some(dotenv)) if !dotenv.real_secret_entries().is_empty()
+    )
 }
 
 fn parse_competitor_source(
@@ -490,11 +517,13 @@ fn parse_competitor_source(
 }
 
 fn parse_env_source(bytes: &[u8]) -> Result<BTreeMap<String, Zeroizing<String>>> {
+    phantom_core::importers::refuse_non_utf8_encoding("env", bytes)?;
     let content = std::str::from_utf8(bytes).context("File is not valid UTF-8")?;
     let dotenv = phantom_core::dotenv::DotenvFile::parse_str(content);
     dotenv
         .validate_for_mutation()
         .context("Import source is malformed; no destination mutation was prepared")?;
+    phantom_core::importers::refuse_dotenvx_ciphertext(&dotenv)?;
     let mut secrets = BTreeMap::new();
     for entry in dotenv.entries() {
         if !entry.value.is_empty() {
@@ -518,7 +547,7 @@ struct ImportConsentPlan {
 }
 
 fn load_import_project_exact() -> Result<ImportProject> {
-    let project_dir = std::env::current_dir()?.canonicalize()?;
+    let project_dir = crate::util::project_dir()?.canonicalize()?;
     let config_path = project_dir.join(".phantom.toml");
     let config_before = phantom_core::fs::read_regular_file(&config_path)
         .context("Failed to safely read .phantom.toml")?
@@ -542,6 +571,33 @@ fn load_import_project_exact() -> Result<ImportProject> {
     };
     recheck_project(&project)?;
     Ok(project)
+}
+
+/// Open the destination vault and list its sorted, deduplicated names: the
+/// set the import decides new, overwritten and skipped names from.
+///
+/// Beside an encrypted-file vault this process cannot open, the opened vault
+/// is the OS keychain. Its listing would treat names already in the file
+/// vault as new and store them into the keychain, splitting the project's
+/// secrets across two vaults, so an empty or keychain-only listing is refused
+/// before any review or value read.
+fn open_import_destination(
+    project: &ImportProject,
+) -> Result<(Box<dyn phantom_vault::VaultBackend>, Vec<String>)> {
+    let vault = crate::util::open_vault(&project.local_project_id)?;
+    let mut vault_names = vault
+        .list()
+        .context("Failed to list destination secret names")?;
+    vault_names.sort();
+    vault_names.dedup();
+    crate::util::require_complete_inventory(
+        vault.as_ref(),
+        &project.local_project_id,
+        vault_names.len(),
+        "import secrets",
+    )?;
+    export_cmd::validate_consent_names(&vault_names)?;
+    Ok((vault, vault_names))
 }
 
 fn recheck_project(project: &ImportProject) -> Result<()> {
@@ -700,6 +756,46 @@ mod fail_closed_tests {
     use phantom_core::error::{PhantomError, Result as PhantomResult};
     use zeroize::Zeroizing;
 
+    /// A restored backup value carries no rotation anchor: a new entry was
+    /// stamped as stored now and a forced overwrite kept the local anchor, so
+    /// restoring an old backup laundered an overdue value. The restore gate
+    /// runs on every entry the restore would write, before the
+    /// trusted-terminal challenge and before any vault write.
+    #[test]
+    fn backup_restore_gates_rotation_before_the_challenge() {
+        let source = include_str!("import_cmd.rs");
+        let run = &source[source.find("pub fn run(").unwrap()..];
+        let run = &run[..run.find("struct ParsedImportedSecret").unwrap()];
+        let gate = run
+            .find("RESTORE_ACTION")
+            .expect("backup restore must gate rotation");
+        let challenge = run
+            .find("require_trusted_terminal_effect(&consent.effect")
+            .unwrap();
+        assert!(gate < challenge);
+        assert!(gate < run.find("commit_init(").unwrap());
+    }
+
+    /// A competitor-imported value (Doppler, Infisical, dotenvx, 1Password,
+    /// .env) carries no rotation anchor: a new entry was stamped as stored
+    /// now and an overwrite kept the local anchor, so re-importing an overdue
+    /// value laundered it. The restore gate runs on every name the import
+    /// writes, before the trusted-terminal challenge and any vault write.
+    #[test]
+    fn competitor_import_gates_rotation_before_the_challenge() {
+        let source = include_str!("import_cmd.rs");
+        let run_from = &source[source.find("pub fn run_from(").unwrap()..];
+        let run_from = &run_from[..run_from.find("fn managed_dotenv_has_plaintext(").unwrap()];
+        let gate = run_from
+            .find("IMPORT_ACTION")
+            .expect("competitor import must gate rotation");
+        let challenge = run_from
+            .find("require_trusted_terminal_effect(&consent.effect")
+            .unwrap();
+        assert!(gate < challenge);
+        assert!(gate < run_from.find("commit_init(").unwrap());
+    }
+
     struct ListFailingVault;
 
     impl phantom_vault::VaultBackend for ListFailingVault {
@@ -723,6 +819,48 @@ mod fail_closed_tests {
 
         fn backend_name(&self) -> &str {
             "list-failing"
+        }
+    }
+
+    #[test]
+    fn env_source_refuses_dotenvx_ciphertext() {
+        let ciphertext = ["encrypted:", "BFakeCipher", "PlaceholderOnly=="].concat();
+        let public = ["03", "fakepublicplaceholder"].concat();
+        let input = format!(
+            "DOTENV_PUBLIC_KEY=\"{public}\"\nPLAIN_NAME=plain_value\nSEALED_NAME=\"{ciphertext}\"\n"
+        );
+        let error = parse_competitor_source("env", input.as_bytes())
+            .err()
+            .map(|error| format!("{error:#}"))
+            .unwrap_or_default();
+        assert!(
+            error.contains("'SEALED_NAME'"),
+            "env import was not refused"
+        );
+        assert!(error.contains("dotenvx decrypt"));
+        assert!(!error.contains("BFakeCipher"));
+        assert!(!error.contains("plain_value"));
+
+        let decrypted = format!("DOTENV_PUBLIC_KEY=\"{public}\"\nSEALED_NAME=decrypted-plain\n");
+        let map = parse_competitor_source("env", decrypted.as_bytes()).unwrap();
+        assert!(map.get("SEALED_NAME").map(|v| v.as_str()) == Some("decrypted-plain"));
+    }
+
+    #[test]
+    fn every_cli_source_refuses_a_utf16_export_by_name() {
+        // The CLI routes `--from env` through its own dotenv parser, so the
+        // encoding refusal must hold here too, not only in phantom-core.
+        for source in ["doppler", "infisical", "dotenvx", "1password", "env"] {
+            let mut input = vec![0xFF, 0xFE];
+            input.extend("WIDE_NAME=x\n".encode_utf16().flat_map(u16::to_le_bytes));
+            let error = parse_competitor_source(source, &input)
+                .err()
+                .map(|error| format!("{error:#}"))
+                .unwrap_or_default();
+            assert!(
+                error.contains("UTF-16 LE") && error.contains("re-save"),
+                "{source} did not name the encoding"
+            );
         }
     }
 
@@ -785,6 +923,24 @@ mod fail_closed_tests {
             .err()
             .expect("symlink import source must be rejected");
         assert!(error.to_string().contains("must not be a symlink"));
+    }
+
+    /// The post-import hint reads the managed dotenv without following a
+    /// symlink: a linked file's target is never read, so it gives no hint.
+    #[cfg(unix)]
+    #[test]
+    fn plaintext_hint_does_not_follow_a_symlinked_managed_dotenv() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let target = outside.path().join("elsewhere.env");
+        std::fs::write(&target, format!("OPENAI_API_KEY={}-outside\n", "sk")).unwrap();
+        let env_path = dir.path().join(".env");
+        std::os::unix::fs::symlink(&target, &env_path).unwrap();
+        assert!(!managed_dotenv_has_plaintext(dir.path(), &env_path));
+
+        std::fs::remove_file(&env_path).unwrap();
+        std::fs::copy(&target, &env_path).unwrap();
+        assert!(managed_dotenv_has_plaintext(dir.path(), &env_path));
     }
 
     #[test]
@@ -896,5 +1052,33 @@ project_id = "swapped-project"
         assert!(error.to_string().contains("trusted terminal"));
         assert_eq!(reader.position(), 0);
         assert!(writer.is_empty());
+    }
+}
+
+#[cfg(all(test, unix))]
+mod locked_vault_tests {
+    use crate::util::test_seam::{empty_keychain, keychain_with_one, LockedProject};
+
+    /// Beside an encrypted-file vault this process cannot open, import read
+    /// the OS keychain's listing as the destination inventory: a name already
+    /// in the file vault was planned as new and stored into the keychain,
+    /// splitting the project's secrets across two vaults.
+    #[test]
+    fn import_refuses_a_destination_beside_a_locked_file_vault() {
+        for make in [empty_keychain, keychain_with_one] {
+            let _project = LockedProject::new(make);
+            let import = super::load_import_project_exact().unwrap();
+            let outcome = super::open_import_destination(&import);
+            assert!(
+                outcome.is_err(),
+                "import must not plan against a keychain beside a locked file vault"
+            );
+            let error = outcome.err().unwrap().to_string();
+            assert!(
+                error.starts_with("Vault locked:")
+                    || error.starts_with("Refusing to import secrets from a partial inventory"),
+            );
+            assert!(error.contains("PHANTOM_VAULT_PASSPHRASE"));
+        }
     }
 }

@@ -7,24 +7,97 @@ use std::io::{BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use zeroize::{Zeroize, Zeroizing};
 
+/// "Refusing to ..." wording for the rotation gate on cloud push and pull.
+const CLOUD_PUSH_ACTION: &str = "push to Phantom Cloud";
+const CLOUD_PULL_ACTION: &str = "pull from Phantom Cloud";
+
+/// Every machine that later pulls the cloud copy receives these values and
+/// stores them read-write: refuse an overdue enforced secret, as
+/// `phantom exec` would, and an entry the expiry policy demoted to read-only
+/// or whose lifecycle metadata cannot be read. Names and metadata only.
+fn gate_cloud_push(
+    config: &PhantomConfig,
+    vault: &dyn phantom_vault::VaultBackend,
+    names: &[String],
+) -> Result<()> {
+    super::rotation_gate::enforce_lifecycle_on_propagation(
+        config,
+        vault,
+        names.iter().map(String::as_str),
+        CLOUD_PUSH_ACTION,
+        "Rotate or promote them before pushing to the cloud vault.",
+        "No vault plaintext was read and nothing was sent to Phantom Cloud.",
+        super::rotation_gate::now_secs(),
+    )
+}
+
 pub fn run_push() -> Result<()> {
-    let project_dir = std::env::current_dir()?.canonicalize()?;
+    let project_dir = crate::util::project_dir()?.canonicalize()?;
     let (config_path, config_before, config) = load_cloud_config_exact(&project_dir)?;
     ensure_cloud_push_allowed(&config)?;
+    // A locked or partial inventory and an overdue enforced, read-only or
+    // unjudgeable entry are known from names and metadata alone: refuse
+    // before asking for consent. All are judged again after consent, before
+    // any value read.
+    {
+        let vault = crate::util::open_vault(config.local_project_id())?;
+        let names = vault.list()?;
+        crate::util::require_complete_inventory(
+            vault.as_ref(),
+            config.local_project_id(),
+            names.len(),
+            "push to the cloud vault",
+        )?;
+        gate_cloud_push(&config, vault.as_ref(), &names)?;
+    }
     require_trusted_terminal_cloud(&cloud_consent_plan("push", &project_dir, &config, false)?)?;
     // Refuse an unreconciled push and require terminal consent before reading
     // cloud credentials or any vault value.
     let api_base = auth::api_base_url()?;
     let token = Zeroizing::new(auth::require_token()?);
+    push_after_consent(
+        &project_dir,
+        &config_path,
+        config_before,
+        config,
+        &api_base,
+        &token,
+    )
+}
 
-    let vault = phantom_vault::try_create_vault(config.local_project_id())?;
+/// `cloud push` once terminal consent is given and the bearer is read: list
+/// the local vault, judge that inventory, and only then read values, fetch the
+/// cloud passphrase and send. Split out so a test can enter here without a
+/// terminal; `run_push` is the only production caller.
+fn push_after_consent(
+    project_dir: &Path,
+    config_path: &Path,
+    config_before: Vec<u8>,
+    config: PhantomConfig,
+    api_base: &str,
+    token: &str,
+) -> Result<()> {
+    let vault = crate::util::open_vault(config.local_project_id())?;
     let mut secret_names = vault.list()?;
     secret_names.sort();
+    // The push replaces the cloud copy: never from a keychain-only view of a
+    // project whose encrypted-file vault this process cannot open.
+    crate::util::require_complete_inventory(
+        vault.as_ref(),
+        config.local_project_id(),
+        secret_names.len(),
+        "push to the cloud vault",
+    )?;
 
     if secret_names.is_empty() {
         println!("{}  No secrets to push", "warn".yellow().bold());
         return Ok(());
     }
+
+    // The cloud copy is handed to every machine that later pulls it: judge
+    // the lifecycle gate again before any value is read, the cloud
+    // passphrase is fetched, or anything is sent.
+    gate_cloud_push(&config, vault.as_ref(), &secret_names)?;
 
     phantom_core::audit::log_result("cloud.push", None)
         .context("Failed to write audit event for cloud push")?;
@@ -33,7 +106,9 @@ pub fn run_push() -> Result<()> {
     let mut secrets = BTreeMap::new();
     let mut guards = Vec::with_capacity(secret_names.len());
     for name in &secret_names {
-        let value = vault.retrieve(name)?;
+        // The injection read re-checks the mode atomically with the value
+        // read, so an entry demoted after the gate is never sent.
+        let value = vault.retrieve_for_injection(name)?;
         guards.push(phantom_vault::InitSecret::replace_if_unchanged(
             name,
             Some(value.as_str().to_string()),
@@ -65,8 +140,8 @@ pub fn run_push() -> Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
     let new_version = rt
         .block_on(cloud::push(
-            &api_base,
-            &token,
+            api_base,
+            token,
             config.portable_project_id(),
             &blob_b64,
             expected_version,
@@ -100,11 +175,11 @@ pub fn run_push() -> Result<()> {
         })?
         .into_bytes();
     phantom_vault::commit_init(
-        &project_dir,
+        project_dir,
         vault.as_ref(),
         guards,
         vec![phantom_vault::InitFile::replace_if_unchanged(
-            &config_path,
+            config_path,
             Some(config_before),
             config_after,
         )],
@@ -128,11 +203,12 @@ pub fn run_push() -> Result<()> {
 pub fn run_pull(force: bool) -> Result<()> {
     let project_dir = std::env::current_dir()?.canonicalize()?;
     let (config_path, config_before, config) = load_cloud_config_exact(&project_dir)?;
+    // Judge the destination before consent, credentials, network or any value
+    // read: the pull decides skip/overwrite/unchanged from this vault alone.
+    let vault = cloud_pull_destination(&config)?;
     require_trusted_terminal_cloud(&cloud_consent_plan("pull", &project_dir, &config, force)?)?;
     let api_base = auth::api_base_url()?;
     let token = Zeroizing::new(auth::require_token()?);
-
-    let vault = phantom_vault::try_create_vault(config.local_project_id())?;
 
     println!("{}  Pulling from Phantom Cloud...", "->".blue().bold());
 
@@ -192,6 +268,23 @@ pub fn run_pull(force: bool) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Open the vault a `cloud pull` writes into, listing names only. Beside an
+/// encrypted-file vault this process cannot open, the OS keychain it selects
+/// instead would take every pulled entry (splitting the project across two
+/// vaults) and judge skip/overwrite/unchanged without the file vault's copies,
+/// so an empty or keychain-only inventory is refused.
+fn cloud_pull_destination(config: &PhantomConfig) -> Result<Box<dyn phantom_vault::VaultBackend>> {
+    let vault = crate::util::open_vault(config.local_project_id())?;
+    let listed = vault.list()?.len();
+    crate::util::require_complete_inventory(
+        vault.as_ref(),
+        config.local_project_id(),
+        listed,
+        "reconcile a cloud pull",
+    )?;
+    Ok(vault)
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -279,7 +372,8 @@ fn load_cloud_config_exact(project_dir: &Path) -> Result<(PathBuf, Vec<u8>, Phan
     let before = phantom_core::fs::read_regular_file(&path)
         .context("Failed to safely read .phantom.toml")?
         .ok_or_else(|| anyhow::anyhow!("No .phantom.toml found. Run `phantom init` first."))?;
-    let config = PhantomConfig::load(&path).context("Failed to load .phantom.toml")?;
+    let config =
+        PhantomConfig::load_from_bytes(&path, &before).context("Failed to load .phantom.toml")?;
     if phantom_core::fs::read_regular_file(&path)
         .context("Failed to recheck .phantom.toml")?
         .as_deref()
@@ -359,7 +453,12 @@ fn apply_cloud_pull_transaction(
     remote_version: u64,
 ) -> Result<(usize, usize)> {
     let mut mutations = Vec::new();
+    // Local values already identical to the remote copy need no write, but
+    // they are still bound at commit so a concurrent change is drift, not a
+    // silently reconciled name.
+    let mut unchanged_guards = Vec::new();
     let mut skipped = 0usize;
+    let mut written = Vec::new();
     for (name, value) in &secrets.0 {
         let before = match vault.retrieve(name) {
             Ok(value) => Some(value),
@@ -368,22 +467,44 @@ fn apply_cloud_pull_transaction(
                 anyhow::bail!("Failed to inspect local cloud-pull destination '{name}': {error}")
             }
         };
+        if let Some(local) = before.as_ref() {
+            if local.as_str().as_bytes() == value.as_bytes() {
+                unchanged_guards.push(phantom_vault::InitSecret::replace_if_unchanged(
+                    name,
+                    Some(local.as_str().to_string()),
+                    local.as_str(),
+                ));
+                continue;
+            }
+        }
         if before.is_some() && !force {
             skipped += 1;
             continue;
         }
+        written.push(name.as_str());
         mutations.push(phantom_vault::InitSecret::replace_if_unchanged(
             name,
             before.as_ref().map(|value| value.as_str().to_string()),
             value.as_str(),
         ));
     }
+    // A pulled value carries no rotation anchor: a new entry would be stamped
+    // as stored now and an overwrite would keep the local anchor, laundering
+    // an overdue value. Refuse every enforced write before any vault write.
+    super::rotation_gate::enforce_rotation_on_restore(
+        &config,
+        vault,
+        written,
+        CLOUD_PULL_ACTION,
+        super::rotation_gate::now_secs(),
+    )?;
 
     update_cloud_reconciliation(&mut config, remote_version, skipped);
     let config_after = toml::to_string_pretty(&config)
         .context("Failed to serialize cloud reconciliation state")?
         .into_bytes();
     let added = mutations.len();
+    mutations.extend(unchanged_guards);
     phantom_vault::commit_init(
         project_dir,
         vault,
@@ -412,37 +533,110 @@ fn update_cloud_reconciliation(config: &mut PhantomConfig, remote_version: u64, 
     }
 }
 
-pub fn run_status() -> Result<()> {
+/// What `phantom cloud status` learned, before it is rendered.
+enum CloudLogin {
+    NotLoggedIn,
+    /// The service rejected the stored bearer (HTTP 401): log in again.
+    TokenRejected,
+    /// The account lookup failed for another reason (network, server error,
+    /// unparseable reply). The stored login was not rejected.
+    LookupFailed(phantom_core::error::PhantomError),
+    LoggedIn(auth::UserInfo),
+}
+
+/// `phantom cloud status --json`: one object with the same facts as the text
+/// report. `user` is the account email when the service returns one, else the
+/// GitHub login. Never includes the stored bearer.
+fn cloud_status_json(
+    login: &CloudLogin,
+    cloud: Option<&phantom_core::config::CloudConfig>,
+    local_config_unreadable: bool,
+) -> serde_json::Value {
+    let user = match login {
+        CloudLogin::LoggedIn(user) => Some(user),
+        _ => None,
+    };
+    serde_json::json!({
+        "loggedIn": user.is_some(),
+        "tokenStored": !matches!(login, CloudLogin::NotLoggedIn),
+        "tokenRejected": matches!(login, CloudLogin::TokenRejected),
+        "accountLookupFailed": matches!(login, CloudLogin::LookupFailed(_)),
+        "user": user.map(|u| u.email.clone().unwrap_or_else(|| u.github_login.clone())),
+        "email": user.and_then(|u| u.email.clone()),
+        "githubLogin": user.map(|u| u.github_login.clone()),
+        "tier": user.map(|u| u.plan.clone()),
+        "vaultsCount": user.and_then(|u| u.vaults_count),
+        "lastSyncedVersion": cloud.map(|c| c.version),
+        "reconciliationRequired": cloud.is_some_and(|c| c.reconciliation_required),
+        "reconciliationRemoteVersion": cloud.and_then(|c| c.reconciliation_remote_version),
+        "localConfigUnreadable": local_config_unreadable,
+    })
+}
+
+/// `json` prints one object (see [`cloud_status_json`]) instead of the text
+/// report. Both pass the same trusted-terminal consent gate first and make
+/// the same single authenticated request.
+pub fn run_status(json: bool) -> Result<()> {
     require_trusted_terminal_cloud(&CloudConsentPlan {
         effect: "read the stored Phantom bearer and send an authenticated request for cloud account and vault status".to_string(),
         challenge: "cloud status authenticated".to_string(),
     })?;
     let api_base = auth::api_base_url()?;
 
-    match auth::load_token() {
+    let login = match auth::load_token() {
         Some(token) => {
+            let token = Zeroizing::new(token);
             let rt = tokio::runtime::Runtime::new()?;
             match rt.block_on(auth::get_user_info(&api_base, &token)) {
-                Ok(user) => {
-                    println!(
-                        "{}  Cloud: logged in as @{} ({})",
-                        "ok".green().bold(),
-                        user.github_login,
-                        user.plan
-                    );
-                    if let Some(count) = user.vaults_count {
-                        println!("   Vaults: {count}");
-                    }
-                }
-                Err(_) => {
-                    println!(
-                        "{}  Cloud: token expired — run `phantom login`",
-                        "warn".yellow().bold()
-                    );
-                }
+                Ok(user) => CloudLogin::LoggedIn(user),
+                Err(phantom_core::error::PhantomError::AuthRequired) => CloudLogin::TokenRejected,
+                Err(error) => CloudLogin::LookupFailed(error),
             }
         }
-        None => {
+        None => CloudLogin::NotLoggedIn,
+    };
+    let config_path = std::path::Path::new(".phantom.toml");
+
+    if json {
+        let (config, local_config_unreadable) =
+            match crate::util::load_config_if_present(config_path) {
+                Ok(config) => (config, false),
+                Err(_) => (None, true),
+            };
+        let cloud = config.as_ref().and_then(|config| config.cloud.as_ref());
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&cloud_status_json(
+                &login,
+                cloud,
+                local_config_unreadable
+            ))?
+        );
+        return Ok(());
+    }
+
+    match &login {
+        CloudLogin::LoggedIn(user) => {
+            println!(
+                "{}  Cloud: logged in as @{} ({})",
+                "ok".green().bold(),
+                user.github_login,
+                user.plan
+            );
+            if let Some(count) = user.vaults_count {
+                println!("   Vaults: {count}");
+            }
+        }
+        CloudLogin::TokenRejected => {
+            write_account_lookup_failure(
+                &mut std::io::stdout(),
+                &phantom_core::error::PhantomError::AuthRequired,
+            )?;
+        }
+        CloudLogin::LookupFailed(error) => {
+            write_account_lookup_failure(&mut std::io::stdout(), error)?;
+        }
+        CloudLogin::NotLoggedIn => {
             println!(
                 "{}  Cloud: not logged in — run `phantom login`",
                 "->".blue().bold()
@@ -450,30 +644,220 @@ pub fn run_status() -> Result<()> {
         }
     }
 
-    // Show local cloud config if it exists
-    if let Ok(config) = PhantomConfig::load(std::path::Path::new(".phantom.toml")) {
-        if let Some(cloud) = &config.cloud {
-            println!("   Last synced version: {}", cloud.version);
-            if cloud.reconciliation_required {
-                let remote = cloud
-                    .reconciliation_remote_version
-                    .map_or_else(|| "unknown".to_string(), |version| version.to_string());
-                println!(
-                    "{}  Partial reconciliation with remote version {remote}; cloud push is blocked until every remote secret is reconciled.",
-                    "warn".yellow().bold()
-                );
-            }
-        }
+    for line in local_cloud_status_lines(config_path) {
+        println!("{line}");
     }
 
     Ok(())
+}
+
+/// Writes what `phantom cloud status` says when the cloud account lookup
+/// fails. Only an authentication rejection (HTTP 401) is reported as an
+/// expired login; a network fault, server error or unparseable reply says the
+/// status could not be checked and names the kind of failure, because logging
+/// in again would not help. The error only selects a branch: every line
+/// written is fixed text, so nothing from the failed request is printed.
+fn write_account_lookup_failure(
+    out: &mut impl Write,
+    error: &phantom_core::error::PhantomError,
+) -> std::io::Result<()> {
+    use phantom_core::error::PhantomError;
+    let warn = "warn".yellow().bold();
+    match error {
+        PhantomError::AuthRequired => {
+            return writeln!(out, "{warn}  Cloud: token expired — run `phantom login`");
+        }
+        PhantomError::AuthError(_) => writeln!(
+            out,
+            "{warn}  Cloud: could not check account status (could not reach Phantom Cloud)"
+        )?,
+        PhantomError::CloudError { status: 0, .. } => writeln!(
+            out,
+            "{warn}  Cloud: could not check account status (could not reach Phantom Cloud: HTTP client unavailable)"
+        )?,
+        PhantomError::CloudError { status, .. } if (200..300).contains(status) => writeln!(
+            out,
+            "{warn}  Cloud: could not check account status (unexpected response from Phantom Cloud)"
+        )?,
+        PhantomError::CloudError { status, .. } if *status >= 500 => writeln!(
+            out,
+            "{warn}  Cloud: could not check account status (Phantom Cloud server error)"
+        )?,
+        PhantomError::CloudError { .. } => writeln!(
+            out,
+            "{warn}  Cloud: could not check account status (Phantom Cloud refused the request)"
+        )?,
+        _ => writeln!(
+            out,
+            "{warn}  Cloud: could not check account status (Phantom Cloud request failed)"
+        )?,
+    }
+    writeln!(
+        out,
+        "{}  The stored login was not rejected; check the network connection, then retry.",
+        "->".blue().bold()
+    )
+}
+
+/// Lines `phantom cloud status` prints about the local `.phantom.toml` cloud
+/// state. A missing config prints nothing; a config that exists but cannot be
+/// read or parsed is reported, because its sync version and any blocked push
+/// are unknown rather than absent.
+fn local_cloud_status_lines(config_path: &std::path::Path) -> Vec<String> {
+    let config = match crate::util::load_config_if_present(config_path) {
+        Ok(Some(config)) => config,
+        Ok(None) => return Vec::new(),
+        Err(_) => {
+            return vec![format!(
+                "{}  .phantom.toml exists but could not be loaded; last synced version and reconciliation state are unknown. Fix or restore it (for example from version control), then rerun `phantom cloud status`.",
+                "warn".yellow().bold()
+            )]
+        }
+    };
+    let Some(cloud) = &config.cloud else {
+        return Vec::new();
+    };
+    let mut lines = vec![format!("   Last synced version: {}", cloud.version)];
+    if cloud.reconciliation_required {
+        let remote = cloud
+            .reconciliation_remote_version
+            .map_or_else(|| "unknown".to_string(), |version| version.to_string());
+        lines.push(format!(
+            "{}  Partial reconciliation with remote version {remote}; cloud push is blocked until every remote secret is reconciled.",
+            "warn".yellow().bold()
+        ));
+    }
+    lines
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use phantom_vault::VaultBackend;
+
+    #[test]
+    fn cloud_status_json_reports_logged_out_without_identity() {
+        let report = cloud_status_json(&CloudLogin::NotLoggedIn, None, false);
+        assert_eq!(report["loggedIn"], false);
+        assert_eq!(report["tokenStored"], false);
+        assert_eq!(report["user"], serde_json::Value::Null);
+        assert_eq!(report["tier"], serde_json::Value::Null);
+        assert_eq!(report["lastSyncedVersion"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn cloud_status_json_reports_identity_tier_and_sync_state() {
+        let user = auth::UserInfo {
+            email: None,
+            github_login: "octo-placeholder".to_string(),
+            plan: "pro".to_string(),
+            vaults_count: Some(2),
+        };
+        let cloud = phantom_core::config::CloudConfig {
+            version: 7,
+            reconciliation_required: true,
+            reconciliation_remote_version: Some(9),
+        };
+        let report = cloud_status_json(&CloudLogin::LoggedIn(user), Some(&cloud), false);
+        assert_eq!(report["loggedIn"], true);
+        assert_eq!(report["user"], "octo-placeholder");
+        assert_eq!(report["githubLogin"], "octo-placeholder");
+        assert_eq!(report["tier"], "pro");
+        assert_eq!(report["vaultsCount"], 2);
+        assert_eq!(report["lastSyncedVersion"], 7);
+        assert_eq!(report["reconciliationRequired"], true);
+        assert_eq!(report["reconciliationRemoteVersion"], 9);
+
+        let rejected = cloud_status_json(&CloudLogin::TokenRejected, None, false);
+        assert_eq!(rejected["loggedIn"], false);
+        assert_eq!(rejected["tokenStored"], true);
+        assert_eq!(rejected["tokenRejected"], true);
+        assert_eq!(rejected["accountLookupFailed"], false);
+    }
+
+    #[test]
+    fn cloud_status_json_does_not_call_a_lookup_failure_a_rejected_token() {
+        let failed = cloud_status_json(
+            &CloudLogin::LookupFailed(phantom_core::error::PhantomError::CloudError {
+                status: 503,
+                message: "service unavailable".to_string(),
+            }),
+            None,
+            true,
+        );
+        assert_eq!(failed["loggedIn"], false);
+        assert_eq!(failed["tokenStored"], true);
+        assert_eq!(failed["tokenRejected"], false);
+        assert_eq!(failed["accountLookupFailed"], true);
+        assert_eq!(failed["localConfigUnreadable"], true);
+        assert_eq!(failed["lastSyncedVersion"], serde_json::Value::Null);
+        assert!(
+            !failed.to_string().contains("service unavailable"),
+            "lookup error text must not reach the JSON report"
+        );
+    }
     use tempfile::TempDir;
+
+    #[test]
+    fn cloud_status_reports_expired_login_only_for_auth_required() {
+        let mut out = Vec::new();
+        write_account_lookup_failure(&mut out, &phantom_core::error::PhantomError::AuthRequired)
+            .unwrap();
+        let expired = String::from_utf8(out).unwrap();
+        assert!(expired.contains("expired"));
+        assert!(expired.contains("phantom login"));
+        assert!(!expired.contains("could not check"));
+    }
+
+    #[test]
+    fn cloud_status_does_not_blame_the_login_for_network_or_server_errors() {
+        use phantom_core::error::PhantomError;
+        let cases = [
+            (
+                PhantomError::AuthError("connection refused by host".to_string()),
+                "could not reach Phantom Cloud",
+            ),
+            (
+                PhantomError::CloudError {
+                    status: 503,
+                    message: "service unavailable".to_string(),
+                },
+                "Phantom Cloud server error",
+            ),
+            (
+                PhantomError::CloudError {
+                    status: 403,
+                    message: "forbidden".to_string(),
+                },
+                "Phantom Cloud refused the request",
+            ),
+            (
+                PhantomError::CloudError {
+                    status: 200,
+                    message: "response was invalid JSON".to_string(),
+                },
+                "unexpected response from Phantom Cloud",
+            ),
+        ];
+        for (error, expected) in cases {
+            let mut out = Vec::new();
+            write_account_lookup_failure(&mut out, &error).unwrap();
+            let text = String::from_utf8(out).unwrap();
+            assert!(
+                !text.contains("expired"),
+                "non-auth failure reported as expired login"
+            );
+            assert!(
+                !text.contains("phantom login"),
+                "non-auth failure told to log in again"
+            );
+            assert!(
+                text.contains("could not check account status"),
+                "missing could-not-check wording"
+            );
+            assert!(text.contains(expected), "missing error class: {expected}");
+        }
+    }
 
     fn cloud_test_config(version: u64) -> PhantomConfig {
         let mut config = PhantomConfig::new_with_defaults("cloud-test-project".to_string());
@@ -503,6 +887,30 @@ mod tests {
             "passphrase".to_string(),
         )
         .unwrap()
+    }
+
+    /// A `.phantom.toml` that exists but cannot be parsed is not "no config":
+    /// status must say the local cloud state is unknown instead of printing
+    /// nothing, which reads as "never synced" and hides a blocked push.
+    #[test]
+    fn cloud_status_reports_a_broken_config_instead_of_hiding_it() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join(".phantom.toml");
+        assert!(local_cloud_status_lines(&config_path).is_empty());
+
+        std::fs::write(&config_path, "[phantom\nversion = ").unwrap();
+        let lines = local_cloud_status_lines(&config_path);
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].contains("could not be loaded"));
+        assert!(lines[0].contains("unknown"));
+
+        let mut config = cloud_test_config(4);
+        config.cloud.as_mut().unwrap().reconciliation_required = true;
+        write_config(&config_path, &config);
+        let lines = local_cloud_status_lines(&config_path);
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].contains("Last synced version: 4"));
+        assert!(lines[1].contains("Partial reconciliation"));
     }
 
     #[test]
@@ -569,6 +977,44 @@ mod tests {
         assert!(ensure_cloud_push_allowed(&persisted).is_err());
     }
 
+    /// A pull that finds a local value byte-identical to the remote one has
+    /// nothing to reconcile for that name. Counting it as skipped kept the old
+    /// merge base and blocked every later push, even right after this machine
+    /// pushed the same vault and pulled it back.
+    #[test]
+    fn identical_local_values_reconcile_without_force() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join(".phantom.toml");
+        let config = cloud_test_config(5);
+        let before = write_config(&config_path, &config);
+        let vault = file_vault(&dir, "cli-cloud-identical");
+        let shared = ["same", "value", "on", "both", "sides"].join("-");
+        vault.store("EXISTING", &shared).unwrap();
+
+        assert_eq!(
+            apply_cloud_pull_transaction(
+                dir.path(),
+                &config_path,
+                config,
+                before,
+                &vault,
+                &sensitive(&[("EXISTING", shared.as_str()), ("NEW", "new")]),
+                false,
+                12,
+            )
+            .unwrap(),
+            (1, 0)
+        );
+        assert!(vault.retrieve("EXISTING").unwrap().as_str() == shared);
+        assert_eq!(vault.retrieve("NEW").unwrap().as_str(), "new");
+        let persisted = PhantomConfig::load(&config_path).unwrap();
+        let cloud = persisted.cloud.as_ref().unwrap();
+        assert_eq!(cloud.version, 12);
+        assert!(!cloud.reconciliation_required);
+        assert_eq!(cloud.reconciliation_remote_version, None);
+        ensure_cloud_push_allowed(&persisted).unwrap();
+    }
+
     #[test]
     fn complete_pull_advances_base_and_unblocks_push() {
         let dir = TempDir::new().unwrap();
@@ -600,6 +1046,101 @@ mod tests {
         assert!(!cloud.reconciliation_required);
         assert_eq!(cloud.reconciliation_remote_version, None);
         ensure_cloud_push_allowed(&persisted).unwrap();
+    }
+
+    fn enforced_cloud_config(names: &[&str]) -> PhantomConfig {
+        let mut config = crate::commands::rotation_gate::fixtures::enforced_config(names);
+        config.cloud.get_or_insert_default().version = 2;
+        config
+    }
+
+    /// A pulled value carries no rotation anchor: a new entry was stamped as
+    /// stored now and a forced overwrite kept the local anchor, so an overdue
+    /// value pushed earlier came back looking fresh. Both are refused before
+    /// any vault or config write.
+    #[test]
+    fn cloud_pull_refuses_to_write_an_enforced_secret_of_unknown_age() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join(".phantom.toml");
+        let config = enforced_cloud_config(&["NEW_KEY", "EXISTING_KEY"]);
+        let before = write_config(&config_path, &config);
+        let vault = file_vault(&dir, "cli-cloud-rotation");
+        vault.store("EXISTING_KEY", "local-owner").unwrap();
+
+        let refused = apply_cloud_pull_transaction(
+            dir.path(),
+            &config_path,
+            config,
+            before.clone(),
+            &vault,
+            &sensitive(&[("EXISTING_KEY", "remote"), ("NEW_KEY", "new")]),
+            true,
+            7,
+        );
+        let message = refused
+            .err()
+            .map(|error| format!("{error:#}"))
+            .unwrap_or_default();
+        assert!(message.starts_with(
+            "Refusing to pull from Phantom Cloud: rotation enforcement blocked 2 secret(s)."
+        ));
+        assert!(message.contains("'NEW_KEY'") && message.contains("'EXISTING_KEY'"));
+        assert!(matches!(
+            vault.retrieve("NEW_KEY"),
+            Err(phantom_core::error::PhantomError::SecretNotFound(_))
+        ));
+        assert!(vault.retrieve("EXISTING_KEY").unwrap().as_str() == "local-owner");
+        assert_eq!(std::fs::read(&config_path).unwrap(), before);
+    }
+
+    /// Only writes are gated: an identical enforced value is not rewritten
+    /// and an unenforced new value still lands.
+    #[test]
+    fn cloud_pull_lets_unchanged_and_unenforced_entries_through() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join(".phantom.toml");
+        let config = enforced_cloud_config(&["EXISTING_KEY"]);
+        let before = write_config(&config_path, &config);
+        let vault = file_vault(&dir, "cli-cloud-rotation-ok");
+        let shared = ["same", "on", "both", "sides"].join("-");
+        vault.store("EXISTING_KEY", &shared).unwrap();
+
+        let applied = apply_cloud_pull_transaction(
+            dir.path(),
+            &config_path,
+            config,
+            before,
+            &vault,
+            &sensitive(&[("EXISTING_KEY", shared.as_str()), ("PLAIN_KEY", "new")]),
+            false,
+            8,
+        );
+        assert_eq!(applied.ok(), Some((1, 0)));
+        assert_eq!(vault.retrieve("PLAIN_KEY").unwrap().as_str(), "new");
+    }
+
+    /// Cloud push hands every vault value to the cloud copy. The rotation
+    /// gate runs before the trusted-terminal consent (names and metadata
+    /// only) and again after it, before any value is read or sent.
+    #[test]
+    fn cloud_push_gates_rotation_before_consent_and_before_any_value_read() {
+        let source = include_str!("cloud.rs");
+        let run_push = &source[source.find("pub fn run_push()").unwrap()..];
+        let pre_gate = run_push
+            .find("gate_cloud_push(")
+            .expect("push must gate rotation before consent");
+        let consent = run_push
+            .find("require_trusted_terminal_cloud(&cloud_consent_plan(\"push\"")
+            .unwrap();
+        assert!(pre_gate < consent);
+
+        let after = &source[source.find("fn push_after_consent(").unwrap()..];
+        let gate = after
+            .find("gate_cloud_push(")
+            .expect("push must gate rotation after consent");
+        let read = after.find("vault.retrieve_for_injection(name)").unwrap();
+        let audit = after.find("audit::log_result(\"cloud.push\"").unwrap();
+        assert!(gate < audit && gate < read);
     }
 
     #[test]
@@ -676,5 +1217,174 @@ mod tests {
         assert!(error.to_string().contains("trusted terminal"));
         assert_eq!(reader.position(), 0);
         assert!(output.is_empty());
+    }
+}
+
+#[cfg(all(test, unix))]
+mod locked_vault_tests {
+    use crate::util::test_seam::{empty_keychain, keychain_with_one, LockedProject};
+
+    /// Entered after consent and the bearer, as `run_push` does. The stub
+    /// keychain panics on any value read, and the API base is unroutable, so
+    /// a refusal here comes before any retrieve or network call.
+    fn push(project: &LockedProject) -> String {
+        let (config_path, config_before, config) =
+            super::load_cloud_config_exact(&project.dir).unwrap();
+        super::push_after_consent(
+            &project.dir,
+            &config_path,
+            config_before,
+            config,
+            "http://127.0.0.1:9",
+            "unused-bearer",
+        )
+        .unwrap_err()
+        .to_string()
+    }
+
+    /// A keychain-only view would replace the cloud copy with a partial set.
+    #[test]
+    fn cloud_push_refuses_a_partial_inventory_before_any_read_or_send() {
+        let project = LockedProject::new(keychain_with_one);
+        let error = push(&project);
+        assert!(
+            error.starts_with("Refusing to push to the cloud vault from a partial inventory"),
+            "{error}"
+        );
+    }
+
+    /// An empty keychain beside a locked file vault was "No secrets to push".
+    #[test]
+    fn cloud_push_refuses_a_locked_file_vault() {
+        let project = LockedProject::new(empty_keychain);
+        let error = push(&project);
+        assert!(error.starts_with("Vault locked:"), "{error}");
+    }
+
+    /// Entered as `run_pull` does, before consent. The stub keychain panics
+    /// on any value read.
+    fn pull_destination(project: &LockedProject) -> Option<String> {
+        let (_, _, config) = super::load_cloud_config_exact(&project.dir).unwrap();
+        super::cloud_pull_destination(&config)
+            .err()
+            .map(|error| error.to_string())
+    }
+
+    /// A keychain-only view would take every pulled entry beside the locked
+    /// file vault and judge skip/overwrite from the keychain alone.
+    #[test]
+    fn cloud_pull_refuses_a_partial_destination_inventory() {
+        let project = LockedProject::new(keychain_with_one);
+        let refusal = pull_destination(&project).unwrap_or_default();
+        assert!(refusal.starts_with("Refusing to reconcile a cloud pull from a partial inventory"));
+    }
+
+    /// An empty keychain beside a locked file vault would read as a fresh
+    /// destination and receive the whole cloud copy.
+    #[test]
+    fn cloud_pull_refuses_a_locked_file_vault() {
+        let project = LockedProject::new(empty_keychain);
+        let refusal = pull_destination(&project).unwrap_or_default();
+        assert!(refusal.starts_with("Vault locked:"));
+    }
+
+    /// Entered as the CLI does, before consent. Tests run without a trusted
+    /// terminal, so a run that reached the consent prompt fails there instead.
+    fn run_push_refusal() -> String {
+        super::run_push().unwrap_err().to_string()
+    }
+
+    /// A locked file vault was refused only after typed consent was spent.
+    #[test]
+    fn cloud_push_refuses_a_locked_file_vault_before_consent() {
+        let _project = LockedProject::new(empty_keychain);
+        let refusal = run_push_refusal();
+        assert!(
+            refusal.starts_with("Vault locked:"),
+            "cloud push reached consent before refusing the locked vault"
+        );
+    }
+
+    /// A keychain-only view beside a locked file vault was refused only after
+    /// typed consent was spent.
+    #[test]
+    fn cloud_push_refuses_a_partial_inventory_before_consent() {
+        let _project = LockedProject::new(keychain_with_one);
+        let refusal = run_push_refusal();
+        assert!(
+            refusal.starts_with("Refusing to push to the cloud vault from a partial inventory"),
+            "cloud push reached consent before refusing the partial inventory"
+        );
+    }
+
+    #[test]
+    fn cloud_pull_judges_the_destination_before_consent() {
+        let source = include_str!("cloud.rs");
+        let destination = source
+            .find("let vault = cloud_pull_destination(&config)?;")
+            .expect("pull must judge its destination inventory");
+        let consent = source
+            .find("require_trusted_terminal_cloud(&cloud_consent_plan(\"pull\"")
+            .expect("pull must require terminal consent");
+        let network = source
+            .find("cloud::pull(&api_base")
+            .expect("pull must fetch the cloud copy");
+        assert!(destination < consent);
+        assert!(consent < network);
+    }
+}
+
+#[cfg(test)]
+mod lifecycle_gate_tests {
+    use crate::util::test_seam::{demoted_vault, metadata_unreadable_vault, SeamProject};
+
+    /// Entered after consent and the bearer, as `run_push` does. The stub
+    /// vault panics on a plain value read, and the API base is unroutable.
+    fn push_after_consent(project: &SeamProject) -> String {
+        let (config_path, config_before, config) =
+            super::load_cloud_config_exact(&project.dir).unwrap();
+        super::push_after_consent(
+            &project.dir,
+            &config_path,
+            config_before,
+            config,
+            "http://127.0.0.1:9",
+            "unused-bearer",
+        )
+        .map(|()| String::new())
+        .unwrap_or_else(|error| error.to_string())
+    }
+
+    /// `phantom cloud push` read every value with a plain retrieve, so an
+    /// entry the expiry policy demoted to read-only was copied into the cloud
+    /// snapshot and came back read-write on every machine that pulled it.
+    /// The push is now refused from metadata alone, naming the entry only.
+    #[test]
+    fn cloud_push_refuses_a_read_only_entry_before_any_value_read() {
+        let project = SeamProject::new(demoted_vault);
+        let refusal = push_after_consent(&project);
+        assert!(refusal.starts_with("Refusing to push to Phantom Cloud: 1 secret(s) are read-only"));
+        assert!(refusal.contains("'DEMOTED_KEY'"));
+    }
+
+    #[test]
+    fn cloud_push_refuses_unreadable_lifecycle_metadata_before_any_value_read() {
+        let project = SeamProject::new(metadata_unreadable_vault);
+        let refusal = push_after_consent(&project);
+        assert!(refusal.starts_with("Refusing to push to Phantom Cloud:"));
+        assert!(refusal.contains("'DEMOTED_KEY'"));
+    }
+
+    /// The refusal is known from names and metadata alone, so it comes before
+    /// the trusted-terminal consent prompt: the user is never asked to
+    /// confirm a push that is then refused.
+    #[test]
+    fn cloud_push_refuses_a_read_only_entry_before_consent() {
+        let project = SeamProject::new(demoted_vault);
+        let refusal = super::run_push()
+            .map(|()| String::new())
+            .unwrap_or_else(|error| error.to_string());
+        assert!(refusal.starts_with("Refusing to push to Phantom Cloud: 1 secret(s) are read-only"));
+        drop(project);
     }
 }

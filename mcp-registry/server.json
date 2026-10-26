@@ -9,11 +9,11 @@
     "source": "github",
     "subfolder": "crates/phantom-mcp"
   },
-  "version": "0.7.6",
+  "version": "0.7.9",
   "tools": [
     {
       "name": "phantom_add_secret",
-      "description": "Deprecated unsafe plaintext secret entry. This tool refuses values because MCP arguments enter agent context. Use phantom_add_secret_interactive instead.",
+      "description": "Deprecated unsafe plaintext secret entry. This tool refuses values because MCP arguments enter agent context. Use phantom_add_secret_interactive instead (no approval needed). Retained for compatibility: still requires `confirm: true` plus a one-use out-of-band `approval_token` (the operator enables effects with PHANTOM_MCP_EFFECTS=trusted-terminal; a call without the token prints a nonce on the server's stderr for `phantom mcp-approve <NONCE>` in a trusted terminal), and never stores anything.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
@@ -39,47 +39,36 @@
         "required": [
           "name"
         ],
-        "title": "AddSecretParams",
         "type": "object"
       }
     },
     {
       "name": "phantom_add_secret_interactive",
-      "description": "Safely add a secret by name without passing its value through MCP. Requires confirm:true. The returned command prompts for the value directly in the user's terminal, outside agent context.",
+      "description": "Safely add a secret by name without passing its value through MCP. Effect-free: it never accepts or echoes a value and touches no vault, file, or network, so it needs no approval and works with PHANTOM_MCP_EFFECTS unset. Returns `phantom add NAME`; the user runs it in a trusted terminal and types the value only at that terminal prompt, outside agent context.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
-          "approval_token": {
-            "default": null,
-            "description": "Out-of-band approval token from `phantom mcp-approve <NONCE>`.",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
           "confirm": {
             "default": false,
-            "description": "Required. Must be true — the calling agent must confirm with the user\nbefore starting an out-of-band terminal flow.",
+            "description": "Optional, accepted for compatibility. This tool performs no effect: it\nonly returns the `phantom add NAME` command for the user to run in a\ntrusted terminal, so it needs neither confirmation nor approval. Legacy\napproval fields from older callers are accepted and ignored.",
             "type": "boolean"
           },
           "name": {
-            "description": "Name of the secret to add (e.g., OPENAI_API_KEY)",
+            "description": "Name of the secret to add (e.g., OPENAI_API_KEY). Must match\n`[A-Za-z_][A-Za-z0-9_]*`. Never pass the secret value.",
             "type": "string"
           }
         },
         "required": [
           "name"
         ],
-        "title": "AddSecretInteractiveParams",
         "type": "object"
       }
     },
     {
       "name": "phantom_apply_expiry_policy",
-      "description": "Scan the vault, apply read-only demotion to secrets whose TTL has expired, and (optionally) re-promote secrets that were demoted but have since been rotated. This blocks future vault retrieval and new `phantom exec`/foreground `phantom start` mapped-secret preflight; it does not recall values already injected or cached. Returns: { demoted: [{ name, expires_at, secs_overdue }], promoted: [{ name }], skipped_count, total_scanned }. Requires confirm:true because it writes vault metadata.",
+      "description": "Scan the vault, apply read-only demotion to secrets whose TTL has expired, and (optionally) re-promote secrets that were demoted but have since been rotated. This blocks future vault retrieval and new `phantom exec`/foreground `phantom start` mapped-secret preflight; it does not recall values already injected or cached. Returns: { demoted: [{ name, expires_at, secs_overdue }], promoted: [{ name }], skipped_count, total_scanned }. Requires confirm:true plus a one-use out-of-band `approval_token` (the operator enables effects with PHANTOM_MCP_EFFECTS=trusted-terminal; a call without the token prints a nonce on the server's stderr for `phantom mcp-approve <NONCE>` in a trusted terminal) because it writes vault metadata.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "description": "Parameters for `phantom_apply_expiry_policy`.\n\nScans the vault, identifies secrets whose TTL has expired, sets\n`vault_mode = ReadOnly` on each, and returns a list of affected secrets.\nThis is the demotion step that blocks future vault retrieval and new\n`phantom exec`/foreground `phantom start` mapped-secret preflight. It does\nnot recall values already injected into or cached by running processes.\n\nRequires `confirm: true` because it writes metadata.",
         "properties": {
           "also_promote_rotated": {
             "default": true,
@@ -100,17 +89,15 @@
             "type": "boolean"
           }
         },
-        "title": "ApplyExpiryPolicyParams",
         "type": "object"
       }
     },
     {
       "name": "phantom_audit_alerts",
-      "description": "Retrieve persisted leak-incident alert records from ~/.phantom/leak-alerts.jsonl. Each alert represents a high-confidence proxy response leak that was dispatched to configured backends (webhook/Slack/PagerDuty). Set 'backfill: true' to re-run correlation, persist new incidents/alerts, and dispatch configured notifications before returning the list; this requires confirm plus approval_token. Returns the most recent 'last' alerts (default 50) in chronological order, including: secret_name, location_label, confidence, event_count, alerted_at, backends_notified, and remediation advice. Never exposes secret values. Read-only when backfill=false. Safe for AI agents.",
+      "description": "Retrieve persisted leak-incident alert records from ~/.phantom/leak-alerts.jsonl. Each alert represents a high-confidence proxy response leak that was dispatched to configured backends (webhook/Slack/PagerDuty). Set 'backfill: true' to re-run correlation, persist new incidents/alerts, and dispatch configured notifications before returning the list; this requires confirm plus approval_token. Returns the most recent 'last' alerts (default 50, max 10000) in chronological order within a 1 MiB response, including: secret_name, location_label, confidence, event_count, alerted_at, backends_notified, and remediation advice. records_total counts every alert in the file, records_returned the alerts listed, and records_truncated is true when older ones were left out; max_records is the effective 'last'. For more run `phantom audit alerts --last N --json` in a terminal. Never exposes secret values. Read-only when backfill=false. Safe for AI agents.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
-        "description": "Parameters for `phantom_audit_alerts`.",
         "properties": {
           "approval_token": {
             "default": null,
@@ -138,25 +125,30 @@
             "type": "integer"
           }
         },
-        "title": "AuditAlertsParams",
         "type": "object"
       }
     },
     {
       "name": "phantom_audit_analytics",
-      "description": "Export full audit analytics for compliance dashboards. Returns per-secret SecretAnalytics (access_count, daily_avg, max_daily, min_daily, anomaly_score) plus timestamped AccessRecords for the requested window. Supports JSON or CSV format. Use min_anomaly_score to filter to flagged secrets only. Never exposes secret values. Feed the output to Datadog, Grafana, CloudWatch, or any BI tool. window_days=0 returns all history; default is 30 days. format=\"csv\" produces RFC 4180 CSV; format=\"json\" produces structured JSON with 'analytics' (SecretAnalytics[]) and 'records' (AccessRecord[]) arrays.",
+      "description": "Export full audit analytics for compliance dashboards. Returns per-secret SecretAnalytics (access_count, daily_avg, max_daily, min_daily, anomaly_score) plus timestamped AccessRecords for the requested window. Supports JSON or CSV format. Use min_anomaly_score to filter to flagged secrets only (clamped to 0.0-1.0; NaN is refused). Never exposes secret values. Feed the output to Datadog, Grafana, CloudWatch, or any BI tool. window_days=0 returns all history; default is 30 days. format=\"csv\" produces RFC 4180 CSV; format=\"json\" produces structured JSON with 'analytics' (SecretAnalytics[]) and 'records' (AccessRecord[]) arrays. Records are bounded: only the newest max_records (default 1000, max 10000) are returned, within a 1 MiB response. records_total counts every matching record in the window and records_truncated is true when older ones were left out; analytics and time_series always cover the whole window. CSV carries the same counts in structuredContent and a second JSON text block. For a complete export run `phantom audit analytics --export FILE` in a terminal.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "description": "Parameters for `phantom_audit_analytics` — full analytics + access-record export.",
         "properties": {
           "format": {
             "default": "json",
-            "description": "Output format: \"json\" (default) or \"csv\".",
+            "description": "Output format: \"json\" (default) or \"csv\", case-insensitive. Other\nvalues are rejected with an invalid-params error.",
             "type": "string"
+          },
+          "max_records": {
+            "default": 1000,
+            "description": "Maximum access records to return, newest kept (default: 1000; values\nabove 10000 are treated as 10000). A 1 MiB response ceiling may return\nfewer; records_truncated and records_total then say so.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
           },
           "min_anomaly_score": {
             "default": null,
-            "description": "Only include secrets whose anomaly score is at or above this threshold\n(range 0.0–1.0). Defaults to 0.0 (return all secrets).",
+            "description": "Only include secrets whose anomaly score is at or above this threshold\n(range 0.0–1.0; other values are clamped into it). Omit to return all\nsecrets.",
             "format": "double",
             "type": [
               "number",
@@ -165,25 +157,31 @@
           },
           "window_days": {
             "default": 30,
-            "description": "Time window in days (default: 30). 0 means all available history.",
+            "description": "Time window in days (default: 30): exactly the last N days of events.\n0 means all available history.",
             "format": "uint32",
             "minimum": 0,
             "type": "integer"
           }
         },
-        "title": "AuditAnalyticsParams",
         "type": "object"
       }
     },
     {
       "name": "phantom_audit_anomalies",
-      "description": "Query the audit log for suspicious access patterns. Returns a findings array where each entry has: name (secret name), anomaly_type (spike | dormant | first_access), anomaly_score (0.0–1.0), access_count, last_access (ISO-8601), daily_avg, and context (human-readable explanation). Secret VALUES are never returned. Read-only; no confirm required. Anomaly types: 'spike' = single day >3x daily average; 'dormant' = access after >=7 consecutive quiet days. Use min_score to filter (default 0.4). Use period to limit the window.",
+      "description": "Query the audit log for suspicious access patterns. Returns a findings array where each entry has: name (secret name), anomaly_type (spike | dormant | first_access), anomaly_score (0.0–1.0), access_count, last_access (ISO-8601), daily_avg, and context (human-readable explanation). Secret VALUES are never returned. Read-only; no confirm required. Anomaly types: 'spike' = single day >3x daily average; 'dormant' = access after >=7 consecutive quiet days. Use min_score to filter (default 0.4). Use period to limit the window. findings holds the highest-scoring max_records (default 1000, max 10000) within a 1 MiB response: total_findings counts every match, findings_returned the listed ones, and records_truncated is true when some were left out.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
+          "max_records": {
+            "default": 1000,
+            "description": "Maximum findings to return, highest scores kept (default: 1000;\nvalues above 10000 are treated as 10000). A 1 MiB response ceiling\nmay return fewer; total_findings stays exact and records_truncated\nthen says so.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
           "min_score": {
             "default": 0.4,
-            "description": "Minimum anomaly score to include (0.0–1.0). Defaults to 0.4.",
+            "description": "Minimum anomaly score to include (0.0–1.0; other values are clamped\ninto it). Defaults to 0.4.",
             "format": "double",
             "type": "number"
           },
@@ -193,16 +191,14 @@
             "type": "string"
           }
         },
-        "title": "AuditAnomaliesParams",
         "type": "object"
       }
     },
     {
       "name": "phantom_audit_anomalies_realtime",
-      "description": "Check whether a secret (or all secrets) has been accessed unusually based on windowed rate and quiet-period analysis of the current audit log. Unlike phantom_audit_anomalies (which uses multi-day daily-bucket statistics), this tool evaluates: (1) accesses within the last rolling hour vs max_accesses_per_hour threshold; (2) re-access after a quiet period longer than max_consecutive_quiet_days. Returns a findings array with fields: name, anomaly_score (0.0–1.0), alert (bool), reason (string), accesses_last_hour, max_quiet_gap_days. Secret VALUES are never returned. Read-only; no confirm required. Use threshold (default 0.5) to filter results. Pass name to check a single secret. Per-secret overrides from .phantom.toml [phantom.secrets.{name}.audit] are respected when max_accesses_per_hour / max_consecutive_quiet_days are omitted.",
+      "description": "Check whether a secret (or all secrets) has been accessed unusually based on windowed rate and quiet-period analysis of the current audit log. Unlike phantom_audit_anomalies (which uses multi-day daily-bucket statistics), this tool evaluates: (1) accesses within the last rolling hour vs max_accesses_per_hour threshold; (2) re-access after a quiet period longer than max_consecutive_quiet_days. Returns a findings array with fields: name, anomaly_score (0.0–1.0), alert (bool), reason (string), accesses_last_hour, max_quiet_gap_days. Secret VALUES are never returned. Read-only; no confirm required. Use threshold (default 0.5) to filter results. Pass name to check a single secret. Per-secret overrides from .phantom.toml [phantom.secrets.{name}.audit] are respected when max_accesses_per_hour / max_consecutive_quiet_days are omitted. findings holds the highest-scoring max_records (default 1000, max 10000) within a 1 MiB response: total_findings counts every match, findings_returned the listed ones, and records_truncated is true when some were left out.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "description": "Parameters for `phantom_audit_anomalies_realtime` — windowed, per-second\nrate-based anomaly check against the current audit log state.",
         "properties": {
           "max_accesses_per_hour": {
             "default": null,
@@ -224,6 +220,13 @@
               "null"
             ]
           },
+          "max_records": {
+            "default": 1000,
+            "description": "Maximum findings to return, highest scores kept (default: 1000;\nvalues above 10000 are treated as 10000). A 1 MiB response ceiling\nmay return fewer; total_findings stays exact and records_truncated\nthen says so.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
           "name": {
             "default": null,
             "description": "Filter to a single secret name. Omit to check all secrets.",
@@ -234,22 +237,20 @@
           },
           "threshold": {
             "default": 0.5,
-            "description": "Minimum anomaly score (0.0–1.0) to include in results. Defaults to 0.5.",
+            "description": "Minimum anomaly score (0.0–1.0; other values are clamped into it) to\ninclude in results. Defaults to 0.5.",
             "format": "double",
             "type": "number"
           }
         },
-        "title": "AuditAnomaliesRealtimeParams",
         "type": "object"
       }
     },
     {
       "name": "phantom_audit_export_report",
-      "description": "Export audit log data or generate a structured compliance report. Two actions: 'export' — return raw audit rows (timestamp, datetime, operation, secret_name, pid, hostname, severity) filtered by date range, secret name, or operation type, in CSV or JSON format; 'report' — generate a full compliance report containing: (a) access-frequency heatmap per secret per calendar day, (b) leak-incident timeline with incident_id/secret_name/occurrences, (c) rotation-timing audit showing days since last vault.store per secret, (d) anomaly executive summary of high-score secrets. Use 'from'/'to' (YYYY-MM-DD) to scope the date range. Set 'save: true' to persist the report to ~/.phantom/reports/; saving requires confirm plus approval_token. Never exposes secret values. Read-only (save=false). Safe for AI agents.",
+      "description": "Export audit log data or generate a structured compliance report. Two actions: 'export' — return raw audit rows (timestamp, datetime, operation, secret_name, pid, hostname, severity) filtered by date range, secret name, or operation type, in CSV or JSON format. Export rows are bounded: only the newest max_records (default 1000, max 10000) are returned, within a 1 MiB response; the first text block is the CSV or JSON array (header-only CSV or [] when nothing matches) and structuredContent plus a second JSON text block carry records_total, records_returned, records_truncated and max_records. For a complete export run `phantom audit export-range` in a terminal; 'report' — generate a full compliance report containing: (a) access-frequency heatmap per secret per calendar day, (b) leak-incident timeline with incident_id/secret_name/occurrences, (c) rotation-timing audit showing days since last vault.store per secret, (d) anomaly executive summary of high-score secrets. The returned report is bounded the same way: each of heatmap (most-accessed secrets), leak_timeline (newest incidents), rotation_audit (longest since rotation) and anomaly_summary (highest scores) holds at most max_records entries, within a 1 MiB response; total_events, distinct_secrets and high_severity_events stay exact, <list>_total and <list>_returned count each list, and records_truncated is true when any entry was left out. Use 'from'/'to' (YYYY-MM-DD) to scope the date range. Set 'save: true' to persist the complete report to ~/.phantom/reports/; saving requires confirm plus approval_token. Never exposes secret values. Read-only (save=false). Safe for AI agents.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
-        "description": "Parameters for `phantom_audit_export_report`.",
         "properties": {
           "action": {
             "default": "report",
@@ -271,7 +272,7 @@
           },
           "format": {
             "default": "json",
-            "description": "Output format: \"csv\" or \"json\". Default: \"json\".",
+            "description": "Output format: \"csv\" or \"json\", case-insensitive. Default: \"json\".\nOther values are rejected with an invalid-params error.",
             "type": "string"
           },
           "from": {
@@ -281,6 +282,13 @@
               "string",
               "null"
             ]
+          },
+          "max_records": {
+            "default": 1000,
+            "description": "Maximum audit rows `action=\"export\"` returns, newest kept, and\nmaximum entries in each list of the returned `action=\"report\"`\n(default: 1000; values above 10000 are treated as 10000). A 1 MiB\nresponse ceiling may return fewer; records_truncated and the totals\nthen say so. A saved report is always complete.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
           },
           "operation": {
             "default": null,
@@ -312,17 +320,15 @@
             ]
           }
         },
-        "title": "AuditExportReportParams",
         "type": "object"
       }
     },
     {
       "name": "phantom_audit_hotspot_alerts",
-      "description": "Inspect per-secret access-velocity spike alerts without manually parsing the audit log. Returns alerts for secrets whose access count in the rolling 24-hour window either (a) exceeds 5× the 7-day mean baseline, or (b) includes a burst of ≥100 accesses within any 5-minute window. Each alert record contains: secret_name, current_velocity (24h count), baseline_velocity (7-day daily mean), alert_level (always 'high'), first_spike_ts (ISO-8601), ack_status ('unacked'|'acked'|'snoozed'), peak_5m_count, and trigger (human-readable description). Secret VALUES are never returned. Set ack=true to acknowledge all returned alerts (removes them from the active list). Set snooze_seconds>0 with ack=true to snooze instead of fully acknowledging. Pass include_acked=true to also return already-acknowledged or snoozed alerts. Use secret_name to filter to a specific secret. Read-only when ack=false; ack=true persists acknowledgement state and requires confirm plus approval_token.",
+      "description": "Inspect per-secret access-velocity spike alerts without manually parsing the audit log. Returns alerts for secrets whose access count in the rolling 24-hour window either (a) exceeds 5× the 7-day mean baseline, or (b) includes a burst of ≥100 accesses within any 5-minute window. Each alert record contains: secret_name, current_velocity (24h count), baseline_velocity (7-day daily mean), alert_level (always 'high'), first_spike_ts (ISO-8601), ack_status ('unacked'|'acked'|'snoozed'), peak_5m_count, and trigger (human-readable description). Secret VALUES are never returned. Set ack=true to acknowledge all returned alerts (removes them from the active list). Set snooze_seconds>0 with ack=true to snooze instead of fully acknowledging. Pass include_acked=true to also return already-acknowledged or snoozed alerts. Use secret_name to filter to a specific secret. Read-only when ack=false; ack=true persists acknowledgement state and requires confirm plus approval_token. alerts lists at most 10000 (unacked first, then fastest) within a 1 MiB response: total_alerts counts every match, alerts_returned the listed ones, and records_truncated is true when some were left out; ack=true acknowledges every matching alert, listed or not.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
-        "description": "Parameters for `phantom_audit_hotspot_alerts` — inspect and acknowledge\nper-secret access-velocity spike alerts.",
         "properties": {
           "ack": {
             "default": false,
@@ -363,17 +369,22 @@
             "type": "integer"
           }
         },
-        "title": "AuditHotspotAlertsParams",
         "type": "object"
       }
     },
     {
       "name": "phantom_audit_incidents",
-      "description": "Return active leak incidents derived from proxy.response_leak audit events. Incidents are correlated by (secret_name, location) within a 24-hour window. min_confidence (default 0.7) filters by confidence score: 0.5 = single leak event; 0.95 = same secret leaked >3 times within 1 hour. Each incident includes: incident_id, secret_name (never the value), location_label, first_seen_ts, last_seen_ts, event_count, confidence, remediation. Incidents whose secret was subsequently stored are omitted. Reads only the persisted incident store; it does not run correlation or write state.",
+      "description": "Return active leak incidents derived from proxy.response_leak audit events. Incidents are correlated by (secret_name, location) within a 24-hour window. min_confidence (default 0.7) filters by confidence score: 0.5 = single leak event; 0.95 = same secret leaked >3 times within 1 hour. Each incident includes: incident_id, secret_name (never the value), location_label, first_seen_ts, last_seen_ts, event_count, confidence, remediation. Incidents whose secret was subsequently stored are omitted. incidents lists the persisted incident store. The proxy only appends audit events, so leak events from the last 24 h that no backfill has persisted yet are correlated in memory and listed separately in uncorrelated_incidents (uncorrelated_count), with a next_step; treat them as possible leaks. Always returns JSON {incident_count, min_confidence, incidents, uncorrelated_count, uncorrelated_incidents, audit_log_present, next_step} (also as structuredContent). Each list holds at most max_records (default 1000, max 10000), most confident first, within a 1 MiB response: incident_count and uncorrelated_count stay exact, incidents_returned and uncorrelated_incidents_returned count the listed entries, and records_truncated is true when some were left out. Read-only: it never writes incident or alert state.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "description": "Parameters for `phantom_audit_incidents`.",
         "properties": {
+          "max_records": {
+            "default": 1000,
+            "description": "Maximum entries in each of incidents and uncorrelated_incidents,\nmost confident kept (default: 1000; values above 10000 are treated as\n10000). A 1 MiB response ceiling may return fewer; incident_count and\nuncorrelated_count stay exact and records_truncated then says so.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
           "min_confidence": {
             "default": 0.7,
             "description": "Only return incidents whose confidence score is at or above this value\n(range 0.0–1.0). Defaults to 0.7.",
@@ -381,13 +392,12 @@
             "type": "number"
           }
         },
-        "title": "AuditIncidentsParams",
         "type": "object"
       }
     },
     {
       "name": "phantom_audit_recent",
-      "description": "List the last N audit events from the HMAC-chained audit log. Returns structured JSONL — each line is a JSON object with fields: seq, ts (Unix epoch), op (operation name), name (secret name, if applicable), pid, process. Secret VALUES are never recorded in the audit log and will never appear here. Supports optional filtering by op prefix or exact secret name. Read-only; no confirm required. Requires PHANTOM_AUDIT=1 to have been set when operations were performed.",
+      "description": "List the last N audit events from the HMAC-chained audit log. Returns structured JSONL — each line is a JSON object with fields: seq, ts (Unix epoch), op (operation name), name (secret name, if applicable), pid, process. Secret VALUES are never recorded in the audit log and will never appear here. Supports optional filtering by op prefix or exact secret name. Reads only the newest 8 MiB of the log: `window_truncated: true` means older events were not examined, so `matched_in_window` is not a total and `total_in_log` is omitted. `unparsable_lines` counts lines in the window that are not audit events and were skipped (run `phantom audit verify` to check the chain). Read-only; no confirm required. Requires PHANTOM_AUDIT=1 to have been set when operations were performed.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
@@ -415,7 +425,6 @@
             ]
           }
         },
-        "title": "AuditRecentParams",
         "type": "object"
       }
     },
@@ -427,7 +436,7 @@
         "properties": {
           "min_anomaly_score": {
             "default": null,
-            "description": "Only include secrets whose anomaly score is at or above this threshold\n(range 0.0–1.0). Omit or set to 0.0 to return all secrets.",
+            "description": "Only include secrets whose anomaly score is at or above this threshold\n(range 0.0–1.0; other values are clamped into it). Omit or set to 0.0\nto return all secrets.",
             "format": "double",
             "type": [
               "number",
@@ -440,7 +449,6 @@
             "type": "string"
           }
         },
-        "title": "AuditStatsParams",
         "type": "object"
       }
     },
@@ -454,7 +462,7 @@
     },
     {
       "name": "phantom_check",
-      "description": "Check for security issues. With runtime=true, scans current environment for phantom tokens without a proxy (leak detection). Otherwise, scans .env files for unprotected real secrets.",
+      "description": "Check for security issues. With runtime=true, scans every environment variable of this server for a phantom token (leak detection). A variable is excused only when PHANTOM_PROXY_PORT and PHANTOM_PROXY_TOKEN lead to a live Phantom proxy (its health endpoint answers) and the session lists the variable in PHANTOM_SESSION_KEYS; excused names are reported in `excused` and `proxy_session` is true. Session variables with no live proxy are reported in `session_warning` and excuse nothing. Otherwise, scans the same dotenv files as `phantom check` for unprotected real secrets: .env, .env.local, .env.development, .env.development.local, .env.production, .env.production.local, .env.test, .env.test.local, plus the configured dotenv_path; a symlink is not followed and makes the result indeterminate. Returns a human summary plus a value-blind JSON report (also as structuredContent) shaped like `phantom check --json`: {mode, clean, findings: [{kind, path?, name?}], warnings, indeterminate?, proxy_session?, excused?, session_warning?}. Reports names and paths only, never values or phantom tokens.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
@@ -464,7 +472,6 @@
             "type": "boolean"
           }
         },
-        "title": "CheckParams",
         "type": "object"
       }
     },
@@ -493,13 +500,12 @@
             "type": "boolean"
           }
         },
-        "title": "CloudPullParams",
         "type": "object"
       }
     },
     {
       "name": "phantom_cloud_push",
-      "description": "Push a client-encrypted local vault to a separately commissioned Phantom Cloud deployment and entitled account; the public hosted service is not currently commissioned for authenticated use. The configured service receives ciphertext rather than decrypted vault values. Requires phantom login first. DESTRUCTIVE — overwrites the existing cloud copy; damage from a prompt-injected push propagates to every machine that later pulls. Requires `confirm: true`; the agent must ask the user for explicit consent before calling.",
+      "description": "Push a client-encrypted local vault to a separately commissioned Phantom Cloud deployment and entitled account; the public hosted service is not currently commissioned for authenticated use. The configured service receives ciphertext rather than decrypted vault values. Requires phantom login first. DESTRUCTIVE — overwrites the existing cloud copy; damage from a prompt-injected push propagates to every machine that later pulls. Refused, before any approval is used or value is read, when any entry is read-only (demoted by expiry policy) or has unreadable lifecycle metadata (names only). Requires `confirm: true` plus a one-use out-of-band `approval_token` (the operator enables effects with PHANTOM_MCP_EFFECTS=trusted-terminal; a call without the token prints a nonce on the server's stderr for `phantom mcp-approve <NONCE>` in a trusted terminal); the agent must ask the user for explicit consent before calling.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
@@ -517,7 +523,6 @@
             "type": "boolean"
           }
         },
-        "title": "CloudPushParams",
         "type": "object"
       }
     },
@@ -527,7 +532,6 @@
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
-        "description": "Dual approval gate for tools whose only inputs are authority controls.",
         "properties": {
           "approval_token": {
             "default": null,
@@ -543,16 +547,14 @@
             "type": "boolean"
           }
         },
-        "title": "ApprovalParams",
         "type": "object"
       }
     },
     {
       "name": "phantom_compliance_status",
-      "description": "Return the compliance state of the current Phantom project as a structured JSON badge. Checks: vault_accessible (vault can be read), audit_enabled (PHANTOM_AUDIT env var is set), precommit_installed (git pre-commit hook contains the current local-only phantom check), env_clean (no unprotected real secrets in .env), secrets_have_ttl (all vault secrets have a rotation policy set). Each check is true/false with an optional detail string. Overall 'compliant' is true only when all checks pass. Read-only.",
+      "description": "Return the compliance state of the current Phantom project as a structured JSON badge. Checks: vault_accessible (every secret of this project can be read here; false for an encrypted-file vault this process cannot open, even when the OS keychain holds some entries, the same rule as `phantom agent doctor`), audit_enabled (PHANTOM_AUDIT env var is set), precommit_installed (git pre-commit hook contains the current local-only phantom check), env_clean (no unprotected real secrets in any dotenv phantom check scans: .env, .env.local, .env.development, .env.development.local, .env.production, .env.production.local, .env.test, .env.test.local and the configured dotenv_path; read without opening the vault, so it is reported before init and with a locked vault), secrets_have_ttl (every vault secret has an expiry (expires_at) or a rotation policy set; false when not every secret can be read; the detail gives the exact count and names at most 20). Each check is true/false with an optional detail string. Overall 'compliant' is true only when all checks pass. Read-only.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "title": "ComplianceStatusParams",
         "type": "object"
       }
     },
@@ -595,7 +597,6 @@
           "name",
           "target_dir"
         ],
-        "title": "CopySecretParams",
         "type": "object"
       }
     },
@@ -764,13 +765,12 @@
         "required": [
           "action"
         ],
-        "title": "EngineeringDoParams",
         "type": "object"
       }
     },
     {
       "name": "phantom_doctor",
-      "description": "Run repository-local Phantom health checks: config validity, .env protection, .gitignore, .env.example, and pre-commit hook. This tool does not open or provision a vault. Set fix=true to apply reviewed repository-local repairs.",
+      "description": "Run repository-local Phantom health checks: config validity, .env protection, .gitignore, .env.example, and pre-commit hook. This tool does not open or provision a vault. Set fix=true to apply reviewed repository-local repairs; fix=true requires `confirm: true` plus a one-use out-of-band `approval_token` (the operator enables effects with PHANTOM_MCP_EFFECTS=trusted-terminal; a call without the token prints a nonce on the server's stderr for `phantom mcp-approve <NONCE>` in a trusted terminal), while fix=false is read-only and ungated. Returns a human summary plus a value-blind JSON report (also as structuredContent) in the `phantom doctor --json` shape: {ok, issues, fixed, checks: [{status, message, fix?, fixed?}], mcp_clients}. `fix` is the hint for that check only; with fix=true a repaired check keeps its warn status and gains `fixed`. Check messages and hints are this tool's own and differ from the CLI's; mcp_clients is always [] because this tool does not inspect global client configs.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
@@ -793,13 +793,12 @@
             "type": "boolean"
           }
         },
-        "title": "DoctorParams",
         "type": "object"
       }
     },
     {
       "name": "phantom_env",
-      "description": "Generate a .env.example file from .env. Secrets are replaced with descriptive placeholders; non-secret config values are preserved. Safe to commit to version control.",
+      "description": "Generate a .env.example file from .env. Secrets are replaced with descriptive placeholders; non-secret config values are preserved. Safe to commit to version control. Writes a file: requires `confirm: true` plus a one-use out-of-band `approval_token` (the operator enables effects with PHANTOM_MCP_EFFECTS=trusted-terminal; a call without the token prints a nonce on the server's stderr for `phantom mcp-approve <NONCE>` in a trusted terminal).",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
@@ -822,16 +821,14 @@
             "type": "string"
           }
         },
-        "title": "EnvParams",
         "type": "object"
       }
     },
     {
       "name": "phantom_expiry_enforce",
-      "description": "Scan .phantom.toml for expired secrets and return a structured list. Each entry has: name (string), expires_at (Unix u64), secs_overdue (u64), status (human-readable string). With fail_closed=true, secrets that have no expiry policy set are also included with status='no_expiry_policy'. Returns { expired: [...], ok_count, no_expiry_count, fail_closed, pass }. pass=true means no action is needed. Read-only; no confirm required. Secret VALUES are never returned.",
+      "description": "Check the vault's TTL metadata (set with `phantom expiry set`) for expired secrets and return a structured list, the same answer as `phantom expiry enforce --json`. Each entry has: name (string), expires_at (Unix u64), secs_overdue (u64), status (human-readable string). `expired` holds only secrets whose expiry has passed. With fail_closed=true, secrets that have no expiry set are violations too and are named in no_expiry_policy (status='no_expiry_policy'); it is empty otherwise. Returns { expired: [...], no_expiry_policy: [...], ok_count, no_expiry_count, fail_closed, pass }. pass=true means no action is needed. Read-only; no confirm required. Secret VALUES are never returned.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "description": "Parameters for `phantom_expiry_enforce`.",
         "properties": {
           "fail_closed": {
             "default": false,
@@ -839,7 +836,6 @@
             "type": "boolean"
           }
         },
-        "title": "PhantomExpiryEnforceParams",
         "type": "object"
       }
     },
@@ -868,18 +864,23 @@
             "type": "string"
           }
         },
-        "title": "InitParams",
         "type": "object"
       }
     },
     {
       "name": "phantom_leak_incidents_realtime",
-      "description": "Query active leak incidents for a real-time security dashboard. Returns incidents with confidence > 0.5 seen within the last 24 hours, sorted by confidence descending. Each entry contains: secret_name (never the value), location_label, confidence, first_seen (ISO-8601), last_seen (ISO-8601), incident_id. Set min_confidence (default 0.5) to narrow results. Reads only persisted incidents and never rotates, writes correlation state, or exposes secret values. Use a separately approved rotation tool to remediate.",
+      "description": "Query active leak incidents for a real-time security dashboard. Returns incidents with confidence > 0.5 seen within the last 24 hours, sorted by confidence descending. Each entry contains: secret_name (never the value), location_label, confidence, first_seen (ISO-8601), last_seen (ISO-8601), incident_id. Set min_confidence (default 0.5) to narrow results. incidents lists persisted incidents; leak events from the last 24 h that no backfill has persisted yet are correlated in memory and listed in uncorrelated_incidents (uncorrelated_count, same entry shape) with a next_step. Always returns JSON {incident_count, min_confidence, effect, rotation_performed, incidents, uncorrelated_count, uncorrelated_incidents, audit_log_present, next_step}. Each list holds at most max_records (default 1000, max 10000), most confident first, within a 1 MiB response: incident_count and uncorrelated_count stay exact, incidents_returned and uncorrelated_incidents_returned count the listed entries, and records_truncated is true when some were left out. Never rotates, writes incident or alert state, or exposes secret values. Use a separately approved rotation tool to remediate.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
-        "description": "Parameters for `phantom_leak_incidents_realtime`.",
         "properties": {
+          "max_records": {
+            "default": 1000,
+            "description": "Maximum entries in each of incidents and uncorrelated_incidents,\nmost confident kept (default: 1000; values above 10000 are treated as\n10000). A 1 MiB response ceiling may return fewer; incident_count and\nuncorrelated_count stay exact and records_truncated then says so.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
           "min_confidence": {
             "default": 0.5,
             "description": "Only return incidents whose confidence score is at or above this value\n(range 0.0–1.0). Defaults to 0.5 per spec (active incident threshold).",
@@ -887,13 +888,12 @@
             "type": "number"
           }
         },
-        "title": "LeakIncidentsRealtimeParams",
         "type": "object"
       }
     },
     {
       "name": "phantom_list_secrets",
-      "description": "List all secret names in the Phantom vault. Returns names only — never exposes actual secret values. Use this to see what secrets are configured.",
+      "description": "List all secret names in the Phantom vault. Returns names only — never exposes actual secret values. Use this to see what secrets are configured. Returns a summary plus JSON {count, secrets: [{name, service}]} (also as structuredContent). Before `phantom init` it opens no vault and returns {count: 0, secrets: [], initialized: false, next_step} instead of an error.",
       "inputSchema": {
         "properties": {},
         "type": "object"
@@ -901,7 +901,7 @@
     },
     {
       "name": "phantom_list_with_expiry",
-      "description": "List all secret names with their TTL/expiry status. Shows days remaining, EXPIRED flag, or 'no expiry' for each secret. Never returns secret values. Use it to audit which credentials need an explicit provider rotation or local expiry-policy review.",
+      "description": "List all secret names with their TTL/expiry status. Shows days remaining, EXPIRED flag, or 'no expiry' for each secret. Never returns secret values. Use it to audit which credentials need an explicit provider rotation or local expiry-policy review. Returns a summary plus JSON {count, show_expiry, expired, expiring_soon, secrets: [{name, service, status?, expires_at?, days_remaining?}]} (also as structuredContent). Before `phantom init` it opens no vault and returns an empty report with initialized: false and next_step instead of an error.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
@@ -911,7 +911,6 @@
             "type": "boolean"
           }
         },
-        "title": "ListWithExpiryParams",
         "type": "object"
       }
     },
@@ -942,13 +941,12 @@
         "required": [
           "name"
         ],
-        "title": "RemoveSecretParams",
         "type": "object"
       }
     },
     {
       "name": "phantom_rotate",
-      "description": "Regenerate all phantom tokens in .env. Old tokens become invalid — any running `phantom exec` / dev server that cached them will break until it picks up the new .env. Real secrets in the vault are unchanged. DESTRUCTIVE; requires `confirm: true`; the agent must ask the user for explicit consent before calling.",
+      "description": "Regenerate all phantom tokens in .env. Old tokens become invalid — any running `phantom exec` / dev server that cached them will break until it picks up the new .env. Real secrets in the vault are unchanged. DESTRUCTIVE; requires `confirm: true` plus a one-use out-of-band `approval_token` (the operator enables effects with PHANTOM_MCP_EFFECTS=trusted-terminal; a call without the token prints a nonce on the server's stderr for `phantom mcp-approve <NONCE>` in a trusted terminal); the agent must ask the user for explicit consent before calling.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
@@ -966,16 +964,14 @@
             "type": "boolean"
           }
         },
-        "title": "RotateParams",
         "type": "object"
       }
     },
     {
       "name": "phantom_rotate_promote",
-      "description": "DEPRECATED hard denial: legacy candidates were local phm_cand_ placeholders, not provider-issued credentials. This tool never validates, promotes, or changes a vault value and ignores compatibility parameters. Live provider issuance is also hard-denied until compensated recovery exists; rotate at the provider and store the replacement interactively.",
+      "description": "DEPRECATED hard denial: legacy candidates were local phm_cand_ placeholders, not provider-issued credentials. This tool never validates, promotes, or changes a vault value and ignores compatibility parameters, including approval_token: no approval can activate it. Live provider issuance is also hard-denied until compensated recovery exists; rotate at the provider and store the replacement interactively.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "description": "Deprecated compatibility parameters for the hard-denied promotion path.",
         "properties": {
           "approval_token": {
             "default": null,
@@ -998,7 +994,6 @@
         "required": [
           "name"
         ],
-        "title": "RotatePromoteParams",
         "type": "object"
       }
     },
@@ -1007,7 +1002,6 @@
       "description": "Provider-rotation compatibility boundary. Shipped builds hard-deny automated live provider issuance before credential access or network I/O because the provider contract does not yet preserve a durable value-free recovery handle and verified abort path for local persistence failure. Unit-test mock providers are not production capability evidence. Current calls return a value-blind hard denial without consuming an approval or opening the vault. The confirm and approval fields are reserved for a future effectful, compensated implementation.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "description": "Parameters for `phantom_rotate_provider`.\n\nCompatibility parameters for the shipped hard-denial boundary. Automated\nlive provider issuance is disabled before credential or network access until\na durable value-free recovery handle and verified abort path exist. No\nsecret value is accepted or returned.",
         "properties": {
           "approval_token": {
             "default": null,
@@ -1038,16 +1032,14 @@
         "required": [
           "name"
         ],
-        "title": "RotateProviderParams",
         "type": "object"
       }
     },
     {
       "name": "phantom_rotate_with_candidate",
-      "description": "DEPRECATED hard denial: legacy shadow rotation generated only a local phm_cand_ placeholder, not a provider-issued credential. This tool never creates or stores a candidate and ignores compatibility parameters. Live provider issuance is also hard-denied until compensated recovery exists; rotate at the provider and store the replacement interactively.",
+      "description": "DEPRECATED hard denial: legacy shadow rotation generated only a local phm_cand_ placeholder, not a provider-issued credential. This tool never creates or stores a candidate and ignores compatibility parameters, including approval_token: no approval can activate it. Live provider issuance is also hard-denied until compensated recovery exists; rotate at the provider and store the replacement interactively.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "description": "Deprecated compatibility parameters for the hard-denied shadow path.",
         "properties": {
           "approval_token": {
             "default": null,
@@ -1080,7 +1072,6 @@
         "required": [
           "name"
         ],
-        "title": "RotateWithCandidateParams",
         "type": "object"
       }
     },
@@ -1113,16 +1104,14 @@
         "required": [
           "days_ttl"
         ],
-        "title": "RotateWithExpiryParams",
         "type": "object"
       }
     },
     {
       "name": "phantom_rotation_schedule_next",
-      "description": "Return the next scheduled rotation time for a named secret. Reads the secret's effective RotationSchedule (per-secret override or global policy) and computes when rotation is next due. Returns: { name, strategy, next_rotation_unix (u64 or null), next_rotation_iso (ISO-8601 or null), last_rotated_unix (u64 or null), last_rotated_iso (ISO-8601 or null), overdue (bool) }. Read-only; no confirm required. Secret VALUES are never returned.",
+      "description": "Return the next scheduled rotation time for a named secret. Reads the secret's effective RotationSchedule (per-secret override or global policy) and computes when rotation is next due. A per-secret `rotate_every` (\"90d\", \"12w\") is an exact interval: strategy \"interval\" with interval_days; an unparseable value is a config error. Returns: { name, strategy, interval_days (u64 or null), next_rotation_unix (u64 or null), next_rotation_iso (ISO-8601 or null), last_rotated_unix (u64 or null), last_rotated_iso (ISO-8601 or null), overdue (bool) }. Read-only; no confirm required. Secret VALUES are never returned.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "description": "Parameters for `phantom_rotation_schedule_next`.\n\nReturns the next scheduled rotation time (ISO-8601 + Unix epoch) for a\nnamed secret, based on its effective `RotationSchedule`.  Read-only; no\nconfirm required.",
         "properties": {
           "name": {
             "description": "Name of the secret to query (e.g. `OPENAI_API_KEY`).",
@@ -1132,13 +1121,12 @@
         "required": [
           "name"
         ],
-        "title": "RotationScheduleNextParams",
         "type": "object"
       }
     },
     {
       "name": "phantom_secret_rotation_due",
-      "description": "Query which secrets in the vault are due for rotation. Returns a JSON object with: due (list of secrets already expired), warning (list of secrets expiring within warn_days, default 7), ok (list of secrets with sufficient TTL remaining), no_ttl (list of secrets with no rotation policy set at all). Each entry has: name, status (expired|warning|ok|no_ttl), days_remaining (null if no TTL), expires_at (ISO-8601 or null). Secret VALUES are never returned. Read-only; no confirm required.",
+      "description": "Query which secrets in the vault are due for rotation. Returns a JSON object with: due (list of secrets already expired), warning (list of secrets expiring within warn_days, default 7), ok (list of secrets with sufficient TTL remaining), no_ttl (list of secrets with neither an expiry nor a rotation policy). A secret with expires_at but no rotation policy is still classified by its expiry. Each entry has: name, status (expired|warning|ok|no_ttl), days_remaining (null if no expiry; negative means already expired), expires_at (ISO-8601 or null), has_rotation_policy (bool). Secret VALUES are never returned. Read-only; no confirm required.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
@@ -1150,7 +1138,6 @@
             "type": "integer"
           }
         },
-        "title": "RotationDueParams",
         "type": "object"
       }
     },
@@ -1159,7 +1146,6 @@
       "description": "DEPRECATED compatibility name: remap the local phm_ placeholder for one already-protected secret. This does not rotate or validate the provider credential, does not change `rotated_at` / `expires_at` / TTL policy, does not clear leak incidents, and cannot sync an unchanged credential (`sync: true` is rejected). When audit logging is enabled, success records `secret.token_remapped`. MUTATING — atomically rewrites .env and requires `confirm: true` plus an out-of-band approval token. Secret VALUES are never returned or logged.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "description": "Parameters for `phantom_secrets_auto_rotate`.",
         "properties": {
           "approval_token": {
             "default": null,
@@ -1187,16 +1173,14 @@
         "required": [
           "name"
         ],
-        "title": "AutoRotateParams",
         "type": "object"
       }
     },
     {
       "name": "phantom_secrets_expiry_check",
-      "description": "Query the local vault for secrets that are expired or expiring soon. Returns a JSON array where each entry has: name (string), days_remaining (i64 — negative means already expired), expires_at (Unix epoch u64), status (human-readable string). Use the `days` parameter (default 7) to tune the look-ahead window. Secrets with no TTL set are omitted — use phantom_secret_rotation_due to also surface those. Secret VALUES are never returned. Read-only; no confirm required.",
+      "description": "Query the local vault for secrets that are expired or expiring soon. Returns a JSON array where each entry has: name (string), days_remaining (i64, floored — negative means already expired, so a secret that expired under 24 h ago reports -1), expires_at (Unix epoch u64), status (human-readable string), expired (bool). Use the `days` parameter (default 7) to tune the look-ahead window. Secrets with no TTL set are omitted — use phantom_secret_rotation_due to also surface those. Secret VALUES are never returned. Read-only; no confirm required.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "description": "Parameters for `phantom_secrets_expiry_check`.",
         "properties": {
           "days": {
             "default": 7,
@@ -1206,7 +1190,6 @@
             "type": "integer"
           }
         },
-        "title": "ExpiryCheckParams",
         "type": "object"
       }
     },
@@ -1281,13 +1264,12 @@
             ]
           }
         },
-        "title": "SetupWorkspaceParams",
         "type": "object"
       }
     },
     {
       "name": "phantom_status",
-      "description": "Read repository-local Phantom status without opening or provisioning a vault: project ID, managed dotenv protection counts, and configured service mappings. Vault backend and stored-secret inventory are deliberately not inspected; use phantom_list_secrets for the latter.",
+      "description": "Read repository-local Phantom status without opening or provisioning a vault: project ID, managed dotenv protection counts, and configured service mappings. Vault backend and stored-secret inventory are deliberately not inspected; use phantom_list_secrets for the latter. Returns a summary plus JSON {initialized, project_id, vault_inspected, dotenv: {path, entries, phantom_tokens, unprotected} | null, services, next_step} (also as structuredContent).",
       "inputSchema": {
         "properties": {},
         "type": "object"
@@ -1295,13 +1277,13 @@
     },
     {
       "name": "phantom_sync",
-      "description": "Show sync configuration and what secrets would be synced to deployment platforms (Vercel, Railway). This is an informational tool — actual sync requires platform API tokens. Use it to understand and explain the sync setup.",
+      "description": "Show sync configuration and what secrets would be synced to deployment platforms (Vercel, Railway). This is an informational tool that never pushes: actual sync requires platform API tokens and `phantom sync` in a terminal. platform must be `vercel` or `railway` (case-insensitive); any other value is refused with invalid params before the vault is opened. Use it to understand and explain the sync setup. live_gate_refusal is the refusal the live `phantom sync` would return for the selected names (an overdue secret under enforced rotation, a secret demoted to read-only, or unreadable lifecycle metadata; names only, judged from metadata without reading a value), or null when that gate passes. Returns a summary plus JSON {configured, platform_filter, configured_platforms, vault_secret_count, targets, live_gate_refusal, next_step} (also as structuredContent).",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
           "platform": {
             "default": null,
-            "description": "Platform to sync to (vercel, railway). If empty, syncs all configured targets.",
+            "description": "Platform to show: `vercel` or `railway` (case-insensitive). Omit it, or pass an empty string, to show every configured target. Any other value is refused.",
             "type": [
               "string",
               "null"
@@ -1316,7 +1298,6 @@
             ]
           }
         },
-        "title": "SyncParams",
         "type": "object"
       }
     },
@@ -1347,7 +1328,6 @@
         "required": [
           "name"
         ],
-        "title": "TeamCreateParams",
         "type": "object"
       }
     },
@@ -1397,13 +1377,12 @@
           "team_id",
           "github_login"
         ],
-        "title": "TeamInviteParams",
         "type": "object"
       }
     },
     {
       "name": "phantom_team_key_publish",
-      "description": "One-time setup: register this device's public key with the team so you can send and receive encrypted vaults. Requires a separately commissioned hosted service and entitled account; the public hosted service is not currently commissioned. Must be called before phantom_team_vault_push or phantom_team_vault_pull. Idempotent — safe to call again after a key rotation.",
+      "description": "One-time setup: register this device's public key with the team so you can send and receive encrypted vaults. Requires a separately commissioned hosted service and entitled account; the public hosted service is not currently commissioned. Must be called before phantom_team_vault_push or phantom_team_vault_pull. Idempotent — safe to call again after a key rotation. Mutating provider request: requires `confirm: true` plus a one-use out-of-band `approval_token` (the operator enables effects with PHANTOM_MCP_EFFECTS=trusted-terminal; a call without the token prints a nonce on the server's stderr for `phantom mcp-approve <NONCE>` in a trusted terminal).",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
@@ -1429,7 +1408,6 @@
         "required": [
           "team_id"
         ],
-        "title": "TeamIdParams",
         "type": "object"
       }
     },
@@ -1439,7 +1417,6 @@
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
-        "description": "Dual approval gate for tools whose only inputs are authority controls.",
         "properties": {
           "approval_token": {
             "default": null,
@@ -1455,7 +1432,6 @@
             "type": "boolean"
           }
         },
-        "title": "ApprovalParams",
         "type": "object"
       }
     },
@@ -1487,13 +1463,12 @@
         "required": [
           "team_id"
         ],
-        "title": "TeamIdParams",
         "type": "object"
       }
     },
     {
       "name": "phantom_team_vault_pull",
-      "description": "Download and decrypt the team vault for this project into the local vault. Requires a separately commissioned hosted service and entitled account; the public hosted service is not currently commissioned. Use this (not phantom_cloud_pull) when secrets were shared by a teammate via phantom_team_vault_push. Overwrites local secrets: requires confirm:true.",
+      "description": "Download and decrypt the team vault for this project into the local vault. Requires a separately commissioned hosted service and entitled account; the public hosted service is not currently commissioned. Use this (not phantom_cloud_pull) when secrets were shared by a teammate via phantom_team_vault_push. Overwrites local secrets: requires confirm:true plus a one-use out-of-band `approval_token` (the operator enables effects with PHANTOM_MCP_EFFECTS=trusted-terminal; a call without the token prints a nonce on the server's stderr for `phantom mcp-approve <NONCE>` in a trusted terminal).",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
@@ -1518,13 +1493,12 @@
         "required": [
           "team_id"
         ],
-        "title": "TeamVaultParams",
         "type": "object"
       }
     },
     {
       "name": "phantom_team_vault_push",
-      "description": "Push this project's secrets to the shared team vault so all members can pull them. Requires a separately commissioned hosted service and entitled account; the public hosted service is not currently commissioned. Encrypts client-side for each member who has registered a key (phantom_team_key_publish). Mutating: requires confirm:true.",
+      "description": "Push this project's secrets to the shared team vault so all members can pull them. Requires a separately commissioned hosted service and entitled account; the public hosted service is not currently commissioned. Encrypts client-side for each member who has registered a key (phantom_team_key_publish). Mutating: requires confirm:true plus a one-use out-of-band `approval_token` (the operator enables effects with PHANTOM_MCP_EFFECTS=trusted-terminal; a call without the token prints a nonce on the server's stderr for `phantom mcp-approve <NONCE>` in a trusted terminal).",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
@@ -1549,13 +1523,12 @@
         "required": [
           "team_id"
         ],
-        "title": "TeamVaultParams",
         "type": "object"
       }
     },
     {
       "name": "phantom_unwrap",
-      "description": "Reverse phantom_wrap: restore original package.json scripts from their `:raw` variants and remove the `:raw` entries.",
+      "description": "Reverse phantom_wrap: restore original package.json scripts from their `:raw` variants and remove the `:raw` entries. Writes package.json: requires `confirm: true` plus a one-use out-of-band `approval_token` (the operator enables effects with PHANTOM_MCP_EFFECTS=trusted-terminal; a call without the token prints a nonce on the server's stderr for `phantom mcp-approve <NONCE>` in a trusted terminal).",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
@@ -1573,13 +1546,12 @@
             "type": "boolean"
           }
         },
-        "title": "UnwrapParams",
         "type": "object"
       }
     },
     {
       "name": "phantom_validate_all",
-      "description": "Run live credential health checks for all secrets in the vault. Each secret is validated against its target API (OpenAI, Stripe, GitHub, Anthropic, AWS, or a generic HTTP check). Returns a JSON compliance report with: total, valid, invalid, unreachable, not_checked counts and per-secret entries (name, validator, status, reason, checked_at). Secret VALUES are never returned or logged. This retrieves credentials, makes real outbound provider requests, and persists value-free validation metadata; it requires confirm plus approval_token and should run during a maintenance window.",
+      "description": "Run live credential health checks for all secrets in the vault. Each secret is validated against its target API (OpenAI, Stripe, GitHub, Anthropic, AWS, or a generic HTTP check). Returns a JSON compliance report with: total, valid, invalid, unreachable, not_checked counts and per-secret entries (name, validator, status, reason, checked_at). A secret blocked by its lifecycle policy (overdue under enforced rotation, demoted to read-only, or unreadable lifecycle metadata) is never read or sent: it is reported with status \"refused\" and its reason, the rest are still validated, and the result is flagged as an error. Secret VALUES are never returned or logged. This retrieves credentials, makes real outbound provider requests, and persists value-free validation metadata; it requires confirm plus approval_token and should run during a maintenance window.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
@@ -1605,13 +1577,12 @@
             "type": "integer"
           }
         },
-        "title": "ValidateAllParams",
         "type": "object"
       }
     },
     {
       "name": "phantom_validate_secret",
-      "description": "Query the last-known validation status for a specific secret. Returns: last_check_ts (Unix epoch, 0 = never checked), is_valid (bool), failure_reason (string or null), validator_name (which validator ran), and is_stale (whether the check is older than 24 h). This tool reads persisted ValidationMetadata — it does NOT make a live HTTP request. Use phantom_validate_all to trigger a fresh check. Read-only; no confirm required. Secret VALUES are never returned.",
+      "description": "Query the last-known validation status for a specific secret. Returns: last_check_ts (Unix epoch, 0 = never checked), is_valid (bool), failure_reason (string or null), validator_name (which validator ran), and is_stale (whether the check is older than 24 h). If the stored results cannot be read, metadata_error is true, a note says why, and the other status fields are null rather than reporting never_checked. This tool reads persisted ValidationMetadata — it does NOT make a live HTTP request. Use phantom_validate_all to trigger a fresh check. Read-only; no confirm required. Secret VALUES are never returned.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
@@ -1623,7 +1594,6 @@
         "required": [
           "name"
         ],
-        "title": "ValidateSecretParams",
         "type": "object"
       }
     },
@@ -1632,7 +1602,6 @@
       "description": "Retrieve the history of past automated validation runs. Each entry contains: started_at (Unix epoch), finished_at, total, pass, fail, unreachable, not_checked, and an optional error string. Use `limit` (default 20, max 100) to control how many recent entries are returned. Secret VALUES are never returned. Read-only; no confirm required.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "description": "Parameters for `phantom_validation_history`.",
         "properties": {
           "limit": {
             "default": 20,
@@ -1642,7 +1611,6 @@
             "type": "integer"
           }
         },
-        "title": "ValidationHistoryParams",
         "type": "object"
       }
     },
@@ -1652,7 +1620,6 @@
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
-        "description": "Parameters for `phantom_validation_schedule` (get/set schedule).",
         "properties": {
           "approval_token": {
             "default": null,
@@ -1676,13 +1643,12 @@
             ]
           }
         },
-        "title": "ValidationScheduleParams",
         "type": "object"
       }
     },
     {
       "name": "phantom_why",
-      "description": "Explain why an environment variable is or isn't protected by Phantom. Shows classification (Secret, PublicKey, NotSecret), whether it has a phantom token, and what heuristic matched.",
+      "description": "Explain why an environment variable is or isn't protected by Phantom. classification is `protected` (has a phantom token), `secret_unprotected` (next_step says to run `phantom init`), `public_key` or `not_secret`, and is null when the key is not in the dotenv (found=false). reason names the heuristic: `phantom_token`, `key_name`, `connection_pattern`, `value_pattern`, `public_prefix_with_secret_value`, `public_prefix` or `no_secret_pattern`; matched_pattern is the matched key fragment or prefix. Value-blind: it reads .phantom.toml and the dotenv, never the vault, so it answers while the vault is locked and before `phantom init` (it then classifies ./.env, and exec is null). For a protected key it also says how `phantom exec` treats it. exec.delivery judges the key alone: `proxied` (a built-in route injects the real value for exec.upstream), `no_route` (the child gets only a session token that no provider accepts, so calls with it fail), `withheld` (exec never hands the child this provider-management or sync credential), `connection_string_refused` or `custom_route_refused` (exec will not start). exec.blocked_by is non-null when the config stops exec from starting for every key: {service, reason: `custom_route`, `altered_builtin_route` or `connection_string`, key}. next_step explains anything but an unblocked `proxied`. Returns a summary plus value-free JSON {key, dotenv_exists, found, classification, protected, reason, matched_pattern, service, exec: {delivery, service, upstream, blocked_by} | null, next_step} (also as structuredContent).",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
@@ -1694,13 +1660,12 @@
         "required": [
           "key"
         ],
-        "title": "WhyParams",
         "type": "object"
       }
     },
     {
       "name": "phantom_wrap",
-      "description": "Wrap package.json scripts with the installed local `phantom exec --` command so secrets are injected via the proxy at runtime. Saves originals as `script:raw` variants. Uses a heuristic to pick dev/start/build/serve/deploy scripts and skip lint/test/format scripts.",
+      "description": "Wrap package.json scripts with the installed local `phantom exec --` command so secrets are injected via the proxy at runtime. Saves originals as `script:raw` variants. Uses a heuristic to pick dev/start/build/serve/deploy scripts and skip lint/test/format scripts. Writes package.json: requires `confirm: true` plus a one-use out-of-band `approval_token` (the operator enables effects with PHANTOM_MCP_EFFECTS=trusted-terminal; a call without the token prints a nonce on the server's stderr for `phantom mcp-approve <NONCE>` in a trusted terminal).",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
@@ -1734,7 +1699,6 @@
             "type": "array"
           }
         },
-        "title": "WrapParams",
         "type": "object"
       }
     }
@@ -1744,7 +1708,7 @@
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "phantom-secrets-mcp",
-      "version": "0.7.6",
+      "version": "0.7.9",
       "transport": {
         "type": "stdio"
       }

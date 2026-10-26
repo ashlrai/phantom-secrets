@@ -1,9 +1,22 @@
 const assert = require("node:assert/strict");
 const { createHash } = require("node:crypto");
 const fs = require("node:fs");
+const os = require("node:os");
+const { execFileSync } = require("node:child_process");
 const path = require("node:path");
 const test = require("node:test");
 const ts = require("typescript");
+
+const sourceFixture = fs.mkdtempSync(path.join(os.tmpdir(), "phantom-source-identity-"));
+fs.writeFileSync(path.join(sourceFixture, "source.txt"), "owned source fixture\n");
+function fixtureGit(...args) {
+  return execFileSync("git", ["-C", sourceFixture, ...args], { encoding: "utf8" }).trim();
+}
+fixtureGit("init", "--quiet");
+fixtureGit("add", "source.txt");
+fixtureGit("-c", "user.name=Phantom fixture", "-c", "user.email=fixture@example.invalid", "-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "Owned fixture");
+const sourceRevision = fixtureGit("rev-parse", "HEAD");
+test.after(() => fs.rmSync(sourceFixture, { recursive: true, force: true }));
 
 const webDir = path.resolve(__dirname, "..");
 const repositoryDir = path.resolve(webDir, "../..");
@@ -18,6 +31,7 @@ const publicAuthConfigurationPath = path.join(
 );
 
 const OBSERVABILITY_ENVS = [
+  "PHANTOM_BUILD_SOURCE_REVISION",
   "VERCEL_GIT_COMMIT_SHA",
   "VERCEL_DEPLOYMENT_ID",
   "VERCEL_ENV",
@@ -63,23 +77,34 @@ function loadCommissioning() {
   });
 }
 
-function loadObservability(packageVersion = "0.7.5") {
+function loadObservability(packageVersion = "0.7.5", frozenSourceRevision = sourceRevision) {
   const commissioning = loadCommissioning();
   const publicAuthConfiguration = compileModule(
     publicAuthConfigurationPath,
     require,
   );
-  return compileModule(observabilityPath, (specifier) => {
-    if (specifier === "server-only") return {};
-    if (specifier === "./commissioning") return commissioning;
-    if (specifier === "./public-auth-configuration") {
-      return publicAuthConfiguration;
-    }
-    if (specifier === "../../package.json") {
-      return { name: "phantom-web", version: packageVersion };
-    }
-    return require(specifier);
-  });
+  const previousSource = process.env.PHANTOM_BUILD_SOURCE_REVISION;
+  if (frozenSourceRevision === undefined || frozenSourceRevision === null) {
+    delete process.env.PHANTOM_BUILD_SOURCE_REVISION;
+  } else {
+    process.env.PHANTOM_BUILD_SOURCE_REVISION = frozenSourceRevision;
+  }
+  try {
+    return compileModule(observabilityPath, (specifier) => {
+      if (specifier === "server-only") return {};
+      if (specifier === "./commissioning") return commissioning;
+      if (specifier === "./public-auth-configuration") {
+        return publicAuthConfiguration;
+      }
+      if (specifier === "../../package.json") {
+        return { name: "phantom-web", version: packageVersion };
+      }
+      return require(specifier);
+    });
+  } finally {
+    if (previousSource === undefined) delete process.env.PHANTOM_BUILD_SOURCE_REVISION;
+    else process.env.PHANTOM_BUILD_SOURCE_REVISION = previousSource;
+  }
 }
 
 function loadRoute(relativePath, observability) {
@@ -91,7 +116,7 @@ function loadRoute(relativePath, observability) {
 
 function validEnvironment() {
   const env = {
-    VERCEL_GIT_COMMIT_SHA: "a".repeat(40),
+    VERCEL_GIT_COMMIT_SHA: sourceRevision,
     VERCEL_DEPLOYMENT_ID: `dpl_${"B".repeat(24)}`,
     VERCEL_ENV: "production",
     NEXT_PUBLIC_SUPABASE_URL: "https://phantom-test.supabase.co",
@@ -144,12 +169,6 @@ test("build identity is exact, bounded, and all-or-nothing", () => {
   );
 
   const cases = [
-    [
-      "missing source revision",
-      "VERCEL_GIT_COMMIT_SHA",
-      undefined,
-      "source_revision_missing_or_invalid",
-    ],
     [
       "short source revision",
       "VERCEL_GIT_COMMIT_SHA",
@@ -206,6 +225,124 @@ test("build identity is exact, bounded, and all-or-nothing", () => {
   assert.deepEqual(invalidRelease.unavailable_reasons, [
     "release_version_missing_or_invalid",
   ]);
+});
+
+test("clean build source identifies prebuilt deployments without a platform Git variable", () => {
+  const observability = loadObservability();
+  const env = validEnvironment();
+  delete env.VERCEL_GIT_COMMIT_SHA;
+  const identity = observability.readBuildIdentity(env);
+  assert.equal(identity.identified, true);
+  assert.equal(identity.source_revision, sourceRevision);
+});
+
+test("runtime source variables cannot repair missing or conflicting frozen source", () => {
+  const valid = validEnvironment();
+  for (const witness of [null, "unidentified", "bad"]) {
+    const identity = loadObservability("0.7.5", witness).readBuildIdentity({
+      ...valid,
+      PHANTOM_BUILD_SOURCE_REVISION: sourceRevision,
+    });
+    assert.equal(identity.identified, false);
+    assert.deepEqual(identity.unavailable_reasons, ["source_revision_missing_or_invalid"]);
+  }
+  const observability = loadObservability();
+  for (const providerSource of ["", " ", "A".repeat(40), "bad", "b".repeat(40)]) {
+    const identity = observability.readBuildIdentity({
+      ...valid,
+      VERCEL_GIT_COMMIT_SHA: providerSource,
+      PHANTOM_BUILD_SOURCE_REVISION: providerSource,
+    });
+    assert.equal(identity.identified, false, providerSource);
+    assert.equal(identity.source_revision, null);
+    assert.deepEqual(identity.unavailable_reasons, ["source_revision_missing_or_invalid"]);
+  }
+  for (const field of ["VERCEL_DEPLOYMENT_ID", "VERCEL_ENV"]) {
+    const env = { ...valid };
+    delete env.VERCEL_GIT_COMMIT_SHA;
+    delete env[field];
+    assert.equal(observability.readBuildIdentity(env).identified, false, field);
+  }
+});
+
+test("source binding diagnostics distinguish absence, invalidity, equality and conflict", () => {
+  const observability = loadObservability();
+  for (const [platformSource, category, identified] of [
+    [undefined, "absent", true],
+    ["", "invalid", false],
+    ["unexpected-platform-marker", "invalid", false],
+    [sourceRevision, "matching", true],
+    ["f".repeat(40), "conflicting", false],
+  ]) {
+    const env = validEnvironment();
+    if (platformSource === undefined) delete env.VERCEL_GIT_COMMIT_SHA;
+    else env.VERCEL_GIT_COMMIT_SHA = platformSource;
+    assert.deepEqual(observability.sourceBindingDiagnostic(env), {
+      build_observation: "valid",
+      platform_source: category,
+    });
+    assert.equal(observability.readBuildIdentity(env).identified, identified);
+  }
+  for (const witness of [null, "unidentified", "invalid-build-observation"]) {
+    const missing = loadObservability("0.7.5", witness);
+    const env = validEnvironment();
+    assert.deepEqual(missing.sourceBindingDiagnostic(env), {
+      build_observation: "missing_or_invalid",
+      platform_source: "conflicting",
+    });
+    assert.equal(missing.readBuildIdentity(env).identified, false);
+    delete env.VERCEL_GIT_COMMIT_SHA;
+    assert.deepEqual(missing.sourceBindingDiagnostic(env), {
+      build_observation: "missing_or_invalid",
+      platform_source: "absent",
+    });
+    assert.equal(missing.readBuildIdentity(env).identified, false);
+  }
+});
+
+test("held source diagnostics log only fixed categories and preserve the public response", async () => {
+  const observability = loadObservability();
+  const route = loadRoute("src/app/api/v1/ready/route.ts", observability);
+  for (const [platformSource, category] of [
+    [undefined, "absent"], ["", "invalid"],
+    ["unexpected-platform-marker", "invalid"],
+    [sourceRevision, "matching"], ["f".repeat(40), "conflicting"],
+  ]) {
+    const env = validEnvironment();
+    delete env.VERCEL_DEPLOYMENT_ID; // Hold another axis to inspect every source category.
+    if (platformSource === undefined) delete env.VERCEL_GIT_COMMIT_SHA;
+    else env.VERCEL_GIT_COMMIT_SHA = platformSource;
+    const calls = [];
+    const originalWarn = console.warn;
+    console.warn = (...args) => calls.push(args);
+    try {
+      await withEnvironment(env, async () => {
+        const response = route.GET();
+        assert.equal(response.status, 503);
+        assert.deepEqual(await response.json(), {
+          status: "not_ready", service: "phantom-web", release_version: "0.7.5",
+        });
+        assert.equal(calls.length, 1);
+        const [marker, text] = calls[0];
+        assert.equal(marker, "phantom-readiness-held");
+        const diagnostic = JSON.parse(text);
+        assert.deepEqual(Object.keys(diagnostic).sort(), [
+          "build_identity_reasons", "checks", "hosted_services", "source_binding",
+        ]);
+        assert.deepEqual(diagnostic.source_binding, {
+          build_observation: "valid", platform_source: category,
+        });
+        for (const value of [sourceRevision, "f".repeat(40), "unexpected-platform-marker",
+          ...["NEXT_PUBLIC_SUPABASE_URL", "NEXT_PUBLIC_SUPABASE_ANON_KEY",
+            "SUPABASE_SERVICE_ROLE_KEY", "STRIPE_SECRET_KEY", "STRIPE_PRO_PRICE_ID",
+            "STRIPE_WEBHOOK_SECRET"].map((name) => env[name])]) {
+          assert.equal(text.includes(value), false, value);
+        }
+      });
+    } finally {
+      console.warn = originalWarn;
+    }
+  }
 });
 
 test("health is provider-free route/runtime liveness with no-store responses", async () => {
@@ -436,6 +573,9 @@ test("documentation redirects are a closed canonical allowlist", async () => {
         return publicAuthConfiguration;
       }
       if (specifier === "./docs-routes.json") return docsRoutes;
+      if (specifier === "./src/lib/build-source-revision") {
+        return compileModule(path.join(webDir, "src/lib/build-source-revision.ts"), require);
+      }
       return require(specifier);
     },
   );
@@ -449,4 +589,25 @@ test("documentation redirects are a closed canonical allowlist", async () => {
     })),
   );
   assert.equal(redirects.some(({ source }) => source.includes(":")), false);
+});
+
+test("retired network installer URLs return a non-executable 410 response", async () => {
+  class TestNextResponse extends Response {}
+  const retiredInstaller = compileModule(
+    path.join(webDir, "src/middleware.ts"),
+    (specifier) => {
+      if (specifier === "next/server") return { NextResponse: TestNextResponse };
+      return require(specifier);
+    },
+  );
+
+  for (const pathName of ["/install.sh", "/install.ps1"]) {
+    assert.ok(retiredInstaller.config.matcher.includes(pathName));
+    const response = retiredInstaller.middleware();
+    assert.equal(response.status, 410);
+    assert.equal(response.headers.get("cache-control"), "no-store");
+    assert.equal(response.headers.get("content-type"), "text/plain; charset=utf-8");
+    assert.equal(response.headers.get("x-content-type-options"), "nosniff");
+    assert.match(await response.text(), /network installer endpoint is unavailable/i);
+  }
 });

@@ -700,6 +700,9 @@ pub enum ValidationStatus {
     Unreachable,
     Skipped,
     NotChecked,
+    /// Never validated: the lifecycle gate (rotation enforcement, read-only
+    /// demotion, unreadable lifecycle metadata) refused to send the value.
+    Refused,
 }
 
 impl std::fmt::Display for ValidationStatus {
@@ -710,6 +713,7 @@ impl std::fmt::Display for ValidationStatus {
             ValidationStatus::Unreachable => write!(f, "unreachable"),
             ValidationStatus::Skipped => write!(f, "skipped"),
             ValidationStatus::NotChecked => write!(f, "not_checked"),
+            ValidationStatus::Refused => write!(f, "refused"),
         }
     }
 }
@@ -729,11 +733,39 @@ pub struct ValidationReport {
     pub unreachable: usize,
     /// Secrets with no applicable validator.
     pub not_checked: usize,
+    /// Secrets the lifecycle gate refused to validate (value never read).
+    /// Absent in reports written before this field existed.
+    #[serde(default)]
+    pub refused: usize,
     /// Per-secret detail.
     pub entries: Vec<ValidationEntry>,
 }
 
 impl ValidationReport {
+    /// Record `name` as refused by the lifecycle gate with `reason` (names
+    /// only, never a value). Counts toward `total` and `refused`; entries
+    /// stay ordered by name.
+    pub fn push_refused(&mut self, name: &str, reason: &str) {
+        self.entries.push(ValidationEntry {
+            name: name.to_string(),
+            validator: "lifecycle_gate".to_string(),
+            status: ValidationStatus::Refused,
+            reason: Some(reason.to_string()),
+            checked_at: now_secs(),
+        });
+        self.entries.sort_by(|a, b| a.name.cmp(&b.name));
+        self.total += 1;
+        self.refused += 1;
+    }
+
+    /// Returns all entries with `status == Refused`.
+    pub fn refused_entries(&self) -> Vec<&ValidationEntry> {
+        self.entries
+            .iter()
+            .filter(|e| e.status == ValidationStatus::Refused)
+            .collect()
+    }
+
     /// Returns all entries with `status == Invalid`.
     pub fn invalid_entries(&self) -> Vec<&ValidationEntry> {
         self.entries
@@ -1001,6 +1033,7 @@ pub fn run_validation_pipeline(
         invalid,
         unreachable,
         not_checked,
+        refused: 0,
         entries: report_entries,
     }
 }
@@ -1163,6 +1196,7 @@ pub fn run_validation_pipeline_parallel(
         invalid,
         unreachable,
         not_checked,
+        refused: 0,
         entries,
     }
 }
@@ -1808,6 +1842,7 @@ mod tests {
             invalid: 1,
             unreachable: 0,
             not_checked: 0,
+            refused: 0,
             entries: vec![
                 ValidationEntry {
                     name: "KEY_A".to_string(),
@@ -1831,6 +1866,39 @@ mod tests {
         assert_eq!(back.valid, 1);
         assert_eq!(back.invalid, 1);
         assert_eq!(back.entries[1].reason.as_deref(), Some("401"));
+    }
+
+    /// A refused entry is part of the report (status `refused`, its reason,
+    /// counted in `total`), and a report written before the `refused`
+    /// count existed still loads.
+    #[test]
+    fn refused_entries_are_reported_and_old_reports_still_load() {
+        let mut report = run_validation_pipeline(
+            vec![(
+                "ZED_KEY".to_string(),
+                zeroize::Zeroizing::new(String::new()),
+            )],
+            &[],
+            1,
+            Duration::from_secs(1),
+        );
+        report.push_refused("ALPHA_KEY", "Refusing to validate: 'ALPHA_KEY' is blocked.");
+        assert_eq!(
+            (report.total, report.not_checked, report.refused),
+            (2, 1, 1)
+        );
+        assert_eq!(report.entries[0].name, "ALPHA_KEY");
+        assert_eq!(report.refused_entries().len(), 1);
+        let json = serde_json::to_value(&report).unwrap();
+        assert_eq!(json["refused"], 1);
+        assert_eq!(json["entries"][0]["status"], "refused");
+        assert_eq!(json["entries"][0]["validator"], "lifecycle_gate");
+        assert_eq!(ValidationStatus::Refused.to_string(), "refused");
+
+        let mut legacy = json;
+        legacy.as_object_mut().unwrap().remove("refused");
+        let back: ValidationReport = serde_json::from_value(legacy).unwrap();
+        assert_eq!(back.refused, 0);
     }
 
     #[test]

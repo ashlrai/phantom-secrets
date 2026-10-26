@@ -14,12 +14,21 @@ import "./npm-candidate-acceptance.test.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const release = readFileSync(join(repoRoot, ".github/workflows/release.yml"), "utf8");
+const ci = readFileSync(join(repoRoot, ".github/workflows/ci.yml"), "utf8");
 const releaseBuild = readFileSync(
   join(repoRoot, ".github/workflows/release-build.yml"),
   "utf8"
 );
 const rehearsal = readFileSync(
   join(repoRoot, ".github/workflows/release-rehearsal.yml"),
+  "utf8"
+);
+const npmCandidateAcceptance = readFileSync(
+  join(repoRoot, ".github/workflows/npm-candidate-acceptance.yml"),
+  "utf8"
+);
+const versionParity = readFileSync(
+  join(repoRoot, "scripts/release/check-version-parity.mjs"),
   "utf8"
 );
 const readiness = readFileSync(join(repoRoot, "docs/release-readiness.md"), "utf8");
@@ -78,6 +87,64 @@ test("manual rehearsal delegates to the shared graph with read-only authority", 
   assert.doesNotMatch(rehearsal, /(?:npm|cargo|mcp-publisher) publish|gh release/);
 });
 
+test("release defaults and lockfiles are part of the exact version parity contract", () => {
+  assert.match(rehearsal, /default: v0\.7\.9/);
+  assert.match(
+    npmCandidateAcceptance,
+    /^      version:\n[\s\S]*?^        default: 0\.7\.9$/m
+  );
+  assert.match(versionParity, /json\("apps\/web\/package-lock\.json"\)/);
+  assert.match(versionParity, /Hosted web lockfile root/);
+  assert.match(versionParity, /README source badge/);
+  assert.match(versionParity, /Roadmap release/);
+  assert.match(versionParity, /phantom-release-version/);
+  assert.match(versionParity, /Current changelog candidate/);
+  assert.match(versionParity, /npm CLI README/);
+  assert.match(versionParity, /npm MCP README/);
+  assert.match(versionParity, /npm candidate acceptance default/);
+  assert.equal(
+    execFileSync(
+      process.execPath,
+      [join(repoRoot, "scripts/release/check-version-parity.mjs"), "v0.7.9"],
+      { cwd: repoRoot, encoding: "utf8" }
+    ).trim(),
+    "release version parity passed: 0.7.9 across 21 surfaces and 12 crates"
+  );
+});
+
+test("web dependency audits use the exact supported npm CLI and stay fail closed", () => {
+  for (const [name, workflow] of [
+    ["CI", ci],
+    ["release build", releaseBuild],
+  ]) {
+    assert.match(
+      workflow,
+      /^  PHANTOM_NPM_AUDIT_VERSION: 11\.15\.0$/m,
+      `${name} must pin the npm audit client`,
+    );
+    assert.match(
+      workflow,
+      /run: npm ci --no-audit/,
+      `${name} must leave advisory checking to the exact audit client`,
+    );
+    assert.match(
+      workflow,
+      /npm install \\\n[\s\S]*?--prefix "\$\{RUNNER_TEMP\}\/phantom-npm-audit"[\s\S]*?--ignore-scripts[\s\S]*?--no-audit[\s\S]*?"npm@\$\{PHANTOM_NPM_AUDIT_VERSION\}"/,
+      `${name} must install the audit client without lifecycle scripts`,
+    );
+    assert.match(
+      workflow,
+      /"\$\{RUNNER_TEMP\}\/phantom-npm-audit\/node_modules\/\.bin\/npm"\s+audit --omit=dev --audit-level=moderate/,
+      `${name} must fail on moderate-or-higher production advisories`,
+    );
+    assert.doesNotMatch(
+      workflow,
+      /^\s*run: npm audit --omit=dev --audit-level=moderate$/m,
+      `${name} must not fall back to the runner-bundled npm audit client`,
+    );
+  }
+});
+
 test("shared graph validates the exact tag before building and keeps native acceptance exact", () => {
   assert.match(releaseBuild, /^  workflow_call:\n    inputs:\n      release_tag:/m);
   assert.match(releaseBuild, /^permissions:\n  contents: read$/m);
@@ -95,12 +162,32 @@ test("shared graph validates the exact tag before building and keeps native acce
 
   const build = jobBlock(releaseBuild, "build", "native-acceptance");
   assert.match(build, /strategy:\n      fail-fast: false/);
+  assert.match(
+    build,
+    /- name: Package \(Windows\)\n        if: runner\.os == 'Windows'\n        shell: pwsh\n        run: \|\n          \$ErrorActionPreference = 'Stop'\n          \$PSNativeCommandUseErrorActionPreference = \$true/,
+    "Windows packaging must use the PowerShell fail-fast statements under pwsh",
+  );
   const native = jobBlock(releaseBuild, "native-acceptance", "verify-artifacts");
   assert.match(native, /needs: build/);
   assert.match(native, /strategy:\n      fail-fast: false/);
   assert.match(native, /run: node scripts\/release\/native-release-smoke\.mjs/);
   assert.match(native, /run: node scripts\/release\/native-installer-acceptance\.mjs/);
   assert.match(native, /Install the exact archive and prove transaction rollback/);
+  for (const command of [
+    "node npm/test/platform-matrix.test.js",
+    "node npm/test/version-cache.test.js",
+    "node npm/test/valid-cache.test.js",
+    "node npm/test/hardening.test.js",
+    "node npm-mcp/test/platform-matrix.test.js",
+    "node npm-mcp/test/version-cache.test.js",
+    "node npm-mcp/test/valid-cache.test.js",
+    "node npm-mcp/test/hardening.test.js",
+    "node npm-mcp/test/schema-contract.test.js",
+  ]) {
+    assert.match(native, new RegExp(`run: ${command.replaceAll(".", "\\.")}`));
+  }
+  assert.doesNotMatch(native, /run: \|\n(?:\s+node npm(?:-mcp)?\/test\/[^\n]+\n){2,}/);
+  assert.match(native, /node scripts\/release\/npm-wrapper-native-acceptance\.mjs/);
   assert.doesNotMatch(native, /(?:npm|cargo|mcp-publisher) publish|gh release/);
 });
 
@@ -186,10 +273,14 @@ test("npm and MCP distribution metadata and runbooks remain publication-safe", (
     });
   }
 
-  for (const readme of [npmReadme, npmMcpReadme]) {
-    assert.match(readme, /This wrapper is version `0\.7\.6`/);
-    assert.match(readme, /npm view phantom-secrets(?:-mcp)?@0\.7\.6/);
-    assert.match(readme, /releases\/tag\/v0\.7\.6/);
+  for (const [readme, packageJson, packageName] of [
+    [npmReadme, npmPackage, "phantom-secrets"],
+    [npmMcpReadme, npmMcpPackage, "phantom-secrets-mcp"],
+  ]) {
+    const escapedVersion = packageJson.version.replaceAll(".", "\\.");
+    assert.match(readme, new RegExp("This wrapper is version `" + escapedVersion + "`"));
+    assert.match(readme, new RegExp(`npm view ${packageName}@${escapedVersion}`));
+    assert.match(readme, new RegExp(`releases/tag/v${escapedVersion}`));
     assert.match(readme, /do not prove|does not prove/);
     assert.doesNotMatch(readme, /v0\.7\.3|older release track|Current main/);
   }
@@ -205,6 +296,9 @@ test("npm and MCP distribution metadata and runbooks remain publication-safe", (
   assert.match(readiness, /stage both under `release-candidate`/);
   assert.match(readiness, /six-target npm-channel\s+acceptance gate/);
   assert.match(readiness, /MCP\s+wrapper to `latest` first and the primary CLI to `latest` last/);
+  assert.match(readiness, /release_tag=v0\.7\.9/);
+  assert.match(readiness, /pre-tag-preflight\.mjs v0\.7\.9/);
+  assert.match(readiness, /publish-crates\.sh --verify-only --version 0\.7\.9/);
 
   const npmPlan = markdownSection(
     npmPublication,
@@ -298,8 +392,8 @@ test("npm and MCP distribution metadata and runbooks remain publication-safe", (
   assert.match(npmPublication, /\| GNU Linux arm64 \| `ubuntu-22\.04-arm` \|/);
   assert.match(npmPublication, /\| Windows x64 \| `windows-latest` \|/);
   assert.match(npmPublication, /\| Windows arm64 \| `windows-11-vs2026-arm` \|/);
-  assert.match(npmPublication, /--package=phantom-secrets-mcp@0\.7\.6/);
-  assert.match(npmPublication, /--package=phantom-secrets@0\.7\.6/);
+  assert.match(npmPublication, /--package=phantom-secrets-mcp@0\.7\.8/);
+  assert.match(npmPublication, /--package=phantom-secrets@0\.7\.8/);
   assert.match(npmPublication, /dist\.attestations/);
   assert.match(npmPublication, /SHA-512 SRI/);
   assert.match(npmPublication, /verify-github-tag-binding\.mjs/);
@@ -644,7 +738,7 @@ test("npm package contents remain the exact five reviewed files", () => {
   ]) {
     const pack = inspectPack(directory);
     assert.equal(pack.name, packageName);
-    assert.equal(pack.version, "0.7.6");
+    assert.equal(pack.version, "0.7.9");
     assert.equal(pack.entryCount, 5);
     assert.deepEqual(
       pack.files.map(({ path }) => path).sort(),

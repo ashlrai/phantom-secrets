@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import test from 'node:test';
@@ -44,7 +44,8 @@ function makeArchive(root, target = 'x86_64-apple-darwin', options = {}) {
   }
   const archiveName = `phantom-${target}.tar.gz`;
   const archive = join(fixture, archiveName);
-  execFileSync('tar', ['-czf', archive, '-C', payload, ...members]);
+  const owner = options.foreignOwner ? ['--owner=4242', '--group=4242'] : [];
+  execFileSync('tar', [...owner, '-czf', archive, '-C', payload, ...members]);
   const digest = createHash('sha256').update(readFileSync(archive)).digest('hex');
   const sidecar = options.sidecar ?? `${digest}  ${archiveName}\n`;
   writeFileSync(`${archive}.sha256`, sidecar);
@@ -178,9 +179,16 @@ async function waitForPath(path, timeoutMs = 5000) {
   }
 }
 
-test('canonical installers exactly match the public mirrors', () => {
-  assert.deepEqual(readFileSync(shellInstaller), readFileSync(join(repo, 'apps/web/public/install.sh')));
-  assert.deepEqual(readFileSync(psInstaller), readFileSync(join(repo, 'apps/web/public/install.ps1')));
+test('web installer mirrors remain bound to the evidenced public release', () => {
+  // Release candidates can target a not-yet-published tag. The phm.dev copies
+  // must not advance until public-release.ts has immutable release evidence.
+  const publicShell = readFileSync(join(repo, 'apps/web/public/install.sh'), 'utf8');
+  const publicPowerShell = readFileSync(join(repo, 'apps/web/public/install.ps1'), 'utf8');
+  // v0.7.9 has its immutable tag-bound release receipt (workflow 34153902556).
+  assert.match(publicShell, /CANDIDATE_TAG="v0\.7\.9"/);
+  assert.match(publicPowerShell, /\$CandidateTag = 'v0\.7\.9'/);
+  assert.doesNotMatch(publicShell, /v0\.7\.8/);
+  assert.doesNotMatch(publicPowerShell, /v0\.7\.8/);
 });
 
 test('Unix installer guidance never emits pipe-to-shell or older-registry fallbacks', () => {
@@ -196,15 +204,15 @@ test('direct installers bind normal use to the canonical repository and exact ca
   const powerShell = readFileSync(psInstaller, 'utf8');
   for (const source of [shell, powerShell]) {
     assert.match(source, /ashlrai\/phantom-secrets/);
-    assert.match(source, /v0\.7\.6/);
+    assert.match(source, /v0\.7\.9/);
     assert.match(source, /PHANTOM_TEST_ALLOW_INSTALLER_OVERRIDES/);
     assert.doesNotMatch(source, /releases\/latest|api\.github\.com/);
   }
 
-  const { log, result } = runInstaller({ version: '0.7.6', useCandidateDefaults: true });
+  const { log, result } = runInstaller({ version: '0.7.9', useCandidateDefaults: true });
   assert.equal(result.status, 0, result.stderr);
   const curlLog = readFileSync(log, 'utf8');
-  assert.match(curlLog, /ashlrai\/phantom-secrets\/releases\/download\/v0\.7\.6\//);
+  assert.match(curlLog, /ashlrai\/phantom-secrets\/releases\/download\/v0\.7\.9\//);
   assert.doesNotMatch(curlLog, /releases\/latest|api\.github\.com/);
 });
 
@@ -268,6 +276,17 @@ test('Unix installer uses bounded HTTPS downloads and promotes both exact binari
   }
   assert.doesNotMatch(curlLog, /http:\/\//);
   assert.equal(readdirSync(dirname(install)).filter((name) => name.includes('.bin.install.')).length, 0);
+});
+
+test('Unix installer extracts without keeping the archive owner', () => {
+  // Release archives carry the CI runner's uid; a root install must not hand the binaries to it.
+  assert.match(readFileSync(shellInstaller, 'utf8'), /tar --no-same-owner -xzf "\$archive_path"/);
+});
+
+test('Unix installer run as root owns the installed binaries', { skip: process.getuid?.() !== 0 }, () => {
+  const { install, result } = runInstaller({ foreignOwner: true });
+  assert.equal(result.status, 0, result.stderr);
+  for (const name of ['phantom', 'phantom-mcp']) assert.equal(lstatSync(join(install, name)).uid, 0);
 });
 
 test('Unix installer rejects unsafe install-directory syntax before download', () => {
@@ -461,12 +480,17 @@ test('PowerShell installer has a strict offline-verifiable security contract', (
   assert.match(source, /Move-Item[\s\S]+backupPath[\s\S]+failed-live/);
   assert.match(source, /FileMode\]::CreateNew/);
   assert.match(source, /Assert-NoReparsePathComponents/);
+  assert.match(source, /function Get-NativeUserProfilePath/);
+  assert.match(source, /GetFolderPath\([\s\S]+\[System\.Environment\+SpecialFolder\]::UserProfile/);
+  assert.match(source, /@\(\$env:USERPROFILE, \$platformProfile, \$env:HOME\)/);
+  assert.match(source, /\^\[A-Za-z\]:\[\\\\\/\]/);
+  assert.doesNotMatch(source, /\$homeDir = if \(\$env:HOME\)/);
   assert.match(source, /MoveFileEx/);
   assert.match(source, /StructuralEqualityComparer/);
   assert.match(source, /PHANTOM_INSTALL_DIR must be a local absolute path/);
   assert.match(source, /install source receipt failed final validation/);
   assert.match(source, /\$CanonicalRepo = 'ashlrai\/phantom-secrets'/);
-  assert.match(source, /\$CandidateTag = 'v0\.7\.6'/);
+  assert.match(source, /\$CandidateTag = 'v0\.7\.9'/);
   assert.match(source, /PHANTOM_TEST_ALLOW_INSTALLER_OVERRIDES -ceq '1'/);
   assert.match(source, /PHANTOM_TEST_LOCAL_RELEASE_DIR/);
   assert.match(source, /PHANTOM_TEST_DISABLE_PATH_PERSISTENCE/);

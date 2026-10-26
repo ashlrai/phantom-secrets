@@ -52,3 +52,77 @@ pub enum PhantomError {
 }
 
 pub type Result<T> = std::result::Result<T, PhantomError>;
+
+impl PhantomError {
+    /// A short, value-free class for a Phantom Cloud request failure that is
+    /// not an auth rejection, so a network or server fault is not reported as
+    /// an expired login. It never includes the error's message text.
+    pub fn cloud_failure_class(&self) -> String {
+        match self {
+            PhantomError::AuthError(_) => "could not reach Phantom Cloud".to_string(),
+            PhantomError::CloudError { status: 0, .. } => {
+                "could not reach Phantom Cloud: HTTP client unavailable".to_string()
+            }
+            PhantomError::CloudError { status, .. } if (200..300).contains(status) => {
+                format!("unexpected response from Phantom Cloud, HTTP {status}")
+            }
+            PhantomError::CloudError { status, .. } if *status >= 500 => {
+                format!("Phantom Cloud server error, HTTP {status}")
+            }
+            PhantomError::CloudError { status, .. } => {
+                format!("Phantom Cloud refused the request, HTTP {status}")
+            }
+            _ => "Phantom Cloud request failed".to_string(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cloud_failure_class_names_the_failure_without_its_message() {
+        let cases = [
+            (
+                PhantomError::AuthError("connection refused by host".to_string()),
+                "could not reach Phantom Cloud",
+            ),
+            (
+                PhantomError::CloudError {
+                    status: 0,
+                    message: "client build failed".to_string(),
+                },
+                "could not reach Phantom Cloud: HTTP client unavailable",
+            ),
+            (
+                PhantomError::CloudError {
+                    status: 200,
+                    message: "response was invalid JSON".to_string(),
+                },
+                "unexpected response from Phantom Cloud, HTTP 200",
+            ),
+            (
+                PhantomError::CloudError {
+                    status: 502,
+                    message: "bad gateway".to_string(),
+                },
+                "Phantom Cloud server error, HTTP 502",
+            ),
+            (
+                PhantomError::CloudError {
+                    status: 403,
+                    message: "forbidden".to_string(),
+                },
+                "Phantom Cloud refused the request, HTTP 403",
+            ),
+            (
+                PhantomError::Other("something odd".to_string()),
+                "Phantom Cloud request failed",
+            ),
+        ];
+        for (error, expected) in cases {
+            assert_eq!(error.cloud_failure_class(), expected);
+        }
+    }
+}

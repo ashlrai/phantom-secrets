@@ -1,12 +1,23 @@
 // ── Error helpers ───────────────────────────────────────────────────
 
-use rmcp::{model::CallToolResult, model::Content, ErrorData as McpError};
+use rmcp::{model::CallToolResult, model::ContentBlock, ErrorData as McpError};
 
 const MCP_EFFECTS_ENV: &str = "PHANTOM_MCP_EFFECTS";
 const TRUSTED_TERMINAL_MODE: &str = "trusted-terminal";
 
 fn effect_execution_enabled(value: Option<&str>) -> bool {
     value == Some(TRUSTED_TERMINAL_MODE)
+}
+
+/// Whether `require_approval_token` would get past its effects gate. Value-
+/// blind preflights call this first so a disabled server still answers with
+/// "disabled by default" and never opens the vault.
+pub fn mcp_effects_enabled() -> bool {
+    #[cfg(test)]
+    if std::env::var("PHANTOM_MCP_SKIP_APPROVAL").as_deref() == Ok("1") {
+        return true;
+    }
+    effect_execution_enabled(std::env::var(MCP_EFFECTS_ENV).ok().as_deref())
 }
 
 pub fn internal_err(msg: impl Into<String>) -> McpError {
@@ -17,12 +28,175 @@ pub fn invalid_params_err(msg: impl Into<String>) -> McpError {
     McpError::new(rmcp::model::ErrorCode::INVALID_PARAMS, msg.into(), None)
 }
 
+/// The call is well formed, but the project is not in a state to serve it:
+/// not initialized, config unreadable, vault locked or undecryptable, not
+/// logged in. The user can fix each of these, and the message names how.
+/// INTERNAL_ERROR (-32603) would tell the client the server itself failed.
+pub fn state_err(msg: impl Into<String>) -> McpError {
+    McpError::new(rmcp::model::ErrorCode::INVALID_REQUEST, msg.into(), None)
+}
+
+/// `enforce_rotation_on_access` for MCP paths that hand a real vault value out
+/// (a copy into another project, a team-vault push): the same decision and
+/// wording as `phantom exec`/`start`, judged per exact vault entry before any
+/// value is read. A blocked secret is a project state the user fixes (rotate,
+/// then replace from a trusted terminal); an unreadable schedule or metadata
+/// refuses too. Messages carry names only.
+pub fn enforce_rotation_on_entries<'e>(
+    config: &phantom_core::config::PhantomConfig,
+    vault: &dyn phantom_vault::VaultBackend,
+    entries: impl IntoIterator<Item = &'e str>,
+    action: &str,
+    now_secs: u64,
+) -> Result<(), McpError> {
+    enforce_rotation_targets(
+        config,
+        vault,
+        phantom_vault::rotation_gate::entry_targets(entries),
+        action,
+        now_secs,
+    )
+}
+
+/// Refuse an MCP path that hands real values to new places (a team-vault or
+/// cloud push) when any entry was demoted to read-only by the expiry policy:
+/// the recipients would inject it at runtime, which the demotion exists to
+/// stop. Metadata that cannot be read refuses too. Messages carry names only.
+/// The decision is [`phantom_vault::rotation_gate::read_only_refusal`], shared
+/// with the CLI.
+pub fn refuse_read_only_entries<'e>(
+    vault: &dyn phantom_vault::VaultBackend,
+    entries: impl IntoIterator<Item = &'e str>,
+    action: &str,
+) -> Result<(), McpError> {
+    match phantom_vault::rotation_gate::read_only_refusal(
+        vault,
+        entries,
+        action,
+        "Rotate or promote them first.",
+    ) {
+        Some(refusal) => Err(state_err(format!(
+            "{refusal} No vault plaintext was read and no network request was sent."
+        ))),
+        None => Ok(()),
+    }
+}
+
+/// The same gate for MCP paths that write values of unknown age into the
+/// vault (a cloud or team vault pull): the incoming value carries no rotation anchor, so a
+/// new entry would look fresh and an overwrite would inherit the local
+/// anchor. Every written entry whose secret enforces rotation is refused.
+pub fn enforce_rotation_on_restore<'e>(
+    config: &phantom_core::config::PhantomConfig,
+    vault: &dyn phantom_vault::VaultBackend,
+    entries: impl IntoIterator<Item = &'e str>,
+    action: &str,
+    now_secs: u64,
+) -> Result<(), McpError> {
+    enforce_rotation_targets(
+        config,
+        vault,
+        phantom_vault::rotation_gate::restore_targets(entries),
+        action,
+        now_secs,
+    )
+}
+
+fn enforce_rotation_targets(
+    config: &phantom_core::config::PhantomConfig,
+    vault: &dyn phantom_vault::VaultBackend,
+    targets: Vec<phantom_vault::rotation_gate::GateTarget>,
+    action: &str,
+    now_secs: u64,
+) -> Result<(), McpError> {
+    use phantom_vault::rotation_gate::{refusal_summary, rotation_refusals, RotationGateError};
+    let refusals = rotation_refusals(config, vault, targets, now_secs).map_err(|error| {
+        let cause = match &error {
+            RotationGateError::Schedule(source) => source.to_string(),
+            RotationGateError::Metadata { source, .. } => source.to_string(),
+        };
+        state_err(format!("Refusing to {action}: {error}: {cause}"))
+    })?;
+    match refusal_summary(action, &refusals) {
+        Some(summary) => Err(state_err(summary)),
+        None => Ok(()),
+    }
+}
+
+/// The next step before `phantom init`, shared with the listing tools.
+pub const NOT_INITIALIZED_NEXT_STEP: &str = "Phantom is not initialized in this project. Ask the \
+     user to run `phantom init` in a trusted terminal (or call phantom_init with confirm plus \
+     approval); phantom_why shows what init would protect.";
+
+pub fn not_initialized_err() -> McpError {
+    state_err(NOT_INITIALIZED_NEXT_STEP)
+}
+
+/// `.phantom.toml` exists but cannot be loaded.
+pub fn config_invalid_err(error: impl std::fmt::Display) -> McpError {
+    state_err(format!(
+        "Failed to load config: {error}. Next step: run phantom_doctor (it does not open the \
+         vault) to see the failing check, then fix .phantom.toml and retry."
+    ))
+}
+
+/// A vault read failed. A decryption failure is a wrong
+/// PHANTOM_VAULT_PASSPHRASE in this server's environment or a corrupt vault
+/// file; the user can act on either, so both next steps are named. Anything
+/// else stays an internal error.
+pub fn vault_read_err(context: &str, error: impl std::fmt::Display) -> McpError {
+    let detail = error.to_string();
+    if detail.contains("Decryption failed") {
+        return state_err(format!(
+            "{context}: the encrypted-file vault could not be decrypted: either a wrong \
+             passphrase or a corrupt vault file. Wrong passphrase: set \
+             PHANTOM_VAULT_PASSPHRASE in the MCP server's env config to the passphrase the \
+             secrets were stored with (the one `phantom` uses in the user's terminal), then \
+             restart the MCP server. Corrupt vault file: ask the user to run `phantom doctor` \
+             in a trusted terminal, then restore the secrets from an encrypted backup \
+             (`phantom import <FILE>`) or a cloud copy (`phantom cloud pull`)."
+        ));
+    }
+    internal_err(format!("{context}: {detail}"))
+}
+
+/// Output format accepted by the audit export tools.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuditFormat {
+    Json,
+    Csv,
+}
+
+/// Parse an audit export `format` parameter: "json" or "csv", ignoring ASCII
+/// case. Anything else is an invalid-params error naming the accepted values.
+pub fn parse_audit_format(format: &str) -> Result<AuditFormat, McpError> {
+    if format.eq_ignore_ascii_case("json") {
+        Ok(AuditFormat::Json)
+    } else if format.eq_ignore_ascii_case("csv") {
+        Ok(AuditFormat::Csv)
+    } else {
+        Err(invalid_params_err(format!(
+            "Invalid format '{format}'. Use: json or csv"
+        )))
+    }
+}
+
+/// Normalize an anomaly-score threshold parameter with the rule every audit
+/// tool and `phantom audit` command shares
+/// ([`phantom_core::analytics::score_threshold`]): clamp to 0.0..=1.0 and
+/// refuse NaN with an invalid-params error naming the parameter.
+pub fn score_threshold_param(param: &str, value: f64) -> Result<f64, McpError> {
+    phantom_core::analytics::score_threshold(value)
+        .map_err(|error| invalid_params_err(format!("Invalid {param}: {error}")))
+}
+
 pub fn require_confirm(tool: &str, confirm: bool) -> Result<(), McpError> {
     if confirm {
         return Ok(());
     }
     Err(invalid_params_err(format!(
-        "{tool} is a destructive vault operation. Ask the user for explicit \
+        "{tool} is effectful: it changes the vault or project files, or sends a \
+         stored credential to a provider (even to read). Ask the user for explicit \
          confirmation, then retry the call with `confirm: true`. This gate \
          exists to prevent prompt-injected content (READMEs, issue comments, \
          dependency docs) from silently mutating or exfiltrating secrets."
@@ -62,7 +236,10 @@ pub fn require_approval_token(
              the requesting agent cannot modify, and `phantom mcp-approve` plus \
              ~/.phantom/mcp-approvals.jsonl are outside that agent's command and file \
              authority. A same-user shell or agent-controlled PTY can defeat the terminal \
-             ceremony; leave effects disabled when that separation cannot be guaranteed."
+             ceremony; leave effects disabled when that separation cannot be guaranteed. \
+             Once enabled, each call also needs out-of-band approval: the operator must \
+             approve it in their own trusted terminal and supply the resulting \
+             `approval_token`. See docs/claude-code.md (Effectful tools)."
         )));
     }
 
@@ -126,12 +303,74 @@ fn extract_token(combined: &str) -> String {
 }
 
 pub fn text_result(msg: impl Into<String>) -> Result<CallToolResult, McpError> {
-    Ok(CallToolResult::success(vec![Content::text(msg.into())]))
+    Ok(CallToolResult::success(vec![ContentBlock::text(
+        msg.into(),
+    )]))
+}
+
+/// A diagnostic result for agents: the existing human summary stays the first
+/// text block, the value-blind report follows as serialized JSON text, and the
+/// same report is attached as MCP `structuredContent`.
+pub fn report_result(
+    summary: impl Into<String>,
+    report: &impl serde::Serialize,
+) -> Result<CallToolResult, McpError> {
+    let value = serde_json::to_value(report)
+        .map_err(|error| internal_err(format!("Serialization error: {error}")))?;
+    let json = serde_json::to_string_pretty(&value)
+        .map_err(|error| internal_err(format!("Serialization error: {error}")))?;
+    let mut result = CallToolResult::success(vec![
+        ContentBlock::text(summary.into()),
+        ContentBlock::text(json),
+    ]);
+    result.structured_content = Some(value);
+    Ok(result)
+}
+
+/// A tool whose whole answer is already a JSON object: keep the pretty JSON
+/// as the only text block (existing clients parse it) and attach the same
+/// object as MCP `structuredContent`.
+pub fn json_object_result(report: &impl serde::Serialize) -> Result<CallToolResult, McpError> {
+    let value = serde_json::to_value(report)
+        .map_err(|error| internal_err(format!("Serialization error: {error}")))?;
+    let json = serde_json::to_string_pretty(&value)
+        .map_err(|error| internal_err(format!("Serialization error: {error}")))?;
+    let mut result = CallToolResult::success(vec![ContentBlock::text(json)]);
+    if value.is_object() {
+        result.structured_content = Some(value);
+    }
+    Ok(result)
+}
+
+/// Vault construction failed. Tell the agent what to do next instead of
+/// surfacing a bare backend error.
+pub fn vault_init_err(error: impl std::fmt::Display) -> McpError {
+    internal_err(format!(
+        "Failed to initialize vault: {error}. Next step: ask the user to run \
+         `phantom doctor` in a trusted terminal. If no OS keychain is available \
+         (headless Linux, CI), the operator can set PHANTOM_VAULT_PASSPHRASE in the \
+         MCP server environment to use the encrypted-file vault. Repository-only \
+         tools (phantom_status, phantom_doctor, phantom_check) still work."
+    ))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{effect_execution_enabled, extract_nonce, extract_token};
+    use super::{
+        effect_execution_enabled, extract_nonce, extract_token, json_object_result, require_confirm,
+    };
+
+    #[test]
+    fn json_object_result_attaches_objects_only() {
+        let object = json_object_result(&serde_json::json!({ "count": 1 })).unwrap();
+        assert_eq!(object.content.len(), 1);
+        assert_eq!(
+            object.structured_content,
+            Some(serde_json::json!({ "count": 1 }))
+        );
+        let array = json_object_result(&serde_json::json!([1, 2])).unwrap();
+        assert!(array.structured_content.is_none());
+    }
 
     #[test]
     fn effect_execution_requires_exact_operator_mode() {
@@ -156,5 +395,116 @@ mod tests {
 
         assert_eq!(extract_nonce(token), "tokenhex");
         assert_eq!(extract_token(token), "tokenhex");
+    }
+
+    #[test]
+    fn confirm_refusal_does_not_call_a_provider_read_destructive() {
+        // The gate also guards reads that send a stored credential to a
+        // provider (phantom_cloud_status, phantom_team_list, ...). Calling
+        // those "a destructive vault operation" sent agents the wrong signal.
+        assert!(require_confirm("phantom_team_list", true).is_ok());
+        let message = require_confirm("phantom_team_list", false)
+            .unwrap_err()
+            .message
+            .to_string();
+        assert!(message.contains("phantom_team_list"), "{message}");
+        assert!(!message.contains("destructive"), "{message}");
+        assert!(
+            message.contains("sends a stored credential to a provider"),
+            "{message}"
+        );
+        assert!(message.contains("`confirm: true`"), "{message}");
+    }
+
+    mod rotation_gate {
+        use super::super::enforce_rotation_on_entries;
+        use phantom_core::config::{PhantomConfig, SecretOverride};
+        use phantom_vault::file::FileVault;
+        use phantom_vault::{SecretMetadata, VaultBackend};
+
+        const DAY: u64 = 86_400;
+        const NOW: u64 = 1_800_000_000;
+
+        fn enforced_config() -> PhantomConfig {
+            let mut config = PhantomConfig::new_with_defaults("mcp-rotation-gate".to_string());
+            config.phantom.secrets.insert(
+                "API_KEY".to_string(),
+                SecretOverride {
+                    rotate_every: Some("30d".to_string()),
+                    enforce_rotation_on_access: true,
+                    ..SecretOverride::default()
+                },
+            );
+            config
+        }
+
+        fn vault_with(dir: &tempfile::TempDir, entries: &[(&str, u64)]) -> FileVault {
+            let vault = FileVault::new(
+                dir.path(),
+                "mcp-rotation-gate",
+                format!("gate-{}", std::process::id()),
+            )
+            .expect("file vault");
+            for (entry, created_at) in entries {
+                vault.store(entry, "placeholder").expect("store");
+                vault
+                    .set_metadata(
+                        entry,
+                        SecretMetadata {
+                            created_at: Some(*created_at),
+                            ..SecretMetadata::default()
+                        },
+                    )
+                    .expect("metadata");
+            }
+            vault
+        }
+
+        #[test]
+        fn an_overdue_enforced_entry_is_refused_as_project_state() {
+            let dir = tempfile::tempdir().unwrap();
+            let vault = vault_with(&dir, &[("API_KEY", NOW - 45 * DAY)]);
+            let refused =
+                enforce_rotation_on_entries(&enforced_config(), &vault, ["API_KEY"], "copy", NOW);
+            let Err(error) = refused else {
+                panic!("an overdue enforced secret was let through");
+            };
+            assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_REQUEST);
+            assert!(error
+                .message
+                .starts_with("Refusing to copy: rotation enforcement blocked 1 secret(s)."));
+            assert!(error.message.contains("'API_KEY'"));
+            assert!(error.message.contains("phantom remove API_KEY"));
+        }
+
+        #[test]
+        fn a_fresh_or_unenforced_entry_passes() {
+            let dir = tempfile::tempdir().unwrap();
+            let vault = vault_with(&dir, &[("API_KEY", NOW - DAY), ("OTHER", NOW - 400 * DAY)]);
+            let config = enforced_config();
+            assert!(enforce_rotation_on_entries(
+                &config,
+                &vault,
+                ["API_KEY", "OTHER"],
+                "copy",
+                NOW
+            )
+            .is_ok());
+        }
+
+        #[test]
+        fn a_namespaced_entry_is_judged_by_its_own_age() {
+            let dir = tempfile::tempdir().unwrap();
+            let vault = vault_with(&dir, &[("API_KEY", NOW), ("prod/API_KEY", NOW - 90 * DAY)]);
+            let config = enforced_config();
+            assert!(enforce_rotation_on_entries(
+                &config,
+                &vault,
+                ["API_KEY", "prod/API_KEY"],
+                "push the team vault",
+                NOW
+            )
+            .is_err());
+        }
     }
 }

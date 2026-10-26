@@ -260,4 +260,78 @@ mod tests {
         assert_eq!(grant.authority().environment, "local");
         assert!(grant.constraints().read_only);
     }
+
+    fn verify_with(
+        intent: &ActionIntentV1,
+        authority: ExpectedAuthority,
+        granted: AuthorityConstraints,
+        at: u64,
+    ) -> Result<VerifiedGrant, AuthorityError> {
+        VerifiedGrant::from_verified(id("grt_").parse().unwrap(), intent, authority, granted, at)
+    }
+
+    /// The sealed constructor is the future active path; each of its checks
+    /// must hold on its own so activating it can never widen authority.
+    #[test]
+    fn from_verified_accepts_the_exact_matching_grant() {
+        assert!(verify_with(&intent(), expected(), constraints(), 1).is_ok());
+    }
+
+    #[test]
+    fn from_verified_rejects_each_subject_mismatch() {
+        let other_digest: Sha256Digest = "ef".repeat(32).parse().unwrap();
+        let mut wrong_workspace = expected();
+        wrong_workspace.workspace_id = id("wrk_").replace("01", "02").parse().unwrap();
+        let mut wrong_manifest = expected();
+        wrong_manifest.workspace_manifest_sha256 = other_digest;
+        let mut wrong_env = expected();
+        wrong_env.environment = "production".into();
+        for (label, authority) in [
+            ("workspace", wrong_workspace),
+            ("manifest", wrong_manifest),
+            ("environment", wrong_env),
+        ] {
+            assert_eq!(
+                verify_with(&intent(), authority, constraints(), 1).unwrap_err(),
+                AuthorityError::SubjectMismatch,
+                "{label}"
+            );
+        }
+    }
+
+    #[test]
+    fn from_verified_rejects_an_invalid_expected_authority() {
+        let mut bad = expected();
+        bad.schema_version += 1;
+        assert_eq!(
+            verify_with(&intent(), bad, constraints(), 1).unwrap_err(),
+            AuthorityError::SubjectMismatch
+        );
+    }
+
+    #[test]
+    fn from_verified_never_turns_a_write_intent_into_a_read_only_grant() {
+        // A valid local-write intent against a read-only grant: the
+        // intersection narrows to read-only, which no longer matches what
+        // was asked, so the grant must be refused rather than narrowed.
+        let mut write_intent = intent();
+        write_intent.operation = Operation::SetupWorkspace;
+        write_intent.constraints.read_only = false;
+        assert!(write_intent.validate().is_ok());
+        assert_eq!(
+            verify_with(&write_intent, expected(), constraints(), 1).unwrap_err(),
+            AuthorityError::SubjectMismatch
+        );
+    }
+
+    #[test]
+    fn from_verified_rejects_outside_the_time_window() {
+        for at in [0, 2, 3] {
+            assert_eq!(
+                verify_with(&intent(), expected(), constraints(), at).unwrap_err(),
+                AuthorityError::Expired,
+                "at {at}"
+            );
+        }
+    }
 }

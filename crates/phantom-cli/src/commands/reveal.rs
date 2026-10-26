@@ -20,15 +20,8 @@ pub fn run(name: &str, clipboard: bool, yes: bool) -> Result<()> {
         );
     }
 
-    let project_dir = std::env::current_dir()?;
-    let config_path = project_dir.join(".phantom.toml");
-
-    if !config_path.exists() {
-        anyhow::bail!(
-            "No .phantom.toml found. Run {} first.",
-            "phantom init".cyan().bold()
-        );
-    }
+    let project_dir = crate::util::project_dir()?;
+    let config = crate::util::load_project_config(&project_dir)?;
 
     if !std::io::stdin().is_terminal() || !std::io::stderr().is_terminal() {
         anyhow::bail!("Refusing to reveal a secret without attached stdin and stderr terminals");
@@ -47,15 +40,18 @@ pub fn run(name: &str, clipboard: bool, yes: bool) -> Result<()> {
         anyhow::bail!("Secret reveal cancelled: typed confirmation did not match");
     }
 
-    let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
     let vault = phantom_vault::try_create_vault(config.local_project_id())?;
+    gate_reveal(
+        &config,
+        vault.as_ref(),
+        name,
+        super::rotation_gate::now_secs(),
+    )?;
 
     phantom_core::audit::log_result("vault.reveal", Some(name))
         .context("Failed to write audit event for secret reveal")?;
 
-    let value: Zeroizing<String> = vault
-        .retrieve(name)
-        .context(format!("Secret '{}' not found in vault", name))?;
+    let value = retrieve_revealed(vault.as_ref(), config.local_project_id(), name)?;
 
     if clipboard {
         validate_clipboard_handoff(value.as_bytes(), CLIPBOARD_CLEAR_DELAY)?;
@@ -75,6 +71,31 @@ pub fn run(name: &str, clipboard: bool, yes: bool) -> Result<()> {
     // Zeroizing<String> scrubs memory on drop automatically.
 
     Ok(())
+}
+
+/// `enforce_rotation_on_access` for reveal: an overdue enforced secret is not
+/// printed or copied, exactly as `phantom exec` would not inject it. Runs
+/// before the audit event and before any value read.
+fn gate_reveal(
+    config: &PhantomConfig,
+    vault: &dyn phantom_vault::VaultBackend,
+    name: &str,
+    now_secs: u64,
+) -> Result<()> {
+    super::rotation_gate::enforce_rotation_on_entries(config, vault, [name], "reveal", now_secs)
+}
+
+/// Read the confirmed secret. Beside an encrypted-file vault this process
+/// cannot open, a name the OS keychain lacks is refused with the unlock step
+/// instead of being reported as not found.
+fn retrieve_revealed(
+    vault: &dyn phantom_vault::VaultBackend,
+    project_id: &str,
+    name: &str,
+) -> Result<Zeroizing<String>> {
+    crate::util::retrieve_secret(vault, project_id, name, || {
+        format!("Secret '{name}' not found in vault")
+    })
 }
 
 fn require_clipboard_copy(copied: bool) -> Result<()> {
@@ -292,6 +313,46 @@ pub fn run_clear_after(secs: u64) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `phantom reveal` printed an overdue enforced secret that
+    /// `phantom exec` refuses to inject. The gate now refuses it before the
+    /// audit event and the read; a secret inside its window is revealed.
+    #[test]
+    fn reveal_applies_rotation_enforcement() {
+        use crate::commands::rotation_gate::fixtures::{aged_vault, enforced_config, NOW};
+        let dir = tempfile::tempdir().unwrap();
+        let vault = aged_vault(&dir, &[("STALE_KEY", 45), ("FRESH_KEY", 1)]);
+        let config = enforced_config(&["STALE_KEY", "FRESH_KEY"]);
+
+        let refused = gate_reveal(&config, &vault, "STALE_KEY", NOW);
+        let message = refused
+            .err()
+            .map(|error| error.to_string())
+            .unwrap_or_default();
+        assert!(
+            message.starts_with("Refusing to reveal: rotation enforcement blocked 1 secret(s).")
+        );
+        assert!(message.contains("'STALE_KEY'"));
+        assert!(gate_reveal(&config, &vault, "FRESH_KEY", NOW).is_ok());
+    }
+
+    /// Beside an encrypted-file vault this process cannot open, the vault is
+    /// an empty OS keychain: reveal reported the secret as not found.
+    #[cfg(unix)]
+    #[test]
+    fn reveal_beside_a_locked_file_vault_names_the_lock_not_a_missing_secret() {
+        let project =
+            crate::util::test_seam::LockedProject::new(crate::util::test_seam::empty_keychain);
+        let vault = crate::util::open_vault(&project.project_id).unwrap();
+
+        let outcome = retrieve_revealed(vault.as_ref(), &project.project_id, "OPENAI_API_KEY");
+
+        assert!(outcome.is_err(), "a locked vault must not reveal anything");
+        let chain = format!("{:#}", outcome.err().unwrap());
+        assert!(chain.starts_with("Vault locked:"));
+        assert!(chain.contains("PHANTOM_VAULT_PASSPHRASE"));
+        assert!(!chain.contains("not found"));
+    }
 
     #[derive(Default)]
     struct FakeClipboard {

@@ -24,7 +24,7 @@ contract enforces 54 unique tools; runtime `tools/list` is canonical.
 
 ### Step 1: install Phantom
 
-Install the reviewed `v0.7.5` binary using the platform-specific, checksum-
+Install the reviewed `v0.7.9` binary using the platform-specific, checksum-
 verified path in [getting started](./getting-started.md#install), then run
 `phantom init` in the project.
 
@@ -40,14 +40,14 @@ This writes `~/.cursor/mcp.json` with the `phantom` MCP server entry:
 {
   "mcpServers": {
     "phantom": {
-      "command": "phantom-mcp",
-      "args": []
+      "command": "/absolute/path/to/phantom",
+      "args": ["mcp", "serve"]
     }
   }
 }
 ```
 
-Install both `v0.7.5` release binaries before setup. Version `0.7.5` records the
+Install both `v0.7.9` release binaries before setup. Version `0.7.9` records the
 running `phantom` executable with `mcp serve` when it can resolve that runtime,
 otherwise it looks for a local `phantom-mcp`. Setup has no network
 package-runner fallback and fails closed when neither local runtime is
@@ -83,16 +83,16 @@ migration guidance and never kills or deletes. Prefer
 
 ## MCP tools Cursor can use
 
-Once `phantom-secrets-mcp` is registered, Cursor Chat can call the same runtime
+Once the `phantom` server is registered, Cursor Chat can call the same runtime
 catalog as other MCP clients. See the [core tool examples in the Claude Code
 guide](./claude-code.md#core-mcp-tools-claude-can-use), and use MCP `tools/list`
 for the canonical catalog.
 
 Key tools for Cursor users:
 
-- `phantom_status` — check vault health and service mappings before starting work
+- `phantom_status` — check managed `.env` protection and service mappings before starting work (does not open the vault)
 - `phantom_list_secrets` — see which secrets are loaded (names only, never values)
-- `phantom_add_secret_interactive` — start the terminal-based secret entry flow
+- `phantom_add_secret_interactive` — return the `phantom add NAME` command to enter a new secret in a trusted terminal (effect-free, no approval)
 - `phantom_doctor` — validate config, `.gitignore`, `.env.example`, and pre-commit hook
 - `phantom_cloud_push` / `phantom_cloud_pull` — dual-gated cloud effects. With
   `force=false`, a partial pull blocks push until full reconciliation.
@@ -126,6 +126,10 @@ Within a Cursor terminal session running under `phantom exec`, your existing cod
 
 ---
 
+## Gateway mode (not supported with a loopback gateway)
+
+A loopback-only LiteLLM gateway behind Phantom does not cover Cursor's editor, because LiteLLM's Cursor integration needs a proxy reachable from the internet. Details: [Connect an agent](litellm.md#connect-an-agent) in the LiteLLM guide. Use the direct Phantom setup above.
+
 ## Troubleshooting
 
 **MCP tools not showing up in Cursor Chat**
@@ -138,7 +142,7 @@ cat ~/.cursor/mcp.json
 
 If it looks correct, restart Cursor. Cursor reads MCP config on startup only. If
 setup reports that the local MCP runtime is missing, reinstall both verified
-`v0.7.5` binaries. The released setup path fails closed instead of generating a
+`v0.7.9` binaries. The released setup path fails closed instead of generating a
 registry-backed command.
 
 **`phantom exec -- cursor .` opens Cursor but API calls fail**

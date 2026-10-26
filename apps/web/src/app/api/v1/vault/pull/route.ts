@@ -18,12 +18,16 @@ export async function GET(req: Request) {
 
   const supabase = createServiceClient();
 
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from("vault_blobs")
     .select("encrypted_blob, version")
     .eq("user_id", authResult.userId)
     .eq("project_id", projectId)
-    .single();
+    .maybeSingle();
+
+  if (error) {
+    return Response.json({ error: "Failed to load vault" }, { status: 500 });
+  }
 
   if (!data) {
     return Response.json({ error: "vault not found" }, { status: 404 });

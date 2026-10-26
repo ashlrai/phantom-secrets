@@ -15,13 +15,13 @@ pub fn run(name: &str) -> Result<()> {
         .context("Failed to load exact .phantom.toml snapshot")?;
     super::add::validate_managed_dotenv_preflight(&project_dir, &config)?;
     let vault = phantom_vault::try_create_vault(config.local_project_id())?;
-    let plan = phantom_vault::ManagedRemovePlan::prepare(
+    let plan = prepare_remove(
         &project_dir,
         config_before,
+        config.local_project_id(),
         vault.as_ref(),
         name,
-    )
-    .context("Removal preflight failed; no secret value was read and no state changed")?;
+    )?;
     require_trusted_terminal_remove(&plan)?;
     let env_path = plan.dotenv_path().to_path_buf();
     plan.commit(vault.as_ref()).context(
@@ -39,6 +39,27 @@ pub fn run(name: &str) -> Result<()> {
     );
 
     Ok(())
+}
+
+/// Plan the removal from value-free state. A name the opened vault does not
+/// list is refused before planning; beside an encrypted-file vault this
+/// process cannot open, that refusal names the locked vault and the unlock
+/// step instead of reporting the secret as not found.
+fn prepare_remove(
+    project_dir: &std::path::Path,
+    config_before: Vec<u8>,
+    project_id: &str,
+    vault: &dyn phantom_vault::VaultBackend,
+    name: &str,
+) -> Result<phantom_vault::ManagedRemovePlan> {
+    const PREFLIGHT_FAILED: &str =
+        "Removal preflight failed; no secret value was read and no state changed";
+    crate::util::require_listed_secret(vault, project_id, name, || {
+        format!("Secret '{name}' not found in vault")
+    })
+    .context(PREFLIGHT_FAILED)?;
+    phantom_vault::ManagedRemovePlan::prepare(project_dir, config_before, vault, name)
+        .context(PREFLIGHT_FAILED)
 }
 
 fn require_trusted_terminal_remove(plan: &phantom_vault::ManagedRemovePlan) -> Result<()> {
@@ -76,4 +97,35 @@ fn require_trusted_terminal_remove(plan: &phantom_vault::ManagedRemovePlan) -> R
         );
     }
     Ok(())
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use crate::util::test_seam::{empty_keychain, LockedProject};
+
+    /// Beside an encrypted-file vault this process cannot open, the vault is
+    /// the OS keychain, which lacks the name: remove reported "not found".
+    #[test]
+    fn remove_beside_a_locked_file_vault_names_the_lock_not_a_missing_secret() {
+        let project = LockedProject::new(empty_keychain);
+        let config_path = project.dir.join(".phantom.toml");
+        let config_before = std::fs::read(&config_path).unwrap();
+        let vault = crate::util::open_vault(&project.project_id).unwrap();
+
+        let outcome = prepare_remove(
+            &project.dir,
+            config_before.clone(),
+            &project.project_id,
+            vault.as_ref(),
+            "OPENAI_API_KEY",
+        );
+
+        assert!(outcome.is_err(), "a locked vault must refuse the removal");
+        let chain = format!("{:#}", outcome.err().unwrap());
+        assert!(chain.contains("Vault locked:"));
+        assert!(chain.contains("PHANTOM_VAULT_PASSPHRASE"));
+        assert!(!chain.contains("not found"));
+        assert_eq!(std::fs::read(&config_path).unwrap(), config_before);
+    }
 }

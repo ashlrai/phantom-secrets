@@ -14,8 +14,8 @@ deployment changes, activate Locus, or prove that a customer workflow works.
 You need:
 
 - a Git repository and a supported local shell;
-- both `phantom` and `phantom-mcp` from the reviewed `v0.7.5` GitHub release,
-  or the separately published Homebrew `v0.7.5` distribution;
+- both `phantom` and `phantom-mcp` from the reviewed `v0.7.9` GitHub release,
+  or the separately reviewed Homebrew distribution (still `v0.7.8` until bumped);
 - the AI client you intend to use; and
 - an independent recoverable copy of each real credential, such as the
   provider's credential console or an approved password manager.
@@ -39,14 +39,20 @@ it is not a security certification or permission for the agent to act.
 Stop if Phantom reports an unexpected dotenv path, an inaccessible vault, or a
 configuration you do not own.
 
+The readiness preview does not apply setup changes, but it probes the configured
+vault and cloud-login state, which can involve the OS keychain. For a disposable
+check that deliberately avoids those probes, run the
+[installed-runtime smoke example](../examples/agent-first-five-minutes/README.md).
+
 ## 2. Protect the project's managed dotenv file
 
 `init` is a local mutation: it stores detected secret values in the selected
 vault backend, atomically rewrites the managed dotenv file with `phm_`
-placeholders, writes Phantom configuration, generates `.env.example`, and
+placeholders, writes Phantom configuration, generates `.env.example` when the
+project has none (an existing one is left byte-for-byte unchanged), and
 attempts to install the repository pre-commit check.
 
-Install the reviewed `v0.7.5` GitHub release using the platform-specific path in
+Install the reviewed `v0.7.9` GitHub release using the platform-specific path in
 [getting started](./getting-started.md#install), then run `phantom init`.
 
 If auto-detection selects the wrong file, stop and use an explicit path shown by
@@ -92,6 +98,7 @@ merges its MCP entry, but it is not a general client-configuration manager.
 ```bash
 phantom agent doctor
 phantom agent report --json
+phantom agent status --json   # read-only MCP approval counts; no nonces or values
 ```
 
 Resolve critical findings before continuing. The JSON report can return
@@ -145,9 +152,15 @@ the session is alive, so `phantom exec` is a credential-injection boundary, not
 a process sandbox.
 
 Agents can inspect secret names and protection state through MCP. If a secret is
-missing, the agent should request `phantom_add_secret_interactive`; enter the
-value only in the trusted terminal prompt. A `confirm: true` MCP parameter is a
-tool gate, not standing permission for unrelated changes.
+missing, have the agent report its name, then run `phantom add SECRET_NAME` in
+your trusted terminal and enter the value at the hidden prompt. Do not put the
+value in a command-line argument or an agent-controlled terminal.
+
+The compatibility tool `phantom_add_secret_interactive` only returns that
+terminal command; it does not open a prompt, receive the value, or store
+anything. Because it is effect-free it works with MCP effects disabled and needs
+neither `confirm` nor an `approval_token`. Leave effects disabled for this basic
+workflow.
 
 ## 7. Close the task with evidence
 
