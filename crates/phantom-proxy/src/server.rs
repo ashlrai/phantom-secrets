@@ -680,6 +680,13 @@ async fn handle_request(
         }
     };
 
+    if !route.allows_request(method.as_str(), remainder) {
+        return Ok(error_response(
+            StatusCode::FORBIDDEN,
+            r#"{"error":"route permits only POST /i/v1/analytics/events","source":"phantom-proxy"}"#,
+        ));
+    }
+
     // Strip phantom_token and any route-owned credential parameters (for
     // example Gemini's `?key=`) before forwarding to the upstream.
     let owned_slots = route.owned_alternate_slots();
