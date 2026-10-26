@@ -27,12 +27,10 @@ pub const MAX_RECORDS: usize = 2000;
 /// Environment switch: `0`, `false`, `off` or `no` disables history writes.
 pub const HISTORY_ENV: &str = "PHANTOM_POSTURE_HISTORY";
 
-/// One secret as seen by a caller. Only the booleans are kept; `name` and
-/// `value` exist so callers can pass what they have without pre-filtering,
-/// and are dropped by [`PostureCounts::from_entries`].
-pub struct PostureEntry<'a> {
-    pub name: &'a str,
-    pub value: Option<&'a str>,
+/// One secret as seen by a caller: flags only, so this type cannot carry a
+/// secret name or value.
+#[derive(Debug, Clone, Copy)]
+pub struct PostureEntry {
     pub wrapped: bool,
     pub expiring: bool,
     pub unrotated: bool,
@@ -52,12 +50,22 @@ pub struct PostureCounts {
     pub unrotated: u32,
     /// Number of plaintext (unwrapped) secret values found in .env files.
     pub plaintext_env: u32,
+    /// Non-reversible fingerprint of the host key (see [`HostKey::key_id`]),
+    /// so a key replacement is visible to readers.
+    pub key_id: String,
+    /// True on the first record after a corrupted history was set aside.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub reset_after_corruption: bool,
 }
 
 impl PostureCounts {
-    pub fn from_entries(project: String, entries: &[PostureEntry<'_>], plaintext_env: u32) -> Self {
-        let count =
-            |f: fn(&PostureEntry<'_>) -> bool| entries.iter().filter(|e| f(e)).count() as u32;
+    pub fn from_entries(
+        project: String,
+        key: &HostKey,
+        entries: &[PostureEntry],
+        plaintext_env: u32,
+    ) -> Self {
+        let count = |f: fn(&PostureEntry) -> bool| entries.iter().filter(|e| f(e)).count() as u32;
         Self {
             schema: SCHEMA_VERSION,
             recorded_at: rfc3339_utc(now_secs()),
@@ -67,6 +75,8 @@ impl PostureCounts {
             expiring: count(|e| e.expiring),
             unrotated: count(|e| e.unrotated),
             plaintext_env,
+            key_id: key.key_id(),
+            reset_after_corruption: false,
         }
     }
 }
@@ -113,7 +123,10 @@ pub fn owner_name_from_remote(url: &str) -> Option<String> {
     {
         let after = &u[i..];
         let (auth, path) = after.split_once('/')?;
-        let host = auth.rsplit_once('@').map_or(auth, |(_, h)| h);
+        let host = auth.split_once('@').map_or(auth, |(_, h)| h);
+        if host.contains('@') {
+            return None;
+        }
         let host_only = host.split_once(':').map_or(host, |(h, port)| {
             if port.bytes().all(|b| b.is_ascii_digit()) && !port.is_empty() {
                 h
@@ -127,8 +140,15 @@ pub fn owner_name_from_remote(url: &str) -> Option<String> {
         path
     } else {
         let (auth, path) = u.split_once(':')?;
-        let host = match auth.rsplit_once('@') {
-            Some((user, h)) if !user.is_empty() && !user.contains(['/', ':']) => h,
+        let host = match auth.split_once('@') {
+            Some((user, h))
+                if !user.is_empty()
+                    && !h.contains('@')
+                    && !user.contains(['/', ':'])
+                    && !user.chars().any(char::is_whitespace) =>
+            {
+                h
+            }
             Some(_) => return None,
             None => auth,
         };
@@ -145,17 +165,17 @@ pub fn owner_name_from_remote(url: &str) -> Option<String> {
 
 /// `local/<folder>` with the folder sanitized to receipt characters.
 pub fn local_repo_name(dir: &Path) -> String {
-    let folder: String = dir
+    // Per UTF-16 unit, like the JS `.replace(/[^A-Za-z0-9_.-]/g, '-').slice(0, 100)`
+    // in phantom #910, so a non-BMP character becomes two dashes in both.
+    let name = dir
         .file_name()
         .map(|f| f.to_string_lossy().into_owned())
-        .unwrap_or_default()
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || "_.-".contains(c) {
-                c
-            } else {
-                '-'
-            }
+        .unwrap_or_default();
+    let folder: String = name
+        .encode_utf16()
+        .map(|u| match u8::try_from(u) {
+            Ok(b) if b.is_ascii_alphanumeric() || b"_.-".contains(&b) => b as char,
+            _ => '-',
         })
         .take(100)
         .collect();
@@ -175,6 +195,11 @@ pub fn repo_identity(origin_remote: Option<&str>, dir: &Path) -> String {
 
 // ---- per-host key and project id ----
 
+/// Error with a stable code and no path, so it is safe to print.
+fn coded(kind: io::ErrorKind, code: &str, what: &str) -> io::Error {
+    io::Error::new(kind, format!("{code}: {what}"))
+}
+
 /// Per-host HMAC key. Never logged or serialized.
 pub struct HostKey([u8; 32]);
 
@@ -185,30 +210,109 @@ impl std::fmt::Debug for HostKey {
 }
 
 impl HostKey {
-    /// Read the key at `path`, or generate one and write it 0600.
-    pub fn load_or_create(path: &Path) -> io::Result<Self> {
-        if let Some(bytes) = crate::fs::read_regular_file(path)? {
-            let key: [u8; 32] = bytes.try_into().map_err(|_| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "posture host key has the wrong length",
-                )
-            })?;
-            return Ok(Self(key));
-        }
-        if let Some(parent) = path.parent() {
-            crate::fs::ensure_private_dir(parent)?;
+    /// Read the key at `path`, refusing one that is not a regular file owned
+    /// by this user with mode 0600 (no group or other bits).
+    fn read(path: &Path) -> io::Result<Option<Self>> {
+        let bytes = match read_owner_only(path)? {
+            Some(b) => b,
+            None => return Ok(None),
+        };
+        let key: [u8; 32] = bytes.try_into().map_err(|_| {
+            coded(
+                io::ErrorKind::InvalidData,
+                "posture_key_invalid",
+                "posture host key has the wrong length",
+            )
+        })?;
+        Ok(Some(Self(key)))
+    }
+
+    /// Read the key, or create it once without ever replacing one: the new
+    /// key is published with a no-replace write, and a creator that loses the
+    /// race reads the winner's key.
+    fn load_or_create(path: &Path) -> io::Result<Self> {
+        if let Some(key) = Self::read(path)? {
+            return Ok(key);
         }
         let mut key = [0u8; 32];
         rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut key);
-        crate::fs::atomic_write(path, &key)?;
-        Ok(Self(key))
+        match crate::fs::write_new_file(path, &key) {
+            Ok(()) => Ok(Self(key)),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                Self::read(path)?.ok_or_else(|| {
+                    coded(
+                        io::ErrorKind::NotFound,
+                        "posture_key_missing",
+                        "posture host key vanished",
+                    )
+                })
+            }
+            Err(e) => Err(path_free(e)),
+        }
     }
 
-    #[doc(hidden)]
-    pub fn to_hex_for_test(&self) -> String {
-        hex::encode(self.0)
+    /// First 4 bytes of HMAC(key, "phantom.posture.keyid") as hex: identifies
+    /// the key without revealing it.
+    pub fn key_id(&self) -> String {
+        let mut mac = Hmac::<Sha256>::new_from_slice(&self.0).expect("hmac accepts any key length");
+        mac.update(b"phantom.posture.keyid");
+        hex::encode(&mac.finalize().into_bytes()[..4])
     }
+}
+
+/// Read a regular, non-symlink file owned by the current user with no group
+/// or other permission bits. Errors carry a code and no path.
+fn read_owner_only(path: &Path) -> io::Result<Option<Vec<u8>>> {
+    use std::io::Read;
+    let mut opts = std::fs::OpenOptions::new();
+    opts.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK);
+    }
+    let mut file = match opts.open(path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => {
+            return Err(coded(
+                io::ErrorKind::PermissionDenied,
+                "posture_key_insecure",
+                "posture host key cannot be opened safely",
+            ))
+        }
+    };
+    let meta = file.metadata().map_err(path_free)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        // SAFETY: geteuid has no preconditions and cannot fail.
+        let euid = unsafe { libc::geteuid() };
+        if !meta.is_file() || meta.uid() != euid || meta.mode() & 0o077 != 0 {
+            return Err(coded(
+                io::ErrorKind::PermissionDenied,
+                "posture_key_insecure",
+                "posture host key must be a regular file owned by you with mode 0600",
+            ));
+        }
+    }
+    #[cfg(not(unix))]
+    if !meta.is_file() {
+        return Err(coded(
+            io::ErrorKind::PermissionDenied,
+            "posture_key_insecure",
+            "posture host key is not a regular file",
+        ));
+    }
+    let mut out = Vec::new();
+    file.read_to_end(&mut out).map_err(path_free)?;
+    Ok(Some(out))
+}
+
+/// Drop any path from an io::Error, keeping its kind.
+fn path_free(e: io::Error) -> io::Error {
+    let kind = e.kind();
+    io::Error::new(kind, format!("posture_io: {kind}"))
 }
 
 /// 16-hex-char HMAC-SHA256 of the repo identity under the host key.
@@ -267,6 +371,15 @@ pub struct PostureLedger {
     dir: PathBuf,
 }
 
+/// Held exclusive lock on `history.lock`; released on drop.
+pub struct HistoryLock(std::fs::File);
+
+impl Drop for HistoryLock {
+    fn drop(&mut self) {
+        let _ = fs2::FileExt::unlock(&self.0);
+    }
+}
+
 impl PostureLedger {
     /// Ledger rooted at an explicit directory (tests, custom homes).
     pub fn at(dir: PathBuf) -> Self {
@@ -289,36 +402,100 @@ impl PostureLedger {
         self.dir.join("host.key")
     }
 
+    /// The per-host key. Created once on first use; never regenerated while
+    /// a history exists (`posture_key_missing`), so project ids cannot
+    /// change silently.
+    pub fn host_key(&self) -> io::Result<HostKey> {
+        if let Some(key) = HostKey::read(&self.host_key_path())? {
+            return Ok(key);
+        }
+        if self.history_path().exists() {
+            return Err(coded(
+                io::ErrorKind::NotFound,
+                "posture_key_missing",
+                "posture history exists but its host key is gone; refusing to mint a new one",
+            ));
+        }
+        crate::fs::ensure_private_dir(&self.dir).map_err(path_free)?;
+        HostKey::load_or_create(&self.host_key_path())
+    }
+
+    fn lock(&self) -> io::Result<HistoryLock> {
+        crate::fs::ensure_private_dir(&self.dir).map_err(path_free)?;
+        let mut opts = std::fs::OpenOptions::new();
+        opts.read(true).write(true).create(true).truncate(false);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600)
+                .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+        }
+        let file = opts
+            .open(self.dir.join("history.lock"))
+            .map_err(path_free)?;
+        match fs2::FileExt::try_lock_exclusive(&file) {
+            Ok(()) => Ok(HistoryLock(file)),
+            Err(_) => Err(coded(
+                io::ErrorKind::WouldBlock,
+                "posture_locked",
+                "posture history is busy",
+            )),
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn lock_for_test(&self) -> io::Result<HistoryLock> {
+        self.lock()
+    }
+
     /// Load every record. A missing file is an empty history; a malformed
-    /// file is `InvalidData` (see [`HistoryError::classify`]).
+    /// file is `InvalidData` (see [`HistoryError::classify`]). Errors carry
+    /// no path.
     pub fn load(&self) -> io::Result<Vec<PostureCounts>> {
-        let Some(bytes) = crate::fs::read_regular_file(&self.history_path())? else {
+        let Some(bytes) = crate::fs::read_regular_file(&self.history_path()).map_err(path_free)?
+        else {
             return Ok(Vec::new());
         };
-        let text = String::from_utf8(bytes).map_err(|_| corrupted(&self.history_path()))?;
+        let text = String::from_utf8(bytes).map_err(|_| corrupted())?;
         text.lines()
             .filter(|l| !l.trim().is_empty())
-            .map(|l| serde_json::from_str(l).map_err(|_| corrupted(&self.history_path())))
+            .map(|l| serde_json::from_str(l).map_err(|_| corrupted()))
             .collect()
     }
 
-    /// Append a record. Returns `Ok(false)` when history is switched off.
-    /// A corrupted history is renamed to `history.jsonl.corrupt` and a fresh
-    /// one is started, so recording never fails on old bad data.
+    /// Append a record under an exclusive non-blocking lock (`posture_locked`,
+    /// [`HistoryError::Locked`] when another writer holds it). Returns
+    /// `Ok(false)` when history is switched off. A record whose `key_id`
+    /// differs from the history's is refused (`posture_key_changed`). A
+    /// corrupted history is renamed to `history.jsonl.corrupt-<unix secs>`
+    /// (never replacing an earlier one) and the new record is marked
+    /// `reset_after_corruption`.
     pub fn record(&self, counts: &PostureCounts) -> io::Result<bool> {
         if !history_enabled() {
             return Ok(false);
         }
-        crate::fs::ensure_private_dir(&self.dir)?;
+        let _lock = self.lock()?;
+        let mut counts = counts.clone();
         let mut records = match self.load() {
             Ok(r) => r,
             Err(e) if e.kind() == io::ErrorKind::InvalidData => {
-                std::fs::rename(self.history_path(), self.dir.join("history.jsonl.corrupt"))?;
+                self.set_aside_corrupt()?;
+                counts.reset_after_corruption = true;
                 Vec::new()
             }
             Err(e) => return Err(e),
         };
-        records.push(counts.clone());
+        if records
+            .last()
+            .is_some_and(|last| last.key_id != counts.key_id)
+        {
+            return Err(coded(
+                io::ErrorKind::PermissionDenied,
+                "posture_key_changed",
+                "record was made under a different host key than this history",
+            ));
+        }
+        records.push(counts);
         if records.len() > MAX_RECORDS {
             records.drain(..records.len() - MAX_RECORDS);
         }
@@ -327,18 +504,36 @@ impl PostureLedger {
             out.push_str(&serde_json::to_string(r).map_err(io::Error::other)?);
             out.push('\n');
         }
-        crate::fs::atomic_write(&self.history_path(), out.as_bytes())?;
+        crate::fs::atomic_write(&self.history_path(), out.as_bytes()).map_err(path_free)?;
         Ok(true)
+    }
+
+    fn set_aside_corrupt(&self) -> io::Result<()> {
+        let base = format!("history.jsonl.corrupt-{}", now_secs());
+        for n in 0..100u32 {
+            let name = if n == 0 {
+                base.clone()
+            } else {
+                format!("{base}-{n}")
+            };
+            let target = self.dir.join(name);
+            if !target.exists() {
+                return std::fs::rename(self.history_path(), target).map_err(path_free);
+            }
+        }
+        Err(coded(
+            io::ErrorKind::AlreadyExists,
+            "posture_corrupt_slots_full",
+            "too many set-aside histories",
+        ))
     }
 }
 
-fn corrupted(path: &Path) -> io::Error {
-    io::Error::new(
+fn corrupted() -> io::Error {
+    coded(
         io::ErrorKind::InvalidData,
-        format!(
-            "posture history at {} is corrupted; it will be set aside on the next record, or delete it",
-            path.display()
-        ),
+        "posture_corrupted",
+        "posture history is corrupted; it will be set aside on the next record",
     )
 }
 
@@ -356,6 +551,26 @@ mod tests {
             expiring: 0,
             unrotated: 0,
             plaintext_env: 0,
+            key_id: "abcd0123".into(),
+            reset_after_corruption: false,
+        }
+    }
+
+    /// Sets an env var for the test and restores it on drop, even on panic.
+    struct EnvGuard(&'static str, Option<std::ffi::OsString>);
+    impl EnvGuard {
+        fn set(name: &'static str, value: &str) -> Self {
+            let old = std::env::var_os(name);
+            std::env::set_var(name, value);
+            Self(name, old)
+        }
+    }
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match self.1.take() {
+                Some(v) => std::env::set_var(self.0, v),
+                None => std::env::remove_var(self.0),
+            }
         }
     }
 
@@ -383,9 +598,25 @@ mod tests {
         std::fs::write(l.history_path(), "{not json\n").unwrap();
         let err = l.load().unwrap_err();
         assert_eq!(HistoryError::classify(&err), HistoryError::Corrupted);
+        assert!(!format!("{err}").contains(&*d.path().to_string_lossy()));
         assert!(l.record(&point(1)).unwrap());
-        assert_eq!(l.load().unwrap(), vec![point(1)]);
-        assert!(d.path().join("posture/history.jsonl.corrupt").exists());
+        let mut marked = point(1);
+        marked.reset_after_corruption = true;
+        assert_eq!(l.load().unwrap(), vec![marked]);
+        // A second corruption never replaces the first set-aside file.
+        std::fs::write(l.history_path(), "{not json again\n").unwrap();
+        assert!(l.record(&point(2)).unwrap());
+        let set_aside = std::fs::read_dir(&l.dir)
+            .unwrap()
+            .filter(|e| {
+                e.as_ref()
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("history.jsonl.corrupt-")
+            })
+            .count();
+        assert_eq!(set_aside, 2);
     }
 
     #[cfg(unix)]
@@ -407,10 +638,8 @@ mod tests {
         let _g = crate::PROCESS_ENV_LOCK.lock().unwrap();
         let d = tempfile::tempdir().unwrap();
         let l = PostureLedger::at(d.path().join("posture"));
-        std::env::set_var(HISTORY_ENV, "0");
-        let wrote = l.record(&point(1));
-        std::env::remove_var(HISTORY_ENV);
-        assert!(!wrote.unwrap());
+        let _env = EnvGuard::set(HISTORY_ENV, "0");
+        assert!(!l.record(&point(1)).unwrap());
         assert!(!l.history_path().exists());
     }
 
@@ -472,6 +701,46 @@ mod tests {
         let key = HostKey::load_or_create(&d.path().join("k")).unwrap();
         let id = project_id(&key, "local/proj");
         assert!(!id.contains("proj") && !id.contains("home"));
+    }
+
+    #[test]
+    fn local_fallback_matches_910_utf16_units_and_truncation() {
+        // One emoji is two UTF-16 units, so two dashes, as in JS.
+        assert_eq!(
+            local_repo_name(Path::new("/w/proj-\u{1F600}")),
+            "local/proj---"
+        );
+        assert_eq!(local_repo_name(Path::new("/w/caf\u{e9}")), "local/caf-");
+        let long = format!("/w/{}\u{1F600}x", "a".repeat(99));
+        assert_eq!(
+            local_repo_name(Path::new(&long)),
+            format!("local/{}-", "a".repeat(99))
+        );
+    }
+
+    #[test]
+    fn userinfo_with_two_at_signs_is_rejected_like_910() {
+        assert_eq!(owner_name_from_remote("https://a@b@github.com/o/n"), None);
+        assert_eq!(owner_name_from_remote("a@b@github.com:o/n.git"), None);
+        assert_eq!(
+            owner_name_from_remote("https://a@github.com/o/n").as_deref(),
+            Some("o/n")
+        );
+    }
+
+    #[test]
+    fn key_id_is_stable_short_and_not_the_key() {
+        let d = tempfile::tempdir().unwrap();
+        let k = HostKey::load_or_create(&d.path().join("k")).unwrap();
+        let id = k.key_id();
+        assert_eq!(id.len(), 8);
+        assert_eq!(
+            id,
+            HostKey::load_or_create(&d.path().join("k"))
+                .unwrap()
+                .key_id()
+        );
+        assert!(!hex::encode(k.0).contains(&id));
     }
 
     #[test]
