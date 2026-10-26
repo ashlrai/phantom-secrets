@@ -4,6 +4,20 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (.env.example no longer copies credentials in inline comments)
+
+- Example generation kept every trailing comment after a value verbatim, so
+  `PORT=3000 # staging key <key>` or `API_KEY=... # rotated from <old key>`
+  put a credential into the shareable `.env.example` even when the value
+  itself was masked or was ordinary config. An inline comment (after a live
+  entry or after a commented-out assignment) that holds a word the
+  classifier's value rules call a secret (a known secret prefix, credentials
+  in a URL, or a long high-entropy string; words under 16 characters are
+  ignored) is now replaced as a whole by
+  `# [comment removed by Phantom: it held a credential]`. Prose comments,
+  plain URLs and short words are kept, and quotes, spacing and line endings
+  are unchanged.
+
 ### Fixed (.env.example no longer copies commented-out secrets)
 
 - `phantom init`, `phantom env`, `phantom doctor --fix`, `phantom agent` and
