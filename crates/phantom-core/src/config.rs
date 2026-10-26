@@ -626,6 +626,15 @@ impl TrustedProxyDefinition {
 /// Keep names, destinations, headers, and formats exact: changing any one of
 /// them changes the trusted network capability.
 const TRUSTED_PROXY_SERVICES: &[TrustedProxyDefinition] = &[
+    // Capture v1 accepts the project token in Authorization. Legacy capture
+    // requires a body token and must never be implemented by resolving bodies.
+    TrustedProxyDefinition {
+        name: "posthog_fleet",
+        secret_key: "POSTHOG_API_KEY",
+        pattern: "us.i.posthog.com",
+        header: "Authorization",
+        header_format: "Bearer {secret}",
+    },
     TrustedProxyDefinition {
         name: "openai",
         secret_key: "OPENAI_API_KEY",
