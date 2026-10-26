@@ -203,7 +203,7 @@ Note: `~/.cargo/bin/` prefix needed because cargo is not in PATH on this machine
 - `crates/phantom-proxy/` — HTTP reverse proxy that buffers each request body within its size bound, never resolves client headers/bodies, injects only fixed route-owned auth headers, and supports streaming responses including SSE
 - `crates/phantom-mcp/` — MCP server for Claude Code, Cursor, Windsurf, Codex, and other MCP clients
 - `crates/phantom-workspace/` — value-blind, recoverable trusted-terminal workspace setup
-- `crates/phantom-authority/`, `phantom-broker/`, `phantom-runtime/`, `phantom-session/`, `phantom-evidence/` — fail-closed governed-execution foundations; production activation remains unavailable
+- `crates/phantom-authority/`, `phantom-broker/`, `phantom-runtime/` — fail-closed governed-execution foundations; production activation remains unavailable
 - `apps/web/` — Next.js backend + landing page at phm.dev (Supabase + Stripe)
 
 ## Key files

@@ -200,6 +200,6 @@ At the end of the pilot, choose one explicit state:
   describe it as shipped.
 
 No state above activates Locus or production agent execution. The current
-authority, Locus-contract, broker, runtime, session, and evidence crates remain
+authority, broker, and runtime crates remain
 fail-closed foundations. See [architecture](architecture.md) and the
 [threat model](../THREAT_MODEL.md) for their activation blockers.
