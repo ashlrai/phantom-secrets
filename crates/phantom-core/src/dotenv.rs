@@ -551,6 +551,24 @@ impl DotenvFile {
         Ok(format!("{preamble}{header}{eol}{body}"))
     }
 
+    /// Commented-out assignments that still hold a secret, as (key, 1-based
+    /// physical line number) in source order.
+    ///
+    /// A full-line comment such as `# OPENAI_API_KEY=<old value>` is not an
+    /// entry, so `phantom init` never moves it into the vault and it stays
+    /// as plaintext in the file. Diagnostics use this to name such lines; the
+    /// value itself is never returned. Detection is the one example
+    /// generation masks with, minus empty and `your_<name>_here` placeholder
+    /// values. Lines inside a multi-line quoted value are not comments.
+    pub fn commented_secret_assignments(&self) -> Vec<(String, usize)> {
+        // Heuristics only: callers have no project config here.
+        self.commented_secret_value_spans(None)
+            .into_iter()
+            .filter(|(span, _)| !is_example_placeholder(&self.source[span.clone()]))
+            .map(|(span, key)| (key, physical_line_number(&self.source, span.start)))
+            .collect()
+    }
+
     /// Value spans of commented-out assignments that classify as secrets.
     ///
     /// A full-line comment such as `# OPENAI_API_KEY=<old value>` is not an
@@ -870,6 +888,21 @@ fn physical_location(source: &str, offset: usize) -> (usize, usize) {
         }
     }
     (line, column)
+}
+
+/// The 1-based physical line holding byte `offset`, counting `\n`, `\r\n`
+/// and a lone `\r` as one line ending each, as [`physical_line_bounds`] does.
+fn physical_line_number(source: &str, offset: usize) -> usize {
+    let before = &source.as_bytes()[..offset];
+    1 + before
+        .iter()
+        .enumerate()
+        .filter(|(index, byte)| match byte {
+            b'\n' => true,
+            b'\r' => before.get(index + 1) != Some(&b'\n'),
+            _ => false,
+        })
+        .count()
 }
 
 /// Locate the content end and post-newline end of the physical line at `start`.
@@ -2424,6 +2457,36 @@ KEY3=unquoted
         assert!(example.contains("# PORT=8080\n"));
         assert!(example.contains("# Set API_KEY=see the docs\n"));
         assert!(example.contains("# Current key\n"));
+    }
+
+    #[test]
+    fn commented_secret_assignments_name_key_and_line_only() {
+        // Commented-out credentials stay as plaintext in .env after init, so
+        // diagnostics need their key and line; never their value.
+        let old = ["sk", "-proj-", "0ldC0mmentedKeyValue0123456789abcdef"].concat();
+        let alt = ["ghp", "_", "AltC0mmentedTokenValue0123456789abcd"].concat();
+        let pem = ["-----BEGIN ", "PRIVATE KEY-----"].concat();
+        let prose = ["sk", "-proj-", "Pr0seC0mmentValue0123456789abcdefgh"].concat();
+        let content = format!(
+            "# Current key\nOPENAI_API_KEY=sk-real-secret\n# OPENAI_API_KEY={old}\r\n  ## export GITHUB_TOKEN=\"{alt}\" # old\n#STRIPE_SECRET_KEY='{pem}\n# PORT=8080\n# Set API_KEY=see the docs\n# OPENAI_API_KEY=your_openai_api_key_here\n# OPENAI_API_KEY=\n# old key: {prose}\nCERT=\"line one\n# AWS_SECRET_ACCESS_KEY={old}\nline three\"\n"
+        );
+        let dotenv = DotenvFile::parse_str(&content);
+        assert_eq!(
+            dotenv.commented_secret_assignments(),
+            vec![
+                ("OPENAI_API_KEY".to_string(), 3),
+                ("GITHUB_TOKEN".to_string(), 4),
+                ("STRIPE_SECRET_KEY".to_string(), 5),
+            ]
+        );
+        assert!(DotenvFile::parse_str("API_KEY=live\n")
+            .commented_secret_assignments()
+            .is_empty());
+        let cr_only = format!("PORT=1\r# OPENAI_API_KEY={old}\r");
+        assert_eq!(
+            DotenvFile::parse_str(&cr_only).commented_secret_assignments(),
+            vec![("OPENAI_API_KEY".to_string(), 2)]
+        );
     }
 
     #[test]
