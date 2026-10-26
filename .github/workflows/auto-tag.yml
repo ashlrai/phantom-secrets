@@ -1,0 +1,144 @@
+# Auto-tag: create v<version> when the version in Cargo.toml changes on main
+# and every required check for that exact commit is green.
+# Tags are created only here, with the ashlr-release GitHub App token, so the
+# tag-triggered release workflow runs. release-please (if present) only opens
+# version PRs and never creates tags.
+#
+# Required checks are discovered at run time from the branch rules API
+# (rulesets) unioned with classic branch protection contexts. Fail closed:
+# - no required checks discovered: fail
+# - a required check missing, queued or in progress: no tag (on the push
+#   trigger this is a notice and the later workflow_run trigger retries;
+#   on workflow_run it fails)
+# - any conclusion other than success: fail. skipped and neutral are NOT
+#   green: required checks here use the skip-job pattern (phantom #811),
+#   which reports success, so a skipped required check means it did not run.
+name: Auto-tag
+
+on:
+  push:
+    branches: [main]
+    paths: ["Cargo.toml"]
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+
+permissions: {}
+
+concurrency:
+  group: auto-tag-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    if: github.event_name == 'push' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      checks: read     # read check-runs for the exact commit
+      statuses: read   # read legacy commit statuses for the exact commit
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      BRANCH: main
+      VERSION_FILE: Cargo.toml
+      SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+      TRIGGER: ${{ github.event_name }}
+      # Required checks designed to report skipped on push to main (PR-only
+      # jobs). Only these may be skipped; everything else must be success.
+      SKIP_OK: ""
+    steps:
+      - name: Detect version change
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          read_version() {
+            gh api -H 'Accept: application/vnd.github.raw' "repos/$REPO/contents/$VERSION_FILE?ref=$1" | python3 -c 'import sys,tomllib; d=tomllib.loads(sys.stdin.read()); print((d.get("workspace",{}).get("package") or d["package"])["version"])'
+          }
+          parent=$(gh api "repos/$REPO/commits/$SHA" -q '.parents[0].sha')
+          new=$(read_version "$SHA")
+          old=$(read_version "$parent" || echo none)
+          [[ "$new" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::unexpected version '$new'"; exit 1; }
+          if [ "$new" = "$old" ]; then
+            echo "Version unchanged ($new); nothing to tag."
+            echo "changed=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if git ls-remote --exit-code --tags "https://github.com/$REPO.git" "refs/tags/v$new" >/dev/null; then
+            echo "Tag v$new already exists; nothing to do."
+            echo "changed=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          echo "version=$new" >> "$GITHUB_OUTPUT"
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Require every required check green on this exact commit
+        id: checks
+        if: steps.version.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          required=$( {
+            gh api "repos/$REPO/rules/branches/$BRANCH" -q '.[] | select(.type=="required_status_checks") | .parameters.required_status_checks[].context'
+            gh api "repos/$REPO/branches/$BRANCH" -q '.protection.required_status_checks.contexts[]?'
+          } | sort -u )
+          if [ -z "$required" ]; then
+            echo "::error::no required checks discovered for $BRANCH; refusing to tag"; exit 1
+          fi
+          runs=$(gh api --paginate "repos/$REPO/commits/$SHA/check-runs?filter=latest&per_page=100" -q '.check_runs[] | [.name, .status, (.conclusion // "")] | @tsv')
+          statuses=$(gh api "repos/$REPO/commits/$SHA/status" -q '.statuses[] | [.context, .state] | @tsv')
+          pending=0; bad=0
+          while IFS= read -r name; do
+            row=$(awk -F'\t' -v n="$name" '$1==n' <<<"$runs" | head -n1)
+            if [ -n "$row" ]; then
+              status=$(cut -f2 <<<"$row"); conclusion=$(cut -f3 <<<"$row")
+              if [ "$status" != completed ]; then echo "pending: $name ($status)"; pending=1
+              elif [ "$conclusion" = success ]; then echo "green: $name"
+              elif [ "$conclusion" = skipped ] && [ -n "$SKIP_OK" ] && [ "$name" = "$SKIP_OK" ]; then echo "skipped by design on push: $name"
+              else echo "::error::not green: $name ($conclusion)"; bad=1; fi
+              continue
+            fi
+            state=$(awk -F'\t' -v n="$name" '$1==n {print $2; exit}' <<<"$statuses")
+            case "$state" in
+              success) echo "green: $name (status)";;
+              pending) echo "pending: $name (status)"; pending=1;;
+              "") echo "missing: $name"; pending=1;;
+              *) echo "::error::not green: $name ($state)"; bad=1;;
+            esac
+          done <<<"$required"
+          if [ "$bad" = 1 ]; then exit 1; fi
+          if [ "$pending" = 1 ]; then
+            if [ "$TRIGGER" = push ]; then
+              echo "::notice::required checks not finished; the workflow_run trigger retries after CI"
+              echo "green=false" >> "$GITHUB_OUTPUT"; exit 0
+            fi
+            echo "::error::required checks missing or pending after CI completed; refusing to tag"; exit 1
+          fi
+          echo "green=true" >> "$GITHUB_OUTPUT"
+
+      - name: Mint ashlr-release App token (contents write, this repo only)
+        id: app
+        if: steps.checks.outputs.green == 'true'
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.ASHLR_RELEASE_APP_ID }}
+          private-key: ${{ secrets.ASHLR_RELEASE_APP_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+
+      - name: Create tag v${{ steps.version.outputs.version }}
+        if: steps.checks.outputs.green == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          if git ls-remote --exit-code --tags "https://github.com/$REPO.git" "refs/tags/v$VERSION" >/dev/null; then
+            echo "Tag v$VERSION appeared meanwhile; nothing to do."; exit 0
+          fi
+          gh api -X POST "repos/$REPO/git/refs" -f ref="refs/tags/v$VERSION" -f sha="$SHA" >/dev/null
+          echo "Created v$VERSION at $SHA" >> "$GITHUB_STEP_SUMMARY"
+
