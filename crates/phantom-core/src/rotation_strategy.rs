@@ -606,8 +606,10 @@ pub fn next_rotation_after(schedule: &RotationSchedule, now_secs: u64) -> Option
             if this_month > now_secs {
                 Some(this_month)
             } else {
+                // Past the representable range the slot saturates; a slot
+                // that is not after `now_secs` is no next rotation.
                 let (year, month) = next_month(year, month);
-                Some(schedule.monthly_slot(year, month))
+                Some(schedule.monthly_slot(year, month)).filter(|slot| *slot > now_secs)
             }
         }
     }
@@ -957,7 +959,7 @@ mod tests {
         assert_eq!(days_in_month(2026, 4), 30);
         // The far future saturates instead of overflowing.
         let monthly = RotationSchedule::from_strategy(RotationStrategy::Monthly);
-        assert!(next_rotation_after(&monthly, u64::MAX).is_some());
+        assert_eq!(next_rotation_after(&monthly, u64::MAX), None);
         assert!(monthly.last_boundary_before(u64::MAX).is_some());
     }
 
