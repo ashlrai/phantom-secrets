@@ -1,5 +1,7 @@
+// fresh:begin public-release-version
 export const PUBLIC_RELEASE_VERSION = "0.7.9";
 export const PUBLIC_RELEASE_TAG = `v${PUBLIC_RELEASE_VERSION}`;
+// fresh:end
 // Bound after reconciling the annotated tag, immutable GitHub release, all 19
 // hosted assets, six native acceptance rows, attestations, and installer blobs.
 export const PUBLIC_RELEASE_EVIDENCE_STATE = "bound";

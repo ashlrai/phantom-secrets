@@ -7,10 +7,12 @@ import {
   ClaudeClientLogo,
   CodexClientLogo,
   CursorClientLogo,
+  GeminiClientLogo,
   WindsurfClientLogo,
 } from "./ClientLogos";
 import { CopyButton } from "./CopyButton";
 
+// fresh:begin install-clients
 const CLIENTS = [
   {
     id: "claude",
@@ -48,11 +50,22 @@ const CLIENTS = [
     Logo: CodexClientLogo,
     preview: "phantom setup --client codex --print",
     command: "phantom setup --client codex",
-    launch: 'phantom exec -- codex "<your task>"',
+    launch: "phantom exec -- codex \"<your task>\"",
     config: "~/.codex/config.toml",
     scope: "user",
   },
+  {
+    id: "gemini",
+    label: "Gemini CLI",
+    Logo: GeminiClientLogo,
+    preview: "phantom setup --client gemini --print",
+    command: "phantom setup --client gemini",
+    launch: "phantom exec -- gemini",
+    config: "~/.gemini/settings.json",
+    scope: "user",
+  },
 ] as const;
+// fresh:end
 
 type ClientId = (typeof CLIENTS)[number]["id"];
 

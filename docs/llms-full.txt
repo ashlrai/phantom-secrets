@@ -6,9 +6,21 @@ Website: https://phm.dev
 GitHub: https://github.com/ashlrai/phantom-secrets
 License: MIT
 Language: Rust
-Release evidence was verified on 2026-09-29. The immutable GitHub `v0.7.9` release at https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.9 resolves to `7a51ce512ec4aee12cc29ff859036af63fbe93db`. Its 19 assets were verified after all six native acceptance rows and release attestations passed in https://github.com/ashlrai/phantom-secrets/actions/runs/34153902556.
-Install: use the exact checksum-verified `v0.7.9` GitHub assets below on macOS, Linux, and Windows. The separately managed Homebrew formula still publishes the previous reviewed `v0.7.8`; its `v0.7.9` bump is pending.
+Release evidence was verified on 2026-09-29.
+<!-- fresh:begin release-receipt -->
+The immutable GitHub `v0.7.9` release at
+https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.9 resolves to
+`7a51ce512ec4aee12cc29ff859036af63fbe93db`. Its 19 assets were published
+after all six native acceptance rows and release attestations passed in
+https://github.com/ashlrai/phantom-secrets/actions/runs/34153902556.
+<!-- fresh:end -->
+<!-- fresh:begin header-install-pin -->
+Install: use the exact checksum-verified `v0.7.9` GitHub assets below on macOS, Linux, and Windows.
+<!-- fresh:end -->
+The separately managed Homebrew formula still publishes the previous reviewed `v0.7.8`; its `v0.7.9` bump is pending.
+<!-- fresh:begin header-mcp-invocation -->
 MCP: after installing both release binaries, run `phantom setup --client claude|cursor|windsurf|codex|gemini`.
+<!-- fresh:end -->
 
 ## The Problem
 
@@ -80,12 +92,15 @@ Connection strings such as DATABASE_URL can be detected, vaulted, and replaced i
 ## Installation
 
 ### Homebrew (macOS, formula still at reviewed v0.7.8)
+<!-- fresh:begin install-homebrew -->
 ```
 brew tap ashlrai/phantom
 brew trust --formula ashlrai/phantom/phantom
 brew install ashlrai/phantom/phantom
 ```
+<!-- fresh:end -->
 
+<!-- fresh:begin release-assets -->
 ### Exact v0.7.9 GitHub assets
 macOS Apple Silicon: https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9/phantom-aarch64-apple-darwin.tar.gz
 macOS Intel: https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9/phantom-x86_64-apple-darwin.tar.gz
@@ -93,16 +108,18 @@ Linux x86_64: https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.
 Linux ARM64: https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9/phantom-aarch64-unknown-linux-gnu.tar.gz
 Windows x64: https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9/phantom-x86_64-pc-windows-msvc.zip
 Windows ARM64: https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9/phantom-aarch64-pc-windows-msvc.zip
+<!-- fresh:end -->
 Download the adjacent `.sha256` sidecar for the selected archive, verify it,
 then extract both release executables and place them on PATH.
 
-### Exact source build
+<!-- fresh:begin source-build -->
 ```
 git clone https://github.com/ashlrai/phantom-secrets.git
 cd phantom-secrets
 git checkout 7a51ce512ec4aee12cc29ff859036af63fbe93db
 cargo build --release --locked --bin phantom --bin phantom-mcp
 ```
+<!-- fresh:end -->
 
 In the exact 2026-09-29 registry snapshot, npm `latest` remains 0.6.0; exact npm
 0.7.4 wrappers exist only under the failed `release-candidate` track. No MCP
@@ -111,16 +128,22 @@ and `cargo install` commands are not the reviewed v0.7.9 GitHub release path.
 
 ### MCP setup
 
+<!-- fresh:begin mcp-setup-invocation -->
 Run `phantom setup --client claude|cursor|windsurf|codex|gemini` after installing both
-`v0.7.9` GitHub release binaries. Ask the client to propose protection and review affected
+`v0.7.9` GitHub release binaries.
+<!-- fresh:end -->
+Ask the client to propose protection and review affected
 files and confirmation-gated steps. Keep secret entry in the trusted terminal
 and deployment/provider authority separate.
 
-Released `v0.7.9` records the running `phantom` executable with `mcp serve` when
-it can resolve that runtime, otherwise it looks for a local `phantom-mcp`.
-Setup has no network package-runner fallback and fails closed when neither local
-runtime is executable. Keep both verified `v0.7.9` binaries installed and
-inspect the generated entry.
+<!-- fresh:begin install-binaries-pin -->
+Install both `v0.7.9` GitHub release binaries first. Version `0.7.9` records
+the running `phantom` executable with `mcp serve` when it can resolve that
+runtime, otherwise it looks for a local `phantom-mcp`. Setup has no network
+package-runner fallback and fails closed when neither local runtime is
+executable. Keep both verified binaries installed and inspect the generated
+entry.
+<!-- fresh:end -->
 
 ## MCP Server — Multi-IDE Support
 
@@ -128,18 +151,19 @@ Phantom includes a native MCP server (`phantom-secrets-mcp`) with 54 tools enfor
 
 ### Setup by IDE
 
-**Claude Code:**
-```
-phantom setup --client claude
-```
+<!-- fresh:begin docs-llmsfull-mcp-setup -->
+**Claude Code:** `phantom setup --client claude`
 
 **Cursor:** `phantom setup --client cursor`
 
 **Windsurf:** `phantom setup --client windsurf`
 
-**GitHub Copilot:** Uses `.github/copilot-instructions.md` for project-level instructions. MCP via VS Code settings.
+**Codex:** `phantom setup --client codex`
 
-**OpenAI Codex:** `phantom setup --client codex`
+**Gemini CLI:** `phantom setup --client gemini`
+<!-- fresh:end -->
+
+**GitHub Copilot:** Uses `.github/copilot-instructions.md` for project-level instructions. MCP via VS Code settings.
 
 ### MCP Tools
 
@@ -174,43 +198,77 @@ instead of injecting the expired value. A later verified lifecycle promotion
 restores read access. Demotion does not recall a value already injected into or
 cached by a running process.
 
-**Secret Management:**
-- `phantom_init` — Exact-before transaction: read a safe project-local dotenv, compare-and-swap vault entries, persist config, and rewrite the dotenv last. Concurrent drift aborts. Params: env_path (default `.env`), confirm, approval_token.
-- `phantom_list_secrets` — List secret names with service mappings (never values). Output: summary text, then `{count, secrets: [{name, service}]}` as JSON text and `structuredContent`.
-- `phantom_list_with_expiry` — List secret names with TTL state. Params: show_expiry. Output: summary text, then `{count, show_expiry, expired, expiring_soon, secrets: [{name, service, status?, expires_at?, days_remaining?}]}` as JSON text and `structuredContent`; `status` is `expired`, `expiring_soon`, `ok`, or `no_expiry`.
-- `phantom_status` — Show repository-local status without opening the vault. Output: summary text, then `{initialized, project_id, vault_inspected: false, dotenv: {path, entries, phantom_tokens, unprotected} | null, services: [{name, secret_key, pattern}], next_step}` as JSON text and `structuredContent`.
-- `phantom_add_secret_interactive` — Return `phantom add NAME`, which prompts for a new value in a trusted terminal, outside MCP. Effect-free: no value, no storage, no approval; works with `PHANTOM_MCP_EFFECTS` unset. Params: name (`[A-Za-z_][A-Za-z0-9_]*`), confirm (optional, ignored).
-- `phantom_add_secret` — Deprecated compatibility tool; refuses plaintext values passed through MCP. Params: name, confirm, approval_token.
-- `phantom_remove_secret` — Transactionally remove the vault value, lifecycle config, and exact managed-dotenv mapping. Params: name, confirm, approval_token.
-- `phantom_rotate` — Regenerate all phantom tokens in .env. Params: confirm, approval_token.
+<!-- fresh:begin docs-llmsfull-tool-catalog -->
+**Secrets and dotenv:**
+- `phantom_init`: Initialize Phantom through one exact-before project transaction: read a safe project-local dotenv, compare-and-swap every vault entry, persist config, and rewrite the dotenv with phantom tokens last. Concurrent file or vault changes abort and transaction-owned writes are rolled back where verifiable. Requires confirm plus out-of-band approval. Params: env_path (optional), confirm, approval_token.
+- `phantom_list_secrets`: List all secret names in the Phantom vault. Returns names only - never exposes actual secret values. Use this to see what secrets are configured. Returns a summary plus JSON {count, secrets: [{name, service}]} (also as structuredContent). Before `phantom init` it opens no vault and returns {count: 0, secrets: [], initialized: false, next_step} instead of an error.
+- `phantom_list_with_expiry`: List all secret names with their TTL/expiry status. Shows days remaining, EXPIRED flag, or 'no expiry' for each secret. Never returns secret values. Use it to audit which credentials need an explicit provider rotation or local expiry-policy review. Params: show_expiry (optional).
+- `phantom_status`: Read repository-local Phantom status without opening or provisioning a vault: project ID, managed dotenv protection counts, and configured service mappings. Vault backend and stored-secret inventory are deliberately not inspected; use phantom_list_secrets for the latter.
+- `phantom_add_secret_interactive`: Safely add a secret by name without passing its value through MCP. Effect-free: it never accepts or echoes a value and touches no vault, file, or network, so it needs no approval and works with PHANTOM_MCP_EFFECTS unset. Returns `phantom add NAME`; the user runs it in a trusted terminal and types the value only at that terminal prompt, outside agent context. Params: name, confirm.
+- `phantom_add_secret`: Deprecated unsafe plaintext secret entry. This tool refuses values because MCP arguments enter agent context. Use phantom_add_secret_interactive instead (no approval needed). Params: name, confirm, approval_token.
+- `phantom_remove_secret`: Transactionally remove a secret's vault value, lifecycle configuration, and exact managed-dotenv mapping. DESTRUCTIVE - a successful removal is recoverable only from a separately retained backup. Uses exact before-images and rolls back only transaction-owned changes. Requires `confirm: true` plus an out-of-band `approval_token`; review the exact value-blind effect before approval. Params: name, confirm, approval_token.
+- `phantom_rotate`: Regenerate all phantom tokens in .env. Old tokens become invalid - any running `phantom exec` / dev server that cached them will break until it picks up the new .env. Real secrets in the vault are unchanged. Params: confirm, approval_token.
+- `phantom_copy_secret`: Copy a secret into a distinct initialized target through one exact-before target transaction. Refuses existing target vault, lifecycle-config, or managed-dotenv ownership; never overwrites. On success it creates both the target vault entry and managed-dotenv phantom mapping, with dotenv committed last. Params: name, target_dir, rename (optional), confirm, approval_token.
 
-**Personal Cloud Backup:**
-The protocol source requires a separately commissioned hosted deployment and entitled account; the public hosted service is not currently commissioned for authenticated use.
-- `phantom_cloud_push` — After commissioning, push a client-encrypted ChaCha20-Poly1305 vault payload. Params: confirm, approval_token. The configured vault API receives ciphertext rather than decrypted secret values; client, account, endpoint, and deployment security remain in scope.
-- `phantom_cloud_pull` — After commissioning, pull a vault snapshot. Params: force, confirm, approval_token. With `force=false`, skipped existing entries retain the prior merge base and block push until full reconciliation.
-- `phantom_cloud_status` — After commissioning, make a dual-gated authenticated provider request for cloud auth status, plan, and last sync version. Params: confirm, approval_token.
+**Diagnostics:**
+- `phantom_doctor`: Run repository-local Phantom health checks: config validity, .env protection, .gitignore, .env.example, and pre-commit hook. This tool does not open or provision a vault. Params: fix (optional), confirm, approval_token.
+- `phantom_why`: Explain why an environment variable is or isn't protected by Phantom. classification is `protected` (has a phantom token), `secret_unprotected` (next_step says to run `phantom init`), `public_key` or `not_secret`, and is null when the key is not in the dotenv (found=false). Params: key.
+- `phantom_check`: Check for security issues. With runtime=true, scans every environment variable of this server for a phantom token (leak detection). A variable is excused only when PHANTOM_PROXY_PORT and PHANTOM_PROXY_TOKEN lead to a live Phantom proxy (its health endpoint answers) and the session lists the variable in PHANTOM_SESSION_KEYS; excused names are reported in `excused` and `proxy_session` is true. Params: runtime (optional).
+- `phantom_env`: Generate a .env.example file from .env. Secrets are replaced with descriptive placeholders; non-secret config values are preserved. Safe to commit to version control. Params: output (optional), confirm, approval_token.
+- `phantom_capability`: Return a value-free capability card for the small conversation-native facade: allowed local verbs, requestable verbs, place/seal state, expiry, and facade hard denials. This is not a policy oracle for the advanced compatibility catalog, whose mutating tools retain separate legacy confirm plus out-of-band local approval gates and are not Locus-sealed.
 
-**Diagnostics & Cross-Project:**
-- `phantom_doctor` — Health checks: config validity, vault access, .env protection, .gitignore, .env.example, pre-commit hook. Params: fix, confirm, approval_token. `confirm` and `approval_token` are required only when `fix=true`. Output: a short summary text block, then the `phantom doctor --json` report `{ok, issues, fixed, checks: [{status, message, fix?, fixed?}], mcp_clients}` as JSON text and `structuredContent`. Each `fix` hint belongs to its own check; with `fix=true` a repaired check keeps status `warn` and gains `fixed`. `mcp_clients` is always `[]` here (this tool does not inspect global client configs). Config parse errors report only a redacted message plus line/column.
-- `phantom_why` — Explain whether a key is classified as Secret / PublicKey / NotSecret and which heuristic matched. Params: key. Output: summary text, then `{key, dotenv_exists, found, classification, protected, reason, matched_pattern, service, exec, next_step}` as JSON text and `structuredContent`; `classification` is `protected`, `public_key`, `secret_unprotected`, `not_secret`, or null when the key is missing. Never includes the value and never opens the vault; before `phantom init` it classifies `./.env` with `exec: null`.
-- `phantom_check` — Run Phantom's bounded detector. Params: runtime. With `runtime=true`, checks every environment variable for phantom tokens, excusing only the variables a live proxy session lists as its own (reported in `excused`, with `proxy_session: true`; session variables with no live proxy add `session_warning`); otherwise it scans supported dotenv files in the working tree. The CLI, separately, supports `phantom check --staged` for index-aware checks. Output: a short summary text block, then the `phantom check --json` report `{mode, clean, findings: [{kind, path?, name?}], warnings}` as JSON text and `structuredContent` (runtime mode may add `proxy_session`, `excused` and `session_warning`); malformed dotenv files add `indeterminate: [{path, reason}]` and keep `clean` false. Names and paths only; never values or phantom tokens.
-- `phantom_env` — Generate a .env.example file from .env. Params: output (default `.env.example`), confirm, approval_token. Secrets become descriptive placeholders; non-secret config values are preserved.
-- `phantom_sync` — Show sync configuration and what secrets would be pushed to deployment platforms (Vercel, Railway). Params: platform (optional), project_id (optional). Informational; it does not execute a sync. Output: summary text, then `{configured, platform_filter, configured_platforms, vault_secret_count, targets: [{platform, project_id, token_env, environments, service_id, environment_id, secrets}], live_gate_refusal, next_step}` as JSON text (`live_gate_refusal` is the refusal the live `phantom sync` would return for the selection, names only, or null) and `structuredContent`.
-- Tools whose answer is already a JSON object (`phantom_capability`, `phantom_do`, `phantom_setup_workspace`, audit, leak-incident, compliance, validation, expiry, and rotation-schedule tools) keep that JSON as their only text block and also attach it as `structuredContent`. Missing-secret and config/vault errors name the next step (e.g. call `phantom_list_secrets`, run `phantom_doctor`, or set `PHANTOM_VAULT_PASSPHRASE` for the encrypted-file vault).
-- `phantom_copy_secret` — Exact-before target transaction that refuses existing vault/config/dotenv ownership and creates the vault entry plus managed-dotenv mapping without returning the value. Params: name, target_dir, rename (optional), confirm, approval_token.
+**Sync and script wrapping:**
+- `phantom_sync`: Show sync configuration and what secrets would be synced to deployment platforms (Vercel, Railway). This is an informational tool that never pushes: actual sync requires platform API tokens and `phantom sync` in a terminal. platform must be `vercel` or `railway` (case-insensitive); any other value is refused with invalid params before the vault is opened. Params: platform (optional), project_id (optional).
+- `phantom_wrap`: Wrap package.json scripts with the installed local `phantom exec --` command so secrets are injected via the proxy at runtime. Saves originals as `script:raw` variants. Uses a heuristic to pick dev/start/build/serve/deploy scripts and skip lint/test/format scripts. Params: only (optional), skip (optional), confirm, approval_token.
+- `phantom_unwrap`: Reverse phantom_wrap: restore original package.json scripts from their `:raw` variants and remove the `:raw` entries. Params: confirm, approval_token.
 
-**Package.json wrapping:**
-- `phantom_wrap` — Wrap `package.json` scripts with the installed local `phantom exec --` runtime so secrets are injected via the proxy. Originals are saved as `script:raw` variants. Heuristically picks dev/start/build/serve/deploy scripts and skips lint/test/format scripts. Params: only, skip, confirm, approval_token.
-- `phantom_unwrap` — Reverse `phantom_wrap`: restore original scripts from `:raw` variants and remove the `:raw` entries. Params: confirm, approval_token.
+**Cloud backup (requires a separately commissioned hosted service):**
+- `phantom_cloud_push`: Push a client-encrypted local vault to a separately commissioned Phantom Cloud deployment and entitled account; the public hosted service is not currently commissioned for authenticated use. The configured service receives ciphertext rather than decrypted vault values. Requires phantom login first. Params: confirm, approval_token.
+- `phantom_cloud_pull`: Pull and decrypt a personal-vault snapshot from a separately commissioned Phantom Cloud deployment and entitled account; the public hosted service is not currently commissioned for authenticated use. DESTRUCTIVE - writes local vault entries; force=true declares overwrites but never bypasses approval. Params: force (optional), confirm, approval_token.
+- `phantom_cloud_status`: Check authentication status, plan, and last sync version against a separately commissioned Phantom Cloud deployment; the public hosted service is not currently commissioned for authenticated use. This uses the stored cloud credential and makes a provider request; requires confirm plus approval_token. Params: confirm, approval_token.
 
-**Teams (source-backed fixed-membership pilot; hosted Pro commissioning required):**
-- `phantom_team_list` — Dual-gated authenticated provider request listing the teams the user belongs to. Params: confirm, approval_token.
-- `phantom_team_members` — Dual-gated authenticated provider request listing members. Params: team_id, confirm, approval_token.
-- `phantom_team_key_publish` — Register this device's X25519 public key with the team. Params: team_id, confirm, approval_token. Pubkey only — the private key stays in the OS keychain.
-- `phantom_team_create` — Create a new team. The authenticated user becomes the owner. Params: name, confirm, approval_token.
-- `phantom_team_invite` — Invite someone to a team by GitHub username. The caller must be owner/admin; the assigned role is `member` or `admin` only. Ownership transfer is not exposed. Params: team_id, github_login, role, confirm, approval_token.
-- `phantom_team_vault_push` — Push this project's secrets to the shared team vault, encrypted client-side for each member with a registered key. Params: team_id, confirm, approval_token.
-- `phantom_team_vault_pull` — Download and decrypt the team vault for this project into the local vault. Params: team_id, confirm, approval_token. This overwrites local secrets; use it instead of phantom_cloud_pull for team-shared secrets.
+**Teams (requires a separately commissioned hosted service):**
+- `phantom_team_list`: List teams the authenticated user belongs to. Requires a separately commissioned hosted service and entitled account; the public hosted service is not currently commissioned. Returns team id, name, and role. Uses the stored cloud credential and makes a provider request; requires confirm plus approval_token. Params: confirm, approval_token.
+- `phantom_team_members`: List members of a team by team_id. Requires a separately commissioned hosted service and entitled account; the public hosted service is not currently commissioned. Returns GitHub login, email, and role. Uses the stored cloud credential and makes a provider request; requires confirm plus approval_token. Params: team_id, confirm, approval_token.
+- `phantom_team_key_publish`: One-time setup: register this device's public key with the team so you can send and receive encrypted vaults. Requires a separately commissioned hosted service and entitled account; the public hosted service is not currently commissioned. Must be called before phantom_team_vault_push or phantom_team_vault_pull. Idempotent - safe to call again after a key rotation. Params: team_id, confirm, approval_token.
+- `phantom_team_create`: Request a new team from a separately commissioned hosted Pro pilot and entitled account; the public hosted service and self-serve Pro billing are not currently commissioned. If accepted, the authenticated user becomes the owner. Mutating provider request: requires confirm:true plus an out-of-band approval_token. Params: name, confirm, approval_token.
+- `phantom_team_invite`: Invite someone to a team by GitHub username. Requires a separately commissioned hosted service and entitled account; the public hosted service is not currently commissioned. The caller must be a team owner or admin; the hosted API permits assigning only member or admin (not owner). Mutating provider request: requires confirm:true plus an out-of-band approval_token. Params: team_id, github_login, role (optional), confirm, approval_token.
+- `phantom_team_vault_push`: Push this project's secrets to the shared team vault so all members can pull them. Requires a separately commissioned hosted service and entitled account; the public hosted service is not currently commissioned. Encrypts client-side for each member who has registered a key (phantom_team_key_publish). Params: team_id, confirm, approval_token.
+- `phantom_team_vault_pull`: Download and decrypt the team vault for this project into the local vault. Requires a separately commissioned hosted service and entitled account; the public hosted service is not currently commissioned. Use this (not phantom_cloud_pull) when secrets were shared by a teammate via phantom_team_vault_push. Params: team_id, confirm, approval_token.
+
+**Workspace and guided actions:**
+- `phantom_setup_workspace`: Conversation-native, value-blind workspace setup. phase=propose returns an exact sealed plan; if the machine-local plan-seal key is absent, provisioning it requires confirm plus approval_token. phase=request_apply always requires both gates because it persists a bearerless trusted-terminal request. phase=status is read-only. MCP never claims or applies workspace changes. Params: phase (optional), plan_id (optional), pre_state_id (optional), request_id (optional), confirm, approval_token.
+- `phantom_do`: Conversation-native engineering action planning. phase=propose (default) accepts only Phantom's closed Cargo action schema and returns a value-free canonical digest, effect classification, local workspace fingerprint, and exact activation blockers without executing anything. Params: action, phase (optional).
+
+**Audit, compliance, and leak incidents:**
+- `phantom_audit_alerts`: Retrieve persisted leak-incident alert records from ~/.phantom/leak-alerts.jsonl. Each alert represents a high-confidence proxy response leak that was dispatched to configured backends (webhook/Slack/PagerDuty). Set 'backfill: true' to re-run correlation, persist new incidents/alerts, and dispatch configured notifications before returning the list; this requires confirm plus approval_token. Params: backfill (optional), last (optional), confirm, approval_token.
+- `phantom_audit_analytics`: Export full audit analytics for compliance dashboards. Returns per-secret SecretAnalytics (access_count, daily_avg, max_daily, min_daily, anomaly_score) plus timestamped AccessRecords for the requested window. Supports JSON or CSV format. Use min_anomaly_score to filter to flagged secrets only (clamped to 0.0-1.0; NaN is refused). Never exposes secret values. Params: format (optional), max_records (optional), min_anomaly_score (optional), window_days (optional).
+- `phantom_audit_anomalies`: Query the audit log for suspicious access patterns. Returns a findings array where each entry has: name (secret name), anomaly_type (spike | dormant | first_access), anomaly_score (0.0-1.0), access_count, last_access (ISO-8601), daily_avg, and context (human-readable explanation). Secret VALUES are never returned. Read-only; no confirm required. Params: max_records (optional), min_score (optional), period (optional).
+- `phantom_audit_anomalies_realtime`: Check whether a secret (or all secrets) has been accessed unusually based on windowed rate and quiet-period analysis of the current audit log. Unlike phantom_audit_anomalies (which uses multi-day daily-bucket statistics), this tool evaluates: (1) accesses within the last rolling hour vs max_accesses_per_hour threshold; (2) re-access after a quiet period longer than max_consecutive_quiet_days. Params: max_accesses_per_hour (optional), max_consecutive_quiet_days (optional), max_records (optional), name (optional), threshold (optional).
+- `phantom_audit_export_report`: Export audit log data or generate a structured compliance report. Two actions: 'export' - return raw audit rows (timestamp, datetime, operation, secret_name, pid, hostname, severity) filtered by date range, secret name, or operation type, in CSV or JSON format. Params: action (optional), format (optional), from (optional), max_records (optional), operation (optional), save (optional), secret_name (optional), to (optional), confirm, approval_token.
+- `phantom_audit_hotspot_alerts`: Inspect per-secret access-velocity spike alerts without manually parsing the audit log. Returns alerts for secrets whose access count in the rolling 24-hour window either (a) exceeds 5× the 7-day mean baseline, or (b) includes a burst of ≥100 accesses within any 5-minute window. Params: ack (optional), include_acked (optional), secret_name (optional), snooze_seconds (optional), confirm, approval_token.
+- `phantom_audit_incidents`: Return active leak incidents derived from proxy.response_leak audit events. Incidents are correlated by (secret_name, location) within a 24-hour window. min_confidence (default 0.7) filters by confidence score: 0.5 = single leak event; 0.95 = same secret leaked >3 times within 1 hour. Params: max_records (optional), min_confidence (optional).
+- `phantom_audit_recent`: List the last N audit events from the HMAC-chained audit log. Returns structured JSONL - each line is a JSON object with fields: seq, ts (Unix epoch), op (operation name), name (secret name, if applicable), pid, process. Secret VALUES are never recorded in the audit log and will never appear here. Supports optional filtering by op prefix or exact secret name. Params: n (optional), name_filter (optional), op_filter (optional).
+- `phantom_audit_stats`: Aggregate access counts, last-access timestamps, daily averages, and anomaly scores from the HMAC-chained audit log. Returns JSON only - never exposes secret values. Anomaly detection flags: (1) any single day with >3× the daily average access count (score 0.6); (2) first access after ≥7 days of inactivity (score 0.5). Use period to limit the window ("7d", "30d", "all"). Params: min_anomaly_score (optional), period (optional).
+- `phantom_compliance_status`: Return the compliance state of the current Phantom project as a structured JSON badge.
+- `phantom_leak_incidents_realtime`: Query active leak incidents for a real-time security dashboard. Returns incidents with confidence > 0.5 seen within the last 24 hours, sorted by confidence descending. Each entry contains: secret_name (never the value), location_label, confidence, first_seen (ISO-8601), last_seen (ISO-8601), incident_id. Set min_confidence (default 0.5) to narrow results. Params: max_records (optional), min_confidence (optional).
+
+**Validation, expiry, and rotation:**
+- `phantom_validate_all`: Run live credential health checks for all secrets in the vault. Each secret is validated against its target API (OpenAI, Stripe, GitHub, Anthropic, AWS, or a generic HTTP check). Returns a JSON compliance report with: total, valid, invalid, unreachable, not_checked counts and per-secret entries (name, validator, status, reason, checked_at). Params: jobs (optional), confirm, approval_token.
+- `phantom_validate_secret`: Query the last-known validation status for a specific secret. Returns: last_check_ts (Unix epoch, 0 = never checked), is_valid (bool), failure_reason (string or null), validator_name (which validator ran), and is_stale (whether the check is older than 24 h). Params: name.
+- `phantom_validation_history`: Retrieve the history of past automated validation runs. Each entry contains: started_at (Unix epoch), finished_at, total, pass, fail, unreachable, not_checked, and an optional error string. Use `limit` (default 20, max 100) to control how many recent entries are returned. Secret VALUES are never returned. Read-only; no confirm required. Params: limit (optional).
+- `phantom_validation_schedule`: Get or set the automated background validation schedule. Pass `interval` to update (accepted values: 'hourly', '6h', '12h', 'daily', 'daily@2am', 'weekly', 'disabled'). Omit `interval` to read the current schedule and staleness status. Returns schedule, last_run_at, and staleness indicators. Read-only when interval is omitted. Params: interval (optional), confirm, approval_token.
+- `phantom_expiry_enforce`: Check the vault's TTL metadata (set with `phantom expiry set`) for expired secrets and return a structured list, the same answer as `phantom expiry enforce --json`. Each entry has: name (string), expires_at (Unix u64), secs_overdue (u64), status (human-readable string). `expired` holds only secrets whose expiry has passed. Params: fail_closed (optional).
+- `phantom_apply_expiry_policy`: Scan the vault, apply read-only demotion to secrets whose TTL has expired, and (optionally) re-promote secrets that were demoted but have since been rotated. This blocks future vault retrieval and new `phantom exec`/foreground `phantom start` mapped-secret preflight; it does not recall values already injected or cached. Params: also_promote_rotated (optional), confirm, approval_token.
+- `phantom_secrets_expiry_check`: Query the local vault for secrets that are expired or expiring soon. Returns a JSON array where each entry has: name (string), days_remaining (i64, floored - negative means already expired, so a secret that expired under 24 h ago reports -1), expires_at (Unix epoch u64), status (human-readable string), expired (bool). Use the `days` parameter (default 7) to tune the look-ahead window. Params: days (optional).
+- `phantom_secret_rotation_due`: Query which secrets in the vault are due for rotation. Returns a JSON object with: due (list of secrets already expired), warning (list of secrets expiring within warn_days, default 7), ok (list of secrets with sufficient TTL remaining), no_ttl (list of secrets with neither an expiry nor a rotation policy). A secret with expires_at but no rotation policy is still classified by its expiry. Params: warn_days (optional).
+- `phantom_rotation_schedule_next`: Return the next scheduled rotation time for a named secret. Reads the secret's effective RotationSchedule (per-secret override or global policy) and computes when rotation is next due. A per-secret `rotate_every` ("90d", "12w") is an exact interval: strategy "interval" with interval_days; an unparseable value is a config error. Params: name.
+- `phantom_rotate_with_expiry`: DEPRECATED compatibility name: atomically remap all local phm_ placeholders. The legacy days_ttl field is validated but no longer renews `rotated_at`, `expires_at`, or rotation_policy because no provider credential changes. Provider credentials and incident state remain unchanged. MUTATING - invalidates current Phantom placeholders; requires confirm:true plus an out-of-band approval_token. Params: days_ttl, confirm, approval_token.
+- `phantom_secrets_auto_rotate`: DEPRECATED compatibility name: remap the local phm_ placeholder for one already-protected secret. This does not rotate or validate the provider credential, does not change `rotated_at` / `expires_at` / TTL policy, does not clear leak incidents, and cannot sync an unchanged credential (`sync: true` is rejected). When audit logging is enabled, success records `secret.token_remapped`. Params: name, sync (optional), confirm, approval_token.
+- `phantom_rotate_with_candidate`: DEPRECATED hard denial: legacy shadow rotation generated only a local phm_cand_ placeholder, not a provider-issued credential. This tool never creates or stores a candidate and ignores compatibility parameters, including approval_token: no approval can activate it. Params: name, auto_promote_ttl_secs (optional), confirm, approval_token.
+- `phantom_rotate_promote`: DEPRECATED hard denial: legacy candidates were local phm_cand_ placeholders, not provider-issued credentials. This tool never validates, promotes, or changes a vault value and ignores compatibility parameters, including approval_token: no approval can activate it. Params: name, confirm, approval_token.
+- `phantom_rotate_provider`: Provider-rotation compatibility boundary. Shipped builds hard-deny automated live provider issuance before credential access or network I/O because the provider contract does not yet preserve a durable value-free recovery handle and verified abort path for local persistence failure. Unit-test mock providers are not production capability evidence. Params: name, provider (optional), confirm, approval_token.
+<!-- fresh:end -->
 
 Owner/admin roles gate invitations, but current vault read/write access is member-wide. Member removal and atomic offboarding key rotation are not shipped; do not treat this pilot as enterprise RBAC or an offboarding control.
 
