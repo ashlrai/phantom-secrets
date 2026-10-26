@@ -11,6 +11,8 @@ use std::process::Stdio;
 
 const VAULT_PASSPHRASE_ENV: &str = "PHANTOM_VAULT_PASSPHRASE";
 
+mod coverage;
+
 fn header_auth_only() -> bool {
     matches!(
         std::env::var("PHANTOM_PROXY_HEADER_AUTH_ONLY")
@@ -120,6 +122,11 @@ async fn run_async(
         .map(|entry| entry.key.clone())
         .collect();
 
+    // A route for a provider does not imply that its CLI understands our
+    // base URL or authentication protocol. Refuse known incompatible direct
+    // invocations before opening the vault, using protected names only.
+    coverage::validate_command(cmd, &preflight_protected_keys)?;
+
     // Connection strings need a protocol-aware broker. Detect them from the
     // protected dotenv/config contract before opening or reading the vault, so
     // a missing entry can never turn this fail-closed decision into a bypass.
@@ -158,6 +165,8 @@ async fn run_async(
         .filter(|entry| PhantomToken::is_phantom_token(&entry.value))
         .map(|entry| entry.key.clone())
         .collect();
+
+    coverage::validate_command(cmd, &protected_env_keys)?;
 
     let (child_scrub_env, never_reintroduce) =
         child_environment_policy(&config, &protected_env_keys);

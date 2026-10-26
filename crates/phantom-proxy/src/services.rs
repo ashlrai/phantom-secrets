@@ -2,6 +2,10 @@ use phantom_core::config::ServiceConfig;
 use std::borrow::Cow;
 use std::collections::HashMap;
 
+#[cfg(test)]
+#[path = "exec_coverage_tests.rs"]
+mod exec_coverage_tests;
+
 /// Registry of service routes for the proxy.
 /// Maps local path prefixes to target HTTPS hosts.
 #[derive(Debug, Clone, Default)]
