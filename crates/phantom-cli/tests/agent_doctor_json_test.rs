@@ -1,7 +1,7 @@
 //! Contract for `phantom agent doctor --json` (docs/agent-preflight-contract.md):
 //! a value-free preflight that never touches the vault or the keychain unless
 //! `--vault` is passed, exits 0 by default, and maps verdicts to exit codes
-//! under `--strict`.
+//! under `--strict` (0 ready, 2 for every other verdict).
 
 mod common;
 
@@ -159,7 +159,11 @@ fn preflight_without_vault_flag_never_opens_vault_or_writes() {
     assert_eq!(value["vault_probed"], false);
     assert!(!ids(&value).contains(&"vault-not-accessible".to_string()));
     assert_ne!(value["verdict"], "blocked");
-    assert_ne!(code, 1);
+    match value["verdict"].as_str() {
+        Some("ready") => assert_eq!(code, 0),
+        Some("degraded" | "blocked" | "unknown") => assert_eq!(code, 2),
+        other => panic!("unexpected verdict {other:?}"),
+    }
 
     // Positive control: --vault does open the vault and reports the failure.
     let (probed, code, _) = run(
@@ -175,7 +179,7 @@ fn preflight_without_vault_flag_never_opens_vault_or_writes() {
         .unwrap()
         .iter()
         .any(|id| id == "vault-not-accessible"));
-    assert_eq!(code, 1);
+    assert_eq!(code, 2);
 }
 
 #[test]
@@ -195,7 +199,7 @@ fn preflight_exit_codes_default_zero_and_strict_mapping() {
         "preflight-pass",
         &["agent", "doctor", "--json", "--strict"],
     );
-    assert_eq!(code, 1);
+    assert_eq!(code, 2);
 
     // Degraded: initialized but no MCP wiring (warning).
     let (dir, _) = initialized("preflight-pass");

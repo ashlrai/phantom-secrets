@@ -140,8 +140,9 @@ enum Commands {
         /// Emit one JSON report on stdout instead of the human checklist
         #[arg(long)]
         json: bool,
-        /// Exit 1 when the report has any issue. Omit it to keep the current exit status.
-        /// Does not apply to --pq or --all.
+        /// Exit 2 when the report has any issue. Warnings count the same as
+        /// failures. Omit it to keep the current exit status. Exit 1 stays a
+        /// command error. Does not apply to --pq or --all.
         #[arg(long, conflicts_with_all = ["pq", "all"])]
         strict: bool,
         /// Print a read-only, value-free post-quantum readiness report
@@ -343,7 +344,9 @@ enum Commands {
     Why {
         /// Environment variable name to explain
         key: String,
-        /// Exit 1 when the key is missing or not protected. Omit it to keep the current exit status.
+        /// Exit 2 when the key is not protected. A JSON report for a missing
+        /// key also exits 2. The human view of a missing key is still a
+        /// command error (exit 1). Omit it to keep the current exit status.
         #[arg(long)]
         strict: bool,
     },
@@ -883,7 +886,8 @@ enum AgentAction {
         /// With --json: also probe the vault and the cloud login (keychain access)
         #[arg(long)]
         vault: bool,
-        /// With --json: exit 0 ready, 2 degraded, 1 blocked, 3 not evaluated
+        /// With --json: exit 0 when ready, exit 2 when degraded, blocked, or
+        /// unknown. Exit 1 stays a command error. Omit it to keep exit 0.
         #[arg(long)]
         strict: bool,
     },

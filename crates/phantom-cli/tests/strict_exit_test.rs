@@ -1,7 +1,9 @@
 //! `--strict` is opt-in for `phantom doctor` and `phantom why`.
-//! Without it, the pinned exit codes stay. With it, doctor exits 1 when the
-//! report has any issue, and why exits 1 when the key is missing or not
-//! protected. The printed report stays the same either way.
+//! Without it, the pinned exit codes stay. With it, doctor exits 2 when the
+//! report has any issue (warnings count the same), and why exits 2 when the
+//! key is not protected. A JSON report for a missing key also exits 2. The
+//! human view of a missing key stays a command error (exit 1). The printed
+//! report stays the same either way.
 mod common;
 
 use assert_cmd::Command;
@@ -80,13 +82,14 @@ fn doctor_strict_exits_on_issues_for_human_and_json_and_keeps_the_report() {
     let global_json = phantom(dir.path(), &["--json", "doctor", "--strict"]);
 
     assert_eq!(code(&human), 0);
-    assert_eq!(code(&human_strict), 1);
-    assert_eq!(code(&json), 0);
-    assert_eq!(code(&json_strict), 1);
-    assert_eq!(code(&global_json), 1);
+    assert_eq!(code(&human_strict), 2);
     assert_eq!(text(&human).0, text(&human_strict).0);
     assert_eq!(text(&json).0, text(&json_strict).0);
     assert_eq!(text(&json_strict).0, text(&global_json).0);
+
+    assert_eq!(code(&json), 0);
+    assert_eq!(code(&json_strict), 2);
+    assert_eq!(code(&global_json), 2);
 
     let report = json_stdout(&json_strict);
     assert_eq!(report["schema"], "phantom.doctor.v1");
@@ -151,10 +154,10 @@ fn why_strict_exits_when_the_key_is_unprotected_and_stays_quiet_about_the_value(
     let global_json = phantom(dir.path(), &["--json", "why", KEY, "--strict"]);
 
     assert_eq!(code(&human), 0);
-    assert_eq!(code(&human_strict), 1);
+    assert_eq!(code(&human_strict), 2);
     assert_eq!(code(&json), 0);
-    assert_eq!(code(&json_strict), 1);
-    assert_eq!(code(&global_json), 1);
+    assert_eq!(code(&json_strict), 2);
+    assert_eq!(code(&global_json), 2);
     assert_eq!(text(&human).0, text(&human_strict).0);
     assert_eq!(text(&json).0, text(&json_strict).0);
     assert_eq!(text(&json_strict).0, text(&global_json).0);
@@ -177,10 +180,10 @@ fn why_strict_exits_when_the_key_is_missing_without_changing_the_json_report() {
     let json = phantom(dir.path(), &["why", "MISSING_KEY", "--json"]);
     let json_strict = phantom(dir.path(), &["why", "MISSING_KEY", "--json", "--strict"]);
 
-    assert_ne!(code(&human), 0);
-    assert_ne!(code(&human_strict), 0);
+    assert_eq!(code(&human), 1);
+    assert_eq!(code(&human_strict), 1);
     assert_eq!(code(&json), 0);
-    assert_eq!(code(&json_strict), 1);
+    assert_eq!(code(&json_strict), 2);
     assert_eq!(text(&human).1, text(&human_strict).1);
     assert_eq!(text(&json).0, text(&json_strict).0);
     let report = json_stdout(&json_strict);
@@ -213,6 +216,78 @@ fn why_strict_keeps_exit_zero_when_the_key_is_protected() {
     assert_eq!(report["found"], true);
 }
 
+/// `doctor --output <file> --strict` writes the same report as `--output`
+/// alone and exits 2 when that report has issues. Stdout stays the one-line
+/// summary.
+#[test]
+fn doctor_output_file_strict_writes_the_report_and_exits_on_issues() {
+    let dir = unprotected_project();
+    let plain_path = dir.path().join("doctor.txt");
+    let strict_path = dir.path().join("doctor-strict.txt");
+    let json_path = dir.path().join("doctor.json");
+    let json_strict_path = dir.path().join("doctor-strict.json");
+
+    let plain = phantom(
+        dir.path(),
+        &["doctor", "--output", plain_path.to_str().unwrap()],
+    );
+    let strict = phantom(
+        dir.path(),
+        &[
+            "doctor",
+            "--output",
+            strict_path.to_str().unwrap(),
+            "--strict",
+        ],
+    );
+    let json = phantom(
+        dir.path(),
+        &["doctor", "--json", "--output", json_path.to_str().unwrap()],
+    );
+    let json_strict = phantom(
+        dir.path(),
+        &[
+            "doctor",
+            "--json",
+            "--output",
+            json_strict_path.to_str().unwrap(),
+            "--strict",
+        ],
+    );
+
+    assert_eq!(code(&plain), 0);
+    assert_eq!(code(&strict), 2);
+    assert_eq!(code(&json), 0);
+    assert_eq!(code(&json_strict), 2);
+    assert_eq!(
+        fs::read(&plain_path).unwrap(),
+        fs::read(&strict_path).unwrap()
+    );
+    assert_eq!(
+        fs::read(&json_path).unwrap(),
+        fs::read(&json_strict_path).unwrap()
+    );
+
+    let summary = text(&strict).0;
+    assert!(summary.starts_with("Doctor: "), "{summary}");
+    assert!(summary.contains("Full report: "), "{summary}");
+    assert_eq!(summary.lines().count(), 1, "{summary}");
+    let file = String::from_utf8(fs::read(&strict_path).unwrap()).unwrap();
+    assert!(file.contains("warn") || file.contains("fail"), "{file}");
+    let json_file = String::from_utf8(fs::read(&json_strict_path).unwrap()).unwrap();
+    let report: Value = serde_json::from_slice(json_file.as_bytes()).unwrap();
+    assert_eq!(report["schema"], "phantom.doctor.v1");
+    assert!(report["issues"].as_u64().unwrap() > 0);
+
+    for output in [&plain, &strict, &json, &json_strict] {
+        assert_canary_absent(output);
+    }
+    for text in [file.as_str(), summary.as_str(), json_file.as_str()] {
+        assert!(!text.contains(CANARY), "planted value reached the report");
+        assert!(!text.contains("phm_"), "a phantom token reached the report");
+    }
+}
+
 #[test]
 fn strict_is_named_in_doctor_and_why_help() {
     let dir = common::canonical_tempdir();
@@ -224,8 +299,10 @@ fn strict_is_named_in_doctor_and_why_help() {
     let why_help = text(&why).0;
     assert!(doctor_help.contains("--strict"));
     assert!(doctor_help.contains("any issue"));
+    assert!(doctor_help.contains("Exit 2"));
     assert!(why_help.contains("--strict"));
     assert!(why_help.contains("not protected"));
+    assert!(why_help.contains("Exit 2"));
     let rejected = phantom(dir.path(), &["doctor", "--strict", "--pq"]);
     assert_ne!(code(&rejected), 0);
 }

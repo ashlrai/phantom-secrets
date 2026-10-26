@@ -11,6 +11,27 @@ pub(crate) const WHY_SCHEMA: &str = "phantom.why.v1";
 pub(crate) const CHECK_SCHEMA: &str = "phantom.check.v1";
 pub(crate) const AGENT_DOCTOR_SCHEMA: &str = "phantom.agent.doctor.v1";
 
+/// Shared `--strict` status for `phantom doctor`, `phantom why`, and
+/// `phantom agent doctor`.
+///
+/// | Code | Meaning |
+/// | --- | --- |
+/// | 0 | No issues. Doctor found none, why says the key is protected, or the agent doctor verdict is `ready`. |
+/// | 1 | Command failure (usage, IO, parse, or another error). This is not an issues-found result. |
+/// | 2 | Issues found, only when `--strict` is set. |
+///
+/// A usage error also exits 2 and prints no report. An issues-found result
+/// prints the report, then exits 2. Doctor counts every issue the same. A warning counts. There is no severity
+/// weighting. Why uses code 2 when the JSON report is not protected, and when
+/// the human view classifies the key as not protected. A missing key in the
+/// human view is still a command error (code 1) because that path prints no
+/// report. Agent doctor maps `degraded`, `blocked`, and `unknown` to code 2.
+///
+/// Without `--strict`, doctor and why keep their previous exits, and
+/// `phantom agent doctor --json` stays 0. The human `phantom agent doctor`
+/// view still uses the readiness report's own exit code.
+pub(crate) const STRICT_ISSUES_FOUND: i32 = 2;
+
 /// Prepend `"schema"` to a pretty-printed JSON object.
 ///
 /// `pretty` must be `serde_json::to_string_pretty` output for an object. The

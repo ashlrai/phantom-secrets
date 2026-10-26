@@ -838,13 +838,14 @@ fn build_preflight(report: &AgentReadinessReport, vault_probed: bool) -> Preflig
     }
 }
 
-/// Exit code for `--strict`: 0 ready, 2 degraded, 1 blocked, 3 not evaluated.
+/// `--strict` uses the shared table in
+/// [`crate::commands::report_json::STRICT_ISSUES_FOUND`]: 0 when the verdict
+/// is `ready`, otherwise exit 2 (`degraded`, `blocked`, or `unknown`).
+/// Exit 1 stays a command error.
 fn strict_exit_code(verdict: &str) -> i32 {
     match verdict {
         "ready" => 0,
-        "degraded" => 2,
-        "blocked" => 1,
-        _ => 3,
+        _ => crate::commands::report_json::STRICT_ISSUES_FOUND,
     }
 }
 

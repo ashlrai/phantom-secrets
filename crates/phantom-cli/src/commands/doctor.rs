@@ -173,11 +173,14 @@ pub fn run_doctor(fix: bool, check_expiry: bool, json: bool, strict: bool) -> Re
     Ok(())
 }
 
-/// `--strict` turns a finished report that still has issues into exit 1.
-/// The report itself is unchanged. Without the flag, issues keep exit 0.
+/// `--strict` turns a finished report that still has issues into exit 2
+/// ([`crate::commands::report_json::STRICT_ISSUES_FOUND`]).
+/// Every issue counts the same: a warning is an issue, with no severity
+/// weighting. The report itself is unchanged. Without the flag, issues keep
+/// exit 0. Exit 1 stays a command error.
 fn exit_if_strict(strict: bool, issues: usize) {
     if strict && issues > 0 {
-        std::process::exit(1);
+        std::process::exit(crate::commands::report_json::STRICT_ISSUES_FOUND);
     }
 }
 

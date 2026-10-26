@@ -126,7 +126,7 @@ pub fn run(key: &str, json: bool, strict: bool) -> Result<()> {
 
 fn exit_unless_protected(strict: bool, protected: bool) {
     if strict && !protected {
-        std::process::exit(1);
+        std::process::exit(crate::commands::report_json::STRICT_ISSUES_FOUND);
     }
 }
 
