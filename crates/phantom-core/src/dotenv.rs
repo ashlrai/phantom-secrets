@@ -558,13 +558,15 @@ impl DotenvFile {
     /// entry, so `phantom init` never moves it into the vault and it stays
     /// as plaintext in the file. Diagnostics use this to name such lines; the
     /// value itself is never returned. Detection is the one example
-    /// generation masks with, minus empty and `your_<name>_here` placeholder
-    /// values. Lines inside a multi-line quoted value are not comments.
+    /// generation masks with, minus placeholder values (empty,
+    /// `your_<name>_here`, and docs-style shapes such as `your.key.here`,
+    /// `...` or `<your-key>`; see [`is_commented_placeholder`]). Lines inside
+    /// a multi-line quoted value are not comments.
     pub fn commented_secret_assignments(&self) -> Vec<(String, usize)> {
         // Heuristics only: callers have no project config here.
         self.commented_secret_value_spans(None)
             .into_iter()
-            .filter(|(span, _)| !is_example_placeholder(&self.source[span.clone()]))
+            .filter(|(span, _)| !is_commented_placeholder(&self.source[span.clone()]))
             .map(|(span, key)| (key, physical_line_number(&self.source, span.start)))
             .collect()
     }
@@ -989,7 +991,8 @@ fn normalize_line_endings(source: &str) -> String {
 /// parses as an assignment is judged on its decoded value and keeps its
 /// quotes and trailing comment. A tail with a valid key whose value does not
 /// parse (an unterminated quote from a commented multi-line value) is judged
-/// on the raw remainder, and the whole remainder is masked. Prose such as
+/// on the raw remainder after its opening quote, and the whole remainder,
+/// quote included, is masked. Only that one physical line is spanned. Prose such as
 /// `Set API_KEY=...` has no valid key and is left alone.
 fn commented_secret_value_span(
     tail: &str,
@@ -1019,9 +1022,15 @@ fn commented_secret_value_span(
     if value_start >= value_end {
         return None;
     }
+    // The opening quote of an unterminated value is not part of it: judge
+    // `"-----BEGIN ...` or `'sk-...` on what follows, so value rules that
+    // match a prefix still apply whatever the key is called.
+    let judged = tail[value_start..value_end]
+        .strip_prefix(['"', '\''])
+        .unwrap_or(&tail[value_start..value_end]);
     let entry = EnvEntry {
         key: key.to_string(),
-        value: tail[value_start..value_end].to_string(),
+        value: judged.to_string(),
         is_phantom: false,
     };
     let secret = config_declares_secret(config, &entry.key)
@@ -1697,6 +1706,70 @@ pub fn is_example_placeholder(value: &str) -> bool {
         && middle
             .chars()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
+}
+
+/// True if `value`, the raw value of a commented-out assignment, is a
+/// docs-style placeholder rather than a credential left behind: an
+/// [`is_example_placeholder`] value, filler such as `...`, `xxxx` or `****`,
+/// a short `<your-key>` or `<your api key>`, or `your` ... `here` words joined
+/// by `.`, `_`, `-` or blanks in any case (`your.key.here`,
+/// `YOUR_TOKEN_HERE`). Matching surrounding quotes are ignored. Anything a
+/// value rule calls a secret, in whole or in any one word, and any word
+/// longer than 24 characters, is never a placeholder, so a real credential
+/// wrapped in placeholder punctuation is still reported.
+fn is_commented_placeholder(value: &str) -> bool {
+    const MAX_PLACEHOLDER_LEN: usize = 64;
+    const MAX_WORD_LEN: usize = 24;
+    let unquoted = ['"', '\'']
+        .into_iter()
+        .find_map(|quote| {
+            value
+                .strip_prefix(quote)
+                .and_then(|rest| rest.strip_suffix(quote))
+        })
+        .unwrap_or(value);
+    if is_example_placeholder(unquoted) {
+        return true;
+    }
+    if unquoted.len() > MAX_PLACEHOLDER_LEN {
+        return false;
+    }
+    let (inner, bracketed) = unquoted
+        .strip_prefix('<')
+        .and_then(|rest| rest.strip_suffix('>'))
+        .map_or((unquoted, false), |inner| (inner, true));
+    if inner.is_empty() {
+        return false;
+    }
+    let matches_value_rule = |candidate: &str| {
+        let mut entry = EnvEntry {
+            key: String::new(),
+            value: candidate.to_string(),
+            is_phantom: false,
+        };
+        let secret = deciding_rule(&entry).is_some() || public_value_rule(&entry.value).is_some();
+        entry.value.zeroize();
+        secret
+    };
+    if matches_value_rule(inner) || inner.split(['.', ' ']).any(matches_value_rule) {
+        return false;
+    }
+    if inner
+        .chars()
+        .all(|c| matches!(c, '.' | '*' | 'x' | 'X' | '-' | '_'))
+    {
+        return true;
+    }
+    let words: Vec<&str> = inner.split(['.', '_', '-', ' ']).collect();
+    let plain_words = words.iter().all(|word| {
+        !word.is_empty()
+            && word.len() <= MAX_WORD_LEN
+            && word.chars().all(|c| c.is_ascii_alphanumeric())
+    });
+    let your_here = words.len() >= 2
+        && words[0].eq_ignore_ascii_case("your")
+        && words[words.len() - 1].eq_ignore_ascii_case("here");
+    plain_words && (bracketed || your_here)
 }
 
 /// Generate a descriptive placeholder for a secret key.
@@ -2487,6 +2560,61 @@ KEY3=unquoted
             DotenvFile::parse_str(&cr_only).commented_secret_assignments(),
             vec![("OPENAI_API_KEY".to_string(), 2)]
         );
+    }
+
+    #[test]
+    fn commented_placeholder_values_are_not_reported() {
+        // Docs-style placeholders under a secret-looking key are not
+        // credentials left behind, whatever their separators.
+        let content = "# API_KEY=your.key.here\n# API_KEY=...\n# API_KEY=<your-key>\n# API_KEY=\"your.api.key.here\"\n# SECRET_TOKEN=YOUR_TOKEN_HERE\n# AUTH_TOKEN=your-auth-token-here\n# DB_PASSWORD=xxxxxxxx\n# API_KEY='<your api key>'\n# STRIPE_SECRET_KEY=****\n";
+        assert_eq!(
+            DotenvFile::parse_str(content).commented_secret_assignments(),
+            Vec::<(String, usize)>::new()
+        );
+    }
+
+    #[test]
+    fn commented_placeholder_shapes_never_hide_real_credentials() {
+        // A real credential wrapped in placeholder punctuation is still one.
+        let old = ["sk", "-proj-", "Wr4ppedC0mmentedValue0123456789abc"].concat();
+        let entropy = ["Q2hhbmdlTWVQbGFjZWhv", "bGRlcldyYXBwZWQwOTg3"].concat();
+        let content = format!(
+            "# API_KEY=<{old}>\n# API_KEY=your.{old}.here\n# API_KEY=\"<{entropy}>\"\n# API_KEY=your.{entropy}.here\n# API_KEY=changeme123\n"
+        );
+        let found = DotenvFile::parse_str(&content).commented_secret_assignments();
+        let lines: Vec<usize> = found.iter().map(|(_, line)| *line).collect();
+        assert_eq!(lines, vec![1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn commented_unterminated_quoted_pem_is_detected_on_its_own_line() {
+        // `# NAME="-----BEGIN ...` from a commented multi-line value has no
+        // closing quote on its line. The opening quote must not hide the PEM
+        // header from the value rules, whatever the key is called, and the
+        // span must stay on that one line.
+        let pem = ["-----BEGIN ", "PRIVATE KEY-----"].concat();
+        let body = ["MIIEvQIBADANBgkqhkiG9w0B", "AQEFAASCBKcwggSjAgEAAoIB"].concat();
+        let end = ["-----END ", "PRIVATE KEY-----"].concat();
+        for quote in ["\"", "'"] {
+            let content = format!(
+                "# CERT_BODY={quote}{pem}\n# {body}\n# {end}{quote}\nPORT=8080\n# NEXT_PUBLIC_PEM={quote}{pem}\nDEBUG=true\n"
+            );
+            let dotenv = DotenvFile::parse_str(&content);
+            assert_eq!(
+                dotenv.commented_secret_assignments(),
+                vec![
+                    ("CERT_BODY".to_string(), 1),
+                    ("NEXT_PUBLIC_PEM".to_string(), 5),
+                ],
+                "quote {quote}"
+            );
+            let example = dotenv.generate_example_content(None).unwrap();
+            assert!(!example.contains(&pem), "commented PEM header copied");
+            assert!(!example.contains(&body), "commented PEM body copied");
+            assert!(example.contains("# CERT_BODY=your_cert_body_here\n"));
+            assert!(example.contains("\nPORT=8080\n"));
+            assert!(example.contains("\nDEBUG=true\n"));
+        }
     }
 
     #[test]
