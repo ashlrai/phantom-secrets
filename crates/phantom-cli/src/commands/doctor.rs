@@ -128,13 +128,13 @@ fn check_managed_dotenv(project_dir: &std::path::Path, env_path: &std::path::Pat
         check_fix("Run: phantom init");
         1
     };
-    issues + check_commented_secrets(&dotenv, name)
+    issues + check_commented_entries(&dotenv, name)
 }
 
 /// One warning per commented-out assignment that still holds a secret.
 /// `phantom init` never touches comments, so such a value stays as plaintext
 /// in the file. Key names and line numbers only; the file is not changed.
-fn check_commented_secrets(dotenv: &DotenvFile, file_label: &str) -> usize {
+fn check_commented_entries(dotenv: &DotenvFile, file_label: &str) -> usize {
     let found = dotenv.commented_secret_assignments();
     for (key_name, line) in &found {
         check_warn(&format!(

@@ -223,7 +223,7 @@ pub fn run(env_path_arg: &str) -> Result<()> {
 
     let env_label = env_name.to_string_lossy().into_owned();
     if real_entries.is_empty() {
-        let commented_warnings = commented_secret_warnings(&dotenv, &env_label);
+        let commented_notes = commented_entry_notes(&dotenv, &env_label);
         println!(
             "{} No real secrets found in {} (all values are already phantom tokens, public keys, or config)",
             "!".yellow().bold(),
@@ -288,7 +288,7 @@ pub fn run(env_path_arg: &str) -> Result<()> {
                 "ok".green().bold()
             );
         }
-        print_commented_secret_warnings(&commented_warnings);
+        print_commented_entry_notes(&commented_notes);
         return Ok(());
     }
 
@@ -344,8 +344,8 @@ pub fn run(env_path_arg: &str) -> Result<()> {
     originals.clear();
     // Line numbers are taken from the rewritten text, which is what the
     // file holds once init commits: a multi-line value becomes one token line.
-    let commented_warnings =
-        commented_secret_warnings(&DotenvFile::parse_str(&phantomized_env), &env_label);
+    let commented_notes =
+        commented_entry_notes(&DotenvFile::parse_str(&phantomized_env), &env_label);
 
     let mut files = vec![
         InitFile::replace_if_exact_snapshot(
@@ -501,7 +501,7 @@ pub fn run(env_path_arg: &str) -> Result<()> {
         println!("{}", headless.dimmed());
     }
 
-    print_commented_secret_warnings(&commented_warnings);
+    print_commented_entry_notes(&commented_notes);
 
     if let Some(prepared) = &claude_setup {
         prompts::finish_auto_setup_claude_code(prepared);
@@ -520,7 +520,7 @@ pub fn run(env_path_arg: &str) -> Result<()> {
 /// a secret. init protects live entries only and never edits comments, so
 /// such a value stays as plaintext in the file. Key names and line numbers
 /// only; the values are never printed.
-fn commented_secret_warnings(dotenv: &DotenvFile, file_label: &str) -> Vec<String> {
+fn commented_entry_notes(dotenv: &DotenvFile, file_label: &str) -> Vec<String> {
     dotenv
         .commented_secret_assignments()
         .into_iter()
@@ -532,7 +532,7 @@ fn commented_secret_warnings(dotenv: &DotenvFile, file_label: &str) -> Vec<Strin
         .collect()
 }
 
-fn print_commented_secret_warnings(lines: &[String]) {
+fn print_commented_entry_notes(lines: &[String]) {
     for line in lines {
         println!("{} {}", "warn".yellow().bold(), line);
     }
@@ -644,12 +644,12 @@ mod tests {
         let old = ["sk", "-proj-", "1n1tC0mmentedValue0123456789abcdefgh"].concat();
         let text = format!("OPENAI_API_KEY=phm_x\n\n# OPENAI_API_KEY={old}\n# PORT=8080\n");
         let dotenv = DotenvFile::parse_str(&text);
-        let lines = commented_secret_warnings(&dotenv, ".env");
+        let lines = commented_entry_notes(&dotenv, ".env");
         assert_eq!(lines.len(), 1, "{lines:?}");
         assert!(lines[0].contains("OPENAI_API_KEY"), "{}", lines[0]);
         assert!(lines[0].contains(".env line 3"), "{}", lines[0]);
         assert!(!lines[0].contains(&old));
-        assert!(commented_secret_warnings(&DotenvFile::parse_str("PORT=1\n"), ".env").is_empty());
+        assert!(commented_entry_notes(&DotenvFile::parse_str("PORT=1\n"), ".env").is_empty());
     }
 
     #[test]
