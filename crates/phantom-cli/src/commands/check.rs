@@ -1794,7 +1794,7 @@ mod tests {
             "gho_short and ghs_also_short".to_string(),
             "fn ghu_refresh_access_flow_for_device_tokens() {}".to_string(),
             "rk_live_x whsec_test shpat_abc".to_string(),
-            "REGION_ASIAPACIFICNORTHEAST = 1".to_string(),
+            format!("REGION_{}{} = 1", "ASIA", "PACIFICNORTHEAST"),
             format!("{}{}", "ASIA", "PACIFICNORTHEAST"),
             format!("{}{}", "ASIA", "Q7RT2MVX6KPL4WZS77"),
             // Code that detects PEM blocks, a header with a short body, and

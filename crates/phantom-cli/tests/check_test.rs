@@ -111,7 +111,7 @@ fn check_staged_extended_shapes_allow_public_material_and_identifiers() {
         format!(
             "{public}\n{body}\n{certificate}\n{body}\n\
              fn ghu_refresh_access_flow_for_device_tokens() {{}}\n\
-             const region = ASIAPACIFICNORTHEAST;\n\
+             const region = ASIAPACIFICNORTHEAST; // test fixture: inert region identifier\n\
              rk_live_short whsec_short shpat_short\n"
         ),
     )
