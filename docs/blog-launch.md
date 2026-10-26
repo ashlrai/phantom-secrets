@@ -58,7 +58,10 @@ never resolve them, but a stolen live proxy bearer can authorize exact routes
 that inject their own credentials. Rotate an exposed project token. Non-secret config values such as `NODE_ENV` and `PORT`
 are normally left untouched by the detection heuristics.
 
-Your real secrets are stored in the OS keychain (macOS Keychain, Linux Secret Service, or an encrypted file fallback for CI environments).
+Your real secrets are stored through the platform credential backend (macOS
+Keychain, the Linux kernel keyring, or Windows Credential Manager), with an
+encrypted-file fallback when its passphrase can be persisted and verified.
+Linux kernel-keyring entries do not survive a reboot.
 
 The real question: if the `.env` has fake keys, how does anything actually work?
 
@@ -112,7 +115,7 @@ closed; Phantom does not inject them into the child environment.
 ## Real usage: three commands
 
 ```bash
-# 1. After installing the reviewed v0.7.5 GitHub release, initialize the project
+# 1. After installing the reviewed v0.7.9 GitHub release, initialize the project
 $ phantom init
 -> Found .env with 5 entries
 -> Detected 3 secret(s): OPENAI_API_KEY, STRIPE_SECRET_KEY, ANTHROPIC_API_KEY
@@ -196,7 +199,7 @@ transcripts, generated files, or tool calls.
 phantom init
 ```
 
-Install the checksum-verified `v0.7.5` GitHub release binaries using the
+Install the checksum-verified `v0.7.9` GitHub release binaries using the
 [current platform instructions](./getting-started.md#install) before running
 this command. Three commands establish the local boundary for supported API routes. Keep
 dotenv reads denied, review the generated config, and use the documented

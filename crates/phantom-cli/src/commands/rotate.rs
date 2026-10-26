@@ -304,9 +304,18 @@ fn prepare_local_token_remap(project_dir: &Path) -> Result<Option<LocalTokenRema
         .context("Failed to load exact .phantom.toml snapshot")?;
     crate::commands::add::validate_managed_dotenv_preflight(&project_dir, &config)?;
     let local_project_id = config.local_project_id().to_string();
-    let vault =
-        phantom_vault::try_create_vault(&local_project_id).context("Failed to initialize vault")?;
+    let vault = crate::util::open_vault(&local_project_id).context("Failed to initialize vault")?;
     let names = sorted_names(vault.as_ref())?;
+    // The remap claims to invalidate every persistent phm_ mapping for the
+    // project. Beside an encrypted-file vault this process cannot open, an
+    // empty keychain listing is not "nothing to remap" and a keychain-only
+    // listing would leave every file-vault entry's token unchanged.
+    crate::util::require_complete_inventory(
+        vault.as_ref(),
+        &local_project_id,
+        names.len(),
+        "remap Phantom tokens",
+    )?;
     if names.is_empty() {
         return Ok(None);
     }
@@ -857,7 +866,7 @@ pub fn run_with_provider(
         auto_sync_rotation_with_bootstrap, default_rotation_providers,
     };
 
-    let reviewed_project_root = std::env::current_dir()?
+    let reviewed_project_root = crate::util::project_dir()?
         .canonicalize()
         .context("Failed to resolve canonical project root for provider rotation")?;
     let reviewed_project = TrustedAnchor::open(&reviewed_project_root)
@@ -886,7 +895,7 @@ pub fn run_with_provider(
         )?;
     // Vault construction may take PROCESS_ENV_LOCK, so it must complete before
     // the project transaction lock is acquired.
-    let vault = phantom_vault::try_create_vault(&reviewed_local_project_id)
+    let vault = crate::util::open_vault(&reviewed_local_project_id)
         .context("Failed to initialize vault")?;
     let transaction_lock = acquire_reviewed_project_lock(
         &reviewed_project_root,
@@ -939,9 +948,20 @@ pub fn run_with_provider(
     if !vault
         .exists(name)
         .with_context(|| format!("Failed to check if '{name}' exists in vault"))?
-        && !is_github_grant
     {
-        anyhow::bail!("Secret '{}' not found in vault.", name);
+        // Beside a locked encrypted-file vault the name is most likely in
+        // that file: name the unlock step instead of "not found", and do not
+        // let a GitHub grant mint a successor into the OS keychain beside it.
+        let locked =
+            crate::util::locked_vault_notice(vault.as_ref(), &reviewed_local_project_id).is_some();
+        if !is_github_grant || locked {
+            return Err(crate::util::missing_secret_error(
+                vault.as_ref(),
+                &reviewed_local_project_id,
+                name,
+                format!("Secret '{name}' not found in vault."),
+            ));
+        }
     }
 
     // Determine the effective provider: explicit --provider flag, else the
@@ -1046,7 +1066,10 @@ pub fn run_with_provider(
 
     // Capture the outgoing value BEFORE overwriting it: providers that revoke
     // the old credential at the vendor (Vercel) do so only after the new value
-    // is durably stored, authenticating with the old value itself.
+    // is durably stored, authenticating with the old value itself. This read
+    // deliberately skips the lifecycle gates: rotating is the remedy their
+    // refusals name, and the value only reaches the exact-before vault write
+    // and the provider that issued it.
     let old_value = match vault.retrieve(name) {
         Ok(value) => Some(value),
         Err(phantom_core::error::PhantomError::SecretNotFound(_)) if is_github_grant => None,
@@ -1282,22 +1305,18 @@ pub fn run_batch(
         );
     }
 
-    let project_dir = std::env::current_dir()?;
-    let config_path = project_dir.join(".phantom.toml");
-
-    if !config_path.exists() {
-        anyhow::bail!(
-            "No .phantom.toml found. Run {} first.",
-            "phantom init".cyan().bold()
-        );
-    }
-
-    let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
-    let vault = phantom_vault::try_create_vault(config.local_project_id())
-        .context("Failed to initialize vault")?;
+    let project_dir = crate::util::project_dir()?;
+    let config = crate::util::load_project_config(&project_dir)?;
+    let vault =
+        crate::util::open_vault(config.local_project_id()).context("Failed to initialize vault")?;
 
     // Gather all secrets with their expiry metadata and provider config.
     let names = vault.list().context("Failed to list secrets")?;
+    // A locked file vault would otherwise read as "No secrets in vault" or
+    // "No secrets are due for rotation".
+    let note =
+        crate::util::inventory_guard(vault.as_ref(), config.local_project_id(), names.len())?;
+    crate::util::warn_inventory_note(note.as_deref());
     if names.is_empty() {
         println!("{} No secrets in vault.", "!".yellow().bold());
         return Ok(());
@@ -1762,7 +1781,7 @@ mod token_remap_tests {
             .next()
             .unwrap();
         let anchor = provider.find("TrustedAnchor::open").unwrap();
-        let vault = provider.find("try_create_vault").unwrap();
+        let vault = provider.find("open_vault(").unwrap();
         let project_lock = provider.find("acquire_reviewed_project_lock").unwrap();
         assert!(anchor < vault && vault < project_lock);
 
@@ -1977,5 +1996,119 @@ mod token_remap_tests {
             .to_string();
         assert!(promote_error.contains("deprecated and disabled"));
         assert!(promote_error.contains("No credential or metadata was changed"));
+    }
+
+    /// `phantom rotate --batch` answered "No secrets in vault." with exit 0
+    /// when the project's secrets were in an encrypted-file vault this
+    /// process could not open; it now refuses with the unlock step, as
+    /// `phantom secrets-expiring-soon` and MCP `phantom_secret_rotation_due`
+    /// do.
+    #[cfg(unix)]
+    #[test]
+    fn batch_rotation_report_refuses_a_locked_file_vault() {
+        let _project =
+            crate::util::test_seam::LockedProject::new(crate::util::test_seam::empty_keychain);
+        let error = run_batch(30, false, true).unwrap_err().to_string();
+        assert!(error.starts_with("Vault locked:"), "{error}");
+        assert!(error.contains("PHANTOM_VAULT_PASSPHRASE"), "{error}");
+    }
+
+    /// Write a managed dotenv holding a protected placeholder for the
+    /// file-vault entry and for the keychain stub's entry.
+    #[cfg(unix)]
+    fn write_locked_project_dotenv(dir: &Path) -> Vec<u8> {
+        let body = format!(
+            "OPENAI_API_KEY={}\nKEYCHAIN_ONLY_KEY={}\nPUBLIC=yes\n",
+            phantom_core::token::PhantomToken::generate().as_str(),
+            phantom_core::token::PhantomToken::generate().as_str(),
+        );
+        std::fs::write(dir.join(".env"), &body).unwrap();
+        body.into_bytes()
+    }
+
+    /// `phantom rotate` answered "No Phantom tokens to remap." with exit 0
+    /// when the project's secrets were in an encrypted-file vault this
+    /// process could not open and the OS keychain it fell back to was empty.
+    #[cfg(unix)]
+    #[test]
+    fn token_remap_refuses_an_empty_keychain_beside_a_locked_file_vault() {
+        let project =
+            crate::util::test_seam::LockedProject::new(crate::util::test_seam::empty_keychain);
+        let before = write_locked_project_dotenv(&project.dir);
+        let outcome = prepare_local_token_remap(&project.dir);
+        assert!(
+            outcome.is_err(),
+            "remap planning must refuse a locked file vault"
+        );
+        let error = outcome.err().unwrap().to_string();
+        assert!(error.starts_with("Vault locked:"), "{error}");
+        assert!(error.contains("PHANTOM_VAULT_PASSPHRASE"), "{error}");
+        assert_eq!(std::fs::read(project.dir.join(".env")).unwrap(), before);
+    }
+
+    /// A keychain-only listing beside a locked file vault planned a remap of
+    /// the keychain names alone while the challenge claimed every mapping is
+    /// invalidated, leaving the file-vault entries' tokens unchanged.
+    #[cfg(unix)]
+    #[test]
+    fn token_remap_refuses_a_keychain_only_inventory_beside_a_locked_file_vault() {
+        let project =
+            crate::util::test_seam::LockedProject::new(crate::util::test_seam::keychain_with_one);
+        let before = write_locked_project_dotenv(&project.dir);
+        let outcome = prepare_local_token_remap(&project.dir);
+        assert!(
+            outcome.is_err(),
+            "remap planning must refuse a keychain-only inventory"
+        );
+        let error = outcome.err().unwrap().to_string();
+        assert!(
+            error.starts_with("Refusing to remap Phantom tokens from a partial inventory"),
+            "{error}"
+        );
+        assert!(error.contains("PHANTOM_VAULT_PASSPHRASE"), "{error}");
+        assert_eq!(std::fs::read(project.dir.join(".env")).unwrap(), before);
+    }
+
+    /// `phantom rotate --name <KEY>` answered "Secret '<KEY>' not found in
+    /// vault." when the secret was in an encrypted-file vault this process
+    /// could not open and the OS keychain it fell back to did not hold it.
+    /// It now names the locked vault and the unlock step.
+    #[cfg(unix)]
+    #[test]
+    fn provider_rotation_names_a_locked_file_vault_not_a_missing_secret() {
+        let project =
+            crate::util::test_seam::LockedProject::new(crate::util::test_seam::empty_keychain);
+        let before = write_locked_project_dotenv(&project.dir);
+        let error = run_with_provider(Some("stripe"), "OPENAI_API_KEY", false, true)
+            .unwrap_err()
+            .to_string();
+        assert!(error.starts_with("Vault locked:"));
+        assert!(error.contains("PHANTOM_VAULT_PASSPHRASE"));
+        assert!(!error.contains("not found"));
+        assert_eq!(std::fs::read(project.dir.join(".env")).unwrap(), before);
+    }
+
+    /// A GitHub grant may create a target the vault does not hold yet, but
+    /// beside a locked encrypted-file vault the target is most likely in that
+    /// file: the run refuses with the unlock step instead of planning a mint
+    /// into the OS keychain beside it.
+    #[cfg(unix)]
+    #[test]
+    fn github_grant_rotation_refuses_beside_a_locked_file_vault() {
+        let project =
+            crate::util::test_seam::LockedProject::new(crate::util::test_seam::empty_keychain);
+        let config_path = project.dir.join(".phantom.toml");
+        let mut config = std::fs::read_to_string(&config_path).unwrap();
+        config.push_str(
+            "\n[phantom.secrets.OPENAI_API_KEY.rotation_provider]\nprovider = \"github\"\n",
+        );
+        std::fs::write(&config_path, config).unwrap();
+        let before = write_locked_project_dotenv(&project.dir);
+        let error = run_with_provider(None, "OPENAI_API_KEY", false, true)
+            .unwrap_err()
+            .to_string();
+        assert!(error.starts_with("Vault locked:"));
+        assert!(error.contains("PHANTOM_VAULT_PASSPHRASE"));
+        assert_eq!(std::fs::read(project.dir.join(".env")).unwrap(), before);
     }
 }

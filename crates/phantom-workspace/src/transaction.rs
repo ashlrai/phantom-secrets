@@ -2145,24 +2145,11 @@ fn acquire_workspace_lock(root: &Path) -> Result<WorkspaceLock> {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let lock_directory = std::env::temp_dir().join("phantom-workspace-locks");
-    std::fs::create_dir_all(&lock_directory).map_err(|source| WorkspaceError::Io {
-        path: lock_directory.clone(),
-        source,
-    })?;
     let lock_path = lock_directory.join(format!(
         "{}.lock",
         digest_hex(root.to_string_lossy().as_bytes())
     ));
-    let lock = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(&lock_path)
-        .map_err(|source| WorkspaceError::Io {
-            path: lock_path.clone(),
-            source,
-        })?;
+    let lock = open_workspace_lock_file(&lock_directory, &lock_path)?;
     fs2::FileExt::lock_exclusive(&lock).map_err(|source| WorkspaceError::Io {
         path: lock_path,
         source,
@@ -2171,6 +2158,60 @@ fn acquire_workspace_lock(root: &Path) -> Result<WorkspaceLock> {
         _process: process,
         _file: lock,
     })
+}
+
+/// Open (creating if needed) the cross-process lock file inside the shared
+/// temp directory.
+///
+/// On Unix the temp directory can be shared with other local users, so the
+/// `phantom-workspace-locks` directory must be a real directory owned by the
+/// current user with no group or other access (created 0700, tightened
+/// through a no-follow descriptor when it is ours), and the lock file is
+/// opened relative to that descriptor without following a symlink. A
+/// directory or link planted by someone else is refused instead of being
+/// followed. The temp directory itself may be a symlink.
+#[cfg(unix)]
+fn open_workspace_lock_file(lock_directory: &Path, lock_path: &Path) -> Result<File> {
+    phantom_core::fs::ensure_private_leaf_dir(lock_directory).map_err(|source| {
+        WorkspaceError::Io {
+            path: lock_directory.to_path_buf(),
+            source,
+        }
+    })?;
+    let unsafe_or_io = |path: &Path, source: std::io::Error| match source.kind() {
+        std::io::ErrorKind::InvalidData | std::io::ErrorKind::InvalidInput => {
+            WorkspaceError::UnsafeTarget(path.to_path_buf())
+        }
+        _ => WorkspaceError::Io {
+            path: path.to_path_buf(),
+            source,
+        },
+    };
+    let directory = phantom_core::fs::open_owned_directory(None, lock_directory, true)
+        .map_err(|source| unsafe_or_io(lock_directory, source))?;
+    let name = lock_path
+        .file_name()
+        .ok_or_else(|| WorkspaceError::UnsafeTarget(lock_path.to_path_buf()))?;
+    phantom_core::fs::open_owned_file_at(&directory, Path::new(name), true)
+        .map_err(|source| unsafe_or_io(lock_path, source))
+}
+
+#[cfg(not(unix))]
+fn open_workspace_lock_file(lock_directory: &Path, lock_path: &Path) -> Result<File> {
+    std::fs::create_dir_all(lock_directory).map_err(|source| WorkspaceError::Io {
+        path: lock_directory.to_path_buf(),
+        source,
+    })?;
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(lock_path)
+        .map_err(|source| WorkspaceError::Io {
+            path: lock_path.to_path_buf(),
+            source,
+        })
 }
 
 #[cfg(test)]
@@ -2337,5 +2378,297 @@ mod descriptor_tests {
             std::fs::read(workspace.path().join("apps/web-moved/.env")).unwrap(),
             b"API_KEY=sk-original-descriptor-value\n"
         );
+    }
+}
+
+// Durable apply and recovery are Unix-only; non-Unix builds fail closed.
+#[cfg(all(test, unix))]
+mod journal_tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn runtime_key() -> [u8; 32] {
+        rand::random()
+    }
+
+    struct Fixture {
+        workspace: TempDir,
+        _journal_dir: TempDir,
+        config: DurableJournalConfig,
+        sealed: SealedSetupPlan,
+    }
+
+    /// Apply a real plan with a durable journal so every test starts from a
+    /// journal written by production code.
+    fn applied_fixture() -> Fixture {
+        let workspace = TempDir::new().unwrap();
+        std::fs::write(
+            workspace.path().join(".env"),
+            "OPENAI_API_KEY=sk-journal-fixture-fake\n",
+        )
+        .unwrap();
+        let journal_dir = TempDir::new().unwrap();
+        let config = DurableJournalConfig::new(
+            "req-journal-test",
+            journal_dir.path().join("journal.bin"),
+            runtime_key(),
+        );
+        let seal_key = PlanSealKey::from_bytes(runtime_key());
+        let sealed = build_sealed_setup_plan(workspace.path(), &seal_key).unwrap();
+        apply_setup_plan_durable(&sealed, &seal_key, &mut NoopSetupParticipant, &config).unwrap();
+        assert!(config.path.is_file(), "durable apply left no journal");
+        Fixture {
+            workspace,
+            _journal_dir: journal_dir,
+            config,
+            sealed,
+        }
+    }
+
+    fn recover(fixture: &Fixture, plan_id: &str, pre_state_id: &str) -> Result<JournalRecovery> {
+        recover_setup_plan_journal(
+            fixture.workspace.path(),
+            plan_id,
+            pre_state_id,
+            &mut NoopSetupParticipant,
+            &fixture.config,
+        )
+    }
+
+    #[test]
+    fn recovery_requires_matching_plan_and_pre_state_ids() {
+        let fixture = applied_fixture();
+        let plan_id = fixture.sealed.plan.plan_id.clone();
+        let pre_state_id = fixture.sealed.pre_state_id.clone();
+        let other = format!("{plan_id}-other");
+
+        assert!(matches!(
+            recover(&fixture, &other, &pre_state_id),
+            Err(WorkspaceError::JournalMismatch)
+        ));
+        assert!(matches!(
+            recover(&fixture, &plan_id, &other),
+            Err(WorkspaceError::JournalMismatch)
+        ));
+        assert!(matches!(
+            recover(&fixture, &plan_id, &pre_state_id),
+            Ok(JournalRecovery::Applied(_))
+        ));
+    }
+
+    /// Mark the applied journal incomplete so recovery must roll it back.
+    fn reopen_as_prepared(fixture: &Fixture) {
+        let mut journal = DurableJournal::load(&fixture.config).unwrap().unwrap();
+        journal.set_phase(JournalPhase::Prepared, None).unwrap();
+    }
+
+    #[test]
+    fn incomplete_journal_recovery_refuses_to_overwrite_later_user_edits() {
+        let fixture = applied_fixture();
+        reopen_as_prepared(&fixture);
+        let journal = DurableJournal::load(&fixture.config).unwrap().unwrap();
+        let target = journal.record.files[0].target.clone();
+        let path = fixture.workspace.path().join(&target);
+        drop(journal);
+        std::fs::write(&path, b"user edit after the interrupted apply\n").unwrap();
+
+        let result = recover(
+            &fixture,
+            &fixture.sealed.plan.plan_id,
+            &fixture.sealed.pre_state_id,
+        );
+        assert!(
+            matches!(result, Err(WorkspaceError::RollbackDrift(_))),
+            "{result:?}"
+        );
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            b"user edit after the interrupted apply\n"
+        );
+        let journal = DurableJournal::load(&fixture.config).unwrap().unwrap();
+        assert!(matches!(journal.record.phase, JournalPhase::Prepared));
+    }
+
+    #[test]
+    fn incomplete_journal_recovery_restores_every_before_image() {
+        let fixture = applied_fixture();
+        reopen_as_prepared(&fixture);
+        let journal = DurableJournal::load(&fixture.config).unwrap().unwrap();
+        let expected = journal
+            .record
+            .files
+            .iter()
+            .map(|file| (file.target.clone(), file.before.clone()))
+            .collect::<Vec<_>>();
+        drop(journal);
+        assert!(!expected.is_empty());
+
+        assert!(matches!(
+            recover(
+                &fixture,
+                &fixture.sealed.plan.plan_id,
+                &fixture.sealed.pre_state_id,
+            ),
+            Ok(JournalRecovery::RolledBack)
+        ));
+        for (target, before) in expected {
+            let current = std::fs::read(fixture.workspace.path().join(&target)).ok();
+            assert_eq!(current, before, "{target}");
+        }
+    }
+
+    #[test]
+    fn incomplete_journal_recovery_refuses_targets_outside_the_workspace() {
+        let outside = TempDir::new().unwrap();
+        let victim = outside.path().join("victim");
+        std::fs::write(&victim, b"outside-original\n").unwrap();
+        for escaping in [
+            format!(
+                "../{}/victim",
+                outside.path().file_name().unwrap().to_string_lossy()
+            ),
+            victim.to_string_lossy().into_owned(),
+        ] {
+            let fixture = applied_fixture();
+            let mut journal = DurableJournal::load(&fixture.config).unwrap().unwrap();
+            journal.record.files = vec![JournalFile {
+                target: escaping.clone(),
+                before: Some(b"attacker-chosen\n".to_vec()),
+                before_mode: None,
+                after: b"outside-original\n".to_vec(),
+            }];
+            journal.set_phase(JournalPhase::Prepared, None).unwrap();
+            drop(journal);
+
+            let result = recover(
+                &fixture,
+                &fixture.sealed.plan.plan_id,
+                &fixture.sealed.pre_state_id,
+            );
+            assert!(
+                matches!(result, Err(WorkspaceError::UnsafeTarget(_))),
+                "{escaping}: {result:?}"
+            );
+            assert_eq!(std::fs::read(&victim).unwrap(), b"outside-original\n");
+        }
+    }
+
+    #[test]
+    fn journal_with_wrong_magic_or_truncated_header_is_invalid() {
+        let fixture = applied_fixture();
+        let original = std::fs::read(&fixture.config.path).unwrap();
+
+        let mut wrong_magic = original.clone();
+        wrong_magic[3] ^= 0x01;
+        std::fs::write(&fixture.config.path, &wrong_magic).unwrap();
+        assert!(matches!(
+            DurableJournal::load(&fixture.config),
+            Err(WorkspaceError::InvalidJournal)
+        ));
+
+        std::fs::write(&fixture.config.path, &original[..10]).unwrap();
+        assert!(matches!(
+            DurableJournal::load(&fixture.config),
+            Err(WorkspaceError::InvalidJournal)
+        ));
+    }
+
+    #[test]
+    fn authenticated_journal_with_wrong_schema_or_request_id_is_invalid() {
+        let fixture = applied_fixture();
+        let mut journal = DurableJournal::load(&fixture.config).unwrap().unwrap();
+        journal.record.schema_version = JOURNAL_SCHEMA_VERSION.wrapping_add(1);
+        journal.persist().unwrap();
+        assert!(matches!(
+            DurableJournal::load(&fixture.config),
+            Err(WorkspaceError::InvalidJournal)
+        ));
+
+        journal.record.schema_version = JOURNAL_SCHEMA_VERSION;
+        journal.record.request_id = format!("{}-other", fixture.config.request_id);
+        journal.persist().unwrap();
+        assert!(matches!(
+            DurableJournal::load(&fixture.config),
+            Err(WorkspaceError::InvalidJournal)
+        ));
+
+        journal.record.request_id = fixture.config.request_id.clone();
+        journal.persist().unwrap();
+        assert!(DurableJournal::load(&fixture.config).unwrap().is_some());
+    }
+}
+
+#[cfg(all(test, unix))]
+mod workspace_lock_tests {
+    use super::*;
+    use std::os::unix::fs::{symlink, MetadataExt, PermissionsExt};
+
+    fn mode(path: &Path) -> u32 {
+        std::fs::symlink_metadata(path).unwrap().mode() & 0o777
+    }
+
+    #[test]
+    fn fresh_workspace_lock_directory_is_private() {
+        let temp = tempfile::tempdir().unwrap();
+        let directory = temp.path().join("phantom-workspace-locks");
+        let lock_path = directory.join("fresh.lock");
+        open_workspace_lock_file(&directory, &lock_path).unwrap();
+        assert_eq!(mode(&directory), 0o700);
+        assert_eq!(mode(&lock_path), 0o600);
+    }
+
+    #[test]
+    fn symlinked_workspace_lock_directory_is_refused_and_target_untouched() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("planted");
+        std::fs::create_dir(&target).unwrap();
+        std::fs::set_permissions(&target, Permissions::from_mode(0o777)).unwrap();
+        let directory = temp.path().join("phantom-workspace-locks");
+        symlink(&target, &directory).unwrap();
+        let lock_path = directory.join("redirected.lock");
+
+        assert!(open_workspace_lock_file(&directory, &lock_path).is_err());
+        assert_eq!(mode(&target), 0o777);
+        assert!(!target.join("redirected.lock").exists());
+    }
+
+    #[test]
+    fn symlinked_workspace_lock_file_is_refused_and_victim_not_created() {
+        let temp = tempfile::tempdir().unwrap();
+        let directory = temp.path().join("phantom-workspace-locks");
+        std::fs::create_dir(&directory).unwrap();
+        let victim = temp.path().join("victim-file");
+        let lock_path = directory.join("planted.lock");
+        symlink(&victim, &lock_path).unwrap();
+
+        assert!(open_workspace_lock_file(&directory, &lock_path).is_err());
+        assert!(std::fs::symlink_metadata(&victim).is_err());
+    }
+
+    #[test]
+    fn workspace_lock_directory_with_other_access_is_tightened() {
+        let temp = tempfile::tempdir().unwrap();
+        let directory = temp.path().join("phantom-workspace-locks");
+        std::fs::create_dir(&directory).unwrap();
+        std::fs::set_permissions(&directory, Permissions::from_mode(0o777)).unwrap();
+        let lock_path = directory.join("shared.lock");
+        open_workspace_lock_file(&directory, &lock_path).unwrap();
+        assert_eq!(mode(&directory), 0o700);
+    }
+
+    #[test]
+    fn workspace_lock_under_symlinked_temp_parent_still_works() {
+        let temp = tempfile::tempdir().unwrap();
+        let real_temp = temp.path().join("real-temp");
+        std::fs::create_dir(&real_temp).unwrap();
+        let linked_temp = temp.path().join("linked-temp");
+        symlink(&real_temp, &linked_temp).unwrap();
+        let directory = linked_temp.join("phantom-workspace-locks");
+        let lock_path = directory.join("linked.lock");
+        open_workspace_lock_file(&directory, &lock_path).unwrap();
+        assert!(real_temp
+            .join("phantom-workspace-locks")
+            .join("linked.lock")
+            .is_file());
     }
 }

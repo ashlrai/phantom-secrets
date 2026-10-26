@@ -1506,6 +1506,9 @@ pub(crate) fn redact_challenge_id(challenge_id: &str) -> String {
 /// would otherwise flow into MCP responses, CLI stderr, `--json` output, and
 /// the audit log. Only structural fields (error type / code / status) are
 /// kept; everything else is replaced by a fixed message plus byte length.
+/// A kept field whose value is not a short structural token (see
+/// [`is_structural_token`]) renders as `withheld`, because a vendor can echo
+/// the rejected key into `code` or `type` too.
 ///
 /// Exposed `pub(crate)` so the `issuance` module reuses the identical hygiene
 /// when summarizing vendor bodies from the manifest/token/device endpoints.
@@ -1517,10 +1520,12 @@ pub(crate) fn summarize_error_body(body: &str) -> String {
             for key in ["type", "code", "status"] {
                 if let Some(field) = scope.get(key) {
                     let rendered = match field {
-                        serde_json::Value::String(s) => {
-                            Some(s.chars().take(64).collect::<String>())
+                        serde_json::Value::String(s) if is_structural_token(s) => Some(s.clone()),
+                        serde_json::Value::String(_) => Some("withheld".to_string()),
+                        serde_json::Value::Number(n) if n.to_string().len() <= 6 => {
+                            Some(n.to_string())
                         }
-                        serde_json::Value::Number(n) => Some(n.to_string()),
+                        serde_json::Value::Number(_) => Some("withheld".to_string()),
                         _ => None,
                     };
                     if let Some(r) = rendered {
@@ -1537,6 +1542,20 @@ pub(crate) fn summarize_error_body(body: &str) -> String {
         }
     }
     format!("vendor error body withheld ({} bytes)", body.len())
+}
+
+/// True for a short structural identifier such as `invalid_request_error`,
+/// `PERMISSION_DENIED` or `api_error.unauthenticated`. A vendor can echo the
+/// rejected key into an allowlisted field, so free text (spaces), other
+/// characters and any segment longer than 16 characters are withheld. Real
+/// codes are short words joined by `_`, `-`, `.` or `:`; keys are not.
+fn is_structural_token(s: &str) -> bool {
+    const SEPARATORS: [char; 4] = ['_', '-', '.', ':'];
+    !s.is_empty()
+        && s.len() <= 64
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || SEPARATORS.contains(&c))
+        && s.split(SEPARATORS).all(|segment| segment.len() <= 16)
 }
 
 // ── Batch rotation ────────────────────────────────────────────────────────────
@@ -2720,6 +2739,67 @@ typo_field = "oops"
         let summary = summarize_error_body(google_style);
         assert!(summary.contains("status=PERMISSION_DENIED"));
         assert!(!summary.contains("secret sauce"));
+    }
+
+    #[test]
+    fn summarize_error_body_withholds_a_key_echoed_into_an_allowlisted_field() {
+        // A vendor can put the rejected key into `code`, `type` or `status`
+        // itself; those fields are kept, so their values must still be checked.
+        let keys = [
+            "sk_live_FAKE_0123456789abcdefghij",
+            "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+            "AKIAIOSFODNN7EXAMPLE",
+            "ghp_FAKE_0123456789abcdefghijABCD",
+        ];
+        for key in keys {
+            for field in ["code", "type", "status"] {
+                let nested = format!(r#"{{"error":{{"{field}":"invalid key {key}"}}}}"#);
+                let bare = format!(r#"{{"{field}":"{key}"}}"#);
+                for body in [nested, bare] {
+                    let summary = summarize_error_body(&body);
+                    for i in 0..=key.len().saturating_sub(8) {
+                        assert!(
+                            !summary.contains(&key[i..i + 8]),
+                            "key fragment survived in {field}: {summary}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn summarize_error_body_keeps_structural_codes() {
+        for (body, want) in [
+            (
+                r#"{"error":{"type":"invalid_request_error"}}"#,
+                "type=invalid_request_error",
+            ),
+            (
+                r#"{"error":{"code":"rate_limit_exceeded"}}"#,
+                "code=rate_limit_exceeded",
+            ),
+            (
+                r#"{"error":{"code":"insufficient_quota"}}"#,
+                "code=insufficient_quota",
+            ),
+            (
+                r#"{"error":{"status":"RESOURCE_EXHAUSTED"}}"#,
+                "status=RESOURCE_EXHAUSTED",
+            ),
+            (r#"{"error":{"code":403}}"#, "code=403"),
+            (
+                r#"{"code":"not_found","status":404}"#,
+                "code=not_found status=404",
+            ),
+            (
+                r#"{"error":{"type":"api_error.unauthenticated"}}"#,
+                "type=api_error.unauthenticated",
+            ),
+        ] {
+            let summary = summarize_error_body(body);
+            assert!(summary.contains(want), "{body} -> {summary}");
+        }
     }
 
     #[test]

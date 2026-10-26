@@ -1,21 +1,13 @@
 //! `phantom grant list` — provider, grant type, state, next renewal. Never values.
 
-use anyhow::{bail, Context, Result};
+use anyhow::Result;
 use colored::Colorize;
-use phantom_core::config::PhantomConfig;
 
 use super::status::{grant_state, GrantRow};
 
 pub fn run_list(json_output: bool) -> Result<()> {
-    let project_dir = std::env::current_dir()?;
-    let config_path = project_dir.join(".phantom.toml");
-    if !config_path.exists() {
-        bail!(
-            "No .phantom.toml found. Run {} first.",
-            "phantom init".cyan().bold()
-        );
-    }
-    let config = PhantomConfig::load(&config_path).context("Failed to load .phantom.toml")?;
+    let project_dir = crate::util::project_dir()?;
+    let config = crate::util::load_project_config(&project_dir)?;
 
     let rows: Vec<GrantRow> = config
         .phantom

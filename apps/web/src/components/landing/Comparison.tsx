@@ -105,9 +105,9 @@ function Cross({ className }: { className?: string }) {
 
 export function Comparison() {
   return (
-    <section id="comparison" className="border-t border-border py-24 sm:py-28">
+    <section id="comparison" className="comparison-section py-24 sm:py-28">
       <div className="mx-auto max-w-[1200px] px-7">
-        <div className="max-w-[640px] mb-12">
+        <div className="comparison-section__intro max-w-[640px] mb-12">
           <h2 className="text-[1.8rem] sm:text-[2.4rem] font-extrabold tracking-[-0.035em] leading-[1.08] text-white">
             Why not just use what you have?
           </h2>

@@ -7,6 +7,22 @@ const CLOUD_VAULT_KEY_PREFIX: &str = "phantom-cloud:vault_key";
 const TEAM_PUBKEY: &str = "phantom-cloud:team_pubkey";
 const TEAM_SECKEY: &str = "phantom-cloud:team_seckey";
 
+fn os_keychain_entry(service: &str, account: &str) -> keyring::Result<keyring::Entry> {
+    #[cfg(target_os = "linux")]
+    {
+        // The vault crate also compiles Secret Service support for an explicit,
+        // per-project migration. Cargo feature unification must never change
+        // pre-existing cloud credentials from keyutils to a different store.
+        let credential =
+            keyring::keyutils::KeyutilsCredential::new_with_target(None, service, account)?;
+        Ok(keyring::Entry::new_with_credential(Box::new(credential)))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        keyring::Entry::new(service, account)
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct DeviceFlowResponse {
     pub device_code: String,
@@ -111,7 +127,7 @@ pub async fn get_user_info(api_base: &str, token: &str) -> Result<UserInfo> {
 
 /// Store the access token in the OS keychain.
 pub fn store_token(token: &str) -> Result<()> {
-    let entry = keyring::Entry::new(KEYCHAIN_SERVICE, TOKEN_KEY)
+    let entry = os_keychain_entry(KEYCHAIN_SERVICE, TOKEN_KEY)
         .map_err(|e| PhantomError::AuthError(format!("Keychain error: {e}")))?;
     entry
         .set_password(token)
@@ -121,7 +137,7 @@ pub fn store_token(token: &str) -> Result<()> {
 
 /// Load the access token from the OS keychain.
 pub fn load_token() -> Option<String> {
-    let entry = keyring::Entry::new(KEYCHAIN_SERVICE, TOKEN_KEY).ok()?;
+    let entry = os_keychain_entry(KEYCHAIN_SERVICE, TOKEN_KEY).ok()?;
     entry.get_password().ok()
 }
 
@@ -132,7 +148,7 @@ pub fn require_token() -> Result<String> {
 
 /// Clear the access token from the OS keychain.
 pub fn clear_token() -> Result<()> {
-    if let Ok(entry) = keyring::Entry::new(KEYCHAIN_SERVICE, TOKEN_KEY) {
+    if let Ok(entry) = os_keychain_entry(KEYCHAIN_SERVICE, TOKEN_KEY) {
         let _ = entry.delete_credential();
     }
     Ok(())
@@ -140,13 +156,29 @@ pub fn clear_token() -> Result<()> {
 
 /// Get or create a cloud vault encryption passphrase.
 /// Stored in OS keychain — never transmitted to the server.
+///
+/// A new passphrase is generated only when the keychain reports that no entry
+/// exists. Any other read failure (a locked or unreachable keychain, an access
+/// denial, an undecodable value) is returned as an error: generating here
+/// would overwrite the stored key and leave every vault already pushed under
+/// it undecryptable.
 pub fn get_or_create_cloud_passphrase() -> Result<String> {
-    let entry = keyring::Entry::new(KEYCHAIN_SERVICE, CLOUD_VAULT_KEY_PREFIX)
+    let entry = os_keychain_entry(KEYCHAIN_SERVICE, CLOUD_VAULT_KEY_PREFIX)
         .map_err(|e| PhantomError::AuthError(format!("Keychain error: {e}")))?;
+    get_or_create_cloud_passphrase_in(&entry)
+}
 
-    // Try to load existing
-    if let Ok(passphrase) = entry.get_password() {
-        return Ok(passphrase);
+fn get_or_create_cloud_passphrase_in(entry: &keyring::Entry) -> Result<String> {
+    match entry.get_password() {
+        Ok(passphrase) => return Ok(passphrase),
+        Err(keyring::Error::NoEntry) => {}
+        Err(e) => {
+            return Err(PhantomError::AuthError(format!(
+                "Could not read the cloud vault key from the OS keychain; no new key was \
+                 created, because replacing it would make vaults already pushed with it \
+                 undecryptable. Unlock the keychain and retry: {e}"
+            )))
+        }
     }
 
     // Generate new passphrase
@@ -165,13 +197,41 @@ pub fn get_or_create_cloud_passphrase() -> Result<String> {
 /// Load the user's long-lived team-vault X25519 keypair, generating
 /// and persisting one in the OS keychain on first call. The private key
 /// never leaves the keychain.
+///
+/// A keypair is generated only when the keychain reports that an entry does
+/// not exist. Any other read failure is returned as an error: generating here
+/// would overwrite the private key that existing team vault key shares are
+/// encrypted to.
 pub fn get_or_create_team_keypair() -> Result<crate::team_crypto::MemberKeypair> {
-    let pub_entry = keyring::Entry::new(KEYCHAIN_SERVICE, TEAM_PUBKEY)
+    let pub_entry = os_keychain_entry(KEYCHAIN_SERVICE, TEAM_PUBKEY)
         .map_err(|e| PhantomError::AuthError(format!("Keychain error: {e}")))?;
-    let sec_entry = keyring::Entry::new(KEYCHAIN_SERVICE, TEAM_SECKEY)
+    let sec_entry = os_keychain_entry(KEYCHAIN_SERVICE, TEAM_SECKEY)
         .map_err(|e| PhantomError::AuthError(format!("Keychain error: {e}")))?;
+    get_or_create_team_keypair_in(&pub_entry, &sec_entry)
+}
 
-    if let (Ok(pub_b64), Ok(sec_b64)) = (pub_entry.get_password(), sec_entry.get_password()) {
+fn get_or_create_team_keypair_in(
+    pub_entry: &keyring::Entry,
+    sec_entry: &keyring::Entry,
+) -> Result<crate::team_crypto::MemberKeypair> {
+    let unreadable = |what: &str, e: keyring::Error| {
+        PhantomError::AuthError(format!(
+            "Could not read the team {what} from the OS keychain; no new keypair was \
+             created, because replacing it would make team vault keys already shared \
+             with you unrecoverable. Unlock the keychain and retry: {e}"
+        ))
+    };
+    let public = match pub_entry.get_password() {
+        Ok(value) => Some(value),
+        Err(keyring::Error::NoEntry) => None,
+        Err(e) => return Err(unreadable("public key", e)),
+    };
+    let private = match sec_entry.get_password() {
+        Ok(value) => Some(value),
+        Err(keyring::Error::NoEntry) => None,
+        Err(e) => return Err(unreadable("private key", e)),
+    };
+    if let (Some(pub_b64), Some(sec_b64)) = (public, private) {
         return crate::team_crypto::MemberKeypair::from_base64(&pub_b64, &sec_b64);
     }
 
@@ -179,7 +239,7 @@ pub fn get_or_create_team_keypair() -> Result<crate::team_crypto::MemberKeypair>
     //
     // Write the private key FIRST. If we crash between the two writes,
     // the keychain ends up with a private key but no public key — the
-    // next load() call sees the public-key fetch fail, falls into this
+    // next load() call sees the public-key entry missing, falls into this
     // generate-and-persist branch, and overwrites the orphan privkey
     // with a fresh pair. Doing it the other way round (pub first) leaves
     // the keychain with a public key whose private key never existed,
@@ -221,5 +281,69 @@ mod tests {
     #[test]
     fn uses_the_canonical_phantom_cloud_origin() {
         assert_eq!(api_base_url().unwrap(), "https://phm.dev/api/v1");
+    }
+
+    fn mock_entry() -> keyring::Entry {
+        keyring::Entry::new_with_credential(Box::<keyring::mock::MockCredential>::default())
+    }
+
+    fn fail_next_read(entry: &keyring::Entry) {
+        entry
+            .get_credential()
+            .downcast_ref::<keyring::mock::MockCredential>()
+            .unwrap()
+            .set_error(keyring::Error::NoStorageAccess("keychain locked".into()));
+    }
+
+    #[test]
+    fn cloud_vault_key_is_created_only_when_absent() {
+        let entry = mock_entry();
+        let created = get_or_create_cloud_passphrase_in(&entry).unwrap();
+        assert_eq!(created.len(), 64);
+        let again = get_or_create_cloud_passphrase_in(&entry).unwrap();
+        assert!(
+            created == again,
+            "an existing cloud vault key must be reused"
+        );
+    }
+
+    #[test]
+    fn unreadable_cloud_vault_key_is_an_error_not_a_replacement() {
+        let entry = mock_entry();
+        let original = get_or_create_cloud_passphrase_in(&entry).unwrap();
+        fail_next_read(&entry);
+        assert!(
+            get_or_create_cloud_passphrase_in(&entry).is_err(),
+            "a keychain read failure must not be treated as a missing key"
+        );
+        let after = entry.get_password().unwrap();
+        assert!(original == after, "the stored cloud vault key was replaced");
+    }
+
+    #[test]
+    fn team_keypair_is_created_only_when_absent() {
+        let (pub_entry, sec_entry) = (mock_entry(), mock_entry());
+        let created = get_or_create_team_keypair_in(&pub_entry, &sec_entry).unwrap();
+        let again = get_or_create_team_keypair_in(&pub_entry, &sec_entry).unwrap();
+        assert!(created.public_b64() == again.public_b64());
+    }
+
+    #[test]
+    fn unreadable_team_keypair_is_an_error_not_a_replacement() {
+        for fail_private in [false, true] {
+            let (pub_entry, sec_entry) = (mock_entry(), mock_entry());
+            get_or_create_team_keypair_in(&pub_entry, &sec_entry).unwrap();
+            let original = sec_entry.get_password().unwrap();
+            fail_next_read(if fail_private { &sec_entry } else { &pub_entry });
+            assert!(
+                get_or_create_team_keypair_in(&pub_entry, &sec_entry).is_err(),
+                "a keychain read failure must not be treated as a missing keypair"
+            );
+            let after = sec_entry.get_password().unwrap();
+            assert!(
+                original == after,
+                "the stored team private key was replaced"
+            );
+        }
     }
 }

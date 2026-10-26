@@ -1,5 +1,6 @@
 import type { NextConfig } from "next";
 import docsRoutes from "./docs-routes.json";
+import { readBuildSourceRevision } from "./src/lib/build-source-revision";
 import { publicAuthConfigurationFingerprint } from "./src/lib/public-auth-configuration";
 
 const CONTENT_SECURITY_POLICY = [
@@ -35,9 +36,17 @@ const SECURITY_HEADERS = [
   },
 ];
 
+const NOINDEX_HEADERS = [
+  { key: "X-Robots-Tag", value: "noindex, nofollow" },
+];
+
 const nextConfig: NextConfig = {
   poweredByHeader: false,
   env: {
+    // Freeze our own observed clean Git source. Prebuilt CLI deployment metadata
+    // does not guarantee a runtime VERCEL_GIT_COMMIT_SHA; never spoof that field.
+    PHANTOM_BUILD_SOURCE_REVISION:
+      readBuildSourceRevision(__dirname) ?? "unidentified",
     // This non-secret digest is frozen into server code at build time. Runtime
     // injection cannot turn a missing or different browser configuration into
     // a ready one.
@@ -45,17 +54,31 @@ const nextConfig: NextConfig = {
       publicAuthConfigurationFingerprint(process.env) ?? "unconfigured",
   },
   async redirects() {
-    return docsRoutes.map(({ source, file }) => ({
+    const legacyDocs = docsRoutes.map(({ source, file }) => ({
       source,
       destination: `https://github.com/ashlrai/phantom-secrets/blob/main/docs/${file}`,
       permanent: false,
     }));
+
+    return legacyDocs;
   },
   async headers() {
     return [
       {
         source: "/:path*",
         headers: SECURITY_HEADERS,
+      },
+      {
+        source: "/dashboard/:path*",
+        headers: NOINDEX_HEADERS,
+      },
+      {
+        source: "/device/:path*",
+        headers: NOINDEX_HEADERS,
+      },
+      {
+        source: "/integrations/:path*",
+        headers: NOINDEX_HEADERS,
       },
     ];
   },

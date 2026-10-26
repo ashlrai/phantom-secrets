@@ -14,7 +14,8 @@
 //! filesystem CAS. Secret values are never serialized or formatted.
 
 use crate::{
-    acquire_project_transaction_lock, ProjectTransactionLock, SecretMetadata, VaultBackend,
+    acquire_project_transaction_lock, acquire_project_transaction_locks, MetadataCas,
+    ProjectTransactionLock, ProjectTransactionLockPair, SecretMetadata, VaultBackend,
 };
 use phantom_core::error::PhantomError;
 use phantom_core::fs::{
@@ -32,6 +33,65 @@ pub struct InitSecret {
     name: String,
     replacement: Option<Zeroizing<String>>,
     expected_before: Option<Option<Zeroizing<String>>>,
+    inherited_protection: Option<InheritedProtection>,
+}
+
+/// The lifecycle metadata a duplicated value carries over from its source
+/// entry, so a copy is never less protected than the entry it duplicates.
+///
+/// Every field of [`SecretMetadata`] gates behavior and is inherited:
+/// - `created_at` / `rotated_at`: the rotation age `enforce_rotation_on_access`
+///   measures; a fresh stamp would restart that clock.
+/// - `expires_at`: the deadline `phantom expiry enforce` fails closed on and
+///   `phantom_apply_expiry_policy` demotes at; dropping it would make an
+///   expired credential look unbounded.
+/// - `rotation_policy`: the TTL that recomputes `expires_at` after a rotation;
+///   dropping it would let the copy drift off its expiry schedule.
+/// - `vault_mode`: a `ReadOnly` source is refused by
+///   `retrieve_for_injection`; a `ReadWrite` copy would bypass that demotion.
+///
+/// Validation metadata (the last provider check verdict) is deliberately not
+/// inherited: it is an observation about a past check, not a protection, and
+/// the destination starts as never-checked like any new entry.
+///
+/// The caller reads the source metadata before the transaction starts, so the
+/// source can be demoted, given an expiry, or rotated before the copy commits.
+/// The protection therefore stays bound to its source entry: the transaction
+/// requires the source to still hold the copied value and exactly
+/// `source_metadata` at preflight, again atomically with the destination's
+/// metadata write when both live in one vault, and once more after every vault
+/// write before the final file commit. Any drift refuses the copy and rolls
+/// the destination back.
+#[derive(Debug, Clone, PartialEq)]
+struct InheritedProtection {
+    source_name: String,
+    source_metadata: Option<SecretMetadata>,
+    inherited: SecretMetadata,
+}
+
+impl InheritedProtection {
+    fn from_source(source_name: String, source: Option<&SecretMetadata>) -> Self {
+        // Destructure exhaustively so a new `SecretMetadata` field fails to
+        // compile here until someone decides whether a copy inherits it.
+        let SecretMetadata {
+            created_at,
+            rotated_at,
+            expires_at,
+            rotation_policy,
+            vault_mode,
+        } = source.cloned().unwrap_or_default();
+        Self {
+            source_name,
+            source_metadata: source.cloned(),
+            inherited: SecretMetadata {
+                created_at,
+                rotated_at,
+                expires_at,
+                rotation_policy,
+                vault_mode,
+            },
+        }
+    }
 }
 
 impl InitSecret {
@@ -40,6 +100,7 @@ impl InitSecret {
             name: name.into(),
             replacement: Some(Zeroizing::new(value.into())),
             expected_before: None,
+            inherited_protection: None,
         }
     }
 
@@ -57,6 +118,7 @@ impl InitSecret {
             name: name.into(),
             replacement: Some(Zeroizing::new(value.into())),
             expected_before: Some(expected_before.map(|value| Zeroizing::new(value.into()))),
+            inherited_protection: None,
         }
     }
 
@@ -71,7 +133,34 @@ impl InitSecret {
             name: name.into(),
             replacement: None,
             expected_before: Some(Some(Zeroizing::new(expected_before.into()))),
+            inherited_protection: None,
         }
+    }
+
+    /// Give a newly created entry the lifecycle metadata of the entry
+    /// `source_name` it copies, instead of the backend's fresh "stored now",
+    /// read-write defaults: the rotation age (`created_at`, `rotated_at`),
+    /// `expires_at`, `rotation_policy` and `vault_mode` become the source's,
+    /// written by compare-and-swap inside the same transaction, so a copy is
+    /// never less protected than its source. A source without metadata leaves
+    /// the destination with no known age, which the rotation gate refuses for
+    /// an enforced secret. Only valid on a create; the transaction refuses it
+    /// for an existing destination.
+    ///
+    /// `source` is the metadata the caller read before the value. The
+    /// transaction binds the copy to it: the source entry (in the destination
+    /// vault, or in the vault passed to [`commit_init_with_source_vault`])
+    /// must still hold this entry's value and exactly `source` metadata at
+    /// preflight and at commit, or the copy is refused with
+    /// [`InitTransactionError::SourceChanged`] and rolled back.
+    pub fn inheriting_source_protection(
+        mut self,
+        source_name: impl Into<String>,
+        source: Option<&SecretMetadata>,
+    ) -> Self {
+        self.inherited_protection =
+            Some(InheritedProtection::from_source(source_name.into(), source));
+        self
     }
 }
 
@@ -195,8 +284,15 @@ pub enum InitTransactionError {
     Preflight { target: String, reason: String },
     #[error("init state changed concurrently at {target}; no changes were committed")]
     ConcurrentChange { target: String },
+    #[error("copy source {source_name} changed after its value and protection were read (rotated, removed, demoted, or given a new expiry); no copy was committed, retry the copy")]
+    SourceChanged { source_name: String },
     #[error("init commit failed at {target}: {reason}; all changes were restored")]
     Commit { target: String, reason: String },
+    /// A copy source changed after the commit's first write and every change
+    /// was restored. The message is the one [`Self::Commit`] carried for this
+    /// case before it had its own variant.
+    #[error("init commit failed at {target}: copy source {source_name} changed after its value and protection were read (rotated, removed, demoted, or given a new expiry); no copy was committed, retry the copy; all changes were restored")]
+    SourceChangedDuringCommit { target: String, source_name: String },
     #[error("init commit failed at {target}, and rollback could not safely restore every target")]
     RollbackIncomplete { target: String },
 }
@@ -207,6 +303,7 @@ struct SecretSnapshot {
     metadata: Option<SecretMetadata>,
     validation: Option<ValidationMetadata>,
     after: Option<Zeroizing<String>>,
+    inherited_protection: Option<InheritedProtection>,
     touched: bool,
 }
 
@@ -263,6 +360,53 @@ pub fn commit_init(
     commit_init_with(project_dir, vault, secrets, files, &AtomicFileWriter)
 }
 
+/// [`commit_init`] for a copy whose source entries live in `source_vault`
+/// (another project's vault) rather than in the destination `vault`.
+///
+/// `source_project_dir` is the project that owns `source_vault`. Its
+/// transaction lock is held with the destination's for the whole commit, in
+/// Phantom's global lock order (see [`acquire_project_transaction_locks`]),
+/// so a cooperating writer on the source project cannot change the source
+/// between the checks below or before the final file commit, and two copies
+/// in opposite directions wait for each other instead of deadlocking. When
+/// both directories are one canonical project the lock is taken once.
+///
+/// Every [`InitSecret::inheriting_source_protection`] source is still verified
+/// in `source_vault` as defence in depth against writers that do not take the
+/// project lock: its value and exact metadata at preflight, its metadata
+/// right after the destination's inherited metadata is written, and both
+/// again after every vault write and before the final file commit. A change
+/// caught after the first write rolls the copy back and is reported as
+/// [`InitTransactionError::SourceChangedDuringCommit`].
+pub fn commit_init_with_source_vault(
+    project_dir: &Path,
+    vault: &dyn VaultBackend,
+    source_project_dir: &Path,
+    source_vault: &dyn VaultBackend,
+    secrets: Vec<InitSecret>,
+    files: Vec<InitFile>,
+) -> Result<InitReceipt, InitTransactionError> {
+    commit_init_with_identity(
+        project_dir,
+        None,
+        vault,
+        Some(CopySource {
+            project_dir: source_project_dir,
+            vault: source_vault,
+        }),
+        secrets,
+        files,
+        &AtomicFileWriter,
+    )
+}
+
+/// The project a cross-project copy reads from, and its vault.
+#[derive(Clone, Copy)]
+struct CopySource<'a> {
+    project_dir: &'a Path,
+    vault: &'a dyn VaultBackend,
+}
+
 /// Commit an initialization plan only if the transaction lock retains the
 /// exact project directory reviewed by the caller.
 ///
@@ -282,6 +426,7 @@ pub fn commit_init_if_project_identity(
         project_dir,
         Some(reviewed_project_identity),
         vault,
+        None,
         secrets,
         files,
         &AtomicFileWriter,
@@ -295,23 +440,50 @@ fn commit_init_with(
     files: Vec<InitFile>,
     writer: &dyn FileWriter,
 ) -> Result<InitReceipt, InitTransactionError> {
-    commit_init_with_identity(project_dir, None, vault, secrets, files, writer)
+    commit_init_with_identity(project_dir, None, vault, None, secrets, files, writer)
 }
 
+/// Where the sources of inherited protection live.
+#[derive(Clone, Copy)]
+enum SourceVault<'a> {
+    /// The destination vault itself (an environment copy).
+    Destination,
+    /// Another project's vault (a cross-project copy).
+    Separate(&'a dyn VaultBackend),
+}
+
+impl<'a> SourceVault<'a> {
+    fn backend(self, destination: &'a dyn VaultBackend) -> &'a dyn VaultBackend {
+        match self {
+            Self::Destination => destination,
+            Self::Separate(source) => source,
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn commit_init_with_identity(
     project_dir: &Path,
     reviewed_project_identity: Option<FileIdentity>,
     vault: &dyn VaultBackend,
+    copy_source: Option<CopySource<'_>>,
     mut secrets: Vec<InitSecret>,
     mut files: Vec<InitFile>,
     writer: &dyn FileWriter,
 ) -> Result<InitReceipt, InitTransactionError> {
-    let transaction_lock = acquire_project_transaction_lock(project_dir).map_err(|error| {
-        InitTransactionError::Preflight {
-            target: project_dir.display().to_string(),
-            reason: format!("could not acquire project transaction lock: {error}"),
+    // A cross-project copy also holds its source project's lock for the whole
+    // commit, both taken in the global lock order.
+    let transaction_locks = match copy_source {
+        Some(source) => acquire_project_transaction_locks(project_dir, source.project_dir),
+        None => {
+            acquire_project_transaction_lock(project_dir).map(ProjectTransactionLockPair::single)
         }
+    }
+    .map_err(|error| InitTransactionError::Preflight {
+        target: project_dir.display().to_string(),
+        reason: format!("could not acquire project transaction lock: {error}"),
     })?;
+    let transaction_lock = transaction_locks.primary();
     if reviewed_project_identity
         .is_some_and(|identity| transaction_lock.project_identity_at_acquisition() != identity)
     {
@@ -320,6 +492,9 @@ fn commit_init_with_identity(
             reason: "project root identity changed after initialization review".to_string(),
         });
     }
+    let source_vault = copy_source.map_or(SourceVault::Destination, |source| {
+        SourceVault::Separate(source.vault)
+    });
     let mut names = BTreeSet::new();
     for secret in &secrets {
         if secret.name.is_empty() || !names.insert(secret.name.clone()) {
@@ -327,6 +502,22 @@ fn commit_init_with_identity(
                 target: secret.name.clone(),
                 reason: "secret names must be non-empty and unique".to_string(),
             });
+        }
+    }
+    if matches!(source_vault, SourceVault::Destination) {
+        // A source this transaction also writes could not be held to its
+        // read-time state, so a copy of it is ambiguous.
+        for secret in &secrets {
+            if let Some(protection) = secret.inherited_protection.as_ref() {
+                if protection.source_name.is_empty() || names.contains(&protection.source_name) {
+                    return Err(InitTransactionError::Preflight {
+                        target: secret.name.clone(),
+                        reason:
+                            "a copy source must be a distinct entry this transaction does not write"
+                                .to_string(),
+                    });
+                }
+            }
         }
     }
     let mut paths = BTreeSet::new();
@@ -368,6 +559,21 @@ fn commit_init_with_identity(
                 });
             }
         }
+        if secret.inherited_protection.is_some()
+            && (before.is_some() || secret.replacement.is_none())
+        {
+            return Err(InitTransactionError::Preflight {
+                target: secret.name,
+                reason: "inherited source metadata applies only to a newly created entry"
+                    .to_string(),
+            });
+        }
+        if let (Some(protection), Some(value)) = (
+            secret.inherited_protection.as_ref(),
+            secret.replacement.as_ref(),
+        ) {
+            verify_copy_source(source_vault.backend(vault), protection, value)?;
+        }
         let metadata = vault
             .get_metadata(&secret.name)
             .map_err(|error| preflight_vault(&secret.name, error))?;
@@ -380,18 +586,20 @@ fn commit_init_with_identity(
             metadata,
             validation,
             after: secret.replacement,
+            inherited_protection: secret.inherited_protection,
             touched: false,
         });
     }
 
     let mut file_snapshots = Vec::with_capacity(files.len());
     for file in files.drain(..) {
-        file_snapshots.push(snapshot_file(&transaction_lock, file)?);
+        file_snapshots.push(snapshot_file(transaction_lock, file)?);
     }
 
     let mut created_directories = BTreeMap::new();
     let mut unresolved_directory_effect = false;
     let mut namespace_durability_verified = true;
+    let mut changed_source = None;
     let commit_result = (|| {
         for snapshot in file_snapshots
             .iter_mut()
@@ -399,7 +607,7 @@ fn commit_init_with_identity(
         {
             commit_file(
                 snapshot,
-                &transaction_lock,
+                transaction_lock,
                 &mut created_directories,
                 &mut unresolved_directory_effect,
                 &mut namespace_durability_verified,
@@ -437,8 +645,25 @@ fn commit_init_with_identity(
             }
             ensure_secret_state(vault, snapshot, true)
                 .map_err(|error| (snapshot.name.clone(), error.to_string()))?;
-            ensure_secret_metadata(vault, snapshot)
+            if let Some(protection) = snapshot.inherited_protection.as_ref() {
+                apply_inherited_protection(vault, source_vault, &snapshot.name, protection)
+                    .map_err(|error| commit_failure(&snapshot.name, error, &mut changed_source))?;
+            }
+            ensure_secret_metadata(vault, snapshot, true)
                 .map_err(|error| (snapshot.name.clone(), error.to_string()))?;
+        }
+
+        // Every copy source must still be exactly what its destination
+        // inherited after all vault writes, before the final file makes the
+        // copy usable; otherwise the copies roll back.
+        for snapshot in &secret_snapshots {
+            if let (Some(protection), Some(value)) = (
+                snapshot.inherited_protection.as_ref(),
+                snapshot.after.as_ref(),
+            ) {
+                verify_copy_source(source_vault.backend(vault), protection, value)
+                    .map_err(|error| commit_failure(&snapshot.name, error, &mut changed_source))?;
+            }
         }
 
         for snapshot in file_snapshots
@@ -447,7 +672,7 @@ fn commit_init_with_identity(
         {
             commit_file(
                 snapshot,
-                &transaction_lock,
+                transaction_lock,
                 &mut created_directories,
                 &mut unresolved_directory_effect,
                 &mut namespace_durability_verified,
@@ -463,7 +688,13 @@ fn commit_init_with_identity(
         let directories_ok = rollback_directories(created_directories, unresolved_directory_effect);
         let vault_ok = rollback_secrets(vault, &mut secret_snapshots);
         return if files_ok && directories_ok && vault_ok {
-            Err(InitTransactionError::Commit { target, reason })
+            Err(match changed_source {
+                Some(source_name) => InitTransactionError::SourceChangedDuringCommit {
+                    target,
+                    source_name,
+                },
+                None => InitTransactionError::Commit { target, reason },
+            })
         } else {
             Err(InitTransactionError::RollbackIncomplete { target })
         };
@@ -480,6 +711,19 @@ fn commit_init_with_identity(
         );
     }
     Ok(receipt)
+}
+
+/// A commit-stage failure as `(target, reason)`, remembering the copy source
+/// whose change caused it so the restored outcome can name it structurally.
+fn commit_failure(
+    target: &str,
+    error: InitTransactionError,
+    changed_source: &mut Option<String>,
+) -> (String, String) {
+    if let InitTransactionError::SourceChanged { source_name } = &error {
+        *changed_source = Some(source_name.clone());
+    }
+    (target.to_string(), error.to_string())
 }
 
 fn commit_file(
@@ -788,11 +1032,131 @@ fn ensure_secret_state(
     }
 }
 
+/// Require a copy source to still hold the copied value and exactly the
+/// metadata its destination inherits. A missing source, a new value (a
+/// rotation), or any metadata change (a demotion, a new expiry or policy, a
+/// rotation stamp) is [`InitTransactionError::SourceChanged`].
+fn verify_copy_source(
+    sources: &dyn VaultBackend,
+    protection: &InheritedProtection,
+    copied_value: &str,
+) -> Result<(), InitTransactionError> {
+    let source_changed = || InitTransactionError::SourceChanged {
+        source_name: protection.source_name.clone(),
+    };
+    let read_failed = || InitTransactionError::Preflight {
+        target: protection.source_name.clone(),
+        reason: "copy source verification failed".to_string(),
+    };
+    let value = match sources.retrieve(&protection.source_name) {
+        Ok(value) => value,
+        Err(PhantomError::SecretNotFound(_)) => return Err(source_changed()),
+        Err(_) => return Err(read_failed()),
+    };
+    if value.as_str() != copied_value {
+        return Err(source_changed());
+    }
+    let metadata = sources
+        .get_metadata(&protection.source_name)
+        .map_err(|_| read_failed())?;
+    if metadata != protection.source_metadata {
+        return Err(source_changed());
+    }
+    Ok(())
+}
+
+/// Replace the backend's fresh metadata on a just-created entry with the
+/// source's lifecycle metadata. Rolling the entry back deletes this metadata
+/// with it.
+///
+/// In one vault the write is a single metadata compare-and-swap batch that
+/// also requires the source's metadata to be unchanged, so a demotion, expiry
+/// or rotation stamp can never land between the check and the inherited
+/// write. A source in another vault is checked right after the write.
+fn apply_inherited_protection(
+    vault: &dyn VaultBackend,
+    source_vault: SourceVault<'_>,
+    name: &str,
+    protection: &InheritedProtection,
+) -> Result<(), InitTransactionError> {
+    let source_changed = || InitTransactionError::SourceChanged {
+        source_name: protection.source_name.clone(),
+    };
+    let current = vault
+        .get_metadata(name)
+        .map_err(|_| InitTransactionError::Preflight {
+            target: name.to_string(),
+            reason: "vault metadata read failed".to_string(),
+        })?;
+    let destination = MetadataCas {
+        name: name.to_string(),
+        expected: current,
+        replacement: Some(protection.inherited.clone()),
+    };
+    let result = match source_vault {
+        SourceVault::Destination => vault.compare_and_swap_metadata_batch(&[
+            destination,
+            MetadataCas {
+                name: protection.source_name.clone(),
+                expected: protection.source_metadata.clone(),
+                replacement: protection.source_metadata.clone(),
+            },
+        ]),
+        SourceVault::Separate(_) => vault.compare_and_swap_metadata_batch(&[destination]),
+    };
+    match result {
+        Ok(true) => {}
+        // The batch cannot tell which before-image moved: name the source
+        // when it is the one that drifted, the destination otherwise.
+        Ok(false) => {
+            return Err(
+                match source_metadata_unchanged(source_vault.backend(vault), protection) {
+                    Ok(true) => InitTransactionError::ConcurrentChange {
+                        target: name.to_string(),
+                    },
+                    _ => source_changed(),
+                },
+            );
+        }
+        Err(PhantomError::SecretNotFound(missing)) if missing == protection.source_name => {
+            return Err(source_changed());
+        }
+        Err(_) => {
+            return Err(InitTransactionError::Preflight {
+                target: name.to_string(),
+                reason: "inherited source metadata could not be written".to_string(),
+            });
+        }
+    }
+    if matches!(source_vault, SourceVault::Separate(_))
+        && !source_metadata_unchanged(source_vault.backend(vault), protection)?
+    {
+        return Err(source_changed());
+    }
+    Ok(())
+}
+
+fn source_metadata_unchanged(
+    sources: &dyn VaultBackend,
+    protection: &InheritedProtection,
+) -> Result<bool, InitTransactionError> {
+    sources
+        .get_metadata(&protection.source_name)
+        .map(|metadata| metadata == protection.source_metadata)
+        .map_err(|_| InitTransactionError::Preflight {
+            target: protection.source_name.clone(),
+            reason: "copy source verification failed".to_string(),
+        })
+}
+
+/// Verify lifecycle and validation metadata for the committed (`after`) or
+/// restored (`!after`) state of an entry that existed before the transaction.
 fn ensure_secret_metadata(
     vault: &dyn VaultBackend,
     snapshot: &SecretSnapshot,
+    after: bool,
 ) -> Result<(), InitTransactionError> {
-    if snapshot.after.is_none() {
+    if after && snapshot.after.is_none() {
         let metadata_absent = vault
             .get_metadata(&snapshot.name)
             .map_err(|_| InitTransactionError::Preflight {
@@ -820,6 +1184,13 @@ fn ensure_secret_metadata(
     if snapshot.before.is_none() {
         return Ok(());
     }
+    // A committed replacement with a different value drops the old
+    // validation verdict; a restored entry carries its exact before-image.
+    let expected_validation = if after && value_changed(snapshot) {
+        None
+    } else {
+        snapshot.validation.clone()
+    };
     let metadata_matches =
         vault
             .get_metadata(&snapshot.name)
@@ -834,7 +1205,7 @@ fn ensure_secret_metadata(
             target: snapshot.name.clone(),
             reason: "vault validation metadata verification failed".to_string(),
         })?
-        == snapshot.validation;
+        == expected_validation;
     if metadata_matches && validation_matches {
         Ok(())
     } else {
@@ -955,13 +1326,17 @@ fn rollback_secrets(vault: &dyn VaultBackend, snapshots: &mut [SecretSnapshot]) 
         let replacement = snapshot.before.as_ref().map(|before| before.as_str());
         let expected_after = snapshot.after.as_ref().map(|after| after.as_str());
         let result = vault.compare_and_swap(&snapshot.name, expected_after, replacement);
-        let metadata_restored = if matches!(result, Ok(true)) && snapshot.after.is_none() {
-            restore_deleted_metadata(vault, snapshot)
-        } else {
-            matches!(result, Ok(true))
+        let metadata_restored = match result {
+            Ok(true) if snapshot.after.is_none() => restore_deleted_metadata(vault, snapshot),
+            Ok(true) if snapshot.before.is_some() && value_changed(snapshot) => {
+                restore_validation(vault, snapshot)
+            }
+            Ok(true) => true,
+            _ => false,
         };
         if !metadata_restored
-            || (snapshot.before.is_some() && ensure_secret_metadata(vault, snapshot).is_err())
+            || (snapshot.before.is_some()
+                && ensure_secret_metadata(vault, snapshot, false).is_err())
         {
             ok = false;
         } else {
@@ -986,10 +1361,24 @@ fn restore_deleted_metadata(vault: &dyn VaultBackend, snapshot: &SecretSnapshot)
     ) {
         return false;
     }
+    restore_validation(vault, snapshot)
+}
+
+fn value_changed(snapshot: &SecretSnapshot) -> bool {
+    snapshot.before.as_ref().map(|value| value.as_str())
+        != snapshot.after.as_ref().map(|value| value.as_str())
+}
+
+/// Put back the exact validation before-image after the backend dropped it
+/// because the value under the name changed.
+fn restore_validation(vault: &dyn VaultBackend, snapshot: &SecretSnapshot) -> bool {
     let current_validation = match vault.get_validation_metadata_exact(&snapshot.name) {
         Ok(metadata) => metadata,
         Err(_) => return false,
     };
+    if current_validation == snapshot.validation {
+        return true;
+    }
     matches!(
         vault.compare_and_swap_validation_metadata(
             &snapshot.name,
@@ -1204,6 +1593,657 @@ mod tests {
             "passphrase".to_string(),
         )
         .unwrap()
+    }
+
+    /// Store a copy source with exact metadata (`None` removes the backend's
+    /// creation stamp).
+    fn seed_source(vault: &FileVault, name: &str, value: &str, metadata: Option<&SecretMetadata>) {
+        vault.store(name, value).unwrap();
+        let current = vault.get_metadata(name).unwrap();
+        assert!(vault
+            .compare_and_swap_metadata(name, current.as_ref(), metadata.cloned())
+            .unwrap());
+    }
+
+    /// A concurrent writer's effect, run once at a staged point of a copy.
+    type Interleave = Box<dyn FnOnce(&FileVault) + Send>;
+
+    /// A file vault that runs a staged effect right after the CAS that
+    /// creates a named entry, i.e. mid-commit, after the transaction's
+    /// preflight already verified the copy source.
+    struct InterleavingVault {
+        inner: FileVault,
+        after_create: std::sync::Mutex<Option<(String, Interleave)>>,
+    }
+
+    impl InterleavingVault {
+        fn new(inner: FileVault, name: &str, effect: Interleave) -> Self {
+            Self {
+                inner,
+                after_create: std::sync::Mutex::new(Some((name.to_string(), effect))),
+            }
+        }
+    }
+
+    impl VaultBackend for InterleavingVault {
+        fn store(&self, name: &str, value: &str) -> PhantomResult<()> {
+            self.inner.store(name, value)
+        }
+        fn retrieve(&self, name: &str) -> PhantomResult<Zeroizing<String>> {
+            self.inner.retrieve(name)
+        }
+        fn delete(&self, name: &str) -> PhantomResult<()> {
+            self.inner.delete(name)
+        }
+        fn compare_and_swap(
+            &self,
+            name: &str,
+            expected: Option<&str>,
+            replacement: Option<&str>,
+        ) -> PhantomResult<bool> {
+            let swapped = self.inner.compare_and_swap(name, expected, replacement)?;
+            if swapped && expected.is_none() {
+                let mut slot = self.after_create.lock().unwrap();
+                if slot.as_ref().is_some_and(|(staged, _)| staged == name) {
+                    let (_, effect) = slot.take().unwrap();
+                    effect(&self.inner);
+                }
+            }
+            Ok(swapped)
+        }
+        fn list(&self) -> PhantomResult<Vec<String>> {
+            self.inner.list()
+        }
+        fn backend_name(&self) -> &str {
+            "interleaving"
+        }
+        fn get_metadata(&self, name: &str) -> PhantomResult<Option<SecretMetadata>> {
+            self.inner.get_metadata(name)
+        }
+        fn compare_and_swap_metadata_batch(&self, changes: &[MetadataCas]) -> PhantomResult<bool> {
+            self.inner.compare_and_swap_metadata_batch(changes)
+        }
+        fn get_validation_metadata_exact(
+            &self,
+            name: &str,
+        ) -> PhantomResult<Option<ValidationMetadata>> {
+            self.inner.get_validation_metadata_exact(name)
+        }
+        fn compare_and_swap_validation_metadata_batch(
+            &self,
+            changes: &[crate::ValidationMetadataCas],
+        ) -> PhantomResult<bool> {
+            self.inner
+                .compare_and_swap_validation_metadata_batch(changes)
+        }
+    }
+
+    fn fresh_source_metadata() -> SecretMetadata {
+        SecretMetadata {
+            created_at: Some(1_000),
+            rotated_at: Some(2_000),
+            ..SecretMetadata::default()
+        }
+    }
+
+    fn demote(vault: &FileVault, name: &str) {
+        let mut metadata = vault.get_metadata(name).unwrap().unwrap_or_default();
+        metadata.vault_mode = crate::metadata::VaultMode::ReadOnly;
+        metadata.expires_at = Some(5_000);
+        vault.set_metadata(name, metadata).unwrap();
+    }
+
+    fn copy_of_source(source: &SecretMetadata) -> InitSecret {
+        InitSecret::replace_if_unchanged("COPY", None::<String>, "fixture-value")
+            .inheriting_source_protection("SOURCE", Some(source))
+    }
+
+    fn assert_no_copy(vault: &dyn VaultBackend) {
+        assert!(matches!(
+            vault.retrieve("COPY"),
+            Err(PhantomError::SecretNotFound(_))
+        ));
+        assert!(vault.get_metadata("COPY").unwrap().is_none());
+    }
+
+    /// The source was demoted to read-only with an expiry after the caller
+    /// read the metadata it hands the copy. Inheriting that stale read-write
+    /// snapshot would make the copy weaker than its source, so the
+    /// transaction refuses before writing anything.
+    #[test]
+    fn copy_refuses_a_source_demoted_after_its_metadata_was_read() {
+        let dir = TempDir::new().unwrap();
+        let vault = vault(&dir);
+        let read = fresh_source_metadata();
+        seed_source(&vault, "SOURCE", "fixture-value", Some(&read));
+        demote(&vault, "SOURCE");
+
+        let error =
+            commit_init(dir.path(), &vault, vec![copy_of_source(&read)], Vec::new()).unwrap_err();
+
+        assert!(matches!(
+            error,
+            InitTransactionError::SourceChanged { ref source_name } if source_name == "SOURCE"
+        ));
+        assert_no_copy(&vault);
+    }
+
+    /// A rotation between the caller's metadata read and value read pairs
+    /// the new value with the old rotation stamp; a rotation after both reads
+    /// leaves the copy holding a retired value. Either way the source no
+    /// longer matches what the copy carries, and the copy is refused.
+    #[test]
+    fn copy_refuses_a_source_rotated_after_it_was_read() {
+        let dir = TempDir::new().unwrap();
+        let vault = vault(&dir);
+        let read = fresh_source_metadata();
+        seed_source(&vault, "SOURCE", "fixture-value", Some(&read));
+        let mut rotated = read.clone();
+        rotated.rotated_at = Some(3_000);
+        assert!(vault
+            .compare_and_swap_metadata("SOURCE", Some(&read), Some(rotated.clone()))
+            .unwrap());
+
+        let stale_stamp = commit_init(dir.path(), &vault, vec![copy_of_source(&read)], Vec::new());
+        assert!(matches!(
+            stale_stamp,
+            Err(InitTransactionError::SourceChanged { .. })
+        ));
+        assert_no_copy(&vault);
+
+        assert!(vault
+            .compare_and_swap("SOURCE", Some("fixture-value"), Some("fixture-rotated"))
+            .unwrap());
+        let retired_value = commit_init(
+            dir.path(),
+            &vault,
+            vec![copy_of_source(&rotated)],
+            Vec::new(),
+        );
+        assert!(matches!(
+            retired_value,
+            Err(InitTransactionError::SourceChanged { .. })
+        ));
+        assert_no_copy(&vault);
+    }
+
+    /// The source was demoted mid-commit, after preflight verified it and
+    /// after the copy's value was written. The commit-time check under the
+    /// same metadata compare-and-swap refuses and rolls the copy back.
+    #[test]
+    fn copy_refuses_a_source_demoted_during_the_commit() {
+        let dir = TempDir::new().unwrap();
+        let read = fresh_source_metadata();
+        let inner = vault(&dir);
+        seed_source(&inner, "SOURCE", "fixture-value", Some(&read));
+        let vault = InterleavingVault::new(
+            inner,
+            "COPY",
+            Box::new(|inner: &FileVault| demote(inner, "SOURCE")),
+        );
+
+        let error =
+            commit_init(dir.path(), &vault, vec![copy_of_source(&read)], Vec::new()).unwrap_err();
+
+        assert!(vault.after_create.lock().unwrap().is_none());
+        assert!(matches!(
+            error,
+            InitTransactionError::SourceChangedDuringCommit { ref source_name, .. }
+                if source_name == "SOURCE"
+        ));
+        assert!(error.to_string().contains("copy source SOURCE changed"));
+        // The structured variant keeps the message the generic commit
+        // failure carried for this case.
+        assert!(error
+            .to_string()
+            .starts_with("init commit failed at COPY: copy source SOURCE changed"));
+        assert!(error
+            .to_string()
+            .ends_with("retry the copy; all changes were restored"));
+        assert_no_copy(&vault);
+        assert_eq!(
+            vault.get_metadata("SOURCE").unwrap().unwrap().vault_mode,
+            crate::metadata::VaultMode::ReadOnly
+        );
+    }
+
+    /// A source rotated mid-commit after the copy's inherited metadata was
+    /// written is caught by the final check before the last file commits;
+    /// the copy and its files roll back.
+    #[test]
+    fn copy_refuses_a_source_rotated_before_the_final_file_commit() {
+        let dir = TempDir::new().unwrap();
+        let read = fresh_source_metadata();
+        let inner = vault(&dir);
+        seed_source(&inner, "SOURCE", "fixture-value", Some(&read));
+        // Stage the rotation on a later entry's creation, after COPY's
+        // inherited metadata is already in place.
+        let vault = InterleavingVault::new(
+            inner,
+            "LATER",
+            Box::new(|inner: &FileVault| {
+                assert!(inner
+                    .compare_and_swap("SOURCE", Some("fixture-value"), Some("fixture-rotated"))
+                    .unwrap());
+            }),
+        );
+        let state = dir.path().join("state");
+
+        let error = commit_init(
+            dir.path(),
+            &vault,
+            vec![
+                copy_of_source(&read),
+                InitSecret::replace_if_unchanged("LATER", None::<String>, "fixture-later"),
+            ],
+            vec![
+                InitFile::replace_if_unchanged(&state, None::<Vec<u8>>, b"copied".to_vec())
+                    .commit_last(),
+            ],
+        )
+        .unwrap_err();
+
+        assert!(vault.after_create.lock().unwrap().is_none());
+        assert!(matches!(
+            error,
+            InitTransactionError::SourceChangedDuringCommit { ref source_name, .. }
+                if source_name == "SOURCE"
+        ));
+        assert_no_copy(&vault);
+        assert!(!vault.exists("LATER").unwrap());
+        assert!(!state.exists());
+    }
+
+    /// A cross-project copy verifies its source in the source project's
+    /// vault: an unchanged source copies with its exact protection, a
+    /// source demoted after it was read is refused.
+    #[test]
+    fn copy_from_a_separate_source_vault_is_held_to_the_read_source() {
+        let source_dir = TempDir::new().unwrap();
+        let source = vault(&source_dir);
+        let read = fresh_source_metadata();
+        seed_source(&source, "SOURCE", "fixture-value", Some(&read));
+        let dir = TempDir::new().unwrap();
+        let target = vault(&dir);
+
+        commit_init_with_source_vault(
+            dir.path(),
+            &target,
+            source_dir.path(),
+            &source,
+            vec![copy_of_source(&read)],
+            Vec::new(),
+        )
+        .unwrap();
+        assert_eq!(target.get_metadata("COPY").unwrap(), Some(read.clone()));
+
+        // The binding resolves in the source vault (no destination vault
+        // holds SOURCE): a demotion there refuses the next copy.
+        let other_dir = TempDir::new().unwrap();
+        let other = vault(&other_dir);
+        demote(&source, "SOURCE");
+        let error = commit_init_with_source_vault(
+            other_dir.path(),
+            &other,
+            source_dir.path(),
+            &source,
+            vec![copy_of_source(&read)],
+            Vec::new(),
+        )
+        .unwrap_err();
+        assert!(matches!(error, InitTransactionError::SourceChanged { .. }));
+        assert_no_copy(&other);
+    }
+
+    /// A cross-project source demoted mid-commit, after the copy's value is
+    /// written, is caught right after the inherited metadata write.
+    #[test]
+    fn copy_from_a_separate_source_vault_refuses_a_mid_commit_demotion() {
+        let source_dir = TempDir::new().unwrap();
+        let source = vault(&source_dir);
+        let read = fresh_source_metadata();
+        seed_source(&source, "SOURCE", "fixture-value", Some(&read));
+        let source_handle = vault(&source_dir);
+        let dir = TempDir::new().unwrap();
+        let target = InterleavingVault::new(
+            vault(&dir),
+            "COPY",
+            Box::new(move |_: &FileVault| demote(&source_handle, "SOURCE")),
+        );
+
+        let error = commit_init_with_source_vault(
+            dir.path(),
+            &target,
+            source_dir.path(),
+            &source,
+            vec![copy_of_source(&read)],
+            Vec::new(),
+        )
+        .unwrap_err();
+
+        assert!(target.after_create.lock().unwrap().is_none());
+        assert!(matches!(
+            error,
+            InitTransactionError::SourceChangedDuringCommit { ref source_name, .. }
+                if source_name == "SOURCE"
+        ));
+        assert_no_copy(&target);
+    }
+
+    fn vault_at(path: &Path) -> FileVault {
+        FileVault::new(
+            &path.canonicalize().unwrap(),
+            "init-test",
+            "passphrase".to_string(),
+        )
+        .unwrap()
+    }
+
+    /// Run `work` on its own thread and fail instead of hanging when it does
+    /// not finish in time, which is how a lock-order deadlock shows up.
+    fn finishes_within<T: Send + 'static>(
+        limit: std::time::Duration,
+        work: impl FnOnce() -> T + Send + 'static,
+    ) -> T {
+        let (done, finished) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = done.send(work());
+        });
+        finished
+            .recv_timeout(limit)
+            .expect("work must finish within its bound (no lock-order deadlock)")
+    }
+
+    /// A cooperating writer on the source project (one that takes the source
+    /// project's transaction lock, as every Phantom writer does) cannot land
+    /// a change while a cross-project copy is committing: it waits until the
+    /// copy has committed, so the copy carries exactly the source it read and
+    /// the writer's change lands afterwards.
+    #[test]
+    fn cross_project_copy_holds_the_source_project_lock_until_it_commits() {
+        let source_dir = TempDir::new().unwrap();
+        let source = vault(&source_dir);
+        let read = fresh_source_metadata();
+        seed_source(&source, "SOURCE", "fixture-value", Some(&read));
+        let dir = TempDir::new().unwrap();
+
+        let writer_project = source_dir.path().to_path_buf();
+        let writer_vault = vault(&source_dir);
+        let writer: std::sync::Arc<std::sync::Mutex<Option<std::thread::JoinHandle<()>>>> =
+            Default::default();
+        let writer_slot = std::sync::Arc::clone(&writer);
+        let writer_entered_during_commit =
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let entered_flag = std::sync::Arc::clone(&writer_entered_during_commit);
+        let target = InterleavingVault::new(
+            vault(&dir),
+            "COPY",
+            Box::new(move |_: &FileVault| {
+                let (progress, progress_signal) = std::sync::mpsc::channel();
+                let handle = std::thread::spawn(move || {
+                    let _lock = acquire_project_transaction_lock(&writer_project).unwrap();
+                    let _ = progress.send("locked");
+                    demote(&writer_vault, "SOURCE");
+                    let _ = progress.send("landed");
+                });
+                *writer_slot.lock().unwrap() = Some(handle);
+                // Without the source lock the writer gets in at once; let
+                // its change land mid-commit (the vault KDF is slow in debug
+                // builds, so wait for the write itself without a tight bound).
+                let locked = progress_signal
+                    .recv_timeout(std::time::Duration::from_millis(750))
+                    .is_ok();
+                if locked {
+                    let _ = progress_signal.recv_timeout(std::time::Duration::from_secs(60));
+                }
+                entered_flag.store(locked, Ordering::SeqCst);
+            }),
+        );
+
+        let committed = commit_init_with_source_vault(
+            dir.path(),
+            &target,
+            source_dir.path(),
+            &source,
+            vec![copy_of_source(&read)],
+            Vec::new(),
+        )
+        .is_ok();
+        let handle = writer.lock().unwrap().take();
+        handle.expect("writer was started").join().unwrap();
+
+        assert!(!writer_entered_during_commit.load(Ordering::SeqCst));
+        assert!(committed);
+        assert_eq!(target.get_metadata("COPY").unwrap(), Some(read));
+        // The writer ran after the copy released the source project.
+        assert_eq!(
+            source.get_metadata("SOURCE").unwrap().unwrap().vault_mode,
+            crate::metadata::VaultMode::ReadOnly
+        );
+    }
+
+    /// Two copies in opposite directions (A into B and B into A) each hold
+    /// both projects' locks, taken in one global order, so they serialize
+    /// and both complete instead of deadlocking.
+    #[test]
+    fn opposite_direction_cross_project_copies_do_not_deadlock() {
+        let first = TempDir::new().unwrap();
+        let second = TempDir::new().unwrap();
+        let read = fresh_source_metadata();
+        seed_source(&vault(&first), "SOURCE", "fixture-value", Some(&read));
+        seed_source(&vault(&second), "SOURCE", "fixture-value", Some(&read));
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+
+        let copier = |into: PathBuf, from: PathBuf| {
+            let barrier = std::sync::Arc::clone(&barrier);
+            let read = read.clone();
+            move || {
+                let source = vault_at(&from);
+                barrier.wait();
+                (0..3)
+                    .map(|round| {
+                        // Hold both locks a little while so the opposite
+                        // copy is waiting on them mid-commit.
+                        let target = InterleavingVault::new(
+                            vault_at(&into),
+                            &format!("COPY_{round}"),
+                            Box::new(|_: &FileVault| {
+                                std::thread::sleep(std::time::Duration::from_millis(25))
+                            }),
+                        );
+                        commit_init_with_source_vault(
+                            &into,
+                            &target,
+                            &from,
+                            &source,
+                            vec![InitSecret::replace_if_unchanged(
+                                format!("COPY_{round}"),
+                                None::<String>,
+                                "fixture-value",
+                            )
+                            .inheriting_source_protection("SOURCE", Some(&read))],
+                            Vec::new(),
+                        )
+                        .is_ok()
+                    })
+                    .collect::<Vec<_>>()
+            }
+        };
+        let forward = copier(first.path().to_path_buf(), second.path().to_path_buf());
+        let backward = copier(second.path().to_path_buf(), first.path().to_path_buf());
+
+        let outcomes = finishes_within(std::time::Duration::from_secs(120), move || {
+            let forward = std::thread::spawn(forward);
+            let backward = std::thread::spawn(backward);
+            (forward.join().unwrap(), backward.join().unwrap())
+        });
+
+        assert_eq!(outcomes, (vec![true; 3], vec![true; 3]));
+        for round in 0..3 {
+            let name = format!("COPY_{round}");
+            assert_eq!(
+                vault(&first).get_metadata(&name).unwrap(),
+                Some(read.clone())
+            );
+            assert_eq!(
+                vault(&second).get_metadata(&name).unwrap(),
+                Some(read.clone())
+            );
+        }
+    }
+
+    /// A copy whose source directory is the destination project (here by a
+    /// different spelling) takes that project's single lock once instead of
+    /// waiting on itself.
+    #[test]
+    fn cross_project_copy_within_one_project_takes_its_lock_once() {
+        let dir = TempDir::new().unwrap();
+        let read = fresh_source_metadata();
+        seed_source(&vault(&dir), "SOURCE", "fixture-value", Some(&read));
+        let project = dir.path().to_path_buf();
+        let spelling = dir.path().join(".");
+
+        let committed = finishes_within(std::time::Duration::from_secs(60), move || {
+            let destination = vault_at(&project);
+            let source = vault_at(&project);
+            commit_init_with_source_vault(
+                &project,
+                &destination,
+                &spelling,
+                &source,
+                vec![copy_of_source(&read)],
+                Vec::new(),
+            )
+            .is_ok()
+        });
+
+        assert!(committed);
+        assert_eq!(
+            vault(&dir).get_metadata("COPY").unwrap(),
+            Some(fresh_source_metadata())
+        );
+    }
+
+    /// A copy of an entry the same transaction writes cannot be held to its
+    /// read-time state; the transaction refuses it before any write.
+    #[test]
+    fn copy_of_an_entry_the_transaction_writes_is_refused() {
+        let dir = TempDir::new().unwrap();
+        let vault = vault(&dir);
+        let read = fresh_source_metadata();
+        seed_source(&vault, "SOURCE", "fixture-value", Some(&read));
+
+        let error = commit_init(
+            dir.path(),
+            &vault,
+            vec![
+                copy_of_source(&read),
+                InitSecret::replace_if_unchanged(
+                    "SOURCE",
+                    Some("fixture-value"),
+                    "fixture-rotated",
+                ),
+            ],
+            Vec::new(),
+        )
+        .unwrap_err();
+
+        assert!(matches!(error, InitTransactionError::Preflight { .. }));
+        assert_no_copy(&vault);
+        assert_eq!(vault.retrieve("SOURCE").unwrap().as_str(), "fixture-value");
+    }
+
+    /// A duplicated value must keep its source's rotation age: the created
+    /// entry carries the source's `created_at`/`rotated_at`, not "now".
+    #[test]
+    fn created_entry_inherits_the_source_rotation_anchor() {
+        let dir = TempDir::new().unwrap();
+        let vault = vault(&dir);
+        let source = SecretMetadata {
+            created_at: Some(1_000),
+            rotated_at: Some(2_000),
+            ..SecretMetadata::default()
+        };
+        seed_source(&vault, "SOURCE_A", "fixture-a", Some(&source));
+        seed_source(&vault, "SOURCE_B", "fixture-b", None);
+        commit_init(
+            dir.path(),
+            &vault,
+            vec![
+                InitSecret::replace_if_unchanged("COPY_A", None::<String>, "fixture-a")
+                    .inheriting_source_protection("SOURCE_A", Some(&source)),
+                InitSecret::replace_if_unchanged("COPY_B", None::<String>, "fixture-b")
+                    .inheriting_source_protection("SOURCE_B", None),
+                InitSecret::new("PLAIN", "fixture-c"),
+            ],
+            Vec::new(),
+        )
+        .unwrap();
+
+        let copied = vault.get_metadata("COPY_A").unwrap().unwrap();
+        assert_eq!(copied.created_at, Some(1_000));
+        assert_eq!(copied.rotated_at, Some(2_000));
+        let unknown = vault.get_metadata("COPY_B").unwrap().unwrap_or_default();
+        assert_eq!((unknown.created_at, unknown.rotated_at), (None, None));
+        let plain = vault.get_metadata("PLAIN").unwrap().unwrap();
+        assert!(plain.created_at.is_some_and(|created| created > 2_000));
+    }
+
+    /// A duplicated value must be no less protected than its source: the
+    /// created entry carries the source's expiry, TTL policy and read-only
+    /// mode, not the backend's fresh read-write defaults.
+    #[test]
+    fn created_entry_inherits_the_source_protective_metadata() {
+        let dir = TempDir::new().unwrap();
+        let vault = vault(&dir);
+        let source = SecretMetadata {
+            created_at: Some(1_000),
+            rotated_at: Some(2_000),
+            expires_at: Some(3_000),
+            rotation_policy: Some(crate::RotationPolicy {
+                days_ttl: 30,
+                auto_rotate: false,
+            }),
+            vault_mode: crate::metadata::VaultMode::ReadOnly,
+        };
+        seed_source(&vault, "SOURCE_A", "fixture-a", Some(&source));
+        commit_init(
+            dir.path(),
+            &vault,
+            vec![
+                InitSecret::replace_if_unchanged("COPY_A", None::<String>, "fixture-a")
+                    .inheriting_source_protection("SOURCE_A", Some(&source)),
+            ],
+            Vec::new(),
+        )
+        .unwrap();
+
+        let copied = vault.get_metadata("COPY_A").unwrap().unwrap_or_default();
+        assert_eq!(copied, source);
+        assert!(vault.retrieve_for_injection("COPY_A").is_err());
+    }
+
+    #[test]
+    fn inherited_protection_is_refused_for_an_existing_entry() {
+        let dir = TempDir::new().unwrap();
+        let vault = vault(&dir);
+        vault.store("EXISTING", "fixture-old").unwrap();
+        seed_source(&vault, "SOURCE", "fixture-new", None);
+        let before = vault.get_metadata("EXISTING").unwrap();
+        let error = commit_init(
+            dir.path(),
+            &vault,
+            vec![
+                InitSecret::replace_if_unchanged("EXISTING", Some("fixture-old"), "fixture-new")
+                    .inheriting_source_protection("SOURCE", None),
+            ],
+            Vec::new(),
+        )
+        .unwrap_err();
+
+        assert!(matches!(error, InitTransactionError::Preflight { .. }));
+        assert!(vault.exists("EXISTING").unwrap());
+        assert_eq!(vault.get_metadata("EXISTING").unwrap(), before);
     }
 
     #[test]
@@ -1800,6 +2840,57 @@ mod tests {
             Some(validation)
         );
         assert_eq!(std::fs::read(&target).unwrap(), b"A=phm_before\n");
+    }
+
+    #[test]
+    fn replacement_drops_stale_verdict_and_rollback_restores_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = vault(&dir);
+        vault.store("A", "one").unwrap();
+        let validation = ValidationMetadata::mark_valid("test");
+        vault
+            .set_validation_metadata("A", validation.clone())
+            .unwrap();
+
+        // A late file failure rolls the replacement back, verdict included.
+        let target = dir.path().join("managed.env");
+        phantom_core::fs::atomic_write(&target, b"A=phm_before\n").unwrap();
+        let error = commit_init_with(
+            dir.path(),
+            &vault,
+            vec![InitSecret::replace_if_unchanged("A", Some("one"), "two")],
+            vec![InitFile::replace_if_unchanged(
+                &target,
+                Some(b"A=phm_before\n".to_vec()),
+                b"A=phm_after\n".to_vec(),
+            )
+            .commit_last()],
+            &FailingWriter {
+                calls: AtomicUsize::new(0),
+                fail: 1,
+            },
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, InitTransactionError::Commit { .. }),
+            "unexpected replacement rollback error: {error:?}"
+        );
+        assert_eq!(vault.retrieve("A").unwrap().as_str(), "one");
+        assert_eq!(
+            vault.get_validation_metadata_exact("A").unwrap(),
+            Some(validation)
+        );
+
+        // A committed replacement no longer carries the old verdict.
+        commit_init(
+            dir.path(),
+            &vault,
+            vec![InitSecret::replace_if_unchanged("A", Some("one"), "two")],
+            vec![],
+        )
+        .unwrap();
+        assert_eq!(vault.retrieve("A").unwrap().as_str(), "two");
+        assert_eq!(vault.get_validation_metadata_exact("A").unwrap(), None);
     }
 
     #[test]

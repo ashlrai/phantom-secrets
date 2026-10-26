@@ -2,12 +2,15 @@ use anyhow::{Context, Result};
 use colored::Colorize;
 
 /// Reverse `phantom wrap` — restore original scripts from `:raw` variants.
-pub fn run() -> Result<()> {
+///
+/// `quiet` suppresses the per-script and summary lines; warnings and errors
+/// still print.
+pub fn run(quiet: bool) -> Result<()> {
     let project_dir = std::env::current_dir()?;
-    run_in(&project_dir, || {})
+    run_in(&project_dir, quiet, || {})
 }
 
-fn run_in(project_dir: &std::path::Path, after_lock: impl FnOnce()) -> Result<()> {
+fn run_in(project_dir: &std::path::Path, quiet: bool, after_lock: impl FnOnce()) -> Result<()> {
     let pkg_path = project_dir.join("package.json");
     let transaction_lock = phantom_vault::acquire_project_transaction_lock(project_dir)
         .context("Failed to acquire the project transaction lock")?;
@@ -30,10 +33,14 @@ fn run_in(project_dir: &std::path::Path, after_lock: impl FnOnce()) -> Result<()
         return Ok(());
     }
 
-    let output = serde_json::to_string_pretty(&pkg).context("Failed to serialize package.json")?;
+    // The exact inverse of `phantom wrap`: each restored script gets its
+    // `:raw` literal back and the `:raw` member is removed with its
+    // separator; nothing else in the file is reformatted.
+    let output = phantom_core::package_scripts::rewrite_scripts_in_place(content, &pkg)
+        .context("No scripts were restored")?;
     match target.replace_if_exact_with_permissions(
         Some(&before),
-        format!("{output}\n").as_bytes(),
+        output.as_bytes(),
         before.permissions(),
     )? {
         phantom_core::fs::AnchoredEffect::Durable(_) => {}
@@ -49,6 +56,9 @@ fn run_in(project_dir: &std::path::Path, after_lock: impl FnOnce()) -> Result<()
         }
     }
 
+    if quiet {
+        return Ok(());
+    }
     for name in &restored {
         println!(
             "   {} {} -> restored from {}:raw",
@@ -67,47 +77,10 @@ fn run_in(project_dir: &std::path::Path, after_lock: impl FnOnce()) -> Result<()
     Ok(())
 }
 
+/// The shared `phantom unwrap` decision (the MCP `phantom_unwrap` tool
+/// applies the same one).
 fn apply_unwrap(pkg: &mut serde_json::Value) -> Vec<String> {
-    let scripts = match pkg.get_mut("scripts").and_then(|s| s.as_object_mut()) {
-        Some(s) => s,
-        None => return Vec::new(),
-    };
-
-    // Find all :raw variants
-    let raw_names: Vec<String> = scripts
-        .keys()
-        .filter(|k| k.ends_with(":raw"))
-        .cloned()
-        .collect();
-
-    let mut owned_pairs = Vec::new();
-
-    for raw_name in &raw_names {
-        let base_name = raw_name.strip_suffix(":raw").unwrap().to_string();
-        let Some(raw_value) = scripts.get(raw_name).and_then(|value| value.as_str()) else {
-            continue;
-        };
-        let expected_wrapped = wrapped_script_command(raw_value);
-        if scripts.get(&base_name).and_then(|value| value.as_str()) == Some(&expected_wrapped) {
-            owned_pairs.push((base_name, raw_name.clone(), raw_value.to_string()));
-        }
-    }
-
-    for (base_name, raw_name, raw_value) in &owned_pairs {
-        scripts.insert(
-            base_name.clone(),
-            serde_json::Value::String(raw_value.clone()),
-        );
-        scripts.remove(raw_name);
-    }
-    owned_pairs
-        .into_iter()
-        .map(|(base_name, _, _)| base_name)
-        .collect()
-}
-
-fn wrapped_script_command(original: &str) -> String {
-    format!("phantom exec -- {original}")
+    phantom_core::package_scripts::unwrap_scripts(pkg)
 }
 
 #[cfg(test)]
@@ -145,6 +118,23 @@ mod tests {
         assert_eq!(pkg["scripts"]["dev:raw"], "user-owned");
     }
 
+    #[test]
+    fn unwrap_restores_the_package_json_layout_exactly() {
+        // Tab indent, unsorted keys, trailing newline: what `phantom wrap`
+        // leaves for a user who wrote their package.json that way.
+        let wrapped = "{\n\t\"name\": \"demo\",\n\t\"scripts\": {\n\t\t\"start\": \"phantom exec -- node server.js\",\n\t\t\"start:raw\": \"node server.js\",\n\t\t\"lint\": \"eslint .\"\n\t},\n\t\"private\": true\n}\n";
+        let original = "{\n\t\"name\": \"demo\",\n\t\"scripts\": {\n\t\t\"start\": \"node server.js\",\n\t\t\"lint\": \"eslint .\"\n\t},\n\t\"private\": true\n}\n";
+        let project = tempfile::tempdir().unwrap();
+        std::fs::write(project.path().join("package.json"), wrapped).unwrap();
+
+        run_in(project.path(), true, || {}).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(project.path().join("package.json")).unwrap(),
+            original
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn unwrap_uses_retained_root_after_rename() {
@@ -158,7 +148,7 @@ mod tests {
         )
         .unwrap();
 
-        run_in(&project, || {
+        run_in(&project, false, || {
             std::fs::rename(&project, &moved).unwrap();
             std::fs::create_dir(&project).unwrap();
             std::fs::write(project.join("package.json"), br#"{"decoy":true}"#).unwrap();

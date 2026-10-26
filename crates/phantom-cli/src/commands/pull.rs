@@ -14,11 +14,17 @@ use std::io::{BufRead, IsTerminal, Write};
 use std::path::Path;
 use zeroize::{Zeroize, Zeroizing};
 
+/// "Refusing to ..." wording for the rotation gate on a provider pull.
+const PLATFORM_PULL_ACTION: &str = "pull from the provider";
+
 #[derive(Clone, Debug, Serialize)]
 struct PullPlan {
     platform: String,
     provider_project: String,
     environment: Option<String>,
+    /// Vercel environments a pulled variable must apply to, taken from the
+    /// `targets` of the matching `[[sync]]` entry. Empty for Railway.
+    targets: Vec<String>,
     service: Option<String>,
     force: bool,
     local_project: String,
@@ -65,7 +71,9 @@ async fn run_async(
         .context("Failed to resolve the local project directory")?;
     let config_path = project_dir.join(".phantom.toml");
 
-    let platform: Platform = from.parse().context("Invalid platform")?;
+    let platform: Platform = from
+        .parse()
+        .map_err(|_| anyhow::anyhow!("Unknown --from '{from}'. Supported: vercel, railway"))?;
     let token_env = match platform {
         Platform::Vercel => "VERCEL_TOKEN",
         Platform::Railway => "RAILWAY_TOKEN",
@@ -85,10 +93,15 @@ async fn run_async(
     parse_pull_dotenv(env_before.as_deref()).context(
         "Managed dotenv is malformed; pull stopped before vault, approval, credential, or provider access",
     )?;
+    let vercel_targets = match platform {
+        Platform::Vercel => sync::vercel_pull_targets(&config.sync, project),
+        Platform::Railway => Vec::new(),
+    };
     let plan = PullPlan {
         platform: platform.to_string(),
         provider_project: project.to_string(),
         environment: environment.clone(),
+        targets: vercel_targets.clone(),
         service: service.clone(),
         force,
         local_project: project_dir.display().to_string(),
@@ -105,7 +118,7 @@ async fn run_async(
     require_trusted_terminal_pull(&plan)?;
 
     let vault = phantom_vault::try_create_vault(config.local_project_id())?;
-    let vault_names = vault.list().context("Failed to list local vault names")?;
+    let vault_names = local_pull_names(vault.as_ref(), config.local_project_id())?;
     let provider_edge =
         phantom_core::managed_dotenv::resolve_dotenv(&project_dir, &config, &vault_names)
             .context("Failed to re-resolve the managed dotenv before provider access")?;
@@ -137,7 +150,7 @@ async fn run_async(
 
     // Pull secrets from platform
     let pulled = match platform {
-        Platform::Vercel => sync::pull_from_vercel(token.as_str(), project).await,
+        Platform::Vercel => sync::pull_from_vercel(token.as_str(), project, &vercel_targets).await,
         Platform::Railway => {
             let env_id = environment.as_deref().unwrap_or("production");
             sync::pull_from_railway(token.as_str(), project, env_id, service.as_deref()).await
@@ -264,6 +277,23 @@ async fn run_async(
     Ok(())
 }
 
+/// The local vault's names, listed after approval and before any provider
+/// credential or network access. Beside an encrypted-file vault this process
+/// cannot open, the listing covers only the OS keychain: names already in the
+/// locked file would be pulled as new into the keychain beside them (and an
+/// existing value would be skipped or overwritten unseen), so the pull is
+/// refused before the provider is contacted.
+fn local_pull_names(vault: &dyn VaultBackend, project_id: &str) -> Result<Vec<String>> {
+    let names = vault.list().context("Failed to list local vault names")?;
+    crate::util::require_complete_inventory(
+        vault,
+        project_id,
+        names.len(),
+        "pull provider secrets into the local vault",
+    )?;
+    Ok(names)
+}
+
 fn pull_plan_digest(plan: &PullPlan) -> Result<String> {
     let canonical = serde_json::to_vec(plan).context("Could not serialize pull plan")?;
     let mut digest = Sha256::new();
@@ -365,12 +395,16 @@ fn apply_platform_pull_transaction(
     let mut counts = PullCounts::default();
     let mut token_map = TokenMap::new();
     let mut mutations = Vec::new();
+    let mut written = Vec::new();
 
     for (key, value) in pulled {
         let before = snapshot_secret(vault, key)?;
         if before.is_some() && !force {
             counts.skipped_names.push(key.clone());
             continue;
+        }
+        if before.as_ref().map(|local| local.as_str()) != Some(value.as_str()) {
+            written.push(key.as_str());
         }
         mutations.push(InitSecret::replace_if_unchanged(
             key,
@@ -384,6 +418,22 @@ fn apply_platform_pull_transaction(
             counts.new_names.push(key.clone());
         }
     }
+
+    // A provider-pulled value carries no rotation anchor: a new entry would
+    // be stamped as stored now and a forced overwrite would keep the local
+    // anchor, laundering an overdue value synced out earlier. Refuse every
+    // enforced write, judged against the reviewed config snapshot, before
+    // any vault, config or dotenv write. Skipped and identical entries are
+    // not written and keep their anchors.
+    let config = PhantomConfig::load_from_bytes(config_path, &config_before)
+        .context("Failed to parse the exact .phantom.toml snapshot")?;
+    super::rotation_gate::enforce_rotation_on_restore(
+        &config,
+        vault,
+        written,
+        PLATFORM_PULL_ACTION,
+        super::rotation_gate::now_secs(),
+    )?;
 
     let mut files = Vec::new();
     if !mutations.is_empty() {
@@ -443,6 +493,35 @@ fn snapshot_regular_file(path: &Path) -> Result<Option<Vec<u8>>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Beside an encrypted-file vault this process cannot open, the local
+    /// listing came from the OS keychain alone, so names already in the
+    /// locked file would be pulled as new into the keychain.
+    #[cfg(unix)]
+    #[test]
+    fn pull_beside_a_locked_file_vault_is_refused_before_provider_access() {
+        use crate::util::test_seam::{empty_keychain, keychain_with_one, LockedProject};
+        for (make, lead) in [
+            (
+                empty_keychain as crate::util::test_seam::MakeVault,
+                "Vault locked:",
+            ),
+            (
+                keychain_with_one,
+                "Refusing to pull provider secrets into the local vault from a partial inventory",
+            ),
+        ] {
+            let project = LockedProject::new(make);
+            let vault = crate::util::open_vault(&project.project_id).unwrap();
+
+            let outcome = local_pull_names(vault.as_ref(), &project.project_id);
+
+            assert!(outcome.is_err(), "a partial local inventory must refuse");
+            let message = outcome.err().unwrap().to_string();
+            assert!(message.starts_with(lead));
+            assert!(message.contains("PHANTOM_VAULT_PASSPHRASE"));
+        }
+    }
     use phantom_core::error::{PhantomError, Result as PhantomResult};
     use std::io::Cursor;
     use zeroize::Zeroizing;
@@ -464,6 +543,7 @@ mod tests {
             platform: "vercel".into(),
             provider_project: "provider-project".into(),
             environment: Some("production".into()),
+            targets: vec!["production".into(), "preview".into()],
             service: Some("api".into()),
             force: false,
             local_project: "/canonical/project".into(),
@@ -488,6 +568,9 @@ mod tests {
         variants.push(changed);
         let mut changed = original.clone();
         changed.environment = Some("preview".into());
+        variants.push(changed);
+        let mut changed = original.clone();
+        changed.targets = vec!["development".into()];
         variants.push(changed);
         let mut changed = original.clone();
         changed.service = Some("worker".into());
@@ -769,6 +852,121 @@ mod tests {
             .contains("Platform pull transaction failed"));
         assert!(!vault.exists("NEW_SECRET").unwrap());
         assert_eq!(std::fs::read(&outside).unwrap(), b"OWNER=unchanged\n");
+    }
+
+    fn enforced_pull_fixture(
+        dir: &tempfile::TempDir,
+        enforced: &[&str],
+    ) -> (std::path::PathBuf, Vec<u8>, phantom_vault::file::FileVault) {
+        let config_path = dir.path().join(".phantom.toml");
+        let config = crate::commands::rotation_gate::fixtures::enforced_config(enforced);
+        let config_before = toml::to_string_pretty(&config).unwrap().into_bytes();
+        std::fs::write(&config_path, &config_before).unwrap();
+        let vault = phantom_vault::file::FileVault::new(
+            &crate::test_support::canonical_tempdir_path(dir),
+            "pull-rotation",
+            "passphrase".to_string(),
+        )
+        .unwrap();
+        (config_path, config_before, vault)
+    }
+
+    /// A provider-pulled value carries no rotation anchor: a new entry was
+    /// stamped as stored now and a forced overwrite kept the local anchor, so
+    /// an overdue value synced to Vercel or Railway came back looking fresh.
+    /// Every enforced write is refused before any vault, config or dotenv write.
+    #[test]
+    fn platform_pull_refuses_to_write_an_enforced_secret_of_unknown_age() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (config_path, config_before, vault) =
+            enforced_pull_fixture(&dir, &["NEW_KEY", "EXISTING_KEY"]);
+        vault.store("EXISTING_KEY", "local-owner").unwrap();
+        let env_path = dir.path().join(".env");
+        let pulled = BTreeMap::from([
+            (
+                "EXISTING_KEY".to_string(),
+                Zeroizing::new("provider-existing".to_string()),
+            ),
+            (
+                "NEW_KEY".to_string(),
+                Zeroizing::new("provider-new".to_string()),
+            ),
+        ]);
+
+        let refused = apply_platform_pull_transaction(
+            dir.path(),
+            &config_path,
+            &env_path,
+            &vault,
+            config_before.clone(),
+            None,
+            &pulled,
+            true,
+        );
+        let message = refused
+            .err()
+            .map(|error| format!("{error:#}"))
+            .unwrap_or_default();
+        assert!(message.starts_with(
+            "Refusing to pull from the provider: rotation enforcement blocked 2 secret(s)."
+        ));
+        assert!(message.contains("'NEW_KEY'") && message.contains("'EXISTING_KEY'"));
+        assert!(!vault.exists("NEW_KEY").unwrap());
+        assert!(vault.retrieve("EXISTING_KEY").unwrap().as_str() == "local-owner");
+        assert!(!env_path.exists());
+        assert_eq!(std::fs::read(&config_path).unwrap(), config_before);
+    }
+
+    /// Only writes are gated: an existing enforced entry skipped without
+    /// --force and an identical forced value keep their anchors, and an
+    /// unenforced new value still lands.
+    #[test]
+    fn platform_pull_lets_skipped_identical_and_unenforced_entries_through() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (config_path, config_before, vault) = enforced_pull_fixture(&dir, &["EXISTING_KEY"]);
+        let shared = ["same", "on", "both", "sides"].join("-");
+        vault.store("EXISTING_KEY", &shared).unwrap();
+        let env_path = dir.path().join(".env");
+
+        let skipped = BTreeMap::from([
+            (
+                "EXISTING_KEY".to_string(),
+                Zeroizing::new("provider-existing".to_string()),
+            ),
+            (
+                "PLAIN_KEY".to_string(),
+                Zeroizing::new("provider-plain".to_string()),
+            ),
+        ]);
+        let counts = apply_platform_pull_transaction(
+            dir.path(),
+            &config_path,
+            &env_path,
+            &vault,
+            config_before.clone(),
+            None,
+            &skipped,
+            false,
+        )
+        .unwrap();
+        assert_eq!(counts.skipped_names, vec!["EXISTING_KEY".to_string()]);
+        assert_eq!(counts.new_names, vec!["PLAIN_KEY".to_string()]);
+        assert!(vault.retrieve("EXISTING_KEY").unwrap().as_str() == shared);
+
+        let identical =
+            BTreeMap::from([("EXISTING_KEY".to_string(), Zeroizing::new(shared.clone()))]);
+        let env_before = std::fs::read(&env_path).ok();
+        let forced = apply_platform_pull_transaction(
+            dir.path(),
+            &config_path,
+            &env_path,
+            &vault,
+            config_before,
+            env_before,
+            &identical,
+            true,
+        );
+        assert!(forced.is_ok());
     }
 
     #[test]

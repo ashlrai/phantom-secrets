@@ -5,13 +5,15 @@
 ```bash
 brew tap ashlrai/phantom
 brew trust --formula ashlrai/phantom/phantom
-brew install ashlrai/phantom/phantom   # installs reviewed v0.7.5
+brew install ashlrai/phantom/phantom   # version must match the verified registry receipt
 phantom init               # protects your .env
 phantom agent doctor       # verify the repo is safe for AI agents
 phantom exec -- claude     # run Claude Code with real secrets injected by proxy
 ```
 
-That Homebrew example is for macOS and installs the reviewed `v0.7.5`. On Linux
+The Homebrew command above installs the independently verified formula, which
+is still at the previous `v0.7.8` release as of 2026-09-29 (a `v0.7.9` tap bump
+is pending). For the current `v0.7.9`, on Linux
 or Windows, or when you want to verify an exact archive directly, select the
 matching platform asset below.
 
@@ -39,7 +41,7 @@ For a detailed breakdown of assets protected, threat actors, mitigations, and kn
 
 ## Install
 
-### Homebrew (macOS, reviewed v0.7.5)
+### Homebrew (macOS; formula currently at v0.7.8)
 
 ```bash
 brew tap ashlrai/phantom
@@ -48,25 +50,29 @@ brew install ashlrai/phantom/phantom
 ```
 
 The formula currently installs both `phantom` and `phantom-mcp` from the
-immutable [`v0.7.5` release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.5).
+immutable [`v0.7.8` release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.8);
+it has not yet been bumped to the current `v0.7.9`. With the `v0.7.8` formula,
+`phantom setup --client claude` writes MCP registration to the legacy
+location; see the [Claude Code guide](./claude-code.md) for the manual step.
 Homebrew publication is independently tested and maintained from GitHub
 Releases; use a direct asset below when you want explicit archive verification.
 
 ### Exact GitHub assets (macOS, Linux, and Windows)
 
-The immutable [`v0.7.5` release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.5)
+The immutable [`v0.7.9` release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.9)
 contains six native archives, each with a checksum sidecar and SPDX document,
-plus the aggregate [`SHA256SUMS`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.5/SHA256SUMS)
-file. All six release targets passed native acceptance before publication.
+plus the aggregate [`SHA256SUMS`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9/SHA256SUMS)
+file. All six release targets passed native acceptance before publication in
+[workflow 34153902556](https://github.com/ashlrai/phantom-secrets/actions/runs/34153902556).
 
-| Platform | `v0.7.5` archive | Published checksum |
+| Platform | `v0.7.9` archive | Published checksum |
 |---|---|---|
-| macOS Apple silicon | [`phantom-aarch64-apple-darwin.tar.gz`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.5/phantom-aarch64-apple-darwin.tar.gz) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.5/phantom-aarch64-apple-darwin.tar.gz.sha256) |
-| macOS Intel | [`phantom-x86_64-apple-darwin.tar.gz`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.5/phantom-x86_64-apple-darwin.tar.gz) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.5/phantom-x86_64-apple-darwin.tar.gz.sha256) |
-| Linux x86_64 | [`phantom-x86_64-unknown-linux-gnu.tar.gz`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.5/phantom-x86_64-unknown-linux-gnu.tar.gz) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.5/phantom-x86_64-unknown-linux-gnu.tar.gz.sha256) |
-| Linux ARM64 | [`phantom-aarch64-unknown-linux-gnu.tar.gz`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.5/phantom-aarch64-unknown-linux-gnu.tar.gz) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.5/phantom-aarch64-unknown-linux-gnu.tar.gz.sha256) |
-| Windows x64 | [`phantom-x86_64-pc-windows-msvc.zip`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.5/phantom-x86_64-pc-windows-msvc.zip) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.5/phantom-x86_64-pc-windows-msvc.zip.sha256) |
-| Windows ARM64 | [`phantom-aarch64-pc-windows-msvc.zip`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.5/phantom-aarch64-pc-windows-msvc.zip) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.5/phantom-aarch64-pc-windows-msvc.zip.sha256) |
+| macOS Apple silicon | [`phantom-aarch64-apple-darwin.tar.gz`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9/phantom-aarch64-apple-darwin.tar.gz) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9/phantom-aarch64-apple-darwin.tar.gz.sha256) |
+| macOS Intel | [`phantom-x86_64-apple-darwin.tar.gz`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9/phantom-x86_64-apple-darwin.tar.gz) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9/phantom-x86_64-apple-darwin.tar.gz.sha256) |
+| Linux x86_64 | [`phantom-x86_64-unknown-linux-gnu.tar.gz`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9/phantom-x86_64-unknown-linux-gnu.tar.gz) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9/phantom-x86_64-unknown-linux-gnu.tar.gz.sha256) |
+| Linux ARM64 | [`phantom-aarch64-unknown-linux-gnu.tar.gz`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9/phantom-aarch64-unknown-linux-gnu.tar.gz) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9/phantom-aarch64-unknown-linux-gnu.tar.gz.sha256) |
+| Windows x64 | [`phantom-x86_64-pc-windows-msvc.zip`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9/phantom-x86_64-pc-windows-msvc.zip) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9/phantom-x86_64-pc-windows-msvc.zip.sha256) |
+| Windows ARM64 | [`phantom-aarch64-pc-windows-msvc.zip`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9/phantom-aarch64-pc-windows-msvc.zip) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9/phantom-aarch64-pc-windows-msvc.zip.sha256) |
 
 Download the archive and its sidecar, then verify before extraction. Use
 `sha256sum -c <archive>.sha256` on Linux. On Windows, compare
@@ -78,22 +84,26 @@ executables on `PATH`.
 ```bash
 git clone https://github.com/ashlrai/phantom-secrets.git
 cd phantom-secrets
-git checkout d2969e73995cc139e6253e0c8a70f1d683f88e20
+git checkout 7a51ce512ec4aee12cc29ff859036af63fbe93db
 cargo build --release --locked --bin phantom --bin phantom-mcp
 ```
 
-The full SHA above is the source commit resolved by `v0.7.5`. Do not treat an
-unpinned registry install as that release. As verified on 2026-09-02, npm
+The full SHA above is the source commit resolved by `v0.7.9`. Do not treat an
+unpinned registry install as that release. In the exact 2026-09-29 registry snapshot, npm
 `latest` remains `0.6.0`; exact npm `0.7.4` wrappers exist only under the failed
-`release-candidate` track. No MCP Registry `0.7.4` record was found, and
+`release-candidate` track. No MCP Registry `0.7.9` record was found, and
 crates.io remains on `0.5.1`.
 
 ### Verify
 
 ```bash
 phantom --version
-# phantom 0.7.5
+phantom-mcp --version
+# phantom 0.7.9
+# phantom-mcp 0.7.9
 ```
+
+A Homebrew install prints `0.7.8` until the formula is bumped.
 
 ---
 
@@ -205,7 +215,12 @@ phantom remove STRIPE_SECRET_KEY
 `add` creates a new protected name, stores its value, and writes a phantom token
 to `.env`. It prompts silently so the secret never enters shell history or the
 process list. Positional secret values are rejected; use `--stdin` only with a
-trusted producer. An existing protected name is denied from value-blind vault
+trusted producer. `--stdin` reads up to EOF (trailing newlines are dropped, 64 KiB
+cap) and is refused when stdin is a terminal. Input with more than one line is
+refused before anything is stored unless you say what to keep: `--multiline`
+stores every line (a PEM key, a JSON document), `--first-line` stores only line 1
+(`pass show svc/api | phantom add API_KEY --stdin --first-line`, since pass and
+gopass put metadata after the key). An existing protected name is denied from value-blind vault
 metadata before Phantom reads the prompt or stdin. `add` never replaces it.
 `remove` requires attached stdin/stdout/stderr plus an exact typed challenge,
 then transactionally removes the vault value, lifecycle config, and exact
@@ -304,6 +319,24 @@ phantom check
 
 Exit code 0 = clean. Exit code 1 = unprotected secrets found.
 
+Agents and CI can add `--json` (or the global `phantom --json check`) to get one
+report on stdout instead of the human text. It lists names, paths and pattern
+labels only, never values or phantom tokens, and keeps the same exit codes. A
+scan whose result is indeterminate is still an error with no report.
+
+```json
+{
+  "mode": "worktree",
+  "clean": false,
+  "findings": [{ "kind": "dotenv", "path": "/repo/.env", "name": "OPENAI_API_KEY" }],
+  "warnings": []
+}
+```
+
+`mode` is `worktree`, `staged` or `runtime`. Each finding's `kind` is `dotenv`,
+`staged_dotenv`, `staged_code` (with `label` and `pattern`) or `runtime_env`.
+`warnings` lists risky `.phantom.toml` routes found in staged config.
+
 ### `phantom doctor`
 
 Health check for your setup: config validity, vault access, `.env` protection, `.gitignore` coverage, `.env.example`, pre-commit hook.
@@ -312,6 +345,17 @@ Health check for your setup: config validity, vault access, `.env` protection, `
 phantom doctor
 phantom doctor --fix    # auto-fix safe issues
 ```
+
+`phantom doctor --json` (or `phantom --json doctor`) prints one report on stdout
+for agents and CI: `ok`, `issues`, `fixed`, a `checks` list of
+`{status, message, fix?, fixed?}` with status `pass`, `fail`, `warn` or `info`,
+and `mcp_clients` with each client's config path and state (`local_runtime`,
+`stale`, `unreadable`, `not_phantom` or `not_configured`). Messages are the same
+value-blind text as the human checklist, and the exit status is unchanged.
+A configured managed dotenv that is missing or cannot be read safely (for
+example a symlink) is a `fail` check named "Managed dotenv" with a fix hint;
+the other checks still run. `phantom doctor --fix` stops with an error before
+any repair in that state.
 
 ```
 $ phantom doctor
@@ -339,6 +383,10 @@ phantom agent setup --apply   # initialize safe defaults
 ```
 
 The readiness engine checks `.env` files, `.phantom.toml`, vault access, unprotected secrets, `.env.example`, `.gitignore`, MCP client wiring, package script wrapping, pre-commit protection, audit status, cloud login, team state, and sync targets. It returns one state: `unsafe`, `protected`, `verified`, `team-ready`, or `compliance-ready`.
+A locked encrypted-file vault (secrets stored with `PHANTOM_VAULT_PASSPHRASE`,
+which this shell lacks) and a missing or unresolvable managed dotenv
+(`managed-dotenv-unresolved`) are critical findings: the state is `unsafe` and
+the command exits 1.
 
 ### `phantom reveal`
 
@@ -356,14 +404,14 @@ phantom reveal OPENAI_API_KEY --clipboard   # trusted terminal + exact typed con
 One command per AI client — Phantom writes the right config file in the right place:
 
 ```bash
-phantom setup --client claude     # .claude/settings.local.json (project)
+phantom setup --client claude     # project MCP; see claude-code.md for v0.7.9 migration
 phantom setup --client cursor     # ~/.cursor/mcp.json
 phantom setup --client windsurf   # ~/.codeium/windsurf/mcp_config.json
 phantom setup --client codex      # ~/.codex/config.toml
 phantom setup --client claude --print   # snippet to stdout for any other client
 ```
 
-Install both `v0.7.5` release binaries before setup. Version `0.7.5` records the
+Install both `v0.7.9` release binaries before setup. Version `0.7.9` records the
 running `phantom` executable with `mcp serve` when it can resolve that
 executable, otherwise it looks for a local standalone `phantom-mcp`. Setup has
 no network package-runner fallback and fails closed when neither local runtime
@@ -456,18 +504,21 @@ Migrate secrets from Doppler, Infisical, dotenvx, 1Password, or a plain `.env` f
 # Doppler: export secrets as JSON first, then import
 phantom import --from doppler --file dump.json
 
-# Infisical: export as .env, then import
+# Infisical: export as .env (or --format=json), then import
 phantom import --from infisical --file export.env
 
 # dotenvx: import a plaintext .env (not an encrypted .env.vault)
 phantom import --from dotenvx --file .env
 
-# 1Password: export as JSON, then import
+# 1Password: collect fields into a flat {"KEY": "value"} JSON object, then import
 phantom import --from 1password --file 1p-export.json
 
 # Plain .env file (same heuristics as phantom init)
 phantom import --from env --file .env
 ```
+
+See [Troubleshooting](troubleshooting.md#importing-from-other-secret-managers)
+for each source's exact file format.
 
 After importing, run `phantom init` to replace any remaining plaintext secrets in your `.env` with phantom tokens.
 
@@ -512,6 +563,35 @@ Click "Always Allow" for the `phantom-secrets` entry. This appears once per appl
 
 ### Linux keychain unavailable / CI environments
 
+Linux starts with the kernel keyutils backend, whose entries do not survive a
+reboot. On a desktop with an unlocked Secret Service, migrate one initialized
+project from a terminal you exclusively control:
+
+```bash
+phantom vault migrate-linux
+```
+
+Phantom previews a value-free, state-bound plan and requires its exact
+challenge before reading vault values. It copies and verifies every indexed
+credential, keeps the keyutils source entries, and only then publishes
+independent owner-only config-root and data-root backend records. Conflicting
+persistent values or an
+unavailable/locked Secret Service fail closed. If a completed project's Secret
+Service is later unavailable, normal vault access fails rather than silently
+falling back to keyutils.
+
+Keep Phantom's private application-data and configuration directories in your
+workstation backup. Migration writes independent anchored records beneath both
+roots plus a Secret Service corroboration sentinel. If either local record is
+missing after a reboot, ordinary access fails closed without probing or
+prompting Secret Service; the explicit migration command can verify and repair
+the prepared state. Normal projects with neither marker remain on keyutils. If
+all local Phantom state is deleted, restore a verified backup; Phantom cannot
+infer the former backend safely.
+
+For CI, WSL, servers, or any environment without a reliably unlocked desktop
+Secret Service, select the encrypted-file vault explicitly:
+
 Set a passphrase and Phantom falls back to an encrypted file vault:
 
 ```bash
@@ -526,18 +606,18 @@ export, so avoid launching agents outside `phantom exec` while it is set.
 
 ### An older registry-based install command fails
 
-The reviewed binaries ship from the immutable `v0.7.5` GitHub Release, not the
+The reviewed binaries ship from the immutable `v0.7.9` GitHub Release, not the
 older registry tracks. Download and verify the platform asset above, or build
 the exact tagged source:
 
 ```bash
 git clone https://github.com/ashlrai/phantom-secrets.git
 cd phantom-secrets
-git checkout d2969e73995cc139e6253e0c8a70f1d683f88e20
+git checkout 7a51ce512ec4aee12cc29ff859036af63fbe93db
 cargo build --release --locked --bin phantom --bin phantom-mcp
 ```
 
-The full SHA above is the source commit resolved by `v0.7.5`.
+The full SHA above is the source commit resolved by `v0.7.9`.
 
 ### Claude Code cannot read `.env` after setup — is this broken?
 

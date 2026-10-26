@@ -13,23 +13,24 @@ wrapper mapping, and native acceptance. One does not prove the next.
 | Native acceptance | The exact identified archive passed the named checks on the matching OS and architecture, with a retained receipt. |
 
 The filesystem hardening described below is source-contract evidence in this
-documentation tranche. Verified 2026-09-03, the immutable `v0.7.5` GitHub
-release resolves to `d2969e73995cc139e6253e0c8a70f1d683f88e20`; workflow
-`33709338577` published 19 assets after all six native-release rows and release
-attestations passed. That does not validate the npm wrapper installation path:
-the `0.7.4` candidate failed on all six targets, npm `latest` remains `0.6.0`,
-and no exact npm `0.7.5` acceptance receipt is claimed.
+documentation tranche. The immutable `v0.7.9` GitHub release resolves to
+`7a51ce512ec4aee12cc29ff859036af63fbe93db`; its 19 assets were verified after all six
+native-release rows and release attestations passed in
+[workflow 34153902556](https://github.com/ashlrai/phantom-secrets/actions/runs/34153902556). That
+does not validate the npm wrapper installation path. In the exact 2026-09-29
+registry snapshot, the `0.7.4` candidate failed on all six targets, npm `latest` remains `0.6.0`,
+and no exact npm `0.7.9` acceptance receipt is claimed.
 
 ## Current matrix
 
 | Target | Release build host and mode | GitHub release workflow | Primary npm wrapper | Shell installer | Configured native acceptance / current evidence |
 |---|---:|---:|---:|---:|---:|
-| macOS Apple Silicon (`aarch64-apple-darwin`) | `macos-latest` is currently an arm64 host; native-architecture build | Archive + SBOM published and attested | Mapped | Mapped | `v0.7.5` release-native acceptance passed on `macos-15` ARM64; npm `0.7.4` acceptance failed; no npm `0.7.5` receipt |
-| macOS Intel (`x86_64-apple-darwin`) | Cross-target build on the current arm64 `macos-latest` host | Archive + SBOM published and attested | Mapped | Mapped | `v0.7.5` release-native acceptance passed on `macos-15-intel` X64; npm `0.7.4` acceptance failed; no npm `0.7.5` receipt |
-| Linux ARM64 GNU (`aarch64-unknown-linux-gnu`) | Cross-compiled with `gcc-aarch64-linux-gnu` on x64 Ubuntu 22.04 | Archive + SBOM published and attested; GLIBC symbol ceiling enforced | Mapped | Mapped | `v0.7.5` release-native acceptance passed on `ubuntu-22.04-arm` ARM64; npm `0.7.4` acceptance failed; no npm `0.7.5` receipt |
-| Linux x64 GNU (`x86_64-unknown-linux-gnu`) | Native-architecture build on x64 Ubuntu 22.04 | Archive + SBOM published and attested; GLIBC symbol ceiling enforced | Mapped | Mapped | `v0.7.5` release-native acceptance passed on `ubuntu-22.04` X64; npm `0.7.4` acceptance failed; no npm `0.7.5` receipt |
-| Windows x64 MSVC (`x86_64-pc-windows-msvc`) | Native-architecture build on x64 `windows-latest` | ZIP + SBOM published and attested | Mapped | Mapped by `install.ps1` | `v0.7.5` release-native acceptance passed on `windows-latest` X64; npm `0.7.4` acceptance failed; no npm `0.7.5` receipt |
-| Windows ARM64 MSVC (`aarch64-pc-windows-msvc`) | Native-architecture build on arm64 `windows-11-vs2026-arm` | ZIP + SBOM published and attested | Mapped | Mapped by `install.ps1` | `v0.7.5` release-native acceptance passed on `windows-11-vs2026-arm` ARM64; npm `0.7.4` acceptance failed; no npm `0.7.5` receipt |
+| macOS Apple Silicon (`aarch64-apple-darwin`) | `macos-latest` is currently an arm64 host; native-architecture build | Archive + SBOM published and attested | Mapped | Mapped | `v0.7.9` release-native acceptance passed on `macos-15` ARM64; npm `0.7.4` acceptance failed; no npm `0.7.9` receipt |
+| macOS Intel (`x86_64-apple-darwin`) | Cross-target build on the current arm64 `macos-latest` host | Archive + SBOM published and attested | Mapped | Mapped | `v0.7.9` release-native acceptance passed on `macos-15-intel` X64; npm `0.7.4` acceptance failed; no npm `0.7.9` receipt |
+| Linux ARM64 GNU (`aarch64-unknown-linux-gnu`) | Cross-compiled with `gcc-aarch64-linux-gnu` on x64 Ubuntu 22.04 | Archive + SBOM published and attested; GLIBC symbol ceiling enforced | Mapped | Mapped | `v0.7.9` release-native acceptance passed on `ubuntu-22.04-arm` ARM64; npm `0.7.4` acceptance failed; no npm `0.7.9` receipt |
+| Linux x64 GNU (`x86_64-unknown-linux-gnu`) | Native-architecture build on x64 Ubuntu 22.04 | Archive + SBOM published and attested; GLIBC symbol ceiling enforced | Mapped | Mapped | `v0.7.9` release-native acceptance passed on `ubuntu-22.04` X64; npm `0.7.4` acceptance failed; no npm `0.7.9` receipt |
+| Windows x64 MSVC (`x86_64-pc-windows-msvc`) | Native-architecture build on x64 `windows-latest` | ZIP + SBOM published and attested | Mapped | Mapped by `install.ps1` | `v0.7.9` release-native acceptance passed on `windows-latest` X64; npm `0.7.4` acceptance failed; no npm `0.7.9` receipt |
+| Windows ARM64 MSVC (`aarch64-pc-windows-msvc`) | Native-architecture build on arm64 `windows-11-vs2026-arm` | ZIP + SBOM published and attested | Mapped | Mapped by `install.ps1` | `v0.7.9` release-native acceptance passed on `windows-11-vs2026-arm` ARM64; npm `0.7.4` acceptance failed; no npm `0.7.9` receipt |
 
 The current workflow defines six target archives, each containing `phantom`
 and `phantom-mcp`: four Unix `.tar.gz` files and two Windows `.zip` files. Both
@@ -39,12 +40,15 @@ the exact tagged five-file npm tarballs from fresh caches on these same six
 native host classes before npm publication, then to repeat acceptance against
 the integrity-pinned public `release-candidate` packages before either `latest`
 tag changes. A workflow definition is not a receipt; retain all six successful
-jobs for each mode. No exact npm `0.7.5` receipt is claimed here.
+jobs for each mode. No exact npm `0.7.9` receipt is claimed here.
 The `native-acceptance` matrix is configured to download each exact build
 artifact on its matching runner, reject extra or unsafe archive members, verify
 archive integrity through extraction, assert the runner OS and architecture,
 run both binaries' exact tagged `--version`, and complete the MCP stdio schema
-smoke. It then runs the real direct installer from that exact local archive in
+smoke. On those same six native filesystems, it also runs both npm wrappers'
+platform mapping, cache validation, rollback, lock, archive, process-failure,
+and closed-schema tests without downloading or publishing an npm package. It
+then runs the real direct installer from that exact local archive in
 an isolated home/profile, validates both installed binaries and the source
 receipt, injects a test-only failure immediately after candidate promotion,
 and verifies that the sentinel-bearing accepted tree is restored with no
@@ -52,12 +56,13 @@ sibling transaction residue. It then corrupts the checksum sidecar and proves
 that a pre-transaction integrity failure also preserves the accepted tree.
 Windows acceptance suppresses persistent user-PATH mutation on the CI
 account; it does not claim shell-profile acceptance. Attestation cannot begin
-until all six jobs succeed. The exact `v0.7.5` tag workflow passed this release
+until all six jobs succeed. The exact `v0.7.9` tag workflow passed this release
 native matrix, completed release attestations, and created the immutable
-19-asset GitHub release in
-[run 33709338577](https://github.com/ashlrai/phantom-secrets/actions/runs/33709338577).
+[19-asset GitHub release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.9);
+retain [workflow 34153902556](https://github.com/ashlrai/phantom-secrets/actions/runs/34153902556)
+as the exact execution receipt.
 That receipt does not prove npm-wrapper installation: exact npm `0.7.4`
-acceptance failed independently and no exact npm `0.7.5` receipt is claimed.
+acceptance failed independently and no exact npm `0.7.9` receipt is claimed.
 
 GitHub's current [hosted-runner reference](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)
 maps `windows-latest` to x64 and `macos-latest` to arm64. GNU/Linux release
@@ -92,9 +97,9 @@ remaining operating-system integrations below.
 | Feature | macOS | Linux | Windows |
 |---|---|---|---|
 | Core CLI, vault, proxy, MCP source | Implemented | Implemented | Implemented |
-| Native credential store | Keychain integration | Secret Service/keyring integration, with encrypted-file fallback | Credential Manager integration |
+| Native credential store | Keychain integration | Kernel keyutils by default; explicit trusted-terminal migration to persistent desktop Secret Service; encrypted-file fallback for CI/headless use | Credential Manager integration |
 | Provider-grant design source and value-free metadata | Present | Present | Present |
-| Provider issuance/enrollment/renewal/revocation | Hard-denied before credential/network access in 0.7.5 | Hard-denied before credential/network access in 0.7.5 | Hard-denied before credential/network access in 0.7.5 |
+| Provider issuance/enrollment/renewal/revocation | Hard-denied before credential/network access in 0.7.9 | Hard-denied before credential/network access in 0.7.9 | Hard-denied before credential/network access in 0.7.9 |
 | Workspace inspect/propose/request | Implemented | Implemented | Inspect/propose only |
 | Durable workspace apply | Descriptor-relative Unix implementation | Descriptor-relative Unix implementation | Fails closed |
 | Durable broker replay foundation | Unix implementation | Unix implementation | Fails closed |
@@ -115,10 +120,31 @@ remaining operating-system integrations below.
 | Created-parent rollback | Identity-bound receipts remove only exact, empty transaction-created directories after descendant handles are dropped | Unknown creation state without a receipt remains explicitly unresolved |
 
 Native credential-store and ACL source are likewise not acceptance. In
-particular, mapping the `keyring` backend to Windows Credential Manager and
-source-testing protected current-user DACL behavior do not prove that an exact
-Windows archive passed those operations under a real user policy. That evidence
-still requires protected native Windows CI against the exact candidate.
+particular, the configured `keyring` crate features select macOS Keychain,
+Linux keyutils or Secret Service, and Windows Credential Manager. Linux
+keyutils entries are in-memory and do not survive a reboot. On a headed Linux
+desktop, `phantom vault migrate-linux` can copy and read-after-write verify the
+current project's entries in Secret Service before atomically selecting it.
+The command retains keyutils source entries, is safe to retry after a partial
+copy, refuses conflicting destination values, and requires an exact attached-
+terminal challenge before reading any secret value. A project that completed
+the migration fails closed when Secret Service is unavailable; it never
+silently treats the retained volatile copy as authoritative. CI, WSL, and
+headless systems should use the explicit encrypted-file vault instead. The
+migration writes a Secret Service corroboration sentinel for explicit recovery
+checks. An independent owner-only corroboration record under Phantom's
+configuration root prevents loss of only the data-root marker plus a reboot
+from silently selecting keyutils: one missing record fails closed without a
+Secret Service probe, while the explicit migration command can reconcile the
+prepared state. Normal unmarked/headless vault opens do not probe Secret
+Service because doing so can prompt or hang without a desktop session. Loss or
+deletion of all local Phantom state is not recoverable automatically; restore
+that state from a verified backup before accessing the vault.
+
+Those source mappings, plus source-tested protected current-user DACL behavior, do
+not prove that an exact archive passed credential-store operations under a real
+user policy. That evidence still requires protected native CI against the exact
+candidate on each claimed platform.
 
 Provider-grant support in source does not prove that a provider application is
 configured, consent completed, a credential accepted, renewal succeeded, or a
@@ -127,17 +153,17 @@ acceptance and never place provider client secrets on the command line.
 
 ## Install methods
 
-- The reviewed `v0.7.5` source build checks out
-  `d2969e73995cc139e6253e0c8a70f1d683f88e20` and runs
+- The reviewed `v0.7.9` source build checks out
+  `7a51ce512ec4aee12cc29ff859036af63fbe93db` and runs
   `cargo build --release --locked --bin phantom --bin phantom-mcp`. An unpinned
   crates.io install currently resolves the older `0.5.1` track.
 - The npm packages' `latest` tags currently resolve `0.6.0`. Exact `0.7.4`
   wrappers exist only under `release-candidate` and failed the six-target npm
-  acceptance gate; they are not the reviewed `v0.7.5` GitHub release path.
+  acceptance gate; they are not the reviewed `v0.7.9` GitHub release path.
 - `scripts/install.sh` supports macOS and GNU Linux targets. Native Windows uses
   `scripts/install.ps1`; both scripts verify bounded HTTPS downloads, strict
   sidecar checksums, archive shape, and binary identity before promotion.
-- The Homebrew formula publishes reviewed `v0.7.5` as a separately managed
+- The Homebrew formula still publishes the previous reviewed `v0.7.8` as a separately managed
   distribution surface. The repository's release workflow does not
   automatically update a tap.
 
@@ -156,8 +182,10 @@ that target:
 
 The release workflow automates steps 1 and 2, a bounded portion of step 3
 (fresh direct install, receipt validation, post-promotion rollback, and
-checksum-failure preservation), and MCP schema initialization from step 5 on
-all six native runners. Upgrade,
+checksum-failure preservation), native-filesystem source tests for both npm
+wrappers, and MCP schema initialization from step 5 on all six native runners.
+Those wrapper tests do not prove installation of a packed or registry-hosted
+npm artifact; the separate npm candidate workflow owns that evidence. Upgrade,
 interruption, cache recovery, persistent PATH/shell behavior, credential stores,
 an authenticated proxy request, editors, and platform trust still require
 separately retained evidence. No repository-local source test or workflow

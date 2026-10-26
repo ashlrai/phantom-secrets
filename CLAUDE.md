@@ -19,7 +19,7 @@
 ~/.cargo/bin/cargo run -- <command>
 ```
 
-Note: `~/.cargo/bin/` prefix is needed because cargo is not in PATH on this machine.
+If `cargo` is not on your PATH (a fresh rustup install puts it in `~/.cargo/bin`), run `export PATH="$HOME/.cargo/bin:$PATH"` first.
 
 ## Architecture
 
@@ -29,8 +29,8 @@ fail-closed governed-execution foundations:
 - **phantom-core** — Config (.phantom.toml), .env parsing/rewriting, phantom token generation (256-bit CSPRNG, `phm_` prefix), error types
 - **phantom-vault** — `VaultBackend` trait with OS keychain (macOS Keychain, Linux Secret Service, Windows Credential Manager) and encrypted file fallback. Argon2id parameters hardened to OWASP balanced (m=64 MiB, t=3, p=1) with legacy-default fallback for older vaults
 - **phantom-proxy** — HTTP reverse proxy on 127.0.0.1. It authenticates and matches exact routes, discards client control of the route auth header, injects only the route-owned vault value there, and forwards client bodies byte-for-byte under a hard size cap. Client headers/bodies never resolve `phm_` tokens. Uses `hyper` for server and `reqwest` for outbound HTTPS; response streaming/SSE is preserved through scrubbing.
-- **phantom-cli** — `clap`-based CLI for init, proxy execution, diagnostics, sync, teams, audit, validation, provider design foundations, and trusted-terminal workspace setup. Live provider issuance/rotation is hard-denied before credential/network access in 0.7.5. Use `phantom --help` as the canonical command inventory. Plaintext JSON export is disabled; reveal requires an attached terminal and exact typed confirmation.
-- **phantom-mcp** — MCP server for Claude Code, Cursor, Windsurf, Codex. Uses `rmcp` 1.3 SDK and stdio transport. Exposes core vault/diagnostic/cloud/team tools plus advanced audit, validation, rotation, expiry, leak-incident, and compliance workflows. The exact catalog is declared in `crates/phantom-mcp/src/server.rs`.
+- **phantom-cli** — `clap`-based CLI for init, proxy execution, diagnostics, sync, teams, audit, validation, provider design foundations, and trusted-terminal workspace setup. Live provider issuance/rotation is hard-denied before credential/network access in 0.7.9. Use `phantom --help` as the canonical command inventory. Plaintext JSON export is disabled; reveal requires an attached terminal and exact typed confirmation.
+- **phantom-mcp** — MCP server for Claude Code, Cursor, Windsurf, Codex. Uses `rmcp` 3.5 SDK and stdio transport. Exposes core vault/diagnostic/cloud/team tools plus advanced audit, validation, rotation, expiry, leak-incident, and compliance workflows. The exact catalog is declared in `crates/phantom-mcp/src/server.rs`; `mcp-registry/server.json` must match the runtime `tools/list` exactly (CI runs `node scripts/release/mcp-stdio-smoke.mjs target/debug/phantom-mcp 54`; after a reviewed schema change, regenerate with `node scripts/release/mcp-stdio-smoke.mjs target/debug/phantom-mcp 54 mcp-registry/server.json --write-registry`). User-fixable states (not initialized, locked vault, wrong passphrase, bad config) return `-32600` with a next step (`tools/helpers.rs::state_err`); `-32603` is for server faults.
 - **governed-execution foundations** — `phantom-workspace` provides the active value-blind Unix setup transaction. `phantom-authority`, `phantom-locus-contract`, `phantom-broker`, `phantom-runtime`, `phantom-session`, and `phantom-evidence` remain fail closed for production execution.
 
 ### How the proxy works
@@ -57,6 +57,8 @@ The proxy is a **reverse proxy with URL rewriting**, NOT a forward/CONNECT proxy
 - Error handling: `thiserror` for library crates, `anyhow` for CLI
 - CLI output uses `colored` crate — prefix lines with `->`, `ok`, `!`, `warn`, etc.
 - Secrets must be `zeroize`d from memory after use
+- Read dotenv files through `phantom_core::managed_dotenv::parse_regular_dotenv`, which opens without following a final symlink and checks the opened handle; `DotenvFile::parse_file` follows a symlink, so non-test code does not use it
+- An answer built from the vault inventory must not read an empty OS keychain as "no secrets" when a locked encrypted-file vault exists: use `util::inventory_guard` / `util::require_complete_inventory` in the CLI and `require_readable_inventory` in MCP; CLI refusals start with `util::VAULT_LOCKED` ("Vault locked: ...")
 - Proxy binds to 127.0.0.1 ONLY — never expose to network
 - Audit log is opt-in: `PHANTOM_AUDIT=1` writes JSONL events for vault store/retrieve/delete to `~/.phantom/audit.log`. Schema records the secret **name** only — never the value. Each entry carries an HMAC-SHA256 over the previous entry's hash (chain rooted at a zero-hash). New audit hook points should call `phantom_core::audit::log(op, name)`. Use `phantom audit verify` to check chain integrity.
-- Importers live in `phantom-core/src/importers/`. Each format (doppler, infisical, dotenvx, 1password, env) implements a parser that returns `BTreeMap<String, String>`. The CLI dispatcher is `phantom_core::importers::import_from(source, path)`.
+- Importers live in `phantom-core/src/importers/`. Each format (doppler, infisical, dotenvx, 1password, env) implements a parser that returns a `SecretMap` (`BTreeMap<String, Zeroizing<String>>`). The CLI dispatcher is `phantom_core::importers::import_from(source, path)`.

@@ -1,0 +1,19 @@
+{
+  "name": "Phantom",
+  "short_name": "Phantom",
+  "description": "The engineering workbench for interactive agent sessions, autonomous fleet workflows and connected resources.",
+  "id": "/",
+  "start_url": "/",
+  "scope": "/",
+  "display": "minimal-ui",
+  "background_color": "#050508",
+  "theme_color": "#050508",
+  "categories": ["developer tools", "security", "utilities"],
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}

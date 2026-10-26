@@ -1,14 +1,15 @@
 # Phantom
 
-> Open-source CLI that helps keep real API keys out of AI-agent context by replacing managed dotenv secrets with non-provider `phm_` tokens and proxying supported API routes through an authenticated local service.
+> Open-source CLI that helps keep provider credential values out of the managed dotenv and MCP path for supported AI workflows. It replaces managed dotenv values with non-provider `phm_` tokens and proxies exact supported API routes through an authenticated local service. Unmanaged files, same-user processes, proxy-bearer theft, and provider content remain outside that boundary.
 
 ## Install
 
-Release state verified 2026-09-03. The immutable GitHub `v0.7.5` release at
-https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.5 resolves to
-`d2969e73995cc139e6253e0c8a70f1d683f88e20`. Workflow `33709338577` published
-19 assets after all six native acceptance rows and release attestations passed.
-The separately managed Homebrew formula publishes reviewed `v0.7.5`.
+Release evidence verified on 2026-09-29. The immutable GitHub `v0.7.9` release at
+https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.9 resolves to
+`7a51ce512ec4aee12cc29ff859036af63fbe93db`. Its 19 assets were published
+after all six native acceptance rows and release attestations passed in
+https://github.com/ashlrai/phantom-secrets/actions/runs/34153902556.
+The separately managed Homebrew formula still publishes the previous reviewed `v0.7.8`; its `v0.7.9` bump is pending.
 
 macOS:
 ```
@@ -17,12 +18,12 @@ brew trust --formula ashlrai/phantom/phantom
 brew install ashlrai/phantom/phantom
 ```
 
-For the current macOS, Linux, or Windows release, select the exact `v0.7.5`
+For the current macOS, Linux, or Windows release, select the exact `v0.7.9`
 archive for your architecture from
 the release, download its adjacent `.sha256` sidecar, verify it, and put both
-release executables on PATH. Registry status verified 2026-09-03: npm `latest`
+release executables on PATH. In the exact 2026-09-29 registry snapshot, npm `latest`
 remains `0.6.0`; exact npm `0.7.4` wrappers exist only under the failed
-`release-candidate` track. No MCP Registry `0.7.4` record was found; crates.io
+`release-candidate` track. No MCP Registry `0.7.9` record was found; crates.io
 remains on `0.5.1`.
 
 ## MCP Server
@@ -34,7 +35,7 @@ Setup (recommended, one command per AI client):
 - Codex: `phantom setup --client codex` (writes ~/.codex/config.toml)
 - Generic: `phantom setup --client claude --print` (snippet to stdout)
 
-Install both `v0.7.5` GitHub release binaries first. Version `0.7.5` records the running
+Install both `v0.7.9` GitHub release binaries first. Version `0.7.9` records the running
 `phantom` executable with `mcp serve` when it can resolve that runtime, otherwise
 it looks for a local `phantom-mcp`. Setup has no network package-runner fallback
 and fails closed when neither local runtime is executable. Keep both verified
@@ -68,7 +69,7 @@ Teams: phantom_team_list, phantom_team_create, phantom_team_members, phantom_tea
 
 ## CLI surface (--help is grouped: Setup · Daily use · Sync & teams · Maintenance)
 
-init (--from <file>, --empty, --all <DIR>, --dry-run, --jobs/-j N), agent (report --json / doctor / setup --dry-run|--apply), exec, start, stop, list (--json), add (--stdin; new names only; initialized project required; positional values rejected), remove (trusted-terminal exact removal), reveal, rotate, status, doctor (--fix), check (--staged, --runtime), sync (--dry-run --json, --only PATTERN), pull, env, setup (--client claude|cursor|windsurf|codex, --print), login, logout, cloud (push/pull/status), wrap, unwrap, watch, why, copy (trusted-terminal confirmation, no target overwrite), export (trusted-terminal hidden prompt only; passphrase files and plaintext disabled), import (--from doppler|infisical|dotenvx|1password|env --file <path>; trusted-terminal exact consent), audit (show [--last N] [--op OP] [--name NAME] [--json] / tail / path / verify), team (list/create/members/invite/key-publish/vault-push/vault-pull/rotate-vault), validate (live/watch/schedule/history), expiry (set/enforce/rotate), open (closed alias catalog), upgrade (managed-owner routing; force denied), completion (bash/zsh/fish/powershell/elvish)
+init (--from <file>, --empty, --all <DIR>, --dry-run, --jobs/-j N), agent (report --json / doctor / setup --dry-run|--apply), exec, start, stop, list (--json), add (--stdin; new names only; initialized project required; positional values rejected), remove (trusted-terminal exact removal), reveal, rotate, status, doctor (--fix), check (--staged, --runtime), sync (--dry-run --json, --only PATTERN), pull, env, setup (--client claude|cursor|windsurf|codex|gemini, --print), login, logout, cloud (push/pull/status), wrap, unwrap, watch, why, copy (trusted-terminal confirmation, no target overwrite), export (trusted-terminal hidden prompt only; passphrase files and plaintext disabled), import (--from doppler|infisical|dotenvx|1password|env --file <path>; trusted-terminal exact consent), audit (show [--last N] [--op OP] [--name NAME] [--json] / tail / path / verify), team (list/create/members/invite/key-publish/vault-push/vault-pull/rotate-vault), validate (live/watch/schedule/history), expiry (set/enforce/rotate), open (closed alias catalog), upgrade (managed-owner routing; force denied), completion (bash/zsh/fish/powershell/elvish)
 
 ## Dashboard
 
@@ -84,10 +85,10 @@ does not start checkout or collect payment.
 - Inert client requests — no client-controlled header or body resolves a `phm_` token; bodies are accepted under a hard size cap, a missing route credential fails before upstream contact, and only route-owned auth injection can contain a real value
 - Response scrubbing — redacts configured vault values and recognized key formats from supported response paths before returning them to the caller
 - Public key awareness — detects and skips publishable/public keys that don't need protection
-- OS keychain storage — macOS Keychain, Linux Secret Service, Windows Credential Manager, encrypted file fallback. Argon2id hardened to OWASP balanced (m=64 MiB, t=3, p=1)
+- OS credential storage — macOS Keychain, Linux keyutils by default with explicit `phantom vault migrate-linux` support for desktop Secret Service, Windows Credential Manager, and encrypted file fallback. Linux keyutils entries do not survive a reboot. Argon2id hardened to OWASP balanced (m=64 MiB, t=3, p=1)
 - Personal cloud backup — client-encrypted restore on the same keychain machine; cloud-key transfer and recovery are not shipped, and deployed service and account configuration remain separate gates
 - Multi-project scanner — `phantom init --all <DIR>` processes eligible repos found within five levels, stops below the first matching repo, and supports `--dry-run` plus `--jobs N`
-- Multi-IDE setup — `phantom setup --client claude|cursor|windsurf|codex` writes the right MCP config for each AI tool
+- Multi-IDE setup — `phantom setup --client claude|cursor|windsurf|codex|gemini` writes the right MCP config for each AI tool
 - Tamper-evident audit log — `PHANTOM_AUDIT=1` writes vault events as JSONL to `~/.phantom/audit.log` (secret name only). HMAC-SHA256 chain; `phantom audit verify` detects tampering. `phantom audit show/tail/path` for access.
 - Competitor import — from an attached terminal outside agent authority, `phantom import --from doppler|infisical|dotenvx|1password|env --file <path>` displays an exact value-blind source/target/name plan and requires its fresh typed challenge before storage; `--force` never bypasses consent
 - Encrypted recovery — export requires attached stdin/stdout/stderr, an exact value-blind challenge, and a hidden terminal passphrase; export passphrase files, plaintext, and argv passphrases are disabled. Import has the same terminal ceremony; only non-Windows import may additionally read a bounded private passphrase file.
@@ -128,12 +129,12 @@ does not start checkout or collect payment.
   Windows CI acceptance. The release receipt proves exact-archive execution
   and MCP schema initialization, not native keychain, ACL, shell, or editor
   acceptance.
-- Immutable `v0.7.5` release identity:
-  `d2969e73995cc139e6253e0c8a70f1d683f88e20`. Live GitHub governance observed
+- Immutable `v0.7.9` release identity:
+  `7a51ce512ec4aee12cc29ff859036af63fbe93db`. Live GitHub governance observed
   2026-09-01: the `release` environment required review and accepted only `v*`
   tags; no-bypass immutability ruleset `21903888` was separate from creation
-  ruleset `21997435` with Mason-only bypass. The successful immutable release
-  workflow is https://github.com/ashlrai/phantom-secrets/actions/runs/33709338577.
+  ruleset `21997435` with Mason-only bypass. The immutable release record is
+  https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.9.
 - Locus, broker, runtime, session, and externally trusted evidence remain
   inactive and fail closed. Enterprise packaging is planned/commissioned only
   through separate written and acceptance evidence.

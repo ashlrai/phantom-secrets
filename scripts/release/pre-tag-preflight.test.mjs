@@ -129,7 +129,7 @@ function createRunner({
       if (endpoint === "--include") {
         assert.equal(
           args[2],
-          `repos/${repository}/releases/tags/v0.7.6`,
+          `repos/${repository}/releases/tags/v0.7.7`,
         );
         return githubReleaseLookup;
       }
@@ -175,7 +175,7 @@ function createRunner({
 test("passes only after source, rehearsal, governance, and reservation gates", () => {
   const { runner, calls } = createRunner();
   const result = runPreTagPreflight({
-    tag: "v0.7.6",
+    tag: "v0.7.7",
     runInput: runUrl,
     cwd: "/fixture/repo",
     commandRunner: runner,
@@ -212,8 +212,8 @@ test("passes only after source, rehearsal, governance, and reservation gates", (
     },
   });
   assert.deepEqual(result.commands, [
-    `git tag -a 'v0.7.6' '${sha}' -m 'Phantom v0.7.6'`,
-    "git push origin 'refs/tags/v0.7.6'",
+    `git tag -a 'v0.7.7' '${sha}' -m 'Phantom v0.7.7'`,
+    "git push origin 'refs/tags/v0.7.7'",
   ]);
   assert.equal(
     calls.filter(({ file, args }) => file === "git" && args[0] === "fetch")
@@ -235,7 +235,7 @@ test("passes only after source, rehearsal, governance, and reservation gates", (
 
 test("fails closed on existing or unprovable GitHub release reservations", () => {
   for (const [githubReleaseLookup, message] of [
-    [success('{"tag_name":"v0.7.6"}'), /GitHub release v0\.7\.6 already exists/],
+    [success('{"tag_name":"v0.7.7"}'), /GitHub release v0\.7\.7 already exists/],
     [
       {
         status: 1,
@@ -249,7 +249,7 @@ test("fails closed on existing or unprovable GitHub release reservations", () =>
     assert.throws(
       () =>
         runPreTagPreflight({
-          tag: "v0.7.6",
+          tag: "v0.7.7",
           runInput: runId,
           cwd: "/fixture/repo",
           commandRunner: runner,
@@ -267,18 +267,18 @@ test("fails closed on unsupported npm, public versions, and stage reservations",
     },
     {
       npmPublishedVersions: {
-        "phantom-secrets": ["0.6.0", "0.7.6"],
+        "phantom-secrets": ["0.6.0", "0.7.7"],
         "phantom-secrets-mcp": ["0.6.0"],
       },
-      message: /phantom-secrets@0\.7\.6 is already public/,
+      message: /phantom-secrets@0\.7\.7 is already public/,
     },
     {
       npmStages: {
         "phantom-secrets": [
-          { id: "reserved-stage", packageName: "phantom-secrets", version: "0.7.6" },
+          { id: "reserved-stage", packageName: "phantom-secrets", version: "0.7.7" },
         ],
       },
-      message: /phantom-secrets@0\.7\.6 already has an npm stage reservation/,
+      message: /phantom-secrets@0\.7\.7 already has an npm stage reservation/,
     },
     {
       npmStages: {
@@ -299,7 +299,7 @@ test("fails closed on unsupported npm, public versions, and stage reservations",
     assert.throws(
       () =>
         runPreTagPreflight({
-          tag: "v0.7.6",
+          tag: "v0.7.7",
           runInput: runId,
           cwd: "/fixture/repo",
           commandRunner: runner,
@@ -326,7 +326,7 @@ test("lists npm stages by package and ignores reservations for other versions", 
   });
 
   const result = runPreTagPreflight({
-    tag: "v0.7.6",
+    tag: "v0.7.7",
     runInput: runId,
     cwd: "/fixture/repo",
     commandRunner: runner,
@@ -348,7 +348,7 @@ test("accepts a positive run ID directly", () => {
   const { runner } = createRunner();
   assert.equal(
     runPreTagPreflight({
-      tag: "v0.7.6",
+      tag: "v0.7.7",
       runInput: runId,
       cwd: "/fixture/repo",
       commandRunner: runner,
@@ -372,7 +372,7 @@ test("rejects malformed tags and cross-repository run URLs before emitting comma
   assert.throws(
     () =>
       runPreTagPreflight({
-        tag: "v0.7.6",
+        tag: "v0.7.7",
         runInput: `https://github.com/other/project/actions/runs/${runId}`,
         cwd: "/fixture/repo",
         commandRunner: runner,
@@ -396,7 +396,7 @@ test("binds GitHub governance to the canonical origin repository", () => {
     assert.throws(
       () =>
         runPreTagPreflight({
-          tag: "v0.7.6",
+          tag: "v0.7.7",
           runInput: runId,
           cwd: "/fixture/repo",
           commandRunner: runner,
@@ -411,13 +411,13 @@ test("fails closed on dirty source, stale main, and existing tags", () => {
     [{ status: "?? untracked.txt\n" }, /not exactly clean/],
     [{ mainSha: "b".repeat(40) }, /not the current remote main/],
     [{ localTagStatus: 0 }, /already exists locally/],
-    [{ remoteTags: `${"b".repeat(40)}\trefs\/tags\/v0.7.6\n` }, /already exists remotely/],
+    [{ remoteTags: `${"b".repeat(40)}\trefs\/tags\/v0.7.7\n` }, /already exists remotely/],
   ]) {
     const { runner } = createRunner(options);
     assert.throws(
       () =>
         runPreTagPreflight({
-          tag: "v0.7.6",
+          tag: "v0.7.7",
           runInput: runId,
           cwd: "/fixture/repo",
           commandRunner: runner,
@@ -475,7 +475,7 @@ test("requires the exact successful candidate rehearsal and all native jobs", ()
     assert.throws(
       () =>
         runPreTagPreflight({
-          tag: "v0.7.6",
+          tag: "v0.7.7",
           runInput: runId,
           cwd: "/fixture/repo",
           commandRunner: runner,
@@ -506,7 +506,7 @@ test("blocks when required external governance cannot be proven", () => {
           conditions: {
             ref_name: {
               include: ["refs/tags/v*"],
-              exclude: ["refs/tags/v0.7.6"],
+              exclude: ["refs/tags/v0.7.7"],
             },
           },
         },
@@ -542,7 +542,7 @@ test("blocks when required external governance cannot be proven", () => {
     assert.throws(
       () =>
         runPreTagPreflight({
-          tag: "v0.7.6",
+          tag: "v0.7.7",
           runInput: runId,
           cwd: "/fixture/repo",
           commandRunner: runner,
@@ -561,7 +561,7 @@ test("does not include subprocess stderr in a blocker", () => {
   assert.throws(
     () =>
       runPreTagPreflight({
-        tag: "v0.7.6",
+        tag: "v0.7.7",
         runInput: runId,
         cwd: "/fixture/repo",
         commandRunner: runner,

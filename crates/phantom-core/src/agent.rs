@@ -1,5 +1,4 @@
 use crate::config::PhantomConfig;
-use crate::dotenv::DotenvFile;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -71,6 +70,10 @@ pub struct AgentReadinessOptions {
     pub vault: Option<VaultProbe>,
     pub cloud_logged_in: bool,
     pub audit_enabled: bool,
+    /// The caller deliberately did not probe the vault (metadata-only
+    /// preflight). Report `vault-not-probed` as info instead of treating the
+    /// missing probe as an inaccessible vault.
+    pub vault_probe_skipped: bool,
 }
 
 #[derive(Debug)]
@@ -83,8 +86,7 @@ struct Signals {
     has_env_example: bool,
     has_gitignore_env: bool,
     has_mcp_wiring: bool,
-    has_package_scripts: bool,
-    has_wrapped_scripts: bool,
+    has_scripts_to_wrap: bool,
     has_precommit: bool,
 }
 
@@ -123,10 +125,24 @@ pub fn build_report(project_dir: &Path, options: AgentReadinessOptions) -> Agent
     let env_files = discover_env_files(project_dir);
     files.extend(env_files.iter().map(|p| rel(project_dir, p)));
     let mut unprotected = Vec::new();
+    // Keys holding a phantom token in a readable dotenv: the same notion of
+    // "protected" `phantom exec` uses when it decides whether to start.
+    let mut protected_keys = std::collections::HashSet::new();
+    // Dotenv files reported below as unreadable (the resolver could not read
+    // them either) and as malformed (readable, so the resolver can still pick
+    // one), by name relative to the project.
+    let mut unreadable_dotenvs = Vec::new();
+    let mut malformed_dotenvs = Vec::new();
     for path in &env_files {
-        match DotenvFile::parse_file(path) {
-            Ok(dotenv) => {
+        // Listed by a lookup that follows symlinks. The read opens without
+        // following one and judges the opened handle, so a linked file is
+        // reported as a finding instead of having its target read.
+        match crate::managed_dotenv::parse_regular_dotenv(project_dir, &rel(project_dir, path)) {
+            // Removed since it was listed.
+            Ok(None) => {}
+            Ok(Some(dotenv)) => {
                 if let Err(err) = dotenv.validate_for_mutation() {
+                    malformed_dotenvs.push(rel(project_dir, path));
                     findings.push(ReadinessFinding {
                         id: "env-parse-error".to_string(),
                         severity: FindingSeverity::Critical,
@@ -143,15 +159,25 @@ pub fn build_report(project_dir: &Path, options: AgentReadinessOptions) -> Agent
                 for entry in dotenv.real_secret_entries() {
                     unprotected.push((path.clone(), entry.key.clone()));
                 }
+                protected_keys.extend(
+                    dotenv
+                        .entries()
+                        .into_iter()
+                        .filter(|entry| crate::token::PhantomToken::is_phantom_token(&entry.value))
+                        .map(|entry| entry.key.clone()),
+                );
             }
-            Err(err) => findings.push(ReadinessFinding {
-                id: "env-parse-error".to_string(),
-                severity: FindingSeverity::Critical,
-                message: format!("Could not parse {}: {err}", rel(project_dir, path)),
-                file: Some(rel(project_dir, path)),
-                command: None,
-                requires_approval: false,
-            }),
+            Err(err) => {
+                unreadable_dotenvs.push(rel(project_dir, path));
+                findings.push(ReadinessFinding {
+                    id: "env-parse-error".to_string(),
+                    severity: FindingSeverity::Critical,
+                    message: format!("Could not parse {}: {err}", rel(project_dir, path)),
+                    file: Some(rel(project_dir, path)),
+                    command: None,
+                    requires_approval: false,
+                })
+            }
         }
     }
 
@@ -192,10 +218,34 @@ pub fn build_report(project_dir: &Path, options: AgentReadinessOptions) -> Agent
         has_env_example: env_example.exists(),
         has_gitignore_env: gitignore_has_env(&gitignore),
         has_mcp_wiring: has_any_mcp_wiring(project_dir),
-        has_package_scripts: package_json.exists() && package_has_scripts(&package_json),
-        has_wrapped_scripts: package_has_wrapped_scripts(&package_json),
+        has_scripts_to_wrap: package_has_scripts_to_wrap(&package_json),
         has_precommit,
     };
+
+    // `phantom exec` refuses to start for every key while a connection string
+    // is protected (or a route is blocked). Report it here, value-free, so a
+    // protected project is not read as ready for `phantom exec`.
+    if let Some(blocker) = config
+        .as_ref()
+        .and_then(|c| c.exec_blocker(|name| protected_keys.contains(name)))
+    {
+        let key = blocker.key();
+        push_finding(
+            &mut findings,
+            &mut fixes,
+            &mut commands,
+            FindingSpec::new(
+                "exec-blocked",
+                FindingSeverity::Warning,
+                crate::why::blocked_next_step(&blocker),
+                match key {
+                    Some(key) => format!("phantom why {key}"),
+                    None => "phantom why <KEY>".to_string(),
+                },
+            )
+            .file(".phantom.toml"),
+        );
+    }
 
     if let Some(error) = precommit_error {
         push_finding(
@@ -268,7 +318,59 @@ pub fn build_report(project_dir: &Path, options: AgentReadinessOptions) -> Agent
         );
     }
 
-    if config.is_some() && !signals.vault_accessible {
+    // The managed dotenv is what `phantom exec` resolves before launching. A
+    // configured file that is missing (or cannot be chosen unambiguously)
+    // fails every protected launch, so it is a critical finding, as it is a
+    // failed check in `phantom doctor`. It is not repeated when the parse
+    // error above is for the managed dotenv's own path: the configured file,
+    // or (without one) a candidate the resolver failed to read. A parse error
+    // in any other dotenv does not hide it.
+    let managed_dotenv_reported =
+        |config: &PhantomConfig| match config.phantom.dotenv_path.as_deref() {
+            Some(name) => unreadable_dotenvs
+                .iter()
+                .chain(&malformed_dotenvs)
+                .any(|reported| reported == name),
+            None => unreadable_dotenvs
+                .iter()
+                .any(|reported| crate::managed_dotenv::is_resolver_candidate(reported)),
+        };
+    if let Some(config) = config
+        .as_ref()
+        .filter(|config| !managed_dotenv_reported(config))
+    {
+        if let Err(error) = crate::managed_dotenv::resolve_dotenv(project_dir, config, &[]) {
+            push_finding(
+                &mut findings,
+                &mut fixes,
+                &mut commands,
+                FindingSpec::new(
+                    "managed-dotenv-unresolved",
+                    FindingSeverity::Critical,
+                    format!(
+                        "Managed dotenv could not be resolved: {error:#}. Restore the managed dotenv as a regular file beside .phantom.toml, or rerun `phantom init --from <file>` to choose it."
+                    ),
+                    "phantom doctor",
+                )
+                .file(".phantom.toml"),
+            );
+        }
+    }
+
+    if config.is_some() && options.vault.is_none() && options.vault_probe_skipped {
+        push_finding(
+            &mut findings,
+            &mut fixes,
+            &mut commands,
+            FindingSpec::new(
+                "vault-not-probed",
+                FindingSeverity::Info,
+                "Vault access was not checked; run `phantom agent doctor --json --vault` to probe it."
+                    .to_string(),
+                "phantom agent doctor --json --vault",
+            ),
+        );
+    } else if config.is_some() && !signals.vault_accessible {
         let message = options
             .vault
             .as_ref()
@@ -332,7 +434,7 @@ pub fn build_report(project_dir: &Path, options: AgentReadinessOptions) -> Agent
         );
     }
 
-    if signals.has_package_scripts && !signals.has_wrapped_scripts {
+    if signals.has_scripts_to_wrap {
         push_finding(
             &mut findings,
             &mut fixes,
@@ -340,7 +442,7 @@ pub fn build_report(project_dir: &Path, options: AgentReadinessOptions) -> Agent
             FindingSpec::new(
                 "package-scripts-not-wrapped",
                 FindingSeverity::Info,
-                "package.json has scripts, but none are wrapped with phantom exec.",
+                "package.json has scripts that `phantom wrap` would run through phantom exec; they run without Phantom now.",
                 "phantom wrap",
             )
             .file("package.json")
@@ -551,8 +653,12 @@ fn gitignore_has_env(path: &Path) -> bool {
 }
 
 fn has_any_mcp_wiring(project_dir: &Path) -> bool {
-    let mut candidates = vec![project_dir.join(".claude/settings.local.json")];
-    if let Some(home) = dirs::home_dir() {
+    has_mcp_wiring_with_home(project_dir, dirs::home_dir().as_deref())
+}
+
+fn has_mcp_wiring_with_home(project_dir: &Path, home: Option<&Path>) -> bool {
+    let mut candidates = vec![project_dir.join(".mcp.json")];
+    if let Some(home) = home {
         candidates.push(home.join(".cursor/mcp.json"));
         candidates.push(home.join(".codeium/windsurf/mcp_config.json"));
         candidates.push(home.join(".codex/config.toml"));
@@ -646,42 +752,49 @@ fn is_runnable_file(path: &Path) -> bool {
     }
 }
 
-fn package_has_scripts(path: &Path) -> bool {
+/// Whether `phantom wrap`, with its default selection, would wrap at least
+/// one script in `path`. The finding that recommends `phantom wrap` uses the
+/// same decision as the command itself
+/// ([`crate::package_scripts::wrap_scripts`]), so it never recommends a run
+/// that changes nothing (only tooling scripts, shell command lines, scripts
+/// already under Phantom, a user-owned `NAME:raw` conflict) and never misses
+/// a selected script left outside Phantom next to a wrapped one.
+fn package_has_scripts_to_wrap(path: &Path) -> bool {
     let Ok(content) = std::fs::read_to_string(path) else {
         return false;
     };
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) else {
+    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&content) else {
         return false;
     };
-    value
-        .get("scripts")
-        .and_then(|v| v.as_object())
-        .is_some_and(|scripts| !scripts.is_empty())
-}
-
-fn package_has_wrapped_scripts(path: &Path) -> bool {
-    let Ok(content) = std::fs::read_to_string(path) else {
-        return false;
-    };
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) else {
-        return false;
-    };
-    value
-        .get("scripts")
-        .and_then(|v| v.as_object())
-        .is_some_and(|scripts| {
-            scripts.values().any(|script| {
-                script.as_str().is_some_and(|s| {
-                    s.contains("phantom exec") || s.contains("phantom-secrets exec")
-                })
-            })
-        })
+    crate::package_scripts::wrap_scripts(&mut value, &[], &[])
+        .is_ok_and(|outcome| !outcome.wrapped.is_empty())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn claude_wiring_requires_the_supported_project_registration_file() {
+        let dir = TempDir::new().unwrap();
+        std::fs::create_dir(dir.path().join(".claude")).unwrap();
+        let registration = serde_json::to_vec(&serde_json::json!({
+            "mcpServers": {"phantom": {
+                "command": std::env::current_exe().unwrap(),
+                "args": ["mcp", "serve"]
+            }}
+        }))
+        .unwrap();
+        std::fs::write(
+            dir.path().join(".claude/settings.local.json"),
+            &registration,
+        )
+        .unwrap();
+        assert!(!has_mcp_wiring_with_home(dir.path(), None));
+        std::fs::write(dir.path().join(".mcp.json"), registration).unwrap();
+        assert!(has_mcp_wiring_with_home(dir.path(), None));
+    }
 
     fn init_git_with_custom_hooks(dir: &Path) -> PathBuf {
         for args in [
@@ -704,6 +817,36 @@ mod tests {
         hook
     }
 
+    #[test]
+    fn skipped_vault_probe_is_info_not_critical() {
+        let dir = tempfile::TempDir::new().unwrap();
+        PhantomConfig::new_with_defaults("probe-skip".to_string())
+            .save(&dir.path().join(".phantom.toml"))
+            .unwrap();
+        let skipped = build_report(
+            dir.path(),
+            AgentReadinessOptions {
+                vault_probe_skipped: true,
+                ..AgentReadinessOptions::default()
+            },
+        );
+        assert!(skipped
+            .findings
+            .iter()
+            .any(|f| f.id == "vault-not-probed" && f.severity == FindingSeverity::Info));
+        assert!(!skipped
+            .findings
+            .iter()
+            .any(|f| f.id == "vault-not-accessible"));
+
+        let unprobed = build_report(dir.path(), AgentReadinessOptions::default());
+        assert!(unprobed
+            .findings
+            .iter()
+            .any(|f| f.id == "vault-not-accessible" && f.severity == FindingSeverity::Critical));
+        assert!(!unprobed.findings.iter().any(|f| f.id == "vault-not-probed"));
+    }
+
     fn no_vault() -> AgentReadinessOptions {
         AgentReadinessOptions {
             vault: Some(VaultProbe {
@@ -714,6 +857,7 @@ mod tests {
             }),
             cloud_logged_in: false,
             audit_enabled: false,
+            vault_probe_skipped: false,
         }
     }
 
@@ -731,6 +875,81 @@ mod tests {
             .iter()
             .any(|f| f.id == "unprotected-env-secrets"));
         assert!(report.commands.contains(&"phantom init".to_string()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_env_is_a_finding_and_its_target_is_not_read() {
+        let dir = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        let target = outside.path().join("elsewhere.env");
+        std::fs::write(&target, format!("OPENAI_API_KEY={}-outside\n", "sk")).unwrap();
+        std::os::unix::fs::symlink(&target, dir.path().join(".env")).unwrap();
+
+        let report = build_report(dir.path(), no_vault());
+
+        assert!(
+            !report
+                .findings
+                .iter()
+                .any(|f| f.id == "unprotected-env-secrets"),
+            "the link target was read: {:?}",
+            report.findings
+        );
+        let refused = report
+            .findings
+            .iter()
+            .find(|f| f.id == "env-parse-error")
+            .expect("the symlink is reported");
+        assert!(refused.message.contains("not a regular, non-symlink file"));
+        assert!(!refused
+            .message
+            .contains(&outside.path().display().to_string()));
+    }
+
+    fn init_protected_project(dir: &Path, env: &str) {
+        let config = PhantomConfig::new_with_defaults(PhantomConfig::project_id_from_path(
+            &std::fs::canonicalize(dir).unwrap(),
+        ));
+        assert!(config.services.contains_key("database"));
+        std::fs::write(
+            dir.join(".phantom.toml"),
+            toml::to_string_pretty(&config).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(dir.join(".env"), env).unwrap();
+    }
+
+    #[test]
+    fn protected_connection_string_is_reported_as_blocking_exec() {
+        let dir = TempDir::new().unwrap();
+        init_protected_project(
+            dir.path(),
+            "DATABASE_URL=phm_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n",
+        );
+
+        let report = build_report(dir.path(), no_vault());
+
+        let finding = report
+            .findings
+            .iter()
+            .find(|f| f.id == "exec-blocked")
+            .expect("doctor reports that exec is blocked");
+        assert_eq!(finding.severity, FindingSeverity::Warning);
+        assert!(finding.message.contains("DATABASE_URL"));
+        assert!(finding.message.contains("outside `phantom exec`"));
+        assert_eq!(finding.command.as_deref(), Some("phantom why DATABASE_URL"));
+        assert_ne!(report.status, ReadinessStatus::Verified);
+    }
+
+    #[test]
+    fn unprotected_connection_string_key_does_not_report_exec_blocked() {
+        let dir = TempDir::new().unwrap();
+        init_protected_project(dir.path(), "OPENAI_API_KEY=phm_test\n");
+
+        let report = build_report(dir.path(), no_vault());
+
+        assert!(!report.findings.iter().any(|f| f.id == "exec-blocked"));
     }
 
     #[test]
@@ -755,7 +974,7 @@ mod tests {
         std::fs::create_dir_all(dir.path().join(".claude")).unwrap();
         let current_exe = std::env::current_exe().unwrap();
         std::fs::write(
-            dir.path().join(".claude/settings.local.json"),
+            dir.path().join(".mcp.json"),
             serde_json::to_vec(&serde_json::json!({
                 "mcpServers": {"phantom": {
                     "command": current_exe,
@@ -777,11 +996,175 @@ mod tests {
                 }),
                 cloud_logged_in: false,
                 audit_enabled: false,
+                vault_probe_skipped: false,
             },
         );
 
         assert_eq!(report.status, ReadinessStatus::Verified);
         assert_eq!(report.exit_code, 0);
+    }
+
+    /// `phantom agent report` said Protected for a project whose configured
+    /// managed dotenv was gone, so every `phantom exec` would refuse to launch.
+    #[test]
+    fn missing_managed_dotenv_is_a_critical_finding() {
+        let dir = TempDir::new().unwrap();
+        let mut config = PhantomConfig::new_with_defaults(PhantomConfig::project_id_from_path(
+            &std::fs::canonicalize(dir.path()).unwrap(),
+        ));
+        config.phantom.dotenv_path = Some(".env".to_string());
+        std::fs::write(
+            dir.path().join(".phantom.toml"),
+            toml::to_string_pretty(&config).unwrap(),
+        )
+        .unwrap();
+
+        let report = build_report(
+            dir.path(),
+            AgentReadinessOptions {
+                vault: Some(VaultProbe {
+                    accessible: true,
+                    backend: Some("file".to_string()),
+                    secret_count: Some(1),
+                    error: None,
+                }),
+                cloud_logged_in: false,
+                audit_enabled: false,
+                vault_probe_skipped: false,
+            },
+        );
+
+        let finding = report
+            .findings
+            .iter()
+            .find(|f| f.id == "managed-dotenv-unresolved")
+            .expect("the missing managed dotenv is reported");
+        assert_eq!(finding.severity, FindingSeverity::Critical);
+        assert!(
+            finding.message.contains("does not exist: .env"),
+            "{}",
+            finding.message
+        );
+        assert!(finding.message.contains("phantom init --from <file>"));
+        assert_eq!(report.status, ReadinessStatus::Unsafe);
+        assert_eq!(report.exit_code, 1);
+    }
+
+    fn config_with_managed_dotenv(dir: &Path) {
+        let mut config = PhantomConfig::new_with_defaults(PhantomConfig::project_id_from_path(
+            &std::fs::canonicalize(dir).unwrap(),
+        ));
+        config.phantom.dotenv_path = Some(".env".to_string());
+        std::fs::write(
+            dir.join(".phantom.toml"),
+            toml::to_string_pretty(&config).unwrap(),
+        )
+        .unwrap();
+    }
+
+    /// Without a configured `dotenv_path` the resolver reads its candidate
+    /// names itself. An unreadable candidate is what made it fail, and is
+    /// already reported, so the finding is skipped; an unreadable file the
+    /// resolver never reads must not hide its failure.
+    #[cfg(unix)]
+    #[test]
+    fn without_a_dotenv_path_only_an_unreadable_resolver_candidate_skips_the_finding() {
+        let outside = TempDir::new().unwrap();
+        let target = outside.path().join("elsewhere.env");
+        std::fs::write(&target, "PORT=3000\n").unwrap();
+        let unresolved = |linked: &str| {
+            let dir = TempDir::new().unwrap();
+            let mut config = PhantomConfig::new_with_defaults(PhantomConfig::project_id_from_path(
+                &std::fs::canonicalize(dir.path()).unwrap(),
+            ));
+            // Protected state with no token-bearing dotenv: the resolver fails.
+            config.phantom.secrets.insert(
+                "SERVICE_TOKEN".to_string(),
+                crate::config::SecretOverride::default(),
+            );
+            std::fs::write(
+                dir.path().join(".phantom.toml"),
+                toml::to_string_pretty(&config).unwrap(),
+            )
+            .unwrap();
+            std::os::unix::fs::symlink(&target, dir.path().join(linked)).unwrap();
+
+            let report = build_report(dir.path(), no_vault());
+            assert!(
+                report
+                    .findings
+                    .iter()
+                    .any(|f| f.id == "env-parse-error" && f.file.as_deref() == Some(linked)),
+                "{linked} is reported as unreadable"
+            );
+            report
+                .findings
+                .iter()
+                .any(|f| f.id == "managed-dotenv-unresolved")
+        };
+
+        assert!(
+            crate::managed_dotenv::is_resolver_candidate(".env.local")
+                && !crate::managed_dotenv::is_resolver_candidate("service.env")
+        );
+        assert!(
+            !unresolved(".env.local"),
+            "an unreadable resolver candidate is the failure already reported"
+        );
+        assert!(
+            unresolved("service.env"),
+            "a file the resolver never reads must not hide its failure"
+        );
+    }
+
+    /// Any `env-parse-error` used to suppress the finding, so a malformed
+    /// `.env.local` hid that the managed `.env` itself was gone.
+    #[test]
+    fn a_malformed_other_dotenv_does_not_hide_a_missing_managed_one() {
+        let dir = TempDir::new().unwrap();
+        config_with_managed_dotenv(dir.path());
+        std::fs::write(dir.path().join(".env.local"), "PORT=3000\nBROKEN_RECORD\n").unwrap();
+
+        let report = build_report(dir.path(), no_vault());
+
+        assert!(report
+            .findings
+            .iter()
+            .any(|f| f.id == "env-parse-error" && f.file.as_deref() == Some(".env.local")));
+        let unresolved = report
+            .findings
+            .iter()
+            .find(|f| f.id == "managed-dotenv-unresolved")
+            .expect("the missing managed .env is still reported");
+        assert!(
+            unresolved.message.contains("does not exist: .env"),
+            "{}",
+            unresolved.message
+        );
+    }
+
+    /// A parse error for the managed dotenv's own path already says what is
+    /// wrong with it; the resolver failure is not reported a second time.
+    #[cfg(unix)]
+    #[test]
+    fn a_parse_error_for_the_managed_dotenv_is_reported_once() {
+        let dir = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        config_with_managed_dotenv(dir.path());
+        let target = outside.path().join("elsewhere.env");
+        std::fs::write(&target, "PORT=3000\n").unwrap();
+        std::os::unix::fs::symlink(&target, dir.path().join(".env")).unwrap();
+
+        let report = build_report(dir.path(), no_vault());
+
+        assert!(report
+            .findings
+            .iter()
+            .any(|f| f.id == "env-parse-error" && f.file.as_deref() == Some(".env")));
+        assert!(!report
+            .findings
+            .iter()
+            .any(|f| f.id == "managed-dotenv-unresolved"));
     }
 
     #[test]
@@ -803,7 +1186,7 @@ mod tests {
         std::fs::write(hook, "#!/bin/sh\nnpx phantom-secrets check --staged\n").unwrap();
         std::fs::create_dir_all(dir.path().join(".claude")).unwrap();
         std::fs::write(
-            dir.path().join(".claude/settings.local.json"),
+            dir.path().join(".mcp.json"),
             r#"{"mcpServers":{"phantom":{"command":"npx","args":["-y","phantom-secrets-mcp"]}}}"#,
         )
         .unwrap();
@@ -819,14 +1202,110 @@ mod tests {
                 }),
                 cloud_logged_in: false,
                 audit_enabled: false,
+                vault_probe_skipped: false,
             },
         );
 
         assert_eq!(report.status, ReadinessStatus::Protected);
+        assert!(!report
+            .findings
+            .iter()
+            .any(|f| f.id == "managed-dotenv-unresolved"));
         assert!(report.findings.iter().any(|f| f.id == "mcp-not-wired"));
         assert!(report
             .findings
             .iter()
             .any(|f| f.id == "missing-precommit-check"));
+    }
+
+    /// The `package-scripts-not-wrapped` finding recommends `phantom wrap`,
+    /// so it fires exactly when `phantom wrap` with its default selection
+    /// would wrap at least one script: never for a package whose scripts it
+    /// would leave alone, and still for a selected script left outside
+    /// Phantom next to one that is already wrapped.
+    #[test]
+    fn unwrapped_scripts_finding_matches_what_phantom_wrap_would_do() {
+        let exec = ["phantom", " exec --"].concat();
+        let cases = [
+            // Tooling only: `phantom wrap` selects none of these.
+            (
+                "tooling only",
+                serde_json::json!({"lint": "eslint .", "test": "vitest", "typecheck": "tsc"}),
+                false,
+            ),
+            // A shell command line is reported and left unchanged by wrap.
+            (
+                "shell command line",
+                serde_json::json!({"dev": "NODE_ENV=development next dev"}),
+                false,
+            ),
+            // Already runs through Phantom via a pinned npx package.
+            (
+                "pinned npx package",
+                serde_json::json!({"dev": "npx phantom-secrets@latest exec -- next dev"}),
+                false,
+            ),
+            (
+                "fully wrapped",
+                serde_json::json!({
+                    "dev": format!("{exec} next dev"),
+                    "dev:raw": "next dev",
+                    "lint": "eslint ."
+                }),
+                false,
+            ),
+            // A user-owned `dev:raw` makes `phantom wrap` refuse and change nothing.
+            (
+                "user-owned raw sibling",
+                serde_json::json!({"dev": "next dev", "dev:raw": "user-owned"}),
+                false,
+            ),
+            ("plain dev", serde_json::json!({"dev": "next dev"}), true),
+            // One wrapped script does not cover a selected one still outside.
+            (
+                "partly wrapped",
+                serde_json::json!({
+                    "dev": format!("{exec} next dev"),
+                    "dev:raw": "next dev",
+                    "build": "next build"
+                }),
+                true,
+            ),
+            // `predev` is selected by default, like `dev`.
+            (
+                "pre hook",
+                serde_json::json!({
+                    "predev": "node scripts/check-env.js",
+                    "dev": format!("{exec} next dev"),
+                    "dev:raw": "next dev"
+                }),
+                true,
+            ),
+        ];
+        let mut mismatches = Vec::new();
+        for (label, scripts, expected) in cases {
+            let dir = TempDir::new().unwrap();
+            let mut package = serde_json::json!({ "name": "demo", "scripts": scripts });
+            std::fs::write(
+                dir.path().join("package.json"),
+                serde_json::to_vec_pretty(&package).unwrap(),
+            )
+            .unwrap();
+
+            let report = build_report(dir.path(), no_vault());
+            let reported = report
+                .findings
+                .iter()
+                .any(|f| f.id == "package-scripts-not-wrapped");
+            let would_wrap = crate::package_scripts::wrap_scripts(&mut package, &[], &[])
+                .is_ok_and(|outcome| !outcome.wrapped.is_empty());
+            if would_wrap != expected {
+                mismatches.push(format!("{label}: phantom wrap would wrap = {would_wrap}"));
+            }
+            if reported != expected {
+                mismatches.push(format!("{label}: agent finding = {reported}"));
+            }
+        }
+        assert!(mismatches.is_empty(), "{mismatches:#?}");
     }
 }

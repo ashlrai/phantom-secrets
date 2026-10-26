@@ -1,13 +1,16 @@
 # Roadmap
 
+<!-- phantom-release-version: 0.7.9 -->
+
 This roadmap describes ordered engineering gates, not delivery dates or shipped
-capabilities. This status snapshot was verified on 2026-09-03. The immutable
-`v0.7.5` GitHub release binds 19 assets to source commit
-`d2969e73995cc139e6253e0c8a70f1d683f88e20`; all six native rows and GitHub
-provenance and SPDX attestations passed in workflow 33709338577. Homebrew
-publishes the same reviewed `v0.7.5`. Both npm `0.7.4` wrappers remain public only under the
+capabilities. This status snapshot was verified on 2026-09-29. The immutable
+`v0.7.9` GitHub release binds 19 assets to source commit
+`7a51ce512ec4aee12cc29ff859036af63fbe93db`; all six native rows and GitHub
+provenance and SPDX attestations passed in workflow 34153902556. Homebrew
+still publishes the previous reviewed `v0.7.8`; its `v0.7.9` bump is pending.
+Both npm `0.7.4` wrappers remain public only under the
 failed `release-candidate` track, while npm `latest` remains `0.6.0`.
-No `0.7.5` npm, crates.io, or MCP Registry publication, hosted-service
+No `0.7.9` npm, crates.io, or MCP Registry publication, hosted-service
 commissioning, provider activation, certification, or customer acceptance is
 represented by the GitHub release receipt.
 
@@ -22,7 +25,20 @@ represented by the GitHub release receipt.
 
 ## Current milestones
 
-### 1. Close the 0.7.5 fix-forward source candidate — released
+### 0.7.9 agent onboarding and Hub status compatibility — released
+
+- Register Claude project MCP configuration in `.mcp.json` while preserving
+  unrelated local permission settings, and diagnose legacy-only registration.
+- Provide an explicitly metadata-only `phantom status --json` contract for
+  bounded Hub inspection without vault, bearer, or network access.
+- Verify the installed CLI and MCP onboarding path in the cross-platform CI
+  matrix before publishing a new immutable release identity.
+
+Released as the immutable `v0.7.9` GitHub release (tag-bound workflow
+34153902556). No npm, crates.io, MCP Registry, or deployment receipt exists for
+`0.7.9`, and the Homebrew formula has not yet been bumped from `v0.7.8`.
+
+### 1. Close the 0.7.8 fix-forward source candidate — released
 
 - Keep local mutations transactional and authority-sensitive operations
   fail-closed.
@@ -33,7 +49,7 @@ represented by the GitHub release receipt.
   and schema gates on one exact clean SHA.
 
 Completed at exact source commit
-`d2969e73995cc139e6253e0c8a70f1d683f88e20`; source completion was a
+`f065b13462f9eaf27e0443f8911f021575b7c409`; source completion was a
 prerequisite, not publication evidence by itself.
 
 ### 2. Produce and accept exact native artifacts — released on GitHub
@@ -51,9 +67,8 @@ native credential-store, ACL, editor, or every-device acceptance.
 
 ### 3. Reconcile remaining distribution tracks — gated
 
-- Preserve the immutable GitHub and Homebrew `v0.7.5` receipts while the
-  `v0.7.6` Windows npm-path fix-forward candidate completes its independent
-  release and package gates.
+- Preserve the immutable GitHub and Homebrew `v0.7.8` receipts while npm,
+  crates.io, and MCP Registry complete their independent publication gates.
 - Publish crates.io, npm, MCP Registry, and future Homebrew updates only through
   their separately approved workflows.
 - Verify exact version and byte identity for each immutable publication.
@@ -89,6 +104,8 @@ availability or local tests do not commission those capabilities.
 - Security, compliance, platform, or support guarantees inferred from source.
 - Dates or adoption claims that lack an accountable owner and acceptance evidence.
 
-Historical planning documents such as [PLAN.md](PLAN.md) record earlier design
-thinking and are not the current roadmap. Current behavior is defined by code,
+The earlier DX plan (public key awareness, `.env.example` generation, README
+onboarding, pre-commit hook, `wrap`/`unwrap`, `copy`, enhanced `doctor`, CI/CD
+detection, `why`, `status --oneline`) has shipped and was removed from the
+repository; see git history for it. Current behavior is defined by code,
 closed schemas, tests, the [changelog](CHANGELOG.md), and canonical documentation.

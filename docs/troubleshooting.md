@@ -37,25 +37,50 @@ If your API calls fail with authentication errors after setting up Phantom:
    `phantom reveal <KEY>` and complete the exact typed confirmation, or use
    `--clipboard` to avoid printing it on screen
 4. **Check BASE_URL is set**: The proxy only works when `OPENAI_BASE_URL` (or equivalent) points to the local proxy. Use `phantom exec -- <cmd>` which sets these automatically.
+5. **Check the key has a proxy route**: `phantom why <KEY>` (or MCP `phantom_why`) reports how `phantom exec` delivers a protected key. `no_route` means no built-in route injects it (for example `GROQ_API_KEY` or `JWT_SECRET`), so the child gets only a session token that no provider accepts. `phantom exec` names these keys at launch with `warn No proxy route for ...`. Custom routes: `phantom start` serves custom routes from `.phantom.toml`; `phantom exec` refuses them and runs only Phantom's exact built-in routes. The reason: `phantom start` is run by a person on project config they have reviewed. `phantom exec` launches an agent, and anything in the repository, `.phantom.toml` included, may have been written by that agent or by an untrusted change, so accepting custom routes there would widen the attack surface.
 
 ### Proxy hangs or times out
 
-The default upstream timeout is 30 seconds. For long-running API calls:
+The proxy's upstream timeout is an idle timeout of 600 seconds (matching the
+OpenAI and Anthropic SDK defaults): it applies to each wait for upstream bytes,
+not to the whole request, so long SSE streams and slow reasoning calls are not
+cut off. If an upstream drops a streaming response midway, the proxy aborts the
+client connection instead of ending the body cleanly, so SDKs report the
+truncation rather than acting on partial output. If a request still hangs:
 
 - Check your network connection
 - Verify the upstream service is accessible
 - The proxy deliberately does not follow upstream redirects. Inspect a returned
   3xx response and use the reviewed canonical service endpoint instead.
 
-### Request body larger than 10 MB returns HTTP 413
+### HTTP 429 with `"source":"phantom-proxy"`
+
+This 429 comes from Phantom's local burst guard, not from the provider. By
+default it trips above 50 requests per secret or 100 requests in total within
+10 seconds. Busy multi-agent sessions can raise the limits before launching:
+
+```bash
+PHANTOM_RATE_LIMIT_PER_SECRET=20 PHANTOM_RATE_LIMIT_BURST=400 phantom exec -- claude
+```
+
+### HTTP 503 `route credential unavailable`
+
+The request reached a proxy route whose key is not protected in this session.
+`phantom exec` only exports a service's base-URL variable when that service's
+key is loaded, so this usually means a client hardcoded the proxy URL. Protect
+the key (`phantom add` or `phantom init`) and restart `phantom exec`.
+
+### Request body larger than 32 MiB returns HTTP 413
 
 The proxy buffers each request body under a strict size limit before contacting
-the upstream. Bodies over the default 10 MB limit fail closed with HTTP 413, so
+the upstream. Bodies over the default 32 MiB limit (Anthropic's request limit) fail closed with HTTP 413, so
 the upstream receives no truncated prefix. Accepted bodies are forwarded
 byte-for-byte; no client header or body resolves a `phm_` token. Only the
 matched route's fixed authentication header receives its route-owned value.
 
-Split larger requests. The body-limit configuration is not currently exposed
+All in-flight requests also share a 320 MiB buffer budget; when many large
+requests overlap, the proxy answers 503 with `retry-after: 1` instead of
+buffering more. Split larger requests. The body-limit configuration is not currently exposed
 through `.phantom.toml`; track the repository issues for future configuration.
 
 ### Claude Code can't read my .env file
@@ -71,7 +96,7 @@ Fix it automatically:
 phantom setup --client claude
 ```
 
-This wires the MCP server, removes legacy Phantom-managed dotenv allow grants, and preserves deny rules in `.claude/settings.local.json`. For other AI tools, swap in `--client cursor|windsurf|codex`. Agents can use Phantom's value-blind MCP inventory without dotenv read access.
+This wires the MCP server, removes legacy Phantom-managed dotenv allow grants, and preserves deny rules in `.claude/settings.local.json`. For other AI tools, swap in `--client cursor|windsurf|codex|gemini`. Agents can use Phantom's value-blind MCP inventory without dotenv read access.
 
 You can verify with:
 ```bash
@@ -90,12 +115,28 @@ refuses this operation in scripts, pipes, CI, or agent tool calls.
 
 On macOS, you may see a keychain access prompt the first time. Click "Always Allow" for the `phantom-secrets` entry.
 
-On Linux, ensure the Secret Service daemon is running:
-```bash
-# GNOME
-systemctl --user start gnome-keyring-daemon
+On Linux, Phantom uses the kernel keyring by default. Its entries do not
+survive a reboot. On a headed desktop with an unlocked Secret Service, run
+`phantom vault migrate-linux` from a terminal you exclusively control. Phantom
+copies and verifies the project before switching; conflicts, a locked service,
+or missing source entries fail closed. After migration, Secret Service remains
+authoritative and its unavailability does not silently revive keyutils. For
+headless Linux, WSL, and CI, set `PHANTOM_VAULT_PASSPHRASE` to select the
+encrypted-file backend explicitly.
 
-# For headless/CI environments, set the passphrase env var instead:
+The persistent selection requires matching owner-only records under Phantom's
+application-data and configuration roots; the migration also stores a Secret
+Service corroboration sentinel used by the explicit migration/recovery path.
+Loss of one local record, including across a reboot, fails closed without a
+desktop-service probe. Unmarked headless vault opens do not probe a desktop
+service. If all local Phantom state was deleted, restore a verified backup
+rather than recreating backend records by hand.
+Kernel-keyring entries do not survive a reboot, and the per-user key quota is
+finite. If an entry is unavailable after reboot, create it again through the
+normal trusted-terminal workflow. For an explicit encrypted-file backend in
+headless or CI environments, provide the passphrase through a protected
+environment or process manager:
+```bash
 export PHANTOM_VAULT_PASSPHRASE="your-secure-passphrase"
 ```
 
@@ -145,6 +186,45 @@ either a proxied or direct child. Commands launched manually from the same shell
 still inherit the export, so do not launch an agent outside `phantom exec` while
 the variable is set.
 
+### "Vault locked: this project's secrets are in an encrypted-file vault this process cannot open"
+
+The project's secrets were stored in the encrypted-file vault (for example by a
+shell that had `PHANTOM_VAULT_PASSPHRASE` set), but this process has no
+passphrase, so Phantom opened the OS keychain instead. Rather than answer from
+that empty view, commands refuse with exit 1: `list`, `expiry enforce`,
+`secrets-expiring-soon`, `validate`, `sync`, and `agent report`/`agent doctor`
+(which report `unsafe`). `phantom exec` and `phantom start` refuse to launch the
+child. `cloud push` and `team vault-push` also refuse a keychain-only partial
+inventory instead of replacing the remote copy with it. The same refusal comes
+from the MCP inventory tools as error `-32600`. With `PHANTOM_REQUIRE_KEYCHAIN=1`
+the file vault is never opened, even with a passphrase set, and the message
+says so.
+
+Fix: export the same `PHANTOM_VAULT_PASSPHRASE` the secrets were stored with
+in the shell, or for MCP clients in the server's env config, then retry or
+restart the server. The message names the vault file. If the vault was made by
+the automatic keychain-unavailable fallback, its passphrase was generated and
+kept in the OS credential store, and the message says how that case differs.
+If your secrets now live in the OS keychain, the file may be stale: back it up
+or move it aside rather than deleting it.
+
+### Proxy port conflicts ("address already in use")
+
+Phantom does not use a fixed proxy port. `phantom exec` and `phantom start` both
+ask the OS for a free loopback port (`127.0.0.1`, port 0) every time, so another
+program holding a port such as 8080 cannot collide with them. Read the actual
+port from the startup line (`Proxy started on 127.0.0.1:PORT`) or from the
+`PHANTOM_PROXY_PORT` variable that `phantom exec` sets for the child. Do not
+hardcode a port in your app or `.env`.
+
+If you see `Another foreground Phantom proxy session already owns <dir>`, the
+cause is a second `phantom start` for the same project, not a busy port. Stop
+the first one with Ctrl-C in its terminal, or use `phantom exec`, which starts
+its own child-owned proxy.
+
+If a hardcoded port from an older setup is still referenced and requests fail
+with connection refused, replace it with `PHANTOM_PROXY_PORT`.
+
 ### `phantom start --daemon` or `phantom stop` is refused
 
 This is intentional. Phantom does not persist a live proxy bearer, PID, or port
@@ -179,17 +259,19 @@ support requires an explicit reviewed trust design and is not supported in this 
 
 ### An older registry-based install command fails
 
-The reviewed `v0.7.5` binaries ship through the immutable GitHub Release. The
-trusted Homebrew formula publishes reviewed `v0.7.5`; Homebrew publication is
-independent of the GitHub release. npm `latest` remains `0.6.0`; exact npm
-`0.7.4` wrappers are failed release candidates. crates.io remains an older
-distribution track.
+The reviewed `v0.7.9` binaries ship through the immutable GitHub Release. The
+trusted Homebrew formula still publishes the previous reviewed `v0.7.8`; Homebrew publication is
+independent of the GitHub release. In the exact 2026-09-29 registry snapshot,
+npm `latest` remains `0.6.0`; exact npm
+`0.7.4` wrappers are failed release candidates. crates.io remains on the older
+`0.5.1` distribution track, and MCP Registry does not publish `0.7.9`.
 
-1. Verify the immutable release exists: https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.5
-2. Use the exact `v0.7.5` asset and `.sha256` sidecar documented in
+1. Verify the immutable release exists: https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.9
+2. Use the exact `v0.7.9` asset and `.sha256` sidecar documented in
    [getting started](./getting-started.md#install)
-3. On macOS, use the direct GitHub asset for `v0.7.5`, or use the tap, trust,
-   and fully qualified formula commands for the same reviewed version
+3. On macOS, use the direct GitHub asset for `v0.7.9`, or use the tap, trust,
+   and fully qualified formula commands for the separately reviewed `v0.7.8`
+   Homebrew distribution.
 
 ## CI/CD Usage
 
@@ -198,7 +280,7 @@ distribution track.
 ```yaml
 - name: Set up Phantom
   run: |
-    cargo install --locked --git https://github.com/ashlrai/phantom-secrets.git --rev d2969e73995cc139e6253e0c8a70f1d683f88e20 phantom-secrets
+    cargo install --locked --git https://github.com/ashlrai/phantom-secrets.git --rev 7a51ce512ec4aee12cc29ff859036af63fbe93db phantom-secrets
     echo "PHANTOM_VAULT_PASSPHRASE=${{ secrets.PHANTOM_VAULT_PASSPHRASE }}" >> $GITHUB_ENV
     phantom pull --from vercel --project ${{ vars.VERCEL_PROJECT_ID }}
   env:
@@ -209,7 +291,7 @@ distribution track.
 
 ```dockerfile
 # Install phantom
-RUN cargo install --locked --git https://github.com/ashlrai/phantom-secrets.git --rev d2969e73995cc139e6253e0c8a70f1d683f88e20 phantom-secrets
+RUN cargo install --locked --git https://github.com/ashlrai/phantom-secrets.git --rev 7a51ce512ec4aee12cc29ff859036af63fbe93db phantom-secrets
 
 # Set passphrase for encrypted vault (pass at runtime, not build time)
 ENV PHANTOM_VAULT_PASSPHRASE=""
@@ -248,7 +330,10 @@ Phantom is designed for local development and CI/CD. In production, your deploym
 
 ### What happens if I lose access to my vault?
 
-If using OS keychain: secrets are tied to your user account. They persist across reboots.
+If using macOS Keychain or Windows Credential Manager, secrets are tied to your
+user account and can persist across reboots. Linux kernel-keyring entries do
+not survive a reboot; recover from an independently protected backup or re-add
+the credential through the trusted-terminal workflow.
 
 If using file vault: you need the `PHANTOM_VAULT_PASSPHRASE` to decrypt. If lost, re-pull from your deployment platform:
 ```bash
@@ -272,7 +357,7 @@ launched outside the proxy environment.
 
 Phantom stores your real secret values in one of two locations:
 
-- **OS keychain (primary):** macOS Keychain or Linux Secret Service. This is the default on desktop systems. Secrets are tied to your user account and persist across reboots.
+- **Platform credential backend (primary):** macOS Keychain, Linux keyutils or explicitly migrated desktop Secret Service, or Windows Credential Manager. Linux keyutils entries are in-memory and do not survive a reboot; `phantom vault migrate-linux` is a per-project trusted-terminal transition, not a headless default.
 - **Encrypted file vault (explicit or guarded fallback):** stored below the operating system's Phantom application-data directory (the exact path varies across macOS, Linux, and Windows). Setting a non-empty `PHANTOM_VAULT_PASSPHRASE` selects this backend explicitly. Otherwise Phantom falls back only after the OS keychain is unavailable and a generated passphrase has been persisted to secure storage and verified by an exact read-after-write. If an encrypted vault already exists but its secure passphrase entry is missing, Phantom refuses to generate a replacement key. Set `PHANTOM_REQUIRE_KEYCHAIN=1` to reject any fallback. Phantom prints a warning whenever an automatic fallback changes the storage posture. Vault payloads use ChaCha20-Poly1305 with an Argon2id-derived key; provide automation passphrases through a protected environment or process manager, not shell history.
 
 ### How to back up your secrets
@@ -359,8 +444,8 @@ Cloud sync is per-vault. Make sure you pushed from the same project directory. E
 ### "Subscription required" on cloud push
 
 There is no self-service hosted-plan upgrade available today. Keep the vault
-local, or request a bounded pilot through the
-[Phantom Pro waitlist](https://phm.dev/waitlist.html). Hosted-plan eligibility,
+local, or request a bounded pilot through
+[Phantom for enterprise](https://phm.dev/enterprise). Hosted-plan eligibility,
 vault and team limits, and pricing are still to be determined and are confirmed
 during pilot onboarding.
 
@@ -401,6 +486,8 @@ Note: entries written before HMAC chaining was introduced (pre-PR #62) are count
 
 The log file is only created once the first event is written. Ensure `PHANTOM_AUDIT=1` is set in the shell where `phantom exec` or vault-mutating commands run. Check the log path with `phantom audit path`.
 
+With an empty log, `phantom audit stats --json` still prints valid JSON (`total_events: 0`, `secrets: []`) and sends the hint to stderr, and `phantom audit export --format json` prints `[]`.
+
 ## Importing from other secret managers
 
 ### `phantom import --from` fails to parse the export file
@@ -409,13 +496,50 @@ Each importer expects a specific file format:
 
 | Source | Expected format | Notes |
 |--------|----------------|-------|
-| `doppler` | JSON object (`{"KEY": "value", ...}`) | Use `doppler secrets download --no-file --format json > dump.json` |
-| `infisical` | `.env` key=value lines | Use `infisical export --format=dotenv > export.env` |
-| `dotenvx` | Plaintext `.env` | Encrypted `.env.vault` files are **not** supported — run `dotenvx decrypt --stdout > .env` first |
-| `1password` | JSON array of item objects | Use `op item list --format json > 1p-export.json` |
-| `env` | Plaintext `.env` key=value | Any standard dotenv format |
+| `doppler` | JSON object: flat `{"KEY": "value"}`, or `{"KEY": {"computed": "...", "raw": "..."}}` | `doppler secrets download --no-file --format json > dump.json` writes the flat form; `doppler secrets --json` writes the nested form, and its `computed` value is imported. `DOPPLER_*` metadata keys are skipped |
+| `infisical` | `.env` key=value lines, or a JSON array `[{"key": "KEY", "value": "value"}, ...]` | `infisical export --format=dotenv > export.env` or `infisical export --format=json > export.json`. A file whose first character is `[` is read as JSON |
+| `dotenvx` | Plaintext `.env`, or a flat JSON object `{"KEY": "value"}` | A file whose first character is `{` is read as JSON. Encrypted `.env.vault` files and `encrypted:` values are **not** supported: run `dotenvx decrypt --stdout > .env` first |
+| `1password` | One flat JSON object `{"KEY": "value"}` that you assemble. Names must be environment variable names (`[A-Za-z_][A-Za-z0-9_]*`); values are strings, numbers or booleans | Phantom does not run `op`. Raw `op item get --format json` output (with its `fields` array) is refused; flatten it as shown below |
+| `env` | Plaintext `.env` key=value | Any standard dotenv format, including `export KEY=value`, quotes, and CRLF line endings |
+
+In every format, empty (and JSON `null`) values are skipped, while a nested
+object or array value refuses the whole file. A leading UTF-8 byte-order mark,
+as written by Windows PowerShell 5.1, is ignored.
+
+Every format must be UTF-8. A UTF-16 or UTF-32 file, which Windows PowerShell
+5.1 writes for `>` and for `Out-File` without `-Encoding`, is refused with an
+error that names the encoding; nothing is imported. Re-save it as UTF-8 and
+retry:
+
+```bash
+iconv -f UTF-16LE -t UTF-8 export.json > export-utf8.json
+# PowerShell: Get-Content export.json | Set-Content -Encoding utf8 export-utf8.json
+```
+
+`phantom import --help` lists the expected format for every source.
+
+For 1Password, collect one item's fields into a flat object with `op` and
+`jq`. The `jq` filter stops on two fields with the same label instead of
+keeping only one of them:
+
+```bash
+op item get "My App Secrets" --vault Dev --format json \
+  | jq '[.fields[] | select(.value != null and .value != "")]
+        | if (map(.label) | unique | length) != length
+          then error("duplicate field labels") else map({(.label): .value}) | add end' \
+  > 1p-export.json
+phantom import --from 1password --file 1p-export.json
+```
 
 If the file format is wrong, the importer returns a parse error. Re-export from the source tool and retry.
+
+A name that appears more than once refuses the whole file, in every format.
+JSON imports also refuse the whole file when a name is not an environment
+variable name (`[A-Za-z_][A-Za-z0-9_]*`), for example a 1Password field label
+such as `API Key` or an Infisical key such as `db-host`. The error lists every
+such entry with a suggested name (`"db-host" (rename to "db_host")`); Phantom
+never renames a secret for you. Rename the entries to the variables your app
+reads and retry.
 
 ### Existing secrets not overwritten during import
 
@@ -446,7 +570,7 @@ An npm-owned binary is also not replaced in place because the wrapper would over
 Older shared-root installs may have no receipt. Phantom recognizes a structurally valid legacy npm manifest, but otherwise reports an ambiguous legacy install and fails closed. Re-running a checksum-verified direct installer establishes the receipt without relying on a path guess.
 
 For Homebrew installs, use the reviewed tap and fully qualified formula. The
-formula currently publishes `v0.7.5`; direct GitHub assets remain available for
+formula currently publishes `v0.7.8`; direct GitHub assets remain available for
 explicit checksum verification:
 
 ```bash

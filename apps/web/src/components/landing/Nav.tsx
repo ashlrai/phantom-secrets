@@ -3,23 +3,26 @@
 import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { capturePostHog } from "@/lib/posthog";
+import { legacySecretsDestination } from "@/lib/legacy-secrets-fragment";
 import { Github } from "./Icons";
 
 const navigation = [
+  { label: "Workbench", href: "/" },
+  { label: "Phantom Secrets", href: "/secrets" },
   { label: "How it works", section: "how" },
-  { label: "Features", section: "features" },
   { label: "Pricing", href: "/pricing" },
   { label: "Enterprise", href: "/enterprise" },
   { label: "Security", href: "/security" },
+  { label: "Docs", href: "/docs" },
 ] as const;
 
 const navLinkClass =
   "rounded-md px-2 py-2 text-[0.84rem] font-medium text-t2 no-underline transition-colors hover:text-t1 focus-visible:text-t1";
 
-function homeSectionHref(pathname: string, section: string) {
-  return pathname === "/" ? `#${section}` : `/#${section}`;
+function secretsSectionHref(pathname: string, section: string) {
+  return pathname === "/secrets" ? `#${section}` : `/secrets#${section}`;
 }
 
 function isCurrentPath(pathname: string, href: string) {
@@ -30,6 +33,7 @@ export function Nav() {
   const pathname = usePathname();
   const [scrolled, setScrolled] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  const menuTrigger = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     const onScroll = () => setScrolled(window.scrollY > 8);
@@ -42,13 +46,31 @@ export function Nav() {
     if (!menuOpen) return;
 
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setMenuOpen(false);
+      if (event.key === "Escape" && !event.defaultPrevented) {
+        setMenuOpen(false);
+        menuTrigger.current?.focus();
+      }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [menuOpen]);
 
-  const installHref = homeSectionHref(pathname, "install");
+  useEffect(() => {
+    if (pathname !== "/") return;
+    const preserveSecretsBookmark = () => {
+      const destination = legacySecretsDestination(pathname, window.location.hash);
+      // A document replacement keeps legacy bookmarks from retaining the
+      // workbench metadata during Next.js's initial client hydration.
+      if (destination) window.location.replace(destination);
+    };
+    preserveSecretsBookmark();
+    window.addEventListener("hashchange", preserveSecretsBookmark);
+    return () => window.removeEventListener("hashchange", preserveSecretsBookmark);
+  }, [pathname]);
+
+  const isWorkbenchHome = pathname === "/" || pathname === "/docs" || pathname === "/docs/workbench" || pathname.startsWith("/docs/workbench-");
+  const installHref = isWorkbenchHome ? "/docs/workbench-setup" : secretsSectionHref(pathname, "install");
+  const githubHref = isWorkbenchHome ? "https://github.com/ashlrai/phantom" : "https://github.com/ashlrai/phantom-secrets";
 
   return (
     <nav
@@ -91,7 +113,7 @@ export function Nav() {
         <div className="hidden items-center gap-1 lg:flex">
           {navigation.map((item) => {
             const href = "section" in item
-              ? homeSectionHref(pathname, item.section)
+              ? secretsSectionHref(pathname, item.section)
               : item.href;
             const active = "href" in item && isCurrentPath(pathname, item.href);
 
@@ -106,21 +128,16 @@ export function Nav() {
               </Link>
             );
           })}
-          <a
-            href="https://github.com/ashlrai/phantom-secrets/blob/main/docs/getting-started.md"
-            className={navLinkClass}
-          >
-            Docs
-          </a>
         </div>
 
         <div className="flex items-center gap-2 sm:gap-3">
           <a
-            href="https://github.com/ashlrai/phantom-secrets"
-            aria-label="View Phantom on GitHub"
-            className="hidden h-10 w-10 items-center justify-center rounded-md border border-border bg-s2 text-t2 transition-colors hover:border-blue hover:text-t1 sm:inline-flex"
+            href={githubHref}
+            aria-label={isWorkbenchHome ? "View Phantom workbench source on GitHub" : "View Phantom Secrets source on GitHub"}
+            className="hidden min-h-10 items-center justify-center gap-2 rounded-md border border-border bg-s2 px-3.5 py-2 text-[0.82rem] font-semibold text-t2 no-underline transition-colors hover:border-blue hover:text-t1 sm:inline-flex"
           >
             <Github aria-hidden className="h-3.5 w-3.5" />
+            View on GitHub
           </a>
 
           <Link
@@ -131,10 +148,11 @@ export function Nav() {
             }}
             className="inline-flex min-h-10 items-center rounded-md bg-blue-action px-3.5 py-2 text-[0.82rem] font-semibold text-white no-underline transition-all duration-200 hover:-translate-y-px hover:bg-blue-action-d hover:shadow-[0_4px_18px_rgba(59,130,246,0.4)] sm:px-4"
           >
-            Get started
+            {isWorkbenchHome ? "Get Phantom" : "Install Secrets"}
           </Link>
 
           <button
+            ref={menuTrigger}
             type="button"
             aria-label={menuOpen ? "Close navigation menu" : "Open navigation menu"}
             aria-expanded={menuOpen}
@@ -169,7 +187,7 @@ export function Nav() {
         <div className="mx-auto grid max-w-[1200px] gap-1">
           {navigation.map((item) => {
             const href = "section" in item
-              ? homeSectionHref(pathname, item.section)
+              ? secretsSectionHref(pathname, item.section)
               : item.href;
             const active = "href" in item && isCurrentPath(pathname, item.href);
 
@@ -188,19 +206,13 @@ export function Nav() {
             );
           })}
           <a
-            href="https://github.com/ashlrai/phantom-secrets/blob/main/docs/getting-started.md"
-            onClick={() => setMenuOpen(false)}
-            className="rounded-lg px-3 py-3 text-[0.92rem] font-medium text-t2 no-underline transition-colors hover:bg-s2 hover:text-t1"
-          >
-            Documentation
-          </a>
-          <a
-            href="https://github.com/ashlrai/phantom-secrets"
+            href={githubHref}
+            aria-label={isWorkbenchHome ? "View Phantom workbench source on GitHub" : "View Phantom Secrets source on GitHub"}
             onClick={() => setMenuOpen(false)}
             className="flex items-center gap-2 rounded-lg px-3 py-3 text-[0.92rem] font-medium text-t2 no-underline transition-colors hover:bg-s2 hover:text-t1 sm:hidden"
           >
             <Github aria-hidden className="h-4 w-4" />
-            GitHub
+            View on GitHub
           </a>
         </div>
       </div>

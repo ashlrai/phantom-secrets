@@ -5,12 +5,13 @@
 //! workspace, plan digest, and pre-state digest. No bearer, credential locator,
 //! environment bytes, target path, or secret value is persisted or returned.
 
+use crate::fs::PrivateStateDir;
 use fs2::FileExt;
 use hmac::{Hmac, Mac};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -79,17 +80,8 @@ pub fn load_or_create_workspace_plan_key() -> Result<Zeroizing<[u8; 32]>> {
 /// host state. Callers can use the status to avoid describing proposal as
 /// entirely read-only on first use.
 pub fn load_or_create_workspace_plan_key_with_status() -> Result<(Zeroizing<[u8; 32]>, bool)> {
-    let _lock = acquire_lock()?;
-    let path = phantom_home()?.join(PLAN_KEY_FILE);
-    let (root, created) = if path.exists() {
-        (read_fixed_key(&path)?, false)
-    } else {
-        let mut root = Zeroizing::new([0_u8; 32]);
-        rand::thread_rng().fill_bytes(root.as_mut());
-        let encoded = Zeroizing::new(hex::encode(root.as_ref()));
-        crate::fs::atomic_write(&path, encoded.as_bytes())?;
-        (root, true)
-    };
+    let lock = acquire_lock()?;
+    let (root, created) = load_or_create_fixed_key(&lock.home, PLAN_KEY_FILE)?;
     let mut mac = HmacSha256::new_from_slice(root.as_ref()).expect("HMAC accepts any key size");
     mac.update(PLAN_KEY_DOMAIN);
     let derived: [u8; 32] = mac.finalize().into_bytes().into();
@@ -97,8 +89,13 @@ pub fn load_or_create_workspace_plan_key_with_status() -> Result<(Zeroizing<[u8;
 }
 
 /// Load an already-provisioned plan-seal key without creating host state.
+///
+/// `~/.phantom` and the key are opened without creating or chmod-ing either:
+/// the directory must be a real one owned by the current user and the key an
+/// owned, single-link regular file read relative to it.
 pub fn load_existing_workspace_plan_key() -> Result<Zeroizing<[u8; 32]>> {
-    let root = read_fixed_key(&phantom_home()?.join(PLAN_KEY_FILE))?;
+    let home = PrivateStateDir::open_existing(&phantom_home()?)?;
+    let root = parse_fixed_key(&read_file(home.open_file_readonly(PLAN_KEY_FILE)?)?)?;
     let mut mac = HmacSha256::new_from_slice(root.as_ref()).expect("HMAC accepts any key size");
     mac.update(PLAN_KEY_DOMAIN);
     let derived: [u8; 32] = mac.finalize().into_bytes().into();
@@ -112,25 +109,15 @@ pub fn load_or_create_workspace_journal(
     request_id: &str,
 ) -> Result<(PathBuf, Zeroizing<[u8; 32]>)> {
     validate_request_id(request_id)?;
-    let _lock = acquire_lock()?;
-    let directory = phantom_home()?.join(JOURNAL_DIR);
-    ensure_private_dir(&directory)?;
-    let path = phantom_home()?.join(JOURNAL_KEY_FILE);
-    let root = if path.exists() {
-        read_fixed_key(&path)?
-    } else {
-        let mut root = Zeroizing::new([0_u8; 32]);
-        rand::thread_rng().fill_bytes(root.as_mut());
-        let encoded = Zeroizing::new(hex::encode(root.as_ref()));
-        crate::fs::atomic_write(&path, encoded.as_bytes())?;
-        root
-    };
+    let lock = acquire_lock()?;
+    let directory = lock.home.ensure_child(JOURNAL_DIR)?;
+    let (root, _created) = load_or_create_fixed_key(&lock.home, JOURNAL_KEY_FILE)?;
     let mut mac = HmacSha256::new_from_slice(root.as_ref()).expect("HMAC accepts any key size");
     mac.update(JOURNAL_KEY_DOMAIN);
     mac.update(request_id.as_bytes());
     let derived: [u8; 32] = mac.finalize().into_bytes().into();
     Ok((
-        directory.join(format!("{request_id}.journal")),
+        directory.path().join(format!("{request_id}.journal")),
         Zeroizing::new(derived),
     ))
 }
@@ -334,9 +321,10 @@ fn create_request_at(
     validate_digest(plan_id, "plan_id")?;
     validate_digest(pre_state_id, "pre_state_id")?;
     let workspace_scope_hash = workspace_scope_hash(workspace)?;
-    let _lock = acquire_lock()?;
-    let key = load_or_create_request_key_locked()?;
-    let pending = cleanup_and_collect_pending_locked(&key, created_at)?;
+    let lock = acquire_lock()?;
+    let key = load_or_create_request_key_locked(&lock)?;
+    let requests = lock.requests()?;
+    let pending = cleanup_and_collect_pending_locked(&requests, &key, created_at)?;
     if let Some(existing) = pending.iter().find(|record| {
         record.workspace_scope_hash == workspace_scope_hash
             && record.plan_id == plan_id
@@ -370,7 +358,7 @@ fn create_request_at(
         authentication: String::new(),
     };
     record.authenticate(&key)?;
-    write_record(&record)?;
+    write_record(&requests, &record)?;
     Ok(request_id)
 }
 
@@ -378,10 +366,11 @@ fn create_request_at(
 /// overdue Claimed requests remain recoverable and report `RecoveryRequired`.
 pub fn get_status(request_id: &str) -> Result<WorkspaceRequestStatus> {
     validate_request_id(request_id)?;
-    let _lock = acquire_lock()?;
-    let key = load_existing_request_key_locked()?;
-    let mut record = load_record(request_id, &key)?;
-    expire_if_needed(&mut record, &key, now_unix())?;
+    let lock = acquire_lock()?;
+    let key = load_existing_request_key_locked(&lock)?;
+    let requests = lock.requests()?;
+    let mut record = load_record(&requests, request_id, &key)?;
+    expire_if_needed(&requests, &mut record, &key, now_unix())?;
     Ok(record.status())
 }
 
@@ -490,11 +479,12 @@ fn transition_with_receipt(
     validate_digest(plan_id, "plan_id")?;
     validate_digest(pre_state_id, "pre_state_id")?;
     let workspace_scope_hash = workspace_scope_hash(workspace)?;
-    let _lock = acquire_lock()?;
-    let key = load_existing_request_key_locked()?;
-    let mut record = load_record(request_id, &key)?;
+    let lock = acquire_lock()?;
+    let key = load_existing_request_key_locked(&lock)?;
+    let requests = lock.requests()?;
+    let mut record = load_record(&requests, request_id, &key)?;
     let now = now_unix();
-    if expire_if_needed(&mut record, &key, now)? {
+    if expire_if_needed(&requests, &mut record, &key, now)? {
         return Err(WorkspaceRequestError::Expired);
     }
     if record.workspace_scope_hash != workspace_scope_hash {
@@ -526,11 +516,16 @@ fn transition_with_receipt(
     record.receipt = receipt;
     record.updated_at = now;
     record.authenticate(&key)?;
-    write_record(&record)?;
+    write_record(&requests, &record)?;
     Ok(record.status())
 }
 
-fn expire_if_needed(record: &mut AuthenticatedRecord, key: &[u8], now: u64) -> Result<bool> {
+fn expire_if_needed(
+    requests: &PrivateStateDir,
+    record: &mut AuthenticatedRecord,
+    key: &[u8],
+    now: u64,
+) -> Result<bool> {
     if record.state == WorkspaceRequestState::Claimed
         && record
             .execution_deadline
@@ -540,7 +535,7 @@ fn expire_if_needed(record: &mut AuthenticatedRecord, key: &[u8], now: u64) -> R
         record.execution_outcome = Some(WorkspaceExecutionOutcome::RecoveryRequired);
         record.updated_at = now;
         record.authenticate(key)?;
-        write_record(record)?;
+        write_record(requests, record)?;
         return Ok(false);
     }
     if !record.is_expired_at(now) {
@@ -549,40 +544,37 @@ fn expire_if_needed(record: &mut AuthenticatedRecord, key: &[u8], now: u64) -> R
     record.state = WorkspaceRequestState::Expired;
     record.updated_at = now;
     record.authenticate(key)?;
-    write_record(record)?;
+    write_record(requests, record)?;
     Ok(true)
 }
 
 /// Remove authenticated expired Pending records and return the live Pending
 /// set while the global request lock is held. Claimed records are retained
 /// regardless of age because their effects may be partially or fully durable.
-fn cleanup_and_collect_pending_locked(key: &[u8], now: u64) -> Result<Vec<AuthenticatedRecord>> {
-    let dir = requests_dir()?;
-    ensure_private_dir(&dir)?;
+fn cleanup_and_collect_pending_locked(
+    requests: &PrivateStateDir,
+    key: &[u8],
+    now: u64,
+) -> Result<Vec<AuthenticatedRecord>> {
     let mut pending = Vec::new();
     let mut removed = false;
-    for entry in std::fs::read_dir(&dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
-            continue;
-        };
+    for name in requests.file_names()? {
         let Some(request_id) = name.strip_suffix(".json") else {
             continue;
         };
         if validate_request_id(request_id).is_err() {
             continue;
         }
-        let record = load_record(request_id, key)?;
+        let record = load_record(requests, request_id, key)?;
         if record.state == WorkspaceRequestState::Pending && record.is_expired_at(now) {
-            std::fs::remove_file(path)?;
+            requests.remove_file(&name)?;
             removed = true;
         } else if record.state == WorkspaceRequestState::Pending {
             pending.push(record);
         }
     }
     if removed {
-        crate::fs::sync_parent_dir(&dir)?;
+        requests.sync()?;
     }
     Ok(pending)
 }
@@ -627,111 +619,130 @@ fn validate_request_id(request_id: &str) -> Result<()> {
 }
 
 fn phantom_home() -> std::io::Result<PathBuf> {
-    // `dirs::home_dir()` consults the Windows profile APIs directly and ignores
-    // an explicit `HOME` override there. Phantom's other machine-local stores
-    // deliberately honor `HOME` first so callers can isolate a process (and so
-    // trusted-terminal and MCP processes agree on the same HMAC keys). Fall
-    // back to `USERPROFILE` for native Windows launches, then to the platform
-    // resolver for environments which provide neither variable.
-    let home = select_home_dir(
-        std::env::var_os("HOME"),
-        std::env::var_os("USERPROFILE"),
-        dirs::home_dir(),
-    )
-    .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "HOME directory not found"))?;
-    Ok(home.join(".phantom"))
+    Ok(crate::home::home_dir_with_platform_fallback()?.join(".phantom"))
 }
 
-fn select_home_dir(
-    home: Option<std::ffi::OsString>,
-    user_profile: Option<std::ffi::OsString>,
-    platform_fallback: Option<PathBuf>,
-) -> Option<PathBuf> {
-    home.into_iter()
-        .chain(user_profile)
-        .map(PathBuf::from)
-        .chain(platform_fallback)
-        .find(|path| !path.as_os_str().is_empty() && path.is_absolute())
-}
-
+#[cfg(test)]
 fn requests_dir() -> std::io::Result<PathBuf> {
     Ok(phantom_home()?.join(REQUEST_DIR))
 }
 
+#[cfg(test)]
 fn request_key_path() -> std::io::Result<PathBuf> {
     Ok(phantom_home()?.join(REQUEST_KEY_FILE))
 }
 
+#[cfg(test)]
 fn request_path(request_id: &str) -> std::io::Result<PathBuf> {
-    Ok(requests_dir()?.join(format!("{request_id}.json")))
+    Ok(requests_dir()?.join(request_file_name(request_id)))
 }
 
+fn request_file_name(request_id: &str) -> String {
+    format!("{request_id}.json")
+}
+
+/// Workspace request, journal and lock state lives under `~/.phantom`, so it
+/// uses the shared state-directory helper: symlinked or non-directory
+/// components are refused, missing `.phantom` ancestors are created 0700, and
+/// only a directory the caller owns is tightened (through a no-follow handle).
+///
+/// A refused (symlinked or non-directory) component keeps reporting
+/// `ErrorKind::InvalidData`, as this store always has.
 fn ensure_private_dir(path: &Path) -> std::io::Result<()> {
-    if let Ok(metadata) = std::fs::symlink_metadata(path) {
-        if metadata.file_type().is_symlink() || !metadata.is_dir() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "workspace request storage directory is not a real directory",
-            ));
+    crate::fs::ensure_private_dir(path).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::Other {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string())
+        } else {
+            error
         }
-    }
-    std::fs::create_dir_all(path)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
-    }
-    Ok(())
+    })
 }
 
-fn acquire_lock() -> std::io::Result<File> {
+/// The held request lock and the verified `~/.phantom` it lives in.
+///
+/// `~/.phantom` is created and judged by [`ensure_private_dir`], then retained
+/// by descriptor: the lock, keys, request directory and records are opened,
+/// created, replaced and removed relative to that verified directory, so a
+/// directory renamed away and replaced after the check cannot redirect them.
+/// A symlinked, non-regular, multiply linked or foreign-owned entry is
+/// refused with `ErrorKind::InvalidData` and never chmod-ed through.
+struct RequestLock {
+    _file: File,
+    home: PrivateStateDir,
+}
+
+impl RequestLock {
+    /// The private request directory, created 0700 relative to `home`.
+    fn requests(&self) -> std::io::Result<PrivateStateDir> {
+        self.home.ensure_child(REQUEST_DIR)
+    }
+}
+
+fn acquire_lock() -> std::io::Result<RequestLock> {
     let home = phantom_home()?;
     ensure_private_dir(&home)?;
-    let lock_path = home.join(REQUEST_LOCK_FILE);
-    if let Ok(metadata) = std::fs::symlink_metadata(&lock_path) {
-        if metadata.file_type().is_symlink() || !metadata.is_file() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "workspace request lock is not a regular file",
-            ));
-        }
-    }
-    let mut options = OpenOptions::new();
-    options.read(true).write(true).create(true).truncate(false);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
-    }
-    let lock = options.open(lock_path)?;
-    FileExt::lock_exclusive(&lock)?;
-    Ok(lock)
+    let home = PrivateStateDir::ensure(&home)?;
+    let file = home.open_file(REQUEST_LOCK_FILE, true)?;
+    FileExt::lock_exclusive(&file)?;
+    Ok(RequestLock { _file: file, home })
 }
 
-fn load_or_create_request_key_locked() -> Result<Zeroizing<Vec<u8>>> {
-    let path = request_key_path()?;
-    if path.exists() {
-        return read_request_key(&path);
+/// Read the whole of an already opened storage file.
+fn read_file(mut file: File) -> std::io::Result<Zeroizing<Vec<u8>>> {
+    let mut bytes = Zeroizing::new(Vec::new());
+    file.read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
+/// Read `name` relative to `dir`; `None` when it does not exist.
+fn read_if_present(
+    dir: &PrivateStateDir,
+    name: &str,
+) -> std::io::Result<Option<Zeroizing<Vec<u8>>>> {
+    match dir.open_file(name, false) {
+        Ok(file) => read_file(file).map(Some),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+/// Load the 32-byte root `name` from `home`, creating it when absent.
+/// Returns whether it was created.
+fn load_or_create_fixed_key(
+    home: &PrivateStateDir,
+    name: &str,
+) -> Result<(Zeroizing<[u8; 32]>, bool)> {
+    if let Some(bytes) = read_if_present(home, name)? {
+        return Ok((parse_fixed_key(&bytes)?, false));
+    }
+    let mut root = Zeroizing::new([0_u8; 32]);
+    rand::thread_rng().fill_bytes(root.as_mut());
+    let encoded = Zeroizing::new(hex::encode(root.as_ref()));
+    home.replace_file(name, encoded.as_bytes())?;
+    Ok((root, true))
+}
+
+fn load_or_create_request_key_locked(lock: &RequestLock) -> Result<Zeroizing<Vec<u8>>> {
+    if let Some(bytes) = read_if_present(&lock.home, REQUEST_KEY_FILE)? {
+        return parse_request_key(&bytes);
     }
     let mut key = Zeroizing::new(vec![0_u8; 32]);
     rand::thread_rng().fill_bytes(&mut key);
     let encoded = Zeroizing::new(hex::encode(&*key));
-    crate::fs::atomic_write(&path, encoded.as_bytes())?;
+    lock.home
+        .replace_file(REQUEST_KEY_FILE, encoded.as_bytes())?;
     Ok(key)
 }
 
-fn load_existing_request_key_locked() -> Result<Zeroizing<Vec<u8>>> {
-    let path = request_key_path()?;
-    if !path.exists() {
-        return Err(WorkspaceRequestError::NotFound);
+fn load_existing_request_key_locked(lock: &RequestLock) -> Result<Zeroizing<Vec<u8>>> {
+    match read_if_present(&lock.home, REQUEST_KEY_FILE)? {
+        Some(bytes) => parse_request_key(&bytes),
+        None => Err(WorkspaceRequestError::NotFound),
     }
-    read_request_key(&path)
 }
 
-fn read_request_key(path: &Path) -> Result<Zeroizing<Vec<u8>>> {
-    let encoded = Zeroizing::new(
-        String::from_utf8(read_regular_file(path)?).map_err(|_| WorkspaceRequestError::Tampered)?,
-    );
+fn parse_request_key(bytes: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
+    let encoded = std::str::from_utf8(bytes).map_err(|_| WorkspaceRequestError::Tampered)?;
     let key = hex::decode(encoded.trim()).map_err(|_| WorkspaceRequestError::Tampered)?;
     if key.len() != 32 {
         return Err(WorkspaceRequestError::Tampered);
@@ -739,10 +750,8 @@ fn read_request_key(path: &Path) -> Result<Zeroizing<Vec<u8>>> {
     Ok(Zeroizing::new(key))
 }
 
-fn read_fixed_key(path: &Path) -> Result<Zeroizing<[u8; 32]>> {
-    let encoded = Zeroizing::new(
-        String::from_utf8(read_regular_file(path)?).map_err(|_| WorkspaceRequestError::Tampered)?,
-    );
+fn parse_fixed_key(bytes: &[u8]) -> Result<Zeroizing<[u8; 32]>> {
+    let encoded = std::str::from_utf8(bytes).map_err(|_| WorkspaceRequestError::Tampered)?;
     let decoded =
         Zeroizing::new(hex::decode(encoded.trim()).map_err(|_| WorkspaceRequestError::Tampered)?);
     let key: [u8; 32] = decoded
@@ -752,12 +761,18 @@ fn read_fixed_key(path: &Path) -> Result<Zeroizing<[u8; 32]>> {
     Ok(Zeroizing::new(key))
 }
 
-fn load_record(request_id: &str, key: &[u8]) -> Result<AuthenticatedRecord> {
-    let path = request_path(request_id)?;
-    if !path.exists() {
-        return Err(WorkspaceRequestError::NotFound);
-    }
-    let bytes = read_regular_file(&path).map_err(|_| WorkspaceRequestError::Tampered)?;
+fn load_record(
+    requests: &PrivateStateDir,
+    request_id: &str,
+    key: &[u8],
+) -> Result<AuthenticatedRecord> {
+    let bytes = match requests.open_file(&request_file_name(request_id), false) {
+        Ok(file) => read_file(file).map_err(|_| WorkspaceRequestError::Tampered)?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(WorkspaceRequestError::NotFound)
+        }
+        Err(_) => return Err(WorkspaceRequestError::Tampered),
+    };
     let record: AuthenticatedRecord =
         serde_json::from_slice(&bytes).map_err(|_| WorkspaceRequestError::Tampered)?;
     if record.request_id != request_id {
@@ -767,39 +782,10 @@ fn load_record(request_id: &str, key: &[u8]) -> Result<AuthenticatedRecord> {
     Ok(record)
 }
 
-fn read_regular_file(path: &Path) -> std::io::Result<Vec<u8>> {
-    let metadata = std::fs::symlink_metadata(path)?;
-    if metadata.file_type().is_symlink() || !metadata.is_file() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "workspace request storage file is not a regular file",
-        ));
-    }
-    let mut options = OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NOFOLLOW);
-    }
-    let mut file = options.open(path)?;
-    if !file.metadata()?.is_file() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "workspace request storage file is not a regular file",
-        ));
-    }
-    let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes)?;
-    Ok(bytes)
-}
-
-fn write_record(record: &AuthenticatedRecord) -> Result<()> {
+fn write_record(requests: &PrivateStateDir, record: &AuthenticatedRecord) -> Result<()> {
     validate_request_id(&record.request_id)?;
-    let dir = requests_dir()?;
-    ensure_private_dir(&dir)?;
     let bytes = serde_json::to_vec(record).map_err(|_| WorkspaceRequestError::Serialization)?;
-    crate::fs::atomic_write(&request_path(&record.request_id)?, &bytes)?;
+    requests.replace_file(&request_file_name(&record.request_id), &bytes)?;
     Ok(())
 }
 
@@ -834,6 +820,81 @@ mod tests {
     use std::sync::{Arc, Barrier};
     use tempfile::{Builder, TempDir};
 
+    /// The workspace request directory goes through the shared state-dir helper: a
+    /// symlinked `.phantom` ancestor is refused instead of followed, so
+    /// nothing is created at the link's target.
+    #[cfg(unix)]
+    #[test]
+    fn workspace_request_dir_refuses_a_symlinked_phantom_ancestor() {
+        let base = TempDir::new().unwrap();
+        let elsewhere = base.path().join("elsewhere");
+        std::fs::create_dir(&elsewhere).unwrap();
+        std::fs::create_dir(base.path().join("home")).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, base.path().join("home/.phantom")).unwrap();
+
+        let target = base.path().join("home/.phantom/nested");
+        assert!(ensure_private_dir(&target).is_err());
+        assert!(!elsewhere.join("nested").exists());
+    }
+
+    /// A symlink standing in for the workspace request directory is refused and the
+    /// directory it points at keeps its mode.
+    #[cfg(unix)]
+    #[test]
+    fn workspace_request_dir_refuses_a_symlinked_dir_and_leaves_its_target_alone() {
+        use std::os::unix::fs::PermissionsExt;
+        let base = TempDir::new().unwrap();
+        let elsewhere = base.path().join("elsewhere");
+        std::fs::create_dir(&elsewhere).unwrap();
+        std::fs::set_permissions(&elsewhere, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let link = base.path().join(".phantom");
+        std::os::unix::fs::symlink(&elsewhere, &link).unwrap();
+
+        assert!(ensure_private_dir(&link).is_err());
+        let mode = std::fs::metadata(&elsewhere).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o755);
+    }
+
+    /// Missing `.phantom` ancestors are created private, and an existing
+    /// group-readable directory the caller owns is tightened to 0700.
+    #[cfg(unix)]
+    #[test]
+    fn workspace_request_dir_creates_private_ancestors_and_tightens_owned_dirs() {
+        use std::os::unix::fs::PermissionsExt;
+        let base = TempDir::new().unwrap();
+        let state = base.path().join("home/.phantom");
+        let nested = state.join("nested");
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        ensure_private_dir(&nested).unwrap();
+        assert_eq!(mode(&state), 0o700);
+        assert_eq!(mode(&nested), 0o700);
+
+        std::fs::set_permissions(&nested, std::fs::Permissions::from_mode(0o750)).unwrap();
+        ensure_private_dir(&nested).unwrap();
+        assert_eq!(mode(&nested), 0o700);
+    }
+
+    /// A directory owned by another user is never chmod-ed. Only root can
+    /// hand a directory to another uid, so the check runs only there.
+    #[cfg(unix)]
+    #[test]
+    fn workspace_request_dir_leaves_a_foreign_owned_dir_untouched() {
+        use std::os::unix::fs::PermissionsExt;
+        // SAFETY: geteuid has no preconditions and cannot fail.
+        if unsafe { libc::geteuid() } != 0 {
+            return;
+        }
+        let base = TempDir::new().unwrap();
+        let state = base.path().join(".phantom");
+        std::fs::create_dir(&state).unwrap();
+        std::fs::set_permissions(&state, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::os::unix::fs::chown(&state, Some(65534), Some(65534)).unwrap();
+
+        ensure_private_dir(&state).unwrap();
+        let mode = std::fs::metadata(&state).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o755);
+    }
+
     fn digest(label: &str) -> String {
         hex::encode(Sha256::digest(label.as_bytes()))
     }
@@ -862,54 +923,6 @@ mod tests {
             None => std::env::remove_var("HOME"),
         }
         result
-    }
-
-    #[test]
-    fn home_resolution_prefers_home_and_falls_back_to_userprofile() {
-        let home = TempDir::new().unwrap();
-        let user_profile = TempDir::new().unwrap();
-        let platform = TempDir::new().unwrap();
-
-        assert_eq!(
-            select_home_dir(
-                Some(home.path().as_os_str().to_owned()),
-                Some(user_profile.path().as_os_str().to_owned()),
-                Some(platform.path().to_path_buf()),
-            )
-            .unwrap(),
-            home.path()
-        );
-        assert_eq!(
-            select_home_dir(
-                None,
-                Some(user_profile.path().as_os_str().to_owned()),
-                Some(platform.path().to_path_buf()),
-            )
-            .unwrap(),
-            user_profile.path()
-        );
-        assert_eq!(
-            select_home_dir(None, None, Some(platform.path().to_path_buf())).unwrap(),
-            platform.path()
-        );
-    }
-
-    #[test]
-    fn home_resolution_rejects_empty_and_relative_overrides() {
-        let user_profile = TempDir::new().unwrap();
-        assert_eq!(
-            select_home_dir(
-                Some(std::ffi::OsString::new()),
-                Some(user_profile.path().as_os_str().to_owned()),
-                None,
-            )
-            .unwrap(),
-            user_profile.path()
-        );
-        assert_eq!(
-            select_home_dir(Some(std::ffi::OsString::from("relative-home")), None, None,),
-            None
-        );
     }
 
     #[test]
@@ -995,12 +1008,16 @@ mod tests {
             let request_id = create_request(workspace.path(), &plan, &pre, summary()).unwrap();
             claim_exact(&request_id, workspace.path(), &plan, &pre).unwrap();
 
-            let key = load_existing_request_key_locked().unwrap();
-            let mut record = load_record(&request_id, &key).unwrap();
-            record.expires_at = 0;
-            record.execution_deadline = Some(0);
-            record.authenticate(&key).unwrap();
-            write_record(&record).unwrap();
+            {
+                let lock = acquire_lock().unwrap();
+                let key = load_existing_request_key_locked(&lock).unwrap();
+                let requests = lock.requests().unwrap();
+                let mut record = load_record(&requests, &request_id, &key).unwrap();
+                record.expires_at = 0;
+                record.execution_deadline = Some(0);
+                record.authenticate(&key).unwrap();
+                write_record(&requests, &record).unwrap();
+            }
             let overdue = get_status(&request_id).unwrap();
             assert_eq!(overdue.state, WorkspaceRequestState::Claimed);
             assert_eq!(
@@ -1297,7 +1314,10 @@ mod tests {
                 first.as_ref()
             );
 
-            let stored = read_fixed_key(&phantom_home().unwrap().join(PLAN_KEY_FILE)).unwrap();
+            let stored = parse_fixed_key(
+                &std::fs::read(phantom_home().unwrap().join(PLAN_KEY_FILE)).unwrap(),
+            )
+            .unwrap();
             assert_ne!(first.as_ref(), stored.as_ref());
             assert_ne!(
                 phantom_home().unwrap().join(PLAN_KEY_FILE),
@@ -1315,6 +1335,73 @@ mod tests {
                 assert_eq!(mode, 0o600);
             }
         });
+    }
+
+    /// Once the lock is held, keys, records and the request listing resolve
+    /// through the retained `~/.phantom`, so renaming it away and putting
+    /// another directory at the path redirects nothing.
+    #[cfg(unix)]
+    #[test]
+    fn locked_operations_resolve_through_the_retained_directory() {
+        with_temp_home(|home| {
+            let workspace = TempDir::new().unwrap();
+            let request_id =
+                create_request(workspace.path(), &digest("plan"), &digest("pre"), summary())
+                    .unwrap();
+            let phantom_dir = home.path().join(".phantom");
+            let lock = acquire_lock().unwrap();
+            let moved = home.path().join("moved-phantom");
+            std::fs::rename(&phantom_dir, &moved).unwrap();
+            std::fs::create_dir(&phantom_dir).unwrap();
+
+            let key = load_existing_request_key_locked(&lock).unwrap();
+            let requests = lock.requests().unwrap();
+            let pending = cleanup_and_collect_pending_locked(&requests, &key, now_unix()).unwrap();
+            assert_eq!(pending.len(), 1);
+            let record = load_record(&requests, &request_id, &key).unwrap();
+            write_record(&requests, &record).unwrap();
+            load_or_create_fixed_key(&lock.home, PLAN_KEY_FILE).unwrap();
+
+            assert_eq!(std::fs::read_dir(&phantom_dir).unwrap().count(), 0);
+            assert!(moved.join(PLAN_KEY_FILE).is_file());
+        });
+    }
+
+    /// A lock, request key or plan key hard-linked to an outside file is
+    /// refused and the shared inode is left unchanged.
+    #[cfg(unix)]
+    #[test]
+    fn hard_linked_lock_or_key_is_refused_without_change() {
+        use std::os::unix::fs::PermissionsExt;
+        for entry in [REQUEST_LOCK_FILE, REQUEST_KEY_FILE, PLAN_KEY_FILE] {
+            with_temp_home(|home| {
+                let workspace = TempDir::new().unwrap();
+                let phantom_dir = home.path().join(".phantom");
+                std::fs::create_dir(&phantom_dir).unwrap();
+                let outside = TempDir::new().unwrap();
+                let shared = outside.path().join("shared");
+                let contents = if entry == REQUEST_LOCK_FILE {
+                    Vec::new()
+                } else {
+                    random_hex_32().into_bytes()
+                };
+                std::fs::write(&shared, &contents).unwrap();
+                std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o644)).unwrap();
+                std::fs::hard_link(&shared, phantom_dir.join(entry)).unwrap();
+
+                let refused = if entry == PLAN_KEY_FILE {
+                    load_existing_workspace_plan_key().is_err()
+                        && load_or_create_workspace_plan_key().is_err()
+                } else {
+                    create_request(workspace.path(), &digest("plan"), &digest("pre"), summary())
+                        .is_err()
+                };
+                assert!(refused, "{entry}");
+                let mode = std::fs::metadata(&shared).unwrap().permissions().mode() & 0o777;
+                assert_eq!(mode, 0o644, "{entry}");
+                assert_eq!(std::fs::read(&shared).unwrap(), contents);
+            });
+        }
     }
 
     #[cfg(unix)]

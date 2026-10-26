@@ -15,55 +15,64 @@
 //!
 //! **How to create this file** (recommended workflow):
 //! ```sh
-//! # Read individual secrets and build the JSON manually, or use jq:
+//! # Read individual secrets and build the JSON manually, or use jq
+//! # (it stops on duplicate labels rather than keeping only one value):
 //! op item get "My App Secrets" --vault Dev --format json \
-//!   | jq '{ (.fields[] | select(.value != null) | .label): .fields[] | select(.value != null) | .value }' \
+//!   | jq '[.fields[] | select(.value != null and .value != "")]
+//!         | if (map(.label) | unique | length) != length
+//!           then error("duplicate field labels") else map({(.label): .value}) | add end' \
 //!   > 1p-export.json
 //!
 //! phantom import --from 1password --file 1p-export.json
 //! ```
+//!
+//! Every name must be an environment variable name (`[A-Za-z_][A-Za-z0-9_]*`).
+//! 1Password field labels such as `API Key` are refused, with nothing
+//! imported, so rename them to the variable your app reads (`API_KEY`).
 //!
 //! The file is read once and never written back to disk.
 
 use anyhow::Result;
 use zeroize::Zeroizing;
 
-use super::{Importer, SecretMap};
+use super::{
+    json_scalar, parse_json_object_entries, refuse_duplicate_names, refuse_invalid_names,
+    utf8_export_body, Importer, SecretMap,
+};
 
 pub struct OnePasswordImporter;
 
 impl Importer for OnePasswordImporter {
     fn parse(input: &[u8]) -> Result<SecretMap> {
-        let obj: serde_json::Map<String, serde_json::Value> = serde_json::from_slice(input)
-            .map_err(|e| {
-                anyhow::anyhow!(
-                    "1Password JSON parse error: {e}\n\
+        let input = utf8_export_body("1Password", input)?;
+        let obj = parse_json_object_entries(input).map_err(|e| {
+            anyhow::anyhow!(
+                "1Password JSON parse error: {e}\n\
                 Expected a flat JSON object: {{\"KEY\": \"value\", ...}}\n\
                 See `phantom import --from 1password --help` for the expected format."
-                )
-            })?;
+            )
+        })?;
+        if obj
+            .iter()
+            .any(|(key, value)| key == "fields" && value.is_array())
+        {
+            anyhow::bail!(
+                "1Password input looks like raw `op item get --format json` output \
+                 (it has a `fields` array); nothing was imported.\n\
+                 Expected a flat JSON object: {{\"KEY\": \"value\", ...}}. Flatten the item \
+                 with the jq filter shown in `phantom import --help` and retry."
+            );
+        }
+        refuse_duplicate_names("1Password", obj.iter().map(|(key, _)| key.as_str()))?;
+        refuse_invalid_names("1Password", obj.iter().map(|(key, _)| key.as_str()))?;
 
         let mut map = SecretMap::new();
         for (key, val) in obj {
-            let value = match &val {
-                serde_json::Value::String(s) => s.clone(),
-                serde_json::Value::Number(n) => n.to_string(),
-                serde_json::Value::Bool(b) => b.to_string(),
-                // Nested objects (e.g. full op item JSON) — not supported in V1
-                serde_json::Value::Object(_) => {
-                    eprintln!(
-                        "warn: key '{key}' has a nested object value — skipped. \
-                         Pre-collect flat key=value pairs (see --help)."
-                    );
-                    continue;
-                }
-                _ => continue,
+            let Some(value) = json_scalar("1Password", &key, &val)? else {
+                continue;
             };
             if value.is_empty() {
                 continue;
-            }
-            if map.contains_key(&key) {
-                eprintln!("warn: duplicate key '{key}' in 1Password input — last value wins");
             }
             map.insert(key, Zeroizing::new(value));
         }
@@ -112,15 +121,21 @@ mod tests {
     }
 
     #[test]
-    fn warns_and_skips_nested_objects() {
-        // Nested op item JSON — V1 skips these with a warning
-        let input = r#"{
-            "FLAT_KEY": "flat_value",
-            "NESTED": {"username": "foo", "password": "bar"}
-        }"#;
-        let map = OnePasswordImporter::parse(input.as_bytes()).unwrap();
-        assert_eq!(map.get("FLAT_KEY").map(|v| v.as_str()), Some("flat_value"));
-        assert!(!map.contains_key("NESTED"));
+    fn refuses_nested_objects_and_arrays_instead_of_dropping_them() {
+        // A nested op item or a list cannot be one secret. Dropping it while
+        // the CLI reports "0 skipped, 0 failed" would lose the entry silently.
+        for input in [
+            r#"{"FLAT_KEY": "flat_value", "NESTED": {"username": "u", "field": "f"}}"#,
+            r#"{"FLAT_KEY": "flat_value", "NESTED": ["one", "two"]}"#,
+        ] {
+            let error = OnePasswordImporter::parse(input.as_bytes())
+                .err()
+                .map(|error| error.to_string())
+                .unwrap_or_default();
+            assert!(error.contains("'NESTED'"));
+            assert!(error.contains("nothing was imported"));
+            assert!(!error.contains("flat_value"));
+        }
     }
 
     #[test]
@@ -143,6 +158,25 @@ mod tests {
         assert_eq!(map.get("PORT").map(|v| v.as_str()), Some("3000"));
         assert_eq!(map.get("DEBUG").map(|v| v.as_str()), Some("false"));
         assert_eq!(map.get("API_KEY").map(|v| v.as_str()), Some("sk-abc"));
+    }
+
+    #[test]
+    fn raw_op_item_output_is_refused_with_the_flattening_hint() {
+        // `op item get --format json` prints the whole item (id, title,
+        // fields[]); importing it used to fail with a generic "array value"
+        // error that did not say the item still needs flattening.
+        let held = ["op", "-held-", "value"].concat();
+        let input = format!(
+            r#"{{"id":"abc","title":"My App","fields":[{{"label":"API_KEY","value":"{held}"}}]}}"#
+        );
+        let message = OnePasswordImporter::parse(input.as_bytes())
+            .err()
+            .map(|error| error.to_string())
+            .unwrap_or_default();
+        assert!(message.contains("op item get"), "no raw-item diagnosis");
+        assert!(message.contains("flat JSON object"), "no expected format");
+        assert!(message.contains("nothing was imported"));
+        assert!(!message.contains("-held-"), "refusal leaked a value");
     }
 
     #[test]

@@ -6,9 +6,10 @@ import { Check, Copy } from "./Icons";
 
 interface CopyButtonProps {
   text: string;
+  prompt?: string;
 }
 
-export function CopyButton({ text }: CopyButtonProps) {
+export function CopyButton({ text, prompt = "$" }: CopyButtonProps) {
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
   const resetTimer = useRef<number | null>(null);
   const attempt = useRef(0);
@@ -62,11 +63,12 @@ export function CopyButton({ text }: CopyButtonProps) {
     <button
       type="button"
       onClick={handleCopy}
-      aria-label={label}
+      title={label}
       className="copy-command"
     >
       <span>
-        <span aria-hidden="true">$ </span>
+        <span className="sr-only">Copy command: </span>
+        <span aria-hidden="true">{prompt} </span>
         {text}
       </span>
       <span className="copy-command__icon" aria-hidden="true">
