@@ -46,6 +46,7 @@ jobs:
       temporal_example: ${{ steps.classify.outputs.temporal_example }}
       docs_commands: ${{ steps.classify.outputs.docs_commands }}
       filterset: ${{ steps.affected.outputs.filterset }}
+      platform: ${{ steps.platform.outputs.platform }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -85,6 +86,27 @@ jobs:
           if printf '%s\n' "$files" | grep -Eq '^(README\.md$|docs/[^/]+\.md$|apps/web/src/|apps/web/public/llms[^/]*\.txt$|\.github/workflows/)'; then docs_commands=true; fi
           echo "docs_commands=$docs_commands" >> "$GITHUB_OUTPUT"
           echo "rust=$rust web=$webc temporal_example=$temporal docs_commands=$docs_commands"
+      # macOS/Windows legs: every non-PR event, the `ci:full-os` label, or a
+      # platform-relevant change (OS-gated Rust, build/toolchain, installers,
+      # npm wrappers, CI itself). Ubuntu always runs; CI Gate checks the rest.
+      - id: platform
+        env:
+          EVENT: ${{ github.event_name }}
+          FULL_OS: ${{ contains(github.event.pull_request.labels.*.name, 'ci:full-os') }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          p=false
+          if [ "$EVENT" != "pull_request" ] || [ "$FULL_OS" = "true" ]; then p=true
+          else
+            files="$(git diff --name-only "$BASE...$HEAD")"
+            if printf '%s\n' "$files" | grep -Eq '(^|/)(Cargo\.toml|Cargo\.lock|rust-toolchain(\.toml)?|build\.rs)$|^\.cargo/|^\.github/workflows/|^scripts/(install\.(sh|ps1)|check-platform-installers\.mjs|installers\.test\.js|release/)|^npm(-mcp)?/|^apps/web/public/install\.|(^|/)(windows|macos|unix|platform)[^/]*(/|\.rs$)'; then p=true; fi
+            while IFS= read -r f; do
+              case "$f" in *.rs) [ -f "$f" ] && grep -Eq 'cfg\((not\()?(windows|unix|target_os|target_family)|cfg!\((windows|unix|target_os)' "$f" && p=true ;; esac
+            done <<< "$files"
+          fi
+          echo "platform=$p" >> "$GITHUB_OUTPUT"; echo "platform=$p"
       - id: affected
         env:
           EVENT: ${{ github.event_name }}
@@ -107,9 +129,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # A push to main runs Linux only: the same tree already passed the full
-        # matrix on its PR (strict up to date). nightly-full.yml runs all three.
-        os: ${{ fromJSON(github.event_name == 'push' && '["ubuntu-latest"]' || '["macos-latest", "ubuntu-latest", "windows-latest"]') }}
+        # PRs run macOS/Windows only when `changes` marks them platform-relevant
+        # (or labelled ci:full-os); pushes, schedule and dispatch run all three.
+        os: ${{ fromJSON(needs.changes.outputs.platform == 'true' && '["macos-latest", "ubuntu-latest", "windows-latest"]' || '["ubuntu-latest"]') }}
     env:
       # Linking the workspace's test binaries with link.exe is most of the
       # Windows Build step (86-107s vs 44s on Linux). rust-lld ships with the
@@ -290,8 +312,8 @@ jobs:
   windows-arm-source-check:
     name: Windows ARM64 source check
     needs: changes
-    # Skipped on push to main (Linux only); runs on PRs and in nightly-full.yml.
-    if: needs.changes.outputs.rust == 'true' && github.event_name != 'push'
+    # Same platform gate as the macOS/Windows Test legs.
+    if: needs.changes.outputs.rust == 'true' && needs.changes.outputs.platform == 'true'
     runs-on: windows-11-vs2026-arm
     permissions:
       contents: read
@@ -576,12 +598,12 @@ jobs:
           const temporalExample = ch.outputs.temporal_example === 'true';
           const docsCommands = ch.outputs.docs_commands === 'true';
           const always = ['dependency-policy', 'secret-scan'];
-          const rustJobs = ['test', 'lint', 'windows-arm-source-check', 'npm-wrappers', 'crate-publication-contract'];
+          const platform = ch.outputs.platform === 'true';
+          const rustJobs = ['test', 'lint', 'npm-wrappers', 'crate-publication-contract'];
           const expect = {
             ...Object.fromEntries(always.map((j) => [j, true])),
             ...Object.fromEntries(rustJobs.map((j) => [j, rust])),
-            // Push to main runs Linux only; this job runs on PRs and nightly.
-            ...(process.env.EVENT === 'push' ? { 'windows-arm-source-check': false } : {}),
+            'windows-arm-source-check': rust && platform,
             web,
             'temporal-codec-example': temporalExample,
             'docs-commands': docsCommands,
@@ -594,5 +616,5 @@ jobs:
           }
           if (Object.keys(needs).length !== Object.keys(expect).length + 1) bad.push('gate inventory drift');
           if (bad.length) throw new Error(bad.join(', '));
-          console.log(`CI Gate passed (rust=${rust}, web=${web}, temporal_example=${temporalExample}, docs_commands=${docsCommands})`);
+          console.log(`CI Gate passed (rust=${rust}, web=${web}, temporal_example=${temporalExample}, docs_commands=${docsCommands}, platform=${platform})`);
           NODE
