@@ -370,12 +370,8 @@ async fn run_async(
         );
     }
 
-    progress!(
-        quiet,
-        "{} Launching: {}\n",
-        "->".blue().bold(),
-        cmd.join(" ").cyan().bold()
-    );
+    // Arguments and executable paths may contain credentials. Keep progress value-free.
+    progress!(quiet, "{} Launching: child process\n", "->".blue().bold());
 
     // Spawn the child process with proxy env vars
     let program = &cmd[0];
@@ -422,7 +418,7 @@ async fn run_async(
             // Stop the proxy first: its session tokens must not outlive a
             // launch that never happened.
             proxy.shutdown().await;
-            let (code, message) = spawn_failure(program, &error);
+            let (code, message) = spawn_failure(&error);
             eprintln!("{} {message}", "error".red().bold());
             std::process::exit(code);
         }
@@ -647,7 +643,7 @@ async fn run_command_directly(cmd: &[String], scrub_env_keys: &HashSet<String>) 
     {
         Ok(status) => status,
         Err(error) => {
-            let (code, message) = spawn_failure(program, &error);
+            let (code, message) = spawn_failure(&error);
             eprintln!("{} {message}", "error".red().bold());
             std::process::exit(code);
         }
@@ -690,19 +686,17 @@ pub(super) fn validate_routes_for_launch(config: &PhantomConfig) -> Result<()> {
 /// Exit code and message for a child that could not be started, following
 /// the shell convention agents already branch on: 127 when the program is not
 /// found, 126 when it exists but cannot be executed.
-fn spawn_failure(program: &str, error: &std::io::Error) -> (i32, String) {
+fn spawn_failure(error: &std::io::Error) -> (i32, String) {
     match error.kind() {
         std::io::ErrorKind::NotFound => (
             127,
-            format!(
-                "Command not found: {program}. Check that it is installed and on PATH, or pass its full path after `--`."
-            ),
+            "Command not found. Check that it is installed and on PATH, or pass its full path after `--`.".to_string(),
         ),
         std::io::ErrorKind::PermissionDenied => (
             126,
-            format!("Command is not executable: {program}. Check its permissions."),
+            "Command is not executable. Check its permissions.".to_string(),
         ),
-        _ => (1, format!("Failed to start command {program}: {error}")),
+        _ => (1, format!("Failed to start command: {}", error.kind())),
     }
 }
 
@@ -1017,23 +1011,28 @@ mod tests {
 
     #[test]
     fn spawn_failure_uses_shell_exit_codes_and_names_the_fix() {
-        let (code, message) = super::spawn_failure(
-            "phantom-missing-tool",
-            &std::io::Error::from(std::io::ErrorKind::NotFound),
-        );
+        let (code, message) =
+            super::spawn_failure(&std::io::Error::from(std::io::ErrorKind::NotFound));
         assert_eq!(code, 127);
-        assert!(
-            message.contains("Command not found: phantom-missing-tool"),
-            "{message}"
-        );
+        assert!(message.contains("Command not found"), "{message}");
         assert!(message.contains("PATH"), "{message}");
 
-        let (code, message) = super::spawn_failure(
-            "./script.sh",
-            &std::io::Error::from(std::io::ErrorKind::PermissionDenied),
-        );
+        let (code, message) =
+            super::spawn_failure(&std::io::Error::from(std::io::ErrorKind::PermissionDenied));
         assert_eq!(code, 126);
         assert!(message.contains("not executable"), "{message}");
+    }
+
+    #[test]
+    fn spawn_failure_does_not_echo_custom_error_details() {
+        let detail = "synthetic-private-error-detail";
+        let (code, message) = super::spawn_failure(&std::io::Error::other(detail));
+        assert_eq!(code, 1);
+        assert!(
+            !message.contains(detail),
+            "spawn error disclosed private details"
+        );
+        assert!(message.contains("Failed to start command"));
     }
 
     #[cfg(unix)]
