@@ -85,6 +85,10 @@ fn starts_with_env_assignment(script: &str) -> bool {
 /// The prefix `phantom wrap` puts in front of a script.
 pub const WRAP_PREFIX: &str = "phantom exec -- ";
 
+/// The prefix `phantom wrap` and MCP `phantom_wrap` wrote before 0.7.4.
+/// [`unwrap_scripts`] still restores scripts wrapped that way.
+pub const LEGACY_WRAP_PREFIX: &str = "npx phantom-secrets exec -- ";
+
 /// The script `phantom wrap` writes for `original`.
 pub fn wrapped_script_command(original: &str) -> String {
     format!("{WRAP_PREFIX}{original}")
@@ -122,8 +126,136 @@ pub fn selected_by_default(name: &str) -> bool {
 
 /// Whether `script` already runs through Phantom, so wrapping it again would
 /// nest `phantom exec` inside itself.
+///
+/// True only when one of the script's commands invokes `phantom exec`: the
+/// `phantom` or `phantom-secrets` program (any path, optionally behind
+/// `npx`, `pnpx`, `bunx`, `bun x`, `pnpm dlx|exec`, `yarn [dlx|exec]` or
+/// `npm exec`, and Phantom's global flags) followed by `exec`. That covers
+/// [`WRAP_PREFIX`] and [`LEGACY_WRAP_PREFIX`]. A script that merely mentions
+/// Phantom (`npx phantom-secrets init`, `echo phantom-secrets`,
+/// `phantomjs render.js`, `./phantom-tools/build.sh`) does not run its
+/// command through the proxy and is not wrapped yet.
 pub fn already_wrapped(script: &str) -> bool {
-    script.contains("phantom-secrets") || script.contains("phantom exec")
+    shell_commands(script).iter().any(|words| {
+        let words: Vec<&str> = words.iter().map(String::as_str).collect();
+        invokes_phantom_exec(&words)
+    })
+}
+
+/// Phantom's global flags, which may come before the subcommand.
+const PHANTOM_GLOBAL_FLAGS: [&str; 5] = ["-v", "--verbose", "-q", "--quiet", "--json"];
+
+/// Whether one command's words run `phantom exec`.
+fn invokes_phantom_exec(mut words: &[&str]) -> bool {
+    while let Some((first, rest)) = words.split_first() {
+        if !starts_with_env_assignment(first) {
+            break;
+        }
+        words = rest;
+    }
+    let launcher = match words {
+        ["npx" | "pnpx" | "bunx", ..] => 1,
+        ["pnpm" | "yarn", "dlx" | "exec", ..] | ["npm", "exec", ..] | ["bun", "x", ..] => 2,
+        ["yarn", ..] => 1,
+        _ => 0,
+    };
+    words = &words[launcher..];
+    if launcher > 0 {
+        while words.first().is_some_and(|word| word.starts_with('-')) {
+            words = &words[1..];
+        }
+    }
+    let Some((program, mut rest)) = words.split_first() else {
+        return false;
+    };
+    let name = program.rsplit('/').next().unwrap_or(program);
+    let is_phantom = name == "phantom"
+        || name == "phantom-secrets"
+        || (launcher > 0 && name.starts_with("phantom-secrets@"));
+    if !is_phantom {
+        return false;
+    }
+    while rest
+        .first()
+        .is_some_and(|flag| PHANTOM_GLOBAL_FLAGS.contains(flag))
+    {
+        rest = &rest[1..];
+    }
+    rest.first() == Some(&"exec")
+}
+
+/// `script` split into its shell commands, each as unquoted words. Quoting is
+/// honored, so `echo "phantom exec"` is one argument, not a command.
+/// Operators and grouping (`;`, `&`, `|`, newlines, `(`, `)`) end a command.
+fn shell_commands(script: &str) -> Vec<Vec<String>> {
+    let mut commands = Vec::new();
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut in_word = false;
+    let mut single = false;
+    let mut double = false;
+    let mut escaped = false;
+    for ch in script.chars() {
+        if escaped {
+            escaped = false;
+            word.push(ch);
+            in_word = true;
+            continue;
+        }
+        if single {
+            if ch == '\'' {
+                single = false;
+            } else {
+                word.push(ch);
+            }
+            continue;
+        }
+        if double {
+            match ch {
+                '"' => double = false,
+                '\\' => escaped = true,
+                _ => word.push(ch),
+            }
+            continue;
+        }
+        match ch {
+            '\\' => escaped = true,
+            '\'' => {
+                single = true;
+                in_word = true;
+            }
+            '"' => {
+                double = true;
+                in_word = true;
+            }
+            ';' | '&' | '|' | '\n' | '\r' | '(' | ')' => {
+                if in_word {
+                    words.push(std::mem::take(&mut word));
+                    in_word = false;
+                }
+                if !words.is_empty() {
+                    commands.push(std::mem::take(&mut words));
+                }
+            }
+            _ if ch.is_whitespace() => {
+                if in_word {
+                    words.push(std::mem::take(&mut word));
+                    in_word = false;
+                }
+            }
+            _ => {
+                word.push(ch);
+                in_word = true;
+            }
+        }
+    }
+    if in_word {
+        words.push(word);
+    }
+    if !words.is_empty() {
+        commands.push(words);
+    }
+    commands
 }
 
 /// What [`wrap_scripts`] changed.
@@ -219,7 +351,8 @@ pub fn wrap_scripts(
 
 /// The inverse of [`wrap_scripts`], shared by `phantom unwrap` and MCP
 /// `phantom_unwrap`: every `name:raw` whose `name` is exactly
-/// [`wrapped_script_command`] of it is restored and removed. Any other
+/// [`wrapped_script_command`] of it, or [`LEGACY_WRAP_PREFIX`] followed by
+/// it (what releases before 0.7.4 wrote), is restored and removed. Any other
 /// `:raw` script is the user's and is left alone. Returns the restored
 /// names in package.json key order.
 pub fn unwrap_scripts(pkg: &mut serde_json::Value) -> Vec<String> {
@@ -234,16 +367,16 @@ pub fn unwrap_scripts(pkg: &mut serde_json::Value) -> Vec<String> {
         .filter_map(|(raw_name, raw_value)| {
             let base_name = raw_name.strip_suffix(":raw")?;
             let original = raw_value.as_str()?;
-            let expected = wrapped_script_command(original);
-            (scripts.get(base_name).and_then(serde_json::Value::as_str) == Some(&expected)).then(
-                || {
-                    (
-                        base_name.to_string(),
-                        raw_name.clone(),
-                        original.to_string(),
-                    )
-                },
-            )
+            let current = scripts.get(base_name).and_then(serde_json::Value::as_str)?;
+            let wrapped_by_phantom = current == wrapped_script_command(original)
+                || current.strip_prefix(LEGACY_WRAP_PREFIX) == Some(original);
+            wrapped_by_phantom.then(|| {
+                (
+                    base_name.to_string(),
+                    raw_name.clone(),
+                    original.to_string(),
+                )
+            })
         })
         .collect::<Vec<_>>();
     for (base_name, raw_name, original) in &owned {
@@ -647,6 +780,105 @@ mod tests {
         assert!(already_wrapped("phantom exec -- next dev"));
         assert!(already_wrapped("npx phantom-secrets exec -- next dev"));
         assert!(!already_wrapped("next dev"));
+    }
+
+    #[test]
+    fn only_scripts_that_run_through_phantom_exec_count_as_wrapped() {
+        for script in [
+            "npx phantom-secrets init",
+            "phantom-secrets doctor",
+            "phantom doctor",
+            "echo phantom-secrets",
+            "grep -r phantom-secrets .",
+            "./phantom-tools/build.sh",
+            "phantomjs render.js",
+            "node ./phantom-secrets-demo/server.js",
+            "node phantom-exec.js",
+            "echo \"phantom exec -- node server.js\"",
+            "node -e 'phantom exec'",
+            "npx phantom-secrets@0.7.9 check",
+            "npx phantomjs exec",
+            "phantom",
+        ] {
+            assert!(!already_wrapped(script), "{script}");
+        }
+    }
+
+    #[test]
+    fn every_form_that_runs_through_phantom_exec_counts_as_wrapped() {
+        for script in [
+            "phantom exec -- next dev",
+            "phantom exec --env staging -- next dev",
+            "phantom --quiet exec -- next dev",
+            "phantom-secrets exec -- next dev",
+            "npx phantom-secrets exec -- next dev",
+            "npx -y phantom-secrets@0.7.9 exec -- next dev",
+            "npx phantom exec -- next dev",
+            "pnpx phantom-secrets exec -- next dev",
+            "bunx phantom-secrets exec -- next dev",
+            "bun x phantom-secrets exec -- next dev",
+            "pnpm dlx phantom-secrets exec -- next dev",
+            "pnpm exec phantom exec -- next dev",
+            "yarn dlx phantom-secrets exec -- next dev",
+            "yarn exec phantom exec -- next dev",
+            "yarn phantom exec -- next dev",
+            "npm exec -- phantom exec -- next dev",
+            "./node_modules/.bin/phantom exec -- next dev",
+            "  phantom   exec -- next dev",
+            "'phantom' exec -- next dev",
+            "NODE_ENV=production phantom exec -- node server.js",
+            "cd web && phantom exec -- next dev",
+            "npm run gen; npx phantom-secrets exec -- node server.js",
+        ] {
+            assert!(already_wrapped(script), "{script}");
+        }
+        // Whatever `phantom wrap` writes, now or in releases before 0.7.4.
+        assert!(already_wrapped(&wrapped_script_command("next dev")));
+        assert!(already_wrapped(&format!("{LEGACY_WRAP_PREFIX}next dev")));
+    }
+
+    #[test]
+    fn scripts_that_only_mention_phantom_are_still_wrapped() {
+        let mut pkg = serde_json::json!({
+            "scripts": {
+                "build": "./phantom-tools/build.sh",
+                "dev": "phantomjs render.js",
+                "start": "npx phantom-secrets exec -- node server.js",
+                "serve": "node ./phantom-secrets-demo/server.js"
+            }
+        });
+        let outcome = wrap_scripts(&mut pkg, &[], &[]).unwrap();
+        assert_eq!(outcome.wrapped, vec!["build", "dev", "serve"]);
+        assert_eq!(pkg["scripts"]["dev"], "phantom exec -- phantomjs render.js");
+        assert_eq!(
+            pkg["scripts"]["start"],
+            "npx phantom-secrets exec -- node server.js"
+        );
+        assert!(pkg["scripts"].get("start:raw").is_none());
+    }
+
+    #[test]
+    fn unwrap_restores_scripts_wrapped_by_releases_before_0_7_4() {
+        let original = serde_json::json!({
+            "scripts": {
+                "dev": "next dev",
+                "start": "node server.js",
+                "build:raw": "user-owned",
+                "build": "npx phantom-secrets exec -- next build"
+            }
+        });
+        let mut pkg = serde_json::json!({
+            "scripts": {
+                "dev": "npx phantom-secrets exec -- next dev",
+                "dev:raw": "next dev",
+                "start": "phantom exec -- node server.js",
+                "start:raw": "node server.js",
+                "build:raw": "user-owned",
+                "build": "npx phantom-secrets exec -- next build"
+            }
+        });
+        assert_eq!(unwrap_scripts(&mut pkg), vec!["dev", "start"]);
+        assert_eq!(pkg, original);
     }
 
     #[test]

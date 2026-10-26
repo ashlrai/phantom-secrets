@@ -17,6 +17,41 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   unchanged, and `#` lines inside a multi-line quoted value stay part of that
   value.
 
+### Fixed (`phantom check --staged` reads every `.envrc` assignment)
+
+- A staged `.envrc` or `.envrc.local` with an unclosed quote stopped being
+  read at that line, and an unclosed quote could pair with the next line's
+  opening quote and swallow that assignment, so a credential assigned after a
+  shell typo was committed unreported. Each line is now also read on its own
+  and the names are combined with the whole-file read, so multi-line quoted
+  values are still covered and a typo hides nothing after it.
+- A single-quoted value starting with `$` (a `'$argon2id$...'` hash, a
+  password beginning with `$`) was skipped as a shell expansion although
+  single quotes make it literal text. It is now reported; unquoted and
+  double-quoted `$VAR`, `${VAR}`, `$(cmd)` and backticks stay unflagged.
+- A name assigned more than once in one `.envrc` is reported once.
+- Plain `.env` files are unchanged: an unclosed quote there already fails
+  `phantom check` and `phantom check --staged` as malformed dotenv.
+
+### Fixed (`phantom wrap` skips only scripts that already run through `phantom exec`)
+
+- `phantom wrap`, MCP `phantom_wrap` and the shared
+  `phantom_core::package_scripts::already_wrapped` treated any script that
+  contained `phantom-secrets` or `phantom exec` as already wrapped, so a
+  selected script such as `node ./phantom-secrets-demo/server.js`, `npx
+  phantom-secrets check` or `echo "phantom exec -- node server.js"` was
+  silently left running without the proxy. A script now counts as wrapped only when one of its
+  commands actually runs `phantom exec`: `phantom` or `phantom-secrets` (any
+  path, `phantom-secrets@VERSION` through a launcher), optionally behind
+  `npx`, `pnpx`, `bunx`, `bun x`, `pnpm dlx|exec`, `yarn [dlx|exec]` or
+  `npm exec` and Phantom's global flags, followed by `exec`. Quoted text is
+  an argument, not a command.
+- `phantom unwrap` and MCP `phantom_unwrap` again restore scripts wrapped by
+  releases before 0.7.4, which wrote `npx phantom-secrets exec -- <script>`.
+  Since 0.7.4 only the current `phantom exec -- <script>` form was restored,
+  so those scripts stayed wrapped. A `NAME:raw` that matches neither form is
+  still the user's and is left alone.
+
 ### Fixed (agent readiness recommends `phantom wrap` only when it would wrap something)
 
 - `phantom agent report`, `phantom agent status` and `phantom agent doctor`
