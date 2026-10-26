@@ -2294,7 +2294,10 @@ impl PhantomMcpServer {
                             log.fail(format!("Managed dotenv parse error: {error}"));
                             issues += 1;
                         } else if real_secrets.is_empty() {
-                            log.pass(format!(".env has {} entries, all protected", entries.len()));
+                            log.pass(format!(
+                                ".env has {} entries and no unprotected secrets",
+                                entries.len()
+                            ));
                         } else {
                             let names: Vec<&str> =
                                 real_secrets.iter().map(|e| e.key.as_str()).collect();

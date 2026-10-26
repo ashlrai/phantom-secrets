@@ -111,7 +111,7 @@ fn check_managed_dotenv(project_dir: &std::path::Path, env_path: &std::path::Pat
         1
     } else if real_secrets.is_empty() {
         check_pass(&format!(
-            ".env has {} entries, all protected",
+            ".env has {} entries and no unprotected secrets",
             entries.len()
         ));
         0
@@ -1239,6 +1239,15 @@ mod tests {
         assert_eq!((issues, lines[0].0), (1, "warn"));
         assert!(lines[0].1.contains("OPENAI_API_KEY"));
         assert_eq!(lines[0].2.as_deref(), Some("Run: phantom init"));
+
+        std::fs::write(
+            project.path().join(".env"),
+            "NODE_ENV=development\nPORT=3000\nOPENAI_API_KEY=phm_placeholder\n",
+        )
+        .unwrap();
+        let (issues, lines) = dotenv_check_lines(project.path());
+        assert_eq!((issues, lines[0].0), (0, "pass"));
+        assert_eq!(lines[0].1, ".env has 3 entries and no unprotected secrets");
     }
 
     /// Run doctor's checks on a project whose config `edit` changes and
