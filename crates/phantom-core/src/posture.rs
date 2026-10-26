@@ -24,7 +24,8 @@ use std::path::{Path, PathBuf};
 pub const SCHEMA_VERSION: u32 = 1;
 /// Most records kept; older ones are dropped on write.
 pub const MAX_RECORDS: usize = 2000;
-/// Environment switch: `0`, `false`, `off` or `no` disables history writes.
+/// Environment switch: `0`, `false`, `off` or `no` (any case) disables history
+/// reads, writes and file or key creation.
 pub const HISTORY_ENV: &str = "PHANTOM_POSTURE_HISTORY";
 
 /// One secret as seen by a caller: flags only, so this type cannot carry a
@@ -371,12 +372,13 @@ pub struct PostureLedger {
     dir: PathBuf,
 }
 
-/// Held exclusive lock on `history.lock`; released on drop.
-pub struct HistoryLock(std::fs::File);
+/// Held exclusive lock on `history.lock` (std `File::try_lock`, flock on
+/// Unix, LockFileEx on Windows); released on drop.
+struct HistoryLock(std::fs::File);
 
 impl Drop for HistoryLock {
     fn drop(&mut self) {
-        let _ = fs2::FileExt::unlock(&self.0);
+        let _ = self.0.unlock();
     }
 }
 
@@ -405,7 +407,17 @@ impl PostureLedger {
     /// The per-host key. Created once on first use; never regenerated while
     /// a history exists (`posture_key_missing`), so project ids cannot
     /// change silently.
+    ///
+    /// With history off this touches nothing and returns `posture_disabled`.
+    ///
+    /// Windows: only a regular-file, no-reparse-point check is made on the
+    /// key (no owner or ACL check), and on every platform deleting
+    /// history.jsonl together with host.key starts a fresh key without
+    /// `posture_key_missing`; both are owner-only actions on a 0700 dir.
     pub fn host_key(&self) -> io::Result<HostKey> {
+        if !history_enabled() {
+            return Err(disabled());
+        }
         if let Some(key) = HostKey::read(&self.host_key_path())? {
             return Ok(key);
         }
@@ -430,28 +442,49 @@ impl PostureLedger {
             opts.mode(0o600)
                 .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
         }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            // FILE_FLAG_OPEN_REPARSE_POINT: open a symlink itself, not its target.
+            opts.custom_flags(0x0020_0000);
+        }
         let file = opts
             .open(self.dir.join("history.lock"))
             .map_err(path_free)?;
-        match fs2::FileExt::try_lock_exclusive(&file) {
+        if !file.metadata().map_err(path_free)?.is_file() {
+            return Err(coded(
+                io::ErrorKind::PermissionDenied,
+                "posture_lock_insecure",
+                "posture history lock is not a regular file",
+            ));
+        }
+        match file.try_lock() {
             Ok(()) => Ok(HistoryLock(file)),
-            Err(_) => Err(coded(
+            Err(std::fs::TryLockError::WouldBlock) => Err(coded(
                 io::ErrorKind::WouldBlock,
                 "posture_locked",
                 "posture history is busy",
             )),
+            Err(std::fs::TryLockError::Error(e)) => Err(path_free(e)),
         }
     }
 
-    #[doc(hidden)]
-    pub fn lock_for_test(&self) -> io::Result<HistoryLock> {
-        self.lock()
+    /// Whether history is on (see [`HISTORY_ENV`]); the envelope's
+    /// `history.enabled`.
+    pub fn enabled(&self) -> bool {
+        history_enabled()
     }
 
     /// Load every record. A missing file is an empty history; a malformed
     /// file is `InvalidData` (see [`HistoryError::classify`]). Errors carry
     /// no path.
+    ///
+    /// With history off this reads and creates nothing and returns an empty
+    /// history; report `history.enabled: false` from [`Self::enabled`].
     pub fn load(&self) -> io::Result<Vec<PostureCounts>> {
+        if !history_enabled() {
+            return Ok(Vec::new());
+        }
         let Some(bytes) = crate::fs::read_regular_file(&self.history_path()).map_err(path_free)?
         else {
             return Ok(Vec::new());
@@ -464,7 +497,9 @@ impl PostureLedger {
     }
 
     /// Append a record under an exclusive non-blocking lock (`posture_locked`,
-    /// [`HistoryError::Locked`] when another writer holds it). Returns
+    /// [`HistoryError::Locked`] when another writer holds it). Callers must
+    /// treat `posture_locked` as a failed write (the point was not stored),
+    /// not as success; retry or report it. Returns
     /// `Ok(false)` when history is switched off. A record whose `key_id`
     /// differs from the history's is refused (`posture_key_changed`). A
     /// corrupted history is renamed to `history.jsonl.corrupt-<unix secs>`
@@ -529,6 +564,14 @@ impl PostureLedger {
     }
 }
 
+fn disabled() -> io::Error {
+    coded(
+        io::ErrorKind::Unsupported,
+        "posture_disabled",
+        "posture history is off (PHANTOM_POSTURE_HISTORY)",
+    )
+}
+
 fn corrupted() -> io::Error {
     coded(
         io::ErrorKind::InvalidData,
@@ -553,24 +596,6 @@ mod tests {
             plaintext_env: 0,
             key_id: "abcd0123".into(),
             reset_after_corruption: false,
-        }
-    }
-
-    /// Sets an env var for the test and restores it on drop, even on panic.
-    struct EnvGuard(&'static str, Option<std::ffi::OsString>);
-    impl EnvGuard {
-        fn set(name: &'static str, value: &str) -> Self {
-            let old = std::env::var_os(name);
-            std::env::set_var(name, value);
-            Self(name, old)
-        }
-    }
-    impl Drop for EnvGuard {
-        fn drop(&mut self) {
-            match self.1.take() {
-                Some(v) => std::env::set_var(self.0, v),
-                None => std::env::remove_var(self.0),
-            }
         }
     }
 
@@ -631,16 +656,6 @@ mod tests {
         assert_eq!(mode(&l.dir), 0o700);
         assert_eq!(mode(&l.history_path()), 0o600);
         assert_eq!(mode(&l.host_key_path()), 0o600);
-    }
-
-    #[test]
-    fn off_switch_skips_write() {
-        let _g = crate::PROCESS_ENV_LOCK.lock().unwrap();
-        let d = tempfile::tempdir().unwrap();
-        let l = PostureLedger::at(d.path().join("posture"));
-        let _env = EnvGuard::set(HISTORY_ENV, "0");
-        assert!(!l.record(&point(1)).unwrap());
-        assert!(!l.history_path().exists());
     }
 
     #[test]

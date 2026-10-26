@@ -79,16 +79,29 @@ fn record_under_a_replaced_key_is_refused_and_visible() {
 }
 
 // Blocking 3
+fn hold_lock(l: &PostureLedger) -> std::fs::File {
+    let f = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(l.history_path().with_file_name("history.lock"))
+        .unwrap();
+    f.try_lock().unwrap();
+    f
+}
+
 #[test]
 fn busy_history_reports_locked() {
     let d = tempfile::tempdir().unwrap();
     let l = PostureLedger::at(d.path().join("posture"));
     let p = point(&l, 1);
-    let guard = l.lock_for_test().unwrap();
+    l.record(&p).unwrap();
+    let held = hold_lock(&l);
     let err = l.record(&p).unwrap_err();
     assert_eq!(HistoryError::classify(&err), HistoryError::Locked);
-    drop(guard);
+    assert!(err.to_string().contains("posture_locked"));
+    drop(held);
     assert!(l.record(&p).unwrap());
+    assert_eq!(l.load().unwrap().len(), 2);
 }
 
 #[test]
@@ -101,4 +114,41 @@ fn sequential_writes_never_drop_points() {
     let r = l.load().unwrap();
     assert_eq!(r.len(), 50);
     assert!(r.iter().enumerate().all(|(i, c)| c.wrapped == i as u32));
+}
+
+#[test]
+fn concurrent_writers_persist_or_report_locked_never_drop() {
+    let d = tempfile::tempdir().unwrap();
+    let dir = d.path().join("posture");
+    let seed = PostureLedger::at(dir.clone());
+    let p = point(&seed, 1);
+    let barrier = Arc::new(Barrier::new(8));
+    let (ok, locked): (usize, usize) = (0..8)
+        .map(|_| {
+            let (dir, p, barrier) = (dir.clone(), p.clone(), Arc::clone(&barrier));
+            std::thread::spawn(move || {
+                let l = PostureLedger::at(dir);
+                barrier.wait();
+                let (mut ok, mut locked) = (0, 0);
+                for _ in 0..50 {
+                    match l.record(&p) {
+                        Ok(true) => ok += 1,
+                        Err(e) if e.to_string().contains("posture_locked") => locked += 1,
+                        other => panic!("unexpected {other:?}"),
+                    }
+                }
+                (ok, locked)
+            })
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
+        .map(|h| h.join().unwrap())
+        .fold((0, 0), |a, b| (a.0 + b.0, a.1 + b.1));
+    assert_eq!(ok + locked, 400);
+    assert!(ok > 0);
+    assert_eq!(
+        seed.load().unwrap().len(),
+        ok,
+        "silent drop: {ok} ok, {locked} locked"
+    );
 }
