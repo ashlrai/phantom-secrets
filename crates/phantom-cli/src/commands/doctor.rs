@@ -156,7 +156,7 @@ fn check_commented_entries(dotenv: &DotenvFile, file_label: &str) -> usize {
 pub fn run_doctor(fix: bool, check_expiry: bool, json: bool) -> Result<()> {
     if json {
         let report = collect_report(fix, check_expiry)?;
-        println!("{}", serde_json::to_string_pretty(&report)?);
+        println!("{}", serde_json::to_string(&report)?);
         return Ok(());
     }
     run_checks(fix, check_expiry).map(|_| ())
@@ -172,7 +172,7 @@ pub fn run_doctor_to_file(
 ) -> Result<()> {
     let report = collect_report(fix, check_expiry)?;
     let body = if json {
-        serde_json::to_string_pretty(&report)? + "\n"
+        serde_json::to_string(&report)? + "\n"
     } else {
         render_text(&report)
     };
@@ -1672,5 +1672,49 @@ mod tests {
         assert!(helper.contains("authorize_external_install_from_terminal"));
         assert!(helper.contains("commit_prepared_install"));
         assert!(!helper.contains("acquire_project_transaction_lock"));
+    }
+}
+
+#[cfg(test)]
+mod json_contract_tests {
+    use phantom_core::report::{DoctorCheck, DoctorMcpClient, DoctorReport};
+
+    #[test]
+    fn doctor_json_field_snapshot() {
+        let report = DoctorReport {
+            ok: false,
+            issues: 1,
+            fixed: 1,
+            checks: vec![DoctorCheck {
+                status: "warn",
+                message: "Example diagnostic".into(),
+                fix: Some("Example repair".into()),
+                fixed: Some("Example result".into()),
+            }],
+            mcp_clients: vec![DoctorMcpClient {
+                client: "codex".into(),
+                path: "/example/config.toml".into(),
+                state: "local_runtime",
+            }],
+        };
+        let expected = serde_json::json!({
+            "ok": false, "issues": 1, "fixed": 1,
+            "checks": [{"status": "warn", "message": "Example diagnostic",
+                "fix": "Example repair", "fixed": "Example result"}],
+            "mcp_clients": [{"client": "codex", "path": "/example/config.toml",
+                "state": "local_runtime"}]
+        });
+        let compact = serde_json::to_string(&report).unwrap();
+        let pretty = serde_json::to_string_pretty(&report).unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&compact).unwrap(),
+            expected
+        );
+        assert!(compact.len() < pretty.len());
+        eprintln!(
+            "doctor fixture: {} -> {} bytes",
+            pretty.len() + 1,
+            compact.len() + 1
+        );
     }
 }
