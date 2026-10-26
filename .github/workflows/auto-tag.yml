@@ -7,10 +7,12 @@
 # Required checks are discovered at run time from the branch rules API
 # (rulesets) unioned with classic branch protection contexts. Fail closed:
 # - no required checks discovered: fail
-# - a required check missing, queued or in progress: no tag (on the push
-#   trigger this is a notice and the later workflow_run trigger retries;
-#   on workflow_run it fails)
-# - any conclusion other than success: fail. skipped and neutral are NOT
+# - only GitHub Actions check runs (app id 15368) count; every latest run with
+#   a required name must be completed + success; statuses use the latest state
+# - a required check missing, queued or in progress: bounded wait (~9.5 min),
+#   then no tag (notice on the push trigger, which workflow_run re-evaluates;
+#   failure on workflow_run)
+# - any conclusion other than success: fail at once. skipped and neutral are NOT
 #   green: required checks here use the skip-job pattern (phantom #811),
 #   which reports success, so a skipped required check means it did not run.
 name: Auto-tag
@@ -34,7 +36,7 @@ jobs:
   tag:
     if: github.event_name == 'push' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     permissions:
       contents: read
       checks: read     # read check-runs for the exact commit
@@ -49,6 +51,7 @@ jobs:
       # Required checks designed to report skipped on push to main (PR-only
       # jobs). Only these may be skipped; everything else must be success.
       SKIP_OK: ""
+      ACTIONS_APP_ID: "15368"   # GitHub Actions; other apps' same-named runs never count
     steps:
       - name: Detect version change
         id: version
@@ -86,36 +89,47 @@ jobs:
           if [ -z "$required" ]; then
             echo "::error::no required checks discovered for $BRANCH; refusing to tag"; exit 1
           fi
-          runs=$(gh api --paginate "repos/$REPO/commits/$SHA/check-runs?filter=latest&per_page=100" -q '.check_runs[] | [.name, .status, (.conclusion // "")] | @tsv')
-          statuses=$(gh api "repos/$REPO/commits/$SHA/status" -q '.statuses[] | [.context, .state] | @tsv')
-          pending=0; bad=0
-          while IFS= read -r name; do
-            row=$(awk -F'\t' -v n="$name" '$1==n' <<<"$runs" | head -n1)
-            if [ -n "$row" ]; then
-              status=$(cut -f2 <<<"$row"); conclusion=$(cut -f3 <<<"$row")
-              if [ "$status" != completed ]; then echo "pending: $name ($status)"; pending=1
-              elif [ "$conclusion" = success ]; then echo "green: $name"
-              elif [ "$conclusion" = skipped ] && [ -n "$SKIP_OK" ] && [ "$name" = "$SKIP_OK" ]; then echo "skipped by design on push: $name"
-              else echo "::error::not green: $name ($conclusion)"; bad=1; fi
-              continue
-            fi
-            state=$(awk -F'\t' -v n="$name" '$1==n {print $2; exit}' <<<"$statuses")
-            case "$state" in
-              success) echo "green: $name (status)";;
-              pending) echo "pending: $name (status)"; pending=1;;
-              "") echo "missing: $name"; pending=1;;
-              *) echo "::error::not green: $name ($state)"; bad=1;;
-            esac
-          done <<<"$required"
-          if [ "$bad" = 1 ]; then exit 1; fi
-          if [ "$pending" = 1 ]; then
-            if [ "$TRIGGER" = push ]; then
-              echo "::notice::required checks not finished; the workflow_run trigger retries after CI"
-              echo "green=false" >> "$GITHUB_OUTPUT"; exit 0
-            fi
-            echo "::error::required checks missing or pending after CI completed; refusing to tag"; exit 1
+          # One evaluation pass. Check runs: only GitHub Actions (app id
+          # $ACTIONS_APP_ID) counts, and EVERY latest run with the required name
+          # must be completed + success. Statuses: the combined-status API
+          # returns the latest status per context, which must be success.
+          evaluate() {
+            runs=$(gh api --paginate "repos/$REPO/commits/$SHA/check-runs?filter=latest&app_id=$ACTIONS_APP_ID&per_page=100"               -q '.check_runs[] | select(.app.id == '"$ACTIONS_APP_ID"') | [.name, .status, (.conclusion // "")] | @tsv')
+            statuses=$(gh api "repos/$REPO/commits/$SHA/status" -q '.statuses[] | [.context, .state] | @tsv')
+            pending=0; bad=0
+            while IFS= read -r name; do
+              rows=$(awk -F'	' -v n="$name" '$1==n' <<<"$runs")
+              if [ -n "$rows" ]; then
+                while IFS=$'	' read -r _ status conclusion; do
+                  if [ "$status" != completed ]; then echo "pending: $name ($status)"; pending=1
+                  elif [ "$conclusion" = success ]; then echo "green: $name"
+                  elif [ "$conclusion" = skipped ] && [ -n "$SKIP_OK" ] && [ "$name" = "$SKIP_OK" ]; then echo "skipped by design on push: $name"
+                  else echo "::error::not green: $name ($conclusion)"; bad=1; fi
+                done <<<"$rows"
+                continue
+              fi
+              state=$(awk -F'	' -v n="$name" '$1==n {print $2; exit}' <<<"$statuses")
+              case "$state" in
+                success) echo "green: $name (status)";;
+                pending) echo "pending: $name (status)"; pending=1;;
+                "") echo "missing: $name"; pending=1;;
+                *) echo "::error::not green: $name ($state)"; bad=1;;
+              esac
+            done <<<"$required"
+          }
+          # Bounded wait while checks are pending or not yet reported:
+          # about 9.5 minutes total, then decide. Failures stop at once.
+          for delay in 0 20 40 60 90 120 120 120; do
+            sleep "$delay"
+            evaluate
+            if [ "$bad" = 1 ]; then exit 1; fi
+            if [ "$pending" = 0 ]; then echo "green=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+          done
+          if [ "$TRIGGER" = push ]; then
+            echo "::notice::required checks still not finished; the workflow_run trigger re-evaluates after CI"
+            echo "green=false" >> "$GITHUB_OUTPUT"; exit 0
           fi
-          echo "green=true" >> "$GITHUB_OUTPUT"
+          echo "::error::required checks missing or pending after CI completed and a bounded wait; refusing to tag"; exit 1
 
       - name: Mint ashlr-release App token (contents write, this repo only)
         id: app
