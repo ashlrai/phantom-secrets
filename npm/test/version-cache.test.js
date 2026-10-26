@@ -13,6 +13,7 @@ const { tmpdir } = require("os");
 const { join } = require("path");
 
 const {
+  attestationPath,
   ensurePrivateCacheDir,
   isCachedBinaryStale,
   parseBinaryVersion,
@@ -67,6 +68,14 @@ try {
   assert.strictEqual(isCachedBinaryStale(paths.binaryPath, {
     execFileSyncImpl: () => Buffer.from("phantom 0.7.9\n"),
   }), false);
+
+  // The passing version check above is attested for this exact binary, so a
+  // repeat call must not spawn. Drop the attestation so the bounded timeout
+  // path below still runs against a real version spawn.
+  assert.strictEqual(validateCachedBinary(paths.binaryPath, paths.manifestPath, {
+    execFileSyncImpl: () => { throw new Error("attested binary must not re-run --version"); },
+  }), true);
+  rmSync(attestationPath(paths.binaryPath));
 
   let observedTimeout;
   assert.strictEqual(validateCachedBinary(paths.binaryPath, paths.manifestPath, {
