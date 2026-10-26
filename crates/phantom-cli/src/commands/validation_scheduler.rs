@@ -42,7 +42,7 @@ pub fn run_schedule(interval: Option<&str>, status: bool, disable: bool, json: b
         state.schedule = Some(Schedule::Disabled);
         state.save_if_unchanged(&state_path, before.as_deref())?;
         if json {
-            println!("{{\"schedule\":\"disabled\"}}");
+            println!("{}", schedule_json(&state.schedule));
         } else {
             println!("{} Validation scheduler disabled.", "info".blue());
         }
@@ -71,10 +71,7 @@ pub fn run_schedule(interval: Option<&str>, status: bool, disable: bool, json: b
     state.save_if_unchanged(&state_path, before.as_deref())?;
 
     if json {
-        println!(
-            "{{\"schedule\":{:?}}}",
-            serde_json::to_string(&state.schedule).unwrap_or_default()
-        );
+        println!("{}", schedule_json(&state.schedule));
     } else {
         println!(
             "{} Validation schedule set to {}.",
@@ -83,8 +80,10 @@ pub fn run_schedule(interval: Option<&str>, status: bool, disable: bool, json: b
         );
         println!("  State persisted to: {}", state_path.display());
         println!();
-        println!("  To start the background daemon, run `phantom validate schedule --status`");
-        println!("  or integrate with a process supervisor (systemd, launchd, etc.).");
+        println!("  Phantom does not run validation on this schedule by itself.");
+        println!(
+            "  `phantom validate schedule --status` shows when `phantom validate --check-all` last ran."
+        );
     }
 
     Ok(())
@@ -218,6 +217,12 @@ pub fn run_history(last: Option<usize>, json: bool) -> Result<()> {
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
+/// The `--json` answer after setting or disabling a schedule. `schedule`
+/// is the same value `--status --json` reports, not a string holding JSON.
+fn schedule_json(schedule: &Option<Schedule>) -> serde_json::Value {
+    serde_json::json!({ "schedule": schedule })
+}
+
 fn print_schedule_status(state: &SchedulerState, json: bool) -> Result<()> {
     if json {
         let out = serde_json::json!({
@@ -286,6 +291,20 @@ fn format_timestamp(ts: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `schedule 6h --json` printed `{"schedule":"{\"interval\":21600}"}`:
+    /// the schedule as a string holding JSON, unlike `--status --json`.
+    #[test]
+    fn set_and_disable_json_report_the_schedule_as_status_does() {
+        assert_eq!(
+            schedule_json(&Some(Schedule::parse("6h").unwrap())).to_string(),
+            r#"{"schedule":{"interval":21600}}"#
+        );
+        assert_eq!(
+            schedule_json(&Some(Schedule::Disabled)).to_string(),
+            r#"{"schedule":"disabled"}"#
+        );
+    }
 
     #[test]
     fn headless_schedule_consent_denies_without_write_authority() {
