@@ -9,7 +9,7 @@ use std::path::Path;
 use std::process::Output;
 
 const PASS: &str = "test-passphrase-dry-run";
-const CANARY: &str = "sk-dry-run-canary-7f3a9c1e5b";
+const CANARY: &str = "sk-FAKE-dry-run-canary-7f3a9c1e5b";
 const PUBLIC_VALUE: &str = "browser-label-not-secret";
 
 fn phantom(dir: &Path) -> Command {
