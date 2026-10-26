@@ -474,6 +474,10 @@ impl DotenvFile {
 
     /// Generate .env.example content with secrets replaced by placeholders.
     /// Public keys and non-secret config values are preserved as-is.
+    ///
+    /// A name `config` declares secret (a `[phantom.secrets.NAME]` entry or a
+    /// service's `secret_key`) is always masked, even when neither its name
+    /// nor its value looks like a credential.
     pub fn generate_example_content(
         &self,
         config: Option<&crate::config::PhantomConfig>,
@@ -483,7 +487,9 @@ impl DotenvFile {
             .records
             .iter()
             .filter(|record| {
-                record.entry.is_phantom || classify(&record.entry) == SecretClassification::Secret
+                record.entry.is_phantom
+                    || config_declares_secret(config, &record.entry.key)
+                    || classify(&record.entry) == SecretClassification::Secret
             })
             .map(|record| {
                 (
@@ -496,7 +502,7 @@ impl DotenvFile {
                 )
             })
             .chain(
-                self.commented_secret_value_spans()
+                self.commented_secret_value_spans(config)
                     .into_iter()
                     .map(|(span, key)| {
                         let replacement = render_replacement(
@@ -510,7 +516,7 @@ impl DotenvFile {
             .chain(
                 self.credential_comment_spans()
                     .into_iter()
-                    .chain(self.credential_prose_comment_spans())
+                    .chain(self.credential_prose_comment_spans(config))
                     .map(|span| (span, INLINE_COMMENT_REMOVED.to_string())),
             )
             .collect::<Vec<_>>();
@@ -555,7 +561,8 @@ impl DotenvFile {
     /// generation masks with, minus empty and `your_<name>_here` placeholder
     /// values. Lines inside a multi-line quoted value are not comments.
     pub fn commented_secret_assignments(&self) -> Vec<(String, usize)> {
-        self.commented_secret_value_spans()
+        // Heuristics only: callers have no project config here.
+        self.commented_secret_value_spans(None)
             .into_iter()
             .filter(|(span, _)| !is_example_placeholder(&self.source[span.clone()]))
             .map(|(span, key)| (key, physical_line_number(&self.source, span.start)))
@@ -568,11 +575,14 @@ impl DotenvFile {
     /// entry, but it still holds a credential. Example generation masks these
     /// spans like live entries so the shareable file never copies them. Lines
     /// inside a multi-line quoted value belong to that value and are skipped.
-    fn commented_secret_value_spans(&self) -> Vec<(Range<usize>, String)> {
+    fn commented_secret_value_spans(
+        &self,
+        config: Option<&crate::config::PhantomConfig>,
+    ) -> Vec<(Range<usize>, String)> {
         self.commented_tails()
             .into_iter()
             .filter_map(|(_, tail_start, tail)| {
-                commented_secret_value_span(tail)
+                commented_secret_value_span(tail, config)
                     .map(|(span, key)| (tail_start + span.start..tail_start + span.end, key))
             })
             .collect()
@@ -613,12 +623,15 @@ impl DotenvFile {
     /// from the first `#` to the end of the physical line, so indentation and
     /// the line ending stay. Commented-out assignments keep their own
     /// handling, which keeps every replaced span disjoint.
-    fn credential_prose_comment_spans(&self) -> Vec<Range<usize>> {
+    fn credential_prose_comment_spans(
+        &self,
+        config: Option<&crate::config::PhantomConfig>,
+    ) -> Vec<Range<usize>> {
         self.commented_tails()
             .into_iter()
             .filter(|(_, _, tail)| {
                 DotenvFile::parse_str(tail).records.is_empty()
-                    && commented_secret_value_span(tail).is_none()
+                    && commented_secret_value_span(tail, config).is_none()
                     && comment_holds_credential(tail)
             })
             .map(|(comment_start, tail_start, tail)| comment_start..tail_start + tail.len())
@@ -978,11 +991,15 @@ fn normalize_line_endings(source: &str) -> String {
 /// parse (an unterminated quote from a commented multi-line value) is judged
 /// on the raw remainder, and the whole remainder is masked. Prose such as
 /// `Set API_KEY=...` has no valid key and is left alone.
-fn commented_secret_value_span(tail: &str) -> Option<(Range<usize>, String)> {
+fn commented_secret_value_span(
+    tail: &str,
+    config: Option<&crate::config::PhantomConfig>,
+) -> Option<(Range<usize>, String)> {
     let parsed = DotenvFile::parse_str(tail);
     if let Some(record) = parsed.records.first() {
-        let secret =
-            !record.entry.is_phantom && classify(&record.entry) == SecretClassification::Secret;
+        let secret = !record.entry.is_phantom
+            && (config_declares_secret(config, &record.entry.key)
+                || classify(&record.entry) == SecretClassification::Secret);
         return secret.then(|| (record.value_span.clone(), record.entry.key.clone()));
     }
     let assignment = tail.strip_prefix("export ").unwrap_or(tail);
@@ -1007,7 +1024,8 @@ fn commented_secret_value_span(tail: &str) -> Option<(Range<usize>, String)> {
         value: tail[value_start..value_end].to_string(),
         is_phantom: false,
     };
-    let secret = classify(&entry) == SecretClassification::Secret;
+    let secret = config_declares_secret(config, &entry.key)
+        || classify(&entry) == SecretClassification::Secret;
     let EnvEntry { key, mut value, .. } = entry;
     value.zeroize();
     secret.then_some((value_start..value_end, key))
@@ -1682,6 +1700,16 @@ pub fn is_example_placeholder(value: &str) -> bool {
 }
 
 /// Generate a descriptive placeholder for a secret key.
+/// Whether the project config declares `key` a secret: it has a
+/// `[phantom.secrets.KEY]` entry or is a service's `secret_key`. Example
+/// generation masks such a key whatever its name or value look like.
+fn config_declares_secret(config: Option<&crate::config::PhantomConfig>, key: &str) -> bool {
+    config.is_some_and(|cfg| {
+        cfg.phantom.secrets.contains_key(key)
+            || cfg.services.values().any(|svc| svc.secret_key == key)
+    })
+}
+
 fn generate_placeholder(key: &str, config: Option<&crate::config::PhantomConfig>) -> String {
     // Check for service mapping to give helpful hints
     if let Some(cfg) = config {
@@ -3543,5 +3571,67 @@ NEXT=ok
         std::fs::write(&env_path, "NODE_ENV=development\n").unwrap();
         let parsed = DotenvFile::parse_file(&env_path).unwrap();
         assert_eq!(parsed.entries().len(), 1);
+    }
+
+    #[test]
+    fn example_masks_names_the_config_declares_secret() {
+        // Neither the names nor the value look like a credential, so only
+        // the project config says these entries are secret.
+        let plain = ["abc", "123", "xyz"].concat();
+        let source = format!(
+            "MY_SERVICE_CRED={plain}\n\
+             export MY_SERVICE_CRED_EXPORTED={plain}\n\
+             MY_SERVICE_CRED_DQ=\"{plain}\"\n\
+             MY_SERVICE_CRED_SQ='{plain}'\n\
+             # MY_SERVICE_CRED_OLD={plain}\n\
+             CUSTOM_GATEWAY_CRED={plain}\n\
+             APP_MODE={plain}\n"
+        );
+        let env = DotenvFile::parse_str(&source);
+        let mut config = crate::config::PhantomConfig::new_with_defaults("a".repeat(64));
+        for name in [
+            "MY_SERVICE_CRED",
+            "MY_SERVICE_CRED_EXPORTED",
+            "MY_SERVICE_CRED_DQ",
+            "MY_SERVICE_CRED_SQ",
+            "MY_SERVICE_CRED_OLD",
+        ] {
+            config
+                .phantom
+                .secrets
+                .insert(name.to_string(), crate::config::SecretOverride::default());
+        }
+        config.services.insert(
+            "gateway".to_string(),
+            crate::config::ServiceConfig {
+                secret_key: "CUSTOM_GATEWAY_CRED".to_string(),
+                pattern: None,
+                header: None,
+                header_format: None,
+                secret_type: "api_key".to_string(),
+            },
+        );
+
+        let example = env.generate_example_content(Some(&config)).unwrap();
+        let body: Vec<&str> = example.lines().filter(|l| !l.starts_with("# ")).collect();
+        assert_eq!(
+            body,
+            [
+                "#",
+                "",
+                "MY_SERVICE_CRED=your_my_service_cred_here",
+                "export MY_SERVICE_CRED_EXPORTED=your_my_service_cred_exported_here",
+                "MY_SERVICE_CRED_DQ=\"your_my_service_cred_dq_here\"",
+                "MY_SERVICE_CRED_SQ='your_my_service_cred_sq_here'",
+                "CUSTOM_GATEWAY_CRED=your_gateway_here",
+                "APP_MODE=abc123xyz",
+            ]
+        );
+        assert!(example.contains("# MY_SERVICE_CRED_OLD=your_my_service_cred_old_here\n"));
+        assert_eq!(example.matches(plain.as_str()).count(), 1);
+
+        // Without a config the heuristics alone decide, as before.
+        let unconfigured = env.generate_example_content(None).unwrap();
+        assert_eq!(unconfigured.matches(plain.as_str()).count(), 7);
     }
 }
