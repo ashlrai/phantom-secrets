@@ -13,8 +13,8 @@
 //! A cross-project transaction (a copy from one project into another) holds
 //! both projects' locks through [`acquire_project_transaction_locks`]. Every
 //! acquisition, single or paired, follows one global order so two copies in
-//! opposite directions cannot deadlock: first the process-local shard
-//! mutexes in ascending shard index (each shard once), then each project's
+//! opposite directions cannot deadlock: first the process-local project
+//! reservations in ascending (shard index, canonical path) order, then each project's
 //! filesystem locks in ascending stable lock name (the digest of the
 //! canonical project path, identical in every process sharing the anchor),
 //! stable before legacy within a project. Two spellings of one canonical
@@ -28,17 +28,20 @@ use phantom_core::fs::{
 use sha2::{Digest, Sha256};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::sync::{Condvar, Mutex, OnceLock};
+use std::time::{Duration, Instant};
+
+const LOCK_TIMEOUT: Duration = Duration::from_secs(120);
 
 const PROCESS_LOCK_SHARDS: usize = 64;
 
 /// An advisory project lock shared by init and token-remap transactions.
 /// Keeping the guard alive spans snapshot, commit, verification, and rollback.
 pub struct ProjectTransactionLock {
-    /// Process-local shard guards, held in ascending shard index. The second
+    /// Process-local project guards, held in global shard/path order. The second
     /// project of a [`ProjectTransactionLockPair`] holds none: the pair's
-    /// primary holds every shard both projects need.
-    _process: Vec<MutexGuard<'static, ()>>,
+    /// primary holds every project reservation both projects need.
+    _process: Vec<ProcessLockGuard>,
     _stable: AnchoredLock,
     _legacy: AnchoredLock,
     project: TrustedAnchor,
@@ -93,22 +96,73 @@ fn process_lock_index(identity: &Path) -> usize {
     hasher.finish() as usize % PROCESS_LOCK_SHARDS
 }
 
-fn process_lock_shard(index: usize) -> MutexGuard<'static, ()> {
-    static LOCKS: OnceLock<Vec<Mutex<()>>> = OnceLock::new();
-    let locks = LOCKS.get_or_init(|| (0..PROCESS_LOCK_SHARDS).map(|_| Mutex::new(())).collect());
-    locks[index]
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+#[derive(Debug, Default)]
+struct ProcessLockShard {
+    active: Mutex<std::collections::BTreeSet<PathBuf>>,
+    changed: Condvar,
 }
 
-/// Lock every distinct shard in ascending index order. Distinct projects can
-/// share a shard, and a shard mutex is not reentrant, so each is taken once.
-fn process_locks_for(identities: &[&Path]) -> Vec<MutexGuard<'static, ()>> {
-    let indices: std::collections::BTreeSet<usize> = identities
+#[derive(Debug)]
+struct ProcessLockGuard {
+    shard: &'static ProcessLockShard,
+    identity: PathBuf,
+}
+
+impl Drop for ProcessLockGuard {
+    fn drop(&mut self) {
+        let mut active = self
+            .shard
+            .active
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        active.remove(&self.identity);
+        self.shard.changed.notify_all();
+    }
+}
+
+fn process_lock_shard(identity: &Path, deadline: Instant) -> Result<ProcessLockGuard> {
+    static LOCKS: OnceLock<Vec<ProcessLockShard>> = OnceLock::new();
+    let locks = LOCKS.get_or_init(|| {
+        (0..PROCESS_LOCK_SHARDS)
+            .map(|_| ProcessLockShard::default())
+            .collect()
+    });
+    let shard = &locks[process_lock_index(identity)];
+    let mut active = shard
+        .active
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    while active.contains(identity) {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(PhantomError::VaultError(
+                "Timed out waiting for project transaction lock; another writer is active. Retry after it finishes.".into(),
+            ));
+        }
+        let (next, _) = shard
+            .changed
+            .wait_timeout(active, remaining)
+            .unwrap_or_else(|error| error.into_inner());
+        active = next;
+    }
+    active.insert(identity.to_path_buf());
+    Ok(ProcessLockGuard {
+        shard,
+        identity: identity.to_path_buf(),
+    })
+}
+
+/// Acquire distinct projects in global (shard, canonical path) order. A shard
+/// mutex protects bookkeeping only; unrelated projects never hold it during I/O.
+fn process_locks_for(identities: &[&Path], deadline: Instant) -> Result<Vec<ProcessLockGuard>> {
+    let ordered: std::collections::BTreeSet<_> = identities
         .iter()
-        .map(|identity| process_lock_index(identity))
+        .map(|identity| (process_lock_index(identity), *identity))
         .collect();
-    indices.into_iter().map(process_lock_shard).collect()
+    ordered
+        .into_iter()
+        .map(|(_, identity)| process_lock_shard(identity, deadline))
+        .collect()
 }
 
 fn lock_anchor() -> PathBuf {
@@ -170,6 +224,7 @@ fn lock_paths(project_dir: &Path) -> Result<ProjectLockPaths> {
 }
 
 /// Acquire the process-local and cross-process lock for one canonical project.
+/// Contention across all lock steps has a shared 120 second deadline.
 pub fn acquire_project_transaction_lock(project_dir: &Path) -> Result<ProjectTransactionLock> {
     acquire_project_transaction_lock_at(lock_paths(project_dir)?)
 }
@@ -196,28 +251,40 @@ fn open_lock_anchor(path: &Path) -> Result<TrustedAnchor> {
     })
 }
 
+#[cfg(test)]
 fn acquire_filesystem_locks(paths: &ProjectLockPaths) -> Result<ProjectFilesystemLocks> {
+    acquire_filesystem_locks_until(paths, Instant::now() + LOCK_TIMEOUT)
+}
+
+fn acquire_filesystem_locks_until(
+    paths: &ProjectLockPaths,
+    deadline: Instant,
+) -> Result<ProjectFilesystemLocks> {
     let anchor = open_lock_anchor(&paths.anchor)?;
 
     // The direct-child lock is the durable coordination identity. Acquiring it
     // first means replacing the legacy descendant directory cannot split two
     // current Phantom writers into different lock domains.
-    let stable = anchor.acquire_lock(&paths.stable).map_err(|error| {
-        PhantomError::VaultError(format!(
-            "Cannot acquire stable project transaction lock {}: {error}",
-            paths.stable.display()
-        ))
-    })?;
+    let stable = anchor
+        .acquire_lock_until(&paths.stable, deadline)
+        .map_err(|error| {
+            PhantomError::VaultError(format!(
+                "Cannot acquire stable project transaction lock {}: {error}",
+                paths.stable.display()
+            ))
+        })?;
 
     // One-release bridge for Phantom versions that only know the historical
     // transaction-locks/<digest>.lock location. Always take it second to keep
     // lock ordering deterministic. Do not remove the legacy file on drop.
-    let legacy = anchor.acquire_lock(&paths.legacy).map_err(|error| {
-        PhantomError::VaultError(format!(
-            "Cannot acquire legacy project transaction lock {}: {error}",
-            paths.legacy.display()
-        ))
-    })?;
+    let legacy = anchor
+        .acquire_lock_until(&paths.legacy, deadline)
+        .map_err(|error| {
+            PhantomError::VaultError(format!(
+                "Cannot acquire legacy project transaction lock {}: {error}",
+                paths.legacy.display()
+            ))
+        })?;
     Ok(ProjectFilesystemLocks { stable, legacy })
 }
 
@@ -232,7 +299,7 @@ fn retain_project_root(paths: &ProjectLockPaths) -> Result<TrustedAnchor> {
 }
 
 fn assemble_lock(
-    process: Vec<MutexGuard<'static, ()>>,
+    process: Vec<ProcessLockGuard>,
     filesystem: ProjectFilesystemLocks,
     project: TrustedAnchor,
     paths: ProjectLockPaths,
@@ -248,9 +315,10 @@ fn assemble_lock(
 }
 
 fn acquire_project_transaction_lock_at(paths: ProjectLockPaths) -> Result<ProjectTransactionLock> {
-    let process = process_locks_for(&[&paths.identity]);
+    let deadline = Instant::now() + LOCK_TIMEOUT;
+    let process = process_locks_for(&[&paths.identity], deadline)?;
     let project = retain_project_root(&paths)?;
-    let filesystem = acquire_filesystem_locks(&paths)?;
+    let filesystem = acquire_filesystem_locks_until(&paths, deadline)?;
     Ok(assemble_lock(process, filesystem, project, paths))
 }
 
@@ -376,7 +444,7 @@ impl ProjectTransactionLock {
 /// and no secondary.
 pub struct ProjectTransactionLockPair {
     // Field order is drop order: the secondary's filesystem locks are
-    // released before the primary releases the shard guards it holds for
+    // released before the primary releases the project guards it holds for
     // both projects. Release order cannot deadlock either way.
     secondary: Option<ProjectTransactionLock>,
     primary: ProjectTransactionLock,
@@ -405,8 +473,8 @@ impl ProjectTransactionLockPair {
 /// Acquire the transaction locks of two projects in Phantom's global lock
 /// order (see the module documentation), so a concurrent pair acquisition in
 /// the opposite direction waits instead of deadlocking. Every lock is a
-/// blocking cooperative lock on every platform; the deterministic order, not
-/// a timeout, is what excludes deadlock.
+/// cooperative lock with a shared 120 second acquisition deadline. Deterministic
+/// ordering excludes deadlock; the deadline bounds contention.
 pub fn acquire_project_transaction_locks(
     primary: &Path,
     secondary: &Path,
@@ -427,15 +495,16 @@ fn acquire_project_transaction_locks_at(
         return acquire_project_transaction_lock_at(primary)
             .map(ProjectTransactionLockPair::single);
     }
-    let process = process_locks_for(&[&primary.identity, &secondary.identity]);
+    let deadline = Instant::now() + LOCK_TIMEOUT;
+    let process = process_locks_for(&[&primary.identity, &secondary.identity], deadline)?;
     let primary_root = retain_project_root(&primary)?;
     let secondary_root = retain_project_root(&secondary)?;
     let (primary_filesystem, secondary_filesystem) = if primary.stable < secondary.stable {
-        let first = acquire_filesystem_locks(&primary)?;
-        (first, acquire_filesystem_locks(&secondary)?)
+        let first = acquire_filesystem_locks_until(&primary, deadline)?;
+        (first, acquire_filesystem_locks_until(&secondary, deadline)?)
     } else {
-        let first = acquire_filesystem_locks(&secondary)?;
-        (acquire_filesystem_locks(&primary)?, first)
+        let first = acquire_filesystem_locks_until(&secondary, deadline)?;
+        (acquire_filesystem_locks_until(&primary, deadline)?, first)
     };
     Ok(ProjectTransactionLockPair {
         secondary: Some(assemble_lock(
@@ -455,13 +524,158 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
+    fn contention_timeout_releases_partial_locks() {
+        let project = tempdir().unwrap();
+        let root = tempdir().unwrap();
+        let paths = lock_paths_at(project.path(), root.path()).unwrap();
+        let anchor = open_lock_anchor(root.path()).unwrap();
+        // A legacy holder forces failure after the stable lock was acquired.
+        let legacy = anchor.acquire_lock(&paths.legacy).unwrap();
+        let error =
+            acquire_filesystem_locks_until(&paths, Instant::now() + Duration::from_millis(50))
+                .err()
+                .expect("contention must time out");
+        assert!(error
+            .to_string()
+            .contains("Timed out waiting for project transaction lock"));
+        assert!(error.to_string().contains("another writer is active"));
+        // The failed acquisition must release its stable lock.
+        let stable = anchor
+            .acquire_lock_until(&paths.stable, Instant::now())
+            .unwrap();
+        drop(stable);
+        drop(legacy);
+        acquire_filesystem_locks(&paths).unwrap();
+    }
+
+    #[test]
+    fn process_shard_contention_has_a_clear_timeout() {
+        let project = tempdir().unwrap();
+        let identity = project.path().canonicalize().unwrap();
+        let held = process_locks_for(&[&identity], Instant::now() + LOCK_TIMEOUT).unwrap();
+        let error = process_locks_for(&[&identity], Instant::now() + Duration::from_millis(20))
+            .expect_err("same-process contention must time out");
+        assert!(error
+            .to_string()
+            .contains("Timed out waiting for project transaction lock"));
+        drop(held);
+        process_locks_for(&[&identity], Instant::now() + LOCK_TIMEOUT).unwrap();
+    }
+
+    // Run only in a subprocess with private fixture paths, never the user's vault.
+    #[test]
+    fn crash_holder_child() {
+        let Some(root) = std::env::var_os("PHANTOM_LOCK_TEST_ROOT") else {
+            return;
+        };
+        let root = PathBuf::from(root);
+        let paths = lock_paths_at(&root.join("project"), &root.join("locks")).unwrap();
+        let _held = acquire_project_transaction_lock_at(paths).unwrap();
+        std::fs::write(root.join("ready"), b"ready").unwrap();
+        loop {
+            std::thread::park();
+        }
+    }
+
+    struct ChildHolder(std::process::Child);
+
+    impl Drop for ChildHolder {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    #[test]
+    fn killed_holder_leaves_reusable_stale_lock_files() {
+        let root = tempdir().unwrap();
+        std::fs::create_dir(root.path().join("project")).unwrap();
+        let mut child = ChildHolder(
+            std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "transaction_lock::tests::crash_holder_child",
+                    "--nocapture",
+                ])
+                .env("PHANTOM_LOCK_TEST_ROOT", root.path())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !root.path().join("ready").exists() {
+            if Instant::now() >= deadline || child.0.try_wait().unwrap().is_some() {
+                let _ = child.0.kill();
+                let _ = child.0.wait();
+                panic!("lock holder did not become ready");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let paths =
+            lock_paths_at(&root.path().join("project"), &root.path().join("locks")).unwrap();
+        let before = TrustedAnchor::open(&paths.anchor)
+            .unwrap()
+            .target(&paths.stable)
+            .unwrap()
+            .read_regular()
+            .unwrap()
+            .unwrap();
+        let legacy_before = TrustedAnchor::open(&paths.anchor)
+            .unwrap()
+            .target(&paths.legacy)
+            .unwrap()
+            .read_regular()
+            .unwrap()
+            .unwrap();
+        let blocked =
+            acquire_filesystem_locks_until(&paths, Instant::now() + Duration::from_millis(30));
+        child.0.kill().unwrap();
+        child.0.wait().unwrap();
+        let error = blocked.err().expect("live holder must remain exclusive");
+        assert!(error
+            .to_string()
+            .contains("Timed out waiting for project transaction lock"));
+        let stable_path = paths.stable.clone();
+        let legacy_path = paths.legacy.clone();
+        let held = acquire_project_transaction_lock_at(paths).unwrap();
+        assert!(root.path().join("locks/transaction-locks").is_dir());
+        let anchor = TrustedAnchor::open(root.path().join("locks")).unwrap();
+        assert_eq!(
+            anchor
+                .target(&stable_path)
+                .unwrap()
+                .read_regular()
+                .unwrap()
+                .unwrap()
+                .identity(),
+            before.identity(),
+        );
+        assert_eq!(
+            anchor
+                .target(&legacy_path)
+                .unwrap()
+                .read_regular()
+                .unwrap()
+                .unwrap()
+                .identity(),
+            legacy_before.identity(),
+        );
+        drop(held);
+        // A normal release also leaves persistent files that must be reusable.
+        let paths =
+            lock_paths_at(&root.path().join("project"), &root.path().join("locks")).unwrap();
+        acquire_project_transaction_lock_at(paths).unwrap();
+    }
+
+    #[test]
     fn project_transaction_lock_serializes_threads() {
         let project = tempdir().unwrap();
-        let barrier = Arc::new(Barrier::new(2));
+        let barrier = Arc::new(Barrier::new(24));
         let active = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let peak = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let mut workers = Vec::new();
-        for _ in 0..2 {
+        for _ in 0..24 {
             let path = project.path().to_path_buf();
             let barrier = Arc::clone(&barrier);
             let active = Arc::clone(&active);
@@ -602,9 +816,8 @@ mod tests {
         assert!(held_once);
     }
 
-    /// Distinct projects can hash to one process shard. That shard mutex is
-    /// not reentrant, so the pair must take it once rather than wait on
-    /// itself.
+    /// Distinct projects can hash to one process shard. They must remain
+    /// independently available and also support globally ordered pairing.
     #[test]
     fn distinct_projects_sharing_a_process_shard_pair_without_self_deadlock() {
         // With more directories than shards, two must share one.
@@ -624,6 +837,12 @@ mod tests {
         let lock_root = tempdir().unwrap();
         let root = lock_root.path().canonicalize().unwrap();
 
+        let first_guard = process_locks_for(&[&first], Instant::now() + LOCK_TIMEOUT).unwrap();
+        let second_guard =
+            process_locks_for(&[&second], Instant::now() + Duration::from_millis(50)).unwrap();
+        drop(second_guard);
+        drop(first_guard);
+
         let paired = finishes_within(std::time::Duration::from_secs(30), move || {
             pair_at(&first, &second, &root).secondary().is_some()
         });
@@ -635,8 +854,8 @@ mod tests {
         let transaction_source = include_str!("transaction_lock.rs");
         assert!(transaction_source.contains("TrustedAnchor::open_canonical_private"));
         assert!(transaction_source.contains("let project = TrustedAnchor::open(&paths.identity)"));
-        assert!(transaction_source.contains("let stable = anchor.acquire_lock"));
-        assert!(transaction_source.contains("let legacy = anchor.acquire_lock"));
+        assert!(transaction_source.contains(".acquire_lock_until(&paths.stable, deadline)"));
+        assert!(transaction_source.contains(".acquire_lock_until(&paths.legacy, deadline)"));
         assert!(transaction_source.contains("_stable: AnchoredLock"));
         assert!(transaction_source.contains("_legacy: AnchoredLock"));
         assert!(transaction_source.contains("project: TrustedAnchor"));
