@@ -687,6 +687,7 @@ mod tests {
             invalid: 1,
             unreachable: 0,
             not_checked: 0,
+            refused: 0,
             entries: vec![
                 ValidationEntry {
                     name: "KEY_A".to_string(),

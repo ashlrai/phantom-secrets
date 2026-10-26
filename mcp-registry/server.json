@@ -1551,7 +1551,7 @@
     },
     {
       "name": "phantom_validate_all",
-      "description": "Run live credential health checks for all secrets in the vault. Each secret is validated against its target API (OpenAI, Stripe, GitHub, Anthropic, AWS, or a generic HTTP check). Returns a JSON compliance report with: total, valid, invalid, unreachable, not_checked counts and per-secret entries (name, validator, status, reason, checked_at). Secret VALUES are never returned or logged. This retrieves credentials, makes real outbound provider requests, and persists value-free validation metadata; it requires confirm plus approval_token and should run during a maintenance window.",
+      "description": "Run live credential health checks for all secrets in the vault. Each secret is validated against its target API (OpenAI, Stripe, GitHub, Anthropic, AWS, or a generic HTTP check). Returns a JSON compliance report with: total, valid, invalid, unreachable, not_checked counts and per-secret entries (name, validator, status, reason, checked_at). A secret blocked by its lifecycle policy (overdue under enforced rotation, demoted to read-only, or unreadable lifecycle metadata) is never read or sent: it is reported with status \"refused\" and its reason, the rest are still validated, and the result is flagged as an error. Secret VALUES are never returned or logged. This retrieves credentials, makes real outbound provider requests, and persists value-free validation metadata; it requires confirm plus approval_token and should run during a maintenance window.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,

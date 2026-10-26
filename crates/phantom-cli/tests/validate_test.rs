@@ -714,6 +714,7 @@ fn report_invalid_entries_helper() {
         invalid: 1,
         unreachable: 1,
         not_checked: 0,
+        refused: 0,
         entries: vec![
             phantom_core::validator::ValidationEntry {
                 name: "A".to_string(),
