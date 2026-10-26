@@ -1177,7 +1177,7 @@ test("contributor templates keep secrets and evidence layers separated", () => {
   assert.match(feature, /Source, artifact, publication, deployment, provider activation, and user acceptance are separate outcomes/i);
   assert.match(feature, /Acceptance and rollback/i);
 
-  const pullRequest = readRepo(".github/pull_request_template.md");
+  const pullRequest = readRepo(".github/PULL_REQUEST_TEMPLATE.md");
   assert.match(pullRequest, /cargo test --workspace --all-targets --locked --no-fail-fast/);
   assert.match(pullRequest, /cargo clippy --workspace --all-targets --locked -- -D warnings/);
   assert.match(pullRequest, /\| Native artifact \| Not claimed \/ \|/);
