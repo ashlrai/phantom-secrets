@@ -510,6 +510,7 @@ impl DotenvFile {
             .chain(
                 self.credential_comment_spans()
                     .into_iter()
+                    .chain(self.credential_prose_comment_spans())
                     .map(|span| (span, INLINE_COMMENT_REMOVED.to_string())),
             )
             .collect::<Vec<_>>();
@@ -553,7 +554,7 @@ impl DotenvFile {
     fn commented_secret_value_spans(&self) -> Vec<(Range<usize>, String)> {
         self.commented_tails()
             .into_iter()
-            .filter_map(|(tail_start, tail)| {
+            .filter_map(|(_, tail_start, tail)| {
                 commented_secret_value_span(tail)
                     .map(|(span, key)| (tail_start + span.start..tail_start + span.end, key))
             })
@@ -576,7 +577,7 @@ impl DotenvFile {
         let commented = self
             .commented_tails()
             .into_iter()
-            .filter_map(|(tail_start, tail)| {
+            .filter_map(|(_, tail_start, tail)| {
                 let parsed = DotenvFile::parse_str(tail);
                 let record = parsed.records.first()?;
                 credential_comment_span(tail, &record.value_span)
@@ -585,10 +586,33 @@ impl DotenvFile {
         live.chain(commented).collect()
     }
 
-    /// Full-line comments outside any entry, as (source offset, text after
-    /// the leading `#` marks and blanks). Lines inside a multi-line quoted
-    /// value belong to that value and are skipped.
-    fn commented_tails(&self) -> Vec<(usize, &str)> {
+    /// Spans of full-line prose comments that hold credential-shaped text.
+    ///
+    /// A comment such as `# old key: <key>` is not a commented-out
+    /// assignment, so neither [`Self::commented_secret_value_spans`] nor
+    /// [`Self::credential_comment_spans`] touches it, yet it is copied
+    /// verbatim into `.env.example`. It is replaced as a whole when
+    /// [`comment_holds_credential`] finds a credential in it. The span runs
+    /// from the first `#` to the end of the physical line, so indentation and
+    /// the line ending stay. Commented-out assignments keep their own
+    /// handling, which keeps every replaced span disjoint.
+    fn credential_prose_comment_spans(&self) -> Vec<Range<usize>> {
+        self.commented_tails()
+            .into_iter()
+            .filter(|(_, _, tail)| {
+                DotenvFile::parse_str(tail).records.is_empty()
+                    && commented_secret_value_span(tail).is_none()
+                    && comment_holds_credential(tail)
+            })
+            .map(|(comment_start, tail_start, tail)| comment_start..tail_start + tail.len())
+            .collect()
+    }
+
+    /// Full-line comments outside any entry, as (offset of the first `#`,
+    /// offset of the text after the leading `#` marks and blanks, that
+    /// text). Lines inside a multi-line quoted value belong to that value
+    /// and are skipped.
+    fn commented_tails(&self) -> Vec<(usize, usize, &str)> {
         let mut tails = Vec::new();
         let mut records = self.records.iter().peekable();
         let mut cursor = usize::from(self.source.starts_with(UTF8_BOM)) * UTF8_BOM.len();
@@ -613,7 +637,7 @@ impl DotenvFile {
                 let tail = trimmed
                     .trim_start_matches('#')
                     .trim_start_matches([' ', '\t']);
-                tails.push((line_end - tail.len(), tail));
+                tails.push((line_end - trimmed.len(), line_end - tail.len(), tail));
             }
             cursor = next_line;
         }
@@ -2428,6 +2452,72 @@ KEY3=unquoted
         let removed = INLINE_COMMENT_REMOVED;
         assert!(example.ends_with(&format!(
             "NAME='app' {removed}\r\nMULTI=\"one\r\ntwo\" {removed}\r\nNEXT=ok\r\n"
+        )));
+    }
+
+    #[test]
+    fn example_removes_prose_comments_holding_credentials() {
+        // A full-line prose comment is shared verbatim unless it holds
+        // credential-shaped text, like the inline comments above.
+        let openai = ["sk", "-proj-", "Pr0seC0mmentValue0123456789abcdef"].concat();
+        let github = ["ghp", "_", "Pr0seC0mmentGitHub0123456789abcdefg"].concat();
+        let url = ["postgres://app:", "Pa55w0rdPr0se", "@db.internal/app"].concat();
+        let entropy = ["Q2hhbmdlTWVQcm9zZUNv", "bW1lbnRFbnRyb3B5MDk4"].concat();
+        let prose = ["sk", "_live_", "Pr0seAss1gnmentValue0123456789"].concat();
+        let content = format!(
+            "# old key: {openai}\n  ## rotated from {github} on 2026-01-02\n#{url}\n\t# backup copy `{entropy}`\n# Set API_KEY={prose} to enable\n# Local development settings\n# Docs: https://docs.example.com/setup\n# sk-learn is a dependency, not a key\nPORT=3000\n"
+        );
+        let example = DotenvFile::parse_str(&content)
+            .generate_example_content(None)
+            .unwrap();
+        for (label, fragment) in [
+            ("openai", &openai),
+            ("github", &github),
+            ("url", &url),
+            ("entropy", &entropy),
+            ("prose", &prose),
+        ] {
+            assert!(
+                !example.contains(fragment.as_str()),
+                "{label} comment copied"
+            );
+        }
+        let removed = INLINE_COMMENT_REMOVED;
+        assert!(example.contains(&format!(
+            "\n{removed}\n  {removed}\n{removed}\n\t{removed}\n{removed}\n"
+        )));
+        // Ordinary prose comments, plain URLs, short words and the header
+        // stay as written.
+        assert!(example.ends_with(
+            "\n# Local development settings\n# Docs: https://docs.example.com/setup\n# sk-learn is a dependency, not a key\nPORT=3000\n"
+        ));
+        assert!(example.starts_with("# Environment variables for this project\n"));
+        assert!(example.contains("\n# See https://phm.dev for details\n"));
+        // Regenerating from a generated example keeps its header and markers.
+        let again = DotenvFile::parse_str(&example)
+            .generate_example_content(None)
+            .unwrap();
+        assert!(again.ends_with(&example));
+    }
+
+    #[test]
+    fn example_prose_comment_removal_keeps_bom_line_endings_and_values() {
+        let openai = ["sk", "-proj-", "CrLfPr0seComment0123456789abcdef"].concat();
+        let commented = ["sk", "_live_", "CrLfC0mmentedValue0123456789"].concat();
+        let content = format!(
+            "\u{feff}# was {openai}\r\n# OPENAI_API_KEY={commented} # old {openai}\r\nPRIVATE_KEY=\"one\r\n# old key: {openai}\r\nthree\"\r\n  # plain note\r\nNEXT=ok"
+        );
+        let example = DotenvFile::parse_str(&content)
+            .generate_example_content(None)
+            .unwrap();
+        assert!(!example.contains(&openai), "credential comment copied");
+        assert!(!example.contains(&commented), "commented value copied");
+        let removed = INLINE_COMMENT_REMOVED;
+        assert!(example.starts_with('\u{feff}'));
+        // The commented-out assignment keeps its own masking, and the line
+        // inside the multi-line value stays part of that masked value.
+        assert!(example.ends_with(&format!(
+            "\r\n{removed}\r\n# OPENAI_API_KEY=your_openai_api_key_here {removed}\r\nPRIVATE_KEY=\"your_private_key_here\"\r\n  # plain note\r\nNEXT=ok"
         )));
     }
 
