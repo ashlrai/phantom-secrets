@@ -212,7 +212,9 @@ fn watch_mode_detects_fresh_invalid_secret_and_updates_report() {
                 &entry.validator,
                 entry.reason.as_deref().unwrap_or("network error"),
             ),
-            ValidationStatus::NotChecked | ValidationStatus::Skipped => continue,
+            ValidationStatus::NotChecked
+            | ValidationStatus::Skipped
+            | ValidationStatus::Refused => continue,
         };
         vault.set_validation_metadata(&entry.name, meta).unwrap();
     }

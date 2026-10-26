@@ -2179,6 +2179,8 @@ impl PhantomMcpServer {
         }
         let mut log = DoctorLog::default();
         let mut issues = 0u32;
+        // Findings only a manual edit clears, which fix=true cannot repair.
+        let mut manual_issues = 0u32;
         let mut fixed = 0u32;
         let mut doctor_files = Vec::new();
         let mut hook_changed = false;
@@ -2294,7 +2296,14 @@ impl PhantomMcpServer {
                             log.fail(format!("Managed dotenv parse error: {error}"));
                             issues += 1;
                         } else if real_secrets.is_empty() {
-                            log.pass(format!(".env has {} entries, all protected", entries.len()));
+                            // A commented-out secret is still plaintext, so
+                            // no "all protected" pass for the file then.
+                            if dotenv.commented_secret_assignments().is_empty() {
+                                log.pass(format!(
+                                    ".env has {} entries, all protected",
+                                    entries.len()
+                                ));
+                            }
                         } else {
                             let names: Vec<&str> =
                                 real_secrets.iter().map(|e| e.key.as_str()).collect();
@@ -2305,6 +2314,23 @@ impl PhantomMcpServer {
                             ));
                             log.fix("Run `phantom init`");
                             issues += 1;
+                        }
+                        // `phantom init` never edits comments, so a
+                        // commented-out credential stays as plaintext. Key
+                        // names and line numbers only; nothing is changed.
+                        let file_label = env_path
+                            .file_name()
+                            .and_then(|name| name.to_str())
+                            .unwrap_or(".env");
+                        for (key_name, line) in dotenv.commented_secret_assignments() {
+                            log.warn(format!(
+                                "{file_label} line {line}: commented-out {key_name} still holds a plaintext secret"
+                            ));
+                            log.fix(format!(
+                                "Delete line {line} from {file_label}; if the value is still needed, store it under an unused name with `phantom add <NAME> --stdin` in a trusted terminal"
+                            ));
+                            issues += 1;
+                            manual_issues += 1;
                         }
                     }
                     Err(_) => {
@@ -2511,7 +2537,7 @@ impl PhantomMcpServer {
         if issues == 0 {
             log.summary("All checks passed!");
         } else {
-            let suffix = if !params.fix {
+            let suffix = if !params.fix && issues > manual_issues {
                 " — use fix=true to auto-fix"
             } else {
                 ""
@@ -5058,6 +5084,10 @@ impl PhantomMcpServer {
             Anthropic, AWS, or a generic HTTP check). Returns a JSON compliance report with: \
             total, valid, invalid, unreachable, not_checked counts and per-secret entries \
             (name, validator, status, reason, checked_at). \
+            A secret blocked by its lifecycle policy (overdue under enforced rotation, demoted \
+            to read-only, or unreadable lifecycle metadata) is never read or sent: it is \
+            reported with status \"refused\" and its reason, the rest are still validated, \
+            and the result is flagged as an error. \
             Secret VALUES are never returned or logged. This retrieves credentials, makes real \
             outbound provider requests, and persists value-free validation metadata; it requires \
             confirm plus approval_token and should run during a maintenance window."
@@ -5086,14 +5116,27 @@ impl PhantomMcpServer {
             .list()
             .map_err(|e| vault_read_err("Failed to list secrets", e))?;
         names.sort();
-        let (names_digest, names_sample) = bounded_validation_name_plan(&names)?;
+        bounded_validation_name_plan(&names)?;
         // Validation sends each value to its provider, as a `phantom exec`
-        // session would: refuse an overdue enforced secret and a secret
-        // demoted to read-only before the one-use approval is requested or
-        // consumed. The check runs again before any value is read.
-        gate_validation_mcp(&config, vault.as_ref(), &names)?;
+        // session would: an overdue enforced secret and a secret demoted to
+        // read-only are refused from names and metadata alone, each on its
+        // own, before the one-use approval is requested or consumed. The
+        // approval binds only the names that will be sent; the check runs
+        // again before any value is read.
+        let (allowed, mut refused) = gate_validation_mcp(&config, vault.as_ref(), &names);
+        if allowed.is_empty() && !refused.is_empty() {
+            // Nothing left to send: no approval, no value read, no request.
+            let empty = phantom_core::validator::run_validation_pipeline(
+                Vec::new(),
+                &[],
+                1,
+                std::time::Duration::from_secs(1),
+            );
+            return validation_report_result(empty, &refused, vault_note);
+        }
+        let (names_digest, names_sample) = bounded_validation_name_plan(&allowed)?;
         let mut metadata_before = std::collections::BTreeMap::new();
-        for name in &names {
+        for name in &allowed {
             metadata_before.insert(
                 name.clone(),
                 vault.get_validation_metadata_exact(name).map_err(|error| {
@@ -5111,9 +5154,10 @@ impl PhantomMcpServer {
             "canonical_project": canonical_project,
             "local_project_id": config.local_project_id(),
             "config_sha256": config_digest,
-            "selected_name_count": names.len(),
+            "selected_name_count": allowed.len(),
             "selected_names_sha256": names_digest,
             "selected_name_sample": names_sample,
+            "refused_name_count": refused.len(),
             "jobs": jobs,
             "timeout_secs": timeout_secs,
         }))
@@ -5137,12 +5181,15 @@ impl PhantomMcpServer {
             return json_object_result(&out);
         }
 
-        gate_validation_mcp(&config, vault.as_ref(), &names)?;
-        // Retrieve all secrets for validation (zeroized after use). The
-        // injection read re-checks the mode atomically with the value read,
-        // so an entry demoted after the gate is never sent.
+        // Judged again after approval: a secret refused now is reported as
+        // refused and never read.
+        let (allowed, refused_now) = gate_validation_mcp(&config, vault.as_ref(), &allowed);
+        refused.extend(refused_now);
+        // Retrieve the allowed secrets for validation (zeroized after use).
+        // The injection read re-checks the mode atomically with the value
+        // read, so an entry demoted after the gate is never sent.
         let mut secrets: Vec<(String, zeroize::Zeroizing<String>)> = Vec::new();
-        for name in &names {
+        for name in &allowed {
             let value = vault
                 .retrieve_for_injection(name)
                 .map_err(|e| internal_err(format!("Failed to retrieve secret '{name}': {e}")))?;
@@ -5202,9 +5249,7 @@ impl PhantomMcpServer {
             ));
         }
 
-        let report = serde_json::to_value(&report)
-            .map_err(|error| internal_err(format!("Serialization error: {error}")))?;
-        json_object_result(&with_vault_note(report, vault_note))
+        validation_report_result(report, &refused, vault_note)
     }
 
     // ── Validation scheduler tools ────────────────────────────────────────
@@ -5963,24 +6008,59 @@ const VALIDATE_ACTION: &str = "validate";
 
 /// The lifecycle gate `phantom validate` applies: exec's rotation gate, then
 /// a refusal for a secret demoted to read-only or whose lifecycle metadata
-/// cannot be read. Names and metadata only.
+/// cannot be read. Each name is judged on its own, so one refusal does not
+/// stop the rest: returns the allowed names and, per refused name, its
+/// refusal. Names and metadata only.
 fn gate_validation_mcp(
     config: &PhantomConfig,
     vault: &dyn phantom_vault::VaultBackend,
     names: &[String],
-) -> Result<(), McpError> {
-    crate::tools::helpers::enforce_rotation_on_entries(
-        config,
-        vault,
-        names.iter().map(String::as_str),
-        VALIDATE_ACTION,
-        phantom_vault::rotation_gate::now_secs(),
-    )?;
-    crate::tools::helpers::refuse_read_only_entries(
-        vault,
-        names.iter().map(String::as_str),
-        VALIDATE_ACTION,
-    )
+) -> (Vec<String>, Vec<(String, String)>) {
+    let now = phantom_vault::rotation_gate::now_secs();
+    let mut allowed = Vec::new();
+    let mut refused = Vec::new();
+    for name in names {
+        let verdict = crate::tools::helpers::enforce_rotation_on_entries(
+            config,
+            vault,
+            std::iter::once(name.as_str()),
+            VALIDATE_ACTION,
+            now,
+        )
+        .and_then(|()| {
+            crate::tools::helpers::refuse_read_only_entries(
+                vault,
+                std::iter::once(name.as_str()),
+                VALIDATE_ACTION,
+            )
+        });
+        match verdict {
+            Ok(()) => allowed.push(name.clone()),
+            Err(refusal) => refused.push((name.clone(), refusal.message.to_string())),
+        }
+    }
+    (allowed, refused)
+}
+
+/// The `phantom_validate_all` result: `report` with each refused name added
+/// as a `refused` entry (its reason, never a value), flagged as an error
+/// when anything was refused so the run does not read as clean.
+fn validation_report_result(
+    mut report: phantom_core::validator::ValidationReport,
+    refused: &[(String, String)],
+    vault_note: Option<String>,
+) -> Result<CallToolResult, McpError> {
+    for (name, reason) in refused {
+        report.push_refused(name, reason);
+    }
+    let any_refused = report.refused > 0;
+    let report = serde_json::to_value(&report)
+        .map_err(|error| internal_err(format!("Serialization error: {error}")))?;
+    let mut result = json_object_result(&with_vault_note(report, vault_note))?;
+    if any_refused {
+        result.is_error = Some(true);
+    }
+    Ok(result)
 }
 
 fn retrieve_optional_secret(
@@ -9590,6 +9670,87 @@ mod tests {
         let text = extract_content_text(&result);
         assert!(text.contains("No .phantom.toml found"), "{text}");
         assert!(text.contains("unprotected secret"), "{text}");
+    }
+
+    #[test]
+    fn doctor_names_commented_out_secrets_without_values() {
+        let _environment = TestEnvironment::new();
+        let (server, dir) = setup_test_project();
+        let old = ["sk", "-proj-", "McpC0mmentedValue0123456789abcdefghi"].concat();
+        std::fs::write(
+            dir.path().join(".env"),
+            format!("NODE_ENV=production\n# PORT=8080\n# OPENAI_API_KEY={old}\n"),
+        )
+        .unwrap();
+        let result = server
+            .phantom_doctor(Parameters(DoctorParams {
+                fix: false,
+                confirm: false,
+                approval_token: None,
+            }))
+            .unwrap();
+        let report = structured_report(&result);
+        let checks = report["checks"].as_array().unwrap();
+        let finding = checks
+            .iter()
+            .find(|check| {
+                check["message"]
+                    .as_str()
+                    .is_some_and(|message| message.contains("OPENAI_API_KEY"))
+            })
+            .unwrap_or_else(|| panic!("no commented-secret finding: {checks:?}"));
+        assert_eq!(finding["status"], "warn");
+        assert!(finding["message"].as_str().unwrap().contains("line 3"));
+        assert!(
+            !checks.iter().any(|check| check["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("all protected"))),
+            "{checks:?}"
+        );
+        assert!(finding["fix"].as_str().unwrap().contains("phantom add"));
+        assert_no_value_leak(&result, &[old.as_str()]);
+    }
+
+    #[test]
+    fn doctor_does_not_offer_fix_true_for_commented_out_secrets() {
+        // fix=true never deletes a comment line, so a commented-out credential
+        // alone must not turn the summary into "use fix=true to auto-fix".
+        let _environment = TestEnvironment::new();
+        let (server, dir) = setup_test_project();
+        let run = |fix: bool| {
+            server
+                .phantom_doctor(Parameters(DoctorParams {
+                    fix,
+                    confirm: fix,
+                    approval_token: None,
+                }))
+                .unwrap()
+        };
+        PhantomConfig::new_with_defaults("doctor-summary-test".to_string())
+            .save(&dir.path().join(".phantom.toml"))
+            .unwrap();
+        std::fs::write(dir.path().join(".env"), "NODE_ENV=production\n").unwrap();
+        run(true);
+        let clean = run(false);
+        assert_eq!(
+            structured_report(&clean)["issues"],
+            0,
+            "{}",
+            extract_content_text(&clean)
+        );
+
+        let old = ["sk", "-proj-", "McpSummaryC0mmentValue0123456789abcd"].concat();
+        std::fs::write(
+            dir.path().join(".env"),
+            format!("NODE_ENV=production\n# OPENAI_API_KEY={old}\n"),
+        )
+        .unwrap();
+        let result = run(false);
+        let text = extract_content_text(&result);
+        assert_eq!(structured_report(&result)["issues"], 1, "{text}");
+        assert!(text.contains("1 issue(s) found"), "{text}");
+        assert!(!text.contains("use fix=true"), "{text}");
+        assert_no_value_leak(&result, &[old.as_str()]);
     }
 
     fn structured_report(result: &CallToolResult) -> serde_json::Value {
@@ -13500,20 +13661,30 @@ mod tests {
     /// sent it to its provider, so a secret demoted to read-only or overdue
     /// under an enforced rotation policy (both refused by `phantom exec`)
     /// still went over the network. Both now refuse from names and metadata
-    /// alone, before the one-use approval is requested or consumed.
+    /// alone, before the one-use approval is requested or consumed, and are
+    /// reported as refused entries of an error result.
     #[test]
     fn validate_all_refuses_read_only_and_overdue_secrets_before_approval() {
         let _environment = TestEnvironment::new();
         let (server, dir) = setup_initialized_project();
-        let validate_now = || {
-            server
-                .phantom_validate_all(Parameters(ValidateAllParams {
-                    jobs: 1,
-                    confirm: true,
-                    approval_token: None,
-                }))
-                .map(|_| String::new())
-                .unwrap_or_else(|error| error.message.to_string())
+        let validate_now = || match server.phantom_validate_all(Parameters(ValidateAllParams {
+            jobs: 1,
+            confirm: true,
+            approval_token: None,
+        })) {
+            Err(error) => error.message.to_string(),
+            Ok(result) => {
+                let report = result.structured_content.unwrap_or_default();
+                let reasons: Vec<&str> = report["entries"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|entry| entry["status"] == "refused")
+                    .filter_map(|entry| entry["reason"].as_str())
+                    .collect();
+                assert_eq!(result.is_error == Some(true), !reasons.is_empty());
+                reasons.join("\n")
+            }
         };
         let before = validate_now();
         assert!(!before.starts_with("Refusing to validate"));
@@ -13557,6 +13728,56 @@ mod tests {
             refused.starts_with("Refusing to validate: rotation enforcement blocked 1 secret(s).")
         );
         assert!(refused.contains("DATABASE_URL"));
+    }
+
+    /// `phantom_validate_all` aborted the whole run on one refused secret,
+    /// so the rest were never validated and no per-secret report came back.
+    /// The refused secret is now reported as refused, with its reason and
+    /// name only, the rest are validated, and the result is an error.
+    #[test]
+    fn validate_all_reports_a_refused_secret_and_validates_the_rest() {
+        let _environment = TestEnvironment::new();
+        let (server, _dir) = setup_initialized_project();
+        let (_config, vault) = server.load_config_and_vault().unwrap();
+        let mut metadata = vault
+            .get_metadata("OPENAI_API_KEY")
+            .unwrap()
+            .unwrap_or_default();
+        metadata.vault_mode = phantom_vault::metadata::VaultMode::ReadOnly;
+        vault.set_metadata("OPENAI_API_KEY", metadata).unwrap();
+
+        let result = server
+            .phantom_validate_all(Parameters(ValidateAllParams {
+                jobs: 1,
+                confirm: true,
+                approval_token: None,
+            }))
+            .map_err(|error| error.message.to_string())
+            .expect("a refused secret must not abort the run");
+        assert_eq!(result.is_error, Some(true));
+        let report = result.structured_content.clone().unwrap();
+        assert_eq!(report["total"], 2);
+        assert_eq!(report["refused"], 1);
+        let entries = report["entries"].as_array().unwrap();
+        let refused = entries
+            .iter()
+            .find(|entry| entry["name"] == "OPENAI_API_KEY")
+            .unwrap();
+        assert_eq!(refused["status"], "refused");
+        let reason = refused["reason"].as_str().unwrap();
+        assert!(reason.starts_with("Refusing to validate: 1 secret(s) are read-only"));
+        assert!(reason.contains("'OPENAI_API_KEY'"));
+        let rest = entries
+            .iter()
+            .find(|entry| entry["name"] == "DATABASE_URL")
+            .unwrap();
+        assert_ne!(rest["status"], "refused");
+        assert_eq!(
+            vault
+                .get_validation_metadata_exact("OPENAI_API_KEY")
+                .unwrap(),
+            None
+        );
     }
 
     /// The sync report's live-gate check reads names and metadata only:
