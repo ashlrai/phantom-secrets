@@ -69,10 +69,10 @@ jobs:
           printf '%s\n' "$files"
           docs='^(docs/|[^/]*\.md$|.*/README\.md$|LICENSE|\.github/ISSUE_TEMPLATE/|\.github/PULL_REQUEST_TEMPLATE)'
           web='^(apps/web/|scripts/supabase/|scripts/seo/|\.github/workflows/)'
-          # Rust/CLI suites: anything that is neither docs nor web-only nor the video sandbox.
+          # Rust/CLI suites: anything that is neither docs nor web-only.
           # scripts/supabase and scripts/seo are exercised only by the web job.
           rust=false; webc=false
-          if printf '%s\n' "$files" | grep -Ev "$docs" | grep -Ev '^(apps/web/|scripts/supabase/|scripts/seo/|video/)' | grep -q .; then rust=true; fi
+          if printf '%s\n' "$files" | grep -Ev "$docs" | grep -Ev '^(apps/web/|scripts/supabase/|scripts/seo/)' | grep -q .; then rust=true; fi
           if printf '%s\n' "$files" | grep -Eq '^\.github/workflows/'; then rust=true; fi
           if printf '%s\n' "$files" | grep -Eq "$web"; then webc=true; fi
           # The Temporal codec example (Python) has its own job.
