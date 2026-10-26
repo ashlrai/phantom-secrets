@@ -298,7 +298,7 @@ mod tests {
         .unwrap();
         std::fs::write(
             project.join(".env"),
-            "OPENAI_API_KEY=phm_dryrunplaceholder0001\nPORT=3000\n",
+            format!("OPENAI_API_KEY=phm_{}\nPORT=3000\n", "a".repeat(64)),
         )
         .unwrap();
         let _seam =
