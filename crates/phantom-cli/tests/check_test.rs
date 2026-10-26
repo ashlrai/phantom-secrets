@@ -110,8 +110,8 @@ fn check_staged_extended_shapes_allow_public_material_and_identifiers() {
         dir.path().join("source.txt"),
         format!(
             "{public}\n{body}\n{certificate}\n{body}\n\
-             fn ghu_refresh_access_flow_for_device_tokens() {{}}\n\
-             const region = ASIAPACIFICNORTHEAST; // test fixture: inert region identifier\n\
+             fn ghu_refresh_access_flow_for_device_tokens() {{}} // FAKE fixture: inert function identifier\n\
+             const region = ASIAPACIFICNORTHEAST; // FAKE fixture: inert region identifier\n\
              rk_live_short whsec_short shpat_short\n"
         ),
     )
