@@ -4,6 +4,15 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (MCP rotation schedule reported every secret overdue)
+
+- MCP `phantom_rotation_schedule_next` judged the schedule against its own
+  `last_rotated`, which nothing ever writes, so every scheduled secret came
+  back `overdue: true` with `last_rotated_unix: null`, even one stored a
+  minute earlier. It now uses the vault's rotation anchor (the later of when
+  the value was stored and when it was last rotated), the same age that
+  `phantom exec` rotation enforcement checks.
+
 ### Fixed (commented-out secret detection: docs placeholders and quoted PEM headers)
 
 - Commented-out assignments whose value is a docs-style placeholder, such as
