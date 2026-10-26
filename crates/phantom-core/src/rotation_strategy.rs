@@ -281,25 +281,29 @@ impl RotationSchedule {
                 }
             }
             RotationStrategy::Monthly => {
-                // Slot fires on self.day_of_month each month at self.hour:self.minute UTC.
-                // Approximate: use 30-day months for boundary detection.
-                let days_since_epoch = now_secs / 86_400;
-                // Approximate month boundaries (good enough for scheduling).
-                let approx_month = days_since_epoch / 30;
-                let month_start_day = approx_month * 30;
-                let target_day_offset = (self.day_of_month as u64).saturating_sub(1);
-                let slot_secs = (self.hour as u64) * 3600 + (self.minute as u64) * 60;
-                let target_slot = (month_start_day + target_day_offset) * 86_400 + slot_secs;
-
-                if target_slot <= now_secs {
-                    Some(target_slot)
+                // Slot fires on self.day_of_month of each calendar month at
+                // self.hour:self.minute UTC (the month's last day when shorter).
+                let (year, month) = year_month_of(now_secs);
+                let this_month = self.monthly_slot(year, month);
+                if this_month <= now_secs {
+                    Some(this_month)
                 } else {
-                    // Slot hasn't fired yet this month — use last month's.
-                    let prev_month_start = month_start_day.saturating_sub(30);
-                    Some((prev_month_start + target_day_offset) * 86_400 + slot_secs)
+                    let (year, month) = previous_month(year, month);
+                    Some(self.monthly_slot(year, month))
                 }
             }
         }
+    }
+
+    /// The monthly slot in the given calendar month, clamped to the month's
+    /// last day and to the epoch.
+    fn monthly_slot(&self, year: i64, month: u32) -> u64 {
+        let day = u32::from(self.day_of_month).clamp(1, days_in_month(year, month));
+        let slot_secs = (self.hour as i64) * 3600 + (self.minute as i64) * 60;
+        let secs = days_from_civil(year, month, day)
+            .saturating_mul(86_400)
+            .saturating_add(slot_secs);
+        u64::try_from(secs).unwrap_or(0)
     }
 
     /// Human-readable description of the schedule, e.g. "daily@02:00 UTC".
@@ -317,8 +321,11 @@ impl RotationSchedule {
             }
             RotationStrategy::Monthly => {
                 format!(
-                    "monthly@{}th:{:02}:{:02} UTC",
-                    self.day_of_month, self.hour, self.minute
+                    "monthly@{}{}:{:02}:{:02} UTC",
+                    self.day_of_month,
+                    ordinal_suffix(self.day_of_month),
+                    self.hour,
+                    self.minute
                 )
             }
             RotationStrategy::Interval(_) => self.strategy.to_label(),
@@ -594,18 +601,77 @@ pub fn next_rotation_after(schedule: &RotationSchedule, now_secs: u64) -> Option
             }
         }
         RotationStrategy::Monthly => {
-            let days_since_epoch = now_secs / 86_400;
-            let approx_month = days_since_epoch / 30;
-            let month_start_day = approx_month * 30;
-            let target_day_offset = (schedule.day_of_month as u64).saturating_sub(1);
-            let slot_secs = (schedule.hour as u64) * 3600 + (schedule.minute as u64) * 60;
-            let this_month_slot = (month_start_day + target_day_offset) * 86_400 + slot_secs;
-            if this_month_slot > now_secs {
-                Some(this_month_slot)
+            let (year, month) = year_month_of(now_secs);
+            let this_month = schedule.monthly_slot(year, month);
+            if this_month > now_secs {
+                Some(this_month)
             } else {
-                Some(this_month_slot + 30 * 86_400)
+                let (year, month) = next_month(year, month);
+                Some(schedule.monthly_slot(year, month))
             }
         }
+    }
+}
+
+// ── Calendar helpers (UTC, proleptic Gregorian) ───────────────────────────────
+
+/// Days since 1970-01-01 for a civil date (Howard Hinnant's algorithm).
+fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
+    let year = if month <= 2 { year - 1 } else { year };
+    let era = year.div_euclid(400);
+    let year_of_era = year - era * 400;
+    let month = i64::from(month);
+    let day_of_year = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + i64::from(day) - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    era * 146_097 + day_of_era - 719_468
+}
+
+/// The UTC calendar year and month (1-12) containing `secs`.
+fn year_month_of(secs: u64) -> (i64, u32) {
+    let days = (secs / 86_400) as i64 + 719_468;
+    let era = days.div_euclid(146_097);
+    let day_of_era = days - era * 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let shifted_month = (5 * day_of_year + 2) / 153;
+    let month = if shifted_month < 10 {
+        shifted_month + 3
+    } else {
+        shifted_month - 9
+    };
+    let year = year_of_era + era * 400 + i64::from(month <= 2);
+    (year, month as u32)
+}
+
+fn days_in_month(year: i64, month: u32) -> u32 {
+    let (next_year, next) = next_month(year, month);
+    (days_from_civil(next_year, next, 1) - days_from_civil(year, month, 1)) as u32
+}
+
+fn next_month(year: i64, month: u32) -> (i64, u32) {
+    if month == 12 {
+        (year + 1, 1)
+    } else {
+        (year, month + 1)
+    }
+}
+
+fn previous_month(year: i64, month: u32) -> (i64, u32) {
+    if month == 1 {
+        (year - 1, 12)
+    } else {
+        (year, month - 1)
+    }
+}
+
+fn ordinal_suffix(day: u8) -> &'static str {
+    match (day % 10, day % 100) {
+        (_, 11..=13) => "th",
+        (1, _) => "st",
+        (2, _) => "nd",
+        (3, _) => "rd",
+        _ => "th",
     }
 }
 
@@ -830,6 +896,69 @@ mod tests {
             ..sched_unrotated
         };
         assert!(!sched.should_rotate_now(now));
+    }
+
+    /// Monthly slots fell on 30-day blocks counted from 1970, so "the 1st"
+    /// could land on any calendar day. They now follow calendar months.
+    #[test]
+    fn monthly_slots_follow_calendar_months() {
+        let monthly = |day_of_month: u8| RotationSchedule {
+            strategy: RotationStrategy::Monthly,
+            hour: 4,
+            minute: 30,
+            weekday: Weekday::Monday,
+            day_of_month,
+            last_rotated: None,
+        };
+        // 2026-10-26 12:00 UTC.
+        let now = 1_793_016_000;
+        // 2026-10-01 04:30 and 2026-11-01 04:30 UTC.
+        assert_eq!(monthly(1).last_boundary_before(now), Some(1_790_829_000));
+        assert_eq!(next_rotation_after(&monthly(1), now), Some(1_793_507_400));
+        assert_eq!(monthly(1).describe(), "monthly@1st:04:30 UTC");
+        assert_eq!(monthly(22).describe(), "monthly@22nd:04:30 UTC");
+        assert_eq!(monthly(13).describe(), "monthly@13th:04:30 UTC");
+
+        // A day the month lacks is its last day: 31 in February 2026 is the
+        // 28th, in a leap February the 29th, and March still gets the 31st.
+        let midnight = |day: u8| RotationSchedule {
+            hour: 0,
+            minute: 0,
+            ..monthly(day)
+        };
+        // 2026-02-10, 2026-02-28, 2026-03-31 at 00:00 UTC.
+        assert_eq!(
+            next_rotation_after(&midnight(31), 1_770_681_600),
+            Some(1_772_236_800)
+        );
+        assert_eq!(
+            next_rotation_after(&midnight(31), 1_772_236_800),
+            Some(1_774_915_200)
+        );
+        // 2024-02-10 → 2024-02-29; 2026-02-10 looks back to 2026-01-31.
+        assert_eq!(
+            next_rotation_after(&midnight(31), 1_707_523_200),
+            Some(1_709_164_800)
+        );
+        assert_eq!(
+            midnight(31).last_boundary_before(1_770_681_600),
+            Some(1_769_817_600)
+        );
+    }
+
+    #[test]
+    fn calendar_helpers_round_trip_across_eras() {
+        for (year, month, day) in [(1970, 1, 1), (2000, 2, 29), (2026, 12, 31), (2100, 3, 1)] {
+            let days = days_from_civil(year, month, day);
+            assert_eq!(year_month_of(days as u64 * 86_400 + 3_600), (year, month));
+        }
+        assert_eq!(days_in_month(2100, 2), 28);
+        assert_eq!(days_in_month(2000, 2), 29);
+        assert_eq!(days_in_month(2026, 4), 30);
+        // The far future saturates instead of overflowing.
+        let monthly = RotationSchedule::from_strategy(RotationStrategy::Monthly);
+        assert!(next_rotation_after(&monthly, u64::MAX).is_some());
+        assert!(monthly.last_boundary_before(u64::MAX).is_some());
     }
 
     // ── Parse helpers ──────────────────────────────────────────────────────────
