@@ -4,6 +4,13 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (expiry check at 0 days listed unexpired secrets)
+
+- `phantom secrets-expiring-soon --days 0` and the MCP
+  `phantom_secrets_expiry_check` tool with `days: 0` are documented to list
+  only secrets that have already expired, but they also listed a secret that
+  expires later today. Such a secret now appears from `--days 1` on.
+
 ### Fixed (commented-out secret detection: docs placeholders and quoted PEM headers)
 
 - Commented-out assignments whose value is a docs-style placeholder, such as

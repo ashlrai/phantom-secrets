@@ -5399,7 +5399,7 @@ impl PhantomMcpServer {
                 let m = meta.as_ref()?;
                 let expires_at = m.expires_at?;
                 let days_remaining = m.days_remaining()?;
-                if days_remaining <= params.days as i64 {
+                if phantom_vault::metadata::in_expiry_report(days_remaining, params.days) {
                     Some(serde_json::json!({
                         "name": name,
                         "days_remaining": days_remaining,
@@ -17347,6 +17347,36 @@ mod tests {
         );
         assert_eq!(entry["expired"], true);
         assert_eq!(entry["status"], "EXPIRED");
+    }
+
+    /// `days: 0` is documented as already-expired only; a secret that
+    /// expires later today has 0 whole days left and was returned too.
+    #[test]
+    fn test_expiry_check_zero_days_omits_secret_expiring_later_today() {
+        let _environment = TestEnvironment::new();
+        let (server, _dir) = setup_initialized_project();
+        let now = phantom_vault::metadata::now_secs();
+        let entry_name = pin_first_entry_metadata(
+            &server,
+            phantom_vault::SecretMetadata {
+                expires_at: Some(now + 3_600),
+                ..Default::default()
+            },
+        );
+
+        let check = |days| {
+            parse_result_json(
+                &server
+                    .phantom_secrets_expiry_check(Parameters(ExpiryCheckParams { days }))
+                    .unwrap(),
+            )
+        };
+        let zero = check(0);
+        assert!(
+            find_entry(&zero["secrets"], &entry_name).is_none(),
+            "unexpired secret listed at days 0: {zero}"
+        );
+        assert!(find_entry(&check(1)["secrets"], &entry_name).is_some());
     }
 
     #[test]
