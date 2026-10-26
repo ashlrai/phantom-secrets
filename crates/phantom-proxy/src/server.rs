@@ -649,11 +649,11 @@ async fn handle_request(
     let (route, remainder) = match state.registry.match_route(&path) {
         Some(matched) => matched,
         None => {
-            warn!("No route found for path: {}", path);
+            warn!("No route found for request path");
             return Ok(error_response(
                 StatusCode::NOT_FOUND,
                 serde_json::json!({
-                    "error": format!("no route for path: {path}"),
+                    "error": "no route for request path",
                     "hint": "check .phantom.toml service configuration",
                     "routes": state
                         .registry
@@ -1224,8 +1224,8 @@ async fn handle_request(
         while let Some(chunk_result) = response_stream.next().await {
             let chunk = match chunk_result {
                 Ok(chunk) => chunk,
-                Err(e) => {
-                    error!("Failed to read response body: {}", e);
+                Err(_) => {
+                    error!("Failed to read response body");
                     return Ok(error_response(
                         StatusCode::BAD_GATEWAY,
                         r#"{"error":"failed to read upstream response"}"#,
