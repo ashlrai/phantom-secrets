@@ -297,36 +297,11 @@ impl ResponseLeakAnalyzer {
         self.scan_str(status, LeakLocation::StatusLine)
     }
 
-    /// Return the name of an exact managed value represented by `candidate`.
-    ///
-    /// Streaming response scrubbing uses this byte-oriented view so it can
-    /// protect non-UTF-8 responses without copying secret values into a second
-    /// long-lived matcher.
-    pub(crate) fn managed_exact_name(&self, candidate: &[u8]) -> Option<&str> {
-        self.vault_values.iter().find_map(|(value, name)| {
-            (value.as_str().as_bytes() == candidate).then_some(name.as_str())
-        })
-    }
-
-    /// Whether `candidate` is a strict prefix of any managed value.
-    pub(crate) fn is_managed_prefix(&self, candidate: &[u8]) -> bool {
-        !candidate.is_empty()
-            && self.vault_values.iter().any(|(value, _)| {
-                let value = value.as_str().as_bytes();
-                value.len() > candidate.len() && value.starts_with(candidate)
-            })
-    }
-
-    /// Return the longest managed value that is a prefix of `candidate`.
-    pub(crate) fn managed_prefix_match(&self, candidate: &[u8]) -> Option<(usize, &str)> {
+    /// Borrow managed bytes for streaming matching without another plaintext owner.
+    pub(crate) fn managed_values(&self) -> impl Iterator<Item = (&[u8], &str)> {
         self.vault_values
             .iter()
-            .filter_map(|(value, name)| {
-                let value = value.as_str().as_bytes();
-                (!value.is_empty() && candidate.starts_with(value))
-                    .then_some((value.len(), name.as_str()))
-            })
-            .max_by_key(|(len, _)| *len)
+            .map(|(value, name)| (value.as_str().as_bytes(), name.as_str()))
     }
 
     pub(crate) fn max_managed_value_len(&self) -> usize {

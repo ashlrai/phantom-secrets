@@ -8,7 +8,8 @@
 //!   with every hit replaced by `[REDACTED:<pattern>]`.
 //! * **Streaming / SSE responses** — each chunk is processed by a bounded,
 //!   byte-oriented incremental scanner so secrets split across chunk boundaries
-//!   are caught without buffering unbounded credential continuations.
+//!   are caught without buffering unbounded credential continuations. Managed
+//!   values also match their Base64, percent-encoded, and form-encoded forms.
 //! * **SSE handling** — buffered bodies retain line-aware parsing; streaming
 //!   bodies use the same byte-oriented incremental scanner as other content so
 //!   split UTF-8 and event delimiters remain byte-preserving.
@@ -28,12 +29,78 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use crate::interceptor::{ResponseLeakAnalyzer, PARTIAL_MIN_RUN};
+use base64::{engine::general_purpose, Engine as _};
 use phantom_core::audit::{LeakEvent, LeakLocation, LeakSeverity};
 use phantom_core::leak_correlation::{
     extract_json_path, value_at_json_path, ContextualLeakProfileStore, RequestContext,
 };
 use tracing::warn;
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
+
+enum ManagedMatch {
+    None,
+    Incomplete,
+    Complete(usize),
+}
+
+fn literal_match(value: &[u8], candidate: &[u8]) -> ManagedMatch {
+    if value.is_empty() {
+        ManagedMatch::None
+    } else if candidate.starts_with(value) {
+        ManagedMatch::Complete(value.len())
+    } else if value.starts_with(candidate) {
+        ManagedMatch::Incomplete
+    } else {
+        ManagedMatch::None
+    }
+}
+
+fn hex_digit(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+/// Compare without decoding into a plaintext allocation. Each byte may be raw
+/// or percent-escaped, independently, so mixed hex case and escaped unreserved
+/// bytes cannot bypass matching. Form '+' decoding is a separate interpretation
+/// from URL decoding, where '+' is literal. No recursive decoding is performed.
+fn url_match(value: &[u8], candidate: &[u8], form: bool) -> ManagedMatch {
+    if value.is_empty() {
+        return ManagedMatch::None;
+    }
+    let mut offset = 0;
+    for &expected in value {
+        let Some(&byte) = candidate.get(offset) else {
+            return ManagedMatch::Incomplete;
+        };
+        if byte == b'%' {
+            let Some(&high) = candidate.get(offset + 1) else {
+                return ManagedMatch::Incomplete;
+            };
+            if hex_digit(high) != Some(expected >> 4) {
+                return ManagedMatch::None;
+            }
+            let Some(&low) = candidate.get(offset + 2) else {
+                return ManagedMatch::Incomplete;
+            };
+            if hex_digit(low) != Some(expected & 0xf) {
+                return ManagedMatch::None;
+            }
+            offset += 3;
+        } else {
+            let decoded = if form && byte == b'+' { b' ' } else { byte };
+            if decoded != expected {
+                return ManagedMatch::None;
+            }
+            offset += 1;
+        }
+    }
+    ManagedMatch::Complete(offset)
+}
 
 #[derive(Clone, Copy)]
 enum ByteClass {
@@ -461,6 +528,9 @@ impl Drop for StreamingScrubState {
 /// arrive.
 pub struct ResponseScrubber {
     analyzer: ResponseLeakAnalyzer,
+    /// Encodings are credential material too: keep their owners zeroizing.
+    /// Partial-run matching deliberately uses only the original vault values.
+    encoded_values: Vec<(Zeroizing<Vec<u8>>, String)>,
 }
 
 impl ResponseScrubber {
@@ -476,18 +546,45 @@ impl ResponseScrubber {
     pub(crate) fn from_token_secret_pairs<'a>(
         pairs: impl IntoIterator<Item = (&'a str, &'a str)>,
     ) -> Self {
-        // Collect borrowed pairs so max-length calculation and analyzer
-        // construction share one view without another plaintext owner.
-        let pairs = pairs.into_iter().collect::<Vec<_>>();
-        Self {
-            analyzer: ResponseLeakAnalyzer::from_token_secret_pairs(pairs.iter().copied()),
-        }
+        Self::from_analyzer(ResponseLeakAnalyzer::from_token_secret_pairs(pairs))
     }
 
     /// Build from a name→secret mapping (human-readable key names in leak events).
     pub fn from_named_map(named_secrets: &HashMap<String, String>) -> Self {
+        Self::from_analyzer(ResponseLeakAnalyzer::new(named_secrets))
+    }
+
+    fn from_analyzer(analyzer: ResponseLeakAnalyzer) -> Self {
+        let mut encoded_values = Vec::new();
+        for (value, name) in analyzer
+            .managed_values()
+            .filter(|(value, _)| !value.is_empty())
+        {
+            for engine in [
+                general_purpose::STANDARD,
+                general_purpose::STANDARD_NO_PAD,
+                general_purpose::URL_SAFE,
+                general_purpose::URL_SAFE_NO_PAD,
+            ] {
+                // encode_slice avoids the non-zeroizing staging buffers used
+                // by allocating encoding APIs. Padded size also fits no-pad.
+                let mut encoded = Zeroizing::new(vec![0; value.len().div_ceil(3) * 4]);
+                let len = engine
+                    .encode_slice(value, &mut encoded[..])
+                    .expect("base64 output fits its padded size");
+                encoded.truncate(len);
+                if encoded.as_slice() != value
+                    && !encoded_values
+                        .iter()
+                        .any(|(bytes, existing_name)| bytes == &encoded && existing_name == name)
+                {
+                    encoded_values.push((encoded, name.to_owned()));
+                }
+            }
+        }
         Self {
-            analyzer: ResponseLeakAnalyzer::new(named_secrets),
+            analyzer,
+            encoded_values,
         }
     }
 
@@ -504,7 +601,8 @@ impl ResponseScrubber {
 
     /// Maximum number of response bytes retained between calls by the typed
     /// incremental scanner. The bound covers the longest managed exact-value
-    /// prefix and the longest minimum unmanaged credential representation.
+    /// prefix (including fully percent-encoded bytes, up to 3x the raw length)
+    /// and the longest minimum unmanaged credential representation.
     pub fn stream_buffer_bound(&self) -> usize {
         let unmanaged_bound = FORMAT_SPECS
             .iter()
@@ -514,6 +612,7 @@ impl ResponseScrubber {
         let exact_bound = self
             .analyzer
             .max_managed_value_len()
+            .saturating_mul(3)
             .saturating_sub(1)
             .max(unmanaged_bound);
         // The partial-run stage holds at most PARTIAL_MIN_RUN - 1 bytes after
@@ -607,6 +706,9 @@ impl ResponseScrubber {
     /// credential families as buffered scrubbing across every possible chunk
     /// boundary. It scans raw bytes for every content type, including SSE, so
     /// transport chunking and split UTF-8 cannot alter the security result.
+    /// Managed values also match standalone standard/URL-safe Base64 (with or
+    /// without padding), percent encoding, and form encoding. This does not
+    /// decode arbitrary containers, nested encodings, or encoded unknown keys.
     /// Once an unbounded family reaches its redaction threshold, all
     /// continuation-class bytes are suppressed until the first delimiter.
     pub fn scrub_stream_chunk(
@@ -750,28 +852,13 @@ impl ResponseScrubber {
         finish: bool,
     ) {
         while !state.pending.is_empty() {
-            if let Some(name) = self.analyzer.managed_exact_name(&state.pending) {
-                if !finish && self.analyzer.is_managed_prefix(&state.pending) {
-                    return;
-                }
-                let name = name.to_string();
-                redact_pending_prefix(
-                    state,
-                    state.pending.len(),
-                    "vault-secret",
-                    LeakSeverity::High,
-                    Some(name),
-                    events,
-                    output,
-                );
-                continue;
-            }
-
-            if !finish && self.analyzer.is_managed_prefix(&state.pending) {
+            let (matched, incomplete) = self.managed_match(&state.pending);
+            // Wait for the longest possible representation, including when
+            // an unpadded Base64 match could still acquire '=' padding.
+            if !finish && incomplete {
                 return;
             }
-
-            if let Some((match_len, name)) = self.analyzer.managed_prefix_match(&state.pending) {
+            if let Some((match_len, name)) = matched {
                 redact_pending_prefix(
                     state,
                     match_len,
@@ -822,6 +909,31 @@ impl ResponseScrubber {
             output.push(state.pending[0]);
             state.pending.remove(0);
         }
+    }
+
+    fn managed_match(&self, candidate: &[u8]) -> (Option<(usize, &str)>, bool) {
+        let mut matched = None;
+        let mut incomplete = false;
+        let mut consider = |result, name| match result {
+            ManagedMatch::Incomplete => incomplete = true,
+            ManagedMatch::Complete(len) => {
+                if matched.is_none_or(|(previous, _)| len > previous) {
+                    matched = Some((len, name));
+                }
+            }
+            ManagedMatch::None => {}
+        };
+        for (value, name) in self.analyzer.managed_values() {
+            consider(literal_match(value, candidate), name);
+            consider(url_match(value, candidate, false), name);
+            if value.contains(&b' ') {
+                consider(url_match(value, candidate, true), name);
+            }
+        }
+        for (value, name) in &self.encoded_values {
+            consider(literal_match(value, candidate), name.as_str());
+        }
+        (matched, incomplete)
     }
 
     // ── SSE parsing ───────────────────────────────────────────────────────────
