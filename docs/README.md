@@ -8,18 +8,24 @@ Release-state snapshot verified on 2026-09-29: the immutable GitHub release
 native release rows, checksums, archive-specific SPDX SBOMs, and GitHub
 provenance and SPDX attestations are bound to that immutable release by
 [workflow 34153902556](https://github.com/ashlrai/phantom-secrets/actions/runs/34153902556).
-Exact public registry endpoints were requeried on 2026-09-29. Homebrew
-independently publishes the previous reviewed `v0.7.8` (bump to `v0.7.9` pending); npm `latest` remains `0.6.0`, and both npm
-`0.7.4` wrappers remain only under the failed `release-candidate` track. The
-GitHub receipt alone does not establish `0.7.9` publication on npm, crates.io,
-or MCP Registry, or any hosted-service commissioning, provider activation,
-certification, or customer acceptance.
+Exact public registry endpoints were requeried on 2026-09-29. That snapshot
+recorded Homebrew at the previous reviewed `v0.7.8` and npm `latest` at
+`0.6.0`, with both npm `0.7.4` wrappers only under the failed
+`release-candidate` track. On 2026-10-26 the ashlrai/homebrew-phantom formula
+at `HEAD` pointed its archive URLs at the `v0.7.9` assets, and the npm registry
+`latest` version of `phantom-secrets` was `0.7.9`. That check did not run
+Homebrew and did not recheck crates.io or the MCP Registry. The GitHub receipt
+alone does not establish crates.io or MCP Registry publication, or any
+hosted-service commissioning, provider activation, certification, or customer
+acceptance.
 
 ## Start here
 
 | Goal | Guide |
 |------|-------|
 | Protect a project for the first time | [Getting started](getting-started.md) |
+| See a measured Linux install and the agent-CLI audit | [First run](FIRST-RUN.md) |
+| Compare install, exec, and memory with dotenvx and SOPS | [Benchmarks](BENCHMARKS.md) |
 | Delegate one bounded task to an AI coding client | [Safe delegation quickstart](delegation-quickstart.md) |
 | Keep personal, company, and client keys separate | [Multi-project key separation](multi-project-keys.md) |
 | Plan a team or enterprise pilot | [Enterprise adoption](enterprise-adoption.md) |
