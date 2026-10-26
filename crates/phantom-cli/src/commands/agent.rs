@@ -882,7 +882,14 @@ fn doctor_preflight(vault: bool, strict: bool) -> Result<()> {
             },
         },
     };
-    println!("{}", serde_json::to_string_pretty(&preflight)?);
+    let pretty = serde_json::to_string_pretty(&preflight)?;
+    println!(
+        "{}",
+        crate::commands::report_json::with_schema_pretty(
+            pretty,
+            crate::commands::report_json::AGENT_DOCTOR_SCHEMA
+        )?
+    );
     if strict {
         let code = strict_exit_code(preflight.verdict);
         if code != 0 {

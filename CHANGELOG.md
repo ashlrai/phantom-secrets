@@ -4,6 +4,17 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Added (schema id on doctor, why, check, and agent doctor JSON)
+
+- `phantom doctor --json`, `phantom why --json`, `phantom check --json`, and
+  `phantom agent doctor --json` already printed machine-readable reports.
+  Each report now starts with a `schema` string: `phantom.doctor.v1`,
+  `phantom.why.v1`, `phantom.check.v1`, or `phantom.agent.doctor.v1`.
+  The rest of the JSON is unchanged, and the human output is unchanged.
+  Reports still omit secret values. Names appear only where the human
+  output already prints them. Exit status is the same with or without
+  `--json`.
+
 ### Fixed (.env.example no longer copies credentials in prose comments)
 
 - Example generation masked commented-out assignments and inline comments

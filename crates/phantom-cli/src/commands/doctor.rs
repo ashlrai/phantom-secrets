@@ -130,12 +130,20 @@ fn check_managed_dotenv(project_dir: &std::path::Path, env_path: &std::path::Pat
     }
 }
 
+fn doctor_json(report: &DoctorReport) -> Result<String> {
+    let pretty = serde_json::to_string_pretty(report)?;
+    crate::commands::report_json::with_schema_pretty(
+        pretty,
+        crate::commands::report_json::DOCTOR_SCHEMA,
+    )
+}
+
 /// Run the full doctor suite. Pass `check_expiry = true` to also scan secret
 /// TTL metadata and warn about expired or soon-to-expire entries.
 pub fn run_doctor(fix: bool, check_expiry: bool, json: bool) -> Result<()> {
     if json {
         let report = collect_report(fix, check_expiry)?;
-        println!("{}", serde_json::to_string_pretty(&report)?);
+        println!("{}", doctor_json(&report)?);
         return Ok(());
     }
     run_checks(fix, check_expiry).map(|_| ())
@@ -151,7 +159,7 @@ pub fn run_doctor_to_file(
 ) -> Result<()> {
     let report = collect_report(fix, check_expiry)?;
     let body = if json {
-        serde_json::to_string_pretty(&report)? + "\n"
+        doctor_json(&report)? + "\n"
     } else {
         render_text(&report)
     };

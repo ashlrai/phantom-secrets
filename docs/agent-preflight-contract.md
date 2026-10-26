@@ -20,6 +20,7 @@ JSON. `--vault` and `--strict` require `--json`.
 
 ```json
 {
+  "schema": "phantom.agent.doctor.v1",
   "schema_version": 1,
   "kind": "phantom.agent.preflight",
   "verdict": "degraded",
@@ -36,6 +37,7 @@ JSON. `--vault` and `--strict` require `--json`.
 
 | Field | Values |
 |---|---|
+| `schema` | `phantom.agent.doctor.v1`. Names this document. It carries no project data. |
 | `verdict` | `ready` (no critical or warning checks), `degraded` (warnings only), `blocked` (any critical check), `unknown` (could not evaluate; `readiness` and `risk_level` are `null`) |
 | `readiness` | `unsafe`, `protected`, `verified`, `team-ready`, `compliance-ready` |
 | `risk_level` | `critical`, `high`, `medium`, `low`, `none` |

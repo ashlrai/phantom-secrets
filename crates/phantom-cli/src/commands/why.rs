@@ -104,6 +104,18 @@ fn load_config(project_dir: &std::path::Path) -> Result<Option<PhantomConfig>> {
     })
 }
 
+fn print_why_json(report: &serde_json::Value) -> Result<()> {
+    let pretty = serde_json::to_string_pretty(report)?;
+    println!(
+        "{}",
+        crate::commands::report_json::with_schema_pretty(
+            pretty,
+            crate::commands::report_json::WHY_SCHEMA
+        )?
+    );
+    Ok(())
+}
+
 /// Explain why a specific key is or isn't protected by Phantom.
 ///
 /// With `json`, prints the value-free report shared with the MCP `phantom_why`
@@ -119,7 +131,7 @@ fn run_in(project_dir: &std::path::Path, key: &str, json: bool) -> Result<()> {
 
     if json && dotenv.is_none() {
         let report = phantom_core::why::why_report_for(Surface::Cli, key, None, config.as_ref());
-        println!("{}", serde_json::to_string_pretty(&report)?);
+        print_why_json(&report)?;
         return Ok(());
     }
 
@@ -136,7 +148,7 @@ fn run_in(project_dir: &std::path::Path, key: &str, json: bool) -> Result<()> {
     if json {
         let report =
             phantom_core::why::why_report_for(Surface::Cli, key, Some(&dotenv), config.as_ref());
-        println!("{}", serde_json::to_string_pretty(&report)?);
+        print_why_json(&report)?;
         return Ok(());
     }
     // Find the entry

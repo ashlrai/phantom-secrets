@@ -84,6 +84,7 @@ fn preflight_schema_v1_keys_and_vocabulary() {
         .map(|k| k.as_str())
         .collect();
     let mut expected = vec![
+        "schema",
         "schema_version",
         "kind",
         "verdict",
@@ -97,6 +98,7 @@ fn preflight_schema_v1_keys_and_vocabulary() {
     let mut got = keys.clone();
     got.sort();
     assert_eq!(got, expected);
+    assert_eq!(value["schema"], "phantom.agent.doctor.v1");
     assert_eq!(value["schema_version"], 1);
     assert_eq!(value["kind"], "phantom.agent.preflight");
     assert!(["ready", "degraded", "blocked"].contains(&value["verdict"].as_str().unwrap()));
