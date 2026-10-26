@@ -48,9 +48,11 @@ jobs:
             echo "code=true" >> "$GITHUB_OUTPUT"; exit 0
           fi
           files="$(git diff --name-only "$BASE...$HEAD")"
-          docs='^(docs/|[^/]*\.md$|.*/README\.md$|LICENSE|\.github/ISSUE_TEMPLATE/|\.github/PULL_REQUEST_TEMPLATE)'
+          docs='^(docs/|.*\.md$|LICENSE|\.github/ISSUE_TEMPLATE/|\.github/PULL_REQUEST_TEMPLATE)'
           code=false
-          if printf '%s\n' "$files" | grep -Ev "$docs" | grep -q .; then code=true; fi
+          # Capture first: an early-exit grep -q under pipefail can SIGPIPE grep -Ev and skip analysis.
+          code_paths="$(printf '%s\n' "$files" | grep -Ev "$docs" || true)"
+          if [ -n "$code_paths" ]; then code=true; fi
           echo "code=$code" >> "$GITHUB_OUTPUT"
           echo "code=$code"
 
