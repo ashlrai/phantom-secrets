@@ -206,6 +206,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn example_masks_managed_mappings_without_opening_a_vault() {
+        let project = tempfile::tempdir().unwrap();
+        let mapping = format!("phm_{}", "a".repeat(64));
+        std::fs::write(
+            project.path().join(".env"),
+            format!("API_KEY={mapping}\nAPP_MODE=development\n"),
+        )
+        .unwrap();
+        run_in(
+            &crate::test_support::canonical_tempdir_path(&project),
+            ".env.example",
+            || {},
+        )
+        .unwrap();
+        let example = std::fs::read_to_string(project.path().join(".env.example")).unwrap();
+        assert!(
+            !example.contains(&mapping),
+            "persistent mapping must remain private"
+        );
+        assert!(example.contains("API_KEY=your_api_key_here"));
+        assert!(example.contains("APP_MODE=development"));
+    }
+
+    #[test]
     fn output_is_one_project_relative_filename() {
         let root = std::path::Path::new("/project");
         assert_eq!(
