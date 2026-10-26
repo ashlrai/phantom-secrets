@@ -915,3 +915,11 @@ pub struct RotateProviderParams {
     #[serde(default)]
     pub approval_token: Option<String>,
 }
+
+/// Metadata lookup has no value, reveal, or effect parameters.
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GetParams {
+    /// Exact environment variable name
+    pub name: String,
+}

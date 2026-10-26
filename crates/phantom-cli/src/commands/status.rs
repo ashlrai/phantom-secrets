@@ -260,6 +260,25 @@ fn metadata_status(project_dir: &Path) -> MetadataStatus {
     report
 }
 
+/// Agent-safe lookup: serialize metadata only, never construct a vault.
+pub fn get(name: &str) -> Result<()> {
+    let project = crate::util::project_dir()?;
+    let config =
+        crate::util::load_config_if_present(&project.join(".phantom.toml")).map_err(|_| {
+            anyhow::anyhow!(
+                "Cannot inspect secret metadata; project configuration is unreadable or invalid"
+            )
+        })?;
+    let report =
+        phantom_core::secret_metadata::get(&project, config.as_ref(), name).map_err(|_| {
+            anyhow::anyhow!(
+                "Cannot inspect secret metadata; check the name, config and managed dotenv"
+            )
+        })?;
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     #[test]

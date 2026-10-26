@@ -2551,6 +2551,31 @@ impl PhantomMcpServer {
         report_result(log.lines.join("\n"), &log.report)
     }
 
+    /// Read metadata without credential access, approval, or network effects.
+    #[tool(
+        description = "Get secret metadata only: exists (exact name in managed dotenv, not verified vault presence), route, delivery_mode from exec_delivery_for_key, and configured expires_at (Unix seconds or null). Never returns a value or mapping and never opens the vault. Works before init and with a locked vault. Reveal is only available through the human trusted-terminal CLI ceremony."
+    )]
+    fn phantom_get(
+        &self,
+        Parameters(params): Parameters<crate::tools::params::GetParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let config = if self.config_present() {
+            Some(self.require_config().map_err(|_| invalid_params_err("Cannot inspect secret metadata; project configuration is unreadable or invalid"))?)
+        } else {
+            None
+        };
+        let report = crate::tools::get_metadata(&self.project_dir, config.as_ref(), &params.name)
+            .map_err(|_| {
+            invalid_params_err(
+                "Cannot inspect secret metadata; check the name, config and managed dotenv",
+            )
+        })?;
+        report_result(
+            "Secret metadata only; vault not inspected.".to_owned(),
+            &report,
+        )
+    }
+
     /// Explain why a key is or isn't protected by Phantom.
     #[tool(
         description = "Explain why an environment variable is or isn't protected by Phantom. classification is `protected` (has a phantom token), `secret_unprotected` (next_step says to run `phantom init`), `public_key` or `not_secret`, and is null when the key is not in the dotenv (found=false). reason names the heuristic: `phantom_token`, `key_name`, `connection_pattern`, `value_pattern`, `public_prefix_with_secret_value`, `public_prefix` or `no_secret_pattern`; matched_pattern is the matched key fragment or prefix. Value-blind: it reads .phantom.toml and the dotenv, never the vault, so it answers while the vault is locked and before `phantom init` (it then classifies ./.env, and exec is null). For a protected key it also says how `phantom exec` treats it. exec.delivery judges the key alone: `proxied` (a built-in route injects the real value for exec.upstream), `no_route` (the child gets only a session token that no provider accepts, so calls with it fail), `withheld` (exec never hands the child this provider-management or sync credential), `connection_string_refused` or `custom_route_refused` (exec will not start). exec.blocked_by is non-null when the config stops exec from starting for every key: {service, reason: `custom_route`, `altered_builtin_route` or `connection_string`, key}. next_step explains anything but an unblocked `proxied`. Returns a summary plus value-free JSON {key, dotenv_exists, found, classification, protected, reason, matched_pattern, service, exec: {delivery, service, upstream, blocked_by} | null, next_step} (also as structuredContent)."
@@ -10284,6 +10309,47 @@ mod tests {
 
         // Asking is read-only: nothing was initialized on the agent's behalf.
         assert!(!dir.path().join(".phantom.toml").exists());
+    }
+
+    #[test]
+    fn get_tool_is_registered_with_only_a_name_parameter() {
+        let tools = PhantomMcpServer::tool_router().list_all();
+        let tool = tools
+            .iter()
+            .find(|tool| tool.name == "phantom_get")
+            .unwrap();
+        let schema = serde_json::to_value(&tool.input_schema).unwrap();
+        assert_eq!(schema["properties"].as_object().unwrap().len(), 1);
+        assert_eq!(schema["required"], serde_json::json!(["name"]));
+        assert_eq!(schema["additionalProperties"], false);
+    }
+
+    #[test]
+    fn get_answers_without_opening_the_vault() {
+        let _environment = TestEnvironment::new();
+        let (server, dir) = setup_initialized_project();
+        let _vault = TestVault::serve(|| panic!("metadata lookup must not open a vault"));
+        // SAFETY: TestEnvironment holds the environment lock and restores it.
+        unsafe { std::env::remove_var("PHANTOM_VAULT_PASSPHRASE") };
+        let result = server
+            .phantom_get(Parameters(crate::tools::params::GetParams {
+                name: "OPENAI_API_KEY".into(),
+            }))
+            .unwrap();
+        let report = structured_report(&result);
+        assert_eq!(report["exists"], true);
+        assert_eq!(report["delivery_mode"], "proxied");
+        assert_eq!(report["vault_inspected"], false);
+        let config = server.require_config().unwrap();
+        assert_eq!(
+            report,
+            phantom_core::secret_metadata::get(dir.path(), Some(&config), "OPENAI_API_KEY")
+                .unwrap()
+        );
+        assert!(serde_json::from_value::<crate::tools::params::GetParams>(
+            serde_json::json!({"name": "KEY", "reveal": true})
+        )
+        .is_err());
     }
 
     #[test]

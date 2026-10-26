@@ -35,7 +35,7 @@ use tracing_subscriber::EnvFilter;
                     phantom exec -- <command>     run your app or agent through the local proxy\n\n\
                   Commands by task:\n  \
                     Setup         init · agent · setup · doctor · workspace · vault · completion · mcp · mcp-approve\n  \
-                    Daily use     exec · start · stop · status · check · list · add · remove · reveal · copy · env · why\n  \
+                    Daily use     exec · start · stop · status · check · list · get · add · remove · reveal · copy · env · why\n  \
                     Sync & teams  login · logout · cloud · team · sync · pull · export · import · wrap · unwrap\n  \
                     Maintenance   upgrade · watch · rotate · grant · validate · expiry · secrets-expiring-soon · open · audit · leaks · crypto",
     version
@@ -297,6 +297,13 @@ enum Commands {
     #[command(next_help_heading = "Daily use")]
     Remove {
         /// Secret name to remove
+        name: String,
+    },
+
+    /// Get secret metadata only; never returns a value or opens the vault
+    #[command(next_help_heading = "Daily use")]
+    Get {
+        /// Exact environment variable name
         name: String,
     },
 
@@ -1086,6 +1093,7 @@ fn apply_global_json(command: &mut Commands) -> Result<(), &'static str> {
             action: AgentAction::Doctor { .. },
         }
         | Commands::Why { .. }
+        | Commands::Get { .. }
         | Commands::Crypto {
             action: CryptoAction::Inventory { .. },
         }
@@ -1307,6 +1315,7 @@ fn run() -> anyhow::Result<()> {
             };
             commands::add::run(&name, value, stdin, lines)
         }
+        Commands::Get { name } => commands::status::get(&name),
         Commands::Remove { name } => commands::remove::run(&name),
         Commands::Reveal {
             name,
@@ -1908,6 +1917,7 @@ mod help_tests {
             // Not JSON output: its hidden legacy `--json` fails closed with
             // "Plaintext JSON export is disabled".
             "export",
+            "get",
             "grant add",
             "grant list",
             "grant revoke",
