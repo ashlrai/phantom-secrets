@@ -130,6 +130,10 @@ fn staged_findings(cwd: &Path) -> Result<(Vec<Finding>, Vec<ConfigWarning>)> {
         if file.ends_with(".phantom.toml") {
             let content = read_staged_file(cwd, &file)?;
             warnings.extend(config_risks(&file, &content));
+            // The config is committed like code: a key pasted into a comment
+            // or a header value is still a committed credential.
+            let scan_content = staged_added_lines(cwd, &file)?;
+            findings.extend(code_pattern_findings(&file, &scan_content));
             continue;
         }
 
@@ -145,6 +149,15 @@ fn staged_findings(cwd: &Path) -> Result<(Vec<Finding>, Vec<ConfigWarning>)> {
             // placeholder. Any other value is still reported.
             if is_example_template_file(&file) {
                 real_secrets.retain(|entry| !is_example_placeholder(&entry.value));
+            }
+            if real_secrets.is_empty() {
+                // The parser never sees comments, so an old key commented
+                // out (`# OPENAI_API_KEY=sk-...`) or a note after a
+                // placeholder passed as clean. A file already reported by
+                // name is blocked anyway, and scanning it again would
+                // report the same values twice.
+                let scan_content = staged_added_lines(cwd, &file)?;
+                findings.extend(code_pattern_findings(&file, &scan_content));
             }
             for entry in real_secrets {
                 findings.push(Finding {
@@ -1603,5 +1616,81 @@ mod tests {
         );
         let dir = repo_with_staged_bytes(".envrc", envrc.as_bytes());
         assert_eq!(staged_dotenv_names(dir.path()), ["WEBHOOK_SIGNING"]);
+    }
+
+    /// A GitHub-shaped credential, built at runtime.
+    fn ghp_shape() -> String {
+        ["ghp_", "Q7rT2mVx9KpL4wZs8NdY3hBc6FjGu5EaR1oW"].concat()
+    }
+
+    /// Dotenv entries are classified by the parser, which never sees
+    /// comments. A key left in a comment of a committable template (an old
+    /// key commented out, a note after a placeholder) was reported clean.
+    #[test]
+    fn staged_env_template_comments_get_the_code_scan() {
+        let shape = ghp_shape();
+        for content in [
+            format!("GITHUB_TOKEN=\n# GITHUB_TOKEN={shape}\n"),
+            format!("GITHUB_TOKEN=your_github_token_here # was {shape}\n"),
+            format!("# rotate: {shape}\nDEBUG=true\n"),
+        ] {
+            for name in [".env.example", "config/.env.sample"] {
+                let dir = repo_with_staged_bytes_at(name, content.as_bytes());
+                assert_eq!(
+                    staged_code_labels(dir.path()),
+                    ["GitHub personal token"],
+                    "{name}"
+                );
+            }
+        }
+    }
+
+    /// A plain `.env` whose entries are all non-secret config still blocks
+    /// on a key left in a comment.
+    #[test]
+    fn staged_dotenv_comment_gets_the_code_scan() {
+        let content = format!("NODE_ENV=production\n# OPENAI_API_KEY={}\n", ghp_shape());
+        let dir = repo_with_staged_bytes_at("apps/api/.env.production.local", content.as_bytes());
+        assert_eq!(staged_code_labels(dir.path()), ["GitHub personal token"]);
+    }
+
+    /// A template with no credential anywhere stays clean.
+    #[test]
+    fn staged_env_template_without_credentials_stays_clean() {
+        let content = "# Get a key at https://example.invalid\nGITHUB_TOKEN=\nDEBUG=true\n";
+        let dir = repo_with_staged_bytes_at(".env.example", content.as_bytes());
+        let (findings, _) = staged_findings(dir.path()).unwrap();
+        assert!(findings.is_empty());
+    }
+
+    /// `.phantom.toml` is committed and was read only for risky routes, so a
+    /// credential pasted into it (a comment, a header value) was never scanned.
+    #[test]
+    fn staged_phantom_config_gets_the_code_scan() {
+        let content = format!(
+            "[phantom]\nproject_id = \"demo\"\n# old key: {}\n",
+            ghp_shape()
+        );
+        for name in [".phantom.toml", "apps/web/.phantom.toml"] {
+            let dir = repo_with_staged_bytes_at(name, content.as_bytes());
+            assert_eq!(
+                staged_code_labels(dir.path()),
+                ["GitHub personal token"],
+                "{name}"
+            );
+        }
+        let dir = repo_with_staged_bytes_at(".phantom.toml", b"[phantom]\nproject_id = \"demo\"\n");
+        assert!(staged_code_labels(dir.path()).is_empty());
+    }
+
+    /// [`repo_with_staged_bytes`] for a path that may sit in a subdirectory.
+    fn repo_with_staged_bytes_at(path: &str, bytes: &[u8]) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        git_in(dir.path(), &["init", "-q"]);
+        let file = dir.path().join(path);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, bytes).unwrap();
+        git_in(dir.path(), &["add", "--", path]);
+        dir
     }
 }
