@@ -134,6 +134,8 @@ pub enum CredentialProfile {
     /// Google API key (the trusted `google_ai` route): also owns the
     /// alternate slots Google reads an API key from.
     GoogleApiKey,
+    /// PostHog capture v1: header-only project token, restricted to event POSTs.
+    PostHogCapture,
 }
 
 impl CredentialProfile {
@@ -148,6 +150,7 @@ impl CredentialProfile {
         match name {
             "twilio" => Self::BasicPassword,
             "google_ai" => Self::GoogleApiKey,
+            "posthog_fleet" => Self::PostHogCapture,
             _ => Self::Standard,
         }
     }
@@ -176,9 +179,9 @@ impl ServiceRoute {
     pub fn auth_injection(&self) -> AuthInjection {
         match self.credential_profile {
             CredentialProfile::BasicPassword => AuthInjection::BasicPassword,
-            CredentialProfile::Standard | CredentialProfile::GoogleApiKey => {
-                AuthInjection::Template
-            }
+            CredentialProfile::Standard
+            | CredentialProfile::GoogleApiKey
+            | CredentialProfile::PostHogCapture => AuthInjection::Template,
         }
     }
 
@@ -198,8 +201,22 @@ impl ServiceRoute {
                 query_params: &["key", "api_key"],
                 headers_carrying_phantom_token: &["authorization"],
             },
-            CredentialProfile::Standard | CredentialProfile::BasicPassword => OwnedSlots::default(),
+            CredentialProfile::Standard
+            | CredentialProfile::BasicPassword
+            | CredentialProfile::PostHogCapture => OwnedSlots::default(),
         }
+    }
+
+    /// Restrict the PostHog capability before any credential lookup or network
+    /// request. The v0 endpoints require body credentials; management endpoints
+    /// must never receive the capture key. Other providers keep their policy.
+    pub fn allows_request(&self, method: &str, remainder: &str) -> bool {
+        self.credential_profile != CredentialProfile::PostHogCapture
+            || (method == "POST"
+                && matches!(
+                    self.upstream_path(remainder).as_ref(),
+                    "/i/v1/analytics/events" | "/i/v1/analytics/events/"
+                ))
     }
 }
 
@@ -358,6 +375,7 @@ impl ServiceRegistry {
             "CO_API_URL",
             "CLOUDFLARE_BASE_URL",
             "CLOUDFLARE_API_BASE_URL",
+            "POSTHOG_BASE_URL",
         ]
     }
 }
@@ -473,6 +491,7 @@ mod tests {
             "cohere",
             "huggingface",
             "google_ai",
+            "posthog_fleet",
         ]
         .into_iter()
         .map(|name| {
@@ -507,6 +526,7 @@ mod tests {
             ("twilio", None),
             ("github_api", None),
             ("pinecone", None),
+            ("posthog_fleet", None),
         ];
         assert_eq!(expected.len(), registry.services().len());
         for (name, path) in expected {
@@ -701,6 +721,74 @@ mod tests {
             .collect();
         assert_eq!(names, vec!["OPENAI_BASE_URL".to_string()]);
         assert!(registry.match_route("/anthropic/v1/messages").is_none());
+    }
+
+    #[test]
+    fn posthog_capture_is_exact_and_its_override_is_scrubbed() {
+        use phantom_core::config::{ExecDelivery, PhantomConfig};
+        let service = PhantomConfig::trusted_builtin_proxy_service("posthog_fleet").unwrap();
+        let mut config = PhantomConfig::new_with_defaults("test".to_string());
+        config
+            .services
+            .insert("posthog_fleet".to_string(), service.clone());
+        config.validate_agentic_proxy_routes().unwrap();
+        assert_eq!(
+            config.exec_delivery_for_key("POSTHOG_API_KEY"),
+            ExecDelivery::Proxied {
+                service: "posthog_fleet",
+                upstream: "us.i.posthog.com",
+            }
+        );
+        let mut registry = ServiceRegistry::from_config(&config.services);
+        let route = registry.match_route("/posthog_fleet").unwrap().0;
+        assert_eq!(route.credential_profile, CredentialProfile::PostHogCapture);
+        for path in [
+            "/i/v1/analytics/events",
+            "/i/v1/analytics/events/",
+            "//i/v1/analytics/events",
+        ] {
+            assert!(route.allows_request("POST", path));
+            for method in ["GET", "HEAD", "OPTIONS", "PUT", "DELETE"] {
+                assert!(!route.allows_request(method, path));
+            }
+        }
+        for path in [
+            "",
+            "/",
+            "/capture/",
+            "/batch/",
+            "/i/v0/e/",
+            "/api/projects/",
+            "/i/v1/analytics/events/extra",
+            "/i/v1/analytics/events.evil",
+        ] {
+            assert!(!route.allows_request("POST", path));
+        }
+        let mut altered = service.clone();
+        altered.pattern = Some("us.i.posthog.com.attacker.example".to_string());
+        assert_eq!(
+            CredentialProfile::for_configured_route("posthog_fleet", &altered),
+            CredentialProfile::Standard
+        );
+        config.services.insert("posthog_fleet".to_string(), altered);
+        assert!(config.validate_agentic_proxy_routes().is_err());
+        config.services.remove("posthog_fleet");
+        config
+            .services
+            .insert("custom_posthog".to_string(), service);
+        assert!(config.validate_agentic_proxy_routes().is_err());
+        registry.retain_routes(|route| route.secret_key == "POSTHOG_API_KEY");
+        let overrides = registry.base_url_overrides(12345);
+        assert_eq!(
+            overrides,
+            [(
+                "POSTHOG_BASE_URL".to_string(),
+                "http://127.0.0.1:12345/posthog_fleet".to_string()
+            )]
+        );
+        assert!(ServiceRegistry::known_override_env_names().contains(&"POSTHOG_BASE_URL"));
+        registry.retain_routes(|_| false);
+        assert!(registry.base_url_overrides(12345).is_empty());
     }
 
     #[test]
