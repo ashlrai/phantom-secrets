@@ -4,6 +4,20 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (commented-out secrets in .env are now reported)
+
+- `phantom init` moves live secret entries into the vault, but a secret that
+  was only commented out, such as `# OPENAI_API_KEY=<old key>` or
+  `# export GITHUB_TOKEN="<token>"`, stayed as plaintext in `.env` and
+  nothing said so. `phantom doctor` and MCP `phantom_doctor` now report one
+  warning per commented-out assignment that classifies as a secret, naming
+  only the key and line number, with a hint to delete the line or store the
+  value with `phantom add <NAME> --stdin`; `phantom init` prints the same
+  key-and-line warnings when it finishes. Values are never printed, empty
+  and `your_<name>_here` placeholders are ignored, and the `.env` file is
+  never changed by these checks. `DotenvFile::commented_secret_assignments`
+  exposes the existing example-masking detection as (key, line) pairs.
+
 ### Fixed (.env.example masks every name the project config declares secret)
 
 - Example generation decided what to mask only from name and value
@@ -1133,6 +1147,7 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   the Test job, so until now the check that documented `phantom` commands and
   flags match the CLI never ran on the PRs that change those docs; drift could
   only show up on `main` after merge. It is part of `CI Gate`.
+
 ### Docs (Temporal: codec errors in the CLI)
 
 - `docs/temporal.md`: explains why `temporal workflow show` reports
