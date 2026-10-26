@@ -2306,6 +2306,22 @@ impl PhantomMcpServer {
                             log.fix("Run `phantom init`");
                             issues += 1;
                         }
+                        // `phantom init` never edits comments, so a
+                        // commented-out credential stays as plaintext. Key
+                        // names and line numbers only; nothing is changed.
+                        let file_label = env_path
+                            .file_name()
+                            .and_then(|name| name.to_str())
+                            .unwrap_or(".env");
+                        for (key_name, line) in dotenv.commented_secret_assignments() {
+                            log.warn(format!(
+                                "{file_label} line {line}: commented-out {key_name} still holds a plaintext secret"
+                            ));
+                            log.fix(format!(
+                                "Delete line {line} from {file_label}; if the value is still needed, store it under an unused name with `phantom add <NAME> --stdin` in a trusted terminal"
+                            ));
+                            issues += 1;
+                        }
                     }
                     Err(_) => {
                         if params.fix {
@@ -9644,6 +9660,39 @@ mod tests {
         let text = extract_content_text(&result);
         assert!(text.contains("No .phantom.toml found"), "{text}");
         assert!(text.contains("unprotected secret"), "{text}");
+    }
+
+    #[test]
+    fn doctor_names_commented_out_secrets_without_values() {
+        let _environment = TestEnvironment::new();
+        let (server, dir) = setup_test_project();
+        let old = ["sk", "-proj-", "McpC0mmentedValue0123456789abcdefghi"].concat();
+        std::fs::write(
+            dir.path().join(".env"),
+            format!("NODE_ENV=production\n# PORT=8080\n# OPENAI_API_KEY={old}\n"),
+        )
+        .unwrap();
+        let result = server
+            .phantom_doctor(Parameters(DoctorParams {
+                fix: false,
+                confirm: false,
+                approval_token: None,
+            }))
+            .unwrap();
+        let report = structured_report(&result);
+        let checks = report["checks"].as_array().unwrap();
+        let finding = checks
+            .iter()
+            .find(|check| {
+                check["message"]
+                    .as_str()
+                    .is_some_and(|message| message.contains("OPENAI_API_KEY"))
+            })
+            .unwrap_or_else(|| panic!("no commented-secret finding: {checks:?}"));
+        assert_eq!(finding["status"], "warn");
+        assert!(finding["message"].as_str().unwrap().contains("line 3"));
+        assert!(finding["fix"].as_str().unwrap().contains("phantom add"));
+        assert_no_value_leak(&result, &[old.as_str()]);
     }
 
     fn structured_report(result: &CallToolResult) -> serde_json::Value {
