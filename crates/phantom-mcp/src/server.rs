@@ -1925,10 +1925,9 @@ impl PhantomMcpServer {
             .decode(&pull_data.encrypted_blob)
             .map_err(|e| internal_err(format!("Invalid cloud data: {e}")))?;
 
-        let plaintext = zeroize::Zeroizing::new(
-            phantom_vault::crypto::decrypt(&encrypted, &passphrase)
-                .map_err(|e| internal_err(format!("Decryption failed: {e}")))?,
-        );
+        // `decrypt` returns a Zeroizing buffer, scrubbed on drop.
+        let plaintext = phantom_vault::crypto::decrypt(&encrypted, &passphrase)
+            .map_err(|e| internal_err(format!("Decryption failed: {e}")))?;
 
         let secrets = SensitiveSecretMap::parse_json(&plaintext)
             .map_err(|e| internal_err(format!("Invalid vault data: {e}")))?;
