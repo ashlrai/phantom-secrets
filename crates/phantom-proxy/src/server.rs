@@ -248,10 +248,23 @@ impl ProxyServer {
     }
 
     /// Shut down the proxy server gracefully.
-    pub async fn shutdown(self) {
+    pub async fn shutdown(mut self) {
         let _ = self.shutdown_tx.send(true);
-        let _ = self.handle.await;
+        let _ = (&mut self.handle).await;
         info!("Phantom proxy shut down");
+    }
+}
+
+impl Drop for ProxyServer {
+    fn drop(&mut self) {
+        let _ = self.shutdown_tx.send(true);
+        // Dropping a JoinHandle alone detaches its task. Abort the owner
+        // instead: its listener closes and its JoinSet aborts connections,
+        // so an early-returned exec cannot leave a credential proxy alive.
+        // Keeping the handle during shutdown also makes cancellation of
+        // that future close the proxy rather than detach it mid-drain.
+        // Aborting an already completed graceful shutdown is harmless.
+        self.handle.abort();
     }
 }
 
@@ -315,7 +328,7 @@ async fn run_server(
                                     }
                                 }
                                 changed = connection_shutdown.changed() => {
-                                    if changed.is_ok() && *connection_shutdown.borrow() {
+                                    if changed.is_err() || *connection_shutdown.borrow() {
                                         connection.as_mut().graceful_shutdown();
                                         match tokio::time::timeout(SHUTDOWN_DRAIN_TIMEOUT, &mut connection).await {
                                             Ok(Err(error)) => debug!("Connection drain error: {error}"),
@@ -332,8 +345,8 @@ async fn run_server(
                     }
                 }
             }
-            _ = shutdown_rx.changed() => {
-                if *shutdown_rx.borrow() {
+            changed = shutdown_rx.changed() => {
+                if changed.is_err() || *shutdown_rx.borrow() {
                     info!("Shutdown signal received");
                     break;
                 }
@@ -1953,6 +1966,24 @@ mod tests {
         let interceptor = Interceptor::new(mappings);
 
         (registry, interceptor)
+    }
+
+    #[tokio::test]
+    async fn closed_shutdown_channel_stops_server() {
+        let (registry, interceptor) = test_state();
+        let mut proxy = ProxyServer::start(ProxyConfig::default(), registry, interceptor)
+            .await
+            .unwrap();
+        let port = proxy.port();
+        let (replacement, _) = watch::channel(false);
+        drop(std::mem::replace(&mut proxy.shutdown_tx, replacement));
+        tokio::time::timeout(std::time::Duration::from_secs(2), &mut proxy.handle)
+            .await
+            .expect("closed owner channel must stop the server instead of spinning")
+            .unwrap();
+        assert!(tokio::net::TcpListener::bind(("127.0.0.1", port))
+            .await
+            .is_ok());
     }
 
     #[tokio::test]

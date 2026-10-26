@@ -10,6 +10,10 @@ use std::path::Path;
 use std::process::Stdio;
 
 const VAULT_PASSPHRASE_ENV: &str = "PHANTOM_VAULT_PASSPHRASE";
+const EXEC_ACTIVE_ENV: &str = "PHANTOM_EXEC_ACTIVE";
+
+#[cfg(unix)]
+mod lifecycle;
 
 fn header_auth_only() -> bool {
     matches!(
@@ -40,12 +44,35 @@ pub fn run(
     bind_source: Option<&std::path::Path>,
     quiet: bool,
 ) -> Result<()> {
+    if std::env::var_os(EXEC_ACTIVE_ENV).is_some() {
+        anyhow::bail!("Refusing recursive phantom exec: PHANTOM_EXEC_ACTIVE is already set. Run the command directly inside the existing session.");
+    }
     if cmd.is_empty() {
         anyhow::bail!("No command specified. Usage: phantom exec -- <command>");
     }
 
+    #[cfg(unix)]
+    let mut lifecycle =
+        lifecycle::Lifecycle::new().context("Failed to start exec lifecycle guard")?;
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(run_async(cmd, env, bind_source, quiet))
+    let result = rt.block_on(run_async(
+        cmd,
+        env,
+        bind_source,
+        quiet,
+        #[cfg(unix)]
+        &mut lifecycle,
+    ));
+    drop(rt);
+    // Reap the guardian and remove leftover group members before propagating
+    // the child's exit code (process::exit would otherwise bypass Drop).
+    #[cfg(unix)]
+    drop(lifecycle);
+    let code = result?;
+    if code != 0 {
+        std::process::exit(code);
+    }
+    Ok(())
 }
 
 /// Actionable, value-free next steps for the connection-string denial.
@@ -76,7 +103,8 @@ async fn run_async(
     env_flag: Option<&str>,
     bind_source: Option<&std::path::Path>,
     quiet: bool,
-) -> Result<()> {
+    #[cfg(unix)] lifecycle: &mut lifecycle::Lifecycle,
+) -> Result<i32> {
     let working_dir = std::env::current_dir()?;
     // Custody (config namespace, managed dotenv, env scope) comes from the
     // working directory unless the caller explicitly binds a verified linked
@@ -167,7 +195,13 @@ async fn run_async(
             "{} No phantom tokens found to proxy. Running command directly with Phantom internal credentials removed.",
             "warn".yellow()
         );
-        return run_command_directly(cmd, &child_scrub_env).await;
+        return run_command_directly(
+            cmd,
+            &child_scrub_env,
+            #[cfg(unix)]
+            lifecycle,
+        )
+        .await;
     }
 
     crate::commands::rotation_gate::enforce_rotation_on_access(
@@ -408,6 +442,7 @@ async fn run_async(
         // reintroduce either the real vault passphrase or a confusing session
         // token under Phantom's internal decryption-key variable.
         .env_remove(VAULT_PASSPHRASE_ENV)
+        .env(EXEC_ACTIVE_ENV, "1")
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
@@ -416,20 +451,32 @@ async fn run_async(
     // (which would keep running against a proxy that is gone). The handlers
     // reset to default in the child on exec.
     let forwarder = SignalForwarder::install().context("Failed to install signal handlers")?;
+    #[cfg(unix)]
+    lifecycle.configure(&mut command);
     let mut child = match command.spawn() {
         Ok(child) => child,
         Err(error) => {
+            #[cfg(unix)]
+            lifecycle.finish();
             // Stop the proxy first: its session tokens must not outlive a
             // launch that never happened.
             proxy.shutdown().await;
             let (code, message) = spawn_failure(program, &error);
             eprintln!("{} {message}", "error".red().bold());
-            std::process::exit(code);
+            return Ok(code);
         }
     };
 
     // Wait for the child to exit, forwarding termination signals to it.
-    let status = forwarder.wait_for(&mut child).await?;
+    let status = wait_for_child(
+        forwarder,
+        &mut child,
+        #[cfg(unix)]
+        lifecycle,
+    )
+    .await?;
+    #[cfg(unix)]
+    lifecycle.finish();
 
     // Shut down the proxy — session tokens are now invalid
     progress!(quiet, "\n{} Shutting down proxy...", "->".blue().bold());
@@ -446,11 +493,11 @@ async fn run_async(
                 code
             ),
         }
-        std::process::exit(code);
+        return Ok(code);
     }
 
     progress!(quiet, "{} Done.", "ok".green().bold());
-    Ok(())
+    Ok(0)
 }
 
 /// Protected keys the child receives as session tokens that no proxy route
@@ -633,35 +680,69 @@ fn detect_next_dependency(package_json: &Path) -> bool {
     contents.contains("\"next\"")
 }
 
-async fn run_command_directly(cmd: &[String], scrub_env_keys: &HashSet<String>) -> Result<()> {
+async fn run_command_directly(
+    cmd: &[String],
+    scrub_env_keys: &HashSet<String>,
+    #[cfg(unix)] lifecycle: &mut lifecycle::Lifecycle,
+) -> Result<i32> {
     let program = &cmd[0];
     let args = &cmd[1..];
 
     let mut command = sanitized_child_command(program, args, scrub_env_keys);
-    let status = match command
+    command
+        .env(EXEC_ACTIVE_ENV, "1")
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .status()
-        .await
-    {
-        Ok(status) => status,
+        .stderr(Stdio::inherit());
+    let forwarder = SignalForwarder::install().context("Failed to install signal handlers")?;
+    #[cfg(unix)]
+    lifecycle.configure(&mut command);
+    let mut child = match command.spawn() {
+        Ok(child) => child,
         Err(error) => {
+            #[cfg(unix)]
+            lifecycle.finish();
             let (code, message) = spawn_failure(program, &error);
             eprintln!("{} {message}", "error".red().bold());
-            std::process::exit(code);
+            return Ok(code);
         }
     };
+    let status = wait_for_child(
+        forwarder,
+        &mut child,
+        #[cfg(unix)]
+        lifecycle,
+    )
+    .await?;
+    #[cfg(unix)]
+    lifecycle.finish();
 
     if !status.success() {
         let (code, signal_note) = child_exit_code(&status);
         if let Some(note) = signal_note {
             eprintln!("{} {note}", "!".yellow().bold());
         }
-        std::process::exit(code);
+        return Ok(code);
     }
 
-    Ok(())
+    Ok(0)
+}
+
+async fn wait_for_child(
+    forwarder: SignalForwarder,
+    child: &mut tokio::process::Child,
+    #[cfg(unix)] lifecycle: &lifecycle::Lifecycle,
+) -> std::io::Result<std::process::ExitStatus> {
+    #[cfg(unix)]
+    {
+        let pid = child.id();
+        tokio::select! {
+            status = forwarder.wait_for(child) => status,
+            () = lifecycle.relay_job_control(pid) => unreachable!("job control monitor never returns"),
+        }
+    }
+    #[cfg(windows)]
+    forwarder.wait_for(child).await
 }
 
 /// Hide the per-session proxy token in printed `*_BASE_URL` lines. The child
@@ -807,41 +888,16 @@ impl SignalForwarder {
                 Some(()) = next_signal(&mut self.terminate) => libc::SIGTERM,
                 Some(()) = next_signal(&mut self.hangup) => libc::SIGHUP,
             };
-            if signal == libc::SIGINT && foreground_of_terminal() {
-                // Ctrl-C at a terminal already reached the child: the tty
-                // signals the whole foreground process group. Sending it again
-                // would read as a second Ctrl-C to tools that force-quit on one.
-                // Limitation: a SIGINT sent by another process (`kill -INT`)
-                // while phantom is the terminal's foreground group is not
-                // forwarded either; it cannot be told apart from a terminal
-                // Ctrl-C here. Phantom then keeps waiting for the child.
-                continue;
-            }
-            // exec does not give the child its own process group, so signal
-            // the child itself; tokio has not reaped it while we are here.
+            // The child owns a separate group (and the terminal foreground
+            // while interactive). Terminal Ctrl-C reaches it directly;
+            // signals addressed to Phantom must reach all its descendants.
             if let Some(pid) = child.id().and_then(|pid| libc::pid_t::try_from(pid).ok()) {
                 // SAFETY: kill(2) with a live child pid and a valid signal number.
                 unsafe {
-                    libc::kill(pid, signal);
+                    libc::kill(-pid, signal);
                 }
             }
         }
-    }
-}
-
-/// Whether phantom's process group is the foreground group of its
-/// controlling terminal, i.e. a terminal-generated SIGINT reached the child
-/// too. Checks stdin, stdout and stderr so `cmd | phantom exec ...` at a
-/// terminal still counts.
-#[cfg(unix)]
-fn foreground_of_terminal() -> bool {
-    // SAFETY: tcgetpgrp and getpgrp only read process state.
-    unsafe {
-        [libc::STDIN_FILENO, libc::STDOUT_FILENO, libc::STDERR_FILENO]
-            .into_iter()
-            .map(|fd| libc::tcgetpgrp(fd))
-            .find(|&group| group != -1)
-            .is_some_and(|group| group == libc::getpgrp())
     }
 }
 
@@ -888,6 +944,7 @@ mod tests {
         runtime.block_on(async {
             let forwarder = super::SignalForwarder::install().unwrap();
             let mut child = tokio::process::Command::new("sh")
+                .process_group(0)
                 .arg("-c")
                 .arg(r#"trap 'echo term > "$MARKER"; exit 42' TERM; : > "$READY"; while :; do sleep 0.05; done"#)
                 .env("READY", &ready)
