@@ -181,7 +181,7 @@ fn mcp_tool_count_claims_match_the_registry() {
 }
 
 /// Docs with `| Tool | Description | Parameters |` tables or `| Tool | ... |` lists.
-const TOOL_TABLE_DOCS: &[&str] = &["AGENTS.md", "codex.md", "docs/claude-code.md"];
+const TOOL_TABLE_DOCS: &[&str] = &["AGENTS.md", "docs/claude-code.md"];
 
 fn parse_params(cell: &str) -> BTreeSet<String> {
     let mut params = BTreeSet::new();
