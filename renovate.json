@@ -1,0 +1,28 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "timezone": "America/New_York",
+  "schedule": ["before 6am on Monday"],
+  "prConcurrentLimit": 3,
+  "prHourlyLimit": 2,
+  "automerge": false,
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "automerge": false
+  },
+  "packageRules": [
+    {
+      "description": "One pull request for every non-major update.",
+      "matchUpdateTypes": ["minor", "patch", "pin", "digest"],
+      "groupName": "non-major updates",
+      "groupSlug": "non-major"
+    },
+    {
+      "description": "Non-major GitHub Actions updates, including digest and pin updates, stay in one pull request. Majors are not grouped.",
+      "matchManagers": ["github-actions"],
+      "matchUpdateTypes": ["minor", "patch", "pin", "digest"],
+      "groupName": "github-actions",
+      "groupSlug": "github-actions"
+    }
+  ]
+}
