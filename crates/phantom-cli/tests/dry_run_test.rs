@@ -107,6 +107,42 @@ fn assert_values_absent(stdout: &str, stderr: &str) {
     assert!(!stderr.contains("phm_"), "stderr contained a phantom token");
 }
 
+fn phantom_unset(dir: &Path) -> Command {
+    let mut command = Command::cargo_bin("phantom").expect("binary not found");
+    command
+        .current_dir(dir)
+        .env("HOME", dir)
+        .env("XDG_DATA_HOME", dir.join("xdg-data"))
+        .env("XDG_CONFIG_HOME", dir.join("xdg-config"))
+        .env("XDG_STATE_HOME", dir.join("xdg-state"))
+        .env("XDG_CACHE_HOME", dir.join("xdg-cache"))
+        .env("NO_COLOR", "1")
+        .env_remove("PHANTOM_VAULT_PASSPHRASE")
+        .env_remove("PHANTOM_REQUIRE_KEYCHAIN")
+        .env_remove("PHANTOM_AUDIT")
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE");
+    command
+}
+
+/// Project files from a dry-run plan, with the encrypted-file vault path
+/// checked and removed. The vault lives under the temp HOME, so its prefix
+/// follows the platform data dir.
+fn project_files_without_vault(dir: &Path, stdout: &str) -> Vec<String> {
+    let id = phantom_core::config::PhantomConfig::project_id_from_path(dir);
+    let mut files = planned_files(stdout);
+    let vault_at = files
+        .iter()
+        .position(|path| path.ends_with(".vault"))
+        .expect("dry run should list the vault path");
+    let vault = files.remove(vault_at);
+    assert!(
+        vault.ends_with(&format!("vaults/{id}.vault")),
+        "vault path {vault}"
+    );
+    files
+}
+
 fn planned_files(stdout: &str) -> Vec<String> {
     let mut files = Vec::new();
     let mut in_files = false;
@@ -151,7 +187,7 @@ fn init_dry_run_lists_files_and_keys_without_writing_or_printing_values() {
     assert!(stdout.contains("Skipping 1 public key(s)"));
     assert!(stdout.contains("NEXT_PUBLIC_APP_NAME"));
     assert_eq!(
-        planned_files(&stdout),
+        project_files_without_vault(dir.path(), &stdout),
         vec![
             ".env".to_string(),
             ".env.example".to_string(),
@@ -178,7 +214,7 @@ fn init_empty_dry_run_plans_config_and_creates_nothing() {
     assert!(output.status.success(), "empty dry run failed: {stderr}");
     assert!(stdout.contains("Would create an empty vault."));
     assert_eq!(
-        planned_files(&stdout),
+        project_files_without_vault(dir.path(), &stdout),
         vec![".gitignore".to_string(), ".phantom.toml".to_string()]
     );
     assert_values_absent(&stdout, &stderr);
@@ -270,6 +306,7 @@ fn add_dry_run_after_init_does_not_read_or_print_a_value_or_mutate() {
     assert!(output.status.success(), "add dry run failed: {stderr}");
     assert!(stdout.contains("Would add 1 key(s):"));
     assert!(stdout.contains("  + NEW_SERVICE_TOKEN"));
+    assert!(stdout.contains("would add NEW_SERVICE_TOKEN (vault state not checked in dry run)"));
     assert_eq!(
         planned_files(&stdout),
         vec![".env".to_string(), ".phantom.toml".to_string()]
@@ -352,6 +389,7 @@ fn remove_dry_run_after_init_leaves_the_vault_and_dotenv_in_place() {
     assert!(output.status.success(), "remove dry run failed: {stderr}");
     assert!(stdout.contains("Would remove 1 key(s):"));
     assert!(stdout.contains("  - OPENAI_API_KEY"));
+    assert!(stdout.contains("would remove OPENAI_API_KEY (vault state not checked in dry run)"));
     assert_eq!(
         planned_files(&stdout),
         vec![".env".to_string(), ".phantom.toml".to_string()]
@@ -363,4 +401,104 @@ fn remove_dry_run_after_init_leaves_the_vault_and_dotenv_in_place() {
     for path in vault_before {
         assert_eq!(before.get(&path), after.get(&path), "vault bytes changed");
     }
+}
+
+#[test]
+fn snapshot_records_empty_directories_lock_files_and_dotfiles() {
+    let dir = common::canonical_tempdir();
+    fs::create_dir(dir.path().join("empty-meta")).unwrap();
+    fs::write(dir.path().join(".hidden-lock"), b"dot").unwrap();
+    fs::write(dir.path().join("project.lock"), b"lock").unwrap();
+    let shot = snapshot(dir.path());
+    assert!(
+        shot.contains_key("empty-meta/"),
+        "empty directories must be recorded"
+    );
+    assert_eq!(
+        shot.get(".hidden-lock").map(Vec::as_slice),
+        Some(b"dot".as_slice())
+    );
+    assert_eq!(
+        shot.get("project.lock").map(Vec::as_slice),
+        Some(b"lock".as_slice())
+    );
+    assert!(shot.get("empty-meta/").unwrap().is_empty());
+}
+
+#[test]
+fn add_and_remove_dry_run_with_passphrase_unset_create_no_app_data() {
+    let dir = common::canonical_tempdir();
+    fs::create_dir(dir.path().join("empty-meta")).unwrap();
+    fs::write(dir.path().join(".hidden-lock"), b"dot").unwrap();
+    fs::write(dir.path().join("project.lock"), b"lock").unwrap();
+    fs::write(dir.path().join(".env"), "PORT=3000\n").unwrap();
+    phantom_core::config::PhantomConfig::new_with_defaults(
+        phantom_core::config::PhantomConfig::project_id_from_path(dir.path()),
+    )
+    .save(&dir.path().join(".phantom.toml"))
+    .unwrap();
+    let before = snapshot(dir.path());
+    assert!(before.contains_key("empty-meta/"));
+    assert!(before.contains_key(".hidden-lock"));
+    assert!(before.contains_key("project.lock"));
+
+    for (verb, name) in [("add", "NEW_SERVICE_TOKEN"), ("remove", "OPENAI_API_KEY")] {
+        let output = phantom_unset(dir.path())
+            .args([verb, name, "--dry-run"])
+            .output()
+            .expect("run dry-run");
+        let (stdout, stderr) = text(&output);
+        assert!(output.status.success(), "{verb} dry run failed: {stderr}");
+        assert!(stdout.contains(&format!(
+            "would {verb} {name} (vault state not checked in dry run)"
+        )));
+        assert!(!stderr.contains("OS keychain"), "{stderr}");
+        assert!(!stderr.contains("passphrase"), "{stderr}");
+        assert_values_absent(&stdout, &stderr);
+        assert_unchanged(&before, &snapshot(dir.path()));
+        assert!(!dir.path().join("xdg-data").exists());
+        assert!(!dir.path().join("xdg-config").exists());
+        assert!(!dir.path().join("xdg-state").exists());
+        assert!(!dir.path().join("xdg-cache").exists());
+    }
+}
+
+#[test]
+fn init_dry_run_reports_existing_claude_files_as_may_update() {
+    let dir = common::canonical_tempdir();
+    fs::create_dir(dir.path().join(".claude")).unwrap();
+    fs::write(
+        dir.path().join(".claude/settings.local.json"),
+        "{\"theme\":\"dark\"}\n",
+    )
+    .unwrap();
+    fs::write(dir.path().join(".mcp.json"), "{}\n").unwrap();
+    fs::write(
+        dir.path().join(".env"),
+        format!("OPENAI_API_KEY={CANARY}\n"),
+    )
+    .unwrap();
+    let before = snapshot(dir.path());
+    let output = phantom(dir.path())
+        .args(["init", "--dry-run"])
+        .output()
+        .expect("run init --dry-run");
+    let (stdout, stderr) = text(&output);
+    assert!(output.status.success(), "init dry run failed: {stderr}");
+    assert!(stdout.contains("may update .claude/settings.local.json"));
+    assert!(stdout.contains("may update .mcp.json"));
+    let files = planned_files(&stdout);
+    assert!(
+        !files
+            .iter()
+            .any(|path| path.contains("settings.local.json")),
+        "{files:?}"
+    );
+    assert!(
+        !files.iter().any(|path| path.ends_with(".mcp.json")),
+        "{files:?}"
+    );
+    assert!(files.iter().any(|path| path.ends_with(".vault")));
+    assert_values_absent(&stdout, &stderr);
+    assert_unchanged(&before, &snapshot(dir.path()));
 }

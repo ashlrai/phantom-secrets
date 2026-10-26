@@ -6,13 +6,20 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ### Added (`--dry-run` for `phantom init`, `phantom add`, and `phantom remove`)
 
-- `phantom init --dry-run` prints the keys it would protect and the project
-  files it would write, then exits without creating a vault or changing any
-  file. `phantom init --all --dry-run` keeps its existing scan report.
+- `phantom init --dry-run` prints the keys it would protect, the project
+  files it would write, and the encrypted-file vault path it would create,
+  then exits without creating a vault or changing any file. When
+  `.claude/settings.local.json` or `.mcp.json` already exist, it prints
+  `may update <path>` and does not take the project lock.
+  `phantom init --all --dry-run` keeps its existing scan report.
   `phantom init --empty --dry-run` reports the config file and the empty
   vault it would create.
 - `phantom add --dry-run` and `phantom remove --dry-run` print the key and
-  the files that transaction would write. Add does not read a value. Remove
+  the files that transaction would write without opening the vault, taking a
+  project lock, or creating app-data directories. They print
+  `would add <name> (vault state not checked in dry run)` or
+  `would remove <name> (vault state not checked in dry run)` because a
+  read-only name lookup is not available. Add does not read a value. Remove
   does not ask for the trusted-terminal challenge and does not delete the
   vault entry. None of these previews print secret values.
 

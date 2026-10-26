@@ -53,8 +53,8 @@ pub fn run(env_path_arg: &str) -> Result<()> {
     let existing_protected_setup =
         config_exists || dotenv.entries().iter().any(|entry| entry.is_phantom);
     let env_transaction_path = project_dir.join(env_name);
-    let files = if keys.is_empty() && !existing_protected_setup {
-        Vec::new()
+    let (mut files, may_update) = if keys.is_empty() && !existing_protected_setup {
+        (Vec::new(), Vec::new())
     } else {
         planned_files(
             &project_dir,
@@ -63,12 +63,17 @@ pub fn run(env_path_arg: &str) -> Result<()> {
             !keys.is_empty(),
         )?
     };
+    if !keys.is_empty() {
+        files.push(planned_vault_path(&project_dir)?);
+    }
     crate::commands::plan_print::print_plan(
         "add",
         &keys,
         &skipped_public,
         &files,
         &project_dir,
+        false,
+        &may_update,
         false,
     );
     Ok(())
@@ -90,7 +95,17 @@ pub fn run_empty() -> Result<()> {
             if let Some(file) = super::env::prepare_gitignore(&cwd)? {
                 files.push(file.path().to_path_buf());
             }
-            crate::commands::plan_print::print_plan("add", &[], &[], &files, &cwd, true);
+            files.push(planned_vault_path(&cwd)?);
+            crate::commands::plan_print::print_plan(
+                "add",
+                &[],
+                &[],
+                &files,
+                &cwd,
+                true,
+                &[],
+                false,
+            );
             Ok(())
         }
     }
@@ -122,7 +137,7 @@ fn planned_files(
     env_path: &Path,
     config_path: &Path,
     rewrite_dotenv: bool,
-) -> Result<Vec<PathBuf>> {
+) -> Result<(Vec<PathBuf>, Vec<PathBuf>)> {
     let mut files = vec![config_path.to_path_buf()];
     if rewrite_dotenv {
         files.push(env_path.to_path_buf());
@@ -137,7 +152,8 @@ fn planned_files(
     if let Some(file) = super::env::prepare_gitignore(project_dir)? {
         files.push(file.path().to_path_buf());
     }
-    files.extend(planned_claude_files(project_dir)?);
+    let claude = planned_claude_files(project_dir)?;
+    files.extend(claude.create);
     let mut guidance = super::docs::prepare_guidance(project_dir, None)?;
     files.extend(
         guidance
@@ -148,24 +164,48 @@ fn planned_files(
     if let Some(path) = planned_hook(project_dir)? {
         files.push(path);
     }
-    Ok(files)
+    Ok((files, claude.may_update))
 }
 
-/// Files the Claude auto-setup would create. Existing settings are not diffed
-/// here: that planner takes the project transaction lock, which creates
-/// directories. A dry run must not do that.
-fn planned_claude_files(project_dir: &Path) -> Result<Vec<PathBuf>> {
+/// Encrypted-file vault location for this checkout. Path math only: the
+/// directory is not created and the keychain is not opened.
+fn planned_vault_path(project_dir: &Path) -> Result<PathBuf> {
+    let project_id = phantom_core::config::PhantomConfig::project_id_from_path(project_dir);
+    phantom_vault::encrypted_file_vault_path(&project_id)
+        .context("Failed to locate the encrypted-file vault path")
+}
+
+struct ClaudePlan {
+    create: Vec<PathBuf>,
+    may_update: Vec<PathBuf>,
+}
+
+/// Claude files a real init would create or merge. Existing settings are not
+/// diffed: that planner takes the project transaction lock, which creates
+/// directories. A dry run reports `may update` and does not lock.
+fn planned_claude_files(project_dir: &Path) -> Result<ClaudePlan> {
     let claude_dir = project_dir.join(".claude");
     match std::fs::symlink_metadata(&claude_dir) {
         Ok(metadata) if metadata.file_type().is_symlink() => {
             anyhow::bail!("Refusing to inspect a symlinked .claude directory");
         }
         Ok(metadata) if metadata.is_dir() => {}
-        Ok(_) => return Ok(Vec::new()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Ok(_) => {
+            return Ok(ClaudePlan {
+                create: Vec::new(),
+                may_update: Vec::new(),
+            });
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(ClaudePlan {
+                create: Vec::new(),
+                may_update: Vec::new(),
+            });
+        }
         Err(error) => return Err(error).context("Failed to inspect .claude"),
     }
-    let mut files = Vec::new();
+    let mut create = Vec::new();
+    let mut may_update = Vec::new();
     for path in [
         claude_dir.join("settings.local.json"),
         project_dir.join(".mcp.json"),
@@ -173,11 +213,11 @@ fn planned_claude_files(project_dir: &Path) -> Result<Vec<PathBuf>> {
         match phantom_core::fs::read_regular_file(&path)
             .with_context(|| format!("Failed to safely inspect {}", path.display()))?
         {
-            Some(_) => {}
-            None => files.push(path),
+            Some(_) => may_update.push(path),
+            None => create.push(path),
         }
     }
-    Ok(files)
+    Ok(ClaudePlan { create, may_update })
 }
 
 fn planned_hook(project_dir: &Path) -> Result<Option<PathBuf>> {

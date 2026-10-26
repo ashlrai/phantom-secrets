@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 
 /// Human preview shared by init, add, and remove. Names and relative paths
 /// only: callers must not pass secret values or file contents.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn print_plan(
     action: &str,
     keys: &[String],
@@ -9,12 +10,19 @@ pub(crate) fn print_plan(
     files: &[PathBuf],
     project: &Path,
     empty_vault: bool,
+    may_update: &[PathBuf],
+    vault_unchecked: bool,
 ) {
     println!("Dry run. No files, config, or vault entries will be written.");
     println!("Would {action} {} key(s):", keys.len());
     let marker = if action == "remove" { "-" } else { "+" };
     for key in keys {
         println!("  {marker} {key}");
+    }
+    if vault_unchecked {
+        for key in keys {
+            println!("would {action} {key} (vault state not checked in dry run)");
+        }
     }
     if !skipped_public.is_empty() {
         println!(
@@ -34,6 +42,15 @@ pub(crate) fn print_plan(
     println!("Would write {} file(s):", shown.len());
     for path in &shown {
         println!("  {path}");
+    }
+    let mut updates: Vec<String> = may_update
+        .iter()
+        .map(|file| display_path(project, file))
+        .collect();
+    updates.sort();
+    updates.dedup();
+    for path in &updates {
+        println!("may update {path}");
     }
     if empty_vault {
         println!("Would create an empty vault.");

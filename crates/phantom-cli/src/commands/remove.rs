@@ -5,7 +5,7 @@ use std::io::{IsTerminal, Write};
 
 pub fn run(name: &str, dry_run: bool) -> Result<()> {
     super::add::validate_secret_name(name)?;
-    let project_dir = std::env::current_dir()?
+    let project_dir = crate::util::project_dir()?
         .canonicalize()
         .context("Failed to resolve project directory")?;
     let config_path = project_dir.join(".phantom.toml");
@@ -14,6 +14,9 @@ pub fn run(name: &str, dry_run: bool) -> Result<()> {
     let config = PhantomConfig::load_from_bytes(&config_path, &config_before)
         .context("Failed to load exact .phantom.toml snapshot")?;
     super::add::validate_managed_dotenv_preflight(&project_dir, &config)?;
+    if dry_run {
+        return dry_run_remove(&project_dir, &config_path, &config, name);
+    }
     let vault = phantom_vault::try_create_vault(config.local_project_id())?;
     let plan = prepare_remove(
         &project_dir,
@@ -22,17 +25,6 @@ pub fn run(name: &str, dry_run: bool) -> Result<()> {
         vault.as_ref(),
         name,
     )?;
-    if dry_run {
-        crate::commands::plan_print::print_plan(
-            "remove",
-            &[name.to_string()],
-            &[],
-            &[config_path, plan.dotenv_path().to_path_buf()],
-            &project_dir,
-            false,
-        );
-        return Ok(());
-    }
     require_trusted_terminal_remove(&plan)?;
     let env_path = plan.dotenv_path().to_path_buf();
     plan.commit(vault.as_ref()).context(
@@ -49,6 +41,30 @@ pub fn run(name: &str, dry_run: bool) -> Result<()> {
             .cyan()
     );
 
+    Ok(())
+}
+
+/// Plan a removal from the config and dotenv only. Vault membership is not
+/// listed: opening the vault can take the project lock and create app-data
+/// directories.
+fn dry_run_remove(
+    project_dir: &std::path::Path,
+    config_path: &std::path::Path,
+    config: &PhantomConfig,
+    name: &str,
+) -> Result<()> {
+    let resolved = phantom_core::managed_dotenv::resolve_dotenv(project_dir, config, &[])
+        .context("Failed to resolve the managed dotenv")?;
+    crate::commands::plan_print::print_plan(
+        "remove",
+        &[name.to_string()],
+        &[],
+        &[config_path.to_path_buf(), resolved.path],
+        project_dir,
+        false,
+        &[],
+        true,
+    );
     Ok(())
 }
 
@@ -110,10 +126,87 @@ fn require_trusted_terminal_remove(plan: &phantom_vault::ManagedRemovePlan) -> R
     Ok(())
 }
 
+#[cfg(test)]
+mod source_tests {
+    #[test]
+    fn dry_run_returns_before_any_vault_open() {
+        let source = include_str!("remove.rs");
+        let run_body = source
+            .split("pub fn run(")
+            .nth(1)
+            .unwrap()
+            .split("fn dry_run_remove(")
+            .next()
+            .unwrap();
+        let dry = run_body.find("if dry_run {").unwrap();
+        let vault = run_body.find("phantom_vault::try_create_vault").unwrap();
+        assert!(
+            dry < vault,
+            "dry-run must return before the vault is opened"
+        );
+        let dry_fn = source
+            .split("fn dry_run_remove(")
+            .nth(1)
+            .unwrap()
+            .split("fn prepare_remove(")
+            .next()
+            .unwrap();
+        assert!(!dry_fn.contains("try_create_vault"));
+        assert!(!dry_fn.contains("acquire_project_lock"));
+        assert!(!dry_fn.contains("get_or_create_passphrase"));
+        assert!(!dry_fn.contains("prepare_remove"));
+    }
+}
+
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
-    use crate::util::test_seam::{empty_keychain, LockedProject};
+    use crate::util::test_seam::{empty_keychain, LockedProject, TestProject};
+
+    struct EnvRestore {
+        previous: Vec<(&'static str, Option<std::ffi::OsString>)>,
+    }
+
+    impl EnvRestore {
+        fn apply(home: &std::path::Path) -> Self {
+            let keys = [
+                "HOME",
+                "XDG_DATA_HOME",
+                "XDG_CONFIG_HOME",
+                "XDG_STATE_HOME",
+                "XDG_CACHE_HOME",
+                "PHANTOM_VAULT_PASSPHRASE",
+                "PHANTOM_REQUIRE_KEYCHAIN",
+            ];
+            let previous = keys
+                .into_iter()
+                .map(|key| (key, std::env::var_os(key)))
+                .collect();
+            unsafe {
+                std::env::set_var("HOME", home);
+                std::env::set_var("XDG_DATA_HOME", home.join("xdg-data"));
+                std::env::set_var("XDG_CONFIG_HOME", home.join("xdg-config"));
+                std::env::set_var("XDG_STATE_HOME", home.join("xdg-state"));
+                std::env::set_var("XDG_CACHE_HOME", home.join("xdg-cache"));
+                std::env::remove_var("PHANTOM_VAULT_PASSPHRASE");
+                std::env::remove_var("PHANTOM_REQUIRE_KEYCHAIN");
+            }
+            Self { previous }
+        }
+    }
+
+    impl Drop for EnvRestore {
+        fn drop(&mut self) {
+            for (key, value) in &self.previous {
+                unsafe {
+                    match value {
+                        Some(value) => std::env::set_var(key, value),
+                        None => std::env::remove_var(key),
+                    }
+                }
+            }
+        }
+    }
 
     /// Beside an encrypted-file vault this process cannot open, the vault is
     /// the OS keychain, which lacks the name: remove reported "not found".
@@ -138,5 +231,38 @@ mod tests {
         assert!(chain.contains("PHANTOM_VAULT_PASSPHRASE"));
         assert!(!chain.contains("not found"));
         assert_eq!(std::fs::read(&config_path).unwrap(), config_before);
+    }
+
+    #[test]
+    fn dry_run_remove_does_not_reach_the_keychain_or_create_app_data() {
+        let _guard = crate::test_support::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let home = tempfile::tempdir().unwrap();
+        let project = home.path().canonicalize().unwrap();
+        let _restore = EnvRestore::apply(&project);
+        std::fs::create_dir(project.join("empty-meta")).unwrap();
+        std::fs::write(project.join(".hidden-lock"), b"lock").unwrap();
+        std::fs::write(project.join("project.lock"), b"lock").unwrap();
+        phantom_core::config::PhantomConfig::new_with_defaults(
+            phantom_core::config::PhantomConfig::project_id_from_path(&project),
+        )
+        .save(&project.join(".phantom.toml"))
+        .unwrap();
+        std::fs::write(project.join(".env"), "PORT=3000\n").unwrap();
+        let _seam =
+            TestProject::install(project.clone(), crate::util::test_seam::untouched_keychain);
+        let before = std::fs::read_dir(&project).unwrap().count();
+
+        let outcome = run("OPENAI_API_KEY", true);
+
+        assert!(outcome.is_ok(), "{outcome:?}");
+        assert_eq!(before, std::fs::read_dir(&project).unwrap().count());
+        assert!(!project.join("xdg-data").exists());
+        assert!(!project.join(".local").exists());
+        assert!(project.join("empty-meta").is_dir());
+        assert!(project.join(".hidden-lock").is_file());
+        assert!(project.join("project.lock").is_file());
+        drop(_seam);
     }
 }
