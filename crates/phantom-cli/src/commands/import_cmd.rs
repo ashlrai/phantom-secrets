@@ -87,7 +87,7 @@ pub fn run(
             .0
             .get(name)
             .expect("every reviewed destination has an imported value");
-        let before = snapshot_destination_secret(vault.as_ref(), name)?;
+        let before = reviewed_before_image(vault.as_ref(), name, &overwrite_names)?;
         mutations.push(secret_mutation(name, value.as_str(), before.as_ref()));
     }
     let imported = mutations.len();
@@ -438,7 +438,7 @@ pub fn run_from(source: &str, file: &str, force: bool) -> Result<()> {
         let value = secrets
             .get(name)
             .expect("every reviewed destination has an imported value");
-        let before = snapshot_destination_secret(vault.as_ref(), name)?;
+        let before = reviewed_before_image(vault.as_ref(), name, &overwrite_names)?;
         mutations.push(secret_mutation(name, value.as_ref(), before.as_ref()));
     }
     let imported = mutations.len();
@@ -762,6 +762,23 @@ fn snapshot_destination_secret(
     }
 }
 
+/// The before-image an import mutation is checked against at commit. A name
+/// reviewed as new keeps an absent before-image, so a value another writer
+/// created after the preflight makes the commit refuse instead of being
+/// replaced without `--force`; only a reviewed overwrite reads the current
+/// value.
+fn reviewed_before_image(
+    vault: &dyn phantom_vault::VaultBackend,
+    name: &str,
+    overwrite_names: &[String],
+) -> Result<Option<Zeroizing<String>>> {
+    if overwrite_names.iter().any(|overwrite| overwrite == name) {
+        snapshot_destination_secret(vault, name)
+    } else {
+        Ok(None)
+    }
+}
+
 fn secret_mutation(
     name: &str,
     value: &str,
@@ -938,6 +955,18 @@ mod fail_closed_tests {
         assert!(error
             .to_string()
             .contains("injected destination read failure"));
+    }
+
+    /// A name reviewed as new is never read back as a before-image: if another
+    /// writer creates it after the preflight, the commit must refuse rather
+    /// than treat it as an authorised overwrite. A reviewed overwrite is read.
+    #[test]
+    fn reviewed_new_names_keep_an_absent_before_image() {
+        let overwrite = names(&["OLD_KEY"]);
+        let new = reviewed_before_image(&ListFailingVault, "NEW_KEY", &overwrite)
+            .expect("a reviewed new name does not read the destination");
+        assert!(new.is_none());
+        assert!(reviewed_before_image(&ListFailingVault, "OLD_KEY", &overwrite).is_err());
     }
 
     #[test]
