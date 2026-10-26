@@ -410,6 +410,7 @@ fn require_trusted_terminal_rotate_with(
 /// placeholder remap is not evidence of credential rotation and must not renew
 /// provider lifecycle metadata or deploy an unchanged credential.
 pub fn run_with_expiry(sync_after: bool, expiry_days: Option<u64>) -> Result<()> {
+    phantom_core::audit::admit_engine()?;
     if expiry_days.is_some() {
         anyhow::bail!(
             "--with-expiry is not valid for a Phantom token remap: the provider credential is unchanged, so its TTL cannot be renewed. Rotate at the provider, then store the replacement from a trusted terminal; automated live provider issuance is disabled."
@@ -436,10 +437,12 @@ pub fn run_with_expiry(sync_after: bool, expiry_days: Option<u64>) -> Result<()>
         &mut std::io::stdin().lock(),
         &mut std::io::stderr().lock(),
     )?;
-    plan.commit()?;
-    for name in &plan.names {
-        phantom_core::audit::log("secret.token_remapped", Some(name));
-    }
+    phantom_core::audit::operation_batch(
+        "secret.token_remapped",
+        &plan.names,
+        || plan.commit(),
+        anyhow::Error::from,
+    )?;
     println!(
         "{} Remapped {} Phantom token(s) in .env. Provider credentials and expiry metadata are unchanged.",
         "ok".green().bold(),

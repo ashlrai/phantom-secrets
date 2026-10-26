@@ -3684,9 +3684,6 @@ impl PhantomMcpServer {
         let project_root = transaction_lock.project_root_at_acquisition();
         let env_path = resolve_env_path_anchored(&transaction_lock, project_root, &config, &names)?;
         remap_phantom_tokens_locked(&transaction_lock, &env_path, &names)?;
-        for name in &names {
-            phantom_core::audit::log("secret.token_remapped", Some(name));
-        }
 
         text_result(with_text_note(
             format!(
@@ -5491,8 +5488,6 @@ impl PhantomMcpServer {
             std::slice::from_ref(&params.name),
         )?;
 
-        phantom_core::audit::log("secret.token_remapped", Some(&params.name));
-
         text_result(format!(
             "Remapped the local Phantom token for '{}'. Provider credential, expiry metadata, and incident state are unchanged.",
             params.name
@@ -7196,69 +7191,73 @@ fn remap_phantom_tokens_locked_with(
     names: &[String],
     before_commit: impl FnOnce(),
 ) -> Result<(), McpError> {
-    let target = transaction_lock.target(env_path).map_err(|error| {
-        internal_err(format!(
-            "Failed to retain managed dotenv {}: {error}",
-            env_path.display()
-        ))
-    })?;
-    let before = target
-        .read_regular()
-        .map_err(|error| {
-            internal_err(format!(
-                "Failed to snapshot {} through the retained project root: {error}",
-                env_path.display()
-            ))
-        })?
-        .ok_or_else(|| {
-            invalid_params_err(format!(
-                "Cannot remap Phantom tokens: {} does not exist.",
-                env_path.display()
-            ))
-        })?;
-    let env_text = std::str::from_utf8(before.bytes()).map_err(|_| {
-        internal_err(format!(
-            "Failed to parse {}: managed dotenv is not valid UTF-8",
-            env_path.display()
-        ))
-    })?;
-    let dotenv = DotenvFile::parse_str(env_text);
-    dotenv
-        .validate_for_mutation()
-        .map_err(|error| invalid_params_err(error.to_string()))?;
-    for name in names {
-        let entry = dotenv
-            .entries()
-            .into_iter()
-            .find(|entry| entry.key == *name)
-            .ok_or_else(|| {
-                invalid_params_err(format!(
-                    "Cannot remap '{name}': it is not present in {}.",
+    phantom_core::audit::operation_batch(
+        "secret.token_remapped",
+        names,
+        || {
+            let target = transaction_lock.target(env_path).map_err(|error| {
+                internal_err(format!(
+                    "Failed to retain managed dotenv {}: {error}",
                     env_path.display()
                 ))
             })?;
-        if !entry.is_phantom {
-            return Err(invalid_params_err(format!(
-                "Cannot remap '{name}': its value in {} is not a protected phm_ token.",
-                env_path.display()
-            )));
-        }
-    }
+            let before = target
+                .read_regular()
+                .map_err(|error| {
+                    internal_err(format!(
+                        "Failed to snapshot {} through the retained project root: {error}",
+                        env_path.display()
+                    ))
+                })?
+                .ok_or_else(|| {
+                    invalid_params_err(format!(
+                        "Cannot remap Phantom tokens: {} does not exist.",
+                        env_path.display()
+                    ))
+                })?;
+            let env_text = std::str::from_utf8(before.bytes()).map_err(|_| {
+                internal_err(format!(
+                    "Failed to parse {}: managed dotenv is not valid UTF-8",
+                    env_path.display()
+                ))
+            })?;
+            let dotenv = DotenvFile::parse_str(env_text);
+            dotenv
+                .validate_for_mutation()
+                .map_err(|error| invalid_params_err(error.to_string()))?;
+            for name in names {
+                let entry = dotenv
+                    .entries()
+                    .into_iter()
+                    .find(|entry| entry.key == *name)
+                    .ok_or_else(|| {
+                        invalid_params_err(format!(
+                            "Cannot remap '{name}': it is not present in {}.",
+                            env_path.display()
+                        ))
+                    })?;
+                if !entry.is_phantom {
+                    return Err(invalid_params_err(format!(
+                        "Cannot remap '{name}': its value in {} is not a protected phm_ token.",
+                        env_path.display()
+                    )));
+                }
+            }
 
-    let mut token_map = TokenMap::new();
-    for name in names {
-        token_map.insert(name.clone());
-    }
-    let (rewritten, mut originals) = dotenv
-        .rewrite_with_phantoms(&token_map)
-        .map_err(|error| invalid_params_err(error.to_string()))?;
-    for value in originals.values_mut() {
-        zeroize::Zeroize::zeroize(value);
-    }
-    originals.clear();
+            let mut token_map = TokenMap::new();
+            for name in names {
+                token_map.insert(name.clone());
+            }
+            let (rewritten, mut originals) = dotenv
+                .rewrite_with_phantoms(&token_map)
+                .map_err(|error| invalid_params_err(error.to_string()))?;
+            for value in originals.values_mut() {
+                zeroize::Zeroize::zeroize(value);
+            }
+            originals.clear();
 
-    before_commit();
-    match target.replace_if_exact_with_permissions(
+            before_commit();
+            match target.replace_if_exact_with_permissions(
         Some(&before),
         rewritten.as_bytes(),
         before.permissions(),
@@ -7279,6 +7278,9 @@ fn remap_phantom_tokens_locked_with(
             env_path.display()
         ))),
     }
+        },
+        |_| internal_err("usage audit unavailable or engine refused"),
+    )
 }
 
 /// Convert a Unix timestamp to a minimal ISO-8601 string (UTC, no external deps).

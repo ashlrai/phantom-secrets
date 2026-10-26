@@ -101,6 +101,7 @@ impl FileVault {
     /// then pins `vaults` and takes the legacy subtree lock for compatibility
     /// with older Phantom processes before performing capability-relative I/O.
     pub fn new(base_dir: &Path, project_id: &str, passphrase: String) -> Result<Self> {
+        phantom_core::audit::admit_engine()?;
         validate_project_id(project_id)?;
         let (base_anchor, canonical_base) = open_trusted_base(base_dir)?;
         let names = VaultNames::new(project_id);
@@ -362,57 +363,61 @@ fn require_durable_effect<T>(outcome: AnchoredEffect<T>, operation: &str) -> Res
 
 impl VaultBackend for FileVault {
     fn store(&self, name: &str, value: &str) -> Result<()> {
-        let locked = self.lock_view()?;
-        let LoadedVault { mut data, before } = self.load(&locked)?;
-        // Preserve existing metadata on overwrite; seed created_at for new entries.
-        if !data.secrets.contains_key(name) {
-            data.metadata
-                .entry(name.to_string())
-                .or_insert_with(crate::metadata::SecretMetadata::new_now);
-        }
-        data.replace_value(name, value);
-        self.save(&locked, &data, before.as_ref())?;
-        phantom_core::audit::log("vault.store", Some(name));
-        Ok(())
+        phantom_core::audit::operation("vault.store", name, || {
+            let locked = self.lock_view()?;
+            let LoadedVault { mut data, before } = self.load(&locked)?;
+            // Preserve existing metadata on overwrite; seed created_at for new entries.
+            if !data.secrets.contains_key(name) {
+                data.metadata
+                    .entry(name.to_string())
+                    .or_insert_with(crate::metadata::SecretMetadata::new_now);
+            }
+            data.replace_value(name, value);
+            self.save(&locked, &data, before.as_ref())?;
+            Ok(())
+        })
     }
 
     fn retrieve(&self, name: &str) -> Result<zeroize::Zeroizing<String>> {
-        let locked = self.lock_view()?;
-        let data = self.load(&locked)?.data;
-        let value = data
-            .secrets
-            .get(name)
-            .cloned()
-            .ok_or_else(|| PhantomError::SecretNotFound(name.to_string()))?;
-        phantom_core::audit::log("vault.retrieve", Some(name));
-        Ok(zeroize::Zeroizing::new(value))
+        phantom_core::audit::operation("vault.retrieve", name, || {
+            let locked = self.lock_view()?;
+            let data = self.load(&locked)?.data;
+            let value = data
+                .secrets
+                .get(name)
+                .cloned()
+                .ok_or_else(|| PhantomError::SecretNotFound(name.to_string()))?;
+            Ok(zeroize::Zeroizing::new(value))
+        })
     }
 
     fn retrieve_for_injection(&self, name: &str) -> Result<zeroize::Zeroizing<String>> {
-        let locked = self.lock_view()?;
-        let data = self.load(&locked)?.data;
-        crate::traits::ensure_secret_injectable(name, data.metadata.get(name))?;
-        let value = data
-            .secrets
-            .get(name)
-            .cloned()
-            .ok_or_else(|| PhantomError::SecretNotFound(name.to_string()))?;
-        phantom_core::audit::log("vault.retrieve_for_injection", Some(name));
-        Ok(zeroize::Zeroizing::new(value))
+        phantom_core::audit::operation("vault.retrieve_for_injection", name, || {
+            let locked = self.lock_view()?;
+            let data = self.load(&locked)?.data;
+            crate::traits::ensure_secret_injectable(name, data.metadata.get(name))?;
+            let value = data
+                .secrets
+                .get(name)
+                .cloned()
+                .ok_or_else(|| PhantomError::SecretNotFound(name.to_string()))?;
+            Ok(zeroize::Zeroizing::new(value))
+        })
     }
 
     fn delete(&self, name: &str) -> Result<()> {
-        let locked = self.lock_view()?;
-        let LoadedVault { mut data, before } = self.load(&locked)?;
-        if data.secrets.remove(name).is_none() {
-            return Err(PhantomError::SecretNotFound(name.to_string()));
-        }
-        // Remove associated metadata so the vault stays consistent.
-        data.metadata.remove(name);
-        data.validation_metadata.remove(name);
-        self.save(&locked, &data, before.as_ref())?;
-        phantom_core::audit::log("vault.delete", Some(name));
-        Ok(())
+        phantom_core::audit::operation("vault.delete", name, || {
+            let locked = self.lock_view()?;
+            let LoadedVault { mut data, before } = self.load(&locked)?;
+            if data.secrets.remove(name).is_none() {
+                return Err(PhantomError::SecretNotFound(name.to_string()));
+            }
+            // Remove associated metadata so the vault stays consistent.
+            data.metadata.remove(name);
+            data.validation_metadata.remove(name);
+            self.save(&locked, &data, before.as_ref())?;
+            Ok(())
+        })
     }
 
     fn compare_and_swap(
@@ -421,31 +426,32 @@ impl VaultBackend for FileVault {
         expected: Option<&str>,
         replacement: Option<&str>,
     ) -> Result<bool> {
-        let locked = self.lock_view()?;
-        let LoadedVault { mut data, before } = self.load(&locked)?;
-        let current = data.secrets.get(name).map(String::as_str);
-        if current != expected {
-            return Ok(false);
-        }
+        phantom_core::audit::operation("vault.compare_and_swap", name, || {
+            let locked = self.lock_view()?;
+            let LoadedVault { mut data, before } = self.load(&locked)?;
+            let current = data.secrets.get(name).map(String::as_str);
+            if current != expected {
+                return Ok(false);
+            }
 
-        match replacement {
-            Some(value) => {
-                if current.is_none() {
-                    data.metadata
-                        .entry(name.to_string())
-                        .or_insert_with(crate::metadata::SecretMetadata::new_now);
+            match replacement {
+                Some(value) => {
+                    if current.is_none() {
+                        data.metadata
+                            .entry(name.to_string())
+                            .or_insert_with(crate::metadata::SecretMetadata::new_now);
+                    }
+                    data.replace_value(name, value);
                 }
-                data.replace_value(name, value);
+                None => {
+                    data.secrets.remove(name);
+                    data.metadata.remove(name);
+                    data.validation_metadata.remove(name);
+                }
             }
-            None => {
-                data.secrets.remove(name);
-                data.metadata.remove(name);
-                data.validation_metadata.remove(name);
-            }
-        }
-        self.save(&locked, &data, before.as_ref())?;
-        phantom_core::audit::log("vault.compare_and_swap", Some(name));
-        Ok(true)
+            self.save(&locked, &data, before.as_ref())?;
+            Ok(true)
+        })
     }
 
     fn list(&self) -> Result<Vec<String>> {
@@ -546,6 +552,7 @@ impl VaultBackend for FileVault {
         &self,
         changes: &[ValidationMetadataCas],
     ) -> Result<bool> {
+        phantom_core::audit::admit_engine()?;
         let locked = self.lock_view()?;
         let LoadedVault { mut data, before } = self.load(&locked)?;
         let mut seen = std::collections::BTreeSet::new();
@@ -580,14 +587,15 @@ impl VaultBackend for FileVault {
     }
 
     fn store_with_expiry(&self, name: &str, value: &str, days_ttl: u64) -> Result<()> {
-        let locked = self.lock_view()?;
-        let LoadedVault { mut data, before } = self.load(&locked)?;
-        data.replace_value(name, value);
-        data.metadata
-            .insert(name.to_string(), SecretMetadata::with_expiry(days_ttl));
-        self.save(&locked, &data, before.as_ref())?;
-        phantom_core::audit::log("vault.store", Some(name));
-        Ok(())
+        phantom_core::audit::operation("vault.store", name, || {
+            let locked = self.lock_view()?;
+            let LoadedVault { mut data, before } = self.load(&locked)?;
+            data.replace_value(name, value);
+            data.metadata
+                .insert(name.to_string(), SecretMetadata::with_expiry(days_ttl));
+            self.save(&locked, &data, before.as_ref())?;
+            Ok(())
+        })
     }
 }
 

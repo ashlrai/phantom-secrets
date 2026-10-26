@@ -604,11 +604,14 @@ enum Commands {
         action: LeaksAction,
     },
 
-    /// View the opt-in audit log (requires PHANTOM_AUDIT=1 to start logging)
+    /// Query agent usage as JSONL, or inspect and verify the audit log
     #[command(next_help_heading = "Maintenance")]
     Audit {
         #[command(subcommand)]
-        action: AuditAction,
+        action: Option<AuditAction>,
+        /// Include events at or after this UNIX timestamp (default query only).
+        #[arg(long, value_name = "UNIX_SECONDS")]
+        since: Option<u64>,
     },
 
     /// Cryptography inventory: algorithms and format tags Phantom uses
@@ -1074,6 +1077,7 @@ impl std::error::Error for UsageError {}
 fn apply_global_json(command: &mut Commands) -> Result<(), &'static str> {
     use commands::audit::AuditAction as A;
     match command {
+        Commands::Audit { action: None, .. } => Ok(()),
         // Commands that read the global flag themselves.
         Commands::Status { .. }
         | Commands::Sync { .. }
@@ -1090,7 +1094,8 @@ fn apply_global_json(command: &mut Commands) -> Result<(), &'static str> {
             action: CryptoAction::Inventory { .. },
         }
         | Commands::Audit {
-            action: A::Verify { .. },
+            action: Some(A::Verify { .. }),
+            ..
         }
         | Commands::Setup { status: true, .. }
         | Commands::Grant { .. }
@@ -1136,33 +1141,44 @@ fn apply_global_json(command: &mut Commands) -> Result<(), &'static str> {
         }
         | Commands::Audit {
             action:
-                A::Show { json, .. }
-                | A::Stats { json, .. }
-                | A::Anomalies { json, .. }
-                | A::Incidents { json, .. }
-                | A::Alerts { json, .. },
+                Some(
+                    A::Show { json, .. }
+                    | A::Stats { json, .. }
+                    | A::Anomalies { json, .. }
+                    | A::Incidents { json, .. }
+                    | A::Alerts { json, .. },
+                ),
+            ..
         } => {
             *json = true;
             Ok(())
         }
         // Audit exports whose output is JSON unless another format is chosen.
         Commands::Audit {
-            action: A::Export { format, .. },
+            action: Some(A::Export { format, .. }),
+            ..
         } => json_format(format, "phantom audit export --format csv"),
         Commands::Audit {
-            action: A::Analytics { format, .. },
+            action: Some(A::Analytics { format, .. }),
+            ..
         } => json_format(format, "phantom audit analytics --format csv"),
         Commands::Audit {
-            action: A::ExportRange { format, .. },
+            action: Some(A::ExportRange { format, .. }),
+            ..
         } => json_format(format, "phantom audit export-range --format csv"),
         Commands::Audit {
-            action: A::Report { .. },
+            action: Some(A::Report { .. }),
+            ..
         } => Ok(()),
         // Commands with no JSON output.
         Commands::Audit {
-            action: A::Tail { .. },
+            action: Some(A::Tail { .. }),
+            ..
         } => Err("phantom audit tail"),
-        Commands::Audit { action: A::Path } => Err("phantom audit path"),
+        Commands::Audit {
+            action: Some(A::Path),
+            ..
+        } => Err("phantom audit path"),
         Commands::Agent {
             action: AgentAction::Setup { .. },
         } => Err("phantom agent setup"),
@@ -1505,7 +1521,20 @@ fn run() -> anyhow::Result<()> {
         Commands::Wrap { only, skip } => commands::wrap::run(&only, &skip, cli.quiet),
         Commands::Unwrap => commands::unwrap::run(cli.quiet),
         Commands::Copy { name, to, rename } => commands::copy::run(&name, &to, &rename),
-        Commands::Audit { action } => match action {
+        Commands::Audit {
+            action: None,
+            since,
+        } => commands::audit::run_query(since),
+        Commands::Audit {
+            action: Some(_),
+            since: Some(_),
+        } => Err(
+            UsageError("--since applies to the default phantom audit --json query".into()).into(),
+        ),
+        Commands::Audit {
+            action: Some(action),
+            since: None,
+        } => match action {
             AuditAction::Show {
                 last,
                 op,
@@ -1890,6 +1919,7 @@ mod help_tests {
             "agent doctor",
             "agent report",
             "agent status",
+            "audit",
             "audit alerts",
             "audit analytics",
             "audit anomalies",
