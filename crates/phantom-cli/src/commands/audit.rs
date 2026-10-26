@@ -373,8 +373,9 @@ fn run_show_at(
             writeln!(out, "{}", line)?;
         }
     } else {
+        // Into `out`, not stdout: with --output, `out` is the file.
         for line in &window {
-            print_event(line);
+            write_event(line, out, err)?;
         }
     }
 
@@ -2005,15 +2006,23 @@ fn matches_filters(line: &str, op: Option<&str>, name: Option<&str>) -> bool {
 ///
 /// Format: `[YYYY-MM-DD HH:MM:SS]  op  name  (process pid)`
 fn print_event(line: &str) {
+    // A closed stdout or stderr ends the tail like println! would.
+    write_event(line, &mut std::io::stdout(), &mut std::io::stderr())
+        .expect("failed to write audit event");
+}
+
+/// One human-readable event line into `out`; a malformed line is reported
+/// to `err` and skipped.
+fn write_event(line: &str, out: &mut dyn Write, err: &mut dyn Write) -> std::io::Result<()> {
     let v: Value = match serde_json::from_str(line) {
         Ok(v) => v,
         Err(_) => {
-            eprintln!(
+            return writeln!(
+                err,
                 "{} Skipping malformed line: {}",
                 "warn".yellow().bold(),
                 line
             );
-            return;
         }
     };
 
@@ -2036,13 +2045,14 @@ fn print_event(line: &str) {
         format!("  {}", name.bold())
     };
 
-    println!(
+    writeln!(
+        out,
         "{}  {}{}  {}",
         ts_str.dimmed(),
         op.cyan(),
         name_part,
         format!("({} {})", process, pid).dimmed()
-    );
+    )
 }
 
 /// Format a Unix epoch (seconds) as `YYYY-MM-DD HH:MM:SS` using only std.
@@ -2504,6 +2514,18 @@ mod tests {
 
         let (stdout, stderr) = show_output(&path, Some("vault.delete"), false, false);
         assert!(stdout.contains("No matching audit events"));
+        assert!(stderr.is_empty());
+    }
+
+    /// `audit show --output FILE` hands `run_show_at` the file's buffer as
+    /// `out`. Human-readable events went to stdout instead, so the file was
+    /// empty and the summary said "wrote 0 line(s)".
+    #[test]
+    fn show_text_writes_events_into_out() {
+        let tmp = tempdir().unwrap();
+        let path = write_fixture(tmp.path(), &[LINE_STORE, LINE_PUSH]);
+        let (stdout, stderr) = show_output(&path, None, false, false);
+        assert_eq!(stdout.lines().count(), 2);
         assert!(stderr.is_empty());
     }
 

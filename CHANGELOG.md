@@ -4,6 +4,17 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (audit show --output, rotate --batch expiry dates, validate history)
+
+- `phantom audit show --output FILE` without `--json` printed the events to
+  the terminal, left the file empty and reported "wrote 0 line(s)". The
+  human-readable events now go into the file, as the flag promises.
+- The Old Expiry and New Expiry columns of `phantom rotate --batch` used
+  365-day years and 30-day months, so 26 Oct 2026 printed as 13 Nov. They
+  now print the real UTC calendar date.
+- `phantom validate history` always ended with "Use --last N to see more",
+  even when every run was shown. It now says "Showing all N run(s)" then.
+
 ### Fixed (commented-out secrets in .env are now reported)
 
 - `phantom init` moves live secret entries into the vault, but a secret that
