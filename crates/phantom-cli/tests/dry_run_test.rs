@@ -182,7 +182,7 @@ fn init_dry_run_lists_files_and_keys_without_writing_or_printing_values() {
         .expect("run init --dry-run");
     let (stdout, stderr) = text(&output);
     assert!(output.status.success(), "init dry run failed: {stderr}");
-    assert!(stdout.contains("Would add 1 key(s):"));
+    assert!(stdout.contains("would add 1 key(s):"));
     assert!(stdout.contains("  + OPENAI_API_KEY"));
     assert!(stdout.contains("Skipping 1 public key(s)"));
     assert!(stdout.contains("NEXT_PUBLIC_APP_NAME"));
@@ -304,7 +304,7 @@ fn add_dry_run_after_init_does_not_read_or_print_a_value_or_mutate() {
         .expect("run add --dry-run");
     let (stdout, stderr) = text(&output);
     assert!(output.status.success(), "add dry run failed: {stderr}");
-    assert!(stdout.contains("Would add 1 key(s):"));
+    assert!(stdout.contains("would add 1 key(s):"));
     assert!(stdout.contains("  + NEW_SERVICE_TOKEN"));
     assert!(stdout.contains("would add NEW_SERVICE_TOKEN (vault state not checked in dry run)"));
     assert_eq!(
@@ -387,9 +387,13 @@ fn remove_dry_run_after_init_leaves_the_vault_and_dotenv_in_place() {
         .expect("run remove --dry-run");
     let (stdout, stderr) = text(&output);
     assert!(output.status.success(), "remove dry run failed: {stderr}");
-    assert!(stdout.contains("Would remove 1 key(s):"));
+    assert!(stdout.contains("would remove 1 key(s):"));
     assert!(stdout.contains("  - OPENAI_API_KEY"));
     assert!(stdout.contains("would remove OPENAI_API_KEY (vault state not checked in dry run)"));
+    assert!(stdout.contains("would remove OPENAI_API_KEY (not in project config)"));
+    assert!(stdout.contains(
+        "dotenv token check uses project config key names only (vault key names not checked in dry run)"
+    ));
     assert_eq!(
         planned_files(&stdout),
         vec![".env".to_string(), ".phantom.toml".to_string()]
@@ -442,24 +446,72 @@ fn add_and_remove_dry_run_with_passphrase_unset_create_no_app_data() {
     assert!(before.contains_key(".hidden-lock"));
     assert!(before.contains_key("project.lock"));
 
-    for (verb, name) in [("add", "NEW_SERVICE_TOKEN"), ("remove", "OPENAI_API_KEY")] {
+    let add = phantom_unset(dir.path())
+        .args(["add", "NEW_SERVICE_TOKEN", "--dry-run"])
+        .output()
+        .expect("run add --dry-run");
+    let (stdout, stderr) = text(&add);
+    assert!(add.status.success(), "add dry run failed: {stderr}");
+    assert!(stdout.contains("would add NEW_SERVICE_TOKEN (vault state not checked in dry run)"));
+    assert!(stdout.contains(
+        "dotenv token check uses project config key names only (vault key names not checked in dry run)"
+    ));
+    assert!(!stderr.contains("OS keychain"), "{stderr}");
+    assert_values_absent(&stdout, &stderr);
+    assert_unchanged(&before, &snapshot(dir.path()));
+
+    let remove = phantom_unset(dir.path())
+        .args(["remove", "OPENAI_API_KEY", "--dry-run"])
+        .output()
+        .expect("run remove --dry-run");
+    let (stdout, stderr) = text(&remove);
+    assert!(
+        !remove.status.success(),
+        "remove dry run must refuse a name with no phantom mapping"
+    );
+    assert!(
+        stderr.contains("expected exactly one managed mapping"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("OS keychain"), "{stderr}");
+    assert_values_absent(&stdout, &stderr);
+    assert_unchanged(&before, &snapshot(dir.path()));
+    assert!(!dir.path().join("xdg-data").exists());
+    assert!(!dir.path().join("xdg-config").exists());
+    assert!(!dir.path().join("xdg-state").exists());
+    assert!(!dir.path().join("xdg-cache").exists());
+}
+
+#[test]
+fn dry_run_refuses_a_tokenless_dotenv_named_by_project_config() {
+    let dir = common::canonical_tempdir();
+    let mut config = phantom_core::config::PhantomConfig::new_with_defaults(
+        phantom_core::config::PhantomConfig::project_id_from_path(dir.path()),
+    );
+    config.phantom.dotenv_path = Some(".env".to_string());
+    config.phantom.secrets.insert(
+        "OPENAI_API_KEY".to_string(),
+        phantom_core::config::SecretOverride::default(),
+    );
+    config
+        .save(&dir.path().join(".phantom.toml"))
+        .expect("write config");
+    fs::write(dir.path().join(".env"), "PORT=3000\n").unwrap();
+    let before = snapshot(dir.path());
+
+    for args in [
+        ["add", "NEW_SERVICE_TOKEN", "--dry-run"],
+        ["remove", "OPENAI_API_KEY", "--dry-run"],
+    ] {
         let output = phantom_unset(dir.path())
-            .args([verb, name, "--dry-run"])
+            .args(args)
             .output()
             .expect("run dry-run");
         let (stdout, stderr) = text(&output);
-        assert!(output.status.success(), "{verb} dry run failed: {stderr}");
-        assert!(stdout.contains(&format!(
-            "would {verb} {name} (vault state not checked in dry run)"
-        )));
-        assert!(!stderr.contains("OS keychain"), "{stderr}");
-        assert!(!stderr.contains("passphrase"), "{stderr}");
+        assert!(!output.status.success(), "{args:?} should refuse: {stdout}");
+        assert!(stderr.contains("no phantom tokens"), "{stderr}");
         assert_values_absent(&stdout, &stderr);
         assert_unchanged(&before, &snapshot(dir.path()));
-        assert!(!dir.path().join("xdg-data").exists());
-        assert!(!dir.path().join("xdg-config").exists());
-        assert!(!dir.path().join("xdg-state").exists());
-        assert!(!dir.path().join("xdg-cache").exists());
     }
 }
 

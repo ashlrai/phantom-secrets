@@ -75,6 +75,7 @@ pub fn run(env_path_arg: &str) -> Result<()> {
         false,
         &may_update,
         false,
+        false,
     );
     Ok(())
 }
@@ -104,6 +105,7 @@ pub fn run_empty() -> Result<()> {
                 &cwd,
                 true,
                 &[],
+                false,
                 false,
             );
             Ok(())

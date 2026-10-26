@@ -124,6 +124,7 @@ fn dry_run_add(
         false,
         &[],
         true,
+        false,
     );
     Ok(())
 }

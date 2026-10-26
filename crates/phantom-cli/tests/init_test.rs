@@ -93,7 +93,7 @@ fn init_dry_run_reports_the_plan_without_mutating() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(output.status.success(), "dry run should succeed: {stderr}");
-    assert!(stdout.contains("Would add 1 key(s):"));
+    assert!(stdout.contains("would add 1 key(s):"));
     assert!(stdout.contains("OPENAI_API_KEY"));
     assert!(stdout.contains("Dry run only. Nothing was written."));
     assert!(

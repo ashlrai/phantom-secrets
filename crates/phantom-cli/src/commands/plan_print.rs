@@ -12,9 +12,10 @@ pub(crate) fn print_plan(
     empty_vault: bool,
     may_update: &[PathBuf],
     vault_unchecked: bool,
+    not_in_config: bool,
 ) {
     println!("Dry run. No files, config, or vault entries will be written.");
-    println!("Would {action} {} key(s):", keys.len());
+    println!("would {action} {} key(s):", keys.len());
     let marker = if action == "remove" { "-" } else { "+" };
     for key in keys {
         println!("  {marker} {key}");
@@ -22,6 +23,14 @@ pub(crate) fn print_plan(
     if vault_unchecked {
         for key in keys {
             println!("would {action} {key} (vault state not checked in dry run)");
+        }
+        println!(
+            "dotenv token check uses project config key names only (vault key names not checked in dry run)"
+        );
+    }
+    if not_in_config {
+        for key in keys {
+            println!("would remove {key} (not in project config)");
         }
     }
     if !skipped_public.is_empty() {

@@ -53,8 +53,19 @@ fn dry_run_remove(
     config: &PhantomConfig,
     name: &str,
 ) -> Result<()> {
+    if name.len() > 128 {
+        anyhow::bail!("invalid managed secret name; expected a bounded environment variable name");
+    }
     let resolved = phantom_core::managed_dotenv::resolve_dotenv(project_dir, config, &[])
         .context("Failed to resolve the managed dotenv")?;
+    let Some(file) = resolved.file.as_ref() else {
+        anyhow::bail!("Managed dotenv does not exist: {}", resolved.path.display());
+    };
+    // Same dotenv key rules as a real remove. The rewritten text is discarded
+    // and nothing is written. Vault membership still cannot be checked here.
+    file.remove_phantom_mapping(name, true)
+        .map_err(anyhow::Error::from)
+        .context("Removal preflight failed; no secret value was read and no state changed")?;
     crate::commands::plan_print::print_plan(
         "remove",
         &[name.to_string()],
@@ -64,6 +75,7 @@ fn dry_run_remove(
         false,
         &[],
         true,
+        !config.phantom.secrets.contains_key(name),
     );
     Ok(())
 }
@@ -208,6 +220,41 @@ mod tests {
         }
     }
 
+    fn tree_snapshot(root: &std::path::Path) -> std::collections::BTreeMap<String, Vec<u8>> {
+        fn walk(
+            root: &std::path::Path,
+            dir: &std::path::Path,
+            files: &mut std::collections::BTreeMap<String, Vec<u8>>,
+        ) {
+            let mut entries: Vec<_> = std::fs::read_dir(dir)
+                .unwrap()
+                .map(|entry| entry.unwrap())
+                .collect();
+            entries.sort_by_key(|entry| entry.file_name());
+            for entry in entries {
+                let path = entry.path();
+                let relative = path
+                    .strip_prefix(root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                let file_type = std::fs::symlink_metadata(&path).unwrap().file_type();
+                if file_type.is_symlink() {
+                    let target = std::fs::read_link(&path).unwrap();
+                    files.insert(relative, target.to_string_lossy().into_owned().into_bytes());
+                } else if file_type.is_dir() {
+                    files.insert(format!("{relative}/"), Vec::new());
+                    walk(root, &path, files);
+                } else {
+                    files.insert(relative, std::fs::read(&path).unwrap());
+                }
+            }
+        }
+        let mut files = std::collections::BTreeMap::new();
+        walk(root, root, &mut files);
+        files
+    }
+
     /// Beside an encrypted-file vault this process cannot open, the vault is
     /// the OS keychain, which lacks the name: remove reported "not found".
     #[test]
@@ -249,20 +296,33 @@ mod tests {
         )
         .save(&project.join(".phantom.toml"))
         .unwrap();
-        std::fs::write(project.join(".env"), "PORT=3000\n").unwrap();
+        std::fs::write(
+            project.join(".env"),
+            "OPENAI_API_KEY=phm_dryrunplaceholder0001\nPORT=3000\n",
+        )
+        .unwrap();
         let _seam =
             TestProject::install(project.clone(), crate::util::test_seam::untouched_keychain);
-        let before = std::fs::read_dir(&project).unwrap().count();
+        let before = tree_snapshot(&project);
+        assert!(before.contains_key("empty-meta/"));
+        assert!(before.contains_key(".hidden-lock"));
+        assert!(before.contains_key("project.lock"));
 
         let outcome = run("OPENAI_API_KEY", true);
-
         assert!(outcome.is_ok(), "{outcome:?}");
-        assert_eq!(before, std::fs::read_dir(&project).unwrap().count());
+        assert_eq!(before, tree_snapshot(&project));
+
+        let missing = run("MISSING_KEY", true);
+        assert!(
+            missing.is_err(),
+            "a name with no phantom mapping must be refused"
+        );
+        let message = format!("{:#}", missing.err().unwrap());
+        assert!(message.contains("expected exactly one managed mapping"));
+        assert!(!message.contains("phm_"));
+        assert_eq!(before, tree_snapshot(&project));
         assert!(!project.join("xdg-data").exists());
         assert!(!project.join(".local").exists());
-        assert!(project.join("empty-meta").is_dir());
-        assert!(project.join(".hidden-lock").is_file());
-        assert!(project.join("project.lock").is_file());
         drop(_seam);
     }
 }
