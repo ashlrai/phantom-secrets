@@ -106,14 +106,18 @@ fn check_managed_dotenv(project_dir: &std::path::Path, env_path: &std::path::Pat
     };
     let entries = dotenv.entries();
     let real_secrets = dotenv.real_secret_entries();
-    if let Err(error) = dotenv.validate_for_mutation() {
+    let issues = if let Err(error) = dotenv.validate_for_mutation() {
         check_fail(&format!(".env parse error: {error}"));
         1
     } else if real_secrets.is_empty() {
-        check_pass(&format!(
-            ".env has {} entries, all protected",
-            entries.len()
-        ));
+        // A commented-out secret below is still plaintext, so no "all
+        // protected" pass for the file then.
+        if dotenv.commented_secret_assignments().is_empty() {
+            check_pass(&format!(
+                ".env has {} entries, all protected",
+                entries.len()
+            ));
+        }
         0
     } else {
         check_warn(&format!(
@@ -127,7 +131,24 @@ fn check_managed_dotenv(project_dir: &std::path::Path, env_path: &std::path::Pat
         ));
         check_fix("Run: phantom init");
         1
+    };
+    issues + check_commented_entries(&dotenv, name)
+}
+
+/// One warning per commented-out assignment that still holds a secret.
+/// `phantom init` never touches comments, so such a value stays as plaintext
+/// in the file. Key names and line numbers only; the file is not changed.
+fn check_commented_entries(dotenv: &DotenvFile, file_label: &str) -> usize {
+    let found = dotenv.commented_secret_assignments();
+    for (key_name, line) in &found {
+        check_warn(&format!(
+            "{file_label} line {line}: commented-out {key_name} still holds a plaintext secret"
+        ));
+        check_fix(&format!(
+            "Delete line {line} from {file_label}; if the value is still needed, store it under an unused name with `phantom add <NAME> --stdin` (and rotate it if it was ever shared)"
+        ));
     }
+    found.len()
 }
 
 /// Run the full doctor suite. Pass `check_expiry = true` to also scan secret
@@ -1239,6 +1260,43 @@ mod tests {
         assert_eq!((issues, lines[0].0), (1, "warn"));
         assert!(lines[0].1.contains("OPENAI_API_KEY"));
         assert_eq!(lines[0].2.as_deref(), Some("Run: phantom init"));
+    }
+
+    #[test]
+    fn dotenv_check_names_commented_out_secrets_by_key_and_line() {
+        // init protects live entries only; a commented-out credential stays
+        // as plaintext in .env, so doctor names it (key and line, no value).
+        let project = tempfile::tempdir().unwrap();
+        let old = ["sk", "-proj-", "D0ct0rC0mmentedValue0123456789abcdef"].concat();
+        let alt = ["ghp", "_", "D0ct0rC0mmentedGitHub0123456789abcde"].concat();
+        std::fs::write(
+            project.path().join(".env"),
+            format!(
+                "PORT=3000\n# OPENAI_API_KEY={old}\n# PORT=8080\n# export GITHUB_TOKEN=\"{alt}\"\n"
+            ),
+        )
+        .unwrap();
+
+        let (issues, lines) = dotenv_check_lines(project.path());
+
+        assert_eq!(issues, 2, "{lines:?}");
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(lines.iter().all(|line| line.0 != "pass"), "{lines:?}");
+        for (line, (key, number)) in lines
+            .iter()
+            .zip([("OPENAI_API_KEY", 2), ("GITHUB_TOKEN", 4)])
+        {
+            assert_eq!(line.0, "warn");
+            assert!(line.1.contains(key), "{line:?}");
+            assert!(line.1.contains(&format!("line {number}")), "{line:?}");
+            let fix = line
+                .2
+                .as_deref()
+                .expect("a commented secret gets a fix hint");
+            assert!(fix.contains("phantom add"), "{fix}");
+        }
+        let rendered = format!("{lines:?}");
+        assert!(!rendered.contains(&old) && !rendered.contains(&alt));
     }
 
     /// Run doctor's checks on a project whose config `edit` changes and
