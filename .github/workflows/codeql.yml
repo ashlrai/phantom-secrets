@@ -49,7 +49,11 @@ jobs:
           if [ "$EVENT" != "pull_request" ]; then
             echo "code=true" >> "$GITHUB_OUTPUT"; echo "langs=$all" >> "$GITHUB_OUTPUT"; exit 0
           fi
-          files="$(git diff --name-only "$BASE...$HEAD")"
+          # An unreadable diff scans everything instead of failing Classify.
+          if ! files="$(git diff --name-only "$BASE...$HEAD")"; then
+            echo "::warning::diff unreadable; scanning every language"
+            echo "code=true" >> "$GITHUB_OUTPUT"; echo "langs=$all" >> "$GITHUB_OUTPUT"; exit 0
+          fi
           docs='^(docs/|.*\.md$|LICENSE|\.github/ISSUE_TEMPLATE/|\.github/PULL_REQUEST_TEMPLATE)'
           code=false
           # Capture first: an early-exit grep -q under pipefail can SIGPIPE grep -Ev and skip analysis.
@@ -57,9 +61,11 @@ jobs:
           if [ -n "$code_paths" ]; then code=true; fi
           echo "code=$code" >> "$GITHUB_OUTPUT"
           echo "code=$code"
-          # Languages this PR touches; a change to this workflow scans all of them.
+          # Languages this PR touches. Any .github/ change or build/dependency
+          # config change scans every language.
           langs=','
-          if printf '%s\n' "$files" | grep -Eq '^\.github/workflows/codeql\.yml$'; then langs="$all"
+          allcfg='^\.github/|^\.cargo/|(^|/)(Cargo\.(toml|lock)|rust-toolchain(\.toml)?|build\.rs|package(-lock)?\.json|npm-shrinkwrap\.json|tsconfig[^/]*\.json|pyproject\.toml|requirements[^/]*\.txt|Gemfile(\.lock)?|[^/]*\.gemspec)$'
+          if printf '%s\n' "$files" | grep -Eq "$allcfg"; then langs="$all"
           else
             sel() { if printf '%s\n' "$code_paths" | grep -Eq "$2"; then langs="${langs}$1,"; fi; }
             sel actions '^\.github/(workflows|actions)/|(^|/)action\.ya?ml$'

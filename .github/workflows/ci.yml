@@ -100,13 +100,18 @@ jobs:
           p=false
           if [ "$EVENT" != "pull_request" ] || [ "$FULL_OS" = "true" ]; then p=true
           else
-            files="$(git diff --name-only "$BASE...$HEAD")"
+            # An unreadable diff runs the full OS matrix.
+            files="$(git diff --name-only "$BASE...$HEAD")" || { echo "::warning::diff unreadable; full OS matrix"; p=true; files=''; }
             if printf '%s\n' "$files" | grep -Eq '(^|/)(Cargo\.toml|Cargo\.lock|rust-toolchain(\.toml)?|build\.rs)$|^\.cargo/|^\.github/workflows/|^scripts/(install\.(sh|ps1)|check-platform-installers\.mjs|installers\.test\.js|release/)|^npm(-mcp)?/|^apps/web/public/install\.|(^|/)(windows|macos|unix|platform)[^/]*(/|\.rs$)'; then p=true; fi
             # Tier-1 paths (CODEOWNERS from the base ref, when present) keep the full OS matrix on the PR.
             if owners="$(git show "$BASE:.github/CODEOWNERS" 2>/dev/null)"; then
               while IFS= read -r pat; do
-                pre="${pat#/}"; pre="${pre%%\**}"
-                [ -n "$pre" ] || continue
+                # Strip leading / and any leading */** segments (so **/package.json
+                # and *.rs are kept as suffix matches), then cut at the next '*'.
+                pre="$pat"; while [ "${pre#[/*]}" != "$pre" ]; do pre="${pre#[/*]}"; done
+                pre="${pre%%\**}"
+                # A bare * (or **) owns every path.
+                if [ -z "$pre" ]; then [ -n "$files" ] && p=true; continue; fi
                 if printf '%s\n' "$files" | grep -qF -- "$pre"; then p=true; fi
               done < <(printf '%s\n' "$owners" | grep -Ev '^[[:space:]]*(#|$)' | awk '{print $1}')
             fi
