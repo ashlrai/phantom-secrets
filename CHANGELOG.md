@@ -4,6 +4,18 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Added (local posture history store)
+
+- `phantom-secrets-core` gains a local posture history store: counts and
+  yes/no flags only, never secret names or values, kept owner-only under
+  `~/.phantom/posture/` and capped at 2000 records. Set
+  `PHANTOM_POSTURE_HISTORY=0` to turn it off; reads and writes then touch
+  nothing. On non-Unix platforms the owner and file-mode check on the host
+  key is skipped, so the key's protection there rests on the user profile's
+  own permissions.
+- `phantom-secrets-core` now declares `rust-version = "1.89"` (needed for
+  `std::fs::File::try_lock`).
+
 ### Fixed (.env.example no longer copies commented-out secrets)
 
 - `phantom init`, `phantom env`, `phantom doctor --fix`, `phantom agent` and
