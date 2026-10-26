@@ -11,11 +11,7 @@ phantom agent doctor       # verify the repo is safe for AI agents
 phantom exec -- claude     # run Claude Code with real secrets injected by proxy
 ```
 
-The Homebrew command above installs the independently verified formula, which
-is still at the previous `v0.7.8` release as of 2026-09-29 (a `v0.7.9` tap bump
-is pending). For the current `v0.7.9`, on Linux
-or Windows, or when you want to verify an exact archive directly, select the
-matching platform asset below.
+See [distribution status](distribution-status.md) for dated npm, Homebrew, crates.io, and MCP Registry evidence. Prefer the checksum-verified `v0.7.9` GitHub assets for an exact install. Select the matching platform asset below on Linux or Windows, or to verify an exact archive directly.
 
 That's the local setup. Keep agent dotenv reads denied and launch supported API
 work through `phantom exec`; Phantom reduces credential exposure, but it does
@@ -88,11 +84,7 @@ git checkout 7a51ce512ec4aee12cc29ff859036af63fbe93db
 cargo build --release --locked --bin phantom --bin phantom-mcp
 ```
 
-The full SHA above is the source commit resolved by `v0.7.9`. Do not treat an
-unpinned registry install as that release. In the exact 2026-09-29 registry snapshot, npm
-`latest` remains `0.6.0`; exact npm `0.7.4` wrappers exist only under the failed
-`release-candidate` track. No MCP Registry `0.7.9` record was found, and
-crates.io remains on `0.5.1`.
+The full SHA above is the source commit resolved by `v0.7.9`. See [distribution status](distribution-status.md) for dated npm, Homebrew, crates.io, and MCP Registry evidence. Prefer the checksum-verified `v0.7.9` GitHub assets for an exact install.
 
 ### Verify
 
