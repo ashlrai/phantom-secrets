@@ -4,6 +4,22 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (`phantom check` misses credential shapes Phantom already knows)
+
+- The staged-code scan behind `phantom check` and the pre-commit hook looked
+  for nine credential prefixes, fewer than the `.env` classifier knows. It now
+  also catches GitHub OAuth, user-to-server, server-to-server and refresh
+  tokens (`gho_`, `ghu_`, `ghs_`, `ghr_`), Stripe restricted keys
+  (`rk_live_`, `rk_test_`) and webhook signing secrets (`whsec_`), Shopify
+  access tokens (`shpat_`), AWS temporary access key IDs (`ASIA`), and PEM
+  private keys pasted into code, including JSON-escaped service account keys.
+  Each shape needs a realistic tail, so a bare prefix, an identifier, an
+  all-caps word starting with `ASIA`, code that only names a PEM header, and
+  public keys or certificates are not flagged. Findings still report the
+  label and prefix only. A test now fails when the classifier learns a prefix
+  the scan does not cover. Google `AIza` keys stay unflagged in code because
+  they are commonly browser-public.
+
 ### Fixed (.env.example no longer copies credentials in prose comments)
 
 - Example generation masked commented-out assignments and inline comments
