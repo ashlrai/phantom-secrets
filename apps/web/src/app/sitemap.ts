@@ -1,31 +1,40 @@
 import type { MetadataRoute } from "next";
 import { PUBLIC_DOCS } from "@/lib/public-docs";
+import { gitLastModified } from "@/lib/git-last-modified";
+import { SECRET_USE_CASES } from "@/lib/secret-use-cases";
 
 const SITE_URL = "https://phm.dev";
 
 const pages = [
-  { path: "/", modified: "2026-10-06" },
-  { path: "/secrets", modified: "2026-10-06" },
-  { path: "/docs", modified: "2026-10-13" },
-  { path: "/docs/manifest.json", modified: "2026-10-13" },
-  { path: "/workbench/llms.txt", modified: "2026-10-13" },
-  { path: "/workbench/llms-full.txt", modified: "2026-10-13" },
-  { path: "/pricing", modified: "2026-09-03" },
-  { path: "/enterprise", modified: "2026-09-03" },
-  { path: "/government", modified: "2026-09-03" },
-  { path: "/security", modified: "2026-09-29" },
-  { path: "/llms.txt", modified: "2026-09-29" },
-  { path: "/llms-full.txt", modified: "2026-09-29" },
+  { path: "/", file: "src/app/page.tsx" },
+  { path: "/secrets", file: "src/app/secrets/page.tsx" },
+  { path: "/docs", file: "src/app/docs/page.tsx" },
+  { path: "/pricing", file: "src/app/pricing/page.tsx" },
+  { path: "/enterprise", file: "src/app/enterprise/page.tsx" },
+  { path: "/government", file: "src/app/government/page.tsx" },
+  { path: "/security", file: "src/app/security/page.tsx" },
 ] as const;
 
+// Generate XML at build time, where Git is available, not in a serverless request.
+export const dynamic = "force-static";
+
 export default function sitemap(): MetadataRoute.Sitemap {
-  const documentationPages = PUBLIC_DOCS.map(({ slug, modified }) => ({
+  const shared = ["src/app/layout.tsx", "src/components/landing", "src/app/globals.css"];
+  const publicPages = pages.map(({ path, file }) => ({
+    path,
+    files: [file, ...shared],
+  }));
+  const documentationPages = PUBLIC_DOCS.map(({ slug, file }) => ({
     path: `/docs/${slug}`,
-    modified,
+    files: [`../../docs/${file}`, "src/app/docs/[slug]/page.tsx", "src/components/docs/MarkdownDocument.tsx", ...shared],
+  }));
+  const useCasePages = SECRET_USE_CASES.map(({ slug }) => ({
+    path: `/secrets/use-cases/${slug}`,
+    files: ["src/lib/secret-use-cases.ts", "src/app/secrets/use-cases/[slug]/page.tsx", ...shared],
   }));
 
-  return [...pages, ...documentationPages].map(({ path, modified }) => ({
+  return [...publicPages, ...documentationPages, ...useCasePages].map(({ path, files }) => ({
     url: new URL(path, SITE_URL).toString(),
-    lastModified: modified,
+    lastModified: gitLastModified(process.cwd(), files),
   }));
 }

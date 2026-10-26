@@ -6,6 +6,7 @@ import { CopyButton } from "@/components/landing/CopyButton";
 import { AskDocumentation } from "@/components/docs/AskDocumentation";
 import { WORKBENCH_RELEASE } from "@/lib/workbench-release";
 import { PUBLIC_RELEASE_TAG } from "@/lib/public-release";
+import { SecretUseCases } from "@/components/landing/SecretUseCases";
 
 export const metadata: Metadata = {
   title: "Documentation",
@@ -115,6 +116,7 @@ export default function DocsPage() {
             <li><Link href="/docs/workbench-troubleshooting"><strong>Resolve a blocker</strong><span>Installation, accounts, quotas and resident service admission.</span></Link></li>
           </ol>
         </section>
+        <SecretUseCases />
         <div className="landing-frame docs-product-heading"><h2>Phantom Secrets</h2><p>Protect API keys in supported coding-agent workflows. The Secrets executable is <code>phantom</code>; the workbench is <code>phm</code>.</p></div>
         <section className="landing-frame docs-page__collections" aria-label="Documentation collections">
           {COLLECTIONS.map((collection) => (
