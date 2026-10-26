@@ -12,3 +12,12 @@
 /apps/web/src/lib/auth.ts @masonwyatt23
 /apps/web/src/lib/supabase-server.ts @masonwyatt23
 /apps/web/supabase/migrations/ @masonwyatt23
+/crates/phantom-core/src/cloud_http.rs @masonwyatt23
+/crates/phantom-core/src/provider_http.rs @masonwyatt23
+/crates/phantom-core/src/auth.rs @masonwyatt23
+/crates/phantom-core/src/team_crypto*.rs @masonwyatt23
+/crates/phantom-core/src/issuance/ @masonwyatt23
+/crates/phantom-mcp/src/server.rs @masonwyatt23
+/crates/phantom-evidence/ @masonwyatt23
+/crates/phantom-workspace/ @masonwyatt23
+/apps/web/src/app/device/device-authorization-client.tsx @masonwyatt23
