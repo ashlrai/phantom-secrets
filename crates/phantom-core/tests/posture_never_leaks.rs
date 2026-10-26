@@ -1,7 +1,7 @@
 //! The posture ledger must never persist or emit a secret name or value.
 //! Written before the store itself (red before green).
 
-use phantom_core::posture::{PostureCounts, PostureLedger, PostureEntry};
+use phantom_core::posture::{PostureCounts, PostureEntry, PostureLedger};
 
 const NAMES: &[&str] = &[
     "STRIPE_SECRET_KEY",
@@ -9,7 +9,10 @@ const NAMES: &[&str] = &[
     "zz_unique_marker_name_7f3a",
     "DATABASE_URL",
 ];
-const VALUES: &[&str] = &["sk_live_value_marker_91c2", "postgres://user:pw_marker@h/db"];
+const VALUES: &[&str] = &[
+    "sk_live_value_marker_91c2",
+    "postgres://user:pw_marker@h/db",
+];
 
 fn entries() -> Vec<PostureEntry<'static>> {
     NAMES

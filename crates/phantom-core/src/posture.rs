@@ -53,8 +53,13 @@ pub fn project_fingerprint(project_root: &str) -> String {
 }
 
 impl PostureCounts {
-    pub fn from_entries(project_root: &str, entries: &[PostureEntry<'_>], plaintext_env: bool) -> Self {
-        let count = |f: fn(&PostureEntry<'_>) -> bool| entries.iter().filter(|e| f(e)).count() as u32;
+    pub fn from_entries(
+        project_root: &str,
+        entries: &[PostureEntry<'_>],
+        plaintext_env: bool,
+    ) -> Self {
+        let count =
+            |f: fn(&PostureEntry<'_>) -> bool| entries.iter().filter(|e| f(e)).count() as u32;
         Self {
             schema: SCHEMA_VERSION,
             recorded_at: std::time::SystemTime::now()
@@ -74,7 +79,10 @@ impl PostureCounts {
 /// True unless [`HISTORY_ENV`] turns history off.
 pub fn history_enabled() -> bool {
     match std::env::var(HISTORY_ENV) {
-        Ok(v) => !matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "off" | "no"),
+        Ok(v) => !matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "off" | "no"
+        ),
         Err(_) => true,
     }
 }
@@ -92,7 +100,9 @@ impl PostureLedger {
 
     /// Default ledger under `~/.phantom/posture`.
     pub fn default_location() -> io::Result<Self> {
-        Ok(Self::at(crate::home::home_dir()?.join(".phantom").join("posture")))
+        Ok(Self::at(
+            crate::home::home_dir()?.join(".phantom").join("posture"),
+        ))
     }
 
     pub fn history_path(&self) -> PathBuf {
@@ -157,14 +167,25 @@ mod tests {
     use super::*;
 
     fn point(n: u32) -> PostureCounts {
-        PostureCounts { schema: 1, recorded_at: n as u64, project: "p".into(), wrapped: n, unwrapped: 0, expiring: 0, unrotated: 0, plaintext_env: false }
+        PostureCounts {
+            schema: 1,
+            recorded_at: n as u64,
+            project: "p".into(),
+            wrapped: n,
+            unwrapped: 0,
+            expiring: 0,
+            unrotated: 0,
+            plaintext_env: false,
+        }
     }
 
     #[test]
     fn size_cap_drops_oldest() {
         let d = tempfile::tempdir().unwrap();
         let l = PostureLedger::at(d.path().join("posture"));
-        let seed: String = (0..MAX_RECORDS as u32).map(|n| serde_json::to_string(&point(n)).unwrap() + "\n").collect();
+        let seed: String = (0..MAX_RECORDS as u32)
+            .map(|n| serde_json::to_string(&point(n)).unwrap() + "\n")
+            .collect();
         crate::fs::ensure_private_dir(&l.dir).unwrap();
         std::fs::write(l.history_path(), seed).unwrap();
         l.record(&point(99_999)).unwrap();
