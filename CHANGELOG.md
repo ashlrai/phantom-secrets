@@ -19,6 +19,16 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   an average of 2 a day with a busiest day of 1. The average now divides by
   the calendar days from the first access to the last, inclusive.
 
+### Fixed (monthly rotation schedules follow calendar months)
+
+- A `monthly` rotation schedule counted 30-day blocks from 1970, so a schedule
+  for the 1st fired on whatever calendar day the block started, and
+  `phantom_rotation_schedule_next` and validation reported that day. Monthly
+  slots now fall on `day_of_month` of each calendar month in UTC, on the
+  month's last day when it is shorter (the 31st is February 28 or 29).
+  `describe` now says `monthly@1st`, not `monthly@1th`. Enforcement's fixed
+  30-day window is unchanged.
+
 ### Fixed (commented-out secret detection: docs placeholders and quoted PEM headers)
 
 - Commented-out assignments whose value is a docs-style placeholder, such as
