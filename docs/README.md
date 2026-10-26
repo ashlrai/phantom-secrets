@@ -54,6 +54,7 @@ These guides cover installation, MCP setup, the value-blind tool model, and dail
 - [Cursor](cursor.md)
 - [Windsurf](windsurf.md)
 - [Temporal workers with no secrets on disk](temporal.md) (optional guidance, untested design)
+- [PostHog fleet capture](posthog.md) (header-only v1 event ingestion)
 - [Copyable agent policy, task brief, and pilot templates](../examples/agent-delegation/README.md)
 - [Examples index](../examples/README.md), including status and safety notes
 
