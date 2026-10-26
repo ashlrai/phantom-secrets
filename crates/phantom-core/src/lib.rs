@@ -25,6 +25,7 @@ mod provider_http;
 pub mod report;
 pub mod rotation_provider;
 pub mod rotation_strategy;
+pub mod secret_detector;
 pub mod sync;
 pub mod team_crypto;
 #[cfg(feature = "pq-hybrid")]

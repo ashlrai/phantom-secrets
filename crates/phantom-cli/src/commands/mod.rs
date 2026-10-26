@@ -28,6 +28,7 @@ pub mod open;
 pub mod pq_report;
 pub(crate) mod proxy_lifecycle;
 pub mod pull;
+pub mod redact;
 pub mod remove;
 pub mod reveal;
 pub mod rotate;
