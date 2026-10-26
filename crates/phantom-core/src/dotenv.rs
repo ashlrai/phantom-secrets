@@ -507,6 +507,12 @@ impl DotenvFile {
                         (span, replacement)
                     }),
             )
+            .chain(
+                self.credential_comment_spans()
+                    .into_iter()
+                    .chain(self.credential_prose_comment_spans())
+                    .map(|span| (span, INLINE_COMMENT_REMOVED.to_string())),
+            )
             .collect::<Vec<_>>();
         replacements.sort_by_key(|(span, _)| span.start);
         let body = splice_source_owned(&self.source, &replacements);
@@ -546,7 +552,68 @@ impl DotenvFile {
     /// spans like live entries so the shareable file never copies them. Lines
     /// inside a multi-line quoted value belong to that value and are skipped.
     fn commented_secret_value_spans(&self) -> Vec<(Range<usize>, String)> {
-        let mut spans = Vec::new();
+        self.commented_tails()
+            .into_iter()
+            .filter_map(|(_, tail_start, tail)| {
+                commented_secret_value_span(tail)
+                    .map(|(span, key)| (tail_start + span.start..tail_start + span.end, key))
+            })
+            .collect()
+    }
+
+    /// Spans of inline comments that hold credential-shaped text.
+    ///
+    /// The comment after a live entry's value, or after the value of a
+    /// commented-out assignment, is copied verbatim into `.env.example`
+    /// whatever the entry's own verdict. A comment such as
+    /// `PORT=3000 # staging key <key>` is therefore replaced as a whole when
+    /// [`comment_holds_credential`] finds a credential in it; prose comments
+    /// are kept.
+    fn credential_comment_spans(&self) -> Vec<Range<usize>> {
+        let live = self
+            .records
+            .iter()
+            .filter_map(|record| credential_comment_span(&self.source, &record.value_span));
+        let commented = self
+            .commented_tails()
+            .into_iter()
+            .filter_map(|(_, tail_start, tail)| {
+                let parsed = DotenvFile::parse_str(tail);
+                let record = parsed.records.first()?;
+                credential_comment_span(tail, &record.value_span)
+                    .map(|span| tail_start + span.start..tail_start + span.end)
+            });
+        live.chain(commented).collect()
+    }
+
+    /// Spans of full-line prose comments that hold credential-shaped text.
+    ///
+    /// A comment such as `# old key: <key>` is not a commented-out
+    /// assignment, so neither [`Self::commented_secret_value_spans`] nor
+    /// [`Self::credential_comment_spans`] touches it, yet it is copied
+    /// verbatim into `.env.example`. It is replaced as a whole when
+    /// [`comment_holds_credential`] finds a credential in it. The span runs
+    /// from the first `#` to the end of the physical line, so indentation and
+    /// the line ending stay. Commented-out assignments keep their own
+    /// handling, which keeps every replaced span disjoint.
+    fn credential_prose_comment_spans(&self) -> Vec<Range<usize>> {
+        self.commented_tails()
+            .into_iter()
+            .filter(|(_, _, tail)| {
+                DotenvFile::parse_str(tail).records.is_empty()
+                    && commented_secret_value_span(tail).is_none()
+                    && comment_holds_credential(tail)
+            })
+            .map(|(comment_start, tail_start, tail)| comment_start..tail_start + tail.len())
+            .collect()
+    }
+
+    /// Full-line comments outside any entry, as (offset of the first `#`,
+    /// offset of the text after the leading `#` marks and blanks, that
+    /// text). Lines inside a multi-line quoted value belong to that value
+    /// and are skipped.
+    fn commented_tails(&self) -> Vec<(usize, usize, &str)> {
+        let mut tails = Vec::new();
         let mut records = self.records.iter().peekable();
         let mut cursor = usize::from(self.source.starts_with(UTF8_BOM)) * UTF8_BOM.len();
         while cursor < self.source.len() {
@@ -570,14 +637,11 @@ impl DotenvFile {
                 let tail = trimmed
                     .trim_start_matches('#')
                     .trim_start_matches([' ', '\t']);
-                let tail_start = line_end - tail.len();
-                if let Some((span, key)) = commented_secret_value_span(tail) {
-                    spans.push((tail_start + span.start..tail_start + span.end, key));
-                }
+                tails.push((line_end - trimmed.len(), line_end - tail.len(), tail));
             }
             cursor = next_line;
         }
-        spans
+        tails
     }
 
     /// Rewrite the .env file, replacing real secret values with phantom tokens.
@@ -917,6 +981,77 @@ fn commented_secret_value_span(tail: &str) -> Option<(Range<usize>, String)> {
     secret.then_some((value_start..value_end, key))
 }
 
+/// The span of the inline comment after the value at `value_span`, when that
+/// comment holds credential-shaped text. The span runs from `#` to the end of
+/// the physical line, so blanks before the comment and the line ending stay.
+fn credential_comment_span(source: &str, value_span: &Range<usize>) -> Option<Range<usize>> {
+    let quoted =
+        value_span.start > 0 && matches!(source.as_bytes()[value_span.start - 1], b'"' | b'\'');
+    let after = value_span.end + usize::from(quoted);
+    let (line_end, _) = physical_line_bounds(source, after);
+    let trailing = &source[after..line_end];
+    let hash = after + (trailing.len() - trailing.trim_start_matches([' ', '\t']).len());
+    (source.as_bytes().get(hash) == Some(&b'#')
+        && comment_holds_credential(&source[hash..line_end]))
+    .then_some(hash..line_end)
+}
+
+/// Whether comment text holds a word the classifier's value rules call a
+/// secret: a known secret prefix, credentials in a URL, or a long
+/// high-entropy string. Each blank-separated word is judged with surrounding
+/// punctuation trimmed, and so is the part after a `=` or `:` in it
+/// (`old=<key>`). Words shorter than 16 characters are prose (`sk-learn`).
+fn comment_holds_credential(comment: &str) -> bool {
+    const MIN_CREDENTIAL_LEN: usize = 16;
+    let trim = |word: &str| {
+        word.trim_matches(|c: char| {
+            matches!(
+                c,
+                '#' | '"'
+                    | '\''
+                    | '`'
+                    | '('
+                    | ')'
+                    | '['
+                    | ']'
+                    | '{'
+                    | '}'
+                    | '<'
+                    | '>'
+                    | ','
+                    | ';'
+                    | '.'
+                    | '!'
+            )
+        })
+        .to_string()
+    };
+    comment.split_whitespace().any(|word| {
+        let word = trim(word);
+        let mut candidates = vec![word.clone()];
+        candidates.extend(word.split_once('=').map(|(_, rest)| trim(rest)));
+        candidates.extend(word.split_once(':').map(|(_, rest)| trim(rest)));
+        let found = candidates.iter().any(|candidate| {
+            candidate.len() >= MIN_CREDENTIAL_LEN && {
+                let mut entry = EnvEntry {
+                    key: String::new(),
+                    value: candidate.clone(),
+                    is_phantom: false,
+                };
+                let secret = deciding_rule(&entry).is_some();
+                entry.value.zeroize();
+                secret
+            }
+        });
+        let mut word = word;
+        word.zeroize();
+        for candidate in &mut candidates {
+            candidate.zeroize();
+        }
+        found
+    })
+}
+
 /// Render a replacement that cannot merge with an immediately following
 /// inline comment. Existing whitespace before the zero-width value remains
 /// untouched; one new separator is placed between rendered value and `#`.
@@ -1039,6 +1174,10 @@ const KNOWN_VALUE_PREFIXES: [&str; 14] = [
 /// base64 and a PEM armor header (audit F11; multi-line PEM bodies depend on
 /// F12 quoted parsing).
 const NON_PUBLIC_VALUE_PREFIXES: [&str; 2] = ["eyJ", "-----BEGIN "];
+
+/// What `.env.example` shows in place of an inline comment that held
+/// credential-shaped text.
+const INLINE_COMMENT_REMOVED: &str = "# [comment removed by Phantom: it held a credential]";
 
 /// Framework prefixes whose keys are shipped in browser bundles.
 const PUBLIC_KEY_PREFIXES: [&str; 6] = [
@@ -2258,6 +2397,128 @@ KEY3=unquoted
         assert!(example.contains("# PORT=8080\n"));
         assert!(example.contains("# Set API_KEY=see the docs\n"));
         assert!(example.contains("# Current key\n"));
+    }
+
+    #[test]
+    fn example_removes_inline_comments_that_hold_credentials() {
+        // A trailing comment after a value is shared verbatim unless it holds
+        // credential-shaped text, whether the entry itself is a secret or not.
+        let openai = ["sk", "-proj-", "Inl1neC0mmentValue0123456789abcdef"].concat();
+        let github = ["ghp", "_", "Inl1neC0mmentGitHub0123456789abcdefg"].concat();
+        let url = ["postgres://app:", "Pa55w0rdInl1ne", "@db.internal/app"].concat();
+        let entropy = ["Q2hhbmdlTWVJbmxpbmVD", "b21tZW50RW50cm9weTA5"].concat();
+        let commented = ["sk", "_live_", "C0mmentedTa1lValue0123456789"].concat();
+        let content = format!(
+            "PORT=3000 # staging key {openai}\nAPI_KEY=live-value # rotated from {github}\nDB_HOST=\"db.internal\"   # old: {url}\nREGION=us-east-1 #backup=`{entropy}`\n# OPENAI_BASE_URL=https://api.example.com # alt {commented}\nDEBUG=true # verbose logs, see https://docs.example.com/debug\nTIMEOUT=30 # seconds; sk-learn default\n"
+        );
+        let dotenv = DotenvFile::parse_str(&content);
+        let example = dotenv.generate_example_content(None).unwrap();
+        for (label, fragment) in [
+            ("openai", &openai),
+            ("github", &github),
+            ("url", &url),
+            ("entropy", &entropy),
+            ("commented", &commented),
+        ] {
+            assert!(
+                !example.contains(fragment.as_str()),
+                "{label} comment copied"
+            );
+        }
+        let removed = INLINE_COMMENT_REMOVED;
+        assert!(example.contains(&format!("\nPORT=3000 {removed}\n")));
+        assert!(example.contains(&format!("\nAPI_KEY=your_api_key_here {removed}\n")));
+        assert!(example.contains(&format!("\nDB_HOST=\"db.internal\"   {removed}\n")));
+        assert!(example.contains(&format!("\nREGION=us-east-1 {removed}\n")));
+        assert!(example.contains(&format!(
+            "\n# OPENAI_BASE_URL=https://api.example.com {removed}\n"
+        )));
+        // Ordinary prose comments, URLs and short words stay as written.
+        assert!(
+            example.contains("\nDEBUG=true # verbose logs, see https://docs.example.com/debug\n")
+        );
+        assert!(example.contains("\nTIMEOUT=30 # seconds; sk-learn default\n"));
+    }
+
+    #[test]
+    fn example_inline_comment_removal_keeps_line_endings_and_quotes() {
+        let openai = ["sk", "-proj-", "CrLfInl1neComment0123456789abcdef"].concat();
+        let content =
+            format!("NAME='app' # was {openai}\r\nMULTI=\"one\r\ntwo\" # {openai}\r\nNEXT=ok\r\n");
+        let example = DotenvFile::parse_str(&content)
+            .generate_example_content(None)
+            .unwrap();
+        assert!(!example.contains(&openai), "credential comment copied");
+        let removed = INLINE_COMMENT_REMOVED;
+        assert!(example.ends_with(&format!(
+            "NAME='app' {removed}\r\nMULTI=\"one\r\ntwo\" {removed}\r\nNEXT=ok\r\n"
+        )));
+    }
+
+    #[test]
+    fn example_removes_prose_comments_holding_credentials() {
+        // A full-line prose comment is shared verbatim unless it holds
+        // credential-shaped text, like the inline comments above.
+        let openai = ["sk", "-proj-", "Pr0seC0mmentValue0123456789abcdef"].concat();
+        let github = ["ghp", "_", "Pr0seC0mmentGitHub0123456789abcdefg"].concat();
+        let url = ["postgres://app:", "Pa55w0rdPr0se", "@db.internal/app"].concat();
+        let entropy = ["Q2hhbmdlTWVQcm9zZUNv", "bW1lbnRFbnRyb3B5MDk4"].concat();
+        let prose = ["sk", "_live_", "Pr0seAss1gnmentValue0123456789"].concat();
+        let content = format!(
+            "# old key: {openai}\n  ## rotated from {github} on 2026-01-02\n#{url}\n\t# backup copy `{entropy}`\n# Set API_KEY={prose} to enable\n# Local development settings\n# Docs: https://docs.example.com/setup\n# sk-learn is a dependency, not a key\nPORT=3000\n"
+        );
+        let example = DotenvFile::parse_str(&content)
+            .generate_example_content(None)
+            .unwrap();
+        for (label, fragment) in [
+            ("openai", &openai),
+            ("github", &github),
+            ("url", &url),
+            ("entropy", &entropy),
+            ("prose", &prose),
+        ] {
+            assert!(
+                !example.contains(fragment.as_str()),
+                "{label} comment copied"
+            );
+        }
+        let removed = INLINE_COMMENT_REMOVED;
+        assert!(example.contains(&format!(
+            "\n{removed}\n  {removed}\n{removed}\n\t{removed}\n{removed}\n"
+        )));
+        // Ordinary prose comments, plain URLs, short words and the header
+        // stay as written.
+        assert!(example.ends_with(
+            "\n# Local development settings\n# Docs: https://docs.example.com/setup\n# sk-learn is a dependency, not a key\nPORT=3000\n"
+        ));
+        assert!(example.starts_with("# Environment variables for this project\n"));
+        assert!(example.contains("\n# See https://phm.dev for details\n"));
+        // Regenerating from a generated example keeps its header and markers.
+        let again = DotenvFile::parse_str(&example)
+            .generate_example_content(None)
+            .unwrap();
+        assert!(again.ends_with(&example));
+    }
+
+    #[test]
+    fn example_prose_comment_removal_keeps_bom_line_endings_and_values() {
+        let openai = ["sk", "-proj-", "CrLfPr0seComment0123456789abcdef"].concat();
+        let commented = ["sk", "_live_", "CrLfC0mmentedValue0123456789"].concat();
+        let content = format!(
+            "\u{feff}# was {openai}\r\n# OPENAI_API_KEY={commented} # old {openai}\r\nPRIVATE_KEY=\"one\r\n# old key: {openai}\r\nthree\"\r\n  # plain note\r\nNEXT=ok"
+        );
+        let example = DotenvFile::parse_str(&content)
+            .generate_example_content(None)
+            .unwrap();
+        assert!(!example.contains(&openai), "credential comment copied");
+        assert!(!example.contains(&commented), "commented value copied");
+        let removed = INLINE_COMMENT_REMOVED;
+        assert!(example.starts_with('\u{feff}'));
+        // The commented-out assignment keeps its own masking, and the line
+        // inside the multi-line value stays part of that masked value.
+        assert!(example.ends_with(&format!(
+            "\r\n{removed}\r\n# OPENAI_API_KEY=your_openai_api_key_here {removed}\r\nPRIVATE_KEY=\"your_private_key_here\"\r\n  # plain note\r\nNEXT=ok"
+        )));
     }
 
     #[test]

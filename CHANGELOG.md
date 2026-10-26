@@ -4,6 +4,48 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (.env.example no longer copies credentials in prose comments)
+
+- Example generation masked commented-out assignments and inline comments
+  that held a credential, but a full-line prose comment such as
+  `# old key: <key>` or `# rotated from <old key> on 2026-01-02` was still
+  copied verbatim into the shareable `.env.example`. Every full-line comment
+  that is not a commented-out assignment is now judged by the same rule as
+  inline comments and, when it holds a credential, replaced with
+  `# [comment removed by Phantom: it held a credential]`, keeping its
+  indentation and line ending. Commented-out assignments keep their own
+  masking, lines inside multi-line quoted values stay part of the value, and
+  ordinary prose comments, plain URLs and the generated header are kept.
+
+### Fixed (one refused secret no longer aborts `phantom validate --check-all`)
+
+- `phantom validate --check-all` and MCP `phantom_validate_all` stopped the
+  whole run at the first secret the lifecycle gate refused (overdue under
+  enforced rotation, demoted to read-only, or unreadable lifecycle metadata),
+  so every other secret went unvalidated and no per-secret report came back.
+  Each secret is now judged on its own: a refused one is never read or sent
+  and appears in the report with status `refused` and its reason (name only),
+  a new `refused` count is added to the report, and the rest go on to the
+  trusted-terminal consent (CLI) or approval (MCP) and are validated. The run
+  still fails when anything was refused: the CLI exits non-zero with each
+  refusal, and the MCP result is flagged as an error. The consent challenge
+  and the MCP approval bind only the names that will be sent. `--watch`
+  keeps refusing the whole name set, since its consent covers a fixed set.
+
+### Fixed (.env.example no longer copies credentials in inline comments)
+
+- Example generation kept every trailing comment after a value verbatim, so
+  `PORT=3000 # staging key <key>` or `API_KEY=... # rotated from <old key>`
+  put a credential into the shareable `.env.example` even when the value
+  itself was masked or was ordinary config. An inline comment (after a live
+  entry or after a commented-out assignment) that holds a word the
+  classifier's value rules call a secret (a known secret prefix, credentials
+  in a URL, or a long high-entropy string; words under 16 characters are
+  ignored) is now replaced as a whole by
+  `# [comment removed by Phantom: it held a credential]`. Prose comments,
+  plain URLs and short words are kept, and quotes, spacing and line endings
+  are unchanged.
+
 ### Fixed (.env.example no longer copies commented-out secrets)
 
 - `phantom init`, `phantom env`, `phantom doctor --fix`, `phantom agent` and

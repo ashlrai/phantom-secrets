@@ -19,7 +19,7 @@
 ~/.cargo/bin/cargo run -- <command>
 ```
 
-Note: `~/.cargo/bin/` prefix is needed because cargo is not in PATH on this machine.
+If `cargo` is not on your PATH (a fresh rustup install puts it in `~/.cargo/bin`), run `export PATH="$HOME/.cargo/bin:$PATH"` first.
 
 ## Architecture
 

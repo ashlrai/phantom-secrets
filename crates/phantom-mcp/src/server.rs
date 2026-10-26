@@ -5058,6 +5058,10 @@ impl PhantomMcpServer {
             Anthropic, AWS, or a generic HTTP check). Returns a JSON compliance report with: \
             total, valid, invalid, unreachable, not_checked counts and per-secret entries \
             (name, validator, status, reason, checked_at). \
+            A secret blocked by its lifecycle policy (overdue under enforced rotation, demoted \
+            to read-only, or unreadable lifecycle metadata) is never read or sent: it is \
+            reported with status \"refused\" and its reason, the rest are still validated, \
+            and the result is flagged as an error. \
             Secret VALUES are never returned or logged. This retrieves credentials, makes real \
             outbound provider requests, and persists value-free validation metadata; it requires \
             confirm plus approval_token and should run during a maintenance window."
@@ -5086,14 +5090,27 @@ impl PhantomMcpServer {
             .list()
             .map_err(|e| vault_read_err("Failed to list secrets", e))?;
         names.sort();
-        let (names_digest, names_sample) = bounded_validation_name_plan(&names)?;
+        bounded_validation_name_plan(&names)?;
         // Validation sends each value to its provider, as a `phantom exec`
-        // session would: refuse an overdue enforced secret and a secret
-        // demoted to read-only before the one-use approval is requested or
-        // consumed. The check runs again before any value is read.
-        gate_validation_mcp(&config, vault.as_ref(), &names)?;
+        // session would: an overdue enforced secret and a secret demoted to
+        // read-only are refused from names and metadata alone, each on its
+        // own, before the one-use approval is requested or consumed. The
+        // approval binds only the names that will be sent; the check runs
+        // again before any value is read.
+        let (allowed, mut refused) = gate_validation_mcp(&config, vault.as_ref(), &names);
+        if allowed.is_empty() && !refused.is_empty() {
+            // Nothing left to send: no approval, no value read, no request.
+            let empty = phantom_core::validator::run_validation_pipeline(
+                Vec::new(),
+                &[],
+                1,
+                std::time::Duration::from_secs(1),
+            );
+            return validation_report_result(empty, &refused, vault_note);
+        }
+        let (names_digest, names_sample) = bounded_validation_name_plan(&allowed)?;
         let mut metadata_before = std::collections::BTreeMap::new();
-        for name in &names {
+        for name in &allowed {
             metadata_before.insert(
                 name.clone(),
                 vault.get_validation_metadata_exact(name).map_err(|error| {
@@ -5111,9 +5128,10 @@ impl PhantomMcpServer {
             "canonical_project": canonical_project,
             "local_project_id": config.local_project_id(),
             "config_sha256": config_digest,
-            "selected_name_count": names.len(),
+            "selected_name_count": allowed.len(),
             "selected_names_sha256": names_digest,
             "selected_name_sample": names_sample,
+            "refused_name_count": refused.len(),
             "jobs": jobs,
             "timeout_secs": timeout_secs,
         }))
@@ -5137,12 +5155,15 @@ impl PhantomMcpServer {
             return json_object_result(&out);
         }
 
-        gate_validation_mcp(&config, vault.as_ref(), &names)?;
-        // Retrieve all secrets for validation (zeroized after use). The
-        // injection read re-checks the mode atomically with the value read,
-        // so an entry demoted after the gate is never sent.
+        // Judged again after approval: a secret refused now is reported as
+        // refused and never read.
+        let (allowed, refused_now) = gate_validation_mcp(&config, vault.as_ref(), &allowed);
+        refused.extend(refused_now);
+        // Retrieve the allowed secrets for validation (zeroized after use).
+        // The injection read re-checks the mode atomically with the value
+        // read, so an entry demoted after the gate is never sent.
         let mut secrets: Vec<(String, zeroize::Zeroizing<String>)> = Vec::new();
-        for name in &names {
+        for name in &allowed {
             let value = vault
                 .retrieve_for_injection(name)
                 .map_err(|e| internal_err(format!("Failed to retrieve secret '{name}': {e}")))?;
@@ -5202,9 +5223,7 @@ impl PhantomMcpServer {
             ));
         }
 
-        let report = serde_json::to_value(&report)
-            .map_err(|error| internal_err(format!("Serialization error: {error}")))?;
-        json_object_result(&with_vault_note(report, vault_note))
+        validation_report_result(report, &refused, vault_note)
     }
 
     // ── Validation scheduler tools ────────────────────────────────────────
@@ -5963,24 +5982,59 @@ const VALIDATE_ACTION: &str = "validate";
 
 /// The lifecycle gate `phantom validate` applies: exec's rotation gate, then
 /// a refusal for a secret demoted to read-only or whose lifecycle metadata
-/// cannot be read. Names and metadata only.
+/// cannot be read. Each name is judged on its own, so one refusal does not
+/// stop the rest: returns the allowed names and, per refused name, its
+/// refusal. Names and metadata only.
 fn gate_validation_mcp(
     config: &PhantomConfig,
     vault: &dyn phantom_vault::VaultBackend,
     names: &[String],
-) -> Result<(), McpError> {
-    crate::tools::helpers::enforce_rotation_on_entries(
-        config,
-        vault,
-        names.iter().map(String::as_str),
-        VALIDATE_ACTION,
-        phantom_vault::rotation_gate::now_secs(),
-    )?;
-    crate::tools::helpers::refuse_read_only_entries(
-        vault,
-        names.iter().map(String::as_str),
-        VALIDATE_ACTION,
-    )
+) -> (Vec<String>, Vec<(String, String)>) {
+    let now = phantom_vault::rotation_gate::now_secs();
+    let mut allowed = Vec::new();
+    let mut refused = Vec::new();
+    for name in names {
+        let verdict = crate::tools::helpers::enforce_rotation_on_entries(
+            config,
+            vault,
+            std::iter::once(name.as_str()),
+            VALIDATE_ACTION,
+            now,
+        )
+        .and_then(|()| {
+            crate::tools::helpers::refuse_read_only_entries(
+                vault,
+                std::iter::once(name.as_str()),
+                VALIDATE_ACTION,
+            )
+        });
+        match verdict {
+            Ok(()) => allowed.push(name.clone()),
+            Err(refusal) => refused.push((name.clone(), refusal.message.to_string())),
+        }
+    }
+    (allowed, refused)
+}
+
+/// The `phantom_validate_all` result: `report` with each refused name added
+/// as a `refused` entry (its reason, never a value), flagged as an error
+/// when anything was refused so the run does not read as clean.
+fn validation_report_result(
+    mut report: phantom_core::validator::ValidationReport,
+    refused: &[(String, String)],
+    vault_note: Option<String>,
+) -> Result<CallToolResult, McpError> {
+    for (name, reason) in refused {
+        report.push_refused(name, reason);
+    }
+    let any_refused = report.refused > 0;
+    let report = serde_json::to_value(&report)
+        .map_err(|error| internal_err(format!("Serialization error: {error}")))?;
+    let mut result = json_object_result(&with_vault_note(report, vault_note))?;
+    if any_refused {
+        result.is_error = Some(true);
+    }
+    Ok(result)
 }
 
 fn retrieve_optional_secret(
@@ -13500,20 +13554,30 @@ mod tests {
     /// sent it to its provider, so a secret demoted to read-only or overdue
     /// under an enforced rotation policy (both refused by `phantom exec`)
     /// still went over the network. Both now refuse from names and metadata
-    /// alone, before the one-use approval is requested or consumed.
+    /// alone, before the one-use approval is requested or consumed, and are
+    /// reported as refused entries of an error result.
     #[test]
     fn validate_all_refuses_read_only_and_overdue_secrets_before_approval() {
         let _environment = TestEnvironment::new();
         let (server, dir) = setup_initialized_project();
-        let validate_now = || {
-            server
-                .phantom_validate_all(Parameters(ValidateAllParams {
-                    jobs: 1,
-                    confirm: true,
-                    approval_token: None,
-                }))
-                .map(|_| String::new())
-                .unwrap_or_else(|error| error.message.to_string())
+        let validate_now = || match server.phantom_validate_all(Parameters(ValidateAllParams {
+            jobs: 1,
+            confirm: true,
+            approval_token: None,
+        })) {
+            Err(error) => error.message.to_string(),
+            Ok(result) => {
+                let report = result.structured_content.unwrap_or_default();
+                let reasons: Vec<&str> = report["entries"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|entry| entry["status"] == "refused")
+                    .filter_map(|entry| entry["reason"].as_str())
+                    .collect();
+                assert_eq!(result.is_error == Some(true), !reasons.is_empty());
+                reasons.join("\n")
+            }
         };
         let before = validate_now();
         assert!(!before.starts_with("Refusing to validate"));
@@ -13557,6 +13621,56 @@ mod tests {
             refused.starts_with("Refusing to validate: rotation enforcement blocked 1 secret(s).")
         );
         assert!(refused.contains("DATABASE_URL"));
+    }
+
+    /// `phantom_validate_all` aborted the whole run on one refused secret,
+    /// so the rest were never validated and no per-secret report came back.
+    /// The refused secret is now reported as refused, with its reason and
+    /// name only, the rest are validated, and the result is an error.
+    #[test]
+    fn validate_all_reports_a_refused_secret_and_validates_the_rest() {
+        let _environment = TestEnvironment::new();
+        let (server, _dir) = setup_initialized_project();
+        let (_config, vault) = server.load_config_and_vault().unwrap();
+        let mut metadata = vault
+            .get_metadata("OPENAI_API_KEY")
+            .unwrap()
+            .unwrap_or_default();
+        metadata.vault_mode = phantom_vault::metadata::VaultMode::ReadOnly;
+        vault.set_metadata("OPENAI_API_KEY", metadata).unwrap();
+
+        let result = server
+            .phantom_validate_all(Parameters(ValidateAllParams {
+                jobs: 1,
+                confirm: true,
+                approval_token: None,
+            }))
+            .map_err(|error| error.message.to_string())
+            .expect("a refused secret must not abort the run");
+        assert_eq!(result.is_error, Some(true));
+        let report = result.structured_content.clone().unwrap();
+        assert_eq!(report["total"], 2);
+        assert_eq!(report["refused"], 1);
+        let entries = report["entries"].as_array().unwrap();
+        let refused = entries
+            .iter()
+            .find(|entry| entry["name"] == "OPENAI_API_KEY")
+            .unwrap();
+        assert_eq!(refused["status"], "refused");
+        let reason = refused["reason"].as_str().unwrap();
+        assert!(reason.starts_with("Refusing to validate: 1 secret(s) are read-only"));
+        assert!(reason.contains("'OPENAI_API_KEY'"));
+        let rest = entries
+            .iter()
+            .find(|entry| entry["name"] == "DATABASE_URL")
+            .unwrap();
+        assert_ne!(rest["status"], "refused");
+        assert_eq!(
+            vault
+                .get_validation_metadata_exact("OPENAI_API_KEY")
+                .unwrap(),
+            None
+        );
     }
 
     /// The sync report's live-gate check reads names and metadata only:

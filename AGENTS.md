@@ -195,7 +195,7 @@ and still requires attached-terminal consent.
 ~/.cargo/bin/cargo fmt --all    # Format
 ```
 
-Note: `~/.cargo/bin/` prefix needed because cargo is not in PATH on this machine.
+If `cargo` is not on your PATH (a fresh rustup install puts it in `~/.cargo/bin`), run `export PATH="$HOME/.cargo/bin:$PATH"` first.
 
 ## Project structure
 
