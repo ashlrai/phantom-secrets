@@ -1,7 +1,9 @@
-//! The posture ledger must never persist or emit a secret name or value.
-//! Written before the store itself (red before green).
+//! The posture ledger must never persist or emit a secret name, value,
+//! project path, remote URL (or its userinfo), or host key material.
 
-use phantom_core::posture::{PostureCounts, PostureEntry, PostureLedger};
+use phantom_core::posture::{
+    project_id, repo_identity, HostKey, PostureCounts, PostureEntry, PostureLedger,
+};
 
 const NAMES: &[&str] = &[
     "STRIPE_SECRET_KEY",
@@ -13,6 +15,8 @@ const VALUES: &[&str] = &[
     "sk_live_value_marker_91c2",
     "postgres://user:pw_marker@h/db",
 ];
+const REMOTE: &str = "https://x-access-token:tok_marker_55d1@github.com/acme/widget-marker.git";
+const ROOT: &str = "/home/u/project-marker-a1";
 
 fn entries() -> Vec<PostureEntry<'static>> {
     NAMES
@@ -29,23 +33,51 @@ fn entries() -> Vec<PostureEntry<'static>> {
 }
 
 #[test]
-fn ledger_file_and_json_never_contain_names_or_values() {
+fn ledger_file_and_json_never_contain_names_values_paths_remotes_or_key() {
     let dir = tempfile::tempdir().unwrap();
     let ledger = PostureLedger::at(dir.path().join("posture"));
-    let counts = PostureCounts::from_entries("/home/u/project-marker-a1", &entries(), true);
-    assert_eq!(counts.wrapped, 2);
-    assert_eq!(counts.unwrapped, 2);
-    assert_eq!(counts.expiring, 1);
-    assert_eq!(counts.unrotated, 1);
-    assert!(counts.plaintext_env);
+    let key = HostKey::load_or_create(&dir.path().join("posture-host.key")).unwrap();
+    let identity = repo_identity(Some(REMOTE), std::path::Path::new(ROOT));
+    assert_eq!(identity, "acme/widget-marker");
+    let id = project_id(&key, &identity);
+    let counts = PostureCounts::from_entries(id, &entries(), 3);
+    assert_eq!(
+        (
+            counts.wrapped,
+            counts.unwrapped,
+            counts.expiring,
+            counts.unrotated,
+            counts.plaintext_env
+        ),
+        (2, 2, 1, 1, 3)
+    );
     ledger.record(&counts).unwrap();
 
     let file = std::fs::read_to_string(ledger.history_path()).unwrap();
     let json = serde_json::to_string(&ledger.load().unwrap()).unwrap();
+    let key_hex = key.to_hex_for_test();
+    let forbidden: Vec<&str> = NAMES
+        .iter()
+        .chain(VALUES)
+        .chain(&[
+            REMOTE,
+            ROOT,
+            "project-marker-a1",
+            "tok_marker_55d1",
+            "acme",
+            "widget-marker",
+            "github.com",
+        ])
+        .copied()
+        .chain([key_hex.as_str()])
+        .collect();
     for haystack in [&file, &json] {
-        for needle in NAMES.iter().chain(VALUES).chain(&["project-marker-a1"]) {
-            assert!(!haystack.contains(needle), "leaked {needle}");
-            assert!(!haystack.to_lowercase().contains(&needle.to_lowercase()));
+        assert!(haystack.contains("recorded_at"));
+        for needle in &forbidden {
+            assert!(
+                !haystack.to_lowercase().contains(&needle.to_lowercase()),
+                "leaked {needle}"
+            );
         }
     }
 }
