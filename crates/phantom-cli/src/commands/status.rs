@@ -164,9 +164,13 @@ pub fn run(oneline: bool, json: bool) -> Result<()> {
 /// An observation contract, not an authorization or vault-health result.
 /// Only fixed vocabulary and counts may cross this boundary; config values,
 /// managed dotenv contents, and arbitrary filesystem errors stay local.
+///
+/// Contract: docs/hub-status-contract.md. `kind` is the schema id a consumer
+/// checks before `schema_version`, matching `phantom.agent.preflight`.
 #[derive(Serialize)]
 struct MetadataStatus {
     schema_version: u8,
+    kind: &'static str,
     initialized: bool,
     inspection: &'static str,
     managed_dotenv: DotenvStatus,
@@ -213,6 +217,7 @@ enum StatusIssue {
 fn metadata_status(project_dir: &Path) -> MetadataStatus {
     let mut report = MetadataStatus {
         schema_version: 1,
+        kind: "phantom.status",
         initialized: false,
         inspection: "metadata-only",
         managed_dotenv: DotenvStatus { inspected: false },
@@ -262,6 +267,27 @@ fn metadata_status(project_dir: &Path) -> MetadataStatus {
 
 #[cfg(test)]
 mod tests {
+    /// Every report state carries the same schema id: it is set once before
+    /// the first early return, so missing, unreadable, invalid and valid
+    /// configurations all identify as `phantom.status`.
+    #[test]
+    fn every_report_carries_the_phantom_status_schema_id() {
+        let project = tempfile::tempdir().unwrap();
+        for (configured, initialized) in [(false, false), (true, true)] {
+            if configured {
+                phantom_core::config::PhantomConfig::new_with_defaults(
+                    "status-kind-fixture".into(),
+                )
+                .save(&project.path().join(".phantom.toml"))
+                .unwrap();
+            }
+            let report = serde_json::to_value(super::metadata_status(project.path())).unwrap();
+            assert_eq!(report["kind"], "phantom.status");
+            assert_eq!(report["schema_version"], 1);
+            assert_eq!(report["initialized"], initialized);
+        }
+    }
+
     #[test]
     fn status_source_never_constructs_or_lists_a_vault() {
         let source = include_str!("status.rs");
