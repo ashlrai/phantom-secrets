@@ -226,13 +226,15 @@ fn run_inner(check_all: bool, jobs: Option<usize>, json: bool, watch: bool) -> R
         // overdue while the prompt was open. It is refused, never sent.
         let again = gate_validation(&config, vault.as_ref(), &gate.allowed);
         refused.extend(again.refused);
+        // Counted from names, before any value is read.
+        let sending = again.allowed.len();
         let secrets = retrieve_validation_values(vault.as_ref(), &again.allowed)?;
 
         if !json {
             println!(
                 "{} Validating {} secret(s) with {} job(s)…",
                 "info".blue(),
-                secrets.len(),
+                sending,
                 n_jobs
             );
         }
