@@ -4,10 +4,12 @@ use phantom_core::config::PhantomConfig;
 use phantom_core::dotenv::DotenvFile;
 use phantom_core::env_scope::DEFAULT_ENV;
 use phantom_core::token::PhantomToken;
+use phantom_proxy::response_scrubber::{ResponseScrubber, StreamingScrubState};
 use phantom_proxy::{Interceptor, ProxyConfig, ProxyServer, ServiceRegistry};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::process::Stdio;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 const VAULT_PASSPHRASE_ENV: &str = "PHANTOM_VAULT_PASSPHRASE";
 
@@ -39,13 +41,14 @@ pub fn run(
     env: Option<&str>,
     bind_source: Option<&std::path::Path>,
     quiet: bool,
+    scrub_output: bool,
 ) -> Result<()> {
     if cmd.is_empty() {
         anyhow::bail!("No command specified. Usage: phantom exec -- <command>");
     }
 
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(run_async(cmd, env, bind_source, quiet))
+    rt.block_on(run_async(cmd, env, bind_source, quiet, scrub_output))
 }
 
 /// Actionable, value-free next steps for the connection-string denial.
@@ -76,6 +79,7 @@ async fn run_async(
     env_flag: Option<&str>,
     bind_source: Option<&std::path::Path>,
     quiet: bool,
+    scrub_output: bool,
 ) -> Result<()> {
     let working_dir = std::env::current_dir()?;
     // Custody (config namespace, managed dotenv, env scope) comes from the
@@ -167,7 +171,7 @@ async fn run_async(
             "{} No phantom tokens found to proxy. Running command directly with Phantom internal credentials removed.",
             "warn".yellow()
         );
-        return run_command_directly(cmd, &child_scrub_env).await;
+        return run_command_directly(cmd, &child_scrub_env, scrub_output).await;
     }
 
     crate::commands::rotation_gate::enforce_rotation_on_access(
@@ -233,6 +237,8 @@ async fn run_async(
     // proxy 503 for every call instead of reaching its provider.
     let mut exported_routes = registry.clone();
     exported_routes.retain_routes(|route| secret_name_to_value.contains_key(&route.secret_key));
+    let output_scrubber =
+        scrub_output.then(|| ResponseScrubber::from_named_map(&secret_name_to_value));
     let interceptor = Interceptor::new_scoped(session_token_to_secret, secret_name_to_value);
 
     progress!(
@@ -408,9 +414,8 @@ async fn run_async(
         // reintroduce either the real vault passphrase or a confusing session
         // token under Phantom's internal decryption-key variable.
         .env_remove(VAULT_PASSPHRASE_ENV)
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit());
+        .stdin(Stdio::inherit());
+    configure_output(&mut command, scrub_output);
     // Take over termination signals before the child exists, so a SIGTERM
     // or SIGINT aimed at phantom can no longer kill it and orphan the child
     // (which would keep running against a proxy that is gone). The handlers
@@ -429,11 +434,12 @@ async fn run_async(
     };
 
     // Wait for the child to exit, forwarding termination signals to it.
-    let status = forwarder.wait_for(&mut child).await?;
+    let result = wait_with_output(forwarder, &mut child, output_scrubber.as_ref()).await;
 
     // Shut down the proxy — session tokens are now invalid
     progress!(quiet, "\n{} Shutting down proxy...", "->".blue().bold());
     proxy.shutdown().await;
+    let status = result?;
 
     if !status.success() {
         let (code, signal_note) = child_exit_code(&status);
@@ -633,25 +639,26 @@ fn detect_next_dependency(package_json: &Path) -> bool {
     contents.contains("\"next\"")
 }
 
-async fn run_command_directly(cmd: &[String], scrub_env_keys: &HashSet<String>) -> Result<()> {
+async fn run_command_directly(
+    cmd: &[String],
+    scrub_env_keys: &HashSet<String>,
+    scrub_output: bool,
+) -> Result<()> {
     let program = &cmd[0];
-    let args = &cmd[1..];
-
-    let mut command = sanitized_child_command(program, args, scrub_env_keys);
-    let status = match command
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .status()
-        .await
-    {
-        Ok(status) => status,
+    let mut command = sanitized_child_command(program, &cmd[1..], scrub_env_keys);
+    command.stdin(Stdio::inherit());
+    configure_output(&mut command, scrub_output);
+    let forwarder = SignalForwarder::install()?;
+    let mut child = match command.spawn() {
+        Ok(child) => child,
         Err(error) => {
             let (code, message) = spawn_failure(program, &error);
             eprintln!("{} {message}", "error".red().bold());
             std::process::exit(code);
         }
     };
+    let scrubber = scrub_output.then(|| ResponseScrubber::from_named_map(&HashMap::new()));
+    let status = wait_with_output(forwarder, &mut child, scrubber.as_ref()).await?;
 
     if !status.success() {
         let (code, signal_note) = child_exit_code(&status);
@@ -662,6 +669,75 @@ async fn run_command_directly(cmd: &[String], scrub_env_keys: &HashSet<String>) 
     }
 
     Ok(())
+}
+
+fn configure_output(command: &mut tokio::process::Command, scrub: bool) {
+    command.stdout(if scrub {
+        Stdio::piped()
+    } else {
+        Stdio::inherit()
+    });
+    command.stderr(if scrub {
+        Stdio::piped()
+    } else {
+        Stdio::inherit()
+    });
+}
+
+async fn scrub_output_stream(
+    mut source: impl AsyncRead + Unpin,
+    mut destination: impl AsyncWrite + Unpin,
+    scrubber: &ResponseScrubber,
+) -> std::io::Result<()> {
+    let mut state = StreamingScrubState::new();
+    let mut buffer = zeroize::Zeroizing::new([0u8; 8192]);
+    let mut write_error = None;
+    loop {
+        let count = source.read(&mut buffer[..]).await?;
+        let output = if count == 0 {
+            scrubber.finish_stream(None, std::mem::take(&mut state)).0
+        } else {
+            scrubber
+                .scrub_stream_chunk(None, &mut state, &buffer[..count])
+                .0
+        };
+        // Keep draining after a closed destination so the child cannot deadlock
+        // on a full pipe while we wait for its exit.
+        if write_error.is_none() {
+            if let Err(error) = async {
+                destination.write_all(&output).await?;
+                destination.flush().await
+            }
+            .await
+            {
+                write_error = Some(error);
+            }
+        }
+        if count == 0 {
+            return write_error.map_or(Ok(()), Err);
+        }
+    }
+}
+
+async fn wait_with_output(
+    forwarder: SignalForwarder,
+    child: &mut tokio::process::Child,
+    scrubber: Option<&ResponseScrubber>,
+) -> Result<std::process::ExitStatus> {
+    let Some(scrubber) = scrubber else {
+        return Ok(forwarder.wait_for(child).await?);
+    };
+    let stdout = child.stdout.take().context("Missing child stdout pipe")?;
+    let stderr = child.stderr.take().context("Missing child stderr pipe")?;
+    let (status, stdout, stderr) = tokio::join!(
+        forwarder.wait_for(child),
+        scrub_output_stream(stdout, tokio::io::stdout(), scrubber),
+        scrub_output_stream(stderr, tokio::io::stderr(), scrubber),
+    );
+    let status = status?;
+    stdout.context("Failed to relay scrubbed stdout")?;
+    stderr.context("Failed to relay scrubbed stderr")?;
+    Ok(status)
 }
 
 /// Hide the per-session proxy token in printed `*_BASE_URL` lines. The child
@@ -875,6 +951,55 @@ impl SignalForwarder {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn output_relay_scrubs_bytewise_and_flushes_incomplete_prefix_at_eof() {
+        let fake = format!("FAKE-{}-value", "managed".repeat(5));
+        let scrubber = ResponseScrubber::from_named_map(&HashMap::from([(
+            "FAKE_KEY".to_string(),
+            fake.clone(),
+        )]));
+        let input = [b"before:".as_slice(), fake.as_bytes(), b":after\xffsk-"].concat();
+        let (mut sender, reader) = tokio::io::duplex(1);
+        let mut output = Vec::new();
+        let (sent, relayed) = tokio::join!(
+            async {
+                for byte in input {
+                    sender.write_all(&[byte]).await?;
+                }
+                sender.shutdown().await
+            },
+            scrub_output_stream(reader, &mut output, &scrubber),
+        );
+        assert!(sent.is_ok());
+        assert!(relayed.is_ok());
+        assert!(!output
+            .windows(fake.len())
+            .any(|bytes| bytes == fake.as_bytes()));
+        assert!(output.starts_with(b"before:[REDACTED:"));
+        assert!(output.ends_with(b":after\xffsk-"));
+    }
+
+    #[tokio::test]
+    async fn output_relay_drains_child_after_destination_closes() {
+        let scrubber = ResponseScrubber::from_named_map(&HashMap::new());
+        let (mut sender, reader) = tokio::io::duplex(64);
+        let (writer, closed) = tokio::io::duplex(1);
+        drop(closed);
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::join!(
+                async {
+                    sender.write_all(&vec![b'.'; 32 * 1024]).await?;
+                    sender.shutdown().await
+                },
+                scrub_output_stream(reader, writer, &scrubber),
+            )
+        })
+        .await
+        .expect("relay must keep draining the child");
+        assert!(result.0.is_ok());
+        assert!(result.1.is_err());
+    }
+
     /// A SIGTERM delivered to phantom while the child runs used to kill
     /// phantom by default and orphan the child. The forwarder now catches it,
     /// passes it to the child, and returns the child's own exit status.
