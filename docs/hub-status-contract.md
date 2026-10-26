@@ -1,6 +1,6 @@
 # Phantom status for local orchestrators
 
-Ashlr Hub and other local orchestrators can inspect whether a project has valid
+The Phantom workbench (formerly Ashlr Hub) and other local orchestrators can inspect whether a project has valid
 Phantom configuration without opening its vault or managed dotenv file:
 
 ```bash

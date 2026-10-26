@@ -4,6 +4,22 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Added
+
+- `INTEGRATION.md`: documents how this repo plugs into the Phantom workbench
+  (formerly Ashlr Hub) — the opt-in delegation model, the `phm_` token-swap
+  flow, trust boundaries, and opt-out. No library dependency in either
+  direction; integration is via the CLI, the local MCP server, and versioned
+  JSON contracts.
+- `DESIGN-onboarding-wizard.md` and `DESIGN-connector-packs.md`: proposals
+  (not implemented) for a unified `phantom onboard` flow and a signed provider
+  connector-pack model. Both need Mason's input before any implementation.
+
+### Changed
+
+- `docs/hub-status-contract.md`: "Ashlr Hub" renamed to "Phantom workbench
+  (formerly Ashlr Hub)" following the `ashlr-hub` → `ashlrai/phantom` rename.
+
 ### Fixed (.env.example no longer copies credentials in prose comments)
 
 - Example generation masked commented-out assignments and inline comments
