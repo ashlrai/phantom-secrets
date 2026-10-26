@@ -42,6 +42,8 @@ struct LoadedVault {
 #[derive(Serialize, Deserialize, Default, PartialEq)]
 struct VaultData {
     secrets: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    versions: BTreeMap<String, LocalVersion>,
     /// Per-secret TTL/expiry metadata. Keys match the keys in `secrets`.
     /// Absent entries mean "no metadata" — graceful on older vault files.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -50,6 +52,20 @@ struct VaultData {
     /// Stored alongside TTL metadata. Absent entries mean "never validated".
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     validation_metadata: BTreeMap<String, ValidationMetadata>,
+}
+
+// Never derive Debug: the predecessor is a credential, encrypted with the vault.
+#[derive(Serialize, Deserialize, PartialEq)]
+struct LocalVersion {
+    version: u64,
+    rotated_at: u64,
+    previous: Option<String>,
+}
+impl Drop for LocalVersion {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        self.previous.zeroize();
+    }
 }
 
 impl std::fmt::Debug for VaultData {
@@ -87,7 +103,15 @@ impl VaultData {
         if self.secrets.get(name).map(String::as_str) != Some(value) {
             self.validation_metadata.remove(name);
         }
-        self.secrets.insert(name.to_string(), value.to_string());
+        if let Some(history) = self.versions.get_mut(name) {
+            use zeroize::Zeroize;
+            history.previous.zeroize();
+            history.previous = None;
+        }
+        if let Some(mut previous) = self.secrets.insert(name.to_string(), value.to_string()) {
+            use zeroize::Zeroize;
+            previous.zeroize();
+        }
     }
 }
 
@@ -361,6 +385,82 @@ fn require_durable_effect<T>(outcome: AnchoredEffect<T>, operation: &str) -> Res
 }
 
 impl VaultBackend for FileVault {
+    fn rotate_generated(
+        &self,
+        name: &str,
+        rollback: bool,
+    ) -> Result<crate::traits::RotationReceipt> {
+        use rand::RngCore;
+        let locked = self.lock_view()?;
+        let LoadedVault { mut data, before } = self.load(&locked)?;
+        crate::traits::ensure_secret_injectable(name, data.metadata.get(name))?;
+        if data
+            .metadata
+            .get(name)
+            .is_some_and(|meta| meta.is_expired())
+        {
+            return Err(PhantomError::VaultError(
+                "local replacement cannot renew expired lifecycle metadata".into(),
+            ));
+        }
+        let old = zeroize::Zeroizing::new(
+            data.secrets
+                .get(name)
+                .cloned()
+                .ok_or_else(|| PhantomError::SecretNotFound(name.into()))?,
+        );
+        let version = data
+            .versions
+            .get(name)
+            .map_or(1, |v| v.version)
+            .checked_add(1)
+            .ok_or_else(|| PhantomError::VaultError("version exhausted".into()))?;
+        let replacement = if rollback {
+            zeroize::Zeroizing::new(
+                data.versions
+                    .get_mut(name)
+                    .and_then(|v| v.previous.take())
+                    .ok_or_else(|| PhantomError::VaultError("no previous local version".into()))?,
+            )
+        } else {
+            let mut bytes = zeroize::Zeroizing::new([0u8; 32]);
+            rand::rngs::OsRng
+                .try_fill_bytes(bytes.as_mut())
+                .map_err(|_| PhantomError::VaultError("OS randomness unavailable".into()))?;
+            zeroize::Zeroizing::new(hex::encode(bytes.as_ref()))
+        };
+        data.replace_value(name, &replacement);
+        let rotated_at = crate::metadata::now_secs();
+        data.versions.insert(
+            name.into(),
+            LocalVersion {
+                version,
+                rotated_at,
+                previous: if rollback {
+                    None
+                } else {
+                    Some(old.to_string())
+                },
+            },
+        );
+        // Local generation cannot renew provider TTL or an expired entry.
+        self.save(&locked, &data, before.as_ref())?;
+        phantom_core::audit::log(
+            if rollback {
+                "vault.local_rollback"
+            } else {
+                "vault.local_generate"
+            },
+            Some(name),
+        );
+        Ok(crate::traits::RotationReceipt {
+            name: name.into(),
+            route: None,
+            rotated_at,
+            version,
+        })
+    }
+
     fn store(&self, name: &str, value: &str) -> Result<()> {
         let locked = self.lock_view()?;
         let LoadedVault { mut data, before } = self.load(&locked)?;
@@ -408,6 +508,7 @@ impl VaultBackend for FileVault {
             return Err(PhantomError::SecretNotFound(name.to_string()));
         }
         // Remove associated metadata so the vault stays consistent.
+        data.versions.remove(name);
         data.metadata.remove(name);
         data.validation_metadata.remove(name);
         self.save(&locked, &data, before.as_ref())?;
@@ -439,6 +540,7 @@ impl VaultBackend for FileVault {
             }
             None => {
                 data.secrets.remove(name);
+                data.versions.remove(name);
                 data.metadata.remove(name);
                 data.validation_metadata.remove(name);
             }
@@ -1364,5 +1466,99 @@ mod tests {
         let (vault, _dir) = test_vault();
         let held: &zeroize::Zeroizing<String> = &vault.passphrase;
         assert!(!held.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod local_version_tests {
+    use super::*;
+    #[test]
+    fn local_versions_are_atomic_persistent_and_bounded() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = FileVault::new(dir.path(), "local", "fixture-passphrase".into()).unwrap();
+        vault.store("KEY", "fixture-original").unwrap();
+        let meta = vault.get_metadata("KEY").unwrap();
+        vault
+            .set_validation_metadata(
+                "KEY",
+                ValidationMetadata {
+                    last_check_ts: 123,
+                    is_valid: true,
+                    failure_reason: None,
+                    validator_name: None,
+                },
+            )
+            .unwrap();
+        let receipt = vault.rotate_generated("KEY", false).unwrap();
+        assert!(vault
+            .get_validation_metadata("KEY")
+            .unwrap()
+            .never_checked());
+        let generated = vault.retrieve_for_injection("KEY").unwrap();
+        assert_eq!(generated.len(), 64);
+        assert!(generated.bytes().all(|c| c.is_ascii_hexdigit()));
+        assert!(generated.as_str() != "fixture-original");
+        let output = serde_json::to_string(&receipt).unwrap();
+        assert!(!output.contains(generated.as_str()));
+        assert!(!format!("{receipt:?}").contains(generated.as_str()));
+        assert_eq!(meta, vault.get_metadata("KEY").unwrap());
+        drop(vault);
+        let reopened = FileVault::new(dir.path(), "local", "fixture-passphrase".into()).unwrap();
+        assert_eq!(reopened.list().unwrap(), vec!["KEY"]);
+        assert_eq!(reopened.rotate_generated("KEY", true).unwrap().version, 3);
+        assert!(reopened.retrieve_for_injection("KEY").unwrap().as_str() == "fixture-original");
+        assert!(reopened.rotate_generated("KEY", true).is_err());
+        reopened.rotate_generated("KEY", false).unwrap();
+        reopened.store("KEY", "fixture-overwrite").unwrap();
+        assert!(reopened.rotate_generated("KEY", true).is_err());
+        reopened.rotate_generated("KEY", false).unwrap();
+        reopened.delete("KEY").unwrap();
+        assert!(reopened.rotate_generated("KEY", true).is_err());
+        reopened.store("KEY", "fixture-recreated").unwrap();
+        assert!(reopened.rotate_generated("KEY", true).is_err());
+    }
+
+    #[test]
+    fn concurrent_generation_serializes_versions_and_cas_removes_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = std::sync::Arc::new(
+            FileVault::new(dir.path(), "parallel", "fixture-passphrase".into()).unwrap(),
+        );
+        vault.store("KEY", "fixture-original").unwrap();
+        let workers: Vec<_> = (0..3)
+            .map(|_| {
+                let vault = vault.clone();
+                std::thread::spawn(move || vault.rotate_generated("KEY", false).unwrap().version)
+            })
+            .collect();
+        let mut versions: Vec<_> = workers.into_iter().map(|w| w.join().unwrap()).collect();
+        versions.sort();
+        assert_eq!(versions, vec![2, 3, 4]);
+        let current = vault.retrieve("KEY").unwrap();
+        assert!(vault
+            .compare_and_swap("KEY", Some(&current), Some("fixture-cas"))
+            .unwrap());
+        assert!(vault.rotate_generated("KEY", true).is_err());
+        vault.store("default/KEY", "fixture-scoped").unwrap();
+        assert_eq!(
+            crate::traits::local_rotation_key(vault.as_ref(), "default", "KEY").unwrap(),
+            "default/KEY"
+        );
+        assert!(crate::traits::local_rotation_key(vault.as_ref(), "prod", "KEY").is_err());
+    }
+
+    #[test]
+    fn local_generation_does_not_bypass_expiry_or_cross_projects() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = FileVault::new(dir.path(), "a", "fixture-passphrase".into()).unwrap();
+        let b = FileVault::new(dir.path(), "b", "fixture-passphrase".into()).unwrap();
+        a.store("KEY", "fixture-original").unwrap();
+        a.rotate_generated("KEY", false).unwrap();
+        assert!(b.rotate_generated("KEY", true).is_err());
+        let mut meta = a.get_metadata("KEY").unwrap().unwrap();
+        meta.expires_at = Some(1);
+        a.set_metadata("KEY", meta).unwrap();
+        assert!(a.rotate_generated("KEY", false).is_err());
+        assert!(a.rotate_generated("KEY", true).is_err());
     }
 }

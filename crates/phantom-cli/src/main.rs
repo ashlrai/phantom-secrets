@@ -522,9 +522,19 @@ enum Commands {
         auto_rotate: bool,
     },
 
-    /// Regenerate all phantom tokens after an exact attached-terminal challenge
+    /// Remap placeholders, generate a named local value, or restore its predecessor.
+    /// Local mutations require exact attached-terminal consent.
     #[command(next_help_heading = "Maintenance")]
     Rotate {
+        /// Secret to replace locally (does not issue or revoke provider credentials).
+        #[arg(value_name = "NAME", requires = "generate")]
+        target: Option<String>,
+        /// Generate a random local value while preserving the managed placeholder.
+        #[arg(long, conflicts_with_all = ["sync", "with_expiry", "shadow", "schedule_strategy", "provider", "batch", "name", "rollback"])]
+        generate: bool,
+        /// Restore the single retained local predecessor; trusted terminal only.
+        #[arg(long, requires = "name", conflicts_with_all = ["sync", "with_expiry", "shadow", "schedule_strategy", "provider", "batch"])]
+        rollback: bool,
         /// Sync a newly provider-rotated credential. Rejected for a local-only
         /// Phantom token remap because the provider credential is unchanged.
         #[arg(long)]
@@ -1099,12 +1109,18 @@ fn apply_global_json(command: &mut Commands) -> Result<(), &'static str> {
         } => Ok(()),
         Commands::Rotate {
             batch,
+            generate,
+            rollback,
             shadow,
             provider,
             name,
             ..
         } => {
-            if *batch || (!*shadow && (provider.is_some() || name.is_some())) {
+            if *generate
+                || *rollback
+                || *batch
+                || (!*shadow && (provider.is_some() || name.is_some()))
+            {
                 Ok(())
             } else {
                 Err("phantom rotate (without --batch or --name)")
@@ -1315,6 +1331,9 @@ fn run() -> anyhow::Result<()> {
         } => commands::reveal::run(&name, clipboard, yes),
         Commands::Status { oneline } => commands::status::run(oneline, global_json),
         Commands::Rotate {
+            target,
+            generate,
+            rollback,
             sync,
             with_expiry,
             shadow,
@@ -1324,7 +1343,12 @@ fn run() -> anyhow::Result<()> {
             batch,
             rotation_window_days,
         } => {
-            if batch {
+            if generate || rollback {
+                let selected = target
+                    .or(name)
+                    .ok_or_else(|| anyhow::anyhow!("local rotation requires NAME"))?;
+                commands::rotate::run_generated(&selected, rollback)
+            } else if batch {
                 commands::rotate::run_batch(rotation_window_days, sync, cli.json)
             } else if shadow {
                 let secret_name =
