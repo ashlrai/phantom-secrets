@@ -18,6 +18,31 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   not protected, with or without `--json`. Without `--strict`, those
   exit codes stay as they were.
 
+### Fixed (commented-out secrets in .env are now reported)
+
+- `phantom init` moves live secret entries into the vault, but a secret that
+  was only commented out, such as `# OPENAI_API_KEY=<old key>` or
+  `# export GITHUB_TOKEN="<token>"`, stayed as plaintext in `.env` and
+  nothing said so. `phantom doctor` and MCP `phantom_doctor` now report one
+  warning per commented-out assignment that classifies as a secret, naming
+  only the key and line number, with a hint to delete the line or store the
+  value with `phantom add <NAME> --stdin`; `phantom init` prints the same
+  key-and-line warnings when it finishes. Values are never printed, empty
+  and `your_<name>_here` placeholders are ignored, and the `.env` file is
+  never changed by these checks. `DotenvFile::commented_secret_assignments`
+  exposes the existing example-masking detection as (key, line) pairs.
+
+### Fixed (.env.example masks every name the project config declares secret)
+
+- Example generation decided what to mask only from name and value
+  heuristics, so a key that `.phantom.toml` lists as a secret (a
+  `[phantom.secrets.NAME]` entry or a service's `secret_key`) but whose name
+  and value look ordinary, such as `MY_SERVICE_CRED=<short value>`, was copied
+  verbatim into the shareable `.env.example`. Those names are now always
+  replaced with a placeholder, in live, `export`, quoted and commented-out
+  assignments alike. Output for every other entry is unchanged, and without a
+  config the heuristics alone decide as before.
+
 ### Fixed (.env.example no longer copies credentials in prose comments)
 
 - Example generation masked commented-out assignments and inline comments
@@ -1136,6 +1161,7 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   the Test job, so until now the check that documented `phantom` commands and
   flags match the CLI never ran on the PRs that change those docs; drift could
   only show up on `main` after merge. It is part of `CI Gate`.
+
 ### Docs (Temporal: codec errors in the CLI)
 
 - `docs/temporal.md`: explains why `temporal workflow show` reports
