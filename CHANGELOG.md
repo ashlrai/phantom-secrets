@@ -4,6 +4,19 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (.env.example no longer copies commented-out secrets)
+
+- `phantom init`, `phantom env`, `phantom doctor --fix`, `phantom agent` and
+  the MCP example generator masked live secret entries but copied every
+  comment line verbatim, so a key kept commented out in `.env`
+  (`# OPENAI_API_KEY=<old key>`, `# export GITHUB_TOKEN="..."`) landed in the
+  `.env.example` meant to be committed and shared. A full-line comment that
+  holds an assignment the classifier calls a secret now gets the same
+  `your_<name>_here` placeholder as a live entry, keeping its quotes and any
+  trailing comment. Commented config (`# PORT=8080`) and prose comments are
+  unchanged, and `#` lines inside a multi-line quoted value stay part of that
+  value.
+
 ### Fixed (`phantom check --staged` reads every `.envrc` assignment)
 
 - A staged `.envrc` or `.envrc.local` with an unclosed quote stopped being

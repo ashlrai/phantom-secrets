@@ -479,7 +479,7 @@ impl DotenvFile {
         config: Option<&crate::config::PhantomConfig>,
     ) -> Result<String> {
         self.validate_for_mutation()?;
-        let replacements = self
+        let mut replacements = self
             .records
             .iter()
             .filter(|record| {
@@ -495,7 +495,20 @@ impl DotenvFile {
                     ),
                 )
             })
+            .chain(
+                self.commented_secret_value_spans()
+                    .into_iter()
+                    .map(|(span, key)| {
+                        let replacement = render_replacement(
+                            &self.source,
+                            &span,
+                            &generate_placeholder(&key, config),
+                        );
+                        (span, replacement)
+                    }),
+            )
             .collect::<Vec<_>>();
+        replacements.sort_by_key(|(span, _)| span.start);
         let body = splice_source_owned(&self.source, &replacements);
         let (preamble, body) = body
             .strip_prefix(UTF8_BOM)
@@ -524,6 +537,47 @@ impl DotenvFile {
         ]
         .join(eol);
         Ok(format!("{preamble}{header}{eol}{body}"))
+    }
+
+    /// Value spans of commented-out assignments that classify as secrets.
+    ///
+    /// A full-line comment such as `# OPENAI_API_KEY=<old value>` is not an
+    /// entry, but it still holds a credential. Example generation masks these
+    /// spans like live entries so the shareable file never copies them. Lines
+    /// inside a multi-line quoted value belong to that value and are skipped.
+    fn commented_secret_value_spans(&self) -> Vec<(Range<usize>, String)> {
+        let mut spans = Vec::new();
+        let mut records = self.records.iter().peekable();
+        let mut cursor = usize::from(self.source.starts_with(UTF8_BOM)) * UTF8_BOM.len();
+        while cursor < self.source.len() {
+            while records
+                .peek()
+                .is_some_and(|record| record.record_span.end <= cursor)
+            {
+                records.next();
+            }
+            if let Some(record) = records
+                .peek()
+                .filter(|record| record.record_span.contains(&cursor))
+            {
+                cursor = record.record_span.end;
+                continue;
+            }
+            let (line_end, next_line) = physical_line_bounds(&self.source, cursor);
+            let line = &self.source[cursor..line_end];
+            let trimmed = line.trim_start_matches([' ', '\t']);
+            if trimmed.starts_with('#') {
+                let tail = trimmed
+                    .trim_start_matches('#')
+                    .trim_start_matches([' ', '\t']);
+                let tail_start = line_end - tail.len();
+                if let Some((span, key)) = commented_secret_value_span(tail) {
+                    spans.push((tail_start + span.start..tail_start + span.end, key));
+                }
+            }
+            cursor = next_line;
+        }
+        spans
     }
 
     /// Rewrite the .env file, replacing real secret values with phantom tokens.
@@ -817,6 +871,50 @@ fn count_consumed_lines(source: &str) -> usize {
 /// Normalize decoded multiline values while leaving retained source untouched.
 fn normalize_line_endings(source: &str) -> String {
     source.replace("\r\n", "\n").replace('\r', "\n")
+}
+
+/// The value span, relative to `tail`, of a commented-out assignment whose
+/// entry classifies as a secret, with its key.
+///
+/// `tail` is one physical line with the comment markers removed. A tail that
+/// parses as an assignment is judged on its decoded value and keeps its
+/// quotes and trailing comment. A tail with a valid key whose value does not
+/// parse (an unterminated quote from a commented multi-line value) is judged
+/// on the raw remainder, and the whole remainder is masked. Prose such as
+/// `Set API_KEY=...` has no valid key and is left alone.
+fn commented_secret_value_span(tail: &str) -> Option<(Range<usize>, String)> {
+    let parsed = DotenvFile::parse_str(tail);
+    if let Some(record) = parsed.records.first() {
+        let secret =
+            !record.entry.is_phantom && classify(&record.entry) == SecretClassification::Secret;
+        return secret.then(|| (record.value_span.clone(), record.entry.key.clone()));
+    }
+    let assignment = tail.strip_prefix("export ").unwrap_or(tail);
+    let eq = assignment.find('=')?;
+    let key = assignment[..eq].trim();
+    if key.is_empty()
+        || !key
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'-'))
+    {
+        return None;
+    }
+    let value_offset = tail.len() - assignment.len() + eq + 1;
+    let raw = &tail[value_offset..];
+    let value_start = value_offset + (raw.len() - raw.trim_start_matches([' ', '\t']).len());
+    let value_end = value_offset + raw.trim_end_matches([' ', '\t']).len();
+    if value_start >= value_end {
+        return None;
+    }
+    let entry = EnvEntry {
+        key: key.to_string(),
+        value: tail[value_start..value_end].to_string(),
+        is_phantom: false,
+    };
+    let secret = classify(&entry) == SecretClassification::Secret;
+    let EnvEntry { key, mut value, .. } = entry;
+    value.zeroize();
+    secret.then_some((value_start..value_end, key))
 }
 
 /// Render a replacement that cannot merge with an immediately following
@@ -2136,6 +2234,41 @@ KEY3=unquoted
         assert!(example.contains("PORT=3000"));
         // Should have header
         assert!(example.contains("# Environment variables for this project"));
+    }
+
+    #[test]
+    fn example_masks_commented_out_secret_assignments() {
+        // A key commented out in .env (an old or alternate credential) must not
+        // be copied verbatim into the shareable .env.example.
+        let old = ["sk", "-proj-", "0ldC0mmentedKeyValue0123456789abcdef"].concat();
+        let alt = ["ghp", "_", "AltC0mmentedTokenValue0123456789abcd"].concat();
+        let pem = ["-----BEGIN ", "PRIVATE KEY-----"].concat();
+        let content = format!(
+            "# Current key\nOPENAI_API_KEY=sk-real-secret\n# OPENAI_API_KEY={old}\n  ## export GITHUB_TOKEN=\"{alt}\" # old\n#STRIPE_SECRET_KEY='{pem}\n# PORT=8080\n# Set API_KEY=see the docs\n"
+        );
+        let dotenv = DotenvFile::parse_str(&content);
+        let example = dotenv.generate_example_content(None).unwrap();
+        assert!(!example.contains(&old), "commented OpenAI value copied");
+        assert!(!example.contains(&alt), "commented GitHub value copied");
+        assert!(!example.contains(&pem), "commented PEM header copied");
+        assert!(example.contains("# OPENAI_API_KEY=your_openai_api_key_here\n"));
+        assert!(example.contains("  ## export GITHUB_TOKEN=\"your_github_token_here\" # old\n"));
+        assert!(example.contains("#STRIPE_SECRET_KEY=your_stripe_secret_key_here\n"));
+        // Commented config and prose stay as written.
+        assert!(example.contains("# PORT=8080\n"));
+        assert!(example.contains("# Set API_KEY=see the docs\n"));
+        assert!(example.contains("# Current key\n"));
+    }
+
+    #[test]
+    fn example_keeps_hash_lines_inside_multiline_values_out_of_comment_scan() {
+        // A `#` line inside a multi-line quoted value belongs to that value,
+        // which is masked as a whole; it is not a comment of its own.
+        let content = "PRIVATE_KEY=\"line one\n# NOT_A_COMMENT=x\nline three\"\nPORT=3000\n";
+        let dotenv = DotenvFile::parse_str(content);
+        let example = dotenv.generate_example_content(None).unwrap();
+        assert!(example.contains("PRIVATE_KEY=\"your_private_key_here\"\nPORT=3000\n"));
+        assert!(!example.contains("NOT_A_COMMENT"));
     }
 
     #[test]
