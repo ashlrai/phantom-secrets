@@ -120,11 +120,17 @@ fn print_why_json(report: &serde_json::Value) -> Result<()> {
 ///
 /// With `json`, prints the value-free report shared with the MCP `phantom_why`
 /// tool instead of the human explanation.
-pub fn run(key: &str, json: bool) -> Result<()> {
-    run_in(&std::env::current_dir()?, key, json)
+pub fn run(key: &str, json: bool, strict: bool) -> Result<()> {
+    run_in(&std::env::current_dir()?, key, json, strict)
 }
 
-fn run_in(project_dir: &std::path::Path, key: &str, json: bool) -> Result<()> {
+fn exit_unless_protected(strict: bool, protected: bool) {
+    if strict && !protected {
+        std::process::exit(1);
+    }
+}
+
+fn run_in(project_dir: &std::path::Path, key: &str, json: bool, strict: bool) -> Result<()> {
     validate_key_argument(key)?;
     let config = load_config(project_dir)?;
     let dotenv = read_dotenv(project_dir, config.as_ref())?;
@@ -132,6 +138,7 @@ fn run_in(project_dir: &std::path::Path, key: &str, json: bool) -> Result<()> {
     if json && dotenv.is_none() {
         let report = phantom_core::why::why_report_for(Surface::Cli, key, None, config.as_ref());
         print_why_json(&report)?;
+        exit_unless_protected(strict, report["protected"].as_bool() == Some(true));
         return Ok(());
     }
 
@@ -149,6 +156,7 @@ fn run_in(project_dir: &std::path::Path, key: &str, json: bool) -> Result<()> {
         let report =
             phantom_core::why::why_report_for(Surface::Cli, key, Some(&dotenv), config.as_ref());
         print_why_json(&report)?;
+        exit_unless_protected(strict, report["protected"].as_bool() == Some(true));
         return Ok(());
     }
     // Find the entry
@@ -222,6 +230,7 @@ fn run_in(project_dir: &std::path::Path, key: &str, json: bool) -> Result<()> {
                         println!("   Override: {}", format!("phantom add {key}").dimmed());
                     }
                 }
+                exit_unless_protected(strict, false);
             }
         }
         None => {
@@ -268,7 +277,7 @@ mod tests {
     #[test]
     fn empty_or_blank_key_is_refused_with_an_example() {
         for key in ["", "   ", "\t"] {
-            let error = format!("{:#}", run(key, true).unwrap_err());
+            let error = format!("{:#}", run(key, true, false).unwrap_err());
             assert!(error.contains("No key name given"), "{error}");
             assert!(error.contains("phantom why OPENAI_API_KEY"), "{error}");
         }
@@ -295,7 +304,7 @@ mod tests {
         std::fs::write(project.path().join(".phantom.toml"), "[phantom\nversion = ").unwrap();
 
         for json in [true, false] {
-            let error = run_in(project.path(), "OPENAI_API_KEY", json).unwrap_err();
+            let error = run_in(project.path(), "OPENAI_API_KEY", json, false).unwrap_err();
             assert!(
                 format!("{error:#}").contains("Failed to load .phantom.toml"),
                 "malformed config must not read as not initialized (json={json})"
@@ -306,7 +315,7 @@ mod tests {
         // Only a missing config means "not initialized".
         std::fs::remove_file(project.path().join(".phantom.toml")).unwrap();
         assert!(load_config(project.path()).unwrap().is_none());
-        assert!(run_in(project.path(), "OPENAI_API_KEY", true).is_ok());
+        assert!(run_in(project.path(), "OPENAI_API_KEY", true, false).is_ok());
     }
 
     /// A dangling `.phantom.toml` symlink is not "not initialized", and a

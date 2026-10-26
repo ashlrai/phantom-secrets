@@ -140,13 +140,24 @@ fn doctor_json(report: &DoctorReport) -> Result<String> {
 
 /// Run the full doctor suite. Pass `check_expiry = true` to also scan secret
 /// TTL metadata and warn about expired or soon-to-expire entries.
-pub fn run_doctor(fix: bool, check_expiry: bool, json: bool) -> Result<()> {
+pub fn run_doctor(fix: bool, check_expiry: bool, json: bool, strict: bool) -> Result<()> {
     if json {
         let report = collect_report(fix, check_expiry)?;
         println!("{}", doctor_json(&report)?);
+        exit_if_strict(strict, report.issues);
         return Ok(());
     }
-    run_checks(fix, check_expiry).map(|_| ())
+    let (issues, _) = run_checks(fix, check_expiry)?;
+    exit_if_strict(strict, issues);
+    Ok(())
+}
+
+/// `--strict` turns a finished report that still has issues into exit 1.
+/// The report itself is unchanged. Without the flag, issues keep exit 0.
+fn exit_if_strict(strict: bool, issues: usize) {
+    if strict && issues > 0 {
+        std::process::exit(1);
+    }
 }
 
 /// `phantom doctor --output <path>`: write the full report (text, or JSON
@@ -155,6 +166,7 @@ pub fn run_doctor_to_file(
     fix: bool,
     check_expiry: bool,
     json: bool,
+    strict: bool,
     path: &std::path::Path,
 ) -> Result<()> {
     let report = collect_report(fix, check_expiry)?;
@@ -165,6 +177,7 @@ pub fn run_doctor_to_file(
     };
     crate::report_file::write_new(path, body.as_bytes())?;
     println!("{}", summary_line(&report, path));
+    exit_if_strict(strict, report.issues);
     Ok(())
 }
 

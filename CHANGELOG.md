@@ -13,7 +13,10 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   The rest of the JSON is unchanged, and the human output is unchanged.
   Reports still omit secret values. Names appear only where the human
   output already prints them. Exit status is the same with or without
-  `--json`.
+  `--json`. `phantom doctor --strict` exits 1 when the report has any
+  issue, and `phantom why --strict` exits 1 when the key is missing or
+  not protected, with or without `--json`. Without `--strict`, those
+  exit codes stay as they were.
 
 ### Fixed (.env.example no longer copies credentials in prose comments)
 
