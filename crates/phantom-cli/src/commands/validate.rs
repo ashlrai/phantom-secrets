@@ -189,7 +189,7 @@ fn run_inner(check_all: bool, jobs: Option<usize>, json: bool, watch: bool) -> R
 
     if names.is_empty() {
         if json {
-            println!("{{\"total\":0,\"valid\":0,\"invalid\":0,\"unreachable\":0,\"not_checked\":0,\"entries\":[]}}");
+            println!("{}", empty_vault_report_json()?);
         } else {
             println!("{} No secrets in vault to validate.", "info".blue());
         }
@@ -280,6 +280,19 @@ fn record_validation_run(
             "warn".yellow()
         );
     }
+}
+
+/// The `--json` report for a vault with nothing in it: the same shape as any
+/// other run (`generated_at` and `refused` included), so a parser written
+/// against a real report does not break on an empty one.
+fn empty_vault_report_json() -> Result<String> {
+    let report = run_validation_pipeline(
+        Vec::new(),
+        &[],
+        1,
+        Duration::from_secs(DEFAULT_TIMEOUT_SECS),
+    );
+    Ok(serde_json::to_string_pretty(&report)?)
 }
 
 /// Watch-mode: poll per-secret schedules in an infinite loop.
@@ -669,6 +682,28 @@ mod tests {
     use phantom_core::validator::ValidationEntry;
     use phantom_vault::file::FileVault;
     use phantom_vault::VaultBackend;
+
+    /// An empty vault's `--json` used to be a hand-written object missing
+    /// `generated_at` and `refused`, so it parsed differently from every
+    /// other run's report.
+    #[test]
+    fn empty_vault_json_has_the_same_fields_as_any_report() {
+        let empty: serde_json::Value =
+            serde_json::from_str(&empty_vault_report_json().unwrap()).unwrap();
+        let mut full = run_validation_pipeline(Vec::new(), &[], 1, Duration::from_secs(1));
+        full.push_refused("SOME_NAME", "refused for the test");
+        let full = serde_json::to_value(&full).unwrap();
+        let keys = |v: &serde_json::Value| {
+            let mut k: Vec<String> = v.as_object().unwrap().keys().cloned().collect();
+            k.sort();
+            k
+        };
+        assert_eq!(keys(&empty), keys(&full));
+        assert_eq!(empty["total"], 0);
+        assert_eq!(empty["refused"], 0);
+        assert_eq!(empty["entries"], serde_json::json!([]));
+        assert!(empty["generated_at"].as_u64().unwrap() > 0);
+    }
 
     #[test]
     fn stale_validation_before_image_commits_nothing() {
