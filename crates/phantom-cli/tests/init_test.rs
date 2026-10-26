@@ -74,7 +74,7 @@ fn malformed_dotenv_aborts_before_every_project_and_vault_mutation() {
 }
 
 #[test]
-fn init_rejects_single_project_dry_run_without_mutating() {
+fn init_dry_run_reports_the_plan_without_mutating() {
     let dir = common::canonical_tempdir();
     let env_path = dir.path().join(".env");
     let original = "OPENAI_API_KEY=sk-real-test\n";
@@ -86,17 +86,28 @@ fn init_rejects_single_project_dry_run_without_mutating() {
         .current_dir(dir.path())
         .env("PHANTOM_VAULT_PASSPHRASE", VAULT_PASS)
         .env("HOME", dir.path())
+        .env("NO_COLOR", "1")
         .output()
         .expect("run phantom init --dry-run");
 
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "dry run should succeed: {stderr}");
+    assert!(stdout.contains("Would add 1 key(s):"));
+    assert!(stdout.contains("OPENAI_API_KEY"));
+    assert!(stdout.contains("Dry run only. Nothing was written."));
     assert!(
-        !output.status.success(),
-        "unsupported flag combination must fail"
+        !stdout.contains("sk-real-test"),
+        "stdout contained the planted value"
+    );
+    assert!(
+        !stderr.contains("sk-real-test"),
+        "stderr contained the planted value"
     );
     assert_eq!(
         fs::read_to_string(&env_path).expect("read .env"),
         original,
-        "rejected preview must not rewrite .env"
+        "dry run must not rewrite .env"
     );
     assert!(!dir.path().join(".phantom.toml").exists());
     assert!(!dir.path().join(".env.example").exists());

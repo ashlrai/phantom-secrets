@@ -3,7 +3,7 @@ use colored::Colorize;
 use phantom_core::config::PhantomConfig;
 use std::io::{IsTerminal, Write};
 
-pub fn run(name: &str) -> Result<()> {
+pub fn run(name: &str, dry_run: bool) -> Result<()> {
     super::add::validate_secret_name(name)?;
     let project_dir = std::env::current_dir()?
         .canonicalize()
@@ -22,6 +22,17 @@ pub fn run(name: &str) -> Result<()> {
         vault.as_ref(),
         name,
     )?;
+    if dry_run {
+        crate::commands::plan_print::print_plan(
+            "remove",
+            &[name.to_string()],
+            &[],
+            &[config_path, plan.dotenv_path().to_path_buf()],
+            &project_dir,
+            false,
+        );
+        return Ok(());
+    }
     require_trusted_terminal_remove(&plan)?;
     let env_path = plan.dotenv_path().to_path_buf();
     plan.commit(vault.as_ref()).context(

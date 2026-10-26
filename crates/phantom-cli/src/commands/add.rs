@@ -36,6 +36,7 @@ pub fn run(
     value_arg: Option<String>,
     from_stdin: bool,
     lines: StdinLines,
+    dry_run: bool,
 ) -> Result<()> {
     if let Some(mut value) = value_arg {
         value.zeroize();
@@ -61,6 +62,23 @@ pub fn run(
     validate_managed_dotenv_preflight(&project_dir, &config)?;
     let vault = phantom_vault::try_create_vault(config.local_project_id())?;
     ensure_secret_absent(vault.as_ref(), config.local_project_id(), name)?;
+    if dry_run {
+        if from_stdin {
+            anyhow::bail!("--dry-run does not read a secret value. Omit --stdin.");
+        }
+        let vault_names = vault.list().context("Failed to list protected secrets")?;
+        let resolved =
+            phantom_core::managed_dotenv::resolve_dotenv(&project_dir, &config, &vault_names)?;
+        crate::commands::plan_print::print_plan(
+            "add",
+            &[name.to_string()],
+            &[],
+            &[config_path, resolved.path],
+            &project_dir,
+            false,
+        );
+        return Ok(());
+    }
 
     // Existing-name authority is resolved from value-blind vault metadata
     // before stdin or the hidden prompt is touched. A second check in
