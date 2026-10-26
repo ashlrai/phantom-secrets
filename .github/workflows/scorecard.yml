@@ -1,12 +1,11 @@
 name: Scorecard
 
-# Push to main, plus a weekly run. No pull_request trigger.
+# Weekly only, plus workflow_dispatch. No push trigger.
 on:
-  push:
-    branches: [main]
   schedule:
     # Tuesday 03:41 UTC. Other org repos use a different minute.
     - cron: "41 3 * * 2"
+  workflow_dispatch:
 
 permissions:
   contents: read

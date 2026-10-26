@@ -288,9 +288,14 @@ jobs:
   # Not part of CI Gate, so a Codecov outage does not become a required check.
   # This is the only job in this workflow with id-token: write. It runs on
   # push to main and merge_group, never on pull_request.
+  # A newer push to the same ref cancels an in-progress coverage upload.
+  # Workflow concurrency still leaves the rest of a main push running.
   coverage:
     name: Upload coverage
     needs: test
+    concurrency:
+      group: coverage-${{ github.workflow }}-${{ github.ref }}
+      cancel-in-progress: true
     if: (github.event_name == 'merge_group' || github.event_name == 'push') && needs.test.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -300,7 +305,7 @@ jobs:
       id-token: write
     steps:
       - name: Download coverage report
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: coverage-lcov
           path: coverage
