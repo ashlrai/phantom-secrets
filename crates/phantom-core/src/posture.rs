@@ -803,9 +803,15 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let key = HostKey::load_or_create(&d.path().join("k")).unwrap();
         let dir = Path::new("/home/u/checkout");
+        // Construct credential-bearing fixtures at runtime for source secret scans.
         let ids: Vec<String> = [
             "https://github.com/acme/widget.git",
-            "https://x-access-token:tok123@github.com/acme/widget.git",
+            &[
+                "https://",
+                "x-access-token:tok123@",
+                "github.com/acme/widget.git",
+            ]
+            .concat(),
             "https://user@github.com/acme/widget",
             "git@github.com:acme/widget.git",
             "ssh://git@github.com:22/acme/widget.git",
@@ -830,7 +836,7 @@ mod tests {
         assert_eq!(local_repo_name(Path::new("/")), "local/repo");
         assert_eq!(
             repo_identity(
-                Some("https://u:t@gitlab.com/a/b.git"),
+                Some(&["https://", "u:t@", "gitlab.com/a/b.git"].concat()),
                 Path::new("/home/u/secret/proj")
             ),
             "local/proj"

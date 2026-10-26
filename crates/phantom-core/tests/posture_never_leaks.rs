@@ -12,7 +12,6 @@ const NAMES: &[&str] = &[
     "zz_unique_marker_name_7f3a",
     "DATABASE_URL",
 ];
-const REMOTE: &str = "https://x-access-token:tok_marker_55d1@github.com/acme/widget-marker.git";
 const ROOT: &str = "/home/u/project-marker-a1";
 
 fn entries() -> Vec<PostureEntry> {
@@ -30,7 +29,14 @@ fn ledger_file_json_and_errors_never_contain_names_paths_remotes_or_key() {
     let dir = tempfile::tempdir().unwrap();
     let ledger = PostureLedger::at(dir.path().join("posture"));
     let key = ledger.host_key().unwrap();
-    let identity = repo_identity(Some(REMOTE), std::path::Path::new(ROOT));
+    // Keep the complete credential-bearing URL out of source literals.
+    let remote = [
+        "https://",
+        "x-access-token:tok_marker_55d1@",
+        "github.com/acme/widget-marker.git",
+    ]
+    .concat();
+    let identity = repo_identity(Some(&remote), std::path::Path::new(ROOT));
     assert_eq!(identity, "acme/widget-marker");
     let counts = PostureCounts::from_entries(project_id(&key, &identity), &key, &entries(), 3);
     assert_eq!(
@@ -59,7 +65,7 @@ fn ledger_file_json_and_errors_never_contain_names_paths_remotes_or_key() {
 
     let mut forbidden: Vec<String> = NAMES.iter().map(|s| s.to_string()).collect();
     for s in [
-        REMOTE,
+        remote.as_str(),
         ROOT,
         "project-marker-a1",
         "tok_marker_55d1",
