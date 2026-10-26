@@ -51,3 +51,8 @@ pub mod watch;
 pub mod why;
 pub mod workspace;
 pub mod wrap;
+
+// Load the golden corpus once for both CLI consumer test modules.
+#[cfg(test)]
+#[path = "../../../phantom-core/tests/support/redact_corpus.rs"]
+mod redact_corpus;

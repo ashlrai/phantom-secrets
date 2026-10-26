@@ -22,9 +22,11 @@ pub mod mcp_approval;
 pub mod package_scripts;
 pub mod precommit_hook;
 mod provider_http;
+pub mod redact;
 pub mod report;
 pub mod rotation_provider;
 pub mod rotation_strategy;
+pub mod secret_detector;
 pub mod sync;
 pub mod team_crypto;
 #[cfg(feature = "pq-hybrid")]

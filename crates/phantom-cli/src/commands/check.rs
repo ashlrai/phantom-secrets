@@ -5,6 +5,7 @@ use phantom_core::dotenv::{is_example_placeholder, is_example_template_file, Dot
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
+use phantom_core::redact::{staged_code_credential_matches, staged_code_patterns};
 use phantom_core::report::{
     CheckConfigWarning as ConfigWarning, CheckFinding as Finding, CheckReport as Report,
 };
@@ -242,107 +243,6 @@ fn is_shell_expansion(value: &str) -> bool {
         })
 }
 
-/// Credential shapes looked for in staged code: the prefix, a label for the
-/// report, and the shortest tail that can follow the prefix in a real key.
-/// A bare prefix is not a key: `task-`, `risk-` and `desk-` all contain `sk-`,
-/// so a match must start a token and carry a key-length tail.
-struct CodePattern {
-    prefix: &'static str,
-    label: &'static str,
-    min_tail: usize,
-    /// AWS access key IDs are upper-case alphanumerics only.
-    upper_alnum_only: bool,
-}
-
-const CODE_PATTERNS: [CodePattern; 9] = [
-    CodePattern {
-        prefix: "sk-",
-        label: "OpenAI API key",
-        min_tail: 20,
-        upper_alnum_only: false,
-    },
-    CodePattern {
-        prefix: "sk_live_",
-        label: "Stripe live key",
-        min_tail: 16,
-        upper_alnum_only: false,
-    },
-    CodePattern {
-        prefix: "sk_test_",
-        label: "Stripe test key",
-        min_tail: 16,
-        upper_alnum_only: false,
-    },
-    CodePattern {
-        prefix: "ghp_",
-        label: "GitHub personal token",
-        min_tail: 30,
-        upper_alnum_only: false,
-    },
-    CodePattern {
-        prefix: "github_pat_",
-        label: "GitHub PAT",
-        min_tail: 30,
-        upper_alnum_only: false,
-    },
-    CodePattern {
-        prefix: "glpat-",
-        label: "GitLab PAT",
-        min_tail: 20,
-        upper_alnum_only: false,
-    },
-    CodePattern {
-        prefix: "xoxb-",
-        label: "Slack bot token",
-        min_tail: 20,
-        upper_alnum_only: false,
-    },
-    CodePattern {
-        prefix: "xoxp-",
-        label: "Slack user token",
-        min_tail: 20,
-        upper_alnum_only: false,
-    },
-    CodePattern {
-        prefix: "AKIA",
-        label: "AWS access key",
-        min_tail: 16,
-        upper_alnum_only: true,
-    },
-];
-
-/// A tail with no digit and no capital is an identifier
-/// (`sk-third-party-rollback-race`), not an issued key: twenty random base62
-/// characters with neither is a one-in-thirty-million draw.
-fn is_identifier_tail(tail: &[u8]) -> bool {
-    !tail
-        .iter()
-        .any(|b| b.is_ascii_digit() || b.is_ascii_uppercase())
-}
-
-/// Whether `text` holds `pattern.prefix` at the start of a token, followed by
-/// at least `min_tail` key characters that do not read as an identifier.
-fn contains_credential(text: &str, pattern: &CodePattern) -> bool {
-    let bytes = text.as_bytes();
-    text.match_indices(pattern.prefix).any(|(start, _)| {
-        if start > 0 && bytes[start - 1].is_ascii_alphanumeric() {
-            return false;
-        }
-        let rest = &bytes[start + pattern.prefix.len()..];
-        let len = rest
-            .iter()
-            .take_while(|b| {
-                if pattern.upper_alnum_only {
-                    b.is_ascii_uppercase() || b.is_ascii_digit()
-                } else {
-                    b.is_ascii_alphanumeric() || **b == b'_' || **b == b'-'
-                }
-            })
-            .count();
-        len >= pattern.min_tail && !is_identifier_tail(&rest[..len])
-    })
-}
-
 /// Label for a LiteLLM-shaped key. Shape only: LiteLLM generates virtual keys
 /// as `sk-` plus `secrets.token_urlsafe(16)`, which is exactly 22 URL-safe
 /// characters (checked in litellm 1.103.5, `key_management_endpoints.py`
@@ -353,47 +253,34 @@ fn contains_credential(text: &str, pattern: &CodePattern) -> bool {
 const LITELLM_KEY_LABEL: &str = "LiteLLM-style virtual key (sk- plus 22 characters)";
 const LITELLM_TAIL_LEN: usize = 22;
 
-/// Tail lengths of every `sk-` token in `text` that the `sk-` rule accepts.
-fn sk_credential_tail_lens(text: &str, pattern: &CodePattern) -> Vec<usize> {
-    let bytes = text.as_bytes();
-    text.match_indices(pattern.prefix)
-        .filter_map(|(start, _)| {
-            if start > 0 && bytes[start - 1].is_ascii_alphanumeric() {
+fn code_pattern_findings(file: &str, added: &str) -> Vec<Finding> {
+    let matches = staged_code_credential_matches(added.as_bytes());
+    staged_code_patterns()
+        .iter()
+        .filter_map(|pattern| {
+            let matching: Vec<_> = matches
+                .iter()
+                .filter(|found| found.pattern.prefix == pattern.prefix)
+                .collect();
+            if matching.is_empty() {
                 return None;
             }
-            let rest = &bytes[start + pattern.prefix.len()..];
-            let len = rest
-                .iter()
-                .take_while(|b| b.is_ascii_alphanumeric() || **b == b'_' || **b == b'-')
-                .count();
-            (len >= pattern.min_tail && !is_identifier_tail(&rest[..len])).then_some(len)
-        })
-        .collect()
-}
-
-/// The report label for a matched pattern. Only the `sk-` rule can relabel,
-/// and only when every accepted token has the LiteLLM tail length, so a file
-/// that also holds an OpenAI-shaped key keeps the OpenAI label.
-fn finding_label(pattern: &CodePattern, added: &str) -> &'static str {
-    if pattern.prefix == "sk-" {
-        let tails = sk_credential_tail_lens(added, pattern);
-        if !tails.is_empty() && tails.iter().all(|len| *len == LITELLM_TAIL_LEN) {
-            return LITELLM_KEY_LABEL;
-        }
-    }
-    pattern.label
-}
-
-fn code_pattern_findings(file: &str, added: &str) -> Vec<Finding> {
-    CODE_PATTERNS
-        .iter()
-        .filter(|pattern| contains_credential(added, pattern))
-        .map(|pattern| Finding {
-            kind: "staged_code",
-            path: Some(file.to_string()),
-            name: None,
-            label: Some(finding_label(pattern, added)),
-            pattern: Some(pattern.prefix),
+            let label = if pattern.prefix == "sk-"
+                && matching
+                    .iter()
+                    .all(|found| found.span.len() - pattern.prefix.len() == LITELLM_TAIL_LEN)
+            {
+                LITELLM_KEY_LABEL
+            } else {
+                pattern.label
+            };
+            Some(Finding {
+                kind: "staged_code",
+                path: Some(file.to_string()),
+                name: None,
+                label: Some(label),
+                pattern: Some(pattern.prefix),
+            })
         })
         .collect()
 }
@@ -1603,5 +1490,29 @@ mod tests {
         );
         let dir = repo_with_staged_bytes(".envrc", envrc.as_bytes());
         assert_eq!(staged_dotenv_names(dir.path()), ["WEBHOOK_SIGNING"]);
+    }
+}
+
+#[cfg(test)]
+mod shared_redact_tests {
+    use super::*;
+    use crate::commands::redact_corpus;
+
+    #[test]
+    fn shared_golden_corpus_preserves_staged_check_labels() {
+        for case in redact_corpus::code_families()
+            .into_iter()
+            .filter(|case| case.staged)
+        {
+            let findings = code_pattern_findings("fixture.rs", &case.token);
+            assert_eq!(findings.len(), 1, "{}", case.label);
+            assert_eq!(findings[0].label, Some(case.label));
+            assert_eq!(findings[0].pattern, Some(case.prefix));
+            let json = serde_json::to_string(&findings).unwrap();
+            assert!(!json.contains(&case.token));
+        }
+        let findings = code_pattern_findings("fixture.rs", &redact_corpus::litellm());
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].label, Some(LITELLM_KEY_LABEL));
     }
 }
