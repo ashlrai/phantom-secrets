@@ -1,4 +1,5 @@
 use crate::error::{PhantomError, Result};
+use crate::secret_detector::known_value_prefix;
 use crate::token::{PhantomToken, TokenMap};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -1210,25 +1211,6 @@ const CONNECTION_KEY_PATTERNS: [&str; 10] = [
     "DSN",
 ];
 
-/// Value prefixes of known secret formats. These alone override a public key
-/// prefix (see [`classify`]).
-const KNOWN_VALUE_PREFIXES: [&str; 14] = [
-    "sk-",
-    "sk_",
-    "pk_",
-    "rk_",
-    "whsec_",
-    "Bearer ",
-    "ghp_",
-    "gho_",
-    "github_pat_",
-    "glpat-",
-    "xoxb-",
-    "xoxp-",
-    "AKIA",
-    "shpat_",
-];
-
 /// Further value prefixes that mark a non-public key as a secret: JWT-style
 /// base64 and a PEM armor header (audit F11; multi-line PEM bodies depend on
 /// F12 quoted parsing).
@@ -1616,13 +1598,6 @@ fn public_value_rule(value: &str) -> Option<ValueRule> {
     } else {
         None
     }
-}
-
-/// The known secret prefix `value` starts with (independent of key name).
-fn known_value_prefix(value: &str) -> Option<&'static str> {
-    KNOWN_VALUE_PREFIXES
-        .into_iter()
-        .find(|p| value.starts_with(p))
 }
 
 /// Check if a value matches known secret prefixes (independent of key name).
@@ -2016,6 +1991,36 @@ KEY3=unquoted
             value: "https://example.com/page?lang=en".into(),
             is_phantom: false
         }));
+    }
+
+    #[test]
+    fn added_provider_shapes_override_public_keys_but_embedded_prose_does_not() {
+        let region = DotenvFile::parse_str("REGION=ASIA\n");
+        assert!(region.real_secret_entries().is_empty());
+        for prefix in [
+            "xapp-", "xoxa-", "xoxs-", "xoxr-", "gho_", "ghu_", "ghs_", "ghr_", "ASIA",
+        ] {
+            let positive = EnvEntry {
+                key: "NEXT_PUBLIC_EXAMPLE".into(),
+                value: format!("{prefix}{}", "FAKE0".repeat(8)),
+                is_phantom: false,
+            };
+            assert_eq!(
+                classify(&positive),
+                SecretClassification::Secret,
+                "shape {prefix}"
+            );
+            let negative = EnvEntry {
+                key: "NEXT_PUBLIC_EXAMPLE".into(),
+                value: format!("documentation:{prefix}FAKE0"),
+                is_phantom: false,
+            };
+            assert_eq!(
+                classify(&negative),
+                SecretClassification::PublicKey,
+                "shape {prefix}"
+            );
+        }
     }
 
     #[test]
