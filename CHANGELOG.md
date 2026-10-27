@@ -47,6 +47,31 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   `.vN` suffix changes only when the JSON shape breaks. `schema_version`
   (currently 1) and `kind` (`phantom.agent.preflight`) stay so older readers
   keep working.
+### Fixed (monthly rotation schedules follow calendar months)
+
+- A `monthly` rotation schedule counted 30-day blocks from 1970, so a schedule
+  for the 1st fired on whatever calendar day the block started, and
+  `phantom_rotation_schedule_next` and validation reported that day. Monthly
+  slots now fall on `day_of_month` of each calendar month in UTC, on the
+  month's last day when it is shorter (the 31st is February 28 or 29).
+  `describe` now says `monthly@1st`, not `monthly@1th`. Enforcement's fixed
+  30-day window is unchanged.
+
+### Fixed (commented-out secret detection: docs placeholders and quoted PEM headers)
+
+- Commented-out assignments whose value is a docs-style placeholder, such as
+  `# API_KEY=your.key.here`, `# API_KEY=...`, `# API_KEY=<your-key>` or
+  `# SECRET_TOKEN=YOUR_TOKEN_HERE`, were reported by `phantom doctor` and
+  `phantom init` as plaintext secrets left in `.env`. They are now ignored;
+  a value that any value rule calls a secret, in whole or in one word, is
+  still reported even inside placeholder punctuation, and `.env.example`
+  masking is unchanged.
+- A commented-out value with an unterminated opening quote, such as the first
+  line of a commented multi-line `# CERT_BODY="-----BEGIN PRIVATE KEY-----`,
+  was judged with its quote, so value rules that match a prefix missed it
+  unless the key name looked secret. It was neither reported nor masked in
+  `.env.example`. The quote is now skipped when judging the value; the span
+  still covers only that one line.
 
 ### Fixed (commented-out secrets in .env are now reported)
 
