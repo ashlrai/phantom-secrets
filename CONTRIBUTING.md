@@ -182,6 +182,13 @@ CI runs the normal Rust suite on macOS, Linux, and Windows. A successful cross-c
 
 ## Pull requests
 
+Do not edit `CHANGELOG.md` directly. Add one fragment file to
+[`changelog.d/`](changelog.d/README.md) named `<pr-number-or-slug>.md` with a
+`### Added|Changed|Fixed|Security (topic)` heading and bullets. Fragments are
+folded into the Unreleased section at release time with
+`node scripts/changelog-fold.mjs`, so queued pull requests no longer conflict
+on the changelog.
+
 Use the pull request template. A strong description explains the user problem, trust-boundary impact, exact verification evidence, platform coverage, and remaining limitations. Screenshots are helpful for UI changes but are not substitutes for behavioral tests.
 
 Project decisions and review authority are described in
