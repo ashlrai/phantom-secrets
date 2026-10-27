@@ -135,13 +135,13 @@ impl FileVault {
         })?;
 
         if let Some(encrypted) = encrypted_before {
-            let plaintext = zeroize::Zeroizing::new(
+            // `crypto::decrypt` returns a Zeroizing buffer, scrubbed on drop.
+            let plaintext =
                 crypto::decrypt(encrypted.bytes(), &self.passphrase).map_err(|error| {
                     PhantomError::VaultError(format!(
                         "Encrypted vault coexists with a legacy plaintext vault but cannot be verified; refusing to remove or replace either file: {error}"
                     ))
-                })?,
-            );
+                })?;
             let encrypted_data: VaultData = serde_json::from_slice(&plaintext).map_err(|error| {
                 PhantomError::VaultError(format!(
                     "Encrypted vault coexists with a legacy plaintext vault but is corrupt; refusing to remove or replace either file: {error}"
@@ -218,10 +218,10 @@ impl FileVault {
             );
         }
 
-        // Wrap the decrypted JSON in Zeroizing so the heap buffer is overwritten
-        // with zeros when it drops — whether that's on success or on an early
-        // return from the serde_json error path below.
-        let plaintext = zeroize::Zeroizing::new(crypto::decrypt(before.bytes(), &self.passphrase)?);
+        // `crypto::decrypt` returns the JSON in a Zeroizing buffer, so the heap
+        // buffer is overwritten with zeros when it drops — whether that's on
+        // success or on an early return from the serde_json error path below.
+        let plaintext = crypto::decrypt(before.bytes(), &self.passphrase)?;
 
         let data = serde_json::from_slice::<VaultData>(&plaintext)
             .map_err(|e| PhantomError::VaultError(format!("Corrupt vault data: {e}")))?;
@@ -259,15 +259,13 @@ impl FileVault {
     }
 
     fn encrypt(&self, data: &VaultData) -> Result<Vec<u8>> {
-        // The plaintext JSON holds every secret in the vault. Wrap it in
-        // Zeroizing so the heap allocation is scrubbed on drop — including on
-        // the error paths below. String's own Drop does not zero memory.
-        let plaintext = zeroize::Zeroizing::new(
-            serde_json::to_string_pretty(data)
-                .map_err(|e| PhantomError::VaultError(format!("Serialize error: {e}")))?,
-        );
+        // The plaintext JSON holds every secret in the vault. Serialize it
+        // through a zeroizing writer so neither the final buffer nor any
+        // buffer superseded while it grew is freed unscrubbed. The bytes are
+        // identical to `serde_json::to_string_pretty`.
+        let plaintext = crypto::to_json_pretty_zeroizing(data)?;
 
-        crypto::encrypt(plaintext.as_bytes(), &self.passphrase)
+        crypto::encrypt(&plaintext, &self.passphrase)
     }
 
     fn save(

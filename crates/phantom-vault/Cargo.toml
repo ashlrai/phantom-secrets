@@ -31,7 +31,8 @@ hex = { workspace = true }
 
 # Encryption for file vault
 chacha20poly1305 = "0.10"
-argon2 = "0.5"
+# `zeroize` scrubs Argon2 internal hash state (initial hash, final block).
+argon2 = { version = "0.5", features = ["zeroize"] }
 
 # Advisory file locking (cross-platform)
 fs2 = "0.4"
