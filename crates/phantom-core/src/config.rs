@@ -27,6 +27,9 @@ pub struct PhantomConfig {
     /// Service pattern mappings: service name -> ServiceConfig
     #[serde(default)]
     pub services: BTreeMap<String, ServiceConfig>,
+    /// Value-free secret requests; placeholders are sensitive project metadata.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub requests: BTreeMap<String, SecretRequest>,
     /// Deployment platform sync targets
     #[serde(default)]
     pub sync: Vec<SyncTarget>,
@@ -45,6 +48,54 @@ pub struct PhantomConfig {
     /// planning only.
     #[serde(default, skip_serializing_if = "LeakResponseConfig::is_default")]
     pub leak_response: LeakResponseConfig,
+}
+
+/// A request contains no credential and grants no provider or route authority.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SecretRequest {
+    pub purpose: String,
+    pub route: Option<String>,
+    pub placeholder: String,
+    pub status: RequestStatus,
+}
+
+impl SecretRequest {
+    /// Validate repository-controlled metadata without echoing its contents.
+    pub fn validate(&self, name: &str) -> Result<()> {
+        let mut bytes = name.bytes();
+        let valid_name = name.len() <= 128
+            && matches!(bytes.next(), Some(b'A'..=b'Z' | b'a'..=b'z' | b'_'))
+            && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_');
+        let valid_placeholder = self.placeholder.len() == 68
+            && self.placeholder.starts_with("phm_")
+            && self.placeholder[4..]
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit());
+        let valid_route = self.route.as_ref().is_none_or(|route| {
+            PhantomConfig::trusted_builtin_proxy_service(route)
+                .is_some_and(|service| service.secret_key == name)
+        });
+        if !valid_name
+            || !valid_placeholder
+            || !valid_route
+            || self.purpose.trim().is_empty()
+            || self.purpose.len() > 1024
+            || self.purpose.chars().any(char::is_control)
+        {
+            return Err(PhantomError::ConfigParseError(
+                "Invalid value-free secret request metadata".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RequestStatus {
+    Pending,
+    Fulfilled,
 }
 
 /// What to do when a leak incident is detected.
@@ -801,6 +852,9 @@ impl PhantomConfig {
         let mut config: Self =
             toml::from_str(content).map_err(|e| value_blind_toml_error(content, &e))?;
         validate_portable_project_id(&config.phantom.project_id)?;
+        for (name, request) in &config.requests {
+            request.validate(name)?;
+        }
 
         // `.phantom.toml` is repository-controlled. Its portable project_id is
         // retained for cloud/team identity, but it must never select
@@ -889,6 +943,7 @@ impl PhantomConfig {
             },
             local_project_id: Some(project_id),
             services,
+            requests: BTreeMap::new(),
             sync: Vec::new(),
             cloud: None,
             public_keys: Vec::new(),
