@@ -86,26 +86,17 @@ jobs:
           if printf '%s\n' "$files" | grep -Eq '^(README\.md$|docs/[^/]+\.md$|apps/web/src/|apps/web/public/llms[^/]*\.txt$|\.github/workflows/)'; then docs_commands=true; fi
           echo "docs_commands=$docs_commands" >> "$GITHUB_OUTPUT"
           echo "rust=$rust web=$webc temporal_example=$temporal docs_commands=$docs_commands"
-      # macOS/Windows legs: every non-PR event, the `ci:full-os` label, or a
-      # platform-relevant change (OS-gated Rust, build/toolchain, installers,
-      # npm wrappers, CI itself). Ubuntu always runs; CI Gate checks the rest.
+      # macOS/Windows legs (Test macOS/Windows, Windows ARM64 source check):
+      # every non-PR event (merge_group, push, nightly-full.yml, dispatch).
+      # PRs run Ubuntu only (runner capacity P0, Oct 26: Free plan 20 jobs,
+      # 5 macOS); the merge queue runs them before anything reaches main.
+      # CI Gate expects them skipped on PRs and successful everywhere else.
       - id: platform
         env:
           EVENT: ${{ github.event_name }}
-          FULL_OS: ${{ contains(github.event.pull_request.labels.*.name, 'ci:full-os') }}
-          BASE: ${{ github.event.pull_request.base.sha }}
-          HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
-          set -euo pipefail
-          p=false
-          if [ "$EVENT" != "pull_request" ] || [ "$FULL_OS" = "true" ]; then p=true
-          else
-            files="$(git diff --name-only "$BASE...$HEAD")"
-            if printf '%s\n' "$files" | grep -Eq '(^|/)(Cargo\.toml|Cargo\.lock|rust-toolchain(\.toml)?|build\.rs)$|^\.cargo/|^\.github/workflows/|^scripts/(install\.(sh|ps1)|check-platform-installers\.mjs|installers\.test\.js|release/)|^npm(-mcp)?/|^apps/web/public/install\.|(^|/)(windows|macos|unix|platform)[^/]*(/|\.rs$)'; then p=true; fi
-            while IFS= read -r f; do
-              case "$f" in *.rs) [ -f "$f" ] && grep -Eq 'cfg\((not\()?(windows|unix|target_os|target_family)|cfg!\((windows|unix|target_os)' "$f" && p=true ;; esac
-            done <<< "$files"
-          fi
+          p=true
+          if [ "$EVENT" = "pull_request" ]; then p=false; fi
           echo "platform=$p" >> "$GITHUB_OUTPUT"; echo "platform=$p"
       - id: affected
         env:
@@ -129,8 +120,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # PRs run macOS/Windows only when `changes` marks them platform-relevant
-        # (or labelled ci:full-os); pushes, schedule and dispatch run all three.
+        # PRs run Ubuntu only; macOS/Windows run on every non-PR event
+        # never on PRs; merge_group, pushes, schedule and dispatch run all three.
         os: ${{ fromJSON(needs.changes.outputs.platform == 'true' && '["macos-latest", "ubuntu-latest", "windows-latest"]' || '["ubuntu-latest"]') }}
     env:
       # Linking the workspace's test binaries with link.exe is most of the

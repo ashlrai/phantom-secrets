@@ -31,6 +31,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       code: ${{ steps.classify.outputs.code }}
+      rust: ${{ steps.classify.outputs.rust }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: github.event_name == 'pull_request'
@@ -45,7 +46,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ "$EVENT" != "pull_request" ]; then
-            echo "code=true" >> "$GITHUB_OUTPUT"; exit 0
+            echo "code=true" >> "$GITHUB_OUTPUT"; echo "rust=true" >> "$GITHUB_OUTPUT"; exit 0
           fi
           files="$(git diff --name-only "$BASE...$HEAD")"
           docs='^(docs/|.*\.md$|LICENSE|\.github/ISSUE_TEMPLATE/|\.github/PULL_REQUEST_TEMPLATE)'
@@ -53,8 +54,13 @@ jobs:
           # Capture first: an early-exit grep -q under pipefail can SIGPIPE grep -Ev and skip analysis.
           code_paths="$(printf '%s\n' "$files" | grep -Ev "$docs" || true)"
           if [ -n "$code_paths" ]; then code=true; fi
+          # Rust analysis (~9 min) runs on PRs only when workflows change (G1);
+          # otherwise on merge_group, every push to main and nightly.
+          rust=false
+          if printf '%s\n' "$files" | grep -q '^\.github/workflows/'; then rust=true; fi
           echo "code=$code" >> "$GITHUB_OUTPUT"
-          echo "code=$code"
+          echo "rust=$rust" >> "$GITHUB_OUTPUT"
+          echo "code=$code rust=$rust"
 
   analyze:
     name: Analyze (${{ matrix.language }})
@@ -80,15 +86,18 @@ jobs:
           - language: rust
             build-mode: none
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - if: matrix.language != 'rust' || needs.classify.outputs.rust == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+      - if: matrix.language != 'rust' || needs.classify.outputs.rust == 'true'
+        uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.build-mode }}
           queries: ${{ github.event.schedule == '29 5 * * 0' && 'security-extended' || '' }}
-      - uses: github/codeql-action/analyze@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+      - if: matrix.language != 'rust' || needs.classify.outputs.rust == 'true'
+        uses: github/codeql-action/analyze@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           # Weekly security-extended results get their own category so the nightly
           # default-suite run does not close the extra alerts.
