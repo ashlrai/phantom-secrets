@@ -19,6 +19,15 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   label and prefix only. A test now fails when the classifier learns a prefix
   that the scan neither covers nor explicitly excludes with a reason. Google
   `AIza` keys stay unflagged in code because they are commonly browser-public.
+### Fixed (monthly rotation schedules follow calendar months)
+
+- A `monthly` rotation schedule counted 30-day blocks from 1970, so a schedule
+  for the 1st fired on whatever calendar day the block started, and
+  `phantom_rotation_schedule_next` and validation reported that day. Monthly
+  slots now fall on `day_of_month` of each calendar month in UTC, on the
+  month's last day when it is shorter (the 31st is February 28 or 29).
+  `describe` now says `monthly@1st`, not `monthly@1th`. Enforcement's fixed
+  30-day window is unchanged.
 
 ### Fixed (commented-out secret detection: docs placeholders and quoted PEM headers)
 
