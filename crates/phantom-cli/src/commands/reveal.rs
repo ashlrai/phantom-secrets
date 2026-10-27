@@ -23,9 +23,12 @@ pub fn run(name: &str, clipboard: bool, yes: bool) -> Result<()> {
     let project_dir = crate::util::project_dir()?;
     let config = crate::util::load_project_config(&project_dir)?;
 
-    if !std::io::stdin().is_terminal() || !std::io::stderr().is_terminal() {
-        anyhow::bail!("Refusing to reveal a secret without attached stdin and stderr terminals");
-    }
+    require_reveal_terminals(
+        clipboard,
+        std::io::stdin().is_terminal(),
+        std::io::stderr().is_terminal(),
+        std::io::stdout().is_terminal(),
+    )?;
 
     eprintln!(
         "{} Plaintext access can expose {} to the current terminal session.",
@@ -70,6 +73,22 @@ pub fn run(name: &str, clipboard: bool, yes: bool) -> Result<()> {
 
     // Zeroizing<String> scrubs memory on drop automatically.
 
+    Ok(())
+}
+
+// Keep the output boundary explicit: clipboard never falls back to stdout.
+fn require_reveal_terminals(
+    clipboard: bool,
+    stdin: bool,
+    stderr: bool,
+    stdout: bool,
+) -> Result<()> {
+    if !stdin || !stderr {
+        anyhow::bail!("Refusing to reveal a secret without attached stdin and stderr terminals");
+    }
+    if !clipboard && !stdout {
+        anyhow::bail!("Refusing to print a secret without an attached stdout terminal; use a trusted human terminal");
+    }
     Ok(())
 }
 
@@ -313,6 +332,22 @@ pub fn run_clear_after(secs: u64) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plaintext_requires_terminal_output_and_all_reveals_require_terminal_consent() {
+        for clipboard in [false, true] {
+            for stdin in [false, true] {
+                for stderr in [false, true] {
+                    for stdout in [false, true] {
+                        assert_eq!(
+                            require_reveal_terminals(clipboard, stdin, stderr, stdout).is_ok(),
+                            stdin && stderr && (clipboard || stdout)
+                        );
+                    }
+                }
+            }
+        }
+    }
 
     /// `phantom reveal` printed an overdue enforced secret that
     /// `phantom exec` refuses to inject. The gate now refuses it before the

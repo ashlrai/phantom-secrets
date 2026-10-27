@@ -249,7 +249,7 @@ team, deployment, provider, authority-kernel, or customer workflows are active
 or accepted.
 
 - **Conversation facade** — `phantom_capability` reports authority and hard denials for the small facade (not the separately gated advanced compatibility catalog); `phantom_do` canonicalizes one closed Cargo action and reports the exact activation blockers without executing it; `phantom_setup_workspace` proposes an exact value-blind plan, creates a bearerless apply request after revalidation, or reads authenticated request status. Provisioning the machine-local seal key and creating a request both require `confirm` plus an out-of-band approval token; MCP never claims or applies the request.
-- **Vault** — `phantom_list_secrets`, `phantom_status`, `phantom_init`, `phantom_add_secret_interactive`, `phantom_add_secret` (deprecated; refuses plaintext), `phantom_remove_secret`, `phantom_rotate`, `phantom_copy_secret`
+- **Vault**: `phantom_list_secrets`, `phantom_status`, `phantom_get`, `phantom_init`, `phantom_add_secret_interactive`, `phantom_add_secret` (generation only; refuses plaintext), `phantom_remove_secret`, `phantom_rotate`, `phantom_copy_secret`
 - **Detection + diagnostics** — `phantom_doctor`, `phantom_why`, `phantom_check`, `phantom_env`, `phantom_validate_secret`, `phantom_validate_all`
 - **Local-to-cloud** — `phantom_wrap`, `phantom_unwrap`, `phantom_sync`, `phantom_cloud_push`, `phantom_cloud_pull`, `phantom_cloud_status`
 - **Teams** — `phantom_team_list`, `phantom_team_create`, `phantom_team_members`, `phantom_team_invite`, `phantom_team_key_publish`, `phantom_team_vault_push`, `phantom_team_vault_pull`
@@ -274,19 +274,23 @@ defeat that ceremony; leave effects disabled unless the approval command and
 Conditional tools keep
 their inspection mode ungated and activate both gates only for the effectful
 parameters. Real secret values are never accepted as MCP tool arguments; new
-secrets are entered out-of-band in a trusted terminal. The exact 54-tool names,
-descriptions, and JSON schemas are mirrored from runtime `tools/list` into
-[`mcp-registry/server.json`](mcp-registry/server.json), and release smoke tests
-reject any drift.
+provider credentials are entered out-of-band in a trusted terminal. Local
+application secrets can be created with `phantom_add_secret` and `generate: true`;
+see [generated secrets](docs/generated-secrets.md). The development runtime adds
+`phantom_get` for [value-free metadata](docs/agent-safe-get.md), bringing its catalog
+to 55 tools. The released 54-tool publication manifest in
+[`mcp-registry/server.json`](mcp-registry/server.json) and release checks require a
+separately authorized parity update before this development change can ship.
 
 `phantom_rotate_with_candidate` and `phantom_rotate_promote` remain in the
-54-tool compatibility catalog as deprecated hard denials. They never create,
+compatibility catalog as deprecated hard denials. They never create,
 validate, or promote a candidate and never change vault or shadow metadata;
 `phantom_rotate_provider` is also hard-denied before credential or network
 access in 0.7.9. `phantom add` creates new names only and refuses existing-name
-replacement before reading a value. Replacing a credential therefore requires
-a separately reviewed provider rotation plus an explicit trusted-terminal
-remove-and-add sequence; those are distinct, non-atomic operations.
+replacement before reading a value. For local application secrets, use
+[generated rotation](docs/agent-safe-rotate.md) to replace a value atomically
+without exposing it. Provider credential replacement still requires a separately
+reviewed provider rotation and a sanctioned storage flow.
 
 Workspace setup is deliberately split across trust boundaries. MCP can call
 `phantom_setup_workspace` with `phase=propose`, then `phase=request_apply` using
@@ -427,6 +431,9 @@ dashboard is designed to show team memberships and member lists.
 | `phantom start` | Run an explicitly supervised foreground proxy; keep its trusted terminal open and press Ctrl-C there to stop |
 | `phantom start --daemon` / `phantom stop` | Detached start fails closed; stop is a TTY-only legacy-state diagnostic that never kills or deletes, not current process control |
 | `phantom list` | Show secret names stored in vault (never values; `--json` for machine-readable output) |
+| `phantom get <KEY>` | Return [agent-safe metadata](docs/agent-safe-get.md) as JSON: managed-dotenv presence, route, exec delivery mode, and configured expiry. Never opens the vault or returns values or mappings. |
+| `phantom request <NAME> --purpose <text> [--route <route>]` | Reserve a value-free pending secret and stable placeholder; a human or sanctioned producer fulfills it outside the agent with `phantom add`. See [secret requests](docs/secret-requests.md). |
+| `phantom requests --json` | List request receipts without vault access (`phantom.requests.v1`); placeholders remain private project metadata |
 | `phantom add <KEY>` | Create a new secret name transactionally in an initialized project through a hidden terminal prompt or trusted `--stdin` producer; existing names are denied before any value read and are never replaced |
 | `phantom remove <KEY>` | After exact trusted-terminal confirmation, transactionally remove the vault value, lifecycle config, and exact managed-dotenv mapping; headless use fails before value access or mutation |
 | `phantom reveal <KEY>` | From an attached trusted terminal, review and type the exact challenge before printing one value or copying it for an auto-cleared 30-second clipboard window |
