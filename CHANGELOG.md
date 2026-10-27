@@ -4,6 +4,16 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (`phantom check --staged` scans dotenv comments and `.phantom.toml`)
+
+- The pre-commit scan classified staged dotenv files only through the
+  dotenv parser, which never sees comments, so a key commented out in a
+  committable `.env.example` (`# OPENAI_API_KEY=<key>`) or left in a note
+  after a placeholder was reported clean and the commit went through. A
+  staged `.phantom.toml` was read only for risky routes and never scanned
+  for credentials at all. Both now also get the staged code scan of their
+  added lines; a dotenv file that already has entries reported by name is
+  not scanned twice.
 ### Fixed (monthly rotation schedules follow calendar months)
 
 - A `monthly` rotation schedule counted 30-day blocks from 1970, so a schedule
