@@ -7336,7 +7336,12 @@ impl ServerHandler for PhantomMcpServer {
                  application remains trusted-terminal-only and must not be described as applied until status proves it. \
                  No Locus seal is active unless the capability card explicitly says so. \
                  Advanced phantom_* tools remain available for compatible operator workflows; \
-                 secret values are never returned through MCP."
+                 secret values are never returned through MCP. To launch an external stdio MCP server \
+                 with protected keys, configure it in a local mcpServers JSON file and run \
+                 `phantom mcp run <name> --config <file>` from the initialized project. \
+                 The child receives fresh phm_ placeholders and authenticated proxy base URLs, \
+                 never the managed vault values; only built-in HTTP routes inject credentials. \
+                 This launcher does not approve MCP effects or resolve placeholders in argv."
                 .to_string(),
         )
     }
