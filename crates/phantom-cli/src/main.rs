@@ -211,7 +211,8 @@ enum Commands {
     },
 
     // ─────────────────────────── Daily use ───────────────────────────
-    /// Start the proxy and run a command
+    /// Start the proxy and run a command. With --json, launch refusals are
+    /// phantom.exec.error.v1 objects on stderr; stdout belongs to the child.
     #[command(next_help_heading = "Daily use")]
     Exec {
         /// Opt-in: use the custody namespace of this source checkout. Accepted
@@ -219,6 +220,10 @@ enum Commands {
         /// (same git common dir) with a byte-identical `.phantom.toml`.
         #[arg(long, value_name = "SOURCE_CHECKOUT")]
         bind_source: Option<std::path::PathBuf>,
+        /// Scrub managed values and recognized credential formats from piped stdout/stderr.
+        /// Opt-in piping changes terminal detection and may affect child buffering.
+        #[arg(long)]
+        scrub_output: bool,
         /// Command and arguments to run
         #[arg(trailing_var_arg = true, required = true)]
         cmd: Vec<String>,
@@ -1033,8 +1038,12 @@ fn main() -> std::process::ExitCode {
 /// `phantom add` refusal under dozens of frames. Keep the same
 /// `Error:`/`Caused by:` layout without the backtrace.
 fn report_error(error: &anyhow::Error) -> std::process::ExitCode {
-    eprintln!("{}", format_error(error));
-    std::process::ExitCode::FAILURE
+    if let Some(json) = error.downcast_ref::<commands::exec::JsonExecError>() {
+        eprintln!("{json}");
+    } else {
+        eprintln!("{}", format_error(error));
+    }
+    std::process::ExitCode::from(commands::exec::error_exit_code(error))
 }
 
 fn format_error(error: &anyhow::Error) -> String {
@@ -1182,7 +1191,7 @@ fn apply_global_json(command: &mut Commands) -> Result<(), &'static str> {
             action: McpAction::Serve,
         } => Err("phantom mcp serve"),
         Commands::McpApprove { .. } => Err("phantom mcp-approve"),
-        Commands::Exec { .. } => Err("phantom exec"),
+        Commands::Exec { .. } => Ok(()),
         Commands::Start { .. } => Err("phantom start"),
         Commands::Stop => Err("phantom stop"),
         Commands::Add { .. } => Err("phantom add"),
@@ -1403,8 +1412,16 @@ fn run() -> anyhow::Result<()> {
             AgentAction::Status { json } => commands::agent::status(json || global_json),
             AgentAction::Setup { dry_run, apply } => commands::agent::setup(dry_run, apply),
         },
-        Commands::Exec { cmd, bind_source } => {
-            commands::exec::run(&cmd, None, bind_source.as_deref(), cli.quiet)
+        Commands::Exec {
+            cmd,
+            bind_source,
+            scrub_output,
+        } => {
+            if global_json {
+                commands::exec::run_json(&cmd, bind_source.as_deref(), scrub_output)
+            } else {
+                commands::exec::run(&cmd, None, bind_source.as_deref(), cli.quiet, scrub_output)
+            }
         }
         Commands::Start { daemon } => commands::start::run(daemon),
         Commands::Stop => commands::stop::run(),
@@ -1908,6 +1925,7 @@ mod help_tests {
             // Not JSON output: its hidden legacy `--json` fails closed with
             // "Plaintext JSON export is disabled".
             "export",
+            "exec",
             "grant add",
             "grant list",
             "grant revoke",

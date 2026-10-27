@@ -111,7 +111,17 @@ pub(crate) fn inspect(project_dir: &Path) -> LegacyState {
 }
 
 pub(crate) fn refuse_start_with_legacy_state(project_dir: &Path) -> Result<()> {
-    match inspect(project_dir) {
+    let state = inspect(project_dir);
+    let code = match &state {
+        LegacyState::Missing | LegacyState::Unverified(_) => "proxy_not_running",
+        LegacyState::Authenticated(_) => "legacy_proxy_running",
+        LegacyState::Unsafe(_) => "legacy_proxy_unsafe",
+    };
+    refuse_legacy_state(state).map_err(|error| super::exec::classify(error, code))
+}
+
+fn refuse_legacy_state(state: LegacyState) -> Result<()> {
+    match state {
         LegacyState::Missing => Ok(()),
         LegacyState::Authenticated(proxy) => anyhow::bail!(
             "Authenticated legacy v0.7.3 proxy state exists for PID {}. v0.7.3 did not ship an authenticated remote-shutdown endpoint, so this binary will not kill it or delete its record. Stop it with Ctrl-C in its owning v0.7.3 terminal; if that is unavailable, use a checksum-verified v0.7.3 binary from a trusted terminal, or independently verify that no process/listener owns the record before manually removing .phantom.pid.",
@@ -172,6 +182,26 @@ fn control_request(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unverified_legacy_proxy_refusal_is_classified_and_preserves_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let path = dir.path().join(".phantom.pid");
+        let contents = format!("1:{port}:{}", "a".repeat(64));
+        std::fs::write(&path, &contents).unwrap();
+        let error = refuse_start_with_legacy_state(dir.path()).unwrap_err();
+        assert_eq!(
+            error
+                .downcast_ref::<super::super::exec::ExecRefusal>()
+                .unwrap()
+                .0,
+            "proxy_not_running"
+        );
+        assert_eq!(std::fs::read_to_string(path).unwrap(), contents);
+    }
 
     #[test]
     fn parser_redacts_and_rejects_malformed_records() {
