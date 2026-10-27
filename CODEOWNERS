@@ -1,0 +1,11 @@
+# Code owners for CI, release and publish paths (Tier-1).
+# Scope: .github/** plus scripts and manifests the release workflows execute
+# or read as the published version source. No catch-all rule.
+
+/.github/                    @masonwyatt23
+/scripts/release/            @masonwyatt23
+/scripts/publish-crates.sh   @masonwyatt23
+/Cargo.toml                  @masonwyatt23
+/npm/package.json            @masonwyatt23
+/npm-mcp/package.json        @masonwyatt23
+/mcp-registry/server.json    @masonwyatt23
