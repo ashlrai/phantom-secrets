@@ -15,7 +15,32 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  full-suite-evidence:
+    # Release gate: the full suite (macOS and Windows included) must have
+    # passed in a manual workflow_dispatch run of CI on this exact sha.
+    name: Full suite green on release sha
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      actions: read
+    steps:
+      - name: Require a successful workflow_dispatch CI run on this sha
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          CI_WORKFLOW: ci.yml
+        run: |
+          set -euo pipefail
+          n="$(gh api "repos/${REPO}/actions/workflows/${CI_WORKFLOW}/runs?event=workflow_dispatch&head_sha=${SHA}&status=success&per_page=1" --jq '.total_count')"
+          if [ "${n:-0}" -lt 1 ]; then
+            echo "::error::No successful workflow_dispatch run of ${CI_WORKFLOW} on ${SHA}. Run 'gh workflow run ${CI_WORKFLOW} --ref <this ref>', wait for green, then release."
+            exit 1
+          fi
+          echo "full suite green on ${SHA} (${n} run(s))"
+
   build-and-verify:
+    needs: [full-suite-evidence]
     name: Build and verify release candidate
     uses: ./.github/workflows/release-build.yml
     with:

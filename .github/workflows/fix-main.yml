@@ -1,0 +1,49 @@
+name: Scheduled FIX-MAIN
+
+# Fix-forward only: when a scheduled full-suite CI run on main fails or
+# is cancelled, open (or comment on) one P0 FIX-MAIN issue. It never reverts,
+# pushes or re-runs anything. Runs from the default branch via workflow_run,
+# so a PR cannot change what this job does.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+permissions: {}
+
+jobs:
+  fix-main:
+    name: File FIX-MAIN issue
+    if: >-
+      github.event.workflow_run.event == 'schedule' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      (github.event.workflow_run.conclusion == 'failure' || github.event.workflow_run.conclusion == 'cancelled')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - name: Open or update the FIX-MAIN issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          REPO_NAME: ${{ github.event.repository.name }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+          CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+        run: |
+          set -euo pipefail
+          sha7="${SHA:0:7}"
+          title="FIX-MAIN ${REPO_NAME} ${sha7} (scheduled full suite)"
+          gh label create P0 --color B60205 --description "Highest priority" 2>/dev/null || true
+          gh label create FIX-MAIN --color D93F0B --description "Default branch is red; fix forward, no revert" 2>/dev/null || true
+          body="Scheduled full-suite CI on the default branch concluded **${CONCLUSION}** at ${SHA}. Run: ${RUN_URL}
+
+          Fix forward only (no revert)."
+          existing="$(gh issue list --state open --label FIX-MAIN --search "in:title FIX-MAIN ${REPO_NAME}" --json number --jq '.[0].number // empty')"
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "$body"
+          else
+            gh issue create --title "$title" --label P0 --label FIX-MAIN --body "$body"
+          fi

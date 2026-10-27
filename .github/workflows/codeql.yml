@@ -3,11 +3,10 @@
 # suite; Rust uses build-mode none, so there is no cargo build.
 name: CodeQL
 
+# RQ-FAST-GATE: no pull_request or main-push scan. CodeQL still runs pre-merge
+# on every merge_group commit (the code that lands), nightly, weekly with
+# security-extended, and on dispatch. It is not a required check.
 on:
-  push:
-    branches: [main]
-  pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
   merge_group:
   schedule:
     # Nightly default-suite scan.

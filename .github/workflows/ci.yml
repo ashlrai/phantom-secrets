@@ -1,15 +1,22 @@
 name: CI
 
+# PR and merge_group run one fast required check (CI Gate): classify, lint
+# (fmt + clippy), Rust dependency policy, the source secret scan, npm
+# wrappers, the crate publication contract, Tier-1 security tests (Linux),
+# and the web security job when web paths change. The full matrix (Test on
+# Linux, macOS and Windows, Windows ARM64) runs at 6 AM and 6 PM ET on main
+# and on workflow_dispatch; a red scheduled run files a P0 FIX-MAIN issue
+# (fix-main.yml). Push to main no longer runs CI: the merge queue already
+# ran CI Gate on the merged tree. This replaces nightly-full.yml.
 on:
-  push:
-    branches: [main]
   pull_request:
     branches: [main]
-  # A merge queue reruns every job on the queued merge commit so CI Gate reports there.
   merge_group:
+  schedule:
+    # 6 AM and 6 PM ET (EDT, UTC-4).
+    - cron: "7 10 * * *"
+    - cron: "7 22 * * *"
   workflow_dispatch:
-  # nightly-full.yml calls this workflow on a schedule to run the full matrix.
-  workflow_call:
 
 # Scope GITHUB_TOKEN down — CI only needs to read the repo.
 permissions:
@@ -47,6 +54,7 @@ jobs:
       docs_commands: ${{ steps.classify.outputs.docs_commands }}
       filterset: ${{ steps.affected.outputs.filterset }}
       platform: ${{ steps.platform.outputs.platform }}
+      full: ${{ steps.full.outputs.full }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -86,6 +94,14 @@ jobs:
           if printf '%s\n' "$files" | grep -Eq '^(README\.md$|docs/[^/]+\.md$|apps/web/src/|apps/web/public/llms[^/]*\.txt$|\.github/workflows/)'; then docs_commands=true; fi
           echo "docs_commands=$docs_commands" >> "$GITHUB_OUTPUT"
           echo "rust=$rust web=$webc temporal_example=$temporal docs_commands=$docs_commands"
+      # Full matrix only on the schedule and on dispatch.
+      - id: full
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          full=false
+          if [ "$EVENT" = "schedule" ] || [ "$EVENT" = "workflow_dispatch" ]; then full=true; fi
+          echo "full=$full" >> "$GITHUB_OUTPUT"; echo "full=$full"
       # macOS/Windows legs: every non-PR event, the `ci:full-os` label, or a
       # platform-relevant change (OS-gated Rust, build/toolchain, installers,
       # npm wrappers, CI itself). Ubuntu always runs; CI Gate checks the rest.
@@ -121,16 +137,44 @@ jobs:
           echo "filterset=$fs" >> "$GITHUB_OUTPUT"
           echo "nextest filterset: $fs"
 
+  # Tier-1 security tests, pre-merge on every PR and queue run that touches
+  # Rust: secret, crypto, authority, leak, permission and hardening tests on
+  # Linux, plus the pq-hybrid crypto tests. The full suite runs in Test.
+  tier1:
+    name: Tier-1 security tests (Linux)
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (2026-04-24)
+        with:
+          toolchain: 1.95.0
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2
+        with:
+          tool: cargo-nextest
+      - name: Run Tier-1 security tests
+        run: >-
+          cargo nextest run --workspace --all-targets --locked --no-fail-fast
+          -E 'binary(/(secur|crypto|authority|leak|permission|hardening|plaintext|denial|integrity|redact|vault|encrypt)/) | test(/(secur|crypto|authority|leak|permission|hardening|plaintext|denial|integrity|redact|encrypt)/)'
+      - name: Run pq-hybrid feature tests
+        run: cargo test --locked -p phantom-secrets-core --features pq-hybrid --lib -- team_crypto_pq crypto_registry
+
   test:
     name: Test (${{ matrix.os }})
     needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    if: needs.changes.outputs.rust == 'true' && needs.changes.outputs.full == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        # PRs run macOS/Windows only when `changes` marks them platform-relevant
-        # (or labelled ci:full-os); pushes, schedule and dispatch run all three.
+        # Scheduled and dispatch runs only, all three OSes.
         os: ${{ fromJSON(needs.changes.outputs.platform == 'true' && '["macos-latest", "ubuntu-latest", "windows-latest"]' || '["ubuntu-latest"]') }}
     env:
       # Linking the workspace's test binaries with link.exe is most of the
@@ -313,7 +357,7 @@ jobs:
     name: Windows ARM64 source check
     needs: changes
     # Same platform gate as the macOS/Windows Test legs.
-    if: needs.changes.outputs.rust == 'true' && needs.changes.outputs.platform == 'true'
+    if: needs.changes.outputs.rust == 'true' && needs.changes.outputs.platform == 'true' && needs.changes.outputs.full == 'true'
     runs-on: windows-11-vs2026-arm
     permissions:
       contents: read
@@ -582,8 +626,10 @@ jobs:
   gate:
     name: CI Gate
     if: always()
-    needs: [changes, test, test-ignored, lint, dependency-policy, windows-arm-source-check, npm-wrappers, web, secret-scan, crate-publication-contract, temporal-codec-example, docs-commands]
+    needs: [changes, tier1, test, test-ignored, lint, dependency-policy, windows-arm-source-check, npm-wrappers, web, secret-scan, crate-publication-contract, temporal-codec-example, docs-commands]
     runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions: {}
     steps:
       - name: Require every selected job
         env:
@@ -599,11 +645,13 @@ jobs:
           const docsCommands = ch.outputs.docs_commands === 'true';
           const always = ['dependency-policy', 'secret-scan'];
           const platform = ch.outputs.platform === 'true';
-          const rustJobs = ['test', 'lint', 'npm-wrappers', 'crate-publication-contract'];
+          const full = ch.outputs.full === 'true';
+          const rustJobs = ['tier1', 'lint', 'npm-wrappers', 'crate-publication-contract'];
           const expect = {
             ...Object.fromEntries(always.map((j) => [j, true])),
             ...Object.fromEntries(rustJobs.map((j) => [j, rust])),
-            'windows-arm-source-check': rust && platform,
+            test: rust && full,
+            'windows-arm-source-check': rust && platform && full,
             web,
             'temporal-codec-example': temporalExample,
             'docs-commands': docsCommands,
@@ -616,5 +664,5 @@ jobs:
           }
           if (Object.keys(needs).length !== Object.keys(expect).length + 1) bad.push('gate inventory drift');
           if (bad.length) throw new Error(bad.join(', '));
-          console.log(`CI Gate passed (rust=${rust}, web=${web}, temporal_example=${temporalExample}, docs_commands=${docsCommands}, platform=${platform})`);
+          console.log(`CI Gate passed (full=${full}, rust=${rust}, web=${web}, temporal_example=${temporalExample}, docs_commands=${docsCommands}, platform=${platform})`);
           NODE
