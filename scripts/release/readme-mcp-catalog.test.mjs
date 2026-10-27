@@ -12,7 +12,7 @@ test("README MCP catalog extraction is identical for LF and CRLF checkouts", () 
     readme.replace(/\r\n?/g, "\n").replace(/\n/g, "\r\n")
   );
 
-  assert.equal(lfNames.length, 54);
+  assert.equal(lfNames.length, 55);
   assert.deepEqual(crlfNames, lfNames);
 });
 

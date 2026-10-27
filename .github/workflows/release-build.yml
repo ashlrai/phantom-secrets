@@ -179,7 +179,7 @@ jobs:
         run: cargo build --release --locked -p phantom-secrets-mcp --bin phantom-mcp
 
       - name: Deep MCP stdio schema smoke
-        run: node scripts/release/mcp-stdio-smoke.mjs ./target/release/phantom-mcp 54
+        run: node scripts/release/mcp-stdio-smoke.mjs ./target/release/phantom-mcp 55
 
       - name: Package every crates.io crate in dependency order
         run: ./scripts/publish-crates.sh --verify-only --version "${PHANTOM_RELEASE_TAG#v}"

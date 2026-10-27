@@ -205,7 +205,7 @@ jobs:
       # smoke and tool count as release-build.yml, against the debug build.
       - name: Verify MCP registry catalog matches runtime tools/list
         if: runner.os == 'Linux'
-        run: node scripts/release/mcp-stdio-smoke.mjs target/debug/phantom-mcp 54
+        run: node scripts/release/mcp-stdio-smoke.mjs target/debug/phantom-mcp 55
       - name: Run direct installer offline tests
         if: runner.os == 'Linux'
         run: node --test scripts/installers.test.js scripts/release/native-installer-acceptance.test.mjs

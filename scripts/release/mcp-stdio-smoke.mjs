@@ -14,7 +14,7 @@ import { validatePhantomDoSchema } from "./mcp-schema-contract.mjs";
 import { extractReadmeMcpToolNames } from "./readme-mcp-catalog.mjs";
 
 const binaryPath = process.argv[2];
-const expectedToolCount = Number(process.argv[3] ?? "54");
+const expectedToolCount = Number(process.argv[3] ?? "55");
 const registryPath = process.argv[4] ?? "mcp-registry/server.json";
 const writeRegistry = process.argv[5] === "--write-registry";
 if (
@@ -174,6 +174,7 @@ try {
     "phantom_compliance_status",
     "phantom_do",
     "phantom_expiry_enforce",
+    "phantom_get",
     "phantom_leak_incidents_realtime",
     "phantom_list_secrets",
     "phantom_list_with_expiry",
