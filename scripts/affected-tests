@@ -1,0 +1,90 @@
+#!/usr/bin/env node
+'use strict';
+
+const { execFileSync } = require('node:child_process');
+const path = require('node:path');
+
+function isDocs(file) {
+  return /^(?:[^/]+\.md|LICENSE(?:\.[^/]+)?|NOTICE)$/.test(file)
+    || /^docs\/.*\.(?:md|rst|txt)$/.test(file);
+}
+
+function isGlobal(file) {
+  return /(?:^|\/)(?:Cargo\.lock|Cargo\.toml|rust-toolchain(?:\.toml)?)$/.test(file)
+    || /\.(?:toml|json|ya?ml)$/.test(file)
+    || /^(?:\.cargo|\.config|\.github)\//.test(file);
+}
+
+// Package scope deliberately includes all targets and reverse dependencies.
+// A changed module can affect integration tests and downstream consumers.
+function affectedTests(files, metadata, root) {
+  if (files.every(isDocs)) return [];
+  if (files.some(isGlobal)) return 'ALL';
+  const members = new Set(metadata.workspace_members);
+  const packages = metadata.packages.filter(pkg => members.has(pkg.id));
+  const owners = packages.map(pkg => ({
+    pkg,
+    dir: path.relative(root, path.dirname(pkg.manifest_path)).split(path.sep).join('/'),
+  })).sort((a, b) => b.dir.length - a.dir.length);
+  const hit = new Set();
+  for (const file of files) {
+    if (isDocs(file)) continue;
+    const owner = owners.find(({ dir }) => dir === '' || file.startsWith(`${dir}/`));
+    if (!owner) return 'ALL';
+    hit.add(owner.pkg.name);
+  }
+  // Include normal, build, dev, optional and platform-specific dependencies.
+  // --no-deps metadata preserves these without resolving registry packages.
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const pkg of packages) {
+      if (!hit.has(pkg.name) && pkg.dependencies.some(dep => hit.has(dep.name))) {
+        hit.add(pkg.name);
+        changed = true;
+      }
+    }
+  }
+  return [...hit].sort();
+}
+
+function main(args) {
+  if (args.length === 1 && args[0] === '--help') {
+    console.log('Usage: scripts/affected-tests BASE\nCompare BASE...HEAD. Print ALL or a JSON array of Cargo package names.\nRun each selected package with cargo test --locked -p NAME --all-targets.');
+    return;
+  }
+  if (args.length !== 1 || args[0].startsWith('-') || args[0].includes('...')) {
+    throw new Error('Usage: scripts/affected-tests BASE');
+  }
+  const run = (cmd, argv, cwd) => execFileSync(cmd, argv, {
+    cwd, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  const root = run('git', ['rev-parse', '--show-toplevel']).trim();
+  // Resolve first so option-like revisions cannot become diff options.
+  const base = run('git', ['rev-parse', '--verify', '--end-of-options', `${args[0]}^{commit}`], root).trim();
+  const raw = run('git', ['diff', '--name-only', '-z', '--no-renames', `${base}...HEAD`, '--'], root);
+  const files = raw.split('\0').filter(Boolean);
+  if (files.every(isDocs)) {
+    console.log('[]');
+    return;
+  }
+  if (files.some(isGlobal)) {
+    console.log('ALL');
+    return;
+  }
+  const metadata = JSON.parse(run('cargo', ['metadata', '--no-deps', '--format-version', '1', '--offline', '--locked'], root));
+  const result = affectedTests(files, metadata, root);
+  console.log(result === 'ALL' ? result : JSON.stringify(result));
+}
+
+module.exports = { affectedTests };
+if (require.main === module) {
+  try {
+    main(process.argv.slice(2));
+  } catch {
+    // Do not echo subprocess output or repository paths into CI logs.
+    console.error('affected-tests: unable to select tests; check BASE, Git and Cargo metadata. Run the full suite.');
+    process.exitCode = 1;
+  }
+}

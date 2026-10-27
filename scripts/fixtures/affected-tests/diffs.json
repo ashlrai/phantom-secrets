@@ -1,0 +1,15 @@
+[
+  { "name": "docs-only", "files": ["README.md", "docs/codex.md"], "expected": [] },
+  { "name": "empty diff", "files": [], "expected": [] },
+  { "name": "single module", "files": ["crates/core/src/dotenv.rs"], "expected": ["cli", "core", "proxy"] },
+  { "name": "lockfile", "files": ["Cargo.lock"], "expected": "ALL" },
+  { "name": "nested manifest", "files": ["crates/core/Cargo.toml"], "expected": "ALL" },
+  { "name": "config", "files": [".cargo/config.toml"], "expected": "ALL" },
+  { "name": "test file", "files": ["crates/cli/tests/setup.rs"], "expected": ["cli"] },
+  { "name": "embedded docs", "files": ["crates/core/src/help.md"], "expected": ["cli", "core", "proxy"] },
+  { "name": "unknown shared input", "files": ["scripts/build.sh"], "expected": "ALL" },
+  { "name": "docs with executable", "files": ["docs/example.rs"], "expected": "ALL" },
+  { "name": "rename across packages", "files": ["crates/core/src/old.rs", "crates/independent/src/new.rs"], "expected": ["cli", "core", "independent", "proxy"] },
+  { "name": "deduplicated sorted packages", "files": ["crates/proxy/src/lib.rs", "crates/core/src/lib.rs", "README.md"], "expected": ["cli", "core", "proxy"] },
+  { "name": "unusual filename", "files": ["crates/core/src/a\n\"$file.rs"], "expected": ["cli", "core", "proxy"] }
+]
