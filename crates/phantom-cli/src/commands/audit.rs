@@ -2083,6 +2083,12 @@ fn days_to_ymd(days: u64) -> (u32, u32, u32) {
 // Tests
 // ──────────────────────────────────────────────────────────────────────────────
 
+/// Default machine-readable audit query, streamed in chronological log order.
+pub fn run_query(since: Option<u64>) -> Result<()> {
+    phantom_core::audit::query_jsonl(since, &mut std::io::stdout().lock())?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

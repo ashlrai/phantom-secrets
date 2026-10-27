@@ -21,6 +21,7 @@ name = "phantom-mcp"
 path = "src/main.rs"
 
 [dependencies]
+rand = { workspace = true }
 phantom-core = { workspace = true }
 phantom-vault = { workspace = true }
 phantom-workspace = { workspace = true }
