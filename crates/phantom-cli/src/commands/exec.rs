@@ -45,7 +45,9 @@ pub fn run(
     }
 
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(run_async(cmd, env, bind_source, quiet))
+    rt.block_on(run_async(cmd, env, bind_source, quiet, |config| {
+        ServiceRegistry::from_config(&config.services)
+    }))
 }
 
 /// Actionable, value-free next steps for the connection-string denial.
@@ -76,6 +78,7 @@ async fn run_async(
     env_flag: Option<&str>,
     bind_source: Option<&std::path::Path>,
     quiet: bool,
+    registry_from_config: impl FnOnce(&PhantomConfig) -> ServiceRegistry,
 ) -> Result<()> {
     let working_dir = std::env::current_dir()?;
     // Custody (config namespace, managed dotenv, env scope) comes from the
@@ -227,7 +230,10 @@ async fn run_async(
     }
 
     // Build service registry from config
-    let registry = ServiceRegistry::from_config(&config.services);
+    // Keep destination construction private and after route validation. Tests
+    // can supply a loopback registry without adding a runtime override that
+    // could redirect credential-bearing requests in the shipped CLI.
+    let registry = registry_from_config(&config);
     // Export base-URL overrides only for routes this session can serve. An
     // SDK pointed at a route without a loaded credential would receive a
     // proxy 503 for every call instead of reaching its provider.
@@ -872,6 +878,10 @@ impl SignalForwarder {
         }
     }
 }
+
+#[cfg(all(test, unix))]
+#[path = "exec_github_tests.rs"]
+mod github_tests;
 
 #[cfg(test)]
 mod tests {
