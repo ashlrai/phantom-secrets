@@ -124,6 +124,9 @@ cargo build --release --locked -p phantom-secrets-mcp --bin phantom-mcp
 cargo build --locked -p phantom-secrets-mcp --bin phantom-mcp
 node scripts/release/mcp-stdio-smoke.mjs target/debug/phantom-mcp 54
 
+# Changelog headings, dates, ordering, and compare links
+node scripts/release/lint-changelog.mjs
+
 # Provider hard-denial and exact cfg(test) transaction-scaffolding tests
 cargo test --locked -p phantom-secrets --test grant_github_app_test
 cargo test --locked -p phantom-secrets --test grant_vercel_integration_test
