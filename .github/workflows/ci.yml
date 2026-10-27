@@ -65,7 +65,12 @@ jobs:
             # The full Test job already runs the docs command check here.
             echo "docs_commands=false" >> "$GITHUB_OUTPUT"; exit 0
           fi
-          files="$(git diff --name-only "$BASE...$HEAD")"
+          # An unreadable diff runs every suite instead of failing Classify.
+          if ! files="$(git -c core.quotepath=off diff --name-only "$BASE...$HEAD")"; then
+            echo "::warning::diff unreadable; running every suite"
+            echo "rust=true" >> "$GITHUB_OUTPUT"; echo "web=true" >> "$GITHUB_OUTPUT"
+            echo "temporal_example=true" >> "$GITHUB_OUTPUT"; echo "docs_commands=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
           printf '%s\n' "$files"
           docs='^(docs/|[^/]*\.md$|.*/README\.md$|LICENSE|\.github/ISSUE_TEMPLATE/|\.github/PULL_REQUEST_TEMPLATE)'
           web='^(apps/web/|scripts/supabase/|scripts/seo/|\.github/workflows/)'
@@ -101,18 +106,24 @@ jobs:
           if [ "$EVENT" != "pull_request" ] || [ "$FULL_OS" = "true" ]; then p=true
           else
             # An unreadable diff runs the full OS matrix.
-            files="$(git diff --name-only "$BASE...$HEAD")" || { echo "::warning::diff unreadable; full OS matrix"; p=true; files=''; }
+            files="$(git -c core.quotepath=off diff --name-only "$BASE...$HEAD")" || { echo "::warning::diff unreadable; full OS matrix"; p=true; files=''; }
             if printf '%s\n' "$files" | grep -Eq '(^|/)(Cargo\.toml|Cargo\.lock|rust-toolchain(\.toml)?|build\.rs)$|^\.cargo/|^\.github/workflows/|^scripts/(install\.(sh|ps1)|check-platform-installers\.mjs|installers\.test\.js|release/)|^npm(-mcp)?/|^apps/web/public/install\.|(^|/)(windows|macos|unix|platform)[^/]*(/|\.rs$)'; then p=true; fi
             # Tier-1 paths (CODEOWNERS from the base ref, when present) keep the full OS matrix on the PR.
             if owners="$(git show "$BASE:.github/CODEOWNERS" 2>/dev/null)"; then
               while IFS= read -r pat; do
                 # Strip leading / and any leading */** segments (so **/package.json
                 # and *.rs are kept as suffix matches), then cut at the next '*'.
+                # A pattern with a non-trailing / is anchored at the repo root;
+                # one without (or starting with *) matches at any depth.
+                mode=seg
+                case "$pat" in '*'*) mode=sub ;; /*) mode=root ;; *?/?*) mode=root ;; esac
                 pre="$pat"; while [ "${pre#[/*]}" != "$pre" ]; do pre="${pre#[/*]}"; done
                 pre="${pre%%\**}"
                 # A bare * (or **) owns every path.
                 if [ -z "$pre" ]; then [ -n "$files" ] && p=true; continue; fi
-                if printf '%s\n' "$files" | grep -qF -- "$pre"; then p=true; fi
+                # root: prefix of the path (/src/ never matches vendor/src/);
+                # seg: starts at a path segment; sub: suffix-style (*.rs) substring.
+                awk -v p="$pre" -v m="$mode" '(m == "root" && index($0, p) == 1) || (m == "seg" && index("/" $0, "/" p) > 0) || (m == "sub" && index($0, p) > 0) { f = 1 } END { exit !f }' <<< "$files" && p=true
               done < <(printf '%s\n' "$owners" | grep -Ev '^[[:space:]]*(#|$)' | awk '{print $1}')
             fi
             while IFS= read -r f; do
