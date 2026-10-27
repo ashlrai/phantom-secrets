@@ -4,12 +4,111 @@ use phantom_core::config::PhantomConfig;
 use phantom_core::dotenv::DotenvFile;
 use phantom_core::env_scope::DEFAULT_ENV;
 use phantom_core::token::PhantomToken;
+use phantom_proxy::response_scrubber::{ResponseScrubber, StreamingScrubState};
 use phantom_proxy::{Interceptor, ProxyConfig, ProxyServer, ServiceRegistry};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::process::Stdio;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+
+/// Stable, value-free classification attached at refusal boundaries.
+#[derive(Debug)]
+pub(crate) struct ExecRefusal(pub &'static str, anyhow::Error);
+
+impl std::fmt::Display for ExecRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} [{}]", self.1, self.0)
+    }
+}
+impl std::error::Error for ExecRefusal {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.1.as_ref())
+    }
+}
+
+pub(crate) fn classify(error: anyhow::Error, code: &'static str) -> anyhow::Error {
+    ExecRefusal(code, error).into()
+}
+
+#[derive(Debug)]
+pub(crate) struct JsonExecError(pub String, u8);
+
+#[derive(Debug)]
+pub(crate) struct ExecSpawnError {
+    code: u8,
+    message: String,
+}
+impl std::fmt::Display for ExecSpawnError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+impl std::error::Error for ExecSpawnError {}
+
+pub(crate) fn error_exit_code(error: &anyhow::Error) -> u8 {
+    if let Some(json) = error.downcast_ref::<JsonExecError>() {
+        json.1
+    } else if let Some(spawn) = error.downcast_ref::<ExecSpawnError>() {
+        spawn.code
+    } else {
+        1
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+struct LaunchOptions {
+    quiet: bool,
+    scrub_output: bool,
+    json: bool,
+}
+impl std::fmt::Display for JsonExecError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+impl std::error::Error for JsonExecError {}
+
+/// JSON contains only fixed vocabulary; underlying errors may contain paths,
+/// command arguments, or repository-controlled text and must not be serialized.
+pub fn run_json(cmd: &[String], bind_source: Option<&Path>, scrub_output: bool) -> Result<()> {
+    run_with_options(
+        cmd,
+        None,
+        bind_source,
+        LaunchOptions {
+            quiet: true,
+            scrub_output,
+            json: true,
+        },
+    )
+    .map_err(json_error)
+}
+
+fn json_error(error: anyhow::Error) -> anyhow::Error {
+    let code = error.downcast_ref::<ExecRefusal>().map_or_else(
+        || {
+            if error.downcast_ref::<ExecSpawnError>().is_some() {
+                "spawn_failed"
+            } else {
+                "exec_failed"
+            }
+        },
+        |refusal| refusal.0,
+    );
+    JsonExecError(
+        serde_json::json!({
+            "schema": "phantom.exec.error.v1",
+            "error": { "code": code, "message": "Phantom refused to launch the command." }
+        })
+        .to_string(),
+        error_exit_code(&error),
+    )
+    .into()
+}
 
 const VAULT_PASSPHRASE_ENV: &str = "PHANTOM_VAULT_PASSPHRASE";
+
+mod coverage;
 
 fn header_auth_only() -> bool {
     matches!(
@@ -39,13 +138,34 @@ pub fn run(
     env: Option<&str>,
     bind_source: Option<&std::path::Path>,
     quiet: bool,
+    scrub_output: bool,
+) -> Result<()> {
+    run_with_options(
+        cmd,
+        env,
+        bind_source,
+        LaunchOptions {
+            quiet,
+            scrub_output,
+            json: false,
+        },
+    )
+}
+
+fn run_with_options(
+    cmd: &[String],
+    env: Option<&str>,
+    bind_source: Option<&Path>,
+    options: LaunchOptions,
 ) -> Result<()> {
     if cmd.is_empty() {
         anyhow::bail!("No command specified. Usage: phantom exec -- <command>");
     }
 
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(run_async(cmd, env, bind_source, quiet))
+    rt.block_on(run_async(cmd, env, bind_source, options, |config| {
+        ServiceRegistry::from_config(&config.services)
+    }))
 }
 
 /// Actionable, value-free next steps for the connection-string denial.
@@ -75,8 +195,14 @@ async fn run_async(
     cmd: &[String],
     env_flag: Option<&str>,
     bind_source: Option<&std::path::Path>,
-    quiet: bool,
+    options: LaunchOptions,
+    registry_from_config: impl FnOnce(&PhantomConfig) -> ServiceRegistry,
 ) -> Result<()> {
+    let LaunchOptions {
+        quiet,
+        scrub_output,
+        json,
+    } = options;
     let working_dir = std::env::current_dir()?;
     // Custody (config namespace, managed dotenv, env scope) comes from the
     // working directory unless the caller explicitly binds a verified linked
@@ -106,7 +232,8 @@ async fn run_async(
     };
     validate_routes_for_launch(&config)?;
 
-    let preflight = phantom_core::managed_dotenv::resolve_dotenv(&project_dir, &config, &[])?;
+    let preflight = phantom_core::managed_dotenv::resolve_dotenv(&project_dir, &config, &[])
+        .map_err(|error| classify(error, "placeholder_mismatch"))?;
     if let Some(dotenv) = preflight.file.as_ref() {
         dotenv
             .validate_for_mutation()
@@ -119,6 +246,11 @@ async fn run_async(
         .filter(|entry| PhantomToken::is_phantom_token(&entry.value))
         .map(|entry| entry.key.clone())
         .collect();
+
+    // A route for a provider does not imply that its CLI understands our
+    // base URL or authentication protocol. Refuse known incompatible direct
+    // invocations before opening the vault, using protected names only.
+    coverage::validate_command(cmd, &preflight_protected_keys)?;
 
     // Connection strings need a protocol-aware broker. Detect them from the
     // protected dotenv/config contract before opening or reading the vault, so
@@ -144,7 +276,8 @@ async fn run_async(
     let vault = phantom_vault::try_create_vault(config.local_project_id())?;
     let vault_names = launch_vault_names(vault.as_ref(), config.local_project_id())?;
     let resolved =
-        phantom_core::managed_dotenv::resolve_dotenv(&project_dir, &config, &vault_names)?;
+        phantom_core::managed_dotenv::resolve_dotenv(&project_dir, &config, &vault_names)
+            .map_err(|error| classify(error, "placeholder_mismatch"))?;
     if let Some(dotenv) = resolved.file.as_ref() {
         dotenv
             .validate_for_mutation()
@@ -159,15 +292,18 @@ async fn run_async(
         .map(|entry| entry.key.clone())
         .collect();
 
+    coverage::validate_command(cmd, &protected_env_keys)?;
+
     let (child_scrub_env, never_reintroduce) =
         child_environment_policy(&config, &protected_env_keys);
 
     if protected_env_keys.is_empty() {
-        eprintln!(
+        progress!(
+            json,
             "{} No phantom tokens found to proxy. Running command directly with Phantom internal credentials removed.",
             "warn".yellow()
         );
-        return run_command_directly(cmd, &child_scrub_env).await;
+        return run_command_directly(cmd, &child_scrub_env, scrub_output).await;
     }
 
     crate::commands::rotation_gate::enforce_rotation_on_access(
@@ -227,12 +363,17 @@ async fn run_async(
     }
 
     // Build service registry from config
-    let registry = ServiceRegistry::from_config(&config.services);
+    // Keep destination construction private and after route validation. Tests
+    // can supply a loopback registry without adding a runtime override that
+    // could redirect credential-bearing requests in the shipped CLI.
+    let registry = registry_from_config(&config);
     // Export base-URL overrides only for routes this session can serve. An
     // SDK pointed at a route without a loaded credential would receive a
     // proxy 503 for every call instead of reaching its provider.
     let mut exported_routes = registry.clone();
     exported_routes.retain_routes(|route| secret_name_to_value.contains_key(&route.secret_key));
+    let output_scrubber =
+        scrub_output.then(|| ResponseScrubber::from_named_map(&secret_name_to_value));
     let interceptor = Interceptor::new_scoped(session_token_to_secret, secret_name_to_value);
 
     progress!(
@@ -260,7 +401,8 @@ async fn run_async(
         interceptor,
     )
     .await
-    .map_err(|e| anyhow::anyhow!("Failed to start proxy: {e}"))?;
+    .map_err(|e| anyhow::anyhow!("Failed to start proxy: {e}"))
+    .map_err(|error| classify(error, "proxy_not_running"))?;
 
     let port = proxy.port();
     progress!(
@@ -362,7 +504,8 @@ async fn run_async(
         injected_count,
     );
     if !unrouted.is_empty() {
-        eprintln!(
+        progress!(
+            json,
             "{} No proxy route for {}: the child gets only a session token for {}, which no provider accepts, so calls that send it will fail. Run `phantom why <KEY>` for details.",
             "warn".yellow(),
             unrouted.join(", ").bold(),
@@ -370,12 +513,8 @@ async fn run_async(
         );
     }
 
-    progress!(
-        quiet,
-        "{} Launching: {}\n",
-        "->".blue().bold(),
-        cmd.join(" ").cyan().bold()
-    );
+    // Arguments and executable paths may contain credentials. Keep progress value-free.
+    progress!(quiet, "{} Launching: child process\n", "->".blue().bold());
 
     // Spawn the child process with proxy env vars
     let program = &cmd[0];
@@ -408,9 +547,8 @@ async fn run_async(
         // reintroduce either the real vault passphrase or a confusing session
         // token under Phantom's internal decryption-key variable.
         .env_remove(VAULT_PASSPHRASE_ENV)
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit());
+        .stdin(Stdio::inherit());
+    configure_output(&mut command, scrub_output);
     // Take over termination signals before the child exists, so a SIGTERM
     // or SIGINT aimed at phantom can no longer kill it and orphan the child
     // (which would keep running against a proxy that is gone). The handlers
@@ -422,18 +560,22 @@ async fn run_async(
             // Stop the proxy first: its session tokens must not outlive a
             // launch that never happened.
             proxy.shutdown().await;
-            let (code, message) = spawn_failure(program, &error);
-            eprintln!("{} {message}", "error".red().bold());
-            std::process::exit(code);
+            let (code, message) = spawn_failure(&error);
+            return Err(ExecSpawnError {
+                code: code as u8,
+                message,
+            }
+            .into());
         }
     };
 
     // Wait for the child to exit, forwarding termination signals to it.
-    let status = forwarder.wait_for(&mut child).await?;
+    let result = wait_with_output(forwarder, &mut child, output_scrubber.as_ref()).await;
 
     // Shut down the proxy — session tokens are now invalid
     progress!(quiet, "\n{} Shutting down proxy...", "->".blue().bold());
     proxy.shutdown().await;
+    let status = result?;
 
     if !status.success() {
         let (code, signal_note) = child_exit_code(&status);
@@ -520,15 +662,18 @@ pub(super) fn retrieve_session_secret(
     refusal: &str,
 ) -> Result<zeroize::Zeroizing<String>> {
     let missing = || {
-        crate::util::missing_protected_entry(
-            vault,
-            project_id,
-            bare,
-            format!(
+        classify(
+            crate::util::missing_protected_entry(
+                vault,
+                project_id,
+                bare,
+                format!(
                 "Protected dotenv key '{bare}' has no vault entry for environment '{active_env}'"
             ),
-            refusal,
-            active_env == DEFAULT_ENV,
+                refusal,
+                active_env == DEFAULT_ENV,
+            ),
+            "missing_secret",
         )
     };
     match vault.retrieve_for_injection(namespaced) {
@@ -633,25 +778,29 @@ fn detect_next_dependency(package_json: &Path) -> bool {
     contents.contains("\"next\"")
 }
 
-async fn run_command_directly(cmd: &[String], scrub_env_keys: &HashSet<String>) -> Result<()> {
+async fn run_command_directly(
+    cmd: &[String],
+    scrub_env_keys: &HashSet<String>,
+    scrub_output: bool,
+) -> Result<()> {
     let program = &cmd[0];
-    let args = &cmd[1..];
-
-    let mut command = sanitized_child_command(program, args, scrub_env_keys);
-    let status = match command
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .status()
-        .await
-    {
-        Ok(status) => status,
+    let mut command = sanitized_child_command(program, &cmd[1..], scrub_env_keys);
+    command.stdin(Stdio::inherit());
+    configure_output(&mut command, scrub_output);
+    let forwarder = SignalForwarder::install()?;
+    let mut child = match command.spawn() {
+        Ok(child) => child,
         Err(error) => {
-            let (code, message) = spawn_failure(program, &error);
-            eprintln!("{} {message}", "error".red().bold());
-            std::process::exit(code);
+            let (code, message) = spawn_failure(&error);
+            return Err(ExecSpawnError {
+                code: code as u8,
+                message,
+            }
+            .into());
         }
     };
+    let scrubber = scrub_output.then(|| ResponseScrubber::from_named_map(&HashMap::new()));
+    let status = wait_with_output(forwarder, &mut child, scrubber.as_ref()).await?;
 
     if !status.success() {
         let (code, signal_note) = child_exit_code(&status);
@@ -662,6 +811,75 @@ async fn run_command_directly(cmd: &[String], scrub_env_keys: &HashSet<String>) 
     }
 
     Ok(())
+}
+
+fn configure_output(command: &mut tokio::process::Command, scrub: bool) {
+    command.stdout(if scrub {
+        Stdio::piped()
+    } else {
+        Stdio::inherit()
+    });
+    command.stderr(if scrub {
+        Stdio::piped()
+    } else {
+        Stdio::inherit()
+    });
+}
+
+async fn scrub_output_stream(
+    mut source: impl AsyncRead + Unpin,
+    mut destination: impl AsyncWrite + Unpin,
+    scrubber: &ResponseScrubber,
+) -> std::io::Result<()> {
+    let mut state = StreamingScrubState::new();
+    let mut buffer = zeroize::Zeroizing::new([0u8; 8192]);
+    let mut write_error = None;
+    loop {
+        let count = source.read(&mut buffer[..]).await?;
+        let output = if count == 0 {
+            scrubber.finish_stream(None, std::mem::take(&mut state)).0
+        } else {
+            scrubber
+                .scrub_stream_chunk(None, &mut state, &buffer[..count])
+                .0
+        };
+        // Keep draining after a closed destination so the child cannot deadlock
+        // on a full pipe while we wait for its exit.
+        if write_error.is_none() {
+            if let Err(error) = async {
+                destination.write_all(&output).await?;
+                destination.flush().await
+            }
+            .await
+            {
+                write_error = Some(error);
+            }
+        }
+        if count == 0 {
+            return write_error.map_or(Ok(()), Err);
+        }
+    }
+}
+
+async fn wait_with_output(
+    forwarder: SignalForwarder,
+    child: &mut tokio::process::Child,
+    scrubber: Option<&ResponseScrubber>,
+) -> Result<std::process::ExitStatus> {
+    let Some(scrubber) = scrubber else {
+        return Ok(forwarder.wait_for(child).await?);
+    };
+    let stdout = child.stdout.take().context("Missing child stdout pipe")?;
+    let stderr = child.stderr.take().context("Missing child stderr pipe")?;
+    let (status, stdout, stderr) = tokio::join!(
+        forwarder.wait_for(child),
+        scrub_output_stream(stdout, tokio::io::stdout(), scrubber),
+        scrub_output_stream(stderr, tokio::io::stderr(), scrubber),
+    );
+    let status = status?;
+    stdout.context("Failed to relay scrubbed stdout")?;
+    stderr.context("Failed to relay scrubbed stderr")?;
+    Ok(status)
 }
 
 /// Hide the per-session proxy token in printed `*_BASE_URL` lines. The child
@@ -683,26 +901,24 @@ fn redact_session_segment(url: &str) -> String {
 pub(super) fn validate_routes_for_launch(config: &PhantomConfig) -> Result<()> {
     config.validate_agentic_proxy_routes().context(
         "Refusing unapproved repository-controlled proxy routing. Run `phantom doctor` to see which service in .phantom.toml blocks launch and what to restore; proxied launches run only with Phantom's built-in routes",
-    )?;
+    ).map_err(|error| classify(error, "unknown_route"))?;
     Ok(())
 }
 
 /// Exit code and message for a child that could not be started, following
 /// the shell convention agents already branch on: 127 when the program is not
 /// found, 126 when it exists but cannot be executed.
-fn spawn_failure(program: &str, error: &std::io::Error) -> (i32, String) {
+fn spawn_failure(error: &std::io::Error) -> (i32, String) {
     match error.kind() {
         std::io::ErrorKind::NotFound => (
             127,
-            format!(
-                "Command not found: {program}. Check that it is installed and on PATH, or pass its full path after `--`."
-            ),
+            "Command not found. Check that it is installed and on PATH, or pass its full path after `--`.".to_string(),
         ),
         std::io::ErrorKind::PermissionDenied => (
             126,
-            format!("Command is not executable: {program}. Check its permissions."),
+            "Command is not executable. Check its permissions.".to_string(),
         ),
-        _ => (1, format!("Failed to start command {program}: {error}")),
+        _ => (1, format!("Failed to start command: {}", error.kind())),
     }
 }
 
@@ -873,8 +1089,61 @@ impl SignalForwarder {
     }
 }
 
+#[cfg(all(test, unix))]
+#[path = "exec_github_tests.rs"]
+mod github_tests;
+
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn output_relay_scrubs_bytewise_and_flushes_incomplete_prefix_at_eof() {
+        let fake = format!("FAKE-{}-value", "managed".repeat(5));
+        let scrubber = ResponseScrubber::from_named_map(&HashMap::from([(
+            "FAKE_KEY".to_string(),
+            fake.clone(),
+        )]));
+        let input = [b"before:".as_slice(), fake.as_bytes(), b":after\xffsk-"].concat();
+        let (mut sender, reader) = tokio::io::duplex(1);
+        let mut output = Vec::new();
+        let (sent, relayed) = tokio::join!(
+            async {
+                for byte in input {
+                    sender.write_all(&[byte]).await?;
+                }
+                sender.shutdown().await
+            },
+            scrub_output_stream(reader, &mut output, &scrubber),
+        );
+        assert!(sent.is_ok());
+        assert!(relayed.is_ok());
+        assert!(!output
+            .windows(fake.len())
+            .any(|bytes| bytes == fake.as_bytes()));
+        assert!(output.starts_with(b"before:[REDACTED:"));
+        assert!(output.ends_with(b":after\xffsk-"));
+    }
+
+    #[tokio::test]
+    async fn output_relay_drains_child_after_destination_closes() {
+        let scrubber = ResponseScrubber::from_named_map(&HashMap::new());
+        let (mut sender, reader) = tokio::io::duplex(64);
+        let (writer, closed) = tokio::io::duplex(1);
+        drop(closed);
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::join!(
+                async {
+                    sender.write_all(&vec![b'.'; 32 * 1024]).await?;
+                    sender.shutdown().await
+                },
+                scrub_output_stream(reader, writer, &scrubber),
+            )
+        })
+        .await
+        .expect("relay must keep draining the child");
+        assert!(result.0.is_ok());
+        assert!(result.1.is_err());
+    }
+
     /// A SIGTERM delivered to phantom while the child runs used to kill
     /// phantom by default and orphan the child. The forwarder now catches it,
     /// passes it to the child, and returns the child's own exit status.
@@ -1017,23 +1286,28 @@ mod tests {
 
     #[test]
     fn spawn_failure_uses_shell_exit_codes_and_names_the_fix() {
-        let (code, message) = super::spawn_failure(
-            "phantom-missing-tool",
-            &std::io::Error::from(std::io::ErrorKind::NotFound),
-        );
+        let (code, message) =
+            super::spawn_failure(&std::io::Error::from(std::io::ErrorKind::NotFound));
         assert_eq!(code, 127);
-        assert!(
-            message.contains("Command not found: phantom-missing-tool"),
-            "{message}"
-        );
+        assert!(message.contains("Command not found"), "{message}");
         assert!(message.contains("PATH"), "{message}");
 
-        let (code, message) = super::spawn_failure(
-            "./script.sh",
-            &std::io::Error::from(std::io::ErrorKind::PermissionDenied),
-        );
+        let (code, message) =
+            super::spawn_failure(&std::io::Error::from(std::io::ErrorKind::PermissionDenied));
         assert_eq!(code, 126);
         assert!(message.contains("not executable"), "{message}");
+    }
+
+    #[test]
+    fn spawn_failure_does_not_echo_custom_error_details() {
+        let detail = "synthetic-private-error-detail";
+        let (code, message) = super::spawn_failure(&std::io::Error::other(detail));
+        assert_eq!(code, 1);
+        assert!(
+            !message.contains(detail),
+            "spawn error disclosed private details"
+        );
+        assert!(message.contains("Failed to start command"));
     }
 
     #[cfg(unix)]
@@ -1342,5 +1616,28 @@ mod tests {
         assert!(never.contains("DATABASE_URL"));
         assert!(never.contains("ROTATION_ADMIN_TOKEN"));
         assert!(never.contains("DEPLOY_TOKEN"));
+    }
+}
+
+#[cfg(test)]
+mod json_error_tests {
+    use super::*;
+
+    #[test]
+    fn refusal_codes_survive_context_without_serializing_diagnostics() {
+        for code in [
+            "unknown_route",
+            "placeholder_mismatch",
+            "missing_secret",
+            "proxy_not_running",
+        ] {
+            let error =
+                classify(anyhow::anyhow!("sensitive diagnostic"), code).context("outer context");
+            let report = json_error(error).to_string();
+            let parsed: serde_json::Value = serde_json::from_str(&report).unwrap();
+            assert_eq!(parsed["error"]["code"], code);
+            assert!(!report.contains("sensitive diagnostic"));
+            assert!(!report.contains("outer context"));
+        }
     }
 }

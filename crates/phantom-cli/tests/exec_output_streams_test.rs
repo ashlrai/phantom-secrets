@@ -38,7 +38,7 @@ fn initialized_project() -> (tempfile::TempDir, tempfile::TempDir) {
     let home = common::canonical_tempdir();
     fs::write(
         project.path().join(".env"),
-        "OPENAI_API_KEY=sk-exec-output-streams-test-value\n",
+        format!("OPENAI_API_KEY=sk-FAKE{}\n", "output".repeat(5)),
     )
     .unwrap();
     let output = phantom_command(project.path(), home.path())
@@ -227,4 +227,87 @@ fn exec_warns_about_protected_keys_without_a_route() {
             assert!(!stderr.contains(value.as_str()), "value leaked:\n{stderr}");
         }
     }
+}
+
+/// FAKE values are assembled at runtime and never included in assertion output.
+#[cfg(unix)]
+#[test]
+fn exec_scrubs_echoed_managed_values_on_both_streams_and_preserves_exit() {
+    let project = common::canonical_tempdir();
+    let home = common::canonical_tempdir();
+    let fake = format!("FAKE-managed-{}", "credential".repeat(4));
+    fs::write(
+        project.path().join(".env"),
+        format!("OPENAI_API_KEY={fake}\n"),
+    )
+    .unwrap();
+    let init = phantom_command(project.path(), home.path())
+        .args(["init", "--from", ".env"])
+        .output()
+        .unwrap();
+    assert!(init.status.success());
+    // Deliberately echo the FAKE vault value via a child script, rather than
+    // the session placeholder supplied in the child's environment.
+    let script = project.path().join("echo-fake.sh");
+    let (first, last) = fake.split_at(19);
+    fs::write(&script, format!(
+        "printf '%s' '{first}'; sleep 0.05; printf '%s\\n' '{last}'; printf '%s\\n' '{fake}' >&2; printf 'safe\\377end'; exit 23\n"
+    )).unwrap();
+    for json in [false, true] {
+        for scrub in [false, true] {
+            let mut command = phantom_command(project.path(), home.path());
+            command.args(["--quiet", "exec"]);
+            if json {
+                command.arg("--json");
+            }
+            if scrub {
+                command.arg("--scrub-output");
+            }
+            let output = command.arg("--").arg("sh").arg(&script).output().unwrap();
+            assert_eq!(output.status.code(), Some(23));
+            for stream in [&output.stdout, &output.stderr] {
+                let contains = stream
+                    .windows(fake.len())
+                    .any(|part| part == fake.as_bytes());
+                assert!(
+                    contains != scrub,
+                    "FAKE value redaction did not match opt-in policy"
+                );
+                if scrub {
+                    assert!(stream.windows(10).any(|part| part == b"[REDACTED:"));
+                }
+            }
+            assert!(output.stdout.ends_with(b"safe\xffend"));
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn exec_scrubs_formats_without_managed_secrets_and_drains_large_streams() {
+    let project = common::canonical_tempdir();
+    let home = common::canonical_tempdir();
+    // A public-only initialized config exercises the direct launch path.
+    fs::write(project.path().join(".env"), "PUBLIC=yes\n").unwrap();
+    phantom_core::config::PhantomConfig::new_with_defaults("a".repeat(64))
+        .save(&project.path().join(".phantom.toml"))
+        .unwrap();
+    let fake = format!("sk-FAKE{}", "a".repeat(40));
+    let script = project.path().join("echo-fake.sh");
+    fs::write(&script, format!(
+        "i=0; while [ $i -lt 1500 ]; do printf '%s\\n' '{fake}'; printf '%s\\n' '{fake}' >&2; i=$((i+1)); done; printf 'tail'\n"
+    )).unwrap();
+    let output = phantom_command(project.path(), home.path())
+        .args(["--quiet", "exec", "--scrub-output", "--", "sh"])
+        .arg(&script)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    for stream in [&output.stdout, &output.stderr] {
+        assert!(!stream
+            .windows(fake.len())
+            .any(|part| part == fake.as_bytes()));
+        assert!(stream.windows(10).any(|part| part == b"[REDACTED:"));
+    }
+    assert!(output.stdout.ends_with(b"tail"));
 }
