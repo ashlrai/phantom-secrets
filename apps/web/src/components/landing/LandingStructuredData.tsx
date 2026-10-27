@@ -60,53 +60,66 @@ function serializeStructuredData(value: unknown): string {
   return JSON.stringify(value).replace(/</g, "\\u003c");
 }
 
+// Reuse the same product identity on the landing page and installation guide.
+export function SecretsSoftwareApplication() {
+  return (
+    <script
+      type="application/ld+json"
+      dangerouslySetInnerHTML={{
+        __html: serializeStructuredData({
+          "@context": "https://schema.org",
+          "@type": "SoftwareApplication",
+          "@id": `${SITE_URL}#software`,
+          name: "Phantom Secrets",
+          alternateName: "Phantom Secrets",
+          applicationCategory: "DeveloperApplication",
+          applicationSubCategory: "SecretsManagement",
+          operatingSystem: "macOS, Linux, Windows",
+          url: SITE_URL,
+          subjectOf: {
+            "@type": "WebPage",
+            url: "https://phm.dev/secrets/capabilities",
+            name: "Phantom Secrets capabilities and installation",
+          },
+          sameAs: [
+            "https://github.com/ashlrai/phantom-secrets",
+          ],
+          codeRepository: "https://github.com/ashlrai/phantom-secrets",
+          programmingLanguage: "Rust",
+          isAccessibleForFree: true,
+          featureList: [
+            "Local-first vault using OS credential stores or a ChaCha20-Poly1305 encrypted-file backend",
+            "Authenticated exact-route HTTP credential injection",
+            "Value-blind MCP tools for coding agents",
+            "Claude Code, Cursor, Windsurf, and Codex setup",
+            "macOS, Linux, and Windows release artifacts",
+          ],
+          license: "https://opensource.org/licenses/MIT",
+          softwareVersion: PUBLIC_RELEASE_VERSION,
+          downloadUrl: PUBLIC_RELEASE_URL,
+          description: DESCRIPTION,
+          offers: {
+            "@type": "Offer",
+            name: "Local open-source CLI",
+            price: "0",
+            priceCurrency: "USD",
+            availability: "https://schema.org/InStock",
+          },
+          author: {
+            "@type": "Organization",
+            name: "AshlrAI, Inc.",
+            url: "https://ashlr.ai",
+          },
+        }),
+      }}
+    />
+  );
+}
+
 export function LandingStructuredData() {
   return (
     <>
-        {/* JSON-LD: SoftwareApplication */}
-        <script
-          type="application/ld+json"
-          dangerouslySetInnerHTML={{
-            __html: serializeStructuredData({
-              "@context": "https://schema.org",
-              "@type": "SoftwareApplication",
-              name: "Phantom Secrets",
-              alternateName: "Phantom Secrets",
-              applicationCategory: "DeveloperApplication",
-              applicationSubCategory: "SecretsManagement",
-              operatingSystem: "macOS, Linux, Windows",
-              url: SITE_URL,
-              sameAs: [
-                "https://github.com/ashlrai/phantom-secrets",
-              ],
-              codeRepository: "https://github.com/ashlrai/phantom-secrets",
-              programmingLanguage: "Rust",
-              isAccessibleForFree: true,
-              featureList: [
-                "Local-first vault using OS credential stores or a ChaCha20-Poly1305 encrypted-file backend",
-                "Authenticated exact-route HTTP credential injection",
-                "Value-blind MCP tools for coding agents",
-                "Claude Code, Cursor, Windsurf, and Codex setup",
-                "macOS, Linux, and Windows release artifacts",
-              ],
-              license: "https://opensource.org/licenses/MIT",
-              softwareVersion: PUBLIC_RELEASE_VERSION,
-              downloadUrl: PUBLIC_RELEASE_URL,
-              description: DESCRIPTION,
-              offers: {
-                "@type": "Offer",
-                price: "0",
-                priceCurrency: "USD",
-                availability: "https://schema.org/InStock",
-              },
-              author: {
-                "@type": "Organization",
-                name: "AshlrAI, Inc.",
-                url: "https://ashlr.ai",
-              },
-            }),
-          }}
-        />
+      <SecretsSoftwareApplication />
         {/* JSON-LD: SoftwareSourceCode */}
         <script
           type="application/ld+json"

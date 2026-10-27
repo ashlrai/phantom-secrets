@@ -36,6 +36,7 @@ const COLLECTIONS = [
     title: "Use Phantom Secrets",
     id: "use-phantom",
     links: [
+      ["Secrets capabilities and installation", "/secrets/capabilities"],
       ["Complete getting started guide", "/docs/getting-started"],
       ["Safe delegation quickstart", "/docs/delegation-quickstart"],
       ["Protect API keys from coding agents", "/docs/protect-api-keys-from-ai-coding-agents"],
