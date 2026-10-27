@@ -252,7 +252,7 @@ export function runNativeReleaseSmoke({
     verifyVersion(phantomMcp, `phantom-mcp ${version}`, runCommand);
     runCommand(
       process.execPath,
-      [join(repoRoot, "scripts/release/mcp-stdio-smoke.mjs"), phantomMcp, "54"],
+      [join(repoRoot, "scripts/release/mcp-stdio-smoke.mjs"), phantomMcp, "55"],
       "MCP stdio schema smoke",
       { cwd: repoRoot, timeout: 30_000 },
     );

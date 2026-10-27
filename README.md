@@ -249,7 +249,7 @@ team, deployment, provider, authority-kernel, or customer workflows are active
 or accepted.
 
 - **Conversation facade** — `phantom_capability` reports authority and hard denials for the small facade (not the separately gated advanced compatibility catalog); `phantom_do` canonicalizes one closed Cargo action and reports the exact activation blockers without executing it; `phantom_setup_workspace` proposes an exact value-blind plan, creates a bearerless apply request after revalidation, or reads authenticated request status. Provisioning the machine-local seal key and creating a request both require `confirm` plus an out-of-band approval token; MCP never claims or applies the request.
-- **Vault** — `phantom_list_secrets`, `phantom_status`, `phantom_init`, `phantom_add_secret_interactive`, `phantom_add_secret` (deprecated; refuses plaintext), `phantom_remove_secret`, `phantom_rotate`, `phantom_copy_secret`
+- **Vault** — `phantom_list_secrets`, `phantom_get` (metadata only), `phantom_status`, `phantom_init`, `phantom_add_secret_interactive`, `phantom_add_secret` (deprecated; refuses plaintext), `phantom_remove_secret`, `phantom_rotate`, `phantom_copy_secret`
 - **Detection + diagnostics** — `phantom_doctor`, `phantom_why`, `phantom_check`, `phantom_env`, `phantom_validate_secret`, `phantom_validate_all`
 - **Local-to-cloud** — `phantom_wrap`, `phantom_unwrap`, `phantom_sync`, `phantom_cloud_push`, `phantom_cloud_pull`, `phantom_cloud_status`
 - **Teams** — `phantom_team_list`, `phantom_team_create`, `phantom_team_members`, `phantom_team_invite`, `phantom_team_key_publish`, `phantom_team_vault_push`, `phantom_team_vault_pull`
@@ -427,6 +427,7 @@ dashboard is designed to show team memberships and member lists.
 | `phantom start` | Run an explicitly supervised foreground proxy; keep its trusted terminal open and press Ctrl-C there to stop |
 | `phantom start --daemon` / `phantom stop` | Detached start fails closed; stop is a TTY-only legacy-state diagnostic that never kills or deletes, not current process control |
 | `phantom list` | Show secret names stored in vault (never values; `--json` for machine-readable output) |
+| `phantom get <KEY>` | Return [agent-safe metadata](docs/agent-safe-get.md) as JSON: managed-dotenv presence, route, exec delivery mode, and configured expiry. Never opens the vault or returns values or mappings. |
 | `phantom add <KEY>` | Create a new secret name transactionally in an initialized project through a hidden terminal prompt or trusted `--stdin` producer; existing names are denied before any value read and are never replaced |
 | `phantom remove <KEY>` | After exact trusted-terminal confirmation, transactionally remove the vault value, lifecycle config, and exact managed-dotenv mapping; headless use fails before value access or mutation |
 | `phantom reveal <KEY>` | From an attached trusted terminal, review and type the exact challenge before printing one value or copying it for an auto-cleared 30-second clipboard window |

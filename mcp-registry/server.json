@@ -840,6 +840,24 @@
       }
     },
     {
+      "name": "phantom_get",
+      "description": "Get secret metadata only: exists (exact name in managed dotenv, not verified vault presence), route, delivery_mode from exec_delivery_for_key, and configured expires_at (Unix seconds or null). Never returns a value or mapping and never opens the vault. Works before init and with a locked vault. Reveal is only available through the human trusted-terminal CLI ceremony.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "description": "Exact environment variable name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      }
+    },
+    {
       "name": "phantom_init",
       "description": "Initialize Phantom through one exact-before project transaction: read a safe project-local dotenv, compare-and-swap every vault entry, persist config, and rewrite the dotenv with phantom tokens last. Concurrent file or vault changes abort and transaction-owned writes are rolled back where verifiable. Requires confirm plus out-of-band approval.",
       "inputSchema": {
