@@ -151,15 +151,37 @@ fn check_commented_entries(dotenv: &DotenvFile, file_label: &str) -> usize {
     found.len()
 }
 
+fn doctor_json(report: &DoctorReport) -> Result<String> {
+    let pretty = serde_json::to_string_pretty(report)?;
+    crate::commands::report_json::with_schema_pretty(
+        pretty,
+        crate::commands::report_json::DOCTOR_SCHEMA,
+    )
+}
+
 /// Run the full doctor suite. Pass `check_expiry = true` to also scan secret
 /// TTL metadata and warn about expired or soon-to-expire entries.
-pub fn run_doctor(fix: bool, check_expiry: bool, json: bool) -> Result<()> {
+pub fn run_doctor(fix: bool, check_expiry: bool, json: bool, strict: bool) -> Result<()> {
     if json {
         let report = collect_report(fix, check_expiry)?;
-        println!("{}", serde_json::to_string_pretty(&report)?);
+        println!("{}", doctor_json(&report)?);
+        exit_if_strict(strict, report.issues);
         return Ok(());
     }
-    run_checks(fix, check_expiry).map(|_| ())
+    let (issues, _) = run_checks(fix, check_expiry)?;
+    exit_if_strict(strict, issues);
+    Ok(())
+}
+
+/// `--strict` turns a finished report that still has issues into exit 2
+/// ([`crate::commands::report_json::STRICT_ISSUES_FOUND`]).
+/// Every issue counts the same: a warning is an issue, with no severity
+/// weighting. The report itself is unchanged. Without the flag, issues keep
+/// exit 0. Exit 1 stays a command error.
+fn exit_if_strict(strict: bool, issues: usize) {
+    if strict && issues > 0 {
+        std::process::exit(crate::commands::report_json::STRICT_ISSUES_FOUND);
+    }
 }
 
 /// `phantom doctor --output <path>`: write the full report (text, or JSON
@@ -168,16 +190,18 @@ pub fn run_doctor_to_file(
     fix: bool,
     check_expiry: bool,
     json: bool,
+    strict: bool,
     path: &std::path::Path,
 ) -> Result<()> {
     let report = collect_report(fix, check_expiry)?;
     let body = if json {
-        serde_json::to_string_pretty(&report)? + "\n"
+        doctor_json(&report)? + "\n"
     } else {
         render_text(&report)
     };
     crate::report_file::write_new(path, body.as_bytes())?;
     println!("{}", summary_line(&report, path));
+    exit_if_strict(strict, report.issues);
     Ok(())
 }
 
