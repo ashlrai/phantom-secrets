@@ -101,7 +101,7 @@ and retains historical design-status language.
 - [Code of Conduct](../CODE_OF_CONDUCT.md)
 - [MIT License](../LICENSE)
 
-The authority, Locus-contract, broker, runtime, session, and evidence crates are
+The authority, broker, and runtime crates are
 fail-closed foundations, not activated production authority or execution. The
 [architecture](architecture.md) and [threat model](../THREAT_MODEL.md) record
 the current activation boundary and non-mitigations. A source implementation

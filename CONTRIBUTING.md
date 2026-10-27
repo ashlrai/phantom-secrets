@@ -51,11 +51,8 @@ On a machine where `cargo` is not on `PATH`, invoke the same commands through yo
 | `crates/phantom-mcp` | MCP server, closed parameter schemas, the governed conversation facade, and separately gated compatibility tools. |
 | `crates/phantom-workspace` | Value-blind workspace planning and trusted-terminal setup transactions. |
 | `crates/phantom-authority` | Closed authority contracts; production verification remains deny-all. |
-| `crates/phantom-locus-contract` | Inactive compatibility requirements for a future Locus integration. |
 | `crates/phantom-broker` | Inactive broker protocol and durable replay/accounting foundations. |
 | `crates/phantom-runtime` | Closed engineering actions and deny-all production execution boundary. |
-| `crates/phantom-session` | Inactive crash-explicit session coordination foundation. |
-| `crates/phantom-evidence` | Inactive value-free evidence and receipt foundation. |
 | `npm`, `npm-mcp` | Native-binary download and launch wrappers. |
 | `apps/web` | Next.js application and Phantom Cloud API. |
 | `docs` | User guides, integration guides, static site assets, and the [documentation map](docs/README.md). |

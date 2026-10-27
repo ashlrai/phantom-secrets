@@ -108,7 +108,7 @@ test("release defaults and lockfiles are part of the exact version parity contra
       [join(repoRoot, "scripts/release/check-version-parity.mjs"), "v0.7.9"],
       { cwd: repoRoot, encoding: "utf8" }
     ).trim(),
-    "release version parity passed: 0.7.9 across 21 surfaces and 12 crates"
+    "release version parity passed: 0.7.9 across 21 surfaces and 9 crates"
   );
 });
 

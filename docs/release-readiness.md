@@ -200,16 +200,15 @@ application, consent screen, remote credential, renewal, or revoke operation.
 ## crates.io publication
 
 The canonical crates.io operator entrypoint is
-`scripts/publish-crates.sh`. It validates the closed twelve-crate workspace
+`scripts/publish-crates.sh`. It validates the closed nine-crate workspace
 against `cargo metadata`, requires one common SemVer version, and rejects a
 stale package list, a package not restricted to `publish = ["crates-io"]`, or
 a dependency-order violation before packaging. The
 publication tiers are:
 
 1. `phantom-secrets-authority` and `phantom-secrets-core`;
-2. `phantom-secrets-broker`, `phantom-secrets-evidence`,
-   `phantom-secrets-locus-contract`, `phantom-secrets-proxy`,
-   `phantom-secrets-session`, `phantom-secrets-vault`, and
+2. `phantom-secrets-broker`, `phantom-secrets-proxy`,
+   `phantom-secrets-vault`, and
    `phantom-secrets-workspace`;
 3. `phantom-secrets-runtime`;
 4. `phantom-secrets-mcp`; and

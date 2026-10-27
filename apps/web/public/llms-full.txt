@@ -513,7 +513,7 @@ OpenAI Codex:
 
 ## Architecture
 
-12-crate Rust workspace:
+9-crate Rust workspace:
 
 phantom-core
   Config (.phantom.toml), .env parsing/rewriting, persistent mapping generation (256-bit CSPRNG, phm_ prefix),
@@ -546,7 +546,7 @@ apps/web
   Vercel-targeted Next.js source. Supabase for database. Stripe for billing.
   Device auth API, vault sync API, billing webhooks.
 
-Authority, Locus-contract, broker, runtime, session, evidence, and workspace crates are fail-closed foundations. They do not activate production execution, issue live Locus authority, or prove an externally trusted receipt.
+Authority, broker, runtime, and workspace crates are fail-closed foundations. They do not activate production execution, issue live Locus authority, or prove an externally trusted receipt.
 
 Governed project and client-config effects resolve from retained directory
 capabilities. They reject outside-root and symlink/reparse traversal, require

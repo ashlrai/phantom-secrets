@@ -311,7 +311,7 @@ Phantom automatically identifies secrets vs config values using heuristics:
 - phantom-proxy: authenticated HTTP reverse proxy with fixed route-owned auth-header injection, inert client headers/bodies, bounded request acceptance, response scrubbing, and SSE/streaming response support
 - phantom-cli: clap CLI with agent readiness, proxy lifecycle, audit, import/export, sync, and team workflows
 - phantom-mcp: MCP server via rmcp SDK (stdio transport, 54 release-checked tools)
-- phantom-authority, phantom-locus-contract, phantom-broker, phantom-runtime, phantom-evidence, phantom-session, phantom-workspace: fail-closed authority, compatibility, lease, execution-denial, evidence, session, and setup foundations
+- phantom-authority, phantom-broker, phantom-runtime, phantom-workspace: fail-closed authority, lease, execution-denial, and setup foundations
 - apps/web: Vercel-targeted Next.js source (Supabase + Stripe, device auth,
   vault API, billing); repository presence is not deployment or commissioning
 

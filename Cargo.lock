@@ -2747,36 +2747,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "phantom-secrets-evidence"
-version = "0.7.9"
-dependencies = [
- "fs2",
- "hex",
- "hmac",
- "libc",
- "phantom-secrets-authority",
- "phantom-secrets-core",
- "rand 0.8.6",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "thiserror 2.0.18",
- "zeroize",
-]
-
-[[package]]
-name = "phantom-secrets-locus-contract"
-version = "0.7.9"
-dependencies = [
- "phantom-secrets-authority",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "thiserror 2.0.18",
-]
-
-[[package]]
 name = "phantom-secrets-mcp"
 version = "0.7.9"
 dependencies = [
@@ -2845,25 +2815,6 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
-]
-
-[[package]]
-name = "phantom-secrets-session"
-version = "0.7.9"
-dependencies = [
- "fs2",
- "hex",
- "hmac",
- "libc",
- "phantom-secrets-authority",
- "phantom-secrets-core",
- "rand 0.8.6",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "thiserror 2.0.18",
- "zeroize",
 ]
 
 [[package]]

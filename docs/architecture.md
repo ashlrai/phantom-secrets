@@ -35,7 +35,7 @@ provider-enabled, or accepted in a real customer workflow.
 | Agent interface | `phantom-mcp` | Stdio MCP tools that return value-free metadata. The small conversation facade is distinct from the advanced compatibility catalog and its legacy gates. |
 | Cloud application | `apps/web` | Next.js routes and UI for device authentication, encrypted cloud-vault storage, teams, and billing. Local source does not prove live deployment state. |
 | Setup kernel | `phantom-workspace` plus workspace-request code in `phantom-core` | Value-blind inspection, deterministic sealed plans, bearerless requests, and recoverable trusted-terminal apply on Unix. |
-| Inactive kernel | `phantom-authority`, `phantom-locus-contract`, `phantom-broker`, `phantom-runtime`, `phantom-session`, `phantom-evidence` | Closed, fail-closed foundations for a future governed execution path. They are not wired into one production system. |
+| Inactive kernel | `phantom-authority`, `phantom-broker`, `phantom-runtime` | Closed, fail-closed foundations for a future governed execution path. They are not wired into one production system. |
 
 ## System context and trust boundaries
 
@@ -288,11 +288,8 @@ path.
 | Crate | Implemented foundation | Why it remains inactive |
 |---|---|---|
 | `phantom-authority` | Closed actions, identifiers, constraints, narrowing, canonical local encoding, and opaque verified-grant type. | The only production verifier is deny-all; no Locus signature or grant is accepted. |
-| `phantom-locus-contract` | Value-free compatibility profiles and pinned candidate metadata. | Negotiation is caller-supplied metadata, not peer/source/signature verification. Audited candidate work is not one coherent compatible artifact. |
 | `phantom-broker` | Bounded protocol, lifecycle types, descriptor-owned Unix replay storage, use accounting, and non-cloneable execution permits. | Transport is deny-all; no verifier, credential resolver, proxy, or worker is connected. Valid old snapshots need an external monotonic rollback anchor. |
 | `phantom-runtime` | Closed Cargo actions, policy binding, revocation/cancellation contracts, and single-use runtime ownership. | Production handle minters do not exist and `DenyAllConfinement` is the production backend. The direct runner is test-only. |
-| `phantom-session` | Crash-explicit, value-free transition journal with immutable genesis and exact recovery semantics. | Its public production factory always refuses construction, and no subsystem consumes it. |
-| `phantom-evidence` | Closed events, bounded local HMAC chain, lifecycle validation, summaries, and receipt primitives. | Local integrity is not external trust; no trusted signer registry or end-to-end execution correlation is wired. |
 
 `phantom_do` exposes only a closed proposal for Cargo check, test, Clippy, or
 format-check actions. It returns the canonical digest, effect classification,
