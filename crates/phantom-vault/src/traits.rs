@@ -19,6 +19,24 @@ pub struct ValidationMetadataCas {
 
 /// Trait for secret storage backends.
 pub trait VaultBackend: Send + Sync {
+    /// Atomically generate a local value or restore its single retained predecessor.
+    /// Unsupported backends must fail closed. Rollback is trusted-terminal only.
+    fn rotate_generated(&self, name: &str, rollback: bool) -> Result<RotationReceipt> {
+        phantom_core::audit::operation(
+            if rollback {
+                "vault.local_rollback"
+            } else {
+                "vault.local_generate"
+            },
+            name,
+            || -> Result<RotationReceipt> {
+                Err(phantom_core::error::PhantomError::VaultError(
+                    "atomic local versioning requires the encrypted file vault".into(),
+                ))
+            },
+        )
+    }
+
     /// Store a secret value under a given name.
     fn store(&self, name: &str, value: &str) -> Result<()>;
 
@@ -251,4 +269,29 @@ pub(crate) fn ensure_secret_injectable(
         )));
     }
     Ok(())
+}
+
+/// Value-blind local rotation receipt. This does not assert provider revocation.
+#[derive(Debug, serde::Serialize, serde::Deserialize, PartialEq)]
+pub struct RotationReceipt {
+    pub name: String,
+    pub route: Option<String>,
+    pub rotated_at: u64,
+    pub version: u64,
+}
+
+/// Resolve exactly the entry a fresh exec uses, without reading a value.
+pub fn local_rotation_key(vault: &dyn VaultBackend, env: &str, name: &str) -> Result<String> {
+    phantom_core::env_scope::validate_env_name(env)?;
+    let names = vault.list()?;
+    let scoped = phantom_core::env_scope::namespaced_key(env, name);
+    if names.contains(&scoped) {
+        return Ok(scoped);
+    }
+    if env == phantom_core::env_scope::DEFAULT_ENV && names.iter().any(|key| key == name) {
+        return Ok(name.into());
+    }
+    Err(phantom_core::error::PhantomError::SecretNotFound(
+        name.into(),
+    ))
 }

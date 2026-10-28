@@ -36,6 +36,7 @@ pub fn run(
     value_arg: Option<String>,
     from_stdin: bool,
     lines: StdinLines,
+    generate: bool,
 ) -> Result<()> {
     if let Some(mut value) = value_arg {
         value.zeroize();
@@ -61,6 +62,13 @@ pub fn run(
     validate_managed_dotenv_preflight(&project_dir, &config)?;
     let vault = phantom_vault::try_create_vault(config.local_project_id())?;
     ensure_secret_absent(vault.as_ref(), config.local_project_id(), name)?;
+
+    if generate {
+        let receipt =
+            phantom_mcp::generate_secret(&project_dir, vault.as_ref(), &config_before, name)?;
+        println!("{}", serde_json::to_string(&receipt)?);
+        return Ok(());
+    }
 
     // Existing-name authority is resolved from value-blind vault metadata
     // before stdin or the hidden prompt is touched. A second check in
@@ -254,7 +262,17 @@ fn prepare_add_plan(
         phantom_core::managed_dotenv::resolve_dotenv(project_dir, &config, &vault_names)?;
     let env_path = resolved.path;
     let env_before = snapshot_regular_file(&env_path)?;
-    let env_after = rewrite_dotenv(env_before.as_deref(), name)?;
+    let request_token = config
+        .requests
+        .get(name)
+        .map(|request| request.placeholder.as_str());
+    let env_after = rewrite_dotenv_with_token(env_before.as_deref(), name, request_token)?;
+    let fulfilled_request = if let Some(request) = config.requests.get_mut(name) {
+        request.status = phantom_core::config::RequestStatus::Fulfilled;
+        true
+    } else {
+        false
+    };
     let before = snapshot_secret(vault, name)?;
     if before.is_some() {
         anyhow::bail!(
@@ -263,17 +281,18 @@ fn prepare_add_plan(
     }
 
     let mutation = InitSecret::replace_if_unchanged(name, None::<String>, value);
-    let config_after = if config.phantom.dotenv_path.is_none() && vault_names.is_empty() {
-        config.phantom.dotenv_path = Some(
-            phantom_core::managed_dotenv::dotenv_basename(project_dir, &env_path)
-                .context("Failed to persist the managed dotenv mapping")?,
-        );
-        toml::to_string_pretty(&config)
-            .context("Failed to serialize managed dotenv configuration")?
-            .into_bytes()
-    } else {
-        config_before.clone()
-    };
+    let config_after =
+        if fulfilled_request || (config.phantom.dotenv_path.is_none() && vault_names.is_empty()) {
+            config.phantom.dotenv_path = Some(
+                phantom_core::managed_dotenv::dotenv_basename(project_dir, &env_path)
+                    .context("Failed to persist the managed dotenv mapping")?,
+            );
+            toml::to_string_pretty(&config)
+                .context("Failed to serialize managed dotenv configuration")?
+                .into_bytes()
+        } else {
+            config_before.clone()
+        };
     // Even when no config field changes, the exact no-op replacement keeps
     // config identity/lifecycle policy inside the same transaction boundary.
     let mut files = vec![InitFile::replace_if_unchanged(
@@ -361,6 +380,14 @@ pub(super) fn snapshot_regular_file(path: &Path) -> Result<Option<Vec<u8>>> {
 }
 
 pub(super) fn rewrite_dotenv(before: Option<&[u8]>, name: &str) -> Result<Vec<u8>> {
+    rewrite_dotenv_with_token(before, name, None)
+}
+
+fn rewrite_dotenv_with_token(
+    before: Option<&[u8]>,
+    name: &str,
+    placeholder: Option<&str>,
+) -> Result<Vec<u8>> {
     let content = Zeroizing::new(match before {
         Some(bytes) => String::from_utf8(bytes.to_vec())
             .context("Managed dotenv is not valid UTF-8; refusing to rewrite it")?,
@@ -371,7 +398,22 @@ pub(super) fn rewrite_dotenv(before: Option<&[u8]>, name: &str) -> Result<Vec<u8
         .validate_for_mutation()
         .context("Managed dotenv is malformed; no vault, config, or file mutation was prepared")?;
     let mut tokens = TokenMap::new();
-    tokens.insert(name.to_string());
+    if let Some(placeholder) = placeholder {
+        if placeholder.len() != 68
+            || !placeholder.starts_with("phm_")
+            || !placeholder[4..]
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit())
+        {
+            anyhow::bail!("Invalid request placeholder; refusing fulfillment");
+        }
+        tokens.insert_with_token(
+            name.to_string(),
+            phantom_core::token::PhantomToken::parse(placeholder).unwrap(),
+        );
+    } else {
+        tokens.insert(name.to_string());
+    }
     let (rewritten, mut originals) = dotenv
         .upsert_with_phantoms(&tokens)
         .context("Managed dotenv cannot be rewritten safely")?;
@@ -705,6 +747,55 @@ mod tests {
             Err(PhantomError::SecretNotFound(_))
         ));
         assert_eq!(std::fs::read(&config_path).unwrap(), original_config);
+        assert!(!project.join(".env").exists());
+    }
+
+    #[test]
+    fn failed_request_fulfillment_preserves_pending_receipt_and_reserved_mapping() {
+        use phantom_core::config::{RequestStatus, SecretRequest};
+        let dir = TempDir::new().unwrap();
+        let (config_path, mut config, _, inner) = initialized(&dir);
+        config.requests.insert(
+            "API_KEY".to_owned(),
+            SecretRequest {
+                purpose: "FAKE rollback test".to_owned(),
+                route: None,
+                placeholder: phantom_core::token::PhantomToken::generate()
+                    .as_str()
+                    .to_owned(),
+                status: RequestStatus::Pending,
+            },
+        );
+        config.save(&config_path).unwrap();
+        let (config, before) = load_config_exact(&config_path).unwrap();
+        let project = dir.path().canonicalize().unwrap();
+        let original_config = before.clone();
+        let vault = AmbiguousCasVault {
+            inner,
+            calls: AtomicUsize::new(0),
+        };
+        // FAKE credential: constructed at runtime and never included in assertions.
+        let fake = format!("FAKE_{}", rand::random::<u128>());
+        let plan = prepare_add_plan(
+            &project,
+            &config_path,
+            config,
+            before,
+            &vault,
+            "API_KEY",
+            &fake,
+        )
+        .unwrap();
+        assert!(
+            phantom_vault::commit_init(&project, &vault, vec![plan.mutation], plan.files).is_err()
+        );
+        assert!(matches!(
+            vault.retrieve("API_KEY"),
+            Err(PhantomError::SecretNotFound(_))
+        ));
+        assert!(std::fs::read(&config_path).unwrap() == original_config);
+        let (config, _) = load_config_exact(&config_path).unwrap();
+        assert_eq!(config.requests["API_KEY"].status, RequestStatus::Pending);
         assert!(!project.join(".env").exists());
     }
 

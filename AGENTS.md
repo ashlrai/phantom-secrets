@@ -74,10 +74,10 @@ parameter names match the runtime JSON schema exactly.
 | `phantom_check` | Scan supported dotenv files, or every process variable with `runtime=true` | runtime |
 | `phantom_env` | Generate an env example file with secret placeholders | output (default `.env.example`), confirm, approval_token |
 | `phantom_sync` | Preview deployment-platform sync configuration (Vercel, Railway) | platform (optional), project_id (optional) |
-| `phantom_add_secret` | **Deprecated** — refuses plaintext via MCP. Use `phantom_add_secret_interactive` instead | name, confirm, approval_token |
+| `phantom_add_secret` | With `generate: true`, create a local 256-bit random secret and return only its name and SHA-256 fingerprint; still refuses plaintext via MCP. Use `phantom_add_secret_interactive` for provider-issued credentials | name, generate (optional), confirm, approval_token |
 | `phantom_add_secret_interactive` | Return `phantom add NAME`, a trusted-terminal command that prompts for the value outside MCP. Effect-free: no approval or `PHANTOM_MCP_EFFECTS` needed | name, confirm (optional, ignored) |
 | `phantom_remove_secret` | Transactionally remove the vault value, lifecycle config, and exact managed-dotenv mapping | name, confirm, approval_token |
-| `phantom_rotate` | Regenerate all persistent `phm_` mappings. Old mappings become invalid | confirm, approval_token |
+| `phantom_rotate` | Regenerate all persistent `phm_` mappings; with `generate: true` plus `name`, atomically replace one local value in the encrypted file vault (no provider issuance; rollback is trusted-terminal CLI only) | name (optional), generate (optional), confirm, approval_token |
 | `phantom_copy_secret` | Copy into a distinct initialized target transaction; creates the vault entry and managed-dotenv mapping and refuses every existing target owner | name, target_dir, rename (optional), confirm, approval_token |
 | `phantom_wrap` | Wrap selected `package.json` scripts with `phantom exec` | only, skip, confirm, approval_token |
 | `phantom_unwrap` | Restore wrapped `package.json` scripts from their `:raw` variants | confirm, approval_token |

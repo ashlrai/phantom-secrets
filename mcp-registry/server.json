@@ -13,7 +13,7 @@
   "tools": [
     {
       "name": "phantom_add_secret",
-      "description": "Deprecated unsafe plaintext secret entry. This tool refuses values because MCP arguments enter agent context. Use phantom_add_secret_interactive instead (no approval needed). Retained for compatibility: still requires `confirm: true` plus a one-use out-of-band `approval_token` (the operator enables effects with PHANTOM_MCP_EFFECTS=trusted-terminal; a call without the token prints a nonce on the server's stderr for `phantom mcp-approve <NONCE>` in a trusted terminal), and never stores anything.",
+      "description": "Create a new locally generated 256-bit random secret with generate=true. Returns only the key name and SHA-256 fingerprint; never accepts or returns plaintext values or mappings. Existing names are refused. Requires confirm=true and a one-use out-of-band approval_token with operator-enabled PHANTOM_MCP_EFFECTS=trusted-terminal. With generate=false (default), this compatibility tool refuses plaintext entry; use phantom_add_secret_interactive for existing provider credentials. Generated secrets are local application secrets, not provider-issued API keys.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
@@ -29,6 +29,11 @@
           "confirm": {
             "default": false,
             "description": "Required. Must be true — the calling agent must confirm with the user\nbefore invoking this tool. Defends against prompt-injected instructions\nin project content (READMEs, issue comments, dependency docs) silently\nmutating the vault.",
+            "type": "boolean"
+          },
+          "generate": {
+            "default": false,
+            "description": "Generate a new 256-bit random secret locally. No value is accepted or returned.",
             "type": "boolean"
           },
           "name": {
@@ -946,7 +951,7 @@
     },
     {
       "name": "phantom_rotate",
-      "description": "Regenerate all phantom tokens in .env. Old tokens become invalid — any running `phantom exec` / dev server that cached them will break until it picks up the new .env. Real secrets in the vault are unchanged. DESTRUCTIVE; requires `confirm: true` plus a one-use out-of-band `approval_token` (the operator enables effects with PHANTOM_MCP_EFFECTS=trusted-terminal; a call without the token prints a nonce on the server's stderr for `phantom mcp-approve <NONCE>` in a trusted terminal); the agent must ask the user for explicit consent before calling.",
+      "description": "With generate=true and name, atomically replace a local value with OS randomness in the encrypted file vault, preserving the placeholder and returning only name, route, rotated_at, version. This does not issue or revoke provider credentials; running sessions retain cached values. Rollback is trusted-terminal CLI only. Without generate/name, regenerate all phantom tokens in .env. Old tokens become invalid — any running `phantom exec` / dev server that cached them will break until it picks up the new .env. Real secrets in the vault are unchanged. DESTRUCTIVE; requires `confirm: true` plus a one-use out-of-band `approval_token` (the operator enables effects with PHANTOM_MCP_EFFECTS=trusted-terminal; a call without the token prints a nonce on the server's stderr for `phantom mcp-approve <NONCE>` in a trusted terminal); the agent must ask the user for explicit consent before calling.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
@@ -960,8 +965,21 @@
           },
           "confirm": {
             "default": false,
-            "description": "Required. Must be true — the calling agent must confirm with the user\nbefore invoking this tool. Rotating invalidates every live phantom token\nand will break any process that cached the old tokens (e.g. a running\n`phantom exec` or dev server) until it picks up the new .env.",
+            "description": "Required. Must be true — the calling agent must confirm with the user.\nLegacy mode remaps persistent placeholders; generation replaces only\nthe named local value and leaves placeholders unchanged.",
             "type": "boolean"
+          },
+          "generate": {
+            "default": false,
+            "description": "Generate a local random value; requires name. No provider issuance or revocation.",
+            "type": "boolean"
+          },
+          "name": {
+            "default": null,
+            "description": "Secret name for local generation; omitted for legacy placeholder remapping.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "type": "object"
