@@ -34,10 +34,9 @@ pub fn run(
     let passphrase = export_cmd::acquire_passphrase(passphrase_file, PassphrasePurpose::Import)?;
     let source = read_import_source(Path::new(file), "encrypted backup")?;
 
-    let decrypted = Zeroizing::new(
-        phantom_vault::crypto::decrypt(&source.bytes, passphrase.as_str())
-            .context("Failed to decrypt import file — wrong passphrase or corrupt data")?,
-    );
+    // `decrypt` returns a Zeroizing buffer, scrubbed on drop.
+    let decrypted = phantom_vault::crypto::decrypt(&source.bytes, passphrase.as_str())
+        .context("Failed to decrypt import file — wrong passphrase or corrupt data")?;
 
     let secrets = ImportedSecrets::parse(&decrypted)
         .context("Failed to parse import data — file may be corrupt")?;
