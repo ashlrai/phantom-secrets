@@ -779,6 +779,14 @@ enum ValidateAction {
 enum McpAction {
     /// Run the MCP stdio server in-process (used by AI clients like Claude Code)
     Serve,
+    /// Launch a configured stdio MCP server with protected session credentials
+    Run {
+        /// Server name in the config's mcpServers object
+        name: String,
+        /// JSON MCP configuration (relative to the current project directory)
+        #[arg(long, default_value = ".mcp.json")]
+        config: std::path::PathBuf,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1203,6 +1211,9 @@ fn apply_global_json(command: &mut Commands) -> Result<(), &'static str> {
         Commands::Mcp {
             action: McpAction::Serve,
         } => Err("phantom mcp serve"),
+        Commands::Mcp {
+            action: McpAction::Run { .. },
+        } => Err("phantom mcp run"),
         Commands::McpApprove { .. } => Err("phantom mcp-approve"),
         Commands::Exec { .. } => Err("phantom exec"),
         Commands::Start { .. } => Err("phantom start"),
@@ -1645,6 +1656,7 @@ fn run() -> anyhow::Result<()> {
         },
         Commands::Mcp { action } => match action {
             McpAction::Serve => commands::mcp::run_serve(),
+            McpAction::Run { name, config } => commands::mcp::run(&name, &config),
         },
         Commands::McpApprove { nonce } => commands::mcp_approve::run(&nonce),
         Commands::Workspace { action } => match action {
