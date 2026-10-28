@@ -447,6 +447,7 @@ dashboard is designed to show team memberships and member lists.
 | `phantom workspace status --request <ID> [--json]` | Read authenticated, value-free request state |
 | `phantom vault migrate-linux` | From an attached trusted terminal on a headed Linux desktop, copy and exactly verify this project's keyutils credentials in Secret Service, retain the source entries, and publish the private backend marker last |
 | `phantom check` | Scan for unprotected secrets (pre-commit hook, `--staged`, `--runtime`) |
+| `phantom redact --stream` | Scrub known credential shapes from stdin to stdout, flushing each line; no vault access. Rejects lines over 1 MiB; shape detection cannot cover arbitrary or encoded secrets. |
 | `phantom sync` | Push secrets to Vercel / Railway (`--dry-run --json` previews safely; `--only PATTERN` filters by glob, repeatable) |
 | `phantom pull` | Pull secrets from Vercel / Railway into vault |
 | `phantom setup` | Wire Phantom into an AI client. `--client claude` (default), `cursor`, `windsurf`, `codex`, or `gemini`. Add `--print` to emit the config snippet to stdout. `--status` is read-only: it reports which clients have Phantom wired (`--json` for automation) |
@@ -485,6 +486,22 @@ dashboard is designed to show team memberships and member lists.
 Omitting `--scope` lists all environments. `--scope default` includes both
 legacy bare names and `default/` names. An unknown valid scope returns an empty
 list; the active `.phantom/env` selector is never changed.
+
+## Scrubbing run logs
+
+Pipe both output streams through the redactor before saving or forwarding logs:
+
+```bash
+set -o pipefail
+your-command 2>&1 | phantom redact --stream > run.log
+```
+
+Known provider tokens become `[REDACTED]`. Each complete line is flushed
+immediately; a partial line waits for its newline or EOF so tokens split across
+pipe writes remain protected. Non-UTF-8 bytes and line endings are preserved.
+An input error or a line exceeding 1 MiB stops the stream with a nonzero exit
+without forwarding that line. This detects token shapes, not arbitrary secrets,
+encoded credentials, or multiline private keys. It does not rotate leaked keys.
 
 ## Rotating real provider credentials
 

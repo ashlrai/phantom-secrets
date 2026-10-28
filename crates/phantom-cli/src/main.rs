@@ -35,7 +35,7 @@ use tracing_subscriber::EnvFilter;
                     phantom exec -- <command>     run your app or agent through the local proxy\n\n\
                   Commands by task:\n  \
                     Setup         init · agent · setup · doctor · workspace · vault · completion · mcp · mcp-approve\n  \
-                    Daily use     exec · start · stop · status · check · list · add · remove · reveal · copy · env · why · git-credential\n  \
+                    Daily use     exec · start · stop · status · check · redact · list · add · remove · reveal · copy · env · why · git-credential\n  \
                     Sync & teams  login · logout · cloud · team · sync · pull · export · import · wrap · unwrap\n  \
                     Maintenance   upgrade · watch · rotate · grant · validate · expiry · secrets-expiring-soon · open · audit · leaks · crypto",
     version
@@ -273,6 +273,14 @@ enum Commands {
         /// Emit a names-only JSON report on stdout (exit status unchanged)
         #[arg(long)]
         json: bool,
+    },
+
+    /// Scrub known credential shapes from stdin to stdout (no vault access)
+    #[command(next_help_heading = "Daily use")]
+    Redact {
+        /// Flush each sanitized line; reject lines over 1 MiB. Does not detect arbitrary or encoded secrets
+        #[arg(long, required = true)]
+        stream: bool,
     },
 
     /// List stored secret names (never shows values)
@@ -1259,6 +1267,7 @@ fn apply_global_json(command: &mut Commands) -> Result<(), &'static str> {
         Commands::Import { .. } => Err("phantom import"),
         Commands::Wrap { .. } => Err("phantom wrap"),
         Commands::Unwrap => Err("phantom unwrap"),
+        Commands::Redact { .. } => Err("phantom redact"),
         Commands::Upgrade { .. } => Err("phantom upgrade"),
         Commands::Watch { .. } => Err("phantom watch"),
         Commands::Open { .. } => Err("phantom open"),
@@ -1561,6 +1570,7 @@ fn run() -> anyhow::Result<()> {
         Commands::Why { key, strict } => commands::why::run(&key, global_json, strict),
         Commands::Wrap { only, skip } => commands::wrap::run(&only, &skip, cli.quiet),
         Commands::Unwrap => commands::unwrap::run(cli.quiet),
+        Commands::Redact { .. } => commands::redact::run(),
         Commands::Copy {
             name,
             to,
@@ -1908,7 +1918,10 @@ mod help_tests {
                 if let Some(long) = arg.get_long() {
                     argv.push(format!("--{long}"));
                 }
-                argv.push(value);
+                // Required switches such as `redact --stream` have no value.
+                if arg.get_action().takes_values() {
+                    argv.push(value);
+                }
             }
             argv
         }
