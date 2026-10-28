@@ -44,7 +44,6 @@ use the matching [release asset](#exact-v079-github-assets). Then run
 `phantom init` in your project and `phantom setup --client claude` (or
 `cursor`, `windsurf`, `codex`). Full walkthrough: [Quick Start](#quick-start).
 
-> **▶ [Historical v0.4 demo — current behavior differs](https://github.com/ashlrai/phantom-secrets/releases/download/v0.4.0/phantom-demo.mp4)** &nbsp;·&nbsp;
 > **🛡 [Security model](SECURITY.md)** &nbsp;·&nbsp;
 > **📋 [Threat model](THREAT_MODEL.md)** &nbsp;·&nbsp;
 > **💬 [Discussions](https://github.com/ashlrai/phantom-secrets/discussions)**
