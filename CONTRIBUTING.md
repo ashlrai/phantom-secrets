@@ -106,6 +106,16 @@ run through `cargo nextest` on the touched crates and their dependents. Secret
 scanning and the Rust dependency policy always run. The single `CI Gate` job
 fails if any selected job did not succeed. Pushes to `main` run everything.
 
+The daily full-suite run keeps its complete cross-OS coverage but also gets an
+off-peak slot: `scripts/ci/daily-matrix.mjs` computes the affected-only OS
+matrix for `Test (${{ matrix.os }})` from a diff (per-leg `cfg` routing, failing
+closed to all three legs) and emits the additive off-peak cron from
+`scripts/ci/offpeak-schedule.json`. Check names are unchanged — the tool only
+ever emits the same `macos-latest`/`ubuntu-latest`/`windows-latest` labels. See
+[scripts/ci/daily-matrix.md](scripts/ci/daily-matrix.md) for rules and the
+workflow wiring, and run its suite with
+`node --test scripts/ci/daily-matrix.test.mjs`.
+
 Run additional checks for the surface you changed:
 
 ```bash
