@@ -221,6 +221,10 @@ pub fn log(op: &str, name: Option<&str>) {
 /// Most legacy call sites should continue using [`log`]. Security-sensitive
 /// operations that must fail closed can call this function directly.
 pub fn log_result(op: &str, name: Option<&str>) -> std::io::Result<()> {
+    if agent_audit_required() {
+        admit_engine()?;
+        return write_event(op, name, true);
+    }
     match mode() {
         AuditMode::Disabled => Ok(()),
         AuditMode::BestEffort => {
@@ -453,11 +457,192 @@ pub fn verify_log() -> std::io::Result<VerifyReport> {
     verify_log_content(&content, key.as_deref(), &path)
 }
 
+/// Stream a consistent JSONL snapshot without following symlinks. The shared
+/// lock prevents observing a partial append. Markers are not usage records.
+pub fn query_jsonl(since: Option<u64>, out: &mut dyn Write) -> std::io::Result<usize> {
+    use std::io::{BufRead, BufReader};
+    let path = log_path()?;
+    if !log_present(&path)? {
+        return Ok(0);
+    }
+    let _lock = acquire_log_lock_shared(&path)?;
+    let mut count = 0;
+    for line in BufReader::new(open_regular_for_read(&path)?).lines() {
+        let line = line?;
+        let event: serde_json::Value = serde_json::from_str(&line).map_err(|_| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, "malformed audit record")
+        })?;
+        let Some(ts) = event.get("ts").and_then(serde_json::Value::as_u64) else {
+            continue;
+        };
+        if since.is_some_and(|since| ts < since) {
+            continue;
+        }
+        writeln!(out, "{line}")?;
+        count += 1;
+    }
+    Ok(count)
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // Internal — writing
 // ──────────────────────────────────────────────────────────────────────────────
 
 fn write_event(op: &str, name: Option<&str>, required: bool) -> std::io::Result<()> {
+    write_usage_event(op, name, required, None)
+}
+
+/// Value-blind usage metadata. Route identifiers must come from reviewed route
+/// definitions, never request paths, headers, bodies, or upstream errors.
+#[derive(Clone, Serialize)]
+struct UsageContext {
+    pub actor: String,
+    pub route: String,
+    pub host: String,
+    pub outcome: String,
+}
+
+/// Agent entry points select a process-wide, value-free attribution source.
+/// This only strengthens auditing; it cannot enable credential effects.
+#[derive(Clone, Copy)]
+pub enum AgentSource {
+    Exec = 1,
+    Mcp = 2,
+}
+static AGENT_SOURCE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+pub fn enable_agent_audit(source: AgentSource) {
+    AGENT_SOURCE.store(source as u8, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn agent_audit_required() -> bool {
+    AGENT_SOURCE.load(std::sync::atomic::Ordering::Relaxed) != 0
+        || std::env::var_os("PHANTOM_ENGINE_ID").is_some()
+}
+
+/// Admit an explicitly identified engine before any credential access. Unknown
+/// identifiers are retained as SHA-256 fingerprints: arbitrary environment text
+/// must never become a channel for copying credential bytes into the log.
+/// This label is attribution, not authentication or a replacement for consent.
+pub fn admit_engine() -> std::io::Result<()> {
+    admit_engine_context(None, "", "")
+}
+
+fn admit_engine_context(name: Option<&str>, route: &str, host: &str) -> std::io::Result<()> {
+    let Some(engine) = std::env::var_os("PHANTOM_ENGINE_ID") else {
+        return Ok(());
+    };
+    if matches!(
+        engine.to_str(),
+        Some("codex" | "claude" | "cursor" | "windsurf" | "gemini" | "copilot" | "exec" | "mcp")
+    ) {
+        return Ok(());
+    }
+    let actor = format!(
+        "unknown:sha256:{:x}",
+        Sha256::digest(engine.as_encoded_bytes())
+    );
+    write_usage_event(
+        "engine.refused",
+        name,
+        true,
+        Some(UsageContext {
+            actor,
+            route: route.into(),
+            host: host.into(),
+            outcome: "refused".into(),
+        }),
+    )?;
+    Err(std::io::Error::new(
+        std::io::ErrorKind::PermissionDenied,
+        "unknown Phantom engine identifier",
+    ))
+}
+
+fn usage_actor() -> String {
+    match std::env::var("PHANTOM_ENGINE_ID").ok().as_deref() {
+        Some(
+            id @ ("codex" | "claude" | "cursor" | "windsurf" | "gemini" | "copilot" | "exec"
+            | "mcp"),
+        ) => id.into(),
+        _ => match AGENT_SOURCE.load(std::sync::atomic::Ordering::Relaxed) {
+            1 => "exec",
+            2 => "mcp",
+            _ => "phantom",
+        }
+        .into(),
+    }
+}
+
+/// Audit a credential operation without accepting its arguments or error text.
+/// Identified engines must durably record admission before touching credentials.
+/// The terminal record distinguishes operation failure from successful access.
+/// A failed post-write append may report an error after a mutation committed;
+/// callers must reconcile state rather than blindly retrying a creation.
+pub fn operation<T, E: From<std::io::Error>>(
+    op: &str,
+    name: &str,
+    action: impl FnOnce() -> Result<T, E>,
+) -> Result<T, E> {
+    operation_batch(op, &[name], action, E::from)
+}
+
+/// The batch variant records each secret separately around one atomic remap.
+pub fn operation_batch<T, E, N: AsRef<str>>(
+    op: &str,
+    names: &[N],
+    action: impl FnOnce() -> Result<T, E>,
+    audit_error: impl Fn(std::io::Error) -> E,
+) -> Result<T, E> {
+    admit_engine_context(names.first().map(AsRef::as_ref), "", "").map_err(&audit_error)?;
+    let identified = agent_audit_required() || mode() == AuditMode::Required;
+    let record = |outcome: &str| -> std::io::Result<()> {
+        for name in names {
+            let usage = Some(UsageContext {
+                actor: usage_actor(),
+                route: String::new(),
+                host: String::new(),
+                outcome: outcome.into(),
+            });
+            if identified || mode() == AuditMode::Required {
+                write_usage_event(op, Some(name.as_ref()), true, usage)?;
+            } else if enabled() {
+                let _ = write_usage_event(op, Some(name.as_ref()), false, usage);
+            }
+        }
+        Ok(())
+    };
+    if identified {
+        record("attempted").map_err(&audit_error)?;
+    }
+    let result = action();
+    record(if result.is_ok() { "success" } else { "failure" }).map_err(audit_error)?;
+    result
+}
+
+/// Record route admission before the request carrying a credential is sent.
+/// The outcome describes injection admission, not upstream HTTP success.
+pub fn log_route_use(name: &str, route: &str, host: &str) -> std::io::Result<()> {
+    admit_engine_context(Some(name), route, host)?;
+    write_usage_event(
+        "proxy.use",
+        Some(name),
+        true,
+        Some(UsageContext {
+            actor: usage_actor(),
+            route: route.into(),
+            host: host.into(),
+            outcome: "admitted".into(),
+        }),
+    )
+}
+
+fn write_usage_event(
+    op: &str,
+    name: Option<&str>,
+    required: bool,
+    usage: Option<UsageContext>,
+) -> std::io::Result<()> {
     let path = log_path()?;
     crate::fs::ensure_private_dir(parent_dir(&path))?;
 
@@ -495,6 +680,12 @@ fn write_event(op: &str, name: Option<&str>, required: bool) -> std::io::Result<
     };
 
     let event = AuditEvent {
+        usage: Some(usage.unwrap_or_else(|| UsageContext {
+            actor: usage_actor(),
+            route: String::new(),
+            host: String::new(),
+            outcome: "success".into(),
+        })),
         seq,
         ts: now_unix(),
         op: op.to_string(),
@@ -977,6 +1168,12 @@ fn compute_hmac_for_event(event: &AuditEvent, key: &[u8]) -> String {
         map.insert("encrypted_context", ec.clone());
     }
 
+    if let Some(usage) = &event.usage {
+        map.insert("actor", usage.actor.clone());
+        map.insert("route", usage.route.clone());
+        map.insert("host", usage.host.clone());
+        map.insert("outcome", usage.outcome.clone());
+    }
     let canonical = serde_json::to_string(&map).expect("BTreeMap serialization is infallible");
     hmac_sha256(key, canonical.as_bytes())
 }
@@ -994,6 +1191,10 @@ fn compute_hmac_for_line(v: &serde_json::Value, key: &[u8]) -> String {
         "ts",
         "name",
         "encrypted_context",
+        "actor",
+        "route",
+        "host",
+        "outcome",
     ] {
         if let Some(val) = v.get(field) {
             let s = match val {
@@ -1071,6 +1272,8 @@ fn read_head(log_path: &Path, key: &[u8]) -> std::io::Result<Option<AuditHead>> 
 
 #[derive(Serialize)]
 struct AuditEvent {
+    #[serde(flatten, skip_serializing_if = "Option::is_none")]
+    usage: Option<UsageContext>,
     seq: u64,
     ts: u64,
     op: String,
@@ -2357,6 +2560,94 @@ mod tests {
         }
     }
 
+    #[test]
+    fn usage_query_filters_inclusively_and_excludes_markers() {
+        with_audit_env(|_| {
+            log_result("vault.store", Some("QUERY_KEY")).unwrap();
+            let mut all = Vec::new();
+            assert_eq!(query_jsonl(None, &mut all).unwrap(), 1);
+            let event: Value = serde_json::from_slice(&all).unwrap();
+            let ts = event["ts"].as_u64().unwrap();
+            let mut selected = Vec::new();
+            assert_eq!(query_jsonl(Some(ts), &mut selected).unwrap(), 1);
+            assert_eq!(selected, all);
+            assert_eq!(query_jsonl(Some(ts + 1), &mut Vec::new()).unwrap(), 0);
+            assert_eq!(event["actor"], "phantom");
+            assert_eq!(event["outcome"], "success");
+        });
+    }
+
+    #[test]
+    fn usage_query_empty_home_creates_no_state() {
+        with_audit_env(|home| {
+            assert_eq!(query_jsonl(None, &mut Vec::new()).unwrap(), 0);
+            assert!(!home.join(".phantom").exists());
+        });
+    }
+
+    #[test]
+    fn usage_metadata_is_covered_by_chain_signature() {
+        for field in ["actor", "route", "host", "outcome"] {
+            with_audit_env(|home| {
+                log_route_use("SIGNATURE_KEY", "openai", "api.openai.com").unwrap();
+                assert!(verify_log().unwrap().is_clean());
+                let path = home.join(".phantom/audit.log");
+                let text = std::fs::read_to_string(&path).unwrap();
+                let changed: Vec<String> = text
+                    .lines()
+                    .map(|line| {
+                        let mut event: Value = serde_json::from_str(line).unwrap();
+                        if event.get("op").is_some() {
+                            event[field] = "changed".into();
+                        }
+                        serde_json::to_string(&event).unwrap()
+                    })
+                    .collect();
+                std::fs::write(&path, format!("{}\n", changed.join("\n"))).unwrap();
+                assert!(!verify_log().unwrap().is_clean());
+            });
+        }
+    }
+
+    #[test]
+    fn usage_operation_failure_never_serializes_error_text() {
+        with_audit_env(|_| {
+            let result: std::io::Result<()> = operation("vault.retrieve", "FAILURE_KEY", || {
+                Err(std::io::Error::other("synthetic-sensitive-error-payload"))
+            });
+            assert!(result.is_err());
+            let mut output = Vec::new();
+            assert_eq!(query_jsonl(None, &mut output).unwrap(), 1);
+            assert!(!String::from_utf8_lossy(&output).contains("synthetic-sensitive-error-payload"));
+            let event: Value = serde_json::from_slice(&output).unwrap();
+            assert_eq!(event["outcome"], "failure");
+            assert!(verify_log().unwrap().is_clean());
+        });
+    }
+
+    #[test]
+    fn usage_batch_records_each_rotation_name_once() {
+        with_audit_env(|_| {
+            operation_batch(
+                "secret.token_remapped",
+                &["FIRST_KEY", "SECOND_KEY"],
+                || Ok::<_, std::io::Error>(()),
+                |e| e,
+            )
+            .unwrap();
+            let mut output = Vec::new();
+            assert_eq!(query_jsonl(None, &mut output).unwrap(), 2);
+            let events: Vec<Value> = String::from_utf8(output)
+                .unwrap()
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect();
+            assert_eq!(events[0]["name"], "FIRST_KEY");
+            assert_eq!(events[1]["name"], "SECOND_KEY");
+            assert!(events.iter().all(|v| v["outcome"] == "success"));
+        });
+    }
+
     // ── existing tests (must still pass) ────────────────────────────────────
 
     #[test]
@@ -2532,6 +2823,7 @@ mod tests {
     #[test]
     fn schema_has_no_value_field() {
         let event = AuditEvent {
+            usage: None,
             seq: 1,
             ts: 0,
             op: "vault.store".to_string(),
@@ -3931,6 +4223,7 @@ mod tests {
             assert!(verify_log_with_context().is_err());
             assert!(detect_hotspot_alerts_at(now_unix()).is_err());
             assert!(read_recent_lines(&log_p, 4096).is_err());
+            assert!(query_jsonl(None, &mut Vec::new()).is_err());
         });
     }
 

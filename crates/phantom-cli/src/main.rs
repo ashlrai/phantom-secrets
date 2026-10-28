@@ -35,7 +35,7 @@ use tracing_subscriber::EnvFilter;
                     phantom exec -- <command>     run your app or agent through the local proxy\n\n\
                   Commands by task:\n  \
                     Setup         init · agent · setup · doctor · workspace · vault · completion · mcp · mcp-approve\n  \
-                    Daily use     exec · start · stop · status · check · list · add · remove · reveal · copy · env · why · git-credential\n  \
+                    Daily use     exec · start · stop · status · check · list · request · requests · add · remove · reveal · copy · env · why · git-credential\n  \
                     Sync & teams  login · logout · cloud · team · sync · pull · export · import · wrap · unwrap\n  \
                     Maintenance   upgrade · watch · rotate · grant · validate · expiry · secrets-expiring-soon · open · audit · leaks · crypto",
     version
@@ -290,6 +290,24 @@ enum Commands {
         min_anomaly_score: Option<u8>,
     },
 
+    /// Reserve a value-free secret request; fulfill outside the agent with phantom add
+    #[command(next_help_heading = "Daily use")]
+    Request {
+        name: String,
+        /// Non-secret explanation of the need (never put credentials here)
+        #[arg(long)]
+        purpose: String,
+        /// Built-in route name for this key; a hint only, never activates a route
+        #[arg(long)]
+        route: Option<String>,
+    },
+    /// List value-free request status without opening the vault
+    #[command(next_help_heading = "Daily use")]
+    Requests {
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Create a new secret name transactionally; existing names are never replaced
     #[command(next_help_heading = "Daily use")]
     Add {
@@ -301,6 +319,9 @@ enum Commands {
         /// Read one new-name value from a pipe up to EOF (64 KiB cap); input with more than one line needs --multiline or --first-line; existing names are denied before the read
         #[arg(long)]
         stdin: bool,
+        /// Generate a 256-bit random secret locally; print only name and SHA-256 fingerprint
+        #[arg(long, conflicts_with_all = ["stdin", "value", "multiline", "first_line"])]
+        generate: bool,
         /// With --stdin: store every line of multi-line input (PEM keys, JSON documents)
         #[arg(long, requires = "stdin", conflicts_with = "first_line")]
         multiline: bool,
@@ -543,9 +564,19 @@ enum Commands {
         auto_rotate: bool,
     },
 
-    /// Regenerate all phantom tokens after an exact attached-terminal challenge
+    /// Remap placeholders, generate a named local value, or restore its predecessor.
+    /// Local mutations require exact attached-terminal consent.
     #[command(next_help_heading = "Maintenance")]
     Rotate {
+        /// Secret to replace locally (does not issue or revoke provider credentials).
+        #[arg(value_name = "NAME", requires = "generate")]
+        target: Option<String>,
+        /// Generate a random local value while preserving the managed placeholder.
+        #[arg(long, conflicts_with_all = ["sync", "with_expiry", "shadow", "schedule_strategy", "provider", "batch", "name", "rollback"])]
+        generate: bool,
+        /// Restore the single retained local predecessor; trusted terminal only.
+        #[arg(long, requires = "name", conflicts_with_all = ["sync", "with_expiry", "shadow", "schedule_strategy", "provider", "batch"])]
+        rollback: bool,
         /// Sync a newly provider-rotated credential. Rejected for a local-only
         /// Phantom token remap because the provider credential is unchanged.
         #[arg(long)]
@@ -625,11 +656,14 @@ enum Commands {
         action: LeaksAction,
     },
 
-    /// View the opt-in audit log (requires PHANTOM_AUDIT=1 to start logging)
+    /// Query agent usage as JSONL, or inspect and verify the audit log
     #[command(next_help_heading = "Maintenance")]
     Audit {
         #[command(subcommand)]
-        action: AuditAction,
+        action: Option<AuditAction>,
+        /// Include events at or after this UNIX timestamp (default query only).
+        #[arg(long, value_name = "UNIX_SECONDS")]
+        since: Option<u64>,
     },
 
     /// Cryptography inventory: algorithms and format tags Phantom uses
@@ -1096,6 +1130,7 @@ impl std::error::Error for UsageError {}
 fn apply_global_json(command: &mut Commands) -> Result<(), &'static str> {
     use commands::audit::AuditAction as A;
     match command {
+        Commands::Audit { action: None, .. } => Ok(()),
         // Commands that read the global flag themselves.
         Commands::Status { .. }
         | Commands::Sync { .. }
@@ -1112,7 +1147,8 @@ fn apply_global_json(command: &mut Commands) -> Result<(), &'static str> {
             action: CryptoAction::Inventory { .. },
         }
         | Commands::Audit {
-            action: A::Verify { .. },
+            action: Some(A::Verify { .. }),
+            ..
         }
         | Commands::Setup { status: true, .. }
         | Commands::Grant { .. }
@@ -1121,12 +1157,18 @@ fn apply_global_json(command: &mut Commands) -> Result<(), &'static str> {
         } => Ok(()),
         Commands::Rotate {
             batch,
+            generate,
+            rollback,
             shadow,
             provider,
             name,
             ..
         } => {
-            if *batch || (!*shadow && (provider.is_some() || name.is_some())) {
+            if *generate
+                || *rollback
+                || *batch
+                || (!*shadow && (provider.is_some() || name.is_some()))
+            {
                 Ok(())
             } else {
                 Err("phantom rotate (without --batch or --name)")
@@ -1143,6 +1185,7 @@ fn apply_global_json(command: &mut Commands) -> Result<(), &'static str> {
         }
         // Commands with their own `--json` flag.
         Commands::List { json, .. }
+        | Commands::Requests { json }
         | Commands::Agent {
             action: AgentAction::Status { json },
         }
@@ -1158,33 +1201,44 @@ fn apply_global_json(command: &mut Commands) -> Result<(), &'static str> {
         }
         | Commands::Audit {
             action:
-                A::Show { json, .. }
-                | A::Stats { json, .. }
-                | A::Anomalies { json, .. }
-                | A::Incidents { json, .. }
-                | A::Alerts { json, .. },
+                Some(
+                    A::Show { json, .. }
+                    | A::Stats { json, .. }
+                    | A::Anomalies { json, .. }
+                    | A::Incidents { json, .. }
+                    | A::Alerts { json, .. },
+                ),
+            ..
         } => {
             *json = true;
             Ok(())
         }
         // Audit exports whose output is JSON unless another format is chosen.
         Commands::Audit {
-            action: A::Export { format, .. },
+            action: Some(A::Export { format, .. }),
+            ..
         } => json_format(format, "phantom audit export --format csv"),
         Commands::Audit {
-            action: A::Analytics { format, .. },
+            action: Some(A::Analytics { format, .. }),
+            ..
         } => json_format(format, "phantom audit analytics --format csv"),
         Commands::Audit {
-            action: A::ExportRange { format, .. },
+            action: Some(A::ExportRange { format, .. }),
+            ..
         } => json_format(format, "phantom audit export-range --format csv"),
         Commands::Audit {
-            action: A::Report { .. },
+            action: Some(A::Report { .. }),
+            ..
         } => Ok(()),
         // Commands with no JSON output.
         Commands::Audit {
-            action: A::Tail { .. },
+            action: Some(A::Tail { .. }),
+            ..
         } => Err("phantom audit tail"),
-        Commands::Audit { action: A::Path } => Err("phantom audit path"),
+        Commands::Audit {
+            action: Some(A::Path),
+            ..
+        } => Err("phantom audit path"),
         Commands::Agent {
             action: AgentAction::Setup { .. },
         } => Err("phantom agent setup"),
@@ -1207,6 +1261,7 @@ fn apply_global_json(command: &mut Commands) -> Result<(), &'static str> {
         Commands::Exec { .. } => Err("phantom exec"),
         Commands::Start { .. } => Err("phantom start"),
         Commands::Stop => Err("phantom stop"),
+        Commands::Request { .. } => Err("phantom request"),
         Commands::Add { .. } => Err("phantom add"),
         Commands::Remove { .. } => Err("phantom remove"),
         Commands::Reveal { .. } => Err("phantom reveal"),
@@ -1317,12 +1372,19 @@ fn run() -> anyhow::Result<()> {
             show_expiry,
             min_anomaly_score,
         } => commands::list::run_with_expiry(json, show_expiry, min_anomaly_score),
+        Commands::Request {
+            name,
+            purpose,
+            route,
+        } => commands::requests::create(&name, &purpose, route.as_deref()),
+        Commands::Requests { json } => commands::requests::list(json),
         Commands::Add {
             name,
             value,
             stdin,
             multiline,
             first_line,
+            generate,
         } => {
             let lines = if multiline {
                 commands::add::StdinLines::Multiline
@@ -1331,7 +1393,7 @@ fn run() -> anyhow::Result<()> {
             } else {
                 commands::add::StdinLines::SingleOnly
             };
-            commands::add::run(&name, value, stdin, lines)
+            commands::add::run(&name, value, stdin, lines, generate)
         }
         Commands::Remove { name } => commands::remove::run(&name),
         Commands::Reveal {
@@ -1341,6 +1403,9 @@ fn run() -> anyhow::Result<()> {
         } => commands::reveal::run(&name, clipboard, yes),
         Commands::Status { oneline } => commands::status::run(oneline, global_json),
         Commands::Rotate {
+            target,
+            generate,
+            rollback,
             sync,
             with_expiry,
             shadow,
@@ -1350,7 +1415,12 @@ fn run() -> anyhow::Result<()> {
             batch,
             rotation_window_days,
         } => {
-            if batch {
+            if generate || rollback {
+                let selected = target
+                    .or(name)
+                    .ok_or_else(|| anyhow::anyhow!("local rotation requires NAME"))?;
+                commands::rotate::run_generated(&selected, rollback)
+            } else if batch {
                 commands::rotate::run_batch(rotation_window_days, sync, cli.json)
             } else if shadow {
                 let secret_name =
@@ -1538,7 +1608,20 @@ fn run() -> anyhow::Result<()> {
         Commands::Wrap { only, skip } => commands::wrap::run(&only, &skip, cli.quiet),
         Commands::Unwrap => commands::unwrap::run(cli.quiet),
         Commands::Copy { name, to, rename } => commands::copy::run(&name, &to, &rename),
-        Commands::Audit { action } => match action {
+        Commands::Audit {
+            action: None,
+            since,
+        } => commands::audit::run_query(since),
+        Commands::Audit {
+            action: Some(_),
+            since: Some(_),
+        } => Err(
+            UsageError("--since applies to the default phantom audit --json query".into()).into(),
+        ),
+        Commands::Audit {
+            action: Some(action),
+            since: None,
+        } => match action {
             AuditAction::Show {
                 last,
                 op,
@@ -1923,6 +2006,7 @@ mod help_tests {
             "agent doctor",
             "agent report",
             "agent status",
+            "audit",
             "audit alerts",
             "audit analytics",
             "audit anomalies",
@@ -1947,6 +2031,7 @@ mod help_tests {
             "grant status",
             "leaks plan",
             "list",
+            "requests",
             "secrets-expiring-soon",
             "status",
             "sync",

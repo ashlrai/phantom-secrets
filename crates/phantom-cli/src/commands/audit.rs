@@ -2759,3 +2759,9 @@ mod tests {
         });
     }
 }
+
+/// Default machine-readable audit query, streamed in chronological log order.
+pub fn run_query(since: Option<u64>) -> Result<()> {
+    phantom_core::audit::query_jsonl(since, &mut std::io::stdout().lock())?;
+    Ok(())
+}
