@@ -1344,3 +1344,32 @@ mod tests {
         assert!(never.contains("DEPLOY_TOKEN"));
     }
 }
+
+#[cfg(test)]
+mod generated_rotation_tests {
+    use super::retrieve_required_secret;
+    use phantom_vault::{file::FileVault, VaultBackend};
+
+    #[test]
+    fn fresh_exec_resolution_uses_generated_value_and_trusted_rollback_restores_previous() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = FileVault::new(dir.path(), "exec-local", "fixture-passphrase".into()).unwrap();
+        vault.store("KEY", "fixture-original").unwrap();
+        let cached =
+            retrieve_required_secret(&vault, "exec-local", "default/KEY", "KEY", "default")
+                .unwrap();
+        vault.rotate_generated("KEY", false).unwrap();
+        let fresh = retrieve_required_secret(&vault, "exec-local", "default/KEY", "KEY", "default")
+            .unwrap();
+        assert!(fresh.as_str() != cached.as_str());
+        // Rotation cannot recall values already copied into an existing process.
+        assert!(cached.as_str() == "fixture-original");
+        vault.rotate_generated("KEY", true).unwrap();
+        assert!(
+            retrieve_required_secret(&vault, "exec-local", "default/KEY", "KEY", "default")
+                .unwrap()
+                .as_str()
+                == cached.as_str()
+        );
+    }
+}

@@ -1341,17 +1341,33 @@ impl PhantomMcpServer {
 
     /// Rotate all phantom tokens.
     #[tool(
-        description = "Regenerate all phantom tokens in .env. Old tokens become invalid — any running `phantom exec` / dev server that cached them will break until it picks up the new .env. Real secrets in the vault are unchanged. DESTRUCTIVE; requires `confirm: true` plus a one-use out-of-band `approval_token` (the operator enables effects with PHANTOM_MCP_EFFECTS=trusted-terminal; a call without the token prints a nonce on the server's stderr for `phantom mcp-approve <NONCE>` in a trusted terminal); the agent must ask the user for explicit consent before calling."
+        description = "With generate=true and name, atomically replace a local value with OS randomness in the encrypted file vault, preserving the placeholder and returning only name, route, rotated_at, version. This does not issue or revoke provider credentials; running sessions retain cached values. Rollback is trusted-terminal CLI only. Without generate/name, regenerate all phantom tokens in .env. Old tokens become invalid — any running `phantom exec` / dev server that cached them will break until it picks up the new .env. Real secrets in the vault are unchanged. DESTRUCTIVE; requires `confirm: true` plus a one-use out-of-band `approval_token` (the operator enables effects with PHANTOM_MCP_EFFECTS=trusted-terminal; a call without the token prints a nonce on the server's stderr for `phantom mcp-approve <NONCE>` in a trusted terminal); the agent must ask the user for explicit consent before calling."
     )]
     fn phantom_rotate(
         &self,
         Parameters(params): Parameters<RotateParams>,
     ) -> Result<CallToolResult, McpError> {
+        if params.generate != params.name.is_some() {
+            return Err(invalid_params_err("local generation requires both generate=true and name; legacy remapping accepts neither"));
+        }
+        if let Some(name) = params.name.as_deref() {
+            validate_mcp_secret_name(name)?;
+        }
         require_confirm("phantom_rotate", params.confirm)?;
         self.preflight_managed_dotenv_strict()?;
         // A locked vault would be refused after approval; refuse it first.
         self.preflight_vault_names(None, "rotate phantom tokens")?;
-        let params_json = serde_json::to_string(&params).unwrap_or_default();
+        let rotation_environment = if params.generate {
+            Some(
+                phantom_core::env_scope::read_active_env(&self.project_dir)
+                    .map_err(|e| vault_read_err("Cannot select environment", e))?,
+            )
+        } else {
+            None
+        };
+        let params_json = params
+            .approval_params(rotation_environment.as_deref())
+            .map_err(|_| invalid_params_err("Cannot serialize rotation approval"))?;
         require_approval_token(
             "phantom_rotate",
             params.approval_token.as_deref(),
@@ -1366,8 +1382,36 @@ impl PhantomMcpServer {
             .list()
             .map_err(|e| vault_read_err("Failed to list secrets", e))?;
 
-        if names.is_empty() {
+        if names.is_empty() && !params.generate {
             return text_result("No secrets to rotate.");
+        }
+
+        if params.generate {
+            let name = params.name.as_deref().expect("validated name");
+            let active_env = phantom_core::env_scope::read_active_env(
+                transaction_lock.project_root_at_acquisition(),
+            )
+            .map_err(|e| vault_read_err("Cannot select environment", e))?;
+            if rotation_environment.as_deref() != Some(active_env.as_str()) {
+                return Err(invalid_params_err(
+                    "Active environment changed after approval; no value changed",
+                ));
+            }
+            let key = phantom_vault::traits::local_rotation_key(vault.as_ref(), &active_env, name)
+                .map_err(|e| vault_read_err("Cannot select local secret", e))?;
+            let mut receipt = vault
+                .rotate_generated(&key, false)
+                .map_err(|e| vault_read_err("Local generation failed", e))?;
+            receipt.name = name.into();
+            receipt.route = config
+                .services
+                .iter()
+                .find(|(_, service)| service.secret_key == name)
+                .map(|(route, _)| route.clone());
+            return text_result(
+                serde_json::to_string(&receipt)
+                    .map_err(|_| invalid_params_err("Receipt serialization failed"))?,
+            );
         }
 
         let project_root = transaction_lock.project_root_at_acquisition();
@@ -13996,6 +14040,8 @@ mod tests {
         }
         let err = server
             .phantom_rotate(Parameters(RotateParams {
+                generate: false,
+                name: None,
                 confirm: true,
                 approval_token: None,
             }))
@@ -14064,6 +14110,111 @@ mod tests {
     }
 
     #[test]
+    fn generated_rotation_preserves_placeholder_and_returns_only_metadata() {
+        let _environment = TestEnvironment::new();
+        let _home = TestHome::new();
+        let (server, dir) = setup_initialized_project();
+        unsafe {
+            std::env::set_var("PHANTOM_AUDIT", "1");
+        }
+        let before = std::fs::read(dir.path().join(".env")).unwrap();
+        let config = server.require_config().unwrap();
+        let vault = phantom_vault::try_create_vault(config.local_project_id()).unwrap();
+        let old = vault.retrieve_for_injection("OPENAI_API_KEY").unwrap();
+        let result = server
+            .phantom_rotate(Parameters(RotateParams {
+                generate: true,
+                name: Some("OPENAI_API_KEY".into()),
+                confirm: true,
+                approval_token: None,
+            }))
+            .unwrap();
+        let text = extract_content_text(&result);
+        let receipt: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(receipt.as_object().unwrap().len(), 4);
+        assert_eq!(receipt["name"], "OPENAI_API_KEY");
+        assert_eq!(receipt["version"], 2);
+        let current = vault.retrieve_for_injection("OPENAI_API_KEY").unwrap();
+        assert!(old.as_str() != current.as_str());
+        assert!(!text.contains(old.as_str()));
+        assert!(!text.contains(current.as_str()));
+        assert!(!text.contains("phm_"));
+        let audit = std::fs::read_to_string(
+            std::path::PathBuf::from(std::env::var_os("HOME").unwrap()).join(".phantom/audit.log"),
+        )
+        .unwrap();
+        assert!(!audit.contains(old.as_str()));
+        assert!(!audit.contains(current.as_str()));
+        assert!(!audit.contains("phm_"));
+        unsafe {
+            std::env::remove_var("PHANTOM_AUDIT");
+        }
+
+        assert_eq!(before, std::fs::read(dir.path().join(".env")).unwrap());
+        assert_eq!(
+            vault
+                .rotate_generated("OPENAI_API_KEY", true)
+                .unwrap()
+                .version,
+            3
+        );
+        assert!(
+            vault
+                .retrieve_for_injection("OPENAI_API_KEY")
+                .unwrap()
+                .as_str()
+                == old.as_str()
+        );
+    }
+
+    #[test]
+    fn generated_rotation_approval_is_environment_bound() {
+        let request = RotateParams {
+            generate: true,
+            name: Some("KEY".into()),
+            confirm: true,
+            approval_token: None,
+        };
+        assert_ne!(
+            request.approval_params(Some("default")).unwrap(),
+            request.approval_params(Some("production")).unwrap()
+        );
+        let reviewed: serde_json::Value =
+            serde_json::from_str(&request.approval_params(Some("production")).unwrap()).unwrap();
+        assert_eq!(reviewed["environment"], "production");
+        assert_eq!(reviewed["name"], "KEY");
+    }
+
+    #[test]
+    fn generated_rotation_retains_effects_and_confirmation_gates() {
+        let _environment = TestEnvironment::new();
+        let _home = TestHome::new();
+        let (server, _dir) = setup_initialized_project();
+        let request = |confirm| {
+            Parameters(RotateParams {
+                generate: true,
+                name: Some("OPENAI_API_KEY".into()),
+                confirm,
+                approval_token: None,
+            })
+        };
+        assert!(server
+            .phantom_rotate(request(false))
+            .unwrap_err()
+            .message
+            .contains("confirm"));
+        unsafe {
+            std::env::remove_var("PHANTOM_MCP_EFFECTS");
+            std::env::remove_var("PHANTOM_MCP_SKIP_APPROVAL");
+        }
+        assert!(server
+            .phantom_rotate(request(true))
+            .unwrap_err()
+            .message
+            .contains("PHANTOM_MCP_EFFECTS"));
+    }
+
+    #[test]
     fn test_destructive_tools_require_confirm() {
         let _environment = TestEnvironment::new();
         let (server, _dir) = setup_initialized_project();
@@ -14089,6 +14240,8 @@ mod tests {
 
         let rotate_err = server
             .phantom_rotate(Parameters(RotateParams {
+                generate: false,
+                name: None,
                 confirm: false,
                 approval_token: None,
             }))
@@ -14170,6 +14323,8 @@ mod tests {
         // Rotate
         let result = server
             .phantom_rotate(Parameters(RotateParams {
+                generate: false,
+                name: None,
                 confirm: true,
                 approval_token: None,
             }))
