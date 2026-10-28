@@ -4,6 +4,21 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (dotenv comments holding credentials fail every clean check)
+
+- `phantom check`, `phantom check --staged`, the MCP `phantom_check` tool
+  and the compliance `env_clean` check judged dotenv files only by their
+  parsed entries, so a credential left in a comment passed clean unless
+  it matched a code-token shape. A commented-out secret assignment with
+  no known prefix (`# AWS_SECRET_ACCESS_KEY=<opaque>`,
+  `# DATABASE_URL=postgres://<db-host>/<db>`) committed and scanned
+  unreported everywhere, though `phantom doctor` already warned on it.
+  All four surfaces now report each commented-out secret assignment by
+  name and each other credential-holding comment — a prose note or a
+  trailing comment — by line, in both `.env` files and `.envrc`, while
+  the staged code scan skips exactly the lines already reported so a
+  value is never reported twice.
+
 ### Fixed (`phantom check --staged` scans dotenv comments and `.phantom.toml`)
 
 - The pre-commit scan classified staged dotenv files only through the

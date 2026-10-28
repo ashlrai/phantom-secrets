@@ -1,7 +1,9 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
 use phantom_core::config::PhantomConfig;
-use phantom_core::dotenv::{is_example_placeholder, is_example_template_file, DotenvFile};
+use phantom_core::dotenv::{
+    is_example_placeholder, is_example_template_file, line_holds_credential_comment, DotenvFile,
+};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
@@ -100,15 +102,21 @@ fn findings_in_listed(project_dir: &Path, listed: Vec<PathBuf>) -> Result<Vec<Fi
             continue;
         };
         dotenv.validate_for_mutation()?;
+        let shown = path.display().to_string();
+        let mut reported = BTreeSet::new();
         for entry in dotenv.real_secret_entries() {
+            reported.insert(entry.key.clone());
             findings.push(Finding {
                 kind: "dotenv",
-                path: Some(path.display().to_string()),
+                path: Some(shown.clone()),
                 name: Some(entry.key.clone()),
                 label: None,
                 pattern: None,
             });
         }
+        // A comment is not an entry, so a credential left in one is
+        // plaintext the entry scan never sees.
+        push_comment_credential_findings(&dotenv, "dotenv", &shown, &mut reported, &mut findings);
     }
     Ok(findings)
 }
@@ -162,12 +170,20 @@ fn staged_findings(cwd: &Path) -> Result<(Vec<Finding>, Vec<ConfigWarning>)> {
                 // The parser never sees comments, so an old key commented
                 // out (`# OPENAI_API_KEY=sk-...`) or a note after a
                 // placeholder passed as clean. A file already reported by
-                // name is blocked anyway, and scanning it again would
-                // report the same values twice.
+                // name is blocked anyway, and a line whose credential sits
+                // in a comment is reported by name or line below; scanning
+                // it again would report the same value twice.
                 let scan_content = staged_added_lines(cwd, &file)?;
-                findings.extend(code_pattern_findings(&file, &scan_content));
+                let uncommented = scan_content
+                    .lines()
+                    .filter(|line| !line_holds_credential_comment(line))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                findings.extend(code_pattern_findings(&file, &uncommented));
             }
+            let mut reported = BTreeSet::new();
             for entry in real_secrets {
+                reported.insert(entry.key.clone());
                 findings.push(Finding {
                     kind: "staged_dotenv",
                     path: Some(file.clone()),
@@ -176,6 +192,16 @@ fn staged_findings(cwd: &Path) -> Result<(Vec<Finding>, Vec<ConfigWarning>)> {
                     pattern: None,
                 });
             }
+            // A comment is not an entry, so a credential left in one — an
+            // old key commented out, a note after a placeholder — stays
+            // committed plaintext whatever the entries hold.
+            push_comment_credential_findings(
+                &dotenv,
+                "staged_dotenv",
+                &file,
+                &mut reported,
+                &mut findings,
+            );
             continue;
         }
 
@@ -209,14 +235,23 @@ fn staged_findings(cwd: &Path) -> Result<(Vec<Finding>, Vec<ConfigWarning>)> {
 /// read by the whole-file parse. Each name is reported once.
 fn staged_direnv_findings(cwd: &Path, file: &str) -> Result<Vec<Finding>> {
     let added = staged_added_lines(cwd, file)?;
-    let mut findings = code_pattern_findings(file, &added);
+    // A line whose credential sits in a comment is reported by name or
+    // line below; scanning it here would report the same value twice.
+    let uncommented = added
+        .lines()
+        .filter(|line| !line_holds_credential_comment(line))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut findings = code_pattern_findings(file, &uncommented);
     let content = read_staged_bytes(cwd, file)?;
     let text = String::from_utf8_lossy(&content);
+    let parsed = DotenvFile::parse_str(&text);
     let mut names = BTreeSet::new();
     collect_direnv_literal_names(&text, &mut names);
     for line in text.split(['\n', '\r']) {
         collect_direnv_literal_names(line, &mut names);
     }
+    let mut reported: BTreeSet<String> = names.iter().cloned().collect();
     findings.extend(names.into_iter().map(|name| Finding {
         kind: "staged_dotenv",
         path: Some(file.to_string()),
@@ -224,6 +259,7 @@ fn staged_direnv_findings(cwd: &Path, file: &str) -> Result<Vec<Finding>> {
         label: None,
         pattern: None,
     }));
+    push_comment_credential_findings(&parsed, "staged_dotenv", file, &mut reported, &mut findings);
     Ok(findings)
 }
 
@@ -303,6 +339,43 @@ fn code_pattern_findings(file: &str, added: &str) -> Vec<Finding> {
             })
         })
         .collect()
+}
+
+/// Findings for credentials that sit in comments, which the dotenv
+/// parser never reaches as entries: each commented-out secret assignment
+/// by name and line, and each other credential-holding comment by line.
+/// `reported` holds the names already found (live entries, literal
+/// assignments); a name is reported once. A commented name carries its
+/// line, so it never collides with a live entry of the same key and each
+/// repeated line is reported.
+fn push_comment_credential_findings(
+    dotenv: &DotenvFile,
+    kind: &'static str,
+    file: &str,
+    reported: &mut BTreeSet<String>,
+    findings: &mut Vec<Finding>,
+) {
+    for (key, line) in dotenv.commented_secret_assignments() {
+        let shown = phantom_core::report::commented_assignment_name(&key, line);
+        if reported.insert(shown.clone()) {
+            findings.push(Finding {
+                kind,
+                path: Some(file.to_string()),
+                name: Some(shown),
+                label: None,
+                pattern: None,
+            });
+        }
+    }
+    for line in dotenv.credential_comment_lines() {
+        findings.push(Finding {
+            kind,
+            path: Some(file.to_string()),
+            name: Some(phantom_core::report::comment_credential_name(line)),
+            label: None,
+            pattern: None,
+        });
+    }
 }
 
 fn print_findings(findings: &[Finding]) {
@@ -1518,22 +1591,36 @@ mod tests {
     }
 
     /// Dotenv entries are classified by the parser, which never sees
-    /// comments. A key left in a comment of a committable template (an old
-    /// key commented out, a note after a placeholder) was reported clean.
+    /// comments. A credential left in a comment of a committable template
+    /// is reported by name or line; the same line is not scanned again,
+    /// so the value is never reported twice.
     #[test]
-    fn staged_env_template_comments_get_the_code_scan() {
+    fn staged_env_template_commented_credentials_are_reported() {
         let shape = ghp_shape();
-        for content in [
-            format!("GITHUB_TOKEN=\n# GITHUB_TOKEN={shape}\n"),
-            format!("GITHUB_TOKEN=your_github_token_here # was {shape}\n"),
-            format!("# rotate: {shape}\nDEBUG=true\n"),
+        for (content, expected) in [
+            (
+                format!("GITHUB_TOKEN=\n# GITHUB_TOKEN={shape}\n"),
+                "GITHUB_TOKEN (commented out, line 2)",
+            ),
+            (
+                format!("GITHUB_TOKEN=your_github_token_here # was {shape}\n"),
+                "credential in a comment (line 1)",
+            ),
+            (
+                format!("# rotate: {shape}\nDEBUG=true\n"),
+                "credential in a comment (line 1)",
+            ),
         ] {
             for name in [".env.example", "config/.env.sample"] {
                 let dir = repo_with_staged_bytes_at(name, content.as_bytes());
                 assert_eq!(
-                    staged_code_labels(dir.path()),
-                    ["GitHub personal token"],
+                    staged_dotenv_names(dir.path()),
+                    [expected.to_string()],
                     "{name}"
+                );
+                assert!(
+                    staged_code_labels(dir.path()).is_empty(),
+                    "{name} reported the same value twice"
                 );
             }
         }
@@ -1542,10 +1629,110 @@ mod tests {
     /// A plain `.env` whose entries are all non-secret config still blocks
     /// on a key left in a comment.
     #[test]
-    fn staged_dotenv_comment_gets_the_code_scan() {
+    fn staged_dotenv_commented_secret_is_named() {
         let content = format!("NODE_ENV=production\n# OPENAI_API_KEY={}\n", ghp_shape());
         let dir = repo_with_staged_bytes_at("apps/api/.env.production.local", content.as_bytes());
-        assert_eq!(staged_code_labels(dir.path()), ["GitHub personal token"]);
+        assert_eq!(
+            staged_dotenv_names(dir.path()),
+            ["OPENAI_API_KEY (commented out, line 2)".to_string()]
+        );
+    }
+
+    /// A commented-out assignment whose value carries no known token
+    /// prefix — an opaque AWS secret or a database URL — still holds the
+    /// plaintext, so it is named like a live entry.
+    #[test]
+    fn staged_dotenv_commented_secrets_without_token_shapes_are_named() {
+        let aws = ["wJalrXUtnFEMI", "K7MDENG+bPxRfiCYEXAMPLEKEY"].concat();
+        let db_url = ["postgres://app:", "Vq8rLm2Xz7Kt", "@db.internal:5432/app"].concat();
+        let content = format!(
+            "NODE_ENV=production\n# AWS_SECRET_ACCESS_KEY={aws}\n# DATABASE_URL={db_url}\n"
+        );
+        let dir = repo_with_staged_bytes_at(".env", content.as_bytes());
+        assert_eq!(
+            staged_dotenv_names(dir.path()),
+            [
+                "AWS_SECRET_ACCESS_KEY (commented out, line 2)".to_string(),
+                "DATABASE_URL (commented out, line 3)".to_string(),
+            ]
+        );
+        assert!(staged_code_labels(dir.path()).is_empty());
+    }
+
+    /// The same key commented out on two lines is two leaks at two
+    /// locations, so each is named; a live entry of that key is a third,
+    /// distinct finding.
+    #[test]
+    fn staged_dotenv_commented_repeats_name_each_line() {
+        let aws = ["wJalrXUtnFEMI", "K7MDENG+bPxRfiCYEXAMPLEKEY"].concat();
+        let older = ["wJalrXUtnFEMI", "K7MDENG+bPxRfiCYEXAMPLEKEZ"].concat();
+        let content = format!(
+            "AWS_SECRET_ACCESS_KEY={aws}\n# AWS_SECRET_ACCESS_KEY={older}\n# AWS_SECRET_ACCESS_KEY={aws}\n"
+        );
+        let dir = repo_with_staged_bytes_at(".env", content.as_bytes());
+        assert_eq!(
+            staged_dotenv_names(dir.path()),
+            [
+                "AWS_SECRET_ACCESS_KEY".to_string(),
+                "AWS_SECRET_ACCESS_KEY (commented out, line 2)".to_string(),
+                "AWS_SECRET_ACCESS_KEY (commented out, line 3)".to_string(),
+            ]
+        );
+        assert!(staged_code_labels(dir.path()).is_empty());
+    }
+
+    /// A `.envrc` comment holds the same plaintext: a commented-out export
+    /// is named like a live assignment.
+    #[test]
+    fn staged_envrc_commented_secret_is_named() {
+        let aws = ["wJalrXUtnFEMI", "K7MDENG+bPxRfiCYEXAMPLEKEY"].concat();
+        let envrc = format!("use flake\n# export AWS_SECRET_ACCESS_KEY={aws}\nexport PORT=3000\n");
+        let dir = repo_with_staged_bytes(".envrc", envrc.as_bytes());
+        assert_eq!(
+            staged_dotenv_names(dir.path()),
+            ["AWS_SECRET_ACCESS_KEY (commented out, line 2)".to_string()]
+        );
+    }
+
+    /// The worktree scan judges the same comments: a credential left in a
+    /// `.env` comment is unprotected plaintext whatever the entries hold.
+    #[test]
+    fn worktree_dotenv_commented_credentials_are_reported() {
+        let aws = ["wJalrXUtnFEMI", "K7MDENG+bPxRfiCYEXAMPLEKEY"].concat();
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(".env"),
+            format!(
+                "NODE_ENV=production\n# AWS_SECRET_ACCESS_KEY={aws}\n# note: {}\n",
+                ghp_shape()
+            ),
+        )
+        .unwrap();
+        let names: Vec<String> = worktree_findings(dir.path())
+            .unwrap()
+            .into_iter()
+            .filter_map(|finding| finding.name)
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "AWS_SECRET_ACCESS_KEY (commented out, line 2)".to_string(),
+                "credential in a comment (line 3)".to_string(),
+            ]
+        );
+    }
+
+    /// A docs-style placeholder in a comment is not a credential left
+    /// behind, in the worktree scan as in the staged one.
+    #[test]
+    fn worktree_dotenv_commented_placeholder_stays_clean() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(".env"),
+            "NODE_ENV=production\n# OPENAI_API_KEY=your_openai_api_key_here\n# TODO rotate\n",
+        )
+        .unwrap();
+        assert!(worktree_findings(dir.path()).unwrap().is_empty());
     }
 
     /// A template with no credential anywhere stays clean.

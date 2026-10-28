@@ -21,6 +21,18 @@ pub struct CheckFinding {
     pub pattern: Option<&'static str>,
 }
 
+/// The `name` a check finding gives a commented-out secret assignment:
+/// the key and line, marked so it is not read as a live entry.
+pub fn commented_assignment_name(key: &str, line: usize) -> String {
+    format!("{key} (commented out, line {line})")
+}
+
+/// The `name` a check finding gives a comment holding credential-shaped
+/// text that is not a commented-out assignment.
+pub fn comment_credential_name(line: usize) -> String {
+    format!("credential in a comment (line {line})")
+}
+
 /// A risky `.phantom.toml` service route found in the staged config.
 #[derive(Debug, Serialize)]
 pub struct CheckConfigWarning {
