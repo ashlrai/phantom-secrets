@@ -1,0 +1,101 @@
+#!/usr/bin/env python3
+"""Print affected Cargo packages, one per line, or ALL; optionally run tests."""
+
+import argparse
+import json
+import re
+from pathlib import Path
+import subprocess
+import sys
+
+
+def is_docs(filename):
+    """Only documentation known not to be a Cargo input can skip tests."""
+    return bool(re.fullmatch(r"(?:[^/]+\.md|LICENSE(?:\.[^/]+)?|NOTICE)", filename)
+                or re.fullmatch(r"docs/.*\.(?:md|rst|txt)", filename))
+
+
+def is_global(filename):
+    return (bool(re.search(r"(?:^|/)(?:Cargo\.lock|Cargo\.toml|rust-toolchain(?:\.toml)?)$", filename))
+            or bool(re.search(r"\.(?:toml|json|ya?ml)$", filename))
+            or filename.startswith((".cargo/", ".github/", ".config/")))
+
+
+def select_packages(files, metadata):
+    """Return sorted reverse dependency closure, or None for the whole workspace."""
+    if any(is_global(f) for f in files):
+        return None
+    root = Path(metadata["workspace_root"])
+    members = set(metadata["workspace_members"])
+    packages = {p["id"]: p for p in metadata["packages"] if p["id"] in members}
+    directories = {
+        ident: Path(p["manifest_path"]).parent.relative_to(root).as_posix()
+        for ident, p in packages.items()
+    }
+    hit = set()
+    for filename in files:
+        if is_docs(filename):
+            continue
+        owners = [ident for ident, directory in directories.items()
+                  if directory == "." or filename == directory
+                  or filename.startswith(directory + "/")]
+        if owners:
+            hit.add(max(owners, key=lambda ident: len(directories[ident])))
+        else:
+            return None  # Unknown shared inputs and deleted crates require the full suite.
+    reverse = {}
+    for node in metadata["resolve"]["nodes"]:
+        for dependency in node["deps"]:
+            reverse.setdefault(dependency["pkg"], set()).add(node["id"])
+    pending = list(hit)
+    while pending:
+        for dependent in reverse.get(pending.pop(), ()):
+            if dependent not in hit:
+                hit.add(dependent)
+                pending.append(dependent)
+    return sorted(packages[ident]["name"] for ident in hit if ident in packages)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("base", nargs="?", help="compare BASE...HEAD; default: tracked changes against HEAD")
+    parser.add_argument("head", nargs="?", default="HEAD")
+    parser.add_argument("--run", action="store_true", help="run cargo test for the selection")
+    args = parser.parse_args()
+    root = Path(__file__).resolve().parent.parent
+    diff = ["git", "diff", "--name-only", "--no-renames", "-z",
+            f"{args.base}...{args.head}" if args.base else "HEAD", "--"]
+    try:
+        files = subprocess.check_output(diff, cwd=root).decode().split("\0")
+        files = [f for f in files if f]
+    except (OSError, UnicodeError, subprocess.CalledProcessError):
+        parser.exit(1, "Unable to read changed paths from git.\n")
+    selected = []
+    if any(is_global(f) for f in files):
+        selected = None
+    elif files and not all(is_docs(f) for f in files):
+        try:
+            result = subprocess.check_output(
+                ["cargo", "metadata", "--format-version", "1", "--locked", "--all-features"],
+                cwd=root, stderr=subprocess.DEVNULL)
+            selected = select_packages(files, json.loads(result))
+        except (OSError, ValueError, KeyError, TypeError, subprocess.CalledProcessError):
+            print("Cargo graph unavailable; selecting the full workspace.", file=sys.stderr)
+            selected = None
+    if not args.run:
+        print("ALL" if selected is None else "\n".join(selected), end="\n" if selected is None or selected else "")
+        return 0
+    if selected == []:
+        print("No affected Rust packages.")
+        return 0
+    command = ["cargo", "test", "--locked", "--all-targets", "--no-fail-fast"]
+    if selected is None:
+        command.append("--workspace")
+    else:
+        for package in selected:
+            command.extend(["--package", package])
+    return subprocess.call(command, cwd=root)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

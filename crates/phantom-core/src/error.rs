@@ -51,6 +51,18 @@ pub enum PhantomError {
     Other(String),
 }
 
+/// A JSON diagnostic that cannot quote plaintext from the input. Do not attach
+/// the original serde error as a source: anyhow's alternate Display and Debug
+/// render every source in the chain.
+pub fn value_blind_json_error(error: &serde_json::Error) -> String {
+    format!(
+        "JSON {:?} error at line {}, column {}",
+        error.classify(),
+        error.line(),
+        error.column()
+    )
+}
+
 pub type Result<T> = std::result::Result<T, PhantomError>;
 
 impl PhantomError {
