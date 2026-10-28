@@ -1212,7 +1212,7 @@ const CONNECTION_KEY_PATTERNS: [&str; 10] = [
 
 /// Value prefixes of known secret formats. These alone override a public key
 /// prefix (see [`classify`]).
-const KNOWN_VALUE_PREFIXES: [&str; 14] = [
+pub const KNOWN_VALUE_PREFIXES: [&str; 14] = [
     "sk-",
     "sk_",
     "pk_",
@@ -1232,7 +1232,7 @@ const KNOWN_VALUE_PREFIXES: [&str; 14] = [
 /// Further value prefixes that mark a non-public key as a secret: JWT-style
 /// base64 and a PEM armor header (audit F11; multi-line PEM bodies depend on
 /// F12 quoted parsing).
-const NON_PUBLIC_VALUE_PREFIXES: [&str; 2] = ["eyJ", "-----BEGIN "];
+pub const NON_PUBLIC_VALUE_PREFIXES: [&str; 2] = ["eyJ", "-----BEGIN "];
 
 /// What `.env.example` shows in place of an inline comment that held
 /// credential-shaped text.

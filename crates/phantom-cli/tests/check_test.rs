@@ -12,6 +12,130 @@ fn phantom(dir: &TempDir) -> Command {
 }
 
 #[test]
+fn check_staged_extended_shapes_block_from_index_without_disclosing_values() {
+    let dir = common::canonical_tempdir();
+    assert!(StdCommand::new("git")
+        .arg("init")
+        .current_dir(dir.path())
+        .output()
+        .unwrap()
+        .status
+        .success());
+
+    // Assemble inert fixtures at runtime so the test source itself is safe
+    // to stage. Exercise the index even when the worktree copy is clean.
+    let tail = "Q7rT2mVx9KpL4wZs8NdY3hBc6FjGu5EaR1oW";
+    let body = "Ab9+/Q".repeat(11);
+    let header = ["-----BEGIN ", "PRIVATE KEY-----"].concat();
+    let mut cases = [
+        "gho_", "ghu_", "ghs_", "ghr_", "rk_live_", "rk_test_", "whsec_", "shpat_",
+    ]
+    .map(|prefix| (prefix, format!("const key = \"{prefix}{tail}\";")))
+    .to_vec();
+    cases.extend([
+        (
+            "ASIA",
+            format!("const id = \"{}{}\";", "ASIA", "Q7RT2MVX6KPL4WZS"),
+        ),
+        ("-----BEGIN ", format!("key: |\n  {header}\n  {body}\n")),
+        (
+            "-----BEGIN ",
+            format!("key: |\n  {header}\n  {}\n  {}\n", &body[..32], &body[32..]),
+        ),
+        (
+            "-----BEGIN ",
+            format!("{{\"key\":\"{header}\\r\\n{body}\\r\\n\"}}"),
+        ),
+    ]);
+
+    for (prefix, source) in cases {
+        fs::write(dir.path().join("source.txt"), &source).unwrap();
+        assert!(StdCommand::new("git")
+            .args(["add", "source.txt"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap()
+            .status
+            .success());
+        fs::write(dir.path().join("source.txt"), "ordinary text\n").unwrap();
+
+        for json in [false, true] {
+            let mut command = phantom(&dir);
+            command.args(["check", "--staged"]);
+            if json {
+                command.arg("--json");
+            }
+            let result = command.assert().code(1);
+            let output = result.get_output();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            for text in [&stdout, &stderr] {
+                assert!(
+                    !text.contains(&tail[..20]),
+                    "credential tail disclosed for {prefix}"
+                );
+                assert!(!text.contains(&body[..20]), "PEM body disclosed");
+                assert!(!text.contains("Q7RT2MVX6KPL4WZS"), "AWS ID disclosed");
+            }
+            if json {
+                let report: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+                assert_eq!(report["mode"], "staged");
+                assert_eq!(report["clean"], false);
+                let findings = report["findings"].as_array().unwrap();
+                assert_eq!(findings.len(), 1, "{prefix}");
+                assert_eq!(findings[0]["kind"], "staged_code");
+                assert_eq!(findings[0]["path"], "source.txt");
+                assert_eq!(findings[0]["pattern"], prefix);
+            } else {
+                assert!(stderr.contains("source.txt") && stderr.contains(prefix));
+            }
+        }
+    }
+}
+
+#[test]
+fn check_staged_extended_shapes_allow_public_material_and_identifiers() {
+    let dir = common::canonical_tempdir();
+    assert!(StdCommand::new("git")
+        .arg("init")
+        .current_dir(dir.path())
+        .output()
+        .unwrap()
+        .status
+        .success());
+    let body = "Ab9+/Q".repeat(11);
+    let public = ["-----BEGIN ", "PUBLIC KEY-----"].concat();
+    let certificate = ["-----BEGIN ", "CERTIFICATE-----"].concat();
+    // Build credential-shaped near misses without changing the detector inputs.
+    let function_identifier = ["ghu_", "refresh_access_flow_for_device_tokens"].concat();
+    let region_identifier = ["ASIA", "PACIFICNORTHEAST"].concat();
+    fs::write(
+        dir.path().join("source.txt"),
+        format!(
+            "{public}\n{body}\n{certificate}\n{body}\n\
+             fn {function_identifier}() {{}}\n\
+             const region = {region_identifier};\n\
+             rk_live_short whsec_short shpat_short\n"
+        ),
+    )
+    .unwrap();
+    assert!(StdCommand::new("git")
+        .args(["add", "source.txt"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap()
+        .status
+        .success());
+    let result = phantom(&dir)
+        .args(["check", "--staged", "--json"])
+        .assert()
+        .success();
+    let report: serde_json::Value = serde_json::from_slice(&result.get_output().stdout).unwrap();
+    assert_eq!(report["clean"], true);
+    assert!(report["findings"].as_array().unwrap().is_empty());
+}
+
+#[test]
 fn check_staged_blocks_staged_env_plaintext_secret() {
     let dir = common::canonical_tempdir();
     StdCommand::new("git")

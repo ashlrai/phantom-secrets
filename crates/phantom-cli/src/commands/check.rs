@@ -243,71 +243,80 @@ fn is_shell_expansion(value: &str) -> bool {
 }
 
 /// Credential shapes looked for in staged code: the prefix, a label for the
-/// report, and the shortest tail that can follow the prefix in a real key.
+/// report, the shortest tail that can follow the prefix in a real key, and
+/// the characters that tail may hold.
 /// A bare prefix is not a key: `task-`, `risk-` and `desk-` all contain `sk-`,
 /// so a match must start a token and carry a key-length tail.
+///
+/// Prefixes come from the dotenv classifier's tables
+/// ([`phantom_core::dotenv::KNOWN_VALUE_PREFIXES`] and
+/// [`phantom_core::dotenv::NON_PUBLIC_VALUE_PREFIXES`]) plus a few shapes it
+/// only catches by entropy; a test keeps the two in sync.
 struct CodePattern {
     prefix: &'static str,
     label: &'static str,
     min_tail: usize,
-    /// AWS access key IDs are upper-case alphanumerics only.
-    upper_alnum_only: bool,
+    shape: Shape,
 }
 
-const CODE_PATTERNS: [CodePattern; 9] = [
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Shape {
+    /// URL-safe key characters: alphanumerics, `_` and `-`.
+    KeyChars,
+    /// AWS long-term access key IDs: upper-case alphanumerics only.
+    AwsKeyId,
+    /// AWS temporary access key IDs: exactly `min_tail` upper-case base32
+    /// characters with at least one digit, so an all-caps word that starts
+    /// with `ASIA` (a region constant, say) is not a key.
+    AwsTempKeyId,
+    /// A PEM private key header followed by a body of at least `min_tail`
+    /// base64 characters, so code that only names the header is not a key.
+    PemPrivateKey,
+}
+
+const fn key(prefix: &'static str, label: &'static str, min_tail: usize) -> CodePattern {
     CodePattern {
-        prefix: "sk-",
-        label: "OpenAI API key",
-        min_tail: 20,
-        upper_alnum_only: false,
-    },
-    CodePattern {
-        prefix: "sk_live_",
-        label: "Stripe live key",
-        min_tail: 16,
-        upper_alnum_only: false,
-    },
-    CodePattern {
-        prefix: "sk_test_",
-        label: "Stripe test key",
-        min_tail: 16,
-        upper_alnum_only: false,
-    },
-    CodePattern {
-        prefix: "ghp_",
-        label: "GitHub personal token",
-        min_tail: 30,
-        upper_alnum_only: false,
-    },
-    CodePattern {
-        prefix: "github_pat_",
-        label: "GitHub PAT",
-        min_tail: 30,
-        upper_alnum_only: false,
-    },
-    CodePattern {
-        prefix: "glpat-",
-        label: "GitLab PAT",
-        min_tail: 20,
-        upper_alnum_only: false,
-    },
-    CodePattern {
-        prefix: "xoxb-",
-        label: "Slack bot token",
-        min_tail: 20,
-        upper_alnum_only: false,
-    },
-    CodePattern {
-        prefix: "xoxp-",
-        label: "Slack user token",
-        min_tail: 20,
-        upper_alnum_only: false,
-    },
+        prefix,
+        label,
+        min_tail,
+        shape: Shape::KeyChars,
+    }
+}
+
+const CODE_PATTERNS: [CodePattern; 19] = [
+    key("sk-", "OpenAI API key", 20),
+    key("sk_live_", "Stripe live key", 16),
+    key("sk_test_", "Stripe test key", 16),
+    key("rk_live_", "Stripe restricted live key", 16),
+    key("rk_test_", "Stripe restricted test key", 16),
+    key("whsec_", "Stripe webhook signing secret", 24),
+    key("ghp_", "GitHub personal token", 30),
+    key("gho_", "GitHub OAuth token", 30),
+    key("ghu_", "GitHub user-to-server token", 30),
+    key("ghs_", "GitHub server-to-server token", 30),
+    key("ghr_", "GitHub refresh token", 30),
+    key("github_pat_", "GitHub PAT", 30),
+    key("glpat-", "GitLab PAT", 20),
+    key("xoxb-", "Slack bot token", 20),
+    key("xoxp-", "Slack user token", 20),
+    key("shpat_", "Shopify access token", 32),
     CodePattern {
         prefix: "AKIA",
         label: "AWS access key",
         min_tail: 16,
-        upper_alnum_only: true,
+        shape: Shape::AwsKeyId,
+    },
+    CodePattern {
+        prefix: "ASIA",
+        label: "AWS temporary access key",
+        min_tail: 16,
+        shape: Shape::AwsTempKeyId,
+    },
+    CodePattern {
+        prefix: "-----BEGIN ",
+        label: "PEM private key",
+        min_tail: 40,
+        shape: Shape::PemPrivateKey,
     },
 ];
 
@@ -321,26 +330,90 @@ fn is_identifier_tail(tail: &[u8]) -> bool {
 }
 
 /// Whether `text` holds `pattern.prefix` at the start of a token, followed by
-/// at least `min_tail` key characters that do not read as an identifier.
+/// a tail of the pattern's shape.
 fn contains_credential(text: &str, pattern: &CodePattern) -> bool {
     let bytes = text.as_bytes();
     text.match_indices(pattern.prefix).any(|(start, _)| {
-        if start > 0 && bytes[start - 1].is_ascii_alphanumeric() {
+        // A PEM header is not a word, and in escaped text it follows the
+        // `n` of a literal `\n`, so only the other shapes need the boundary.
+        if pattern.shape != Shape::PemPrivateKey
+            && start > 0
+            && bytes[start - 1].is_ascii_alphanumeric()
+        {
             return false;
         }
         let rest = &bytes[start + pattern.prefix.len()..];
-        let len = rest
-            .iter()
-            .take_while(|b| {
-                if pattern.upper_alnum_only {
-                    b.is_ascii_uppercase() || b.is_ascii_digit()
-                } else {
-                    b.is_ascii_alphanumeric() || **b == b'_' || **b == b'-'
-                }
-            })
-            .count();
-        len >= pattern.min_tail && !is_identifier_tail(&rest[..len])
+        match pattern.shape {
+            Shape::KeyChars => {
+                let len = rest
+                    .iter()
+                    .take_while(|b| b.is_ascii_alphanumeric() || **b == b'_' || **b == b'-')
+                    .count();
+                len >= pattern.min_tail && !is_identifier_tail(&rest[..len])
+            }
+            Shape::AwsKeyId => {
+                let len = rest
+                    .iter()
+                    .take_while(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
+                    .count();
+                len >= pattern.min_tail
+            }
+            Shape::AwsTempKeyId => {
+                let len = rest
+                    .iter()
+                    .take_while(|b| b.is_ascii_uppercase() || (b'2'..=b'7').contains(*b))
+                    .count();
+                len == pattern.min_tail
+                    && !rest.get(len).is_some_and(u8::is_ascii_alphanumeric)
+                    && rest[..len].iter().any(u8::is_ascii_digit)
+            }
+            Shape::PemPrivateKey => pem_private_key_body_len(rest) >= pattern.min_tail,
+        }
     })
+}
+
+/// The length of the base64 body after a PEM armor header, given the
+/// text after `-----BEGIN `. Only a header naming a private key counts
+/// (`PRIVATE KEY`, `RSA PRIVATE KEY`, `OPENSSH PRIVATE KEY`, ...), and the
+/// body may follow a real line break or an escaped `\n` (JSON service
+/// account files). Returns 0 for anything else.
+fn pem_private_key_body_len(rest: &[u8]) -> usize {
+    let label_len = rest
+        .iter()
+        .take_while(|b| b.is_ascii_uppercase() || **b == b' ')
+        .count();
+    let Some(after) = rest[label_len..].strip_prefix(b"-----") else {
+        return 0;
+    };
+    if !rest[..label_len].ends_with(b"PRIVATE KEY") {
+        return 0;
+    }
+    let newlines = [&b"\r\n"[..], b"\n", b"\\r\\n", b"\\n"];
+    let mut remaining = after;
+    let mut total = 0;
+    while let Some(body) = newlines
+        .iter()
+        .find_map(|newline| remaining.strip_prefix(*newline))
+    {
+        // YAML block scalars and heredocs indent the body.
+        let indent = body
+            .iter()
+            .take_while(|b| matches!(**b, b' ' | b'\t'))
+            .count();
+        let body = &body[indent..];
+        let len = body
+            .iter()
+            .take_while(|b| b.is_ascii_alphanumeric() || **b == b'+' || **b == b'/')
+            .count();
+        if len == 0 {
+            break;
+        }
+        // PEM bodies may wrap at fewer than 40 characters. Count across
+        // adjacent body lines, stopping at padding, armor or other text.
+        total += len;
+        remaining = &body[len..];
+    }
+    total
 }
 
 /// Label for a LiteLLM-shaped key. Shape only: LiteLLM generates virtual keys
@@ -1603,5 +1676,144 @@ mod tests {
         );
         let dir = repo_with_staged_bytes(".envrc", envrc.as_bytes());
         assert_eq!(staged_dotenv_names(dir.path()), ["WEBHOOK_SIGNING"]);
+    }
+
+    /// Core value prefixes the code scanner deliberately does not look for,
+    /// with the reason. Every other core prefix must be covered by a pattern.
+    const CORE_PREFIXES_NOT_SCANNED: [(&str, &str); 3] = [
+        ("pk_", "publishable keys are meant to ship in client code"),
+        ("Bearer ", "an HTTP scheme word, common in ordinary code"),
+        ("eyJ", "any base64 JSON, including public JWT fixtures"),
+    ];
+
+    /// Code patterns for shapes the dotenv classifier does not name by prefix
+    /// (it still treats them as secrets through its high-entropy rule).
+    const SCANNER_ONLY_PREFIXES: [&str; 4] = ["ghs_", "ghu_", "ghr_", "ASIA"];
+
+    #[test]
+    fn code_patterns_stay_in_sync_with_the_core_classifier() {
+        use phantom_core::dotenv::{KNOWN_VALUE_PREFIXES, NON_PUBLIC_VALUE_PREFIXES};
+        for core in KNOWN_VALUE_PREFIXES
+            .iter()
+            .chain(&NON_PUBLIC_VALUE_PREFIXES)
+        {
+            let scanned = CODE_PATTERNS.iter().any(|p| p.prefix.starts_with(core));
+            let excluded = CORE_PREFIXES_NOT_SCANNED.iter().any(|(p, _)| p == core);
+            assert!(
+                scanned != excluded,
+                "core prefix {core:?} must be scanned or listed as not scanned, not both"
+            );
+        }
+        for pattern in &CODE_PATTERNS {
+            let from_core = KNOWN_VALUE_PREFIXES
+                .iter()
+                .chain(&NON_PUBLIC_VALUE_PREFIXES)
+                .any(|core| pattern.prefix.starts_with(core));
+            let scanner_only = SCANNER_ONLY_PREFIXES.contains(&pattern.prefix);
+            assert!(
+                from_core != scanner_only,
+                "code pattern {:?} must come from the core table or be listed as scanner-only",
+                pattern.prefix
+            );
+        }
+    }
+
+    /// A 64-character base64 line, the width of a real PEM body line.
+    fn pem_body_line() -> String {
+        [
+            "MIIEvQIBADANBgkqhkiG9w0BAQEFAASC",
+            "BKcwggSjAgEAAoIBAQC7Hq8vN2cW7rT4",
+        ]
+        .concat()
+    }
+
+    #[test]
+    fn code_patterns_catch_the_shapes_the_core_classifier_knows() {
+        let gh_tail = "Q7rT2mVx9KpL4wZs8NdY3hBc6FjGu5EaR1oW";
+        let stripe_tail = "51HxYzQ7rT2mVx9KpL4wZs8NdY3hBc6F";
+        let header = ["-----BEGIN ", "PRIVATE KEY-----"].concat();
+        let rsa_header = ["-----BEGIN ", "RSA PRIVATE KEY-----"].concat();
+        let ssh_header = ["-----BEGIN ", "OPENSSH PRIVATE KEY-----"].concat();
+        let body = pem_body_line();
+        let cases = [
+            (format!("t = \"{}{}\"", "gho_", gh_tail), "gho_"),
+            (format!("t = \"{}{}\"", "ghs_", gh_tail), "ghs_"),
+            (format!("t = \"{}{}\"", "ghu_", gh_tail), "ghu_"),
+            (format!("t = \"{}{}{}\"", "ghr_", gh_tail, gh_tail), "ghr_"),
+            (format!("k: '{}{}'", "rk_live_", stripe_tail), "rk_live_"),
+            (format!("k: '{}{}'", "rk_test_", stripe_tail), "rk_test_"),
+            (
+                format!("hook = {}{}", "whsec_", "Hq8vN2cW7rT4kLx9ZpM3sJ6dQ1fY5bVn"),
+                "whsec_",
+            ),
+            (
+                format!("{}{}", "shpat_", "4f9c2a7e1b3d8f6a0c5e9b2d7a1f3c8e"),
+                "shpat_",
+            ),
+            (format!("id = {}{}", "ASIA", "Q7RT2MVX6KPL4WZS"), "ASIA"),
+            // A pasted multi-line key, a JSON-escaped one (service account
+            // files), and an OpenSSH key.
+            (format!("const k = `{header}\n{body}\n`;"), "-----BEGIN "),
+            (
+                format!("\"private_key\": \"{rsa_header}\\n{body}\\n\""),
+                "-----BEGIN ",
+            ),
+            (format!("{ssh_header}\r\n{body}"), "-----BEGIN "),
+            (
+                format!("{header}\n{}\n{}\n", &body[..32], &body[32..]),
+                "-----BEGIN ",
+            ),
+            (
+                format!("{header}\\r\\n{}\\r\\n{}", &body[..32], &body[32..]),
+                "-----BEGIN ",
+            ),
+            // An indented body (YAML block scalar), and an escaped key that
+            // follows another block's `\n`.
+            (format!("key: |\n  {header}\n  {body}\n"), "-----BEGIN "),
+            (
+                format!("\"chain\": \"-----END CERTIFICATE-----\\n{header}\\n{body}\""),
+                "-----BEGIN ",
+            ),
+        ];
+        for (text, prefix) in cases {
+            let findings = code_pattern_findings("src/a.ts", &text);
+            assert_eq!(findings.len(), 1, "{prefix}");
+            assert_eq!(findings[0].pattern, Some(prefix));
+            let json = serde_json::to_string(&findings).unwrap();
+            assert!(!json.contains("Q7rT2mVx9K") && !json.contains(&body[..20]));
+        }
+    }
+
+    #[test]
+    fn new_code_patterns_ignore_near_misses() {
+        let body = pem_body_line();
+        let header = ["-----BEGIN ", "PRIVATE KEY-----"].concat();
+        let public = ["-----BEGIN ", "PUBLIC KEY-----"].concat();
+        let cert = ["-----BEGIN ", "CERTIFICATE-----"].concat();
+        for text in [
+            "gho_short and ghs_also_short".to_string(),
+            concat!("fn ghu_", "refresh_access_flow_for_device_tokens() {}").to_string(),
+            "rk_live_x whsec_test shpat_abc".to_string(),
+            format!("REGION_{}{} = 1", "ASIA", "PACIFICNORTHEAST"),
+            format!("{}{}", "ASIA", "PACIFICNORTHEAST"),
+            format!("{}{}", "ASIA", "Q7RT2MVX6KPL4WZS77"),
+            // Code that detects PEM blocks, a header with a short body, and
+            // public material.
+            "if line.starts_with(\"-----BEGIN \") {".to_string(),
+            format!("assert!(pem.contains(\"{header}\"));"),
+            format!("{header}\\nMIIEvQIBADANBgkqhkiG9w0BAQEF...\\n"),
+            format!("{header}\n{}\n-----END PRIVATE KEY-----", &body[..32]),
+            format!(
+                "{header}\n{}\n-----END PRIVATE KEY-----\n{body}",
+                &body[..32]
+            ),
+            format!("{public}\n{body}"),
+            format!("{cert}\n{body}"),
+        ] {
+            assert!(
+                code_pattern_findings("src/a.rs", &text).is_empty(),
+                "{text}"
+            );
+        }
     }
 }
