@@ -51,21 +51,11 @@ pub fn run(
     let existing = vault_names.iter().cloned().collect::<BTreeSet<_>>();
     let incoming = secrets.0.keys().cloned().collect::<Vec<_>>();
     export_cmd::validate_consent_names(&incoming)?;
-    let destination_names = incoming
-        .iter()
-        .filter(|name| force || !existing.contains(*name))
-        .cloned()
-        .collect::<Vec<_>>();
-    let overwrite_names = incoming
-        .iter()
-        .filter(|name| force && existing.contains(*name))
-        .cloned()
-        .collect::<Vec<_>>();
-    let skipped_names = incoming
-        .iter()
-        .filter(|name| !force && existing.contains(*name))
-        .cloned()
-        .collect::<Vec<_>>();
+    let ImportSets {
+        destination: destination_names,
+        overwrite: overwrite_names,
+        skipped: skipped_names,
+    } = import_sets(&incoming, &existing, force);
     // A restored value carries no rotation anchor: a new entry would be
     // stamped as stored now and a forced overwrite would keep the local
     // anchor, laundering an overdue value from an old backup. Refuse every
@@ -97,7 +87,7 @@ pub fn run(
             .0
             .get(name)
             .expect("every reviewed destination has an imported value");
-        let before = snapshot_destination_secret(vault.as_ref(), name)?;
+        let before = reviewed_before_image(vault.as_ref(), name, &overwrite_names)?;
         mutations.push(secret_mutation(name, value.as_str(), before.as_ref()));
     }
     let imported = mutations.len();
@@ -413,20 +403,22 @@ pub fn run_from(source: &str, file: &str, force: bool) -> Result<()> {
     let existing = vault_names.iter().cloned().collect::<BTreeSet<_>>();
     let incoming = secrets.keys().cloned().collect::<Vec<_>>();
     export_cmd::validate_consent_names(&incoming)?;
-    let overwrite_names = incoming
-        .iter()
-        .filter(|name| existing.contains(*name))
-        .cloned()
-        .collect::<Vec<_>>();
+    // Without --force an existing name is skipped, exactly as in an
+    // encrypted-backup restore: --force is what selects overwriting.
+    let ImportSets {
+        destination: destination_names,
+        overwrite: overwrite_names,
+        skipped: skipped_names,
+    } = import_sets(&incoming, &existing, force);
     // An imported value carries no rotation anchor: a new entry would be
     // stamped as stored now and an overwrite would keep the local anchor,
-    // laundering an overdue value re-exported from another manager. Every
-    // incoming name is written, so each one whose secret enforces rotation
-    // is refused from names alone, before the challenge and any vault write.
+    // laundering an overdue value re-exported from another manager. Each
+    // name the import writes whose secret enforces rotation is refused from
+    // names alone, before the challenge and any vault write.
     super::rotation_gate::enforce_rotation_on_restore(
         &project.config,
         vault.as_ref(),
-        incoming.iter().map(String::as_str),
+        destination_names.iter().map(String::as_str),
         IMPORT_ACTION,
         super::rotation_gate::now_secs(),
     )?;
@@ -435,18 +427,21 @@ pub fn run_from(source: &str, file: &str, force: bool) -> Result<()> {
         &source_snapshot,
         &project,
         &incoming,
-        &incoming,
+        &destination_names,
         &overwrite_names,
-        &[],
+        &skipped_names,
         force,
         "not applicable",
     )?;
     export_cmd::require_trusted_terminal_effect(&consent.effect, &consent.challenge)?;
     verify_import_preflight(&project, &source_snapshot, &vault_names, vault.as_ref())?;
 
-    let mut mutations = Vec::with_capacity(secrets.len());
-    for (name, value) in &secrets {
-        let before = snapshot_destination_secret(vault.as_ref(), name)?;
+    let mut mutations = Vec::with_capacity(destination_names.len());
+    for name in &destination_names {
+        let value = secrets
+            .get(name)
+            .expect("every reviewed destination has an imported value");
+        let before = reviewed_before_image(vault.as_ref(), name, &overwrite_names)?;
         mutations.push(secret_mutation(name, value.as_ref(), before.as_ref()));
     }
     let imported = mutations.len();
@@ -465,7 +460,7 @@ pub fn run_from(source: &str, file: &str, force: bool) -> Result<()> {
         "ok".green().bold(),
         imported,
         source,
-        0,
+        skipped_names.len(),
         0
     );
 
@@ -628,6 +623,35 @@ fn config_transaction_guard(project: &ImportProject) -> phantom_vault::InitFile 
     )
 }
 
+/// The names an import writes, overwrites and skips. Without `force` an
+/// incoming name the vault already holds is skipped; with it, that name is
+/// overwritten. Every import path decides its sets here so `--force` means
+/// the same thing for a backup restore and a competitor import.
+struct ImportSets {
+    destination: Vec<String>,
+    overwrite: Vec<String>,
+    skipped: Vec<String>,
+}
+
+fn import_sets(incoming: &[String], existing: &BTreeSet<String>, force: bool) -> ImportSets {
+    let mut sets = ImportSets {
+        destination: Vec::new(),
+        overwrite: Vec::new(),
+        skipped: Vec::new(),
+    };
+    for name in incoming {
+        if !existing.contains(name) {
+            sets.destination.push(name.clone());
+        } else if force {
+            sets.destination.push(name.clone());
+            sets.overwrite.push(name.clone());
+        } else {
+            sets.skipped.push(name.clone());
+        }
+    }
+    sets
+}
+
 #[allow(clippy::too_many_arguments)]
 fn import_consent_plan(
     import_type: &str,
@@ -741,6 +765,23 @@ fn snapshot_destination_secret(
     }
 }
 
+/// The before-image an import mutation is checked against at commit. A name
+/// reviewed as new keeps an absent before-image, so a value another writer
+/// created after the preflight makes the commit refuse instead of being
+/// replaced without `--force`; only a reviewed overwrite reads the current
+/// value.
+fn reviewed_before_image(
+    vault: &dyn phantom_vault::VaultBackend,
+    name: &str,
+    overwrite_names: &[String],
+) -> Result<Option<Zeroizing<String>>> {
+    if overwrite_names.iter().any(|overwrite| overwrite == name) {
+        snapshot_destination_secret(vault, name)
+    } else {
+        Ok(None)
+    }
+}
+
 fn secret_mutation(
     name: &str,
     value: &str,
@@ -797,6 +838,46 @@ mod fail_closed_tests {
             .unwrap();
         assert!(gate < challenge);
         assert!(gate < run_from.find("commit_init(").unwrap());
+    }
+
+    fn names(list: &[&str]) -> Vec<String> {
+        list.iter().map(|name| name.to_string()).collect()
+    }
+
+    /// Without --force an import skips a name the vault already holds; with
+    /// it, that name is overwritten. New names are written either way.
+    #[test]
+    fn import_sets_skip_existing_names_unless_forced() {
+        let incoming = names(&["NEW_KEY", "OLD_KEY"]);
+        let existing = names(&["OLD_KEY", "OTHER_KEY"]).into_iter().collect();
+
+        let kept = import_sets(&incoming, &existing, false);
+        assert_eq!(kept.destination, names(&["NEW_KEY"]));
+        assert!(kept.overwrite.is_empty());
+        assert_eq!(kept.skipped, names(&["OLD_KEY"]));
+
+        let forced = import_sets(&incoming, &existing, true);
+        assert_eq!(forced.destination, names(&["NEW_KEY", "OLD_KEY"]));
+        assert_eq!(forced.overwrite, names(&["OLD_KEY"]));
+        assert!(forced.skipped.is_empty());
+    }
+
+    /// A competitor import (`--from`) wrote every incoming name, so an
+    /// existing secret was replaced without --force and the output said
+    /// "0 skipped". It now decides its sets the way a backup restore does,
+    /// writes only the destination set and reports the skipped count.
+    #[test]
+    fn competitor_import_honours_force_like_a_backup_restore() {
+        let source = include_str!("import_cmd.rs");
+        let run_from = &source[source.find("pub fn run_from(").unwrap()..];
+        let run_from = &run_from[..run_from.find("fn managed_dotenv_has_plaintext(").unwrap()];
+        let sets = run_from
+            .find("import_sets(&incoming, &existing, force)")
+            .expect("competitor import must decide its sets from --force");
+        assert!(sets < run_from.find("IMPORT_ACTION").unwrap());
+        assert!(run_from.contains("for name in &destination_names"));
+        assert!(run_from.contains("skipped_names.len()"));
+        assert!(!run_from.contains("for (name, value) in &secrets"));
     }
 
     struct ListFailingVault;
@@ -877,6 +958,18 @@ mod fail_closed_tests {
         assert!(error
             .to_string()
             .contains("injected destination read failure"));
+    }
+
+    /// A name reviewed as new is never read back as a before-image: if another
+    /// writer creates it after the preflight, the commit must refuse rather
+    /// than treat it as an authorised overwrite. A reviewed overwrite is read.
+    #[test]
+    fn reviewed_new_names_keep_an_absent_before_image() {
+        let overwrite = names(&["OLD_KEY"]);
+        let new = reviewed_before_image(&ListFailingVault, "NEW_KEY", &overwrite)
+            .expect("a reviewed new name does not read the destination");
+        assert!(new.is_none());
+        assert!(reviewed_before_image(&ListFailingVault, "OLD_KEY", &overwrite).is_err());
     }
 
     #[test]
