@@ -5139,7 +5139,7 @@ impl PhantomMcpServer {
                 1,
                 std::time::Duration::from_secs(1),
             );
-            return validation_report_result(empty, &refused, vault_note);
+            return validation_report_result(empty, &refused, vault_note, None);
         }
         let (names_digest, names_sample) = bounded_validation_name_plan(&allowed)?;
         let mut metadata_before = std::collections::BTreeMap::new();
@@ -5206,7 +5206,8 @@ impl PhantomMcpServer {
         let timeout = std::time::Duration::from_secs(timeout_secs);
         let validators = phantom_core::validator::default_validators();
 
-        let report =
+        let started_at = phantom_vault::metadata::now_secs();
+        let mut report =
             phantom_core::validator::run_validation_pipeline(secrets, &validators, jobs, timeout);
 
         // Persist ValidationMetadata for each result so phantom_validate_secret
@@ -5256,7 +5257,26 @@ impl PhantomMcpServer {
             ));
         }
 
-        validation_report_result(report, &refused, vault_note)
+        // Recorded for `phantom_validation_history`, refused entries counted
+        // as `phantom validate --check-all` counts them. A failed write is
+        // reported beside the report and never changes it.
+        for (name, reason) in &refused {
+            report.push_refused(name, reason);
+        }
+        // A run the gate refused entirely after approval checked nothing.
+        let history_error = if allowed.is_empty() {
+            None
+        } else {
+            phantom_core::validation_scheduler::record_run(
+                &phantom_core::validation_scheduler::state_file_path(config.local_project_id()),
+                phantom_core::validation_scheduler::ValidationRunRecord::from_report(
+                    started_at, &report,
+                ),
+            )
+            .err()
+            .map(|error| format!("This run was not added to validation history: {error:#}"))
+        };
+        validation_report_result(report, &[], vault_note, history_error)
     }
 
     // ── Validation scheduler tools ────────────────────────────────────────
@@ -6066,13 +6086,17 @@ fn validation_report_result(
     mut report: phantom_core::validator::ValidationReport,
     refused: &[(String, String)],
     vault_note: Option<String>,
+    history_error: Option<String>,
 ) -> Result<CallToolResult, McpError> {
     for (name, reason) in refused {
         report.push_refused(name, reason);
     }
     let any_refused = report.refused > 0;
-    let report = serde_json::to_value(&report)
+    let mut report = serde_json::to_value(&report)
         .map_err(|error| internal_err(format!("Serialization error: {error}")))?;
+    if let (Some(error), Some(object)) = (history_error, report.as_object_mut()) {
+        object.insert("history_error".to_string(), error.into());
+    }
     let mut result = json_object_result(&with_vault_note(report, vault_note))?;
     if any_refused {
         result.is_error = Some(true);
@@ -13821,6 +13845,40 @@ mod tests {
                 .unwrap(),
             None
         );
+    }
+
+    /// `phantom_validation_history` read runs nothing wrote:
+    /// `phantom_validate_all` never recorded one.
+    #[test]
+    fn validate_all_records_the_run_in_history() {
+        let _environment = TestEnvironment::new();
+        let _home = TestHome::new();
+        let (server, _dir) = setup_initialized_project();
+        let history = || {
+            server
+                .phantom_validation_history(Parameters(ValidationHistoryParams { limit: 20 }))
+                .unwrap()
+                .structured_content
+                .unwrap()
+        };
+        assert_eq!(history()["total_runs"], 0);
+
+        let report = server
+            .phantom_validate_all(Parameters(ValidateAllParams {
+                jobs: 1,
+                confirm: true,
+                approval_token: None,
+            }))
+            .map_err(|error| error.message.to_string())
+            .unwrap()
+            .structured_content
+            .unwrap();
+        assert!(report.get("history_error").is_none(), "{report}");
+
+        let after = history();
+        assert_eq!(after["total_runs"], 1);
+        assert_eq!(after["entries"][0]["total"], report["total"]);
+        assert!(!after.to_string().contains("OPENAI_API_KEY"));
     }
 
     /// The sync report's live-gate check reads names and metadata only:
