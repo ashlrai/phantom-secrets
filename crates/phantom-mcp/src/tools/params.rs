@@ -120,6 +120,9 @@ fn default_env_path() -> String {
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AddSecretParams {
+    /// Generate a new 256-bit random secret locally. No value is accepted or returned.
+    #[serde(default)]
+    pub generate: bool,
     /// Name of the secret (e.g., OPENAI_API_KEY)
     pub name: String,
     /// Required. Must be true — the calling agent must confirm with the user

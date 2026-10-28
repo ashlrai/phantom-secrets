@@ -305,6 +305,9 @@ enum Commands {
         /// Read one new-name value from a pipe up to EOF (64 KiB cap); input with more than one line needs --multiline or --first-line; existing names are denied before the read
         #[arg(long)]
         stdin: bool,
+        /// Generate a 256-bit random secret locally; print only name and SHA-256 fingerprint
+        #[arg(long, conflicts_with_all = ["stdin", "value", "multiline", "first_line"])]
+        generate: bool,
         /// With --stdin: store every line of multi-line input (PEM keys, JSON documents)
         #[arg(long, requires = "stdin", conflicts_with = "first_line")]
         multiline: bool,
@@ -1336,6 +1339,7 @@ fn run() -> anyhow::Result<()> {
             stdin,
             multiline,
             first_line,
+            generate,
         } => {
             let lines = if multiline {
                 commands::add::StdinLines::Multiline
@@ -1344,7 +1348,7 @@ fn run() -> anyhow::Result<()> {
             } else {
                 commands::add::StdinLines::SingleOnly
             };
-            commands::add::run(&name, value, stdin, lines)
+            commands::add::run(&name, value, stdin, lines, generate)
         }
         Commands::Remove { name } => commands::remove::run(&name),
         Commands::Reveal {
