@@ -807,20 +807,9 @@ fn now_unix() -> u64 {
         .as_secs()
 }
 
-/// Format a Unix timestamp as an ISO-8601-like UTC string for display.
+/// Format a Unix timestamp as an ISO-8601 UTC string for display.
 fn chrono_iso(secs: u64) -> String {
-    // Manual calculation to avoid pulling in chrono — only for display.
-    let s = secs;
-    let sec = s % 60;
-    let min = (s / 60) % 60;
-    let hour = (s / 3600) % 24;
-    let days = s / 86_400;
-    // Approximate date from days since epoch (good enough for display).
-    let year = 1970 + days / 365;
-    let rem_days = days % 365;
-    let month = rem_days / 30 + 1;
-    let day = rem_days % 30 + 1;
-    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{min:02}:{sec:02}Z")
+    phantom_core::analytics::unix_to_iso8601(secs)
 }
 
 /// Reject the legacy shadow-candidate path.
@@ -1502,6 +1491,15 @@ mod token_remap_tests {
     use phantom_vault::SecretMetadata;
     use tempfile::tempdir;
     use zeroize::Zeroizing;
+
+    /// The batch summary's expiry columns used 365-day years and 30-day
+    /// months, so 26 Oct 2026 printed as 13 Nov.
+    #[test]
+    fn expiry_columns_print_the_real_calendar_date() {
+        assert_eq!(chrono_iso(1_793_016_000), "2026-10-26T12:00:00Z");
+        assert_eq!(chrono_iso(1_798_718_400), "2026-12-31T12:00:00Z");
+        assert_eq!(chrono_iso(1_835_481_599), "2028-02-29T23:59:59Z");
+    }
 
     fn sample_plan() -> LocalTokenRemapPlan {
         let project_dir = PathBuf::from("/canonical/project");
