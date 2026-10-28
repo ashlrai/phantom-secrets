@@ -87,8 +87,7 @@ fn collect_expiring(
             let m = meta.as_ref()?;
             let expires_at = m.expires_at?;
             let days_remaining = m.days_remaining()?;
-            // Include expired (days_remaining < 0) and expiring soon.
-            if days_remaining <= warn_days as i64 {
+            if phantom_vault::metadata::in_expiry_report(days_remaining, warn_days) {
                 Some(ExpiryEntry {
                     name: entry_name.clone(),
                     days_remaining,
@@ -329,78 +328,16 @@ fn require_trusted_terminal_expiry_set(
 /// The JSON is [`phantom_vault::metadata::ExpiryEnforceReport`], the same
 /// value the `phantom_expiry_enforce` MCP tool returns.
 pub fn run_enforce(fail_closed: bool, json: bool) -> Result<()> {
-    use phantom_core::rotation_strategy::check_expiry;
-
-    let (report, entries, now) = enforce_inputs(fail_closed)?;
+    let report = enforce_report(fail_closed)?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
-        let mut expired: Vec<EnforceEntry> = Vec::new();
-        let mut ok_count: usize = 0;
-        let mut no_expiry_count: usize = 0;
-        for (name, metadata) in entries {
-            match metadata.and_then(|metadata| metadata.expires_at) {
-                None => {
-                    no_expiry_count += 1;
-                }
-                Some(expires_at) => {
-                    let status = check_expiry(expires_at, 0, now);
-                    if status.is_expired() {
-                        let secs_overdue = match status {
-                            phantom_core::rotation_strategy::ExpiryStatus::Expired {
-                                secs_overdue,
-                            } => secs_overdue,
-                            _ => 0,
-                        };
-                        expired.push(EnforceEntry {
-                            name,
-                            expires_at,
-                            secs_overdue,
-                            status: status.label(),
-                        });
-                    } else {
-                        ok_count += 1;
-                    }
-                }
-            }
-        }
-        if expired.is_empty() {
-            if fail_closed && no_expiry_count > 0 {
-                eprintln!(
-                    "{} --fail-closed: {} secret(s) have no expiry policy set.",
-                    "FAIL".red().bold(),
-                    no_expiry_count
-                );
-            } else {
-                println!(
-                    "{} All {} secret(s) with expiry are within TTL ({} with no expiry).",
-                    "ok".green().bold(),
-                    ok_count,
-                    no_expiry_count
-                );
-            }
-        } else {
-            eprintln!(
-                "{} {} expired secret(s) detected:",
-                "EXPIRED".red().bold(),
-                expired.len()
-            );
-            for e in &expired {
-                let days_overdue = e.secs_overdue / 86_400;
-                eprintln!(
-                    "   {} {}: {} ({} day(s) overdue)",
-                    "x".red(),
-                    e.name.bold(),
-                    e.status,
-                    days_overdue
-                );
-            }
-            eprintln!(
-                "\nRun a configured provider rotation to replace expired credentials. {} only remaps the local phm_ placeholder and does not reset expiry.",
-                "phantom expiry rotate <KEY>".cyan()
-            );
-        }
+        write_enforce_text(
+            &mut std::io::stdout().lock(),
+            &mut std::io::stderr().lock(),
+            &report,
+        )?;
     }
 
     // Exit 1 if expired, or if fail_closed with no-TTL secrets.
@@ -410,27 +347,79 @@ pub fn run_enforce(fail_closed: bool, json: bool) -> Result<()> {
     Ok(())
 }
 
-/// One entry in the human enforce output.
-#[derive(Debug, Serialize)]
-pub struct EnforceEntry {
-    pub name: String,
-    pub expires_at: u64,
-    pub secs_overdue: u64,
-    pub status: String,
+/// The human answer of `phantom expiry enforce`, built from the same report
+/// as `--json`: a pass goes to `out`, every violation to `err`, and each
+/// failing secret is named, the no-policy ones under `--fail-closed` too.
+fn write_enforce_text(
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+    report: &phantom_vault::metadata::ExpiryEnforceReport,
+) -> Result<()> {
+    if report.pass {
+        writeln!(
+            out,
+            "{} All {} secret(s) with expiry are within TTL ({} with no expiry).",
+            "ok".green().bold(),
+            report.ok_count,
+            report.no_expiry_count
+        )?;
+        return Ok(());
+    }
+    if !report.expired.is_empty() {
+        writeln!(
+            err,
+            "{} {} expired secret(s) detected:",
+            "EXPIRED".red().bold(),
+            report.expired.len()
+        )?;
+        for entry in &report.expired {
+            writeln!(
+                err,
+                "   {} {}: {} ({})",
+                "x".red(),
+                entry.name.bold(),
+                entry.status,
+                overdue_text(entry.secs_overdue)
+            )?;
+        }
+        writeln!(
+            err,
+            "\nRun a configured provider rotation to replace expired credentials. {} only remaps the local phm_ placeholder and does not reset expiry.",
+            "phantom expiry rotate <KEY>".cyan()
+        )?;
+    }
+    if !report.no_expiry_policy.is_empty() {
+        if !report.expired.is_empty() {
+            writeln!(err)?;
+        }
+        writeln!(
+            err,
+            "{} --fail-closed: {} secret(s) have no expiry policy set:",
+            "FAIL".red().bold(),
+            report.no_expiry_policy.len()
+        )?;
+        for entry in &report.no_expiry_policy {
+            writeln!(err, "   {} {}", "x".red(), entry.name.bold())?;
+        }
+        writeln!(
+            err,
+            "\nSet one with {}.",
+            "phantom expiry set <KEY> <DAYS>".cyan()
+        )?;
+    }
+    Ok(())
 }
 
-type EnforceInputs = (
-    phantom_vault::metadata::ExpiryEnforceReport,
-    Vec<(String, Option<phantom_vault::SecretMetadata>)>,
-    u64,
-);
+/// How long ago an expiry passed, in whole days once it is a day or more.
+/// Under a day it said "0 day(s) overdue", which reads as not overdue.
+fn overdue_text(secs_overdue: u64) -> String {
+    match secs_overdue / 86_400 {
+        0 => "expired less than a day ago".to_string(),
+        days => format!("{days} day(s) overdue"),
+    }
+}
 
-#[cfg(test)]
 fn enforce_report(fail_closed: bool) -> Result<phantom_vault::metadata::ExpiryEnforceReport> {
-    enforce_inputs(fail_closed).map(|(report, _, _)| report)
-}
-
-fn enforce_inputs(fail_closed: bool) -> Result<EnforceInputs> {
     let project_dir = crate::util::project_dir()?;
     let config = crate::util::load_project_config(&project_dir)?;
     let vault = crate::util::open_vault(config.local_project_id())?;
@@ -446,8 +435,11 @@ fn enforce_inputs(fail_closed: bool) -> Result<EnforceInputs> {
         entries.len(),
         "enforce expiry",
     )?;
-    let report = phantom_vault::metadata::expiry_enforce_report(&entries, fail_closed, now);
-    Ok((report, entries, now))
+    Ok(phantom_vault::metadata::expiry_enforce_report(
+        &entries,
+        fail_closed,
+        now,
+    ))
 }
 
 // ── phantom expiry rotate <KEY> (deprecated token remap) ─────────────────────
@@ -563,6 +555,31 @@ mod tests {
         assert_eq!(json[0]["expired"], true);
         assert_eq!(json[1]["expired"], false);
     }
+
+    /// `--days 0` is documented as already-expired only. A secret that
+    /// expires later today has 0 whole days left and was listed with them.
+    #[test]
+    fn zero_day_window_lists_only_expired_secrets() {
+        let now = phantom_vault::metadata::now_secs();
+        let meta = |expires_at| {
+            Some(phantom_vault::SecretMetadata {
+                expires_at: Some(expires_at),
+                ..Default::default()
+            })
+        };
+        let entries = vec![
+            ("LATER_TODAY".to_string(), meta(now + 3_600)),
+            ("JUST_EXPIRED".to_string(), meta(now - 3_600)),
+        ];
+        let names = |days| -> Vec<String> {
+            collect_expiring(&entries, days)
+                .into_iter()
+                .map(|e| e.name)
+                .collect()
+        };
+        assert_eq!(names(0), ["JUST_EXPIRED"]);
+        assert_eq!(names(1), ["JUST_EXPIRED", "LATER_TODAY"]);
+    }
 }
 
 #[cfg(test)]
@@ -642,6 +659,66 @@ mod enforce_report_tests {
         assert_eq!(names(&open, "expired"), ["EXPIRED_ONE"], "{open}");
         assert_eq!(open["no_expiry_policy"], serde_json::json!([]));
         assert_eq!(open["pass"], false);
+    }
+
+    /// The text answer named the expired secrets but not the no-policy ones
+    /// `--fail-closed` failed on, dropped that failure entirely when both
+    /// were present, and called an expiry from an hour ago "0 day(s) overdue".
+    #[test]
+    fn enforce_text_names_every_failing_entry() {
+        use phantom_vault::SecretMetadata;
+        let now = 1_900_000_000;
+        let with_expiry = |expires_at| {
+            Some(SecretMetadata {
+                expires_at: Some(expires_at),
+                ..Default::default()
+            })
+        };
+        let entries = vec![
+            ("HOUR_PAST".to_string(), with_expiry(now - 3_600)),
+            ("WEEK_PAST".to_string(), with_expiry(now - 7 * 86_400)),
+            ("UNSET_ONE".to_string(), None),
+            ("FUTURE_ONE".to_string(), with_expiry(now + 86_400)),
+        ];
+        let render = |fail_closed| {
+            let report = phantom_vault::metadata::expiry_enforce_report(&entries, fail_closed, now);
+            let (mut out, mut err) = (Vec::new(), Vec::new());
+            super::write_enforce_text(&mut out, &mut err, &report).unwrap();
+            (
+                String::from_utf8(out).unwrap(),
+                String::from_utf8(err).unwrap(),
+            )
+        };
+
+        let (out, err) = render(true);
+        assert_eq!(out, "");
+        assert!(err.contains("2 expired secret(s)"), "{err}");
+        assert!(err.contains("HOUR_PAST"), "{err}");
+        assert!(err.contains("expired less than a day ago"), "{err}");
+        assert!(!err.contains("0 day(s) overdue"), "{err}");
+        assert!(err.contains("7 day(s) overdue"), "{err}");
+        assert!(
+            err.contains("1 secret(s) have no expiry policy set"),
+            "{err}"
+        );
+        assert!(err.contains("UNSET_ONE"), "{err}");
+        assert!(!err.contains("FUTURE_ONE"), "{err}");
+
+        let (out, err) = render(false);
+        assert_eq!(out, "");
+        assert!(!err.contains("UNSET_ONE"), "{err}");
+        assert!(!err.contains("no expiry policy"), "{err}");
+
+        let passing = &entries[2..];
+        let report = phantom_vault::metadata::expiry_enforce_report(passing, false, now);
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        super::write_enforce_text(&mut out, &mut err, &report).unwrap();
+        let out = String::from_utf8(out).unwrap();
+        assert!(
+            out.contains("All 1 secret(s) with expiry are within TTL (1 with no expiry)."),
+            "{out}"
+        );
+        assert!(err.is_empty());
     }
 }
 

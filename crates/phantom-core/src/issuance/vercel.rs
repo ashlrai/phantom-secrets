@@ -499,7 +499,7 @@ mod tests {
         let _g = issue_audit_guard();
         let (base, _seen) = spawn_stub(
             400,
-            r#"{"error":"invalid_grant","error_description":"bad code"}"#,
+            r#"{"error":"invalid_grant","error_description":"vercel_FAKE_0123456789abcdefghij"}"#,
         );
         let http = reqwest::blocking::Client::new();
         let ep = endpoints(format!("{base}/v2/oauth/access_token"));
@@ -515,6 +515,9 @@ mod tests {
             .issue(&request(None), &deps)
             .unwrap_err();
         assert!(matches!(err, IssuanceError::Exchange { status: 400, .. }));
+        let logged = format!("{err} {err:?}");
+        assert!(!logged.contains("vercel_FAKE"));
+        assert!(logged.contains("withheld"));
     }
 
     #[test]

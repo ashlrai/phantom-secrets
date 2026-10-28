@@ -26,14 +26,7 @@ fn init_project(dir: &TempDir) {
     )
     .expect("write seed .env");
 
-    Command::cargo_bin("phantom")
-        .expect("binary not found")
-        .args(["init", "--from", ".env"])
-        .current_dir(dir.path())
-        .env("PHANTOM_VAULT_PASSPHRASE", VAULT_PASS)
-        .env("HOME", dir.path())
-        .assert()
-        .success();
+    common::init_project(dir, VAULT_PASS);
 
     // Configure a rotation provider for the secret, exactly as an operator
     // would in .phantom.toml.
@@ -48,10 +41,8 @@ fn init_project(dir: &TempDir) {
 }
 
 fn phantom(dir: &TempDir) -> Command {
-    let mut cmd = Command::cargo_bin("phantom").expect("binary not found");
-    cmd.current_dir(dir.path())
-        .env("PHANTOM_VAULT_PASSPHRASE", VAULT_PASS)
-        .env("HOME", dir.path())
+    let mut cmd = common::phantom(dir, VAULT_PASS);
+    cmd
         // Regression input: this legacy runtime flag must be ignored by the
         // shipped CLI binary. Positive mock-provider behavior is covered by
         // phantom-core's compiled unit tests instead.

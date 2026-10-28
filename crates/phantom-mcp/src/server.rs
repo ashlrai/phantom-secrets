@@ -2365,10 +2365,17 @@ impl PhantomMcpServer {
                 .and_then(|path| path.file_name())
                 .and_then(|name| name.to_str())
                 .unwrap_or(".env");
-            if content.lines().any(|l| l.trim() == managed_name) {
+            let state = phantom_core::gitignore::dotenv_ignore_state(&content, managed_name);
+            if state == phantom_core::gitignore::DotenvIgnore::Ignored {
                 log.pass(format!("{managed_name} is in .gitignore"));
             } else {
-                log.warn(".env is NOT in .gitignore — secrets could be committed!");
+                if state == phantom_core::gitignore::DotenvIgnore::Negated {
+                    log.warn(format!(
+                        "{managed_name} is un-ignored by a later `!` rule in .gitignore — secrets could be committed!"
+                    ));
+                } else {
+                    log.warn(".env is NOT in .gitignore — secrets could be committed!");
+                }
                 if params.fix {
                     let mut c = content;
                     if !c.ends_with('\n') {
@@ -5132,7 +5139,7 @@ impl PhantomMcpServer {
                 1,
                 std::time::Duration::from_secs(1),
             );
-            return validation_report_result(empty, &refused, vault_note);
+            return validation_report_result(empty, &refused, vault_note, None);
         }
         let (names_digest, names_sample) = bounded_validation_name_plan(&allowed)?;
         let mut metadata_before = std::collections::BTreeMap::new();
@@ -5199,7 +5206,8 @@ impl PhantomMcpServer {
         let timeout = std::time::Duration::from_secs(timeout_secs);
         let validators = phantom_core::validator::default_validators();
 
-        let report =
+        let started_at = phantom_vault::metadata::now_secs();
+        let mut report =
             phantom_core::validator::run_validation_pipeline(secrets, &validators, jobs, timeout);
 
         // Persist ValidationMetadata for each result so phantom_validate_secret
@@ -5249,7 +5257,26 @@ impl PhantomMcpServer {
             ));
         }
 
-        validation_report_result(report, &refused, vault_note)
+        // Recorded for `phantom_validation_history`, refused entries counted
+        // as `phantom validate --check-all` counts them. A failed write is
+        // reported beside the report and never changes it.
+        for (name, reason) in &refused {
+            report.push_refused(name, reason);
+        }
+        // A run the gate refused entirely after approval checked nothing.
+        let history_error = if allowed.is_empty() {
+            None
+        } else {
+            phantom_core::validation_scheduler::record_run(
+                &phantom_core::validation_scheduler::state_file_path(config.local_project_id()),
+                phantom_core::validation_scheduler::ValidationRunRecord::from_report(
+                    started_at, &report,
+                ),
+            )
+            .err()
+            .map(|error| format!("This run was not added to validation history: {error:#}"))
+        };
+        validation_report_result(report, &[], vault_note, history_error)
     }
 
     // ── Validation scheduler tools ────────────────────────────────────────
@@ -5399,7 +5426,7 @@ impl PhantomMcpServer {
                 let m = meta.as_ref()?;
                 let expires_at = m.expires_at?;
                 let days_remaining = m.days_remaining()?;
-                if days_remaining <= params.days as i64 {
+                if phantom_vault::metadata::in_expiry_report(days_remaining, params.days) {
                     Some(serde_json::json!({
                         "name": name,
                         "days_remaining": days_remaining,
@@ -5585,9 +5612,19 @@ impl PhantomMcpServer {
 
         let now = phantom_vault::metadata::now_secs();
 
-        let schedule = config
+        let mut schedule = config
             .get_rotation_schedule(&params.name)
             .map_err(config_invalid_err)?;
+        // Nothing writes the schedule's own `last_rotated`, so it alone made
+        // every schedule overdue. The value's age is the vault's rotation
+        // anchor, the same one `phantom exec` enforcement judges; that
+        // enforcement ignores the config field, so the report does too.
+        if let Some(sched) = schedule.as_mut() {
+            let metadata = vault
+                .get_metadata(&params.name)
+                .map_err(|e| vault_read_err("Failed to read secret metadata", e))?;
+            sched.last_rotated = phantom_vault::rotation_gate::rotation_anchor(metadata.as_ref());
+        }
         let interval_days = schedule.as_ref().and_then(|s| s.strategy.interval_days());
         let (strategy_label, next_unix, last_rotated_unix, overdue) = match &schedule {
             None => ("none".to_string(), None::<u64>, None::<u64>, false),
@@ -6049,13 +6086,17 @@ fn validation_report_result(
     mut report: phantom_core::validator::ValidationReport,
     refused: &[(String, String)],
     vault_note: Option<String>,
+    history_error: Option<String>,
 ) -> Result<CallToolResult, McpError> {
     for (name, reason) in refused {
         report.push_refused(name, reason);
     }
     let any_refused = report.refused > 0;
-    let report = serde_json::to_value(&report)
+    let mut report = serde_json::to_value(&report)
         .map_err(|error| internal_err(format!("Serialization error: {error}")))?;
+    if let (Some(error), Some(object)) = (history_error, report.as_object_mut()) {
+        object.insert("history_error".to_string(), error.into());
+    }
     let mut result = json_object_result(&with_vault_note(report, vault_note))?;
     if any_refused {
         result.is_error = Some(true);
@@ -12039,6 +12080,32 @@ mod tests {
         assert!(structured_report(&result)["fixed"].as_u64().unwrap() >= 2);
     }
 
+    /// The `.gitignore` check followed one literal line: `/.env` drew a
+    /// warning, and a later `!.env` (which Git honours) passed.
+    #[test]
+    fn doctor_gitignore_check_follows_git_rules() {
+        let _environment = TestEnvironment::new();
+        for (body, status, message) in [
+            ("/.env\n", "pass", ".env is in .gitignore"),
+            (".env\n!.env\n", "warn", ".env is un-ignored"),
+        ] {
+            let dir = TempDir::new().unwrap();
+            std::fs::write(dir.path().join(".env"), "PORT=3000\n").unwrap();
+            std::fs::write(dir.path().join(".gitignore"), body).unwrap();
+            let server = PhantomMcpServer::with_dir(dir.path().to_path_buf());
+            let result = server
+                .phantom_doctor(Parameters(DoctorParams {
+                    fix: false,
+                    confirm: false,
+                    approval_token: None,
+                }))
+                .unwrap();
+            let checks = doctor_checks(&result);
+            let check = find_check(&checks, message);
+            assert_eq!(check["status"], status, "{body:?}: {check}");
+        }
+    }
+
     #[test]
     fn doctor_config_parse_error_never_echoes_config_values() {
         let _environment = TestEnvironment::new();
@@ -13778,6 +13845,40 @@ mod tests {
                 .unwrap(),
             None
         );
+    }
+
+    /// `phantom_validation_history` read runs nothing wrote:
+    /// `phantom_validate_all` never recorded one.
+    #[test]
+    fn validate_all_records_the_run_in_history() {
+        let _environment = TestEnvironment::new();
+        let _home = TestHome::new();
+        let (server, _dir) = setup_initialized_project();
+        let history = || {
+            server
+                .phantom_validation_history(Parameters(ValidationHistoryParams { limit: 20 }))
+                .unwrap()
+                .structured_content
+                .unwrap()
+        };
+        assert_eq!(history()["total_runs"], 0);
+
+        let report = server
+            .phantom_validate_all(Parameters(ValidateAllParams {
+                jobs: 1,
+                confirm: true,
+                approval_token: None,
+            }))
+            .map_err(|error| error.message.to_string())
+            .unwrap()
+            .structured_content
+            .unwrap();
+        assert!(report.get("history_error").is_none(), "{report}");
+
+        let after = history();
+        assert_eq!(after["total_runs"], 1);
+        assert_eq!(after["entries"][0]["total"], report["total"]);
+        assert!(!after.to_string().contains("OPENAI_API_KEY"));
     }
 
     /// The sync report's live-gate check reads names and metadata only:
@@ -16988,6 +17089,60 @@ mod tests {
         }
     }
 
+    /// The schedule's `last_rotated` is never written, so a secret stored
+    /// a minute ago under a 90-day interval was reported overdue and due now.
+    /// The vault's rotation anchor is now its last rotation.
+    #[test]
+    fn rotation_schedule_next_judges_a_fresh_secret_by_its_vault_anchor() {
+        let _environment = TestEnvironment::new();
+        let (server, dir) = setup_initialized_project();
+        set_rotate_every(&dir, "OPENAI_API_KEY", "90d", false);
+        let (_config, vault) = server.load_config_and_vault().unwrap();
+        let now = phantom_vault::metadata::now_secs();
+        let next = |rotated_at: u64| {
+            let mut metadata = vault
+                .get_metadata("OPENAI_API_KEY")
+                .unwrap()
+                .unwrap_or_default();
+            metadata.created_at = Some(100);
+            metadata.rotated_at = Some(rotated_at);
+            vault.set_metadata("OPENAI_API_KEY", metadata).unwrap();
+            parse_result_json(
+                &server
+                    .phantom_rotation_schedule_next(params(
+                        serde_json::json!({ "name": "OPENAI_API_KEY" }),
+                    ))
+                    .unwrap(),
+            )
+        };
+
+        let fresh = next(now - 60);
+        assert_eq!(fresh["overdue"], false, "{fresh}");
+        assert_eq!(fresh["last_rotated_unix"], now - 60);
+        assert_eq!(fresh["next_rotation_unix"], now - 60 + 90 * 86_400);
+
+        let stale = next(now - 91 * 86_400);
+        assert_eq!(stale["overdue"], true, "{stale}");
+        assert_eq!(stale["last_rotated_unix"], now - 91 * 86_400);
+
+        // A later `last_rotated` in the config does not hide a value that
+        // `phantom exec` would refuse as overdue.
+        let config_path = dir.path().join(".phantom.toml");
+        let mut config = PhantomConfig::load(&config_path).unwrap();
+        let mut schedule = phantom_core::config::parse_rotate_every("90d").unwrap();
+        schedule.last_rotated = Some(now);
+        config
+            .phantom
+            .secrets
+            .get_mut("OPENAI_API_KEY")
+            .unwrap()
+            .rotation_schedule = Some(schedule);
+        config.save(&config_path).unwrap();
+        let masked = next(now - 91 * 86_400);
+        assert_eq!(masked["overdue"], true, "{masked}");
+        assert_eq!(masked["last_rotated_unix"], now - 91 * 86_400);
+    }
+
     /// An unparseable `rotate_every` silently fell back to the global policy
     /// (or to no schedule). It is now a config error naming the field.
     #[test]
@@ -17347,6 +17502,36 @@ mod tests {
         );
         assert_eq!(entry["expired"], true);
         assert_eq!(entry["status"], "EXPIRED");
+    }
+
+    /// `days: 0` is documented as already-expired only; a secret that
+    /// expires later today has 0 whole days left and was returned too.
+    #[test]
+    fn test_expiry_check_zero_days_omits_secret_expiring_later_today() {
+        let _environment = TestEnvironment::new();
+        let (server, _dir) = setup_initialized_project();
+        let now = phantom_vault::metadata::now_secs();
+        let entry_name = pin_first_entry_metadata(
+            &server,
+            phantom_vault::SecretMetadata {
+                expires_at: Some(now + 3_600),
+                ..Default::default()
+            },
+        );
+
+        let check = |days| {
+            parse_result_json(
+                &server
+                    .phantom_secrets_expiry_check(Parameters(ExpiryCheckParams { days }))
+                    .unwrap(),
+            )
+        };
+        let zero = check(0);
+        assert!(
+            find_entry(&zero["secrets"], &entry_name).is_none(),
+            "unexpired secret listed at days 0: {zero}"
+        );
+        assert!(find_entry(&check(1)["secrets"], &entry_name).is_some());
     }
 
     #[test]

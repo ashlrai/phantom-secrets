@@ -16,15 +16,19 @@ unsupported traffic.
 
 ## Install an exact published version
 
+<!-- fresh:begin npm-cli-wrapper-version -->
 This wrapper is version `0.7.9`. Its manifest and this README do not prove that
 the npm package or matching GitHub release has been published. Verify the exact
 npm version before installing it:
+<!-- fresh:end -->
 
+<!-- fresh:begin npm-cli-install -->
 ```bash
 npm view phantom-secrets@0.7.9 version dist.integrity dist.tarball --registry=https://registry.npmjs.org/
 npm install --global phantom-secrets@0.7.9 --registry=https://registry.npmjs.org/
 phantom --version
 ```
+<!-- fresh:end -->
 
 The first invocation downloads the matching native binary from the exact
 [`v0.7.9` GitHub release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.9),
