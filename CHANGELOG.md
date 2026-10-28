@@ -4,13 +4,6 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
-### Fixed (expiry check at 0 days listed unexpired secrets)
-
-- `phantom secrets-expiring-soon --days 0` and the MCP
-  `phantom_secrets_expiry_check` tool with `days: 0` are documented to list
-  only secrets that have already expired, but they also listed a secret that
-  expires later today. Such a secret now appears from `--days 1` on.
-
 ### Fixed (monthly rotation schedules follow calendar months)
 
 - A `monthly` rotation schedule counted 30-day blocks from 1970, so a schedule
