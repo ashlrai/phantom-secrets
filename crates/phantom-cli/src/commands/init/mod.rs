@@ -1,5 +1,6 @@
 mod config;
 mod docs;
+pub(crate) mod dry_run;
 pub(crate) mod env;
 mod hooks;
 pub mod multi;
