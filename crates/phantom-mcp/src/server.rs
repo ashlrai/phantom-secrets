@@ -2297,7 +2297,7 @@ impl PhantomMcpServer {
                                     "Managed dotenv became malformed; doctor made no repairs: {error}"
                                 )));
                             }
-                            log.fail(format!("Managed dotenv parse error: {error}"));
+                            log.fail(format!("{file_label} parse error: {error}"));
                             issues += 1;
                         } else if real_secrets.is_empty() {
                             // A commented-out secret is still plaintext, so
@@ -2344,10 +2344,7 @@ impl PhantomMcpServer {
                     }
                 }
             } else {
-                log.info(format!(
-                    "No {} file in current directory",
-                    env_path.display()
-                ));
+                log.info(format!("No {file_label} file in current directory"));
             }
         } else {
             log.info("Dotenv checks skipped because no safe managed path was resolved");
@@ -2374,7 +2371,9 @@ impl PhantomMcpServer {
                         "{managed_name} is un-ignored by a later `!` rule in .gitignore — secrets could be committed!"
                     ));
                 } else {
-                    log.warn(".env is NOT in .gitignore — secrets could be committed!");
+                    log.warn(format!(
+                        "{managed_name} is NOT in .gitignore — secrets could be committed!"
+                    ));
                 }
                 if params.fix {
                     let mut c = content;
@@ -2388,7 +2387,7 @@ impl PhantomMcpServer {
                         Some(before),
                         c.into_bytes(),
                     ));
-                    log.fixed("Added .env to .gitignore");
+                    log.fixed(format!("Added {managed_name} to .gitignore"));
                 } else {
                     issues += 1;
                 }
@@ -9708,6 +9707,7 @@ mod tests {
         let mut config = PhantomConfig::load(&config_path).unwrap();
         config.phantom.dotenv_path = Some("custom.env".to_string());
         config.save(&config_path).unwrap();
+        std::fs::write(dir.path().join(".gitignore"), "node_modules\n").unwrap();
 
         let result = server
             .phantom_doctor(Parameters(DoctorParams {
@@ -9726,6 +9726,12 @@ mod tests {
                 .iter()
                 .any(|message| message.starts_with("custom.env has ")
                     && message.ends_with("entries, all protected")),
+            "{messages:?}"
+        );
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.starts_with("custom.env is NOT in .gitignore")),
             "{messages:?}"
         );
         assert!(

@@ -7,3 +7,11 @@
   another file such as one chosen with `phantom init --from`. Only the
   message text changes. Which file doctor checks, the issue counts and the
   exit codes stay the same.
+
+### Security (dotenv file names with control characters are refused)
+
+- A `phantom.dotenv_path`, or an `env_path` argument to the MCP
+  `phantom_init` tool, that contains a control character such as a newline
+  is now refused as an invalid file name. Such a name was echoed into doctor reports, results
+  returned to MCP agents and, with `doctor --fix`, a `.gitignore` line, where
+  it could forge extra lines.
