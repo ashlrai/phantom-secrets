@@ -35,7 +35,7 @@ use tracing_subscriber::EnvFilter;
                     phantom exec -- <command>     run your app or agent through the local proxy\n\n\
                   Commands by task:\n  \
                     Setup         init · agent · setup · doctor · workspace · vault · completion · mcp · mcp-approve\n  \
-                    Daily use     exec · start · stop · status · check · list · add · remove · reveal · copy · env · why · git-credential\n  \
+                    Daily use     exec · start · stop · status · check · list · request · requests · add · remove · reveal · copy · env · why · git-credential\n  \
                     Sync & teams  login · logout · cloud · team · sync · pull · export · import · wrap · unwrap\n  \
                     Maintenance   upgrade · watch · rotate · grant · validate · expiry · secrets-expiring-soon · open · audit · leaks · crypto",
     version
@@ -292,6 +292,24 @@ enum Commands {
         /// tampered log is an error, not an all-normal answer.
         #[arg(long, value_name = "SCORE", value_parser = clap::value_parser!(u8).range(0..=2))]
         min_anomaly_score: Option<u8>,
+    },
+
+    /// Reserve a value-free secret request; fulfill outside the agent with phantom add
+    #[command(next_help_heading = "Daily use")]
+    Request {
+        name: String,
+        /// Non-secret explanation of the need (never put credentials here)
+        #[arg(long)]
+        purpose: String,
+        /// Built-in route name for this key; a hint only, never activates a route
+        #[arg(long)]
+        route: Option<String>,
+    },
+    /// List value-free request status without opening the vault
+    #[command(next_help_heading = "Daily use")]
+    Requests {
+        #[arg(long)]
+        json: bool,
     },
 
     /// Create a new secret name transactionally; existing names are never replaced
@@ -1150,6 +1168,7 @@ fn apply_global_json(command: &mut Commands) -> Result<(), &'static str> {
         }
         // Commands with their own `--json` flag.
         Commands::List { json, .. }
+        | Commands::Requests { json }
         | Commands::Agent {
             action: AgentAction::Status { json },
         }
@@ -1214,6 +1233,7 @@ fn apply_global_json(command: &mut Commands) -> Result<(), &'static str> {
         Commands::Exec { .. } => Err("phantom exec"),
         Commands::Start { .. } => Err("phantom start"),
         Commands::Stop => Err("phantom stop"),
+        Commands::Request { .. } => Err("phantom request"),
         Commands::Add { .. } => Err("phantom add"),
         Commands::Remove { .. } => Err("phantom remove"),
         Commands::Reveal { .. } => Err("phantom reveal"),
@@ -1330,6 +1350,12 @@ fn run() -> anyhow::Result<()> {
             }
             None => commands::list::run_with_expiry(json, show_expiry, min_anomaly_score),
         },
+        Commands::Request {
+            name,
+            purpose,
+            route,
+        } => commands::requests::create(&name, &purpose, route.as_deref()),
+        Commands::Requests { json } => commands::requests::list(json),
         Commands::Add {
             name,
             value,
@@ -1965,6 +1991,7 @@ mod help_tests {
             "grant status",
             "leaks plan",
             "list",
+            "requests",
             "secrets-expiring-soon",
             "status",
             "sync",
