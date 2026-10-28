@@ -116,6 +116,9 @@ cargo build --release --locked -p phantom-secrets-mcp --bin phantom-mcp
 cargo build --locked -p phantom-secrets-mcp --bin phantom-mcp
 node scripts/release/mcp-stdio-smoke.mjs target/debug/phantom-mcp 54
 
+# Changelog headings, dates, ordering, and compare links
+node scripts/release/lint-changelog.mjs
+
 # Provider hard-denial and exact cfg(test) transaction-scaffolding tests
 cargo test --locked -p phantom-secrets --test grant_github_app_test
 cargo test --locked -p phantom-secrets --test grant_vercel_integration_test
@@ -182,6 +185,13 @@ CI runs the normal Rust suite on macOS, Linux, and Windows. A successful cross-c
 
 ## Pull requests
 
+Do not edit `CHANGELOG.md` directly. Add one fragment file to
+[`changelog.d/`](changelog.d/README.md) named `<pr-number-or-slug>.md` with a
+`### Added|Changed|Fixed|Security (topic)` heading and bullets. Fragments are
+folded into the Unreleased section at release time with
+`node scripts/changelog-fold.mjs`, so queued pull requests no longer conflict
+on the changelog.
+
 Use the pull request template. A strong description explains the user problem, trust-boundary impact, exact verification evidence, platform coverage, and remaining limitations. Screenshots are helpful for UI changes but are not substitutes for behavioral tests.
 
 Project decisions and review authority are described in
@@ -199,3 +209,18 @@ is a separate maintainer and legal-policy decision, not an implied requirement.
 ## Questions
 
 Use [GitHub Discussions](https://github.com/ashlrai/phantom-secrets/discussions) for design and usage questions, [GitHub Issues](https://github.com/ashlrai/phantom-secrets/issues) for reproducible defects and accepted work, and [SUPPORT.md](SUPPORT.md) to choose the right public or private route.
+
+### Testing affected Rust packages
+
+`scripts/affected-tests BASE [HEAD]` prints Cargo package names, one per line,
+for changed workspace crates and their transitive dependents. It uses Cargo's
+resolved graph, including build, development, renamed and optional dependencies.
+An empty list means no Rust packages are affected. Workspace configuration
+changes, unknown crate paths, and unavailable metadata select `ALL`.
+
+Run `make test-affected BASE=main` to test that selection, or `make test-affected`
+to inspect tracked staged and unstaged changes against HEAD. Untracked files are
+excluded; add new files to Git before using this shortcut. This is a local
+iteration aid; the full workspace checks above remain required before merging.
+Cargo and Python 3 must be on PATH. Run the selector's fixture tests with
+`python3 scripts/affected-tests.test.py`.
