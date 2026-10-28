@@ -217,22 +217,22 @@ trait PassphraseStore {
 }
 
 struct KeyringPassphraseStore {
-    entry: keyring::Entry,
+    entry: keyring_core::Entry,
 }
 
 impl PassphraseStore for KeyringPassphraseStore {
     fn get(&self) -> std::result::Result<Option<Zeroizing<String>>, String> {
         match self.entry.get_password() {
             Ok(passphrase) => Ok(Some(Zeroizing::new(passphrase))),
-            Err(keyring::Error::NoEntry) => Ok(None),
-            Err(error) => Err(error.to_string()),
+            Err(keyring_core::Error::NoEntry) => Ok(None),
+            Err(error) => Err(phantom_core::keyring::error_kind(&error).to_string()),
         }
     }
 
     fn set(&self, passphrase: &str) -> std::result::Result<(), String> {
         self.entry
             .set_password(passphrase)
-            .map_err(|error| error.to_string())
+            .map_err(|error| phantom_core::keyring::error_kind(&error).to_string())
     }
 }
 
@@ -297,7 +297,8 @@ fn get_or_create_passphrase(project_id: &str, allow_generation: bool) -> Result<
     let entry =
         keychain::unmigrated_os_entry(PASSPHRASE_SERVICE, &keychain_key).map_err(|error| {
             PhantomError::VaultError(format!(
-                "could not create the secure passphrase entry: {error}"
+                "could not create the secure passphrase entry: {}",
+                phantom_core::keyring::error_kind(&error)
             ))
         })?;
     resolve_persisted_passphrase(
@@ -429,6 +430,34 @@ mod tests {
         assert_eq!(generated.len(), 64);
         assert!(generated.bytes().all(|b| b.is_ascii_hexdigit()));
         assert_ne!(generated.as_str(), generate_passphrase().as_str());
+    }
+
+    #[test]
+    fn keyring_passphrase_adapter_redacts_backend_errors_without_replacing_key() {
+        use keyring_core::api::CredentialStoreApi;
+        let entry = keyring_core::mock::Store::new()
+            .unwrap()
+            .build("phantom-test-passphrase", "test-account", None)
+            .unwrap();
+        entry.set_password("synthetic-test-passphrase").unwrap();
+        entry
+            .as_any()
+            .downcast_ref::<keyring_core::mock::Cred>()
+            .unwrap()
+            .set_error(keyring_core::Error::BadDataFormat(
+                b"synthetic-test-passphrase".to_vec(),
+                "raw-test-error-detail".into(),
+            ));
+        let store = KeyringPassphraseStore { entry };
+        let error = resolve_persisted_passphrase(&store, true, || {
+            panic!("a failed store read must never generate a replacement key")
+        })
+        .unwrap_err();
+        let diagnostic = error.to_string();
+        assert!(diagnostic.contains("malformed credential data"));
+        assert!(!diagnostic.contains("synthetic-test-passphrase"));
+        assert!(!diagnostic.contains("raw-test-error-detail"));
+        assert!(store.get().unwrap().unwrap().as_str() == "synthetic-test-passphrase");
     }
 
     #[test]
