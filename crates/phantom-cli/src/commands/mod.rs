@@ -30,6 +30,7 @@ pub mod pq_report;
 pub(crate) mod proxy_lifecycle;
 pub mod pull;
 pub mod remove;
+pub(crate) mod report_json;
 pub mod reveal;
 pub mod rotate;
 pub(crate) mod rotation_gate;
