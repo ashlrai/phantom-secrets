@@ -4,21 +4,6 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
-### Fixed (counts and JSON in audit alerts, batch rotation and analytics)
-
-- `phantom audit alerts` printed the listed count as the total: 120 alerts
-  with the default `--last 50` read "50 leak alert(s) (most recent 50 shown)".
-  The header now counts every alert in the file, and `--last 0` no longer
-  says "No leak alerts found" when alerts exist.
-- `phantom rotate --batch --json` printed "Found N secret(s) due..." on stdout
-  ahead of the JSON array, and plain text when nothing was due, so the output
-  did not parse. Under `--json` stdout now carries only JSON (`[]` when there
-  is nothing to rotate) and the progress line goes to stderr.
-- Audit analytics divided accesses by elapsed time but bucketed them by
-  calendar day, so one access just before midnight and one just after gave
-  an average of 2 a day with a busiest day of 1. The average now divides by
-  the calendar days from the first access to the last, inclusive.
-
 ### Fixed (monthly rotation schedules follow calendar months)
 
 - A `monthly` rotation schedule counted 30-day blocks from 1970, so a schedule
