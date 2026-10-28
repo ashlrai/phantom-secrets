@@ -158,9 +158,9 @@ Claude's shell and PTY authority.
 
 | Tool | What it does |
 |------|-------------|
-| `phantom_add_secret` | Deprecated compatibility tool. Refuses plaintext values passed through MCP. |
+| `phantom_add_secret` | Deprecated compatibility tool. Refuses plaintext values passed through MCP; with `generate: true`, creates a local random secret and returns only its name and fingerprint. |
 | `phantom_remove_secret` | Transactionally remove the vault value, lifecycle record, and exact managed-dotenv mapping. |
-| `phantom_rotate` | Regenerate all phantom tokens in `.env`. Old tokens become invalid immediately — any running dev server that cached them will break until it reloads. Real secrets are unchanged. |
+| `phantom_rotate` | Regenerate all phantom tokens in `.env`. Old tokens become invalid immediately - any running dev server that cached them will break until it reloads. Real secrets are unchanged. With `generate: true` plus `name`, atomically replaces a named local value in the encrypted file vault; no provider issuance. |
 | `phantom_cloud_push` | With a separately commissioned hosted deployment and entitled account, encrypt and upload the local vault. The public hosted service is not currently commissioned for authenticated use. Overwrites the existing cloud copy and requires `phantom login` first. |
 | `phantom_cloud_pull` | With a separately commissioned hosted deployment and entitled account, download and decrypt a vault. The public hosted service is not currently commissioned for authenticated use. With `force=false`, skipped entries preserve the prior merge base and block push until full reconciliation; `force=true` declares overwrites but does not bypass approval. |
 | `phantom_copy_secret` | Copy into another initialized project using exact config/vault/managed-dotenv before-images. Existing target ownership and traversal are refused. |

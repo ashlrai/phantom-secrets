@@ -120,6 +120,9 @@ fn default_env_path() -> String {
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AddSecretParams {
+    /// Generate a new 256-bit random secret locally. No value is accepted or returned.
+    #[serde(default)]
+    pub generate: bool,
     /// Name of the secret (e.g., OPENAI_API_KEY)
     pub name: String,
     /// Required. Must be true — the calling agent must confirm with the user
@@ -163,15 +166,31 @@ pub struct RemoveSecretParams {
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct RotateParams {
-    /// Required. Must be true — the calling agent must confirm with the user
-    /// before invoking this tool. Rotating invalidates every live phantom token
-    /// and will break any process that cached the old tokens (e.g. a running
-    /// `phantom exec` or dev server) until it picks up the new .env.
+    /// Generate a local random value; requires name. No provider issuance or revocation.
+    #[serde(default)]
+    pub generate: bool,
+    /// Secret name for local generation; omitted for legacy placeholder remapping.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Required. Must be true - the calling agent must confirm with the user.
+    /// Legacy mode remaps persistent placeholders; generation replaces only
+    /// the named local value and leaves placeholders unchanged.
     #[serde(default)]
     pub confirm: bool,
     /// Out-of-band approval token from `phantom mcp-approve <NONCE>`.
     #[serde(default)]
     pub approval_token: Option<String>,
+}
+
+impl RotateParams {
+    /// Include the resolved environment in the exact operator-reviewed effect.
+    pub fn approval_params(&self, environment: Option<&str>) -> serde_json::Result<String> {
+        let mut params = serde_json::to_value(self)?;
+        if let Some(environment) = environment {
+            params["environment"] = serde_json::Value::String(environment.into());
+        }
+        serde_json::to_string(&params)
+    }
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]

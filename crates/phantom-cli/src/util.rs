@@ -826,7 +826,13 @@ mod config_gate_tests {
             ("status --oneline", || status::run(true, false)),
             ("watch", || watch::run_with_rotate(false, false)),
             ("add", || {
-                add::run("FIXTURE_NAME", None, true, add::StdinLines::SingleOnly)
+                add::run(
+                    "FIXTURE_NAME",
+                    None,
+                    true,
+                    add::StdinLines::SingleOnly,
+                    false,
+                )
             }),
             ("expiry", || expiry::run(30, false, false, false)),
             ("expiry set", || expiry::run_set("FIXTURE_NAME", 30)),
