@@ -1,6 +1,6 @@
 import type { SVGProps } from "react";
 import type { IconBaseProps } from "react-icons";
-import { SiClaude, SiOpenai, SiWindsurf } from "react-icons/si";
+import { SiClaude, SiGooglegemini, SiOpenai, SiWindsurf } from "react-icons/si";
 
 type LogoProps = SVGProps<SVGSVGElement>;
 
@@ -34,4 +34,8 @@ export function WindsurfClientLogo(props: LogoProps) {
 
 export function CodexClientLogo(props: LogoProps) {
   return <SiOpenai {...asIconProps(props, "currentColor")} />;
+}
+
+export function GeminiClientLogo(props: LogoProps) {
+  return <SiGooglegemini {...asIconProps(props, "#1b72e8")} />;
 }

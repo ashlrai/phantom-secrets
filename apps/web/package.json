@@ -9,7 +9,10 @@
     "lint": "eslint . --max-warnings=0",
     "test": "node --test tests/*.test.cjs",
     "test:billing-auth": "node --test tests/billing-auth.test.cjs",
-    "test:claims": "node --test tests/public-claims.test.cjs"
+    "test:claims": "node --test tests/public-claims.test.cjs",
+    "test:freshness": "node --test tests/freshness.test.cjs",
+    "freshness": "node scripts/freshness/check.mjs",
+    "freshness:sync": "node scripts/freshness/sync.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2",

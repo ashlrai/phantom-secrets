@@ -37,25 +37,33 @@ Phantom Secrets is the open-source CLI that helps keep provider credential value
 
 ## Install
 
-Release evidence verified on 2026-10-06. The immutable GitHub `v0.7.9` release at
+Release evidence verified on 2026-10-06.
+<!-- fresh:begin release-receipt -->
+The immutable GitHub `v0.7.9` release at
 https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.9 resolves to
 `7a51ce512ec4aee12cc29ff859036af63fbe93db`. Its 19 assets were published
 after all six native acceptance rows and release attestations passed in
 https://github.com/ashlrai/phantom-secrets/actions/runs/34153902556.
+<!-- fresh:end -->
 The separately managed Homebrew formula publishes reviewed `v0.7.9`.
 
 Homebrew (macOS, third-party tap):
 
+<!-- fresh:begin install-homebrew -->
 ```
 brew tap ashlrai/phantom
 brew trust --formula ashlrai/phantom/phantom
 brew install ashlrai/phantom/phantom
 ```
+<!-- fresh:end -->
 
+<!-- fresh:begin release-asset-pin -->
 For the current macOS, Linux, or Windows release, select the exact `v0.7.9`
-archive for your architecture from
-the release, download its adjacent `.sha256` sidecar, verify it, and place both
-release executables on PATH. The independent 2026-10-06 readback finds Homebrew `v0.7.9`, both npm `latest`
+archive for your architecture from the release, download its adjacent
+`.sha256` sidecar, verify it, and place both release executables on
+PATH.
+<!-- fresh:end -->
+The independent 2026-10-06 readback finds Homebrew `v0.7.9`, both npm `latest`
 packages at `0.7.9`, and the official MCP Registry entry
 `io.github.ashlrai/phantom-secrets-mcp` active at `0.7.9`. crates.io remains
 at `0.5.1`. Matching npm tarball integrity and registry discovery do not prove
@@ -67,19 +75,25 @@ certification or customer acceptance.
 
 One command per AI client — Phantom writes the right config file for each:
 
+<!-- fresh:begin site-llms-mcp-setup -->
 | Editor | Command | Writes to |
 |---|---|---|
 | Claude Code | `phantom setup --client claude` | `.mcp.json` (project; also hardens `.claude/settings.local.json`) |
 | Cursor | `phantom setup --client cursor` | `~/.cursor/mcp.json` |
 | Windsurf | `phantom setup --client windsurf` | `~/.codeium/windsurf/mcp_config.json` |
 | Codex | `phantom setup --client codex` | `~/.codex/config.toml` |
+| Gemini CLI | `phantom setup --client gemini` | `~/.gemini/settings.json` |
 | Other | `phantom setup --client claude --print` | snippet to stdout |
+<!-- fresh:end -->
 
-Install both `v0.7.9` GitHub release binaries first. Version `0.7.9` records the running
-`phantom` executable with `mcp serve` when it can resolve that runtime, otherwise
-it looks for a local `phantom-mcp`. Setup has no network package-runner fallback
-and fails closed when neither local runtime is executable. Keep both verified
-binaries installed and inspect the generated entry.
+<!-- fresh:begin install-binaries-pin -->
+Install both `v0.7.9` GitHub release binaries first. Version `0.7.9` records
+the running `phantom` executable with `mcp serve` when it can resolve that
+runtime, otherwise it looks for a local `phantom-mcp`. Setup has no network
+package-runner fallback and fails closed when neither local runtime is
+executable. Keep both verified binaries installed and inspect the generated
+entry.
+<!-- fresh:end -->
 
 ## What an AI agent should do
 
@@ -99,33 +113,25 @@ binaries installed and inspect the generated entry.
 
 The runtime `tools/list` response and release-checked MCP schema are the canonical catalog.
 
-Read-only, or read-only by default where noted:
-- `phantom_list_secrets` — names only, never values
-- `phantom_status` — project config and managed .env state (does not open the vault)
-- `phantom_check` — scan supported dotenv files; parameter: `runtime` only (the CLI separately supports `phantom check --staged`)
-- `phantom_doctor` — diagnostic checks; parameters: `fix`, `confirm`, `approval_token`, with both gates required only for `fix=true`
-- `phantom_why` — explain a token's origin; parameter: `key`
-- `phantom_sync` — preview platform sync; parameters: optional `platform`, optional `project_id`
+<!-- fresh:begin llms-tool-catalog -->
+Secrets and dotenv: `phantom_init`, `phantom_list_secrets`, `phantom_list_with_expiry`, `phantom_status`, `phantom_add_secret_interactive`, `phantom_add_secret`, `phantom_remove_secret`, `phantom_rotate`, `phantom_copy_secret`
 
-Init / scaffolding (mutating; require `confirm` and `approval_token`):
-- `phantom_init` — exact-before transaction across config, dotenv, gitignore,
-  hook, client files, and vault; parameters: `env_path`, `confirm`, `approval_token`
-- `phantom_env` — parameters: `output`, `confirm`, `approval_token`; writes an env example file
-- `phantom_wrap` — parameters: `only`, `skip`, `confirm`, `approval_token`; selectively wraps runtime/build `package.json` scripts and leaves test, lint, type, and format scripts unchanged
-- `phantom_unwrap` — parameters: `confirm`, `approval_token`; restores scripts from `:raw` variants
+Diagnostics: `phantom_doctor`, `phantom_why`, `phantom_check`, `phantom_env`, `phantom_capability`
 
-> Note: a legacy `phantom_add_secret` tool exists but is hard-deprecated — it refuses any plaintext value through MCP because tool arguments enter agent context. Use `phantom_add_secret_interactive` (`name` only) instead: it is effect-free, needs no approval, and returns `phantom add NAME` for the user's trusted terminal.
+Sync and script wrapping: `phantom_sync`, `phantom_wrap`, `phantom_unwrap`
 
-Other mutating tools (also require `confirm` and `approval_token`):
-- `phantom_remove_secret`: exact vault/lifecycle/managed-dotenv transaction;
-  `name`, `confirm`, `approval_token`; `phantom_rotate`: `confirm`, `approval_token`
-- `phantom_cloud_push`: `confirm`, `approval_token`; `phantom_cloud_pull`:
-  `force`, `confirm`, `approval_token`. A non-forced partial pull preserves the
-  prior merge base and blocks push until full reconciliation.
-- `phantom_copy_secret`: refuses an existing target and transactionally commits
-  the target vault/config/dotenv mapping; `name`, `target_dir`, optional
-  `rename`, `confirm`, `approval_token`
-- `phantom_cloud_status`: authenticated provider read; `confirm`, `approval_token`
+Cloud backup (requires a separately commissioned hosted service): `phantom_cloud_push`, `phantom_cloud_pull`, `phantom_cloud_status`
+
+Teams (requires a separately commissioned hosted service): `phantom_team_list`, `phantom_team_members`, `phantom_team_key_publish`, `phantom_team_create`, `phantom_team_invite`, `phantom_team_vault_push`, `phantom_team_vault_pull`
+
+Workspace and guided actions: `phantom_setup_workspace`, `phantom_do`
+
+Audit, compliance, and leak incidents: `phantom_audit_alerts`, `phantom_audit_analytics`, `phantom_audit_anomalies`, `phantom_audit_anomalies_realtime`, `phantom_audit_export_report`, `phantom_audit_hotspot_alerts`, `phantom_audit_incidents`, `phantom_audit_recent`, `phantom_audit_stats`, `phantom_compliance_status`, `phantom_leak_incidents_realtime`
+
+Validation, expiry, and rotation: `phantom_validate_all`, `phantom_validate_secret`, `phantom_validation_history`, `phantom_validation_schedule`, `phantom_expiry_enforce`, `phantom_apply_expiry_policy`, `phantom_secrets_expiry_check`, `phantom_secret_rotation_due`, `phantom_rotation_schedule_next`, `phantom_rotate_with_expiry`, `phantom_secrets_auto_rotate`, `phantom_rotate_with_candidate`, `phantom_rotate_promote`, `phantom_rotate_provider`
+<!-- fresh:end -->
+
+> Note: a legacy `phantom_add_secret` tool exists but is hard-deprecated: it refuses any plaintext value through MCP because tool arguments enter agent context. Use `phantom_add_secret_interactive` (`name` only) instead: it is effect-free, needs no approval, and returns `phantom add NAME` for the user's trusted terminal.
 
 Expiry enforcement: `phantom_apply_expiry_policy` requires both gates and
 demotes expired entries to `VaultMode::ReadOnly`; vault retrieval and
@@ -135,19 +141,16 @@ values are not recalled.
 
 Teams (multi-developer fixed-membership shared vaults — planned Pro pilot):
 - Current vault access is member-wide: every team member can read and write the shared vault; roles do not provide per-vault access control.
-- `phantom_team_list` — authenticated provider read; `confirm`, `approval_token`
-- `phantom_team_members` — authenticated provider read; `team_id`, `confirm`, `approval_token`
-- `phantom_team_key_publish` — `team_id`, `confirm`, `approval_token`; registers the user's X25519 pubkey (private key stays in the OS keychain)
-- `phantom_team_create` — `name`, `confirm`, `approval_token`; the authenticated creator becomes owner
-- `phantom_team_invite` — `team_id`, `github_login`, `role` (`member` or
-  `admin`), `confirm`, `approval_token`; invitation management is owner/admin-gated
-- `phantom_team_vault_push`, `phantom_team_vault_pull` — each takes `team_id`, `confirm`, `approval_token`. Push wraps a fresh symmetric key per recipient (X25519 + ChaCha20-Poly1305). Server only stores ciphertext.
+- `phantom_team_invite` assigns only the `member` or `admin` role; invitation management is owner/admin-gated.
+- `phantom_team_vault_push` wraps a fresh symmetric key per recipient (X25519 + ChaCha20-Poly1305). Server only stores ciphertext.
 
 Team member removal and automatic vault-key rotation are not shipped. Use fixed-membership pilots; do not treat team vaults as an offboarding control. Pro is a planned hosted plan, not a generally purchasable or commissioned entitlement evidenced by this repository.
 
 ## CLI surface
 
-Setup: `init · agent · setup · doctor · workspace · vault · completion · mcp · mcp-approve` | Daily use: `exec · start · stop · status · check · list · add · remove · reveal · copy · env · why` | Sync & teams: `login · logout · cloud · team · sync · pull · export · import · wrap · unwrap` | Maintenance: `upgrade · watch · rotate · grant · validate · expiry · secrets-expiring-soon · open · audit`
+<!-- fresh:begin cli-surface -->
+Setup: `init · setup · agent · doctor · completion · mcp · mcp-approve · workspace · vault` | Daily use: `exec · start · stop · status · check · list · add · remove · reveal · copy · env · why` | Sync & teams: `login · logout · cloud · team · sync · pull · export · import · wrap · unwrap` | Maintenance: `upgrade · watch · rotate · grant · validate · leaks · audit · crypto · open · secrets-expiring-soon · expiry`
+<!-- fresh:end -->
 
 Recently-added flags worth knowing:
 
@@ -155,10 +158,13 @@ Recently-added flags worth knowing:
 - `phantom agent doctor` shows a human-readable AI-agent readiness report. `phantom agent report --json` emits stable JSON with status, risk, findings, fixes, commands, files, approval requirements, and exit code.
 - `phantom agent setup --dry-run` previews safe setup changes for agent use; `phantom agent setup --apply` writes them.
 - `phantom sync --dry-run --json` previews deployment sync targets, selected key names, skipped key names, token-env presence, and warnings without decrypting values or calling platform APIs.
-- `phantom setup --client claude|cursor|windsurf|codex` writes the right MCP config file per AI tool; `--print` emits the snippet to stdout for any other client.
+<!-- fresh:begin setup-clients-feature -->
+- `phantom setup --client claude|cursor|windsurf|codex|gemini` writes the right MCP config file per AI tool; `--print` emits the snippet to stdout for any other client.
+<!-- fresh:end -->
 - `phantom add KEY --stdin` reads one new-name value from a trusted piped producer. Bare `phantom add KEY` (no value) prompts silently on the terminal via `rpassword` so the secret never enters shell history. Add requires an initialized project and does not auto-create config, gitignore, or vault state; run `phantom init --empty` first in a new project. Existing names are denied before prompt/stdin read and are never replaced.
 - `phantom list --json` emits a JSON array of `{name, detected_service}` for scripting; values are never included.
 - `phantom sync --only PATTERN` (repeatable; OR-ed) limits which keys get pushed; also honoured via `only = [...]` on each `[[sync]]` block in `.phantom.toml`.
+- `phantom wrap [--only A,B] [--skip X,Y]` wraps selected runtime/build `package.json` scripts and leaves test, lint, type, and format scripts unchanged; `phantom unwrap` restores them from their `:raw` variants.
 - `phantom check --staged` reads from the git index (including staged `.env` files) and is suitable for pre-commit hooks.
 - `phantom export` requires attached stdin/stdout/stderr, an exact typed
   challenge, and a hidden passphrase prompt. Export `--passphrase-file`,
@@ -233,8 +239,11 @@ Detection and runtime injection are different capabilities. Database connection 
   Windows CI acceptance. The release receipt proves exact-archive execution
   and MCP schema initialization, not native keychain, ACL, shell, or editor
   acceptance.
+<!-- fresh:begin release-identity -->
 - Immutable `v0.7.9` release identity:
-  `7a51ce512ec4aee12cc29ff859036af63fbe93db`. Live GitHub governance observed
+  `7a51ce512ec4aee12cc29ff859036af63fbe93db`.
+<!-- fresh:end -->
+  Live GitHub governance observed
   2026-09-01: the `release` environment required review and accepted only `v*`
   tags; no-bypass immutability ruleset `21903888` was separate from creation
   ruleset `21997435` with Mason-only bypass. The immutable release record is
