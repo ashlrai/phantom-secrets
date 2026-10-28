@@ -79,9 +79,6 @@ fn commit_mcp_precommit_repair(project_dir: &Path) -> Result<Option<HookChange>,
 
 #[derive(Debug, Clone)]
 pub struct PhantomMcpServer {
-    // rmcp's #[tool_router] / #[tool_handler] macros consume this field via
-    // generated code that clippy's dead-code pass can't see through.
-    #[allow(dead_code)]
     tool_router: ToolRouter<Self>,
     project_dir: PathBuf,
 }
@@ -154,6 +151,62 @@ impl PhantomMcpServer {
             .unwrap_or(path)
             .display()
             .to_string()
+    }
+
+    /// Locus narrows project credential use; it never replaces Phantom's
+    /// confirmation, approval, lifecycle, or production hard-denial gates.
+    fn require_locus_binding(&self) -> Result<Option<phantom_core::locus::LocusBinding>, McpError> {
+        let binding =
+            phantom_core::locus::probe().map_err(|error| invalid_params_err(error.to_string()))?;
+        Self::require_locus_project(&binding, &self.project_dir)?;
+        Ok(binding)
+    }
+
+    fn require_locus_project(
+        binding: &Option<phantom_core::locus::LocusBinding>,
+        project_dir: &Path,
+    ) -> Result<(), McpError> {
+        let Some(binding) = binding else {
+            return Ok(());
+        };
+        let config = read_project_config(&project_dir.join(".phantom.toml"))
+            .map_err(|error| invalid_params_err(error.to_string()))?;
+        if config
+            .as_ref()
+            .and_then(|config| config.phantom.locus.as_ref())
+            != Some(binding)
+        {
+            return Err(invalid_params_err(
+                "Locus binding mismatch: credential use refused. This project's [phantom.locus] binding and tenant must both match the active pin. Have the operator review project ownership and run `locus status --json` in their trusted terminal; no secret was used.",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Global Cloud login and notification credentials have no value-free
+    /// Locus ownership attestation. A repository declaration cannot assign
+    /// them to a tenant, so never fall through to those ambient identities.
+    fn refuse_locus_ambient_identity(
+        binding: &Option<phantom_core::locus::LocusBinding>,
+    ) -> Result<(), McpError> {
+        if binding.is_some() {
+            return Err(invalid_params_err(
+                "Locus pin active: this tool uses an ambient Cloud or notification identity whose binding cannot be verified. Credential use refused. Use a provider tool scoped by Locus; project ownership metadata does not authorize global credentials.",
+            ));
+        }
+        Ok(())
+    }
+
+    fn recheck_locus_binding(
+        &self,
+        expected: &Option<phantom_core::locus::LocusBinding>,
+    ) -> Result<(), McpError> {
+        if &self.require_locus_binding()? != expected {
+            return Err(invalid_params_err(
+                "Locus pin changed during the request; credential use refused. Retry after the operator verifies the active pin.",
+            ));
+        }
+        Ok(())
     }
 
     fn config_path(&self) -> PathBuf {
@@ -1728,6 +1781,8 @@ impl PhantomMcpServer {
         Parameters(params): Parameters<CloudPushParams>,
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_cloud_push", params.confirm)?;
+        let locus_binding = self.require_locus_binding()?;
+        Self::refuse_locus_ambient_identity(&locus_binding)?;
         use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
         use std::collections::BTreeMap;
 
@@ -1789,6 +1844,7 @@ impl PhantomMcpServer {
             &params_json,
             &self.project_id(),
         )?;
+        self.recheck_locus_binding(&locus_binding)?;
 
         let token = phantom_core::auth::load_token()
             .ok_or_else(|| state_err("Not logged in. Next step: ask the user to run `phantom login` in a trusted terminal, then retry."))?;
@@ -1868,6 +1924,8 @@ impl PhantomMcpServer {
         Parameters(params): Parameters<CloudPullParams>,
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_cloud_pull", params.confirm)?;
+        let locus_binding = self.require_locus_binding()?;
+        Self::refuse_locus_ambient_identity(&locus_binding)?;
         let config_path = self.config_path();
         let (config, config_before) = load_mcp_config_exact(&config_path)?;
         let vault = self.open_project_vault(&config)?;
@@ -1894,6 +1952,7 @@ impl PhantomMcpServer {
             &params_json,
             &self.project_id(),
         )?;
+        self.recheck_locus_binding(&locus_binding)?;
         use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 
         let token = phantom_core::auth::load_token()
@@ -1931,7 +1990,7 @@ impl PhantomMcpServer {
         );
 
         let secrets = SensitiveSecretMap::parse_json(&plaintext)
-            .map_err(|e| internal_err(format!("Invalid vault data: {e}")))?;
+            .map_err(|_| internal_err("Invalid vault data: expected a map of secret names to strings; plaintext diagnostics withheld"))?;
 
         // SensitiveSecretMap owns zeroizing values before TOML serialization,
         // so every early-return path below scrubs the parsed plaintext map.
@@ -1970,6 +2029,7 @@ impl PhantomMcpServer {
         Parameters(params): Parameters<CopySecretParams>,
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_copy_secret", params.confirm)?;
+        let locus_binding = self.require_locus_binding()?;
         // Reject `..` in the raw input. Canonicalize below collapses traversal,
         // but only once target_dir exists on disk — and an attacker can stage a
         // missing-path case. Guarding at the textual layer is simplest.
@@ -2008,6 +2068,7 @@ impl PhantomMcpServer {
             ));
         }
 
+        Self::require_locus_project(&locus_binding, &target_dir)?;
         let target_config_path = target_dir.join(".phantom.toml");
         let (target_config, target_config_before) = load_mcp_config_exact(&target_config_path)
             .map_err(|error| {
@@ -2110,6 +2171,8 @@ impl PhantomMcpServer {
             &approval_params,
             &self.project_id(),
         )?;
+        self.recheck_locus_binding(&locus_binding)?;
+        Self::require_locus_project(&locus_binding, &target_dir)?;
 
         let (source_config, source_vault) = self.load_config_and_vault()?;
         // A copy hands the value to a project that does not carry this
@@ -3319,6 +3382,8 @@ impl PhantomMcpServer {
         Parameters(params): Parameters<ApprovalParams>,
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_cloud_status", params.confirm)?;
+        let locus_binding = self.require_locus_binding()?;
+        Self::refuse_locus_ambient_identity(&locus_binding)?;
         let params_json = serde_json::to_string(&params).unwrap_or_default();
         require_approval_token(
             "phantom_cloud_status",
@@ -3326,6 +3391,7 @@ impl PhantomMcpServer {
             &params_json,
             &self.project_id(),
         )?;
+        self.recheck_locus_binding(&locus_binding)?;
         let api_base = phantom_core::auth::api_base_url()
             .map_err(|e| internal_err(format!("Invalid cloud API URL: {e}")))?;
 
@@ -3356,6 +3422,8 @@ impl PhantomMcpServer {
         Parameters(params): Parameters<ApprovalParams>,
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_team_list", params.confirm)?;
+        let locus_binding = self.require_locus_binding()?;
+        Self::refuse_locus_ambient_identity(&locus_binding)?;
         let params_json = serde_json::to_string(&params).unwrap_or_default();
         require_approval_token(
             "phantom_team_list",
@@ -3363,6 +3431,7 @@ impl PhantomMcpServer {
             &params_json,
             &self.project_id(),
         )?;
+        self.recheck_locus_binding(&locus_binding)?;
         let token = phantom_core::auth::require_token().map_err(|e| internal_err(e.to_string()))?;
         let api_base =
             phantom_core::auth::api_base_url().map_err(|e| internal_err(e.to_string()))?;
@@ -3388,6 +3457,8 @@ impl PhantomMcpServer {
         Parameters(params): Parameters<TeamCreateParams>,
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_team_create", params.confirm)?;
+        let locus_binding = self.require_locus_binding()?;
+        Self::refuse_locus_ambient_identity(&locus_binding)?;
         let params_json = serde_json::to_string(&params).unwrap_or_default();
         require_approval_token(
             "phantom_team_create",
@@ -3395,6 +3466,7 @@ impl PhantomMcpServer {
             &params_json,
             &self.project_id(),
         )?;
+        self.recheck_locus_binding(&locus_binding)?;
         let token = phantom_core::auth::require_token().map_err(|e| internal_err(e.to_string()))?;
         let api_base =
             phantom_core::auth::api_base_url().map_err(|e| internal_err(e.to_string()))?;
@@ -3416,6 +3488,8 @@ impl PhantomMcpServer {
         Parameters(params): Parameters<TeamIdParams>,
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_team_members", params.confirm)?;
+        let locus_binding = self.require_locus_binding()?;
+        Self::refuse_locus_ambient_identity(&locus_binding)?;
         let params_json = serde_json::to_string(&params).unwrap_or_default();
         require_approval_token(
             "phantom_team_members",
@@ -3423,6 +3497,7 @@ impl PhantomMcpServer {
             &params_json,
             &self.project_id(),
         )?;
+        self.recheck_locus_binding(&locus_binding)?;
         let token = phantom_core::auth::require_token().map_err(|e| internal_err(e.to_string()))?;
         let api_base =
             phantom_core::auth::api_base_url().map_err(|e| internal_err(e.to_string()))?;
@@ -3455,6 +3530,8 @@ impl PhantomMcpServer {
         Parameters(params): Parameters<TeamInviteParams>,
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_team_invite", params.confirm)?;
+        let locus_binding = self.require_locus_binding()?;
+        Self::refuse_locus_ambient_identity(&locus_binding)?;
         let params_json = serde_json::to_string(&params).unwrap_or_default();
         require_approval_token(
             "phantom_team_invite",
@@ -3462,6 +3539,7 @@ impl PhantomMcpServer {
             &params_json,
             &self.project_id(),
         )?;
+        self.recheck_locus_binding(&locus_binding)?;
         let role = params.role.as_str();
         let token = phantom_core::auth::require_token().map_err(|e| internal_err(e.to_string()))?;
         let api_base =
@@ -3490,6 +3568,8 @@ impl PhantomMcpServer {
         Parameters(params): Parameters<TeamIdParams>,
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_team_key_publish", params.confirm)?;
+        let locus_binding = self.require_locus_binding()?;
+        Self::refuse_locus_ambient_identity(&locus_binding)?;
         let params_json = serde_json::to_string(&params).unwrap_or_default();
         require_approval_token(
             "phantom_team_key_publish",
@@ -3497,6 +3577,7 @@ impl PhantomMcpServer {
             &params_json,
             &self.project_id(),
         )?;
+        self.recheck_locus_binding(&locus_binding)?;
         let token = phantom_core::auth::require_token().map_err(|e| internal_err(e.to_string()))?;
         let api_base =
             phantom_core::auth::api_base_url().map_err(|e| internal_err(e.to_string()))?;
@@ -3525,6 +3606,8 @@ impl PhantomMcpServer {
         Parameters(params): Parameters<TeamVaultParams>,
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_team_vault_push", params.confirm)?;
+        let locus_binding = self.require_locus_binding()?;
+        Self::refuse_locus_ambient_identity(&locus_binding)?;
         if params.team_id.is_empty()
             || params.team_id.len() > 128
             || !params
@@ -3577,6 +3660,7 @@ impl PhantomMcpServer {
             &params_json,
             &self.project_id(),
         )?;
+        self.recheck_locus_binding(&locus_binding)?;
         use std::collections::BTreeMap;
         use zeroize::Zeroizing;
 
@@ -3829,10 +3913,7 @@ impl PhantomMcpServer {
         Parameters(params): Parameters<AuditStatsParams>,
     ) -> Result<CallToolResult, McpError> {
         let period = phantom_core::analytics::Period::parse(&params.period).ok_or_else(|| {
-            crate::tools::helpers::invalid_params_err(format!(
-                "Invalid period '{}'. Use: 7d, 30d, or all",
-                params.period
-            ))
+            crate::tools::helpers::invalid_params_err("Invalid period. Use: 7d, 30d, or all")
         })?;
 
         let min_anomaly_score = params
@@ -3929,12 +4010,8 @@ impl PhantomMcpServer {
         &self,
         Parameters(params): Parameters<AuditAnomaliesParams>,
     ) -> Result<CallToolResult, McpError> {
-        let period = phantom_core::analytics::Period::parse(&params.period).ok_or_else(|| {
-            invalid_params_err(format!(
-                "Invalid period '{}'. Use: 7d, 30d, or all",
-                params.period
-            ))
-        })?;
+        let period = phantom_core::analytics::Period::parse(&params.period)
+            .ok_or_else(|| invalid_params_err("Invalid period. Use: 7d, 30d, or all"))?;
 
         let min_score =
             crate::tools::helpers::score_threshold_param("min_score", params.min_score)?;
@@ -4484,6 +4561,8 @@ impl PhantomMcpServer {
 
         if params.backfill {
             require_confirm("phantom_audit_alerts", params.confirm)?;
+            let locus_binding = self.require_locus_binding()?;
+            Self::refuse_locus_ambient_identity(&locus_binding)?;
             let config_path = self.config_path();
             let config_before = phantom_core::fs::read_regular_file(&config_path)
                 .map_err(|error| internal_err(format!("Failed to safely read config: {error}")))?;
@@ -4528,6 +4607,7 @@ impl PhantomMcpServer {
                 &params_json,
                 &self.project_id(),
             )?;
+            self.recheck_locus_binding(&locus_binding)?;
             let current_config = phantom_core::fs::read_regular_file(&config_path)
                 .map_err(|error| internal_err(format!("Failed to recheck config: {error}")))?;
             if current_config != config_before {
@@ -4630,7 +4710,16 @@ impl PhantomMcpServer {
             params.from.as_deref().unwrap_or(""),
             params.to.as_deref().unwrap_or(""),
         )
-        .map_err(|e| invalid_params_err(format!("{e}. Omit it for no bound.")))?;
+        .map_err(|error| {
+            let message = if error.starts_with("Invalid 'from' date") {
+                "Invalid 'from' date: expected YYYY-MM-DD. Omit it for no lower bound."
+            } else if error.starts_with("Invalid 'to' date") {
+                "Invalid 'to' date: expected YYYY-MM-DD. Omit it for no upper bound."
+            } else {
+                "Invalid date range: 'from' is after 'to'. Use from <= to."
+            };
+            invalid_params_err(message)
+        })?;
 
         if params.save {
             if params.action == "export" {
@@ -4731,9 +4820,9 @@ impl PhantomMcpServer {
                 }
             }
 
-            other => Err(invalid_params_err(format!(
-                "Unknown action '{other}'. Retry with action 'export' or 'report'."
-            ))),
+            _ => Err(invalid_params_err(
+                "Unknown action. Retry with action 'export' or 'report'.",
+            )),
         }
     }
 
@@ -4942,6 +5031,8 @@ impl PhantomMcpServer {
         Parameters(params): Parameters<TeamVaultParams>,
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_team_vault_pull", params.confirm)?;
+        let locus_binding = self.require_locus_binding()?;
+        Self::refuse_locus_ambient_identity(&locus_binding)?;
         if params.team_id.is_empty()
             || params.team_id.len() > 128
             || !params
@@ -4976,6 +5067,7 @@ impl PhantomMcpServer {
             &params_json,
             &self.project_id(),
         )?;
+        self.recheck_locus_binding(&locus_binding)?;
         require_exact_config_before_effect(&config_path, &config_before)?;
         let token = phantom_core::auth::require_token().map_err(|e| internal_err(e.to_string()))?;
         let api_base =
@@ -5104,6 +5196,7 @@ impl PhantomMcpServer {
         Parameters(params): Parameters<ValidateAllParams>,
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_validate_all", params.confirm)?;
+        let locus_binding = self.require_locus_binding()?;
         let canonical_project = self.project_dir.canonicalize().map_err(|error| {
             internal_err(format!("Failed to resolve project directory: {error}"))
         })?;
@@ -5175,6 +5268,7 @@ impl PhantomMcpServer {
             &params_json,
             &self.project_id(),
         )?;
+        self.recheck_locus_binding(&locus_binding)?;
         if names.is_empty() {
             let out = serde_json::json!({
                 "total": 0,
@@ -5312,8 +5406,8 @@ impl PhantomMcpServer {
         // If an interval was provided, update the schedule.
         if let Some(ref interval_str) = params.interval {
             require_confirm("phantom_validation_schedule", params.confirm)?;
-            let sched = Schedule::parse(interval_str).map_err(|e| {
-                crate::tools::helpers::invalid_params_err(format!("Invalid schedule interval: {e}"))
+            let sched = Schedule::parse(interval_str).map_err(|_| {
+                invalid_params_err("Invalid schedule interval. Use hourly, 6h, daily, daily@2am, weekly, or disabled.")
             })?;
             let params_json = serde_json::to_string(&serde_json::json!({
                 "request": &params,
@@ -7363,8 +7457,45 @@ fn server_identity() -> Implementation {
         .with_website_url("https://phm.dev/secrets")
 }
 
-#[tool_handler]
+#[tool_handler(router = self.tool_router)]
 impl ServerHandler for PhantomMcpServer {
+    async fn call_tool(
+        &self,
+        request: CallToolRequestParams,
+        context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<CallToolResponse, McpError> {
+        if request.arguments.as_ref().is_some_and(|arguments| {
+            arguments.iter().any(|(key, value)| {
+                crate::tools::helpers::credential_shaped_input(&serde_json::Value::String(
+                    key.clone(),
+                )) || crate::tools::helpers::credential_shaped_input(value)
+            })
+        }) {
+            return Err(invalid_params_err(
+                "Credential-shaped input is forbidden through MCP, including identifiers and paths. Supply secret names only; add values through a trusted terminal.",
+            ));
+        }
+        let context = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
+        let response = self.tool_router.call(context).await?;
+        // rmcp turns serde argument failures into successful protocol responses
+        // with isError=true. Those diagnostics quote rejected enum values,
+        // unknown field names, and nested input. Never forward that payload.
+        if let CallToolResponse::Complete(result) = &response {
+            if result.is_error == Some(true)
+                && result.content.iter().any(|content| {
+                    content.as_text().is_some_and(|text| {
+                        text.text.starts_with("failed to deserialize parameters:")
+                    })
+                })
+            {
+                return Ok(CallToolResult::error(vec![ContentBlock::text(
+                    "Invalid tool arguments. Use the tool's inputSchema; argument values are omitted from diagnostics.",
+                )]).into());
+            }
+        }
+        Ok(response)
+    }
+
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(server_identity())
@@ -7376,8 +7507,16 @@ impl ServerHandler for PhantomMcpServer {
                  Setup proposals can create bearerless apply requests, but MCP can never claim or apply them; \
                  application remains trusted-terminal-only and must not be described as applied until status proves it. \
                  No Locus seal is active unless the capability card explicitly says so. \
+                 With an active Locus pin, project credential use requires matching [phantom.locus] \
+                 binding and tenant metadata. Global Cloud and notification credentials cannot be \
+                 binding-verified and are refused while pinned. These restrictions do not grant authority. \
                  Advanced phantom_* tools remain available for compatible operator workflows; \
-                 secret values are never returned through MCP."
+                 secret values are never returned through MCP. To launch an external stdio MCP server \
+                 with protected keys, configure it in a local mcpServers JSON file and run \
+                 `phantom mcp run <name> --config <file>` from the initialized project. \
+                 The child receives fresh phm_ placeholders and authenticated proxy base URLs, \
+                 never the managed vault values; only built-in HTTP routes inject credentials. \
+                 This launcher does not approve MCP effects or resolve placeholders in argv."
                 .to_string(),
         )
     }
@@ -7457,6 +7596,19 @@ fn audit_recent_report(
             continue;
         };
         if v.get("hmac_chain_started_at").is_some() {
+            continue;
+        }
+        // Do not forward arbitrary JSON under an allowlisted field name.
+        // A malformed/foreign log row can hide plaintext inside nested data.
+        let valid_metadata = ["seq", "ts", "pid"]
+            .iter()
+            .all(|field| v.get(*field).is_none_or(|value| value.is_u64()))
+            && ["process", "name"].iter().all(|field| {
+                v.get(*field)
+                    .is_none_or(|value| value.is_null() || value.is_string())
+            });
+        if !valid_metadata {
+            unparsable += 1;
             continue;
         }
         let Some(op) = v.get("op").and_then(|o| o.as_str()) else {
@@ -18120,3 +18272,7 @@ mod tests {
         assert!(server.require_config().is_err(), "dangling must refuse");
     }
 }
+
+#[cfg(test)]
+#[path = "locus_tests.rs"]
+mod locus_tests;
