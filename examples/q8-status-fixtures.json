@@ -1,0 +1,32 @@
+{
+  "empty": {
+    "schema_version": 1,
+    "kind": "phantom.status",
+    "initialized": false,
+    "inspection": "metadata-only",
+    "managed_dotenv": { "inspected": false },
+    "vault": { "inspected": false },
+    "proxy": { "lifecycle_lock": "not-inspected", "listener_authenticated": false },
+    "issues": ["config-missing"]
+  },
+  "partial": {
+    "schema_version": 1,
+    "kind": "phantom.status",
+    "initialized": true,
+    "inspection": "metadata-only",
+    "managed_dotenv": { "inspected": false },
+    "vault": { "inspected": false },
+    "proxy": { "lifecycle_lock": "missing", "listener_authenticated": false },
+    "issues": []
+  },
+  "diagnostic": {
+    "schema_version": 1,
+    "kind": "phantom.status",
+    "initialized": true,
+    "inspection": "metadata-only",
+    "managed_dotenv": { "inspected": false },
+    "vault": { "inspected": false },
+    "proxy": { "lifecycle_lock": "unknown", "listener_authenticated": false },
+    "issues": ["proxy-lock-unavailable"]
+  }
+}
