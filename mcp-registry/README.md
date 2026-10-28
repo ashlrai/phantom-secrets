@@ -87,8 +87,12 @@ Prefer an absolute executable path where the client supports it.
 ## Exact current-source tool catalog
 
 The staged `server.json` contains exactly 54 unique tool names generated from
-the current Rust server declarations. This list is checked against that JSON in
-the web claim-regression suite. The installed runtime's `tools/list` response
+the current Rust server declarations in `crates/phantom-mcp/src/server.rs`.
+`crates/phantom-mcp/src/tools/mod.rs` declares helper and parameter modules, not
+the tool catalog. Run `node --test scripts/release/readme-mcp-catalog.test.mjs`
+to compare source registrations, this list, the README catalog, agent guidance,
+and the staged JSON without opening a vault or starting a server.
+The installed runtime's `tools/list` response
 remains canonical for that binary.
 
 <!-- tool-catalog:start -->
