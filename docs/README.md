@@ -8,12 +8,7 @@ Release-state snapshot verified on 2026-09-29: the immutable GitHub release
 native release rows, checksums, archive-specific SPDX SBOMs, and GitHub
 provenance and SPDX attestations are bound to that immutable release by
 [workflow 34153902556](https://github.com/ashlrai/phantom-secrets/actions/runs/34153902556).
-Exact public registry endpoints were requeried on 2026-09-29. Homebrew
-independently publishes the previous reviewed `v0.7.8` (bump to `v0.7.9` pending); npm `latest` remains `0.6.0`, and both npm
-`0.7.4` wrappers remain only under the failed `release-candidate` track. The
-GitHub receipt alone does not establish `0.7.9` publication on npm, crates.io,
-or MCP Registry, or any hosted-service commissioning, provider activation,
-certification, or customer acceptance.
+See [distribution status](distribution-status.md) for dated npm, Homebrew, crates.io, and MCP Registry evidence. Prefer the checksum-verified `v0.7.9` GitHub assets for an exact install. The GitHub receipt alone does not establish hosted-service commissioning, provider activation, certification, or customer acceptance.
 
 ## Start here
 

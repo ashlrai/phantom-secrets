@@ -1,0 +1,670 @@
+//! `--dry-run` for init, add, and remove must print a plan and leave the
+//! project tree, including the encrypted-file vault under HOME, unchanged.
+mod common;
+
+use assert_cmd::Command;
+use std::collections::BTreeMap;
+use std::fs;
+use std::path::Path;
+use std::process::Output;
+
+const PASS: &str = "test-passphrase-dry-run";
+const CANARY: &str = "sk-FAKE-dry-run-canary-7f3a9c1e5b";
+const PUBLIC_VALUE: &str = "browser-label-not-secret";
+
+fn phantom(dir: &Path) -> Command {
+    let mut command = Command::cargo_bin("phantom").expect("binary not found");
+    command
+        .current_dir(dir)
+        .env("HOME", dir)
+        .env("PHANTOM_VAULT_PASSPHRASE", PASS)
+        .env("NO_COLOR", "1")
+        .env_remove("PHANTOM_AUDIT")
+        .env_remove("XDG_DATA_HOME")
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("XDG_STATE_HOME")
+        .env_remove("XDG_CACHE_HOME")
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE");
+    command
+}
+
+/// Seed real encrypted state without letting Windows KnownFolder resolution
+/// place a fixture vault in the operator's application-data directory. Unix
+/// continues to exercise the actual CLI initialization under its temporary HOME.
+fn prepare_initialized_project(dir: &Path) {
+    #[cfg(not(windows))]
+    {
+        fs::write(
+            dir.join(".env"),
+            format!("OPENAI_API_KEY={CANARY}\nPORT=3000\n"),
+        )
+        .unwrap();
+        let init = phantom(dir)
+            .args(["init", "--from", ".env"])
+            .output()
+            .expect("run init");
+        assert!(
+            init.status.success(),
+            "init failed: {}",
+            String::from_utf8_lossy(&init.stderr)
+        );
+    }
+    #[cfg(windows)]
+    {
+        use phantom_core::config::PhantomConfig;
+        use phantom_core::token::PhantomToken;
+        use phantom_vault::{file::FileVault, VaultBackend};
+
+        let project_id = PhantomConfig::project_id_from_path(dir);
+        let mut config = PhantomConfig::new_with_defaults(project_id.clone());
+        config.phantom.dotenv_path = Some(".env".to_string());
+        config.save(&dir.join(".phantom.toml")).unwrap();
+        let token = PhantomToken::generate();
+        fs::write(
+            dir.join(".env"),
+            format!("OPENAI_API_KEY={}\nPORT=3000\n", token.as_str()),
+        )
+        .unwrap();
+        // Dry-run must never open this vault; its actual ciphertext remains
+        // in the same snapshot as config and dotenv on every platform.
+        let vault = FileVault::new(&dir.join("fixture-vault"), &project_id, PASS.to_string())
+            .expect("create isolated encrypted fixture vault");
+        vault
+            .store("OPENAI_API_KEY", CANARY)
+            .expect("store encrypted fixture value");
+    }
+}
+
+fn snapshot(root: &Path) -> BTreeMap<String, Vec<u8>> {
+    let mut files = BTreeMap::new();
+    walk(root, root, &mut files);
+    files
+}
+
+fn walk(root: &Path, dir: &Path, files: &mut BTreeMap<String, Vec<u8>>) {
+    let mut entries: Vec<_> = fs::read_dir(dir)
+        .unwrap_or_else(|error| panic!("read {}: {error}", dir.display()))
+        .map(|entry| entry.expect("directory entry"))
+        .collect();
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
+        let path = entry.path();
+        let relative = path
+            .strip_prefix(root)
+            .expect("child path")
+            .to_string_lossy()
+            .replace('\\', "/");
+        let metadata = fs::symlink_metadata(&path)
+            .unwrap_or_else(|error| panic!("stat {}: {error}", path.display()));
+        let file_type = metadata.file_type();
+        if file_type.is_symlink() {
+            let target = fs::read_link(&path).expect("read link");
+            files.insert(relative, target.to_string_lossy().into_owned().into_bytes());
+        } else if file_type.is_dir() {
+            files.insert(format!("{relative}/"), Vec::new());
+            walk(root, &path, files);
+        } else {
+            let bytes =
+                fs::read(&path).unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+            files.insert(relative, bytes);
+        }
+    }
+}
+
+fn assert_unchanged(before: &BTreeMap<String, Vec<u8>>, after: &BTreeMap<String, Vec<u8>>) {
+    let mut changes = Vec::new();
+    for (path, bytes) in before {
+        match after.get(path) {
+            Some(now) if now == bytes => {}
+            Some(_) => changes.push(format!("changed {path}")),
+            None => changes.push(format!("removed {path}")),
+        }
+    }
+    for path in after.keys() {
+        if !before.contains_key(path) {
+            changes.push(format!("added {path}"));
+        }
+    }
+    assert!(
+        changes.is_empty(),
+        "dry run changed the project or vault tree: {changes:?}"
+    );
+}
+
+fn text(output: &Output) -> (String, String) {
+    (
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+    )
+}
+
+fn assert_values_absent(stdout: &str, stderr: &str) {
+    for secret in [CANARY, PUBLIC_VALUE] {
+        assert!(
+            !stdout.contains(secret),
+            "stdout contained a planted secret value"
+        );
+        assert!(
+            !stderr.contains(secret),
+            "stderr contained a planted secret value"
+        );
+    }
+    assert!(!stdout.contains("phm_"), "stdout contained a phantom token");
+    assert!(!stderr.contains("phm_"), "stderr contained a phantom token");
+}
+
+fn phantom_unset(dir: &Path) -> Command {
+    let mut command = Command::cargo_bin("phantom").expect("binary not found");
+    command
+        .current_dir(dir)
+        .env("HOME", dir)
+        .env("XDG_DATA_HOME", dir.join("xdg-data"))
+        .env("XDG_CONFIG_HOME", dir.join("xdg-config"))
+        .env("XDG_STATE_HOME", dir.join("xdg-state"))
+        .env("XDG_CACHE_HOME", dir.join("xdg-cache"))
+        .env("NO_COLOR", "1")
+        .env_remove("PHANTOM_VAULT_PASSPHRASE")
+        .env_remove("PHANTOM_REQUIRE_KEYCHAIN")
+        .env_remove("PHANTOM_AUDIT")
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE");
+    command
+}
+
+/// Project files from a dry-run plan, with the encrypted-file vault path
+/// checked and removed. The vault lives under the temp HOME, so its prefix
+/// follows the platform data dir.
+fn project_files_without_vault(dir: &Path, stdout: &str) -> Vec<String> {
+    let id = phantom_core::config::PhantomConfig::project_id_from_path(dir);
+    let mut files = planned_files(stdout);
+    let vault_at = files
+        .iter()
+        .position(|path| path.ends_with(".vault"))
+        .expect("dry run should list the vault path");
+    let vault = files.remove(vault_at);
+    assert!(
+        vault.ends_with(&format!("vaults/{id}.vault")),
+        "vault path {vault}"
+    );
+    files
+}
+
+fn planned_files(stdout: &str) -> Vec<String> {
+    let mut files = Vec::new();
+    let mut in_files = false;
+    for line in stdout.lines() {
+        if line.starts_with("Would write ") {
+            in_files = true;
+            continue;
+        }
+        if !in_files {
+            continue;
+        }
+        if let Some(path) = line.strip_prefix("  ") {
+            if path.is_empty() || path.starts_with('+') || path.starts_with('-') {
+                break;
+            }
+            files.push(path.to_string());
+        } else {
+            break;
+        }
+    }
+    files
+}
+
+#[test]
+fn init_dry_run_lists_files_and_keys_without_writing_or_printing_values() {
+    let dir = common::canonical_tempdir();
+    fs::write(
+        dir.path().join(".env"),
+        format!("OPENAI_API_KEY={CANARY}\nNEXT_PUBLIC_APP_NAME={PUBLIC_VALUE}\nPORT=3000\n"),
+    )
+    .unwrap();
+    let before = snapshot(dir.path());
+
+    let output = phantom(dir.path())
+        .args(["init", "--dry-run", "--from", ".env"])
+        .output()
+        .expect("run init --dry-run");
+    let (stdout, stderr) = text(&output);
+    assert!(output.status.success(), "init dry run failed: {stderr}");
+    assert!(stdout.contains("would add 1 key(s):"));
+    assert!(stdout.contains("  + OPENAI_API_KEY"));
+    assert!(stdout.contains("Skipping 1 public key(s)"));
+    assert!(stdout.contains("NEXT_PUBLIC_APP_NAME"));
+    assert_eq!(
+        project_files_without_vault(dir.path(), &stdout),
+        vec![
+            ".env".to_string(),
+            ".env.example".to_string(),
+            ".gitignore".to_string(),
+            ".phantom.toml".to_string(),
+            "CLAUDE.md".to_string(),
+        ]
+    );
+    assert!(stdout.contains("Dry run only. Nothing was written."));
+    assert_values_absent(&stdout, &stderr);
+    assert_unchanged(&before, &snapshot(dir.path()));
+    assert!(!dir.path().join(".local").exists());
+}
+
+#[test]
+fn init_empty_dry_run_plans_config_and_creates_nothing() {
+    let dir = common::canonical_tempdir();
+    let before = snapshot(dir.path());
+    let output = phantom(dir.path())
+        .args(["init", "--empty", "--dry-run"])
+        .output()
+        .expect("run init --empty --dry-run");
+    let (stdout, stderr) = text(&output);
+    assert!(output.status.success(), "empty dry run failed: {stderr}");
+    assert!(stdout.contains("Would create an empty vault."));
+    assert_eq!(
+        project_files_without_vault(dir.path(), &stdout),
+        vec![".gitignore".to_string(), ".phantom.toml".to_string()]
+    );
+    assert_values_absent(&stdout, &stderr);
+    assert_unchanged(&before, &snapshot(dir.path()));
+}
+
+#[test]
+fn init_empty_dry_run_leaves_an_existing_config_alone() {
+    let dir = common::canonical_tempdir();
+    fs::write(dir.path().join(".phantom.toml"), "existing = true\n").unwrap();
+    let before = snapshot(dir.path());
+    let output = phantom(dir.path())
+        .args(["init", "--empty", "--dry-run"])
+        .output()
+        .expect("run init --empty --dry-run");
+    let (stdout, stderr) = text(&output);
+    assert!(output.status.success(), "empty dry run failed: {stderr}");
+    assert!(stdout.contains(".phantom.toml already exists. Nothing to do."));
+    assert!(!stdout.contains('\u{2014}'));
+    assert!(!stderr.contains('\u{2014}'));
+    assert_values_absent(&stdout, &stderr);
+    assert_unchanged(&before, &snapshot(dir.path()));
+}
+
+#[test]
+fn init_all_dry_run_still_writes_nothing() {
+    let dir = common::canonical_tempdir();
+    fs::write(
+        dir.path().join(".env"),
+        format!("OPENAI_API_KEY={CANARY}\n"),
+    )
+    .unwrap();
+    let before = snapshot(dir.path());
+    let output = phantom(dir.path())
+        .args(["init", "--all", dir.path().to_str().unwrap(), "--dry-run"])
+        .output()
+        .expect("run init --all --dry-run");
+    let (stdout, stderr) = text(&output);
+    assert!(output.status.success(), "multi dry run failed: {stderr}");
+    assert!(stdout.contains("No candidate repos found."));
+    assert_values_absent(&stdout, &stderr);
+    assert_unchanged(&before, &snapshot(dir.path()));
+}
+
+#[test]
+fn init_dry_run_of_a_malformed_dotenv_writes_nothing_and_hides_the_value() {
+    let dir = common::canonical_tempdir();
+    fs::write(
+        dir.path().join(".env"),
+        format!("OPENAI_API_KEY={CANARY}\nBROKEN_RECORD\n"),
+    )
+    .unwrap();
+    let before = snapshot(dir.path());
+    let output = phantom(dir.path())
+        .args(["init", "--dry-run"])
+        .output()
+        .expect("run init --dry-run");
+    let (stdout, stderr) = text(&output);
+    assert!(!output.status.success(), "malformed dotenv must fail");
+    assert!(stderr.contains("malformed"), "{stderr}");
+    assert_values_absent(&stdout, &stderr);
+    assert_unchanged(&before, &snapshot(dir.path()));
+}
+
+#[test]
+fn add_dry_run_after_init_does_not_read_or_print_a_value_or_mutate() {
+    let dir = common::canonical_tempdir();
+    prepare_initialized_project(dir.path());
+    let before = snapshot(dir.path());
+
+    let output = phantom(dir.path())
+        .args(["add", "NEW_SERVICE_TOKEN", "--dry-run"])
+        .output()
+        .expect("run add --dry-run");
+    let (stdout, stderr) = text(&output);
+    assert!(output.status.success(), "add dry run failed: {stderr}");
+    assert!(stdout.contains("would add 1 key(s):"));
+    assert!(stdout.contains("  + NEW_SERVICE_TOKEN"));
+    assert!(stdout.contains("would add NEW_SERVICE_TOKEN (vault state not checked in dry run)"));
+    assert_eq!(
+        planned_files(&stdout),
+        vec![".env".to_string(), ".phantom.toml".to_string()]
+    );
+    assert_values_absent(&stdout, &stderr);
+    assert_unchanged(&before, &snapshot(dir.path()));
+}
+
+#[test]
+fn add_dry_run_refuses_a_positional_value_without_printing_it_or_writing() {
+    let dir = common::canonical_tempdir();
+    fs::write(
+        dir.path().join(".env"),
+        format!("PORT=3000\nOPENAI_API_KEY={CANARY}\n"),
+    )
+    .unwrap();
+    let before = snapshot(dir.path());
+    let output = phantom(dir.path())
+        .args(["add", "OPENAI_API_KEY", CANARY, "--dry-run"])
+        .output()
+        .expect("run add --dry-run");
+    let (stdout, stderr) = text(&output);
+    assert!(!output.status.success(), "positional value must be refused");
+    assert!(stderr.contains("Positional secret values are disabled"));
+    assert_values_absent(&stdout, &stderr);
+    assert_unchanged(&before, &snapshot(dir.path()));
+    assert!(!dir.path().join(".phantom.toml").exists());
+}
+
+#[test]
+fn add_dry_run_on_an_uninitialized_project_writes_nothing() {
+    let dir = common::canonical_tempdir();
+    fs::write(
+        dir.path().join(".env"),
+        format!("OPENAI_API_KEY={CANARY}\n"),
+    )
+    .unwrap();
+    let before = snapshot(dir.path());
+    let output = phantom(dir.path())
+        .args(["add", "OPENAI_API_KEY", "--dry-run"])
+        .output()
+        .expect("run add --dry-run");
+    let (stdout, stderr) = text(&output);
+    assert!(!output.status.success(), "uninitialized add must fail");
+    assert!(stderr.contains("not initialized"));
+    assert_values_absent(&stdout, &stderr);
+    assert_unchanged(&before, &snapshot(dir.path()));
+}
+
+#[test]
+fn remove_dry_run_after_init_leaves_the_vault_and_dotenv_in_place() {
+    let dir = common::canonical_tempdir();
+    prepare_initialized_project(dir.path());
+    let before = snapshot(dir.path());
+    let vault_before: Vec<_> = before
+        .keys()
+        .filter(|path| path.ends_with(".vault"))
+        .cloned()
+        .collect();
+    assert!(!vault_before.is_empty(), "init should create a vault file");
+
+    let output = phantom(dir.path())
+        .args(["remove", "OPENAI_API_KEY", "--dry-run"])
+        .output()
+        .expect("run remove --dry-run");
+    let (stdout, stderr) = text(&output);
+    assert!(output.status.success(), "remove dry run failed: {stderr}");
+    assert!(stdout.contains("would remove 1 key(s):"));
+    assert!(stdout.contains("  - OPENAI_API_KEY"));
+    assert!(stdout.contains("would remove OPENAI_API_KEY (vault state not checked in dry run)"));
+    assert!(stdout.contains("would remove OPENAI_API_KEY (not in project config)"));
+    assert!(stdout.contains(
+        "dotenv token check uses project config key names only (vault key names not checked in dry run)"
+    ));
+    assert_eq!(
+        planned_files(&stdout),
+        vec![".env".to_string(), ".phantom.toml".to_string()]
+    );
+    assert!(!stdout.contains("DIGEST"));
+    assert_values_absent(&stdout, &stderr);
+    let after = snapshot(dir.path());
+    assert_unchanged(&before, &after);
+    for path in vault_before {
+        assert_eq!(before.get(&path), after.get(&path), "vault bytes changed");
+    }
+}
+
+#[test]
+fn snapshot_records_empty_directories_lock_files_and_dotfiles() {
+    let dir = common::canonical_tempdir();
+    fs::create_dir(dir.path().join("empty-meta")).unwrap();
+    fs::write(dir.path().join(".hidden-lock"), b"dot").unwrap();
+    fs::write(dir.path().join("project.lock"), b"lock").unwrap();
+    let shot = snapshot(dir.path());
+    assert!(
+        shot.contains_key("empty-meta/"),
+        "empty directories must be recorded"
+    );
+    assert_eq!(
+        shot.get(".hidden-lock").map(Vec::as_slice),
+        Some(b"dot".as_slice())
+    );
+    assert_eq!(
+        shot.get("project.lock").map(Vec::as_slice),
+        Some(b"lock".as_slice())
+    );
+    assert!(shot.get("empty-meta/").unwrap().is_empty());
+}
+
+#[test]
+fn add_and_remove_dry_run_with_passphrase_unset_create_no_app_data() {
+    let dir = common::canonical_tempdir();
+    fs::create_dir(dir.path().join("empty-meta")).unwrap();
+    fs::write(dir.path().join(".hidden-lock"), b"dot").unwrap();
+    fs::write(dir.path().join("project.lock"), b"lock").unwrap();
+    fs::write(dir.path().join(".env"), "PORT=3000\n").unwrap();
+    phantom_core::config::PhantomConfig::new_with_defaults(
+        phantom_core::config::PhantomConfig::project_id_from_path(dir.path()),
+    )
+    .save(&dir.path().join(".phantom.toml"))
+    .unwrap();
+    let before = snapshot(dir.path());
+    assert!(before.contains_key("empty-meta/"));
+    assert!(before.contains_key(".hidden-lock"));
+    assert!(before.contains_key("project.lock"));
+
+    let add = phantom_unset(dir.path())
+        .args(["add", "NEW_SERVICE_TOKEN", "--dry-run"])
+        .output()
+        .expect("run add --dry-run");
+    let (stdout, stderr) = text(&add);
+    assert!(add.status.success(), "add dry run failed: {stderr}");
+    assert!(stdout.contains("would add NEW_SERVICE_TOKEN (vault state not checked in dry run)"));
+    assert!(stdout.contains(
+        "dotenv token check uses project config key names only (vault key names not checked in dry run)"
+    ));
+    assert!(!stderr.contains("OS keychain"), "{stderr}");
+    assert_values_absent(&stdout, &stderr);
+    assert_unchanged(&before, &snapshot(dir.path()));
+
+    let remove = phantom_unset(dir.path())
+        .args(["remove", "OPENAI_API_KEY", "--dry-run"])
+        .output()
+        .expect("run remove --dry-run");
+    let (stdout, stderr) = text(&remove);
+    assert!(
+        !remove.status.success(),
+        "remove dry run must refuse a name with no phantom mapping"
+    );
+    assert!(
+        stderr.contains("expected exactly one managed mapping"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("OS keychain"), "{stderr}");
+    assert_values_absent(&stdout, &stderr);
+    assert_unchanged(&before, &snapshot(dir.path()));
+    assert!(!dir.path().join("xdg-data").exists());
+    assert!(!dir.path().join("xdg-config").exists());
+    assert!(!dir.path().join("xdg-state").exists());
+    assert!(!dir.path().join("xdg-cache").exists());
+}
+
+#[test]
+fn dry_run_refuses_a_tokenless_dotenv_named_by_project_config() {
+    let dir = common::canonical_tempdir();
+    let mut config = phantom_core::config::PhantomConfig::new_with_defaults(
+        phantom_core::config::PhantomConfig::project_id_from_path(dir.path()),
+    );
+    config.phantom.dotenv_path = Some(".env".to_string());
+    config.phantom.secrets.insert(
+        "OPENAI_API_KEY".to_string(),
+        phantom_core::config::SecretOverride::default(),
+    );
+    config
+        .save(&dir.path().join(".phantom.toml"))
+        .expect("write config");
+    fs::write(dir.path().join(".env"), "PORT=3000\n").unwrap();
+    let before = snapshot(dir.path());
+
+    for args in [
+        ["add", "NEW_SERVICE_TOKEN", "--dry-run"],
+        ["remove", "OPENAI_API_KEY", "--dry-run"],
+    ] {
+        let output = phantom_unset(dir.path())
+            .args(args)
+            .output()
+            .expect("run dry-run");
+        let (stdout, stderr) = text(&output);
+        assert!(!output.status.success(), "{args:?} should refuse: {stdout}");
+        assert!(stderr.contains("no phantom tokens"), "{stderr}");
+        assert_values_absent(&stdout, &stderr);
+        assert_unchanged(&before, &snapshot(dir.path()));
+    }
+}
+
+#[test]
+fn init_dry_run_reports_existing_claude_files_as_may_update() {
+    let dir = common::canonical_tempdir();
+    fs::create_dir(dir.path().join(".claude")).unwrap();
+    fs::write(
+        dir.path().join(".claude/settings.local.json"),
+        "{\"theme\":\"dark\"}\n",
+    )
+    .unwrap();
+    fs::write(dir.path().join(".mcp.json"), "{}\n").unwrap();
+    fs::write(
+        dir.path().join(".env"),
+        format!("OPENAI_API_KEY={CANARY}\n"),
+    )
+    .unwrap();
+    let before = snapshot(dir.path());
+    let output = phantom(dir.path())
+        .args(["init", "--dry-run"])
+        .output()
+        .expect("run init --dry-run");
+    let (stdout, stderr) = text(&output);
+    assert!(output.status.success(), "init dry run failed: {stderr}");
+    assert!(stdout.contains("may update .claude/settings.local.json"));
+    assert!(stdout.contains("may update .mcp.json"));
+    let files = planned_files(&stdout);
+    assert!(
+        !files
+            .iter()
+            .any(|path| path.contains("settings.local.json")),
+        "{files:?}"
+    );
+    assert!(
+        !files.iter().any(|path| path.ends_with(".mcp.json")),
+        "{files:?}"
+    );
+    assert!(files.iter().any(|path| path.ends_with(".vault")));
+    assert_values_absent(&stdout, &stderr);
+    assert_unchanged(&before, &snapshot(dir.path()));
+}
+
+#[test]
+fn init_dry_run_warns_about_commented_secrets_without_printing_values() {
+    let dir = common::canonical_tempdir();
+    fs::write(
+        dir.path().join(".env"),
+        format!("PORT=3000\n# OPENAI_API_KEY={CANARY}\n# API_KEY=your.key.here\n"),
+    )
+    .unwrap();
+    let before = snapshot(dir.path());
+    let output = phantom_unset(dir.path())
+        .args(["init", "--dry-run"])
+        .output()
+        .unwrap();
+    let (stdout, stderr) = text(&output);
+    assert!(output.status.success(), "{stderr}");
+    assert!(stdout.contains(".env line 2: commented-out OPENAI_API_KEY is still plaintext"));
+    assert!(!stdout.contains("commented-out API_KEY"));
+    assert_values_absent(&stdout, &stderr);
+    assert_unchanged(&before, &snapshot(dir.path()));
+}
+
+#[test]
+fn init_dry_run_rejects_malformed_existing_config_without_disclosing_it() {
+    let dir = common::canonical_tempdir();
+    fs::write(dir.path().join(".env"), "PORT=3000\n").unwrap();
+    fs::write(
+        dir.path().join(".phantom.toml"),
+        format!("[phantom\nprivate_fixture = '{CANARY}'\n"),
+    )
+    .unwrap();
+    let before = snapshot(dir.path());
+    let output = phantom_unset(dir.path())
+        .args(["init", "--dry-run"])
+        .output()
+        .unwrap();
+    let (stdout, stderr) = text(&output);
+    assert!(!output.status.success());
+    assert!(stderr.contains("Failed to load existing .phantom.toml"));
+    assert_values_absent(&stdout, &stderr);
+    assert_unchanged(&before, &snapshot(dir.path()));
+}
+
+#[test]
+fn init_dry_run_plans_a_git_hook_without_changing_git_state() {
+    let dir = common::canonical_tempdir();
+    let initialized = std::process::Command::new("git")
+        .args(["init", "--quiet"])
+        .current_dir(dir.path())
+        .env("HOME", dir.path())
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .output()
+        .unwrap();
+    assert!(initialized.status.success());
+    fs::write(
+        dir.path().join(".env"),
+        format!("OPENAI_API_KEY={CANARY}\n"),
+    )
+    .unwrap();
+    let before = snapshot(dir.path());
+    #[cfg(unix)]
+    let modes: Vec<_> = {
+        use std::os::unix::fs::PermissionsExt;
+        [
+            dir.path(),
+            &dir.path().join(".git"),
+            &dir.path().join(".git/hooks"),
+        ]
+        .into_iter()
+        .map(|path| {
+            (
+                path.to_path_buf(),
+                fs::metadata(path).unwrap().permissions().mode(),
+            )
+        })
+        .collect()
+    };
+    let output = phantom_unset(dir.path())
+        .args(["init", "--dry-run"])
+        .output()
+        .unwrap();
+    let (stdout, stderr) = text(&output);
+    assert!(output.status.success(), "{stderr}");
+    assert!(planned_files(&stdout).contains(&".git/hooks/pre-commit".to_string()));
+    assert_values_absent(&stdout, &stderr);
+    assert_unchanged(&before, &snapshot(dir.path()));
+    #[cfg(unix)]
+    for (path, mode) in modes {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(fs::metadata(path).unwrap().permissions().mode(), mode);
+    }
+}

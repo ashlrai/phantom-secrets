@@ -151,9 +151,10 @@ function runInstaller(options = {}) {
   if (options.directLocalRelease) {
     env.PHANTOM_TEST_LOCAL_RELEASE_DIR = fixture;
   }
-  const result = spawnSync('/bin/bash', [shellInstaller], {
+  const result = spawnSync('/bin/bash', [options.installer ?? shellInstaller], {
     encoding: 'utf8',
     env,
+    timeout: options.timeoutMs,
   });
   return { root, install, log, result };
 }
@@ -423,6 +424,117 @@ test('Unix installer recovers an abandoned stale owner lock', () => {
   assert.equal(existsSync(lock), false);
   assert.match(readFileSync(join(install, 'phantom'), 'utf8'), /phantom 1\.2\.3/);
 });
+
+// Remove the fixture lock exactly between the installer's existence check and
+// stat, reproducing an owner's normal release without relying on scheduling.
+function lockStatFixture({ owner = true, remove = true, churn = false } = {}) {
+  // Match the installer's canonical parent (/var -> /private/var on macOS).
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-installer-lock-stat-')));
+  const shims = makeShims(root);
+  const install = join(root, 'live', 'bin');
+  const lock = join(dirname(install), '.bin.install.lock');
+  const marker = join(root, 'stat-interceptions');
+  mkdirSync(lock, { recursive: true, mode: 0o700 });
+  if (owner) writeFileSync(join(lock, 'owner'), 'existing-owner\n', { mode: 0o600 });
+  const target = owner ? join(lock, 'owner') : lock;
+  const quote = (value) => `'${value.replaceAll("'", "'\\''")}'`;
+  const stat = join(shims, 'stat');
+  writeFileSync(stat, `#!/bin/sh
+last=''
+for arg do last="$arg"; done
+if [ "$last" = ${quote(target)} ] && {
+  { [ "$1" = '-c' ] && [ "$2" = '%Y' ]; } ||
+  { [ "$1" = '-f' ] && [ "$2" = '%m' ]; }
+}; then
+  printf 'stat\\n' >> ${quote(marker)}
+  if ${remove}; then /bin/rm -rf -- ${quote(lock)}; fi
+  exit 1
+fi
+exec /usr/bin/stat "$@"
+`);
+  chmodSync(stat, 0o755);
+  if (churn) {
+    const mkdir = join(shims, 'mkdir');
+    writeFileSync(mkdir, `#!/bin/sh
+if [ "$1" = '-m' ] && [ "$2" = '700' ] && [ "$3" = ${quote(lock)} ]; then
+  /bin/mkdir -p -m 700 -- ${quote(lock)} || exit 1
+  printf 'another-owner\\n' > ${quote(join(lock, 'owner'))}
+  chmod 600 ${quote(join(lock, 'owner'))}
+  exit 1
+fi
+exec /bin/mkdir "$@"
+`);
+    chmodSync(mkdir, 0o755);
+  }
+  return { root, shims, install, lock, marker };
+}
+
+for (const installer of [shellInstaller, join(repo, 'apps/web/public/install.sh')]) {
+  const label = installer === shellInstaller ? 'candidate' : 'public-reference';
+  for (const owner of [true, false]) {
+    const subject = owner ? 'owner' : 'ownerless directory';
+    test(`Unix ${label} installer retries a disappearing lock ${subject}`, () => {
+      const fixture = lockStatFixture({ owner });
+      const { result, install } = runInstaller({ ...fixture, installer, timeoutMs: 60_000 });
+      assert.ifError(result.error);
+      assert.equal(result.status, 0, result.stderr);
+      assert.ok(existsSync(fixture.marker), 'stat must hit the deterministic release seam');
+      assert.equal(existsSync(fixture.lock), false);
+      assert.match(readFileSync(join(install, 'phantom'), 'utf8'), /phantom 1\.2\.3/);
+      assert.match(readFileSync(join(install, 'phantom-mcp'), 'utf8'), /phantom-mcp 1\.2\.3/);
+    });
+
+    test(`Unix ${label} installer rejects unreadable extant lock ${subject} metadata`, () => {
+      const fixture = lockStatFixture({ owner, remove: false });
+      const { result, log } = runInstaller({ ...fixture, installer, timeoutMs: 60_000 });
+      assert.ifError(result.error);
+      assert.equal(result.status, 1, result.stderr);
+      assert.match(result.stderr, owner ? /could not inspect install lock owner/ : /could not inspect install lock\s/);
+      assert.equal(existsSync(log), false, 'metadata failure must precede downloads');
+      assert.equal(existsSync(fixture.lock), true, 'extant lock must be preserved');
+    });
+  }
+
+  test(`Unix ${label} installer bounds repeated disappearance retries`, () => {
+    const fixture = lockStatFixture({ churn: true });
+    const { result, log } = runInstaller({
+      ...fixture, installer, lockWaitSeconds: '2', timeoutMs: 60_000,
+    });
+    assert.ifError(result.error);
+    assert.equal(result.status, 1, result.stderr);
+    assert.match(result.stderr, /timed out waiting for another Phantom installer/);
+    assert.ok(existsSync(fixture.marker), 'the disappearance retry must execute');
+    assert.equal(existsSync(log), false, 'timeout must precede downloads');
+  });
+
+  test(`Unix ${label} installer rejects unsafe lock and owner types`, () => {
+    for (const kind of ['lock-file', 'lock-link', 'owner-directory', 'owner-link']) {
+      const root = mkdtempSync(join(tmpdir(), 'phantom-installer-lock-type-'));
+      const install = join(root, 'live', 'bin');
+      const lock = join(dirname(install), '.bin.install.lock');
+      mkdirSync(dirname(install), { recursive: true });
+      if (kind === 'lock-file') {
+        writeFileSync(lock, 'not a directory');
+      } else if (kind === 'lock-link') {
+        symlinkSync(join(root, 'absent-target'), lock, 'dir');
+      } else {
+        mkdirSync(lock, { mode: 0o700 });
+        if (kind === 'owner-directory') mkdirSync(join(lock, 'owner'));
+        else symlinkSync(join(root, 'absent-target'), join(lock, 'owner'));
+      }
+      const { result, log } = runInstaller({ root, install, installer, timeoutMs: 60_000 });
+      assert.ifError(result.error);
+      assert.equal(result.status, 1, `${kind}: ${result.stderr}`);
+      assert.match(result.stderr, kind.startsWith('owner-')
+        ? /install lock owner is not a regular file/
+        : /install lock is not a regular directory/);
+      assert.equal(existsSync(log), false, 'unsafe locks must fail before downloads');
+      assert.equal(existsSync(join(root, 'absent-target')), false);
+      assert.ok(lstatSync(kind.startsWith('owner-') ? join(lock, 'owner') : lock),
+        'unsafe lock paths must be preserved');
+    }
+  });
+}
 
 test('Unix installer preserves the prior live install on malformed checksum', () => {
   const { install, result } = runInstaller({ existing: true, sidecar: `${'a'.repeat(64)}  wrong.tar.gz\nextra\n` });

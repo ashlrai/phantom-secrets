@@ -1,0 +1,18 @@
+version: 2
+
+# Socket's default issue rules. Omitted keys would follow the dashboard.
+issueRules:
+  didYouMean: true
+  installScripts: true
+  telemetry: true
+  troll: true
+  malware: true
+  hasNativeCode: true
+  shellScriptOverride: true
+  gitDependency: true
+  httpDependency: true
+  invalidPackageJSON: true
+  unresolvedRequire: true
+
+projectIgnorePaths:
+  - "**/fixtures/**"

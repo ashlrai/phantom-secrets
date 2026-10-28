@@ -88,11 +88,11 @@ fn check_managed_dotenv(project_dir: &std::path::Path, env_path: &std::path::Pat
     let dotenv = match phantom_core::managed_dotenv::parse_regular_dotenv(project_dir, name) {
         Ok(Some(dotenv)) => dotenv,
         Ok(None) => {
-            check_info("No .env file in current directory");
+            check_info(&format!("No {name} file in current directory"));
             return 0;
         }
         Err(error) => {
-            check_fail(&format!(".env could not be read: {error:#}"));
+            check_fail(&format!("{name} could not be read: {error:#}"));
             // Only to choose the hint; the read above already decided.
             let special = std::fs::symlink_metadata(env_path)
                 .is_ok_and(|metadata| metadata.file_type().is_symlink() || !metadata.is_file());
@@ -107,21 +107,21 @@ fn check_managed_dotenv(project_dir: &std::path::Path, env_path: &std::path::Pat
     let entries = dotenv.entries();
     let real_secrets = dotenv.real_secret_entries();
     let issues = if let Err(error) = dotenv.validate_for_mutation() {
-        check_fail(&format!(".env parse error: {error}"));
+        check_fail(&format!("{name} parse error: {error}"));
         1
     } else if real_secrets.is_empty() {
         // A commented-out secret below is still plaintext, so no "all
         // protected" pass for the file then.
         if dotenv.commented_secret_assignments().is_empty() {
             check_pass(&format!(
-                ".env has {} entries, all protected",
+                "{name} has {} entries, all protected",
                 entries.len()
             ));
         }
         0
     } else {
         check_warn(&format!(
-            ".env has {} unprotected secret(s): {}",
+            "{name} has {} unprotected secret(s): {}",
             real_secrets.len(),
             real_secrets
                 .iter()
@@ -1215,10 +1215,14 @@ mod tests {
     type CheckLine = (&'static str, String, Option<String>);
 
     fn dotenv_check_lines(project: &Path) -> (usize, Vec<CheckLine>) {
+        dotenv_check_lines_for(project, ".env")
+    }
+
+    fn dotenv_check_lines_for(project: &Path, name: &str) -> (usize, Vec<CheckLine>) {
         super::REPORT.with(|report| {
             *report.borrow_mut() = Some(phantom_core::report::DoctorReport::default())
         });
-        let issues = super::check_managed_dotenv(project, &project.join(".env"));
+        let issues = super::check_managed_dotenv(project, &project.join(name));
         let report = super::REPORT
             .with(|report| report.borrow_mut().take())
             .unwrap();
@@ -1302,6 +1306,39 @@ mod tests {
         assert_eq!((issues, lines[0].0), (1, "warn"));
         assert!(lines[0].1.contains("OPENAI_API_KEY"));
         assert_eq!(lines[0].2.as_deref(), Some("Run: phantom init"));
+    }
+
+    /// A project managing `.env.local` (`phantom init --from .env.local`) was
+    /// told about ".env" in every line of this check, a file it may not have.
+    #[test]
+    fn dotenv_check_names_the_managed_file() {
+        let project = tempfile::tempdir().unwrap();
+        let (_, lines) = dotenv_check_lines_for(project.path(), ".env.local");
+        assert_eq!(lines[0].1, "No .env.local file in current directory");
+
+        std::fs::write(
+            project.path().join(".env.local"),
+            format!("OPENAI_API_KEY={}-inside\n", "sk"),
+        )
+        .unwrap();
+        let (_, lines) = dotenv_check_lines_for(project.path(), ".env.local");
+        assert!(
+            lines[0]
+                .1
+                .starts_with(".env.local has 1 unprotected secret(s)"),
+            "{lines:?}"
+        );
+
+        std::fs::write(project.path().join(".env.local"), "PORT=3000\n").unwrap();
+        let (_, lines) = dotenv_check_lines_for(project.path(), ".env.local");
+        assert_eq!(lines[0].1, ".env.local has 1 entries, all protected");
+
+        std::fs::write(project.path().join(".env.local"), "BROKEN_RECORD\n").unwrap();
+        let (_, lines) = dotenv_check_lines_for(project.path(), ".env.local");
+        assert!(
+            lines[0].1.starts_with(".env.local parse error"),
+            "{lines:?}"
+        );
     }
 
     #[test]
