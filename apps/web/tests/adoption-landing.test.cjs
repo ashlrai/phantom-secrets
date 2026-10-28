@@ -7,6 +7,15 @@ const webRoot = path.resolve(__dirname, "..");
 const read = (relativePath) =>
   fs.readFileSync(path.join(webRoot, relativePath), "utf8");
 
+test("workbench introduction gives a local first step without implying fleet readiness", () => {
+  const hero = read("src/components/landing/WorkbenchHero.tsx");
+
+  assert.match(hero, /Start by installing Phantom on your machine, then connect and configure your tools/);
+  assert.match(hero, /This page is an introduction; a fleet is ready only after local setup and permissions are in place/);
+  assert.match(hero, /href="\/docs\/workbench-setup">\s*Install and set up Phantom/);
+  assert.match(hero, /Illustrated engineering workflow, not live account status/);
+});
+
 test("landing restores credential proof without claiming universal proxy support", () => {
   const hero = read("src/components/landing/Hero.tsx");
   const page = read("src/app/secrets/page.tsx");

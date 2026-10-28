@@ -19,9 +19,13 @@ export function WorkbenchHero() {
           Bring your signed-in coding tools, separately billed APIs and local models
           into one workbench for chats, projects, traces and review.
         </p>
+        <p className="phantom-workbench__note">
+          Start by installing Phantom on your machine, then connect and configure your tools.
+          This page is an introduction; a fleet is ready only after local setup and permissions are in place.
+        </p>
         <div className="phantom-workbench__actions">
           <Link className="phantom-workbench__primary" href="/docs/workbench-setup">
-            Get started with Phantom
+            Install and set up Phantom
           </Link>
           <Link className="phantom-workbench__secondary" href="/docs/workbench">Read the documentation</Link>
           <a className="phantom-workbench__secondary" href="/secrets">
