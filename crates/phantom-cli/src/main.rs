@@ -35,7 +35,7 @@ use tracing_subscriber::EnvFilter;
                     phantom exec -- <command>     run your app or agent through the local proxy\n\n\
                   Commands by task:\n  \
                     Setup         init · agent · setup · doctor · workspace · vault · completion · mcp · mcp-approve\n  \
-                    Daily use     exec · start · stop · status · check · list · add · remove · reveal · copy · env · why\n  \
+                    Daily use     exec · start · stop · status · check · list · add · remove · reveal · copy · env · why · git-credential\n  \
                     Sync & teams  login · logout · cloud · team · sync · pull · export · import · wrap · unwrap\n  \
                     Maintenance   upgrade · watch · rotate · grant · validate · expiry · secrets-expiring-soon · open · audit · leaks · crypto",
     version
@@ -211,6 +211,17 @@ enum Commands {
     },
 
     // ─────────────────────────── Daily use ───────────────────────────
+    /// Supply a GitHub credential to Git through a pipe (never a terminal or file).
+    #[command(next_help_heading = "Daily use")]
+    GitCredential {
+        /// Git credential protocol operation; store and erase are effect-free.
+        #[arg(value_enum)]
+        operation: commands::git_credential::Operation,
+        /// Exact project vault entry to use.
+        #[arg(long, default_value = "GITHUB_TOKEN")]
+        secret: String,
+    },
+
     /// Start the proxy and run a command
     #[command(next_help_heading = "Daily use")]
     Exec {
@@ -1188,6 +1199,7 @@ fn apply_global_json(command: &mut Commands) -> Result<(), &'static str> {
         Commands::Add { .. } => Err("phantom add"),
         Commands::Remove { .. } => Err("phantom remove"),
         Commands::Reveal { .. } => Err("phantom reveal"),
+        Commands::GitCredential { .. } => Err("phantom git-credential"),
         Commands::Copy { .. } => Err("phantom copy"),
         Commands::Env { .. } => Err("phantom env"),
         Commands::Login => Err("phantom login"),
@@ -1265,6 +1277,9 @@ fn run() -> anyhow::Result<()> {
         .init();
 
     match cli.command {
+        Commands::GitCredential { operation, secret } => {
+            commands::git_credential::run(operation, &secret)
+        }
         Commands::Init {
             from,
             all,
