@@ -428,7 +428,7 @@ dashboard is designed to show team memberships and member lists.
 | `phantom exec -- <cmd>` | Start an authenticated proxy and run a command with secret injection |
 | `phantom start` | Run an explicitly supervised foreground proxy; keep its trusted terminal open and press Ctrl-C there to stop |
 | `phantom start --daemon` / `phantom stop` | Detached start fails closed; stop is a TTY-only legacy-state diagnostic that never kills or deletes, not current process control |
-| `phantom list` | Show secret names stored in vault (never values; `--json` for machine-readable output) |
+| `phantom list` | Show secret names stored in vault (never values; `--json` for machine-readable output; `--scope dev`, `--scope staging`, or `--scope prod` to filter an exact environment) |
 | `phantom add <KEY>` | Create a new secret name transactionally in an initialized project through a hidden terminal prompt or trusted `--stdin` producer; existing names are denied before any value read and are never replaced |
 | `phantom remove <KEY>` | After exact trusted-terminal confirmation, transactionally remove the vault value, lifecycle config, and exact managed-dotenv mapping; headless use fails before value access or mutation |
 | `phantom reveal <KEY>` | From an attached trusted terminal, review and type the exact challenge before printing one value or copying it for an auto-cleared 30-second clipboard window |
@@ -480,6 +480,11 @@ dashboard is designed to show team memberships and member lists.
 | `phantom upgrade` | `--check-only` performs a read-only version lookup only for an eligible standalone install. Live standalone replacement requires attached terminals and two exact challenges; managed installs route to their owner, ambiguous installs fail closed, and `--force` is rejected. |
 | `phantom completion <shell>` | Print a shell-completion script (bash, zsh, fish, powershell, elvish) |
 | `phantom crypto inventory` | List the algorithms and format tags Phantom uses, with role, status and quantum class (`--format text` or `json`). Reads no vault, key, or config; not a CycloneDX CBOM |
+
+`phantom list --scope ENV` is read-only and keeps qualified names in its output.
+Omitting `--scope` lists all environments. `--scope default` includes both
+legacy bare names and `default/` names. An unknown valid scope returns an empty
+list; the active `.phantom/env` selector is never changed.
 
 ## Rotating real provider credentials
 
