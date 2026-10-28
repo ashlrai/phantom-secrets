@@ -1,4 +1,5 @@
 import type { NextConfig } from "next";
+import path from "node:path";
 import docsRoutes from "./docs-routes.json";
 import { readBuildSourceRevision } from "./src/lib/build-source-revision";
 import { publicAuthConfigurationFingerprint } from "./src/lib/public-auth-configuration";
@@ -41,6 +42,26 @@ const NOINDEX_HEADERS = [
 ];
 
 const nextConfig: NextConfig = {
+  // Both bundlers embed the authoritative repository Markdown as text. A
+  // standalone Vercel function must never need ../../docs at request time.
+  turbopack: {
+    root: path.resolve(__dirname, "../.."),
+    rules: {
+      "*.md": {
+        loaders: [path.resolve(__dirname, "scripts/public-doc-markdown-loader.cjs")],
+        as: "*.js",
+      },
+    },
+  },
+  webpack(config) {
+    config.module.rules.push({
+      test: /\.md$/,
+      // The loader enforces the exact catalog; other Markdown imports refuse.
+      include: path.resolve(__dirname, "../../docs"),
+      use: [path.resolve(__dirname, "scripts/public-doc-markdown-loader.cjs")],
+    });
+    return config;
+  },
   poweredByHeader: false,
   env: {
     // Freeze our own observed clean Git source. Prebuilt CLI deployment metadata

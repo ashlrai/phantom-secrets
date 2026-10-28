@@ -1,0 +1,16 @@
+{
+  "workspace_root": "/fixture",
+  "workspace_members": ["core-id", "leaf-id", "app-id", "other-id"],
+  "packages": [
+    {"id": "core-id", "name": "fixture-core", "manifest_path": "/fixture/crates/core/Cargo.toml"},
+    {"id": "leaf-id", "name": "fixture-leaf", "manifest_path": "/fixture/crates/leaf/Cargo.toml"},
+    {"id": "app-id", "name": "fixture-app", "manifest_path": "/fixture/crates/app/Cargo.toml"},
+    {"id": "other-id", "name": "fixture-other", "manifest_path": "/fixture/crates/other/Cargo.toml"}
+  ],
+  "resolve": {"nodes": [
+    {"id": "core-id", "deps": []},
+    {"id": "leaf-id", "deps": [{"name": "renamed_core", "pkg": "core-id", "dep_kinds": [{"kind": "build"}]}]},
+    {"id": "app-id", "deps": [{"name": "leaf", "pkg": "leaf-id", "dep_kinds": [{"kind": "dev"}]}]},
+    {"id": "other-id", "deps": []}
+  ]}
+}

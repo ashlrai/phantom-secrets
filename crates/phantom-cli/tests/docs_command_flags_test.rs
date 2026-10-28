@@ -1,6 +1,6 @@
 //! Docs drift guard for every place that shows phantom-secrets CLI commands.
 //!
-//! - README.md and top-level docs/*.md: `phantom ...` lines inside fenced
+//! - README.md, AGENTS.md, CLAUDE.md, mcp-registry/README.md and top-level docs/*.md: `phantom ...` lines inside fenced
 //!   code blocks.
 //! - Web app sources (apps/web/src/**/*.ts, *.tsx) and the published
 //!   apps/web/public/llms*.txt: every inline `phantom <command> ...` command,
@@ -23,7 +23,15 @@ fn repo_root() -> PathBuf {
 
 fn md_files() -> Vec<PathBuf> {
     let root = repo_root();
-    let mut files = vec![root.join("README.md")];
+    let mut files: Vec<PathBuf> = [
+        "README.md",
+        "AGENTS.md",
+        "CLAUDE.md",
+        "mcp-registry/README.md",
+    ]
+    .iter()
+    .map(|name| root.join(name))
+    .collect();
     let mut docs: Vec<PathBuf> = std::fs::read_dir(root.join("docs"))
         .expect("read docs/")
         .map(|e| e.expect("docs entry").path())
@@ -113,6 +121,12 @@ impl Helper {
         let Some(help) = self.help_for(words) else {
             return vec![format!("no help for `phantom {}`", words.join(" "))];
         };
+        if let Some(command) = words.first().filter(|word| is_word(word)) {
+            let top = subcommands(&self.help(&[]).expect("top-level help"));
+            if !top.contains(command) {
+                problems.push(format!("`{command}` is not a top-level phantom command"));
+            }
+        }
         if words.len() >= 2 && is_word(&words[1]) {
             let parent = self.help(&words[..1]).unwrap_or_default();
             let subs = subcommands(&parent);
@@ -312,6 +326,9 @@ fn inline_extraction_skips_paths_and_cargo_targets() {
         cache: HashMap::new(),
     };
     let mut n = 0;
+    assert!(
+        helper.check(&["nonexistent-command".into()], &[], &mut n)[0].contains("not a top-level")
+    );
     let bad = helper.check(&["team".into(), "bogus-cmd".into()], &[], &mut n);
     assert_eq!(bad.len(), 1, "{bad:?}");
     assert!(

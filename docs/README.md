@@ -14,6 +14,7 @@ See [distribution status](distribution-status.md) for dated npm, Homebrew, crate
 
 | Goal | Guide |
 |------|-------|
+| Run GitHub PR operations through Phantom with curl | [GitHub box runners](github-box-runners.md) |
 | Protect a project for the first time | [Getting started](getting-started.md) |
 | Delegate one bounded task to an AI coding client | [Safe delegation quickstart](delegation-quickstart.md) |
 | Keep personal, company, and client keys separate | [Multi-project key separation](multi-project-keys.md) |

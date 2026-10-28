@@ -644,6 +644,10 @@ fn prepare_environment_copy(
     to: &str,
     now_secs: u64,
 ) -> Result<EnvironmentCopyPlan> {
+    // Validate at the planning boundary too: selectors are exact namespaces,
+    // never patterns, even when a caller bypasses the CLI review path.
+    validate_env_name(from)?;
+    validate_env_name(to)?;
     let mut sources = BTreeMap::<String, String>::new();
     for key in all_keys {
         let logical = match split_key(key) {
@@ -1574,6 +1578,48 @@ mod tests {
                 after_create: std::sync::Mutex::new(None),
             },
         )
+    }
+
+    #[test]
+    fn environment_copy_rejects_glob_selectors_before_retrieval() {
+        let (_dir, vault) = vault(None);
+        let keys = vec!["dev/API_KEY".to_string(), "prod/API_KEY".to_string()];
+        for pattern in ["*", "dev*", "?", "[dp]ev", "dev/../prod"] {
+            for (from, to) in [(pattern, "target"), ("dev", pattern)] {
+                assert!(
+                    prepare_environment_copy(&unenforced(), &vault, &keys, from, to, 0).is_err()
+                );
+            }
+        }
+        assert_eq!(vault.retrieve_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn environment_copy_treats_glob_names_literally_within_exact_scope() {
+        let (dir, vault) = vault(None);
+        for key in [
+            "dev/API_*",
+            "dev/API_?",
+            "dev/[KEY]",
+            "development/API_*",
+            "prod/API_*",
+            "API_*",
+        ] {
+            vault.store(key, "synthetic-fixture").unwrap();
+        }
+        let keys = vault.list().unwrap();
+        let plan =
+            prepare_environment_copy(&unenforced(), &vault, &keys, "dev", "target", 0).unwrap();
+        assert_eq!(plan.copied_names, ["API_*", "API_?", "[KEY]"]);
+        assert_eq!(vault.retrieve_calls.load(Ordering::SeqCst), 3);
+        phantom_vault::commit_init(dir.path(), &vault, plan.mutations, Vec::new()).unwrap();
+        let targets: Vec<_> = vault
+            .list()
+            .unwrap()
+            .into_iter()
+            .filter(|key| key.starts_with("target/"))
+            .collect();
+        assert_eq!(targets, ["target/API_*", "target/API_?", "target/[KEY]"]);
     }
 
     #[test]

@@ -61,6 +61,7 @@ plus the aggregate [`SHA256SUMS`](https://github.com/ashlrai/phantom-secrets/rel
 file. All six release targets passed native acceptance before publication in
 [workflow 34153902556](https://github.com/ashlrai/phantom-secrets/actions/runs/34153902556).
 
+<!-- fresh:begin docs-release-asset-table -->
 | Platform | `v0.7.9` archive | Published checksum |
 |---|---|---|
 | macOS Apple silicon | [`phantom-aarch64-apple-darwin.tar.gz`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9/phantom-aarch64-apple-darwin.tar.gz) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9/phantom-aarch64-apple-darwin.tar.gz.sha256) |
@@ -69,6 +70,7 @@ file. All six release targets passed native acceptance before publication in
 | Linux ARM64 | [`phantom-aarch64-unknown-linux-gnu.tar.gz`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9/phantom-aarch64-unknown-linux-gnu.tar.gz) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9/phantom-aarch64-unknown-linux-gnu.tar.gz.sha256) |
 | Windows x64 | [`phantom-x86_64-pc-windows-msvc.zip`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9/phantom-x86_64-pc-windows-msvc.zip) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9/phantom-x86_64-pc-windows-msvc.zip.sha256) |
 | Windows ARM64 | [`phantom-aarch64-pc-windows-msvc.zip`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9/phantom-aarch64-pc-windows-msvc.zip) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9/phantom-aarch64-pc-windows-msvc.zip.sha256) |
+<!-- fresh:end -->
 
 Download the archive and its sidecar, then verify before extraction. Use
 `sha256sum -c <archive>.sha256` on Linux. On Windows, compare
@@ -88,12 +90,14 @@ The full SHA above is the source commit resolved by `v0.7.9`. See [distribution 
 
 ### Verify
 
+<!-- fresh:begin docs-verify-version-output -->
 ```bash
 phantom --version
 phantom-mcp --version
 # phantom 0.7.9
 # phantom-mcp 0.7.9
 ```
+<!-- fresh:end -->
 
 A Homebrew install prints `0.7.8` until the formula is bumped.
 
@@ -336,14 +340,25 @@ Health check for your setup: config validity, vault access, `.env` protection, `
 ```bash
 phantom doctor
 phantom doctor --fix    # auto-fix safe issues
+phantom doctor --strict # exit 2 when any issue is present, including warnings
+phantom why OPENAI_API_KEY --strict
 ```
+
+`phantom doctor --strict` exits 2 when the report has any issue. Warnings
+count the same as failures. There is no severity weighting. Omit `--strict`
+to keep the current exit status: a finished report with issues still exits 0.
+Exit 1 stays a command error. `phantom why KEY --strict` uses that same table.
+It exits 2 when the key is not protected, and a JSON report for a missing key
+also exits 2. The human view of a missing key is still a command error
+(exit 1). Without `--strict`, a present key still exits 0.
 
 `phantom doctor --json` (or `phantom --json doctor`) prints one report on stdout
 for agents and CI: `ok`, `issues`, `fixed`, a `checks` list of
 `{status, message, fix?, fixed?}` with status `pass`, `fail`, `warn` or `info`,
 and `mcp_clients` with each client's config path and state (`local_runtime`,
 `stale`, `unreadable`, `not_phantom` or `not_configured`). Messages are the same
-value-blind text as the human checklist, and the exit status is unchanged.
+value-blind text as the human checklist, and the exit status is unchanged
+unless `--strict` is also set.
 A configured managed dotenv that is missing or cannot be read safely (for
 example a symlink) is a `fail` check named "Managed dotenv" with a fix hint;
 the other checks still run. `phantom doctor --fix` stops with an error before
@@ -369,10 +384,19 @@ One command answers whether this repo is ready for autonomous AI coding tools.
 
 ```bash
 phantom agent doctor          # human-readable readiness view
+phantom agent doctor --json --strict # exit 2 unless the verdict is ready
 phantom agent report --json   # stable JSON for automation and CI
 phantom agent setup --dry-run # preview safe setup changes
 phantom agent setup --apply   # initialize safe defaults
 ```
+
+`phantom agent doctor --json --strict` uses the same exit table as
+`phantom doctor --strict`: exit 0 when the verdict is `ready`, exit 2 when it
+is `degraded`, `blocked`, or `unknown`, and exit 1 for a command error.
+Without `--strict` the JSON exit stays 0. Key on `schema`
+(`phantom.agent.doctor.v1`). The `.vN` suffix changes only when the JSON
+shape breaks. `schema_version` and `kind` (`phantom.agent.preflight`) stay
+for older readers. See `docs/agent-preflight-contract.md`.
 
 The readiness engine checks `.env` files, `.phantom.toml`, vault access, unprotected secrets, `.env.example`, `.gitignore`, MCP client wiring, package script wrapping, pre-commit protection, audit status, cloud login, team state, and sync targets. It returns one state: `unsafe`, `protected`, `verified`, `team-ready`, or `compliance-ready`.
 A locked encrypted-file vault (secrets stored with `PHANTOM_VAULT_PASSPHRASE`,
