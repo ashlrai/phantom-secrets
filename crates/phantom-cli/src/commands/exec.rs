@@ -5,7 +5,8 @@ use phantom_core::dotenv::DotenvFile;
 use phantom_core::env_scope::DEFAULT_ENV;
 use phantom_core::token::PhantomToken;
 use phantom_proxy::{Interceptor, ProxyConfig, ProxyServer, ServiceRegistry};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::ffi::OsString;
 use std::path::Path;
 use std::process::Stdio;
 
@@ -45,7 +46,12 @@ pub fn run(
     }
 
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(run_async(cmd, env, bind_source, quiet))
+    rt.block_on(run_async(cmd, env, bind_source, quiet, None))
+}
+
+pub(super) fn run_mcp(cmd: &[String], extra_env: &BTreeMap<String, String>) -> Result<()> {
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(run_async(cmd, None, None, true, Some(extra_env)))
 }
 
 /// Actionable, value-free next steps for the connection-string denial.
@@ -76,6 +82,7 @@ async fn run_async(
     env_flag: Option<&str>,
     bind_source: Option<&std::path::Path>,
     quiet: bool,
+    mcp_env: Option<&BTreeMap<String, String>>,
 ) -> Result<()> {
     let working_dir = std::env::current_dir()?;
     // Custody (config namespace, managed dotenv, env scope) comes from the
@@ -162,12 +169,16 @@ async fn run_async(
     let (child_scrub_env, never_reintroduce) =
         child_environment_policy(&config, &protected_env_keys);
 
+    let mut mcp_environment = mcp_env
+        .map(|extra| mcp_child_environment(cmd, extra, &child_scrub_env, &protected_env_keys))
+        .transpose()?;
+
     if protected_env_keys.is_empty() {
         eprintln!(
             "{} No phantom tokens found to proxy. Running command directly with Phantom internal credentials removed.",
             "warn".yellow()
         );
-        return run_command_directly(cmd, &child_scrub_env).await;
+        return run_command_directly(cmd, &child_scrub_env, mcp_environment.as_deref()).await;
     }
 
     crate::commands::rotation_gate::enforce_rotation_on_access(
@@ -233,6 +244,9 @@ async fn run_async(
     // proxy 503 for every call instead of reaching its provider.
     let mut exported_routes = registry.clone();
     exported_routes.retain_routes(|route| secret_name_to_value.contains_key(&route.secret_key));
+    if let (Some(environment), Some(extra)) = (mcp_environment.as_mut(), mcp_env) {
+        protect_mcp_launch(cmd, extra, environment, &secret_name_to_value)?;
+    }
     let interceptor = Interceptor::new_scoped(session_token_to_secret, secret_name_to_value);
 
     progress!(
@@ -306,7 +320,7 @@ async fn run_async(
     let package_json_path = working_dir.join("package.json");
     let is_node_project = package_json_path.exists();
 
-    if is_node_project {
+    if is_node_project && mcp_env.is_none() {
         progress!(quiet, "   {} Detected Node.js project", "->".dimmed(),);
 
         // Detect Next.js: check if the command starts with "next" or package.json
@@ -382,6 +396,11 @@ async fn run_async(
     let args = &cmd[1..];
 
     let mut command = sanitized_child_command(program, args, &child_scrub_env);
+    if let Some(environment) = mcp_environment.as_ref() {
+        // Snapshot and filter the inherited environment before starting the
+        // proxy. Do not let a later ambient value bypass the value scan.
+        command.env_clear().envs(environment.iter().cloned());
+    }
     command
         .envs(overrides.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .envs(
@@ -563,6 +582,82 @@ fn sanitized_child_command(
     command
 }
 
+/// MCP config is data, never a shell template or a credential resolver.
+/// Protected entries may be omitted or contain a mapping marker, which is
+/// discarded. Only the managed dotenv decides which fresh tokens to supply.
+fn mcp_child_environment(
+    cmd: &[String],
+    extra: &BTreeMap<String, String>,
+    scrub: &HashSet<String>,
+    protected: &HashSet<String>,
+) -> Result<Vec<(OsString, OsString)>> {
+    if cmd.is_empty() || cmd.iter().any(|arg| arg.contains("phm_")) {
+        anyhow::bail!("MCP command/args must not contain persistent Phantom mappings");
+    }
+    let owned = |key: &str| {
+        key.to_ascii_uppercase().starts_with("PHANTOM_")
+            || ServiceRegistry::known_override_env_names()
+                .iter()
+                .any(|name| name.eq_ignore_ascii_case(key))
+    };
+    if protected.iter().any(|key| owned(key)) {
+        anyhow::bail!("MCP protected keys cannot use Phantom internal or proxy URL variable names");
+    }
+    let reserved = |key: &str| {
+        // Windows variable names are case-insensitive. Reject alternate
+        // spellings on every platform to keep configs portable.
+        owned(key) || scrub.iter().any(|name| name.eq_ignore_ascii_case(key))
+    };
+    for (key, value) in extra {
+        if protected.contains(key) {
+            if !PhantomToken::is_phantom_token(value) {
+                anyhow::bail!("MCP protected env entries must be omitted or use a Phantom mapping placeholder");
+            }
+        } else if reserved(key) || value.contains("phm_") {
+            anyhow::bail!("MCP env cannot override Phantom internal credentials, proxy URLs, or unmapped placeholders");
+        }
+    }
+    let mut environment: BTreeMap<OsString, OsString> = std::env::vars_os()
+        .filter(|(key, value)| {
+            !reserved(&key.to_string_lossy()) && !value.to_string_lossy().contains("phm_")
+        })
+        .collect();
+    environment.extend(
+        extra
+            .iter()
+            .filter(|(key, _)| !protected.contains(*key))
+            .map(|(key, value)| (OsString::from(key), OsString::from(value))),
+    );
+    Ok(environment.into_iter().collect())
+}
+
+/// The vault values remain in the parent proxy. Fail closed for literal
+/// configured copies; remove inherited aliases (including embedded copies).
+/// Messages deliberately omit the offending key, argument, and value.
+fn protect_mcp_launch(
+    cmd: &[String],
+    extra: &BTreeMap<String, String>,
+    environment: &mut Vec<(OsString, OsString)>,
+    values: &HashMap<String, String>,
+) -> Result<()> {
+    let contains_secret = |text: &str| {
+        values
+            .values()
+            .any(|value| !value.is_empty() && text.contains(value.as_str()))
+    };
+    if cmd.iter().any(|arg| contains_secret(arg))
+        || extra
+            .iter()
+            .any(|(key, value)| contains_secret(key) || contains_secret(value))
+    {
+        anyhow::bail!("Refusing MCP launch: configured command, args, or env contains a protected vault value");
+    }
+    environment.retain(|(key, value)| {
+        !contains_secret(&key.to_string_lossy()) && !contains_secret(&value.to_string_lossy())
+    });
+    Ok(())
+}
+
 /// The comma-separated, sorted variable names a session fills with its own
 /// phantom tokens, for [`phantom_core::report::SESSION_KEYS_VAR`].
 pub(crate) fn session_variable_list<'a>(names: impl Iterator<Item = &'a String>) -> String {
@@ -633,11 +728,18 @@ fn detect_next_dependency(package_json: &Path) -> bool {
     contents.contains("\"next\"")
 }
 
-async fn run_command_directly(cmd: &[String], scrub_env_keys: &HashSet<String>) -> Result<()> {
+async fn run_command_directly(
+    cmd: &[String],
+    scrub_env_keys: &HashSet<String>,
+    mcp_environment: Option<&[(OsString, OsString)]>,
+) -> Result<()> {
     let program = &cmd[0];
     let args = &cmd[1..];
 
     let mut command = sanitized_child_command(program, args, scrub_env_keys);
+    if let Some(environment) = mcp_environment {
+        command.env_clear().envs(environment.iter().cloned());
+    }
     let status = match command
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())

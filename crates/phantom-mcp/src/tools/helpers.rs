@@ -20,12 +20,82 @@ pub fn mcp_effects_enabled() -> bool {
     effect_execution_enabled(std::env::var(MCP_EFFECTS_ENV).ok().as_deref())
 }
 
+/// Refuse recognizable credentials even when accidentally pasted into a
+/// metadata field. Reuse the public-env value rules so hashes, plan IDs, and
+/// approval tokens are not mistaken for secrets by the entropy heuristic.
+/// This is admission hygiene, not a substitute for value-free result DTOs.
+pub fn credential_shaped_input(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::String(text) => {
+            let mut entry = phantom_core::dotenv::EnvEntry {
+                key: "NEXT_PUBLIC_MCP_ARGUMENT".to_string(),
+                value: text.clone(),
+                is_phantom: false,
+            };
+            let classified = phantom_core::dotenv::classify_with_reason(&entry).0
+                == phantom_core::dotenv::SecretClassification::Secret;
+            zeroize::Zeroize::zeroize(&mut entry.value);
+            classified
+                || phantom_core::token::PhantomToken::is_phantom_token(text)
+                || text.starts_with("eyJ")
+        }
+        serde_json::Value::Array(items) => items.iter().any(credential_shaped_input),
+        serde_json::Value::Object(fields) => fields.iter().any(|(key, value)| {
+            credential_shaped_input(&serde_json::Value::String(key.clone()))
+                || credential_shaped_input(value)
+        }),
+        _ => false,
+    }
+}
+
+/// Serde diagnostics may quote arbitrary strings from decrypted vault data,
+/// persisted metadata, or rejected input. Preserve error codes and the data
+/// shape around a failure, but never pass these diagnostics to the agent.
+/// This is not a secret-pattern filter: opaque values are equally protected.
+fn value_blind_diagnostic(message: String) -> String {
+    const INPUT_BEARING_DIAGNOSTICS: &[&str] = &[
+        "invalid type:",
+        "invalid value:",
+        "unknown variant ",
+        "unknown field ",
+        "missing field ",
+        "Corrupt vault data:",
+    ];
+    if INPUT_BEARING_DIAGNOSTICS
+        .iter()
+        .any(|prefix| message.contains(prefix))
+    {
+        "Stored or submitted data could not be decoded. Diagnostic contents withheld; inspect the source in a trusted terminal.".to_string()
+    } else {
+        message
+    }
+}
+
+fn value_blind_report(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::String(text) => {
+            *text = value_blind_diagnostic(std::mem::take(text));
+        }
+        serde_json::Value::Array(items) => items.iter_mut().for_each(value_blind_report),
+        serde_json::Value::Object(fields) => fields.values_mut().for_each(value_blind_report),
+        _ => {}
+    }
+}
+
 pub fn internal_err(msg: impl Into<String>) -> McpError {
-    McpError::new(rmcp::model::ErrorCode::INTERNAL_ERROR, msg.into(), None)
+    McpError::new(
+        rmcp::model::ErrorCode::INTERNAL_ERROR,
+        value_blind_diagnostic(msg.into()),
+        None,
+    )
 }
 
 pub fn invalid_params_err(msg: impl Into<String>) -> McpError {
-    McpError::new(rmcp::model::ErrorCode::INVALID_PARAMS, msg.into(), None)
+    McpError::new(
+        rmcp::model::ErrorCode::INVALID_PARAMS,
+        value_blind_diagnostic(msg.into()),
+        None,
+    )
 }
 
 /// The call is well formed, but the project is not in a state to serve it:
@@ -33,7 +103,11 @@ pub fn invalid_params_err(msg: impl Into<String>) -> McpError {
 /// logged in. The user can fix each of these, and the message names how.
 /// INTERNAL_ERROR (-32603) would tell the client the server itself failed.
 pub fn state_err(msg: impl Into<String>) -> McpError {
-    McpError::new(rmcp::model::ErrorCode::INVALID_REQUEST, msg.into(), None)
+    McpError::new(
+        rmcp::model::ErrorCode::INVALID_REQUEST,
+        value_blind_diagnostic(msg.into()),
+        None,
+    )
 }
 
 /// `enforce_rotation_on_access` for MCP paths that hand a real vault value out
@@ -175,9 +249,7 @@ pub fn parse_audit_format(format: &str) -> Result<AuditFormat, McpError> {
     } else if format.eq_ignore_ascii_case("csv") {
         Ok(AuditFormat::Csv)
     } else {
-        Err(invalid_params_err(format!(
-            "Invalid format '{format}'. Use: json or csv"
-        )))
+        Err(invalid_params_err("Invalid format. Use: json or csv"))
     }
 }
 
@@ -263,9 +335,9 @@ pub fn require_approval_token(
                          `approval_token: \"<nonce>:<token>\"`."
                     )))
                 }
-                Err(e) => Err(invalid_params_err(format!(
-                    "Approval request was rejected before persistence: {e}"
-                ))),
+                Err(_) => Err(invalid_params_err(
+                    "Approval request was rejected before persistence. Parameters must be bounded, value-blind JSON; check approval storage in a trusted terminal.",
+                )),
             }
         }
         Some(token) => {
@@ -281,8 +353,22 @@ pub fn require_approval_token(
                 params_json,
                 project_id,
             )
-            .map_err(invalid_params_err)
+            .map_err(|error| invalid_params_err(approval_failure_summary(&error)))
         }
+    }
+}
+
+/// Approval storage is untrusted input, including serde failures and persisted
+/// tool/project names. Keep useful refusal classes without reflecting it.
+fn approval_failure_summary(error: &str) -> &'static str {
+    if error.contains("expired") || error.contains("consumed") || error.contains("not found") {
+        "Approval expired, consumed, or not found. Request fresh out-of-band approval."
+    } else if error.contains("parameter mismatch") {
+        "Approval parameter mismatch. Request fresh out-of-band approval for the exact parameters."
+    } else if error.contains("has not been approved") {
+        "Approval has not been approved yet. Use a trusted terminal outside agent authority."
+    } else {
+        "Approval verification failed. Check the exact tool, project, and parameters; request fresh out-of-band approval."
     }
 }
 
@@ -304,7 +390,7 @@ fn extract_token(combined: &str) -> String {
 
 pub fn text_result(msg: impl Into<String>) -> Result<CallToolResult, McpError> {
     Ok(CallToolResult::success(vec![ContentBlock::text(
-        msg.into(),
+        value_blind_diagnostic(msg.into()),
     )]))
 }
 
@@ -315,12 +401,13 @@ pub fn report_result(
     summary: impl Into<String>,
     report: &impl serde::Serialize,
 ) -> Result<CallToolResult, McpError> {
-    let value = serde_json::to_value(report)
+    let mut value = serde_json::to_value(report)
         .map_err(|error| internal_err(format!("Serialization error: {error}")))?;
+    value_blind_report(&mut value);
     let json = serde_json::to_string_pretty(&value)
         .map_err(|error| internal_err(format!("Serialization error: {error}")))?;
     let mut result = CallToolResult::success(vec![
-        ContentBlock::text(summary.into()),
+        ContentBlock::text(value_blind_diagnostic(summary.into())),
         ContentBlock::text(json),
     ]);
     result.structured_content = Some(value);
@@ -331,8 +418,9 @@ pub fn report_result(
 /// as the only text block (existing clients parse it) and attach the same
 /// object as MCP `structuredContent`.
 pub fn json_object_result(report: &impl serde::Serialize) -> Result<CallToolResult, McpError> {
-    let value = serde_json::to_value(report)
+    let mut value = serde_json::to_value(report)
         .map_err(|error| internal_err(format!("Serialization error: {error}")))?;
+    value_blind_report(&mut value);
     let json = serde_json::to_string_pretty(&value)
         .map_err(|error| internal_err(format!("Serialization error: {error}")))?;
     let mut result = CallToolResult::success(vec![ContentBlock::text(json)]);
@@ -359,6 +447,19 @@ mod tests {
     use super::{
         effect_execution_enabled, extract_nonce, extract_token, json_object_result, require_confirm,
     };
+
+    #[test]
+    fn approval_refusals_never_echo_storage_or_submitted_values() {
+        let marker = hex::encode(rand::random::<[u8; 24]>());
+        for detail in [
+            format!("invalid type: string {marker}, expected a boolean"),
+            format!("Approval nonce was issued for project '{marker}'"),
+            format!("Nonce '{marker}' not found; it may have been consumed"),
+            format!("Nonce '{marker}' has not been approved yet"),
+        ] {
+            assert!(!super::approval_failure_summary(&detail).contains(&marker));
+        }
+    }
 
     #[test]
     fn json_object_result_attaches_objects_only() {

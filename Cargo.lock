@@ -2787,6 +2787,7 @@ dependencies = [
  "phantom-secrets-runtime",
  "phantom-secrets-vault",
  "phantom-secrets-workspace",
+ "rand 0.8.6",
  "rmcp",
  "schemars",
  "serde",
