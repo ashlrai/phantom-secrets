@@ -60,6 +60,9 @@ libc = "0.2"
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
 
 [dev-dependencies]
+phantom-proxy = { workspace = true, features = ["test-utils"] }
+reqwest = { version = "0.12", features = ["rustls-tls", "stream"], default-features = false }
+hyper = { version = "1", features = ["full"] }
 assert_cmd = "2"
 wiremock = "0.6"
 ed25519-dalek = { version = "2", features = ["rand_core"] }
