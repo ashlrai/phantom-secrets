@@ -324,7 +324,7 @@ fn open_trusted_base(base_dir: &Path) -> Result<(TrustedAnchor, PathBuf)> {
 /// contain `-` or `_`; path separators, dot segments, whitespace, and Unicode
 /// are deliberately rejected so the file backend cannot escape `vaults/` on
 /// any supported platform.
-fn validate_project_id(project_id: &str) -> Result<()> {
+pub(crate) fn validate_project_id(project_id: &str) -> Result<()> {
     let valid = !project_id.is_empty()
         && project_id.len() <= 128
         && project_id

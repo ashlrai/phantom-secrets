@@ -127,6 +127,12 @@ impl PreparedHookPlan {
         self.change
     }
 
+    /// Hook file this plan would write when [`Self::change`] is not
+    /// [`HookChange::Unchanged`].
+    pub fn path(&self) -> &Path {
+        &self.location.path
+    }
+
     pub fn authority(&self) -> &HookAuthority {
         &self.location.authority
     }

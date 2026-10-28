@@ -26,6 +26,7 @@ pub mod logout;
 pub mod mcp;
 pub mod mcp_approve;
 pub mod open;
+pub(crate) mod plan_print;
 pub mod pq_report;
 pub(crate) mod proxy_lifecycle;
 pub mod pull;
