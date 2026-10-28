@@ -1,11 +1,11 @@
 name: Nightly full matrix
 
-# Push to main runs Linux only (see ci.yml). This runs the full CI matrix,
-# macOS and Windows included, on main every night. A failure fails this run,
+# PRs and the merge queue run only fast checks (see ci.yml). This runs the
+# full CI matrix, macOS and Windows included, on main daily at 06:00 ET. A failure fails this run,
 # which shows in the Actions tab and its run summary.
 on:
   schedule:
-    - cron: "23 7 * * *"
+    - cron: "0 10 * * *"
   workflow_dispatch:
 
 permissions:
@@ -24,6 +24,7 @@ jobs:
     needs: ci
     if: always()
     runs-on: ubuntu-latest
+    timeout-minutes: 2
     steps:
       - name: Report result
         env:
