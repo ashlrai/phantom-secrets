@@ -1,0 +1,1491 @@
+{
+  "resultType": "complete",
+  "tools": [
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "approval_token": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "confirm": {
+            "default": false,
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "name": "phantom_add_secret"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "confirm": {
+            "default": false,
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "name": "phantom_add_secret_interactive"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "also_promote_rotated": {
+            "default": true,
+            "type": "boolean"
+          },
+          "approval_token": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "confirm": {
+            "default": false,
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "name": "phantom_apply_expiry_policy"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "approval_token": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "backfill": {
+            "default": false,
+            "type": "boolean"
+          },
+          "confirm": {
+            "default": false,
+            "type": "boolean"
+          },
+          "last": {
+            "default": 50,
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "name": "phantom_audit_alerts"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "format": {
+            "default": "json",
+            "type": "string"
+          },
+          "max_records": {
+            "default": 1000,
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "min_anomaly_score": {
+            "default": null,
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "window_days": {
+            "default": 30,
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "name": "phantom_audit_analytics"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "max_records": {
+            "default": 1000,
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "min_score": {
+            "default": 0.4,
+            "format": "double",
+            "type": "number"
+          },
+          "period": {
+            "default": "30d",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "phantom_audit_anomalies"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "max_accesses_per_hour": {
+            "default": null,
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "max_consecutive_quiet_days": {
+            "default": null,
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "max_records": {
+            "default": 1000,
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "name": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "threshold": {
+            "default": 0.5,
+            "format": "double",
+            "type": "number"
+          }
+        },
+        "type": "object"
+      },
+      "name": "phantom_audit_anomalies_realtime"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "default": "report",
+            "type": "string"
+          },
+          "approval_token": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "confirm": {
+            "default": false,
+            "type": "boolean"
+          },
+          "format": {
+            "default": "json",
+            "type": "string"
+          },
+          "from": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "max_records": {
+            "default": 1000,
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "operation": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "save": {
+            "default": false,
+            "type": "boolean"
+          },
+          "secret_name": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "to": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "name": "phantom_audit_export_report"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "ack": {
+            "default": false,
+            "type": "boolean"
+          },
+          "approval_token": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "confirm": {
+            "default": false,
+            "type": "boolean"
+          },
+          "include_acked": {
+            "default": false,
+            "type": "boolean"
+          },
+          "secret_name": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "snooze_seconds": {
+            "default": 0,
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "name": "phantom_audit_hotspot_alerts"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "max_records": {
+            "default": 1000,
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "min_confidence": {
+            "default": 0.7,
+            "format": "double",
+            "type": "number"
+          }
+        },
+        "type": "object"
+      },
+      "name": "phantom_audit_incidents"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "n": {
+            "default": 20,
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "name_filter": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "op_filter": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "name": "phantom_audit_recent"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "min_anomaly_score": {
+            "default": null,
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "period": {
+            "default": "all",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "phantom_audit_stats"
+    },
+    {
+      "inputSchema": {
+        "properties": {},
+        "type": "object"
+      },
+      "name": "phantom_capability"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "runtime": {
+            "default": false,
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "name": "phantom_check"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "approval_token": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "confirm": {
+            "default": false,
+            "type": "boolean"
+          },
+          "force": {
+            "default": false,
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "name": "phantom_cloud_pull"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "approval_token": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "confirm": {
+            "default": false,
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "name": "phantom_cloud_push"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "approval_token": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "confirm": {
+            "default": false,
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "name": "phantom_cloud_status"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object"
+      },
+      "name": "phantom_compliance_status"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "approval_token": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "confirm": {
+            "default": false,
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          },
+          "rename": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "target_dir": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "target_dir"
+        ],
+        "type": "object"
+      },
+      "name": "phantom_copy_secret"
+    },
+    {
+      "inputSchema": {
+        "$defs": {
+          "EngineeringAction": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "action": {
+                    "const": "cargo_check",
+                    "type": "string"
+                  },
+                  "cwd": {
+                    "$ref": "#/$defs/RelativeCwd"
+                  },
+                  "package": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/PackageName"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "action",
+                  "cwd"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "action": {
+                    "const": "cargo_test",
+                    "type": "string"
+                  },
+                  "cwd": {
+                    "$ref": "#/$defs/RelativeCwd"
+                  },
+                  "filter": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/TestFilter"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "package": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/PackageName"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "action",
+                  "cwd"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "action": {
+                    "const": "cargo_clippy",
+                    "type": "string"
+                  },
+                  "cwd": {
+                    "$ref": "#/$defs/RelativeCwd"
+                  },
+                  "package": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/PackageName"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "action",
+                  "cwd"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "action": {
+                    "const": "cargo_fmt_check",
+                    "type": "string"
+                  },
+                  "cwd": {
+                    "$ref": "#/$defs/RelativeCwd"
+                  }
+                },
+                "required": [
+                  "action",
+                  "cwd"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "EngineeringDoPhase": {
+            "oneOf": [
+              {
+                "const": "propose",
+                "type": "string"
+              },
+              {
+                "const": "execute",
+                "type": "string"
+              }
+            ]
+          },
+          "PackageName": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$",
+            "type": "string"
+          },
+          "RelativeCwd": {
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "TestFilter": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "$ref": "#/$defs/EngineeringAction"
+          },
+          "phase": {
+            "$ref": "#/$defs/EngineeringDoPhase",
+            "default": "propose"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "name": "phantom_do"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "approval_token": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "confirm": {
+            "default": false,
+            "type": "boolean"
+          },
+          "fix": {
+            "default": false,
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "name": "phantom_doctor"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "approval_token": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "confirm": {
+            "default": false,
+            "type": "boolean"
+          },
+          "output": {
+            "default": ".env.example",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "phantom_env"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "fail_closed": {
+            "default": false,
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "name": "phantom_expiry_enforce"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "approval_token": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "confirm": {
+            "default": false,
+            "type": "boolean"
+          },
+          "env_path": {
+            "default": ".env",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "phantom_init"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "max_records": {
+            "default": 1000,
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "min_confidence": {
+            "default": 0.5,
+            "format": "double",
+            "type": "number"
+          }
+        },
+        "type": "object"
+      },
+      "name": "phantom_leak_incidents_realtime"
+    },
+    {
+      "inputSchema": {
+        "properties": {},
+        "type": "object"
+      },
+      "name": "phantom_list_secrets"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "show_expiry": {
+            "default": true,
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "name": "phantom_list_with_expiry"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "approval_token": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "confirm": {
+            "default": false,
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "name": "phantom_remove_secret"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "approval_token": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "confirm": {
+            "default": false,
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "name": "phantom_rotate"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "approval_token": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "confirm": {
+            "default": false,
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "name": "phantom_rotate_promote"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "approval_token": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "confirm": {
+            "default": false,
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          },
+          "provider": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "name": "phantom_rotate_provider"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "approval_token": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "auto_promote_ttl_secs": {
+            "default": null,
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "confirm": {
+            "default": false,
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "name": "phantom_rotate_with_candidate"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "approval_token": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "confirm": {
+            "default": false,
+            "type": "boolean"
+          },
+          "days_ttl": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "days_ttl"
+        ],
+        "type": "object"
+      },
+      "name": "phantom_rotate_with_expiry"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "name": "phantom_rotation_schedule_next"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "warn_days": {
+            "default": 7,
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "name": "phantom_secret_rotation_due"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "approval_token": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "confirm": {
+            "default": false,
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          },
+          "sync": {
+            "default": false,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "name": "phantom_secrets_auto_rotate"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "days": {
+            "default": 7,
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "name": "phantom_secrets_expiry_check"
+    },
+    {
+      "inputSchema": {
+        "$defs": {
+          "SetupWorkspacePhase": {
+            "oneOf": [
+              {
+                "const": "propose",
+                "type": "string"
+              },
+              {
+                "const": "request_apply",
+                "type": "string"
+              },
+              {
+                "const": "status",
+                "type": "string"
+              }
+            ]
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "approval_token": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "confirm": {
+            "default": false,
+            "type": "boolean"
+          },
+          "phase": {
+            "$ref": "#/$defs/SetupWorkspacePhase",
+            "default": "propose"
+          },
+          "plan_id": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "pre_state_id": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "request_id": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "name": "phantom_setup_workspace"
+    },
+    {
+      "inputSchema": {
+        "properties": {},
+        "type": "object"
+      },
+      "name": "phantom_status"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "platform": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "project_id": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "name": "phantom_sync"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "approval_token": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "confirm": {
+            "default": false,
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "name": "phantom_team_create"
+    },
+    {
+      "inputSchema": {
+        "$defs": {
+          "TeamInviteRole": {
+            "enum": [
+              "member",
+              "admin"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "approval_token": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "confirm": {
+            "default": false,
+            "type": "boolean"
+          },
+          "github_login": {
+            "type": "string"
+          },
+          "role": {
+            "$ref": "#/$defs/TeamInviteRole",
+            "default": "member"
+          },
+          "team_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "team_id",
+          "github_login"
+        ],
+        "type": "object"
+      },
+      "name": "phantom_team_invite"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "approval_token": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "confirm": {
+            "default": false,
+            "type": "boolean"
+          },
+          "team_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "team_id"
+        ],
+        "type": "object"
+      },
+      "name": "phantom_team_key_publish"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "approval_token": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "confirm": {
+            "default": false,
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "name": "phantom_team_list"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "approval_token": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "confirm": {
+            "default": false,
+            "type": "boolean"
+          },
+          "team_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "team_id"
+        ],
+        "type": "object"
+      },
+      "name": "phantom_team_members"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "approval_token": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "confirm": {
+            "default": false,
+            "type": "boolean"
+          },
+          "team_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "team_id"
+        ],
+        "type": "object"
+      },
+      "name": "phantom_team_vault_pull"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "approval_token": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "confirm": {
+            "default": false,
+            "type": "boolean"
+          },
+          "team_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "team_id"
+        ],
+        "type": "object"
+      },
+      "name": "phantom_team_vault_push"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "approval_token": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "confirm": {
+            "default": false,
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "name": "phantom_unwrap"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "approval_token": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "confirm": {
+            "default": false,
+            "type": "boolean"
+          },
+          "jobs": {
+            "default": 4,
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "name": "phantom_validate_all"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "name": "phantom_validate_secret"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "limit": {
+            "default": 20,
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "name": "phantom_validation_history"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "approval_token": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "confirm": {
+            "default": false,
+            "type": "boolean"
+          },
+          "interval": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "name": "phantom_validation_schedule"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "key": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key"
+        ],
+        "type": "object"
+      },
+      "name": "phantom_why"
+    },
+    {
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "approval_token": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "confirm": {
+            "default": false,
+            "type": "boolean"
+          },
+          "only": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "skip": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "name": "phantom_wrap"
+    }
+  ]
+}

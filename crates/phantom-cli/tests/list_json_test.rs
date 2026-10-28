@@ -48,6 +48,11 @@ fn list_json_emits_valid_json_with_secret_names() {
     let parsed: Value = serde_json::from_str(&stdout)
         .unwrap_or_else(|e| panic!("output is not valid JSON: {e}\noutput was: {stdout}"));
 
+    assert_eq!(stdout.lines().count(), 1);
+    assert_eq!(
+        stdout.trim_end().len(),
+        serde_json::to_vec(&parsed).unwrap().len()
+    );
     let array = parsed
         .as_array()
         .expect("top-level JSON should be an array");
@@ -96,6 +101,11 @@ fn list_json_emits_empty_array_when_vault_has_no_secrets() {
     let parsed: Value = serde_json::from_str(&stdout)
         .unwrap_or_else(|e| panic!("output is not valid JSON: {e}\noutput was: {stdout}"));
 
+    assert_eq!(stdout.lines().count(), 1);
+    assert_eq!(
+        stdout.trim_end().len(),
+        serde_json::to_vec(&parsed).unwrap().len()
+    );
     let array = parsed
         .as_array()
         .expect("top-level JSON should be an array");

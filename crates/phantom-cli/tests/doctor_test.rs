@@ -163,6 +163,35 @@ fn doctor_json_reports_checks_hints_and_mcp_clients() {
         let report: serde_json::Value =
             serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("{args:?}: {e}: {stdout}"));
 
+        assert_eq!(stdout.lines().count(), 1);
+        assert_eq!(
+            stdout.trim_end().len(),
+            serde_json::to_vec(&report).unwrap().len()
+        );
+        assert_eq!(
+            report
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["checks", "fixed", "issues", "mcp_clients", "ok"]
+        );
+        for check in report["checks"].as_array().unwrap() {
+            assert!(check["status"].is_string());
+            assert!(check["message"].is_string());
+        }
+        for client in report["mcp_clients"].as_array().unwrap() {
+            assert_eq!(
+                client
+                    .as_object()
+                    .unwrap()
+                    .keys()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>(),
+                ["client", "path", "state"]
+            );
+        }
         assert_eq!(report["ok"], false, "{stdout}");
         assert!(report["issues"].as_u64().unwrap() >= 2, "{stdout}");
         let checks = report["checks"].as_array().unwrap();
