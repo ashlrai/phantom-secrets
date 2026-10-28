@@ -12,6 +12,17 @@ pub fn docs_url(slug: &str) -> String {
     )
 }
 
+/// The async runtime for a one-shot command that `block_on`s one future.
+/// Requests, child waiting and signal forwarding stay asynchronous on a
+/// single thread, so there is no reason to start and join one worker per
+/// CPU for every short-lived invocation. Long-lived servers (`start`,
+/// `mcp`) keep their own multi-thread runtimes.
+pub fn oneshot_runtime() -> std::io::Result<tokio::runtime::Runtime> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+}
+
 /// The project directory a command works on: the current directory. Tests
 /// install their own with [`test_seam::TestProject`].
 pub fn project_dir() -> anyhow::Result<PathBuf> {

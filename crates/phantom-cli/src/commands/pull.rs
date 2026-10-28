@@ -55,7 +55,7 @@ pub fn run(
     service: Option<String>,
     force: bool,
 ) -> Result<()> {
-    let rt = tokio::runtime::Runtime::new()?;
+    let rt = crate::util::oneshot_runtime()?;
     rt.block_on(run_async(from, project, environment, service, force))
 }
 
