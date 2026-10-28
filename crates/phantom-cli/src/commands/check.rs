@@ -55,7 +55,14 @@ pub fn run(staged_only: bool, runtime: bool, json: bool) -> Result<()> {
             excused: scan.as_ref().map_or(&[], |scan| scan.excused.as_slice()),
             session_warning: scan.as_ref().and_then(|scan| scan.session_warning()),
         };
-        println!("{}", serde_json::to_string_pretty(&report)?);
+        let pretty = serde_json::to_string_pretty(&report)?;
+        println!(
+            "{}",
+            crate::commands::report_json::with_schema_pretty(
+                pretty,
+                crate::commands::report_json::CHECK_SCHEMA
+            )?
+        );
     } else {
         print_warnings(&warnings);
         if let Some(scan) = &scan {
