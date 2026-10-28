@@ -19,6 +19,7 @@ function load(relativePath) {
   const originalRequire = createRequire(filename);
   const requireModule = (id) => {
     if (id === "server-only") return {};
+    if (id.endsWith(".md")) return fs.readFileSync(path.resolve(path.dirname(filename), id), "utf8");
     if (id.startsWith("@/")) return load(`src/${id.slice(2)}.ts`);
     return originalRequire(id);
   };

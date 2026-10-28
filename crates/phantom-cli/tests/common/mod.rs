@@ -48,6 +48,10 @@ pub fn phantom(dir: &TempDir, passphrase: &str) -> assert_cmd::Command {
     command
         .current_dir(dir.path())
         .env("PHANTOM_VAULT_PASSPHRASE", passphrase)
-        .env("HOME", dir.path());
+        .env("HOME", dir.path())
+        .env("USERPROFILE", dir.path())
+        .env("APPDATA", dir.path().join("appdata"))
+        .env("LOCALAPPDATA", dir.path().join("localappdata"))
+        .env("XDG_DATA_HOME", dir.path().join("data"));
     command
 }

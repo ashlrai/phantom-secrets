@@ -615,7 +615,7 @@ test("registry README catalog exactly matches the staged 54-tool schema", () => 
   assert.equal(documentedNames.length, 54, "README catalog must contain 54 tool names");
   assert.equal(new Set(documentedNames).size, 54, "README catalog names must be unique");
   assert.deepEqual(documentedNames.sort(), schemaNames.sort());
-  assert.match(registryReadme, /npm `0\.7\.4` wrappers are public only under `release-candidate`/i);
+  assert.match(registryReadme, /npm `0\.7\.4` wrappers were public only under `release-candidate`/i);
   assert.match(registryReadme, /local `server\.json` stages version `0\.7\.9`/i);
   assert.match(registryReadme, /do not publish this manifest until/i);
 });
@@ -768,8 +768,8 @@ test("public release references bind v0.7.9 to its immutable publication receipt
     assert.match(source, /19[-\s]assets/i);
     assert.match(source, /all six native|six-row native/i);
     assert.match(source, /attestations/i);
-    // The site reflects the bumped tap; repository docs still name v0.7.8.
-    assert.match(source, site ? /Homebrew[^\n]*v0\.7\.9/i : /Homebrew[^\n]*v0\.7\.8/i);
+    // Repository guides delegate mutable channel status to the dated receipt.
+    assert.match(source, site ? /Homebrew[^\n]*v0\.7\.9/i : /\[distribution status\]\(distribution-status\.md\)/);
     assert.ok(source.includes(workflowUrl));
   }
 
@@ -823,15 +823,16 @@ test("public installer digests bind to the exact release-source bytes", () => {
 
   assert.match(tagObject, /^[a-f0-9]{40}$/);
   assert.match(sourceCommit, /^[a-f0-9]{40}$/);
-  // Candidate release assets may point at a future tag. Public download
-  // evidence stays anchored to the bytes phm.dev actually serves.
-  assert.equal(unixDigest, sha256File("apps/web/public/install.sh"));
-  assert.equal(windowsDigest, sha256File("apps/web/public/install.ps1"));
+  // QuickStart downloads scripts from the immutable source commit. Current
+  // public installers evolve independently; these fixtures are that commit
+  // unmodified scripts/install.sh and scripts/install.ps1 blobs.
+  assert.equal(unixDigest, sha256File("apps/web/tests/fixtures/release-v0.7.9/install.sh"));
+  assert.equal(windowsDigest, sha256File("apps/web/tests/fixtures/release-v0.7.9/install.ps1"));
   // These blob OIDs were resolved from the annotated v0.7.9 tag. Together
   // with the SHA-256 assertions above, they bind the public checksums to the
   // exact repository bytes served by the immutable source-commit URLs.
-  assert.equal(unixBlobOid, gitBlobOid("apps/web/public/install.sh"));
-  assert.equal(windowsBlobOid, gitBlobOid("apps/web/public/install.ps1"));
+  assert.equal(unixBlobOid, gitBlobOid("apps/web/tests/fixtures/release-v0.7.9/install.sh"));
+  assert.equal(windowsBlobOid, gitBlobOid("apps/web/tests/fixtures/release-v0.7.9/install.ps1"));
   assert.match(
     exportedString(publicRelease, "PUBLIC_RELEASE_WORKFLOW_URL"),
     /\/actions\/runs\/\d+$/,
