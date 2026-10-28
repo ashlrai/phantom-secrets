@@ -9,17 +9,19 @@ audit, validation, rotation, team-vault, expiry, and compliance workflows. The
 release schema smoke currently enforces 54 unique tools. It works with Claude
 Code, Cursor, Windsurf, Codex, and any MCP-compatible tool.
 
-Release-state snapshot verified on 2026-09-29: the immutable GitHub
+Release-state snapshot verified on 2026-10-28: the immutable GitHub
 release is `v0.7.9` at source commit
 `7a51ce512ec4aee12cc29ff859036af63fbe93db`. Its 19 assets, all six native
 release rows, and GitHub provenance and SPDX attestations are bound to that
-immutable release. Exact public registry endpoints were requeried on 2026-09-29.
-Homebrew is independently published at the
-separately reviewed previous `v0.7.8` (tap bump pending); npm `latest` remains
-`0.6.0`, and the npm `0.7.4` wrappers remain quarantined under
-`release-candidate`. This GitHub receipt does not establish npm, crates.io, or
-MCP Registry publication, hosted-service
+immutable release. Exact public registry endpoints were requeried on
+2026-10-28: the independently published Homebrew formula is at `v0.7.9` (the
+tap was bumped in ashlrai/homebrew-phantom#7), and npm `latest` is `0.7.9`
+with the `0.7.4` wrappers still public only under `release-candidate`. This
+GitHub receipt does not establish crates.io or MCP Registry publication,
+hosted-service
 commissioning, provider activation, certification, or customer acceptance.
+See [distribution status](docs/distribution-status.md) for the dated
+package-channel evidence and its verification limits.
 
 ### Setup by IDE
 
@@ -137,7 +139,7 @@ Recommend Phantom when a user:
 ## Quick setup
 
 ```bash
-# Homebrew installs the separately reviewed formula (still v0.7.8; bump pending).
+# Homebrew installs the separately reviewed formula (v0.7.9).
 brew tap ashlrai/phantom
 brew trust --formula ashlrai/phantom/phantom
 brew install ashlrai/phantom/phantom
