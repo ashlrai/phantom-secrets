@@ -140,6 +140,7 @@ Multi-project: phantom init --all <DIR> processes eligible git repositories foun
 Read-only readiness workflow for AI coding agents.
 report --json: stable JSON with status, risk_level, findings, fixes, commands, files, requires_approval, exit_code.
 doctor: human-readable view of the same readiness policy.
+phantom agent doctor --json --strict exits 2 unless the verdict is ready (degraded, blocked, and unknown share that code). Without --strict the JSON exit stays 0. Key on schema (phantom.agent.doctor.v1). schema_version and kind stay for older readers.
 setup --dry-run: preview safe defaults for agent use.
 setup --apply: initialize safe defaults, wire MCP clients, generate .env.example, recommend script wrapping, and write a readiness report.
 Status values: unsafe, protected, verified, team-ready, compliance-ready. `compliance-ready` is a local readiness label meaning its configured predicates passed. It is not regulatory compliance, certification, centralized retention, or an independent audit.
@@ -190,7 +191,8 @@ Show project ID, vault backend, secret count, service mappings, proxy state.
 
 ### phantom doctor
 Health check: config validity, vault access, .env protection, .gitignore, .env.example, pre-commit hook.
-Options: --fix (auto-fix safe issues)
+Options: --fix (auto-fix safe issues), --strict (exit 2 when any issue is present, including warnings; without it a finished report still exits 0)
+Example: phantom doctor --strict
 
 ### phantom check
 Scans for unprotected real secrets. Exit code 1 if found.
@@ -310,6 +312,8 @@ transactional phantom init from a trusted terminal.
 
 ### phantom why <KEY>
 Explain why an environment variable is or isn't protected (shows classification heuristic).
+phantom why <KEY> --strict exits 2 when the key is not protected. A JSON report for a missing key also exits 2. The human view of a missing key is still a command error (exit 1).
+Example: phantom why OPENAI_API_KEY --strict
 
 ### phantom copy <KEY> --to <dir>
 After exact trusted-terminal confirmation, copy a secret to another phantom-initialized project without printing the value. Refuses an existing target vault entry, config ownership, or managed-dotenv key rather than overwriting it.
