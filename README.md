@@ -427,6 +427,8 @@ dashboard is designed to show team memberships and member lists.
 | `phantom start` | Run an explicitly supervised foreground proxy; keep its trusted terminal open and press Ctrl-C there to stop |
 | `phantom start --daemon` / `phantom stop` | Detached start fails closed; stop is a TTY-only legacy-state diagnostic that never kills or deletes, not current process control |
 | `phantom list` | Show secret names stored in vault (never values; `--json` for machine-readable output) |
+| `phantom request <NAME> --purpose <text> [--route <route>]` | Reserve a value-free pending secret and stable placeholder; a human or sanctioned producer fulfills it outside the agent with `phantom add`. See [secret requests](docs/secret-requests.md). |
+| `phantom requests --json` | List request receipts without vault access (`phantom.requests.v1`); placeholders remain private project metadata |
 | `phantom add <KEY>` | Create a new secret name transactionally in an initialized project through a hidden terminal prompt or trusted `--stdin` producer; existing names are denied before any value read and are never replaced |
 | `phantom remove <KEY>` | After exact trusted-terminal confirmation, transactionally remove the vault value, lifecycle config, and exact managed-dotenv mapping; headless use fails before value access or mutation |
 | `phantom reveal <KEY>` | From an attached trusted terminal, review and type the exact challenge before printing one value or copying it for an auto-cleared 30-second clipboard window |
