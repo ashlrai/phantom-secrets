@@ -12,6 +12,7 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
 use phantom_core::config::PhantomConfig;
+use phantom_core::validation_scheduler::{record_run, state_file_path, ValidationRunRecord};
 use phantom_core::validator::{
     default_validators, run_validation_pipeline, ValidationMetadata, ValidationReport,
     ValidationStatus,
@@ -188,7 +189,7 @@ fn run_inner(check_all: bool, jobs: Option<usize>, json: bool, watch: bool) -> R
 
     if names.is_empty() {
         if json {
-            println!("{{\"total\":0,\"valid\":0,\"invalid\":0,\"unreachable\":0,\"not_checked\":0,\"entries\":[]}}");
+            println!("{}", empty_vault_report_json()?);
         } else {
             println!("{} No secrets in vault to validate.", "info".blue());
         }
@@ -207,6 +208,7 @@ fn run_inner(check_all: bool, jobs: Option<usize>, json: bool, watch: bool) -> R
     // as refused and only the rest are put to consent and validated.
     let gate = gate_validation(&config, vault.as_ref(), &names);
     let mut refused = gate.refused;
+    let mut validated_from = None;
     let mut report = if gate.allowed.is_empty() {
         // Nothing left to send: no consent, no value read, no request.
         run_validation_pipeline(Vec::new(), &[], n_jobs, timeout)
@@ -240,12 +242,18 @@ fn run_inner(check_all: bool, jobs: Option<usize>, json: bool, watch: bool) -> R
         }
 
         let validators = default_validators();
+        validated_from = (sending > 0).then(phantom_vault::metadata::now_secs);
         let report = run_validation_pipeline(secrets, &validators, n_jobs, timeout);
         persist_validation_metadata(vault.as_ref(), &report, &metadata_before)?;
         report
     };
     for (name, reason) in &refused {
         report.push_refused(name, reason);
+    }
+    // A run the gate refused entirely, before or after consent, sent
+    // nothing, so only a run that checked values is history.
+    if let Some(started_at) = validated_from {
+        record_validation_run(&state_file_path(&project_id), started_at, &report);
     }
 
     if json {
@@ -255,6 +263,36 @@ fn run_inner(check_all: bool, jobs: Option<usize>, json: bool, watch: bool) -> R
         print_report_human(&report);
     }
     one_shot_verdict(&report)
+}
+
+/// Append a finished run to `phantom validate history` and the
+/// `validate schedule --status` last-run fields. Counts only, never a name or
+/// value. A failed write is reported and never changes the run's verdict.
+fn record_validation_run(
+    state_path: &std::path::Path,
+    started_at: u64,
+    report: &phantom_core::validator::ValidationReport,
+) {
+    let record = ValidationRunRecord::from_report(started_at, report);
+    if let Err(error) = record_run(state_path, record) {
+        eprintln!(
+            "{} This run was not added to `phantom validate history`: {error:#}",
+            "warn".yellow()
+        );
+    }
+}
+
+/// The `--json` report for a vault with nothing in it: the same shape as any
+/// other run (`generated_at` and `refused` included), so a parser written
+/// against a real report does not break on an empty one.
+fn empty_vault_report_json() -> Result<String> {
+    let report = run_validation_pipeline(
+        Vec::new(),
+        &[],
+        1,
+        Duration::from_secs(DEFAULT_TIMEOUT_SECS),
+    );
+    Ok(serde_json::to_string_pretty(&report)?)
 }
 
 /// Watch-mode: poll per-secret schedules in an infinite loop.
@@ -645,6 +683,28 @@ mod tests {
     use phantom_vault::file::FileVault;
     use phantom_vault::VaultBackend;
 
+    /// An empty vault's `--json` used to be a hand-written object missing
+    /// `generated_at` and `refused`, so it parsed differently from every
+    /// other run's report.
+    #[test]
+    fn empty_vault_json_has_the_same_fields_as_any_report() {
+        let empty: serde_json::Value =
+            serde_json::from_str(&empty_vault_report_json().unwrap()).unwrap();
+        let mut full = run_validation_pipeline(Vec::new(), &[], 1, Duration::from_secs(1));
+        full.push_refused("SOME_NAME", "refused for the test");
+        let full = serde_json::to_value(&full).unwrap();
+        let keys = |v: &serde_json::Value| {
+            let mut k: Vec<String> = v.as_object().unwrap().keys().cloned().collect();
+            k.sort();
+            k
+        };
+        assert_eq!(keys(&empty), keys(&full));
+        assert_eq!(empty["total"], 0);
+        assert_eq!(empty["refused"], 0);
+        assert_eq!(empty["entries"], serde_json::json!([]));
+        assert!(empty["generated_at"].as_u64().unwrap() > 0);
+    }
+
     #[test]
     fn stale_validation_before_image_commits_nothing() {
         let dir = tempfile::tempdir().unwrap();
@@ -1018,6 +1078,50 @@ mod lifecycle_gate_tests {
             (report.total, report.refused, report.not_checked),
             (2, 1, 1)
         );
+    }
+
+    /// `phantom validate history` and `schedule --status` read runs that
+    /// nothing wrote: `--check-all` never recorded one.
+    #[test]
+    fn a_checked_run_is_recorded_in_history_with_counts_only() {
+        use phantom_core::validator::run_validation_pipeline;
+        let home = tempfile::tempdir().unwrap();
+        let state_path = home.path().join("project").join("validation-state.json");
+        let mut report = run_validation_pipeline(
+            vec![(
+                "PLAIN_SETTING".to_string(),
+                zeroize::Zeroizing::new(String::new()),
+            )],
+            &[],
+            1,
+            std::time::Duration::from_secs(1),
+        );
+        report.push_refused("DEMOTED_KEY", "read-only");
+
+        super::record_validation_run(&state_path, 1_000, &report);
+        super::record_validation_run(&state_path, 2_000, &report);
+
+        let state = phantom_core::validation_scheduler::SchedulerState::load(&state_path).unwrap();
+        assert_eq!(state.history.len(), 2);
+        assert_eq!(state.history[1].started_at, 2_000);
+        let last = state.last_run.as_ref().unwrap();
+        assert_eq!((last.total, last.not_checked), (2, 1));
+        assert_eq!(state.last_run_at, last.finished_at);
+        assert!(!state.is_stale(3600));
+        let raw = std::fs::read_to_string(&state_path).unwrap();
+        assert!(!raw.contains("PLAIN_SETTING") && !raw.contains("DEMOTED_KEY"));
+    }
+
+    /// One-shot records the run after the values were checked.
+    #[test]
+    fn one_shot_records_the_run_after_checking() {
+        let source = include_str!("validate.rs");
+        let production = &source[..source.find("#[cfg(test)]").unwrap()];
+        let once = &production[production.find("fn run_inner(").unwrap()..];
+        let once = &once[..once.find("fn run_watch_loop(").unwrap()];
+        let checked = once.find("run_validation_pipeline(secrets").unwrap();
+        let recorded = once.find("record_validation_run(&state_file_path").unwrap();
+        assert!(recorded > checked);
     }
 
     /// Every path that reads values to validate gates first, and no plain
