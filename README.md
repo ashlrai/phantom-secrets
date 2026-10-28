@@ -205,6 +205,8 @@ Notes:
 3. API calls hit the proxy, which authenticates the local session, removes its local auth token, injects only the matched route's vault value into that route's exact configured authentication header, and forwards over TLS. Client-controlled headers and bodies never resolve `phm_` tokens.
 4. When the session ends, the proxy shuts down and its bearer is invalid. `phantom exec` also replaces project tokens with fresh child-process tokens for that run. Project `phm_` values persist until rotation; they are not provider credentials and are never client-resolved, but a process controlling an authenticated active proxy can still invoke its configured provider routes.
 
+Use `phantom exec --scrub-output -- <command>` to opt into bounded streaming redaction of child stdout and stderr using the proxy response scrubber. Each stream is scanned independently, including values split across reads; ordinary bytes are preserved. Output is piped, so terminal detection, colors, interactivity, and child buffering may change. Candidate prefixes can be delayed until more output or EOF arrives. This covers active managed values and recognized credential formats, not arbitrary secrets or encoded values.
+
 Phantom does not grant AI tools permission to read `.env` or other dotenv files. `phantom setup` removes legacy Phantom-managed dotenv read grants and preserves deny rules; agents use value-blind MCP inventory instead.
 
 ### Provider grants
@@ -424,6 +426,7 @@ dashboard is designed to show team memberships and member lists.
 |---------|-------------|
 | `phantom init` | Import `.env` secrets into vault and rewrite with phantom tokens. Use `--empty` to initialize a new project before its first `phantom add`; `add` does not auto-create project state. `--all <DIR>` processes eligible repositories found by the bounded five-level scan; discovery stops below the first matching repository. Use `--dry-run` to inspect the exact set and `--jobs N` / `-j N` to control parallelism. An existing `.env.example` is left unchanged. |
 | `phantom exec -- <cmd>` | Start an authenticated proxy and run a command with secret injection |
+| `phantom exec --scrub-output -- <cmd>` | Also scrub child stdout/stderr for active managed values and recognized credential formats |
 | `phantom start` | Run an explicitly supervised foreground proxy; keep its trusted terminal open and press Ctrl-C there to stop |
 | `phantom start --daemon` / `phantom stop` | Detached start fails closed; stop is a TTY-only legacy-state diagnostic that never kills or deletes, not current process control |
 | `phantom list` | Show secret names stored in vault (never values; `--json` for machine-readable output) |
