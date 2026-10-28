@@ -53,10 +53,6 @@ use std::io::BufRead;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-// reqwest is a workspace dependency available in phantom-core
-#[allow(unused_imports)]
-use reqwest;
-
 // ──────────────────────────────────────────────────────────────────────────────
 // Contextual Leak Profiles — Adaptive Scrubbing Intelligence
 // ──────────────────────────────────────────────────────────────────────────────
