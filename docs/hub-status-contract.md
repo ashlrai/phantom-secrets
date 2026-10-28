@@ -20,6 +20,7 @@ An uninitialized project returns this JSON document with exit code zero:
 ```json
 {
   "schema_version": 1,
+  "kind": "phantom.status",
   "initialized": false,
   "inspection": "metadata-only",
   "managed_dotenv": { "inspected": false },
@@ -40,9 +41,14 @@ Parse errors become fixed issue codes rather than arbitrary parser diagnostics.
 
 | Field | Values and meaning |
 |---|---|
+| `kind` | Always `phantom.status`: the schema id that distinguishes this document from other Phantom JSON contracts (such as `phantom.agent.preflight`), which share `schema_version: 1` |
 | `proxy.lifecycle_lock` | `not-inspected` when configuration is unavailable; `missing` when no lock exists; `available` when the existing lock is not held; `held` when another process holds it; `unknown` when inspection fails |
 | `proxy.listener_authenticated` | Always `false`: this command does not authenticate a listener |
 | `issues` | Zero or more of `config-missing`, `config-unreadable`, `config-invalid`, `proxy-lock-unavailable` |
+
+`kind` was added to the contract after the immutable `v0.7.9` shipment; builds
+predating it emit the same `schema_version: 1` document without `kind`. Under
+the consumer requirements below, such a build reports as unknown status.
 
 The observer does not create runtime storage, open the vault or dotenv, load
 cloud credentials, read legacy proxy bearer state, or send network requests.
@@ -73,7 +79,8 @@ invalid, symlinked to another project) and the canary-leak checks are pinned in
 
 Launch the installed binary with an argument array and the exact project working
 directory. Bound execution time and output size. Require a successful exit,
-valid JSON, `schema_version === 1`, and a boolean `initialized` field. Display
+valid JSON, `kind === "phantom.status"`, `schema_version === 1`, and a boolean
+`initialized` field. Display
 unknown status on any unsupported response; do not fall back to searching human
 output for words such as "running" or "initialized".
 

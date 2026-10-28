@@ -36,7 +36,7 @@ pub fn run_list(json: bool) -> Result<()> {
     let token = Zeroizing::new(auth::require_token()?);
     let api_base = auth::api_base_url()?;
 
-    let rt = tokio::runtime::Runtime::new()?;
+    let rt = crate::util::oneshot_runtime()?;
     let team_list = rt.block_on(teams::list_teams(&api_base, &token))?;
 
     if json {
@@ -79,7 +79,7 @@ pub fn run_create(name: &str) -> Result<()> {
 
     println!("{}  Creating team \"{}\"...", "->".blue().bold(), name);
 
-    let rt = tokio::runtime::Runtime::new()?;
+    let rt = crate::util::oneshot_runtime()?;
     let team = rt
         .block_on(teams::create_team(&api_base, &token, name))
         .context(
@@ -105,7 +105,7 @@ pub fn run_members(team_id: &str) -> Result<()> {
     let token = Zeroizing::new(auth::require_token()?);
     let api_base = auth::api_base_url()?;
 
-    let rt = tokio::runtime::Runtime::new()?;
+    let rt = crate::util::oneshot_runtime()?;
     let members = rt.block_on(teams::list_members(&api_base, &token, team_id))?;
 
     if members.is_empty() {
@@ -150,7 +150,7 @@ pub fn run_key_publish(team_id: &str) -> Result<()> {
     // server and in the user's keychain — this is just a visual aid.
     let fp_len = 8.min(pk.len());
     let fingerprint = &pk[pk.len() - fp_len..];
-    let rt = tokio::runtime::Runtime::new()?;
+    let rt = crate::util::oneshot_runtime()?;
     rt.block_on(teams::register_team_key(&api_base, &token, team_id, &pk))
         .context("Team key registration did not return a success receipt; a local device keypair may already exist and the remote outcome is unknown. Inspect registered keys before any retry")?;
     println!(
@@ -253,7 +253,7 @@ fn vault_push_after_consent(
     api_base: &str,
     kp: &phantom_core::team_crypto::MemberKeypair,
 ) -> Result<()> {
-    let rt = tokio::runtime::Runtime::new()?;
+    let rt = crate::util::oneshot_runtime()?;
 
     // Read the local vault into a Zeroizing-valued map so the secret
     // bytes are scrubbed when the helper drops them.
@@ -320,7 +320,7 @@ pub fn run_vault_pull(team_id: &str) -> Result<()> {
     let token = Zeroizing::new(auth::require_token()?);
     let api_base = auth::api_base_url()?;
     let kp = auth::get_or_create_team_keypair()?;
-    let rt = tokio::runtime::Runtime::new()?;
+    let rt = crate::util::oneshot_runtime()?;
 
     let (secrets, version) = rt.block_on(teams_vault::pull_for_project(
         &api_base,
@@ -449,7 +449,7 @@ pub fn run_rotate_vault(team_id: &str) -> Result<()> {
         team_id
     );
 
-    let rt = tokio::runtime::Runtime::new()?;
+    let rt = crate::util::oneshot_runtime()?;
     let outcome = rt
         .block_on(teams_vault::rotate_vault(
             &api_base,
@@ -498,7 +498,7 @@ pub fn run_invite(team_id: &str, github_login: &str, role: &str) -> Result<()> {
         team_id
     );
 
-    let rt = tokio::runtime::Runtime::new()?;
+    let rt = crate::util::oneshot_runtime()?;
     rt.block_on(teams::invite_member(
         &api_base,
         &token,

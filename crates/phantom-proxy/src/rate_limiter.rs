@@ -150,13 +150,6 @@ impl SlidingWindow {
         self.timestamps.len() as u64
     }
 
-    /// Return the current count without recording.
-    #[allow(dead_code)]
-    fn count(&mut self, now: Instant) -> u64 {
-        self.evict(now);
-        self.timestamps.len() as u64
-    }
-
     fn evict(&mut self, now: Instant) {
         while let Some(&front) = self.timestamps.front() {
             if now.duration_since(front) > self.window {
@@ -307,6 +300,50 @@ mod tests {
             per_secret_rps,
             burst_total_10s,
         })
+    }
+
+    #[test]
+    fn sliding_window_includes_the_exact_boundary() {
+        let start = Instant::now();
+        for seconds in [10, 60] {
+            let duration = Duration::from_secs(seconds);
+            let mut window = SlidingWindow::new(duration);
+            assert_eq!(window.record_and_count(start), 1);
+            assert_eq!(window.record_and_count(start + duration), 2);
+            assert_eq!(
+                window.record_and_count(start + duration + Duration::from_nanos(1)),
+                2
+            );
+        }
+    }
+
+    #[test]
+    fn sliding_window_evicts_expired_hits_and_retains_recent_hits() {
+        let start = Instant::now();
+        for seconds in [10, 60] {
+            let duration = Duration::from_secs(seconds);
+            let mut window = SlidingWindow::new(duration);
+            assert_eq!(window.record_and_count(start), 1);
+            assert_eq!(window.record_and_count(start + Duration::from_secs(1)), 2);
+            assert_eq!(window.record_and_count(start + duration), 3);
+            assert_eq!(
+                window.record_and_count(start + duration + Duration::from_secs(2)),
+                2
+            );
+            assert_eq!(
+                window.record_and_count(start + duration * 2 + Duration::from_secs(3)),
+                1
+            );
+        }
+    }
+
+    #[test]
+    fn sliding_window_counts_hits_with_identical_timestamps() {
+        let now = Instant::now();
+        let mut window = SlidingWindow::new(Duration::from_secs(10));
+        for expected in 1..=3 {
+            assert_eq!(window.record_and_count(now), expected);
+        }
     }
 
     #[test]

@@ -137,7 +137,7 @@ fn push_after_consent(
         secret_names.len()
     );
 
-    let rt = tokio::runtime::Runtime::new()?;
+    let rt = crate::util::oneshot_runtime()?;
     let new_version = rt
         .block_on(cloud::push(
             api_base,
@@ -215,7 +215,7 @@ pub fn run_pull(force: bool) -> Result<()> {
     phantom_core::audit::log_result("cloud.pull", None)
         .context("Failed to write audit event for cloud pull")?;
 
-    let rt = tokio::runtime::Runtime::new()?;
+    let rt = crate::util::oneshot_runtime()?;
     let pull_result = rt.block_on(cloud::pull(&api_base, &token, config.portable_project_id()))?;
 
     let pull_data = match pull_result {
@@ -586,7 +586,7 @@ pub fn run_status(json: bool) -> Result<()> {
     let login = match auth::load_token() {
         Some(token) => {
             let token = Zeroizing::new(token);
-            let rt = tokio::runtime::Runtime::new()?;
+            let rt = crate::util::oneshot_runtime()?;
             match rt.block_on(auth::get_user_info(&api_base, &token)) {
                 Ok(user) => CloudLogin::LoggedIn(user),
                 Err(phantom_core::error::PhantomError::AuthRequired) => CloudLogin::TokenRejected,
