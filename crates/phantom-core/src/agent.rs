@@ -647,9 +647,10 @@ fn rel(project_dir: &Path, path: &Path) -> String {
 }
 
 fn gitignore_has_env(path: &Path) -> bool {
-    std::fs::read_to_string(path)
-        .ok()
-        .is_some_and(|content| content.lines().any(|line| line.trim() == ".env"))
+    std::fs::read_to_string(path).ok().is_some_and(|content| {
+        crate::gitignore::dotenv_ignore_state(&content, ".env")
+            == crate::gitignore::DotenvIgnore::Ignored
+    })
 }
 
 fn has_any_mcp_wiring(project_dir: &Path) -> bool {

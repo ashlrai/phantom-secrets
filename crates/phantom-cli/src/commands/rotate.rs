@@ -706,12 +706,12 @@ impl Default for CliProviderStages {
 fn cli_provider_partial_error(
     name: &str,
     stage: &str,
-    error: impl std::fmt::Display,
+    _error: impl std::fmt::Display,
     stages: &CliProviderStages,
 ) -> anyhow::Error {
     let receipt = serde_json::to_string(stages).unwrap_or_else(|_| "receipt_unavailable".into());
     anyhow::anyhow!(
-        "Provider rotation for '{name}' partially succeeded: {stage} failed. stage_receipt: {receipt}. Local and provider state may now differ. Do not retry automatically; reconcile provider, vault, token, metadata, and cleanup state first. Cause: {error}"
+        "Provider rotation for '{name}' partially succeeded: {stage} failed. stage_receipt: {receipt}. Local and provider state may now differ. Do not retry automatically; reconcile provider, vault, token, metadata, and cleanup state first. Backend diagnostic withheld because it may contain credential material."
     )
 }
 
@@ -807,20 +807,9 @@ fn now_unix() -> u64 {
         .as_secs()
 }
 
-/// Format a Unix timestamp as an ISO-8601-like UTC string for display.
+/// Format a Unix timestamp as an ISO-8601 UTC string for display.
 fn chrono_iso(secs: u64) -> String {
-    // Manual calculation to avoid pulling in chrono — only for display.
-    let s = secs;
-    let sec = s % 60;
-    let min = (s / 60) % 60;
-    let hour = (s / 3600) % 24;
-    let days = s / 86_400;
-    // Approximate date from days since epoch (good enough for display).
-    let year = 1970 + days / 365;
-    let rem_days = days % 365;
-    let month = rem_days / 30 + 1;
-    let day = rem_days % 30 + 1;
-    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{min:02}:{sec:02}Z")
+    phantom_core::analytics::unix_to_iso8601(secs)
 }
 
 /// Reject the legacy shadow-candidate path.
@@ -1318,7 +1307,13 @@ pub fn run_batch(
         crate::util::inventory_guard(vault.as_ref(), config.local_project_id(), names.len())?;
     crate::util::warn_inventory_note(note.as_deref());
     if names.is_empty() {
-        println!("{} No secrets in vault.", "!".yellow().bold());
+        println!(
+            "{}",
+            empty_batch_stdout(
+                json_output,
+                format!("{} No secrets in vault.", "!".yellow().bold())
+            )
+        );
         return Ok(());
     }
 
@@ -1350,9 +1345,15 @@ pub fn run_batch(
 
     if due_items.is_empty() {
         println!(
-            "{} No secrets are due for rotation within the next {} day(s).",
-            "ok".green().bold(),
-            rotation_window_days
+            "{}",
+            empty_batch_stdout(
+                json_output,
+                format!(
+                    "{} No secrets are due for rotation within the next {} day(s).",
+                    "ok".green().bold(),
+                    rotation_window_days
+                )
+            )
         );
         return Ok(());
     }
@@ -1363,13 +1364,19 @@ pub fn run_batch(
         );
     }
 
-    println!(
+    let found = format!(
         "{} Found {} secret(s) due for rotation within {} day(s).",
         "->".blue().bold(),
         due_items.len(),
         rotation_window_days
     );
-    println!();
+    if json_output {
+        // stdout carries only the JSON array.
+        eprintln!("{found}");
+    } else {
+        println!("{found}");
+        println!();
+    }
 
     // Execute the batch.
     let (batch_id, outcomes) = execute_batch_rotation(&due_items, &providers, now);
@@ -1466,6 +1473,16 @@ pub fn run_batch(
     Ok(())
 }
 
+/// What `rotate --batch` prints on stdout when there is nothing to rotate:
+/// an empty JSON array under `--json`, so scripts can parse every outcome.
+fn empty_batch_stdout(json_output: bool, notice: String) -> String {
+    if json_output {
+        "[]".to_string()
+    } else {
+        notice
+    }
+}
+
 #[cfg(test)]
 mod token_remap_tests {
     use super::*;
@@ -1474,6 +1491,15 @@ mod token_remap_tests {
     use phantom_vault::SecretMetadata;
     use tempfile::tempdir;
     use zeroize::Zeroizing;
+
+    /// The batch summary's expiry columns used 365-day years and 30-day
+    /// months, so 26 Oct 2026 printed as 13 Nov.
+    #[test]
+    fn expiry_columns_print_the_real_calendar_date() {
+        assert_eq!(chrono_iso(1_793_016_000), "2026-10-26T12:00:00Z");
+        assert_eq!(chrono_iso(1_798_718_400), "2026-12-31T12:00:00Z");
+        assert_eq!(chrono_iso(1_835_481_599), "2028-02-29T23:59:59Z");
+    }
 
     fn sample_plan() -> LocalTokenRemapPlan {
         let project_dir = PathBuf::from("/canonical/project");
@@ -2110,5 +2136,42 @@ mod token_remap_tests {
         assert!(error.starts_with("Vault locked:"));
         assert!(error.contains("PHANTOM_VAULT_PASSPHRASE"));
         assert_eq!(std::fs::read(project.dir.join(".env")).unwrap(), before);
+    }
+
+    #[test]
+    fn empty_batch_json_stdout_is_an_empty_array() {
+        let json: serde_json::Value =
+            serde_json::from_str(&empty_batch_stdout(true, "ok nothing due".to_string()))
+                .expect("--json stdout parses");
+        assert_eq!(json, serde_json::json!([]));
+        assert_eq!(
+            empty_batch_stdout(false, "ok nothing due".to_string()),
+            "ok nothing due"
+        );
+    }
+}
+
+#[cfg(test)]
+mod error_redaction_tests {
+    #[test]
+    fn partial_rotation_does_not_format_backend_payload() {
+        use rand::RngCore;
+        let mut bytes = [0; 24];
+        rand::thread_rng().fill_bytes(&mut bytes);
+        let canary = hex::encode(bytes);
+        let error = super::cli_provider_partial_error(
+            "KEY",
+            "vault commit",
+            anyhow::anyhow!(canary.clone()),
+            &super::CliProviderStages::default(),
+        );
+        for rendered in [
+            format!("{error}"),
+            format!("{error:#}"),
+            format!("{error:?}"),
+        ] {
+            assert!(!rendered.contains(&canary), "backend payload was disclosed");
+            assert!(rendered.contains("Do not retry automatically"));
+        }
     }
 }
