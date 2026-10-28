@@ -52,6 +52,12 @@ fallback.
 
 ## Start with value-free inspection
 
+For the source CLI's external-server launch workflow, see
+[Launch a protected MCP server](mcp-server-launch.md). `phantom mcp run` supplies
+managed keys as fresh session placeholders and built-in proxy base URLs while
+preserving the server's stdio stream. `phantom mcp serve` remains Phantom's own
+secret-management server.
+
 After protecting a project with `phantom init`, an agent can use read-only tools
 such as:
 

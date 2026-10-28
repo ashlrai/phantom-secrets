@@ -53,7 +53,7 @@ fn run_with_terminal_state(
     if !stdin_is_terminal || !stderr_is_terminal {
         anyhow::bail!(
             "Approval refused: stdin and stderr must both be attached to an interactive terminal. \
-             Run `phantom mcp-approve {nonce}` yourself in a terminal outside the requesting \
+             Run `phantom mcp-approve <NONCE>` yourself in a terminal outside the requesting \
              agent's command authority. A same-user shell or controllable PTY can defeat this \
              ceremony; leave MCP effects disabled when that separation cannot be guaranteed."
         );
@@ -80,9 +80,16 @@ fn run_interactive(
         output,
         |nonce| {
             mcp_approval::inspect_pending_approval(nonce)
-                .with_context(|| "Approval inspection failed")
+                .map_err(|error| anyhow::anyhow!("Approval inspection failed ({:?}). Check approval storage in a trusted terminal; stored contents are omitted.", error.kind()))
         },
-        |nonce| mcp_approval::approve_nonce(nonce).with_context(|| "Approval failed"),
+        |nonce| {
+            mcp_approval::approve_nonce(nonce).map_err(|error| {
+                anyhow::anyhow!(
+                    "Approval failed ({:?}); stored contents are omitted.",
+                    error.kind()
+                )
+            })
+        },
     )
 }
 
@@ -466,6 +473,57 @@ mod tests {
         assert!(state.inspected);
         assert!(!state.approved);
         assert!(state.pending.is_some());
+    }
+
+    #[test]
+    fn nonterminal_refusal_never_echoes_unvalidated_nonce() {
+        let marker = random_hex::<24>();
+        let mut diagnostic = Vec::new();
+        let mut output = Vec::new();
+        let error = super::run_with_terminal_state(
+            &marker,
+            false,
+            false,
+            &mut PanicOnRead,
+            &mut diagnostic,
+            &mut output,
+        )
+        .unwrap_err();
+        assert!(!format!("{error:#}").contains(&marker));
+        assert!(diagnostic.is_empty());
+        assert!(output.is_empty());
+    }
+
+    #[test]
+    fn corrupt_approval_storage_never_reaches_terminal_or_error_chain() {
+        with_temp_home(|| {
+            let marker = random_hex::<24>();
+            let nonce = mcp_approval::generate_pending_approval(
+                "phantom_rotate",
+                r#"{"confirm":true}"#,
+                "audit-project",
+            )
+            .unwrap();
+            let path = mcp_approval::approvals_path().unwrap();
+            std::fs::write(
+                path,
+                serde_json::json!({"nonce":nonce,"approved":marker}).to_string(),
+            )
+            .unwrap();
+            let mut diagnostic = Vec::new();
+            let mut output = Vec::new();
+            let error = super::run_interactive(
+                &nonce,
+                "unused",
+                &mut PanicOnRead,
+                &mut diagnostic,
+                &mut output,
+            )
+            .unwrap_err();
+            assert!(!format!("{error:#}").contains(&marker));
+            assert!(diagnostic.is_empty());
+            assert!(output.is_empty());
+        });
     }
 
     #[test]
