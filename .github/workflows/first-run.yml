@@ -1,0 +1,44 @@
+name: First-run scorecard
+
+# Install-to-first-wrapped-exec scorecard. Target: p95 <= 5 s on
+# ubuntu-latest and macos-latest. Nightly and on demand; on pull requests it
+# runs only when this workflow or its script changes, so other PRs pay nothing.
+on:
+  schedule:
+    - cron: "17 7 * * *"
+  workflow_dispatch:
+    inputs:
+      runs:
+        description: Runs per OS
+        default: "10"
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/first-run.yml
+      - scripts/bench/first-run.sh
+
+permissions:
+  contents: read
+
+concurrency:
+  group: first-run-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  first-run:
+    name: First run (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Measure install to first wrapped exec
+        env:
+          PHANTOM_VERSION: v0.7.9
+          RUNS: ${{ github.event.inputs.runs || '10' }}
+        run: bash scripts/bench/first-run.sh "$RUNS"

@@ -175,6 +175,14 @@ impl SecretMetadata {
     }
 }
 
+/// Whether a secret with `days_remaining` belongs in an expiry report that
+/// looks `warn_days` ahead. Expired secrets always do. `warn_days == 0` means
+/// already-expired only, so a secret that expires later today (`0` days left)
+/// is left out.
+pub fn in_expiry_report(days_remaining: i64, warn_days: u64) -> bool {
+    days_remaining < 0 || (warn_days > 0 && days_remaining <= warn_days as i64)
+}
+
 /// One expired secret in an [`ExpiryEnforceReport`]. Name and timestamps only.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ExpiredEntry {

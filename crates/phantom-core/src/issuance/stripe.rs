@@ -197,10 +197,10 @@ fn stripe_token_exchange(
             })?;
 
     // Stripe reports OAuth failures as a top-level `error` string even on 200.
-    if let Some(err) = body.get("error").and_then(|v| v.as_str()) {
+    if body.get("error").and_then(|v| v.as_str()).is_some() {
         return Err(IssuanceError::Exchange {
             status,
-            reason: format!("error={}", err.chars().take(64).collect::<String>()),
+            reason: summarize_error_body(&body.to_string()),
         });
     }
     Ok(body)
@@ -650,7 +650,7 @@ mod tests {
         let _g = issue_audit_guard();
         let (base, _seen) = spawn_stub(
             400,
-            r#"{"error":"invalid_grant","error_description":"authorization code does not exist"}"#,
+            r#"{"error":{"type":"invalid_request_error","message":"sk_live_FAKE_0123456789abcdefghij"}}"#,
         );
         let http = reqwest::blocking::Client::new();
         let ep = endpoints(format!("{base}/v1/oauth/token"));
@@ -664,6 +664,29 @@ mod tests {
         };
         let err = StripeAppOAuthFlow.issue(&request(None), &deps).unwrap_err();
         assert!(matches!(err, IssuanceError::Exchange { status: 400, .. }));
+        let logged = format!("{err} {err:?}");
+        assert!(logged.contains("invalid_request_error"));
+        assert!(!logged.contains("sk_live_FAKE"));
+    }
+
+    #[test]
+    fn success_status_error_withholds_provider_text() {
+        let (base, _seen) = spawn_stub(200, r#"{"error":"sk_live_FAKE_0123456789abcdefghij"}"#);
+        let http = reqwest::blocking::Client::new();
+        let ep = endpoints(format!("{base}/v1/oauth/token"));
+        let browser = super::super::browser::NoBrowser;
+        let loopback = MockLoopbackListener::new("code", MockStateMode::Echo);
+        let deps = IssuanceDeps {
+            browser: &browser,
+            loopback: &loopback,
+            http: &http,
+            endpoints: &ep,
+        };
+        let err =
+            stripe_token_exchange(&deps, &Zeroizing::new("mock".to_owned()), &[]).unwrap_err();
+        let logged = format!("{err} {err:?}");
+        assert!(!logged.contains("sk_live_FAKE"));
+        assert!(logged.contains("withheld"));
     }
 
     #[test]

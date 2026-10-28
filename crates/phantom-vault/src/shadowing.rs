@@ -426,8 +426,12 @@ impl ShadowStore {
     /// Persist shadow metadata for `secret`.
     pub fn save(&self, secret: &ShadowedSecret) -> std::io::Result<()> {
         let meta = ShadowMeta::from_secret(secret);
-        let bytes = serde_json::to_vec_pretty(&meta)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        let bytes = serde_json::to_vec_pretty(&meta).map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                phantom_core::error::value_blind_json_error(&e),
+            )
+        })?;
         write_secret_file(&self.meta_path(&secret.name), &bytes)
     }
 
@@ -438,8 +442,12 @@ impl ShadowStore {
         let Some(bytes) = phantom_core::fs::read_regular_file(&self.meta_path(name))? else {
             return Ok(None);
         };
-        let meta: ShadowMeta = serde_json::from_slice(&bytes)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        let meta: ShadowMeta = serde_json::from_slice(&bytes).map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                phantom_core::error::value_blind_json_error(&e),
+            )
+        })?;
         Ok(Some(meta))
     }
 
