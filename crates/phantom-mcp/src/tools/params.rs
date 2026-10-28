@@ -120,9 +120,12 @@ fn default_env_path() -> String {
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AddSecretParams {
+    /// Generate a new 256-bit random secret locally. No value is accepted or returned.
+    #[serde(default)]
+    pub generate: bool,
     /// Name of the secret (e.g., OPENAI_API_KEY)
     pub name: String,
-    /// Required. Must be true — the calling agent must confirm with the user
+    /// Required. Must be true; the calling agent must confirm with the user
     /// before invoking this tool. Defends against prompt-injected instructions
     /// in project content (READMEs, issue comments, dependency docs) silently
     /// mutating the vault.
@@ -151,7 +154,7 @@ pub struct AddSecretInteractiveParams {
 pub struct RemoveSecretParams {
     /// Name of the secret to remove
     pub name: String,
-    /// Required. Must be true — the calling agent must confirm with the user
+    /// Required. Must be true; the calling agent must confirm with the user
     /// before invoking this tool. Defends against prompt-injected instructions
     /// deleting secrets.
     #[serde(default)]
@@ -163,10 +166,15 @@ pub struct RemoveSecretParams {
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct RotateParams {
-    /// Required. Must be true — the calling agent must confirm with the user
-    /// before invoking this tool. Rotating invalidates every live phantom token
-    /// and will break any process that cached the old tokens (e.g. a running
-    /// `phantom exec` or dev server) until it picks up the new .env.
+    /// Generate a local random value; requires name. No provider issuance or revocation.
+    #[serde(default)]
+    pub generate: bool,
+    /// Secret name for local generation; omitted for legacy placeholder remapping.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Required. Must be true; the calling agent must confirm with the user.
+    /// Legacy mode remaps persistent placeholders; generation replaces only
+    /// the named local value and leaves placeholders unchanged.
     #[serde(default)]
     pub confirm: bool,
     /// Out-of-band approval token from `phantom mcp-approve <NONCE>`.
@@ -174,12 +182,23 @@ pub struct RotateParams {
     pub approval_token: Option<String>,
 }
 
+impl RotateParams {
+    /// Include the resolved environment in the exact operator-reviewed effect.
+    pub fn approval_params(&self, environment: Option<&str>) -> serde_json::Result<String> {
+        let mut params = serde_json::to_value(self)?;
+        if let Some(environment) = environment {
+            params["environment"] = serde_json::Value::String(environment.into());
+        }
+        serde_json::to_string(&params)
+    }
+}
+
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct RotateWithExpiryParams {
     /// Deprecated compatibility field. Must be greater than zero, but a local
     /// Phantom token remap does not renew credential TTL or lifecycle metadata.
     pub days_ttl: u64,
-    /// Required. Must be true — the calling agent must confirm with the user
+    /// Required. Must be true; the calling agent must confirm with the user
     /// before remapping all local Phantom tokens (invalidating cached
     /// placeholders). Provider credentials and expiry metadata remain unchanged.
     #[serde(default)]
@@ -202,7 +221,7 @@ fn default_true() -> bool {
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct CloudPushParams {
-    /// Required. Must be true — the calling agent must confirm with the user
+    /// Required. Must be true; the calling agent must confirm with the user
     /// before invoking this tool. A push overwrites the cloud copy of the
     /// project's vault; damage from a prompt-injected push propagates to every
     /// machine that later pulls.
@@ -220,7 +239,7 @@ pub struct CloudPullParams {
     /// entries retain the prior merge base and block push until reconciliation.
     #[serde(default)]
     pub force: bool,
-    /// Required. Must be true — the calling agent must confirm with the user
+    /// Required. Must be true; the calling agent must confirm with the user
     /// before invoking this tool. A pull writes entries into the local vault;
     /// force declares which reviewed entries may be overwritten.
     #[serde(default)]
@@ -242,7 +261,7 @@ pub struct CopySecretParams {
     /// if the target vault, lifecycle config, or managed dotenv already owns
     /// this name; there is no overwrite mode.
     pub rename: Option<String>,
-    /// Required. Must be true — the calling agent must confirm with the user
+    /// Required. Must be true; the calling agent must confirm with the user
     /// before invoking this tool. Copying writes secrets into another vault,
     /// which an attacker can use as an exfiltration primitive.
     #[serde(default)]
@@ -864,7 +883,7 @@ pub struct AutoRotateParams {
     /// remapping does not create a credential that can truthfully be synced.
     #[serde(default)]
     pub sync: bool,
-    /// Required. Must be true — the calling agent must confirm with the user
+    /// Required. Must be true; the calling agent must confirm with the user
     /// before remapping the local Phantom token. This rewrites `.env` and can
     /// disrupt running services that cached the old placeholder, but it does
     /// not alter provider credentials or lifecycle metadata.

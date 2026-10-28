@@ -58,3 +58,4 @@ pub mod wrap;
 #[cfg(test)]
 #[path = "../../../phantom-core/tests/support/redact_corpus.rs"]
 mod redact_corpus;
+pub mod requests;

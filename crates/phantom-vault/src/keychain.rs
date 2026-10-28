@@ -937,6 +937,7 @@ impl KeychainVault {
     /// Create a new keychain vault for a project.
     /// Returns an error if the keychain is not available.
     pub fn new(project_id: &str) -> Result<Self> {
+        phantom_core::audit::admit_engine()?;
         let project_lock = acquire_project_lock(project_id)?;
         Self::new_with_project_lock(project_id, &project_lock)
             .map_err(KeychainOpenError::into_inner)
@@ -1551,58 +1552,59 @@ pub fn migrate_linux_to_secret_service(
 
 impl VaultBackend for KeychainVault {
     fn store(&self, name: &str, value: &str) -> Result<()> {
-        let _lock = self.lock_sidecars()?;
-        self.store_locked(name, value, None)?;
-        phantom_core::audit::log("vault.store", Some(name));
-        Ok(())
+        phantom_core::audit::operation("vault.store", name, || {
+            let _lock = self.lock_sidecars()?;
+            self.store_locked(name, value, None)?;
+            Ok(())
+        })
     }
 
     fn retrieve(&self, name: &str) -> Result<zeroize::Zeroizing<String>> {
-        let _lock = self.lock_sidecars()?;
-        let entry = self.entry_for(name)?;
-        match entry.get_password() {
-            Ok(value) => {
-                phantom_core::audit::log("vault.retrieve", Some(name));
-                Ok(zeroize::Zeroizing::new(value))
+        phantom_core::audit::operation("vault.retrieve", name, || {
+            let _lock = self.lock_sidecars()?;
+            let entry = self.entry_for(name)?;
+            match entry.get_password() {
+                Ok(value) => Ok(zeroize::Zeroizing::new(value)),
+                Err(keyring::Error::NoEntry) => {
+                    // F13 migration: older phantom versions stored entries under
+                    // the plaintext name. The migration spans the hashed entry,
+                    // index, and legacy deletion as one compensated transaction.
+                    let legacy = self
+                        .legacy_entry_for(name)
+                        .ok_or_else(|| PhantomError::SecretNotFound(name.to_string()))?;
+                    let migration = KeychainLegacyMigration {
+                        vault: self,
+                        hashed: &entry,
+                        legacy: &legacy,
+                    };
+                    let value = migrate_legacy_transaction(&migration, name)?;
+                    Ok(value)
+                }
+                Err(e) => Err(PhantomError::VaultError(format!(
+                    "Failed to retrieve secret: {e}"
+                ))),
             }
-            Err(keyring::Error::NoEntry) => {
-                // F13 migration: older phantom versions stored entries under
-                // the plaintext name. The migration spans the hashed entry,
-                // index, and legacy deletion as one compensated transaction.
-                let legacy = self
-                    .legacy_entry_for(name)
-                    .ok_or_else(|| PhantomError::SecretNotFound(name.to_string()))?;
-                let migration = KeychainLegacyMigration {
-                    vault: self,
-                    hashed: &entry,
-                    legacy: &legacy,
-                };
-                let value = migrate_legacy_transaction(&migration, name)?;
-                phantom_core::audit::log("vault.retrieve", Some(name));
-                Ok(value)
-            }
-            Err(e) => Err(PhantomError::VaultError(format!(
-                "Failed to retrieve secret: {e}"
-            ))),
-        }
+        })
     }
 
     fn retrieve_for_injection(&self, name: &str) -> Result<zeroize::Zeroizing<String>> {
-        let _lock = self.lock_sidecars()?;
-        let metadata = self.load_meta_map()?;
-        crate::traits::ensure_secret_injectable(name, metadata.get(name))?;
-        let value = self
-            .current_value_locked(name)?
-            .ok_or_else(|| PhantomError::SecretNotFound(name.to_string()))?;
-        phantom_core::audit::log("vault.retrieve_for_injection", Some(name));
-        Ok(value)
+        phantom_core::audit::operation("vault.retrieve_for_injection", name, || {
+            let _lock = self.lock_sidecars()?;
+            let metadata = self.load_meta_map()?;
+            crate::traits::ensure_secret_injectable(name, metadata.get(name))?;
+            let value = self
+                .current_value_locked(name)?
+                .ok_or_else(|| PhantomError::SecretNotFound(name.to_string()))?;
+            Ok(value)
+        })
     }
 
     fn delete(&self, name: &str) -> Result<()> {
-        let _lock = self.lock_sidecars()?;
-        self.delete_locked(name)?;
-        phantom_core::audit::log("vault.delete", Some(name));
-        Ok(())
+        phantom_core::audit::operation("vault.delete", name, || {
+            let _lock = self.lock_sidecars()?;
+            self.delete_locked(name)?;
+            Ok(())
+        })
     }
 
     fn compare_and_swap(
@@ -1611,20 +1613,21 @@ impl VaultBackend for KeychainVault {
         expected: Option<&str>,
         replacement: Option<&str>,
     ) -> Result<bool> {
-        let _lock = self.lock_sidecars()?;
-        let current = self.current_value_locked(name)?;
-        if current.as_ref().map(|value| value.as_str()) != expected {
-            return Ok(false);
-        }
-        if replacement == expected {
-            return Ok(true);
-        }
-        match replacement {
-            Some(value) => self.store_locked(name, value, None)?,
-            None => self.delete_locked(name)?,
-        }
-        phantom_core::audit::log("vault.compare_and_swap", Some(name));
-        Ok(true)
+        phantom_core::audit::operation("vault.compare_and_swap", name, || {
+            let _lock = self.lock_sidecars()?;
+            let current = self.current_value_locked(name)?;
+            if current.as_ref().map(|value| value.as_str()) != expected {
+                return Ok(false);
+            }
+            if replacement == expected {
+                return Ok(true);
+            }
+            match replacement {
+                Some(value) => self.store_locked(name, value, None)?,
+                None => self.delete_locked(name)?,
+            }
+            Ok(true)
+        })
     }
 
     fn list(&self) -> Result<Vec<String>> {
@@ -1703,10 +1706,11 @@ impl VaultBackend for KeychainVault {
     }
 
     fn store_with_expiry(&self, name: &str, value: &str, days_ttl: u64) -> Result<()> {
-        let _lock = self.lock_sidecars()?;
-        self.store_locked(name, value, Some(SecretMetadata::with_expiry(days_ttl)))?;
-        phantom_core::audit::log("vault.store", Some(name));
-        Ok(())
+        phantom_core::audit::operation("vault.store", name, || {
+            let _lock = self.lock_sidecars()?;
+            self.store_locked(name, value, Some(SecretMetadata::with_expiry(days_ttl)))?;
+            Ok(())
+        })
     }
 
     fn get_validation_metadata(&self, name: &str) -> Result<ValidationMetadata> {
@@ -1736,6 +1740,7 @@ impl VaultBackend for KeychainVault {
         &self,
         changes: &[ValidationMetadataCas],
     ) -> Result<bool> {
+        phantom_core::audit::admit_engine()?;
         let _lock = self.lock_sidecars()?;
         let index = self.load_index()?;
         let target = &self.sidecars.validation;
