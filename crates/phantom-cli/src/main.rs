@@ -230,6 +230,10 @@ enum Commands {
         /// (same git common dir) with a byte-identical `.phantom.toml`.
         #[arg(long, value_name = "SOURCE_CHECKOUT")]
         bind_source: Option<std::path::PathBuf>,
+        /// Scrub managed values and recognized credential formats from piped stdout/stderr.
+        /// Opt-in piping changes terminal detection and may affect child buffering.
+        #[arg(long)]
+        scrub_output: bool,
         /// Command and arguments to run
         #[arg(trailing_var_arg = true, required = true)]
         cmd: Vec<String>,
@@ -1418,9 +1422,11 @@ fn run() -> anyhow::Result<()> {
             AgentAction::Status { json } => commands::agent::status(json || global_json),
             AgentAction::Setup { dry_run, apply } => commands::agent::setup(dry_run, apply),
         },
-        Commands::Exec { cmd, bind_source } => {
-            commands::exec::run(&cmd, None, bind_source.as_deref(), cli.quiet)
-        }
+        Commands::Exec {
+            cmd,
+            bind_source,
+            scrub_output,
+        } => commands::exec::run(&cmd, None, bind_source.as_deref(), cli.quiet, scrub_output),
         Commands::Start { daemon } => commands::start::run(daemon),
         Commands::Stop => commands::stop::run(),
         Commands::Check {
