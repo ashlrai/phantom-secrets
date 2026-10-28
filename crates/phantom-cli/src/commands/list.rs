@@ -127,8 +127,8 @@ pub fn run_with_expiry(json: bool, show_expiry: bool, min_anomaly_score: Option<
                 }
             })
             .collect();
-        let out = serde_json::to_string_pretty(&entries)
-            .context("Failed to serialize secret list to JSON")?;
+        let out =
+            serde_json::to_string(&entries).context("Failed to serialize secret list to JSON")?;
         println!("{}", out);
         return Ok(());
     }
@@ -342,5 +342,60 @@ mod anomaly_level_tests {
         assert!(parsed.is_err());
         let parsed = crate::Cli::try_parse_from(["phantom", "list", "--min-anomaly-score", "2"]);
         assert!(parsed.is_ok());
+    }
+}
+
+#[cfg(test)]
+mod json_contract_tests {
+    use super::SecretEntry;
+
+    #[test]
+    fn list_json_field_snapshots() {
+        let mut entry = SecretEntry {
+            name: "EXAMPLE_KEY",
+            detected_service: None,
+            ttl_status: None,
+            expires_at: None,
+            days_remaining: None,
+            anomaly_score: None,
+            anomaly_class: None,
+        };
+        let compact = serde_json::to_string(&[&entry]).unwrap();
+        let pretty = serde_json::to_string_pretty(&[&entry]).unwrap();
+        eprintln!(
+            "list default fixture: {} -> {} bytes",
+            pretty.len() + 1,
+            compact.len() + 1
+        );
+        assert_eq!(
+            serde_json::to_value(&entry).unwrap(),
+            serde_json::json!({
+                "name": "EXAMPLE_KEY", "detected_service": null
+            })
+        );
+        entry.detected_service = Some("example");
+        entry.ttl_status = Some("expires in 2 days".into());
+        entry.expires_at = Some(2000000000);
+        entry.days_remaining = Some(2);
+        entry.anomaly_score = Some(40);
+        entry.anomaly_class = Some("caution".into());
+        let expected = serde_json::json!([{
+            "name": "EXAMPLE_KEY", "detected_service": "example",
+            "ttl_status": "expires in 2 days", "expires_at": 2000000000,
+            "days_remaining": 2, "anomaly_score": 40, "anomaly_class": "caution"
+        }]);
+        let entries = [entry];
+        let compact = serde_json::to_string(&entries).unwrap();
+        let pretty = serde_json::to_string_pretty(&entries).unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&compact).unwrap(),
+            expected
+        );
+        assert!(compact.len() < pretty.len());
+        eprintln!(
+            "list full fixture: {} -> {} bytes",
+            pretty.len() + 1,
+            compact.len() + 1
+        );
     }
 }

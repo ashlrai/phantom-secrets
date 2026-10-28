@@ -921,7 +921,7 @@ impl PhantomMcpServer {
 
     /// List all secret names stored in the vault. Never returns secret values.
     #[tool(
-        description = "List all secret names in the Phantom vault. Returns names only — never exposes actual secret values. Use this to see what secrets are configured. Returns a summary plus JSON {count, secrets: [{name, service}]} (also as structuredContent). Before `phantom init` it opens no vault and returns {count: 0, secrets: [], initialized: false, next_step} instead of an error."
+        description = "List secret names only, never values. Returns summary and JSON {count, secrets: [{name, service}]} plus structuredContent. Before init, opens no vault and returns {count: 0, secrets: [], initialized: false, next_step}."
     )]
     fn phantom_list_secrets(&self) -> Result<CallToolResult, McpError> {
         if let Some(result) =
@@ -963,7 +963,7 @@ impl PhantomMcpServer {
 
     /// Show the current status of Phantom in this project.
     #[tool(
-        description = "Read repository-local Phantom status without opening or provisioning a vault: project ID, managed dotenv protection counts, and configured service mappings. Vault backend and stored-secret inventory are deliberately not inspected; use phantom_list_secrets for the latter. Returns a summary plus JSON {initialized, project_id, vault_inspected, dotenv: {path, entries, phantom_tokens, unprotected} | null, services, next_step} (also as structuredContent)."
+        description = "Read project ID, dotenv counts and service mappings without opening or provisioning a vault. Use phantom_list_secrets for inventory. Returns summary and JSON {initialized, project_id, vault_inspected, dotenv: {path, entries, phantom_tokens, unprotected} | null, services, next_step} plus structuredContent."
     )]
     fn phantom_status(&self) -> Result<CallToolResult, McpError> {
         if !self.config_present() {
@@ -1218,7 +1218,7 @@ impl PhantomMcpServer {
 
     /// Add a secret to the vault.
     #[tool(
-        description = "Deprecated unsafe plaintext secret entry. This tool refuses values because MCP arguments enter agent context. Use phantom_add_secret_interactive instead (no approval needed). Retained for compatibility: still requires `confirm: true` plus a one-use out-of-band `approval_token` (the operator enables effects with PHANTOM_MCP_EFFECTS=trusted-terminal; a call without the token prints a nonce on the server's stderr for `phantom mcp-approve <NONCE>` in a trusted terminal), and never stores anything."
+        description = "Deprecated unsafe plaintext secret entry. This tool refuses values because MCP arguments enter agent context. Use phantom_add_secret_interactive instead (no approval needed). Retained for compatibility: still requires `confirm: true` plus a one-use out-of-band `approval_token` (operator-set PHANTOM_MCP_EFFECTS=trusted-terminal required; missing approval prints a stderr nonce for trusted-terminal `phantom mcp-approve <NONCE>`), and never stores anything."
     )]
     fn phantom_add_secret(
         &self,
@@ -1341,7 +1341,7 @@ impl PhantomMcpServer {
 
     /// Rotate all phantom tokens.
     #[tool(
-        description = "Regenerate all phantom tokens in .env. Old tokens become invalid — any running `phantom exec` / dev server that cached them will break until it picks up the new .env. Real secrets in the vault are unchanged. DESTRUCTIVE; requires `confirm: true` plus a one-use out-of-band `approval_token` (the operator enables effects with PHANTOM_MCP_EFFECTS=trusted-terminal; a call without the token prints a nonce on the server's stderr for `phantom mcp-approve <NONCE>` in a trusted terminal); the agent must ask the user for explicit consent before calling."
+        description = "Regenerate all phantom tokens in .env. Old tokens become invalid; any running `phantom exec` / dev server that cached them will break until it picks up the new .env. Real secrets in the vault are unchanged. DESTRUCTIVE; requires `confirm: true` plus a one-use out-of-band `approval_token` (operator-set PHANTOM_MCP_EFFECTS=trusted-terminal required; missing approval prints a stderr nonce for trusted-terminal `phantom mcp-approve <NONCE>`); the agent must ask the user for explicit consent before calling."
     )]
     fn phantom_rotate(
         &self,
@@ -1721,7 +1721,7 @@ impl PhantomMcpServer {
 
     /// Push encrypted vault to Phantom Cloud.
     #[tool(
-        description = "Push a client-encrypted local vault to a separately commissioned Phantom Cloud deployment and entitled account; the public hosted service is not currently commissioned for authenticated use. The configured service receives ciphertext rather than decrypted vault values. Requires phantom login first. DESTRUCTIVE — overwrites the existing cloud copy; damage from a prompt-injected push propagates to every machine that later pulls. Refused, before any approval is used or value is read, when any entry is read-only (demoted by expiry policy) or has unreadable lifecycle metadata (names only). Requires `confirm: true` plus a one-use out-of-band `approval_token` (the operator enables effects with PHANTOM_MCP_EFFECTS=trusted-terminal; a call without the token prints a nonce on the server's stderr for `phantom mcp-approve <NONCE>` in a trusted terminal); the agent must ask the user for explicit consent before calling."
+        description = "Push a client-encrypted local vault to a separately commissioned Phantom Cloud deployment and entitled account; the public hosted service is not currently commissioned for authenticated use. The configured service receives ciphertext rather than decrypted vault values. Requires phantom login first. DESTRUCTIVE; overwrites the existing cloud copy; damage from a prompt-injected push propagates to every machine that later pulls. Refused, before any approval is used or value is read, when any entry is read-only (demoted by expiry policy) or has unreadable lifecycle metadata (names only). Requires `confirm: true` plus a one-use out-of-band `approval_token` (operator-set PHANTOM_MCP_EFFECTS=trusted-terminal required; missing approval prints a stderr nonce for trusted-terminal `phantom mcp-approve <NONCE>`); the agent must ask the user for explicit consent before calling."
     )]
     async fn phantom_cloud_push(
         &self,
@@ -2168,7 +2168,7 @@ impl PhantomMcpServer {
 
     /// Run health checks and optionally auto-fix issues.
     #[tool(
-        description = "Run repository-local Phantom health checks: config validity, .env protection, .gitignore, .env.example, and pre-commit hook. This tool does not open or provision a vault. Set fix=true to apply reviewed repository-local repairs; fix=true requires `confirm: true` plus a one-use out-of-band `approval_token` (the operator enables effects with PHANTOM_MCP_EFFECTS=trusted-terminal; a call without the token prints a nonce on the server's stderr for `phantom mcp-approve <NONCE>` in a trusted terminal), while fix=false is read-only and ungated. Returns a human summary plus a value-blind JSON report (also as structuredContent) in the `phantom doctor --json` shape: {ok, issues, fixed, checks: [{status, message, fix?, fixed?}], mcp_clients}. `fix` is the hint for that check only; with fix=true a repaired check keeps its warn status and gains `fixed`. Check messages and hints are this tool's own and differ from the CLI's; mcp_clients is always [] because this tool does not inspect global client configs."
+        description = "Check config, dotenv protection, .gitignore, .env.example and pre-commit hook without opening or provisioning a vault. fix=false is read-only and ungated; fix=true applies reviewed local repairs and requires confirm:true plus one-use out-of-band approval_token. Effects require operator-set PHANTOM_MCP_EFFECTS=trusted-terminal; missing approval prints a stderr nonce for trusted-terminal `phantom mcp-approve <NONCE>`. Returns summary and JSON {ok, issues, fixed, checks: [{status, message, fix?, fixed?}], mcp_clients} plus structuredContent, matching CLI doctor --json fields. Each fix belongs to its check; repaired checks retain warn status and gain fixed. Messages differ from CLI. mcp_clients=[]: global client configs are not inspected."
     )]
     fn phantom_doctor(
         &self,
@@ -2718,7 +2718,7 @@ impl PhantomMcpServer {
 
     /// Wrap package.json scripts with the installed local `phantom` binary.
     #[tool(
-        description = "Wrap package.json scripts with the installed local `phantom exec --` command so secrets are injected via the proxy at runtime. Saves originals as `script:raw` variants. Uses a heuristic to pick dev/start/build/serve/deploy scripts and skip lint/test/format scripts. Writes package.json: requires `confirm: true` plus a one-use out-of-band `approval_token` (the operator enables effects with PHANTOM_MCP_EFFECTS=trusted-terminal; a call without the token prints a nonce on the server's stderr for `phantom mcp-approve <NONCE>` in a trusted terminal)."
+        description = "Wrap package.json scripts with the installed local `phantom exec --` command so secrets are injected via the proxy at runtime. Saves originals as `script:raw` variants. Uses a heuristic to pick dev/start/build/serve/deploy scripts and skip lint/test/format scripts. Writes package.json: requires `confirm: true` plus a one-use out-of-band `approval_token` (operator-set PHANTOM_MCP_EFFECTS=trusted-terminal required; missing approval prints a stderr nonce for trusted-terminal `phantom mcp-approve <NONCE>`)."
     )]
     fn phantom_wrap(
         &self,
@@ -2773,7 +2773,7 @@ impl PhantomMcpServer {
 
     /// Unwrap package.json scripts, restoring originals from `:raw` variants.
     #[tool(
-        description = "Reverse phantom_wrap: restore original package.json scripts from their `:raw` variants and remove the `:raw` entries. Writes package.json: requires `confirm: true` plus a one-use out-of-band `approval_token` (the operator enables effects with PHANTOM_MCP_EFFECTS=trusted-terminal; a call without the token prints a nonce on the server's stderr for `phantom mcp-approve <NONCE>` in a trusted terminal)."
+        description = "Reverse phantom_wrap: restore original package.json scripts from their `:raw` variants and remove the `:raw` entries. Writes package.json: requires `confirm: true` plus a one-use out-of-band `approval_token` (operator-set PHANTOM_MCP_EFFECTS=trusted-terminal required; missing approval prints a stderr nonce for trusted-terminal `phantom mcp-approve <NONCE>`)."
     )]
     fn phantom_unwrap(
         &self,
@@ -2870,7 +2870,7 @@ impl PhantomMcpServer {
 
     /// Check for leaked secrets or orphaned phantom tokens.
     #[tool(
-        description = "Check for security issues. With runtime=true, scans every environment variable of this server for a phantom token (leak detection). A variable is excused only when PHANTOM_PROXY_PORT and PHANTOM_PROXY_TOKEN lead to a live Phantom proxy (its health endpoint answers) and the session lists the variable in PHANTOM_SESSION_KEYS; excused names are reported in `excused` and `proxy_session` is true. Session variables with no live proxy are reported in `session_warning` and excuse nothing. Otherwise, scans the same dotenv files as `phantom check` for unprotected real secrets: .env, .env.local, .env.development, .env.development.local, .env.production, .env.production.local, .env.test, .env.test.local, plus the configured dotenv_path; a symlink is not followed and makes the result indeterminate. Returns a human summary plus a value-blind JSON report (also as structuredContent) shaped like `phantom check --json`: {mode, clean, findings: [{kind, path?, name?}], warnings, indeterminate?, proxy_session?, excused?, session_warning?}. Reports names and paths only, never values or phantom tokens."
+        description = "Scan dotenv files by default: .env{,.local,.development,.development.local,.production,.production.local,.test,.test.local} and configured dotenv_path. Symlinks are not followed and make results indeterminate. runtime=true instead scans every server environment variable. Excuse a placeholder only when PHANTOM_PROXY_PORT and PHANTOM_PROXY_TOKEN reach a live proxy health endpoint and PHANTOM_SESSION_KEYS lists its name; report excused names and proxy_session=true. Stale sessions excuse nothing and produce session_warning. Returns summary and JSON {mode, clean, findings: [{kind, path?, name?}], warnings, indeterminate?, proxy_session?, excused?, session_warning?} plus structuredContent, matching CLI check --json. Names and paths only; never values or placeholders."
     )]
     fn phantom_check(
         &self,
@@ -3004,7 +3004,7 @@ impl PhantomMcpServer {
 
     /// Generate a .env.example file from the current .env.
     #[tool(
-        description = "Generate a .env.example file from .env. Secrets are replaced with descriptive placeholders; non-secret config values are preserved. Safe to commit to version control. Writes a file: requires `confirm: true` plus a one-use out-of-band `approval_token` (the operator enables effects with PHANTOM_MCP_EFFECTS=trusted-terminal; a call without the token prints a nonce on the server's stderr for `phantom mcp-approve <NONCE>` in a trusted terminal)."
+        description = "Generate a .env.example file from .env. Secrets are replaced with descriptive placeholders; non-secret config values are preserved. Safe to commit to version control. Writes a file: requires `confirm: true` plus a one-use out-of-band `approval_token` (operator-set PHANTOM_MCP_EFFECTS=trusted-terminal required; missing approval prints a stderr nonce for trusted-terminal `phantom mcp-approve <NONCE>`)."
     )]
     fn phantom_env(
         &self,
@@ -3084,7 +3084,7 @@ impl PhantomMcpServer {
 
     /// Show what would be synced to deployment platforms and the current sync configuration.
     #[tool(
-        description = "Show sync configuration and what secrets would be synced to deployment platforms (Vercel, Railway). This is an informational tool that never pushes: actual sync requires platform API tokens and `phantom sync` in a terminal. platform must be `vercel` or `railway` (case-insensitive); any other value is refused with invalid params before the vault is opened. Use it to understand and explain the sync setup. live_gate_refusal is the refusal the live `phantom sync` would return for the selected names (an overdue secret under enforced rotation, a secret demoted to read-only, or unreadable lifecycle metadata; names only, judged from metadata without reading a value), or null when that gate passes. Returns a summary plus JSON {configured, platform_filter, configured_platforms, vault_secret_count, targets, live_gate_refusal, next_step} (also as structuredContent)."
+        description = "Preview Vercel/Railway sync configuration; never pushes. Live sync requires platform credentials and terminal `phantom sync`. platform accepts vercel/railway case-insensitively; other values fail before vault access. live_gate_refusal reports overdue enforced rotation, read-only demotion or unreadable lifecycle metadata for selected names, or null. Metadata only, no value retrieval. Returns summary and JSON {configured, platform_filter, configured_platforms, vault_secret_count, targets, live_gate_refusal, next_step} plus structuredContent."
     )]
     fn phantom_sync(
         &self,
@@ -3476,7 +3476,7 @@ impl PhantomMcpServer {
 
     /// Register the user's X25519 public key on a team.
     #[tool(
-        description = "One-time setup: register this device's public key with the team so you can send and receive encrypted vaults. Requires a separately commissioned hosted service and entitled account; the public hosted service is not currently commissioned. Must be called before phantom_team_vault_push or phantom_team_vault_pull. Idempotent — safe to call again after a key rotation. Mutating provider request: requires `confirm: true` plus a one-use out-of-band `approval_token` (the operator enables effects with PHANTOM_MCP_EFFECTS=trusted-terminal; a call without the token prints a nonce on the server's stderr for `phantom mcp-approve <NONCE>` in a trusted terminal)."
+        description = "One-time setup: register this device's public key with the team so you can send and receive encrypted vaults. Requires a separately commissioned hosted service and entitled account; the public hosted service is not currently commissioned. Must be called before phantom_team_vault_push or phantom_team_vault_pull. Idempotent; safe to call again after a key rotation. Mutating provider request: requires `confirm: true` plus a one-use out-of-band `approval_token` (operator-set PHANTOM_MCP_EFFECTS=trusted-terminal required; missing approval prints a stderr nonce for trusted-terminal `phantom mcp-approve <NONCE>`)."
     )]
     async fn phantom_team_key_publish(
         &self,
@@ -3511,7 +3511,7 @@ impl PhantomMcpServer {
 
     /// Push the current project's vault to a team.
     #[tool(
-        description = "Push this project's secrets to the shared team vault so all members can pull them. Requires a separately commissioned hosted service and entitled account; the public hosted service is not currently commissioned. Encrypts client-side for each member who has registered a key (phantom_team_key_publish). Mutating: requires confirm:true plus a one-use out-of-band `approval_token` (the operator enables effects with PHANTOM_MCP_EFFECTS=trusted-terminal; a call without the token prints a nonce on the server's stderr for `phantom mcp-approve <NONCE>` in a trusted terminal)."
+        description = "Push this project's secrets to the shared team vault so all members can pull them. Requires a separately commissioned hosted service and entitled account; the public hosted service is not currently commissioned. Encrypts client-side for each member who has registered a key (phantom_team_key_publish). Mutating: requires confirm:true plus a one-use out-of-band `approval_token` (operator-set PHANTOM_MCP_EFFECTS=trusted-terminal required; missing approval prints a stderr nonce for trusted-terminal `phantom mcp-approve <NONCE>`)."
     )]
     async fn phantom_team_vault_push(
         &self,
@@ -4928,7 +4928,7 @@ impl PhantomMcpServer {
 
     /// Pull a team vault into the current project's local vault.
     #[tool(
-        description = "Download and decrypt the team vault for this project into the local vault. Requires a separately commissioned hosted service and entitled account; the public hosted service is not currently commissioned. Use this (not phantom_cloud_pull) when secrets were shared by a teammate via phantom_team_vault_push. Overwrites local secrets: requires confirm:true plus a one-use out-of-band `approval_token` (the operator enables effects with PHANTOM_MCP_EFFECTS=trusted-terminal; a call without the token prints a nonce on the server's stderr for `phantom mcp-approve <NONCE>` in a trusted terminal)."
+        description = "Download and decrypt the team vault for this project into the local vault. Requires a separately commissioned hosted service and entitled account; the public hosted service is not currently commissioned. Use this (not phantom_cloud_pull) when secrets were shared by a teammate via phantom_team_vault_push. Overwrites local secrets: requires confirm:true plus a one-use out-of-band `approval_token` (operator-set PHANTOM_MCP_EFFECTS=trusted-terminal required; missing approval prints a stderr nonce for trusted-terminal `phantom mcp-approve <NONCE>`)."
     )]
     async fn phantom_team_vault_pull(
         &self,
@@ -5628,7 +5628,7 @@ impl PhantomMcpServer {
             promoted: [{ name }], skipped_count, total_scanned }. \
             Requires confirm:true \
             plus a one-use out-of-band `approval_token` \
-            (the operator enables effects with PHANTOM_MCP_EFFECTS=trusted-terminal; a call without the token prints a nonce on the server's stderr for `phantom mcp-approve <NONCE>` in a trusted terminal) because it writes vault metadata."
+            (operator-set PHANTOM_MCP_EFFECTS=trusted-terminal required; missing approval prints a stderr nonce for trusted-terminal `phantom mcp-approve <NONCE>`) because it writes vault metadata."
     )]
     fn phantom_apply_expiry_policy(
         &self,
@@ -17933,5 +17933,65 @@ mod tests {
             "a dangling config symlink is not an uninitialized project"
         );
         assert!(server.require_config().is_err(), "dangling must refuse");
+    }
+}
+
+#[cfg(test)]
+mod wire_size_tests {
+    use super::PhantomMcpServer;
+    use serde_json::Value;
+
+    // Ignore only prose annotations. Every consumer-visible schema constraint,
+    // default, property and tool attribute stays in the compatibility snapshot.
+    fn without_descriptions(value: &mut Value) {
+        match value {
+            Value::Object(object) => {
+                if object.get("description").is_some_and(Value::is_string) {
+                    object.remove("description");
+                }
+                for child in object.values_mut() {
+                    without_descriptions(child);
+                }
+            }
+            Value::Array(array) => array.iter_mut().for_each(without_descriptions),
+            _ => {}
+        }
+    }
+
+    #[test]
+    fn tools_wire_contract() {
+        let tools = PhantomMcpServer::tool_router().list_all();
+        let mut wire =
+            serde_json::to_value(rmcp::model::ListToolsResult::with_all_items(tools)).unwrap();
+        let bytes = serde_json::to_vec(&wire).unwrap().len();
+        eprintln!(
+            "tools/list: {bytes} bytes, ~{} tokens (ceil(bytes/4))",
+            bytes.div_ceil(4)
+        );
+        for name in [
+            "phantom_list_secrets",
+            "phantom_status",
+            "phantom_doctor",
+            "phantom_check",
+            "phantom_why",
+            "phantom_init",
+        ] {
+            let tool = wire["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|tool| tool["name"] == name)
+                .unwrap();
+            let size = serde_json::to_vec(tool).unwrap().len();
+            eprintln!("{name}: {size} bytes, ~{} tokens", size.div_ceil(4));
+        }
+        // Baseline is the exact pre-audit ListToolsResult, not pretty JSON or
+        // a JSON-RPC envelope. Keep a measurable saving on every catalog fetch.
+        assert!(bytes <= 69_000);
+        without_descriptions(&mut wire);
+        let expected: Value =
+            serde_json::from_str(include_str!("../tests/snapshots/tools-list-contract.json"))
+                .unwrap();
+        assert_eq!(wire, expected);
     }
 }
