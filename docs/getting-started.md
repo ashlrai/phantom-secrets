@@ -37,7 +37,7 @@ For a detailed breakdown of assets protected, threat actors, mitigations, and kn
 
 ## Install
 
-### Homebrew (macOS; formula currently at v0.7.8)
+### Homebrew (macOS; formula currently at v0.7.9)
 
 ```bash
 brew tap ashlrai/phantom
@@ -46,11 +46,11 @@ brew install ashlrai/phantom/phantom
 ```
 
 The formula currently installs both `phantom` and `phantom-mcp` from the
-immutable [`v0.7.8` release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.8);
-it has not yet been bumped to the current `v0.7.9`. With the `v0.7.8` formula,
-`phantom setup --client claude` writes MCP registration to the legacy
-location; see the [Claude Code guide](./claude-code.md) for the manual step.
-Homebrew publication is independently tested and maintained from GitHub
+immutable [`v0.7.9` release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.9).
+Installs from the former `v0.7.8` formula registered Claude Code MCP in the
+legacy location; after `brew upgrade`, rerun `phantom setup --client claude`
+to migrate, or see the [Claude Code guide](./claude-code.md) for the manual
+step. Homebrew publication is independently tested and maintained from GitHub
 Releases; use a direct asset below when you want explicit archive verification.
 
 ### Exact GitHub assets (macOS, Linux, and Windows)
@@ -99,7 +99,8 @@ phantom-mcp --version
 ```
 <!-- fresh:end -->
 
-A Homebrew install prints `0.7.8` until the formula is bumped.
+A Homebrew install of the current formula prints `0.7.9`; an install made
+before the tap bump prints `0.7.8` until `brew upgrade`.
 
 ---
 

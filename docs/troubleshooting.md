@@ -562,7 +562,7 @@ An npm-owned binary is also not replaced in place because the wrapper would over
 Older shared-root installs may have no receipt. Phantom recognizes a structurally valid legacy npm manifest, but otherwise reports an ambiguous legacy install and fails closed. Re-running a checksum-verified direct installer establishes the receipt without relying on a path guess.
 
 For Homebrew installs, use the reviewed tap and fully qualified formula. The
-formula currently publishes `v0.7.8`; direct GitHub assets remain available for
+formula currently publishes `v0.7.9`; direct GitHub assets remain available for
 explicit checksum verification:
 
 ```bash

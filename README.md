@@ -10,7 +10,7 @@ Delegate more to AI without putting real keys in agent context.
 
 Phantom replaces project secrets with scoped `phm_` placeholders. Applications use those placeholders through an authenticated local proxy, while agents use value-blind MCP tools for inventory, diagnostics, and governed requests.
 
-[![GitHub stars](https://img.shields.io/github/stars/ashlrai/phantom-secrets?style=for-the-badge&logo=github&color=blue&labelColor=0b0b14)](https://github.com/ashlrai/phantom-secrets/stargazers)
+[![GitHub stars](https://img.shields.io/github/stars/ashlrai/phantom-secrets?style=for-the-badge&logo=github&color=blue&labelColor=0b0b14)](https://github.com/ashlrai/phantom-secrets)
 [![CI](https://img.shields.io/github/actions/workflow/status/ashlrai/phantom-secrets/ci.yml?style=for-the-badge&label=CI&logo=github&labelColor=0b0b14)](https://github.com/ashlrai/phantom-secrets/actions/workflows/ci.yml)
 <!-- fresh:begin readme-release-badges -->
 [![Verified GitHub release](https://img.shields.io/badge/verified_GitHub_release-v0.7.9-2f81f7?style=for-the-badge&labelColor=0b0b14)](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.9)
@@ -189,8 +189,8 @@ Notes:
 ```
   .env file (AI read denied)       OS Keychain / Vault
   +--------------------------+      +---------------------+
-  | OPENAI_API_KEY=phm_a7f3  | ---> | sk-real-secret-key  |
-  | STRIPE_KEY=phm_c9d1...   |      | sk_live_real-key... |
+  | OPENAI_API_KEY=phm_a7f3  | ---> | OPENAI_API_KEY=•••  |
+  | STRIPE_KEY=phm_c9d1...   |      | STRIPE_KEY=•••      |
   +--------------------------+      +---------------------+
            |                                 |
            v                                 v
@@ -740,7 +740,14 @@ written scope.
 
 ## Part of the Ashlr ecosystem
 
-Phantom Secrets is one of the open-source tools from [Ashlr](https://ashlr.ai), a forward-deployed engineering company. Its siblings: [Lexicon](https://github.com/ashlrai/lexicon), [Locus](https://github.com/ashlrai/locus), [Ashlr Stack](https://github.com/ashlrai/ashlr-stack), [Ashlr Markdown](https://github.com/ashlrai/ashlr-md), [Ashlr plugin](https://github.com/ashlrai/ashlr-plugin).
+Phantom Secrets is one of the open-source tools from [Ashlr](https://ashlr.ai), a forward-deployed engineering company. Each one installs and runs on its own:
+
+- **[Phantom](https://phm.dev)** (`phm`): the agent workbench. Source: [ashlrai/phantom](https://github.com/ashlrai/phantom).
+- **[Locus](https://github.com/ashlrai/locus)** (`locus`): pins each agent session to one account.
+- **[Lexicon](https://lexicon.ashlr.ai)** (`lexicon`): fixes the words dictation gets wrong.
+- **[Ashlr MD](https://md.ashlr.ai)**: a Markdown app with an MCP server.
+- **[Ashlr Stack](https://stack.ashlr.ai)** (`stack`): provisions services and stores their keys in Phantom Secrets.
+- **[ashlr-plugin](https://plugin.ashlr.ai/)** (`ashlr-plugin`): token-efficiency tools for Claude Code and Codex.
 
 ## Contributing
 
