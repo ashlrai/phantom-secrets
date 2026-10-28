@@ -57,6 +57,10 @@ pub fn validate_dotenv_basename(name: &str) -> Result<String> {
         || name.is_empty()
         || name.len() > 255
         || matches!(name, "." | ".." | ".phantom.toml")
+        // The name is echoed into reports, agent-facing MCP results and a
+        // `.gitignore` line, so a control character (a newline above all)
+        // could forge extra lines in any of them.
+        || name.chars().any(char::is_control)
         || !(name == ".env" || name.starts_with(".env.") || name.ends_with(".env"))
     {
         anyhow::bail!(
@@ -288,8 +292,11 @@ mod tests {
             "/tmp/.env",
             ".phantom.toml",
             "README.md",
+            ".env.\nnext line",
+            "custom\r.env",
+            ".env.\u{1b}[2J",
         ] {
-            assert!(validate_dotenv_basename(bad).is_err(), "accepted {bad}");
+            assert!(validate_dotenv_basename(bad).is_err(), "accepted {bad:?}");
         }
         assert_eq!(
             validate_dotenv_basename("custom.env").unwrap(),

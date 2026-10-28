@@ -2282,6 +2282,10 @@ impl PhantomMcpServer {
                     internal_err(format!("Failed to read managed dotenv safely: {error}"))
                 })?
                 .map(zeroize::Zeroizing::new);
+            let file_label = env_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or(".env");
             if let Some(bytes) = env_before.as_deref() {
                 match std::str::from_utf8(bytes).map(DotenvFile::parse_str) {
                     Ok(dotenv) => {
@@ -2293,14 +2297,14 @@ impl PhantomMcpServer {
                                     "Managed dotenv became malformed; doctor made no repairs: {error}"
                                 )));
                             }
-                            log.fail(format!("Managed dotenv parse error: {error}"));
+                            log.fail(format!("{file_label} parse error: {error}"));
                             issues += 1;
                         } else if real_secrets.is_empty() {
                             // A commented-out secret is still plaintext, so
                             // no "all protected" pass for the file then.
                             if dotenv.commented_secret_assignments().is_empty() {
                                 log.pass(format!(
-                                    ".env has {} entries, all protected",
+                                    "{file_label} has {} entries, all protected",
                                     entries.len()
                                 ));
                             }
@@ -2308,7 +2312,7 @@ impl PhantomMcpServer {
                             let names: Vec<&str> =
                                 real_secrets.iter().map(|e| e.key.as_str()).collect();
                             log.warn(format!(
-                                ".env has {} unprotected secret(s): {}",
+                                "{file_label} has {} unprotected secret(s): {}",
                                 real_secrets.len(),
                                 names.join(", ")
                             ));
@@ -2318,10 +2322,6 @@ impl PhantomMcpServer {
                         // `phantom init` never edits comments, so a
                         // commented-out credential stays as plaintext. Key
                         // names and line numbers only; nothing is changed.
-                        let file_label = env_path
-                            .file_name()
-                            .and_then(|name| name.to_str())
-                            .unwrap_or(".env");
                         for (key_name, line) in dotenv.commented_secret_assignments() {
                             log.warn(format!(
                                 "{file_label} line {line}: commented-out {key_name} still holds a plaintext secret"
@@ -2339,15 +2339,12 @@ impl PhantomMcpServer {
                                 "Managed dotenv became non-UTF-8; doctor made no repairs",
                             ));
                         }
-                        log.fail(".env parse error: file is not valid UTF-8");
+                        log.fail(format!("{file_label} parse error: file is not valid UTF-8"));
                         issues += 1;
                     }
                 }
             } else {
-                log.info(format!(
-                    "No {} file in current directory",
-                    env_path.display()
-                ));
+                log.info(format!("No {file_label} file in current directory"));
             }
         } else {
             log.info("Dotenv checks skipped because no safe managed path was resolved");
@@ -2374,7 +2371,9 @@ impl PhantomMcpServer {
                         "{managed_name} is un-ignored by a later `!` rule in .gitignore — secrets could be committed!"
                     ));
                 } else {
-                    log.warn(".env is NOT in .gitignore — secrets could be committed!");
+                    log.warn(format!(
+                        "{managed_name} is NOT in .gitignore — secrets could be committed!"
+                    ));
                 }
                 if params.fix {
                     let mut c = content;
@@ -2388,7 +2387,7 @@ impl PhantomMcpServer {
                         Some(before),
                         c.into_bytes(),
                     ));
-                    log.fixed("Added .env to .gitignore");
+                    log.fixed(format!("Added {managed_name} to .gitignore"));
                 } else {
                     issues += 1;
                 }
@@ -9695,6 +9694,50 @@ mod tests {
         );
         assert_eq!(compliance["checks"]["env_clean"]["pass"], true);
         assert!(!dir.path().join(".env").exists());
+    }
+
+    /// Doctor's dotenv lines named ".env" even when the project manages
+    /// another file, so a pass or a finding pointed at the wrong file.
+    #[test]
+    fn doctor_names_the_configured_managed_dotenv() {
+        let _environment = TestEnvironment::new();
+        let (server, dir) = setup_initialized_project();
+        let config_path = dir.path().join(".phantom.toml");
+        std::fs::rename(dir.path().join(".env"), dir.path().join("custom.env")).unwrap();
+        let mut config = PhantomConfig::load(&config_path).unwrap();
+        config.phantom.dotenv_path = Some("custom.env".to_string());
+        config.save(&config_path).unwrap();
+        std::fs::write(dir.path().join(".gitignore"), "node_modules\n").unwrap();
+
+        let result = server
+            .phantom_doctor(Parameters(DoctorParams {
+                fix: false,
+                confirm: false,
+                approval_token: None,
+            }))
+            .unwrap();
+        let checks = doctor_checks(&result);
+        let messages: Vec<&str> = checks
+            .iter()
+            .filter_map(|check| check["message"].as_str())
+            .collect();
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.starts_with("custom.env has ")
+                    && message.ends_with("entries, all protected")),
+            "{messages:?}"
+        );
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.starts_with("custom.env is NOT in .gitignore")),
+            "{messages:?}"
+        );
+        assert!(
+            !messages.iter().any(|message| message.starts_with(".env ")),
+            "{messages:?}"
+        );
     }
 
     #[test]
