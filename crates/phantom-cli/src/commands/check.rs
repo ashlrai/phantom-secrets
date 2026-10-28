@@ -5,6 +5,7 @@ use phantom_core::dotenv::{is_example_placeholder, is_example_template_file, Dot
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
+use phantom_core::redact::{staged_code_credential_matches, staged_code_patterns};
 use phantom_core::report::{
     CheckConfigWarning as ConfigWarning, CheckFinding as Finding, CheckReport as Report,
 };
@@ -55,7 +56,14 @@ pub fn run(staged_only: bool, runtime: bool, json: bool) -> Result<()> {
             excused: scan.as_ref().map_or(&[], |scan| scan.excused.as_slice()),
             session_warning: scan.as_ref().and_then(|scan| scan.session_warning()),
         };
-        println!("{}", serde_json::to_string_pretty(&report)?);
+        let pretty = serde_json::to_string_pretty(&report)?;
+        println!(
+            "{}",
+            crate::commands::report_json::with_schema_pretty(
+                pretty,
+                crate::commands::report_json::CHECK_SCHEMA
+            )?
+        );
     } else {
         print_warnings(&warnings);
         if let Some(scan) = &scan {
@@ -130,6 +138,10 @@ fn staged_findings(cwd: &Path) -> Result<(Vec<Finding>, Vec<ConfigWarning>)> {
         if file.ends_with(".phantom.toml") {
             let content = read_staged_file(cwd, &file)?;
             warnings.extend(config_risks(&file, &content));
+            // The config is committed like code: a key pasted into a comment
+            // or a header value is still a committed credential.
+            let scan_content = staged_added_lines(cwd, &file)?;
+            findings.extend(code_pattern_findings(&file, &scan_content));
             continue;
         }
 
@@ -145,6 +157,15 @@ fn staged_findings(cwd: &Path) -> Result<(Vec<Finding>, Vec<ConfigWarning>)> {
             // placeholder. Any other value is still reported.
             if is_example_template_file(&file) {
                 real_secrets.retain(|entry| !is_example_placeholder(&entry.value));
+            }
+            if real_secrets.is_empty() {
+                // The parser never sees comments, so an old key commented
+                // out (`# OPENAI_API_KEY=sk-...`) or a note after a
+                // placeholder passed as clean. A file already reported by
+                // name is blocked anyway, and scanning it again would
+                // report the same values twice.
+                let scan_content = staged_added_lines(cwd, &file)?;
+                findings.extend(code_pattern_findings(&file, &scan_content));
             }
             for entry in real_secrets {
                 findings.push(Finding {
@@ -242,107 +263,6 @@ fn is_shell_expansion(value: &str) -> bool {
         })
 }
 
-/// Credential shapes looked for in staged code: the prefix, a label for the
-/// report, and the shortest tail that can follow the prefix in a real key.
-/// A bare prefix is not a key: `task-`, `risk-` and `desk-` all contain `sk-`,
-/// so a match must start a token and carry a key-length tail.
-struct CodePattern {
-    prefix: &'static str,
-    label: &'static str,
-    min_tail: usize,
-    /// AWS access key IDs are upper-case alphanumerics only.
-    upper_alnum_only: bool,
-}
-
-const CODE_PATTERNS: [CodePattern; 9] = [
-    CodePattern {
-        prefix: "sk-",
-        label: "OpenAI API key",
-        min_tail: 20,
-        upper_alnum_only: false,
-    },
-    CodePattern {
-        prefix: "sk_live_",
-        label: "Stripe live key",
-        min_tail: 16,
-        upper_alnum_only: false,
-    },
-    CodePattern {
-        prefix: "sk_test_",
-        label: "Stripe test key",
-        min_tail: 16,
-        upper_alnum_only: false,
-    },
-    CodePattern {
-        prefix: "ghp_",
-        label: "GitHub personal token",
-        min_tail: 30,
-        upper_alnum_only: false,
-    },
-    CodePattern {
-        prefix: "github_pat_",
-        label: "GitHub PAT",
-        min_tail: 30,
-        upper_alnum_only: false,
-    },
-    CodePattern {
-        prefix: "glpat-",
-        label: "GitLab PAT",
-        min_tail: 20,
-        upper_alnum_only: false,
-    },
-    CodePattern {
-        prefix: "xoxb-",
-        label: "Slack bot token",
-        min_tail: 20,
-        upper_alnum_only: false,
-    },
-    CodePattern {
-        prefix: "xoxp-",
-        label: "Slack user token",
-        min_tail: 20,
-        upper_alnum_only: false,
-    },
-    CodePattern {
-        prefix: "AKIA",
-        label: "AWS access key",
-        min_tail: 16,
-        upper_alnum_only: true,
-    },
-];
-
-/// A tail with no digit and no capital is an identifier
-/// (`sk-third-party-rollback-race`), not an issued key: twenty random base62
-/// characters with neither is a one-in-thirty-million draw.
-fn is_identifier_tail(tail: &[u8]) -> bool {
-    !tail
-        .iter()
-        .any(|b| b.is_ascii_digit() || b.is_ascii_uppercase())
-}
-
-/// Whether `text` holds `pattern.prefix` at the start of a token, followed by
-/// at least `min_tail` key characters that do not read as an identifier.
-fn contains_credential(text: &str, pattern: &CodePattern) -> bool {
-    let bytes = text.as_bytes();
-    text.match_indices(pattern.prefix).any(|(start, _)| {
-        if start > 0 && bytes[start - 1].is_ascii_alphanumeric() {
-            return false;
-        }
-        let rest = &bytes[start + pattern.prefix.len()..];
-        let len = rest
-            .iter()
-            .take_while(|b| {
-                if pattern.upper_alnum_only {
-                    b.is_ascii_uppercase() || b.is_ascii_digit()
-                } else {
-                    b.is_ascii_alphanumeric() || **b == b'_' || **b == b'-'
-                }
-            })
-            .count();
-        len >= pattern.min_tail && !is_identifier_tail(&rest[..len])
-    })
-}
-
 /// Label for a LiteLLM-shaped key. Shape only: LiteLLM generates virtual keys
 /// as `sk-` plus `secrets.token_urlsafe(16)`, which is exactly 22 URL-safe
 /// characters (checked in litellm 1.103.5, `key_management_endpoints.py`
@@ -353,47 +273,34 @@ fn contains_credential(text: &str, pattern: &CodePattern) -> bool {
 const LITELLM_KEY_LABEL: &str = "LiteLLM-style virtual key (sk- plus 22 characters)";
 const LITELLM_TAIL_LEN: usize = 22;
 
-/// Tail lengths of every `sk-` token in `text` that the `sk-` rule accepts.
-fn sk_credential_tail_lens(text: &str, pattern: &CodePattern) -> Vec<usize> {
-    let bytes = text.as_bytes();
-    text.match_indices(pattern.prefix)
-        .filter_map(|(start, _)| {
-            if start > 0 && bytes[start - 1].is_ascii_alphanumeric() {
+fn code_pattern_findings(file: &str, added: &str) -> Vec<Finding> {
+    let matches = staged_code_credential_matches(added.as_bytes());
+    staged_code_patterns()
+        .iter()
+        .filter_map(|pattern| {
+            let matching: Vec<_> = matches
+                .iter()
+                .filter(|found| found.pattern.prefix == pattern.prefix)
+                .collect();
+            if matching.is_empty() {
                 return None;
             }
-            let rest = &bytes[start + pattern.prefix.len()..];
-            let len = rest
-                .iter()
-                .take_while(|b| b.is_ascii_alphanumeric() || **b == b'_' || **b == b'-')
-                .count();
-            (len >= pattern.min_tail && !is_identifier_tail(&rest[..len])).then_some(len)
-        })
-        .collect()
-}
-
-/// The report label for a matched pattern. Only the `sk-` rule can relabel,
-/// and only when every accepted token has the LiteLLM tail length, so a file
-/// that also holds an OpenAI-shaped key keeps the OpenAI label.
-fn finding_label(pattern: &CodePattern, added: &str) -> &'static str {
-    if pattern.prefix == "sk-" {
-        let tails = sk_credential_tail_lens(added, pattern);
-        if !tails.is_empty() && tails.iter().all(|len| *len == LITELLM_TAIL_LEN) {
-            return LITELLM_KEY_LABEL;
-        }
-    }
-    pattern.label
-}
-
-fn code_pattern_findings(file: &str, added: &str) -> Vec<Finding> {
-    CODE_PATTERNS
-        .iter()
-        .filter(|pattern| contains_credential(added, pattern))
-        .map(|pattern| Finding {
-            kind: "staged_code",
-            path: Some(file.to_string()),
-            name: None,
-            label: Some(finding_label(pattern, added)),
-            pattern: Some(pattern.prefix),
+            let label = if pattern.prefix == "sk-"
+                && matching
+                    .iter()
+                    .all(|found| found.span.len() - pattern.prefix.len() == LITELLM_TAIL_LEN)
+            {
+                LITELLM_KEY_LABEL
+            } else {
+                pattern.label
+            };
+            Some(Finding {
+                kind: "staged_code",
+                path: Some(file.to_string()),
+                name: None,
+                label: Some(label),
+                pattern: Some(pattern.prefix),
+            })
         })
         .collect()
 }
@@ -1603,5 +1510,105 @@ mod tests {
         );
         let dir = repo_with_staged_bytes(".envrc", envrc.as_bytes());
         assert_eq!(staged_dotenv_names(dir.path()), ["WEBHOOK_SIGNING"]);
+    }
+
+    /// A GitHub-shaped credential, built at runtime.
+    fn ghp_shape() -> String {
+        ["ghp_", "Q7rT2mVx9KpL4wZs8NdY3hBc6FjGu5EaR1oW"].concat()
+    }
+
+    /// Dotenv entries are classified by the parser, which never sees
+    /// comments. A key left in a comment of a committable template (an old
+    /// key commented out, a note after a placeholder) was reported clean.
+    #[test]
+    fn staged_env_template_comments_get_the_code_scan() {
+        let shape = ghp_shape();
+        for content in [
+            format!("GITHUB_TOKEN=\n# GITHUB_TOKEN={shape}\n"),
+            format!("GITHUB_TOKEN=your_github_token_here # was {shape}\n"),
+            format!("# rotate: {shape}\nDEBUG=true\n"),
+        ] {
+            for name in [".env.example", "config/.env.sample"] {
+                let dir = repo_with_staged_bytes_at(name, content.as_bytes());
+                assert_eq!(
+                    staged_code_labels(dir.path()),
+                    ["GitHub personal token"],
+                    "{name}"
+                );
+            }
+        }
+    }
+
+    /// A plain `.env` whose entries are all non-secret config still blocks
+    /// on a key left in a comment.
+    #[test]
+    fn staged_dotenv_comment_gets_the_code_scan() {
+        let content = format!("NODE_ENV=production\n# OPENAI_API_KEY={}\n", ghp_shape());
+        let dir = repo_with_staged_bytes_at("apps/api/.env.production.local", content.as_bytes());
+        assert_eq!(staged_code_labels(dir.path()), ["GitHub personal token"]);
+    }
+
+    /// A template with no credential anywhere stays clean.
+    #[test]
+    fn staged_env_template_without_credentials_stays_clean() {
+        let content = "# Get a key at https://example.invalid\nGITHUB_TOKEN=\nDEBUG=true\n";
+        let dir = repo_with_staged_bytes_at(".env.example", content.as_bytes());
+        let (findings, _) = staged_findings(dir.path()).unwrap();
+        assert!(findings.is_empty());
+    }
+
+    /// `.phantom.toml` is committed and was read only for risky routes, so a
+    /// credential pasted into it (a comment, a header value) was never scanned.
+    #[test]
+    fn staged_phantom_config_gets_the_code_scan() {
+        let content = format!(
+            "[phantom]\nproject_id = \"demo\"\n# old key: {}\n",
+            ghp_shape()
+        );
+        for name in [".phantom.toml", "apps/web/.phantom.toml"] {
+            let dir = repo_with_staged_bytes_at(name, content.as_bytes());
+            assert_eq!(
+                staged_code_labels(dir.path()),
+                ["GitHub personal token"],
+                "{name}"
+            );
+        }
+        let dir = repo_with_staged_bytes_at(".phantom.toml", b"[phantom]\nproject_id = \"demo\"\n");
+        assert!(staged_code_labels(dir.path()).is_empty());
+    }
+
+    /// [`repo_with_staged_bytes`] for a path that may sit in a subdirectory.
+    fn repo_with_staged_bytes_at(path: &str, bytes: &[u8]) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        git_in(dir.path(), &["init", "-q"]);
+        let file = dir.path().join(path);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, bytes).unwrap();
+        git_in(dir.path(), &["add", "--", path]);
+        dir
+    }
+}
+
+#[cfg(test)]
+mod shared_redact_tests {
+    use super::*;
+    use crate::commands::redact_corpus;
+
+    #[test]
+    fn shared_golden_corpus_preserves_staged_check_labels() {
+        for case in redact_corpus::code_families()
+            .into_iter()
+            .filter(|case| case.staged)
+        {
+            let findings = code_pattern_findings("fixture.rs", &case.token);
+            assert_eq!(findings.len(), 1, "{}", case.label);
+            assert_eq!(findings[0].label, Some(case.label));
+            assert_eq!(findings[0].pattern, Some(case.prefix));
+            let json = serde_json::to_string(&findings).unwrap();
+            assert!(!json.contains(&case.token));
+        }
+        let findings = code_pattern_findings("fixture.rs", &redact_corpus::litellm());
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].label, Some(LITELLM_KEY_LABEL));
     }
 }

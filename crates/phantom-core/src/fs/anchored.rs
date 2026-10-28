@@ -557,6 +557,16 @@ impl TrustedAnchor {
             .acquire_exclusive_lock()
     }
 
+    /// Acquire a validated lock with a shared acquisition deadline.
+    pub fn acquire_lock_until(
+        &self,
+        relative: impl AsRef<Path>,
+        deadline: std::time::Instant,
+    ) -> io::Result<AnchoredLock> {
+        self.target_with_private_parents(relative)?
+            .acquire_exclusive_lock_until(Some(deadline))
+    }
+
     fn walk_directories(
         &self,
         components: &[OsString],
@@ -756,6 +766,13 @@ impl AnchoredTarget {
 
     /// Acquire an exclusive lock at this exact anchored target.
     pub fn acquire_exclusive_lock(&self) -> io::Result<AnchoredLock> {
+        self.acquire_exclusive_lock_until(None)
+    }
+
+    fn acquire_exclusive_lock_until(
+        &self,
+        deadline: Option<std::time::Instant>,
+    ) -> io::Result<AnchoredLock> {
         let mut options = OpenOptions::new();
         options.read(true).write(true).create(true);
         configure_no_follow(&mut options);
@@ -765,7 +782,29 @@ impl AnchoredTarget {
         repair_private_file(&cap_file)?;
         let identity = file_identity(&cap_file)?;
         let file = cap_file.into_std();
-        file.lock_exclusive()?;
+        if let Some(deadline) = deadline {
+            loop {
+                match file.try_lock_exclusive() {
+                    Ok(()) => break,
+                    Err(error)
+                        if error.kind() == io::ErrorKind::WouldBlock
+                            || error.raw_os_error()
+                                == fs2::lock_contended_error().raw_os_error() =>
+                    {
+                        let remaining =
+                            deadline.saturating_duration_since(std::time::Instant::now());
+                        if remaining.is_zero() {
+                            return Err(io::Error::new(io::ErrorKind::TimedOut,
+                                "Timed out waiting for project transaction lock; another writer is active. Retry after it finishes."));
+                        }
+                        std::thread::sleep(remaining.min(std::time::Duration::from_millis(10)));
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+        } else {
+            file.lock_exclusive()?;
+        }
 
         let current = open_regular(self.parent(), &self.leaf, &self.relative)?;
         if file_identity(&current)? != identity {

@@ -10,6 +10,38 @@ import {
 
 const repoRoot = resolve(import.meta.dirname, "../..");
 const normalCi = readFileSync(resolve(repoRoot, ".github/workflows/ci.yml"), "utf8");
+const windowsInstallerStepName =
+  "Exercise the Windows installer with the existing debug binaries";
+
+// These workflow contracts use fixed YAML indentation. Stop at the next peer
+// or ancestor so unrelated steps/jobs cannot satisfy or invalidate assertions.
+function indentedBlock(source, header, indent) {
+  const lines = source.split(/\r?\n/);
+  const starts = lines.flatMap((line, index) =>
+    line === `${" ".repeat(indent)}${header}` ? [index] : [],
+  );
+  assert.equal(starts.length, 1, `expected exactly one ${header} block`);
+  const start = starts[0];
+  const end = lines.findIndex(
+    (line, index) => index > start && line.trim() && line.search(/\S/) <= indent,
+  );
+  return lines.slice(start, end < 0 ? lines.length : end).join("\n");
+}
+
+function assertWindowsInstallerAcceptance(source) {
+  const job = indentedBlock(source, "test:", 2);
+  const steps = indentedBlock(job, "steps:", 4);
+  const step = indentedBlock(steps, `- name: ${windowsInstallerStepName}`, 6);
+
+  assert.match(step, /if: runner\.os == 'Windows'/);
+  assert.match(step, /Push-Location target\/debug/);
+  assert.match(step, /Compress-Archive -LiteralPath phantom\.exe, phantom-mcp\.exe/);
+  assert.match(step, /phantom-x86_64-pc-windows-msvc\.zip/);
+  assert.match(step, /PHANTOM_NATIVE_TARGET = 'x86_64-pc-windows-msvc'/);
+  assert.match(step, /PHANTOM_RELEASE_TAG = "v\$version"/);
+  assert.match(step, /node scripts\/release\/native-installer-acceptance\.mjs/);
+  assert.doesNotMatch(step, /cargo build|download-artifact|releases\/download/);
+}
 
 test("Windows acceptance uses the runner-owned temp directory", () => {
   assert.equal(
@@ -92,20 +124,87 @@ test("installer local-release seams remain explicit test-only contracts", () => 
 });
 
 test("normal Windows CI exercises installer acceptance with existing debug binaries", () => {
-  const start = normalCi.indexOf(
-    "- name: Exercise the Windows installer with the existing debug binaries",
-  );
-  assert.ok(start >= 0, "normal CI must include native Windows installer acceptance");
-  const end = normalCi.indexOf("\n\n  test-ignored:", start);
-  assert.ok(end > start, "Windows installer acceptance must remain in the normal test job");
-  const step = normalCi.slice(start, end);
+  assertWindowsInstallerAcceptance(normalCi);
+});
 
-  assert.match(step, /if: runner\.os == 'Windows'/);
-  assert.match(step, /Push-Location target\/debug/);
-  assert.match(step, /Compress-Archive -LiteralPath phantom\.exe, phantom-mcp\.exe/);
-  assert.match(step, /phantom-x86_64-pc-windows-msvc\.zip/);
-  assert.match(step, /PHANTOM_NATIVE_TARGET = 'x86_64-pc-windows-msvc'/);
-  assert.match(step, /PHANTOM_RELEASE_TAG = "v\$version"/);
-  assert.match(step, /node scripts\/release\/native-installer-acceptance\.mjs/);
-  assert.doesNotMatch(step, /cargo build|download-artifact|releases\/download/);
+test("Windows installer contract accepts CRLF workflow line endings", () => {
+  assertWindowsInstallerAcceptance(normalCi.replace(/\r?\n/g, "\r\n"));
+});
+
+const windowsInstallerStep = indentedBlock(
+  indentedBlock(indentedBlock(normalCi, "test:", 2), "steps:", 4),
+  `- name: ${windowsInstallerStepName}`,
+  6,
+);
+const unrelatedStep = `      - name: Unrelated build
+        run: cargo build
+      - name: Unrelated download
+        uses: actions/download-artifact@fixture # releases/download`;
+
+test("Windows installer contract ignores preceding and following jobs", () => {
+  assertWindowsInstallerAcceptance(`jobs:
+  preceding:
+    steps:
+${unrelatedStep}
+  test:
+    steps:
+${windowsInstallerStep}
+  following:
+    steps:
+${unrelatedStep}
+`);
+});
+
+test("Windows installer contract ignores preceding and following steps", () => {
+  assertWindowsInstallerAcceptance(`jobs:
+  test:
+    steps:
+${unrelatedStep}
+${windowsInstallerStep}
+${unrelatedStep}
+`);
+});
+
+test("Windows installer contract rejects missing, misplaced, or duplicate steps", () => {
+  for (const source of [
+    `jobs:\n  other:\n    steps:\n${windowsInstallerStep}\n`,
+    `jobs:\n  test:\n    steps:\n${unrelatedStep}\n`,
+    `jobs:\n  test:\n    steps:\n${unrelatedStep}\n  other:\n    steps:\n${windowsInstallerStep}\n`,
+    `jobs:\n  other:\n    steps:\n${windowsInstallerStep}\n  test:\n    steps:\n${unrelatedStep}\n`,
+    `jobs:\n  test:\n    steps:\n${windowsInstallerStep}\n${windowsInstallerStep}\n`,
+  ]) {
+    assert.throws(() => assertWindowsInstallerAcceptance(source), /expected exactly one/);
+  }
+});
+
+for (const forbidden of ["cargo build", "download-artifact", "releases/download"]) {
+  test(`Windows installer contract rejects ${forbidden} inside its step`, () => {
+    assert.throws(
+      () => assertWindowsInstallerAcceptance(`jobs:
+  test:
+    steps:
+${windowsInstallerStep}
+          ${forbidden}
+`),
+      { code: "ERR_ASSERTION", operator: "doesNotMatch" },
+    );
+  });
+}
+
+test("Windows installer contract still requires every acceptance assertion", () => {
+  for (const required of [
+    "if: runner.os == 'Windows'",
+    "Push-Location target/debug",
+    "Compress-Archive -LiteralPath phantom.exe, phantom-mcp.exe",
+    "phantom-x86_64-pc-windows-msvc.zip",
+    "PHANTOM_NATIVE_TARGET = 'x86_64-pc-windows-msvc'",
+    'PHANTOM_RELEASE_TAG = "v$version"',
+    "node scripts/release/native-installer-acceptance.mjs",
+  ]) {
+    assert.throws(() => assertWindowsInstallerAcceptance(`jobs:
+  test:
+    steps:
+${windowsInstallerStep.replace(required, "removed-required-contract")}
+`), { code: "ERR_ASSERTION", operator: "match" });
+  }
 });

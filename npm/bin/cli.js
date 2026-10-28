@@ -305,6 +305,126 @@ function sha256File(path) {
   return crypto.createHash("sha256").update(readFileSync(path)).digest("hex");
 }
 
+// Verification attestation cache. Re-hashing the full binary on every wrapper
+// call dominates startup, so a successful full verification is remembered in a
+// private sidecar keyed by the binary's dev, ino, size, mtime_ns and ctime_ns
+// and bound to the manifest digest and the wrapper VERSION. Any replacement,
+// rewrite, chmod or rename-over changes ino or ctime, so the key misses and the
+// full hash runs again. Every failure path (missing, unreadable, insecure,
+// symlinked, corrupt or mismatched attestation, or a stat error) falls back to
+// the full verification exactly as before; the cache can only skip work that
+// already succeeded for the identical file.
+const ATTESTATION_SCHEMA = 1;
+const ATTESTATION_MAX_BYTES = 1024;
+// Racy-stat guard (same idea as git's racy index entries): on filesystems with
+// coarse timestamps, a same-size rewrite or an unlink plus recreate that reuses
+// the inode within the same tick can leave every key field unchanged. Only a
+// key whose newest timestamp is at least this old when attested is trusted.
+const ATTESTATION_SETTLE_NS = 2_000_000_000n;
+let attestationClockNs = () => BigInt(Date.now()) * 1_000_000n;
+
+function setAttestationClockForTest(clock) {
+  attestationClockNs = clock || (() => BigInt(Date.now()) * 1_000_000n);
+}
+
+function identitySettledAt(identity, atNs) {
+  const newest = BigInt(identity.mtimeNs) > BigInt(identity.ctimeNs)
+    ? BigInt(identity.mtimeNs) : BigInt(identity.ctimeNs);
+  return atNs - newest >= ATTESTATION_SETTLE_NS;
+}
+
+function attestationPath(binaryPath) {
+  return `${binaryPath}.verified.json`;
+}
+
+function binaryIdentity(binaryPath) {
+  const stat = lstatSync(binaryPath, { bigint: true });
+  if (!stat.isFile()) throw new Error(`${binaryPath} must be a regular file`);
+  return {
+    dev: stat.dev.toString(),
+    ino: stat.ino.toString(),
+    size: stat.size.toString(),
+    mtimeNs: stat.mtimeNs.toString(),
+    ctimeNs: stat.ctimeNs.toString(),
+  };
+}
+
+function sameIdentity(a, b) {
+  // A zero inode (possible on some Windows filesystems) cannot establish
+  // identity, so it never matches.
+  return a.ino !== "0" && a.dev === b.dev && a.ino === b.ino && a.size === b.size &&
+    a.mtimeNs === b.mtimeNs && a.ctimeNs === b.ctimeNs;
+}
+
+function readAttestation(binaryPath, manifest, platform = process.platform) {
+  // Returns the attestation only when it is private, current-user owned, a
+  // regular single-link file in a private directory, well formed, bound to
+  // this digest and VERSION, and keyed to the binary as it is right now.
+  try {
+    validateOwnedPath(dirname(binaryPath), "directory", platform);
+    const path = attestationPath(binaryPath);
+    const stat = validateOwnedPath(path, "file", platform);
+    if (stat.size > ATTESTATION_MAX_BYTES) return null;
+    const record = JSON.parse(readFileSync(path, "utf8"));
+    if (
+      !record || typeof record !== "object" ||
+      Object.keys(record).sort().join(",") !== "attestedAtNs,identity,schema,sha256,version,versionChecked" ||
+      record.schema !== ATTESTATION_SCHEMA ||
+      record.version !== VERSION ||
+      record.sha256 !== manifest.sha256 ||
+      manifest.version !== VERSION ||
+      typeof record.versionChecked !== "boolean" ||
+      !record.identity || typeof record.identity !== "object" ||
+      Object.keys(record.identity).sort().join(",") !== "ctimeNs,dev,ino,mtimeNs,size" ||
+      !Object.values(record.identity).every((v) => typeof v === "string" && /^[0-9]{1,40}$/.test(v)) ||
+      typeof record.attestedAtNs !== "string" || !/^[0-9]{1,40}$/.test(record.attestedAtNs) ||
+      !identitySettledAt(record.identity, BigInt(record.attestedAtNs)) ||
+      !sameIdentity(record.identity, binaryIdentity(binaryPath))
+    ) return null;
+    return record;
+  } catch {
+    return null;
+  }
+}
+
+function writeAttestation(binaryPath, manifest, identity, versionChecked, platform = process.platform) {
+  // Best effort: a failed write only costs a full hash on the next call.
+  if (manifest.version !== VERSION) return;
+  const attestedAtNs = attestationClockNs();
+  // A key that is not yet settled could be shared by a same-tick rewrite, so
+  // it is verified in full every time until it settles.
+  if (!identitySettledAt(identity, attestedAtNs)) return;
+  try {
+    validateOwnedPath(dirname(binaryPath), "directory", platform);
+    const record = { schema: ATTESTATION_SCHEMA, version: VERSION, sha256: manifest.sha256, versionChecked, identity, attestedAtNs: attestedAtNs.toString() };
+    writeAtomicPrivateFile(attestationPath(binaryPath), JSON.stringify(record) + "\n", 0o600, platform);
+  } catch {
+    // Fail closed: no attestation means full verification next time.
+  }
+}
+
+function binaryDigestMatches(binaryPath, manifest, platform = process.platform) {
+  if (readAttestation(binaryPath, manifest, platform)) return true;
+  removeAttestation(binaryPath);
+  // Identity is captured before and after hashing; a file that changed while
+  // being read is verified but never attested.
+  const before = binaryIdentity(binaryPath);
+  if (sha256File(binaryPath) !== manifest.sha256) return false;
+  if (sameIdentity(before, binaryIdentity(binaryPath))) {
+    writeAttestation(binaryPath, manifest, before, false, platform);
+  }
+  return true;
+}
+
+function removeAttestation(binaryPath) {
+  try {
+    // unlink removes a symlink itself, never its target.
+    unlinkSync(attestationPath(binaryPath));
+  } catch {
+    // Missing or unremovable attestations are ignored by readAttestation.
+  }
+}
+
 const SEMVER_SOURCE =
   "(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)" +
   "(?:-((?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*))?" +
@@ -336,7 +456,7 @@ function readIntegrityVerifiedManifest(binaryPath, manifestPath, platform = proc
       typeof manifest.version !== "string" ||
       !new RegExp(`^${SEMVER_SOURCE}$`).test(manifest.version) ||
       !/^[0-9a-f]{64}$/.test(manifest.sha256) ||
-      sha256File(binaryPath) !== manifest.sha256
+      !binaryDigestMatches(binaryPath, manifest, platform)
     ) return null;
     return manifest;
   } catch {
@@ -425,8 +545,13 @@ function validateCachedBinary(binaryPath, manifestPath, {
   execTimeoutMs = EXEC_TIMEOUT_MS,
   heartbeat = () => {},
 } = {}) {
-  if (!readVerifiedManifest(binaryPath, manifestPath, platform)) return false;
+  const manifest = readVerifiedManifest(binaryPath, manifestPath, platform);
+  if (!manifest) return false;
+  // The --version spawn exists only for verification, so a version check that
+  // already passed for this exact binary identity and digest is reused.
+  if (readAttestation(binaryPath, manifest, platform)?.versionChecked === true) return true;
   try {
+    const identity = binaryIdentity(binaryPath);
     const output = runBoundedExec(
       execFileSyncImpl,
       binaryPath,
@@ -434,7 +559,11 @@ function validateCachedBinary(binaryPath, manifestPath, {
       { stdio: ["ignore", "pipe", "ignore"] },
       { timeoutMs: execTimeoutMs, heartbeat }
     );
-    return parseBinaryVersion(output) === VERSION;
+    if (parseBinaryVersion(output) !== VERSION) return false;
+    if (readAttestation(binaryPath, manifest, platform) && sameIdentity(identity, binaryIdentity(binaryPath))) {
+      writeAttestation(binaryPath, manifest, identity, true, platform);
+    }
+    return true;
   } catch {
     return false;
   }
@@ -777,6 +906,7 @@ function recoverInterruptedInstall(paths, platform = process.platform) {
     paths.binaryPath, paths.manifestPath, paths.backupBinaryPath,
     paths.backupManifestPath, paths.transactionPath,
   ]) removeFileIfExists(path);
+  removeAttestation(paths.binaryPath);
   fsyncDirectory(dirname(paths.binaryPath), platform);
   return "cleaned";
 }
@@ -786,6 +916,7 @@ function replaceCachedBinary(candidatePath, candidateManifestPath, paths, platfo
     throw new Error("candidate binary metadata is invalid");
   }
   const cacheDir = dirname(paths.binaryPath);
+  removeAttestation(paths.binaryPath);
   writeAtomicPrivateFile(paths.transactionPath, JSON.stringify({ version: VERSION }) + "\n", 0o600, platform);
   const hadPrevious = Boolean(
     readIntegrityVerifiedManifest(paths.binaryPath, paths.manifestPath, platform)
@@ -932,6 +1063,7 @@ module.exports = {
   ALLOWED_DOWNLOAD_HOSTS,
   SUPPORTED_TARGETS,
   acquireInstallLock,
+  attestationPath,
   download,
   ensureBinary,
   ensurePrivateCacheDir,
@@ -949,6 +1081,7 @@ module.exports = {
   recoverInterruptedInstall,
   replaceCachedBinary,
   sameWindowsFilesystemObject,
+  setAttestationClockForTest,
   validateCachedBinary,
   validateWindowsPathAncestors,
   writePrivateFile,

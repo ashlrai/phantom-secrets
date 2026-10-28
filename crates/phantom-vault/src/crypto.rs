@@ -6,11 +6,57 @@ use chacha20poly1305::{
 };
 use phantom_core::blob_format::{self, Tag, WriteFormat};
 use phantom_core::error::{PhantomError, Result};
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 const SALT_LEN: usize = 32;
 const NONCE_LEN: usize = 12;
 const KEY_LEN: usize = 32;
+
+/// One authenticated unlock, owned by a single immutable-passphrase vault.
+/// Never shared between vaults, persisted, or used to cache plaintext/metadata.
+/// The prefix includes the exact format/KDF header, salt and nonce; every hit
+/// still authenticates the current ciphertext and its associated data.
+#[derive(Default)]
+pub(crate) struct DecryptionCache {
+    entry: Option<CachedKey>,
+}
+
+struct CachedKey {
+    prefix: Vec<u8>,
+    aad_len: usize,
+    key: Zeroizing<[u8; KEY_LEN]>,
+}
+
+impl DecryptionCache {
+    /// The caller must bind this cache to one immutable passphrase for its
+    /// entire lifetime. FileVault owns both; one-shot public decrypts get a
+    /// fresh cache so no passphrase can be bypassed by another caller's hit.
+    pub(crate) fn decrypt(&mut self, encrypted: &[u8], passphrase: &str) -> Result<Vec<u8>> {
+        if let Some(entry) = &self.entry {
+            if encrypted.starts_with(&entry.prefix) {
+                let aad = (entry.aad_len != 0).then_some(&encrypted[..entry.aad_len]);
+                if let Some(plaintext) =
+                    decrypt_with_key(&encrypted[entry.aad_len..], &entry.key, aad)?
+                {
+                    return Ok(plaintext);
+                }
+            }
+        }
+        // A failed cached authentication cannot bypass the normal format and
+        // legacy-collision rules. Only a successful unlock replaces the key.
+        decrypt_uncached(encrypted, passphrase, self)
+    }
+
+    fn remember(&mut self, body: &[u8], aad: Option<&[u8]>, key: Zeroizing<[u8; KEY_LEN]>) {
+        let mut prefix = aad.unwrap_or_default().to_vec();
+        prefix.extend_from_slice(&body[..SALT_LEN + NONCE_LEN]);
+        self.entry = Some(CachedKey {
+            prefix,
+            aad_len: aad.map_or(0, <[u8]>::len),
+            key,
+        });
+    }
+}
 
 /// Minimum size of an encrypted blob: salt + nonce + at least 1 byte of ciphertext.
 pub const MIN_ENCRYPTED_LEN: usize = SALT_LEN + NONCE_LEN + 1;
@@ -110,6 +156,14 @@ pub fn encrypt_with_format(
 ///
 /// Untagged input format: `salt (32 bytes) || nonce (12 bytes) || ciphertext`
 pub fn decrypt(encrypted: &[u8], passphrase: &str) -> Result<Vec<u8>> {
+    DecryptionCache::default().decrypt(encrypted, passphrase)
+}
+
+fn decrypt_uncached(
+    encrypted: &[u8],
+    passphrase: &str,
+    cache: &mut DecryptionCache,
+) -> Result<Vec<u8>> {
     if encrypted.len() < MIN_ENCRYPTED_LEN {
         return Err(PhantomError::VaultError(
             "Encrypted data too small — may be corrupt".to_string(),
@@ -120,7 +174,7 @@ pub fn decrypt(encrypted: &[u8], passphrase: &str) -> Result<Vec<u8>> {
     if let Tag::V2(body) = &tag {
         if body.len() >= MIN_ENCRYPTED_LEN {
             let header = &encrypted[..blob_format::HEADER_LEN];
-            if let Some(pt) = decrypt_body(body, passphrase, Some(header))? {
+            if let Some(pt) = decrypt_body(body, passphrase, Some(header), cache)? {
                 return Ok(pt);
             }
         }
@@ -132,13 +186,13 @@ pub fn decrypt(encrypted: &[u8], passphrase: &str) -> Result<Vec<u8>> {
     } = tag
     {
         if let Some((params, header, body)) = blob_format::parse_v3_header(encrypted) {
-            if let Some(pt) = decrypt_body_v3(body, passphrase, params, header)? {
+            if let Some(pt) = decrypt_body_v3(body, passphrase, params, header, cache)? {
                 return Ok(pt);
             }
         }
     }
     // Untagged, or the magic collided with a legacy salt: legacy layout.
-    if let Some(pt) = decrypt_body(encrypted, passphrase, None)? {
+    if let Some(pt) = decrypt_body(encrypted, passphrase, None, cache)? {
         return Ok(pt);
     }
     if let Tag::Unsupported { version, alg } = tag {
@@ -153,23 +207,24 @@ pub fn decrypt(encrypted: &[u8], passphrase: &str) -> Result<Vec<u8>> {
 
 /// Decrypt a `salt || nonce || ciphertext` body. With `aad` set only the
 /// hardened KDF is tried (tagged blobs never used the legacy parameters).
-fn decrypt_body(body: &[u8], passphrase: &str, aad: Option<&[u8]>) -> Result<Option<Vec<u8>>> {
+fn decrypt_body(
+    body: &[u8],
+    passphrase: &str,
+    aad: Option<&[u8]>,
+    cache: &mut DecryptionCache,
+) -> Result<Option<Vec<u8>>> {
     if body.len() < MIN_ENCRYPTED_LEN {
         return Ok(None);
     }
-    let salt = &body[..SALT_LEN];
-    let nonce = Nonce::from_slice(&body[SALT_LEN..SALT_LEN + NONCE_LEN]);
-    let ciphertext = &body[SALT_LEN + NONCE_LEN..];
-
     // Try the hardened parameters first; if AEAD verification fails we
     // fall back to legacy `Argon2::default()` to keep older vaults
-    // decryptable. Either path's key is zeroized before this fn returns.
-    if let Some(plaintext) = try_decrypt_with(derive_key, passphrase, salt, nonce, ciphertext, aad)?
-    {
+    // decryptable. Failed keys are scrubbed immediately; a successful key is
+    // retained only in the caller's zeroizing, instance-local unlock cache.
+    if let Some(plaintext) = try_decrypt_with(derive_key, passphrase, body, aad, cache)? {
         return Ok(Some(plaintext));
     }
     if aad.is_none() {
-        return try_decrypt_with(derive_key_legacy, passphrase, salt, nonce, ciphertext, None);
+        return try_decrypt_with(derive_key_legacy, passphrase, body, None, cache);
     }
     Ok(None)
 }
@@ -181,6 +236,7 @@ fn decrypt_body_v3(
     passphrase: &str,
     params: blob_format::KdfParamsV3,
     header: &[u8],
+    cache: &mut DecryptionCache,
 ) -> Result<Option<Vec<u8>>> {
     if body.len() < MIN_ENCRYPTED_LEN {
         return Ok(None);
@@ -192,37 +248,44 @@ fn decrypt_body_v3(
         Some(KEY_LEN),
     )
     .map_err(|e| PhantomError::VaultError(format!("Argon2 params: {e}")))?;
-    let mut key: [u8; KEY_LEN] = Default::default();
+    let mut key = Zeroizing::new([0u8; KEY_LEN]);
     Argon2::new(Algorithm::Argon2id, Version::V0x13, argon2_params)
-        .hash_password_into(passphrase.as_bytes(), &body[..SALT_LEN], &mut key)
+        .hash_password_into(passphrase.as_bytes(), &body[..SALT_LEN], key.as_mut())
         .map_err(|e| PhantomError::VaultError(format!("Key derivation failed: {e}")))?;
-    let cipher = ChaCha20Poly1305::new_from_slice(&key)
-        .map_err(|e| PhantomError::VaultError(format!("Cipher init failed: {e}")))?;
-    key.zeroize();
-    let nonce = Nonce::from_slice(&body[SALT_LEN..SALT_LEN + NONCE_LEN]);
-    Ok(cipher
-        .decrypt(
-            nonce,
-            Payload {
-                msg: &body[SALT_LEN + NONCE_LEN..],
-                aad: header,
-            },
-        )
-        .ok())
+    let plaintext = decrypt_with_key(body, &key, Some(header))?;
+    if plaintext.is_some() {
+        cache.remember(body, Some(header), key);
+    }
+    Ok(plaintext)
 }
 
 fn try_decrypt_with(
     derive: fn(&str, &[u8]) -> Result<[u8; KEY_LEN]>,
     passphrase: &str,
-    salt: &[u8],
-    nonce: &Nonce,
-    ciphertext: &[u8],
+    body: &[u8],
+    aad: Option<&[u8]>,
+    cache: &mut DecryptionCache,
+) -> Result<Option<Vec<u8>>> {
+    let key = Zeroizing::new(derive(passphrase, &body[..SALT_LEN])?);
+    let plaintext = decrypt_with_key(body, &key, aad)?;
+    if plaintext.is_some() {
+        cache.remember(body, aad, key);
+    }
+    Ok(plaintext)
+}
+
+fn decrypt_with_key(
+    body: &[u8],
+    key: &[u8; KEY_LEN],
     aad: Option<&[u8]>,
 ) -> Result<Option<Vec<u8>>> {
-    let mut key = derive(passphrase, salt)?;
-    let cipher = ChaCha20Poly1305::new_from_slice(&key)
+    if body.len() < MIN_ENCRYPTED_LEN {
+        return Ok(None);
+    }
+    let cipher = ChaCha20Poly1305::new_from_slice(key)
         .map_err(|e| PhantomError::VaultError(format!("Cipher init failed: {e}")))?;
-    key.zeroize();
+    let nonce = Nonce::from_slice(&body[SALT_LEN..SALT_LEN + NONCE_LEN]);
+    let ciphertext = &body[SALT_LEN + NONCE_LEN..];
 
     Ok(match aad {
         None => cipher.decrypt(nonce, ciphertext),
@@ -581,6 +644,137 @@ mod tests {
     fn golden_untagged_fixture_decrypts() {
         let blob = hex_to_bytes(GOLDEN_HEX);
         assert_eq!(decrypt(&blob, "golden-pass").unwrap(), b"golden-plaintext");
+    }
+
+    #[test]
+    fn unlock_cache_warm_reads_support_every_existing_format() {
+        let passphrase = "synthetic-cache-format-passphrase";
+        let cases = [
+            (
+                encrypt_with_format(b"edge", passphrase, WriteFormat::Legacy).unwrap(),
+                b"edge".as_slice(),
+            ),
+            (
+                encrypt_with_format(b"edge", passphrase, WriteFormat::Tagged).unwrap(),
+                b"edge".as_slice(),
+            ),
+            (
+                // The old KDF and a salt resembling a tagged header must
+                // both retain their compatibility path on a warm unlock.
+                colliding_blob(
+                    derive_key_legacy,
+                    passphrase,
+                    blob_format::VERSION_2,
+                    blob_format::ALG_CHACHA20_POLY1305,
+                ),
+                b"edge".as_slice(),
+            ),
+            (seal_v3_for_test(b"edge", passphrase), b"edge".as_slice()),
+        ];
+        for (blob, expected) in cases {
+            let mut cache = DecryptionCache::default();
+            assert_eq!(cache.decrypt(&blob, passphrase).unwrap(), expected);
+            // Measure only already-authenticated reads. This generous alarm
+            // catches expensive unlock regressions on ordinary runners;
+            // cached AEAD authentication of tiny fixtures is much cheaper.
+            let started = std::time::Instant::now();
+            for _ in 0..64 {
+                assert_eq!(cache.decrypt(&blob, passphrase).unwrap(), expected);
+            }
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(2),
+                "warm authenticated reads unexpectedly repeated expensive unlocks"
+            );
+        }
+    }
+
+    #[test]
+    fn unlock_cache_authenticates_current_ciphertext_and_rejects_truncation() {
+        let passphrase = "synthetic-cache-corruption-passphrase";
+        for format in [WriteFormat::Legacy, WriteFormat::Tagged] {
+            let blob = encrypt_with_format(b"current-contents", passphrase, format).unwrap();
+            let mut cache = DecryptionCache::default();
+            cache.decrypt(&blob, passphrase).unwrap();
+
+            let mut corrupt = blob.clone();
+            *corrupt.last_mut().unwrap() ^= 1;
+            assert!(cache.decrypt(&corrupt, passphrase).is_err());
+            for end in [0, MIN_ENCRYPTED_LEN - 1, blob.len() - 1] {
+                assert!(cache.decrypt(&blob[..end], passphrase).is_err());
+            }
+            // An unsuccessful authentication neither poisons the good
+            // unlock nor substitutes previously decrypted plaintext.
+            assert_eq!(
+                cache.decrypt(&blob, passphrase).unwrap(),
+                b"current-contents"
+            );
+        }
+    }
+
+    #[test]
+    fn unlock_cache_does_not_bypass_header_or_stored_kdf_authentication() {
+        let passphrase = "synthetic-cache-header-passphrase";
+        let tagged = encrypt_with_format(b"tagged", passphrase, WriteFormat::Tagged).unwrap();
+        let v3 = seal_v3_for_test(b"stored-kdf", passphrase);
+        for (blob, offsets) in [
+            (&tagged, [0usize, 4, 5].as_slice()),
+            // KDF id, memory cost, time cost, and parallelism are all
+            // authenticated header bytes and must miss the old cache key.
+            (&v3, [6usize, 7, 11, 12].as_slice()),
+        ] {
+            let mut cache = DecryptionCache::default();
+            cache.decrypt(blob, passphrase).unwrap();
+            for offset in offsets {
+                let mut tampered = blob.clone();
+                tampered[*offset] = tampered[*offset].wrapping_add(1);
+                assert!(
+                    cache.decrypt(&tampered, passphrase).is_err(),
+                    "warm unlock accepted a changed authenticated header"
+                );
+            }
+            assert!(cache.decrypt(blob, passphrase).is_ok());
+        }
+    }
+
+    #[test]
+    fn unlock_cache_refreshes_for_replacement_and_does_not_remember_failed_keys() {
+        let passphrase = "synthetic-cache-replacement-passphrase";
+        let first = encrypt_with_format(b"before", passphrase, WriteFormat::Legacy).unwrap();
+        let replacement = encrypt_with_format(b"after", passphrase, WriteFormat::Tagged).unwrap();
+        let mut cache = DecryptionCache::default();
+        assert_eq!(cache.decrypt(&first, passphrase).unwrap(), b"before");
+        let original_prefix = cache.entry.as_ref().unwrap().prefix.clone();
+
+        let mut invalid_replacement = replacement.clone();
+        *invalid_replacement.last_mut().unwrap() ^= 1;
+        assert!(cache.decrypt(&invalid_replacement, passphrase).is_err());
+        assert_eq!(cache.entry.as_ref().unwrap().prefix, original_prefix);
+
+        assert_eq!(cache.decrypt(&replacement, passphrase).unwrap(), b"after");
+        assert_ne!(cache.entry.as_ref().unwrap().prefix, original_prefix);
+        assert_eq!(cache.decrypt(&replacement, passphrase).unwrap(), b"after");
+    }
+
+    #[test]
+    fn public_decrypt_never_reuses_a_vault_instances_authenticated_key() {
+        let passphrase = "synthetic-cache-public-passphrase";
+        let blob = encrypt_with_format(b"protected", passphrase, WriteFormat::Tagged).unwrap();
+        let mut instance_cache = DecryptionCache::default();
+        instance_cache.decrypt(&blob, passphrase).unwrap();
+
+        // Public callers do not own an immutable-passphrase FileVault and
+        // must perform their own unlock even after another caller succeeded.
+        assert!(decrypt(&blob, "synthetic-wrong-passphrase").is_err());
+        let mut other_instance = DecryptionCache::default();
+        assert!(other_instance
+            .decrypt(&blob, "synthetic-wrong-passphrase")
+            .is_err());
+        assert!(other_instance.entry.is_none());
+        assert_eq!(
+            instance_cache.decrypt(&blob, passphrase).unwrap(),
+            b"protected"
+        );
+        assert_eq!(decrypt(&blob, passphrase).unwrap(), b"protected");
     }
 
     fn hex_to_bytes(h: &str) -> Vec<u8> {

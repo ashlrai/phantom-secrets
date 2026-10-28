@@ -1,10 +1,12 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
+  # PR and merge queue run only the seconds-fast checks (Mason, Oct 28 2026:
+  # merge fast, test later, fix forward daily). Main pushes run nothing; the
+  # full matrix runs daily via nightly-full.yml and on workflow_dispatch.
   pull_request:
     branches: [main]
+    types: [opened, synchronize, reopened]
   # A merge queue reruns every job on the queued merge commit so CI Gate reports there.
   merge_group:
   workflow_dispatch:
@@ -15,10 +17,9 @@ on:
 permissions:
   contents: read
 
-# Cancel superseded runs of the same PR so agents pushing fixups do not queue
-# behind stale builds. Pushes to main are never cancelled.
+# Cancel superseded PR runs only; every other run gets its own group.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('run-{0}', github.run_id) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -40,6 +41,7 @@ jobs:
   changes:
     name: Classify changes
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       rust: ${{ steps.classify.outputs.rust }}
       web: ${{ steps.classify.outputs.web }}
@@ -124,8 +126,9 @@ jobs:
   test:
     name: Test (${{ matrix.os }})
     needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    if: github.event_name != 'pull_request' && github.event_name != 'merge_group' && needs.changes.outputs.rust == 'true'
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -157,6 +160,21 @@ jobs:
       - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2
         with:
           tool: cargo-nextest
+      # Coverage tools install only on Linux merge_group and the nightly run
+      # (nightly-full.yml calls this workflow, so event_name is schedule).
+      # Pull requests and pushes to main skip these steps, so a merge does not
+      # pay for a second, uncached instrumented build.
+      - name: Install coverage tools
+        if: runner.os == 'Linux' && (github.event_name == 'merge_group' || github.event_name == 'schedule')
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (2026-04-24)
+        with:
+          toolchain: 1.95.0
+          components: llvm-tools-preview
+      - name: Install cargo-llvm-cov
+        if: runner.os == 'Linux' && (github.event_name == 'merge_group' || github.event_name == 'schedule')
+        uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2
+        with:
+          tool: cargo-llvm-cov@0.9.1
       - name: Build
         run: cargo build --workspace --all-targets --locked --verbose
       # nextest runs every test in its own process, in parallel across all
@@ -166,12 +184,41 @@ jobs:
       # them (nextest rdeps filterset); workspace-wide changes (manifests,
       # lockfile, toolchain, CI) select all(). Pushes to main always run the
       # complete suite on every OS.
+      # Linux nightly and merge_group call the same nextest binary with
+      # the same flags. show-env only exports coverage variables.
       - name: Run tests
         # PRs test only crates the diff touches plus their reverse deps
         # (computed in `changes`); main pushes always run all().
-        if: needs.changes.outputs.filterset != 'none()'
+        if: needs.changes.outputs.filterset != 'none()' && (runner.os != 'Linux' || (github.event_name != 'merge_group' && github.event_name != 'schedule'))
         shell: bash
         run: cargo nextest run --workspace --all-targets --locked --no-fail-fast -E "${{ needs.changes.outputs.filterset }}"
+      - name: Run tests with coverage
+        if: runner.os == 'Linux' && (github.event_name == 'merge_group' || github.event_name == 'schedule') && needs.changes.outputs.filterset != 'none()'
+        shell: bash
+        env:
+          # Outside ./target so rust-cache does not save the instrumented
+          # rebuild for later pull requests. Debug info stays the workflow
+          # line-tables-only profile.
+          CARGO_TARGET_DIR: ${{ runner.temp }}/phantom-coverage
+        run: |
+          set -euo pipefail
+          source <(cargo llvm-cov show-env --sh)
+          cargo llvm-cov clean --workspace
+          cargo nextest run --workspace --all-targets --locked --no-fail-fast -E "${{ needs.changes.outputs.filterset }}"
+          mkdir -p target
+          cargo llvm-cov report --lcov --output-path target/lcov.info
+          if [ ! -s target/lcov.info ]; then
+            echo "::error::coverage file target/lcov.info is missing or empty"
+            exit 1
+          fi
+      - name: Upload coverage report
+        if: runner.os == 'Linux' && (github.event_name == 'merge_group' || github.event_name == 'schedule') && needs.changes.outputs.filterset != 'none()'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage-lcov
+          path: target/lcov.info
+          if-no-files-found: error
+          retention-days: 1
       # The X-Wing hybrid share (team_crypto_pq) and its crypto registry drift
       # test compile only with the pq-hybrid feature. Other jobs only
       # `cargo check --all-features`, so these tests never ran in CI.
@@ -242,10 +289,45 @@ jobs:
           $env:PHANTOM_RELEASE_TAG = "v$version"
           node scripts/release/native-installer-acceptance.mjs
 
+  # Not part of CI Gate, so a Codecov outage does not become a required check.
+  # This is the only job in this workflow with id-token: write. It runs on
+  # the nightly schedule and merge_group, never on pull_request or push.
+  # A newer push to the same ref cancels an in-progress coverage upload.
+  # Workflow concurrency still leaves the rest of a main push running.
+  coverage:
+    name: Upload coverage
+    needs: test
+    concurrency:
+      group: coverage-${{ github.workflow }}-${{ github.ref }}
+      cancel-in-progress: true
+    if: (github.event_name == 'merge_group' || github.event_name == 'schedule') && needs.test.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Download coverage report
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: coverage-lcov
+          path: coverage
+      - name: Require the coverage file
+        run: test -s coverage/lcov.info
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+        with:
+          use_oidc: "true"
+          version: "v11.3.1"
+          files: coverage/lcov.info
+          disable_search: "true"
+          fail_ci_if_error: "false"
+
   test-ignored:
     name: Ignored Tests (${{ matrix.os }})
     if: github.event_name == 'workflow_dispatch'
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     strategy:
       matrix:
         os: [macos-latest, ubuntu-latest, windows-latest]
@@ -265,6 +347,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -282,6 +365,7 @@ jobs:
   dependency-policy:
     name: Rust dependency policy
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
     steps:
@@ -313,8 +397,9 @@ jobs:
     name: Windows ARM64 source check
     needs: changes
     # Same platform gate as the macOS/Windows Test legs.
-    if: needs.changes.outputs.rust == 'true' && needs.changes.outputs.platform == 'true'
+    if: github.event_name != 'pull_request' && github.event_name != 'merge_group' && needs.changes.outputs.rust == 'true' && needs.changes.outputs.platform == 'true'
     runs-on: windows-11-vs2026-arm
+    timeout-minutes: 15
     permissions:
       contents: read
     steps:
@@ -342,6 +427,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
     steps:
@@ -374,9 +460,9 @@ jobs:
   web:
     name: Web security, tests, and build
     needs: changes
-    if: needs.changes.outputs.web == 'true'
+    if: github.event_name != 'pull_request' && github.event_name != 'merge_group' && needs.changes.outputs.web == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 15
     permissions:
       contents: read
     defaults:
@@ -453,6 +539,7 @@ jobs:
   secret-scan:
     name: Source secret scan
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
     steps:
@@ -491,8 +578,9 @@ jobs:
   crate-publication-contract:
     name: Crate publication contract
     needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    if: github.event_name != 'pull_request' && github.event_name != 'merge_group' && needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
     steps:
@@ -524,7 +612,7 @@ jobs:
   temporal-codec-example:
     name: Temporal codec example tests
     needs: changes
-    if: needs.changes.outputs.temporal_example == 'true'
+    if: github.event_name != 'pull_request' && github.event_name != 'merge_group' && needs.changes.outputs.temporal_example == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -557,9 +645,9 @@ jobs:
   docs-commands:
     name: Docs command check
     needs: changes
-    if: needs.changes.outputs.docs_commands == 'true'
+    if: github.event_name != 'pull_request' && github.event_name != 'merge_group' && needs.changes.outputs.docs_commands == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 10
     permissions:
       contents: read
     steps:
@@ -575,6 +663,35 @@ jobs:
       - name: Documented phantom commands match the CLI
         run: cargo test --locked -p phantom-secrets --test docs_command_flags_test
 
+  secret-shape:
+    # Security floor: pinned scrub.pl (sha256 5aa902ab) over the added lines of
+    # the candidate diff, on every event. No if and no paths filter; the gate
+    # fails closed unless this job succeeds.
+    name: Secret-shape scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Scan candidate diff (fail closed)
+        env:
+          SCRUB_SHA256: 5aa902abedbb3bf7fa8d893b93969e247c82ff62ac26cd082215caabfb740265
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          echo "${SCRUB_SHA256}  .github/tests/secret-shape/scrub.pl" | sha256sum --check --strict
+          if [ -z "${BASE_SHA}" ]; then BASE_SHA="$(git rev-parse "${HEAD_SHA}^1")"; fi
+          base="$(git merge-base "${BASE_SHA}" "${HEAD_SHA}")"
+          git diff --no-color --no-ext-diff "${base}" "${HEAD_SHA}" > "${RUNNER_TEMP}/candidate.diff"
+          perl .github/tests/secret-shape/scrub.pl --check --allow-fixtures < "${RUNNER_TEMP}/candidate.diff"
+
   # The single required status check. Fails if any job failed or was
   # cancelled, or if a job the classifier selected did not succeed. A job may
   # be skipped only when the classifier deselected it (or, for Ignored Tests,
@@ -582,8 +699,10 @@ jobs:
   gate:
     name: CI Gate
     if: always()
-    needs: [changes, test, test-ignored, lint, dependency-policy, windows-arm-source-check, npm-wrappers, web, secret-scan, crate-publication-contract, temporal-codec-example, docs-commands]
+    needs: [changes, test, test-ignored, lint, dependency-policy, windows-arm-source-check, npm-wrappers, web, secret-scan, secret-shape, crate-publication-contract, temporal-codec-example, docs-commands]
     runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions: {}
     steps:
       - name: Require every selected job
         env:
@@ -597,16 +716,20 @@ jobs:
           const rust = ch.outputs.rust === 'true', web = ch.outputs.web === 'true';
           const temporalExample = ch.outputs.temporal_example === 'true';
           const docsCommands = ch.outputs.docs_commands === 'true';
-          const always = ['dependency-policy', 'secret-scan'];
+          const always = ['dependency-policy', 'secret-scan', 'secret-shape'];
+          // PR and merge queue: daily-only jobs must be skipped.
+          const full = process.env.EVENT !== 'pull_request' && process.env.EVENT !== 'merge_group';
           const platform = ch.outputs.platform === 'true';
-          const rustJobs = ['test', 'lint', 'npm-wrappers', 'crate-publication-contract'];
+          const rustJobs = ['lint', 'npm-wrappers'];
+          const dailyRustJobs = ['test', 'crate-publication-contract'];
           const expect = {
             ...Object.fromEntries(always.map((j) => [j, true])),
             ...Object.fromEntries(rustJobs.map((j) => [j, rust])),
-            'windows-arm-source-check': rust && platform,
-            web,
-            'temporal-codec-example': temporalExample,
-            'docs-commands': docsCommands,
+            ...Object.fromEntries(dailyRustJobs.map((j) => [j, full && rust])),
+            'windows-arm-source-check': full && rust && platform,
+            web: full && web,
+            'temporal-codec-example': full && temporalExample,
+            'docs-commands': full && docsCommands,
             'test-ignored': process.env.EVENT === 'workflow_dispatch',
           };
           const bad = [];
@@ -614,7 +737,49 @@ jobs:
             const result = needs[job]?.result;
             if (selected ? result !== 'success' : result !== 'skipped') bad.push(`${job}=${result} (selected=${selected})`);
           }
-          if (Object.keys(needs).length !== Object.keys(expect).length + 1) bad.push('gate inventory drift');
+          const keys = ['changes', ...Object.keys(expect)].sort();
+          if (JSON.stringify(Object.keys(needs).sort()) !== JSON.stringify(keys)) bad.push('gate inventory drift');
           if (bad.length) throw new Error(bad.join(', '));
           console.log(`CI Gate passed (rust=${rust}, web=${web}, temporal_example=${temporalExample}, docs_commands=${docsCommands}, platform=${platform})`);
           NODE
+
+  fixup-queue:
+    # Daily red run -> READY FIXUP lines for the router queue (fix-forward owner:
+    # ci-efficiency). One line per failed job from the needs context only: no
+    # logs or env, read-only token, passed through the pinned scrub.pl.
+    name: Daily fixup queue
+    needs: [changes, test, test-ignored, lint, dependency-policy, windows-arm-source-check, npm-wrappers, web, secret-scan, secret-shape, crate-publication-contract, temporal-codec-example, docs-commands, gate]
+    if: ${{ always() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout scrubber
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/tests/secret-shape/scrub.pl
+          sparse-checkout-cone-mode: false
+      - name: Build fixup-queue.txt
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+          SCRUB_SHA256: 5aa902abedbb3bf7fa8d893b93969e247c82ff62ac26cd082215caabfb740265
+        run: |
+          set -euo pipefail
+          echo "${SCRUB_SHA256}  .github/tests/secret-shape/scrub.pl" | sha256sum --check --strict
+          sha7="${GITHUB_SHA:0:7}"
+          run="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          printf '%s' "$NEEDS" | jq -r --arg sha7 "$sha7" --arg run "$run" --arg repo "phantom-secrets" --arg up "$(echo phantom-secrets | tr a-z- A-Z-)" '
+            [to_entries[] | select(.value.result == "failure" or .value.result == "cancelled")] | to_entries[] |
+            "- READY RQ-FIXUP-\($up)-\($sha7)-\(.key + 1) (P0, pool=any, repo=\($repo), lead=CI-Efficiency, owner=ci-efficiency, job=\(.value.key), result=\(.value.value.result), run=\($run), sha=\($sha7)): daily full suite job \(.value.key) concluded \(.value.value.result); first error is in the run'"'"'s failed step."' > raw.txt
+          perl .github/tests/secret-shape/scrub.pl < raw.txt > fixup-queue.txt
+          echo "fixup_lines=$(wc -l < fixup-queue.txt)"
+          cat fixup-queue.txt >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload fixup queue
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: phantom-secrets-fixup-queue
+          path: fixup-queue.txt
+          if-no-files-found: error
+          retention-days: 7

@@ -156,6 +156,62 @@ impl PhantomMcpServer {
             .to_string()
     }
 
+    /// Locus narrows project credential use; it never replaces Phantom's
+    /// confirmation, approval, lifecycle, or production hard-denial gates.
+    fn require_locus_binding(&self) -> Result<Option<phantom_core::locus::LocusBinding>, McpError> {
+        let binding =
+            phantom_core::locus::probe().map_err(|error| invalid_params_err(error.to_string()))?;
+        Self::require_locus_project(&binding, &self.project_dir)?;
+        Ok(binding)
+    }
+
+    fn require_locus_project(
+        binding: &Option<phantom_core::locus::LocusBinding>,
+        project_dir: &Path,
+    ) -> Result<(), McpError> {
+        let Some(binding) = binding else {
+            return Ok(());
+        };
+        let config = read_project_config(&project_dir.join(".phantom.toml"))
+            .map_err(|error| invalid_params_err(error.to_string()))?;
+        if config
+            .as_ref()
+            .and_then(|config| config.phantom.locus.as_ref())
+            != Some(binding)
+        {
+            return Err(invalid_params_err(
+                "Locus binding mismatch: credential use refused. This project's [phantom.locus] binding and tenant must both match the active pin. Have the operator review project ownership and run `locus status --json` in their trusted terminal; no secret was used.",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Global Cloud login and notification credentials have no value-free
+    /// Locus ownership attestation. A repository declaration cannot assign
+    /// them to a tenant, so never fall through to those ambient identities.
+    fn refuse_locus_ambient_identity(
+        binding: &Option<phantom_core::locus::LocusBinding>,
+    ) -> Result<(), McpError> {
+        if binding.is_some() {
+            return Err(invalid_params_err(
+                "Locus pin active: this tool uses an ambient Cloud or notification identity whose binding cannot be verified. Credential use refused. Use a provider tool scoped by Locus; project ownership metadata does not authorize global credentials.",
+            ));
+        }
+        Ok(())
+    }
+
+    fn recheck_locus_binding(
+        &self,
+        expected: &Option<phantom_core::locus::LocusBinding>,
+    ) -> Result<(), McpError> {
+        if &self.require_locus_binding()? != expected {
+            return Err(invalid_params_err(
+                "Locus pin changed during the request; credential use refused. Retry after the operator verifies the active pin.",
+            ));
+        }
+        Ok(())
+    }
+
     fn config_path(&self) -> PathBuf {
         self.project_dir.join(".phantom.toml")
     }
@@ -1728,6 +1784,8 @@ impl PhantomMcpServer {
         Parameters(params): Parameters<CloudPushParams>,
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_cloud_push", params.confirm)?;
+        let locus_binding = self.require_locus_binding()?;
+        Self::refuse_locus_ambient_identity(&locus_binding)?;
         use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
         use std::collections::BTreeMap;
 
@@ -1789,6 +1847,7 @@ impl PhantomMcpServer {
             &params_json,
             &self.project_id(),
         )?;
+        self.recheck_locus_binding(&locus_binding)?;
 
         let token = phantom_core::auth::load_token()
             .ok_or_else(|| state_err("Not logged in. Next step: ask the user to run `phantom login` in a trusted terminal, then retry."))?;
@@ -1868,6 +1927,8 @@ impl PhantomMcpServer {
         Parameters(params): Parameters<CloudPullParams>,
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_cloud_pull", params.confirm)?;
+        let locus_binding = self.require_locus_binding()?;
+        Self::refuse_locus_ambient_identity(&locus_binding)?;
         let config_path = self.config_path();
         let (config, config_before) = load_mcp_config_exact(&config_path)?;
         let vault = self.open_project_vault(&config)?;
@@ -1894,6 +1955,7 @@ impl PhantomMcpServer {
             &params_json,
             &self.project_id(),
         )?;
+        self.recheck_locus_binding(&locus_binding)?;
         use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 
         let token = phantom_core::auth::load_token()
@@ -1970,6 +2032,7 @@ impl PhantomMcpServer {
         Parameters(params): Parameters<CopySecretParams>,
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_copy_secret", params.confirm)?;
+        let locus_binding = self.require_locus_binding()?;
         // Reject `..` in the raw input. Canonicalize below collapses traversal,
         // but only once target_dir exists on disk — and an attacker can stage a
         // missing-path case. Guarding at the textual layer is simplest.
@@ -2008,6 +2071,7 @@ impl PhantomMcpServer {
             ));
         }
 
+        Self::require_locus_project(&locus_binding, &target_dir)?;
         let target_config_path = target_dir.join(".phantom.toml");
         let (target_config, target_config_before) = load_mcp_config_exact(&target_config_path)
             .map_err(|error| {
@@ -2110,6 +2174,8 @@ impl PhantomMcpServer {
             &approval_params,
             &self.project_id(),
         )?;
+        self.recheck_locus_binding(&locus_binding)?;
+        Self::require_locus_project(&locus_binding, &target_dir)?;
 
         let (source_config, source_vault) = self.load_config_and_vault()?;
         // A copy hands the value to a project that does not carry this
@@ -2282,6 +2348,10 @@ impl PhantomMcpServer {
                     internal_err(format!("Failed to read managed dotenv safely: {error}"))
                 })?
                 .map(zeroize::Zeroizing::new);
+            let file_label = env_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or(".env");
             if let Some(bytes) = env_before.as_deref() {
                 match std::str::from_utf8(bytes).map(DotenvFile::parse_str) {
                     Ok(dotenv) => {
@@ -2293,14 +2363,14 @@ impl PhantomMcpServer {
                                     "Managed dotenv became malformed; doctor made no repairs: {error}"
                                 )));
                             }
-                            log.fail(format!("Managed dotenv parse error: {error}"));
+                            log.fail(format!("{file_label} parse error: {error}"));
                             issues += 1;
                         } else if real_secrets.is_empty() {
                             // A commented-out secret is still plaintext, so
                             // no "all protected" pass for the file then.
                             if dotenv.commented_secret_assignments().is_empty() {
                                 log.pass(format!(
-                                    ".env has {} entries, all protected",
+                                    "{file_label} has {} entries, all protected",
                                     entries.len()
                                 ));
                             }
@@ -2308,7 +2378,7 @@ impl PhantomMcpServer {
                             let names: Vec<&str> =
                                 real_secrets.iter().map(|e| e.key.as_str()).collect();
                             log.warn(format!(
-                                ".env has {} unprotected secret(s): {}",
+                                "{file_label} has {} unprotected secret(s): {}",
                                 real_secrets.len(),
                                 names.join(", ")
                             ));
@@ -2318,10 +2388,6 @@ impl PhantomMcpServer {
                         // `phantom init` never edits comments, so a
                         // commented-out credential stays as plaintext. Key
                         // names and line numbers only; nothing is changed.
-                        let file_label = env_path
-                            .file_name()
-                            .and_then(|name| name.to_str())
-                            .unwrap_or(".env");
                         for (key_name, line) in dotenv.commented_secret_assignments() {
                             log.warn(format!(
                                 "{file_label} line {line}: commented-out {key_name} still holds a plaintext secret"
@@ -2339,15 +2405,12 @@ impl PhantomMcpServer {
                                 "Managed dotenv became non-UTF-8; doctor made no repairs",
                             ));
                         }
-                        log.fail(".env parse error: file is not valid UTF-8");
+                        log.fail(format!("{file_label} parse error: file is not valid UTF-8"));
                         issues += 1;
                     }
                 }
             } else {
-                log.info(format!(
-                    "No {} file in current directory",
-                    env_path.display()
-                ));
+                log.info(format!("No {file_label} file in current directory"));
             }
         } else {
             log.info("Dotenv checks skipped because no safe managed path was resolved");
@@ -2365,10 +2428,19 @@ impl PhantomMcpServer {
                 .and_then(|path| path.file_name())
                 .and_then(|name| name.to_str())
                 .unwrap_or(".env");
-            if content.lines().any(|l| l.trim() == managed_name) {
+            let state = phantom_core::gitignore::dotenv_ignore_state(&content, managed_name);
+            if state == phantom_core::gitignore::DotenvIgnore::Ignored {
                 log.pass(format!("{managed_name} is in .gitignore"));
             } else {
-                log.warn(".env is NOT in .gitignore — secrets could be committed!");
+                if state == phantom_core::gitignore::DotenvIgnore::Negated {
+                    log.warn(format!(
+                        "{managed_name} is un-ignored by a later `!` rule in .gitignore — secrets could be committed!"
+                    ));
+                } else {
+                    log.warn(format!(
+                        "{managed_name} is NOT in .gitignore — secrets could be committed!"
+                    ));
+                }
                 if params.fix {
                     let mut c = content;
                     if !c.ends_with('\n') {
@@ -2381,7 +2453,7 @@ impl PhantomMcpServer {
                         Some(before),
                         c.into_bytes(),
                     ));
-                    log.fixed("Added .env to .gitignore");
+                    log.fixed(format!("Added {managed_name} to .gitignore"));
                 } else {
                     issues += 1;
                 }
@@ -3312,6 +3384,8 @@ impl PhantomMcpServer {
         Parameters(params): Parameters<ApprovalParams>,
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_cloud_status", params.confirm)?;
+        let locus_binding = self.require_locus_binding()?;
+        Self::refuse_locus_ambient_identity(&locus_binding)?;
         let params_json = serde_json::to_string(&params).unwrap_or_default();
         require_approval_token(
             "phantom_cloud_status",
@@ -3319,6 +3393,7 @@ impl PhantomMcpServer {
             &params_json,
             &self.project_id(),
         )?;
+        self.recheck_locus_binding(&locus_binding)?;
         let api_base = phantom_core::auth::api_base_url()
             .map_err(|e| internal_err(format!("Invalid cloud API URL: {e}")))?;
 
@@ -3349,6 +3424,8 @@ impl PhantomMcpServer {
         Parameters(params): Parameters<ApprovalParams>,
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_team_list", params.confirm)?;
+        let locus_binding = self.require_locus_binding()?;
+        Self::refuse_locus_ambient_identity(&locus_binding)?;
         let params_json = serde_json::to_string(&params).unwrap_or_default();
         require_approval_token(
             "phantom_team_list",
@@ -3356,6 +3433,7 @@ impl PhantomMcpServer {
             &params_json,
             &self.project_id(),
         )?;
+        self.recheck_locus_binding(&locus_binding)?;
         let token = phantom_core::auth::require_token().map_err(|e| internal_err(e.to_string()))?;
         let api_base =
             phantom_core::auth::api_base_url().map_err(|e| internal_err(e.to_string()))?;
@@ -3381,6 +3459,8 @@ impl PhantomMcpServer {
         Parameters(params): Parameters<TeamCreateParams>,
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_team_create", params.confirm)?;
+        let locus_binding = self.require_locus_binding()?;
+        Self::refuse_locus_ambient_identity(&locus_binding)?;
         let params_json = serde_json::to_string(&params).unwrap_or_default();
         require_approval_token(
             "phantom_team_create",
@@ -3388,6 +3468,7 @@ impl PhantomMcpServer {
             &params_json,
             &self.project_id(),
         )?;
+        self.recheck_locus_binding(&locus_binding)?;
         let token = phantom_core::auth::require_token().map_err(|e| internal_err(e.to_string()))?;
         let api_base =
             phantom_core::auth::api_base_url().map_err(|e| internal_err(e.to_string()))?;
@@ -3409,6 +3490,8 @@ impl PhantomMcpServer {
         Parameters(params): Parameters<TeamIdParams>,
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_team_members", params.confirm)?;
+        let locus_binding = self.require_locus_binding()?;
+        Self::refuse_locus_ambient_identity(&locus_binding)?;
         let params_json = serde_json::to_string(&params).unwrap_or_default();
         require_approval_token(
             "phantom_team_members",
@@ -3416,6 +3499,7 @@ impl PhantomMcpServer {
             &params_json,
             &self.project_id(),
         )?;
+        self.recheck_locus_binding(&locus_binding)?;
         let token = phantom_core::auth::require_token().map_err(|e| internal_err(e.to_string()))?;
         let api_base =
             phantom_core::auth::api_base_url().map_err(|e| internal_err(e.to_string()))?;
@@ -3448,6 +3532,8 @@ impl PhantomMcpServer {
         Parameters(params): Parameters<TeamInviteParams>,
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_team_invite", params.confirm)?;
+        let locus_binding = self.require_locus_binding()?;
+        Self::refuse_locus_ambient_identity(&locus_binding)?;
         let params_json = serde_json::to_string(&params).unwrap_or_default();
         require_approval_token(
             "phantom_team_invite",
@@ -3455,6 +3541,7 @@ impl PhantomMcpServer {
             &params_json,
             &self.project_id(),
         )?;
+        self.recheck_locus_binding(&locus_binding)?;
         let role = params.role.as_str();
         let token = phantom_core::auth::require_token().map_err(|e| internal_err(e.to_string()))?;
         let api_base =
@@ -3483,6 +3570,8 @@ impl PhantomMcpServer {
         Parameters(params): Parameters<TeamIdParams>,
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_team_key_publish", params.confirm)?;
+        let locus_binding = self.require_locus_binding()?;
+        Self::refuse_locus_ambient_identity(&locus_binding)?;
         let params_json = serde_json::to_string(&params).unwrap_or_default();
         require_approval_token(
             "phantom_team_key_publish",
@@ -3490,6 +3579,7 @@ impl PhantomMcpServer {
             &params_json,
             &self.project_id(),
         )?;
+        self.recheck_locus_binding(&locus_binding)?;
         let token = phantom_core::auth::require_token().map_err(|e| internal_err(e.to_string()))?;
         let api_base =
             phantom_core::auth::api_base_url().map_err(|e| internal_err(e.to_string()))?;
@@ -3518,6 +3608,8 @@ impl PhantomMcpServer {
         Parameters(params): Parameters<TeamVaultParams>,
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_team_vault_push", params.confirm)?;
+        let locus_binding = self.require_locus_binding()?;
+        Self::refuse_locus_ambient_identity(&locus_binding)?;
         if params.team_id.is_empty()
             || params.team_id.len() > 128
             || !params
@@ -3570,6 +3662,7 @@ impl PhantomMcpServer {
             &params_json,
             &self.project_id(),
         )?;
+        self.recheck_locus_binding(&locus_binding)?;
         use std::collections::BTreeMap;
         use zeroize::Zeroizing;
 
@@ -4477,6 +4570,8 @@ impl PhantomMcpServer {
 
         if params.backfill {
             require_confirm("phantom_audit_alerts", params.confirm)?;
+            let locus_binding = self.require_locus_binding()?;
+            Self::refuse_locus_ambient_identity(&locus_binding)?;
             let config_path = self.config_path();
             let config_before = phantom_core::fs::read_regular_file(&config_path)
                 .map_err(|error| internal_err(format!("Failed to safely read config: {error}")))?;
@@ -4521,6 +4616,7 @@ impl PhantomMcpServer {
                 &params_json,
                 &self.project_id(),
             )?;
+            self.recheck_locus_binding(&locus_binding)?;
             let current_config = phantom_core::fs::read_regular_file(&config_path)
                 .map_err(|error| internal_err(format!("Failed to recheck config: {error}")))?;
             if current_config != config_before {
@@ -4935,6 +5031,8 @@ impl PhantomMcpServer {
         Parameters(params): Parameters<TeamVaultParams>,
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_team_vault_pull", params.confirm)?;
+        let locus_binding = self.require_locus_binding()?;
+        Self::refuse_locus_ambient_identity(&locus_binding)?;
         if params.team_id.is_empty()
             || params.team_id.len() > 128
             || !params
@@ -4969,6 +5067,7 @@ impl PhantomMcpServer {
             &params_json,
             &self.project_id(),
         )?;
+        self.recheck_locus_binding(&locus_binding)?;
         require_exact_config_before_effect(&config_path, &config_before)?;
         let token = phantom_core::auth::require_token().map_err(|e| internal_err(e.to_string()))?;
         let api_base =
@@ -5097,6 +5196,7 @@ impl PhantomMcpServer {
         Parameters(params): Parameters<ValidateAllParams>,
     ) -> Result<CallToolResult, McpError> {
         require_confirm("phantom_validate_all", params.confirm)?;
+        let locus_binding = self.require_locus_binding()?;
         let canonical_project = self.project_dir.canonicalize().map_err(|error| {
             internal_err(format!("Failed to resolve project directory: {error}"))
         })?;
@@ -5132,7 +5232,7 @@ impl PhantomMcpServer {
                 1,
                 std::time::Duration::from_secs(1),
             );
-            return validation_report_result(empty, &refused, vault_note);
+            return validation_report_result(empty, &refused, vault_note, None);
         }
         let (names_digest, names_sample) = bounded_validation_name_plan(&allowed)?;
         let mut metadata_before = std::collections::BTreeMap::new();
@@ -5168,6 +5268,7 @@ impl PhantomMcpServer {
             &params_json,
             &self.project_id(),
         )?;
+        self.recheck_locus_binding(&locus_binding)?;
         if names.is_empty() {
             let out = serde_json::json!({
                 "total": 0,
@@ -5199,7 +5300,8 @@ impl PhantomMcpServer {
         let timeout = std::time::Duration::from_secs(timeout_secs);
         let validators = phantom_core::validator::default_validators();
 
-        let report =
+        let started_at = phantom_vault::metadata::now_secs();
+        let mut report =
             phantom_core::validator::run_validation_pipeline(secrets, &validators, jobs, timeout);
 
         // Persist ValidationMetadata for each result so phantom_validate_secret
@@ -5249,7 +5351,26 @@ impl PhantomMcpServer {
             ));
         }
 
-        validation_report_result(report, &refused, vault_note)
+        // Recorded for `phantom_validation_history`, refused entries counted
+        // as `phantom validate --check-all` counts them. A failed write is
+        // reported beside the report and never changes it.
+        for (name, reason) in &refused {
+            report.push_refused(name, reason);
+        }
+        // A run the gate refused entirely after approval checked nothing.
+        let history_error = if allowed.is_empty() {
+            None
+        } else {
+            phantom_core::validation_scheduler::record_run(
+                &phantom_core::validation_scheduler::state_file_path(config.local_project_id()),
+                phantom_core::validation_scheduler::ValidationRunRecord::from_report(
+                    started_at, &report,
+                ),
+            )
+            .err()
+            .map(|error| format!("This run was not added to validation history: {error:#}"))
+        };
+        validation_report_result(report, &[], vault_note, history_error)
     }
 
     // ── Validation scheduler tools ────────────────────────────────────────
@@ -5399,7 +5520,7 @@ impl PhantomMcpServer {
                 let m = meta.as_ref()?;
                 let expires_at = m.expires_at?;
                 let days_remaining = m.days_remaining()?;
-                if days_remaining <= params.days as i64 {
+                if phantom_vault::metadata::in_expiry_report(days_remaining, params.days) {
                     Some(serde_json::json!({
                         "name": name,
                         "days_remaining": days_remaining,
@@ -5585,9 +5706,19 @@ impl PhantomMcpServer {
 
         let now = phantom_vault::metadata::now_secs();
 
-        let schedule = config
+        let mut schedule = config
             .get_rotation_schedule(&params.name)
             .map_err(config_invalid_err)?;
+        // Nothing writes the schedule's own `last_rotated`, so it alone made
+        // every schedule overdue. The value's age is the vault's rotation
+        // anchor, the same one `phantom exec` enforcement judges; that
+        // enforcement ignores the config field, so the report does too.
+        if let Some(sched) = schedule.as_mut() {
+            let metadata = vault
+                .get_metadata(&params.name)
+                .map_err(|e| vault_read_err("Failed to read secret metadata", e))?;
+            sched.last_rotated = phantom_vault::rotation_gate::rotation_anchor(metadata.as_ref());
+        }
         let interval_days = schedule.as_ref().and_then(|s| s.strategy.interval_days());
         let (strategy_label, next_unix, last_rotated_unix, overdue) = match &schedule {
             None => ("none".to_string(), None::<u64>, None::<u64>, false),
@@ -6049,13 +6180,17 @@ fn validation_report_result(
     mut report: phantom_core::validator::ValidationReport,
     refused: &[(String, String)],
     vault_note: Option<String>,
+    history_error: Option<String>,
 ) -> Result<CallToolResult, McpError> {
     for (name, reason) in refused {
         report.push_refused(name, reason);
     }
     let any_refused = report.refused > 0;
-    let report = serde_json::to_value(&report)
+    let mut report = serde_json::to_value(&report)
         .map_err(|error| internal_err(format!("Serialization error: {error}")))?;
+    if let (Some(error), Some(object)) = (history_error, report.as_object_mut()) {
+        object.insert("history_error".to_string(), error.into());
+    }
     let mut result = json_object_result(&with_vault_note(report, vault_note))?;
     if any_refused {
         result.is_error = Some(true);
@@ -7335,6 +7470,9 @@ impl ServerHandler for PhantomMcpServer {
                  Setup proposals can create bearerless apply requests, but MCP can never claim or apply them; \
                  application remains trusted-terminal-only and must not be described as applied until status proves it. \
                  No Locus seal is active unless the capability card explicitly says so. \
+                 With an active Locus pin, project credential use requires matching [phantom.locus] \
+                 binding and tenant metadata. Global Cloud and notification credentials cannot be \
+                 binding-verified and are refused while pinned. These restrictions do not grant authority. \
                  Advanced phantom_* tools remain available for compatible operator workflows; \
                  secret values are never returned through MCP."
                 .to_string(),
@@ -9654,6 +9792,50 @@ mod tests {
         );
         assert_eq!(compliance["checks"]["env_clean"]["pass"], true);
         assert!(!dir.path().join(".env").exists());
+    }
+
+    /// Doctor's dotenv lines named ".env" even when the project manages
+    /// another file, so a pass or a finding pointed at the wrong file.
+    #[test]
+    fn doctor_names_the_configured_managed_dotenv() {
+        let _environment = TestEnvironment::new();
+        let (server, dir) = setup_initialized_project();
+        let config_path = dir.path().join(".phantom.toml");
+        std::fs::rename(dir.path().join(".env"), dir.path().join("custom.env")).unwrap();
+        let mut config = PhantomConfig::load(&config_path).unwrap();
+        config.phantom.dotenv_path = Some("custom.env".to_string());
+        config.save(&config_path).unwrap();
+        std::fs::write(dir.path().join(".gitignore"), "node_modules\n").unwrap();
+
+        let result = server
+            .phantom_doctor(Parameters(DoctorParams {
+                fix: false,
+                confirm: false,
+                approval_token: None,
+            }))
+            .unwrap();
+        let checks = doctor_checks(&result);
+        let messages: Vec<&str> = checks
+            .iter()
+            .filter_map(|check| check["message"].as_str())
+            .collect();
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.starts_with("custom.env has ")
+                    && message.ends_with("entries, all protected")),
+            "{messages:?}"
+        );
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.starts_with("custom.env is NOT in .gitignore")),
+            "{messages:?}"
+        );
+        assert!(
+            !messages.iter().any(|message| message.starts_with(".env ")),
+            "{messages:?}"
+        );
     }
 
     #[test]
@@ -12039,6 +12221,32 @@ mod tests {
         assert!(structured_report(&result)["fixed"].as_u64().unwrap() >= 2);
     }
 
+    /// The `.gitignore` check followed one literal line: `/.env` drew a
+    /// warning, and a later `!.env` (which Git honours) passed.
+    #[test]
+    fn doctor_gitignore_check_follows_git_rules() {
+        let _environment = TestEnvironment::new();
+        for (body, status, message) in [
+            ("/.env\n", "pass", ".env is in .gitignore"),
+            (".env\n!.env\n", "warn", ".env is un-ignored"),
+        ] {
+            let dir = TempDir::new().unwrap();
+            std::fs::write(dir.path().join(".env"), "PORT=3000\n").unwrap();
+            std::fs::write(dir.path().join(".gitignore"), body).unwrap();
+            let server = PhantomMcpServer::with_dir(dir.path().to_path_buf());
+            let result = server
+                .phantom_doctor(Parameters(DoctorParams {
+                    fix: false,
+                    confirm: false,
+                    approval_token: None,
+                }))
+                .unwrap();
+            let checks = doctor_checks(&result);
+            let check = find_check(&checks, message);
+            assert_eq!(check["status"], status, "{body:?}: {check}");
+        }
+    }
+
     #[test]
     fn doctor_config_parse_error_never_echoes_config_values() {
         let _environment = TestEnvironment::new();
@@ -13778,6 +13986,40 @@ mod tests {
                 .unwrap(),
             None
         );
+    }
+
+    /// `phantom_validation_history` read runs nothing wrote:
+    /// `phantom_validate_all` never recorded one.
+    #[test]
+    fn validate_all_records_the_run_in_history() {
+        let _environment = TestEnvironment::new();
+        let _home = TestHome::new();
+        let (server, _dir) = setup_initialized_project();
+        let history = || {
+            server
+                .phantom_validation_history(Parameters(ValidationHistoryParams { limit: 20 }))
+                .unwrap()
+                .structured_content
+                .unwrap()
+        };
+        assert_eq!(history()["total_runs"], 0);
+
+        let report = server
+            .phantom_validate_all(Parameters(ValidateAllParams {
+                jobs: 1,
+                confirm: true,
+                approval_token: None,
+            }))
+            .map_err(|error| error.message.to_string())
+            .unwrap()
+            .structured_content
+            .unwrap();
+        assert!(report.get("history_error").is_none(), "{report}");
+
+        let after = history();
+        assert_eq!(after["total_runs"], 1);
+        assert_eq!(after["entries"][0]["total"], report["total"]);
+        assert!(!after.to_string().contains("OPENAI_API_KEY"));
     }
 
     /// The sync report's live-gate check reads names and metadata only:
@@ -16988,6 +17230,60 @@ mod tests {
         }
     }
 
+    /// The schedule's `last_rotated` is never written, so a secret stored
+    /// a minute ago under a 90-day interval was reported overdue and due now.
+    /// The vault's rotation anchor is now its last rotation.
+    #[test]
+    fn rotation_schedule_next_judges_a_fresh_secret_by_its_vault_anchor() {
+        let _environment = TestEnvironment::new();
+        let (server, dir) = setup_initialized_project();
+        set_rotate_every(&dir, "OPENAI_API_KEY", "90d", false);
+        let (_config, vault) = server.load_config_and_vault().unwrap();
+        let now = phantom_vault::metadata::now_secs();
+        let next = |rotated_at: u64| {
+            let mut metadata = vault
+                .get_metadata("OPENAI_API_KEY")
+                .unwrap()
+                .unwrap_or_default();
+            metadata.created_at = Some(100);
+            metadata.rotated_at = Some(rotated_at);
+            vault.set_metadata("OPENAI_API_KEY", metadata).unwrap();
+            parse_result_json(
+                &server
+                    .phantom_rotation_schedule_next(params(
+                        serde_json::json!({ "name": "OPENAI_API_KEY" }),
+                    ))
+                    .unwrap(),
+            )
+        };
+
+        let fresh = next(now - 60);
+        assert_eq!(fresh["overdue"], false, "{fresh}");
+        assert_eq!(fresh["last_rotated_unix"], now - 60);
+        assert_eq!(fresh["next_rotation_unix"], now - 60 + 90 * 86_400);
+
+        let stale = next(now - 91 * 86_400);
+        assert_eq!(stale["overdue"], true, "{stale}");
+        assert_eq!(stale["last_rotated_unix"], now - 91 * 86_400);
+
+        // A later `last_rotated` in the config does not hide a value that
+        // `phantom exec` would refuse as overdue.
+        let config_path = dir.path().join(".phantom.toml");
+        let mut config = PhantomConfig::load(&config_path).unwrap();
+        let mut schedule = phantom_core::config::parse_rotate_every("90d").unwrap();
+        schedule.last_rotated = Some(now);
+        config
+            .phantom
+            .secrets
+            .get_mut("OPENAI_API_KEY")
+            .unwrap()
+            .rotation_schedule = Some(schedule);
+        config.save(&config_path).unwrap();
+        let masked = next(now - 91 * 86_400);
+        assert_eq!(masked["overdue"], true, "{masked}");
+        assert_eq!(masked["last_rotated_unix"], now - 91 * 86_400);
+    }
+
     /// An unparseable `rotate_every` silently fell back to the global policy
     /// (or to no schedule). It is now a config error naming the field.
     #[test]
@@ -17347,6 +17643,36 @@ mod tests {
         );
         assert_eq!(entry["expired"], true);
         assert_eq!(entry["status"], "EXPIRED");
+    }
+
+    /// `days: 0` is documented as already-expired only; a secret that
+    /// expires later today has 0 whole days left and was returned too.
+    #[test]
+    fn test_expiry_check_zero_days_omits_secret_expiring_later_today() {
+        let _environment = TestEnvironment::new();
+        let (server, _dir) = setup_initialized_project();
+        let now = phantom_vault::metadata::now_secs();
+        let entry_name = pin_first_entry_metadata(
+            &server,
+            phantom_vault::SecretMetadata {
+                expires_at: Some(now + 3_600),
+                ..Default::default()
+            },
+        );
+
+        let check = |days| {
+            parse_result_json(
+                &server
+                    .phantom_secrets_expiry_check(Parameters(ExpiryCheckParams { days }))
+                    .unwrap(),
+            )
+        };
+        let zero = check(0);
+        assert!(
+            find_entry(&zero["secrets"], &entry_name).is_none(),
+            "unexpired secret listed at days 0: {zero}"
+        );
+        assert!(find_entry(&check(1)["secrets"], &entry_name).is_some());
     }
 
     #[test]
@@ -17935,3 +18261,7 @@ mod tests {
         assert!(server.require_config().is_err(), "dangling must refuse");
     }
 }
+
+#[cfg(test)]
+#[path = "locus_tests.rs"]
+mod locus_tests;

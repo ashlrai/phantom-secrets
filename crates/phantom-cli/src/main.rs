@@ -35,7 +35,7 @@ use tracing_subscriber::EnvFilter;
                     phantom exec -- <command>     run your app or agent through the local proxy\n\n\
                   Commands by task:\n  \
                     Setup         init · agent · setup · doctor · workspace · vault · completion · mcp · mcp-approve\n  \
-                    Daily use     exec · start · stop · status · check · list · add · remove · reveal · copy · env · why\n  \
+                    Daily use     exec · start · stop · status · check · redact · list · add · remove · reveal · copy · env · why · git-credential\n  \
                     Sync & teams  login · logout · cloud · team · sync · pull · export · import · wrap · unwrap\n  \
                     Maintenance   upgrade · watch · rotate · grant · validate · expiry · secrets-expiring-soon · open · audit · leaks · crypto",
     version
@@ -70,8 +70,9 @@ enum Commands {
         /// Skips repos that already have .phantom.toml.
         #[arg(long, value_name = "DIR")]
         all: Option<std::path::PathBuf>,
-        /// With --all: scan and report what would change without modifying anything.
-        #[arg(long, requires = "all")]
+        /// Report the keys and files this init would write, without changing anything.
+        /// With --all, scan and report what would change without modifying anything.
+        #[arg(long)]
         dry_run: bool,
         /// With --all: number of repos to initialise concurrently.
         /// Defaults to PHANTOM_INIT_JOBS env var, then 4.
@@ -79,7 +80,7 @@ enum Commands {
         jobs: Option<usize>,
         /// Create a valid .phantom.toml and empty vault without requiring a .env file.
         /// Use this to bootstrap a brand-new project before any secrets exist.
-        #[arg(long, conflicts_with_all = ["all", "dry_run"])]
+        #[arg(long, conflicts_with = "all")]
         empty: bool,
     },
 
@@ -140,6 +141,11 @@ enum Commands {
         /// Emit one JSON report on stdout instead of the human checklist
         #[arg(long)]
         json: bool,
+        /// Exit 2 when the report has any issue. Warnings count the same as
+        /// failures. Omit it to keep the current exit status. Exit 1 stays a
+        /// command error. Does not apply to --pq or --all.
+        #[arg(long, conflicts_with_all = ["pq", "all"])]
+        strict: bool,
         /// Print a read-only, value-free post-quantum readiness report
         /// (algorithms in use, which are quantum-vulnerable) instead of the
         /// health checks. Combine with --json for machine-readable output.
@@ -211,6 +217,17 @@ enum Commands {
     },
 
     // ─────────────────────────── Daily use ───────────────────────────
+    /// Supply a GitHub credential to Git through a pipe (never a terminal or file).
+    #[command(next_help_heading = "Daily use")]
+    GitCredential {
+        /// Git credential protocol operation; store and erase are effect-free.
+        #[arg(value_enum)]
+        operation: commands::git_credential::Operation,
+        /// Exact project vault entry to use.
+        #[arg(long, default_value = "GITHUB_TOKEN")]
+        secret: String,
+    },
+
     /// Start the proxy and run a command
     #[command(next_help_heading = "Daily use")]
     Exec {
@@ -258,9 +275,21 @@ enum Commands {
         json: bool,
     },
 
+    /// Scrub known credential shapes from stdin to stdout (no vault access)
+    #[command(next_help_heading = "Daily use")]
+    Redact {
+        /// Flush each sanitized line; reject lines over 1 MiB. Does not detect arbitrary or encoded secrets
+        #[arg(long, required = true)]
+        stream: bool,
+    },
+
     /// List stored secret names (never shows values)
     #[command(next_help_heading = "Daily use")]
     List {
+        /// Only list this environment (for example dev, staging, prod, or default).
+        /// Omit to list all environments. Never changes the active environment.
+        #[arg(long, value_name = "ENV")]
+        scope: Option<String>,
         /// Emit JSON instead of the human-readable table
         #[arg(long)]
         json: bool,
@@ -291,6 +320,9 @@ enum Commands {
         /// With --stdin: store only the first line (pass/gopass put metadata after it)
         #[arg(long, requires = "stdin")]
         first_line: bool,
+        /// Report the key and files this add would write, without reading a value or changing anything
+        #[arg(long, conflicts_with_all = ["stdin", "multiline", "first_line"])]
+        dry_run: bool,
     },
 
     /// Remove a secret transactionally after an exact trusted-terminal challenge
@@ -298,6 +330,9 @@ enum Commands {
     Remove {
         /// Secret name to remove
         name: String,
+        /// Report the key and files this removal would write, without deleting anything
+        #[arg(long)]
+        dry_run: bool,
     },
 
     /// Reveal a secret value (print to stdout or copy to clipboard)
@@ -324,6 +359,9 @@ enum Commands {
         /// Rename the secret in the target project
         #[arg(long, alias = "as")]
         rename: Option<String>,
+        /// Allow copying between projects whose `owner` labels differ
+        #[arg(long)]
+        allow_cross_owner: bool,
     },
 
     /// Generate .env.example for team onboarding
@@ -339,6 +377,11 @@ enum Commands {
     Why {
         /// Environment variable name to explain
         key: String,
+        /// Exit 2 when the key is not protected. A JSON report for a missing
+        /// key also exits 2. The human view of a missing key is still a
+        /// command error (exit 1). Omit it to keep the current exit status.
+        #[arg(long)]
+        strict: bool,
     },
 
     // ───────────────────────── Sync & teams ──────────────────────────
@@ -876,7 +919,8 @@ enum AgentAction {
         /// With --json: also probe the vault and the cloud login (keychain access)
         #[arg(long)]
         vault: bool,
-        /// With --json: exit 0 ready, 2 degraded, 1 blocked, 3 not evaluated
+        /// With --json: exit 0 when ready, exit 2 when degraded, blocked, or
+        /// unknown. Exit 1 stays a command error. Omit it to keep exit 0.
         #[arg(long)]
         strict: bool,
     },
@@ -1188,6 +1232,7 @@ fn apply_global_json(command: &mut Commands) -> Result<(), &'static str> {
         Commands::Add { .. } => Err("phantom add"),
         Commands::Remove { .. } => Err("phantom remove"),
         Commands::Reveal { .. } => Err("phantom reveal"),
+        Commands::GitCredential { .. } => Err("phantom git-credential"),
         Commands::Copy { .. } => Err("phantom copy"),
         Commands::Env { .. } => Err("phantom env"),
         Commands::Login => Err("phantom login"),
@@ -1222,6 +1267,7 @@ fn apply_global_json(command: &mut Commands) -> Result<(), &'static str> {
         Commands::Import { .. } => Err("phantom import"),
         Commands::Wrap { .. } => Err("phantom wrap"),
         Commands::Unwrap => Err("phantom unwrap"),
+        Commands::Redact { .. } => Err("phantom redact"),
         Commands::Upgrade { .. } => Err("phantom upgrade"),
         Commands::Watch { .. } => Err("phantom watch"),
         Commands::Open { .. } => Err("phantom open"),
@@ -1265,6 +1311,9 @@ fn run() -> anyhow::Result<()> {
         .init();
 
     match cli.command {
+        Commands::GitCredential { operation, secret } => {
+            commands::git_credential::run(operation, &secret)
+        }
         Commands::Init {
             from,
             all,
@@ -1272,7 +1321,9 @@ fn run() -> anyhow::Result<()> {
             jobs,
             empty,
         } => {
-            if empty {
+            if empty && dry_run {
+                commands::init::dry_run::run_empty()
+            } else if empty {
                 commands::init::run_empty()
             } else {
                 match all {
@@ -1282,6 +1333,7 @@ fn run() -> anyhow::Result<()> {
                             .unwrap_or(commands::init::multi::DEFAULT_JOBS);
                         commands::init::multi::run(root, dry_run, j)
                     }
+                    None if dry_run => commands::init::dry_run::run(&from),
                     None => commands::init::run(&from),
                 }
             }
@@ -1290,13 +1342,20 @@ fn run() -> anyhow::Result<()> {
             json,
             show_expiry,
             min_anomaly_score,
-        } => commands::list::run_with_expiry(json, show_expiry, min_anomaly_score),
+            scope,
+        } => match scope.as_deref() {
+            Some(scope) => {
+                commands::list::run_with_scope(json, show_expiry, min_anomaly_score, Some(scope))
+            }
+            None => commands::list::run_with_expiry(json, show_expiry, min_anomaly_score),
+        },
         Commands::Add {
             name,
             value,
             stdin,
             multiline,
             first_line,
+            dry_run,
         } => {
             let lines = if multiline {
                 commands::add::StdinLines::Multiline
@@ -1305,9 +1364,9 @@ fn run() -> anyhow::Result<()> {
             } else {
                 commands::add::StdinLines::SingleOnly
             };
-            commands::add::run(&name, value, stdin, lines)
+            commands::add::run(&name, value, stdin, lines, dry_run)
         }
-        Commands::Remove { name } => commands::remove::run(&name),
+        Commands::Remove { name, dry_run } => commands::remove::run(&name, dry_run),
         Commands::Reveal {
             name,
             clipboard,
@@ -1379,18 +1438,25 @@ fn run() -> anyhow::Result<()> {
             fix,
             expiry,
             json,
+            strict,
             pq,
             all,
             output,
         } => {
             if let Some(path) = output {
-                commands::doctor::run_doctor_to_file(fix, expiry, json || global_json, &path)
+                commands::doctor::run_doctor_to_file(
+                    fix,
+                    expiry,
+                    json || global_json,
+                    strict,
+                    &path,
+                )
             } else if all {
                 commands::doctor_all::run(json || global_json)
             } else if pq {
                 commands::pq_report::run(json || global_json)
             } else {
-                commands::doctor::run_doctor(fix, expiry, json || global_json)
+                commands::doctor::run_doctor(fix, expiry, json || global_json, strict)
             }
         }
         Commands::Agent { action } => match action {
@@ -1501,10 +1567,16 @@ fn run() -> anyhow::Result<()> {
                 json,
             } => commands::leaks::run_plan(min_confidence, json || global_json),
         },
-        Commands::Why { key } => commands::why::run(&key, global_json),
+        Commands::Why { key, strict } => commands::why::run(&key, global_json, strict),
         Commands::Wrap { only, skip } => commands::wrap::run(&only, &skip, cli.quiet),
         Commands::Unwrap => commands::unwrap::run(cli.quiet),
-        Commands::Copy { name, to, rename } => commands::copy::run(&name, &to, &rename),
+        Commands::Redact { .. } => commands::redact::run(),
+        Commands::Copy {
+            name,
+            to,
+            rename,
+            allow_cross_owner,
+        } => commands::copy::run(&name, &to, &rename, allow_cross_owner),
         Commands::Audit { action } => match action {
             AuditAction::Show {
                 last,
@@ -1846,7 +1918,10 @@ mod help_tests {
                 if let Some(long) = arg.get_long() {
                     argv.push(format!("--{long}"));
                 }
-                argv.push(value);
+                // Required switches such as `redact --stream` have no value.
+                if arg.get_action().takes_values() {
+                    argv.push(value);
+                }
             }
             argv
         }

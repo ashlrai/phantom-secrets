@@ -1,11 +1,13 @@
 name: Nightly full matrix
 
-# Push to main runs Linux only (see ci.yml). This runs the full CI matrix,
-# macOS and Windows included, on main every night. A failure fails this run,
-# which shows in the Actions tab and its run summary.
+# PRs and the merge queue run only fast checks (see ci.yml). This runs the
+# full CI matrix, macOS and Windows included, on main daily at 04:07 ET (08:07 UTC),
+# staggered from the other repos' daily runs so the macOS leg does not queue
+# behind them (RQ-DAILY-15). A failure fails this run, which shows in the
+# Actions tab and its run summary.
 on:
   schedule:
-    - cron: "23 7 * * *"
+    - cron: "7 8 * * *"
   workflow_dispatch:
 
 permissions:
@@ -18,12 +20,17 @@ concurrency:
 jobs:
   ci:
     uses: ./.github/workflows/ci.yml
+    # id-token: write is only for ci.yml's coverage job (Codecov OIDC upload).
+    permissions:
+      contents: read
+      id-token: write
 
   summary:
     name: Nightly summary
     needs: ci
     if: always()
     runs-on: ubuntu-latest
+    timeout-minutes: 2
     steps:
       - name: Report result
         env:

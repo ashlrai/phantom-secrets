@@ -197,6 +197,34 @@ pub struct CloudConfig {
     pub reconciliation_remote_version: Option<u64>,
 }
 
+/// Validate an owner scope label: `personal`, `company`, `company:<name>` or
+/// `client:<name>`, where `<name>` is 1-64 ASCII lowercase letters, digits,
+/// `-` or `_`.
+pub fn validate_owner_label(label: &str) -> Result<()> {
+    let valid_name = |name: &str| {
+        !name.is_empty()
+            && name.len() <= 64
+            && name
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_')
+    };
+    let ok = match label.split_once(':') {
+        None => label == "personal" || label == "company",
+        Some(("company", name)) | Some(("client", name)) => valid_name(name),
+        Some(_) => false,
+    };
+    if ok {
+        Ok(())
+    } else {
+        // Labels come from repository-controlled config and may contain a
+        // pasted credential. Match the value-blind TOML diagnostics above.
+        Err(PhantomError::ConfigParseError(
+            "invalid owner label: expected personal, company, company:<name> or client:<name>"
+                .to_string(),
+        ))
+    }
+}
+
 fn bool_is_false(value: &bool) -> bool {
     !*value
 }
@@ -211,6 +239,15 @@ pub struct PhantomMeta {
     /// Machine-local vault and state namespacing uses
     /// [`PhantomConfig::local_project_id`] instead.
     pub project_id: String,
+    /// Optional owner scope label: `personal`, `company[:<name>]` or
+    /// `client:<name>`. Used to refuse accidental cross-owner secret copies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
+    /// Value-free ownership declaration for this project's secrets. Under an
+    /// active Locus pin, MCP credential/provider calls require an exact match.
+    /// This is a routing restriction, never an approval or credential grant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub locus: Option<crate::locus::LocusBinding>,
     /// Basename of the dotenv file protected by this config. The config is
     /// stored beside the dotenv file, so accepting a path here would let
     /// repository-controlled config redirect security-sensitive rewrites.
@@ -801,6 +838,9 @@ impl PhantomConfig {
         let mut config: Self =
             toml::from_str(content).map_err(|e| value_blind_toml_error(content, &e))?;
         validate_portable_project_id(&config.phantom.project_id)?;
+        if let Some(owner) = config.phantom.owner.as_deref() {
+            validate_owner_label(owner)?;
+        }
 
         // `.phantom.toml` is repository-controlled. Its portable project_id is
         // retained for cloud/team identity, but it must never select
@@ -883,6 +923,8 @@ impl PhantomConfig {
             phantom: PhantomMeta {
                 version: "1".to_string(),
                 project_id: project_id.clone(),
+                owner: None,
+                locus: None,
                 dotenv_path: None,
                 rotation_policy: None,
                 secrets: BTreeMap::new(),
@@ -2475,6 +2517,71 @@ version = 4
         assert_eq!(cloud.reconciliation_remote_version, Some(9));
     }
 
+    #[test]
+    fn owner_labels_accept_known_scopes_only() {
+        for ok in [
+            "personal",
+            "company",
+            "company:ashlr",
+            "client:globex",
+            "client:acme_2",
+        ] {
+            assert!(validate_owner_label(ok).is_ok(), "{ok}");
+        }
+        assert!(validate_owner_label(&format!("client:{}", "a".repeat(64))).is_ok());
+        for bad in [
+            "",
+            "Personal",
+            "client",
+            "client:",
+            "client:Acme",
+            "team:x",
+            "client:a/b",
+            "personal:x",
+            "client:a:b",
+            "client:é",
+            "client:a\n",
+        ] {
+            assert!(validate_owner_label(bad).is_err(), "{bad}");
+        }
+        assert!(validate_owner_label(&format!("client:{}", "a".repeat(65))).is_err());
+    }
+
+    #[test]
+    fn owner_labels_roundtrip_and_legacy_configs_remain_unlabelled() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join(".phantom.toml");
+        let mut config = PhantomConfig::new_with_defaults("abc".to_string());
+        let legacy = toml::to_string_pretty(&config).unwrap();
+        assert!(!legacy.contains("owner"));
+        assert!(PhantomConfig::load_from_bytes(&path, legacy.as_bytes())
+            .unwrap()
+            .phantom
+            .owner
+            .is_none());
+        config.phantom.owner = Some("client:globex".to_string());
+        config.save(&path).unwrap();
+        assert_eq!(
+            PhantomConfig::load(&path).unwrap().phantom.owner.as_deref(),
+            Some("client:globex")
+        );
+    }
+
+    #[test]
+    fn invalid_owner_labels_are_value_blind_on_load() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join(".phantom.toml");
+        let invalid = "synthetic-credential-not-an-owner";
+        let mut config = PhantomConfig::new_with_defaults("abc".to_string());
+        config.phantom.owner = Some(invalid.to_string());
+        let encoded = toml::to_string_pretty(&config).unwrap();
+        let error = PhantomConfig::load_from_bytes(&path, encoded.as_bytes()).unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("invalid owner label"));
+        assert!(!message.contains(invalid));
+        assert!(!format!("{error:?}").contains(invalid));
+    }
+
     #[cfg(unix)]
     #[test]
     fn save_refuses_a_symlinked_config_and_leaves_the_target_untouched() {
@@ -2514,5 +2621,39 @@ version = 4
         assert_ne!(after.ino(), before_inode, "config was rewritten in place");
         assert_eq!(after.permissions().mode() & 0o777, 0o640);
         assert!(PhantomConfig::load(&config_path).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod locus_config_tests {
+    use super::*;
+
+    #[test]
+    fn locus_binding_is_optional_and_round_trips_without_changing_legacy_config() {
+        let mut config = PhantomConfig::new_with_defaults("project-fixture".into());
+        let legacy = toml::to_string(&config).unwrap();
+        assert!(!legacy.contains("locus"));
+        let decoded: PhantomConfig = toml::from_str(&legacy).unwrap();
+        assert!(decoded.phantom.locus.is_none());
+        config.phantom.locus = Some(crate::locus::LocusBinding {
+            binding: "client-a".into(),
+            tenant: "tenant-a".into(),
+        });
+        let encoded = toml::to_string(&config).unwrap();
+        assert!(encoded.contains("[phantom.locus]"));
+        let decoded: PhantomConfig = toml::from_str(&encoded).unwrap();
+        assert_eq!(decoded.phantom.locus, config.phantom.locus);
+    }
+
+    #[test]
+    fn locus_binding_rejects_partial_or_misspelled_ownership() {
+        let legacy =
+            toml::to_string(&PhantomConfig::new_with_defaults("project-fixture".into())).unwrap();
+        for invalid in [
+            "[phantom.locus]\nbinding = 'client-a'\n",
+            "[phantom.locus]\nbinding = 'client-a'\ntenant = 'tenant-a'\ntenent = 'typo'\n",
+        ] {
+            assert!(toml::from_str::<PhantomConfig>(&format!("{legacy}\n{invalid}")).is_err());
+        }
     }
 }

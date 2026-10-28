@@ -185,6 +185,12 @@ pub struct InitFile {
 }
 
 impl InitFile {
+    /// Path this plan would write. The bytes stay private so a preview cannot
+    /// print file contents.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
     pub fn replace(path: impl Into<PathBuf>, content: impl Into<Vec<u8>>) -> Self {
         Self {
             path: path.into(),
@@ -536,6 +542,14 @@ fn commit_init_with_identity(
         }
     }
 
+    // Reject stale reviewed files before opening vault entries. Contending
+    // init writers commonly share one reviewed file state; losers should not
+    // hold the project lock while doing unnecessary vault reads.
+    let mut file_snapshots = Vec::with_capacity(files.len());
+    for file in files.drain(..) {
+        file_snapshots.push(snapshot_file(transaction_lock, file)?);
+    }
+
     let mut secret_snapshots = Vec::with_capacity(secrets.len());
     for secret in secrets.drain(..) {
         let existed = vault
@@ -589,11 +603,6 @@ fn commit_init_with_identity(
             inherited_protection: secret.inherited_protection,
             touched: false,
         });
-    }
-
-    let mut file_snapshots = Vec::with_capacity(files.len());
-    for file in files.drain(..) {
-        file_snapshots.push(snapshot_file(transaction_lock, file)?);
     }
 
     let mut created_directories = BTreeMap::new();
@@ -1396,6 +1405,102 @@ mod tests {
     use phantom_core::error::Result as PhantomResult;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::TempDir;
+
+    #[test]
+    fn stale_reviewed_file_is_rejected_before_vault_decryption() {
+        let dir = TempDir::new().unwrap();
+        let inner = vault(&dir);
+        inner.store("ENTRY", "synthetic-test-value").unwrap();
+        let locked = FileVault::new(
+            &dir.path().canonicalize().unwrap(),
+            "init-test",
+            "different-test-passphrase".into(),
+        )
+        .unwrap();
+        assert!(locked.exists("ENTRY").is_err());
+        let path = dir.path().join("state");
+        std::fs::write(&path, b"concurrent owner").unwrap();
+        let error = commit_init(
+            dir.path(),
+            &locked,
+            vec![InitSecret::replace_if_unchanged(
+                "NEW",
+                None::<String>,
+                "synthetic-test-value",
+            )],
+            vec![InitFile::replace_if_unchanged(
+                &path,
+                Some(b"reviewed".to_vec()),
+                b"replacement".to_vec(),
+            )],
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            InitTransactionError::ConcurrentChange { .. }
+        ));
+        assert!(!inner.exists("NEW").unwrap());
+        assert_eq!(std::fs::read(path).unwrap(), b"concurrent owner");
+    }
+
+    #[test]
+    fn concurrent_exact_init_writers_commit_one_complete_winner() {
+        let dir = TempDir::new().unwrap();
+        let vault = std::sync::Arc::new(vault(&dir));
+        let path = dir.path().join("state");
+        std::fs::write(&path, b"reviewed").unwrap();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(24));
+        let mut workers = Vec::new();
+        for index in 0..24 {
+            let vault = std::sync::Arc::clone(&vault);
+            let barrier = std::sync::Arc::clone(&barrier);
+            let root = dir.path().to_path_buf();
+            let path = path.clone();
+            workers.push(std::thread::spawn(move || {
+                let output = format!("writer-{index}").into_bytes();
+                barrier.wait();
+                let result = commit_init(
+                    &root,
+                    vault.as_ref(),
+                    vec![InitSecret::replace_if_unchanged(
+                        "CONTENDED",
+                        None::<String>,
+                        "synthetic-test-value",
+                    )],
+                    vec![
+                        InitFile::replace_if_unchanged(
+                            &path,
+                            Some(b"reviewed".to_vec()),
+                            output.clone(),
+                        ),
+                        InitFile::replace(root.join("receipt"), output.clone()).commit_last(),
+                    ],
+                );
+                (result, output)
+            }));
+        }
+        // Reap every worker before reporting a failure so no transaction can
+        // outlive the temporary project that owns its payloads.
+        let results: Vec<_> = workers.into_iter().map(|worker| worker.join()).collect();
+        let mut winners = Vec::new();
+        let mut conflicts = 0;
+        for result in results {
+            let (result, output) = result.unwrap();
+            match result {
+                Ok(_) => winners.push(output),
+                Err(InitTransactionError::ConcurrentChange { .. }) => conflicts += 1,
+                Err(error) => panic!("unexpected init failure: {error}"),
+            }
+        }
+        assert_eq!(winners.len(), 1);
+        assert_eq!(conflicts, 23);
+        assert!(vault.exists("CONTENDED").unwrap());
+        assert_eq!(std::fs::read(path).unwrap(), winners[0]);
+        assert_eq!(
+            std::fs::read(dir.path().join("receipt")).unwrap(),
+            winners[0]
+        );
+    }
 
     struct FailingVault {
         inner: FileVault,
