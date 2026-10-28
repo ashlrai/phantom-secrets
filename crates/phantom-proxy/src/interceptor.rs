@@ -1,10 +1,8 @@
 use std::collections::HashMap;
 use zeroize::Zeroize;
 
-use lazy_static::lazy_static;
-use regex::Regex;
-
 use phantom_core::audit::{LeakEvent, LeakLocation, LeakSeverity};
+use phantom_core::redact::response::FORMAT_SPECS;
 
 /// A secret-bearing string whose owned allocation is erased before release.
 /// Deliberately does not implement `Debug` or `Display`.
@@ -32,38 +30,6 @@ impl Drop for SecretValue {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Known secret format patterns (regex pool)
-// Each entry: (pattern_label, Regex)
-// These cover the most common API key formats emitted by SaaS providers.
-// ──────────────────────────────────────────────────────────────────────────────
-
-lazy_static! {
-    static ref SECRET_PATTERNS: Vec<(&'static str, Regex)> = vec![
-        // OpenAI / Anthropic style (sk- prefix)
-        ("sk_*", Regex::new(r"sk-[A-Za-z0-9_\-]{20,}").unwrap()),
-        // Stripe live/test keys
-        ("sk_live_*", Regex::new(r"sk_live_[A-Za-z0-9]{20,}").unwrap()),
-        ("sk_test_*", Regex::new(r"sk_test_[A-Za-z0-9]{20,}").unwrap()),
-        // GitHub personal access tokens (classic ghp_ and fine-grained github_pat_)
-        ("ghp_*", Regex::new(r"ghp_[A-Za-z0-9]{36,}").unwrap()),
-        ("github_pat_*", Regex::new(r"github_pat_[A-Za-z0-9_]{80,}").unwrap()),
-        // AWS access keys
-        ("AKIA*", Regex::new(r"AKIA[0-9A-Z]{16}").unwrap()),
-        // Google API keys
-        ("AIza*", Regex::new(r"AIza[0-9A-Za-z\-_]{35}").unwrap()),
-        // Slack tokens
-        ("xoxb-*", Regex::new(r"xoxb-[0-9A-Za-z\-]{40,}").unwrap()),
-        ("xoxp-*", Regex::new(r"xoxp-[0-9A-Za-z\-]{40,}").unwrap()),
-        // SendGrid
-        ("SG.*", Regex::new(r"SG\.[A-Za-z0-9_\-]{22}\.[A-Za-z0-9_\-]{43}").unwrap()),
-        // Twilio
-        ("AC*", Regex::new(r"AC[0-9a-f]{32}").unwrap()),
-        // Phantom tokens themselves (should never appear in responses after scrubbing)
-        ("phm_*", Regex::new(r"phm_[0-9a-f]{64}").unwrap()),
-    ];
-}
-
-// ──────────────────────────────────────────────────────────────────────────────
 // ResponseLeakAnalyzer
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -72,7 +38,7 @@ lazy_static! {
 /// Two detection modes are applied together:
 /// 1. **Vault-value match**: compares response content against every real secret
 ///    in the active injection map. Any hit is HIGH severity and names the key.
-/// 2. **Format-pattern match**: scans for well-known API key formats (regex pool).
+/// 2. **Format-pattern match**: scans the shared response-credential byte grammars.
 ///    Hits that are NOT in the vault injection map are MEDIUM severity (the
 ///    response may contain credentials that aren't under Phantom management).
 ///
@@ -386,9 +352,10 @@ impl ResponseLeakAnalyzer {
         }
 
         // 2. Format-pattern match (catches secrets not yet in vault injection map).
-        for (label, re) in SECRET_PATTERNS.iter() {
+        for spec in FORMAT_SPECS {
+            let label = spec.label;
             // Count remaining matches (after vault replacements above).
-            let matches: Vec<_> = re.find_iter(&result).collect();
+            let matches = spec.match_ranges(result.as_bytes());
             if matches.is_empty() {
                 continue;
             }
@@ -399,7 +366,7 @@ impl ResponseLeakAnalyzer {
             let is_vault_confirmed = matches.iter().any(|m| {
                 self.vault_values
                     .iter()
-                    .any(|(secret, _)| secret.as_str() == m.as_str())
+                    .any(|(secret, _)| secret.as_str() == &result[m.clone()])
             });
             let severity = if is_vault_confirmed {
                 LeakSeverity::High
@@ -408,12 +375,21 @@ impl ResponseLeakAnalyzer {
             };
             // Replace with [REDACTED:<label>].
             let replacement = format!("[REDACTED:{}]", label);
-            let scrubbed = re.replace_all(&result, replacement.as_str()).into_owned();
+            let mut scrubbed = String::with_capacity(result.len());
+            let mut cursor = 0;
+            for range in matches {
+                // The shared grammar matches ASCII bytes only, so these ranges
+                // always lie on UTF-8 boundaries in this string input.
+                scrubbed.push_str(&result[cursor..range.start]);
+                scrubbed.push_str(&replacement);
+                cursor = range.end;
+            }
+            scrubbed.push_str(&result[cursor..]);
             if scrubbed != result {
                 result.zeroize();
                 result = scrubbed;
                 // Avoid duplicate events if vault-match already fired for this pattern.
-                let already_reported = events.iter().any(|e| e.pattern == *label);
+                let already_reported = events.iter().any(|e| e.pattern == label);
                 if !already_reported {
                     events.push(LeakEvent {
                         ts: now,

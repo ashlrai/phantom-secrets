@@ -129,6 +129,7 @@ impl FileVault {
             return Ok(());
         };
         let legacy_data: VaultData = serde_json::from_slice(legacy.bytes()).map_err(|error| {
+            let error = phantom_core::error::value_blind_json_error(&error);
             PhantomError::VaultError(format!(
                 "Legacy plaintext vault coexists with migration state but is corrupt; refusing to remove or replace either file: {error}"
             ))
@@ -143,6 +144,7 @@ impl FileVault {
                 })?,
             );
             let encrypted_data: VaultData = serde_json::from_slice(&plaintext).map_err(|error| {
+                let error = phantom_core::error::value_blind_json_error(&error);
                 PhantomError::VaultError(format!(
                     "Encrypted vault coexists with a legacy plaintext vault but is corrupt; refusing to remove or replace either file: {error}"
                 ))
@@ -223,8 +225,12 @@ impl FileVault {
         // return from the serde_json error path below.
         let plaintext = zeroize::Zeroizing::new(crypto::decrypt(before.bytes(), &self.passphrase)?);
 
-        let data = serde_json::from_slice::<VaultData>(&plaintext)
-            .map_err(|e| PhantomError::VaultError(format!("Corrupt vault data: {e}")))?;
+        let data = serde_json::from_slice::<VaultData>(&plaintext).map_err(|e| {
+            PhantomError::VaultError(format!(
+                "Corrupt vault data: {}",
+                phantom_core::error::value_blind_json_error(&e)
+            ))
+        })?;
         Ok(LoadedVault {
             data,
             before: Some(before),

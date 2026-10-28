@@ -36,7 +36,7 @@ fn seed(home: &Path, secret: &str, confidence: f64) {
     std::fs::create_dir_all(&dir).unwrap();
     let now = now_unix();
     let line = format!(
-        r#"{{"incident_id":"abc123","secret_name":"{secret}","location_label":"body","first_seen_ts":{},"last_seen_ts":{},"event_count":4,"confidence":{confidence},"remediation":"x"}}"#,
+        r#"{{"incident_id":"abc123","secret_name":"{secret}","location_label":"body","first_seen_ts":{},"last_seen_ts":{},"event_count":4,"confidence":{confidence},"remediation":"rk_live_value_that_must_not_be_printed"}}"#,
         now - 120,
         now - 60
     );
@@ -76,6 +76,8 @@ fn plan_json_is_dry_run_and_writes_nothing() {
     );
     assert_eq!(v["plan"][0]["live_rotation"], "disabled_in_this_build");
     assert_eq!(v["live_revoke_available"], false);
+
+    assert!(!stdout.contains("rk_live_value_that_must_not_be_printed"));
 
     assert_eq!(before, snapshot(tmp.path()), "plan must not write files");
 }

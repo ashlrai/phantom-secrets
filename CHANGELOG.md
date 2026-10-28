@@ -4,6 +4,49 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Added (schema id on doctor, why, check, and agent doctor JSON)
+
+- `phantom doctor --json`, `phantom why --json`, `phantom check --json`, and
+  `phantom agent doctor --json` already printed machine-readable reports.
+  Each report now starts with a `schema` string: `phantom.doctor.v1`,
+  `phantom.why.v1`, `phantom.check.v1`, or `phantom.agent.doctor.v1`.
+  The rest of the JSON is unchanged, and the human output is unchanged.
+  Reports still omit secret values. Names appear only where the human
+  output already prints them. The new `schema` key is additive, so a
+  consumer that requires an exact key set must accept it. Existing exit statuses
+  are preserved without `--strict`. For a missing key, `phantom why` exits 1
+  in the human view; the JSON view exits 0 by default or 2 with `--strict`.
+  The human `phantom agent doctor` view uses the readiness report's exit code,
+  while its JSON view exits 0 by default or 2 for a non-ready verdict with
+  `--strict`.
+
+  `phantom doctor --strict`, `phantom why --strict`, and
+  `phantom agent doctor --json --strict` share one exit table:
+
+  | Code | Meaning |
+  | --- | --- |
+  | 0 | No issues. Doctor found none, why says the key is protected, or the agent doctor verdict is `ready`. |
+  | 1 | Command failure (usage, IO, parse, or another error). This is not an issues-found result. |
+  | 2 | Issues found, only when `--strict` is set. |
+
+  A usage error also exits 2 and prints no report. An issues-found result
+  prints the report, then exits 2. Doctor counts every issue the same.
+  A warning counts. There is no severity weighting. Why exits 2 when the
+  JSON report is not protected (the key is missing or unprotected) and when
+  the human view classifies the key as not protected. A missing key in the
+  human view is still a command error (exit 1)
+  because that path prints no report. Agent doctor maps `degraded`, `blocked`,
+  and `unknown` to exit 2. That replaces the earlier agent doctor mapping of
+  0 ready, 2 degraded, 1 blocked, 3 not evaluated. `--vault` and `--strict`
+  still apply only to `phantom agent doctor --json`. Without `--strict`,
+  doctor and why keep their previous exits, and `phantom agent doctor --json`
+  stays 0. The human `phantom agent doctor` view still uses the readiness
+  report's own exit code.
+
+  For agent doctor JSON, key on `schema` (`phantom.agent.doctor.v1`). The
+  `.vN` suffix changes only when the JSON shape breaks. `schema_version`
+  (currently 1) and `kind` (`phantom.agent.preflight`) stay so older readers
+  keep working.
 ### Fixed (monthly rotation schedules follow calendar months)
 
 - A `monthly` rotation schedule counted 30-day blocks from 1970, so a schedule
@@ -2820,15 +2863,17 @@ remain separate evidence gates.
 
 For older release notes and downloadable artifacts, see [GitHub Releases](https://github.com/ashlrai/phantom-secrets/releases).
 
+<!-- fresh:begin changelog-unreleased-compare -->
 [Unreleased]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.9...HEAD
+<!-- fresh:end -->
 [0.7.9]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.8...v0.7.9
 [0.7.8]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.7...v0.7.8
 [0.7.7]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.6...v0.7.7
 [0.7.6]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.5...v0.7.6
 [0.7.5]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.4...v0.7.5
 [0.7.4]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.3...v0.7.4
-[0.7.3]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.0...v0.7.3
-[0.7.2]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.0...v0.7.2
+[0.7.3]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.2...v0.7.3
+[0.7.2]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/ashlrai/phantom-secrets/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/ashlrai/phantom-secrets/releases/tag/v0.6.0

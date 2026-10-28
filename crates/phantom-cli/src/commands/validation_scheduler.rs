@@ -207,11 +207,7 @@ pub fn run_history(last: Option<usize>, json: bool) -> Result<()> {
     }
 
     println!();
-    println!(
-        "  Showing {} of {} total run(s). Use --last N to see more.",
-        entries.len(),
-        state.history.len()
-    );
+    println!("{}", history_footer(entries.len(), state.history.len()));
 
     Ok(())
 }
@@ -283,9 +279,25 @@ fn format_timestamp(ts: u64) -> String {
     }
 }
 
+/// The line under `validate history`: suggests --last only when runs are
+/// hidden.
+fn history_footer(shown: usize, total: usize) -> String {
+    if shown < total {
+        format!("  Showing {shown} of {total} total run(s). Use --last N to see more.")
+    } else {
+        format!("  Showing all {total} run(s).")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn history_footer_suggests_last_only_when_runs_are_hidden() {
+        assert_eq!(history_footer(3, 3), "  Showing all 3 run(s).");
+        assert!(history_footer(20, 45).contains("Use --last N to see more."));
+    }
 
     #[test]
     fn headless_schedule_consent_denies_without_write_authority() {
