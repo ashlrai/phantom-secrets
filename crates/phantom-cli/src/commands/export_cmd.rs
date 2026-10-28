@@ -421,9 +421,10 @@ fn run_encrypted(plan: &ExportPlan, passphrase: &str) -> Result<()> {
         secrets.0.insert(name.clone(), String::from(value.as_str()));
     }
 
-    let json = Zeroizing::new(
-        serde_json::to_vec(&secrets.0).context("Failed to serialize secrets for backup")?,
-    );
+    // Serialize through a zeroizing writer so no plaintext fragment is left
+    // in a freed superseded buffer; byte-identical to `serde_json::to_vec`.
+    let json = phantom_vault::crypto::to_json_zeroizing(&secrets.0)
+        .context("Failed to serialize secrets for backup")?;
     let encrypted = phantom_vault::crypto::encrypt(&json, passphrase)
         .context("Failed to encrypt backup data")?;
     if encrypted.len() as u64 > MAX_ENCRYPTED_BACKUP_BYTES {

@@ -1818,22 +1818,22 @@ impl PhantomMcpServer {
 
         // Serialize, then zeroize the map on every exit path — including the
         // serialization-error case (otherwise an `Err` early-returns with the
-        // cloned plaintext strings still sitting in the map).
-        let serialize_result = serde_json::to_string(&secrets);
+        // cloned plaintext strings still sitting in the map). The zeroizing
+        // writer leaves no plaintext fragment in a freed superseded buffer.
+        let serialize_result = phantom_vault::crypto::to_json_zeroizing(&secrets);
         for value in secrets.values_mut() {
             zeroize::Zeroize::zeroize(value);
         }
         drop(secrets);
-        let plaintext = zeroize::Zeroizing::new(
-            serialize_result.map_err(|e| internal_err(format!("Failed to serialize: {e}")))?,
-        );
+        let plaintext =
+            serialize_result.map_err(|e| internal_err(format!("Failed to serialize: {e}")))?;
 
         let passphrase = zeroize::Zeroizing::new(
             phantom_core::auth::get_or_create_cloud_passphrase()
                 .map_err(|e| internal_err(format!("Failed to access cloud key: {e}")))?,
         );
 
-        let encrypted = phantom_vault::crypto::encrypt(plaintext.as_bytes(), &passphrase)
+        let encrypted = phantom_vault::crypto::encrypt(&plaintext, &passphrase)
             .map_err(|e| internal_err(format!("Encryption failed: {e}")))?;
 
         let blob_b64 = BASE64.encode(&encrypted);
@@ -1925,10 +1925,9 @@ impl PhantomMcpServer {
             .decode(&pull_data.encrypted_blob)
             .map_err(|e| internal_err(format!("Invalid cloud data: {e}")))?;
 
-        let plaintext = zeroize::Zeroizing::new(
-            phantom_vault::crypto::decrypt(&encrypted, &passphrase)
-                .map_err(|e| internal_err(format!("Decryption failed: {e}")))?,
-        );
+        // `decrypt` returns a Zeroizing buffer, scrubbed on drop.
+        let plaintext = phantom_vault::crypto::decrypt(&encrypted, &passphrase)
+            .map_err(|e| internal_err(format!("Decryption failed: {e}")))?;
 
         let secrets = SensitiveSecretMap::parse_json(&plaintext)
             .map_err(|e| internal_err(format!("Invalid vault data: {e}")))?;

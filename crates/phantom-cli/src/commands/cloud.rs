@@ -117,16 +117,18 @@ fn push_after_consent(
         secrets.insert(name.clone(), String::from(value.as_str()));
     }
 
-    let serialize_result = serde_json::to_string(&secrets);
+    // Serialize through a zeroizing writer so no plaintext fragment is left
+    // in a freed superseded buffer; byte-identical to `serde_json::to_string`.
+    let serialize_result = phantom_vault::crypto::to_json_zeroizing(&secrets);
     for value in secrets.values_mut() {
         value.zeroize();
     }
-    let plaintext = Zeroizing::new(serialize_result.context("Failed to serialize secrets")?);
+    let plaintext = serialize_result.context("Failed to serialize secrets")?;
 
     // Encrypt with cloud passphrase (stored in keychain, never transmitted)
     let passphrase =
         auth::get_or_create_cloud_passphrase().context("Failed to access cloud encryption key")?;
-    let encrypted = phantom_vault::crypto::encrypt(plaintext.as_bytes(), &passphrase)?;
+    let encrypted = phantom_vault::crypto::encrypt(&plaintext, &passphrase)?;
     let blob_b64 = BASE64.encode(&encrypted);
 
     let expected_version = config.cloud.as_ref().map(|c| c.version).unwrap_or(0);
@@ -235,7 +237,8 @@ pub fn run_pull(force: bool) -> Result<()> {
     let encrypted = BASE64
         .decode(&pull_data.encrypted_blob)
         .context("Invalid cloud vault data")?;
-    let plaintext = Zeroizing::new(phantom_vault::crypto::decrypt(&encrypted, &passphrase)?);
+    // `decrypt` returns a Zeroizing buffer, scrubbed on drop.
+    let plaintext = phantom_vault::crypto::decrypt(&encrypted, &passphrase)?;
     let secrets = SensitiveCloudSecrets::parse_json(&plaintext)
         .context("Failed to parse cloud vault data")?;
 

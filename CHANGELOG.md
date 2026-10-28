@@ -4,6 +4,22 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (vault encryption left plaintext and key material in freed memory)
+
+- `crypto::decrypt` returned the decrypted vault JSON as a plain `Vec<u8>`,
+  so any caller that did not wrap it freed the plaintext unscrubbed. It now
+  returns `Zeroizing<Vec<u8>>`. Serializing the vault for encryption used
+  `serde_json::to_string_pretty`, whose buffer grows by reallocation and
+  freed earlier copies of the plaintext prefix unscrubbed; it now goes
+  through a writer that grows by copying into a fresh zeroizing buffer, with
+  byte-identical output. The compact serializers feeding the cloud-push and
+  encrypted-export payloads went through the same zeroizing writer. Argon2
+  derived keys are held in `Zeroizing` buffers
+  (also scrubbed on error paths), Argon2's up-to-64 MiB working memory is
+  supplied as a zeroizing buffer instead of being freed unscrubbed, and the
+  `argon2` `zeroize` feature scrubs its internal hash state. On-disk format,
+  KDF parameters, and the legacy-parameter fallback are unchanged.
+
 ### Fixed (`phantom check --staged` scans dotenv comments and `.phantom.toml`)
 
 - The pre-commit scan classified staged dotenv files only through the
