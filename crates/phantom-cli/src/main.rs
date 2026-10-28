@@ -140,6 +140,11 @@ enum Commands {
         /// Emit one JSON report on stdout instead of the human checklist
         #[arg(long)]
         json: bool,
+        /// Exit 2 when the report has any issue. Warnings count the same as
+        /// failures. Omit it to keep the current exit status. Exit 1 stays a
+        /// command error. Does not apply to --pq or --all.
+        #[arg(long, conflicts_with_all = ["pq", "all"])]
+        strict: bool,
         /// Print a read-only, value-free post-quantum readiness report
         /// (algorithms in use, which are quantum-vulnerable) instead of the
         /// health checks. Combine with --json for machine-readable output.
@@ -350,6 +355,11 @@ enum Commands {
     Why {
         /// Environment variable name to explain
         key: String,
+        /// Exit 2 when the key is not protected. A JSON report for a missing
+        /// key also exits 2. The human view of a missing key is still a
+        /// command error (exit 1). Omit it to keep the current exit status.
+        #[arg(long)]
+        strict: bool,
     },
 
     // ───────────────────────── Sync & teams ──────────────────────────
@@ -895,7 +905,8 @@ enum AgentAction {
         /// With --json: also probe the vault and the cloud login (keychain access)
         #[arg(long)]
         vault: bool,
-        /// With --json: exit 0 ready, 2 degraded, 1 blocked, 3 not evaluated
+        /// With --json: exit 0 when ready, exit 2 when degraded, blocked, or
+        /// unknown. Exit 1 stays a command error. Omit it to keep exit 0.
         #[arg(long)]
         strict: bool,
     },
@@ -1405,18 +1416,25 @@ fn run() -> anyhow::Result<()> {
             fix,
             expiry,
             json,
+            strict,
             pq,
             all,
             output,
         } => {
             if let Some(path) = output {
-                commands::doctor::run_doctor_to_file(fix, expiry, json || global_json, &path)
+                commands::doctor::run_doctor_to_file(
+                    fix,
+                    expiry,
+                    json || global_json,
+                    strict,
+                    &path,
+                )
             } else if all {
                 commands::doctor_all::run(json || global_json)
             } else if pq {
                 commands::pq_report::run(json || global_json)
             } else {
-                commands::doctor::run_doctor(fix, expiry, json || global_json)
+                commands::doctor::run_doctor(fix, expiry, json || global_json, strict)
             }
         }
         Commands::Agent { action } => match action {
@@ -1527,7 +1545,7 @@ fn run() -> anyhow::Result<()> {
                 json,
             } => commands::leaks::run_plan(min_confidence, json || global_json),
         },
-        Commands::Why { key } => commands::why::run(&key, global_json),
+        Commands::Why { key, strict } => commands::why::run(&key, global_json, strict),
         Commands::Wrap { only, skip } => commands::wrap::run(&only, &skip, cli.quiet),
         Commands::Unwrap => commands::unwrap::run(cli.quiet),
         Commands::Copy { name, to, rename } => commands::copy::run(&name, &to, &rename),
