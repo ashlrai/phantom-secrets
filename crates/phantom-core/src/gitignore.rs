@@ -55,10 +55,12 @@ fn covers_root_file(pattern: &str, name: &str) -> bool {
     if pattern.ends_with('/') || pattern.contains(['[', '\\']) {
         return false;
     }
-    // A leading `/` anchors to the root; a leading `**/` matches any depth,
-    // the root included. Either way the rest must name the file itself.
+    // A leading `/` anchors to the root; a leading `**/` (or `/**/`) matches
+    // any depth, the root included. Either way the rest must name the file
+    // itself.
     let pattern = pattern
-        .strip_prefix("**/")
+        .strip_prefix("/**/")
+        .or_else(|| pattern.strip_prefix("**/"))
         .or_else(|| pattern.strip_prefix('/'))
         .unwrap_or(pattern);
     // Any other separator addresses a path below the root.
@@ -106,6 +108,7 @@ mod tests {
             ".env\n",
             "/.env\n",
             "**/.env\n",
+            "/**/.env\n",
             ".env*\n",
             ".e?v\n",
             "node_modules\n.env  \n",

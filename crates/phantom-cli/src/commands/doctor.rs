@@ -406,41 +406,48 @@ fn run_checks(fix: bool, check_expiry: bool) -> Result<(usize, usize)> {
         None => issues += check_managed_dotenv(&project_dir, &env_path),
     }
 
-    // Check 4: .gitignore
+    // Check 4: .gitignore, judged for the managed dotenv's own name.
+    let dotenv_name = env_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(".env");
     let gitignore_path = project_dir.join(".gitignore");
     let gitignore_before = phantom_core::fs::read_regular_file(&gitignore_path)
         .map_err(|error| anyhow::anyhow!("Refusing unsafe .gitignore target: {error}"))?;
     if let Some(bytes) = gitignore_before.as_deref() {
         let content = String::from_utf8(bytes.to_vec())
             .map_err(|_| anyhow::anyhow!("Refusing to rewrite non-UTF-8 .gitignore"))?;
-        let state = phantom_core::gitignore::dotenv_ignore_state(&content, ".env");
+        let state = phantom_core::gitignore::dotenv_ignore_state(&content, dotenv_name);
         if state == phantom_core::gitignore::DotenvIgnore::Ignored {
-            check_pass(".env is in .gitignore");
+            check_pass(&format!("{dotenv_name} is in .gitignore"));
         } else {
             if state == phantom_core::gitignore::DotenvIgnore::Negated {
-                check_warn(
-                    ".env is un-ignored by a later `!` rule in .gitignore — secrets could be committed!",
-                );
+                check_warn(&format!(
+                    "{dotenv_name} is un-ignored by a later `!` rule in .gitignore — secrets could be committed!"
+                ));
             } else {
-                check_warn(".env is NOT in .gitignore — secrets could be committed!");
+                check_warn(&format!(
+                    "{dotenv_name} is NOT in .gitignore — secrets could be committed!"
+                ));
             }
-            // Git applies the last matching rule, so an appended `.env` also
+            // Git applies the last matching rule, so an appended name also
             // overrides an earlier negation.
-            check_fix("Run: echo '.env' >> .gitignore");
+            check_fix(&format!("Run: echo '{dotenv_name}' >> .gitignore"));
             if fix && !mutation_applied {
                 ensure_dotenv_repair_guard(repair_dotenv_guard.as_ref())?;
                 let mut c = content;
                 if !c.ends_with('\n') {
                     c.push('\n');
                 }
-                c.push_str(".env\n");
+                c.push_str(dotenv_name);
+                c.push('\n');
                 write_project_file_exact(
                     &project_dir,
                     &gitignore_path,
                     gitignore_before.as_deref(),
                     c.as_bytes(),
                 )?;
-                check_fixed("Added .env to .gitignore");
+                check_fixed(&format!("Added {dotenv_name} to .gitignore"));
                 fixed += 1;
                 mutation_applied = true;
             } else {
@@ -452,12 +459,14 @@ fn run_checks(fix: bool, check_expiry: bool) -> Result<(usize, usize)> {
         check_fix("Run: phantom doctor --fix (creates .gitignore with .env patterns)");
         if fix && !mutation_applied {
             ensure_dotenv_repair_guard(repair_dotenv_guard.as_ref())?;
-            write_project_file_exact(
-                &project_dir,
-                &gitignore_path,
-                None,
-                b".env\n.env.local\n.env.*.local\n.env.backup\n",
-            )?;
+            let mut body = String::from(".env\n.env.local\n.env.*.local\n.env.backup\n");
+            if phantom_core::gitignore::dotenv_ignore_state(&body, dotenv_name)
+                != phantom_core::gitignore::DotenvIgnore::Ignored
+            {
+                body.push_str(dotenv_name);
+                body.push('\n');
+            }
+            write_project_file_exact(&project_dir, &gitignore_path, None, body.as_bytes())?;
             check_fixed("Created .gitignore with .env patterns");
             fixed += 1;
             mutation_applied = true;
@@ -1600,6 +1609,55 @@ mod tests {
                 body
             );
         }
+    }
+
+    /// Doctor judged `.gitignore` for a literal `.env` even when
+    /// `.phantom.toml` manages another file: an unignored `.env.production`
+    /// passed because `.env` was listed, and `--fix` appended `.env`.
+    #[test]
+    fn gitignore_check_uses_the_managed_dotenv_name() {
+        let project = tempfile::tempdir().unwrap();
+        let dir = project.path().canonicalize().unwrap();
+        let mut config =
+            phantom_core::config::PhantomConfig::new_with_defaults("doctor-name".to_string());
+        config.phantom.dotenv_path = Some(".env.production".to_string());
+        config.save(&dir.join(".phantom.toml")).unwrap();
+        std::fs::write(dir.join(".env.production"), b"PORT=3000\n").unwrap();
+        std::fs::write(dir.join(".gitignore"), b".env\n").unwrap();
+        let _seam = crate::util::test_seam::TestProject::install(
+            dir.clone(),
+            crate::util::test_seam::empty_keychain,
+        );
+
+        for fix in [false, true] {
+            super::REPORT.with(|report| {
+                *report.borrow_mut() = Some(phantom_core::report::DoctorReport::default())
+            });
+            let outcome = super::run_checks(fix, false);
+            let report = super::REPORT
+                .with(|report| report.borrow_mut().take())
+                .unwrap();
+            outcome.expect("doctor must report, not abort");
+            let line = report
+                .checks
+                .iter()
+                .find(|check| check.message.contains(".gitignore"))
+                .expect("a .gitignore finding");
+            assert!(
+                line.message
+                    .starts_with(".env.production is NOT in .gitignore"),
+                "{}",
+                line.message
+            );
+            assert_eq!(
+                line.fixed.as_deref(),
+                fix.then_some("Added .env.production to .gitignore")
+            );
+        }
+        assert_eq!(
+            std::fs::read_to_string(dir.join(".gitignore")).unwrap(),
+            ".env\n.env.production\n"
+        );
     }
 
     /// The `.env.example` repair derives from the bytes the guard read, not a
