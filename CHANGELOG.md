@@ -4,16 +4,6 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
-### Fixed (`phantom expiry enforce` text output names every failure)
-
-- With `--fail-closed`, the text output said only how many secrets had no
-  expiry policy and never named them. When expired secrets were also present
-  it dropped that failure entirely, so the exit status was 1 for reasons the
-  output did not show. It now lists each no-policy secret with a hint to run
-  `phantom expiry set`, alongside the expired ones.
-- A secret that expired under a day ago read "0 day(s) overdue"; it now
-  reads "expired less than a day ago".
-
 ### Fixed (monthly rotation schedules follow calendar months)
 
 - A `monthly` rotation schedule counted 30-day blocks from 1970, so a schedule
