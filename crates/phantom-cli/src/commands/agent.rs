@@ -432,7 +432,12 @@ fn ensure_gitignore(project_dir: &std::path::Path) -> Result<bool> {
         }
         None => String::new(),
     };
-    if content.lines().any(|line| line.trim() == ".env") {
+    // A literal `.env` line means these patterns were written before; skip
+    // only while no later `!` rule has un-ignored it.
+    if content.lines().any(|line| line.trim() == ".env")
+        && phantom_core::gitignore::dotenv_ignore_state(&content, ".env")
+            == phantom_core::gitignore::DotenvIgnore::Ignored
+    {
         return Ok(false);
     }
     if !content.is_empty() && !content.ends_with('\n') {
@@ -626,6 +631,39 @@ mod tests {
             assert!(
                 !project.path().join(path).exists(),
                 "unexpected mutation: {path}"
+            );
+        }
+    }
+
+    /// Agent setup skips its env patterns only when a literal `.env` line is
+    /// present and still in force: a later `!.env` no longer counts, and
+    /// `/.env` alone still gets `.env.local` and the other patterns.
+    #[test]
+    fn gitignore_setup_skips_only_a_literal_dotenv_still_in_force() {
+        for (body, changed) in [
+            (".env\n", false),
+            (".env\n!.env\n", true),
+            ("/.env\n", true),
+        ] {
+            let project = tempfile::tempdir().unwrap();
+            std::fs::write(project.path().join(".env"), b"APP_NAME=demo\n").unwrap();
+            std::fs::write(project.path().join(".gitignore"), body).unwrap();
+
+            assert_eq!(
+                super::ensure_gitignore(project.path()).unwrap(),
+                changed,
+                "{body:?}"
+            );
+            let after = std::fs::read_to_string(project.path().join(".gitignore")).unwrap();
+            assert_eq!(
+                phantom_core::gitignore::dotenv_ignore_state(&after, ".env"),
+                phantom_core::gitignore::DotenvIgnore::Ignored,
+                "{body:?} -> {after:?}"
+            );
+            assert_eq!(
+                after.contains(".env.local"),
+                changed,
+                "{body:?} -> {after:?}"
             );
         }
     }
@@ -838,13 +876,14 @@ fn build_preflight(report: &AgentReadinessReport, vault_probed: bool) -> Preflig
     }
 }
 
-/// Exit code for `--strict`: 0 ready, 2 degraded, 1 blocked, 3 not evaluated.
+/// `--strict` uses the shared table in
+/// [`crate::commands::report_json::STRICT_ISSUES_FOUND`]: 0 when the verdict
+/// is `ready`, otherwise exit 2 (`degraded`, `blocked`, or `unknown`).
+/// Exit 1 stays a command error.
 fn strict_exit_code(verdict: &str) -> i32 {
     match verdict {
         "ready" => 0,
-        "degraded" => 2,
-        "blocked" => 1,
-        _ => 3,
+        _ => crate::commands::report_json::STRICT_ISSUES_FOUND,
     }
 }
 
@@ -882,7 +921,14 @@ fn doctor_preflight(vault: bool, strict: bool) -> Result<()> {
             },
         },
     };
-    println!("{}", serde_json::to_string_pretty(&preflight)?);
+    let pretty = serde_json::to_string_pretty(&preflight)?;
+    println!(
+        "{}",
+        crate::commands::report_json::with_schema_pretty(
+            pretty,
+            crate::commands::report_json::AGENT_DOCTOR_SCHEMA
+        )?
+    );
     if strict {
         let code = strict_exit_code(preflight.verdict);
         if code != 0 {

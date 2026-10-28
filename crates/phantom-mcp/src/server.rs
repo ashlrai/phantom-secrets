@@ -2365,10 +2365,17 @@ impl PhantomMcpServer {
                 .and_then(|path| path.file_name())
                 .and_then(|name| name.to_str())
                 .unwrap_or(".env");
-            if content.lines().any(|l| l.trim() == managed_name) {
+            let state = phantom_core::gitignore::dotenv_ignore_state(&content, managed_name);
+            if state == phantom_core::gitignore::DotenvIgnore::Ignored {
                 log.pass(format!("{managed_name} is in .gitignore"));
             } else {
-                log.warn(".env is NOT in .gitignore — secrets could be committed!");
+                if state == phantom_core::gitignore::DotenvIgnore::Negated {
+                    log.warn(format!(
+                        "{managed_name} is un-ignored by a later `!` rule in .gitignore — secrets could be committed!"
+                    ));
+                } else {
+                    log.warn(".env is NOT in .gitignore — secrets could be committed!");
+                }
                 if params.fix {
                     let mut c = content;
                     if !c.ends_with('\n') {
@@ -12037,6 +12044,32 @@ mod tests {
         let example = find_check(&checks, "No .env.example");
         assert_eq!(example["fixed"], "Generated .env.example");
         assert!(structured_report(&result)["fixed"].as_u64().unwrap() >= 2);
+    }
+
+    /// The `.gitignore` check followed one literal line: `/.env` drew a
+    /// warning, and a later `!.env` (which Git honours) passed.
+    #[test]
+    fn doctor_gitignore_check_follows_git_rules() {
+        let _environment = TestEnvironment::new();
+        for (body, status, message) in [
+            ("/.env\n", "pass", ".env is in .gitignore"),
+            (".env\n!.env\n", "warn", ".env is un-ignored"),
+        ] {
+            let dir = TempDir::new().unwrap();
+            std::fs::write(dir.path().join(".env"), "PORT=3000\n").unwrap();
+            std::fs::write(dir.path().join(".gitignore"), body).unwrap();
+            let server = PhantomMcpServer::with_dir(dir.path().to_path_buf());
+            let result = server
+                .phantom_doctor(Parameters(DoctorParams {
+                    fix: false,
+                    confirm: false,
+                    approval_token: None,
+                }))
+                .unwrap();
+            let checks = doctor_checks(&result);
+            let check = find_check(&checks, message);
+            assert_eq!(check["status"], status, "{body:?}: {check}");
+        }
     }
 
     #[test]

@@ -14,11 +14,8 @@ use tempfile::TempDir;
 const VAULT_PASS: &str = "placeholder-headless-output-passphrase";
 
 fn phantom(dir: &TempDir) -> Command {
-    let mut cmd = Command::cargo_bin("phantom").expect("binary not found");
-    cmd.current_dir(dir.path())
-        .env("PHANTOM_VAULT_PASSPHRASE", VAULT_PASS)
-        .env("HOME", dir.path())
-        .env("NO_COLOR", "1")
+    let mut cmd = common::phantom(dir, VAULT_PASS);
+    cmd.env("NO_COLOR", "1")
         .env_remove("PHANTOM_AUDIT")
         .env_remove("RUST_BACKTRACE")
         .env_remove("RUST_LIB_BACKTRACE");
@@ -31,10 +28,7 @@ fn init_project(dir: &TempDir) {
         "OPENAI_API_KEY=placeholder-value-for-tests\nNODE_ENV=development\n",
     )
     .expect("write seed .env");
-    phantom(dir)
-        .args(["init", "--from", ".env"])
-        .assert()
-        .success();
+    common::init_project(dir, VAULT_PASS);
 }
 
 #[test]
