@@ -16,6 +16,9 @@ pub struct FileVault {
     vault_path: PathBuf,
     /// Scrubbed when the backend drops; it unlocks every secret in the vault.
     passphrase: zeroize::Zeroizing<String>,
+    /// Reuse only the derived key, never decrypted values or lifecycle state.
+    /// Accessed after the filesystem locks; dropped and scrubbed with the vault.
+    decryption_cache: std::sync::Mutex<crypto::DecryptionCache>,
 }
 
 struct VaultNames {
@@ -110,6 +113,7 @@ impl FileVault {
             vault_path: canonical_base.join("vaults").join(&names.encrypted),
             names,
             passphrase: zeroize::Zeroizing::new(passphrase),
+            decryption_cache: std::sync::Mutex::new(crypto::DecryptionCache::default()),
         };
 
         // Auto-migrate from the old unencrypted .json format while both the
@@ -136,7 +140,7 @@ impl FileVault {
 
         if let Some(encrypted) = encrypted_before {
             let plaintext = zeroize::Zeroizing::new(
-                crypto::decrypt(encrypted.bytes(), &self.passphrase).map_err(|error| {
+                self.decrypt(encrypted.bytes()).map_err(|error| {
                     PhantomError::VaultError(format!(
                         "Encrypted vault coexists with a legacy plaintext vault but cannot be verified; refusing to remove or replace either file: {error}"
                     ))
@@ -221,7 +225,7 @@ impl FileVault {
         // Wrap the decrypted JSON in Zeroizing so the heap buffer is overwritten
         // with zeros when it drops — whether that's on success or on an early
         // return from the serde_json error path below.
-        let plaintext = zeroize::Zeroizing::new(crypto::decrypt(before.bytes(), &self.passphrase)?);
+        let plaintext = zeroize::Zeroizing::new(self.decrypt(before.bytes())?);
 
         let data = serde_json::from_slice::<VaultData>(&plaintext)
             .map_err(|e| PhantomError::VaultError(format!("Corrupt vault data: {e}")))?;
@@ -229,6 +233,13 @@ impl FileVault {
             data,
             before: Some(before),
         })
+    }
+
+    fn decrypt(&self, encrypted: &[u8]) -> Result<Vec<u8>> {
+        self.decryption_cache
+            .lock()
+            .map_err(|_| PhantomError::VaultError("Vault unlock cache lock poisoned".into()))?
+            .decrypt(encrypted, &self.passphrase)
     }
 
     /// Lock a stable base child first, then pin the current `vaults` directory
@@ -609,6 +620,77 @@ mod tests {
         )
         .unwrap();
         (vault, dir)
+    }
+
+    #[test]
+    fn warm_unlock_observes_external_value_lifecycle_and_deletion() {
+        let (vault, dir) = test_vault();
+        vault.store("API_KEY", "synthetic-first").unwrap();
+        // Populate this instance's unlock cache before another instance writes.
+        assert!(vault.retrieve_for_injection("API_KEY").is_ok());
+        let writer = FileVault::new(
+            &canonical_temp_root(&dir),
+            "test-project",
+            "test-passphrase".into(),
+        )
+        .unwrap();
+        writer.store("API_KEY", "synthetic-replacement").unwrap();
+        assert!(
+            vault.retrieve_for_injection("API_KEY").unwrap().as_str() == "synthetic-replacement"
+        );
+
+        let mut metadata = writer.get_metadata("API_KEY").unwrap().unwrap();
+        metadata.vault_mode = crate::metadata::VaultMode::ReadOnly;
+        writer.set_metadata("API_KEY", metadata).unwrap();
+        assert!(vault.retrieve_for_injection("API_KEY").is_err());
+        assert!(vault
+            .get_metadata("API_KEY")
+            .unwrap()
+            .unwrap()
+            .vault_mode
+            .is_read_only());
+
+        writer.delete("API_KEY").unwrap();
+        assert!(vault.list().unwrap().is_empty());
+        assert!(vault.retrieve_for_injection("API_KEY").is_err());
+    }
+
+    #[test]
+    fn warm_unlock_authenticates_current_ciphertext_and_passphrase() {
+        let (vault, dir) = test_vault();
+        vault.store("API_KEY", "synthetic-value").unwrap();
+        assert!(vault.retrieve_for_injection("API_KEY").is_ok());
+        let before = std::fs::read(&vault.vault_path).unwrap();
+        let mut corrupted = before.clone();
+        *corrupted.last_mut().unwrap() ^= 1;
+        std::fs::write(&vault.vault_path, corrupted).unwrap();
+        assert!(vault.list().is_err());
+        assert!(vault.retrieve_for_injection("API_KEY").is_err());
+
+        std::fs::write(&vault.vault_path, before).unwrap();
+        assert!(vault.retrieve_for_injection("API_KEY").is_ok());
+        let wrong_passphrase = FileVault::new(
+            &canonical_temp_root(&dir),
+            "test-project",
+            "synthetic-wrong-passphrase".into(),
+        )
+        .unwrap();
+        assert!(wrong_passphrase.list().is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn warm_unlock_still_refuses_symlinked_ciphertext() {
+        use std::os::unix::fs::symlink;
+
+        let (vault, _dir) = test_vault();
+        vault.store("API_KEY", "synthetic-value").unwrap();
+        assert!(vault.list().is_ok());
+        let moved = vault.vault_path.with_extension("moved");
+        std::fs::rename(&vault.vault_path, &moved).unwrap();
+        symlink(&moved, &vault.vault_path).unwrap();
+        assert!(vault.list().is_err());
+        assert!(vault.retrieve_for_injection("API_KEY").is_err());
     }
 
     #[test]

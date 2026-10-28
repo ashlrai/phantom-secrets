@@ -44,7 +44,11 @@ pub fn run(
         anyhow::bail!("No command specified. Usage: phantom exec -- <command>");
     }
 
-    let rt = tokio::runtime::Runtime::new()?;
+    // Proxy I/O, child waiting and signal forwarding are async. Avoid starting
+    // and joining one worker per CPU for every short-lived exec invocation.
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
     rt.block_on(run_async(cmd, env, bind_source, quiet))
 }
 
@@ -872,6 +876,10 @@ impl SignalForwarder {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "exec_perf.rs"]
+mod perf_tests;
 
 #[cfg(test)]
 mod tests {
