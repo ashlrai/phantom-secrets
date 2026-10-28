@@ -706,12 +706,12 @@ impl Default for CliProviderStages {
 fn cli_provider_partial_error(
     name: &str,
     stage: &str,
-    error: impl std::fmt::Display,
+    _error: impl std::fmt::Display,
     stages: &CliProviderStages,
 ) -> anyhow::Error {
     let receipt = serde_json::to_string(stages).unwrap_or_else(|_| "receipt_unavailable".into());
     anyhow::anyhow!(
-        "Provider rotation for '{name}' partially succeeded: {stage} failed. stage_receipt: {receipt}. Local and provider state may now differ. Do not retry automatically; reconcile provider, vault, token, metadata, and cleanup state first. Cause: {error}"
+        "Provider rotation for '{name}' partially succeeded: {stage} failed. stage_receipt: {receipt}. Local and provider state may now differ. Do not retry automatically; reconcile provider, vault, token, metadata, and cleanup state first. Backend diagnostic withheld because it may contain credential material."
     )
 }
 
@@ -2110,5 +2110,30 @@ mod token_remap_tests {
         assert!(error.starts_with("Vault locked:"));
         assert!(error.contains("PHANTOM_VAULT_PASSPHRASE"));
         assert_eq!(std::fs::read(project.dir.join(".env")).unwrap(), before);
+    }
+}
+
+#[cfg(test)]
+mod error_redaction_tests {
+    #[test]
+    fn partial_rotation_does_not_format_backend_payload() {
+        use rand::RngCore;
+        let mut bytes = [0; 24];
+        rand::thread_rng().fill_bytes(&mut bytes);
+        let canary = hex::encode(bytes);
+        let error = super::cli_provider_partial_error(
+            "KEY",
+            "vault commit",
+            anyhow::anyhow!(canary.clone()),
+            &super::CliProviderStages::default(),
+        );
+        for rendered in [
+            format!("{error}"),
+            format!("{error:#}"),
+            format!("{error:?}"),
+        ] {
+            assert!(!rendered.contains(&canary), "backend payload was disclosed");
+            assert!(rendered.contains("Do not retry automatically"));
+        }
     }
 }

@@ -140,8 +140,11 @@ impl Drop for ParsedImportedSecret {
 struct ImportedSecrets(BTreeMap<String, Zeroizing<String>>);
 
 impl ImportedSecrets {
-    fn parse(bytes: &[u8]) -> serde_json::Result<Self> {
-        let parsed: BTreeMap<String, ParsedImportedSecret> = serde_json::from_slice(bytes)?;
+    fn parse(bytes: &[u8]) -> Result<Self> {
+        let parsed: BTreeMap<String, ParsedImportedSecret> = serde_json::from_slice(bytes)
+            .map_err(|error| {
+                anyhow::anyhow!(phantom_core::error::value_blind_json_error(&error))
+            })?;
         Ok(Self(
             parsed
                 .into_iter()
@@ -1079,6 +1082,28 @@ mod locked_vault_tests {
                     || error.starts_with("Refusing to import secrets from a partial inventory"),
             );
             assert!(error.contains("PHANTOM_VAULT_PASSPHRASE"));
+        }
+    }
+}
+
+#[cfg(test)]
+mod error_redaction_tests {
+    #[test]
+    fn encrypted_restore_type_error_does_not_retain_decrypted_value() {
+        use rand::RngCore;
+        let mut bytes = [0; 24];
+        rand::thread_rng().fill_bytes(&mut bytes);
+        let canary = hex::encode(bytes);
+        let plaintext = format!("\"{canary}\"");
+        let error = super::ImportedSecrets::parse(plaintext.as_bytes())
+            .err()
+            .unwrap();
+        for rendered in [
+            format!("{error}"),
+            format!("{error:#}"),
+            format!("{error:?}"),
+        ] {
+            assert!(!rendered.contains(&canary), "decrypted value was disclosed");
         }
     }
 }
