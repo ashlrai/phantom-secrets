@@ -30,6 +30,7 @@ pub mod pq_report;
 pub(crate) mod proxy_lifecycle;
 pub mod pull;
 pub mod remove;
+pub(crate) mod report_json;
 pub mod reveal;
 pub mod rotate;
 pub(crate) mod rotation_gate;
@@ -52,3 +53,8 @@ pub mod watch;
 pub mod why;
 pub mod workspace;
 pub mod wrap;
+
+// Load the golden corpus once for both CLI consumer test modules.
+#[cfg(test)]
+#[path = "../../../phantom-core/tests/support/redact_corpus.rs"]
+mod redact_corpus;

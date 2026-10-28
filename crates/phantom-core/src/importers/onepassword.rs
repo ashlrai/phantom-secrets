@@ -47,9 +47,10 @@ impl Importer for OnePasswordImporter {
         let input = utf8_export_body("1Password", input)?;
         let obj = parse_json_object_entries(input).map_err(|e| {
             anyhow::anyhow!(
-                "1Password JSON parse error: {e}\n\
+                "1Password JSON parse error: {}\n\
                 Expected a flat JSON object: {{\"KEY\": \"value\", ...}}\n\
-                See `phantom import --from 1password --help` for the expected format."
+                See `phantom import --from 1password --help` for the expected format.",
+                crate::error::value_blind_json_error(&e)
             )
         })?;
         if obj
