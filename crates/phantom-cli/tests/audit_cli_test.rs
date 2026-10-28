@@ -422,3 +422,99 @@ fn show_output_writes_the_full_report_to_a_new_file_and_prints_a_summary() {
     assert!(!again.status.success());
     assert_eq!(std::fs::read(&dest).unwrap(), plain.stdout);
 }
+
+#[test]
+fn default_json_query_and_since_are_machine_readable() {
+    let tmp = common::canonical_tempdir();
+    write_signed_events(tmp.path());
+    let out = Command::cargo_bin("phantom")
+        .unwrap()
+        .current_dir(tmp.path())
+        .env("HOME", tmp.path())
+        .args(["audit", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let text = String::from_utf8(out.stdout).unwrap();
+    let rows: Vec<serde_json::Value> = text
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(rows.len(), 2);
+    assert!(rows
+        .iter()
+        .all(|v| v["actor"] == "phantom" && v["outcome"] == "success"));
+    let ts = rows[0]["ts"].as_u64().unwrap().to_string();
+    let inclusive = Command::cargo_bin("phantom")
+        .unwrap()
+        .current_dir(tmp.path())
+        .env("HOME", tmp.path())
+        .args(["audit", "--json", "--since", &ts])
+        .output()
+        .unwrap();
+    assert!(inclusive.status.success());
+    assert!(inclusive.stdout == text.as_bytes());
+    let future = Command::cargo_bin("phantom")
+        .unwrap()
+        .current_dir(tmp.path())
+        .env("HOME", tmp.path())
+        .args(["audit", "--json", "--since", "18446744073709551615"])
+        .output()
+        .unwrap();
+    assert!(future.status.success());
+    assert!(future.stdout.is_empty());
+    Command::cargo_bin("phantom")
+        .unwrap()
+        .env("HOME", tmp.path())
+        .args(["audit", "--json", "--since", "invalid"])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn unknown_engine_exec_is_refused_before_project_or_child_access() {
+    let tmp = common::canonical_tempdir();
+    let out = Command::cargo_bin("phantom")
+        .unwrap()
+        .current_dir(tmp.path())
+        .env("HOME", tmp.path())
+        .env("PHANTOM_ENGINE_ID", "synthetic-unknown-engine")
+        .args(["exec", "--", "must-never-run"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(!String::from_utf8_lossy(&out.stderr).contains("synthetic-unknown-engine"));
+    let text = std::fs::read_to_string(tmp.path().join(".phantom/audit.log")).unwrap();
+    assert!(!text.contains("synthetic-unknown-engine"));
+    let rows: Vec<serde_json::Value> = text
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(
+        rows.iter()
+            .filter(|v| v["op"] == "engine.refused" && v["outcome"] == "refused")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn unknown_engine_mcp_is_refused_before_server_initialization() {
+    let tmp = common::canonical_tempdir();
+    let out = Command::cargo_bin("phantom")
+        .unwrap()
+        .current_dir(tmp.path())
+        .env("HOME", tmp.path())
+        .env("PHANTOM_ENGINE_ID", "synthetic-unknown-engine")
+        .args(["mcp", "serve"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(!String::from_utf8_lossy(&out.stderr).contains("synthetic-unknown-engine"));
+    let text = std::fs::read_to_string(tmp.path().join(".phantom/audit.log")).unwrap();
+    assert!(!text.contains("synthetic-unknown-engine"));
+    assert!(text
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .any(|event| event["op"] == "engine.refused" && event["outcome"] == "refused"));
+}

@@ -40,12 +40,44 @@ pub fn run(
     bind_source: Option<&std::path::Path>,
     quiet: bool,
 ) -> Result<()> {
+    phantom_core::audit::enable_agent_audit(phantom_core::audit::AgentSource::Exec);
+    phantom_core::audit::admit_engine()?;
     if cmd.is_empty() {
         anyhow::bail!("No command specified. Usage: phantom exec -- <command>");
     }
 
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(run_async(cmd, env, bind_source, quiet))
+}
+
+fn configure_child_audit(command: &mut tokio::process::Command, engine: &str) {
+    command
+        .env("PHANTOM_AUDIT", "required")
+        .env("PHANTOM_ENGINE_ID", engine);
+}
+
+#[cfg(test)]
+mod child_audit_tests {
+    #[test]
+    fn child_inherits_required_audit_and_engine_after_other_overrides() {
+        for engine in ["exec", "codex"] {
+            let mut command = tokio::process::Command::new("unused-test-program");
+            command
+                .env("PHANTOM_AUDIT", "0")
+                .env("PHANTOM_ENGINE_ID", "ignored-override");
+            super::configure_child_audit(&mut command, engine);
+            let setting = |name: &str| {
+                command
+                    .as_std()
+                    .get_envs()
+                    .find(|(key, _)| *key == name)
+                    .and_then(|(_, value)| value)
+                    .and_then(|value| value.to_str())
+            };
+            assert!(setting("PHANTOM_AUDIT") == Some("required"));
+            assert!(setting("PHANTOM_ENGINE_ID") == Some(engine));
+        }
+    }
 }
 
 /// Actionable, value-free next steps for the connection-string denial.
@@ -411,6 +443,15 @@ async fn run_async(
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
+    // Agent-launched Phantom subprocesses inherit required auditing even
+    // when the operator did not supply a specific engine label. Admission at
+    // run entry has already validated any explicit identifier.
+    configure_child_audit(
+        &mut command,
+        std::env::var("PHANTOM_ENGINE_ID")
+            .as_deref()
+            .unwrap_or("exec"),
+    );
     // Take over termination signals before the child exists, so a SIGTERM
     // or SIGINT aimed at phantom can no longer kill it and orphan the child
     // (which would keep running against a proxy that is gone). The handlers
