@@ -3,22 +3,27 @@
 
 import argparse
 import json
+import re
 from pathlib import Path
 import subprocess
 import sys
 
 
-GLOBAL_FILES = {
-    "Cargo.toml", "Cargo.lock", "rust-toolchain", "rust-toolchain.toml",
-    "deny.toml", "clippy.toml", ".clippy.toml", "rustfmt.toml", ".rustfmt.toml",
-    "Makefile", "scripts/affected-tests",
-}
+def is_docs(filename):
+    """Only documentation known not to be a Cargo input can skip tests."""
+    return bool(re.fullmatch(r"(?:[^/]+\.md|LICENSE(?:\.[^/]+)?|NOTICE)", filename)
+                or re.fullmatch(r"docs/.*\.(?:md|rst|txt)", filename))
+
+
+def is_global(filename):
+    return (bool(re.search(r"(?:^|/)(?:Cargo\.lock|Cargo\.toml|rust-toolchain(?:\.toml)?)$", filename))
+            or bool(re.search(r"\.(?:toml|json|ya?ml)$", filename))
+            or filename.startswith((".cargo/", ".github/", ".config/")))
 
 
 def select_packages(files, metadata):
     """Return sorted reverse dependency closure, or None for the whole workspace."""
-    if any(f in GLOBAL_FILES or f.startswith((".cargo/", ".github/", ".config/"))
-           or (f.endswith(".rs") and not f.startswith("crates/")) for f in files):
+    if any(is_global(f) for f in files):
         return None
     root = Path(metadata["workspace_root"])
     members = set(metadata["workspace_members"])
@@ -29,15 +34,15 @@ def select_packages(files, metadata):
     }
     hit = set()
     for filename in files:
-        if filename.endswith(".md") or filename.startswith("docs/"):
+        if is_docs(filename):
             continue
         owners = [ident for ident, directory in directories.items()
                   if directory == "." or filename == directory
                   or filename.startswith(directory + "/")]
         if owners:
             hit.add(max(owners, key=lambda ident: len(directories[ident])))
-        elif filename.startswith("crates/"):
-            return None  # A deleted/unknown crate cannot be safely narrowed.
+        else:
+            return None  # Unknown shared inputs and deleted crates require the full suite.
     reverse = {}
     for node in metadata["resolve"]["nodes"]:
         for dependency in node["deps"]:
@@ -66,7 +71,9 @@ def main():
     except (OSError, UnicodeError, subprocess.CalledProcessError):
         parser.exit(1, "Unable to read changed paths from git.\n")
     selected = []
-    if files:
+    if any(is_global(f) for f in files):
+        selected = None
+    elif files and not all(is_docs(f) for f in files):
         try:
             result = subprocess.check_output(
                 ["cargo", "metadata", "--format-version", "1", "--locked", "--all-features"],
