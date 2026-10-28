@@ -4,6 +4,7 @@ const path = require('node:path');
 const test = require('node:test');
 const { pathToFileURL } = require('node:url');
 const ts = require('typescript');
+const markdownLoader = require('../scripts/public-doc-markdown-loader.cjs');
 const root = path.resolve(__dirname, '..');
 const repository = path.resolve(root, '..', '..');
 const read = (file) => fs.readFileSync(path.join(root, file), 'utf8');
@@ -17,6 +18,11 @@ function loadTs(file, overrides = {}) {
     if (id === 'server-only') return {};
     if (Object.hasOwn(overrides, id)) return overrides[id];
     if (id === '../../docs-catalog.json') return catalog;
+    if (id.endsWith('.md')) {
+      const resourcePath = path.resolve(root, path.dirname(file), id);
+      const javascript = markdownLoader.call({ resourcePath, addDependency() {} }, fs.readFileSync(resourcePath));
+      return JSON.parse(javascript.slice('export default '.length, -1));
+    }
     return require(id);
   }, exports, path.dirname(path.join(root, file)));
   return exports;

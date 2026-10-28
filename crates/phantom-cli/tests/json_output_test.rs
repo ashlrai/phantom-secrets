@@ -89,6 +89,7 @@ fn why_json_reports_classification_without_values() {
         .unwrap()
         .contains("phantom init"));
     assert!(!String::from_utf8_lossy(&output.stdout).contains(secret_value));
+    assert!(!String::from_utf8_lossy(&output.stderr).contains(secret_value));
 
     let not_secret = stdout_json(&phantom(
         project.path(),
