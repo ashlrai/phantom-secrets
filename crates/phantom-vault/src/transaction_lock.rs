@@ -612,8 +612,18 @@ mod tests {
         };
         let root = PathBuf::from(root);
         let paths = lock_paths_at(&root.join("project"), &root.join("locks")).unwrap();
-        let _held = acquire_project_transaction_lock_at(paths).unwrap();
-        std::fs::write(root.join("ready"), b"ready").unwrap();
+        let held = acquire_project_transaction_lock_at(paths).unwrap();
+        // Windows locks deny reads; report identities from the retained handles.
+        std::fs::write(
+            root.join("ready.tmp"),
+            format!(
+                "{:?}\n{:?}",
+                held._stable.identity(),
+                held._legacy.identity()
+            ),
+        )
+        .unwrap();
+        std::fs::rename(root.join("ready.tmp"), root.join("ready")).unwrap();
         loop {
             std::thread::park();
         }
@@ -656,20 +666,7 @@ mod tests {
         }
         let paths =
             lock_paths_at(&root.path().join("project"), &root.path().join("locks")).unwrap();
-        let before = TrustedAnchor::open(&paths.anchor)
-            .unwrap()
-            .target(&paths.stable)
-            .unwrap()
-            .read_regular()
-            .unwrap()
-            .unwrap();
-        let legacy_before = TrustedAnchor::open(&paths.anchor)
-            .unwrap()
-            .target(&paths.legacy)
-            .unwrap()
-            .read_regular()
-            .unwrap()
-            .unwrap();
+        let before = std::fs::read_to_string(root.path().join("ready")).unwrap();
         let blocked =
             acquire_filesystem_locks_until(&paths, Instant::now() + Duration::from_millis(30));
         child.0.kill().unwrap();
@@ -678,30 +675,16 @@ mod tests {
         assert!(error
             .to_string()
             .contains("Timed out waiting for project transaction lock"));
-        let stable_path = paths.stable.clone();
-        let legacy_path = paths.legacy.clone();
         let held = acquire_project_transaction_lock_at(paths).unwrap();
         assert!(root.path().join("locks/transaction-locks").is_dir());
-        let anchor = TrustedAnchor::open(root.path().join("locks")).unwrap();
         assert_eq!(
-            anchor
-                .target(&stable_path)
-                .unwrap()
-                .read_regular()
-                .unwrap()
-                .unwrap()
-                .identity(),
-            before.identity(),
-        );
-        assert_eq!(
-            anchor
-                .target(&legacy_path)
-                .unwrap()
-                .read_regular()
-                .unwrap()
-                .unwrap()
-                .identity(),
-            legacy_before.identity(),
+            format!(
+                "{:?}\n{:?}",
+                held._stable.identity(),
+                held._legacy.identity()
+            ),
+            before,
+            "both persistent lock files must retain their identity after a crash",
         );
         drop(held);
         // A normal release also leaves persistent files that must be reusable.
