@@ -962,6 +962,26 @@ async fn handle_request(
         outgoing = outgoing.body(body_bytes);
     }
 
+    // Log only reviewed route metadata, never the client URI or request data.
+    let audit_host = reqwest::Url::parse(&route.target_base)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_owned))
+        .unwrap_or_default();
+    let audit_name = route.secret_key.clone();
+    let audit_route = route.name.clone();
+    // The durable append takes a file lock and fsyncs; keep that work off
+    // Tokio's async workers. Only value-blind metadata enters the task.
+    let audit_result = tokio::task::spawn_blocking(move || {
+        phantom_core::audit::log_route_use(&audit_name, &audit_route, &audit_host)
+    })
+    .await;
+    if !matches!(audit_result, Ok(Ok(()))) {
+        return Ok(error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            r#"{"error":"usage audit unavailable or engine refused"}"#,
+        ));
+    }
+
     // Send the request
     let response = match outgoing.send().await {
         Ok(resp) => resp,
@@ -2654,6 +2674,25 @@ mod tests {
         let auth_header = received.headers.get("authorization").unwrap();
         assert_eq!(auth_header, &format!("Bearer {real_secret}"));
         assert!(!auth_header.contains("phm_"));
+
+        // The production forwarding path must append value-blind route usage,
+        // independently of PHANTOM_AUDIT opt-in.
+        let mut audit = Vec::new();
+        phantom_core::audit::query_jsonl(None, &mut audit).unwrap();
+        let text = String::from_utf8(audit).unwrap();
+        assert!(!text.contains(real_secret));
+        assert!(!text.contains(phantom_token));
+        let recorded = text
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .any(|event| {
+                event["op"] == "proxy.use"
+                    && event["name"] == "TEST_API_KEY"
+                    && event["route"] == "testapi"
+                    && event["host"] == "127.0.0.1"
+                    && event["outcome"] == "admitted"
+            });
+        assert!(recorded, "proxy forwarding did not record route admission");
 
         proxy.shutdown().await;
         mock.shutdown().await;

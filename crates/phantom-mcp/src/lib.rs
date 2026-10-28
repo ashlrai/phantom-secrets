@@ -1,6 +1,9 @@
 pub mod server;
 pub(crate) mod tools;
 
+// Shared value-blind generation transaction used by the CLI and MCP.
+pub use tools::{generate_secret, GenerationReceipt};
+
 // Re-export param structs needed by integration tests.
 pub use tools::params::LeakIncidentsRealtimeParams;
 
@@ -26,6 +29,8 @@ pub fn init_tracing() {
 /// This is the main entry-point used both by the standalone `phantom-mcp`
 /// binary and by `phantom mcp serve` inside the main `phantom` CLI.
 pub async fn run_stdio_server() -> anyhow::Result<()> {
+    phantom_core::audit::enable_agent_audit(phantom_core::audit::AgentSource::Mcp);
+    phantom_core::audit::admit_engine()?;
     init_tracing();
 
     tracing::info!("Phantom MCP server starting...");
