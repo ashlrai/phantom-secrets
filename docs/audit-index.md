@@ -73,7 +73,7 @@ Primary source paths for this review:
   and global client-config authorities, private parent receipts, and stable
   setup coordination under Phantom application state;
 - [`workspace.rs`](../crates/phantom-cli/src/commands/workspace.rs),
-  [`rotate.rs`](../crates/phantom-cli/src/commands/rotate.rs), and
+  [`rotate/`](../crates/phantom-cli/src/commands/rotate/), and
   [`server.rs`](../crates/phantom-mcp/src/server.rs) — vault/application
   authority before project-lock acquisition, retained root-identity comparison,
   and exact post-lock config revalidation; and

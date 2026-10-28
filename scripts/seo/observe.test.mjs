@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { performance } from "node:perf_hooks";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -228,23 +229,44 @@ test("the default network policy is closed to phm.dev and two public GitHub reco
   }
 });
 
-test("one monotonic request deadline covers retries and redirects", async () => {
-  let calls = 0;
-  const fetchImpl = async (_url, { signal }) => {
-    calls += 1;
-    if (calls === 1) {
-      await delay(10, signal);
-      return new Response("temporary", { status: 503 });
+test("one monotonic request deadline covers retries and redirects", async (t) => {
+  const temporary = new Response("temporary", { status: 503 });
+  const redirect = new Response("", {
+    status: 302,
+    headers: { location: "https://phm.dev/docs" },
+  });
+  // Drive the monotonic clock and abort timers together so scheduler delays
+  // cannot exhaust the request budget before the retry and redirect are tested.
+  let now = 0;
+  let nextTimer = 0;
+  const timers = new Map();
+  const budgets = [];
+  const requests = [];
+  t.mock.method(performance, "now", () => now);
+  t.mock.method(globalThis, "setTimeout", (callback, milliseconds) => {
+    const id = ++nextTimer;
+    timers.set(id, { callback, milliseconds });
+    budgets.push(milliseconds);
+    return id;
+  });
+  t.mock.method(globalThis, "clearTimeout", (id) => timers.delete(id));
+  const fetchImpl = async (url, { signal }) => {
+    requests.push(url.href);
+    assert.equal(signal.aborted, false);
+    if (requests.length === 1) {
+      now += 40;
+      return temporary;
     }
-    if (calls === 2) {
-      await delay(10, signal);
-      return new Response("", {
-        status: 302,
-        headers: { location: "https://phm.dev/docs" },
-      });
+    if (requests.length === 2) {
+      now += 40;
+      return redirect;
     }
-    await delay(200, signal);
-    return new Response("late", { status: 200 });
+    assert.equal(timers.size, 1);
+    const timer = timers.values().next().value;
+    now += timer.milliseconds;
+    timer.callback();
+    signal.throwIfAborted();
+    assert.fail("the remaining request budget must abort the redirected request");
   };
 
   await assert.rejects(
@@ -256,7 +278,14 @@ test("one monotonic request deadline covers retries and redirects", async () => 
     }),
     /request deadline exceeded/,
   );
-  assert.equal(calls, 3);
+  assert.deepEqual(requests, [
+    "https://phm.dev/",
+    "https://phm.dev/",
+    "https://phm.dev/docs",
+  ]);
+  assert.deepEqual(budgets, [120, 80, 40]);
+  assert.equal(now, 120);
+  assert.equal(timers.size, 0);
 });
 
 test("the global observation deadline aborts concurrent initial requests", async () => {

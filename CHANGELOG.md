@@ -4,6 +4,17 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Fixed (`phantom check --staged` scans dotenv comments and `.phantom.toml`)
+
+- The pre-commit scan classified staged dotenv files only through the
+  dotenv parser, which never sees comments, so a key commented out in a
+  committable `.env.example` (`# OPENAI_API_KEY=<key>`) or left in a note
+  after a placeholder was reported clean and the commit went through. A
+  staged `.phantom.toml` was read only for risky routes and never scanned
+  for credentials at all. Both now also get the staged code scan of their
+  added lines; a dotenv file that already has entries reported by name is
+  not scanned twice.
+
 ### Added (schema id on doctor, why, check, and agent doctor JSON)
 
 - `phantom doctor --json`, `phantom why --json`, `phantom check --json`, and
@@ -47,6 +58,33 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   `.vN` suffix changes only when the JSON shape breaks. `schema_version`
   (currently 1) and `kind` (`phantom.agent.preflight`) stay so older readers
   keep working.
+
+### Added (`phantom status --json` schema id)
+
+- The status document now carries `"kind": "phantom.status"`, the same
+  document-id convention `phantom agent doctor --json` uses
+  (`phantom.agent.preflight`), so an orchestrator can distinguish this
+  contract from other Phantom JSON documents that share `schema_version: 1`.
+  The change is additive within schema version 1: consumers keep ignoring
+  unknown fields, and a build predating `kind` simply reports as unknown
+  status to a consumer that requires it. See `docs/hub-status-contract.md`.
+
+### Added (local posture history store)
+
+- `phantom-secrets-core` gains a local posture history store: counts and
+  yes/no flags only, never secret names or values, kept owner-only under
+  `~/.phantom/posture/` and capped at 2000 records. Set
+  `PHANTOM_POSTURE_HISTORY=0` to turn it off; reads and writes then touch
+  nothing. On non-Unix platforms the owner and file-mode check on the host
+  key is skipped, so the key's protection there rests on the user profile's
+  own permissions.
+- History reads and writes validate the schema and metadata and reject unsafe
+  file targets and permissions. Writes refuse records from a different host
+  key. Reads are size-bounded and corrupt histories are preserved without
+  replacing an earlier recovery copy.
+- `phantom-secrets-core` now declares `rust-version = "1.89"` (needed for
+  `std::fs::File::try_lock`).
+
 ### Fixed (monthly rotation schedules follow calendar months)
 
 - A `monthly` rotation schedule counted 30-day blocks from 1970, so a schedule

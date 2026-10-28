@@ -35,7 +35,7 @@ use tracing_subscriber::EnvFilter;
                     phantom exec -- <command>     run your app or agent through the local proxy\n\n\
                   Commands by task:\n  \
                     Setup         init · agent · setup · doctor · workspace · vault · completion · mcp · mcp-approve\n  \
-                    Daily use     exec · start · stop · status · check · list · add · remove · reveal · copy · env · why · git-credential\n  \
+                    Daily use     exec · start · stop · status · check · redact · list · add · remove · reveal · copy · env · why · git-credential\n  \
                     Sync & teams  login · logout · cloud · team · sync · pull · export · import · wrap · unwrap\n  \
                     Maintenance   upgrade · watch · rotate · grant · validate · expiry · secrets-expiring-soon · open · audit · leaks · crypto",
     version
@@ -70,8 +70,9 @@ enum Commands {
         /// Skips repos that already have .phantom.toml.
         #[arg(long, value_name = "DIR")]
         all: Option<std::path::PathBuf>,
-        /// With --all: scan and report what would change without modifying anything.
-        #[arg(long, requires = "all")]
+        /// Report the keys and files this init would write, without changing anything.
+        /// With --all, scan and report what would change without modifying anything.
+        #[arg(long)]
         dry_run: bool,
         /// With --all: number of repos to initialise concurrently.
         /// Defaults to PHANTOM_INIT_JOBS env var, then 4.
@@ -79,7 +80,7 @@ enum Commands {
         jobs: Option<usize>,
         /// Create a valid .phantom.toml and empty vault without requiring a .env file.
         /// Use this to bootstrap a brand-new project before any secrets exist.
-        #[arg(long, conflicts_with_all = ["all", "dry_run"])]
+        #[arg(long, conflicts_with = "all")]
         empty: bool,
     },
 
@@ -274,6 +275,14 @@ enum Commands {
         json: bool,
     },
 
+    /// Scrub known credential shapes from stdin to stdout (no vault access)
+    #[command(next_help_heading = "Daily use")]
+    Redact {
+        /// Flush each sanitized line; reject lines over 1 MiB. Does not detect arbitrary or encoded secrets
+        #[arg(long, required = true)]
+        stream: bool,
+    },
+
     /// List stored secret names (never shows values)
     #[command(next_help_heading = "Daily use")]
     List {
@@ -311,6 +320,9 @@ enum Commands {
         /// With --stdin: store only the first line (pass/gopass put metadata after it)
         #[arg(long, requires = "stdin")]
         first_line: bool,
+        /// Report the key and files this add would write, without reading a value or changing anything
+        #[arg(long, conflicts_with_all = ["stdin", "multiline", "first_line"])]
+        dry_run: bool,
     },
 
     /// Remove a secret transactionally after an exact trusted-terminal challenge
@@ -318,6 +330,9 @@ enum Commands {
     Remove {
         /// Secret name to remove
         name: String,
+        /// Report the key and files this removal would write, without deleting anything
+        #[arg(long)]
+        dry_run: bool,
     },
 
     /// Reveal a secret value (print to stdout or copy to clipboard)
@@ -1252,6 +1267,7 @@ fn apply_global_json(command: &mut Commands) -> Result<(), &'static str> {
         Commands::Import { .. } => Err("phantom import"),
         Commands::Wrap { .. } => Err("phantom wrap"),
         Commands::Unwrap => Err("phantom unwrap"),
+        Commands::Redact { .. } => Err("phantom redact"),
         Commands::Upgrade { .. } => Err("phantom upgrade"),
         Commands::Watch { .. } => Err("phantom watch"),
         Commands::Open { .. } => Err("phantom open"),
@@ -1305,7 +1321,9 @@ fn run() -> anyhow::Result<()> {
             jobs,
             empty,
         } => {
-            if empty {
+            if empty && dry_run {
+                commands::init::dry_run::run_empty()
+            } else if empty {
                 commands::init::run_empty()
             } else {
                 match all {
@@ -1315,6 +1333,7 @@ fn run() -> anyhow::Result<()> {
                             .unwrap_or(commands::init::multi::DEFAULT_JOBS);
                         commands::init::multi::run(root, dry_run, j)
                     }
+                    None if dry_run => commands::init::dry_run::run(&from),
                     None => commands::init::run(&from),
                 }
             }
@@ -1336,6 +1355,7 @@ fn run() -> anyhow::Result<()> {
             stdin,
             multiline,
             first_line,
+            dry_run,
         } => {
             let lines = if multiline {
                 commands::add::StdinLines::Multiline
@@ -1344,9 +1364,9 @@ fn run() -> anyhow::Result<()> {
             } else {
                 commands::add::StdinLines::SingleOnly
             };
-            commands::add::run(&name, value, stdin, lines)
+            commands::add::run(&name, value, stdin, lines, dry_run)
         }
-        Commands::Remove { name } => commands::remove::run(&name),
+        Commands::Remove { name, dry_run } => commands::remove::run(&name, dry_run),
         Commands::Reveal {
             name,
             clipboard,
@@ -1550,6 +1570,7 @@ fn run() -> anyhow::Result<()> {
         Commands::Why { key, strict } => commands::why::run(&key, global_json, strict),
         Commands::Wrap { only, skip } => commands::wrap::run(&only, &skip, cli.quiet),
         Commands::Unwrap => commands::unwrap::run(cli.quiet),
+        Commands::Redact { .. } => commands::redact::run(),
         Commands::Copy {
             name,
             to,
@@ -1897,7 +1918,10 @@ mod help_tests {
                 if let Some(long) = arg.get_long() {
                     argv.push(format!("--{long}"));
                 }
-                argv.push(value);
+                // Required switches such as `redact --stream` have no value.
+                if arg.get_action().takes_values() {
+                    argv.push(value);
+                }
             }
             argv
         }

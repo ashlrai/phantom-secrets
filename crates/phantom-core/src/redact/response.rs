@@ -161,6 +161,19 @@ fn sendgrid_prefix_is_incomplete(suffix: &[u8]) -> bool {
             .all(|byte| ByteClass::AlnumDashUnderscore.contains(*byte))
 }
 
+/// FORMAT_SPECS grouped by first prefix byte, so a scan position only tests
+/// the shapes that can begin there. Bucket contents preserve catalog order.
+pub(crate) fn specs_by_first_byte() -> &'static [Vec<&'static FormatSpec>; 256] {
+    static INDEX: std::sync::OnceLock<[Vec<&'static FormatSpec>; 256]> = std::sync::OnceLock::new();
+    INDEX.get_or_init(|| {
+        let mut index: [Vec<&'static FormatSpec>; 256] = std::array::from_fn(|_| Vec::new());
+        for spec in FORMAT_SPECS {
+            index[spec.prefix[0] as usize].push(spec);
+        }
+        index
+    })
+}
+
 /// Canonical response-format catalog, ordered for stable audit and replacement
 /// behavior. Both buffered and bounded streaming consumers use these grammars.
 pub const FORMAT_SPECS: &[FormatSpec] = &[

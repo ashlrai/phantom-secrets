@@ -46,7 +46,7 @@ pub fn run(
         anyhow::bail!("No command specified. Usage: phantom exec -- <command>");
     }
 
-    let rt = tokio::runtime::Runtime::new()?;
+    let rt = crate::util::oneshot_runtime()?;
     rt.block_on(run_async(cmd, env, bind_source, quiet, |config| {
         ServiceRegistry::from_config(&config.services)
     }))
@@ -885,6 +885,10 @@ impl SignalForwarder {
 #[cfg(all(test, unix))]
 #[path = "exec_github_tests.rs"]
 mod github_tests;
+
+#[cfg(test)]
+#[path = "exec_perf.rs"]
+mod perf_tests;
 
 #[cfg(test)]
 mod tests {
