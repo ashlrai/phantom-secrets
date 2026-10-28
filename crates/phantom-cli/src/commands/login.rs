@@ -25,7 +25,7 @@ pub fn run() -> Result<()> {
 
     // Check if already logged in
     if let Some(token) = auth::load_token() {
-        let rt = tokio::runtime::Runtime::new()?;
+        let rt = crate::util::oneshot_runtime()?;
         match rt.block_on(auth::get_user_info(&api_base, &token)) {
             Ok(user) => {
                 println!(
@@ -42,7 +42,7 @@ pub fn run() -> Result<()> {
         }
     }
 
-    let rt = tokio::runtime::Runtime::new()?;
+    let rt = crate::util::oneshot_runtime()?;
 
     // Initiate device flow
     let flow = rt

@@ -105,7 +105,7 @@ pub fn run(
     dry_run: bool,
     json: bool,
 ) -> Result<()> {
-    let rt = tokio::runtime::Runtime::new()?;
+    let rt = crate::util::oneshot_runtime()?;
     rt.block_on(run_async(platform, project, only, dry_run, json))
 }
 
