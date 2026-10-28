@@ -320,6 +320,9 @@ enum Commands {
         /// With --stdin: store only the first line (pass/gopass put metadata after it)
         #[arg(long, requires = "stdin")]
         first_line: bool,
+        /// Generate a 256-bit random secret locally; print only name and SHA-256 fingerprint
+        #[arg(long, conflicts_with_all = ["stdin", "value", "multiline", "first_line", "dry_run"])]
+        generate: bool,
         /// Report the key and files this add would write, without reading a value or changing anything
         #[arg(long, conflicts_with_all = ["stdin", "multiline", "first_line"])]
         dry_run: bool,
@@ -1355,6 +1358,7 @@ fn run() -> anyhow::Result<()> {
             stdin,
             multiline,
             first_line,
+            generate,
             dry_run,
         } => {
             let lines = if multiline {
@@ -1364,7 +1368,7 @@ fn run() -> anyhow::Result<()> {
             } else {
                 commands::add::StdinLines::SingleOnly
             };
-            commands::add::run(&name, value, stdin, lines, dry_run)
+            commands::add::run(&name, value, stdin, lines, dry_run, generate)
         }
         Commands::Remove { name, dry_run } => commands::remove::run(&name, dry_run),
         Commands::Reveal {

@@ -157,9 +157,11 @@ interactive prompt is used when a terminal is attached):
 printf 'EXAMPLE_SECOND_KEY_VALUE\n' | phantom add MISTRAL_API_KEY --stdin
 ```
 
-The MCP surface refuses plaintext the same way: `phantom_add_secret` is a
-hard denial, and `phantom_add_secret_interactive` returns a
-trusted-terminal command instead of accepting a value.
+The MCP surface refuses plaintext the same way: `phantom_add_secret` accepts
+no value — with `generate: true` it creates a new locally generated secret and
+returns only a value-free receipt (see
+[generated-secrets.md](generated-secrets.md)) — and
+`phantom_add_secret_interactive` returns a trusted-terminal command instead.
 
 ## 6. Refusals are the point
 

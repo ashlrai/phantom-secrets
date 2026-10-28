@@ -79,7 +79,7 @@ parameter names match the runtime JSON schema exactly.
 | `phantom_check` | Scan supported dotenv files, or every process variable with `runtime=true` | runtime |
 | `phantom_env` | Generate an env example file with secret placeholders | output (default `.env.example`), confirm, approval_token |
 | `phantom_sync` | Preview deployment-platform sync configuration (Vercel, Railway) | platform (optional), project_id (optional) |
-| `phantom_add_secret` | **Deprecated**: refuses plaintext via MCP. Use `phantom_add_secret_interactive` instead | name, confirm, approval_token |
+| `phantom_add_secret` | With `generate: true`, create a new locally generated 256-bit secret and return a value-free `name`/`fingerprint` receipt; otherwise refuses plaintext via MCP — use `phantom_add_secret_interactive` for provider credentials | name, generate (optional), confirm, approval_token |
 | `phantom_add_secret_interactive` | Return `phantom add NAME`, a trusted-terminal command that prompts for the value outside MCP. Effect-free: no approval or `PHANTOM_MCP_EFFECTS` needed | name, confirm (optional, ignored) |
 | `phantom_remove_secret` | Transactionally remove the vault value, lifecycle config, and exact managed-dotenv mapping | name, confirm, approval_token |
 | `phantom_rotate` | Regenerate all persistent `phm_` mappings. Old mappings become invalid | confirm, approval_token |
@@ -186,7 +186,7 @@ and still requires attached-terminal consent.
 - Codex users: setup and MCP details live in [docs/codex.md](docs/codex.md)
 - The `.env` file contains persistent `phm_...` mappings. They are not broken keys, but they are sensitive metadata: do not disclose, log, or publish them. Fresh `phantom exec` child placeholders are inert in client headers/bodies; the separate proxy bearer is session-scoped and sensitive.
 - Use `phantom_list_secrets` to see what secrets are available (never shows values)
-- Use `phantom_add_secret_interactive` to store new keys a user provides; the **deprecated** `phantom_add_secret` refuses plaintext via MCP on purpose, so values never enter AI context
+- Use `phantom_add_secret_interactive` to store new keys a user provides, or `phantom_add_secret` with `generate: true` when a new locally generated value is wanted; `phantom_add_secret` refuses plaintext via MCP on purpose, so values never enter AI context
 - Use `phantom_init` to protect an unprotected `.env` file
 - If a tool answers "Vault locked: ..." (MCP error -32600), the project's secrets are in an encrypted-file vault this process cannot open, usually because `PHANTOM_VAULT_PASSPHRASE` is not set in the MCP server's env config. Do not treat it as "no secrets"; pass on the unlock step in the message to the user. `phantom_list_secrets` reports the same state as "Vault locked, not empty."
 - When a call fails with 401 under `phantom exec`, run `phantom_why` on the key: `exec.delivery: no_route` means no built-in proxy route injects it, so the child only has a session token
