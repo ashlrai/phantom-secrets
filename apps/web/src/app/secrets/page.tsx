@@ -16,6 +16,7 @@ import { RequestTrace } from "@/components/landing/RequestTrace";
 import { SiteFooter } from "@/components/landing/SiteFooter";
 import { TrustBoundary } from "@/components/landing/TrustBoundary";
 import { Transformation } from "@/components/landing/Transformation";
+import { SecretUseCases } from "@/components/landing/SecretUseCases";
 
 const title = "Phantom Secrets — API key security for AI coding agents";
 
@@ -47,6 +48,7 @@ export default function SecretsPage() {
         <TrustBoundary />
         <Features />
         <Comparison />
+        <SecretUseCases />
         <DocumentationGateway />
         <EvidenceLedger />
         <Pricing />
