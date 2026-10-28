@@ -87,8 +87,7 @@ fn collect_expiring(
             let m = meta.as_ref()?;
             let expires_at = m.expires_at?;
             let days_remaining = m.days_remaining()?;
-            // Include expired (days_remaining < 0) and expiring soon.
-            if days_remaining <= warn_days as i64 {
+            if phantom_vault::metadata::in_expiry_report(days_remaining, warn_days) {
                 Some(ExpiryEntry {
                     name: entry_name.clone(),
                     days_remaining,
@@ -562,6 +561,31 @@ mod tests {
         let json = serde_json::to_value(&report).unwrap();
         assert_eq!(json[0]["expired"], true);
         assert_eq!(json[1]["expired"], false);
+    }
+
+    /// `--days 0` is documented as already-expired only. A secret that
+    /// expires later today has 0 whole days left and was listed with them.
+    #[test]
+    fn zero_day_window_lists_only_expired_secrets() {
+        let now = phantom_vault::metadata::now_secs();
+        let meta = |expires_at| {
+            Some(phantom_vault::SecretMetadata {
+                expires_at: Some(expires_at),
+                ..Default::default()
+            })
+        };
+        let entries = vec![
+            ("LATER_TODAY".to_string(), meta(now + 3_600)),
+            ("JUST_EXPIRED".to_string(), meta(now - 3_600)),
+        ];
+        let names = |days| -> Vec<String> {
+            collect_expiring(&entries, days)
+                .into_iter()
+                .map(|e| e.name)
+                .collect()
+        };
+        assert_eq!(names(0), ["JUST_EXPIRED"]);
+        assert_eq!(names(1), ["JUST_EXPIRED", "LATER_TODAY"]);
     }
 }
 
