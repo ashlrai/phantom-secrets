@@ -2811,11 +2811,9 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
- "lazy_static",
  "phantom-secrets-core",
  "phantom-secrets-proxy",
  "rand 0.8.6",
- "regex",
  "reqwest 0.12.28",
  "rustls",
  "serde",
@@ -2886,7 +2884,6 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "toml",
- "windows-sys 0.61.2",
  "zeroize",
 ]
 
