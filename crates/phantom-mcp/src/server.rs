@@ -5592,9 +5592,19 @@ impl PhantomMcpServer {
 
         let now = phantom_vault::metadata::now_secs();
 
-        let schedule = config
+        let mut schedule = config
             .get_rotation_schedule(&params.name)
             .map_err(config_invalid_err)?;
+        // Nothing writes the schedule's own `last_rotated`, so it alone made
+        // every schedule overdue. The value's age is the vault's rotation
+        // anchor, the same one `phantom exec` enforcement judges; that
+        // enforcement ignores the config field, so the report does too.
+        if let Some(sched) = schedule.as_mut() {
+            let metadata = vault
+                .get_metadata(&params.name)
+                .map_err(|e| vault_read_err("Failed to read secret metadata", e))?;
+            sched.last_rotated = phantom_vault::rotation_gate::rotation_anchor(metadata.as_ref());
+        }
         let interval_days = schedule.as_ref().and_then(|s| s.strategy.interval_days());
         let (strategy_label, next_unix, last_rotated_unix, overdue) = match &schedule {
             None => ("none".to_string(), None::<u64>, None::<u64>, false),
@@ -17019,6 +17029,60 @@ mod tests {
             assert_eq!(json["strategy"], "interval", "{interval}");
             assert_eq!(json["interval_days"], days, "{interval}");
         }
+    }
+
+    /// The schedule's `last_rotated` is never written, so a secret stored
+    /// a minute ago under a 90-day interval was reported overdue and due now.
+    /// The vault's rotation anchor is now its last rotation.
+    #[test]
+    fn rotation_schedule_next_judges_a_fresh_secret_by_its_vault_anchor() {
+        let _environment = TestEnvironment::new();
+        let (server, dir) = setup_initialized_project();
+        set_rotate_every(&dir, "OPENAI_API_KEY", "90d", false);
+        let (_config, vault) = server.load_config_and_vault().unwrap();
+        let now = phantom_vault::metadata::now_secs();
+        let next = |rotated_at: u64| {
+            let mut metadata = vault
+                .get_metadata("OPENAI_API_KEY")
+                .unwrap()
+                .unwrap_or_default();
+            metadata.created_at = Some(100);
+            metadata.rotated_at = Some(rotated_at);
+            vault.set_metadata("OPENAI_API_KEY", metadata).unwrap();
+            parse_result_json(
+                &server
+                    .phantom_rotation_schedule_next(params(
+                        serde_json::json!({ "name": "OPENAI_API_KEY" }),
+                    ))
+                    .unwrap(),
+            )
+        };
+
+        let fresh = next(now - 60);
+        assert_eq!(fresh["overdue"], false, "{fresh}");
+        assert_eq!(fresh["last_rotated_unix"], now - 60);
+        assert_eq!(fresh["next_rotation_unix"], now - 60 + 90 * 86_400);
+
+        let stale = next(now - 91 * 86_400);
+        assert_eq!(stale["overdue"], true, "{stale}");
+        assert_eq!(stale["last_rotated_unix"], now - 91 * 86_400);
+
+        // A later `last_rotated` in the config does not hide a value that
+        // `phantom exec` would refuse as overdue.
+        let config_path = dir.path().join(".phantom.toml");
+        let mut config = PhantomConfig::load(&config_path).unwrap();
+        let mut schedule = phantom_core::config::parse_rotate_every("90d").unwrap();
+        schedule.last_rotated = Some(now);
+        config
+            .phantom
+            .secrets
+            .get_mut("OPENAI_API_KEY")
+            .unwrap()
+            .rotation_schedule = Some(schedule);
+        config.save(&config_path).unwrap();
+        let masked = next(now - 91 * 86_400);
+        assert_eq!(masked["overdue"], true, "{masked}");
+        assert_eq!(masked["last_rotated_unix"], now - 91 * 86_400);
     }
 
     /// An unparseable `rotate_every` silently fell back to the global policy
