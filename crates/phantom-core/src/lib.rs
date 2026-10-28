@@ -18,6 +18,7 @@ pub mod importers;
 pub mod issuance;
 pub mod leak_correlation;
 pub mod linked_checkout;
+pub mod locus;
 pub mod managed_dotenv;
 pub mod mcp_approval;
 pub mod package_scripts;

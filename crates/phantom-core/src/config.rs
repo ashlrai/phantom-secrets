@@ -243,6 +243,11 @@ pub struct PhantomMeta {
     /// `client:<name>`. Used to refuse accidental cross-owner secret copies.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner: Option<String>,
+    /// Value-free ownership declaration for this project's secrets. Under an
+    /// active Locus pin, MCP credential/provider calls require an exact match.
+    /// This is a routing restriction, never an approval or credential grant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub locus: Option<crate::locus::LocusBinding>,
     /// Basename of the dotenv file protected by this config. The config is
     /// stored beside the dotenv file, so accepting a path here would let
     /// repository-controlled config redirect security-sensitive rewrites.
@@ -919,6 +924,7 @@ impl PhantomConfig {
                 version: "1".to_string(),
                 project_id: project_id.clone(),
                 owner: None,
+                locus: None,
                 dotenv_path: None,
                 rotation_policy: None,
                 secrets: BTreeMap::new(),
@@ -2615,5 +2621,39 @@ version = 4
         assert_ne!(after.ino(), before_inode, "config was rewritten in place");
         assert_eq!(after.permissions().mode() & 0o777, 0o640);
         assert!(PhantomConfig::load(&config_path).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod locus_config_tests {
+    use super::*;
+
+    #[test]
+    fn locus_binding_is_optional_and_round_trips_without_changing_legacy_config() {
+        let mut config = PhantomConfig::new_with_defaults("project-fixture".into());
+        let legacy = toml::to_string(&config).unwrap();
+        assert!(!legacy.contains("locus"));
+        let decoded: PhantomConfig = toml::from_str(&legacy).unwrap();
+        assert!(decoded.phantom.locus.is_none());
+        config.phantom.locus = Some(crate::locus::LocusBinding {
+            binding: "client-a".into(),
+            tenant: "tenant-a".into(),
+        });
+        let encoded = toml::to_string(&config).unwrap();
+        assert!(encoded.contains("[phantom.locus]"));
+        let decoded: PhantomConfig = toml::from_str(&encoded).unwrap();
+        assert_eq!(decoded.phantom.locus, config.phantom.locus);
+    }
+
+    #[test]
+    fn locus_binding_rejects_partial_or_misspelled_ownership() {
+        let legacy =
+            toml::to_string(&PhantomConfig::new_with_defaults("project-fixture".into())).unwrap();
+        for invalid in [
+            "[phantom.locus]\nbinding = 'client-a'\n",
+            "[phantom.locus]\nbinding = 'client-a'\ntenant = 'tenant-a'\ntenent = 'typo'\n",
+        ] {
+            assert!(toml::from_str::<PhantomConfig>(&format!("{legacy}\n{invalid}")).is_err());
+        }
     }
 }
