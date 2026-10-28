@@ -95,8 +95,12 @@ fn refuse_encrypted_values(map: &SecretMap) -> Result<()> {
 }
 
 fn parse_flat_json(input: &[u8]) -> Result<SecretMap> {
-    let obj = parse_json_object_entries(input)
-        .map_err(|e| anyhow::anyhow!("dotenvx JSON parse error: {}", e))?;
+    let obj = parse_json_object_entries(input).map_err(|e| {
+        anyhow::anyhow!(
+            "dotenvx JSON parse error: {}",
+            crate::error::value_blind_json_error(&e)
+        )
+    })?;
     refuse_duplicate_names("dotenvx", obj.iter().map(|(key, _)| key.as_str()))?;
     refuse_invalid_names("dotenvx", obj.iter().map(|(key, _)| key.as_str()))?;
 
