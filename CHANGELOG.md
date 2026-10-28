@@ -68,6 +68,23 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   The change is additive within schema version 1: consumers keep ignoring
   unknown fields, and a build predating `kind` simply reports as unknown
   status to a consumer that requires it. See `docs/hub-status-contract.md`.
+
+### Added (local posture history store)
+
+- `phantom-secrets-core` gains a local posture history store: counts and
+  yes/no flags only, never secret names or values, kept owner-only under
+  `~/.phantom/posture/` and capped at 2000 records. Set
+  `PHANTOM_POSTURE_HISTORY=0` to turn it off; reads and writes then touch
+  nothing. On non-Unix platforms the owner and file-mode check on the host
+  key is skipped, so the key's protection there rests on the user profile's
+  own permissions.
+- History reads and writes validate the schema and metadata and reject unsafe
+  file targets and permissions. Writes refuse records from a different host
+  key. Reads are size-bounded and corrupt histories are preserved without
+  replacing an earlier recovery copy.
+- `phantom-secrets-core` now declares `rust-version = "1.89"` (needed for
+  `std::fs::File::try_lock`).
+
 ### Fixed (monthly rotation schedules follow calendar months)
 
 - A `monthly` rotation schedule counted 30-day blocks from 1970, so a schedule
