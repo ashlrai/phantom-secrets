@@ -37,6 +37,7 @@ pub fn run(
     from_stdin: bool,
     lines: StdinLines,
     dry_run: bool,
+    generate: bool,
 ) -> Result<()> {
     if let Some(mut value) = value_arg {
         value.zeroize();
@@ -65,6 +66,13 @@ pub fn run(
     }
     let vault = crate::util::open_vault(config.local_project_id())?;
     ensure_secret_absent(vault.as_ref(), config.local_project_id(), name)?;
+
+    if generate {
+        let receipt =
+            phantom_mcp::generate_secret(&project_dir, vault.as_ref(), &config_before, name)?;
+        println!("{}", serde_json::to_string(&receipt)?);
+        return Ok(());
+    }
 
     // Existing-name authority is resolved from value-blind vault metadata
     // before stdin or the hidden prompt is touched. A second check in
@@ -750,6 +758,7 @@ mod tests {
             false,
             StdinLines::SingleOnly,
             true,
+            false,
         )
         .unwrap();
 

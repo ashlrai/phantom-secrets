@@ -54,10 +54,11 @@ is the dispatch record.
 ### C1 `RQ-PS-AGENT-CREATE` — model-blind create (generated values)
 
 Server-side generation so an agent can create a real secret with no value in
-context: `phantom add NAME --generate [--bytes N]` and MCP
-`phantom_add_secret_generate` draw a CSPRNG value inside the process, store it
-in the vault, write the `phm_` mapping, and return only the name and mapping.
-Dispatched: `codex-bridge/RQ-PS-AGENT-CREATE`.
+context: `phantom add NAME --generate` and MCP `phantom_add_secret` with
+`generate: true` draw a CSPRNG value inside the process, store it in the
+vault, write the `phm_` mapping, and return only the name and a SHA-256
+fingerprint — never the value or the mapping. Landed as a `generate` param on
+`phantom_add_secret` rather than a separate tool, keeping the catalog at 54.
 
 ### C2 `RQ-PS-AGENT-REQUEST` — model-blind create (human-fulfilled requests)
 
@@ -122,24 +123,24 @@ expected to flip when the owning job lands (update the spec in the same PR).
       "title": "Model-blind secret create via server-side generation",
       "covers": ["create"],
       "role": "core",
-      "status": "dispatched",
+      "status": "landed",
       "branch": "codex-bridge/RQ-PS-AGENT-CREATE",
       "depends_on": [],
-      "scope": "phantom add NAME --generate plus MCP phantom_add_secret_generate: CSPRNG value stored in the vault, phm_ mapping written, only name and mapping returned.",
+      "scope": "phantom add NAME --generate plus MCP phantom_add_secret generate=true: CSPRNG value stored in the vault, phm_ mapping written, only name and SHA-256 fingerprint returned.",
       "surfaces": {
         "new": ["crates/phantom-mcp/src/tools/generate.rs", "crates/phantom-cli/tests/add_generate_test.rs", "docs/generated-secrets.md"],
         "modified": ["crates/phantom-mcp/src/server.rs", "crates/phantom-mcp/src/tools/mod.rs", "crates/phantom-mcp/src/tools/params.rs", "crates/phantom-cli/src/commands/add.rs", "crates/phantom-cli/src/main.rs"]
       },
       "acceptance": [
-        "MCP tool returns name + phm_ mapping and never the value; denial strings stay value-free",
+        "MCP tool returns name + SHA-256 fingerprint and never the value or the phm_ mapping; denial strings stay value-free",
         "phantom add --generate refuses to overwrite an existing name before any value work",
         "Generated value lands in the vault and .env gains only the phm_ mapping",
         "mcp-registry/server.json stays in exact lockstep with tools/list"
       ],
       "tests": ["crates/phantom-cli/tests/add_generate_test.rs", "phantom-mcp unit tests in server.rs"],
       "claims": [
-        { "expect": "absent", "path": "crates/phantom-mcp/src/tools/generate.rs" },
-        { "expect": "absent", "path": "docs/generated-secrets.md" },
+        { "expect": "present", "path": "crates/phantom-mcp/src/tools/generate.rs" },
+        { "expect": "present", "path": "docs/generated-secrets.md" },
         { "expect": "present", "path": "crates/phantom-mcp/src/server.rs", "contains": "phantom_add_secret_interactive" },
         { "expect": "present", "path": "crates/phantom-cli/src/commands/add.rs", "contains": "fn read_secret_value" }
       ]
@@ -221,7 +222,7 @@ expected to flip when the owning job lands (update the spec in the same PR).
       "title": "github_api route end-to-end under phantom exec",
       "covers": ["use", "github_api_route"],
       "role": "core",
-      "status": "dispatched",
+      "status": "landed",
       "branch": "codex-bridge/RQ-PS-GH-CLIENT",
       "depends_on": [],
       "scope": "Docs, a boxed-runner example, and exec-level tests proving GITHUB_TOKEN is injected into Authorization: Bearer only for api.github.com while request bodies stay unresolved.",
@@ -240,8 +241,8 @@ expected to flip when the owning job lands (update the spec in the same PR).
         { "expect": "present", "path": "crates/phantom-core/src/config.rs", "contains": "api.github.com" },
         { "expect": "present", "path": "crates/phantom-proxy/src/services.rs", "contains": "GITHUB_TOKEN_BASE_URL" },
         { "expect": "present", "path": "crates/phantom-cli/src/commands/init/config.rs", "contains": "apply_detected_services" },
-        { "expect": "absent", "path": "docs/github-box-runners.md" },
-        { "expect": "absent", "path": "examples/github-box-runner/github.sh" }
+        { "expect": "present", "path": "docs/github-box-runners.md" },
+        { "expect": "present", "path": "examples/github-box-runner/github.sh" }
       ]
     },
     {
@@ -255,7 +256,7 @@ expected to flip when the owning job lands (update the spec in the same PR).
       "scope": "Value-free rotation metadata and local phm_ remapping that keeps a created secret usable without exposing old or new values; live provider rotation stays hard-denied.",
       "surfaces": {
         "new": ["docs/agent-safe-rotate.md", "crates/phantom-cli/tests/rotate_generate_test.rs"],
-        "modified": ["crates/phantom-cli/src/commands/rotate.rs", "crates/phantom-cli/src/commands/exec.rs", "crates/phantom-mcp/src/server.rs", "crates/phantom-mcp/src/tools/params.rs", "crates/phantom-vault/src/file.rs", "crates/phantom-vault/src/traits.rs", "mcp-registry/server.json"]
+        "modified": ["crates/phantom-cli/src/commands/rotate/mod.rs", "crates/phantom-cli/src/commands/exec.rs", "crates/phantom-mcp/src/server.rs", "crates/phantom-mcp/src/tools/params.rs", "crates/phantom-vault/src/file.rs", "crates/phantom-vault/src/traits.rs", "mcp-registry/server.json"]
       },
       "acceptance": [
         "Rotation metadata and remapping never surface a value",
@@ -315,7 +316,7 @@ expected to flip when the owning job lands (update the spec in the same PR).
       "title": "git credential helper as a second github use-leg",
       "covers": ["use", "github_api_route"],
       "role": "enabler",
-      "status": "dispatched",
+      "status": "landed",
       "branch": "codex-bridge/RQ-PS-GITCRED",
       "depends_on": [],
       "scope": "phantom git-credential helper feeding git-over-HTTPS auth from the vault with no token on disk.",
@@ -329,7 +330,7 @@ expected to flip when the owning job lands (update the spec in the same PR).
       ],
       "tests": ["crates/phantom-cli/tests/git_credential_test.rs"],
       "claims": [
-        { "expect": "absent", "path": "crates/phantom-cli/src/commands/git_credential.rs" }
+        { "expect": "present", "path": "crates/phantom-cli/src/commands/git_credential.rs" }
       ]
     }
   ]

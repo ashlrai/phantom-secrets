@@ -44,6 +44,7 @@ These guides cover installation, MCP setup, the value-blind tool model, and dail
 
 - [Safe delegation quickstart](delegation-quickstart.md) for the common cross-client workflow
 - [Hub status contract](hub-status-contract.md) for value-free local-orchestrator inspection (shipped in v0.7.9)
+- [Generated secrets](generated-secrets.md) for value-free local secret creation via `phantom add --generate` and `phantom_add_secret` `generate: true`
 - [Installed-runtime smoke](../examples/agent-first-five-minutes/README.md) for disposable CLI and MCP checks
 - [Claude Code](claude-code.md)
 - [Codex](codex.md)

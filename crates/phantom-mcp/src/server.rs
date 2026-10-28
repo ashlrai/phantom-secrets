@@ -1289,7 +1289,7 @@ impl PhantomMcpServer {
 
     /// Add a secret to the vault.
     #[tool(
-        description = "Deprecated unsafe plaintext secret entry. This tool refuses values because MCP arguments enter agent context. Use phantom_add_secret_interactive instead (no approval needed). Retained for compatibility: still requires `confirm: true` plus a one-use out-of-band `approval_token` (the operator enables effects with PHANTOM_MCP_EFFECTS=trusted-terminal; a call without the token prints a nonce on the server's stderr for `phantom mcp-approve <NONCE>` in a trusted terminal), and never stores anything."
+        description = "Create a new locally generated 256-bit random secret with generate=true. Returns only the key name and SHA-256 fingerprint; never accepts or returns plaintext values or mappings. Existing names are refused. Requires confirm=true and a one-use out-of-band approval_token with operator-enabled PHANTOM_MCP_EFFECTS=trusted-terminal. With generate=false (default), this compatibility tool refuses plaintext entry; use phantom_add_secret_interactive for existing provider credentials. Generated secrets are local application secrets, not provider-issued API keys."
     )]
     fn phantom_add_secret(
         &self,
@@ -1307,6 +1307,27 @@ impl PhantomMcpServer {
             &params_json,
             &self.project_id(),
         )?;
+        if params.generate {
+            self.preflight_managed_dotenv_strict()?;
+            let project = self
+                .project_dir
+                .canonicalize()
+                .map_err(|_| internal_err("Failed to resolve project directory"))?;
+            let before = phantom_core::fs::read_regular_file(&project.join(".phantom.toml"))
+                .map_err(|_| internal_err("Failed to read config safely"))?
+                .ok_or_else(not_initialized_err)?;
+            let config = PhantomConfig::load_from_bytes(&project.join(".phantom.toml"), &before)
+                .map_err(config_invalid_err)?;
+            let vault = self.open_project_vault(&config)?;
+            self.require_complete_inventory(&config, vault.as_ref(), "generate a secret")?;
+            let receipt =
+                crate::tools::generate_secret(&project, vault.as_ref(), &before, &params.name)
+                    .map_err(|error| internal_err(format!("Secret generation failed: {error}")))?;
+            return text_result(
+                serde_json::to_string(&receipt)
+                    .map_err(|_| internal_err("Failed to serialize generation receipt"))?,
+            );
+        }
         text_result(format!(
             "No secret value accepted through MCP for '{}'. Use phantom_add_secret_interactive to start an out-of-band terminal flow.",
             params.name
@@ -14338,6 +14359,46 @@ mod tests {
     }
 
     #[test]
+    fn generated_add_is_gated_and_returns_only_receipt() {
+        let _environment = TestEnvironment::new();
+        let (server, _dir) = setup_initialized_project();
+        let request = || {
+            Parameters(AddSecretParams {
+                name: "GENERATED_KEY".to_owned(),
+                generate: true,
+                confirm: true,
+                approval_token: None,
+            })
+        };
+        unsafe {
+            std::env::remove_var("PHANTOM_MCP_EFFECTS");
+            std::env::remove_var("PHANTOM_MCP_SKIP_APPROVAL");
+        }
+        assert!(server.phantom_add_secret(request()).is_err());
+        unsafe {
+            std::env::set_var("PHANTOM_MCP_EFFECTS", "trusted-terminal");
+            std::env::remove_var("PHANTOM_MCP_SKIP_APPROVAL");
+        }
+        live_approval_mode();
+        assert!(server.phantom_add_secret(request()).is_err());
+        unsafe {
+            std::env::set_var("PHANTOM_MCP_SKIP_APPROVAL", "1");
+        }
+        let result = server.phantom_add_secret(request()).unwrap();
+        let receipt = parse_result_json(&result);
+        assert_eq!(receipt.as_object().unwrap().len(), 2);
+        assert_eq!(receipt["name"], "GENERATED_KEY");
+        let (_, vault) = server.load_config_and_vault().unwrap();
+        let value = vault.retrieve("GENERATED_KEY").unwrap();
+        let output = serde_json::to_string(&result).unwrap();
+        assert!(
+            !output.contains(value.as_str()),
+            "MCP response leaked value"
+        );
+        assert!(server.phantom_add_secret(request()).is_err());
+    }
+
+    #[test]
     fn test_add_secret_params_rejects_plaintext_value_field() {
         let _environment = TestEnvironment::new();
         let parsed = serde_json::from_value::<AddSecretParams>(serde_json::json!({
@@ -14374,6 +14435,7 @@ mod tests {
             for confirm in [false, true] {
                 let error = server
                     .phantom_add_secret(Parameters(AddSecretParams {
+                        generate: false,
                         name: name.clone(),
                         confirm,
                         approval_token: None,
@@ -14399,6 +14461,7 @@ mod tests {
 
         let add_err = server
             .phantom_add_secret(Parameters(AddSecretParams {
+                generate: false,
                 name: "X".to_string(),
                 confirm: false,
                 approval_token: None,

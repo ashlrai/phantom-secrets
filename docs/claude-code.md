@@ -158,7 +158,7 @@ Claude's shell and PTY authority.
 
 | Tool | What it does |
 |------|-------------|
-| `phantom_add_secret` | Deprecated compatibility tool. Refuses plaintext values passed through MCP. |
+| `phantom_add_secret` | With `generate: true`, create a new locally generated 256-bit secret and return a value-free `name`/`fingerprint` receipt; otherwise refuses plaintext values passed through MCP. |
 | `phantom_remove_secret` | Transactionally remove the vault value, lifecycle record, and exact managed-dotenv mapping. |
 | `phantom_rotate` | Regenerate all phantom tokens in `.env`. Old tokens become invalid immediately — any running dev server that cached them will break until it reloads. Real secrets are unchanged. |
 | `phantom_cloud_push` | With a separately commissioned hosted deployment and entitled account, encrypt and upload the local vault. The public hosted service is not currently commissioned for authenticated use. Overwrites the existing cloud copy and requires `phantom login` first. |
