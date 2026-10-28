@@ -220,7 +220,22 @@ fn tail_byte(pattern: &CredentialPattern, byte: u8) -> bool {
     }
 }
 
+/// CREDENTIAL_PATTERNS grouped by first prefix byte, so a scan position only
+/// tests the shapes that can begin there. Bucket contents preserve catalog order.
+fn patterns_by_first_byte() -> &'static [Vec<&'static CredentialPattern>; 256] {
+    static INDEX: std::sync::OnceLock<[Vec<&'static CredentialPattern>; 256]> =
+        std::sync::OnceLock::new();
+    INDEX.get_or_init(|| {
+        let mut index: [Vec<&'static CredentialPattern>; 256] = std::array::from_fn(|_| Vec::new());
+        for pattern in CREDENTIAL_PATTERNS {
+            index[pattern.prefix.as_bytes()[0] as usize].push(pattern);
+        }
+        index
+    })
+}
+
 fn matches(input: &[u8], code: bool) -> Vec<CredentialMatch> {
+    let patterns = patterns_by_first_byte();
     let mut found = Vec::new();
     let mut start = 0;
     while start < input.len() {
@@ -229,7 +244,7 @@ fn matches(input: &[u8], code: bool) -> Vec<CredentialMatch> {
             continue;
         }
         let mut next = start + 1;
-        for pattern in CREDENTIAL_PATTERNS {
+        for &pattern in &patterns[input[start] as usize] {
             // Bearer is an auth wrapper, not a staged-code provider identity. Let
             // the enclosed provider token produce its existing finding/label.
             if code && pattern.prefix == "Bearer " {
@@ -277,8 +292,15 @@ pub fn credential_spans(input: &[u8]) -> Vec<Range<usize>> {
         .collect();
     // Logs and incident reports must also cover response-only shapes (including
     // sensitive Phantom mappings), without the code scanner's boundary filter.
-    for spec in response::FORMAT_SPECS {
-        spans.extend(spec.match_ranges(input));
+    // Every byte is still tested; the index only skips shapes whose first byte
+    // cannot start a match at that position.
+    let specs = response::specs_by_first_byte();
+    for (cursor, byte) in input.iter().enumerate() {
+        for spec in &specs[*byte as usize] {
+            if let Some(len) = spec.complete_prefix_len(&input[cursor..]) {
+                spans.push(cursor..cursor + len);
+            }
+        }
     }
     spans.sort_unstable_by_key(|span| (span.start, span.end));
     let mut merged: Vec<Range<usize>> = Vec::new();
