@@ -259,19 +259,11 @@ support requires an explicit reviewed trust design and is not supported in this 
 
 ### An older registry-based install command fails
 
-The reviewed `v0.7.9` binaries ship through the immutable GitHub Release. The
-trusted Homebrew formula still publishes the previous reviewed `v0.7.8`; Homebrew publication is
-independent of the GitHub release. In the exact 2026-09-29 registry snapshot,
-npm `latest` remains `0.6.0`; exact npm
-`0.7.4` wrappers are failed release candidates. crates.io remains on the older
-`0.5.1` distribution track, and MCP Registry does not publish `0.7.9`.
+See [distribution status](distribution-status.md) for dated npm, Homebrew, crates.io, and MCP Registry evidence. Prefer the checksum-verified `v0.7.9` GitHub assets for an exact install.
 
-1. Verify the immutable release exists: https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.9
-2. Use the exact `v0.7.9` asset and `.sha256` sidecar documented in
-   [getting started](./getting-started.md#install)
-3. On macOS, use the direct GitHub asset for `v0.7.9`, or use the tap, trust,
-   and fully qualified formula commands for the separately reviewed `v0.7.8`
-   Homebrew distribution.
+1. Select the matching asset in [getting started](./getting-started.md#install).
+2. Verify its adjacent `.sha256` checksum before executing either binary.
+3. Check both binary versions after installation.
 
 ## CI/CD Usage
 

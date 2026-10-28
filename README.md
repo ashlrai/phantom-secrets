@@ -589,12 +589,7 @@ $ git checkout 7a51ce512ec4aee12cc29ff859036af63fbe93db
 $ cargo build --release --locked --bin phantom --bin phantom-mcp
 ```
 
-Do not treat unpinned package-manager commands as `v0.7.9`. In the exact
-2026-09-29 registry snapshot, npm `latest` remains `0.6.0`; the immutable npm `0.7.4` wrappers
-exist only under `release-candidate` after failing cross-platform acceptance.
-No npm `0.7.9`, crates.io `0.7.9`, or MCP Registry `0.7.9` publication is
-represented by this GitHub release receipt. Homebrew is separately published
-and verified through its tap, which now installs `v0.7.9` (requeried 2026-10-12).
+See [distribution status](docs/distribution-status.md) for dated npm, Homebrew, crates.io, and MCP Registry evidence. Prefer the checksum-verified `v0.7.9` GitHub assets for an exact install.
 
 ### Release-state snapshot
 
@@ -606,12 +601,9 @@ and verified through its tap, which now installs `v0.7.9` (requeried 2026-10-12)
 > attestations, and all six native release rows are bound to that immutable
 > release record by tag-bound workflow
 > [34153902556](https://github.com/ashlrai/phantom-secrets/actions/runs/34153902556).
-> Exact public registry endpoints were requeried on 2026-09-29. The Homebrew
-> formula now installs `v0.7.9` (requeried 2026-10-12);
-> npm `latest` is `0.7.9` as of 2026-10-12 (it was `0.6.0` at this snapshot), and the npm
-> `0.7.4` wrappers remain quarantined under `release-candidate` after failed
-> npm-channel acceptance. The GitHub receipt alone does not prove the separately
-> verified Homebrew formula, an npm or crates.io package, MCP Registry entry, hosted-service
+> See [distribution status](docs/distribution-status.md) for the separately dated
+> package-channel snapshot and its verification limits. The GitHub receipt alone
+> does not prove npm, Homebrew, crates.io, MCP Registry, or hosted-service
 > commissioning, provider activation, signing/notarization, certification, or
 > customer acceptance. See
 > [release readiness](docs/release-readiness.md) and
@@ -680,12 +672,7 @@ dependency, and the comparison is not a feature or platform-parity claim.
 
 **`apps/web`** contains the Next.js site and backend routes for cloud vault sync, GitHub device authentication, and Stripe billing. The repository source and local tests are separate evidence from the currently deployed state at [phm.dev](https://phm.dev).
 
-**Registry tracks**: npm `latest` currently resolves
-[`phantom-secrets`](https://www.npmjs.com/package/phantom-secrets) and
-[`phantom-secrets-mcp`](https://www.npmjs.com/package/phantom-secrets-mcp) at
-`0.6.0`. Exact `0.7.4` wrappers remain public only under `release-candidate`
-after failing native npm-channel acceptance; do not use that candidate as the
-reviewed `v0.7.9` GitHub release path.
+**Registry tracks**: See [distribution status](docs/distribution-status.md) for dated npm, Homebrew, crates.io, and MCP Registry evidence. Prefer the checksum-verified `v0.7.9` GitHub assets for an exact install.
 
 CI runs locked, all-target workspace builds and tests on macOS, Linux, and Windows runner environments, plus formatting, Clippy, and npm release-mapping checks. Release builds and native end-to-end acceptance are separate evidence layers; see [Platform support](docs/platform-support.md).
 

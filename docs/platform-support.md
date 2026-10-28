@@ -18,8 +18,8 @@ documentation tranche. The immutable `v0.7.9` GitHub release resolves to
 native-release rows and release attestations passed in
 [workflow 34153902556](https://github.com/ashlrai/phantom-secrets/actions/runs/34153902556). That
 does not validate the npm wrapper installation path. In the exact 2026-09-29
-registry snapshot, the `0.7.4` candidate failed on all six targets, npm `latest` remains `0.6.0`,
-and no exact npm `0.7.9` acceptance receipt is claimed.
+registry snapshot, the `0.7.4` candidate failed on all six targets, npm `latest` was `0.6.0`,
+and no exact npm `0.7.9` acceptance receipt is claimed. See [distribution status](distribution-status.md) for the later package-channel snapshot.
 
 ## Current matrix
 
@@ -155,17 +155,12 @@ acceptance and never place provider client secrets on the command line.
 
 - The reviewed `v0.7.9` source build checks out
   `7a51ce512ec4aee12cc29ff859036af63fbe93db` and runs
-  `cargo build --release --locked --bin phantom --bin phantom-mcp`. An unpinned
-  crates.io install currently resolves the older `0.5.1` track.
-- The npm packages' `latest` tags currently resolve `0.6.0`. Exact `0.7.4`
-  wrappers exist only under `release-candidate` and failed the six-target npm
-  acceptance gate; they are not the reviewed `v0.7.9` GitHub release path.
+  `cargo build --release --locked --bin phantom --bin phantom-mcp`. See [distribution status](distribution-status.md) for the dated crates.io snapshot.
+- See [distribution status](distribution-status.md) for dated npm, Homebrew, crates.io, and MCP Registry evidence. Prefer the checksum-verified `v0.7.9` GitHub assets for an exact install.
 - `scripts/install.sh` supports macOS and GNU Linux targets. Native Windows uses
   `scripts/install.ps1`; both scripts verify bounded HTTPS downloads, strict
   sidecar checksums, archive shape, and binary identity before promotion.
-- The Homebrew formula still publishes the previous reviewed `v0.7.8` as a separately managed
-  distribution surface. The repository's release workflow does not
-  automatically update a tap.
+- Homebrew is independently published; the repository release workflow does not automatically update a tap. See [distribution status](distribution-status.md) for dated npm, Homebrew, crates.io, and MCP Registry evidence. Prefer the checksum-verified `v0.7.9` GitHub assets for an exact install.
 
 ## Configured and additional native acceptance
 
