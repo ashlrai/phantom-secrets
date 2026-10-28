@@ -32,9 +32,11 @@ PASS a pull request that commits a raw dotenv value fails `phantom check`
 COMPLETE: GitHub Actions secret gate recipe (4 checks)
 ```
 
+<!-- fresh:begin examples-gate-verified-release -->
 This recipe passes against both the v0.7.9 release and the workspace build.
 The install step in the workflow was also run as written on Linux x86_64
 (`gh release download`, `sha256sum -c`, `phantom --version` → `phantom 0.7.9`).
+<!-- fresh:end -->
 
 ## Scope
 
