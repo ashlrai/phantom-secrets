@@ -47,6 +47,16 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
   `.vN` suffix changes only when the JSON shape breaks. `schema_version`
   (currently 1) and `kind` (`phantom.agent.preflight`) stay so older readers
   keep working.
+
+### Added (`phantom status --json` schema id)
+
+- The status document now carries `"kind": "phantom.status"`, the same
+  document-id convention `phantom agent doctor --json` uses
+  (`phantom.agent.preflight`), so an orchestrator can distinguish this
+  contract from other Phantom JSON documents that share `schema_version: 1`.
+  The change is additive within schema version 1: consumers keep ignoring
+  unknown fields, and a build predating `kind` simply reports as unknown
+  status to a consumer that requires it. See `docs/hub-status-contract.md`.
 ### Fixed (monthly rotation schedules follow calendar months)
 
 - A `monthly` rotation schedule counted 30-day blocks from 1970, so a schedule
