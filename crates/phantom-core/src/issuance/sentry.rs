@@ -637,7 +637,10 @@ mod tests {
     #[test]
     fn non_2xx_exchange_surfaces_summarized_error() {
         let _g = issue_audit_guard();
-        let (base, _seen) = spawn_stub(403, r#"{"detail":"Invalid grant","type":"error"}"#);
+        let (base, _seen) = spawn_stub(
+            403,
+            r#"{"detail":"sntrys_FAKE_0123456789abcdefghij","type":"error"}"#,
+        );
         let ep = endpoints(&base);
         let http = reqwest::blocking::Client::new();
         let browser = super::super::browser::NoBrowser;
@@ -651,6 +654,9 @@ mod tests {
         };
         let err = SentryInstallFlow.issue(&request(None), &deps).unwrap_err();
         assert!(matches!(err, IssuanceError::Exchange { status: 403, .. }));
+        let logged = format!("{err} {err:?}");
+        assert!(!logged.contains("sntrys_FAKE"));
+        assert!(logged.contains("type=error"));
     }
 
     #[test]

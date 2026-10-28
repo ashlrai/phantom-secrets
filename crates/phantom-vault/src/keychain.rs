@@ -435,6 +435,7 @@ fn linux_store_from_marker(
 #[cfg(any(target_os = "linux", test))]
 fn validate_linux_backend_marker(bytes: &[u8], project_id: &str) -> Result<()> {
     let marker: LinuxBackendMarker = serde_json::from_slice(bytes).map_err(|error| {
+        let error = phantom_core::error::value_blind_json_error(&error);
         PhantomError::VaultError(format!(
             "Corrupt Linux vault backend marker; refusing to guess which credential store is authoritative: {error}"
         ))
@@ -647,6 +648,7 @@ where
         return Ok(BTreeMap::new());
     };
     serde_json::from_slice(contents.bytes()).map_err(|error| {
+        let error = phantom_core::error::value_blind_json_error(&error);
         PhantomError::VaultError(format!(
             "Corrupt keychain {label} sidecar {}: {error}",
             target.relative_path().display()
@@ -663,6 +665,7 @@ where
     let before = target.read_regular()?;
     let map = match before.as_ref() {
         Some(contents) => serde_json::from_slice(contents.bytes()).map_err(|error| {
+            let error = phantom_core::error::value_blind_json_error(&error);
             PhantomError::VaultError(format!(
                 "Corrupt keychain {label} sidecar {}: {error}",
                 target.relative_path().display()
@@ -1087,6 +1090,7 @@ impl KeychainVault {
 
         match entry.get_password() {
             Ok(data) => serde_json::from_str(&data).map_err(|e| {
+                let e = phantom_core::error::value_blind_json_error(&e);
                 PhantomError::VaultError(format!(
                     "Corrupt keychain index (try `phantom init` to rebuild): {e}"
                 ))
@@ -2756,5 +2760,47 @@ mod tests {
 
         vault.delete(name).expect("delete");
         assert!(vault.retrieve(name).is_err());
+    }
+}
+
+#[cfg(test)]
+mod error_redaction_tests {
+    use super::*;
+
+    #[test]
+    fn corrupt_sidecars_and_backend_marker_do_not_quote_rejected_values() {
+        use rand::RngCore;
+        let mut bytes = [0; 24];
+        rand::thread_rng().fill_bytes(&mut bytes);
+        let canary = hex::encode(bytes);
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let anchor = TrustedAnchor::open(&root).unwrap();
+        let target = anchor.target("metadata.json").unwrap();
+        std::fs::write(
+            root.join("metadata.json"),
+            format!("{{\"KEY\":\"{canary}\"}}"),
+        )
+        .unwrap();
+        let errors = [
+            load_sidecar_map::<SecretMetadata>(&target, "metadata").unwrap_err(),
+            load_sidecar_snapshot::<SecretMetadata>(&target, "metadata")
+                .err()
+                .unwrap(),
+            validate_linux_backend_marker(
+                format!("{{\"version\":\"{canary}\"}}").as_bytes(),
+                "project",
+            )
+            .unwrap_err(),
+        ];
+        for error in errors {
+            for rendered in [
+                format!("{error}"),
+                format!("{error:#}"),
+                format!("{error:?}"),
+            ] {
+                assert!(!rendered.contains(&canary), "stored payload was disclosed");
+            }
+        }
     }
 }

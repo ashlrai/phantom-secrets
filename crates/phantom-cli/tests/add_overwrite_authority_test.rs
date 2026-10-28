@@ -4,7 +4,7 @@ use assert_cmd::Command;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tempfile::TempDir;
 
 const VAULT_PASS: &str = "test-add-overwrite-authority-passphrase";
@@ -82,17 +82,14 @@ fn existing_name_is_denied_before_stdin_read_and_preserves_all_state() {
     // deriving the test vault key before reaching the existing-name check.
     // Keep stdin open long enough to distinguish that work from an actual
     // blocked read without turning ordinary runner load into a false failure.
-    let deadline = Instant::now() + Duration::from_secs(20);
-    loop {
-        if child.try_wait().expect("poll overwrite attempt").is_some() {
-            break;
-        }
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            panic!("existing-name add blocked waiting for stdin");
-        }
-        std::thread::sleep(Duration::from_millis(10));
+    if common::poll(Duration::from_secs(20), || {
+        child.try_wait().expect("poll overwrite attempt")
+    })
+    .is_none()
+    {
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("existing-name add blocked waiting for stdin");
     }
     drop(open_stdin);
 

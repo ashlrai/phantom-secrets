@@ -176,14 +176,15 @@ test("sitemap contains only canonical same-host public surfaces", () => {
     "/enterprise",
     "/government",
     "/security",
-    "/llms.txt",
-    "/llms-full.txt",
+    "/docs",
   ]) {
     assert.match(sitemap, new RegExp(`path: "${route.replace("/", "\\/")}"`));
   }
 
   assert.match(sitemap, /new URL\(path, SITE_URL\)\.toString\(\)/);
-  assert.match(sitemap, /lastModified: modified/);
+  assert.match(sitemap, /lastModified: gitLastModified\(process\.cwd\(\), files\)/);
+  assert.match(sitemap, /dynamic = "force-static"/);
+  assert.doesNotMatch(sitemap, /path: "[^\"]*\.(?:txt|json)"/);
   assert.doesNotMatch(sitemap, /github\.com|REPO_URL/);
   assert.doesNotMatch(sitemap, /\/api\/|\/dashboard|\/device|\/integrations\//);
   assert.doesNotMatch(sitemap, /new Date\(\)/);
