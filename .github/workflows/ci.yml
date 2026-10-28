@@ -41,7 +41,7 @@ jobs:
   changes:
     name: Classify changes
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 10
     outputs:
       rust: ${{ steps.classify.outputs.rust }}
       web: ${{ steps.classify.outputs.web }}
@@ -128,7 +128,7 @@ jobs:
     needs: changes
     if: github.event_name != 'pull_request' && github.event_name != 'merge_group' && needs.changes.outputs.rust == 'true'
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -269,7 +269,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -287,7 +287,7 @@ jobs:
   dependency-policy:
     name: Rust dependency policy
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 10
     permissions:
       contents: read
     steps:
@@ -321,7 +321,7 @@ jobs:
     # Same platform gate as the macOS/Windows Test legs.
     if: github.event_name != 'pull_request' && github.event_name != 'merge_group' && needs.changes.outputs.rust == 'true' && needs.changes.outputs.platform == 'true'
     runs-on: windows-11-vs2026-arm
-    timeout-minutes: 45
+    timeout-minutes: 15
     permissions:
       contents: read
     steps:
@@ -349,7 +349,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 10
     permissions:
       contents: read
     steps:
@@ -384,7 +384,7 @@ jobs:
     needs: changes
     if: github.event_name != 'pull_request' && github.event_name != 'merge_group' && needs.changes.outputs.web == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 15
     permissions:
       contents: read
     defaults:
@@ -461,7 +461,7 @@ jobs:
   secret-scan:
     name: Source secret scan
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 10
     permissions:
       contents: read
     steps:
@@ -502,7 +502,7 @@ jobs:
     needs: changes
     if: github.event_name != 'pull_request' && github.event_name != 'merge_group' && needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 15
     permissions:
       contents: read
     steps:
@@ -569,7 +569,7 @@ jobs:
     needs: changes
     if: github.event_name != 'pull_request' && github.event_name != 'merge_group' && needs.changes.outputs.docs_commands == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 10
     permissions:
       contents: read
     steps:
