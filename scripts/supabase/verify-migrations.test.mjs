@@ -29,11 +29,11 @@ test("the committed migration set matches its ordered digest manifest", async ()
   const result = await verifyMigrationManifest({
     supabaseDirectory: projectSupabaseDirectory,
   });
-  assert.equal(result.count, 11);
+  assert.equal(result.count, 12);
   assert.equal(result.files[0], "001_initial.sql");
   assert.equal(
     result.files.at(-1),
-    "20260902000000_harden_rls_and_function_paths.sql",
+    "20260903180004_vercel_oauth_security_foundation.sql",
   );
 });
 
@@ -177,6 +177,14 @@ test("runtime authority assertions preserve the hardened user boundary", async (
   assert.match(assertions, /permissive = 'PERMISSIVE'/);
   assert.match(assertions, /NOT proc\.prosecdef/);
   assert.match(assertions, /'search_path=pg_catalog' = ANY\(proc\.proconfig\)/);
+  assert.match(assertions, /platform_tokens must not retain a plaintext access_token column/);
+  assert.match(assertions, /relation\.relname IN \('oauth_states', 'platform_tokens'\)/);
+  assert.match(assertions, /tablename IN \('oauth_states', 'platform_tokens'\)/);
+  assert.match(assertions, /ARRAY\['SELECT', 'INSERT', 'UPDATE', 'DELETE'\]/);
+  assert.match(assertions, /service role OAuth table grants are incomplete/);
+  assert.match(assertions, /consume_vercel_oauth_state\(bytea, uuid\)/);
+  assert.match(assertions, /issue_vercel_oauth_state\(bytea, uuid\)/);
+  assert.match(assertions, /public clients must not execute OAuth state consumption/);
 });
 
 test("local configuration pins Postgres and disables mutable seed inputs", async () => {

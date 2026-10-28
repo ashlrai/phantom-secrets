@@ -35,8 +35,12 @@ pub struct DopplerImporter;
 impl Importer for DopplerImporter {
     fn parse(input: &[u8]) -> Result<SecretMap> {
         let input = utf8_export_body("Doppler", input)?;
-        let obj = parse_json_object_entries(input)
-            .map_err(|e| anyhow::anyhow!("Doppler JSON parse error: {}", e))?;
+        let obj = parse_json_object_entries(input).map_err(|e| {
+            anyhow::anyhow!(
+                "Doppler JSON parse error: {}",
+                crate::error::value_blind_json_error(&e)
+            )
+        })?;
         // Meta-keys are skipped below, so only secret names must be unique.
         let secret_names = || {
             obj.iter()

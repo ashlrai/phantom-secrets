@@ -11,6 +11,8 @@ use std::process::Stdio;
 
 const VAULT_PASSPHRASE_ENV: &str = "PHANTOM_VAULT_PASSPHRASE";
 
+mod coverage;
+
 fn header_auth_only() -> bool {
     matches!(
         std::env::var("PHANTOM_PROXY_HEADER_AUTH_ONLY")
@@ -45,7 +47,9 @@ pub fn run(
     }
 
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(run_async(cmd, env, bind_source, quiet))
+    rt.block_on(run_async(cmd, env, bind_source, quiet, |config| {
+        ServiceRegistry::from_config(&config.services)
+    }))
 }
 
 /// Actionable, value-free next steps for the connection-string denial.
@@ -76,6 +80,7 @@ async fn run_async(
     env_flag: Option<&str>,
     bind_source: Option<&std::path::Path>,
     quiet: bool,
+    registry_from_config: impl FnOnce(&PhantomConfig) -> ServiceRegistry,
 ) -> Result<()> {
     let working_dir = std::env::current_dir()?;
     // Custody (config namespace, managed dotenv, env scope) comes from the
@@ -120,6 +125,11 @@ async fn run_async(
         .map(|entry| entry.key.clone())
         .collect();
 
+    // A route for a provider does not imply that its CLI understands our
+    // base URL or authentication protocol. Refuse known incompatible direct
+    // invocations before opening the vault, using protected names only.
+    coverage::validate_command(cmd, &preflight_protected_keys)?;
+
     // Connection strings need a protocol-aware broker. Detect them from the
     // protected dotenv/config contract before opening or reading the vault, so
     // a missing entry can never turn this fail-closed decision into a bypass.
@@ -158,6 +168,8 @@ async fn run_async(
         .filter(|entry| PhantomToken::is_phantom_token(&entry.value))
         .map(|entry| entry.key.clone())
         .collect();
+
+    coverage::validate_command(cmd, &protected_env_keys)?;
 
     let (child_scrub_env, never_reintroduce) =
         child_environment_policy(&config, &protected_env_keys);
@@ -227,7 +239,10 @@ async fn run_async(
     }
 
     // Build service registry from config
-    let registry = ServiceRegistry::from_config(&config.services);
+    // Keep destination construction private and after route validation. Tests
+    // can supply a loopback registry without adding a runtime override that
+    // could redirect credential-bearing requests in the shipped CLI.
+    let registry = registry_from_config(&config);
     // Export base-URL overrides only for routes this session can serve. An
     // SDK pointed at a route without a loaded credential would receive a
     // proxy 503 for every call instead of reaching its provider.
@@ -370,12 +385,8 @@ async fn run_async(
         );
     }
 
-    progress!(
-        quiet,
-        "{} Launching: {}\n",
-        "->".blue().bold(),
-        cmd.join(" ").cyan().bold()
-    );
+    // Arguments and executable paths may contain credentials. Keep progress value-free.
+    progress!(quiet, "{} Launching: child process\n", "->".blue().bold());
 
     // Spawn the child process with proxy env vars
     let program = &cmd[0];
@@ -422,7 +433,7 @@ async fn run_async(
             // Stop the proxy first: its session tokens must not outlive a
             // launch that never happened.
             proxy.shutdown().await;
-            let (code, message) = spawn_failure(program, &error);
+            let (code, message) = spawn_failure(&error);
             eprintln!("{} {message}", "error".red().bold());
             std::process::exit(code);
         }
@@ -647,7 +658,7 @@ async fn run_command_directly(cmd: &[String], scrub_env_keys: &HashSet<String>) 
     {
         Ok(status) => status,
         Err(error) => {
-            let (code, message) = spawn_failure(program, &error);
+            let (code, message) = spawn_failure(&error);
             eprintln!("{} {message}", "error".red().bold());
             std::process::exit(code);
         }
@@ -690,19 +701,17 @@ pub(super) fn validate_routes_for_launch(config: &PhantomConfig) -> Result<()> {
 /// Exit code and message for a child that could not be started, following
 /// the shell convention agents already branch on: 127 when the program is not
 /// found, 126 when it exists but cannot be executed.
-fn spawn_failure(program: &str, error: &std::io::Error) -> (i32, String) {
+fn spawn_failure(error: &std::io::Error) -> (i32, String) {
     match error.kind() {
         std::io::ErrorKind::NotFound => (
             127,
-            format!(
-                "Command not found: {program}. Check that it is installed and on PATH, or pass its full path after `--`."
-            ),
+            "Command not found. Check that it is installed and on PATH, or pass its full path after `--`.".to_string(),
         ),
         std::io::ErrorKind::PermissionDenied => (
             126,
-            format!("Command is not executable: {program}. Check its permissions."),
+            "Command is not executable. Check its permissions.".to_string(),
         ),
-        _ => (1, format!("Failed to start command {program}: {error}")),
+        _ => (1, format!("Failed to start command: {}", error.kind())),
     }
 }
 
@@ -873,6 +882,10 @@ impl SignalForwarder {
     }
 }
 
+#[cfg(all(test, unix))]
+#[path = "exec_github_tests.rs"]
+mod github_tests;
+
 #[cfg(test)]
 mod tests {
     /// A SIGTERM delivered to phantom while the child runs used to kill
@@ -1017,23 +1030,28 @@ mod tests {
 
     #[test]
     fn spawn_failure_uses_shell_exit_codes_and_names_the_fix() {
-        let (code, message) = super::spawn_failure(
-            "phantom-missing-tool",
-            &std::io::Error::from(std::io::ErrorKind::NotFound),
-        );
+        let (code, message) =
+            super::spawn_failure(&std::io::Error::from(std::io::ErrorKind::NotFound));
         assert_eq!(code, 127);
-        assert!(
-            message.contains("Command not found: phantom-missing-tool"),
-            "{message}"
-        );
+        assert!(message.contains("Command not found"), "{message}");
         assert!(message.contains("PATH"), "{message}");
 
-        let (code, message) = super::spawn_failure(
-            "./script.sh",
-            &std::io::Error::from(std::io::ErrorKind::PermissionDenied),
-        );
+        let (code, message) =
+            super::spawn_failure(&std::io::Error::from(std::io::ErrorKind::PermissionDenied));
         assert_eq!(code, 126);
         assert!(message.contains("not executable"), "{message}");
+    }
+
+    #[test]
+    fn spawn_failure_does_not_echo_custom_error_details() {
+        let detail = "synthetic-private-error-detail";
+        let (code, message) = super::spawn_failure(&std::io::Error::other(detail));
+        assert_eq!(code, 1);
+        assert!(
+            !message.contains(detail),
+            "spawn error disclosed private details"
+        );
+        assert!(message.contains("Failed to start command"));
     }
 
     #[cfg(unix)]

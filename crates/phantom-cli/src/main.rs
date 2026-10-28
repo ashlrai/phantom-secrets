@@ -277,6 +277,10 @@ enum Commands {
     /// List stored secret names (never shows values)
     #[command(next_help_heading = "Daily use")]
     List {
+        /// Only list this environment (for example dev, staging, prod, or default).
+        /// Omit to list all environments. Never changes the active environment.
+        #[arg(long, value_name = "ENV")]
+        scope: Option<String>,
         /// Emit JSON instead of the human-readable table
         #[arg(long)]
         json: bool,
@@ -340,6 +344,9 @@ enum Commands {
         /// Rename the secret in the target project
         #[arg(long, alias = "as")]
         rename: Option<String>,
+        /// Allow copying between projects whose `owner` labels differ
+        #[arg(long)]
+        allow_cross_owner: bool,
     },
 
     /// Generate .env.example for team onboarding
@@ -1316,7 +1323,13 @@ fn run() -> anyhow::Result<()> {
             json,
             show_expiry,
             min_anomaly_score,
-        } => commands::list::run_with_expiry(json, show_expiry, min_anomaly_score),
+            scope,
+        } => match scope.as_deref() {
+            Some(scope) => {
+                commands::list::run_with_scope(json, show_expiry, min_anomaly_score, Some(scope))
+            }
+            None => commands::list::run_with_expiry(json, show_expiry, min_anomaly_score),
+        },
         Commands::Add {
             name,
             value,
@@ -1537,7 +1550,12 @@ fn run() -> anyhow::Result<()> {
         Commands::Why { key, strict } => commands::why::run(&key, global_json, strict),
         Commands::Wrap { only, skip } => commands::wrap::run(&only, &skip, cli.quiet),
         Commands::Unwrap => commands::unwrap::run(cli.quiet),
-        Commands::Copy { name, to, rename } => commands::copy::run(&name, &to, &rename),
+        Commands::Copy {
+            name,
+            to,
+            rename,
+            allow_cross_owner,
+        } => commands::copy::run(&name, &to, &rename, allow_cross_owner),
         Commands::Audit { action } => match action {
             AuditAction::Show {
                 last,

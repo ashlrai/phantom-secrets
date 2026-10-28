@@ -373,8 +373,9 @@ fn run_show_at(
             writeln!(out, "{}", line)?;
         }
     } else {
+        // Into `out`, not stdout: with --output, `out` is the file.
         for line in &window {
-            print_event(line);
+            write_event(line, out, err)?;
         }
     }
 
@@ -1598,37 +1599,50 @@ pub fn run_alerts(last: usize, backfill: bool, json: bool) -> Result<()> {
         Box::new(crate::commands::audit::NullDispatch),
     );
 
-    let alerts = alerter
-        .load_recent_alerts(last)
+    let recent = alerter
+        .scan_recent_alerts(last)
         .map_err(|e| anyhow::anyhow!("Failed to read alerts: {e}"))?;
+    write_alert_list(&mut std::io::stdout().lock(), recent, json)?;
+    Ok(())
+}
 
-    if alerts.is_empty() {
+/// Print the listed alerts as JSON or text. The header counts every alert in
+/// the file, and the empty state appears only when the file has none.
+fn write_alert_list(
+    out: &mut dyn Write,
+    recent: phantom_core::leak_correlation::RecentAlerts,
+    json: bool,
+) -> Result<()> {
+    let alerts = recent.alerts;
+
+    if recent.total == 0 {
         if json {
-            println!("[]");
+            writeln!(out, "[]")?;
         } else {
-            println!(
+            writeln!(
+                out,
                 "{}  No leak alerts found. Run with {} to enable alerting.",
                 "->".blue().bold(),
                 "`phantom audit alerts --backfill`".cyan()
-            );
+            )?;
         }
         return Ok(());
     }
 
     if json {
-        let out = serde_json::to_string_pretty(&alerts)
+        let listed = serde_json::to_string_pretty(&alerts)
             .map_err(|e| anyhow::anyhow!("Serialisation error: {e}"))?;
-        println!("{}", out);
+        writeln!(out, "{listed}")?;
         return Ok(());
     }
 
-    println!(
-        "{}  {} leak alert(s) (most recent {} shown)",
+    writeln!(
+        out,
+        "{}  {}",
         "->".blue().bold(),
-        alerts.len().to_string().red().bold(),
-        last.min(alerts.len()),
-    );
-    println!();
+        alerts_header(recent.total, alerts.len())
+    )?;
+    writeln!(out)?;
 
     for alert in &alerts {
         let confidence_str = if alert.confidence >= 0.9 {
@@ -1637,7 +1651,8 @@ pub fn run_alerts(last: usize, backfill: bool, json: bool) -> Result<()> {
             format!("{:.2}", alert.confidence).yellow().to_string()
         };
 
-        println!(
+        writeln!(
+            out,
             "  {}  secret={}  location={}  confidence={}  events={}  backends={}",
             format_unix_ts(alert.alerted_at).dimmed(),
             alert.secret_name.bold(),
@@ -1645,16 +1660,22 @@ pub fn run_alerts(last: usize, backfill: bool, json: bool) -> Result<()> {
             confidence_str,
             alert.event_count,
             alert.backends_notified.join(",").dimmed(),
-        );
-        println!(
+        )?;
+        writeln!(
+            out,
             "    {}  {}",
             "remediation:".yellow().bold(),
             alert.remediation.dimmed(),
-        );
-        println!();
+        )?;
+        writeln!(out)?;
     }
 
     Ok(())
+}
+
+/// The `audit alerts` header: every alert in the file, and how many are listed.
+fn alerts_header(total: usize, shown: usize) -> String {
+    format!("{total} leak alert(s) (most recent {shown} shown)")
 }
 
 /// Load alerting config from the nearest `.phantom.toml`, falling back to
@@ -2005,15 +2026,23 @@ fn matches_filters(line: &str, op: Option<&str>, name: Option<&str>) -> bool {
 ///
 /// Format: `[YYYY-MM-DD HH:MM:SS]  op  name  (process pid)`
 fn print_event(line: &str) {
+    // A closed stdout or stderr ends the tail like println! would.
+    write_event(line, &mut std::io::stdout(), &mut std::io::stderr())
+        .expect("failed to write audit event");
+}
+
+/// One human-readable event line into `out`; a malformed line is reported
+/// to `err` and skipped.
+fn write_event(line: &str, out: &mut dyn Write, err: &mut dyn Write) -> std::io::Result<()> {
     let v: Value = match serde_json::from_str(line) {
         Ok(v) => v,
         Err(_) => {
-            eprintln!(
+            return writeln!(
+                err,
                 "{} Skipping malformed line: {}",
                 "warn".yellow().bold(),
                 line
             );
-            return;
         }
     };
 
@@ -2036,13 +2065,14 @@ fn print_event(line: &str) {
         format!("  {}", name.bold())
     };
 
-    println!(
+    writeln!(
+        out,
         "{}  {}{}  {}",
         ts_str.dimmed(),
         op.cyan(),
         name_part,
         format!("({} {})", process, pid).dimmed()
-    );
+    )
 }
 
 /// Format a Unix epoch (seconds) as `YYYY-MM-DD HH:MM:SS` using only std.
@@ -2088,6 +2118,44 @@ mod tests {
     use super::*;
     use std::io::Write;
     use tempfile::tempdir;
+
+    #[test]
+    fn alert_list_header_counts_every_alert_on_file() {
+        use phantom_core::leak_correlation::{LeakAlert, RecentAlerts};
+        let alert = |alerted_at: u64| LeakAlert {
+            incident_id: format!("incident-{alerted_at}"),
+            secret_name: "STRIPE_NAME".to_string(),
+            location_label: "body".to_string(),
+            confidence: 0.95,
+            event_count: 2,
+            alerted_at,
+            backends_notified: vec!["webhook".to_string()],
+            remediation: "rotate it".to_string(),
+        };
+        let listed = |recent: RecentAlerts| {
+            let mut out = Vec::new();
+            write_alert_list(&mut out, recent, false).unwrap();
+            String::from_utf8(out).unwrap()
+        };
+
+        let capped = listed(RecentAlerts {
+            alerts: vec![alert(4), alert(5)],
+            total: 5,
+            unparsable_lines: 0,
+        });
+        assert!(capped.contains("5 leak alert(s) (most recent 2 shown)"));
+
+        // `--last 0` with alerts on file is not "no alerts".
+        let none_listed = listed(RecentAlerts {
+            alerts: Vec::new(),
+            total: 3,
+            unparsable_lines: 0,
+        });
+        assert!(none_listed.contains("3 leak alert(s) (most recent 0 shown)"));
+        assert!(!none_listed.contains("No leak alerts found"));
+
+        assert!(listed(RecentAlerts::default()).contains("No leak alerts found"));
+    }
 
     #[test]
     fn export_range_with_no_matches_prints_valid_json() {
@@ -2504,6 +2572,18 @@ mod tests {
 
         let (stdout, stderr) = show_output(&path, Some("vault.delete"), false, false);
         assert!(stdout.contains("No matching audit events"));
+        assert!(stderr.is_empty());
+    }
+
+    /// `audit show --output FILE` hands `run_show_at` the file's buffer as
+    /// `out`. Human-readable events went to stdout instead, so the file was
+    /// empty and the summary said "wrote 0 line(s)".
+    #[test]
+    fn show_text_writes_events_into_out() {
+        let tmp = tempdir().unwrap();
+        let path = write_fixture(tmp.path(), &[LINE_STORE, LINE_PUSH]);
+        let (stdout, stderr) = show_output(&path, None, false, false);
+        assert_eq!(stdout.lines().count(), 2);
         assert!(stderr.is_empty());
     }
 
