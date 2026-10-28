@@ -246,11 +246,14 @@ impl PhantomMcpServer {
 
     /// Compliance `env_clean`: `(pass, detail)` over every regular dotenv the
     /// project holds (the conventional names, plus `dotenv_path` once
-    /// configured). Names only, never values, and the vault is not opened. A
-    /// file that cannot be read safely (a symlink, a parse error) makes the
-    /// result indeterminate, which fails the check rather than passing it.
-    /// `.phantom.toml` itself is read only as a regular, non-symlink file, as
-    /// `phantom check` reads it, so the two agree on the scan list.
+    /// configured). Names and comment line numbers only, never values, and
+    /// the vault is not opened. A commented-out secret assignment or a
+    /// comment holding credential-shaped text is unprotected plaintext, as
+    /// `phantom check` reports it. A file that cannot be read safely (a
+    /// symlink, a parse error) makes the result indeterminate, which fails
+    /// the check rather than passing it. `.phantom.toml` itself is read only
+    /// as a regular, non-symlink file, as `phantom check` reads it, so the
+    /// two agree on the scan list.
     fn env_clean_check(&self) -> (bool, String) {
         let configured = match read_project_config(&self.config_path()) {
             Ok(config) => config.and_then(|config| config.phantom.dotenv_path),
@@ -291,9 +294,21 @@ impl PhantomMcpServer {
                 );
             }
             let real = dotenv.real_secret_entries();
-            if !real.is_empty() {
-                total += real.len();
-                let keys: Vec<&str> = real.iter().map(|e| e.key.as_str()).collect();
+            let commented = dotenv.commented_secret_assignments();
+            let comment_lines = dotenv.credential_comment_lines();
+            if !(real.is_empty() && commented.is_empty() && comment_lines.is_empty()) {
+                total += real.len() + commented.len() + comment_lines.len();
+                // A commented name carries its line, so it never collides
+                // with a live entry of the same key.
+                let mut keys: Vec<String> = real.iter().map(|entry| entry.key.clone()).collect();
+                keys.extend(commented.iter().map(|(key, line)| {
+                    phantom_core::report::commented_assignment_name(key, *line)
+                }));
+                keys.extend(
+                    comment_lines
+                        .iter()
+                        .map(|line| phantom_core::report::comment_credential_name(*line)),
+                );
                 findings.push(format!("{name}: {}", keys.join(", ")));
             }
             scanned.push(name);
@@ -3006,18 +3021,52 @@ impl PhantomMcpServer {
                             continue;
                         }
                         let real = dotenv.real_secret_entries();
-                        if !real.is_empty() {
+                        let commented = dotenv.commented_secret_assignments();
+                        let comment_lines = dotenv.credential_comment_lines();
+                        let issue_count = real.len() + commented.len() + comment_lines.len();
+                        if issue_count > 0 {
                             output.push_str(&format!(
                                 "{}: {} unprotected secret(s)\n",
-                                filename,
-                                real.len()
+                                filename, issue_count
                             ));
+                            let mut reported = std::collections::BTreeSet::new();
                             for entry in &real {
+                                reported.insert(entry.key.clone());
                                 output.push_str(&format!("  - {}\n", entry.key));
                                 findings.push(CheckFinding {
                                     kind: "dotenv",
                                     path: Some(filename.to_string()),
                                     name: Some(entry.key.clone()),
+                                    label: None,
+                                    pattern: None,
+                                });
+                            }
+                            // A comment is not an entry, so a credential
+                            // left in one is plaintext the entry scan
+                            // never sees. The reported name carries its
+                            // line, so it never collides with a live entry
+                            // of the same key and each line is reported.
+                            for (key, line) in &commented {
+                                let shown =
+                                    phantom_core::report::commented_assignment_name(key, *line);
+                                if reported.insert(shown.clone()) {
+                                    output.push_str(&format!("  - {shown}\n"));
+                                    findings.push(CheckFinding {
+                                        kind: "dotenv",
+                                        path: Some(filename.to_string()),
+                                        name: Some(shown),
+                                        label: None,
+                                        pattern: None,
+                                    });
+                                }
+                            }
+                            for line in &comment_lines {
+                                let shown = phantom_core::report::comment_credential_name(*line);
+                                output.push_str(&format!("  - {shown}\n"));
+                                findings.push(CheckFinding {
+                                    kind: "dotenv",
+                                    path: Some(filename.to_string()),
+                                    name: Some(shown),
                                     label: None,
                                     pattern: None,
                                 });
@@ -4834,7 +4883,7 @@ impl PhantomMcpServer {
             holds some entries, the same rule as `phantom agent doctor`), \
             audit_enabled (PHANTOM_AUDIT env var is set), \
             precommit_installed (git pre-commit hook contains the current local-only phantom check), \
-            env_clean (no unprotected real secrets in any dotenv phantom check scans: .env, .env.local, .env.development, .env.development.local, .env.production, .env.production.local, .env.test, .env.test.local and the configured dotenv_path; read without opening the vault, so it is reported before init and with a locked vault), \
+            env_clean (no unprotected real secrets in any dotenv phantom check scans: .env, .env.local, .env.development, .env.development.local, .env.production, .env.production.local, .env.test, .env.test.local and the configured dotenv_path; commented-out secret assignments and comments holding credential-shaped text count as unprotected; read without opening the vault, so it is reported before init and with a locked vault), \
             secrets_have_ttl (every vault secret has an expiry (expires_at) or a rotation policy set; \
             false when not every secret can be read; the detail gives the exact count and names at most 20). \
             Each check is true/false with an optional detail string. \
@@ -10632,6 +10681,44 @@ mod tests {
             serde_json::json!({"mode":"worktree","clean":true,"findings":[],"warnings":[]})
         );
         assert_no_value_leak(&result, &[token.as_str()]);
+    }
+
+    /// A commented-out secret is plaintext the entry scan never sees; the
+    /// check reports it by name and line like the CLI does.
+    #[test]
+    fn check_worktree_reports_commented_out_secrets() {
+        let _environment = TestEnvironment::new();
+        let dir = TempDir::new().unwrap();
+        let value = plaintext_value();
+        std::fs::write(
+            dir.path().join(".env"),
+            format!("NODE_ENV=production\n# AWS_SECRET_ACCESS_KEY={value}\n# note: ghp_{value}\n"),
+        )
+        .unwrap();
+        let server = PhantomMcpServer::with_dir(dir.path().to_path_buf());
+        let result = server
+            .phantom_check(Parameters(CheckParams { runtime: false }))
+            .unwrap();
+        let report = structured_report(&result);
+        assert_eq!(report["clean"], false);
+        let names: Vec<&str> = report["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|finding| {
+                assert_eq!(finding["kind"], "dotenv");
+                assert_eq!(finding["path"], ".env");
+                finding["name"].as_str().unwrap()
+            })
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "AWS_SECRET_ACCESS_KEY (commented out, line 2)",
+                "credential in a comment (line 3)",
+            ]
+        );
+        assert_no_value_leak(&result, &[&value]);
     }
 
     /// MCP `phantom_check` must judge the same files as `phantom check`: every
@@ -16957,6 +17044,51 @@ mod tests {
         assert!(!pass, "{detail}");
         assert!(
             detail.contains(".env.development.local: STRIPE_SECRET_KEY"),
+            "{detail}"
+        );
+        assert!(!detail.contains(&value), "{detail}");
+    }
+
+    /// A commented-out assignment is still plaintext; the value has no
+    /// token prefix a shape scan could catch, so the comment must be
+    /// judged like an entry.
+    #[test]
+    fn compliance_env_clean_flags_commented_out_secrets() {
+        let _environment = TestEnvironment::new();
+        let (server, dir) = setup_initialized_project();
+        assert!(env_clean(&server).0, "a freshly protected .env is clean");
+
+        let value = plaintext_value();
+        std::fs::write(
+            dir.path().join(".env.local"),
+            format!("NODE_ENV=production\n# AWS_SECRET_ACCESS_KEY={value}\n"),
+        )
+        .unwrap();
+        let (pass, detail) = env_clean(&server);
+        assert!(!pass, "{detail}");
+        assert!(
+            detail.contains(".env.local: AWS_SECRET_ACCESS_KEY (commented out, line 2)"),
+            "{detail}"
+        );
+        assert!(!detail.contains(&value), "{detail}");
+    }
+
+    /// A prose comment holding credential-shaped text is unprotected
+    /// plaintext too, reported by line because there is no key to name.
+    #[test]
+    fn compliance_env_clean_flags_a_credential_in_a_comment() {
+        let _environment = TestEnvironment::new();
+        let (server, dir) = setup_initialized_project();
+        let value = format!("ghp_{}", plaintext_value());
+        std::fs::write(
+            dir.path().join(".env.local"),
+            format!("NODE_ENV=production\n# old token {value}\n"),
+        )
+        .unwrap();
+        let (pass, detail) = env_clean(&server);
+        assert!(!pass, "{detail}");
+        assert!(
+            detail.contains("credential in a comment (line 2)"),
             "{detail}"
         );
         assert!(!detail.contains(&value), "{detail}");

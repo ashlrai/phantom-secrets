@@ -572,6 +572,32 @@ impl DotenvFile {
             .collect()
     }
 
+    /// Physical (1-based) line numbers of comments that hold
+    /// credential-shaped text but are not commented-out secret
+    /// assignments (those [`Self::commented_secret_assignments`] names by
+    /// key): prose notes such as `# old key: <token>` and inline comments
+    /// after a value such as `PORT=3000 # staging key <token>`. A comment
+    /// line already named by [`Self::commented_secret_assignments`] is not
+    /// repeated here, so the two reports stay disjoint. Lines inside a
+    /// multi-line quoted value are not comments and are never returned.
+    pub fn credential_comment_lines(&self) -> Vec<usize> {
+        let named: BTreeSet<usize> = self
+            .commented_secret_assignments()
+            .into_iter()
+            .map(|(_, line)| line)
+            .collect();
+        let mut lines: Vec<usize> = self
+            .credential_comment_spans()
+            .into_iter()
+            .chain(self.credential_prose_comment_spans(None))
+            .map(|span| physical_line_number(&self.source, span.start))
+            .filter(|line| !named.contains(line))
+            .collect();
+        lines.sort_unstable();
+        lines.dedup();
+        lines
+    }
+
     /// Value spans of commented-out assignments that classify as secrets.
     ///
     /// A full-line comment such as `# OPENAI_API_KEY=<old value>` is not an
@@ -1110,6 +1136,20 @@ fn comment_holds_credential(comment: &str) -> bool {
         }
         found
     })
+}
+
+/// Whether a single dotenv `line` carries a comment that
+/// [`DotenvFile::commented_secret_assignments`] or
+/// [`DotenvFile::credential_comment_lines`] would report: a commented-out
+/// secret assignment, or prose/inline comment text a value rule calls a
+/// credential. Callers that report those comments by name or line use
+/// this to keep a second scan of the same line from reporting the
+/// credential again.
+pub fn line_holds_credential_comment(line: &str) -> bool {
+    let parsed = DotenvFile::parse_str(line);
+    !parsed.commented_secret_assignments().is_empty()
+        || !parsed.credential_comment_spans().is_empty()
+        || !parsed.credential_prose_comment_spans(None).is_empty()
 }
 
 /// Render a replacement that cannot merge with an immediately following
@@ -2619,6 +2659,59 @@ KEY3=unquoted
             assert!(example.contains("# CERT_BODY=your_cert_body_here\n"));
             assert!(example.contains("\nPORT=8080\n"));
             assert!(example.contains("\nDEBUG=true\n"));
+        }
+    }
+
+    #[test]
+    fn credential_comment_lines_cover_prose_and_inline_comments() {
+        // Prose notes and inline comments hold credentials the same way
+        // commented-out assignments do; an assignment is reported by name
+        // instead, so the line sets stay disjoint.
+        let shape = ["ghp", "_", "Pr0seC0mmentGitHub0123456789abcdefg"].concat();
+        let content = format!(
+            "PORT=3000\n# old key: {shape}\nDEBUG=true # rotate {shape}\n# API_KEY={shape}\n# Set API_KEY=see the docs\n"
+        );
+        let dotenv = DotenvFile::parse_str(&content);
+        assert_eq!(dotenv.credential_comment_lines(), vec![2, 3]);
+        assert_eq!(
+            dotenv.commented_secret_assignments(),
+            vec![("API_KEY".to_string(), 4)]
+        );
+    }
+
+    #[test]
+    fn credential_comment_lines_skip_placeholders_and_quoted_values() {
+        // Docs placeholders and text inside a multi-line quoted value are
+        // not credentials left in a comment.
+        let shape = ["ghp", "_", "Q7rT2mVx9KpL4wZs8NdY3hBc6FjGu5EaR1oW"].concat();
+        let content = format!(
+            "# API_KEY=<your-key>\n# TODO rotate\nCERT=\"line one\n# inside value {shape}\nline three\"\n"
+        );
+        let dotenv = DotenvFile::parse_str(&content);
+        assert!(dotenv.credential_comment_lines().is_empty());
+        assert!(dotenv.commented_secret_assignments().is_empty());
+    }
+
+    #[test]
+    fn line_holds_credential_comment_judges_one_line() {
+        // The predicate covers every form the comment reports cover, so a
+        // second scan of the same line can skip exactly those.
+        let shape = ["ghp", "_", "Q7rT2mVx9KpL4wZs8NdY3hBc6FjGu5EaR1oW"].concat();
+        for line in [
+            format!("# API_KEY={shape}"),
+            format!("# rotate: {shape}"),
+            format!("PORT=3000 # was {shape}"),
+            format!("  # export GITHUB_TOKEN={shape}"),
+        ] {
+            assert!(line_holds_credential_comment(&line), "{line}");
+        }
+        for line in [
+            "# API_KEY=<your-key>",
+            "# TODO nothing",
+            "PORT=3000",
+            "NOTE=plain prose",
+        ] {
+            assert!(!line_holds_credential_comment(line), "{line}");
         }
     }
 
