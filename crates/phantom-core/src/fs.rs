@@ -41,6 +41,12 @@ pub fn atomic_write(path: &Path, contents: &[u8]) -> io::Result<()> {
 /// symlinks are rejected so callers can safely bind an exact before-image to a
 /// later [`atomic_write_if_unchanged`] call.
 pub fn read_regular_file(path: &Path) -> io::Result<Option<Vec<u8>>> {
+    read_regular_file_bounded(path, usize::MAX)
+}
+
+/// Like [`read_regular_file`], but refuses files larger than `max_bytes`,
+/// including files that grow after open. Never reads more than one extra byte.
+pub fn read_regular_file_bounded(path: &Path, max_bytes: usize) -> io::Result<Option<Vec<u8>>> {
     match std::fs::symlink_metadata(path) {
         Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
             return Err(io::Error::other(format!(
@@ -73,7 +79,15 @@ pub fn read_regular_file(path: &Path) -> io::Result<Option<Vec<u8>>> {
         Err(RegularOpenError::Open(error) | RegularOpenError::Inspect(error)) => return Err(error),
     };
     let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes)?;
+    (&mut file)
+        .take((max_bytes as u64).saturating_add(1))
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > max_bytes {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "file exceeds read limit",
+        ));
+    }
 
     // Re-inspect the pathname after reading. Atomic replacement by an
     // uncooperative same-user process cannot be made impossible with portable
@@ -945,6 +959,25 @@ mod tests {
         let error = atomic_write_if_unchanged(&target, Some(&before), b"phantom").unwrap_err();
         assert!(error.to_string().contains("changed after it was read"));
         assert_eq!(std::fs::read(&target).unwrap(), b"concurrent-owner");
+    }
+
+    #[test]
+    fn bounded_read_accepts_exact_limit_and_refuses_larger_files() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("config.json");
+        assert!(read_regular_file_bounded(&path, 4).unwrap().is_none());
+        std::fs::write(&path, b"1234").unwrap();
+        assert_eq!(
+            read_regular_file_bounded(&path, 4).unwrap().unwrap(),
+            b"1234"
+        );
+        assert_eq!(
+            read_regular_file_bounded(&path, 3).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        std::fs::write(&path, b"").unwrap();
+        assert_eq!(read_regular_file_bounded(&path, 0).unwrap().unwrap(), b"");
+        assert!(read_regular_file_bounded(dir.path(), 4).is_err());
     }
 
     #[test]

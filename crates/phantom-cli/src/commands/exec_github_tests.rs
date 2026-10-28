@@ -136,16 +136,23 @@ fn exec_fixture() {
             "--nocapture".to_string(),
         ];
         let port_file = Path::new("proxy-port");
-        super::run_async(&command, None, None, false, |config| {
-            let canonical = ServiceRegistry::from_config(&config.services);
-            let mut route = canonical.match_route("/github_api").unwrap().0.clone();
-            assert!(route.target_base == "https://api.github.com");
-            assert!(route.header_format == "Bearer {secret}");
-            route.target_base = mock.uri();
-            let mut registry = ServiceRegistry::new();
-            registry.add_route(route);
-            registry
-        })
+        super::run_async(
+            &command,
+            None,
+            None,
+            false,
+            |config| {
+                let canonical = ServiceRegistry::from_config(&config.services);
+                let mut route = canonical.match_route("/github_api").unwrap().0.clone();
+                assert!(route.target_base == "https://api.github.com");
+                assert!(route.header_format == "Bearer {secret}");
+                route.target_base = mock.uri();
+                let mut registry = ServiceRegistry::new();
+                registry.add_route(route);
+                registry
+            },
+            None,
+        )
         .await
         .unwrap();
 
@@ -187,9 +194,14 @@ fn exec_fixture() {
         // altered destination must fail before the factory or child runs.
         config.services.get_mut("github_api").unwrap().pattern = Some("127.0.0.1".into());
         config.save(Path::new(".phantom.toml")).unwrap();
-        let result = super::run_async(&command, None, None, true, |_| {
-            panic!("untrusted route reached registry factory")
-        })
+        let result = super::run_async(
+            &command,
+            None,
+            None,
+            true,
+            |_| panic!("untrusted route reached registry factory"),
+            None,
+        )
         .await;
         assert!(result.is_err());
         println!("github lifecycle verified");
