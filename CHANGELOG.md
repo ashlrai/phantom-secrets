@@ -4,17 +4,6 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
-### Fixed (.gitignore checks follow Git's rules for `.env`)
-
-- `phantom doctor` (CLI and MCP) and `phantom agent` decided whether `.env`
-  was ignored by looking for one literal `.env` line. A `.gitignore` using
-  `/.env`, `**/.env` or `.env*` drew a warning (and `--fix` appended a
-  duplicate line), while one that ignored `.env` and then un-ignored it with
-  a later `!.env` passed. The checks now apply the last matching rule as Git
-  does, and a negated `.env` gets its own warning; `phantom agent` adds its
-  env patterns again when a later `!.env` cancelled them. Patterns the
-  reader does not understand still count as not covering `.env`.
-
 ### Fixed (monthly rotation schedules follow calendar months)
 
 - A `monthly` rotation schedule counted 30-day blocks from 1970, so a schedule
