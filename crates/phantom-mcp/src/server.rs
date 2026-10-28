@@ -1218,7 +1218,7 @@ impl PhantomMcpServer {
 
     /// Add a secret to the vault.
     #[tool(
-        description = "Deprecated unsafe plaintext secret entry. This tool refuses values because MCP arguments enter agent context. Use phantom_add_secret_interactive instead (no approval needed). Retained for compatibility: still requires `confirm: true` plus a one-use out-of-band `approval_token` (the operator enables effects with PHANTOM_MCP_EFFECTS=trusted-terminal; a call without the token prints a nonce on the server's stderr for `phantom mcp-approve <NONCE>` in a trusted terminal), and never stores anything."
+        description = "Create a new locally generated 256-bit random secret with generate=true. Returns only the key name and SHA-256 fingerprint; never accepts or returns plaintext values or mappings. Existing names are refused. Requires confirm=true and a one-use out-of-band approval_token with operator-enabled PHANTOM_MCP_EFFECTS=trusted-terminal. With generate=false (default), this compatibility tool refuses plaintext entry; use phantom_add_secret_interactive for existing provider credentials. Generated secrets are local application secrets, not provider-issued API keys."
     )]
     fn phantom_add_secret(
         &self,
@@ -1236,6 +1236,27 @@ impl PhantomMcpServer {
             &params_json,
             &self.project_id(),
         )?;
+        if params.generate {
+            self.preflight_managed_dotenv_strict()?;
+            let project = self
+                .project_dir
+                .canonicalize()
+                .map_err(|_| internal_err("Failed to resolve project directory"))?;
+            let before = phantom_core::fs::read_regular_file(&project.join(".phantom.toml"))
+                .map_err(|_| internal_err("Failed to read config safely"))?
+                .ok_or_else(not_initialized_err)?;
+            let config = PhantomConfig::load_from_bytes(&project.join(".phantom.toml"), &before)
+                .map_err(config_invalid_err)?;
+            let vault = self.open_project_vault(&config)?;
+            self.require_complete_inventory(&config, vault.as_ref(), "generate a secret")?;
+            let receipt =
+                crate::tools::generate_secret(&project, vault.as_ref(), &before, &params.name)
+                    .map_err(|error| internal_err(format!("Secret generation failed: {error}")))?;
+            return text_result(
+                serde_json::to_string(&receipt)
+                    .map_err(|_| internal_err("Failed to serialize generation receipt"))?,
+            );
+        }
         text_result(format!(
             "No secret value accepted through MCP for '{}'. Use phantom_add_secret_interactive to start an out-of-band terminal flow.",
             params.name
@@ -1341,17 +1362,33 @@ impl PhantomMcpServer {
 
     /// Rotate all phantom tokens.
     #[tool(
-        description = "Regenerate all phantom tokens in .env. Old tokens become invalid — any running `phantom exec` / dev server that cached them will break until it picks up the new .env. Real secrets in the vault are unchanged. DESTRUCTIVE; requires `confirm: true` plus a one-use out-of-band `approval_token` (the operator enables effects with PHANTOM_MCP_EFFECTS=trusted-terminal; a call without the token prints a nonce on the server's stderr for `phantom mcp-approve <NONCE>` in a trusted terminal); the agent must ask the user for explicit consent before calling."
+        description = "With generate=true and name, atomically replace a local value with OS randomness in the encrypted file vault, preserving the placeholder and returning only name, route, rotated_at, version. This does not issue or revoke provider credentials; running sessions retain cached values. Rollback is trusted-terminal CLI only. Without generate/name, regenerate all phantom tokens in .env. Old tokens become invalid; any running `phantom exec` / dev server that cached them will break until it picks up the new .env. Real secrets in the vault are unchanged. DESTRUCTIVE; requires `confirm: true` plus a one-use out-of-band `approval_token` (the operator enables effects with PHANTOM_MCP_EFFECTS=trusted-terminal; a call without the token prints a nonce on the server's stderr for `phantom mcp-approve <NONCE>` in a trusted terminal); the agent must ask the user for explicit consent before calling."
     )]
     fn phantom_rotate(
         &self,
         Parameters(params): Parameters<RotateParams>,
     ) -> Result<CallToolResult, McpError> {
+        if params.generate != params.name.is_some() {
+            return Err(invalid_params_err("local generation requires both generate=true and name; legacy remapping accepts neither"));
+        }
+        if let Some(name) = params.name.as_deref() {
+            validate_mcp_secret_name(name)?;
+        }
         require_confirm("phantom_rotate", params.confirm)?;
         self.preflight_managed_dotenv_strict()?;
         // A locked vault would be refused after approval; refuse it first.
         self.preflight_vault_names(None, "rotate phantom tokens")?;
-        let params_json = serde_json::to_string(&params).unwrap_or_default();
+        let rotation_environment = if params.generate {
+            Some(
+                phantom_core::env_scope::read_active_env(&self.project_dir)
+                    .map_err(|e| vault_read_err("Cannot select environment", e))?,
+            )
+        } else {
+            None
+        };
+        let params_json = params
+            .approval_params(rotation_environment.as_deref())
+            .map_err(|_| invalid_params_err("Cannot serialize rotation approval"))?;
         require_approval_token(
             "phantom_rotate",
             params.approval_token.as_deref(),
@@ -1366,8 +1403,36 @@ impl PhantomMcpServer {
             .list()
             .map_err(|e| vault_read_err("Failed to list secrets", e))?;
 
-        if names.is_empty() {
+        if names.is_empty() && !params.generate {
             return text_result("No secrets to rotate.");
+        }
+
+        if params.generate {
+            let name = params.name.as_deref().expect("validated name");
+            let active_env = phantom_core::env_scope::read_active_env(
+                transaction_lock.project_root_at_acquisition(),
+            )
+            .map_err(|e| vault_read_err("Cannot select environment", e))?;
+            if rotation_environment.as_deref() != Some(active_env.as_str()) {
+                return Err(invalid_params_err(
+                    "Active environment changed after approval; no value changed",
+                ));
+            }
+            let key = phantom_vault::traits::local_rotation_key(vault.as_ref(), &active_env, name)
+                .map_err(|e| vault_read_err("Cannot select local secret", e))?;
+            let mut receipt = vault
+                .rotate_generated(&key, false)
+                .map_err(|e| vault_read_err("Local generation failed", e))?;
+            receipt.name = name.into();
+            receipt.route = config
+                .services
+                .iter()
+                .find(|(_, service)| service.secret_key == name)
+                .map(|(route, _)| route.clone());
+            return text_result(
+                serde_json::to_string(&receipt)
+                    .map_err(|_| invalid_params_err("Receipt serialization failed"))?,
+            );
         }
 
         let project_root = transaction_lock.project_root_at_acquisition();
@@ -3690,9 +3755,6 @@ impl PhantomMcpServer {
         let project_root = transaction_lock.project_root_at_acquisition();
         let env_path = resolve_env_path_anchored(&transaction_lock, project_root, &config, &names)?;
         remap_phantom_tokens_locked(&transaction_lock, &env_path, &names)?;
-        for name in &names {
-            phantom_core::audit::log("secret.token_remapped", Some(name));
-        }
 
         text_result(with_text_note(
             format!(
@@ -5517,8 +5579,6 @@ impl PhantomMcpServer {
             std::slice::from_ref(&params.name),
         )?;
 
-        phantom_core::audit::log("secret.token_remapped", Some(&params.name));
-
         text_result(format!(
             "Remapped the local Phantom token for '{}'. Provider credential, expiry metadata, and incident state are unchanged.",
             params.name
@@ -7236,69 +7296,73 @@ fn remap_phantom_tokens_locked_with(
     names: &[String],
     before_commit: impl FnOnce(),
 ) -> Result<(), McpError> {
-    let target = transaction_lock.target(env_path).map_err(|error| {
-        internal_err(format!(
-            "Failed to retain managed dotenv {}: {error}",
-            env_path.display()
-        ))
-    })?;
-    let before = target
-        .read_regular()
-        .map_err(|error| {
-            internal_err(format!(
-                "Failed to snapshot {} through the retained project root: {error}",
-                env_path.display()
-            ))
-        })?
-        .ok_or_else(|| {
-            invalid_params_err(format!(
-                "Cannot remap Phantom tokens: {} does not exist.",
-                env_path.display()
-            ))
-        })?;
-    let env_text = std::str::from_utf8(before.bytes()).map_err(|_| {
-        internal_err(format!(
-            "Failed to parse {}: managed dotenv is not valid UTF-8",
-            env_path.display()
-        ))
-    })?;
-    let dotenv = DotenvFile::parse_str(env_text);
-    dotenv
-        .validate_for_mutation()
-        .map_err(|error| invalid_params_err(error.to_string()))?;
-    for name in names {
-        let entry = dotenv
-            .entries()
-            .into_iter()
-            .find(|entry| entry.key == *name)
-            .ok_or_else(|| {
-                invalid_params_err(format!(
-                    "Cannot remap '{name}': it is not present in {}.",
+    phantom_core::audit::operation_batch(
+        "secret.token_remapped",
+        names,
+        || {
+            let target = transaction_lock.target(env_path).map_err(|error| {
+                internal_err(format!(
+                    "Failed to retain managed dotenv {}: {error}",
                     env_path.display()
                 ))
             })?;
-        if !entry.is_phantom {
-            return Err(invalid_params_err(format!(
-                "Cannot remap '{name}': its value in {} is not a protected phm_ token.",
-                env_path.display()
-            )));
-        }
-    }
+            let before = target
+                .read_regular()
+                .map_err(|error| {
+                    internal_err(format!(
+                        "Failed to snapshot {} through the retained project root: {error}",
+                        env_path.display()
+                    ))
+                })?
+                .ok_or_else(|| {
+                    invalid_params_err(format!(
+                        "Cannot remap Phantom tokens: {} does not exist.",
+                        env_path.display()
+                    ))
+                })?;
+            let env_text = std::str::from_utf8(before.bytes()).map_err(|_| {
+                internal_err(format!(
+                    "Failed to parse {}: managed dotenv is not valid UTF-8",
+                    env_path.display()
+                ))
+            })?;
+            let dotenv = DotenvFile::parse_str(env_text);
+            dotenv
+                .validate_for_mutation()
+                .map_err(|error| invalid_params_err(error.to_string()))?;
+            for name in names {
+                let entry = dotenv
+                    .entries()
+                    .into_iter()
+                    .find(|entry| entry.key == *name)
+                    .ok_or_else(|| {
+                        invalid_params_err(format!(
+                            "Cannot remap '{name}': it is not present in {}.",
+                            env_path.display()
+                        ))
+                    })?;
+                if !entry.is_phantom {
+                    return Err(invalid_params_err(format!(
+                        "Cannot remap '{name}': its value in {} is not a protected phm_ token.",
+                        env_path.display()
+                    )));
+                }
+            }
 
-    let mut token_map = TokenMap::new();
-    for name in names {
-        token_map.insert(name.clone());
-    }
-    let (rewritten, mut originals) = dotenv
-        .rewrite_with_phantoms(&token_map)
-        .map_err(|error| invalid_params_err(error.to_string()))?;
-    for value in originals.values_mut() {
-        zeroize::Zeroize::zeroize(value);
-    }
-    originals.clear();
+            let mut token_map = TokenMap::new();
+            for name in names {
+                token_map.insert(name.clone());
+            }
+            let (rewritten, mut originals) = dotenv
+                .rewrite_with_phantoms(&token_map)
+                .map_err(|error| invalid_params_err(error.to_string()))?;
+            for value in originals.values_mut() {
+                zeroize::Zeroize::zeroize(value);
+            }
+            originals.clear();
 
-    before_commit();
-    match target.replace_if_exact_with_permissions(
+            before_commit();
+            match target.replace_if_exact_with_permissions(
         Some(&before),
         rewritten.as_bytes(),
         before.permissions(),
@@ -7319,6 +7383,9 @@ fn remap_phantom_tokens_locked_with(
             env_path.display()
         ))),
     }
+        },
+        |_| internal_err("usage audit unavailable or engine refused"),
+    )
 }
 
 /// Convert a Unix timestamp to a minimal ISO-8601 string (UTC, no external deps).
@@ -14140,6 +14207,8 @@ mod tests {
         }
         let err = server
             .phantom_rotate(Parameters(RotateParams {
+                generate: false,
+                name: None,
                 confirm: true,
                 approval_token: None,
             }))
@@ -14150,6 +14219,44 @@ mod tests {
         assert!(err.message.contains("approval_token"));
         assert!(err.message.contains("docs/claude-code.md"));
         assert!(!err.message.contains("<nonce>:<token>"));
+    }
+
+    #[test]
+    fn generated_add_is_gated_and_returns_only_receipt() {
+        let _environment = TestEnvironment::new();
+        let (server, _dir) = setup_initialized_project();
+        let request = || {
+            Parameters(AddSecretParams {
+                name: "GENERATED_KEY".to_owned(),
+                generate: true,
+                confirm: true,
+                approval_token: None,
+            })
+        };
+        unsafe {
+            std::env::remove_var("PHANTOM_MCP_EFFECTS");
+        }
+        assert!(server.phantom_add_secret(request()).is_err());
+        unsafe {
+            std::env::set_var("PHANTOM_MCP_EFFECTS", "trusted-terminal");
+        }
+        live_approval_mode();
+        assert!(server.phantom_add_secret(request()).is_err());
+        unsafe {
+            std::env::set_var("PHANTOM_MCP_SKIP_APPROVAL", "1");
+        }
+        let result = server.phantom_add_secret(request()).unwrap();
+        let receipt = parse_result_json(&result);
+        assert_eq!(receipt.as_object().unwrap().len(), 2);
+        assert_eq!(receipt["name"], "GENERATED_KEY");
+        let (_, vault) = server.load_config_and_vault().unwrap();
+        let value = vault.retrieve("GENERATED_KEY").unwrap();
+        let output = serde_json::to_string(&result).unwrap();
+        assert!(
+            !output.contains(value.as_str()),
+            "MCP response leaked value"
+        );
+        assert!(server.phantom_add_secret(request()).is_err());
     }
 
     #[test]
@@ -14189,6 +14296,7 @@ mod tests {
             for confirm in [false, true] {
                 let error = server
                     .phantom_add_secret(Parameters(AddSecretParams {
+                        generate: false,
                         name: name.clone(),
                         confirm,
                         approval_token: None,
@@ -14208,12 +14316,118 @@ mod tests {
     }
 
     #[test]
+    fn generated_rotation_preserves_placeholder_and_returns_only_metadata() {
+        let _environment = TestEnvironment::new();
+        let _home = TestHome::new();
+        let (server, dir) = setup_initialized_project();
+        unsafe {
+            std::env::set_var("PHANTOM_AUDIT", "1");
+        }
+        let before = std::fs::read(dir.path().join(".env")).unwrap();
+        let config = server.require_config().unwrap();
+        let vault = phantom_vault::try_create_vault(config.local_project_id()).unwrap();
+        let old = vault.retrieve_for_injection("OPENAI_API_KEY").unwrap();
+        let result = server
+            .phantom_rotate(Parameters(RotateParams {
+                generate: true,
+                name: Some("OPENAI_API_KEY".into()),
+                confirm: true,
+                approval_token: None,
+            }))
+            .unwrap();
+        let text = extract_content_text(&result);
+        let receipt: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(receipt.as_object().unwrap().len(), 4);
+        assert_eq!(receipt["name"], "OPENAI_API_KEY");
+        assert_eq!(receipt["version"], 2);
+        let current = vault.retrieve_for_injection("OPENAI_API_KEY").unwrap();
+        assert!(old.as_str() != current.as_str());
+        assert!(!text.contains(old.as_str()));
+        assert!(!text.contains(current.as_str()));
+        assert!(!text.contains("phm_"));
+        let audit = std::fs::read_to_string(
+            std::path::PathBuf::from(std::env::var_os("HOME").unwrap()).join(".phantom/audit.log"),
+        )
+        .unwrap();
+        assert!(!audit.contains(old.as_str()));
+        assert!(!audit.contains(current.as_str()));
+        assert!(!audit.contains("phm_"));
+        unsafe {
+            std::env::remove_var("PHANTOM_AUDIT");
+        }
+
+        assert_eq!(before, std::fs::read(dir.path().join(".env")).unwrap());
+        assert_eq!(
+            vault
+                .rotate_generated("OPENAI_API_KEY", true)
+                .unwrap()
+                .version,
+            3
+        );
+        assert!(
+            vault
+                .retrieve_for_injection("OPENAI_API_KEY")
+                .unwrap()
+                .as_str()
+                == old.as_str()
+        );
+    }
+
+    #[test]
+    fn generated_rotation_approval_is_environment_bound() {
+        let request = RotateParams {
+            generate: true,
+            name: Some("KEY".into()),
+            confirm: true,
+            approval_token: None,
+        };
+        assert_ne!(
+            request.approval_params(Some("default")).unwrap(),
+            request.approval_params(Some("production")).unwrap()
+        );
+        let reviewed: serde_json::Value =
+            serde_json::from_str(&request.approval_params(Some("production")).unwrap()).unwrap();
+        assert_eq!(reviewed["environment"], "production");
+        assert_eq!(reviewed["name"], "KEY");
+    }
+
+    #[test]
+    fn generated_rotation_retains_effects_and_confirmation_gates() {
+        let _environment = TestEnvironment::new();
+        let _home = TestHome::new();
+        let (server, _dir) = setup_initialized_project();
+        let request = |confirm| {
+            Parameters(RotateParams {
+                generate: true,
+                name: Some("OPENAI_API_KEY".into()),
+                confirm,
+                approval_token: None,
+            })
+        };
+        assert!(server
+            .phantom_rotate(request(false))
+            .unwrap_err()
+            .message
+            .contains("confirm"));
+        unsafe {
+            std::env::remove_var("PHANTOM_MCP_EFFECTS");
+            std::env::remove_var("PHANTOM_MCP_SKIP_APPROVAL");
+        }
+        assert!(server
+            .phantom_rotate(request(true))
+            .unwrap_err()
+            .message
+            .contains("PHANTOM_MCP_EFFECTS"));
+    }
+
+    #[test]
     fn test_destructive_tools_require_confirm() {
         let _environment = TestEnvironment::new();
         let (server, _dir) = setup_initialized_project();
 
         let add_err = server
             .phantom_add_secret(Parameters(AddSecretParams {
+                generate: false,
                 name: "X".to_string(),
                 confirm: false,
                 approval_token: None,
@@ -14233,6 +14447,8 @@ mod tests {
 
         let rotate_err = server
             .phantom_rotate(Parameters(RotateParams {
+                generate: false,
+                name: None,
                 confirm: false,
                 approval_token: None,
             }))
@@ -14314,6 +14530,8 @@ mod tests {
         // Rotate
         let result = server
             .phantom_rotate(Parameters(RotateParams {
+                generate: false,
+                name: None,
                 confirm: true,
                 approval_token: None,
             }))

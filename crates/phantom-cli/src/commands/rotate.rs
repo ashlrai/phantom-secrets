@@ -410,6 +410,7 @@ fn require_trusted_terminal_rotate_with(
 /// placeholder remap is not evidence of credential rotation and must not renew
 /// provider lifecycle metadata or deploy an unchanged credential.
 pub fn run_with_expiry(sync_after: bool, expiry_days: Option<u64>) -> Result<()> {
+    phantom_core::audit::admit_engine()?;
     if expiry_days.is_some() {
         anyhow::bail!(
             "--with-expiry is not valid for a Phantom token remap: the provider credential is unchanged, so its TTL cannot be renewed. Rotate at the provider, then store the replacement from a trusted terminal; automated live provider issuance is disabled."
@@ -436,10 +437,12 @@ pub fn run_with_expiry(sync_after: bool, expiry_days: Option<u64>) -> Result<()>
         &mut std::io::stdin().lock(),
         &mut std::io::stderr().lock(),
     )?;
-    plan.commit()?;
-    for name in &plan.names {
-        phantom_core::audit::log("secret.token_remapped", Some(name));
-    }
+    phantom_core::audit::operation_batch(
+        "secret.token_remapped",
+        &plan.names,
+        || plan.commit(),
+        anyhow::Error::from,
+    )?;
     println!(
         "{} Remapped {} Phantom token(s) in .env. Provider credentials and expiry metadata are unchanged.",
         "ok".green().bold(),
@@ -1481,6 +1484,62 @@ fn empty_batch_stdout(json_output: bool, notice: String) -> String {
     } else {
         notice
     }
+}
+
+/// Local value replacement. Neither provider issuance nor provider revocation.
+pub fn run_generated(name: &str, rollback: bool) -> Result<()> {
+    crate::commands::add::validate_secret_name(name)?;
+    require_attached_rotate_terminals()?;
+    let project = std::env::current_dir()?.canonicalize()?;
+    let config_path = project.join(".phantom.toml");
+    let config_before =
+        phantom_core::fs::read_regular_file(&config_path)?.context("Run phantom init first")?;
+    let config = PhantomConfig::load_from_bytes(&config_path, &config_before)?;
+    let vault = crate::util::open_vault(config.local_project_id())?;
+    let reviewed = TrustedAnchor::open(&project)?;
+    let lock = acquire_reviewed_project_lock(&project, &reviewed, || {}, "local value rotation")?;
+    crate::commands::add::validate_managed_dotenv_preflight(&project, &config)?;
+    let active_env = phantom_core::env_scope::read_active_env(&project)?;
+    let vault_key = phantom_vault::traits::local_rotation_key(vault.as_ref(), &active_env, name)?;
+    // Hold the project lock across exact consent and the atomic vault operation.
+    let challenge = format!(
+        "{} LOCAL VALUE {} IN {} CONFIG {}",
+        if rollback { "ROLLBACK" } else { "GENERATE" },
+        vault_key,
+        terminal_safe_path(&project, "project")?,
+        digest_bytes(b"local-value-rotation", &config_before)
+    );
+    eprintln!("Local replacement only: no provider issuance/revocation; running sessions retain cached values.\nType exactly:\n{challenge}");
+    let mut response = String::new();
+    std::io::stdin()
+        .lock()
+        .take((challenge.len() + 2) as u64)
+        .read_line(&mut response)?;
+    anyhow::ensure!(
+        response.trim_end_matches(['\r', '\n']) == challenge,
+        "Confirmation mismatch; no value changed"
+    );
+    let current = lock
+        .target(&config_path)?
+        .read_regular()?
+        .context("Config disappeared")?;
+    anyhow::ensure!(
+        current.bytes() == config_before,
+        "Config changed; no value changed"
+    );
+    anyhow::ensure!(
+        phantom_core::env_scope::read_active_env(&project)? == active_env,
+        "Active environment changed; no value changed"
+    );
+    let mut receipt = vault.rotate_generated(&vault_key, rollback)?;
+    receipt.name = name.into();
+    receipt.route = config
+        .services
+        .iter()
+        .find(|(_, service)| service.secret_key == name)
+        .map(|(route, _)| route.clone());
+    println!("{}", serde_json::to_string(&receipt)?);
+    Ok(())
 }
 
 #[cfg(test)]
