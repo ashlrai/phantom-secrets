@@ -2,6 +2,8 @@
 name = "phantom-secrets-core"
 version.workspace = true
 edition.workspace = true
+# std File::try_lock (posture history) needs 1.89.
+rust-version = "1.89"
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true

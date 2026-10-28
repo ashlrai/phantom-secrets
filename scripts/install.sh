@@ -218,6 +218,9 @@ acquire_install_lock() {
   lock_token="$$-$(date +%s)-${RANDOM}-${RANDOM}"
   deadline=$(($(date +%s) + wait_seconds))
   while :; do
+    # Every retry, including a disappearing or reclaimed lock, shares this
+    # original deadline. Contention must never become an unbounded retry loop.
+    [ "$(date +%s)" -lt "$deadline" ] || die "timed out waiting for another Phantom installer"
     if mkdir -m 700 "$lock_path" 2>/dev/null; then
       printf '%s\n' "$lock_token" > "$lock_path/owner"
       chmod 600 "$lock_path/owner"
@@ -247,17 +250,43 @@ acquire_install_lock() {
       return 0
     fi
 
-    [ -e "$lock_path" ] || die "could not create install lock"
-    [ -d "$lock_path" ] && [ ! -L "$lock_path" ] \
-      || die "install lock is not a regular directory"
+    # The owner may release its lock between mkdir, existence checks, and
+    # stat. Retry only disappearance; extant unsafe/unreadable paths still fail.
+    if [ ! -e "$lock_path" ] && [ ! -L "$lock_path" ]; then
+      sleep 1
+      continue
+    fi
+    if [ ! -d "$lock_path" ] || [ -L "$lock_path" ]; then
+      if [ ! -e "$lock_path" ] && [ ! -L "$lock_path" ]; then
+        sleep 1
+        continue
+      fi
+      die "install lock is not a regular directory"
+    fi
+    [ ! -L "$lock_path/owner" ] || die "install lock owner is not a regular file"
     if [ -e "$lock_path/owner" ]; then
-      [ -f "$lock_path/owner" ] && [ ! -L "$lock_path/owner" ] \
-        || die "install lock owner is not a regular file"
-      mtime="$(file_mtime_epoch "$lock_path/owner")" \
-        || die "could not inspect install lock owner"
+      if [ ! -f "$lock_path/owner" ] || [ -L "$lock_path/owner" ]; then
+        if [ ! -e "$lock_path/owner" ] && [ ! -L "$lock_path/owner" ]; then
+          sleep 1
+          continue
+        fi
+        die "install lock owner is not a regular file"
+      fi
+      if ! mtime="$(file_mtime_epoch "$lock_path/owner")"; then
+        if [ ! -e "$lock_path/owner" ] && [ ! -L "$lock_path/owner" ]; then
+          sleep 1
+          continue
+        fi
+        die "could not inspect install lock owner"
+      fi
     else
-      mtime="$(file_mtime_epoch "$lock_path")" \
-        || die "could not inspect install lock"
+      if ! mtime="$(file_mtime_epoch "$lock_path")"; then
+        if [ ! -e "$lock_path" ] && [ ! -L "$lock_path" ]; then
+          sleep 1
+          continue
+        fi
+        die "could not inspect install lock"
+      fi
     fi
     now="$(date +%s)"
     age=$((now - mtime))

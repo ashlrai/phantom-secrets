@@ -7,7 +7,7 @@ GitHub: https://github.com/ashlrai/phantom-secrets
 License: MIT
 Language: Rust
 Release evidence was verified on 2026-09-29. The immutable GitHub `v0.7.9` release at https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.9 resolves to `7a51ce512ec4aee12cc29ff859036af63fbe93db`. Its 19 assets were verified after all six native acceptance rows and release attestations passed in https://github.com/ashlrai/phantom-secrets/actions/runs/34153902556.
-Install: use the exact checksum-verified `v0.7.9` GitHub assets below on macOS, Linux, and Windows. The separately managed Homebrew formula still publishes the previous reviewed `v0.7.8`; its `v0.7.9` bump is pending.
+Install: use the exact checksum-verified `v0.7.9` GitHub assets below on macOS, Linux, and Windows. See [distribution status](distribution-status.md) for dated npm, Homebrew, crates.io, and MCP Registry evidence. Prefer the checksum-verified `v0.7.9` GitHub assets for an exact install.
 MCP: after installing both release binaries, run `phantom setup --client claude|cursor|windsurf|codex|gemini`.
 
 ## The Problem
@@ -35,7 +35,7 @@ Connection strings such as DATABASE_URL can be detected, vaulted, and replaced i
 
 ## CLI Commands
 
-- `phantom init` — Import .env secrets into vault and rewrite managed values. `--all <DIR>` processes eligible repositories found within a five-level scan, stops below the first matching repository, and supports `--dry-run` plus `--jobs N` / `-j N` (default 4).
+- `phantom init` — Import .env secrets into vault and rewrite managed values. `--all <DIR>` processes eligible repositories found within a five-level scan, stops below the first matching repository, and supports `--dry-run` plus `--jobs N` / `-j N` (default 4). Without `--all`, `--dry-run` prints the keys it would protect, the project files it would write, and the vault path it would create without changing anything; `--empty --dry-run` reports the same plan for a bootstrap project.
 - `phantom agent report --json` — Read-only AI-agent readiness report with status, risk_level, findings, fixes, commands, files, requires_approval, and exit_code.
 - `phantom agent doctor` — Human-readable view of the same readiness policy. Status values: unsafe, protected, verified, team-ready, compliance-ready. `compliance-ready` is a local readiness label meaning its configured predicates passed; it is not regulatory compliance, certification, centralized retention, or an independent audit.
 - `phantom agent doctor --json --strict` exits 2 unless the verdict is `ready` (`degraded`, `blocked`, and `unknown` share that code). Without `--strict` the JSON exit stays 0. Key on `schema` (`phantom.agent.doctor.v1`). `schema_version` and `kind` stay for older readers.
@@ -54,8 +54,8 @@ Connection strings such as DATABASE_URL can be detected, vaulted, and replaced i
 - `phantom audit verify` — Verify HMAC-SHA256 chain integrity; exits 1 if tampering detected.
 - `phantom start` — Run a foreground proxy only when stdin/stdout/stderr are terminals; keep the trusted owning terminal open and press Ctrl-C there to stop. `--daemon` and current external control fail closed; `phantom stop` authenticates legacy v0.7.3 state only to report manual migration guidance and never kills or deletes.
 - `phantom list` — Show secret names stored in vault (never shows values). Add `--json` to emit a machine-readable array of `{name, detected_service}` for scripting; values are still excluded.
-- `phantom add <KEY>` — Transactionally create a new secret name in an initialized project through a hidden terminal prompt. It does not auto-create config, gitignore, or vault state; run `phantom init --empty` first in a new project. Positional values are rejected; for a trusted piped producer, pass `--stdin` (read up to EOF, trailing newlines dropped, 64 KiB cap; refused when stdin is a terminal). Input with more than one line is refused before any write unless you add `--multiline` (store every line, e.g. a PEM key) or `--first-line` (store only line 1, e.g. `pass show` output). Existing names are denied before prompt/stdin read and are never replaced.
-- `phantom remove <KEY>` — After exact trusted-terminal consent, transactionally remove the vault value, lifecycle config, and exact managed-dotenv mapping.
+- `phantom add <KEY>` — Transactionally create a new secret name in an initialized project through a hidden terminal prompt. It does not auto-create config, gitignore, or vault state; run `phantom init --empty` first in a new project. Positional values are rejected; for a trusted piped producer, pass `--stdin` (read up to EOF, trailing newlines dropped, 64 KiB cap; refused when stdin is a terminal). Input with more than one line is refused before any write unless you add `--multiline` (store every line, e.g. a PEM key) or `--first-line` (store only line 1, e.g. `pass show` output). Existing names are denied before prompt/stdin read and are never replaced. `--dry-run` prints the key and files the transaction would write without opening the vault or reading a value.
+- `phantom remove <KEY>` — After exact trusted-terminal consent, transactionally remove the vault value, lifecycle config, and exact managed-dotenv mapping. `--dry-run` prints the key and files the removal would write without opening the vault, applying the same dotenv mapping rules, and skips the trusted-terminal challenge.
 - `phantom reveal <KEY>` — View a secret value only from attached terminals after exact typed confirmation; there is no non-interactive bypass.
 - `phantom rotate` — After an exact attached-terminal challenge bound to the canonical project, config, dotenv, and sorted-name digest, regenerate all local phantom mappings without changing provider credentials. Headless use is denied before vault access or mutation, and drift aborts the write. `--sync` is rejected for a local-only remap; rotate at the provider, store the successor from a trusted terminal, then run a separately reviewed sync.
 - `phantom status` — Show project ID, vault backend, secret count, service mappings.
@@ -82,7 +82,7 @@ Connection strings such as DATABASE_URL can be detected, vaulted, and replaced i
 
 ## Installation
 
-### Homebrew (macOS, formula still at reviewed v0.7.8)
+### Homebrew (macOS; see distribution status)
 ```
 brew tap ashlrai/phantom
 brew trust --formula ashlrai/phantom/phantom
@@ -107,10 +107,7 @@ git checkout 7a51ce512ec4aee12cc29ff859036af63fbe93db
 cargo build --release --locked --bin phantom --bin phantom-mcp
 ```
 
-In the exact 2026-09-29 registry snapshot, npm `latest` remains 0.6.0; exact npm
-0.7.4 wrappers exist only under the failed `release-candidate` track. No MCP
-Registry 0.7.9 record was found; crates.io remains on 0.5.1. Unpinned npm, npx,
-and `cargo install` commands are not the reviewed v0.7.9 GitHub release path.
+See [distribution status](distribution-status.md) for dated npm, Homebrew, crates.io, and MCP Registry evidence. Prefer the checksum-verified `v0.7.9` GitHub assets for an exact install.
 
 ### MCP setup
 
