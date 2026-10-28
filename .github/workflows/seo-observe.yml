@@ -10,7 +10,7 @@ permissions:
 
 concurrency:
   group: seo-observe-production
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   observe:
