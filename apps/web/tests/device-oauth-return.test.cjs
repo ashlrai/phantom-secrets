@@ -259,6 +259,30 @@ test("invalid device code explains the accepted characters and displayed format"
   assert.equal(h.requests.length, 0);
 });
 
+test("seven-character device code shows the length error and can be corrected", async () => {
+  const h = harness({ url: "https://phm.dev/device", storedCode: null, previousSession: { access_token: "synthetic-existing-account" } });
+  find(h.render(), "input").props.onChange({ target: { value: "abcd234" } });
+  let tree = h.render();
+  assert.equal(find(tree, "input").props.value, "ABCD-234");
+  assert.equal(find(tree, "button").props.disabled, true);
+
+  await find(tree, "form").props.onSubmit({ preventDefault() {} });
+  tree = h.render();
+  assert.equal(findById(tree, "device-error").props.children, "Enter 8 letters or numbers. The code is displayed as XXXX-XXXX.");
+  assert.equal(find(tree, "input").props["aria-invalid"], true);
+  assert.deepEqual(h.events, []);
+  assert.equal(h.requests.length, 0);
+
+  find(tree, "input").props.onChange({ target: { value: "abcd2345" } });
+  tree = h.render();
+  assert.equal(find(tree, "button").props.disabled, false);
+  await find(tree, "form").props.onSubmit({ preventDefault() {} });
+  assert.equal(h.states[2], "");
+  assert.equal(h.states[1], "done");
+  assert.equal(h.requests.length, 1);
+  assert.deepEqual(JSON.parse(h.requests[0].body), { user_code: "ABCD2345" });
+});
+
 test("eight letters and numbers are formatted and submitted without the display hyphen", async () => {
   const h = harness({ url: "https://phm.dev/device", previousSession: { access_token: "synthetic-existing-account" } });
   find(h.render(), "input").props.onChange({ target: { value: "ab01cd23" } });
