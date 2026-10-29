@@ -264,7 +264,7 @@ export default function DeviceAuthorizationClient() {
                 autoCapitalize="characters"
                 spellCheck={false}
                 aria-invalid={Boolean(error)}
-                aria-describedby={error ? "device-error device-help" : "device-help"}
+                aria-describedby={error ? "device-code-hint device-error device-help" : "device-code-hint device-help"}
                 value={code}
                 onChange={(event) => setCode(formatDeviceUserCode(event.target.value))}
                 placeholder="XXXX-XXXX"
@@ -273,6 +273,10 @@ export default function DeviceAuthorizationClient() {
                 autoFocus
                 disabled={status !== "input"}
               />
+
+              <p id="device-code-hint" className="text-left text-t3 text-sm leading-relaxed">
+                Enter 8 letters or numbers in the format XXXX-XXXX.
+              </p>
 
               {error && <p id="device-error" role="alert" className="text-red-400 text-sm leading-relaxed">{error}</p>}
 
