@@ -81,6 +81,7 @@ test("rendered primary navigation links are named and reach local pages and frag
       const href = link.getAttribute("href");
       assert.ok(namedLinks.includes(link), `${pathname}: link ${href} needs an accessible name`);
       assert.ok(href, `${pathname}: link needs a destination`);
+      assert.match(href, /\S/, `${pathname}: link destination must not be whitespace`);
       if (href.startsWith("https://github.com/")) continue;
       assert.ok((href.startsWith("/") && !href.startsWith("//")) || href.startsWith("#"), `${pathname}: ${href} must be local`);
       assert.notEqual(href, "#", `${pathname}: fragment must have a target`);
@@ -104,6 +105,40 @@ test("rendered primary navigation links are named and reach local pages and frag
     const hrefs = links.map((link) => link.getAttribute("href"));
     assert.equal(hrefs.filter((href) => href === (pathname === "/secrets" ? "#how" : "/secrets#how")).length, 2, pathname);
     assert.ok(hrefs.includes(pathname === "/" || pathname === "/docs" || pathname.startsWith("/docs/workbench") ? "/docs/workbench-setup" : pathname === "/secrets" ? "#install" : "/secrets#install"), pathname);
+  }
+});
+
+test("public footer navigation links have nonempty destinations", () => {
+  const React = require("react");
+  const ts = require("typescript");
+  const { renderToStaticMarkup } = require("react-dom/server");
+  const { JSDOM } = require("jsdom");
+  const compiled = ts.transpileModule(footer, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, esModuleInterop: true },
+    fileName: "SiteFooter.tsx",
+  }).outputText;
+  const localRequire = (name) => {
+    if (name === "next/link") return { __esModule: true, default: ({ children, ...props }) => React.createElement("a", props, children) };
+    if (name === "next/image") return { __esModule: true, default: (props) => React.createElement("img", props) };
+    if (name === "@/lib/commercial-offerings") return { COMMERCIAL_CONTACT: "contact@example.com" };
+    return require(name);
+  };
+  const exports = {};
+  new Function("exports", "require", compiled)(exports, localRequire);
+  const dom = new JSDOM(renderToStaticMarkup(React.createElement(exports.SiteFooter)));
+  try {
+    const footerElement = dom.window.document.querySelector("footer");
+    assert.ok(footerElement);
+    for (const label of ["Product links", "Organization links", "Open-source project links"]) {
+      const group = footerElement.querySelector(`nav[aria-label="${label}"]`);
+      assert.ok(group, `${label} exists`);
+      assert.ok(group.querySelectorAll("a").length > 0, `${label} has links`);
+    }
+    for (const link of footerElement.querySelectorAll("a")) {
+      assert.match(link.getAttribute("href") ?? "", /\S/, `${link.textContent.trim()}: link needs a nonempty destination`);
+    }
+  } finally {
+    dom.window.close();
   }
 });
 
