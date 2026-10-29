@@ -27,7 +27,7 @@ function compile(file, localRequire) {
   return module.exports;
 }
 
-test("short codes show the format error through the form and a corrected code can be authorized", async () => {
+async function checkSubmission(submit) {
   let clientCalls = 0;
   const requests = [];
   const originalFetch = global.fetch;
@@ -55,7 +55,7 @@ test("short codes show the format error through the form and a corrected code ca
     for (let length = 0; length < 8; length++) {
       await user.clear(input);
       if (length) await user.type(input, "abcd2345".slice(0, length));
-      await user.click(button);
+      await submit(user, input, button);
       assert.equal(screen.getByRole("alert").textContent, "Enter 8 letters or numbers. The code is displayed as XXXX-XXXX.");
       assert.equal(input.getAttribute("aria-invalid"), "true");
       assert.equal(clientCalls, 0);
@@ -63,7 +63,7 @@ test("short codes show the format error through the form and a corrected code ca
     }
     await user.clear(input);
     await user.type(input, "abcd2345");
-    await user.click(button);
+    await submit(user, input, button);
     assert.ok(await screen.findByRole("heading", { name: "Device Authorized" }));
     assert.equal(clientCalls, 1);
     assert.equal(requests.length, 1);
@@ -72,6 +72,19 @@ test("short codes show the format error through the form and a corrected code ca
   } finally {
     cleanup();
     global.fetch = originalFetch;
-    dom.window.close();
   }
+}
+
+test("short codes show the format error through the form and a corrected code can be authorized", async () => {
+  await checkSubmission((user, _input, button) => user.click(button));
 });
+
+test("Enter validates short codes and authorizes a corrected code", async () => {
+  await checkSubmission(async (user, input) => {
+    input.focus();
+    assert.equal(document.activeElement, input);
+    await user.keyboard("{Enter}");
+  });
+});
+
+test.after(() => dom.window.close());
