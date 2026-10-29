@@ -33,6 +33,8 @@ const RELEASE_ASSET_BASE =
 const RAW_SOURCE_BASE =
   `https://raw.githubusercontent.com/ashlrai/phantom-secrets/${PUBLIC_RELEASE_SOURCE_COMMIT}/scripts`;
 
+// The Unix subshells attempt to remove the installer and its empty staging
+// directory on exit, including after failures once the EXIT trap is installed.
 const PLATFORMS = [
   {
     name: "macOS",

@@ -1,6 +1,8 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
+const os = require("node:os");
+const { spawnSync } = require("node:child_process");
 const test = require("node:test");
 const ts = require("typescript");
 const React = require("react");
@@ -61,5 +63,53 @@ test("switching platforms displays the selected install instructions", () => {
       assert.ok(!html.includes(other.asset));
     }
     for (const content of [expected.command, expected.asset, expected.caveat]) assert.ok(html.includes(content), content);
+  }
+});
+
+test("Unix install commands clean their staging directory on success and failure", (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "phantom-quickstart-test-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const bin = path.join(root, "bin");
+  const home = path.join(root, "home");
+  const temp = path.join(root, "temp");
+  fs.mkdirSync(bin);
+  fs.mkdirSync(temp);
+  const installedBin = path.join(home, ".phantom-secrets", "bin");
+  fs.mkdirSync(installedBin, { recursive: true });
+  const executable = (file, contents) => fs.writeFileSync(file, `#!/bin/bash\n${contents}\n`, { mode: 0o755 });
+  for (const name of ["phantom", "phantom-mcp"]) executable(path.join(installedBin, name), "exit 0");
+  executable(path.join(bin, "curl"), `
+    while [[ $# -gt 0 && "$1" != "--output" ]]; do shift; done
+    [[ $# -ge 2 ]] || exit 2
+    installer="$2"
+    printf '#!/bin/bash\\n[[ "$FAIL_POINT" != installer ]]\\n' > "$installer"
+    [[ "$FAIL_POINT" != download ]]
+  `);
+  for (const name of ["shasum", "sha256sum"]) {
+    executable(path.join(bin, name), 'cat >/dev/null; [[ "$FAIL_POINT" != checksum ]]');
+  }
+
+  let selected = "macOS";
+  const hooks = { ...React, useState() { return [selected, (value) => { selected = value; }]; } };
+  const { QuickStart } = load("src/components/landing/QuickStart.tsx", (name) => {
+    if (name === "react") return hooks;
+    if (name === "next/link") return { __esModule: true, default: () => null };
+    if (name === "@/lib/public-release") return load("src/lib/public-release.ts");
+    if (name === "./CopyButton") return { CopyButton: () => null };
+    return require(name);
+  });
+
+  for (const platform of ["macOS", "Linux"]) {
+    selected = platform;
+    const command = findElements(QuickStart(), (element) => typeof element.props.text === "string")
+      .find((element) => element.props.text.includes("mktemp -d")).props.text;
+    for (const failure of ["", "download", "checksum", "installer"]) {
+      const result = spawnSync("/bin/bash", ["-c", command], {
+        env: { HOME: home, TMPDIR: temp, PATH: `${bin}:/usr/bin:/bin`, FAIL_POINT: failure },
+        encoding: "utf8",
+      });
+      assert.equal(result.status, failure ? 1 : 0, `${platform}: ${failure || "success"}: ${result.stderr}`);
+      assert.deepEqual(fs.readdirSync(temp), [], `${platform}: ${failure || "success"} left staging files`);
+    }
   }
 });
