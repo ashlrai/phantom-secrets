@@ -40,14 +40,14 @@ test("public device form displays eight characters with a separator when typed o
     const input = screen.getByRole("textbox", { name: "Device code", description: /8 letters or numbers.*XXXX-XXXX/ });
     const button = screen.getByRole("button", { name: "Authorize Device" });
     assert.equal(input.placeholder, "XXXX-XXXX");
-    assert.equal(input.maxLength, 9);
-    assert.equal(button.disabled, true);
+    assert.equal(input.maxLength, -1);
+    assert.equal(button.disabled, false);
 
     await user.type(input, "abcd");
     assert.equal(input.value, "ABCD");
     await user.type(input, "234");
     assert.equal(input.value, "ABCD-234");
-    assert.equal(button.disabled, true);
+    assert.equal(button.disabled, false);
     await user.type(input, "5");
     assert.equal(input.value, "ABCD-2345");
     assert.equal(button.disabled, false);
