@@ -171,6 +171,38 @@ test("each platform displays and copies its phantom-install staging prefix", asy
   }
 });
 
+test("QuickStart displays line breaks between consecutive commands", async () => {
+  const style = document.createElement("style");
+  style.textContent = fs.readFileSync(path.join(__dirname, "../src/app/globals.css"), "utf8");
+  document.head.append(style);
+  const user = userEvent.setup();
+  try {
+    render(React.createElement(QuickStart));
+    for (const [platform, consecutiveCommands] of [
+      ["macOS", "set -euo pipefail\numask 077"],
+      ["Windows", "  & $Installer\n  if (-not $?) { throw 'Phantom installer failed' }"],
+      ["Linux", "set -euo pipefail\numask 077"],
+    ]) {
+      await user.click(screen.getByRole("button", { name: platform }));
+      const card = screen.getByRole("heading", { level: 3, name: platform }).closest("article");
+      const installText = within(card).getByRole("button", { name: /^Copy command:/ }).firstElementChild;
+      const versionText = within(screen.getByRole("list", { name: "" }))
+        .getAllByRole("button", { name: /^Copy command:/ })[0].firstElementChild;
+
+      for (const [label, element, expected] of [
+        [platform, installText, consecutiveCommands],
+        ["version check", versionText, "phantom --version\nphantom-mcp --version"],
+      ]) {
+        assert.ok(element.textContent.includes(expected), `${label}: consecutive commands retain their newline`);
+        assert.equal(window.getComputedStyle(element).whiteSpace, "pre-wrap", `${label}: newlines are displayed`);
+      }
+    }
+  } finally {
+    cleanup();
+    style.remove();
+  }
+});
+
 test("every displayed QuickStart command can be selected and matches the copied text", async () => {
   const style = document.createElement("style");
   style.textContent = fs.readFileSync(path.join(__dirname, "../src/app/globals.css"), "utf8");
