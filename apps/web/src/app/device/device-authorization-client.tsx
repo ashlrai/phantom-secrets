@@ -282,7 +282,7 @@ export default function DeviceAuthorizationClient() {
 
               <button
                 type="submit"
-                disabled={status !== "input" || code.length < 9}
+                disabled={status !== "input"}
                 className="w-full min-h-[48px] py-3 bg-blue-action hover:bg-blue-action-d disabled:bg-s3 disabled:text-t3 rounded-lg font-semibold transition-colors focus-visible:outline-2 focus-visible:outline-blue-b"
               >
                 {status === "authenticating"
