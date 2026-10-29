@@ -324,6 +324,79 @@ for (const [name, code, formatted] of [
   }
 });
 
+test("Enter in the code input and the submit button share validation and approval", async () => {
+  const { JSDOM } = require("jsdom");
+  const dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "https://phm.dev/device" });
+  const previousGlobals = new Map(["window", "document", "navigator", "HTMLElement"].map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)]));
+  for (const name of previousGlobals.keys()) Object.defineProperty(globalThis, name, { value: dom.window[name], configurable: true, writable: true });
+
+  const React = require("react");
+  const { render, cleanup } = require("@testing-library/react");
+  const userEvent = require("@testing-library/user-event").default;
+  const compiled = ts.transpileModule(source, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, esModuleInterop: true },
+    fileName: filename,
+  }).outputText;
+  try {
+    for (const method of ["keyboard", "button"]) {
+      const requests = [];
+      let sessionReads = 0;
+      const dependencies = {
+        "next/image": { __esModule: true, default: () => null },
+        "next/link": { __esModule: true, default: ({ children, ...props }) => React.createElement("a", props, children) },
+        "@/lib/device-code": deviceCodeModule.exports,
+        "@/lib/posthog": { capturePostHog: async () => {} },
+        "@supabase/supabase-js": { createClient: () => ({ auth: {
+          getSession: async () => { sessionReads++; return { data: { session: { access_token: "synthetic-session" } }, error: null }; },
+        } }) },
+      };
+      const module = { exports: {} };
+      new Function("require", "module", "exports", "sessionStorage", "fetch", compiled)(
+        (name) => dependencies[name] ?? require(name), module, module.exports, dom.window.sessionStorage,
+        async (endpoint, request) => { requests.push({ endpoint, request }); return Response.json({ status: "approved" }); },
+      );
+      const page = render(React.createElement(module.exports.default));
+      const input = page.getByRole("textbox", { name: "Device code" });
+      const user = userEvent.setup({ document: dom.window.document });
+      const submit = async () => {
+        if (method === "keyboard") await user.type(input, "{Enter}");
+        else await user.click(page.getByRole("button", { name: "Authorize Device" }));
+      };
+
+      for (const invalid of ["", "ab12c"]) {
+        await user.clear(input);
+        if (invalid) await user.type(input, invalid);
+        await submit();
+        const alert = page.getByRole("alert");
+        assert.equal(alert.textContent, "Enter 8 letters or numbers. The code is displayed as XXXX-XXXX.");
+        assert.equal(input.getAttribute("aria-invalid"), "true");
+        assert.ok(input.getAttribute("aria-describedby").split(/\s+/).includes(alert.id));
+        assert.equal(sessionReads, 0);
+        assert.equal(requests.length, 0);
+      }
+
+      await user.clear(input);
+      await user.type(input, "abcd2345");
+      assert.equal(input.value, testCode);
+      await submit();
+      await page.findByRole("heading", { name: "Device Authorized" });
+      assert.equal(sessionReads, 1);
+      assert.equal(requests.length, 1);
+      assert.equal(requests[0].endpoint, "/api/v1/auth/device/approve");
+      assert.equal(requests[0].request.headers.Authorization, "Bearer synthetic-session");
+      assert.deepEqual(JSON.parse(requests[0].request.body), { user_code: "ABCD2345" });
+      cleanup();
+    }
+  } finally {
+    cleanup();
+    dom.window.close();
+    for (const [name, descriptor] of previousGlobals) {
+      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+      else delete globalThis[name];
+    }
+  }
+});
+
 test("invalid device code explains the accepted characters and displayed format", async () => {
   const h = harness({ url: "https://phm.dev/device", storedCode: null });
   find(h.render(), "input").props.onChange({ target: { value: "ab12c" } });
