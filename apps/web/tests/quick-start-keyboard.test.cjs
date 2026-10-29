@@ -12,7 +12,7 @@ Object.defineProperty(global, "navigator", { value: dom.window.navigator, config
 global.HTMLElement = dom.window.HTMLElement;
 
 const React = require("react");
-const { cleanup, render, screen, waitFor } = require("@testing-library/react");
+const { cleanup, render, screen, waitFor, within } = require("@testing-library/react");
 const userEvent = require("@testing-library/user-event").default;
 
 function compile(file, localRequire) {
@@ -38,6 +38,44 @@ const { QuickStart } = compile("components/landing/QuickStart.tsx", (name) => {
   if (name === "@/lib/public-release") return release;
   if (name === "next/link") return { __esModule: true, default: ({ children, ...props }) => React.createElement("a", props, children) };
   return require(name);
+});
+
+test("re-selecting the active platform preserves its selection and install command", async () => {
+  const user = userEvent.setup();
+  render(React.createElement(QuickStart));
+  try {
+    const selector = screen.getByRole("group", { name: "Choose an operating system" });
+    for (const [platform, commandPart] of [
+      ["macOS", "shasum -a 256 -c -"],
+      ["Windows", "Get-FileHash -Algorithm SHA256"],
+      ["Linux", "sha256sum -c -"],
+      ["macOS", "shasum -a 256 -c -"],
+    ]) {
+      const active = within(selector).getByRole("button", { name: platform });
+      if (active.getAttribute("aria-pressed") !== "true") await user.click(active);
+      const card = screen.getByRole("heading", { level: 3, name: platform }).closest("article");
+      assert.ok(card);
+      const command = within(card).getByRole("button", { name: /^Copy command:/ });
+      const displayed = command.textContent;
+      assert.ok(displayed.includes(commandPart), `${platform}: expected install command`);
+
+      for (let repeat = 0; repeat < 2; repeat++) {
+        await user.click(active);
+        for (const button of within(selector).getAllByRole("button")) {
+          assert.equal(button.getAttribute("aria-pressed"), String(button === active));
+        }
+        assert.equal(screen.getByRole("heading", { level: 3, name: platform }).closest("article"), card);
+        assert.equal(within(card).getByRole("button", { name: /^Copy command:/ }).textContent, displayed);
+      }
+
+      await user.click(command);
+      const copied = await navigator.clipboard.readText();
+      assert.ok(copied.includes(commandPart), `${platform}: copied command matches the displayed platform`);
+      assert.ok(displayed.includes(copied), `${platform}: copied command matches the displayed command`);
+    }
+  } finally {
+    cleanup();
+  }
 });
 
 test("QuickStart copy controls are named, reachable by Tab, and operable by keyboard", async () => {
