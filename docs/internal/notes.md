@@ -1,5 +1,23 @@
 # Notes: Phantom North Star Stabilization
 
+## Landing-page installer temporary directory
+
+The macOS and Linux commands in `apps/web/src/components/landing/QuickStart.tsx`
+create a private staging directory with
+`mktemp -d "${TMPDIR:-/tmp}/phantom-install.XXXXXX"`. Set and export `TMPDIR`
+to an existing writable directory before running the displayed command to choose
+its parent; if `TMPDIR` is unset or empty, the shell falls back to `/tmp`.
+For example, `export TMPDIR="$HOME/my temporary files"` selects that directory
+if it already exists and is writable. The staging directory contains the
+downloaded `install.sh`, not the installed binaries, which the commands check
+under `$HOME/.phantom-secrets/bin`.
+
+After the exit trap is installed, it attempts to remove the installer and then
+the empty staging directory on exit, including on failure. Cleanup is not
+guaranteed, and a nonempty directory is left in place. Windows instead uses a
+temporary installer file under PowerShell's `$env:TEMP` and attempts to remove it
+in `finally`; the Unix `TMPDIR` override does not apply to that command.
+
 ## Session Context
 - Branch: `main`
 - Entire: `entire resume main` returned no checkpoint.

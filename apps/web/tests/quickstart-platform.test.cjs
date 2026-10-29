@@ -71,7 +71,7 @@ test("Unix install commands clean their staging directory on success and failure
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const bin = path.join(root, "bin");
   const home = path.join(root, "home");
-  const temp = path.join(root, "temp");
+  const temp = path.join(root, "temp with spaces");
   fs.mkdirSync(bin);
   fs.mkdirSync(temp);
   const installedBin = path.join(home, ".phantom-secrets", "bin");
@@ -105,15 +105,17 @@ test("Unix install commands clean their staging directory on success and failure
     selected = platform;
     const command = findElements(QuickStart(), (element) => typeof element.props.text === "string")
       .find((element) => element.props.text.includes("mktemp -d")).props.text;
-    for (const failure of ["", "download", "checksum", "installer", "nonempty", "default-temp"]) {
+    for (const failure of ["", "download", "checksum", "installer", "nonempty", "default-temp", "unset-temp"]) {
       const record = path.join(root, "stage-record");
+      const env = { HOME: home, PATH: `${bin}:/usr/bin:/bin`, FAIL_POINT: failure, STAGE_RECORD: record };
+      if (failure !== "unset-temp") env.TMPDIR = failure === "default-temp" ? "" : temp;
       const result = spawnSync("/bin/bash", ["-c", command], {
-        env: { HOME: home, TMPDIR: failure === "default-temp" ? "" : temp, PATH: `${bin}:/usr/bin:/bin`, FAIL_POINT: failure, STAGE_RECORD: record },
+        env,
         encoding: "utf8",
       });
       assert.equal(result.status, ["download", "checksum", "installer"].includes(failure) ? 1 : 0, `${platform}: ${failure || "success"}: ${result.stderr}`);
       const stage = fs.readFileSync(record, "utf8");
-      assert.equal(path.dirname(stage), failure === "default-temp" ? "/tmp" : temp);
+      assert.equal(path.dirname(stage), ["default-temp", "unset-temp"].includes(failure) ? "/tmp" : temp);
       if (failure === "nonempty") {
         assert.deepEqual(fs.readdirSync(stage), ["extra"], "cleanup must leave a nonempty directory without the installer");
         fs.rmSync(stage, { recursive: true });
@@ -123,6 +125,15 @@ test("Unix install commands clean their staging directory on success and failure
       assert.deepEqual(fs.readdirSync(temp), [], `${platform}: ${failure || "success"} left staging files`);
     }
   }
+});
+
+test("internal notes describe the displayed installer staging override", () => {
+  const notes = fs.readFileSync(path.join(__dirname, "../../../docs/internal/notes.md"), "utf8");
+  assert.ok(notes.includes('mktemp -d "${TMPDIR:-/tmp}/phantom-install.XXXXXX"'));
+  assert.match(notes, /Set and export `TMPDIR`\s+to an existing writable directory/);
+  assert.match(notes, /`TMPDIR` is unset or empty, the shell falls back to `\/tmp`/);
+  assert.match(notes, /After the exit trap is installed, it attempts to remove the installer and then\s+the empty staging directory on exit, including on failure/);
+  assert.match(notes, /Windows instead uses a\s+temporary installer file under PowerShell's `\$env:TEMP`/);
 });
 
 test("public installation guide describes the landing command's staging cleanup", () => {
