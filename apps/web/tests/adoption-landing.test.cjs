@@ -268,6 +268,21 @@ test("install guidance explains the temporary installer location for each platfo
   assert.match(quickStart, /Windows uses a\s+temporary installer file instead/);
 });
 
+test("both Unix install snippets quote every staging directory reference", () => {
+  const quickStart = read("src/components/landing/QuickStart.tsx");
+  const snippets = [
+    ["macOS", quickStart.split('name: "macOS"')[1]?.split('name: "Windows"')[0]],
+    ["Linux", quickStart.split('name: "Linux"')[1]?.split("export function QuickStart")[0]],
+  ];
+
+  for (const [platform, snippet] of snippets) {
+    assert.ok(snippet, `${platform}: install snippet exists`);
+    assert.ok(snippet.includes('phantom_installer="$phantom_stage/install.sh"'), `${platform}: quote the installer path`);
+    assert.ok(snippet.includes('rmdir -- "$phantom_stage"'), `${platform}: quote the cleanup path`);
+    assert.equal((snippet.match(/\$phantom_stage\b/g) || []).length, 2, `${platform}: review all staging directory references`);
+  }
+});
+
 test("activation orders installation before client connection and previews config writes", () => {
   const page = read("src/app/secrets/page.tsx");
   const connection = read("src/components/landing/Install.tsx");
