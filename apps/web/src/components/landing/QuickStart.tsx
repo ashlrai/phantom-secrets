@@ -184,7 +184,10 @@ export function QuickStart() {
           release artifact—not every local shell, policy, or credential-store state.
           The command panels download the installer source from the exact {PUBLIC_RELEASE_TAG}
           source commit, verify the fixed script digest, and only then execute the
-          local file. The scripts verify the selected archive&apos;s adjacent checksum,
+          local file. On macOS and Linux, the temporary staging directory holds the
+          downloaded installer script for verification and execution; cleanup attempts
+          to remove both on exit. It is not the install directory. Windows uses a
+          temporary installer file instead. The scripts verify the selected archive&apos;s adjacent checksum,
           exact two-binary shape, and versions before promoting it into a user-owned
           install directory. The Linux encrypted-file path needs its managed
           passphrase configured before <code>phantom init</code>; keep that
