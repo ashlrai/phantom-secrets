@@ -48,7 +48,7 @@ test("rendered primary navigation links are named and reach local pages and frag
   const ts = require("typescript");
   const { renderToStaticMarkup } = require("react-dom/server");
   const { JSDOM } = require("jsdom");
-  const { queryAllByRole } = require("@testing-library/dom");
+  const { getByRole, queryAllByRole } = require("@testing-library/dom");
   const catalog = JSON.parse(read("docs-catalog.json"));
   const compiled = ts.transpileModule(nav, {
     compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, esModuleInterop: true },
@@ -57,7 +57,8 @@ test("rendered primary navigation links are named and reach local pages and frag
 
   for (const pathname of ["/", "/secrets", "/pricing", "/docs", "/docs/workbench-setup", "/docs/getting-started"]) {
     let stateIndex = 0;
-    const hooks = { ...React, useState: (initial) => [stateIndex++ === 1 ? true : initial, () => {}] };
+    let menuOpen = false;
+    const hooks = { ...React, useState: (initial) => [stateIndex++ === 1 ? menuOpen : initial, () => {}] };
     const localRequire = (name) => {
       if (name === "react") return hooks;
       if (name === "next/navigation") return { usePathname: () => pathname };
@@ -70,9 +71,23 @@ test("rendered primary navigation links are named and reach local pages and frag
     };
     const exports = {};
     new Function("exports", "require", compiled)(exports, localRequire);
+    const closed = new JSDOM(renderToStaticMarkup(React.createElement(exports.Nav)));
+    assert.equal(
+      getByRole(closed.window.document.body, "navigation", { name: /\S/ }),
+      closed.window.document.querySelector('nav[aria-label="Primary navigation"]'),
+      `${pathname}: closed menu has a named navigation landmark`,
+    );
+    closed.window.close();
+    stateIndex = 0;
+    menuOpen = true;
     const document = new JSDOM(renderToStaticMarkup(React.createElement(exports.Nav))).window.document;
     const primary = document.querySelector('nav[aria-label="Primary navigation"]');
     assert.ok(primary, pathname);
+    assert.equal(
+      getByRole(document.body, "navigation", { name: /\S/ }),
+      primary,
+      `${pathname}: open menu has a named navigation landmark`,
+    );
     assert.equal(primary.querySelector("#mobile-navigation").hidden, false, pathname);
     const links = [...primary.querySelectorAll("a")];
     const namedLinks = queryAllByRole(primary, "link", { name: /\S/ });
