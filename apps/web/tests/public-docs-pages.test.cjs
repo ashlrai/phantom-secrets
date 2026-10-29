@@ -126,13 +126,31 @@ function loadDocs(entries = catalog, revision) {
   return { docs: module.exports, loadedFiles };
 }
 
+function assertPrimaryHeading(document, pagePath) {
+  const heading = document.querySelector("main h1");
+  assert.ok(heading, `${pagePath} must have a primary heading`);
+  assert.ok(heading.textContent.trim(), `${pagePath} must have a nonempty primary heading`);
+}
+
 test("every public documentation page renders a nonempty primary heading", async () => {
   const { docs } = loadDocs();
+  const empty = () => null;
+  const Link = ({ href, children, ...props }) => React.createElement("a", { href, ...props }, children);
+  const hub = loadComponent("src/app/docs/page.tsx", {
+    "next/link": Link,
+    "@/components/landing/Nav": { Nav: empty },
+    "@/components/landing/SiteFooter": { SiteFooter: empty },
+    "@/components/landing/CopyButton": { CopyButton: empty },
+    "@/components/landing/SecretUseCases": { SecretUseCases: empty },
+    "@/components/docs/AskDocumentation": { AskDocumentation: empty },
+    "@/lib/workbench-release": { WORKBENCH_RELEASE: null },
+    "@/lib/public-release": { PUBLIC_RELEASE_TAG: "test" },
+  });
   const renderer = loadComponent("src/components/docs/MarkdownDocument.tsx", {
     "@/lib/public-docs": docs,
   });
   const page = loadComponent("src/app/docs/[slug]/page.tsx", {
-    "next/link": ({ href, children, ...props }) => React.createElement("a", { href, ...props }, children),
+    "next/link": Link,
     "next/navigation": { notFound: () => { throw new Error("Document not found"); } },
     "@/components/docs/AskDocumentation": { AskDocumentation: () => null },
     "@/components/docs/MarkdownDocument": renderer,
@@ -141,12 +159,23 @@ test("every public documentation page renders a nonempty primary heading", async
     "@/lib/public-docs": docs,
   });
 
+  assertPrimaryHeading(new JSDOM(renderToStaticMarkup(React.createElement(hub.default))).window.document, "/docs");
   for (const { slug } of catalog) {
     const element = await page.default({ params: Promise.resolve({ slug }) });
     const document = new JSDOM(renderToStaticMarkup(element)).window.document;
-    const heading = document.querySelector("main h1");
-    assert.ok(heading, `${slug} must have a primary heading`);
-    assert.ok(heading.textContent.trim(), `${slug} must have a nonempty primary heading`);
+    assertPrimaryHeading(document, `/docs/${slug}`);
+  }
+});
+
+test("primary heading checks reject missing, empty, and out-of-main headings", () => {
+  const document = (html) => new JSDOM(html).window.document;
+  assert.doesNotThrow(() => assertPrimaryHeading(document("<main><h1>Guide</h1></main>"), "/fixture"));
+  for (const html of [
+    "<main></main>",
+    "<main><h1>  </h1></main>",
+    "<h1>Outside main</h1><main></main>",
+  ]) {
+    assert.throws(() => assertPrimaryHeading(document(html), "/fixture"), /\/fixture must have a (?:nonempty )?primary heading/);
   }
 });
 
