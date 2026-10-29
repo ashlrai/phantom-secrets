@@ -7,6 +7,7 @@ const test = require("node:test");
 const ts = require("typescript");
 const React = require("react");
 const { renderToStaticMarkup } = require("react-dom/server");
+const { JSDOM } = require("jsdom");
 
 function load(relativePath, localRequire = require) {
   const source = fs.readFileSync(path.join(__dirname, "..", relativePath), "utf8");
@@ -66,7 +67,7 @@ test("switching platforms displays the selected install instructions", () => {
   }
 });
 
-test("Unix install commands clean their staging directory on success and failure", (t) => {
+test("rendered Unix install commands support TMPDIR with spaces and clean up on success and failure", (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "phantom-quickstart-test-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const bin = path.join(root, "bin");
@@ -93,18 +94,31 @@ test("Unix install commands clean their staging directory on success and failure
 
   let selected = "macOS";
   const hooks = { ...React, useState() { return [selected, (value) => { selected = value; }]; } };
+  const icons = load("src/components/landing/Icons.tsx");
+  const copyButton = load("src/components/landing/CopyButton.tsx", (name) => {
+    if (name === "./Icons") return icons;
+    if (name === "@/lib/posthog") return { capturePostHog: () => {} };
+    return require(name);
+  });
   const { QuickStart } = load("src/components/landing/QuickStart.tsx", (name) => {
     if (name === "react") return hooks;
     if (name === "next/link") return { __esModule: true, default: () => null };
     if (name === "@/lib/public-release") return load("src/lib/public-release.ts");
-    if (name === "./CopyButton") return { CopyButton: () => null };
+    if (name === "./CopyButton") return copyButton;
     return require(name);
   });
 
   for (const platform of ["macOS", "Linux"]) {
     selected = platform;
-    const command = findElements(QuickStart(), (element) => typeof element.props.text === "string")
-      .find((element) => element.props.text.includes("mktemp -d")).props.text;
+    const dom = new JSDOM(renderToStaticMarkup(React.createElement(QuickStart)));
+    const commandText = dom.window.document.querySelector(".platform-install-card__command .copy-command > span:first-child");
+    assert.ok(commandText, `${platform}: command is displayed`);
+    const command = Array.from(commandText.childNodes)
+      .filter((node) => node.nodeType === dom.window.Node.TEXT_NODE)
+      .map((node) => node.textContent)
+      .join("");
+    dom.window.close();
+    assert.ok(command.includes('mktemp -d "${TMPDIR:-/tmp}/phantom-install.XXXXXX"'), `${platform}: staging template is quoted`);
     for (const failure of ["", "download", "checksum", "installer", "nonempty", "default-temp", "unset-temp"]) {
       const record = path.join(root, "stage-record");
       const env = { HOME: home, PATH: `${bin}:/usr/bin:/bin`, FAIL_POINT: failure, STAGE_RECORD: record };
