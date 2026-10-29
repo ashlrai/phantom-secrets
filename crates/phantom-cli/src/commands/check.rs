@@ -174,11 +174,8 @@ fn staged_findings(cwd: &Path) -> Result<(Vec<Finding>, Vec<ConfigWarning>)> {
                 // in a comment is reported by name or line below; scanning
                 // it again would report the same value twice.
                 let scan_content = staged_added_lines(cwd, &file)?;
-                let uncommented = scan_content
-                    .lines()
-                    .filter(|line| !line_holds_credential_comment(line))
-                    .collect::<Vec<_>>()
-                    .join("\n");
+                let reported_lines = reported_comment_line_texts(&dotenv, &content);
+                let uncommented = skip_reported_comment_lines(&scan_content, &reported_lines);
                 findings.extend(code_pattern_findings(&file, &uncommented));
             }
             let mut reported = BTreeSet::new();
@@ -235,17 +232,14 @@ fn staged_findings(cwd: &Path) -> Result<(Vec<Finding>, Vec<ConfigWarning>)> {
 /// read by the whole-file parse. Each name is reported once.
 fn staged_direnv_findings(cwd: &Path, file: &str) -> Result<Vec<Finding>> {
     let added = staged_added_lines(cwd, file)?;
-    // A line whose credential sits in a comment is reported by name or
-    // line below; scanning it here would report the same value twice.
-    let uncommented = added
-        .lines()
-        .filter(|line| !line_holds_credential_comment(line))
-        .collect::<Vec<_>>()
-        .join("\n");
-    let mut findings = code_pattern_findings(file, &uncommented);
     let content = read_staged_bytes(cwd, file)?;
     let text = String::from_utf8_lossy(&content);
     let parsed = DotenvFile::parse_str(&text);
+    // A line whose credential sits in a comment is reported by name or
+    // line below; scanning it here would report the same value twice.
+    let reported_lines = reported_comment_line_texts(&parsed, &text);
+    let uncommented = skip_reported_comment_lines(&added, &reported_lines);
+    let mut findings = code_pattern_findings(file, &uncommented);
     let mut names = BTreeSet::new();
     collect_direnv_literal_names(&text, &mut names);
     for line in text.split(['\n', '\r']) {
@@ -339,6 +333,39 @@ fn code_pattern_findings(file: &str, added: &str) -> Vec<Finding> {
             })
         })
         .collect()
+}
+
+/// Text of the physical lines the whole-file comment report covers:
+/// commented-out secret assignments and other credential-holding comments
+/// (see [`push_comment_credential_findings`]). Line breaks follow the
+/// dotenv parser: `\r\n`, `\n` or a lone `\r`.
+fn reported_comment_line_texts(dotenv: &DotenvFile, content: &str) -> BTreeSet<String> {
+    let numbers: BTreeSet<usize> = dotenv
+        .commented_secret_assignments()
+        .into_iter()
+        .map(|(_, line)| line)
+        .chain(dotenv.credential_comment_lines())
+        .collect();
+    let normalized = content.replace("\r\n", "\n");
+    normalized
+        .split(['\n', '\r'])
+        .enumerate()
+        .filter(|(index, _)| numbers.contains(&(index + 1)))
+        .map(|(_, line)| line.to_string())
+        .collect()
+}
+
+/// Staged added lines minus those whose credential comment the whole-file
+/// report already names. A line is skipped only when its exact text is a
+/// reported comment line: a `#` line inside a multi-line quoted value
+/// looks like a comment on its own, but the whole-file parse reads it as
+/// value text and never reports it, so it must keep the code scan.
+fn skip_reported_comment_lines(added: &str, reported: &BTreeSet<String>) -> String {
+    added
+        .lines()
+        .filter(|line| !(line_holds_credential_comment(line) && reported.contains(*line)))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Findings for credentials that sit in comments, which the dotenv
@@ -1636,6 +1663,22 @@ mod tests {
             staged_dotenv_names(dir.path()),
             ["OPENAI_API_KEY (commented out, line 2)".to_string()]
         );
+    }
+
+    /// A `#` line inside a multi-line quoted value is value text, not a
+    /// comment: the whole-file comment report never names it, so the
+    /// staged code scan must still see the credential on that line.
+    #[test]
+    fn staged_dotenv_hash_line_inside_quoted_value_keeps_the_code_scan() {
+        let content = format!("GREETING=\"hello\n# rotate: {}\n\"\n", ghp_shape());
+        for name in [".env", ".env.example"] {
+            let dir = repo_with_staged_bytes_at(name, content.as_bytes());
+            assert_eq!(
+                staged_code_labels(dir.path()),
+                ["GitHub personal token"],
+                "{name}"
+            );
+        }
     }
 
     /// A commented-out assignment whose value carries no known token
