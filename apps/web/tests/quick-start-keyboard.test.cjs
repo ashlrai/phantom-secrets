@@ -12,7 +12,7 @@ Object.defineProperty(global, "navigator", { value: dom.window.navigator, config
 global.HTMLElement = dom.window.HTMLElement;
 
 const React = require("react");
-const { cleanup, render, screen, waitFor, within } = require("@testing-library/react");
+const { cleanup, fireEvent, render, screen, waitFor, within } = require("@testing-library/react");
 const userEvent = require("@testing-library/user-event").default;
 
 function compile(file, localRequire) {
@@ -38,6 +38,53 @@ const { QuickStart } = compile("components/landing/QuickStart.tsx", (name) => {
   if (name === "@/lib/public-release") return release;
   if (name === "next/link") return { __esModule: true, default: ({ children, ...props }) => React.createElement("a", props, children) };
   return require(name);
+});
+
+test("reduced motion keeps platform commands available without animation events", async () => {
+  const originalMatchMedia = window.matchMedia;
+  window.matchMedia = (query) => ({
+    matches: query === "(prefers-reduced-motion: reduce)",
+    media: query,
+    addEventListener() {},
+    removeEventListener() {},
+    addListener() {},
+    removeListener() {},
+  });
+  const user = userEvent.setup();
+  try {
+    render(React.createElement(QuickStart));
+    const selector = screen.getByRole("group", { name: "Choose an operating system" });
+    const check = (platform, commandPart) => {
+      const active = within(selector).getByRole("button", { name: platform });
+      for (const button of within(selector).getAllByRole("button")) {
+        assert.equal(button.getAttribute("aria-pressed"), String(button === active));
+      }
+      const card = screen.getByRole("heading", { level: 3, name: platform }).closest("article");
+      assert.ok(card);
+      assert.equal(document.querySelectorAll(".platform-install-card").length, 1);
+      const command = within(card).getByRole("button", { name: /^Copy command:/ });
+      assert.ok(command.textContent.includes(commandPart), `${platform}: command is immediately available`);
+      assert.equal(command.disabled, false);
+      return command;
+    };
+
+    check("macOS", "shasum -a 256 -c -");
+    // Dispatch no animation or transition events: selection must update on activation alone.
+    fireEvent.click(within(selector).getByRole("button", { name: "Windows" }));
+    check("Windows", "Get-FileHash -Algorithm SHA256");
+    const linux = within(selector).getByRole("button", { name: "Linux" });
+    linux.focus();
+    await user.keyboard("{Enter}");
+    assert.equal(document.activeElement, linux);
+    const command = check("Linux", "sha256sum -c -");
+    await user.click(command);
+    assert.ok((await navigator.clipboard.readText()).includes("sha256sum -c -"));
+    fireEvent.click(within(selector).getByRole("button", { name: "macOS" }));
+    check("macOS", "shasum -a 256 -c -");
+  } finally {
+    cleanup();
+    window.matchMedia = originalMatchMedia;
+  }
 });
 
 test("re-selecting the active platform preserves its selection and install command", async () => {
