@@ -127,6 +127,25 @@ function find(tree, type) {
   return null;
 }
 
+test("device code has a visible, associated label before and after an approval error", async () => {
+  const h = harness({ url: "https://phm.dev/device", previousSession: { access_token: "synthetic-existing-account" }, approvalError: true });
+  const assertLabel = () => {
+    const tree = h.render();
+    const label = find(tree, "label");
+    const input = find(tree, "input");
+    assert.equal(label.props.children, "Code shown in your terminal");
+    assert.ok(input.props.id);
+    assert.equal(label.props.htmlFor, input.props.id);
+  };
+
+  assertLabel();
+  find(h.render(), "input").props.onChange({ target: { value: testCode } });
+  await find(h.render(), "form").props.onSubmit({ preventDefault() {} });
+  assert.equal(h.states[1], "input");
+  assert.ok(h.states[2]);
+  assertLabel();
+});
+
 async function assertSuccessfulCallback(h) {
   h.runEffect();
   await h.settle();

@@ -254,7 +254,7 @@ export default function DeviceAuthorizationClient() {
 
             <form onSubmit={handleSubmit} className="space-y-4">
               <label htmlFor="device-code" className="block text-left text-sm font-medium text-t1">
-                Device code
+                Code shown in your terminal
               </label>
               <input
                 id="device-code"
