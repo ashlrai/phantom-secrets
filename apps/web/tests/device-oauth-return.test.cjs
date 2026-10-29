@@ -433,6 +433,65 @@ test("device code format hint remains associated with the input when validation 
   for (const id of input.props["aria-describedby"].split(" ")) assert.ok(findById(tree, id));
 });
 
+test("rendered device code errors are announced and described by the field", async () => {
+  const { JSDOM } = require("jsdom");
+  const dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "https://phm.dev/device" });
+  global.window = dom.window;
+  global.document = dom.window.document;
+  Object.defineProperty(global, "navigator", { value: dom.window.navigator, configurable: true });
+  global.HTMLElement = dom.window.HTMLElement;
+  const React = require("react");
+  const { render, screen, fireEvent, cleanup } = require("@testing-library/react");
+  const userEvent = require("@testing-library/user-event").default;
+  const { computeAccessibleDescription } = require("dom-accessibility-api");
+  const module = { exports: {} };
+  const output = ts.transpileModule(source, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2022 },
+    fileName: filename,
+  }).outputText;
+  const dependencies = {
+    "next/image": { default: (props) => React.createElement("img", props) },
+    "next/link": { default: ({ children, ...props }) => React.createElement("a", props, children) },
+    "@/lib/device-code": deviceCodeModule.exports,
+    "@/lib/posthog": { capturePostHog: async () => {} },
+    "@supabase/supabase-js": { createClient: () => ({ auth: {
+      getSession: async () => ({ data: { session: { access_token: testToken } }, error: null }),
+    } }) },
+  };
+  new Function("require", "module", "exports", "window", "sessionStorage", "fetch", output)(
+    (name) => dependencies[name] ?? require(name), module, module.exports, dom.window, dom.window.sessionStorage,
+    async () => Response.json({ error: "Invalid or expired code. Please try again." }, { status: 400 }),
+  );
+  try {
+    const user = userEvent.setup();
+    render(React.createElement(module.exports.default));
+    const input = screen.getByRole("textbox", { name: "Device code" });
+    assert.equal(input.getAttribute("aria-invalid"), "false");
+    assert.equal(screen.queryByRole("alert"), null);
+
+    // Exercise the client-side validation branch even though the button blocks short codes.
+    fireEvent.submit(input.closest("form"));
+    let alert = screen.getByRole("alert");
+    assert.equal(alert.textContent, "Enter 8 letters or numbers. The code is displayed as XXXX-XXXX.");
+    assert.equal(input.getAttribute("aria-invalid"), "true");
+    assert.ok(computeAccessibleDescription(input).includes(alert.textContent));
+
+    await user.type(input, "abcd2345");
+    await user.click(screen.getByRole("button", { name: "Authorize Device" }));
+    alert = await screen.findByRole("alert");
+    assert.equal(alert.textContent, "Invalid or expired code. Please try again.");
+    assert.equal(input.getAttribute("aria-invalid"), "true");
+    assert.ok(computeAccessibleDescription(input).includes(alert.textContent));
+  } finally {
+    cleanup();
+    dom.window.close();
+    delete global.window;
+    delete global.document;
+    delete global.navigator;
+    delete global.HTMLElement;
+  }
+});
+
 test("branded form associates instructions and errors and announces busy and success states", async () => {
   const h = harness({ deferInitialization: true });
   const tree = h.render();
