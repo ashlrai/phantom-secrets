@@ -21,6 +21,18 @@ test("complete device user codes display in two four-character groups and normal
   }
 });
 
+test("input normalization accepts lowercase and separators while requiring eight characters", () => {
+  for (const input of ["abcd2345", "abcd-2345", "ab cd-23 45!"]) {
+    assert.equal(normalizeDeviceUserCode(input), "ABCD2345");
+    assert.equal(formatDeviceUserCode(input), "ABCD-2345");
+    assert.equal(isValidDeviceUserCode(input), true);
+  }
+  for (const [input, displayed] of [["ab-cd", "ABCD"], ["abc-d2", "ABCD-2"]]) {
+    assert.equal(formatDeviceUserCode(input), displayed);
+    assert.equal(isValidDeviceUserCode(input), false);
+  }
+});
+
 test("formatting preserves extra characters so overlong codes remain invalid", () => {
   const displayed = formatDeviceUserCode("abcd-23456");
   assert.equal(displayed, "ABCD-23456");
