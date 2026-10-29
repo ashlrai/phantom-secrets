@@ -268,6 +268,23 @@ test("install guidance explains the temporary installer location for each platfo
   assert.match(quickStart, /Windows uses a\s+temporary installer file instead/);
 });
 
+test("both Unix install commands use a portable mktemp directory template", () => {
+  const quickStart = read("src/components/landing/QuickStart.tsx");
+  const platforms = [
+    ["macOS", quickStart.split('name: "macOS"')[1]?.split('name: "Windows"')[0]],
+    ["Linux", quickStart.split('name: "Linux"')[1]?.split("export function QuickStart")[0]],
+  ];
+
+  for (const [platform, source] of platforms) {
+    assert.ok(source, `${platform}: platform definition exists`);
+    assert.match(
+      source,
+      /`phantom_stage="\$\(mktemp -d "\\\$\{TMPDIR:-\/tmp\}\/phantom-install\.X{6,}"\)"`,/,
+      `${platform}: mktemp directory template must end in at least six X characters`,
+    );
+  }
+});
+
 test("activation orders installation before client connection and previews config writes", () => {
   const page = read("src/app/secrets/page.tsx");
   const connection = read("src/components/landing/Install.tsx");
