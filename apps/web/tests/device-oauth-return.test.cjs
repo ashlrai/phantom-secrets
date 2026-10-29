@@ -308,16 +308,38 @@ test("eight letters and numbers are formatted and submitted without the display 
   const h = harness({ url: "https://phm.dev/device", previousSession: { access_token: "synthetic-existing-account" } });
   let input = find(h.render(), "input");
   assert.equal(input.props.placeholder, "XXXX-XXXX");
-  assert.equal(input.props.maxLength, 9);
+  assert.equal(input.props.maxLength, undefined);
   input.props.onChange({ target: { value: "ab01" } });
   assert.equal(find(h.render(), "input").props.value, "AB01");
-  find(h.render(), "input").props.onChange({ target: { value: "ab01-cd23!45" } });
+  find(h.render(), "input").props.onChange({ target: { value: "ab01-cd23!" } });
   input = find(h.render(), "input");
   assert.equal(input.props.value, "AB01-CD23");
   assert.equal(find(h.render(), "button").props.disabled, false);
   await find(h.render(), "form").props.onSubmit({ preventDefault() {} });
   assert.equal(h.states[1], "done");
   assert.deepEqual(JSON.parse(h.requests[0].body), { user_code: "AB01CD23" });
+});
+
+test("overlong device codes are rejected without starting authorization and can be corrected", async () => {
+  for (const [value, displayed] of [["abcd23456", "ABCD-23456"], ["abcd-234567", "ABCD-234567"]]) {
+    const h = harness({ url: "https://phm.dev/device", storedCode: null, previousSession: { access_token: "synthetic-existing-account" } });
+    find(h.render(), "input").props.onChange({ target: { value } });
+    let tree = h.render();
+    assert.equal(find(tree, "input").props.value, displayed);
+    assert.equal(find(tree, "button").props.disabled, false);
+    await find(tree, "form").props.onSubmit({ preventDefault() {} });
+    tree = h.render();
+    assert.equal(findById(tree, "device-error").props.children, "Enter 8 letters or numbers. The code is displayed as XXXX-XXXX.");
+    assert.equal(find(tree, "input").props["aria-invalid"], true);
+    assert.deepEqual(h.events, []);
+    assert.equal(h.requests.length, 0);
+
+    find(tree, "input").props.onChange({ target: { value: testCode } });
+    await find(h.render(), "form").props.onSubmit({ preventDefault() {} });
+    assert.equal(h.states[2], "");
+    assert.equal(h.states[1], "done");
+    assert.deepEqual(JSON.parse(h.requests[0].body), { user_code: "ABCD2345" });
+  }
 });
 
 test("causal control reproduces prior-account approval when the failed-callback retry guard is removed", async () => {
@@ -408,7 +430,7 @@ test("only successful callback verification clears persisted retry intent", asyn
 });
 
 test("missing or invalid pending code still consumes callback and enables manual code entry", async () => {
-  for (const storedCode of [null, "invalid"]) {
+  for (const storedCode of [null, "invalid", "ABCD-23456"]) {
     const h = harness({ storedCode }); h.runEffect(); await h.settle();
     assert.equal(h.requests.length, 0);
     assert.ok(h.events.includes("sdk-session-restored"));
@@ -416,6 +438,12 @@ test("missing or invalid pending code still consumes callback and enables manual
     assert.equal(h.states[1], "input");
     assert.match(h.states[2], /current code from your terminal/);
     assert.equal(find(h.render(), "input").props.disabled, false);
+    if (storedCode === "ABCD-23456") {
+      assert.equal(find(h.render(), "input").props.value, storedCode);
+      await find(h.render(), "form").props.onSubmit({ preventDefault() {} });
+      assert.equal(h.states[2], "Enter 8 letters or numbers. The code is displayed as XXXX-XXXX.");
+      assert.equal(h.requests.length, 0);
+    }
   }
 });
 

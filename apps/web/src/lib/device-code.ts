@@ -5,7 +5,7 @@ export function normalizeDeviceUserCode(value: string): string {
 }
 
 export function formatDeviceUserCode(value: string): string {
-  const normalized = normalizeDeviceUserCode(value).slice(0, DEVICE_USER_CODE_LENGTH);
+  const normalized = normalizeDeviceUserCode(value);
   if (normalized.length <= 4) {
     return normalized;
   }
