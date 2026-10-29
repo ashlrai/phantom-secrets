@@ -1,4 +1,6 @@
 const assert = require("assert");
+const { readFileSync } = require("fs");
+const { join } = require("path");
 
 const {
   SUPPORTED_TARGETS,
@@ -15,6 +17,25 @@ const expected = Object.freeze({
 });
 
 assert.deepStrictEqual(SUPPORTED_TARGETS, expected);
+
+// Keep the published platform table in sync with the executable's exact map.
+const readme = readFileSync(join(__dirname, "..", "README.md"), "utf8");
+const platformTable = readme.match(
+  /\| Operating system \(Node\.js platform\) \| Node\.js architecture \| Native target \|\r?\n\|---\|---\|---\|\r?\n((?:\|[^\n]+\|\r?\n)+)/
+);
+assert.ok(platformTable, "README must contain the supported platform table");
+const documentedTargets = {};
+const platformNames = { darwin: "macOS", linux: "Linux with glibc", win32: "Windows" };
+for (const row of platformTable[1].trim().split(/\r?\n/)) {
+  const match = row.match(/^\| ([^|]+) \(`([^`]+)`\) \| `([^`]+)` \| `([^`]+)` \|$/);
+  assert.ok(match, `invalid README platform row: ${row}`);
+  const [, name, platform, arch, target] = match;
+  assert.strictEqual(name, platformNames[platform], `incorrect OS name for ${platform}`);
+  const key = `${platform}-${arch}`;
+  assert.ok(!Object.hasOwn(documentedTargets, key), `duplicate README platform: ${key}`);
+  documentedTargets[key] = target;
+}
+assert.deepStrictEqual(documentedTargets, SUPPORTED_TARGETS);
 
 for (const [platformKey, target] of Object.entries(expected)) {
   const [platform, arch] = platformKey.split("-");
@@ -40,7 +61,7 @@ for (const runtime of [
   });
 }
 
-const wrapperSource = require("fs").readFileSync(require("path").join(__dirname, "..", "bin", "cli.js"), "utf8");
+const wrapperSource = readFileSync(join(__dirname, "..", "bin", "cli.js"), "utf8");
 assert.doesNotMatch(wrapperSource, /Install from source|cargo install phantom-secrets/);
 
 console.log("npm CLI wrapper platform matrix tests passed");
