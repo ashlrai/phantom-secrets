@@ -171,6 +171,30 @@ test("each platform displays and copies its phantom-install staging prefix", asy
   }
 });
 
+test("every displayed mktemp staging template has the Phantom prefix and random suffix", async () => {
+  const user = userEvent.setup();
+  render(React.createElement(QuickStart));
+  try {
+    for (const [platform, expectedCount] of [["macOS", 1], ["Windows", 0], ["Linux", 1]]) {
+      await user.click(screen.getByRole("button", { name: platform }));
+      const commands = screen.getAllByRole("button", { name: /^Copy command:/ });
+      const invocations = commands.flatMap((button) =>
+        [...button.textContent.matchAll(/\bmktemp\b[^\n]*/g)].map((match) => match[0]),
+      );
+      assert.equal(invocations.length, expectedCount, `${platform}: displayed mktemp invocations`);
+      for (const invocation of invocations) {
+        assert.match(
+          invocation,
+          /^mktemp -d "\$\{TMPDIR:-\/tmp\}\/phantom-install\.X{6}"\)"$/,
+          `${platform}: staging template includes the prefix and random suffix`,
+        );
+      }
+    }
+  } finally {
+    cleanup();
+  }
+});
+
 test("every displayed QuickStart command can be selected and matches the copied text", async () => {
   const style = document.createElement("style");
   style.textContent = fs.readFileSync(path.join(__dirname, "../src/app/globals.css"), "utf8");
