@@ -3,6 +3,7 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
+const ts = require("typescript");
 
 const webDir = path.resolve(__dirname, "..");
 const repoDir = path.resolve(webDir, "../..");
@@ -175,6 +176,32 @@ function structuredMetadataBlock(source, type) {
   assert.notEqual(end, -1, `missing boundary after ${type} structured metadata`);
   return source.slice(start, end);
 }
+
+test("public home page has a descriptive document title", () => {
+  const source = ts.createSourceFile(
+    "page.tsx", claims["src/app/page.tsx"], ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX,
+  );
+  const metadata = source.statements
+    .filter(ts.isVariableStatement)
+    .filter((statement) => statement.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword))
+    .flatMap((statement) => statement.declarationList.declarations)
+    .find((declaration) => ts.isIdentifier(declaration.name) && declaration.name.text === "metadata");
+  assert.ok(metadata && metadata.initializer && ts.isObjectLiteralExpression(metadata.initializer), "missing exported page metadata");
+
+  const title = metadata.initializer.properties.find(
+    (property) => ts.isPropertyAssignment(property) && property.name.getText(source) === "title",
+  );
+  assert.ok(title && ts.isPropertyAssignment(title), "missing document title");
+  const absolute = ts.isObjectLiteralExpression(title.initializer)
+    ? title.initializer.properties.find(
+      (property) => ts.isPropertyAssignment(property) && property.name.getText(source) === "absolute",
+    )
+    : undefined;
+  const value = absolute && ts.isPropertyAssignment(absolute) ? absolute.initializer : title.initializer;
+  assert.ok(ts.isStringLiteral(value), "document title must be a literal string or absolute title");
+  assert.match(value.text.trim(), /phantom/i, "title should identify Phantom");
+  assert.match(value.text.trim(), /engineering agents/i, "title should describe the page");
+});
 
 test("public surfaces reject previously audited absolute claims", () => {
   for (const forbidden of [
