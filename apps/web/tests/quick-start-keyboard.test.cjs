@@ -45,8 +45,8 @@ test("QuickStart copy controls are named, reachable by Tab, and operable by keyb
   render(React.createElement(QuickStart));
   try {
     const buttons = screen.getAllByRole("button", { name: /^Copy command:/ });
-    assert.equal(buttons.length, 5, "each platform and setup step has a named copy button");
-    assert.equal(screen.getByRole("button", { name: "Copy command: phantom init" }), buttons[4]);
+    assert.equal(buttons.length, 3, "the selected platform and each setup step have a named copy button");
+    assert.equal(screen.getByRole("button", { name: "Copy command: phantom init" }), buttons[2]);
 
     const reached = [];
     for (let i = 0; i < 40 && reached.length < buttons.length; i++) {
@@ -59,7 +59,7 @@ test("QuickStart copy controls are named, reachable by Tab, and operable by keyb
       await navigator.clipboard.writeText("");
       await user.keyboard(key);
       await waitFor(async () => assert.equal(await navigator.clipboard.readText(), "phantom init"));
-      assert.equal(document.activeElement, buttons[4], "copying keeps focus on the control");
+      assert.equal(document.activeElement, buttons[2], "copying keeps focus on the control");
     }
   } finally {
     cleanup();

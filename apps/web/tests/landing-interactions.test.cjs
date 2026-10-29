@@ -190,6 +190,58 @@ test("rerendering the landing page does not duplicate primary navigation links",
     }
   }
 });
+test("QuickStart copy controls have accessible names and work with Enter and Space", async () => {
+  const { JSDOM } = require("jsdom");
+  const dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "http://localhost/" });
+  const previousGlobals = new Map(["window", "document", "navigator", "HTMLElement"].map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)]));
+  for (const name of previousGlobals.keys()) Object.defineProperty(globalThis, name, { value: dom.window[name], configurable: true, writable: true });
+
+  const { render, cleanup, waitFor } = require("@testing-library/react");
+  const userEvent = require("@testing-library/user-event").default;
+  try {
+    const icons = compile("Icons.tsx", require);
+    const release = compile("../../lib/public-release.ts", require);
+    const copyButton = compile("CopyButton.tsx", (name) => {
+      if (name === "./Icons") return icons;
+      if (name === "@/lib/posthog") return { capturePostHog: async () => {} };
+      return require(name);
+    }, dom.window, dom.window.document);
+    const { QuickStart } = compile("QuickStart.tsx", (name) => {
+      if (name === "./CopyButton") return copyButton;
+      if (name === "@/lib/public-release") return release;
+      if (name === "next/link") return { __esModule: true, default: ({ children, ...props }) => React.createElement("a", props, children) };
+      return require(name);
+    });
+    const user = userEvent.setup({ document: dom.window.document });
+    const { getAllByRole, getByRole } = render(React.createElement(QuickStart));
+    const buttons = getAllByRole("button", { name: /^Copy command:/ });
+    assert.equal(buttons.length, 3, "the selected platform and both setup steps have named copy controls");
+    const init = getByRole("button", { name: "Copy command: phantom init" });
+    assert.equal(init, buttons[2]);
+
+    const reached = [];
+    for (let i = 0; i < 40 && reached.length < buttons.length; i++) {
+      await user.tab();
+      if (buttons.includes(dom.window.document.activeElement)) reached.push(dom.window.document.activeElement);
+    }
+    assert.deepEqual(reached, buttons, "Tab reaches each copy control in order");
+
+    for (const key of ["{Enter}", " "]) {
+      await dom.window.navigator.clipboard.writeText("");
+      await user.keyboard(key);
+      await waitFor(async () => assert.equal(await dom.window.navigator.clipboard.readText(), "phantom init"));
+      assert.equal(dom.window.document.activeElement, init, "copying retains keyboard focus");
+      assert.equal(init.querySelector('[aria-live="polite"]').textContent, "Copied");
+    }
+  } finally {
+    cleanup();
+    dom.window.close();
+    for (const [name, descriptor] of previousGlobals) {
+      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+      else delete globalThis[name];
+    }
+  }
+});
 test("Escape returns focus from the inline mobile disclosure and its listener is cleaned up", () => {
   const f = navigationFixture("/secrets", true); const cleanups = f.effects.map((effect) => effect()).filter(Boolean);
   const escape = new Event("keydown"); Object.defineProperty(escape, "key", { value: "Escape" }); f.window.dispatchEvent(escape);
