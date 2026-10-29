@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
@@ -54,6 +55,24 @@ function jsonLd(type, extra = {}) {
     ...extra,
   })}</script>`;
 }
+
+test("the CLI rejects a missing required output or output value", () => {
+  const observer = path.join(scriptDirectory, "observe.mjs");
+  for (const [args, diagnostic] of [
+    [[], /--out is required/],
+    [["--out"], /missing value for --out/],
+  ]) {
+    const result = spawnSync(process.execPath, [observer, ...args], {
+      cwd: repositoryDirectory,
+      encoding: "utf8",
+      timeout: 5_000,
+    });
+    assert.ifError(result.error);
+    assert.equal(result.status, 1);
+    assert.equal(result.stdout, "");
+    assert.match(result.stderr, diagnostic);
+  }
+});
 
 test("HTML entities are decoded exactly once", () => {
   assert.equal(decodeEntities("&amp;&quot;&#39;&lt;&gt;"), "&\"'<>");
