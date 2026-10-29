@@ -14,6 +14,28 @@ const helper = { exports: {} };
 new Function("require", "exports", "module", compiled)(require, helper.exports, helper);
 const { readBuildSourceRevision } = helper.exports;
 
+function buildMetadata(directory) {
+  const configPath = path.resolve(__dirname, "../next.config.ts");
+  const config = ts.transpileModule(fs.readFileSync(configPath, "utf8"), {
+    compilerOptions: {
+      esModuleInterop: true, module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022,
+    },
+  }).outputText;
+  const module = { exports: {} };
+  function localRequire(name) {
+    if (name === "./src/lib/build-source-revision") return helper.exports;
+    if (name === "./src/lib/public-auth-configuration") {
+      return { publicAuthConfigurationFingerprint: () => null };
+    }
+    if (name === "./docs-routes.json") return require("../docs-routes.json");
+    return require(name);
+  }
+  new Function("require", "exports", "module", "__dirname", config)(
+    localRequire, module.exports, module, directory,
+  );
+  return module.exports.default.env.PHANTOM_BUILD_SOURCE_REVISION;
+}
+
 function withRepository(action) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "phantom-build-source-"));
   const gitEnvironment = Object.fromEntries(
@@ -65,6 +87,20 @@ test("copied source without Git or a committed HEAD is unidentified", () => {
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test("build metadata falls back when source revision is unavailable", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "phantom-build-metadata-"));
+  try {
+    assert.equal(buildMetadata(directory), "unidentified", "source without Git");
+    execFileSync("git", ["-C", directory, "init", "--quiet"]);
+    assert.equal(buildMetadata(directory), "unidentified", "repository without a commit");
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+  withRepository(({ directory, revision }) => {
+    assert.equal(buildMetadata(directory), revision, "clean committed source");
+  });
 });
 
 test("caller source and Git environment overrides cannot bind a different checkout", () => {
