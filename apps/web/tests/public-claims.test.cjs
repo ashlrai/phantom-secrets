@@ -81,6 +81,75 @@ const claims = Object.fromEntries(
 );
 const allClaims = Object.values(claims).join("\n");
 
+test("rendered public homepage has unique IDs across the whole document", async () => {
+  const React = require("react");
+  const { renderToStaticMarkup } = require("react-dom/server");
+  const { JSDOM } = require("jsdom");
+  const ts = require("typescript");
+  const { pathToFileURL } = require("node:url");
+  const contract = await import(pathToFileURL(path.join(webDir, "src/lib/workbench-release-contract.mjs")).href);
+  const cache = new Map();
+
+  // Render the real page, layout and components; replace only Next's browser
+  // adapters and analytics, which do not determine the page's ID structure.
+  function load(filename) {
+    if (cache.has(filename)) return cache.get(filename).exports;
+    const module = { exports: {} };
+    cache.set(filename, module);
+    const source = fs.readFileSync(filename, "utf8");
+    const output = ts.transpileModule(source, {
+      fileName: filename,
+      compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, esModuleInterop: true, allowJs: true },
+    }).outputText;
+    const localRequire = (specifier) => {
+      if (specifier === "next/navigation") return { usePathname: () => "/" };
+      if (specifier === "next/link") return { __esModule: true, default: ({ children, ...props }) => React.createElement("a", props, children) };
+      if (specifier === "next/image") return { __esModule: true, default: ({ priority, ...props }) => React.createElement("img", props) };
+      if (specifier === "@/lib/posthog") return { capturePostHog: async () => {} };
+      if (specifier.endsWith("workbench-release-contract.mjs")) return contract;
+      if (specifier.endsWith(".css")) return {};
+      if (specifier.startsWith("@/") || specifier.startsWith(".")) {
+        const base = specifier.startsWith("@/")
+          ? path.join(webDir, "src", specifier.slice(2))
+          : path.resolve(path.dirname(filename), specifier);
+        const resolved = [base, `${base}.tsx`, `${base}.ts`, `${base}.js`, `${base}.json`]
+          .find((candidate) => fs.existsSync(candidate) && fs.statSync(candidate).isFile());
+        assert.ok(resolved, `cannot resolve ${specifier} from ${filename}`);
+        return resolved.endsWith(".json") ? JSON.parse(fs.readFileSync(resolved, "utf8")) : load(resolved);
+      }
+      return require(specifier);
+    };
+    new Function("exports", "require", "module", output)(module.exports, localRequire, module);
+    return module.exports;
+  }
+
+  const Home = load(path.join(webDir, "src/app/page.tsx")).default;
+  const Layout = load(path.join(webDir, "src/app/layout.tsx")).default;
+  const dom = new JSDOM(renderToStaticMarkup(React.createElement(Layout, null, React.createElement(Home))));
+  try {
+    const document = dom.window.document;
+    const assertUniqueIds = () => {
+      const seen = new Set();
+      for (const element of document.querySelectorAll("[id]")) {
+        const id = element.getAttribute("id");
+        assert.equal(seen.has(id), false, `duplicate ID: ${JSON.stringify(id)}`);
+        seen.add(id);
+      }
+    };
+    assert.ok(document.querySelector("#main-content"));
+    assert.ok(document.querySelector("#phantom-world"), "embedded scene must be rendered");
+    assertUniqueIds();
+
+    // Exercise the detector with a collision between separate page regions.
+    const duplicate = document.createElement("div");
+    duplicate.id = "main-content";
+    document.querySelector("#phantom-world").append(duplicate);
+    assert.throws(assertUniqueIds, /duplicate ID: "main-content"/);
+  } finally {
+    dom.window.close();
+  }
+});
+
 const staticDocumentationPaths = repoFilesUnder("docs", [".html", ".md"]);
 const staticDocumentationClaims = Object.fromEntries(
   staticDocumentationPaths.map((relativePath) => [relativePath, readRepo(relativePath)]),
