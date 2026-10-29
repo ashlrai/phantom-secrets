@@ -68,6 +68,15 @@ test("build source observes an actual clean Git commit and tree, including detac
   });
 });
 
+test("repeated reads of a stable source revision display the same value", () => {
+  withRepository(({ directory, revision }) => {
+    for (let read = 0; read < 3; read++) {
+      assert.equal(readBuildSourceRevision(directory), revision);
+      assert.equal(buildMetadata(directory), revision);
+    }
+  });
+});
+
 test("staged, unstaged and untracked source are unidentified", () => {
   for (const kind of ["unstaged", "staged", "untracked"]) {
     withRepository(({ directory, git }) => {
