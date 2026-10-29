@@ -262,7 +262,7 @@ function loadComponent(relativePath, dependencies) {
   const module = { exports: {} };
   const localRequire = (specifier) => {
     if (Object.hasOwn(dependencies, specifier)) return dependencies[specifier];
-    if (specifier === "react" || specifier === "react/jsx-runtime" || specifier === "node:path") {
+    if (["react", "react/jsx-runtime", "node:path", "node:assert/strict", "node:test"].includes(specifier)) {
       return require(specifier);
     }
     throw new Error(`Unexpected component dependency: ${specifier}`);
@@ -279,6 +279,11 @@ function isLocalPage(href) {
     return catalog.some(({ slug }) => slug === guide[1]) &&
       fs.existsSync(path.join(webRoot, "src/app/docs/[slug]", guide[2] ? "markdown/route.ts" : "page.tsx"));
   }
+  const useCase = /^\/secrets\/use-cases\/([^/]+)$/.exec(pathname);
+  if (useCase) {
+    return loadComponent("src/lib/secret-use-cases.ts", {}).SECRET_USE_CASES.some(({ slug }) => slug === useCase[1]) &&
+      fs.existsSync(path.join(webRoot, "src/app/secrets/use-cases/[slug]/page.tsx"));
+  }
   const relativePath = pathname.slice(1);
   return [
     path.join(webRoot, "src/app", relativePath, "page.tsx"),
@@ -294,23 +299,36 @@ function localLinks(element) {
     .filter((href) => href.startsWith("/") && !href.startsWith("//"));
 }
 
-test("rendered documentation navigation points to existing local pages", () => {
+function renderDocsHub() {
   const empty = () => null;
   const Link = ({ href, children }) => React.createElement("a", { href }, children);
+  const useCases = loadComponent("src/lib/secret-use-cases.ts", {});
+  const { SecretUseCases } = loadComponent("src/components/landing/SecretUseCases.tsx", {
+    "next/link": Link,
+    "@/lib/secret-use-cases": useCases,
+  });
   const { default: DocsPage } = loadComponent("src/app/docs/page.tsx", {
     "next/link": Link,
     "@/components/landing/Nav": { Nav: empty },
     "@/components/landing/SiteFooter": { SiteFooter: empty },
     "@/components/landing/CopyButton": { CopyButton: empty },
     "@/components/docs/AskDocumentation": { AskDocumentation: empty },
-    "@/components/landing/SecretUseCases": { SecretUseCases: empty },
+    "@/components/landing/SecretUseCases": { SecretUseCases },
     "@/lib/workbench-release": { WORKBENCH_RELEASE: null },
     "@/lib/public-release": { PUBLIC_RELEASE_TAG: "test" },
   });
+  return React.createElement(DocsPage);
+}
+
+loadComponent("tests/public-docs.test.ts", {}).registerPublicDocsHeadingTest(
+  () => new JSDOM(renderToStaticMarkup(renderDocsHub())).window.document,
+);
+
+test("rendered documentation navigation points to existing local pages", () => {
   const { MarkdownDocument } = loadComponent("src/components/docs/MarkdownDocument.tsx", {
     "@/lib/public-docs": loadDocs().docs,
   });
-  const hubLinks = localLinks(React.createElement(DocsPage));
+  const hubLinks = localLinks(renderDocsHub());
   assert.ok(hubLinks.length > catalog.length, "the hub must expose its guide and resource links");
   for (const href of hubLinks) assert.ok(isLocalPage(href), `docs hub links to missing ${href}`);
 
@@ -328,6 +346,8 @@ test("local documentation route checks reject missing guides and accept URL frag
   assert.equal(isLocalPage("/docs/guide-that-does-not-exist"), false);
   assert.equal(isLocalPage("/docs/guide-that-does-not-exist/markdown"), false);
   assert.equal(isLocalPage("/docs/[slug]"), false);
+  assert.equal(isLocalPage("/secrets/use-cases/ai-api-development"), true);
+  assert.equal(isLocalPage("/secrets/use-cases/not-a-use-case"), false);
   assert.equal(isLocalPage("/not-a-local-page"), false);
 });
 
