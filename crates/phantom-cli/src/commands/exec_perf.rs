@@ -40,11 +40,11 @@ fn fixture(protected: bool) -> tempfile::TempDir {
 
 fn median_startup(cmd: &[String]) -> Duration {
     // Warm the executable, filesystem, and TLS initialization before sampling.
-    super::run(cmd, None, None, true).unwrap();
+    super::run(cmd, None, None, true, false).unwrap();
     let mut samples = [Duration::ZERO; 5];
     for sample in &mut samples {
         let started = Instant::now();
-        super::run(cmd, None, None, true).unwrap();
+        super::run(cmd, None, None, true, false).unwrap();
         *sample = started.elapsed();
     }
     samples.sort_unstable();
@@ -117,6 +117,7 @@ fn exec_startup_has_a_generous_warm_ceiling() {
         None,
         None,
         true,
+        false,
     )
     .unwrap();
 

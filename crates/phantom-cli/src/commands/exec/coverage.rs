@@ -306,7 +306,7 @@ mod tests {
             return;
         };
         let cmd: Vec<String> = serde_json::from_str(&raw).unwrap();
-        let result = super::super::run(&cmd, None, None, true);
+        let result = super::super::run(&cmd, None, None, true, false);
         let error = result
             .expect_err("unsupported CLI must be refused")
             .to_string();

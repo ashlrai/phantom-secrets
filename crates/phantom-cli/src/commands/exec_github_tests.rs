@@ -136,7 +136,7 @@ fn exec_fixture() {
             "--nocapture".to_string(),
         ];
         let port_file = Path::new("proxy-port");
-        super::run_async(&command, None, None, false, |config| {
+        super::run_async(&command, None, None, false, false, |config| {
             let canonical = ServiceRegistry::from_config(&config.services);
             let mut route = canonical.match_route("/github_api").unwrap().0.clone();
             assert!(route.target_base == "https://api.github.com");
@@ -187,7 +187,7 @@ fn exec_fixture() {
         // altered destination must fail before the factory or child runs.
         config.services.get_mut("github_api").unwrap().pattern = Some("127.0.0.1".into());
         config.save(Path::new(".phantom.toml")).unwrap();
-        let result = super::run_async(&command, None, None, true, |_| {
+        let result = super::run_async(&command, None, None, true, false, |_| {
             panic!("untrusted route reached registry factory")
         })
         .await;
