@@ -41,6 +41,47 @@ fn run_init(dir: &TempDir) -> assert_cmd::assert::Assert {
 }
 
 #[test]
+fn init_jobs_without_all_reports_error_without_mutating_fixture() {
+    let dir = common::canonical_tempdir();
+    let env_content = "NODE_ENV=development\n";
+    let gitignore_content = "existing-entry\n";
+    fs::write(dir.path().join(".env"), env_content).unwrap();
+    fs::write(dir.path().join(".gitignore"), gitignore_content).unwrap();
+
+    let output = Command::cargo_bin("phantom")
+        .expect("binary not found")
+        .args(["init", "--jobs", "2"])
+        .current_dir(dir.path())
+        .env("HOME", dir.path())
+        .env("NO_COLOR", "1")
+        .assert()
+        .failure();
+
+    let stderr = String::from_utf8_lossy(&output.get_output().stderr);
+    assert!(stderr.contains("--jobs"), "error should identify --jobs");
+    assert!(stderr.contains("--all"), "error should identify --all");
+    assert!(
+        stderr.contains("required"),
+        "error should explain the requirement"
+    );
+
+    let mut entries: Vec<_> = fs::read_dir(dir.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    entries.sort();
+    assert_eq!(entries, [".env", ".gitignore"]);
+    assert_eq!(
+        fs::read(dir.path().join(".env")).unwrap(),
+        env_content.as_bytes()
+    );
+    assert_eq!(
+        fs::read(dir.path().join(".gitignore")).unwrap(),
+        gitignore_content.as_bytes()
+    );
+}
+
+#[test]
 fn malformed_dotenv_aborts_before_every_project_and_vault_mutation() {
     let dir = common::canonical_tempdir();
     let source = "OPENAI_API_KEY=plaintext-must-not-escape\nBROKEN_RECORD\n";
