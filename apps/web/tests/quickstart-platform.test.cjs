@@ -7,6 +7,7 @@ const test = require("node:test");
 const ts = require("typescript");
 const React = require("react");
 const { renderToStaticMarkup } = require("react-dom/server");
+const Parser = require("tree-sitter");
 
 function load(relativePath, localRequire = require) {
   const source = fs.readFileSync(path.join(__dirname, "..", relativePath), "utf8");
@@ -25,6 +26,52 @@ function findElements(element, predicate) {
     ...React.Children.toArray(element.props.children).flatMap((child) => findElements(child, predicate)),
   ];
 }
+
+test("every displayed QuickStart command parses in its platform's shell", async () => {
+  const powershell = new Parser();
+  powershell.setLanguage((await import("tree-sitter-powershell")).default);
+  const parse = {
+    bash(command) {
+      const result = spawnSync("bash", ["-n"], { input: command, encoding: "utf8" });
+      assert.ifError(result.error);
+      return result.status === 0;
+    },
+    powershell(command) {
+      return !powershell.parse(command).rootNode.hasError;
+    },
+  };
+  // Ensure both parsers actually reject the quoting regressions they guard against.
+  for (const shell of Object.values(parse)) {
+    assert.equal(shell("echo 'unterminated"), false);
+    assert.equal(shell('echo "unterminated'), false);
+  }
+
+  let selected = "macOS";
+  const hooks = { ...React, useState() { return [selected, (value) => { selected = value; }]; } };
+  const CopyButton = () => null;
+  const { QuickStart } = load("src/components/landing/QuickStart.tsx", (name) => {
+    if (name === "react") return hooks;
+    if (name === "next/link") return { __esModule: true, default: () => null };
+    if (name === "@/lib/public-release") return load("src/lib/public-release.ts");
+    if (name === "./CopyButton") return { CopyButton };
+    return require(name);
+  });
+  const shells = { macOS: "bash", Windows: "powershell", Linux: "bash" };
+  const platforms = findElements(QuickStart(), (element) => element.type === "button")
+    .map((button) => button.props.children);
+  assert.deepEqual(platforms, Object.keys(shells), "assign a shell parser to every platform");
+
+  for (const platform of platforms) {
+    selected = platform;
+    const commands = findElements(QuickStart(), (element) => element.type === CopyButton);
+    assert.ok(commands.length >= 3, `${platform}: install and follow-up commands are displayed`);
+    for (const [index, element] of commands.entries()) {
+      assert.equal(typeof element.props.text, "string");
+      assert.ok(element.props.text.trim(), `${platform}: command ${index + 1} is not empty`);
+      assert.ok(parse[shells[platform]](element.props.text), `${platform}: command ${index + 1} has invalid shell syntax`);
+    }
+  }
+});
 
 test("switching platforms displays the selected install instructions", () => {
   let selected;

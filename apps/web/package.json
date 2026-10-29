@@ -35,6 +35,8 @@
     "playwright": "^1.64.1",
     "postcss": "^8",
     "tailwindcss": "^4",
+    "tree-sitter": "^0.25.0",
+    "tree-sitter-powershell": "^0.26.6",
     "typescript": "^5"
   },
   "overrides": {
