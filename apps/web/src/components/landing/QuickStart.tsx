@@ -203,9 +203,11 @@ export function QuickStart() {
           release artifact—not every local shell, policy, or credential-store state.
           The command panels download the installer source from the exact {PUBLIC_RELEASE_TAG}
           source commit, verify the fixed script digest, and only then execute the
-          local file. On macOS and Linux, the temporary staging directory holds the
-          downloaded installer script for verification and execution; cleanup attempts
-          to remove both on exit. It is not the install directory. Windows uses a
+          local file. On macOS and Linux, a staging directory under <code>TMPDIR</code>
+          (or <code>/tmp</code> when unset or empty) holds the downloaded installer
+          script. Once the exit trap is installed, cleanup attempts to remove the
+          script and then the empty directory on exit, including after failures;
+          cleanup is not guaranteed. It is not the install directory. Windows uses a
           temporary installer file instead. The scripts verify the selected archive&apos;s adjacent checksum,
           exact two-binary shape, and versions before promoting it into a user-owned
           install directory. The Linux encrypted-file path needs its managed

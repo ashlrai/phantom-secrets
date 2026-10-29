@@ -4,7 +4,7 @@
     "file": "getting-started.md",
     "title": "Getting started",
     "description": "Install a reviewed Phantom release, protect one project, connect a supported coding client, and verify the local credential boundary.",
-    "modified": "2026-10-06"
+    "modified": "2026-10-29"
   },
   {
     "slug": "delegation-quickstart",

@@ -143,7 +143,8 @@ test("install guidance explains the temporary installer location for each platfo
     assert.match(command, /phantom_installer=.*phantom_stage\/install\.sh/);
     assert.match(command, /trap .*phantom_installer.*phantom_stage/);
   }
-  assert.match(quickStart, /On macOS and Linux, the temporary staging directory holds the\s+downloaded installer script for verification and execution; cleanup attempts\s+to remove both on exit\. It is not the install directory/);
+  assert.match(quickStart, /On macOS and Linux, a staging directory under <code>TMPDIR<\/code>\s+\(or <code>\/tmp<\/code> when unset or empty\) holds the downloaded installer\s+script/);
+  assert.match(quickStart, /Once the exit trap is installed, cleanup attempts to remove the\s+script and then the empty directory on exit, including after failures;\s+cleanup is not guaranteed\. It is not the install directory/);
   assert.match(quickStart, /Windows uses a\s+temporary installer file instead/);
 });
 
