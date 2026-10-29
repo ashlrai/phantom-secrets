@@ -309,3 +309,39 @@ test("illustrative replay is finite and pauses offscreen or in a background tab"
   assert.equal(fixture.timers.size, 0);
   cleanup();
 });
+
+test("guided agent choices render ordered next steps with native keyboard controls", () => {
+  const ts = require("typescript");
+  const React = require("react");
+  const { renderToStaticMarkup } = require("react-dom/server");
+  const output = ts.transpileModule(read("src/components/landing/WorkbenchIntegrations.tsx"), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX },
+  }).outputText;
+  const exports = {};
+  new Function("exports", "require", output)(exports, name =>
+    name === "./BrandLogos" ? { KEY_ENTRIES: [] } :
+      name === "next/link" ? { default: ({ children, ...props }) => React.createElement("a", props, children) } : require(name));
+  const html = renderToStaticMarkup(React.createElement(exports.WorkbenchIntegrations));
+  assert.match(html, /id="connect-agent"/);
+  assert.match(read("src/components/landing/WorkbenchHero.tsx"), /href="#connect-agent">Choose an agent to connect/);
+  const choices = [...html.matchAll(/<details\b[^>]*>([\s\S]*?)<\/details>/g)];
+  assert.equal(choices.length, 4);
+  for (const [index, agent] of ["Claude Code", "Codex", "Grok", "API or local model"].entries()) {
+    const content = choices[index][1];
+    assert.ok(content.startsWith("<summary"), "native disclosure is the first child and keyboard operable");
+    assert.ok(content.includes(`${agent} — connection steps`));
+    assert.ok(content.includes(`Continue with ${agent} setup`));
+    const steps = [...content.matchAll(/<li>([\s\S]*?)<\/li>/g)].map(match => match[1]);
+    assert.equal(steps.length, 4);
+    assert.match(steps[0], index < 3 ? /sign in through its vendor CLI/ : /Configure an API engine or a local model runtime/);
+    assert.match(steps[1], /phm verse/);
+    assert.match(steps[2], /Resources[\s\S]*ready[\s\S]*fresh/);
+    assert.match(steps[3], /Work with me[\s\S]*scratch repository[\s\S]*Review the diff and checks/);
+    assert.match(content, /href="\/docs\/workbench-setup#connect-a-usable-resource"/);
+  }
+  assert.doesNotMatch(html, /tabindex="-1"|role="tab"|onkeydown|width:\d+px/i);
+  assert.match(html, /overflow-wrap:anywhere/);
+  assert.match(html, /display:grid;gap:1rem;min-width:0/);
+  assert.match(read("src/app/globals.css"), /:focus-visible\s*\{[^}]*outline:/);
+  assert.match(html, /does not activate unattended fleet work/);
+});
