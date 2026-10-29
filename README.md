@@ -597,6 +597,26 @@ Use the asset matching your OS and architecture. Download its adjacent
 On Linux, verify with `sha256sum -c <archive>.sha256`. On Windows, compare
 `Get-FileHash -Algorithm SHA256 <archive>` with the published sidecar.
 
+Linux x86_64, as one shell script:
+
+```bash
+archive=phantom-x86_64-unknown-linux-gnu.tar.gz
+base=https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9
+curl -fsSL -o "$archive" "$base/$archive"
+curl -fsSL -o "$archive.sha256" "$base/$archive.sha256"
+sha256sum -c "$archive.sha256"
+tar -xzf "$archive"
+mkdir -p "$HOME/.local/bin"
+install -m 0755 phantom phantom-mcp "$HOME/.local/bin/"
+export PATH="$HOME/.local/bin:$PATH"
+phantom --version
+phantom-mcp --version
+```
+
+Use the ARM64 archive name from the table on ARM64 Linux. The same steps
+timed on a measurement VM are recorded in
+[docs/FIRST-RUN.md](docs/FIRST-RUN.md).
+
 ### Build the exact release source
 
 The `v0.7.9` tag resolves to source commit

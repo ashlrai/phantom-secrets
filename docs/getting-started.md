@@ -5,13 +5,13 @@
 ```bash
 brew tap ashlrai/phantom
 brew trust --formula ashlrai/phantom/phantom
-brew install ashlrai/phantom/phantom   # version must match the verified registry receipt
+brew install ashlrai/phantom/phantom
 phantom init               # protects your .env
 phantom agent doctor       # verify the repo is safe for AI agents
-phantom exec -- claude     # run Claude Code with real secrets injected by proxy
+phantom exec -- claude     # run Claude Code through the local proxy
 ```
 
-See [distribution status](distribution-status.md) for dated npm, Homebrew, crates.io, and MCP Registry evidence. Prefer the checksum-verified `v0.7.9` GitHub assets for an exact install. Select the matching platform asset below on Linux or Windows, or to verify an exact archive directly.
+The Homebrew block is the macOS path. See [distribution status](distribution-status.md) for dated npm, Homebrew, crates.io, and MCP Registry evidence. Prefer the checksum-verified `v0.7.9` GitHub assets for an exact install. Select the matching platform asset below on Linux or Windows, or to verify an exact archive directly. A timed Linux walk-through is in [First run](FIRST-RUN.md).
 
 That's the local setup. Keep agent dotenv reads denied and launch supported API
 work through `phantom exec`; Phantom reduces credential exposure, but it does
@@ -72,10 +72,29 @@ file. All six release targets passed native acceptance before publication in
 | Windows ARM64 | [`phantom-aarch64-pc-windows-msvc.zip`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9/phantom-aarch64-pc-windows-msvc.zip) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9/phantom-aarch64-pc-windows-msvc.zip.sha256) |
 <!-- fresh:end -->
 
-Download the archive and its sidecar, then verify before extraction. Use
-`sha256sum -c <archive>.sha256` on Linux. On Windows, compare
+Download the archive and its sidecar, then verify before extraction. On Linux,
+`sha256sum -c` accepts the published sidecar. On Windows, compare
 `Get-FileHash -Algorithm SHA256 <archive>` with the sidecar. Put both extracted
 executables on `PATH`.
+
+Linux x86_64, as one shell script:
+
+```bash
+archive=phantom-x86_64-unknown-linux-gnu.tar.gz
+base=https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9
+curl -fsSL -o "$archive" "$base/$archive"
+curl -fsSL -o "$archive.sha256" "$base/$archive.sha256"
+sha256sum -c "$archive.sha256"
+tar -xzf "$archive"
+mkdir -p "$HOME/.local/bin"
+install -m 0755 phantom phantom-mcp "$HOME/.local/bin/"
+export PATH="$HOME/.local/bin:$PATH"
+phantom --version
+phantom-mcp --version
+```
+
+Use the ARM64 archive name from the table on ARM64 Linux. The same steps on
+the measurement VM are recorded in [First run](FIRST-RUN.md).
 
 ### Build the exact release source
 
@@ -104,35 +123,43 @@ before the tap bump prints `0.7.8` until `brew upgrade`.
 
 ---
 
-## First run: representative terminal output
+## First run
 
-```
-$ cd my-project
-$ phantom init
--> Scanning .env...
--> Found 3 secret(s): OPENAI_API_KEY, ANTHROPIC_API_KEY, DATABASE_URL
--> Storing secrets in OS keychain...
-ok  OPENAI_API_KEY stored
-ok  ANTHROPIC_API_KEY stored
-ok  DATABASE_URL stored
--> Rewriting .env with phantom tokens...
-ok  .env updated
--> Writing .phantom.toml...
-ok  Initialized. Run `phantom exec -- <cmd>` to start the proxy.
-```
+Create a project `.env`, then run `phantom init` in that directory. The
+published `v0.7.9` Linux binary, measured in [First run](FIRST-RUN.md), prints
+this shape for one detected API key:
 
-Your `.env` now contains:
-
-```env
-# Managed by Phantom -- do not edit phantom tokens manually
-OPENAI_API_KEY=phm_a7f3b9e2c4d1f8a3b6e9d2c5f8a1b4e7a7f3b9e2c4d1f8a3b6e9d2c5f8a1b4e7
-ANTHROPIC_API_KEY=phm_d4e7a0b3c6f9e2d5a8c1b4f7e0d3a6c9d4e7a0b3c6f9e2d5a8c1b4f7e0d3a6c9
-DATABASE_URL=phm_b1c4d7e0a3f6b9c2d5e8a1b4c7d0e3f6b1c4d7e0a3f6b9c2d5e8a1b4c7d0e3f6
-NODE_ENV=development
-PORT=3000
+```text
+-> Reading .env...
+-> Found 1 secret(s) to protect:
+   + OPENAI_API_KEY
+-> Using linux-keyutils (volatile across reboot) vault backend
+   + OPENAI_API_KEY -> phm_<12 characters shown>
+ok Rewrote .env with phantom tokens
+ok Saved .phantom.toml
+ok Generated .env.example
+done 1 secret(s) are now protected!
+ok Added Phantom instructions to CLAUDE.md
 ```
 
-Non-secret values (`NODE_ENV`, `PORT`) are left untouched. If your `.env` is at a non-standard path:
+That binary then suggests `phantom login`, `phantom open`, and
+`pre-commit install`. None of those is required to store a secret and run
+`phantom exec`. The `.pre-commit-hooks.yaml` file used by `pre-commit install`
+is in this repository and is not one of the 19 files attached to the `v0.7.9`
+release. Source in this tree leads the next steps with `phantom agent doctor`,
+`phantom setup`, and `phantom exec`, and it warns that keyutils is cleared on
+reboot.
+
+The protected value in `.env` is a `phm_` token. In the measurement the file
+token was 68 characters and the init line showed 12 of them. `NODE_ENV` and
+`PORT` stayed as written. `.env.example` received placeholders, and `.gitignore`
+gained `.env`.
+
+Linux keyutils does not survive a reboot. Keep a provider or password-manager
+copy, or export `PHANTOM_VAULT_PASSPHRASE` before `phantom init` to select the
+encrypted-file vault. The later section on Linux keychain covers that choice.
+
+If your `.env` is at a non-standard path:
 
 ```bash
 phantom init --from .env.local
@@ -371,7 +398,7 @@ pass: .phantom.toml found
 pass: Config valid (project: a1b2c3d4)
 pass: Vault backend: macOS Keychain
 pass: 3 secret(s) in vault
-pass: .env has 5 entries, all protected
+pass: .env has 5 entries and no unprotected secrets
 pass: .env is in .gitignore
 warn: No .env.example — team onboarding may be difficult
 warn: No pre-commit hook installed

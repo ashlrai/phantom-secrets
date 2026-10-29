@@ -110,11 +110,11 @@ fn check_managed_dotenv(project_dir: &std::path::Path, env_path: &std::path::Pat
         check_fail(&format!("{name} parse error: {error}"));
         1
     } else if real_secrets.is_empty() {
-        // A commented-out secret below is still plaintext, so no "all
-        // protected" pass for the file then.
+        // A commented-out secret below is still plaintext, so no clean
+        // pass for the file then.
         if dotenv.commented_secret_assignments().is_empty() {
             check_pass(&format!(
-                "{name} has {} entries, all protected",
+                "{name} has {} entries and no unprotected secrets",
                 entries.len()
             ));
         }
@@ -1306,6 +1306,15 @@ mod tests {
         assert_eq!((issues, lines[0].0), (1, "warn"));
         assert!(lines[0].1.contains("OPENAI_API_KEY"));
         assert_eq!(lines[0].2.as_deref(), Some("Run: phantom init"));
+
+        std::fs::write(
+            project.path().join(".env"),
+            "NODE_ENV=development\nPORT=3000\nOPENAI_API_KEY=phm_placeholder\n",
+        )
+        .unwrap();
+        let (issues, lines) = dotenv_check_lines(project.path());
+        assert_eq!((issues, lines[0].0), (0, "pass"));
+        assert_eq!(lines[0].1, ".env has 3 entries and no unprotected secrets");
     }
 
     /// A project managing `.env.local` (`phantom init --from .env.local`) was
@@ -1331,7 +1340,10 @@ mod tests {
 
         std::fs::write(project.path().join(".env.local"), "PORT=3000\n").unwrap();
         let (_, lines) = dotenv_check_lines_for(project.path(), ".env.local");
-        assert_eq!(lines[0].1, ".env.local has 1 entries, all protected");
+        assert_eq!(
+            lines[0].1,
+            ".env.local has 1 entries and no unprotected secrets"
+        );
 
         std::fs::write(project.path().join(".env.local"), "BROKEN_RECORD\n").unwrap();
         let (_, lines) = dotenv_check_lines_for(project.path(), ".env.local");

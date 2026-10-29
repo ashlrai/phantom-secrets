@@ -2402,10 +2402,10 @@ impl PhantomMcpServer {
                             issues += 1;
                         } else if real_secrets.is_empty() {
                             // A commented-out secret is still plaintext, so
-                            // no "all protected" pass for the file then.
+                            // no clean pass for the file then.
                             if dotenv.commented_secret_assignments().is_empty() {
                                 log.pass(format!(
-                                    "{file_label} has {} entries, all protected",
+                                    "{file_label} has {} entries and no unprotected secrets",
                                     entries.len()
                                 ));
                             }
@@ -9892,7 +9892,7 @@ mod tests {
             messages
                 .iter()
                 .any(|message| message.starts_with("custom.env has ")
-                    && message.ends_with("entries, all protected")),
+                    && message.ends_with("entries and no unprotected secrets")),
             "{messages:?}"
         );
         assert!(
@@ -9955,7 +9955,7 @@ mod tests {
         assert!(
             !checks.iter().any(|check| check["message"]
                 .as_str()
-                .is_some_and(|message| message.contains("all protected"))),
+                .is_some_and(|message| message.contains("no unprotected secrets"))),
             "{checks:?}"
         );
         assert!(finding["fix"].as_str().unwrap().contains("phantom add"));

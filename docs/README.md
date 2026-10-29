@@ -16,6 +16,8 @@ See [distribution status](distribution-status.md) for dated npm, Homebrew, crate
 |------|-------|
 | Run GitHub PR operations through Phantom with curl | [GitHub box runners](github-box-runners.md) |
 | Protect a project for the first time | [Getting started](getting-started.md) |
+| See a measured Linux install and the agent-CLI audit | [First run](FIRST-RUN.md) |
+| Compare install, exec, and memory with dotenvx and SOPS | [Benchmarks](BENCHMARKS.md) |
 | Delegate one bounded task to an AI coding client | [Safe delegation quickstart](delegation-quickstart.md) |
 | Keep personal, company, and client keys separate | [Multi-project key separation](multi-project-keys.md) |
 | Plan a team or enterprise pilot | [Enterprise adoption](enterprise-adoption.md) |
