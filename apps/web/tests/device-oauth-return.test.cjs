@@ -293,14 +293,23 @@ test("clicking authorize with an empty code displays accessible validation", asy
     );
     const page = render(React.createElement(module.exports.default));
     const input = page.getByRole("textbox", { name: "Device code" });
+    const label = page.getByText("Device code", { selector: "label" });
     const button = page.getByRole("button", { name: "Authorize Device" });
+    const user = userEvent.setup({ document: dom.window.document });
+    assert.equal(page.getByLabelText("Device code"), input);
     assert.equal(input.value, "");
     assert.equal(button.disabled, false);
-    await userEvent.setup({ document: dom.window.document }).click(button);
+    await user.click(button);
     const alert = page.getByRole("alert");
     assert.equal(alert.textContent, "Enter 8 letters or numbers. The code is displayed as XXXX-XXXX.");
     assert.equal(input.getAttribute("aria-invalid"), "true");
     assert.ok(input.getAttribute("aria-describedby").split(/\s+/).includes(alert.id));
+    assert.equal(page.getByRole("textbox", { name: "Device code" }), input);
+    assert.equal(page.getByLabelText("Device code"), input);
+    await user.click(label);
+    assert.equal(dom.window.document.activeElement, input);
+    await user.type(input, "abcd2345");
+    assert.equal(input.value, "ABCD-2345");
     assert.equal(clientsCreated, 0);
   } finally {
     cleanup();
