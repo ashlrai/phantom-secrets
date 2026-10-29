@@ -52,17 +52,21 @@ test("short codes show the format error through the form and a corrected code ca
     render(React.createElement(Component));
     const input = screen.getByRole("textbox", { name: "Device code" });
     const button = screen.getByRole("button", { name: "Authorize Device" });
+    const displayedCodes = ["", "A", "AB", "ABC", "ABCD", "ABCD-2", "ABCD-23", "ABCD-234"];
     for (let length = 0; length < 8; length++) {
       await user.clear(input);
       if (length) await user.type(input, "abcd2345".slice(0, length));
       await user.click(button);
       assert.equal(screen.getByRole("alert").textContent, "Enter 8 letters or numbers. The code is displayed as XXXX-XXXX.");
       assert.equal(input.getAttribute("aria-invalid"), "true");
+      const retainedInput = screen.getByRole("textbox", { name: "Device code" });
+      assert.equal(retainedInput.value, displayedCodes[length]);
+      assert.equal(retainedInput.disabled, false);
       assert.equal(clientCalls, 0);
       assert.equal(requests.length, 0);
     }
-    await user.clear(input);
-    await user.type(input, "abcd2345");
+    await user.type(input, "5");
+    assert.equal(input.value, "ABCD-2345");
     await user.click(button);
     assert.ok(await screen.findByRole("heading", { name: "Device Authorized" }));
     assert.equal(clientCalls, 1);
