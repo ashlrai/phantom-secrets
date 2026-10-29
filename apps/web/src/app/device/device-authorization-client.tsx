@@ -266,7 +266,10 @@ export default function DeviceAuthorizationClient() {
                 aria-invalid={Boolean(error)}
                 aria-describedby={error ? "device-code-hint device-error device-help" : "device-code-hint device-help"}
                 value={code}
-                onChange={(event) => setCode(formatDeviceUserCode(event.target.value))}
+                onChange={(event) => {
+                  setCode(formatDeviceUserCode(event.target.value));
+                  setError("");
+                }}
                 placeholder="XXXX-XXXX"
                 className="w-full min-w-0 text-center text-2xl sm:text-3xl font-mono tracking-[0.12em] sm:tracking-[0.2em] py-4 px-2 bg-bg border border-border-l rounded-lg text-t1 focus-visible:outline-2 focus-visible:outline-blue-b placeholder:text-t3"
                 autoFocus
