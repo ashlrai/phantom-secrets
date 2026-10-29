@@ -127,6 +127,16 @@ function find(tree, type) {
   return null;
 }
 
+function findById(tree, id) {
+  if (!tree || typeof tree !== "object") return null;
+  if (tree.props?.id === id) return tree;
+  for (const child of [tree.props?.children].flat(Infinity)) {
+    const match = findById(child, id);
+    if (match) return match;
+  }
+  return null;
+}
+
 async function assertSuccessfulCallback(h) {
   h.runEffect();
   await h.settle();
@@ -381,12 +391,28 @@ test("submit errors enable retry without reflecting private SDK details", async 
   }
 });
 
+test("device code format hint remains associated with the input when validation fails", async () => {
+  const h = harness();
+  let tree = h.render();
+  const hint = findById(tree, "device-code-hint");
+  assert.match(hint.props.children, /8 letters or numbers.*XXXX-XXXX/);
+  assert.deepEqual(find(tree, "input").props["aria-describedby"].split(" "), ["device-code-hint", "device-help"]);
+
+  await find(tree, "form").props.onSubmit({ preventDefault() {} });
+  tree = h.render();
+  const input = find(tree, "input");
+  assert.equal(input.props["aria-invalid"], true);
+  assert.deepEqual(input.props["aria-describedby"].split(" "), ["device-code-hint", "device-error", "device-help"]);
+  assert.equal(findById(tree, "device-error").props.role, "alert");
+  for (const id of input.props["aria-describedby"].split(" ")) assert.ok(findById(tree, id));
+});
+
 test("branded form associates instructions and errors and announces busy and success states", async () => {
   const h = harness({ deferInitialization: true });
   const tree = h.render();
   assert.equal(find(tree, "label").props.htmlFor, "device-code");
   assert.equal(find(tree, "input").props.id, "device-code");
-  assert.equal(find(tree, "input").props["aria-describedby"], "device-help");
+  assert.equal(find(tree, "input").props["aria-describedby"], "device-code-hint device-help");
   assert.equal(find(tree, "button").props.type, "submit");
   assert.match(find(tree, "input").props.className, /text-2xl.*tracking-\[0\.12em\]/);
   assert.equal(find(tree, "a").props.href, "/secrets");
