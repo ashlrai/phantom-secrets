@@ -40,6 +40,56 @@ const { QuickStart } = compile("components/landing/QuickStart.tsx", (name) => {
   return require(name);
 });
 
+function checkExternalAndNewTabLinks(container) {
+  const namedLinks = within(container).queryAllByRole("link", { name: /\S/ });
+  const links = [...container.querySelectorAll("a")];
+  let externalCount = 0;
+  for (const link of links) {
+    const newTab = link.getAttribute("target")?.toLowerCase() === "_blank";
+    const external = link.hasAttribute("href") && new URL(link.href).origin !== window.location.origin;
+    if (external) externalCount++;
+    if (external || newTab) {
+      assert.ok(namedLinks.includes(link), "external or new-tab link needs an accessible name");
+    }
+    if (newTab) {
+      const rel = (link.getAttribute("rel") || "").toLowerCase().split(/\s+/);
+      for (const token of ["noopener", "noreferrer"]) {
+        assert.ok(rel.includes(token), `new-tab link needs rel=${token}`);
+      }
+    }
+  }
+  return externalCount;
+}
+
+test("external and new-tab link checks reject unsafe or unnamed links", () => {
+  const container = document.createElement("div");
+  const check = (html) => {
+    container.innerHTML = html;
+    return checkExternalAndNewTabLinks(container);
+  };
+  assert.equal(check('<a href="https://example.com" target="_blank" rel="noreferrer noopener">Example</a>'), 1);
+  assert.equal(check('<a href="/local" target="_BLANK" rel="NOOPENER NOREFERRER" aria-label="Local"></a>'), 0);
+  assert.throws(() => check('<a href="https://example.com" aria-label=" "> </a>'), /accessible name/);
+  assert.throws(() => check('<a href="/local" target="_blank" rel="noopener noreferrer"><span aria-hidden="true">Hidden</span></a>'), /accessible name/);
+  assert.throws(() => check('<a href="https://example.com" target="_blank">Example</a>'), /noopener/);
+  assert.throws(() => check('<a href="https://example.com" target="_blank" rel="noopener">Example</a>'), /noreferrer/);
+  assert.throws(() => check('<a href="https://example.com" target="_blank" rel="not-noopener noreferrer">Example</a>'), /noopener/);
+});
+
+test("QuickStart external links are named and any new-tab links are protected on every platform", async () => {
+  const user = userEvent.setup();
+  const { container } = render(React.createElement(QuickStart));
+  try {
+    for (const platform of ["macOS", "Windows", "Linux"]) {
+      await user.click(screen.getByRole("button", { name: platform }));
+      assert.ok(screen.getByRole("heading", { level: 3, name: platform }));
+      assert.ok(checkExternalAndNewTabLinks(container) >= 5, `${platform}: archive, checksum, and source links are present`);
+    }
+  } finally {
+    cleanup();
+  }
+});
+
 test("reduced motion keeps platform commands available without animation events", async () => {
   const originalMatchMedia = window.matchMedia;
   window.matchMedia = (query) => ({
