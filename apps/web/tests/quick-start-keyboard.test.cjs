@@ -239,6 +239,49 @@ test("every displayed QuickStart command can be selected and matches the copied 
   }
 });
 
+test("switching platforms renders the selected multiline install snippet", async () => {
+  const style = document.createElement("style");
+  style.textContent = fs.readFileSync(path.join(__dirname, "../src/app/globals.css"), "utf8");
+  document.head.append(style);
+  const user = userEvent.setup();
+  const snippets = {
+    macOS: { lines: 12, opening: "(\nset -euo pipefail\numask 077", verification: "shasum -a 256 -c -", ending: '"$HOME/.phantom-secrets/bin/phantom-mcp" --version\n)' },
+    Windows: { lines: 18, opening: "& {\n$ErrorActionPreference = 'Stop'\n$Installer =", verification: "Get-FileHash -Algorithm SHA256", ending: "  Remove-Item -LiteralPath $Installer -Force -ErrorAction SilentlyContinue\n}\n}" },
+    Linux: { lines: 12, opening: "(\nset -euo pipefail\numask 077", verification: "sha256sum -c -", ending: '"$HOME/.phantom-secrets/bin/phantom-mcp" --version\n)' },
+  };
+  try {
+    render(React.createElement(QuickStart));
+    const selector = screen.getByRole("group", { name: "Choose an operating system" });
+    const seen = new Map();
+    for (const platform of ["macOS", "Windows", "Linux", "macOS", "Windows"]) {
+      await user.click(within(selector).getByRole("button", { name: platform }));
+      const card = screen.getByRole("heading", { level: 3, name: platform }).closest("article");
+      assert.ok(card);
+      const button = within(card).getByRole("button", { name: /^Copy command:/ });
+      const container = button.firstElementChild;
+      const nodes = Array.from(container.childNodes).filter((node) => node.nodeType === dom.window.Node.TEXT_NODE);
+      assert.equal(nodes.length, 1, `${platform}: snippet is visible text`);
+      const snippet = nodes[0].textContent;
+      const expected = snippets[platform];
+      assert.ok(snippet.startsWith(expected.opening), `${platform}: opening lines`);
+      assert.ok(snippet.includes(expected.verification), `${platform}: verification command`);
+      assert.ok(snippet.endsWith(expected.ending), `${platform}: final lines`);
+      assert.equal(snippet.split("\n").length, expected.lines, `${platform}: line breaks`);
+      assert.equal(window.getComputedStyle(container).whiteSpace, "pre-wrap", `${platform}: line breaks are rendered`);
+      for (const [other, value] of Object.entries(snippets)) {
+        if (other !== platform) assert.ok(!snippet.includes(value.verification), `${platform}: no stale ${other} snippet`);
+      }
+      if (seen.has(platform)) assert.equal(snippet, seen.get(platform), `${platform}: switching back restores the snippet`);
+      seen.set(platform, snippet);
+      await user.click(button);
+      await waitFor(async () => assert.equal(await navigator.clipboard.readText(), snippet));
+    }
+  } finally {
+    cleanup();
+    style.remove();
+  }
+});
+
 test("QuickStart copy controls are named, reachable by Tab, and operable by keyboard", async () => {
   for (const platform of ["macOS", "Windows", "Linux"]) {
     const user = userEvent.setup();

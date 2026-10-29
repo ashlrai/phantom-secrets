@@ -78,6 +78,9 @@ test("QuickStart remains usable without horizontal overflow on narrow screens", 
         const displayed = await command.locator("span").first().evaluate((node) =>
           Array.from(node.childNodes).filter((child) => child.nodeType === Node.TEXT_NODE).map((child) => child.textContent).join(""));
         assert.ok(displayed.includes(expected));
+        assert.ok(displayed.includes("\n"), `${platform}: command retains line breaks`);
+        assert.equal(await command.locator("span").first().evaluate((node) => getComputedStyle(node).whiteSpace), "pre-wrap",
+          `${platform}: command displays line breaks`);
 
         for (const element of [selector, ...await selector.getByRole("button").all(), card, command]) {
           const bounds = await element.evaluate((node) => {
