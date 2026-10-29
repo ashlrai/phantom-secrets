@@ -71,6 +71,87 @@ test("landing calls to action have accessible names and destinations", async () 
   ]);
 });
 
+// These images repeat adjacent text or an already named link/button. Keep the
+// exceptions scoped to their source and count so new images need a review.
+const decorativeImages = {
+  "src/components/landing/Nav.tsx": { "/favicon.svg": 1 },
+  "src/components/landing/SiteFooter.tsx": { "/favicon.svg": 1 },
+  "src/components/landing/WorkbenchHero.tsx": { "/favicon.svg": 1 },
+  "src/components/landing/phantom-world-markup.json": {
+    "/phantom-world/provider-claude.svg": 1,
+    "/phantom-world/provider-codex.svg": 1,
+    "/phantom-world/provider-grok.svg": 1,
+    "/phantom-world/devin-mark.svg": 1,
+    "/phantom-world/provider-local.svg": 1,
+    "/phantom-world/provider-vercel.svg": 1,
+    "/phantom-world/provider-supabase.svg": 1,
+    "/phantom-world/phantom-mark.svg": 4,
+  },
+};
+
+function checkImageAlternatives(images, exceptions, location) {
+  const remaining = { ...exceptions };
+  for (const { src, alt } of images) {
+    assert.equal(typeof alt, "string", `${location}: image ${src} needs a static alt attribute`);
+    if (alt === "") {
+      assert.ok(remaining[src] > 0, `${location}: review decorative image ${src}`);
+      remaining[src] -= 1;
+    } else {
+      assert.ok(alt.trim(), `${location}: image ${src} needs nonempty alternative text`);
+    }
+  }
+  for (const [src, count] of Object.entries(remaining)) {
+    assert.equal(count, 0, `${location}: stale decorative image exception for ${src}`);
+  }
+}
+
+test("landing images provide alternatives or are reviewed as decorative", () => {
+  const ts = require("typescript");
+  const { JSDOM } = require("jsdom");
+  const landingDir = "src/components/landing";
+  const files = fs.readdirSync(path.join(webRoot, landingDir))
+    .filter(name => name.endsWith(".tsx"))
+    .map(name => `${landingDir}/${name}`);
+  files.push("src/app/page.tsx", "src/app/secrets/page.tsx");
+
+  for (const file of files) {
+    const source = ts.createSourceFile(file, read(file), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+    const images = [];
+    function visit(node) {
+      if ((ts.isJsxSelfClosingElement(node) || ts.isJsxOpeningElement(node)) &&
+          ["img", "Image"].includes(node.tagName.getText(source))) {
+        const attributes = node.attributes.properties;
+        assert.ok(attributes.every(ts.isJsxAttribute), `${file}: image attributes must be explicit`);
+        const literal = name => {
+          const attribute = attributes.find(item => item.name.getText(source) === name);
+          return attribute && attribute.initializer && ts.isStringLiteral(attribute.initializer)
+            ? attribute.initializer.text : undefined;
+        };
+        images.push({ src: literal("src"), alt: literal("alt") });
+      }
+      ts.forEachChild(node, visit);
+    }
+    visit(source);
+    checkImageAlternatives(images, decorativeImages[file], file);
+  }
+
+  const markupFile = `${landingDir}/phantom-world-markup.json`;
+  const document = new JSDOM(JSON.parse(read(markupFile))).window.document;
+  const images = [...document.querySelectorAll("img")].map(image => ({
+    src: image.getAttribute("src"), alt: image.getAttribute("alt"),
+  }));
+  checkImageAlternatives(images, decorativeImages[markupFile], markupFile);
+});
+
+test("image alternative check rejects missing, blank and unreviewed decorative text", () => {
+  for (const alt of [undefined, null, " ", "\n", ""]) {
+    assert.throws(() => checkImageAlternatives([{ src: "example.png", alt }], {}, "fixture"));
+  }
+  assert.doesNotThrow(() => checkImageAlternatives([{ src: "example.png", alt: "A useful description" }], {}, "fixture"));
+  assert.doesNotThrow(() => checkImageAlternatives([{ src: "icon.svg", alt: "" }], { "icon.svg": 1 }, "fixture"));
+  assert.throws(() => checkImageAlternatives([{ src: "icon.svg", alt: "" }, { src: "icon.svg", alt: "" }], { "icon.svg": 1 }, "fixture"));
+});
+
 test("workbench introduction gives a local first step without implying fleet readiness", () => {
   const hero = read("src/components/landing/WorkbenchHero.tsx");
 
