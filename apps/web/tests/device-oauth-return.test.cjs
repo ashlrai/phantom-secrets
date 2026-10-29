@@ -285,7 +285,7 @@ test("seven-character device code shows the length error and can be corrected", 
   find(h.render(), "input").props.onChange({ target: { value: "abcd234" } });
   let tree = h.render();
   assert.equal(find(tree, "input").props.value, "ABCD-234");
-  assert.equal(find(tree, "button").props.disabled, true);
+  assert.equal(find(tree, "button").props.disabled, false);
 
   await find(tree, "form").props.onSubmit({ preventDefault() {} });
   tree = h.render();
@@ -302,6 +302,63 @@ test("seven-character device code shows the length error and can be corrected", 
   assert.equal(h.states[1], "done");
   assert.equal(h.requests.length, 1);
   assert.deepEqual(JSON.parse(h.requests[0].body), { user_code: "ABCD2345" });
+});
+
+test("clicking authorize with a short code displays validation and permits a corrected retry", async () => {
+  const { JSDOM } = require("jsdom");
+  const dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "https://phm.dev/device" });
+  const globals = ["window", "document", "navigator", "HTMLElement"];
+  const previous = globals.map((name) => Object.getOwnPropertyDescriptor(globalThis, name));
+  for (const name of globals) {
+    Object.defineProperty(globalThis, name, { value: name === "window" ? dom.window : dom.window[name], configurable: true, writable: true });
+  }
+  const React = require("react");
+  const { cleanup, render } = require("@testing-library/react");
+  const user = require("@testing-library/user-event").default.setup({ document: dom.window.document });
+  const calls = [];
+  const dependencies = {
+    "next/image": { __esModule: true, default: () => null },
+    "next/link": { __esModule: true, default: ({ children, ...props }) => React.createElement("a", props, children) },
+    "@/lib/device-code": deviceCodeModule.exports,
+    "@/lib/posthog": { capturePostHog: async () => {} },
+    "@supabase/supabase-js": { createClient: () => {
+      calls.push("create-client");
+      return { auth: { getSession: async () => ({ data: { session: { access_token: "synthetic-session" } }, error: null }) } };
+    } },
+  };
+  const compiled = ts.transpileModule(source, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, esModuleInterop: true },
+    fileName: filename,
+  }).outputText;
+  const module = { exports: {} };
+  new Function("require", "module", "exports", "sessionStorage", "fetch", compiled)(
+    (name) => dependencies[name] ?? require(name), module, module.exports, dom.window.sessionStorage,
+    async (_url, request) => { calls.push(JSON.parse(request.body)); return Response.json({ status: "approved" }); },
+  );
+  try {
+    const view = render(React.createElement(module.exports.default));
+    const input = view.getByRole("textbox", { name: "Device code" });
+    const button = view.getByRole("button", { name: "Authorize Device" });
+    await user.type(input, "abcd234");
+    assert.equal(input.value, "ABCD-234");
+    assert.equal(button.disabled, false);
+    await user.click(button);
+    assert.equal(view.getByRole("alert").textContent, "Enter 8 letters or numbers. The code is displayed as XXXX-XXXX.");
+    assert.equal(input.getAttribute("aria-invalid"), "true");
+    assert.deepEqual(calls, []);
+
+    await user.type(input, "5");
+    await user.click(button);
+    assert.ok(await view.findByRole("heading", { name: "Device Authorized" }));
+    assert.deepEqual(calls, ["create-client", { user_code: "ABCD2345" }]);
+  } finally {
+    cleanup();
+    dom.window.close();
+    globals.forEach((name, index) => {
+      if (previous[index]) Object.defineProperty(globalThis, name, previous[index]);
+      else delete globalThis[name];
+    });
+  }
 });
 
 test("eight letters and numbers are formatted and submitted without the display hyphen", async () => {
