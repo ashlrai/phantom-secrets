@@ -42,6 +42,63 @@ const { QuickStart } = compile("components/landing/QuickStart.tsx", (name) => {
   return require(name);
 });
 
+test("platform selection shows only the chosen instructions and exposes its pressed state", async () => {
+  const user = userEvent.setup();
+  const platforms = {
+    macOS: {
+      detail: "Uses Keychain when available.",
+      command: "shasum -a 256 -c -",
+      assets: ["phantom-aarch64-apple-darwin.tar.gz", "phantom-x86_64-apple-darwin.tar.gz"],
+    },
+    Windows: {
+      detail: "Uses current-user Credential Manager when available.",
+      command: "Get-FileHash -Algorithm SHA256",
+      assets: ["phantom-aarch64-pc-windows-msvc.zip", "phantom-x86_64-pc-windows-msvc.zip"],
+    },
+    Linux: {
+      detail: "Published GNU targets enforce a glibc 2.35 symbol ceiling",
+      command: "sha256sum -c -",
+      assets: ["phantom-aarch64-unknown-linux-gnu.tar.gz", "phantom-x86_64-unknown-linux-gnu.tar.gz"],
+    },
+  };
+  render(React.createElement(QuickStart));
+  try {
+    const selector = screen.getByRole("group", { name: "Choose an operating system" });
+    const check = (selected) => {
+      const controls = within(selector).getAllByRole("button");
+      assert.equal(controls.length, 3);
+      assert.equal(within(selector).getByRole("button", { name: selected, pressed: true }).textContent, selected);
+      for (const name of Object.keys(platforms).filter((name) => name !== selected)) {
+        assert.ok(within(selector).getByRole("button", { name, pressed: false }));
+        assert.equal(screen.queryByRole("heading", { level: 3, name }), null);
+      }
+      const card = screen.getByRole("heading", { level: 3, name: selected }).closest("article");
+      assert.ok(card);
+      assert.equal(document.querySelectorAll(".platform-install-card").length, 1);
+      assert.ok(card.textContent.includes(platforms[selected].detail));
+      assert.ok(within(card).getByRole("button", { name: /^Copy command:/ }).textContent.includes(platforms[selected].command));
+      const links = within(card).getAllByRole("link");
+      for (const asset of platforms[selected].assets) {
+        assert.ok(links.some((link) => link.getAttribute("href").endsWith(`/${asset}`)), asset);
+        assert.ok(links.some((link) => link.getAttribute("href").endsWith(`/${asset}.sha256`)), `${asset} checksum`);
+      }
+    };
+
+    check("macOS");
+    await user.click(within(selector).getByRole("button", { name: "Windows" }));
+    check("Windows");
+    const linux = within(selector).getByRole("button", { name: "Linux" });
+    linux.focus();
+    await user.keyboard(" ");
+    assert.equal(document.activeElement, linux);
+    check("Linux");
+    await user.click(within(selector).getByRole("button", { name: "macOS" }));
+    check("macOS");
+  } finally {
+    cleanup();
+  }
+});
+
 test("quick start remains a region named by its visible heading when switching platforms", async () => {
   const user = userEvent.setup();
   render(React.createElement(QuickStart));
