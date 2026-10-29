@@ -248,7 +248,7 @@ test("empty device code submission shows validation without authorizing", async 
   const h = harness({ url: "https://phm.dev/device", storedCode: null, previousSession: { access_token: "synthetic-existing-account" } });
   let tree = h.render();
   assert.equal(find(tree, "input").props.value, "");
-  assert.equal(find(tree, "button").props.disabled, true);
+  assert.equal(find(tree, "button").props.disabled, false);
 
   let prevented = false;
   await find(tree, "form").props.onSubmit({ preventDefault() { prevented = true; } });
@@ -260,9 +260,56 @@ test("empty device code submission shows validation without authorizing", async 
   assert.equal(findById(tree, "device-error").props.role, "alert");
   assert.equal(findById(tree, "device-error").props.children, "Enter 8 letters or numbers. The code is displayed as XXXX-XXXX.");
   assert.ok(find(tree, "form"));
-  assert.equal(find(tree, "button").props.disabled, true);
+  assert.equal(find(tree, "button").props.disabled, false);
   assert.deepEqual(h.events, []);
   assert.equal(h.requests.length, 0);
+});
+
+test("clicking authorize with an empty code displays accessible validation", async () => {
+  const { JSDOM } = require("jsdom");
+  const dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "https://phm.dev/device" });
+  const previousGlobals = new Map(["window", "document", "navigator", "HTMLElement"].map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)]));
+  for (const name of previousGlobals.keys()) Object.defineProperty(globalThis, name, { value: dom.window[name], configurable: true, writable: true });
+
+  const React = require("react");
+  const { render, cleanup } = require("@testing-library/react");
+  const userEvent = require("@testing-library/user-event").default;
+  let clientsCreated = 0;
+  const dependencies = {
+    "next/image": { __esModule: true, default: () => null },
+    "next/link": { __esModule: true, default: ({ children, ...props }) => React.createElement("a", props, children) },
+    "@/lib/device-code": deviceCodeModule.exports,
+    "@/lib/posthog": { capturePostHog: async () => {} },
+    "@supabase/supabase-js": { createClient: () => { clientsCreated++; throw new Error("Unexpected client creation"); } },
+  };
+  const compiled = ts.transpileModule(source, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, esModuleInterop: true },
+    fileName: filename,
+  }).outputText;
+  const module = { exports: {} };
+  try {
+    new Function("require", "module", "exports", compiled)(
+      (name) => dependencies[name] ?? require(name), module, module.exports,
+    );
+    const page = render(React.createElement(module.exports.default));
+    const input = page.getByRole("textbox", { name: "Device code" });
+    const button = page.getByRole("button", { name: "Authorize Device" });
+    assert.equal(input.value, "");
+    assert.equal(button.disabled, false);
+    await userEvent.setup({ document: dom.window.document }).click(button);
+    const alert = page.getByRole("alert");
+    assert.equal(alert.textContent, "Enter 8 letters or numbers. The code is displayed as XXXX-XXXX.");
+    assert.equal(input.getAttribute("aria-invalid"), "true");
+    assert.ok(input.getAttribute("aria-describedby").split(/\s+/).includes(alert.id));
+    assert.equal(clientsCreated, 0);
+  } finally {
+    cleanup();
+    dom.window.close();
+    for (const [name, descriptor] of previousGlobals) {
+      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+      else delete globalThis[name];
+    }
+  }
 });
 
 test("invalid device code explains the accepted characters and displayed format", async () => {
@@ -285,7 +332,7 @@ test("seven-character device code shows the length error and can be corrected", 
   find(h.render(), "input").props.onChange({ target: { value: "abcd234" } });
   let tree = h.render();
   assert.equal(find(tree, "input").props.value, "ABCD-234");
-  assert.equal(find(tree, "button").props.disabled, true);
+  assert.equal(find(tree, "button").props.disabled, false);
 
   await find(tree, "form").props.onSubmit({ preventDefault() {} });
   tree = h.render();
