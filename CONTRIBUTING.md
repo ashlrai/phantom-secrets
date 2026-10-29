@@ -100,21 +100,28 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
 
-On pull requests, CI classifies the changed paths and skips suites a change
-cannot affect: docs-only changes skip the Rust and web suites, and Rust tests
-run through `cargo nextest` on the touched crates and their dependents. Secret
-scanning and the Rust dependency policy always run. The single `CI Gate` job
-fails if any selected job did not succeed. Pushes to `main` run everything.
+On pull requests and the merge queue, CI runs only the seconds-fast checks:
+path classification, lint and the npm wrapper tests when the diff can affect
+Rust code, the dependency policy, both secret scans, and the single required
+`CI Gate` job, which fails if any selected job did not succeed. The cross-OS
+test matrix, the web suite, the Temporal example, the crate publication
+contract and the docs command check run only on the daily schedule
+(`nightly-full.yml` calls `ci.yml`) and on `workflow_dispatch`; pushes to
+`main` run nothing. `scripts/ci/pr-path-contract.test.mjs` locks that split —
+a read-only contract over the workflow files asserting no heavy job can
+reattach to the pull-request or merge-queue path.
 
-The daily full-suite run keeps its complete cross-OS coverage but also gets an
-off-peak slot: `scripts/ci/daily-matrix.mjs` computes the affected-only OS
-matrix for `Test (${{ matrix.os }})` from a diff (per-leg `cfg` routing, failing
-closed to all three legs) and emits the additive off-peak cron from
+The daily full-suite run keeps its complete cross-OS coverage. The additive
+off-peak affected-only run is designed and its engine shipped, but the
+workflow wiring is a gated `.github/` patch not yet applied:
+`scripts/ci/daily-matrix.mjs` computes the affected-only OS matrix for
+`Test (${{ matrix.os }})` from a diff (per-leg `cfg` routing, failing closed
+to all three legs) and emits the off-peak cron from
 `scripts/ci/offpeak-schedule.json`. Check names are unchanged — the tool only
-ever emits the same `macos-latest`/`ubuntu-latest`/`windows-latest` labels. See
-[scripts/ci/daily-matrix.md](scripts/ci/daily-matrix.md) for rules and the
-workflow wiring, and run its suite with
-`node --test scripts/ci/daily-matrix.test.mjs`.
+ever emits the same `macos-latest`/`ubuntu-latest`/`windows-latest` labels.
+See [scripts/ci/daily-matrix.md](scripts/ci/daily-matrix.md) for rules and the
+wiring plan, and run the CI script suites with
+`node --test scripts/ci/daily-matrix.test.mjs scripts/ci/pr-path-contract.test.mjs`.
 
 Run additional checks for the surface you changed:
 

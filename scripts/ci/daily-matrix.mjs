@@ -13,7 +13,7 @@
 //   --files PATH|-      newline-separated changed paths ('-' reads stdin)
 //   --base SHA [--head SHA]   git diff --name-only BASE...HEAD
 //   --since HOURS       diff HEAD against `git rev-list -n1 --before="N hours ago"`
-//   --full              force all three OS legs (escape hatch, e.g. ci:full-os)
+//   --full              force all three OS legs (escape hatch)
 // Output opts: --github-output appends os_matrix=<json> to $GITHUB_OUTPUT;
 //   --explain prints per-leg reasons and the wall estimate to stderr.
 //
