@@ -1,0 +1,81 @@
+Phantom replaces managed dotenv secrets with non-provider phantom placeholders.
+Its authenticated local proxy matches exact routes and injects only route-owned authentication into each route's fixed header; client headers and bodies never resolve placeholders.
+Agents confined to value-blind tools and supported proxy routes do not receive stored values.
+Unmanaged files, same-user processes, arbitrary tools, and unsupported protocols remain outside this boundary.
+
+Quick start (from the project root):
+  phantom init                  protect .env secrets and rewrite them as phm_ tokens
+  phantom agent doctor          check the repo is ready for AI agents
+  phantom setup --client codex  wire MCP into claude, cursor, windsurf, or codex
+  phantom exec -- <command>     run your app or agent through the local proxy
+
+Commands by task:
+  Setup         init · agent · setup · doctor · workspace · vault · completion · mcp · mcp-approve
+  Daily use     exec · start · stop · status · check · redact · list · add · remove · reveal · copy · env · why · git-credential
+  Sync & teams  login · logout · cloud · team · sync · pull · export · import · wrap · unwrap
+  Maintenance   upgrade · watch · rotate · grant · validate · expiry · secrets-expiring-soon · open · audit · leaks · crypto
+
+Usage: phantom [OPTIONS] <COMMAND>
+
+Commands:
+  init                   Import .env secrets into the vault and rewrite with phantom tokens
+  setup                  Wire Phantom into an AI client (Claude Code, Cursor, Windsurf, Codex, Gemini CLI)
+  agent                  Agent readiness report, doctor, and setup workflows
+  doctor                 Check configuration and vault health
+  completion             Print a shell-completion script to stdout
+  mcp                    MCP server commands (Model Context Protocol)
+  mcp-approve            Approve a pending MCP nonce for a mutating vault operation
+  workspace              Plan, approve, apply, and inspect exact workspace setup transactions
+  vault                  Manage the local credential backend from a trusted terminal
+  git-credential         Supply a GitHub credential to Git through a pipe (never a terminal or file)
+  exec                   Start the proxy and run a command
+  start                  Start a foreground proxy owned by this terminal
+  stop                   TTY-only diagnostic and manual migration guidance for legacy v0.7.3 state
+  status                 Show project status (--json uses value-free metadata inspection)
+  check                  Check for unprotected secrets (pre-commit hook)
+  redact                 Scrub known credential shapes from stdin to stdout (no vault access)
+  list                   List stored secret names (never shows values)
+  add                    Create a new secret name transactionally; existing names are never replaced
+  remove                 Remove a secret transactionally after an exact trusted-terminal challenge
+  reveal                 Reveal a secret value (print to stdout or copy to clipboard)
+  copy                   Copy a secret to an initialized target; existing target ownership is never overwritten
+  env                    Generate .env.example for team onboarding
+  why                    Explain why a key is or isn't protected
+  login                  Log in only after two exact trusted-terminal challenges
+  logout                 Log out only after an exact trusted-terminal challenge
+  cloud                  Cloud status plus trusted-terminal push/pull commands
+  team                   Authenticated team reads and trusted-terminal team mutations
+  sync                   Sync secrets to deployment platforms (Vercel, Railway)
+  pull                   Pull secrets from a deployment platform into the vault
+  export                 Export to a new encrypted backup after an exact trusted-terminal challenge
+  import                 Import only after an exact trusted-terminal challenge; --force never bypasses it
+  wrap                   Wrap package.json scripts with `phantom exec` (no more manual prefix)
+  unwrap                 Unwrap package.json scripts (restore originals from :raw variants)
+  upgrade                Check for updates; standalone installs may self-replace, while managed installs route to their owner
+  watch                  Watch .env files and auto-detect new unprotected secrets
+  rotate                 Regenerate all phantom tokens after an exact attached-terminal challenge
+  grant                  Inspect configured grant metadata. Enrollment and remote revocation are hard-denied in this release; obtain credentials at the provider and store them with trusted-terminal `phantom add`
+  validate               Validate stored secrets; live provider checks require exact trusted-terminal consent
+  leaks                  Leak response tools (read-only preview)
+  audit                  View the opt-in audit log (requires PHANTOM_AUDIT=1 to start logging)
+  crypto                 Cryptography inventory: algorithms and format tags Phantom uses
+  open                   Open a closed-catalog Phantom page after an exact trusted-terminal challenge. Aliases: dashboard, billing, team, docs, pricing, github, issues, site. Other words and arbitrary URLs are rejected before browser access
+  secrets-expiring-soon  List expired/expiring secrets; optionally remap their local Phantom tokens
+  expiry                 TTL metadata: exact-terminal set, read-only enforce, and deprecated local remap
+  help                   Print this message or the help of the given subcommand(s)
+
+Options:
+  -v, --verbose
+          Enable verbose/debug logging
+
+  -q, --quiet
+          Suppress progress output from exec, wrap, and unwrap (errors and warnings still print; other commands ignore it)
+
+      --json
+          Output in JSON format (for scripting)
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+  -V, --version
+          Print version
