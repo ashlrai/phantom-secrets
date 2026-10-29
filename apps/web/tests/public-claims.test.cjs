@@ -176,6 +176,20 @@ function structuredMetadataBlock(source, type) {
   return source.slice(start, end);
 }
 
+test("public home page provides a nonempty meta description", () => {
+  const ts = require("typescript");
+  const compiled = ts.transpileModule(claims["src/app/page.tsx"], {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX },
+    fileName: "page.tsx",
+  }).outputText;
+  const exports = {};
+  const localRequire = (name) => name.startsWith("@/") ? {} : require(name);
+  new Function("exports", "require", compiled)(exports, localRequire);
+
+  assert.equal(typeof exports.metadata?.description, "string");
+  assert.match(exports.metadata.description, /\S/, "home page description must not be empty");
+});
+
 test("public surfaces reject previously audited absolute claims", () => {
   for (const forbidden of [
     /backed up automatically/i,
