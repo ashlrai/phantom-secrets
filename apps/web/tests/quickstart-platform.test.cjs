@@ -116,6 +116,7 @@ test("Unix install commands clean their staging directory on success and failure
       assert.equal(result.status, ["download", "checksum", "installer"].includes(failure) ? 1 : 0, `${platform}: ${failure || "success"}: ${result.stderr}`);
       const stage = fs.readFileSync(record, "utf8");
       assert.equal(path.dirname(stage), ["default-temp", "unset-temp"].includes(failure) ? "/tmp" : temp);
+      assert.match(path.basename(stage), /^phantom-install\.[A-Za-z0-9]{6}$/, `${platform}: staging directory prefix`);
       if (failure === "nonempty") {
         assert.deepEqual(fs.readdirSync(stage), ["extra"], "cleanup must leave a nonempty directory without the installer");
         fs.rmSync(stage, { recursive: true });
