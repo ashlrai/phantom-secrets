@@ -18,6 +18,77 @@ function load(relativePath: string, localRequire: NodeRequire = require) {
   return exports;
 }
 
+// Inspect JSX rather than one rendered state, so links in alternate branches
+// and shared public components are covered as well.
+function newTabLinkIssues(source: string, filename: string) {
+  const file = ts.createSourceFile(filename, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const issues: string[] = [];
+  let newTabLinks = 0;
+  const literal = (attribute: ts.JsxAttribute | undefined) => {
+    const value = attribute?.initializer;
+    if (value && ts.isStringLiteral(value)) return value.text;
+    if (value && ts.isJsxExpression(value) && value.expression && ts.isStringLiteral(value.expression)) return value.expression.text;
+    return undefined;
+  };
+  function visit(node: ts.Node) {
+    if ((ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node)) &&
+        (node.tagName.getText(file) === "a" || node.tagName.getText(file) === "Link")) {
+      const location = `${filename}:${file.getLineAndCharacterOfPosition(node.getStart(file)).line + 1}`;
+      const attributes = node.attributes.properties;
+      const attribute = (name: string) => attributes.find(
+        (item): item is ts.JsxAttribute => ts.isJsxAttribute(item) && item.name.getText(file) === name,
+      );
+      // Spreads or dynamic targets can hide a new-tab link from this guard.
+      if (attributes.some(ts.isJsxSpreadAttribute)) issues.push(`${location}: link props must be explicit`);
+      const target = attribute("target");
+      const targetValue = literal(target);
+      if (target && targetValue === undefined) issues.push(`${location}: link target must be a string literal`);
+      if (targetValue?.toLowerCase() === "_blank") {
+        newTabLinks++;
+        const rel = literal(attribute("rel"))?.toLowerCase().split(/\s+/) ?? [];
+        for (const token of ["noopener", "noreferrer"]) {
+          if (!rel.includes(token)) issues.push(`${location}: new-tab link needs rel=${token}`);
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(file);
+  return { issues, newTabLinks };
+}
+
+test("public JSX new-tab links include noopener and noreferrer", () => {
+  function tsxFiles(directory: string): string[] {
+    return fs.readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+      const file = path.join(directory, entry.name);
+      return entry.isDirectory() ? tsxFiles(file) : entry.name.endsWith(".tsx") ? [file] : [];
+    });
+  }
+  const root = path.join(__dirname, "../src");
+  const files = ["app", "components"].flatMap((directory) => tsxFiles(path.join(root, directory)));
+  let newTabLinks = 0;
+  const issues = files.flatMap((file) => {
+    const result = newTabLinkIssues(fs.readFileSync(file, "utf8"), path.relative(root, file));
+    newTabLinks += result.newTabLinks;
+    return result.issues;
+  });
+  assert.ok(newTabLinks > 0, "expected to inspect the documentation assistant's new-tab link");
+  assert.deepEqual(issues, []);
+});
+
+test("new-tab link guard detects missing rel tokens and obscured link props", () => {
+  const check = (jsx: string) => newTabLinkIssues(`const fixture = ${jsx};`, "fixture.tsx").issues;
+  assert.deepEqual(check('<a target="_blank" rel="noreferrer noopener" />'), []);
+  assert.deepEqual(check('<Link target={"_BLANK"} rel={"noopener noreferrer"} />'), []);
+  assert.deepEqual(check('<a href="https://example.com" />'), []);
+  assert.match(check('<a target="_blank" />').join(" "), /noopener.*noreferrer/);
+  assert.match(check('<a target="_blank" rel="noopener" />').join(" "), /noreferrer/);
+  assert.match(check('<a target="_blank" rel="noreferrer" />').join(" "), /noopener/);
+  assert.match(check('<a target="_blank" rel="not-noopener noreferrer" />').join(" "), /noopener/);
+  assert.match(check('<a target={destination} rel="noopener noreferrer" />').join(" "), /target must be a string literal/);
+  assert.match(check('<a {...props} />').join(" "), /props must be explicit/);
+});
+
 test("QuickStart displays expanded multiline commands for every platform", () => {
   let selected = "macOS";
   const hooks = { ...React, useState: () => [selected, (value: string) => { selected = value; }] };
