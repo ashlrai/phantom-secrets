@@ -39,9 +39,21 @@ identity. If the npm query, release, checksum, or expected `phantom 0.7.9`
 version is unavailable, stop instead of substituting an unpinned package or
 release.
 
-The wrapper supports macOS arm64/x64, glibc Linux arm64/x64, and Windows
-arm64/x64. Published archives do not by themselves prove every keychain,
-shell, editor, or provider integration on every host; see the
+The wrapper selects a native archive for these Node.js platform and
+architecture combinations:
+
+| Operating system (Node.js platform) | Node.js architecture | Native target |
+|---|---|---|
+| macOS (`darwin`) | `arm64` | `aarch64-apple-darwin` |
+| macOS (`darwin`) | `x64` | `x86_64-apple-darwin` |
+| Linux with glibc (`linux`) | `arm64` | `aarch64-unknown-linux-gnu` |
+| Linux with glibc (`linux`) | `x64` | `x86_64-unknown-linux-gnu` |
+| Windows (`win32`) | `arm64` | `aarch64-pc-windows-msvc` |
+| Windows (`win32`) | `x64` | `x86_64-pc-windows-msvc` |
+
+Linux archives target glibc; the wrapper does not provide a musl build or
+detect the host's libc. Published archives do not by themselves prove every
+keychain, shell, editor, or provider integration on every host; see the
 [platform support matrix](https://github.com/ashlrai/phantom-secrets/blob/main/docs/platform-support.md).
 
 ## Quick start
