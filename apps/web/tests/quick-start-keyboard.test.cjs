@@ -40,6 +40,39 @@ const { QuickStart } = compile("components/landing/QuickStart.tsx", (name) => {
   return require(name);
 });
 
+test("rendered quick start commands retain their line breaks when displayed and copied", async () => {
+  const user = userEvent.setup();
+  render(React.createElement(QuickStart));
+  try {
+    const cases = [
+      ["macOS", "$", 12, "(\nset -euo pipefail\numask 077", 'bash "$phantom_installer"\n"$HOME/.phantom-secrets/bin/phantom" --version'],
+      ["Windows", "PS>", 18, "& {\n$ErrorActionPreference = 'Stop'", "} finally {\n  Remove-Item -LiteralPath $Installer -Force -ErrorAction SilentlyContinue\n}\n}"],
+      ["Linux", "$", 12, "(\nset -euo pipefail\numask 077", 'bash "$phantom_installer"\n"$HOME/.phantom-secrets/bin/phantom" --version'],
+    ];
+    for (const [platform, prompt, lineCount, start, fragment] of cases) {
+      await user.click(screen.getByRole("button", { name: platform }));
+      const card = screen.getByRole("heading", { level: 3, name: platform }).closest("article");
+      const button = within(card).getByRole("button", { name: /^Copy command:/ });
+      const displayed = button.textContent;
+      const prefix = `Copy command: ${prompt} `;
+      assert.ok(displayed.startsWith(prefix));
+      const command = displayed.slice(prefix.length);
+      assert.equal(command.split("\n").length, lineCount, `${platform}: line count`);
+      assert.ok(command.startsWith(start), `${platform}: opening lines`);
+      assert.ok(command.includes(fragment), `${platform}: subsequent lines`);
+      await user.click(button);
+      assert.equal(await navigator.clipboard.readText(), command, `${platform}: copied text matches rendered text`);
+    }
+
+    const verification = screen.getByRole("button", { name: /Copy command: phantom --version/ });
+    assert.equal(verification.textContent, "Copy command: $ phantom --version\nphantom-mcp --version");
+    await user.click(verification);
+    assert.equal(await navigator.clipboard.readText(), "phantom --version\nphantom-mcp --version");
+  } finally {
+    cleanup();
+  }
+});
+
 test("reduced motion keeps platform commands available without animation events", async () => {
   const originalMatchMedia = window.matchMedia;
   window.matchMedia = (query) => ({
