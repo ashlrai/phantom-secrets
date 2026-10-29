@@ -126,6 +126,51 @@ function loadDocs(entries = catalog, revision) {
   return { docs: module.exports, loadedFiles };
 }
 
+function loadComponent(relativePath, dependencies) {
+  const file = path.join(webRoot, relativePath);
+  const output = ts.transpileModule(fs.readFileSync(file, "utf8"), {
+    compilerOptions: {
+      esModuleInterop: true,
+      jsx: ts.JsxEmit.ReactJSX,
+      module: ts.ModuleKind.CommonJS,
+      target: ts.ScriptTarget.ES2022,
+    },
+    fileName: file,
+  }).outputText;
+  const module = { exports: {} };
+  const localRequire = (specifier) => {
+    if (Object.hasOwn(dependencies, specifier)) return dependencies[specifier];
+    if (["react", "react/jsx-runtime", "node:path"].includes(specifier)) return require(specifier);
+    throw new Error(`Unexpected component dependency: ${specifier}`);
+  };
+  new Function("exports", "require", "module", output)(module.exports, localRequire, module);
+  return module.exports;
+}
+
+test("every public documentation page renders a nonempty primary heading", async () => {
+  const { docs } = loadDocs();
+  const renderer = loadComponent("src/components/docs/MarkdownDocument.tsx", {
+    "@/lib/public-docs": docs,
+  });
+  const page = loadComponent("src/app/docs/[slug]/page.tsx", {
+    "next/link": ({ href, children, ...props }) => React.createElement("a", { href, ...props }, children),
+    "next/navigation": { notFound: () => { throw new Error("Document not found"); } },
+    "@/components/docs/AskDocumentation": { AskDocumentation: () => null },
+    "@/components/docs/MarkdownDocument": renderer,
+    "@/components/landing/Nav": { Nav: () => null },
+    "@/components/landing/SiteFooter": { SiteFooter: () => null },
+    "@/lib/public-docs": docs,
+  });
+
+  for (const { slug } of catalog) {
+    const element = await page.default({ params: Promise.resolve({ slug }) });
+    const document = new JSDOM(renderToStaticMarkup(element)).window.document;
+    const heading = document.querySelector("main h1");
+    assert.ok(heading, `${slug} must have a primary heading`);
+    assert.ok(heading.textContent.trim(), `${slug} must have a nonempty primary heading`);
+  }
+});
+
 test("bundled documentation preserves every authoritative Markdown byte without runtime filesystem access", () => {
   const { docs, loadedFiles } = loadDocs();
   assert.deepEqual(loadedFiles.sort(), catalog.map(({ file }) => path.join(repoRoot, "docs", file)).sort());
