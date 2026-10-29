@@ -304,14 +304,43 @@ test("seven-character device code shows the length error and can be corrected", 
   assert.deepEqual(JSON.parse(h.requests[0].body), { user_code: "ABCD2345" });
 });
 
+test("overlong device codes show the format error without starting authorization and can be corrected", async () => {
+  for (const previousSession of [null, { access_token: "synthetic-existing-account" }]) {
+    const h = harness({ url: "https://phm.dev/device", storedCode: null, previousSession });
+    find(h.render(), "input").props.onChange({ target: { value: "abcd-23456" } });
+    let tree = h.render();
+    assert.equal(find(tree, "input").props.value, "ABCD-23456");
+    assert.equal(find(tree, "input").props.maxLength, undefined);
+    assert.equal(find(tree, "button").props.disabled, false);
+
+    await find(tree, "form").props.onSubmit({ preventDefault() {} });
+    tree = h.render();
+    assert.equal(findById(tree, "device-error").props.children, "Enter 8 letters or numbers. The code is displayed as XXXX-XXXX.");
+    assert.equal(find(tree, "input").props["aria-invalid"], true);
+    assert.deepEqual(h.events, []);
+    assert.equal(h.requests.length, 0);
+    assert.equal(h.storage.has("phantom_device_code"), false);
+
+    find(tree, "input").props.onChange({ target: { value: "abcd-2345" } });
+    await find(h.render(), "form").props.onSubmit({ preventDefault() {} });
+    assert.equal(h.states[2], "");
+    if (previousSession) {
+      assert.equal(h.requests.length, 1);
+      assert.deepEqual(JSON.parse(h.requests[0].body), { user_code: "ABCD2345" });
+    } else {
+      assert.ok(h.events.includes("start-oauth"));
+      assert.equal(h.storage.get("phantom_device_code"), "ABCD-2345");
+    }
+  }
+});
+
 test("eight letters and numbers are formatted and submitted without the display hyphen", async () => {
   const h = harness({ url: "https://phm.dev/device", previousSession: { access_token: "synthetic-existing-account" } });
   let input = find(h.render(), "input");
   assert.equal(input.props.placeholder, "XXXX-XXXX");
-  assert.equal(input.props.maxLength, 9);
   input.props.onChange({ target: { value: "ab01" } });
   assert.equal(find(h.render(), "input").props.value, "AB01");
-  find(h.render(), "input").props.onChange({ target: { value: "ab01-cd23!45" } });
+  find(h.render(), "input").props.onChange({ target: { value: "ab01-cd!23" } });
   input = find(h.render(), "input");
   assert.equal(input.props.value, "AB01-CD23");
   assert.equal(find(h.render(), "button").props.disabled, false);
@@ -408,7 +437,7 @@ test("only successful callback verification clears persisted retry intent", asyn
 });
 
 test("missing or invalid pending code still consumes callback and enables manual code entry", async () => {
-  for (const storedCode of [null, "invalid"]) {
+  for (const storedCode of [null, "invalid", "ABCD-23456"]) {
     const h = harness({ storedCode }); h.runEffect(); await h.settle();
     assert.equal(h.requests.length, 0);
     assert.ok(h.events.includes("sdk-session-restored"));
