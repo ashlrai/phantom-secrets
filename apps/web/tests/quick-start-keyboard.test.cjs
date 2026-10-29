@@ -239,6 +239,30 @@ test("every displayed QuickStart command can be selected and matches the copied 
   }
 });
 
+test("every displayed QuickStart command is nonempty and has no trailing whitespace", async () => {
+  const user = userEvent.setup();
+  render(React.createElement(QuickStart));
+  try {
+    for (const platform of ["macOS", "Windows", "Linux"]) {
+      await user.click(screen.getByRole("button", { name: platform }));
+      const buttons = screen.getAllByRole("button", { name: /^Copy command:/ });
+      assert.equal(buttons.length, 3, `${platform}: install and both follow-up commands`);
+      for (const [index, button] of buttons.entries()) {
+        const commandNode = Array.from(button.firstElementChild.childNodes)
+          .find((node) => node.nodeType === dom.window.Node.TEXT_NODE);
+        assert.ok(commandNode, `${platform}: command ${index + 1} is displayed as text`);
+        const command = commandNode.textContent;
+        assert.ok(command.trim(), `${platform}: command ${index + 1} is nonempty`);
+        for (const [lineIndex, line] of command.split("\n").entries()) {
+          assert.doesNotMatch(line, /\s$/u, `${platform}: command ${index + 1}, line ${lineIndex + 1} has trailing whitespace`);
+        }
+      }
+    }
+  } finally {
+    cleanup();
+  }
+});
+
 test("QuickStart copy controls are named, reachable by Tab, and operable by keyboard", async () => {
   for (const platform of ["macOS", "Windows", "Linux"]) {
     const user = userEvent.setup();
