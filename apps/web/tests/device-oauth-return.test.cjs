@@ -6,6 +6,11 @@ const ts = require("typescript");
 
 const filename = path.resolve(__dirname, "../src/app/device/device-authorization-client.tsx");
 const source = fs.readFileSync(filename, "utf8");
+const deviceCodeSource = fs.readFileSync(path.resolve(__dirname, "../src/lib/device-code.ts"), "utf8");
+const deviceCodeModule = { exports: {} };
+new Function("module", "exports", ts.transpileModule(deviceCodeSource, {
+  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+}).outputText)(deviceCodeModule, deviceCodeModule.exports);
 const testCode = "ABCD-2345";
 const testToken = "synthetic-callback-bearer";
 
@@ -50,11 +55,7 @@ function harness(options = {}) {
       useRef(initial) { return refs[refCursor++] ??= { current: initial }; },
       useEffect(callback) { if (effects.length === 0) effects.push(callback); },
     },
-    "@/lib/device-code": {
-      normalizeDeviceUserCode: (value) => value.replace(/-/g, "").toUpperCase(),
-      formatDeviceUserCode: (value) => value,
-      isValidDeviceUserCode: (value) => /^[A-Z2-9]{4}-?[A-Z2-9]{4}$/.test(value),
-    },
+    "@/lib/device-code": deviceCodeModule.exports,
     "@/lib/posthog": { capturePostHog: async () => {} },
     "@supabase/supabase-js": {
       createClient() {
@@ -241,6 +242,31 @@ test("ordinary existing-session submission still approves without starting OAuth
   assert.equal(h.requests[0].headers.Authorization, "Bearer synthetic-existing-account");
   assert.equal(h.events.includes("start-oauth"), false);
   assert.equal(h.states[1], "done");
+});
+
+test("invalid device code explains the accepted characters and displayed format", async () => {
+  const h = harness({ url: "https://phm.dev/device", storedCode: null });
+  find(h.render(), "input").props.onChange({ target: { value: "ab12c" } });
+  await find(h.render(), "form").props.onSubmit({ preventDefault() {} });
+  const tree = h.render();
+  assert.equal(find(tree, "input").props.value, "AB12-C");
+  assert.equal(find(tree, "input").props["aria-invalid"], true);
+  assert.equal(find(tree, "input").props["aria-describedby"], "device-error device-help");
+  const error = find(tree, "form").props.children.find((child) => child?.props?.id === "device-error");
+  assert.equal(error.props.role, "alert");
+  assert.equal(error.props.children, "Enter 8 letters or numbers. The code is displayed as XXXX-XXXX.");
+  assert.deepEqual(h.events, []);
+  assert.equal(h.requests.length, 0);
+});
+
+test("eight letters and numbers are formatted and submitted without the display hyphen", async () => {
+  const h = harness({ url: "https://phm.dev/device", previousSession: { access_token: "synthetic-existing-account" } });
+  find(h.render(), "input").props.onChange({ target: { value: "ab01cd23" } });
+  assert.equal(find(h.render(), "input").props.value, "AB01-CD23");
+  assert.equal(find(h.render(), "button").props.disabled, false);
+  await find(h.render(), "form").props.onSubmit({ preventDefault() {} });
+  assert.equal(h.states[1], "done");
+  assert.deepEqual(JSON.parse(h.requests[0].body), { user_code: "AB01CD23" });
 });
 
 test("causal control reproduces prior-account approval when the failed-callback retry guard is removed", async () => {

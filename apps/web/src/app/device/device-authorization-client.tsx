@@ -61,7 +61,7 @@ export default function DeviceAuthorizationClient() {
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!isValidDeviceUserCode(code)) {
-      setError("Code must be 8 characters (XXXX-XXXX)");
+      setError("Enter 8 letters or numbers. The code is displayed as XXXX-XXXX.");
       return;
     }
 
