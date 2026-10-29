@@ -307,6 +307,8 @@ code, pre, .mono {
   overflow-x: auto;
   overflow-y: hidden;
   overflow-wrap: anywhere;
+  -webkit-user-select: text;
+  user-select: text;
   white-space: pre-wrap;
 }
 
