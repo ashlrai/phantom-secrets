@@ -155,6 +155,33 @@ test("root metadata supplies a title template without forcing every route canoni
   ]);
 });
 
+test("public pages render a nonempty document title in their metadata", () => {
+  const React = require("react");
+  const ts = require("typescript");
+  const { renderToStaticMarkup } = require("react-dom/server");
+  const { JSDOM } = require("jsdom");
+  const { resolveTitle } = require("next/dist/lib/metadata/resolvers/resolve-title");
+  const { BasicMeta } = require("next/dist/lib/metadata/generate/basic");
+
+  for (const [route, source] of Object.entries(publicPages)) {
+    const compiled = ts.transpileModule(source, {
+      compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX },
+      fileName: "page.tsx",
+    }).outputText;
+    const exports = {};
+    const localRequire = (name) => name.startsWith("@/") ? {} : require(name);
+    new Function("exports", "require", compiled)(exports, localRequire);
+
+    // Use the same title resolution and metadata component as the pinned Next.js version.
+    const metadata = { title: resolveTitle(exports.metadata?.title, null) };
+    const html = renderToStaticMarkup(React.createElement(React.Fragment, null, ...BasicMeta({ metadata })));
+    const document = new JSDOM(html).window.document;
+    const titles = document.head.querySelectorAll("title");
+    assert.equal(titles.length, 1, `${route}: metadata must contain one document title`);
+    assert.ok(titles[0].textContent.trim(), `${route}: document title must not be empty`);
+  }
+});
+
 test("both installable manifests and machine references identify the workbench and dedicated Secrets page", () => {
   const dynamicManifest = read("src/app/manifest.ts");
   assert.match(dynamicManifest, /name: "Phantom"/);
