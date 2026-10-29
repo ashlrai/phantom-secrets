@@ -146,6 +146,31 @@ test("re-selecting the active platform preserves its selection and install comma
   }
 });
 
+test("each platform displays and copies its phantom-install staging prefix", async () => {
+  const user = userEvent.setup();
+  render(React.createElement(QuickStart));
+  try {
+    const expected = [
+      ["macOS", 'phantom_stage="$(mktemp -d "${TMPDIR:-/tmp}/phantom-install.XXXXXX")"'],
+      ["Windows", `$Installer = Join-Path $env:TEMP ('phantom-install-${release.PUBLIC_RELEASE_TAG}-{0}.ps1' -f [Guid]::NewGuid().ToString('N'))`],
+      ["Linux", 'phantom_stage="$(mktemp -d "${TMPDIR:-/tmp}/phantom-install.XXXXXX")"'],
+    ];
+    const selector = screen.getByRole("group", { name: "Choose an operating system" });
+    assert.equal(within(selector).getAllByRole("button").length, expected.length);
+    for (const [platform, stagingLine] of expected) {
+      await user.click(within(selector).getByRole("button", { name: platform }));
+      const card = screen.getByRole("heading", { level: 3, name: platform }).closest("article");
+      const button = within(card).getByRole("button", { name: /^Copy command:/ });
+      assert.ok(button.textContent.includes(stagingLine), `${platform}: displayed staging path`);
+      await user.click(button);
+      const copied = await navigator.clipboard.readText();
+      assert.ok(copied.split("\n").includes(stagingLine), `${platform}: copied staging path`);
+    }
+  } finally {
+    cleanup();
+  }
+});
+
 test("every displayed QuickStart command can be selected and matches the copied text", async () => {
   const style = document.createElement("style");
   style.textContent = fs.readFileSync(path.join(__dirname, "../src/app/globals.css"), "utf8");
