@@ -1280,3 +1280,83 @@ test("community and entry-point Markdown links resolve inside the repository", (
     }
   }
 });
+
+test("public page same-page fragment links resolve in the rendered page", async () => {
+  const ts = require("typescript");
+  const React = require("react");
+  const { renderToStaticMarkup } = require("react-dom/server");
+  const { JSDOM } = require("jsdom");
+  const { pathToFileURL } = require("node:url");
+  const { parseWorkbenchRelease } = await import(
+    pathToFileURL(path.join(webDir, "src/lib/workbench-release-contract.mjs")).href
+  );
+  const release = parseWorkbenchRelease(require("../src/lib/workbench-release.json"));
+
+  function loadPageModule(relativePath, pathname, cache = new Map()) {
+    const filename = path.join(webDir, relativePath);
+    if (cache.has(filename)) return cache.get(filename);
+    if (filename.endsWith(".json")) return JSON.parse(fs.readFileSync(filename, "utf8"));
+    const output = ts.transpileModule(fs.readFileSync(filename, "utf8"), {
+      compilerOptions: {
+        module: ts.ModuleKind.CommonJS,
+        jsx: ts.JsxEmit.ReactJSX,
+        esModuleInterop: true,
+      },
+      fileName: filename,
+    }).outputText;
+    const module = { exports: {} };
+    cache.set(filename, module.exports);
+    const localRequire = (specifier) => {
+      if (specifier === "next/link") {
+        return { __esModule: true, default: ({ children, ...props }) => React.createElement("a", props, children) };
+      }
+      if (specifier === "next/image") {
+        return { __esModule: true, default: ({ priority, ...props }) => React.createElement("img", props) };
+      }
+      if (specifier === "next/navigation") {
+        return { usePathname: () => pathname, notFound: () => { throw new Error("Not found"); } };
+      }
+      if (specifier === "@/lib/workbench-release") return { WORKBENCH_RELEASE: release };
+      if (specifier.startsWith("@/") || specifier.startsWith(".")) {
+        const base = specifier.startsWith("@/")
+          ? path.join(webDir, "src", specifier.slice(2))
+          : path.resolve(path.dirname(filename), specifier);
+        const resolved = [base, `${base}.tsx`, `${base}.ts`, `${base}.js`, `${base}.json`]
+          .find((candidate) => fs.existsSync(candidate) && fs.statSync(candidate).isFile());
+        assert.ok(resolved, `cannot resolve ${specifier} from ${relativePath}`);
+        return loadPageModule(path.relative(webDir, resolved), pathname, cache);
+      }
+      return require(specifier);
+    };
+    new Function("require", "module", "exports", output)(localRequire, module, module.exports);
+    cache.set(filename, module.exports);
+    return module.exports;
+  }
+
+  const pages = [
+    ["/", "src/app/page.tsx"],
+    ...["secrets", "pricing", "enterprise", "government", "security"].map((slug) =>
+      [`/${slug}`, `src/app/${slug}/page.tsx`]),
+  ];
+  const useCases = loadPageModule("src/lib/secret-use-cases.ts", "/").SECRET_USE_CASES;
+  pages.push(...useCases.map(({ slug }) => [
+    `/secrets/use-cases/${slug}`,
+    "src/app/secrets/use-cases/[slug]/page.tsx",
+    slug,
+  ]));
+
+  for (const [pathname, file, slug] of pages) {
+    const Page = loadPageModule(file, pathname).default;
+    const element = slug ? await Page({ params: Promise.resolve({ slug }) }) : React.createElement(Page);
+    const document = new JSDOM(renderToStaticMarkup(element), { url: `https://phm.dev${pathname}` }).window.document;
+    let checked = 0;
+    for (const link of document.querySelectorAll("a[href]")) {
+      const target = new URL(link.getAttribute("href"), document.URL);
+      if (target.origin !== document.location.origin || target.pathname !== pathname || !target.hash) continue;
+      const fragment = decodeURIComponent(target.hash.slice(1));
+      assert.ok(document.getElementById(fragment), `${pathname}: ${link.getAttribute("href")} has no target`);
+      checked++;
+    }
+    assert.ok(checked > 0, `${pathname}: expected at least one same-page fragment link`);
+  }
+});
