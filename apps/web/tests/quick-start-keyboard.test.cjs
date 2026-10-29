@@ -12,7 +12,7 @@ Object.defineProperty(global, "navigator", { value: dom.window.navigator, config
 global.HTMLElement = dom.window.HTMLElement;
 
 const React = require("react");
-const { cleanup, render, screen, waitFor } = require("@testing-library/react");
+const { cleanup, render, screen, waitFor, within } = require("@testing-library/react");
 const userEvent = require("@testing-library/user-event").default;
 
 function compile(file, localRequire) {
@@ -38,6 +38,47 @@ const { QuickStart } = compile("components/landing/QuickStart.tsx", (name) => {
   if (name === "@/lib/public-release") return release;
   if (name === "next/link") return { __esModule: true, default: ({ children, ...props }) => React.createElement("a", props, children) };
   return require(name);
+});
+
+test("platform controls show keyboard focus and select their instructions", async () => {
+  const style = document.createElement("style");
+  style.textContent = fs.readFileSync(path.join(__dirname, "../src/app/globals.css"), "utf8");
+  document.head.appendChild(style);
+  const user = userEvent.setup();
+  render(React.createElement(QuickStart));
+  try {
+    const group = screen.getByRole("group", { name: "Choose an operating system" });
+    const platforms = ["macOS", "Windows", "Linux"];
+    const buttons = within(group).getAllByRole("button");
+    assert.deepEqual(buttons.map((button) => button.textContent), platforms);
+    await user.click(buttons[2]);
+    document.activeElement.blur();
+
+    for (const [index, platform] of platforms.entries()) {
+      await user.tab();
+      const button = buttons[index];
+      assert.equal(document.activeElement, button, `${platform}: reachable by Tab in order`);
+      assert.ok(button.matches(":focus-visible"), `${platform}: keyboard focus is visible`);
+      // JSDOM caches styles across focus changes; reattach the stylesheet to recalculate them.
+      style.remove();
+      document.head.appendChild(style);
+      const focusedStyle = window.getComputedStyle(button);
+      assert.match(focusedStyle.outline, /^2px solid (?:#60a5fa|rgb\(96, 165, 250\))$/i, `${platform}: focus outline`);
+      assert.equal(focusedStyle.outlineOffset, "2px", `${platform}: focus outline offset`);
+
+      assert.equal(button.getAttribute("aria-pressed"), "false", `${platform}: initially unselected`);
+      await user.keyboard(index === 1 ? " " : "{Enter}");
+      assert.equal(document.activeElement, button, `${platform}: activation retains focus`);
+      assert.equal(button.getAttribute("aria-pressed"), "true", `${platform}: selected`);
+      assert.ok(screen.getByRole("heading", { level: 3, name: platform }), `${platform}: instructions displayed`);
+      for (const other of buttons.filter((candidate) => candidate !== button)) {
+        assert.equal(other.getAttribute("aria-pressed"), "false", `${platform}: other platforms unselected`);
+      }
+    }
+  } finally {
+    cleanup();
+    style.remove();
+  }
 });
 
 test("QuickStart copy controls are named, reachable by Tab, and operable by keyboard", async () => {
