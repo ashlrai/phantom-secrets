@@ -1,6 +1,8 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
+const { spawnSync } = require("node:child_process");
 const test = require("node:test");
 const { JSDOM } = require("jsdom");
 const ts = require("typescript");
@@ -165,6 +167,56 @@ test("each platform displays and copies its phantom-install staging prefix", asy
       await user.click(button);
       const copied = await navigator.clipboard.readText();
       assert.ok(copied.split("\n").includes(stagingLine), `${platform}: copied staging path`);
+    }
+  } finally {
+    cleanup();
+  }
+});
+
+test("rendered and copied Unix install commands handle a TMPDIR with spaces", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "phantom-rendered-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const temp = path.join(root, "temporary files");
+  const bin = path.join(root, "bin");
+  const home = path.join(root, "home");
+  const installedBin = path.join(home, ".phantom-secrets", "bin");
+  const record = path.join(root, "stage-record");
+  fs.mkdirSync(temp);
+  fs.mkdirSync(bin);
+  fs.mkdirSync(installedBin, { recursive: true });
+  const executable = (file, body) => fs.writeFileSync(file, `#!/bin/bash\n${body}\n`, { mode: 0o755 });
+  for (const name of ["phantom", "phantom-mcp"]) executable(path.join(installedBin, name), "exit 0");
+  executable(path.join(bin, "curl"), `
+    while [[ $# -gt 0 && "$1" != "--output" ]]; do shift; done
+    [[ $# -ge 2 ]] || exit 2
+    printf '%s' "$2" > "$STAGE_RECORD"
+    printf '#!/bin/bash\\nexit 0\\n' > "$2"
+  `);
+  for (const name of ["shasum", "sha256sum"]) executable(path.join(bin, name), "cat >/dev/null");
+
+  const user = userEvent.setup();
+  render(React.createElement(QuickStart));
+  try {
+    for (const platform of ["macOS", "Linux"]) {
+      await user.click(screen.getByRole("button", { name: platform }));
+      const card = screen.getByRole("heading", { level: 3, name: platform }).closest("article");
+      const button = within(card).getByRole("button", { name: /^Copy command:/ });
+      const commandNode = Array.from(button.firstElementChild.childNodes)
+        .find((node) => node.nodeType === dom.window.Node.TEXT_NODE);
+      assert.ok(commandNode, `${platform}: command is rendered as text`);
+      const displayed = commandNode.textContent;
+      await user.click(button);
+      const copied = await navigator.clipboard.readText();
+      assert.equal(copied, displayed, `${platform}: copied command matches rendered text`);
+      const result = spawnSync("/bin/bash", ["-c", copied], {
+        env: { HOME: home, PATH: `${bin}:/usr/bin:/bin`, TMPDIR: temp, STAGE_RECORD: record },
+        encoding: "utf8",
+      });
+      assert.equal(result.status, 0, `${platform}: command failed: ${result.stderr}`);
+      const installer = fs.readFileSync(record, "utf8");
+      assert.equal(path.dirname(path.dirname(installer)), temp, `${platform}: staging directory is under TMPDIR`);
+      assert.equal(path.basename(installer), "install.sh");
+      assert.deepEqual(fs.readdirSync(temp), [], `${platform}: staging directory was cleaned up`);
     }
   } finally {
     cleanup();
