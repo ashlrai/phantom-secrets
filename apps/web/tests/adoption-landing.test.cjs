@@ -7,6 +7,70 @@ const webRoot = path.resolve(__dirname, "..");
 const read = (relativePath) =>
   fs.readFileSync(path.join(webRoot, relativePath), "utf8");
 
+test("landing calls to action have accessible names and destinations", async () => {
+  const ts = require("typescript");
+  const React = require("react");
+  const { renderToStaticMarkup } = require("react-dom/server");
+  const { JSDOM } = require("jsdom");
+  const { computeAccessibleName, isInaccessible } = require("dom-accessibility-api");
+  const { pathToFileURL } = require("node:url");
+  const { parseWorkbenchRelease } = await import(pathToFileURL(path.join(webRoot, "src/lib/workbench-release-contract.mjs")).href);
+  const release = parseWorkbenchRelease(require("../src/lib/workbench-release.json"));
+
+  function renderComponent(file, exportName, workbenchRelease = null) {
+    const output = ts.transpileModule(read(`src/components/landing/${file}.tsx`), {
+      compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, esModuleInterop: true },
+    }).outputText;
+    const exports = {};
+    const localRequire = name => {
+      if (name === "next/link") return { __esModule: true, default: ({ children, ...props }) => React.createElement("a", props, children) };
+      if (name === "next/image") return { __esModule: true, default: () => null };
+      if (name === "@/lib/workbench-release") return { WORKBENCH_RELEASE: workbenchRelease };
+      if (name === "./BrandLogos") return { EXACT_ROUTE_ENTRIES: [] };
+      if (name === "./CarouselPauseButton") return { CarouselPauseButton: () => null };
+      if (name === "./SocialProof") return { SocialProof: () => null };
+      if (name === "./Icons") return { Github: props => React.createElement("svg", props) };
+      return require(name);
+    };
+    new Function("exports", "require", output)(exports, localRequire);
+    return new JSDOM(renderToStaticMarkup(React.createElement(exports[exportName]))).window.document;
+  }
+
+  function assertActions(document, selector, expected) {
+    const group = document.querySelector(selector);
+    assert.ok(group, `missing action group: ${selector}`);
+    const links = [...group.querySelectorAll("a")];
+    assert.equal(links.length, expected.length, selector);
+    for (const [index, [name, destination]] of expected.entries()) {
+      const link = links[index];
+      assert.equal(isInaccessible(link), false, `${selector}: action ${index + 1} must be accessible`);
+      assert.equal(computeAccessibleName(link).trim(), name, `${selector}: action ${index + 1} name`);
+      assert.equal(link.getAttribute("href")?.trim(), destination, `${selector}: ${name} destination`);
+    }
+  }
+
+  const workbenchActions = [
+    ["Choose an agent to connect", "#connect-agent"],
+    ["Install and set up Phantom", "/docs/workbench-setup"],
+    ["Read the documentation", "/docs/workbench"],
+    ["Protect credentials with Phantom Secrets", "/secrets"],
+  ];
+  // Exercise both the unpublished state and the optional download action.
+  for (const current of [null, release, { macDownloadUrl: "https://example.com/phantom.dmg" }]) {
+    const expected = [...workbenchActions];
+    if (current?.macDownloadUrl) expected.push(["Download for Mac", current.macDownloadUrl]);
+    assertActions(renderComponent("WorkbenchHero", "WorkbenchHero", current), ".phantom-workbench__actions", expected);
+  }
+  assertActions(renderComponent("Hero", "Hero"), "#phantom-secrets .mt-8", [
+    ["Install Phantom Secrets", "#install"],
+    ["View Phantom Secrets source on GitHub", "https://github.com/ashlrai/phantom-secrets"],
+  ]);
+  assertActions(renderComponent("CTA", "CTA"), ".closing-section__actions", [
+    ["Follow the install path", "#install"],
+    ["View on GitHub", "https://github.com/ashlrai/phantom-secrets"],
+  ]);
+});
+
 test("workbench introduction gives a local first step without implying fleet readiness", () => {
   const hero = read("src/components/landing/WorkbenchHero.tsx");
 
