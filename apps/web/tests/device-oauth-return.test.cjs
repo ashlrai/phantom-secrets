@@ -244,6 +244,27 @@ test("ordinary existing-session submission still approves without starting OAuth
   assert.equal(h.states[1], "done");
 });
 
+test("empty device code submission shows validation without authorizing", async () => {
+  const h = harness({ url: "https://phm.dev/device", storedCode: null, previousSession: { access_token: "synthetic-existing-account" } });
+  let tree = h.render();
+  assert.equal(find(tree, "input").props.value, "");
+  assert.equal(find(tree, "button").props.disabled, true);
+
+  let prevented = false;
+  await find(tree, "form").props.onSubmit({ preventDefault() { prevented = true; } });
+  tree = h.render();
+  assert.equal(prevented, true);
+  assert.equal(h.states[1], "input");
+  assert.equal(find(tree, "input").props.value, "");
+  assert.equal(find(tree, "input").props["aria-invalid"], true);
+  assert.equal(findById(tree, "device-error").props.role, "alert");
+  assert.equal(findById(tree, "device-error").props.children, "Enter 8 letters or numbers. The code is displayed as XXXX-XXXX.");
+  assert.ok(find(tree, "form"));
+  assert.equal(find(tree, "button").props.disabled, true);
+  assert.deepEqual(h.events, []);
+  assert.equal(h.requests.length, 0);
+});
+
 test("invalid device code explains the accepted characters and displayed format", async () => {
   const h = harness({ url: "https://phm.dev/device", storedCode: null });
   find(h.render(), "input").props.onChange({ target: { value: "ab12c" } });
