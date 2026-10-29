@@ -222,11 +222,40 @@ test("the default network policy is closed to phm.dev and two public GitHub reco
     "https://example.com/",
     "http://phm.dev/",
     "https://phm.dev/docs?code=private",
+    "https://phm.dev/docs?",
+    "https://phm.dev/docs#",
     "https://api.github.com/user",
     "https://api.github.com/repos/another/project",
   ]) {
     assert.throws(() => assertDefaultNetworkUrl(forbidden), /not allowlisted/);
   }
+});
+
+test("an empty query is rejected before a network request", async () => {
+  let requests = 0;
+  await assert.rejects(
+    requestWithinBoundary("https://phm.dev/docs?", {
+      fetchImpl: async () => { requests += 1; },
+      networkPolicy: assertDefaultNetworkUrl,
+    }),
+    /network destination is not allowlisted: https:\/\/phm\.dev\/docs/,
+  );
+  assert.equal(requests, 0);
+});
+
+test("an empty query in a redirect is rejected before following it", async () => {
+  let requests = 0;
+  await assert.rejects(
+    requestWithinBoundary("https://phm.dev/", {
+      fetchImpl: async () => {
+        requests += 1;
+        return new Response(null, { status: 302, headers: { location: "/docs?" } });
+      },
+      networkPolicy: assertDefaultNetworkUrl,
+    }),
+    /network destination is not allowlisted: https:\/\/phm\.dev\/docs/,
+  );
+  assert.equal(requests, 1);
 });
 
 test("one monotonic request deadline covers retries and redirects", async (t) => {
@@ -408,6 +437,37 @@ test("canonical, structured-data, and off-origin redirect failures stay visible"
         response.statusCode = 302;
         response.setHeader("location", "https://example.com/attacker-secret");
         response.end();
+      },
+    },
+  );
+});
+
+test("sitemap URLs with an empty query are rejected before fetching the route", async () => {
+  await withFixtureServer(
+    async ({ options, requests }) => {
+      await assert.rejects(observeProduction(options), /sitemap URL contains query or hash data: \/docs/);
+      assert.ok(!requests.includes("/docs"));
+    },
+    {
+      "/sitemap.xml": (response, origin) => {
+        response.end(`<urlset><url><loc>${origin}/docs?</loc></url></urlset>`);
+      },
+    },
+  );
+});
+
+test("canonical URLs with an empty query are reported as mismatches", async () => {
+  await withFixtureServer(
+    async ({ options }) => {
+      const report = await observeProduction(options);
+      assert.ok(report.findings.some(
+        (finding) => finding.code === "canonical_mismatch" && finding.route === "/docs",
+      ));
+    },
+    {
+      "/docs": (response, origin) => {
+        response.setHeader("content-type", "text/html");
+        response.end(html(origin, "/docs", { canonical: `${origin}/docs?` }));
       },
     },
   );
