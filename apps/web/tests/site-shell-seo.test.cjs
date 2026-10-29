@@ -43,6 +43,70 @@ test("primary navigation works from the home page and nested routes", () => {
   assert.match(nav, /aria-label="Primary navigation"/);
 });
 
+test("rendered primary navigation links are named and reach local pages and fragments", () => {
+  const React = require("react");
+  const ts = require("typescript");
+  const { renderToStaticMarkup } = require("react-dom/server");
+  const { JSDOM } = require("jsdom");
+  const { queryAllByRole } = require("@testing-library/dom");
+  const catalog = JSON.parse(read("docs-catalog.json"));
+  const compiled = ts.transpileModule(nav, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, esModuleInterop: true },
+    fileName: "Nav.tsx",
+  }).outputText;
+
+  for (const pathname of ["/", "/secrets", "/pricing", "/docs", "/docs/workbench-setup", "/docs/getting-started"]) {
+    let stateIndex = 0;
+    const hooks = { ...React, useState: (initial) => [stateIndex++ === 1 ? true : initial, () => {}] };
+    const localRequire = (name) => {
+      if (name === "react") return hooks;
+      if (name === "next/navigation") return { usePathname: () => pathname };
+      if (name === "next/link") return { __esModule: true, default: ({ children, ...props }) => React.createElement("a", props, children) };
+      if (name === "next/image") return { __esModule: true, default: ({ priority, ...props }) => React.createElement("img", props) };
+      if (name === "@/lib/posthog") return { capturePostHog: async () => {} };
+      if (name === "@/lib/legacy-secrets-fragment") return { legacySecretsDestination: () => null };
+      if (name === "./Icons") return { Github: () => React.createElement("svg", { "aria-hidden": true }) };
+      return require(name);
+    };
+    const exports = {};
+    new Function("exports", "require", compiled)(exports, localRequire);
+    const document = new JSDOM(renderToStaticMarkup(React.createElement(exports.Nav))).window.document;
+    const primary = document.querySelector('nav[aria-label="Primary navigation"]');
+    assert.ok(primary, pathname);
+    assert.equal(primary.querySelector("#mobile-navigation").hidden, false, pathname);
+    const links = [...primary.querySelectorAll("a")];
+    const namedLinks = queryAllByRole(primary, "link", { name: /\S/ });
+    assert.ok(links.length >= 18, `${pathname}: desktop and mobile links are present`);
+    for (const link of links) {
+      const href = link.getAttribute("href");
+      assert.ok(namedLinks.includes(link), `${pathname}: link ${href} needs an accessible name`);
+      assert.ok(href, `${pathname}: link needs a destination`);
+      if (href.startsWith("https://github.com/")) continue;
+      assert.ok((href.startsWith("/") && !href.startsWith("//")) || href.startsWith("#"), `${pathname}: ${href} must be local`);
+      assert.notEqual(href, "#", `${pathname}: fragment must have a target`);
+      const target = new URL(href, `https://phm.dev${pathname}`);
+      assert.equal(target.origin, "https://phm.dev", `${pathname}: ${href}`);
+      let pageFile = `src/app${target.pathname === "/" ? "" : target.pathname}/page.tsx`;
+      if (target.pathname.startsWith("/docs/")) {
+        const slug = target.pathname.slice("/docs/".length);
+        assert.ok(catalog.some((doc) => doc.slug === slug), `${href}: documentation slug exists`);
+        pageFile = "src/app/docs/[slug]/page.tsx";
+      }
+      assert.ok(fs.existsSync(path.join(webDir, pageFile)), `${href}: page exists`);
+      if (target.hash) {
+        const page = read(pageFile);
+        const components = [...page.matchAll(/@\/components\/landing\/([^\"]+)/g)]
+          .map((match) => read(`src/components/landing/${match[1]}.tsx`)).join("\n");
+        const id = decodeURIComponent(target.hash.slice(1));
+        assert.ok((page + components).includes(`id="${id}"`), `${href}: fragment target exists`);
+      }
+    }
+    const hrefs = links.map((link) => link.getAttribute("href"));
+    assert.equal(hrefs.filter((href) => href === (pathname === "/secrets" ? "#how" : "/secrets#how")).length, 2, pathname);
+    assert.ok(hrefs.includes(pathname === "/" || pathname === "/docs" || pathname.startsWith("/docs/workbench") ? "/docs/workbench-setup" : pathname === "/secrets" ? "#install" : "/secrets#install"), pathname);
+  }
+});
+
 test("mobile navigation exposes state and keyboard-close semantics", () => {
   assert.match(nav, /type="button"/);
   assert.match(nav, /aria-expanded=\{menuOpen\}/);
