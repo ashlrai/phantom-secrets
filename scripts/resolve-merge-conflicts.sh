@@ -55,14 +55,28 @@ resolve_reapply() {
         echo "  !  $path: no upstream stage, left for manual resolution" >&2
         return 1
     fi
-    local rejects=0
-    if git diff ":1:$path" ":$lane:$path" > "$tmp/lane.patch" 2>/dev/null && [[ -s "$tmp/lane.patch" ]]; then
-        git apply --reject --whitespace=nowarn "$tmp/lane.patch" 2> "$tmp/apply.err" || true
+    local rejects=0 apply_rc=0
+    if ! git diff ":1:$path" ":$lane:$path" > "$tmp/lane.patch" 2> "$tmp/diff.err"; then
+        echo "  !  $path: could not extract the lane patch:" >&2
+        cat "$tmp/diff.err" >&2
+        return 1
+    fi
+    if [[ -s "$tmp/lane.patch" ]]; then
+        rm -f "$path.rej"
+        git apply --reject --whitespace=nowarn "$tmp/lane.patch" 2> "$tmp/apply.err" || apply_rc=$?
         if [[ -f "$path.rej" ]]; then
-            rejects=$(grep -c '^@@' "$path.rej" || true)
+            # grep -c exits 1 on a zero count; exit 2 is a real read error.
+            rejects=$(grep -c '^@@' "$path.rej" || [ $? -eq 1 ]) || {
+                echo "  !  $path: could not count rejected hunks" >&2
+                return 1
+            }
             echo "  ~  $path: upstream version kept; $rejects lane hunk(s) did not apply:" >&2
             cat "$path.rej" >&2
             rm -f "$path.rej"
+        elif (( apply_rc )); then
+            echo "  !  $path: lane patch failed without leaving rejects:" >&2
+            cat "$tmp/apply.err" >&2
+            return 1
         fi
     fi
     git add "$path"

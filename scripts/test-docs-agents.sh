@@ -123,8 +123,15 @@ assert_count=0
 
 # assert_output '<literal command line in the doc>' '<extended regex its log must match>'
 assert_output() {
-    local needle=$1 pattern=$2 block log
-    block=$(grep -lF -- "$needle" "$BLOCKS"/block-*.sh | head -n 1 || true)
+    local needle=$1 pattern=$2 block log matches
+    # grep exits 1 on no match (fine); exit 2 is a real error. No pipe to
+    # head, so grep can never take SIGPIPE under `set -o pipefail`.
+    matches=$(grep -lF -- "$needle" "$BLOCKS"/block-*.sh || [ $? -eq 1 ]) || {
+        say "FAIL assert: grep errored locating the doc block for: $needle" >&2
+        assert_count=$((assert_count + 1))
+        return 1
+    }
+    block=${matches%%$'\n'*}
     if [[ -z $block ]]; then
         say "FAIL assert: no doc block contains: $needle" >&2
         assert_count=$((assert_count + 1))

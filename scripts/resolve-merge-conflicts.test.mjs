@@ -159,7 +159,10 @@ test("rebase resolves CHANGELOG union, doc reapply, and Cargo.lock regen", { ski
     assert.equal(again.status, 0, again.stderr);
 });
 
-test("merge direction: upstream stage 3, lane stage 2", () => {
+// Leaves a repo mid-merge with README.md unmerged: the lane's alpha hunk
+// collides with upstream's (it is rejected into README.md.rej on reapply)
+// while the lane's bravo hunk still applies cleanly.
+function readmeConflictRepo() {
     const dir = initRepo();
     write(dir, "README.md", longDoc("README"));
     git(dir, "add", "-A");
@@ -178,6 +181,22 @@ test("merge direction: upstream stage 3, lane stage 2", () => {
     // `git merge main` while on the lane: theirs (stage 3) is upstream.
     assert.notEqual(tryGit(dir, "merge", "main").status, 0);
     assert.deepEqual(unmerged(dir), ["README.md"]);
+    return dir;
+}
+
+// Runs the helper with a stub tool prepended to PATH.
+function runWithStub(dir, name, body) {
+    const stub = mkdtempSync(join(tmpdir(), "mr-stub-"));
+    writeFileSync(join(stub, name), `#!/bin/sh\n${body}`, { mode: 0o755 });
+    return spawnSync("bash", [helper], {
+        cwd: dir,
+        encoding: "utf8",
+        env: { ...process.env, PATH: `${stub}:${process.env.PATH}` },
+    });
+}
+
+test("merge direction: upstream stage 3, lane stage 2", () => {
+    const dir = readmeConflictRepo();
 
     const run = spawnSync("bash", [helper], { cwd: dir, encoding: "utf8" });
     assert.equal(run.status, 0, `helper failed: ${run.stderr}`);
@@ -208,4 +227,32 @@ test("paths outside the managed set stay conflicted and exit 1", () => {
     assert.equal(run.status, 1);
     assert.match(run.stderr, /notes\.txt/);
     assert.deepEqual(unmerged(dir), ["notes.txt"]);
+});
+
+// A grep that dies with exit 2 while counting rejects is a real error, not a
+// zero count: `|| true` used to mask it and report a clean resolve.
+test("a grep error counting rejects stays conflicted instead of resolving", () => {
+    const dir = readmeConflictRepo();
+
+    const run = runWithStub(dir, "grep", "exit 2");
+    assert.equal(run.status, 1, `expected failure: ${run.stdout}${run.stderr}`);
+    assert.match(run.stderr, /could not count rejected hunks/);
+    assert.match(run.stderr, /README\.md/);
+    assert.doesNotMatch(run.stdout, /all conflicts resolved/);
+    assert.deepEqual(unmerged(dir), ["README.md"]);
+});
+
+// A `git apply` that fails without writing a reject file must surface too;
+// `|| true` used to stage the bare upstream blob and call it resolved.
+test("a git apply failure without rejects stays conflicted", () => {
+    const dir = readmeConflictRepo();
+    const realGit = execFileSync("which", ["git"], { encoding: "utf8" }).trim();
+
+    const run = runWithStub(dir, "git",
+        `[ "$1" = apply ] && exit 2\nexec "${realGit}" "$@"`);
+    assert.equal(run.status, 1, `expected failure: ${run.stdout}${run.stderr}`);
+    assert.match(run.stderr, /failed without leaving rejects/);
+    assert.match(run.stderr, /README\.md/);
+    assert.doesNotMatch(run.stdout, /all conflicts resolved/);
+    assert.deepEqual(unmerged(dir), ["README.md"]);
 });
