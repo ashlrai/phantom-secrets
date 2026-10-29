@@ -190,6 +190,30 @@ test("public shell provides a visible-on-focus skip link with real page-main tar
   assert.match(footer, /src="\/favicon\.svg" alt=""/);
 });
 
+test("public document declares a nonempty language", () => {
+  const React = require("react");
+  const ts = require("typescript");
+  const { renderToStaticMarkup } = require("react-dom/server");
+  const { JSDOM } = require("jsdom");
+  const compiled = ts.transpileModule(layout, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX },
+    fileName: "layout.tsx",
+  }).outputText;
+  const localRequire = (name) => {
+    if (name.endsWith(".css")) return {};
+    if (name === "./providers") return { PostHogProvider: ({ children }) => children };
+    return require(name);
+  };
+  const exports = {};
+  new Function("exports", "require", compiled)(exports, localRequire);
+  const dom = new JSDOM(renderToStaticMarkup(React.createElement(exports.default, null, "Page content")));
+  try {
+    assert.match(dom.window.document.documentElement.getAttribute("lang") ?? "", /\S/, "document language must not be empty");
+  } finally {
+    dom.window.close();
+  }
+});
+
 test("root metadata supplies a title template without forcing every route canonical to home", () => {
   assert.match(layout, /metadataBase: new URL\(SITE_URL\)/);
   assert.match(layout, /template: "%s — Phantom"/);
