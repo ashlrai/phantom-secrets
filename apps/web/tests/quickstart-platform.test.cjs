@@ -82,7 +82,9 @@ test("Unix install commands clean their staging directory on success and failure
     while [[ $# -gt 0 && "$1" != "--output" ]]; do shift; done
     [[ $# -ge 2 ]] || exit 2
     installer="$2"
+    printf '%s' "$(dirname "$installer")" > "$STAGE_RECORD"
     printf '#!/bin/bash\\n[[ "$FAIL_POINT" != installer ]]\\n' > "$installer"
+    if [[ "$FAIL_POINT" == nonempty ]]; then touch "$(dirname "$installer")/extra"; fi
     [[ "$FAIL_POINT" != download ]]
   `);
   for (const name of ["shasum", "sha256sum"]) {
@@ -103,13 +105,31 @@ test("Unix install commands clean their staging directory on success and failure
     selected = platform;
     const command = findElements(QuickStart(), (element) => typeof element.props.text === "string")
       .find((element) => element.props.text.includes("mktemp -d")).props.text;
-    for (const failure of ["", "download", "checksum", "installer"]) {
+    for (const failure of ["", "download", "checksum", "installer", "nonempty", "default-temp"]) {
+      const record = path.join(root, "stage-record");
       const result = spawnSync("/bin/bash", ["-c", command], {
-        env: { HOME: home, TMPDIR: temp, PATH: `${bin}:/usr/bin:/bin`, FAIL_POINT: failure },
+        env: { HOME: home, TMPDIR: failure === "default-temp" ? "" : temp, PATH: `${bin}:/usr/bin:/bin`, FAIL_POINT: failure, STAGE_RECORD: record },
         encoding: "utf8",
       });
-      assert.equal(result.status, failure ? 1 : 0, `${platform}: ${failure || "success"}: ${result.stderr}`);
+      assert.equal(result.status, ["download", "checksum", "installer"].includes(failure) ? 1 : 0, `${platform}: ${failure || "success"}: ${result.stderr}`);
+      const stage = fs.readFileSync(record, "utf8");
+      assert.equal(path.dirname(stage), failure === "default-temp" ? "/tmp" : temp);
+      if (failure === "nonempty") {
+        assert.deepEqual(fs.readdirSync(stage), ["extra"], "cleanup must leave a nonempty directory without the installer");
+        fs.rmSync(stage, { recursive: true });
+      } else {
+        assert.equal(fs.existsSync(stage), false, `${platform}: ${failure || "success"} left its staging directory`);
+      }
       assert.deepEqual(fs.readdirSync(temp), [], `${platform}: ${failure || "success"} left staging files`);
     }
   }
+});
+
+test("public installation guide describes the landing command's staging cleanup", () => {
+  const guide = fs.readFileSync(path.join(__dirname, "../../../docs/getting-started.md"), "utf8");
+  assert.match(guide, /landing page\]\(https:\/\/phm\.dev\/#install\)/);
+  assert.match(guide, /under `TMPDIR`, or\s+`\/tmp` when `TMPDIR` is unset or empty/);
+  assert.match(guide, /Once the exit trap is installed, it attempts to\s+remove the script and then the directory on exit, including after a command\s+fails/);
+  assert.match(guide, /directory is removed only if it is empty; cleanup can fail and is\s+not guaranteed/);
+  assert.match(guide, /not the\s+manual archive steps below/);
 });

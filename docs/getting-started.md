@@ -61,6 +61,15 @@ plus the aggregate [`SHA256SUMS`](https://github.com/ashlrai/phantom-secrets/rel
 file. All six release targets passed native acceptance before publication in
 [workflow 34153902556](https://github.com/ashlrai/phantom-secrets/actions/runs/34153902556).
 
+The macOS and Linux installer commands on the [landing page](https://phm.dev/#install)
+create a temporary `phantom-install.*` staging directory under `TMPDIR`, or
+`/tmp` when `TMPDIR` is unset or empty. It holds the downloaded installer script,
+not the installed binaries. Once the exit trap is installed, it attempts to
+remove the script and then the directory on exit, including after a command
+fails. The directory is removed only if it is empty; cleanup can fail and is
+not guaranteed. These details apply to the landing-page commands, not the
+manual archive steps below.
+
 <!-- fresh:begin docs-release-asset-table -->
 | Platform | `v0.7.9` archive | Published checksum |
 |---|---|---|
