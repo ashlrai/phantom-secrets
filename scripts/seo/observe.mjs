@@ -428,8 +428,13 @@ export function validateExperiments(value, allowedPaths, now = new Date()) {
   };
 }
 
+function hasQueryOrHash(url) {
+  // URL.search and URL.hash are empty even when their delimiters are present.
+  return url.href.includes("?") || url.href.includes("#");
+}
+
 function defaultNetworkPolicy(url) {
-  if (url.username || url.password || url.search || url.hash) return false;
+  if (url.username || url.password || hasQueryOrHash(url)) return false;
   if (url.origin === DEFAULT_SITE_ORIGIN) return true;
   if (url.origin !== "https://api.github.com") return false;
   return [
@@ -666,7 +671,7 @@ function parseSitemap(body, siteOrigin) {
   const seen = new Set();
   for (const url of urls) {
     invariant(url.origin === siteOrigin, `sitemap contains an off-host URL: ${url.origin}`);
-    invariant(!url.search && !url.hash, `sitemap URL contains query or hash data: ${url.pathname}`);
+    invariant(!hasQueryOrHash(url), `sitemap URL contains query or hash data: ${url.pathname}`);
     invariant(url.pathname.length <= 512, "sitemap path exceeds the observation limit");
     invariant(!seen.has(url.pathname), `sitemap contains duplicate path ${url.pathname}`);
     seen.add(url.pathname);
@@ -682,7 +687,7 @@ function addFinding(findings, severity, code, message, route = null) {
 function canonicalMatches(candidate, expected, siteOrigin) {
   try {
     const url = new URL(candidate, siteOrigin);
-    return url.origin === siteOrigin && !url.search && !url.hash && url.pathname === expected;
+    return url.origin === siteOrigin && !hasQueryOrHash(url) && url.pathname === expected;
   } catch {
     return false;
   }
