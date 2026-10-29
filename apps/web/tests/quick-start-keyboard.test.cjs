@@ -148,7 +148,7 @@ test("re-selecting the active platform preserves its selection and install comma
   }
 });
 
-test("each platform displays and copies its phantom-install staging prefix", async () => {
+test("each platform renders and copies its exact installer staging command", async () => {
   const user = userEvent.setup();
   render(React.createElement(QuickStart));
   try {
@@ -162,11 +162,19 @@ test("each platform displays and copies its phantom-install staging prefix", asy
     for (const [platform, stagingLine] of expected) {
       await user.click(within(selector).getByRole("button", { name: platform }));
       const card = screen.getByRole("heading", { level: 3, name: platform }).closest("article");
+      assert.ok(card, `${platform}: install card is displayed`);
       const button = within(card).getByRole("button", { name: /^Copy command:/ });
-      assert.ok(button.textContent.includes(stagingLine), `${platform}: displayed staging path`);
+      const commandNode = Array.from(button.firstElementChild.childNodes)
+        .find((node) => node.nodeType === dom.window.Node.TEXT_NODE);
+      assert.ok(commandNode, `${platform}: install command is rendered as text`);
+      const displayed = commandNode.textContent;
+      const stagingLines = displayed.split("\n").filter((line) =>
+        platform === "Windows" ? line.startsWith("$Installer =") : line.startsWith("phantom_stage="),
+      );
+      assert.deepEqual(stagingLines, [stagingLine], `${platform}: exact displayed staging line`);
       await user.click(button);
       const copied = await navigator.clipboard.readText();
-      assert.ok(copied.split("\n").includes(stagingLine), `${platform}: copied staging path`);
+      assert.equal(copied, displayed, `${platform}: copied command matches rendered text`);
     }
   } finally {
     cleanup();
