@@ -12,6 +12,7 @@ while IFS= read -r name; do
 done < "$tmp"
 ((${#packages[@]})) || packages=(--workspace)
 PYTHONDONTWRITEBYTECODE=1 python3 scripts/affected-crates.test.py
+node scripts/check-repo-tooling.mjs
 cargo fmt --all -- --check
 cargo check --all-targets --locked "${packages[@]}"
 cargo clippy --all-targets --locked "${packages[@]}" -- -D warnings
