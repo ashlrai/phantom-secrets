@@ -14,7 +14,7 @@ const helper = { exports: {} };
 new Function("require", "exports", "module", compiled)(require, helper.exports, helper);
 const { readBuildSourceRevision } = helper.exports;
 
-function buildMetadata(directory) {
+function buildMetadata(directory, revisionHelper = helper.exports) {
   const configPath = path.resolve(__dirname, "../next.config.ts");
   const config = ts.transpileModule(fs.readFileSync(configPath, "utf8"), {
     compilerOptions: {
@@ -23,7 +23,7 @@ function buildMetadata(directory) {
   }).outputText;
   const module = { exports: {} };
   function localRequire(name) {
-    if (name === "./src/lib/build-source-revision") return helper.exports;
+    if (name === "./src/lib/build-source-revision") return revisionHelper;
     if (name === "./src/lib/public-auth-configuration") {
       return { publicAuthConfigurationFingerprint: () => null };
     }
@@ -109,6 +109,29 @@ test("build metadata falls back when source revision is unavailable", () => {
   }
   withRepository(({ directory, revision }) => {
     assert.equal(buildMetadata(directory), revision, "clean committed source");
+  });
+});
+
+test("empty revision output produces unidentified build metadata", () => {
+  withRepository(({ directory }) => {
+    for (const output of ["", " \n"]) {
+      let revisionReads = 0;
+      const module = { exports: {} };
+      function localRequire(name) {
+        if (name !== "node:child_process") return require(name);
+        return { execFileSync(command, args, options) {
+          if (args.includes("HEAD^{commit}")) {
+            revisionReads++;
+            return output;
+          }
+          return execFileSync(command, args, options);
+        } };
+      }
+      new Function("require", "exports", "module", compiled)(localRequire, module.exports, module);
+      assert.equal(module.exports.readBuildSourceRevision(directory), null);
+      assert.equal(buildMetadata(directory, module.exports), "unidentified");
+      assert.equal(revisionReads, 2);
+    }
   });
 });
 
