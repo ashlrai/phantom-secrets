@@ -417,6 +417,42 @@ test("submit errors enable retry without reflecting private SDK details", async 
   }
 });
 
+test("rendered device code input exposes the visible format hint", () => {
+  const React = require("react");
+  const { renderToStaticMarkup } = require("react-dom/server");
+  const { JSDOM } = require("jsdom");
+  const { getByRole, getByText } = require("@testing-library/dom");
+  const { isInaccessible } = require("dom-accessibility-api");
+  const compiled = ts.transpileModule(source, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, esModuleInterop: true },
+    fileName: filename,
+  }).outputText;
+  const dependencies = {
+    "next/image": { __esModule: true, default: () => null },
+    "next/link": { __esModule: true, default: ({ children, ...props }) => React.createElement("a", props, children) },
+    "@/lib/device-code": deviceCodeModule.exports,
+    "@/lib/posthog": { capturePostHog: async () => {} },
+  };
+  const module = { exports: {} };
+  new Function("require", "module", "exports", compiled)(
+    (name) => dependencies[name] ?? require(name), module, module.exports,
+  );
+  const dom = new JSDOM(renderToStaticMarkup(React.createElement(module.exports.default)));
+  try {
+    const body = dom.window.document.body;
+    const hint = getByText(body, "Enter 8 letters or numbers in the format XXXX-XXXX.");
+    assert.equal(isInaccessible(hint), false);
+    const input = getByRole(body, "textbox", {
+      name: "Device code",
+      description: /Enter 8 letters or numbers in the format XXXX-XXXX\./,
+    });
+    assert.equal(input.getAttribute("placeholder"), "XXXX-XXXX");
+    assert.ok(input.getAttribute("aria-describedby").split(/\s+/).includes(hint.id));
+  } finally {
+    dom.window.close();
+  }
+});
+
 test("device code format hint remains associated with the input when validation fails", async () => {
   const h = harness();
   let tree = h.render();
