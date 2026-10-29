@@ -123,11 +123,12 @@ test("rendered primary navigation links are named and reach local pages and frag
   }
 });
 
-test("public footer navigation links have nonempty destinations", () => {
+test("public footer navigation links have accessible names and nonempty destinations", () => {
   const React = require("react");
   const ts = require("typescript");
   const { renderToStaticMarkup } = require("react-dom/server");
   const { JSDOM } = require("jsdom");
+  const { queryAllByRole } = require("@testing-library/dom");
   const compiled = ts.transpileModule(footer, {
     compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, esModuleInterop: true },
     fileName: "SiteFooter.tsx",
@@ -149,7 +150,9 @@ test("public footer navigation links have nonempty destinations", () => {
       assert.ok(group, `${label} exists`);
       assert.ok(group.querySelectorAll("a").length > 0, `${label} has links`);
     }
+    const namedLinks = queryAllByRole(footerElement, "link", { name: /\S/ });
     for (const link of footerElement.querySelectorAll("a")) {
+      assert.ok(namedLinks.includes(link), `${link.getAttribute("href")}: link needs an accessible name`);
       assert.match(link.getAttribute("href") ?? "", /\S/, `${link.textContent.trim()}: link needs a nonempty destination`);
     }
   } finally {
