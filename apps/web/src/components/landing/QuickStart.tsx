@@ -40,6 +40,8 @@ const PLATFORMS = [
     vault: "Keychain when available",
     detail: "Uses Keychain when available. The verified source installer auto-detects Apple Silicon or Intel.",
     source: `${RAW_SOURCE_BASE}/install.sh`,
+    // Stage the downloaded script for verification and execution; the EXIT trap
+    // attempts to remove the script and its temporary directory, not the installation.
     command: [
       `(`,
       `set -euo pipefail`,
@@ -101,6 +103,8 @@ const PLATFORMS = [
     vault: "Keyutils initially",
     detail: "Published GNU targets enforce a glibc 2.35 symbol ceiling; musl and Alpine are not published.",
     source: `${RAW_SOURCE_BASE}/install.sh`,
+    // Stage the downloaded script for verification and execution; the EXIT trap
+    // attempts to remove the script and its temporary directory, not the installation.
     command: [
       `(`,
       `set -euo pipefail`,
