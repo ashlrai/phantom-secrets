@@ -40,6 +40,27 @@ const { QuickStart } = compile("components/landing/QuickStart.tsx", (name) => {
   return require(name);
 });
 
+test("quick start remains a region named by its visible heading when switching platforms", async () => {
+  const user = userEvent.setup();
+  render(React.createElement(QuickStart));
+  try {
+    const name = "Install on your OS. Then protect one project.";
+    const region = screen.getByRole("region", { name });
+    const heading = within(region).getByRole("heading", { level: 2, name });
+    assert.equal(region.getAttribute("aria-labelledby"), heading.id);
+    assert.ok(heading.id);
+
+    for (const platform of ["Windows", "Linux", "macOS"]) {
+      await user.click(within(region).getByRole("button", { name: platform }));
+      assert.equal(screen.getByRole("region", { name }), region);
+      assert.equal(within(region).getByRole("heading", { level: 2, name }), heading);
+      assert.ok(within(region).getByRole("heading", { level: 3, name: platform }));
+    }
+  } finally {
+    cleanup();
+  }
+});
+
 test("reduced motion keeps platform commands available without animation events", async () => {
   const originalMatchMedia = window.matchMedia;
   window.matchMedia = (query) => ({
