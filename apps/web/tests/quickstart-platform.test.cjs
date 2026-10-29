@@ -66,6 +66,44 @@ test("switching platforms displays the selected install instructions", () => {
   }
 });
 
+test("each Unix install command chooses a staging template when TMPDIR is unset or empty", (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "phantom-quickstart-template-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const bin = path.join(root, "bin");
+  const record = path.join(root, "mktemp-args");
+  fs.mkdirSync(bin);
+  fs.writeFileSync(path.join(bin, "mktemp"), '#!/bin/bash\nprintf "%s\\n" "$@" > "$ARG_RECORD"\nexit 42\n', { mode: 0o755 });
+
+  let selected = "macOS";
+  const hooks = { ...React, useState() { return [selected, (value) => { selected = value; }]; } };
+  const { QuickStart } = load("src/components/landing/QuickStart.tsx", (name) => {
+    if (name === "react") return hooks;
+    if (name === "next/link") return { __esModule: true, default: () => null };
+    if (name === "@/lib/public-release") return load("src/lib/public-release.ts");
+    if (name === "./CopyButton") return { CopyButton: () => null };
+    return require(name);
+  });
+
+  for (const platform of ["macOS", "Linux"]) {
+    selected = platform;
+    const card = findElements(QuickStart(), (element) => element.type === "article")[0];
+    const commands = findElements(card, (element) => typeof element.props.text === "string");
+    assert.equal(commands.length, 1, `${platform}: one displayed install command`);
+    for (const [label, tmpdir, expected] of [
+      ["unset", undefined, "/tmp"],
+      ["empty", "", "/tmp"],
+      ["override with spaces", path.join(root, "temp with spaces"), path.join(root, "temp with spaces")],
+    ]) {
+      fs.rmSync(record, { force: true });
+      const env = { PATH: `${bin}:/usr/bin:/bin`, ARG_RECORD: record };
+      if (tmpdir !== undefined) env.TMPDIR = tmpdir;
+      const result = spawnSync("/bin/bash", ["-c", commands[0].props.text], { env, encoding: "utf8" });
+      assert.equal(result.status, 42, `${platform}, ${label}: expected the mktemp stub to stop the command`);
+      assert.equal(fs.readFileSync(record, "utf8"), `-d\n${expected}/phantom-install.XXXXXX\n`, `${platform}, ${label}`);
+    }
+  }
+});
+
 test("Unix install commands clean their staging directory on success and failure", (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "phantom-quickstart-test-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
