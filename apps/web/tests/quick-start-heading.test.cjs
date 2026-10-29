@@ -33,12 +33,12 @@ test("rendered quick start is a named section with a clear heading hierarchy", (
   assert.ok(label, "the section is named by its heading");
 
   const headings = [...section[2].matchAll(/<h([1-6])\b([^>]*)>([\s\S]*?)<\/h\1>/g)];
-  assert.deepEqual(headings.map((heading) => Number(heading[1])), [2, 3, 3, 3, 3, 3]);
+  assert.deepEqual(headings.map((heading) => Number(heading[1])), [2, 3, 3, 3]);
   assert.match(headings[0][2], new RegExp(`\\bid="${label[1]}"`));
   assert.doesNotMatch(headings[0][2], /\b(?:hidden|aria-hidden="true")/);
   assert.equal(headings[0][3], "Install on your OS. Then protect one project.");
   assert.deepEqual(headings.slice(1).map((heading) => heading[3]), [
-    "macOS", "Windows", "Linux", `Verify both ${release.PUBLIC_RELEASE_TAG} binaries`, "Protect one supported project",
+    "macOS", `Verify both ${release.PUBLIC_RELEASE_TAG} binaries`, "Protect one supported project",
   ]);
   assert.equal((html.match(new RegExp(`\\bid="${label[1]}"`, "g")) ?? []).length, 1, "heading ID is unique");
 });

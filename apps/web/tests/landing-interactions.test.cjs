@@ -190,6 +190,50 @@ test("rerendering the landing page does not duplicate primary navigation links",
     }
   }
 });
+test("platform selector exposes the current choice as a pressed button", async () => {
+  const { JSDOM } = require("jsdom");
+  const dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "http://localhost/" });
+  const previousGlobals = new Map(["window", "document", "navigator", "HTMLElement"].map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)]));
+  for (const name of previousGlobals.keys()) Object.defineProperty(globalThis, name, { value: dom.window[name], configurable: true, writable: true });
+
+  const { render, cleanup, within } = require("@testing-library/react");
+  const user = require("@testing-library/user-event").default.setup({ document: dom.window.document });
+  try {
+    const release = compile("../../lib/public-release.ts", require);
+    const { QuickStart } = compile("QuickStart.tsx", (name) => {
+      if (name === "next/link") return { __esModule: true, default: ({ children, ...props }) => React.createElement("a", props, children) };
+      if (name === "@/lib/public-release") return release;
+      if (name === "./CopyButton") return { CopyButton: () => null };
+      return require(name);
+    });
+    const page = render(React.createElement(QuickStart));
+    const selector = within(page.getByRole("group", { name: "Choose an operating system" }));
+    const assertSelection = (selected) => {
+      assert.deepEqual(selector.getAllByRole("button").map((button) => button.textContent), ["macOS", "Windows", "Linux"]);
+      assert.equal(selector.getAllByRole("button", { pressed: true }).length, 1);
+      for (const name of ["macOS", "Windows", "Linux"]) {
+        selector.getByRole("button", { name, pressed: name === selected });
+      }
+      assert.equal(within(page.getByRole("article")).getByRole("heading", { level: 3 }).textContent, selected);
+    };
+    assertSelection("macOS");
+    await user.click(selector.getByRole("button", { name: "Windows" }));
+    assertSelection("Windows");
+    selector.getByRole("button", { name: "Linux" }).focus();
+    await user.keyboard("{Enter}");
+    assertSelection("Linux");
+    selector.getByRole("button", { name: "macOS" }).focus();
+    await user.keyboard(" ");
+    assertSelection("macOS");
+  } finally {
+    cleanup();
+    dom.window.close();
+    for (const [name, descriptor] of previousGlobals) {
+      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+      else delete globalThis[name];
+    }
+  }
+});
 test("Escape returns focus from the inline mobile disclosure and its listener is cleaned up", () => {
   const f = navigationFixture("/secrets", true); const cleanups = f.effects.map((effect) => effect()).filter(Boolean);
   const escape = new Event("keydown"); Object.defineProperty(escape, "key", { value: "Escape" }); f.window.dispatchEvent(escape);
