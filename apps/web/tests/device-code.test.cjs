@@ -10,7 +10,7 @@ const output = ts.transpileModule(source, {
 }).outputText;
 const deviceCodeModule = { exports: {} };
 new Function("module", "exports", output)(deviceCodeModule, deviceCodeModule.exports);
-const { formatDeviceUserCode, normalizeDeviceUserCode } = deviceCodeModule.exports;
+const { formatDeviceUserCode, isValidDeviceUserCode, normalizeDeviceUserCode } = deviceCodeModule.exports;
 
 test("complete device user codes display in two four-character groups and normalize for storage", () => {
   for (const canonical of ["ABCD2345", "WXYZ6789"]) {
@@ -19,4 +19,11 @@ test("complete device user codes display in two four-character groups and normal
     assert.equal(displayed, `${canonical.slice(0, 4)}-${canonical.slice(4)}`);
     assert.equal(normalizeDeviceUserCode(displayed), canonical);
   }
+});
+
+test("formatting preserves extra characters so overlong codes remain invalid", () => {
+  const displayed = formatDeviceUserCode("abcd-23456");
+  assert.equal(displayed, "ABCD-23456");
+  assert.equal(normalizeDeviceUserCode(displayed), "ABCD23456");
+  assert.equal(isValidDeviceUserCode(displayed), false);
 });
