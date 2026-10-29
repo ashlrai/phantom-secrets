@@ -493,6 +493,34 @@ test("device code format hint remains associated with the input when validation 
   for (const id of input.props["aria-describedby"].split(" ")) assert.ok(findById(tree, id));
 });
 
+test("device code input has an accessible name before and after validation", async () => {
+  const React = require("react");
+  const { renderToStaticMarkup } = require("react-dom/server");
+  const { JSDOM } = require("jsdom");
+  const { getByRole } = require("@testing-library/dom");
+  const h = harness({ url: "https://phm.dev/device", storedCode: null });
+
+  function toElement(node) {
+    if (Array.isArray(node)) return node.map(toElement);
+    if (!node || typeof node !== "object") return node;
+    const { children, ...props } = node.props;
+    return React.createElement(node.type, props, ...[children].flat().map(toElement));
+  }
+
+  function assertNamedInput() {
+    const document = new JSDOM(renderToStaticMarkup(toElement(h.render()))).window.document;
+    const input = getByRole(document.body, "textbox", { name: "Device code" });
+    assert.equal(input.id, "device-code");
+    assert.equal(input.labels.length, 1);
+    assert.equal(input.labels[0].textContent.trim(), "Device code");
+  }
+
+  assertNamedInput();
+  await find(h.render(), "form").props.onSubmit({ preventDefault() {} });
+  assert.equal(find(h.render(), "input").props["aria-invalid"], true);
+  assertNamedInput();
+});
+
 test("branded form associates instructions and errors and announces busy and success states", async () => {
   const h = harness({ deferInitialization: true });
   const tree = h.render();
