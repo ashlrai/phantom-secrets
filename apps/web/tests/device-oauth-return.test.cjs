@@ -324,6 +324,71 @@ for (const [name, code, formatted] of [
   }
 });
 
+test("correcting an invalid code and resubmitting clears the rendered validation error", async () => {
+  const { JSDOM } = require("jsdom");
+  const dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "https://phm.dev/device" });
+  const globals = ["window", "document", "navigator", "HTMLElement", "sessionStorage", "fetch"];
+  const previousGlobals = new Map(globals.map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)]));
+  for (const name of globals.slice(0, -1)) Object.defineProperty(globalThis, name, { value: dom.window[name], configurable: true, writable: true });
+
+  const React = require("react");
+  const { render, cleanup, waitFor } = require("@testing-library/react");
+  const userEvent = require("@testing-library/user-event").default;
+  let resolveSession;
+  const session = new Promise((resolve) => { resolveSession = resolve; });
+  const requests = [];
+  globalThis.fetch = async (endpoint, request) => {
+    requests.push({ endpoint, request });
+    return Response.json({ status: "approved" });
+  };
+  const dependencies = {
+    "next/image": { __esModule: true, default: () => null },
+    "next/link": { __esModule: true, default: ({ children, ...props }) => React.createElement("a", props, children) },
+    "@/lib/device-code": deviceCodeModule.exports,
+    "@/lib/posthog": { capturePostHog: async () => {} },
+    "@supabase/supabase-js": { createClient: () => ({ auth: { getSession: () => session } }) },
+  };
+  const compiled = ts.transpileModule(source, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, esModuleInterop: true },
+    fileName: filename,
+  }).outputText;
+  const module = { exports: {} };
+  try {
+    new Function("require", "module", "exports", compiled)(
+      (name) => dependencies[name] ?? require(name), module, module.exports,
+    );
+    const page = render(React.createElement(module.exports.default));
+    const user = userEvent.setup({ document: dom.window.document });
+    const input = page.getByRole("textbox", { name: "Device code" });
+    await user.type(input, "abcd234");
+    await user.click(page.getByRole("button", { name: "Authorize Device" }));
+    assert.match(page.getByRole("alert").textContent, /Enter 8 letters or numbers/);
+    assert.equal(input.getAttribute("aria-invalid"), "true");
+    assert.equal(requests.length, 0);
+
+    await user.type(input, "5");
+    assert.equal(input.value, testCode);
+    await user.click(page.getByRole("button", { name: "Authorize Device" }));
+    assert.equal(page.queryByRole("alert"), null);
+    assert.equal(input.getAttribute("aria-invalid"), "false");
+    assert.deepEqual(input.getAttribute("aria-describedby").split(/\s+/), ["device-code-hint", "device-help"]);
+    assert.equal(page.getByRole("button", { name: "Signing in with GitHub..." }).disabled, true);
+
+    resolveSession({ data: { session: { access_token: "synthetic-existing-account" } }, error: null });
+    await waitFor(() => assert.ok(page.getByRole("heading", { name: "Device Authorized" })));
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].endpoint, "/api/v1/auth/device/approve");
+    assert.deepEqual(JSON.parse(requests[0].request.body), { user_code: "ABCD2345" });
+  } finally {
+    cleanup();
+    dom.window.close();
+    for (const [name, descriptor] of previousGlobals) {
+      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+      else delete globalThis[name];
+    }
+  }
+});
+
 test("invalid device code explains the accepted characters and displayed format", async () => {
   const h = harness({ url: "https://phm.dev/device", storedCode: null });
   find(h.render(), "input").props.onChange({ target: { value: "ab12c" } });
