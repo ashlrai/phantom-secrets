@@ -192,6 +192,10 @@ test('web installer mirrors remain bound to the evidenced public release', () =>
   assert.doesNotMatch(publicPowerShell, /v0\.7\.8/);
 });
 
+test('web Unix installer has valid Bash syntax', () => {
+  execFileSync('/bin/bash', ['-n', join(repo, 'apps/web/public/install.sh')]);
+});
+
 test('Unix installer guidance never emits pipe-to-shell or older-registry fallbacks', () => {
   const source = readFileSync(shellInstaller, 'utf8');
   assert.doesNotMatch(source, /curl[^\n]*https?:\/\/[^\n]*\|\s*(?:ba)?sh\b/i);
