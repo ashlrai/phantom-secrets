@@ -20,3 +20,17 @@ test("complete device user codes display in two four-character groups and normal
     assert.equal(normalizeDeviceUserCode(displayed), canonical);
   }
 });
+
+test("internal device-code note matches the public form and formatter", () => {
+  const notes = fs.readFileSync(path.join(__dirname, "../../../docs/internal/notes.md"), "utf8");
+  const form = fs.readFileSync(path.join(__dirname, "../src/app/device/device-authorization-client.tsx"), "utf8");
+  const note = notes.match(/### Device Auth Wave\n([\s\S]*?)(?=\n### )/);
+  assert.ok(note, "device auth note exists");
+  assert.match(note[1], /eight uppercase letters or numbers as `XXXX-XXXX`/);
+  assert.match(note[1], /separator is not part of the code, so the display is nine characters long/);
+  const placeholder = form.match(/placeholder="(XXXX-XXXX)"/);
+  assert.ok(placeholder, "public form displays the documented pattern");
+  assert.equal(formatDeviceUserCode("XXXXXXXX"), placeholder[1]);
+  assert.equal(normalizeDeviceUserCode(placeholder[1]).length, 8);
+  assert.equal(placeholder[1].length, 9);
+});
