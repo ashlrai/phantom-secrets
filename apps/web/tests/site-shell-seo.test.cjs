@@ -155,6 +155,20 @@ test("root metadata supplies a title template without forcing every route canoni
   ]);
 });
 
+test("home page exports a nonempty metadata description", () => {
+  const ts = require("typescript");
+  const compiled = ts.transpileModule(publicPages["/"], {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX },
+    fileName: "page.tsx",
+  }).outputText;
+  const exports = {};
+  const localRequire = (name) => name.startsWith("@/") ? {} : require(name);
+  new Function("exports", "require", compiled)(exports, localRequire);
+
+  assert.equal(typeof exports.metadata?.description, "string");
+  assert.match(exports.metadata.description, /\S/, "home page description must not be empty");
+});
+
 test("both installable manifests and machine references identify the workbench and dedicated Secrets page", () => {
   const dynamicManifest = read("src/app/manifest.ts");
   assert.match(dynamicManifest, /name: "Phantom"/);
