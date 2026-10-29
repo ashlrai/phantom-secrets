@@ -195,6 +195,34 @@ test("every displayed mktemp staging template has the Phantom prefix and random 
   }
 });
 
+test("displayed QuickStart commands have no blank lines after staging directory creation", async () => {
+  const user = userEvent.setup();
+  render(React.createElement(QuickStart));
+  try {
+    for (const [platform, expectedStages] of [["macOS", 1], ["Windows", 0], ["Linux", 1]]) {
+      await user.click(screen.getByRole("button", { name: platform }));
+      const buttons = screen.getAllByRole("button", { name: /^Copy command:/ });
+      assert.equal(buttons.length, 3, `${platform}: all displayed commands are checked`);
+      let stages = 0;
+      for (const [index, button] of buttons.entries()) {
+        const textNodes = Array.from(button.firstElementChild.childNodes)
+          .filter((node) => node.nodeType === dom.window.Node.TEXT_NODE);
+        assert.equal(textNodes.length, 1, `${platform}: command ${index + 1} is displayed as text`);
+        const lines = textNodes[0].textContent.split("\n");
+        for (const [lineIndex, line] of lines.entries()) {
+          if (line.includes("mktemp -d")) {
+            stages++;
+            assert.ok(lines[lineIndex + 1]?.trim(), `${platform}: staging directory creation must be followed immediately by a command`);
+          }
+        }
+      }
+      assert.equal(stages, expectedStages, `${platform}: staging directory creation count`);
+    }
+  } finally {
+    cleanup();
+  }
+});
+
 test("every displayed QuickStart command can be selected and matches the copied text", async () => {
   const style = document.createElement("style");
   style.textContent = fs.readFileSync(path.join(__dirname, "../src/app/globals.css"), "utf8");
