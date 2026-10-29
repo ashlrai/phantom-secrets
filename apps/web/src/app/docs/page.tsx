@@ -121,7 +121,7 @@ export default function DocsPage() {
         <section className="landing-frame docs-page__collections" aria-label="Documentation collections">
           {COLLECTIONS.map((collection) => (
             <article key={collection.title}>
-              <h2 id={collection.id}>{collection.title}</h2>
+              <h3 id={collection.id}>{collection.title}</h3>
               <ul>
                 {collection.links.map(([label, href]) => (
                   <li key={href}>
