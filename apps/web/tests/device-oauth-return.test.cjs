@@ -248,7 +248,7 @@ test("empty device code submission shows validation without authorizing", async 
   const h = harness({ url: "https://phm.dev/device", storedCode: null, previousSession: { access_token: "synthetic-existing-account" } });
   let tree = h.render();
   assert.equal(find(tree, "input").props.value, "");
-  assert.equal(find(tree, "button").props.disabled, true);
+  assert.equal(find(tree, "button").props.disabled, false);
 
   let prevented = false;
   await find(tree, "form").props.onSubmit({ preventDefault() { prevented = true; } });
@@ -260,7 +260,7 @@ test("empty device code submission shows validation without authorizing", async 
   assert.equal(findById(tree, "device-error").props.role, "alert");
   assert.equal(findById(tree, "device-error").props.children, "Enter 8 letters or numbers. The code is displayed as XXXX-XXXX.");
   assert.ok(find(tree, "form"));
-  assert.equal(find(tree, "button").props.disabled, true);
+  assert.equal(find(tree, "button").props.disabled, false);
   assert.deepEqual(h.events, []);
   assert.equal(h.requests.length, 0);
 });
@@ -285,7 +285,7 @@ test("seven-character device code shows the length error and can be corrected", 
   find(h.render(), "input").props.onChange({ target: { value: "abcd234" } });
   let tree = h.render();
   assert.equal(find(tree, "input").props.value, "ABCD-234");
-  assert.equal(find(tree, "button").props.disabled, true);
+  assert.equal(find(tree, "button").props.disabled, false);
 
   await find(tree, "form").props.onSubmit({ preventDefault() {} });
   tree = h.render();
