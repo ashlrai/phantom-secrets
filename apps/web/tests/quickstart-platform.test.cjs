@@ -26,6 +26,68 @@ function findElements(element, predicate) {
   ];
 }
 
+function assertStagingOrder(platform, command) {
+  const unix = platform !== "Windows";
+  const creation = unix
+    ? /^\s*phantom_stage="\$\(mktemp -d [^\n]+\)"/m.exec(command)
+    : /^\s*\$Installer\s*=\s*Join-Path\s+\$env:TEMP\b[^\n]*/mi.exec(command);
+  assert.ok(creation, `${platform}: staging location is created or assigned`);
+  const assignmentEnd = creation.index + creation[0].length;
+  const variableIndex = unix ? 0 : creation.index + creation[0].search(/\$Installer\b/i);
+  const use = unix
+    ? /\$(?:phantom_stage\b|\{phantom_stage\})/.exec(command)
+    : /\$Installer\b/i.exec(command.slice(variableIndex + "$Installer".length));
+  assert.ok(use, `${platform}: staging location is used`);
+  if (unix) {
+    assert.ok(assignmentEnd <= use.index, `${platform}: staging directory must exist before its first use`);
+  } else {
+    // The assignment is the first occurrence of the installer variable.
+    assert.equal(command.search(/\$Installer\b/i), variableIndex,
+      `${platform}: temporary installer path must be assigned before its first use`);
+    assert.ok(variableIndex + "$Installer".length + use.index >= assignmentEnd,
+      `${platform}: temporary installer path must be assigned before its first use`);
+  }
+}
+
+test("displayed install commands create or assign staging locations before first use", () => {
+  let selected = "macOS";
+  const hooks = { ...React, useState() { return [selected, (value) => { selected = value; }]; } };
+  const { QuickStart } = load("src/components/landing/QuickStart.tsx", (name) => {
+    if (name === "react") return hooks;
+    if (name === "next/link") return { __esModule: true, default: () => null };
+    if (name === "@/lib/public-release") return load("src/lib/public-release.ts");
+    if (name === "./CopyButton") return { CopyButton: () => null };
+    return require(name);
+  });
+
+  const platforms = findElements(QuickStart(), (element) => element.type === "button")
+    .map((button) => button.props.children);
+  assert.deepEqual(platforms, ["macOS", "Windows", "Linux"]);
+  for (const platform of platforms) {
+    selected = platform;
+    const cards = findElements(QuickStart(), (element) => element.type === "article");
+    assert.equal(cards.length, 1, `${platform}: one displayed install card`);
+    const commands = findElements(cards[0], (element) => typeof element.props.text === "string");
+    assert.equal(commands.length, 1, `${platform}: one displayed install command`);
+    assertStagingOrder(platform, commands[0].props.text);
+  }
+});
+
+test("staging order check rejects missing creation and use before creation", () => {
+  const unix = 'phantom_stage="$(mktemp -d /tmp/phantom-install.XXXXXX)"\nphantom_installer="$phantom_stage/install.sh"';
+  const windows = '$Installer = Join-Path $env:TEMP "installer.ps1"\nInvoke-WebRequest -OutFile $Installer';
+  for (const [platform, command, prematureUse] of [
+    ["macOS", unix, 'echo "$phantom_stage"'],
+    ["Linux", unix, 'echo "${phantom_stage}"'],
+    ["Windows", windows, 'Write-Output $Installer'],
+  ]) {
+    assertStagingOrder(platform, command);
+    assert.throws(() => assertStagingOrder(platform, `${prematureUse}\n${command}`), /before its first use/);
+    assert.throws(() => assertStagingOrder(platform, command.split("\n").slice(1).join("\n")), /staging location is created or assigned/);
+  }
+  assert.throws(() => assertStagingOrder("Windows", windows.replace('"installer.ps1"', '$Installer')), /before its first use/);
+});
+
 test("switching platforms displays the selected install instructions", () => {
   let selected;
   const hooks = { ...React, useState(initial) { selected ??= initial; return [selected, (value) => { selected = value; }]; } };
