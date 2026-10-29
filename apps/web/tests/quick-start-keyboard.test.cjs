@@ -89,6 +89,21 @@ test("QuickStart copy controls are named, reachable by Tab, and operable by keyb
       assert.equal(buttons.length, 3, `${platform}: selected platform and setup steps have named copy buttons`);
       assert.equal(screen.getByRole("button", { name: "Copy command: phantom init" }), buttons[2]);
 
+      const commandNode = Array.from(buttons[0].firstElementChild.childNodes)
+        .find((node) => node.nodeType === dom.window.Node.TEXT_NODE);
+      assert.ok(commandNode, `${platform}: install command is text`);
+      const range = document.createRange();
+      range.selectNodeContents(commandNode);
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      const selectedCommand = selection.toString();
+      assert.ok(selectedCommand.includes("\n"), `${platform}: selection includes line breaks`);
+      await user.click(buttons[0]);
+      await waitFor(async () => assert.equal(await navigator.clipboard.readText(), selectedCommand));
+      selection.removeAllRanges();
+      document.activeElement.blur();
+
       const reached = [];
       for (let i = 0; i < 40 && reached.length < buttons.length; i++) {
         await user.tab();

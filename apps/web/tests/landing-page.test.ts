@@ -120,6 +120,15 @@ test("QuickStart displays expanded multiline commands for every platform", () =>
       .join("");
     assert.ok(command.split("\n").length > 2, `${platform}: command has multiple lines`);
     assert.equal(dom.window.getComputedStyle(commandText).whiteSpace, "pre-wrap", `${platform}: line breaks remain visible`);
+    assert.equal(dom.window.getComputedStyle(commandText).userSelect, "text", `${platform}: command is selectable`);
+    const textNodes = Array.from(commandText.childNodes).filter((node: ChildNode) => node.nodeType === dom.window.Node.TEXT_NODE);
+    assert.equal(textNodes.length, 1, `${platform}: command is one selectable text node`);
+    const range = dom.window.document.createRange();
+    range.selectNodeContents(textNodes[0]);
+    const selection = dom.window.getSelection();
+    assert.ok(selection);
+    selection.addRange(range);
+    assert.equal(selection.toString(), command, `${platform}: selection preserves the complete command and its line breaks`);
     // The Unix shell parameter expansion is intentional; JavaScript template expressions are not.
     assert.doesNotMatch(command, /\$\{(?!TMPDIR:-\/tmp\})/, `${platform}: no unexpanded template expressions`);
     assert.ok(command.includes(release.PUBLIC_RELEASE_SOURCE_COMMIT), `${platform}: source revision is expanded`);
