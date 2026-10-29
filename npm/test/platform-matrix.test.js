@@ -1,9 +1,11 @@
 const assert = require("assert");
-const { readFileSync } = require("fs");
+const { existsSync, mkdtempSync, readFileSync, rmSync } = require("fs");
+const { tmpdir } = require("os");
 const { join } = require("path");
 
 const {
   SUPPORTED_TARGETS,
+  ensureBinary,
   getPlatformTarget,
 } = require("../bin/cli.js");
 
@@ -64,4 +66,29 @@ for (const runtime of [
 const wrapperSource = readFileSync(join(__dirname, "..", "bin", "cli.js"), "utf8");
 assert.doesNotMatch(wrapperSource, /Install from source|cargo install phantom-secrets/);
 
-console.log("npm CLI wrapper platform matrix tests passed");
+(async () => {
+  const testDir = mkdtempSync(join(tmpdir(), "phantom-cli-unsupported-"));
+  const cacheDir = join(testDir, "cache");
+  let downloads = 0;
+  try {
+    await assert.rejects(
+      ensureBinary({
+        cacheDir,
+        runtime: { platform: "freebsd", arch: "x64" },
+        downloadImpl: async () => {
+          downloads += 1;
+          throw new Error("unsupported platforms must not download");
+        },
+      }),
+      /Unsupported platform: freebsd-x64/
+    );
+    assert.strictEqual(downloads, 0, "unsupported platforms must not attempt a download");
+    assert.strictEqual(existsSync(cacheDir), false, "unsupported platforms must not create a cache");
+  } finally {
+    rmSync(testDir, { recursive: true, force: true });
+  }
+  console.log("npm CLI wrapper platform matrix tests passed");
+})().catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});
