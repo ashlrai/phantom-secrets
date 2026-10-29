@@ -3,6 +3,9 @@ const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
 const ts = require("typescript");
+const React = require("react");
+const { renderToStaticMarkup } = require("react-dom/server");
+const { JSDOM } = require("jsdom");
 const markdownLoader = require("../scripts/public-doc-markdown-loader.cjs");
 
 const webRoot = path.resolve(__dirname, "..");
@@ -200,6 +203,87 @@ test("the docs hub and sitemap expose every rendered guide", () => {
   }
   assert.match(sitemap, /import \{ PUBLIC_DOCS \}/);
   assert.match(sitemap, /path: `\/docs\/\$\{slug\}`/);
+});
+
+function loadComponent(relativePath, dependencies) {
+  const output = ts.transpileModule(read(relativePath), {
+    compilerOptions: {
+      esModuleInterop: true,
+      jsx: ts.JsxEmit.ReactJSX,
+      module: ts.ModuleKind.CommonJS,
+    },
+    fileName: relativePath,
+  }).outputText;
+  const module = { exports: {} };
+  const localRequire = (specifier) => {
+    if (Object.hasOwn(dependencies, specifier)) return dependencies[specifier];
+    if (specifier === "react" || specifier === "react/jsx-runtime" || specifier === "node:path") {
+      return require(specifier);
+    }
+    throw new Error(`Unexpected component dependency: ${specifier}`);
+  };
+  new Function("exports", "require", "module", output)(module.exports, localRequire, module);
+  return module.exports;
+}
+
+function isLocalPage(href) {
+  if (!href.startsWith("/") || href.startsWith("//")) return false;
+  const pathname = new URL(href, "https://phm.dev").pathname.replace(/\/$/, "") || "/";
+  const guide = /^\/docs\/([^/]+)(\/markdown)?$/.exec(pathname);
+  if (guide && guide[1] !== "manifest.json") {
+    return catalog.some(({ slug }) => slug === guide[1]) &&
+      fs.existsSync(path.join(webRoot, "src/app/docs/[slug]", guide[2] ? "markdown/route.ts" : "page.tsx"));
+  }
+  const relativePath = pathname.slice(1);
+  return [
+    path.join(webRoot, "src/app", relativePath, "page.tsx"),
+    path.join(webRoot, "src/app", relativePath, "route.ts"),
+    path.join(webRoot, "public", relativePath),
+  ].some((file) => fs.existsSync(file) && fs.statSync(file).isFile());
+}
+
+function localLinks(element) {
+  const html = renderToStaticMarkup(element);
+  return [...new JSDOM(html).window.document.querySelectorAll("a[href]")]
+    .map((link) => link.getAttribute("href"))
+    .filter((href) => href.startsWith("/") && !href.startsWith("//"));
+}
+
+test("rendered documentation navigation points to existing local pages", () => {
+  const empty = () => null;
+  const Link = ({ href, children }) => React.createElement("a", { href }, children);
+  const { default: DocsPage } = loadComponent("src/app/docs/page.tsx", {
+    "next/link": Link,
+    "@/components/landing/Nav": { Nav: empty },
+    "@/components/landing/SiteFooter": { SiteFooter: empty },
+    "@/components/landing/CopyButton": { CopyButton: empty },
+    "@/components/docs/AskDocumentation": { AskDocumentation: empty },
+    "@/components/landing/SecretUseCases": { SecretUseCases: empty },
+    "@/lib/workbench-release": { WORKBENCH_RELEASE: null },
+    "@/lib/public-release": { PUBLIC_RELEASE_TAG: "test" },
+  });
+  const { MarkdownDocument } = loadComponent("src/components/docs/MarkdownDocument.tsx", {
+    "@/lib/public-docs": loadDocs().docs,
+  });
+  const hubLinks = localLinks(React.createElement(DocsPage));
+  assert.ok(hubLinks.length > catalog.length, "the hub must expose its guide and resource links");
+  for (const href of hubLinks) assert.ok(isLocalPage(href), `docs hub links to missing ${href}`);
+
+  for (const entry of catalog) {
+    const markdown = fs.readFileSync(path.join(repoRoot, "docs", entry.file), "utf8");
+    for (const href of localLinks(React.createElement(MarkdownDocument, { markdown, sourceFile: entry.file }))) {
+      assert.ok(isLocalPage(href), `${entry.file} links to missing ${href}`);
+    }
+  }
+});
+
+test("local documentation route checks reject missing guides and accept URL fragments", () => {
+  assert.equal(isLocalPage("/docs/getting-started?source=hub#install"), true);
+  assert.equal(isLocalPage("/docs/getting-started/markdown"), true);
+  assert.equal(isLocalPage("/docs/guide-that-does-not-exist"), false);
+  assert.equal(isLocalPage("/docs/guide-that-does-not-exist/markdown"), false);
+  assert.equal(isLocalPage("/docs/[slug]"), false);
+  assert.equal(isLocalPage("/not-a-local-page"), false);
 });
 
 test("embedded Workbench guides retain build-bound source links", () => {
