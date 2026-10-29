@@ -353,6 +353,91 @@ test("local documentation route checks reject missing guides and accept URL frag
   assert.equal(isLocalPage("/not-a-local-page"), false);
 });
 
+test("documented same-origin links resolve to public routes or assets", () => {
+  const docs = loadDocs().docs;
+  const useCases = loadComponent("src/lib/secret-use-cases.ts", {});
+  const sitemap = loadComponent("src/app/sitemap.ts", {
+    "@/lib/public-docs": docs,
+    "@/lib/secret-use-cases": useCases,
+    "@/lib/git-last-modified": { gitLastModified: () => new Date(0) },
+  });
+  const publicPages = new Set(sitemap.default().map(({ url }) => new URL(url).pathname));
+  const appRoot = path.join(webRoot, "src/app");
+  const publicRoot = path.join(webRoot, "public");
+  const isFile = (file) => fs.existsSync(file) && fs.statSync(file).isFile();
+
+  function publicDestination(href, sourcePath) {
+    let url;
+    try {
+      url = new URL(href, `https://phm.dev${sourcePath}`);
+    } catch {
+      return false;
+    }
+    if (url.origin !== "https://phm.dev") return true;
+    const pathname = url.pathname.replace(/\/$/, "") || "/";
+    const doc = /^\/docs\/([^/]+)(\/markdown)?$/.exec(pathname);
+    if (doc && catalog.some(({ slug }) => slug === doc[1])) {
+      return (doc[2] || publicPages.has(pathname)) &&
+        isFile(path.join(appRoot, "docs/[slug]", doc[2] ? "markdown/route.ts" : "page.tsx"));
+    }
+    const useCase = /^\/secrets\/use-cases\/([^/]+)$/.exec(pathname);
+    if (useCase) {
+      return publicPages.has(pathname) &&
+        useCases.SECRET_USE_CASES.some(({ slug }) => slug === useCase[1]) &&
+        isFile(path.join(appRoot, "secrets/use-cases/[slug]/page.tsx"));
+    }
+    if (publicPages.has(pathname)) return isFile(path.join(appRoot, pathname, "page.tsx"));
+    if (pathname === "/docs/manifest.json") return isFile(path.join(appRoot, "docs/manifest.json/route.ts"));
+    return isFile(path.join(publicRoot, pathname));
+  }
+
+  assert.ok(publicDestination("https://phm.dev/docs/getting-started?source=hub#install", "/docs"));
+  assert.ok(publicDestination("getting-started", "/docs/codex"));
+  assert.ok(publicDestination("#section", "/docs/codex"));
+  assert.ok(publicDestination("https://example.com/missing", "/docs"));
+  assert.equal(publicDestination("https://phm.dev/docs/missing", "/docs"), false);
+  assert.equal(publicDestination("/docs/missing/markdown", "/docs"), false);
+  assert.equal(publicDestination("/dashboard", "/docs"), false);
+  assert.equal(publicDestination("/secrets/use-cases/missing", "/docs"), false);
+
+  const empty = () => null;
+  const Link = ({ href, children, ...props }) => React.createElement("a", { href, ...props }, children);
+  const { default: DocsPage } = loadComponent("src/app/docs/page.tsx", {
+    "next/link": Link,
+    "@/components/landing/Nav": { Nav: empty },
+    "@/components/landing/SiteFooter": { SiteFooter: empty },
+    "@/components/landing/CopyButton": { CopyButton: empty },
+    "@/components/docs/AskDocumentation": { AskDocumentation: empty },
+    "@/components/landing/SecretUseCases": loadComponent("src/components/landing/SecretUseCases.tsx", {
+      "next/link": Link,
+      "@/lib/secret-use-cases": useCases,
+    }),
+    "@/lib/workbench-release": { WORKBENCH_RELEASE: null },
+    "@/lib/public-release": { PUBLIC_RELEASE_TAG: "test" },
+  });
+  const { MarkdownDocument } = loadComponent("src/components/docs/MarkdownDocument.tsx", {
+    "@/lib/public-docs": docs,
+  });
+  const pages = [{ source: "docs hub", path: "/docs", element: React.createElement(DocsPage) }];
+  for (const { slug, file } of catalog) {
+    pages.push({
+      source: file,
+      path: `/docs/${slug}`,
+      element: React.createElement(MarkdownDocument, { markdown: docs.getPublicDoc(slug).markdown, sourceFile: file }),
+    });
+  }
+  let checked = 0;
+  for (const page of pages) {
+    const document = new JSDOM(renderToStaticMarkup(page.element)).window.document;
+    for (const link of document.querySelectorAll("a[href]")) {
+      const href = link.getAttribute("href");
+      assert.ok(publicDestination(href, page.path), `${page.source} links to missing or non-public ${href}`);
+      if (new URL(href, `https://phm.dev${page.path}`).origin === "https://phm.dev") checked++;
+    }
+  }
+  assert.ok(checked > catalog.length, "documentation must contain local links to check");
+});
+
 test("embedded Workbench guides retain build-bound source links", () => {
   const revision = "a".repeat(40);
   const { docs } = loadDocs(catalog, revision);
