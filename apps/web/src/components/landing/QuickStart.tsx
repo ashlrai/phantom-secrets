@@ -1,3 +1,6 @@
+"use client";
+
+import { useState } from "react";
 import Link from "next/link";
 import { FaApple, FaLinux, FaWindows } from "react-icons/fa6";
 import { CopyButton } from "./CopyButton";
@@ -122,6 +125,8 @@ const PLATFORMS = [
 ] as const;
 
 export function QuickStart() {
+  const [selectedPlatform, setSelectedPlatform] = useState<(typeof PLATFORMS)[number]["name"]>("macOS");
+
   return (
     <section id="install" className="passage-section" aria-labelledby="passage-title">
       <div className="landing-frame">
@@ -137,7 +142,19 @@ export function QuickStart() {
         </div>
 
         <div className="platform-install-grid" aria-label="Release downloads by operating system">
-          {PLATFORMS.map((platform) => (
+          <div className="platform-install-selector" role="group" aria-label="Choose an operating system">
+            {PLATFORMS.map((platform) => (
+              <button
+                key={platform.name}
+                type="button"
+                aria-pressed={selectedPlatform === platform.name}
+                onClick={() => setSelectedPlatform(platform.name)}
+              >
+                {platform.name}
+              </button>
+            ))}
+          </div>
+          {PLATFORMS.filter((platform) => platform.name === selectedPlatform).map((platform) => (
             <article key={platform.name} className="platform-install-card">
               <div className="platform-install-card__heading">
                 <div className="platform-install-card__identity">

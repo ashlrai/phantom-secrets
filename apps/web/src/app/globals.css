@@ -2483,9 +2483,29 @@ code, pre, .mono {
   --landing-muted: var(--ink-soft);
   --landing-ink: var(--ink);
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 1rem;
   margin: 2.5rem 0 1rem;
+}
+
+.platform-install-selector {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.platform-install-selector button {
+  padding: 0.55rem 1rem;
+  border: 1px solid var(--landing-line);
+  border-radius: 0.65rem;
+  background: var(--landing-paper);
+  color: var(--landing-ink);
+  cursor: pointer;
+}
+
+.platform-install-selector button[aria-pressed="true"] {
+  border-color: var(--landing-blue);
+  background: var(--landing-blue);
+  color: white;
 }
 
 #install,
@@ -2647,12 +2667,6 @@ code, pre, .mono {
 
 @keyframes eliteMarquee {
   to { transform: translateX(calc(-50% - 0.375rem)); }
-}
-
-@media (max-width: 1120px) {
-  .platform-install-grid {
-    grid-template-columns: 1fr;
-  }
 }
 
 .comparison-section {
