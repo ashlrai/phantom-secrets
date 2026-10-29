@@ -7,6 +7,45 @@ const webRoot = path.resolve(__dirname, "..");
 const read = (relativePath) =>
   fs.readFileSync(path.join(webRoot, relativePath), "utf8");
 
+test("landing controls explicitly use non-submit button types", () => {
+  const ts = require("typescript");
+  const { JSDOM } = require("jsdom");
+  const directory = "src/components/landing";
+  const controls = new Set();
+
+  for (const file of fs.readdirSync(path.join(webRoot, directory)).filter(name => name.endsWith(".tsx"))) {
+    const relativePath = `${directory}/${file}`;
+    const source = ts.createSourceFile(relativePath, read(relativePath), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+    function visit(node) {
+      if ((ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node)) && node.tagName.getText(source) === "button") {
+        controls.add(file);
+        const attributes = node.attributes.properties;
+        const typeIndex = attributes.findIndex(attribute => ts.isJsxAttribute(attribute) && attribute.name.getText(source) === "type");
+        const location = `${relativePath}:${source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1}`;
+        assert.ok(typeIndex >= 0, `${location}: missing explicit button type`);
+        const type = attributes[typeIndex];
+        assert.ok(type.initializer && ts.isStringLiteral(type.initializer), `${location}: type must be a literal`);
+        assert.equal(type.initializer.text, "button", location);
+        assert.ok(!attributes.slice(typeIndex + 1).some(ts.isJsxSpreadAttribute), `${location}: a later spread could override type`);
+      }
+      ts.forEachChild(node, visit);
+    }
+    visit(source);
+  }
+  for (const file of ["Nav.tsx", "QuickStart.tsx", "Install.tsx", "CopyButton.tsx", "CarouselPauseButton.tsx"]) {
+    assert.ok(controls.has(file), `expected landing control in ${file}`);
+  }
+
+  const markup = JSON.parse(read(`${directory}/phantom-world-markup.json`));
+  const document = new JSDOM(markup).window.document;
+  for (const selector of ["[data-mode]", "[data-resource]", "[data-agent]", "[data-step]", "[data-action]"]) {
+    assert.ok(document.querySelector(`button${selector}`), `missing demo controls: ${selector}`);
+  }
+  for (const button of document.querySelectorAll("button")) {
+    assert.equal(button.getAttribute("type"), "button", `demo control: ${button.outerHTML}`);
+  }
+});
+
 test("landing calls to action have accessible names and destinations", async () => {
   const ts = require("typescript");
   const React = require("react");
