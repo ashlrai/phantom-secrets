@@ -265,7 +265,10 @@ test("empty device code submission shows validation without authorizing", async 
   assert.equal(h.requests.length, 0);
 });
 
-test("clicking authorize with an empty code displays accessible validation", async () => {
+for (const [name, code, formatted] of [
+  ["clicking authorize with an empty code displays accessible validation", "", ""],
+  ["submitting an invalid device code exposes the error to assistive technology", "ab12c", "AB12-C"],
+]) test(name, async () => {
   const { JSDOM } = require("jsdom");
   const dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "https://phm.dev/device" });
   const previousGlobals = new Map(["window", "document", "navigator", "HTMLElement"].map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)]));
@@ -296,11 +299,20 @@ test("clicking authorize with an empty code displays accessible validation", asy
     const button = page.getByRole("button", { name: "Authorize Device" });
     assert.equal(input.value, "");
     assert.equal(button.disabled, false);
-    await userEvent.setup({ document: dom.window.document }).click(button);
+    assert.equal(input.getAttribute("aria-invalid"), "false");
+    assert.equal(page.queryByRole("alert"), null);
+    const user = userEvent.setup({ document: dom.window.document });
+    if (code) await user.type(input, code);
+    assert.equal(input.value, formatted);
+    await user.click(button);
     const alert = page.getByRole("alert");
     assert.equal(alert.textContent, "Enter 8 letters or numbers. The code is displayed as XXXX-XXXX.");
     assert.equal(input.getAttribute("aria-invalid"), "true");
     assert.ok(input.getAttribute("aria-describedby").split(/\s+/).includes(alert.id));
+    assert.equal(page.getByRole("textbox", {
+      name: "Device code",
+      description: /Enter 8 letters or numbers\. The code is displayed as XXXX-XXXX\./,
+    }), input);
     assert.equal(clientsCreated, 0);
   } finally {
     cleanup();
