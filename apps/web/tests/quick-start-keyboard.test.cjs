@@ -125,6 +125,50 @@ test("re-selecting the active platform preserves its selection and install comma
   }
 });
 
+test("every displayed QuickStart command can be selected and matches the copied text", async () => {
+  const style = document.createElement("style");
+  style.textContent = fs.readFileSync(path.join(__dirname, "../src/app/globals.css"), "utf8");
+  document.head.append(style);
+  const user = userEvent.setup();
+  try {
+    render(React.createElement(QuickStart));
+    for (const [platform, installPart] of [
+      ["macOS", "shasum -a 256 -c -"],
+      ["Windows", "Get-FileHash -Algorithm SHA256"],
+      ["Linux", "sha256sum -c -"],
+    ]) {
+      await user.click(screen.getByRole("button", { name: platform }));
+      const buttons = screen.getAllByRole("button", { name: /^Copy command:/ });
+      assert.equal(buttons.length, 3, `${platform}: install and both follow-up commands are displayed`);
+      for (const [index, button] of buttons.entries()) {
+        const textContainer = button.firstElementChild;
+        const textNodes = Array.from(textContainer.childNodes).filter((node) => node.nodeType === dom.window.Node.TEXT_NODE);
+        assert.equal(textNodes.length, 1, `${platform}: command ${index + 1} is selectable text`);
+        const command = textNodes[0].textContent;
+        assert.ok(command, `${platform}: command ${index + 1} is not empty`);
+        assert.equal(window.getComputedStyle(textContainer).userSelect, "text");
+        assert.equal(window.getComputedStyle(textContainer).whiteSpace, "pre-wrap");
+        if (index === 0) assert.ok(command.includes(installPart), `${platform}: expected installer`);
+        if (index === 1) assert.equal(command, "phantom --version\nphantom-mcp --version");
+        if (index === 2) assert.equal(command, "phantom init");
+
+        const selection = window.getSelection();
+        const range = document.createRange();
+        range.selectNodeContents(textNodes[0]);
+        selection.removeAllRanges();
+        selection.addRange(range);
+        assert.equal(selection.toString(), command, `${platform}: selection preserves the entire command`);
+        await user.click(button);
+        await waitFor(async () => assert.equal(await navigator.clipboard.readText(), command));
+        selection.removeAllRanges();
+      }
+    }
+  } finally {
+    cleanup();
+    style.remove();
+  }
+});
+
 test("QuickStart copy controls are named, reachable by Tab, and operable by keyboard", async () => {
   for (const platform of ["macOS", "Windows", "Linux"]) {
     const user = userEvent.setup();
