@@ -126,27 +126,6 @@ function loadDocs(entries = catalog, revision) {
   return { docs: module.exports, loadedFiles };
 }
 
-function loadComponent(relativePath, dependencies) {
-  const file = path.join(webRoot, relativePath);
-  const output = ts.transpileModule(fs.readFileSync(file, "utf8"), {
-    compilerOptions: {
-      esModuleInterop: true,
-      jsx: ts.JsxEmit.ReactJSX,
-      module: ts.ModuleKind.CommonJS,
-      target: ts.ScriptTarget.ES2022,
-    },
-    fileName: file,
-  }).outputText;
-  const module = { exports: {} };
-  const localRequire = (specifier) => {
-    if (Object.hasOwn(dependencies, specifier)) return dependencies[specifier];
-    if (["react", "react/jsx-runtime", "node:path"].includes(specifier)) return require(specifier);
-    throw new Error(`Unexpected component dependency: ${specifier}`);
-  };
-  new Function("exports", "require", "module", output)(module.exports, localRequire, module);
-  return module.exports;
-}
-
 test("every public documentation page renders a nonempty primary heading", async () => {
   const { docs } = loadDocs();
   const renderer = loadComponent("src/components/docs/MarkdownDocument.tsx", {
@@ -270,6 +249,49 @@ function loadComponent(relativePath, dependencies) {
   new Function("exports", "require", "module", output)(module.exports, localRequire, module);
   return module.exports;
 }
+
+const { registerPublicDocsLinkLabelTests } = loadComponent("tests/public-docs.test.ts", {
+  "node:assert/strict": assert,
+  "node:test": test,
+});
+
+registerPublicDocsLinkLabelTests(async () => {
+  const { pathToFileURL } = require("node:url");
+  const assistant = await import(pathToFileURL(path.join(webRoot, "src/lib/documentation-assistant.mjs")).href);
+  const Link = ({ href, children, ...props }) => React.createElement("a", { href, ...props }, children);
+  const empty = () => null;
+  const shared = {
+    "next/link": Link,
+    "@/components/landing/Nav": { Nav: empty },
+    "@/components/landing/SiteFooter": { SiteFooter: empty },
+    "@/components/docs/AskDocumentation": loadComponent("src/components/docs/AskDocumentation.tsx", {
+      "@/lib/documentation-assistant.mjs": assistant,
+    }),
+  };
+  const docs = loadDocs().docs;
+  const renderer = loadComponent("src/components/docs/MarkdownDocument.tsx", { "@/lib/public-docs": docs });
+  const hub = loadComponent("src/app/docs/page.tsx", {
+    ...shared,
+    "@/components/landing/CopyButton": { CopyButton: empty },
+    "@/components/landing/SecretUseCases": loadComponent("src/components/landing/SecretUseCases.tsx", {
+      "next/link": Link,
+      "@/lib/secret-use-cases": loadComponent("src/lib/secret-use-cases.ts", {}),
+    }),
+    "@/lib/workbench-release": { WORKBENCH_RELEASE: null },
+    "@/lib/public-release": { PUBLIC_RELEASE_TAG: "test" },
+  });
+  const page = loadComponent("src/app/docs/[slug]/page.tsx", {
+    ...shared,
+    "next/navigation": { notFound: () => { throw new Error("Document not found"); } },
+    "@/components/docs/MarkdownDocument": renderer,
+    "@/lib/public-docs": docs,
+  });
+  const pages = [{ path: "/docs", element: React.createElement(hub.default) }];
+  for (const { slug } of catalog) {
+    pages.push({ path: `/docs/${slug}`, element: await page.default({ params: Promise.resolve({ slug }) }) });
+  }
+  return pages.map(({ path, element }) => ({ path, document: new JSDOM(renderToStaticMarkup(element)).window.document }));
+}, (html) => new JSDOM(html).window.document, require("dom-accessibility-api").computeAccessibleName);
 
 function isLocalPage(href) {
   if (!href.startsWith("/") || href.startsWith("//")) return false;
