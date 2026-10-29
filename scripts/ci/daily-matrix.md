@@ -61,6 +61,13 @@ File selection (first wins; no selector means the full matrix):
 
 ## Wiring (G1-gated workflow patch; `.github/` is not touched by this change)
 
+Since RQ-CI-SECONDS (#576) the `Test` job never runs on `pull_request` or
+`merge_group` — the PR-path runner savings #562 asked for are already in
+place and locked by `scripts/ci/pr-path-contract.test.mjs`. The lever this
+tool still powers is the daily run's queue wait: an additive off-peak cron
+in `nightly-full.yml`, with `ci.yml` consulting an affected-only matrix only
+on that run.
+
 `nightly-full.yml` — add the off-peak cron and mark the call affected-only:
 
 ```yaml
@@ -77,7 +84,8 @@ jobs:
       affected_only: ${{ github.event.schedule == '43 3 * * *' }}
 ```
 
-`ci.yml` — declare the input, emit `os_matrix`, consult it on the affected run:
+`ci.yml` — declare the input on `workflow_call`, emit `os_matrix` from
+`changes`, and consult it on the affected run only:
 
 ```yaml
 on:
@@ -101,32 +109,63 @@ on:
             node scripts/ci/daily-matrix.mjs --full --github-output
           fi
 
-# jobs.test.strategy.matrix.os: consult os_matrix only for the affected run;
-# pull_request, merge_group, dispatch and the kept schedule are byte-identical.
+# jobs.test.strategy.matrix.os: the affected run uses os_matrix verbatim;
+# every other event keeps the complete matrix. `platform` is constant-true
+# on every event that can reach this job (its only PR consumers are gone),
+# so the fallback is the literal three-leg array.
         os: ${{ fromJSON(inputs.affected_only && needs.changes.outputs.os_matrix
-              || (needs.changes.outputs.platform == 'true'
-                  && '["macos-latest", "ubuntu-latest", "windows-latest"]'
-                  || '["ubuntu-latest"]')) }}
+              || '["macos-latest", "ubuntu-latest", "windows-latest"]') }}
 ```
 
 The `changes` job already checks out with `fetch-depth: 0`, so
-`rev-list --before` resolves on every event. `ubuntu-latest` remains the
-coverage/coverage-upload leg; when the affected diff selects no legs the Test
-job spawns zero cells and reports success, and `CI Gate` still sees
-`test=success` (its `full && rust` expectation holds because the run is a
-schedule event).
+`rev-list --before` resolves on every event.
+
+### The empty selection is `skipped`, not `success`
+
+A docs-only day legitimately emits `[]`, and a zero-cell matrix concludes the
+Test job `skipped` — the gate's `full && rust` expectation requires
+`success`, so the patch must extend it on the affected run only:
+
+```yaml
+# gate expect table:
+#   'test': full && rust && !(affected && osMatrix === '[]')  — and accept
+#           'skipped' from test when affected && osMatrix === '[]'
+#   'windows-arm-source-check':
+#       full && rust && platform && (!affected || osMatrix.includes('windows-latest'))
+#   'coverage' stays ungated, but its if gains
+#       && (!affected || osMatrix.includes('ubuntu-latest'))
+```
+
+`windows-arm-source-check` gets the same affected gate in its job `if`
+(`&& (!inputs.affected_only || contains(fromJSON(needs.changes.outputs.os_matrix), 'windows-latest'))`)
+so a windows-less selection skips the ARM64 runner, and `coverage` needs the
+matching `ubuntu-latest` clause because the lcov artifact is produced only on
+the Linux leg — without it a non-ubuntu selection fails the
+`test -s coverage/lcov.info` step.
+
+### Cleanup the same patch can land
+
+The `platform` classify step, its `changes` output, the `ci:full-os` label
+plumbing (`FULL_OS` env), and the `affected`/`filterset` machinery are
+vestigial: `platform` is constant-true and `filterset` unread on every event
+where their only consumers run, so removing them is behavior-identical.
+`scripts/ci/affected-filterset.sh` is deleted with the `affected` step.
 
 Optionally, feed the same `--since 25` file list to the existing `classify`
-step's regexes on the affected run so docs/web/temporal jobs also deselect
-like a pull request — that is a refinement, not a requirement.
+step's regexes on the affected run so the `web`/`temporal-codec-example`/
+`docs-commands`/`crate-publication-contract` jobs also deselect like a pull
+request — that is a refinement, not a requirement.
 
 ## Tests
 
 ```bash
-node --test scripts/ci/daily-matrix.test.mjs
+node --test scripts/ci/daily-matrix.test.mjs scripts/ci/pr-path-contract.test.mjs
 ```
 
 The suite covers leg routing, cfg complement semantics, cron parsing and the
 off-peak window, schedule-data validation, the 900s estimate for every leg
 selection, fail-closed fallbacks, and a read-only contract that every emitted
 OS label is a check name `ci.yml` already produces.
+`pr-path-contract.test.mjs` is the sibling read-only contract locking the
+pull-request/merge-queue fast-path split and the diff-scoped CodeQL matrix
+described above.
