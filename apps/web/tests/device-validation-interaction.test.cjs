@@ -58,8 +58,13 @@ test("short codes show the format error through the form and a corrected code ca
       await user.click(button);
       assert.equal(screen.getByRole("alert").textContent, "Enter 8 letters or numbers. The code is displayed as XXXX-XXXX.");
       assert.equal(input.getAttribute("aria-invalid"), "true");
+      assert.equal(input.getAttribute("aria-describedby"), "device-code-hint device-error device-help");
       assert.equal(clientCalls, 0);
       assert.equal(requests.length, 0);
+      await user.type(input, "z");
+      assert.equal(Boolean(screen.queryByRole("alert")), false);
+      assert.equal(input.getAttribute("aria-invalid"), "false");
+      assert.equal(input.getAttribute("aria-describedby"), "device-code-hint device-help");
     }
     await user.clear(input);
     await user.type(input, "abcd2345");
