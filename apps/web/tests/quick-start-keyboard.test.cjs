@@ -171,6 +171,32 @@ test("each platform displays and copies its phantom-install staging prefix", asy
   }
 });
 
+test("each displayed installation command includes its temporary staging cleanup", async () => {
+  const user = userEvent.setup();
+  render(React.createElement(QuickStart));
+  try {
+    const unixCleanup = `trap 'rm -f -- "$phantom_installer"; rmdir -- "$phantom_stage" 2>/dev/null || true' EXIT`;
+    const cases = [
+      ["macOS", unixCleanup],
+      ["Windows", "} finally {\n  Remove-Item -LiteralPath $Installer -Force -ErrorAction SilentlyContinue\n}"],
+      ["Linux", unixCleanup],
+    ];
+    const selector = screen.getByRole("group", { name: "Choose an operating system" });
+    assert.equal(within(selector).getAllByRole("button").length, cases.length);
+    for (const [platform, cleanupCommand] of cases) {
+      await user.click(within(selector).getByRole("button", { name: platform }));
+      const card = screen.getByRole("heading", { level: 3, name: platform }).closest("article");
+      const button = within(card).getByRole("button", { name: /^Copy command:/ });
+      assert.ok(button.textContent.includes(cleanupCommand), `${platform}: displayed cleanup`);
+      await user.click(button);
+      const copied = await navigator.clipboard.readText();
+      assert.ok(copied.includes(cleanupCommand), `${platform}: copied cleanup`);
+    }
+  } finally {
+    cleanup();
+  }
+});
+
 test("every displayed QuickStart command can be selected and matches the copied text", async () => {
   const style = document.createElement("style");
   style.textContent = fs.readFileSync(path.join(__dirname, "../src/app/globals.css"), "utf8");
