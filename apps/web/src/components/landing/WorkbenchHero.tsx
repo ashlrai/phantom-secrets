@@ -24,7 +24,8 @@ export function WorkbenchHero() {
           This page is an introduction; a fleet is ready only after local setup and permissions are in place.
         </p>
         <div className="phantom-workbench__actions">
-          <Link className="phantom-workbench__primary" href="/docs/workbench-setup">
+          <a className="phantom-workbench__primary" href="#connect-agent">Choose an agent to connect</a>
+          <Link className="phantom-workbench__secondary" href="/docs/workbench-setup">
             Install and set up Phantom
           </Link>
           <Link className="phantom-workbench__secondary" href="/docs/workbench">Read the documentation</Link>
