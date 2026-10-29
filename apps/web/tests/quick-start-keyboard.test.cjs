@@ -12,7 +12,7 @@ Object.defineProperty(global, "navigator", { value: dom.window.navigator, config
 global.HTMLElement = dom.window.HTMLElement;
 
 const React = require("react");
-const { cleanup, render, screen, waitFor } = require("@testing-library/react");
+const { cleanup, render, screen, waitFor, within } = require("@testing-library/react");
 const userEvent = require("@testing-library/user-event").default;
 
 function compile(file, localRequire) {
@@ -38,6 +38,37 @@ const { QuickStart } = compile("components/landing/QuickStart.tsx", (name) => {
   if (name === "@/lib/public-release") return release;
   if (name === "next/link") return { __esModule: true, default: ({ children, ...props }) => React.createElement("a", props, children) };
   return require(name);
+});
+
+test("the initial macOS instructions display and copy their install command", async () => {
+  const user = userEvent.setup();
+  render(React.createElement(QuickStart));
+  try {
+    assert.equal(screen.getByRole("button", { name: "macOS" }).getAttribute("aria-pressed"), "true");
+    const card = screen.getByRole("heading", { name: "macOS" }).closest("article");
+    assert.ok(card);
+    const instructions = within(card);
+    assert.ok(instructions.getByText("Uses Keychain when available. The verified source installer auto-detects Apple Silicon or Intel."));
+    assert.ok(instructions.getByRole("link", { name: `Download Phantom ${release.PUBLIC_RELEASE_TAG} for macOS Apple Silicon` }));
+
+    const source = instructions.getByRole("link", { name: "View exact installer source" }).getAttribute("href");
+    const copy = instructions.getByRole("button", { name: /^Copy command:/ });
+    const command = Array.from(copy.firstElementChild.childNodes)
+      .filter((node) => node.nodeType === dom.window.Node.TEXT_NODE)
+      .map((node) => node.textContent)
+      .join("");
+    assert.ok(command.includes(source), "the displayed command downloads the linked installer");
+    assert.ok(command.includes(release.PUBLIC_RELEASE_UNIX_INSTALLER_SHA256));
+    assert.ok(command.includes("shasum -a 256 -c -"), "the command uses the macOS checksum utility");
+    assert.ok(command.includes('"$HOME/.phantom-secrets/bin/phantom-mcp" --version'));
+    assert.ok(!command.includes("sha256sum -c -"));
+    assert.ok(!command.includes("Get-FileHash"));
+
+    await user.click(copy);
+    await waitFor(async () => assert.equal(await navigator.clipboard.readText(), command));
+  } finally {
+    cleanup();
+  }
 });
 
 test("QuickStart copy controls are named, reachable by Tab, and operable by keyboard", async () => {
