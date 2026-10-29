@@ -41,27 +41,31 @@ const { QuickStart } = compile("components/landing/QuickStart.tsx", (name) => {
 });
 
 test("QuickStart copy controls are named, reachable by Tab, and operable by keyboard", async () => {
-  const user = userEvent.setup();
-  render(React.createElement(QuickStart));
-  try {
-    const buttons = screen.getAllByRole("button", { name: /^Copy command:/ });
-    assert.equal(buttons.length, 5, "each platform and setup step has a named copy button");
-    assert.equal(screen.getByRole("button", { name: "Copy command: phantom init" }), buttons[4]);
+  for (const platform of ["macOS", "Windows", "Linux"]) {
+    const user = userEvent.setup();
+    render(React.createElement(QuickStart));
+    try {
+      await user.click(screen.getByRole("button", { name: platform }));
+      document.activeElement.blur();
+      const buttons = screen.getAllByRole("button", { name: /^Copy command:/ });
+      assert.equal(buttons.length, 3, `${platform}: selected platform and setup steps have named copy buttons`);
+      assert.equal(screen.getByRole("button", { name: "Copy command: phantom init" }), buttons[2]);
 
-    const reached = [];
-    for (let i = 0; i < 40 && reached.length < buttons.length; i++) {
-      await user.tab();
-      if (buttons.includes(document.activeElement)) reached.push(document.activeElement);
-    }
-    assert.deepEqual(reached, buttons, "Tab reaches every copy button in document order");
+      const reached = [];
+      for (let i = 0; i < 40 && reached.length < buttons.length; i++) {
+        await user.tab();
+        if (buttons.includes(document.activeElement)) reached.push(document.activeElement);
+      }
+      assert.deepEqual(reached, buttons, `${platform}: Tab reaches every copy button in document order`);
 
-    for (const key of ["{Enter}", " "]) {
-      await navigator.clipboard.writeText("");
-      await user.keyboard(key);
-      await waitFor(async () => assert.equal(await navigator.clipboard.readText(), "phantom init"));
-      assert.equal(document.activeElement, buttons[4], "copying keeps focus on the control");
+      for (const key of ["{Enter}", " "]) {
+        await navigator.clipboard.writeText("");
+        await user.keyboard(key);
+        await waitFor(async () => assert.equal(await navigator.clipboard.readText(), "phantom init"));
+        assert.equal(document.activeElement, buttons[2], "copying keeps focus on the control");
+      }
+    } finally {
+      cleanup();
     }
-  } finally {
-    cleanup();
   }
 });

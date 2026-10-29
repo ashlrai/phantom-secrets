@@ -251,7 +251,7 @@ test("invalid device code explains the accepted characters and displayed format"
   const tree = h.render();
   assert.equal(find(tree, "input").props.value, "AB12-C");
   assert.equal(find(tree, "input").props["aria-invalid"], true);
-  assert.equal(find(tree, "input").props["aria-describedby"], "device-error device-help");
+  assert.equal(find(tree, "input").props["aria-describedby"], "device-code-hint device-error device-help");
   const error = find(tree, "form").props.children.find((child) => child?.props?.id === "device-error");
   assert.equal(error.props.role, "alert");
   assert.equal(error.props.children, "Enter 8 letters or numbers. The code is displayed as XXXX-XXXX.");
