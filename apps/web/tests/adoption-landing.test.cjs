@@ -69,6 +69,20 @@ test("platform chooser links every reviewed release target with bounded evidence
   assert.doesNotMatch(quickStart, /curl[^\n]+phm\.dev\/install|irm[^\n]+phm\.dev\/install/i);
 });
 
+test("install guidance explains the temporary installer location for each platform", () => {
+  const quickStart = read("src/components/landing/QuickStart.tsx");
+  const macos = quickStart.split('name: "macOS"')[1].split('name: "Windows"')[0];
+  const linux = quickStart.split('name: "Linux"')[1].split("export function QuickStart")[0];
+
+  for (const command of [macos, linux]) {
+    assert.match(command, /phantom_stage=.*mktemp -d/);
+    assert.match(command, /phantom_installer=.*phantom_stage\/install\.sh/);
+    assert.match(command, /trap .*phantom_installer.*phantom_stage/);
+  }
+  assert.match(quickStart, /On macOS and Linux, the temporary staging directory holds the\s+downloaded installer script for verification and execution; cleanup attempts\s+to remove both on exit\. It is not the install directory/);
+  assert.match(quickStart, /Windows uses a\s+temporary installer file instead/);
+});
+
 test("activation orders installation before client connection and previews config writes", () => {
   const page = read("src/app/secrets/page.tsx");
   const connection = read("src/components/landing/Install.tsx");
