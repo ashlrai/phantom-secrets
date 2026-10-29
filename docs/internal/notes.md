@@ -1,5 +1,20 @@
 # Notes: Phantom North Star Stabilization
 
+## Keyring migration tracking
+
+[Issue #242](https://github.com/ashlrai/phantom-secrets/issues/242) tracks
+the keyring migration and the three existing `deny.toml` advisory ignores:
+
+- `RUSTSEC-2026-0370` — `zvariant`
+- `RUSTSEC-2026-0371` — `zbus_names`
+- `RUSTSEC-2026-0372` — `zvariant_derive`
+
+The migration remains outstanding; these unmaintained-crate advisories come
+through keyring 3's Linux Secret Service dependency chain. Removing the ignores
+depends on eliminating the affected dependencies, not merely upgrading keyring.
+See the [migration scoping note](../design/keyring-4-migration-scoping.md) for
+the evaluated options and remaining compatibility checks.
+
 ## Landing-page installer temporary directory
 
 The macOS and Linux commands in `apps/web/src/components/landing/QuickStart.tsx`
