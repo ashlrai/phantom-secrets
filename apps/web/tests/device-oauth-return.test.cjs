@@ -306,8 +306,14 @@ test("seven-character device code shows the length error and can be corrected", 
 
 test("eight letters and numbers are formatted and submitted without the display hyphen", async () => {
   const h = harness({ url: "https://phm.dev/device", previousSession: { access_token: "synthetic-existing-account" } });
-  find(h.render(), "input").props.onChange({ target: { value: "ab01cd23" } });
-  assert.equal(find(h.render(), "input").props.value, "AB01-CD23");
+  let input = find(h.render(), "input");
+  assert.equal(input.props.placeholder, "XXXX-XXXX");
+  assert.equal(input.props.maxLength, 9);
+  input.props.onChange({ target: { value: "ab01" } });
+  assert.equal(find(h.render(), "input").props.value, "AB01");
+  find(h.render(), "input").props.onChange({ target: { value: "ab01-cd23!45" } });
+  input = find(h.render(), "input");
+  assert.equal(input.props.value, "AB01-CD23");
   assert.equal(find(h.render(), "button").props.disabled, false);
   await find(h.render(), "form").props.onSubmit({ preventDefault() {} });
   assert.equal(h.states[1], "done");

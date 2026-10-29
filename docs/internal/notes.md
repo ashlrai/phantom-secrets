@@ -44,6 +44,7 @@
 ### Device Auth Wave
 - Fixed initiate/approve mismatch by storing `device_tokens.user_code` as canonical uppercase alphanumeric without hyphens.
 - API still returns readable codes as two four-character groups separated by a hyphen (`XXXX-XXXX`) using the shared formatting helper.
+- The browser displays eight letters or numbers in uppercase as `XXXX-XXXX`: the hyphen is a separator, so the complete presentation is nine characters long. As the user types, the page strips non-alphanumeric characters, inserts the hyphen after the fourth character, and limits the code to eight letters or numbers. Approval submits the canonical eight-character code without the hyphen.
 - Browser device page and approve route now use shared normalization/validation helpers.
 - Initiate rate limit now matches its comment: reject once 10 device codes have been created in the last minute.
 - Added migration `20260523000016_canonical_device_user_codes.sql` to canonicalize existing user codes and enforce a unique `user_code` index.
