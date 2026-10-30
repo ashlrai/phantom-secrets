@@ -110,6 +110,63 @@ test("landing calls to action have accessible names and destinations", async () 
   ]);
 });
 
+test("Secrets landing install links reach its quick-start section", () => {
+  const ts = require("typescript");
+  const React = require("react");
+  const { renderToStaticMarkup } = require("react-dom/server");
+  const { JSDOM } = require("jsdom");
+  const { computeAccessibleName, isInaccessible } = require("dom-accessibility-api");
+
+  function load(relativePath, localRequire) {
+    const output = ts.transpileModule(read(relativePath), {
+      compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, esModuleInterop: true },
+    }).outputText;
+    const exports = {};
+    new Function("exports", "require", output)(exports, localRequire);
+    return exports;
+  }
+
+  const release = load("src/lib/public-release.ts", require);
+  const components = {};
+  function localRequire(name) {
+    if (name === "next/link") return { __esModule: true, default: ({ children, ...props }) => React.createElement("a", props, children) };
+    if (name === "@/lib/public-release") return release;
+    if (name === "./BrandLogos") return { EXACT_ROUTE_ENTRIES: [] };
+    if (name === "./Icons") return { Github: props => React.createElement("svg", props) };
+    if (["./CarouselPauseButton", "./SocialProof", "./CopyButton"].includes(name)) {
+      return { [name.slice(2)]: () => null };
+    }
+    if (name.startsWith("@/components/landing/")) {
+      const component = name.split("/").pop();
+      return { [component]: components[component] || (() => null) };
+    }
+    return require(name);
+  }
+  for (const name of ["Hero", "QuickStart", "CTA"]) {
+    components[name] = load(`src/components/landing/${name}.tsx`, localRequire)[name];
+  }
+  const { default: SecretsPage } = load("src/app/secrets/page.tsx", localRequire);
+  const document = new JSDOM(renderToStaticMarkup(React.createElement(SecretsPage)), {
+    url: "https://example.com/secrets",
+  }).window.document;
+  const sections = document.querySelectorAll('[id="install"]');
+  assert.equal(sections.length, 1, "the quick-start destination must be unique");
+  assert.equal(sections[0].tagName, "SECTION");
+  assert.equal(isInaccessible(sections[0]), false);
+  assert.match(computeAccessibleName(sections[0]), /Install on your OS/);
+
+  for (const [selector, name] of [["#phantom-secrets", "Install Phantom Secrets"], [".closing-section", "Follow the install path"]]) {
+    const link = [...document.querySelectorAll(`${selector} a`)]
+      .find(element => computeAccessibleName(element).trim() === name);
+    assert.ok(link, `missing ${name} link`);
+    assert.equal(isInaccessible(link), false, `${name} must be accessible`);
+    const destination = new URL(link.href);
+    assert.equal(destination.pathname, "/secrets", `${name} must remain on the Secrets landing`);
+    assert.equal(destination.hash, "#install", `${name} must point to quick start`);
+    assert.equal(document.getElementById(destination.hash.slice(1)), sections[0]);
+  }
+});
+
 // These images repeat adjacent text or an already named link/button. Keep the
 // exceptions scoped to their source and count so new images need a review.
 const decorativeImages = {
