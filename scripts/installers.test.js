@@ -540,6 +540,68 @@ for (const installer of [shellInstaller, join(repo, 'apps/web/public/install.sh'
   });
 }
 
+// Point-failure shims for the private staging tree. Each fails only the exact
+// staging call and execs the real tool for everything else, so the installer
+// reaches its staging step and must then stop with a useful error.
+function addStagingFailureShim(shims, seam) {
+  const scripts = {
+    mktemp: `#!/bin/sh
+for arg do
+  case "$arg" in
+    *.install.XXXXXX)
+      printf 'mktemp: injected staging-directory failure\\n' >&2
+      exit 1
+      ;;
+  esac
+done
+exec /usr/bin/mktemp "$@"
+`,
+    chmod: `#!/bin/sh
+if [ "$#" -eq 2 ] && [ "$1" = '700' ]; then
+  printf 'chmod: injected staging-directory failure\\n' >&2
+  exit 1
+fi
+exec /bin/chmod "$@"
+`,
+    mkdir: `#!/bin/sh
+for arg do
+  case "$arg" in
+    */download|*/candidate)
+      printf 'mkdir: injected staging-directory failure\\n' >&2
+      exit 1
+      ;;
+  esac
+done
+exec /bin/mkdir "$@"
+`,
+  };
+  const shim = join(shims, seam);
+  writeFileSync(shim, scripts[seam]);
+  chmodSync(shim, 0o755);
+}
+
+test('Unix installer aborts before download when staging-directory creation fails', () => {
+  for (const seam of ['mktemp', 'chmod', 'mkdir']) {
+    const root = mkdtempSync(join(tmpdir(), `phantom-installer-stage-${seam}-`));
+    const shims = makeShims(root);
+    addStagingFailureShim(shims, seam);
+    const install = join(root, 'live', 'bin');
+    const parent = dirname(install);
+    const { result, log } = runInstaller({ root, shims, install, existing: true });
+    assert.ifError(result.error);
+    assert.equal(result.status, 1, `${seam}: ${result.stderr}`);
+    assert.match(result.stderr, /could not .*staging director/, `${seam}: must report a useful error`);
+    assert.equal(existsSync(log), false, `${seam}: staging failure must precede downloads`);
+    assert.equal(readFileSync(join(install, 'old-install'), 'utf8'), 'preserve-me');
+    assert.equal(existsSync(join(parent, '.bin.install.lock')), false, `${seam}: lock released`);
+    assert.deepEqual(
+      readdirSync(parent).filter((name) => name.startsWith('.')),
+      [],
+      `${seam}: staging and lock leftovers must be cleaned up`,
+    );
+  }
+});
+
 test('Unix installer preserves the prior live install on malformed checksum', () => {
   const { install, result } = runInstaller({ existing: true, sidecar: `${'a'.repeat(64)}  wrong.tar.gz\nextra\n` });
   assert.notEqual(result.status, 0);
