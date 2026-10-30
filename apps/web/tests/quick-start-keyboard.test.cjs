@@ -288,6 +288,66 @@ test("rendered and copied Unix install commands handle a TMPDIR with spaces", as
   }
 });
 
+test("displayed Linux install command creates a fresh private temporary directory on each run", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "phantom-linux-stage-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const temp = path.join(root, "temporary files");
+  const bin = path.join(root, "bin");
+  const home = path.join(root, "home");
+  const installedBin = path.join(home, ".phantom-secrets", "bin");
+  const record = path.join(root, "downloads.jsonl");
+  fs.mkdirSync(temp);
+  fs.mkdirSync(bin);
+  fs.mkdirSync(installedBin, { recursive: true });
+  const sentinel = path.join(temp, "install.sh");
+  fs.writeFileSync(sentinel, "untouched");
+  const executable = (file, body) => fs.writeFileSync(file, `#!/bin/bash\n${body}\n`, { mode: 0o755 });
+  for (const name of ["phantom", "phantom-mcp"]) executable(path.join(installedBin, name), "exit 0");
+  executable(path.join(bin, "sha256sum"), "cat >/dev/null");
+  fs.writeFileSync(path.join(bin, "curl"), `#!${process.execPath}
+const fs = require("node:fs");
+const path = require("node:path");
+const output = process.argv[process.argv.indexOf("--output") + 1];
+const directory = path.dirname(output);
+fs.appendFileSync(process.env.RECORD, JSON.stringify({ output, mode: fs.statSync(directory).mode & 0o777 }) + "\\n");
+fs.writeFileSync(output, "#!/bin/bash\\nexit 0\\n");
+`, { mode: 0o755 });
+
+  const user = userEvent.setup();
+  render(React.createElement(QuickStart));
+  try {
+    await user.click(screen.getByRole("button", { name: "Linux" }));
+    const card = screen.getByRole("heading", { level: 3, name: "Linux" }).closest("article");
+    const button = within(card).getByRole("button", { name: /^Copy command:/ });
+    const commandNode = Array.from(button.firstElementChild.childNodes)
+      .find((node) => node.nodeType === dom.window.Node.TEXT_NODE);
+    assert.ok(commandNode, "Linux command is displayed as text");
+    for (let run = 0; run < 2; run++) {
+      const result = spawnSync("/bin/bash", ["-c", commandNode.textContent], {
+        env: { HOME: home, PATH: `${bin}:/usr/bin:/bin`, TMPDIR: temp, RECORD: record },
+        encoding: "utf8",
+      });
+      assert.equal(result.status, 0, `run ${run + 1}: ${result.stderr}`);
+    }
+    const downloads = fs.readFileSync(record, "utf8").trim().split("\n").map(JSON.parse);
+    assert.equal(downloads.length, 2);
+    const stages = downloads.map(({ output, mode }) => {
+      const stage = path.dirname(output);
+      assert.equal(path.dirname(stage), temp);
+      assert.match(path.basename(stage), /^phantom-install\.[A-Za-z0-9]{6}$/);
+      assert.equal(path.basename(output), "install.sh");
+      assert.equal(mode, 0o700, "staging directory is private");
+      assert.equal(fs.existsSync(stage), false, "staging directory is cleaned up");
+      return stage;
+    });
+    assert.notEqual(stages[0], stages[1], "each run uses a fresh staging directory");
+    assert.equal(fs.readFileSync(sentinel, "utf8"), "untouched");
+    assert.deepEqual(fs.readdirSync(temp), ["install.sh"]);
+  } finally {
+    cleanup();
+  }
+});
+
 test("every displayed mktemp staging template has the Phantom prefix and random suffix", async () => {
   const user = userEvent.setup();
   render(React.createElement(QuickStart));
