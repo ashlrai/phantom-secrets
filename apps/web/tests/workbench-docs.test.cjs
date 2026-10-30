@@ -4,6 +4,10 @@ const path = require('node:path');
 const test = require('node:test');
 const { pathToFileURL } = require('node:url');
 const ts = require('typescript');
+const React = require('react');
+const { renderToStaticMarkup } = require('react-dom/server');
+const { JSDOM } = require('jsdom');
+const { computeAccessibleName } = require('dom-accessibility-api');
 const markdownLoader = require('../scripts/public-doc-markdown-loader.cjs');
 const root = path.resolve(__dirname, '..');
 const repository = path.resolve(root, '..', '..');
@@ -12,7 +16,7 @@ const catalog = JSON.parse(read('docs-catalog.json'));
 const workbench = catalog.filter(({ slug }) => slug === 'workbench' || slug.startsWith('workbench-'));
 const assistant = import(pathToFileURL(path.join(root, 'src/lib/documentation-assistant.mjs')).href);
 function loadTs(file, overrides = {}) {
-  const compiled = ts.transpileModule(read(file), { compilerOptions: { module: ts.ModuleKind.CommonJS, esModuleInterop: true } }).outputText;
+  const compiled = ts.transpileModule(read(file), { compilerOptions: { module: ts.ModuleKind.CommonJS, esModuleInterop: true, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2022 } }).outputText;
   const exports = {};
   new Function('require', 'exports', '__dirname', compiled)((id) => {
     if (id === 'server-only') return {};
@@ -39,6 +43,23 @@ test('workbench articles have immutable evidence and resolvable internal links',
     assert.doesNotMatch(body, /phm authority resident start\s*\n|phm authority grant\s*\n/);
   }
   assert.match(fs.readFileSync(path.join(repository, 'docs/workbench-agents.md'), 'utf8'), /must not imitate Touch ID/);
+});
+
+test('workbench overview renders an accessible link to the public setup guide', () => {
+  const { MarkdownDocument } = loadTs('src/components/docs/MarkdownDocument.tsx', { '@/lib/public-docs': docs });
+  const overview = docs.getPublicDoc('workbench');
+  const html = renderToStaticMarkup(React.createElement(MarkdownDocument, {
+    markdown: overview.markdown,
+    sourceFile: overview.file,
+  }));
+  const document = new JSDOM(html).window.document;
+  const link = [...document.querySelectorAll('a')].find((anchor) =>
+    computeAccessibleName(anchor) === 'Install and open Phantom');
+
+  assert.ok(link, 'the setup guide link must have accessible text');
+  assert.ok(link.getAttribute('href')?.trim(), 'the setup guide link must have a destination');
+  assert.equal(link.getAttribute('href'), '/docs/workbench-setup');
+  assert.ok(docs.getPublicDoc('workbench-setup'), 'the destination must be a public document');
 });
 
 test('every immutable upstream target belongs to the verified pinned source tree', () => {
