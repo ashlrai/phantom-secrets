@@ -285,6 +285,28 @@ test("public home page has a descriptive document title", () => {
   assert.match(value.text.trim(), /engineering agents/i, "title should describe the page");
 });
 
+test("public home page supplies a nonempty description", () => {
+  function assertDescription(text) {
+    const source = ts.createSourceFile("page.tsx", text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+    const metadata = source.statements
+      .filter(ts.isVariableStatement)
+      .filter((statement) => statement.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword))
+      .flatMap((statement) => statement.declarationList.declarations)
+      .find((declaration) => ts.isIdentifier(declaration.name) && declaration.name.text === "metadata");
+    assert.ok(metadata && metadata.initializer && ts.isObjectLiteralExpression(metadata.initializer), "missing exported page metadata");
+    const description = metadata.initializer.properties.find(
+      (property) => ts.isPropertyAssignment(property) && property.name.getText(source) === "description",
+    );
+    assert.ok(description && ts.isStringLiteral(description.initializer), "description must be a literal string");
+    assert.ok(description.initializer.text.trim().length > 0, "description must not be empty");
+  }
+
+  assertDescription(claims["src/app/page.tsx"]);
+  assert.throws(() => assertDescription('export const metadata = { description: "" };'), /description must not be empty/);
+  assert.throws(() => assertDescription('export const metadata = { description: "   " };'), /description must not be empty/);
+  assert.throws(() => assertDescription('export const metadata = {};'), /description must be a literal string/);
+});
+
 test("public surfaces reject previously audited absolute claims", () => {
   for (const forbidden of [
     /backed up automatically/i,
