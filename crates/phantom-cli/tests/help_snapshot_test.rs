@@ -4,6 +4,10 @@ use std::process::Command;
 fn top_level_help_matches_snapshot_without_project_state() {
     let home = tempfile::tempdir().expect("create isolated home");
     let project = tempfile::tempdir().expect("create isolated project");
+    // Coverage-instrumented binaries (cargo llvm-cov) write a default
+    // *.profraw into the current directory when LLVM_PROFILE_FILE is absent,
+    // which would falsify the no-side-effects assertions below.
+    let profile = tempfile::tempdir().expect("create coverage profile dir");
     let output = Command::new(env!("CARGO_BIN_EXE_phantom"))
         .arg("--help")
         .current_dir(project.path())
@@ -11,6 +15,10 @@ fn top_level_help_matches_snapshot_without_project_state() {
         .env("HOME", home.path())
         .env("USERPROFILE", home.path())
         .env("NO_COLOR", "1")
+        .env(
+            "LLVM_PROFILE_FILE",
+            profile.path().join("phantom-%p.profraw"),
+        )
         .output()
         .expect("run top-level help");
 
