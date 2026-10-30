@@ -39,6 +39,41 @@ test("bounded JSON accepts an object at the exact byte limit", async () => {
   );
 });
 
+test("a streamed JSON body at the 4096-byte route limit is accepted, but one byte over is rejected", async () => {
+  const limit = 4_096; // Used by the device auth and team routes.
+  const base = JSON.stringify({ key: "é" });
+  const value = "a".repeat(limit - Buffer.byteLength(base)) + "é";
+
+  for (const extra of ["", "a"]) {
+    const expected = { key: value + extra };
+    const bytes = Buffer.from(JSON.stringify(expected));
+    assert.equal(bytes.byteLength, limit + extra.length);
+    const split = bytes.indexOf(Buffer.from("é")) + 1;
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(bytes.subarray(0, split));
+        controller.enqueue(bytes.subarray(split));
+        controller.close();
+      },
+    });
+    const request = new Request("https://phm.dev/test", {
+      method: "POST",
+      headers: { "content-length": String(limit) },
+      body: stream,
+      duplex: "half",
+    });
+
+    if (extra) {
+      await assert.rejects(
+        body.readBoundedJsonObject(request, limit),
+        (error) => error.status === 413 && error.code === "body_too_large",
+      );
+    } else {
+      assert.deepEqual(await body.readBoundedJsonObject(request, limit), expected);
+    }
+  }
+});
+
 test("declared and streamed oversized bodies fail with 413", async () => {
   const declared = new Request("https://phm.dev/test", {
     method: "POST",
