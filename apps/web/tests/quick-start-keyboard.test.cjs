@@ -246,6 +246,8 @@ test("rendered and copied Unix install commands handle a TMPDIR with spaces", as
   const home = path.join(root, "home");
   const installedBin = path.join(home, ".phantom-secrets", "bin");
   const record = path.join(root, "stage-record");
+  const checksumRecord = path.join(root, "checksum-record");
+  const executionRecord = path.join(root, "execution-record");
   fs.mkdirSync(temp);
   fs.mkdirSync(bin);
   fs.mkdirSync(installedBin, { recursive: true });
@@ -255,14 +257,18 @@ test("rendered and copied Unix install commands handle a TMPDIR with spaces", as
     while [[ $# -gt 0 && "$1" != "--output" ]]; do shift; done
     [[ $# -ge 2 ]] || exit 2
     printf '%s' "$2" > "$STAGE_RECORD"
-    printf '#!/bin/bash\\nexit 0\\n' > "$2"
+    cat > "$2" <<'INSTALLER'
+#!/bin/bash
+printf '%s' "$0" > "$EXECUTION_RECORD"
+INSTALLER
   `);
-  for (const name of ["shasum", "sha256sum"]) executable(path.join(bin, name), "cat >/dev/null");
+  for (const name of ["shasum", "sha256sum"]) executable(path.join(bin, name), 'cat > "$CHECKSUM_RECORD"');
 
   const user = userEvent.setup();
   render(React.createElement(QuickStart));
   try {
     for (const platform of ["macOS", "Linux"]) {
+      for (const file of [record, checksumRecord, executionRecord]) fs.rmSync(file, { force: true });
       await user.click(screen.getByRole("button", { name: platform }));
       const card = screen.getByRole("heading", { level: 3, name: platform }).closest("article");
       const button = within(card).getByRole("button", { name: /^Copy command:/ });
@@ -274,13 +280,15 @@ test("rendered and copied Unix install commands handle a TMPDIR with spaces", as
       const copied = await navigator.clipboard.readText();
       assert.equal(copied, displayed, `${platform}: copied command matches rendered text`);
       const result = spawnSync("/bin/bash", ["-c", copied], {
-        env: { HOME: home, PATH: `${bin}:/usr/bin:/bin`, TMPDIR: temp, STAGE_RECORD: record },
+        env: { HOME: home, PATH: `${bin}:/usr/bin:/bin`, TMPDIR: temp, STAGE_RECORD: record, CHECKSUM_RECORD: checksumRecord, EXECUTION_RECORD: executionRecord },
         encoding: "utf8",
       });
       assert.equal(result.status, 0, `${platform}: command failed: ${result.stderr}`);
       const installer = fs.readFileSync(record, "utf8");
       assert.equal(path.dirname(path.dirname(installer)), temp, `${platform}: staging directory is under TMPDIR`);
       assert.equal(path.basename(installer), "install.sh");
+      assert.equal(fs.readFileSync(checksumRecord, "utf8"), `${release.PUBLIC_RELEASE_UNIX_INSTALLER_SHA256}  ${installer}\n`, `${platform}: checksum verifies the staged installer`);
+      assert.equal(fs.readFileSync(executionRecord, "utf8"), installer, `${platform}: executes the staged installer`);
       assert.deepEqual(fs.readdirSync(temp), [], `${platform}: staging directory was cleaned up`);
     }
   } finally {
