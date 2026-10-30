@@ -304,6 +304,40 @@ test("rendered and copied Unix install commands use the TMPDIR fallback and pres
   }
 });
 
+test("rendered Unix commands stop before downloading when TMPDIR does not exist", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "phantom-missing-temp-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const missingTemp = path.join(root, "missing directory");
+  const bin = path.join(root, "bin");
+  const downloadMarker = path.join(root, "download-started");
+  fs.mkdirSync(bin);
+  fs.writeFileSync(path.join(bin, "curl"), '#!/bin/bash\ntouch "$DOWNLOAD_MARKER"\n', { mode: 0o755 });
+
+  const user = userEvent.setup();
+  render(React.createElement(QuickStart));
+  try {
+    for (const platform of ["macOS", "Linux"]) {
+      await user.click(screen.getByRole("button", { name: platform }));
+      const card = screen.getByRole("heading", { level: 3, name: platform }).closest("article");
+      const button = within(card).getByRole("button", { name: /^Copy command:/ });
+      const commandNode = Array.from(button.firstElementChild.childNodes)
+        .find((node) => node.nodeType === dom.window.Node.TEXT_NODE);
+      assert.ok(commandNode, `${platform}: command is rendered as text`);
+      assert.ok(commandNode.textContent.includes('${TMPDIR:-/tmp}/phantom-install.XXXXXX'));
+      const result = spawnSync("/bin/bash", ["-c", commandNode.textContent], {
+        env: { HOME: root, PATH: `${bin}:/usr/bin:/bin`, TMPDIR: missingTemp, DOWNLOAD_MARKER: downloadMarker },
+        encoding: "utf8",
+      });
+      assert.equal(result.error, undefined, `${platform}: shell started`);
+      assert.ok(Number.isInteger(result.status) && result.status !== 0, `${platform}: invalid TMPDIR must fail`);
+      assert.equal(fs.existsSync(missingTemp), false, `${platform}: missing directory remains absent`);
+      assert.equal(fs.existsSync(downloadMarker), false, `${platform}: download must not start`);
+    }
+  } finally {
+    cleanup();
+  }
+});
+
 test("displayed Linux install command creates a fresh private temporary directory on each run", async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "phantom-linux-stage-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
