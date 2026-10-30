@@ -67,6 +67,42 @@ test("submitting an empty device code shows validation without starting authoriz
   }
 });
 
+test("each short code submitted with Enter independently shows the format error", async () => {
+  let clientCalls = 0;
+  let fetchCalls = 0;
+  const originalFetch = global.fetch;
+  const dependencies = {
+    "next/image": { __esModule: true, default: () => null },
+    "next/link": { __esModule: true, default: ({ children, ...props }) => React.createElement("a", props, children) },
+    "@/lib/device-code": compile("lib/device-code.ts", require),
+    "@/lib/posthog": { capturePostHog: async () => {} },
+    "@supabase/supabase-js": { createClient() { clientCalls++; throw new Error("Unexpected authentication"); } },
+  };
+  global.fetch = async () => { fetchCalls++; throw new Error("Unexpected network request"); };
+  try {
+    const Component = compile("app/device/device-authorization-client.tsx", (name) => dependencies[name] ?? require(name)).default;
+    const user = userEvent.setup();
+    for (let length = 1; length < 8; length++) {
+      render(React.createElement(Component));
+      const input = screen.getByRole("textbox", { name: "Device code" });
+      await user.type(input, "abcd2345".slice(0, length));
+      assert.equal(screen.queryByRole("alert"), null);
+      await user.keyboard("{Enter}");
+      const alert = screen.getByRole("alert");
+      assert.equal(alert.textContent, "Enter 8 letters or numbers. The code is displayed as XXXX-XXXX.");
+      assert.equal(input.getAttribute("aria-invalid"), "true");
+      assert.ok(input.getAttribute("aria-describedby").split(/\s+/).includes(alert.id));
+      assert.equal(input.disabled, false);
+      assert.equal(clientCalls, 0);
+      assert.equal(fetchCalls, 0);
+      cleanup();
+    }
+  } finally {
+    cleanup();
+    global.fetch = originalFetch;
+  }
+});
+
 test("short codes show the format error through the form and a corrected code can be authorized", async () => {
   let clientCalls = 0;
   const requests = [];
