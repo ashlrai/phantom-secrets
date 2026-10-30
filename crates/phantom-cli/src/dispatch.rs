@@ -9,7 +9,14 @@ use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
 pub(crate) fn run() -> anyhow::Result<()> {
+    // Probe before parsing or logging, without touching project/vault state.
+    if crate::handshake::requested(std::env::args_os().skip(1)) {
+        return crate::handshake::print();
+    }
     let mut cli = Cli::parse();
+    if cli.ashlr_handshake {
+        return crate::handshake::print();
+    }
     let global_json = cli.json;
     if global_json {
         if let Err(command) = apply_global_json(&mut cli.command) {

@@ -7,6 +7,7 @@ mod dispatch;
 #[cfg(test)]
 mod doc_facts;
 mod fleet_status;
+mod handshake;
 mod report_file;
 mod util;
 
@@ -63,6 +64,10 @@ struct Cli {
     /// Output in JSON format (for scripting)
     #[arg(long, global = true)]
     json: bool,
+
+    /// Print the local, value-free Ashlr companion handshake and exit
+    #[arg(long)]
+    ashlr_handshake: bool,
 }
 
 #[derive(Subcommand)]
