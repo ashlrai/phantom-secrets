@@ -658,6 +658,28 @@ test("sitemap URLs with an empty query are rejected before fetching the route", 
   );
 });
 
+test("sitemap URLs with a fragment are rejected before fetching the route", async () => {
+  // The bare "#" delimiter matters: URL.hash is empty even when it is present.
+  for (const fragment of ["#", "#section"]) {
+    await withFixtureServer(
+      async ({ options, requests }) => {
+        await assert.rejects(
+          observeProduction(options),
+          /sitemap URL contains query or hash data: \/docs/,
+        );
+        assert.ok(!requests.includes("/docs"));
+      },
+      {
+        "/sitemap.xml": (response, origin) => {
+          response.end(
+            `<urlset><url><loc>${origin}/docs${fragment}</loc></url></urlset>`,
+          );
+        },
+      },
+    );
+  }
+});
+
 test("canonical URLs with an empty query are reported as mismatches", async () => {
   await withFixtureServer(
     async ({ options }) => {
@@ -670,6 +692,27 @@ test("canonical URLs with an empty query are reported as mismatches", async () =
       "/docs": (response, origin) => {
         response.setHeader("content-type", "text/html");
         response.end(html(origin, "/docs", { canonical: `${origin}/docs?` }));
+      },
+    },
+  );
+});
+
+test("canonical URLs with a fragment are reported as mismatches", async () => {
+  await withFixtureServer(
+    async ({ options }) => {
+      const report = await observeProduction(options);
+      assert.ok(report.findings.some(
+        (finding) => finding.code === "canonical_mismatch" && finding.route === "/docs",
+      ));
+      assert.equal(
+        report.technical.public_routes.find((page) => page.route === "/docs").canonical,
+        null,
+      );
+    },
+    {
+      "/docs": (response, origin) => {
+        response.setHeader("content-type", "text/html");
+        response.end(html(origin, "/docs", { canonical: `${origin}/docs#section` }));
       },
     },
   );
