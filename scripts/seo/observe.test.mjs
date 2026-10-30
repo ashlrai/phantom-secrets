@@ -292,6 +292,35 @@ test("an empty query is rejected before a network request", async () => {
   assert.equal(requests, 0);
 });
 
+test("a malformed site URL fails clearly before any network request", async () => {
+  let requests = 0;
+  await assert.rejects(
+    observeProduction({
+      siteOrigin: "http://[invalid",
+      fetchImpl: async () => { requests += 1; },
+    }),
+    { code: "ERR_INVALID_URL", message: /Invalid URL/ },
+  );
+  assert.equal(requests, 0);
+
+  const result = spawnSync(process.execPath, ["--input-type=module", "--eval", `
+    import { observeProduction } from "./scripts/seo/observe.mjs";
+    await observeProduction({
+      siteOrigin: "http://[invalid",
+      fetchImpl: async () => { process.stdout.write("unexpected network request"); },
+    });
+  `], {
+    cwd: repositoryDirectory,
+    encoding: "utf8",
+    timeout: 5_000,
+  });
+  assert.ifError(result.error);
+  assert.equal(result.status, 1);
+  assert.equal(result.stdout, "");
+  assert.match(result.stderr, /Invalid URL/);
+  assert.match(result.stderr, /ERR_INVALID_URL/);
+});
+
 test("an empty query in a redirect is rejected before following it", async () => {
   let requests = 0;
   await assert.rejects(
