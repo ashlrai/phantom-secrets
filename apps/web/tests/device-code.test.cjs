@@ -22,9 +22,17 @@ test("complete device user codes display in two four-character groups and normal
 });
 
 test("the internal note's display and canonical example matches the formatter", () => {
-  const notes = fs.readFileSync(path.join(__dirname, "../../../docs/internal/notes.md"), "utf8");
+  const notesPath = path.join(__dirname, "../../../docs/internal/notes.md");
+  const notes = fs.readFileSync(notesPath, "utf8");
   const example = notes.match(/`([A-Z0-9]{4}-[A-Z0-9]{4})` corresponds to `([A-Z0-9]{8})` in storage/);
   assert.ok(example, "the note should pair a displayed code with its canonical storage value");
+  const formLink = notes.match(/\[device authorization form\]\(([^)]+)\)/);
+  assert.ok(formLink, "the note should link to the device authorization form");
+  assert.equal(
+    path.resolve(path.dirname(notesPath), formLink[1]),
+    path.resolve(__dirname, "../src/app/device/device-authorization-client.tsx"),
+  );
+  assert.ok(fs.statSync(path.resolve(path.dirname(notesPath), formLink[1])).isFile());
   const [, displayed, canonical] = example;
   assert.match(notes, /format it as `XXXX-XXXX`: two groups of four code characters separated by a hyphen/);
   assert.match(notes, /The hyphen is display formatting, not part of the canonical/);
