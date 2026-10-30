@@ -27,7 +27,7 @@ function compile(file, localRequire) {
   return module.exports;
 }
 
-test("submitting an empty device code shows validation without starting authorization", async () => {
+test("submitting an empty or cleared device code shows validation without starting authorization", async () => {
   let clientCalls = 0;
   let fetchCalls = 0;
   const originalFetch = global.fetch;
@@ -42,10 +42,15 @@ test("submitting an empty device code shows validation without starting authoriz
   try {
     const Component = compile("app/device/device-authorization-client.tsx", (name) => dependencies[name] ?? require(name)).default;
     const user = userEvent.setup();
-    for (const method of ["click", "enter"]) {
+    for (const [method, cleared] of [["click", false], ["enter", false], ["click", true], ["enter", true]]) {
       render(React.createElement(Component));
       const input = screen.getByRole("textbox", { name: "Device code" });
       const button = screen.getByRole("button", { name: "Authorize Device" });
+      if (cleared) {
+        await user.type(input, "abcd2345");
+        assert.equal(input.value, "ABCD-2345");
+        await user.clear(input);
+      }
       assert.equal(input.value, "");
       assert.equal(screen.queryByRole("alert"), null);
       if (method === "click") await user.click(button);
