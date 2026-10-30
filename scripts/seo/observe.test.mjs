@@ -433,6 +433,42 @@ test(
   },
 );
 
+test("HTML route records distinguish missing and empty metadata", async () => {
+  for (const [head, expectedTitle, expectedDescription] of [
+    ["", null, null],
+    ['<title>  </title><meta name="description" content="  ">', "", ""],
+    ['<title></title><meta name="description" content="">', "", null],
+  ]) {
+    await withFixtureServer(
+      async ({ options }) => {
+        const report = await observeProduction(options);
+        const route = report.technical.public_routes.find((entry) => entry.route === "/security");
+        assert.deepEqual(route, {
+          route: "/security",
+          status: 200,
+          content_type: "text/html",
+          title: expectedTitle,
+          description: expectedDescription,
+          canonical: null,
+          h1_count: 1,
+          structured_data_types: [],
+        });
+        assert.deepEqual(
+          report.findings.filter((finding) => finding.route === "/security").map((finding) => finding.code),
+          ["canonical_count", "description_missing", "title_missing"],
+        );
+        assert.equal(report.verdict, "FAIL");
+      },
+      {
+        "/security": (response) => {
+          response.setHeader("content-type", "text/html");
+          response.end(`<!doctype html><html><head>${head}</head><body><h1>Security</h1></body></html>`);
+        },
+      },
+    );
+  }
+});
+
 test("canonical, structured-data, and off-origin redirect failures stay visible", async () => {
   await withFixtureServer(
     async ({ options }) => {
