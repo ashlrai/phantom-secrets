@@ -60,6 +60,7 @@ test("the CLI rejects a missing required output or output value", () => {
   const observer = path.join(scriptDirectory, "observe.mjs");
   for (const [args, diagnostic] of [
     [[], /--out is required/],
+    [["--experiments", "missing-ledger.json"], /--out is required/],
     [["--out"], /missing value for --out/],
   ]) {
     const result = spawnSync(process.execPath, [observer, ...args], {
@@ -71,6 +72,7 @@ test("the CLI rejects a missing required output or output value", () => {
     assert.equal(result.status, 1);
     assert.equal(result.stdout, "");
     assert.match(result.stderr, diagnostic);
+    assert.match(result.stderr, /Usage: node scripts\/seo\/observe\.mjs --out <report\.json>/);
   }
 });
 
