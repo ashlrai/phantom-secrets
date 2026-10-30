@@ -238,7 +238,7 @@ test("each platform renders and copies its exact installer staging command", asy
   }
 });
 
-test("rendered and copied Unix install commands handle a TMPDIR with spaces", async (t) => {
+test("rendered and copied Unix install commands handle unset, empty, and spaced TMPDIR", async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "phantom-rendered-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const temp = path.join(root, "temporary files");
@@ -273,15 +273,23 @@ test("rendered and copied Unix install commands handle a TMPDIR with spaces", as
       await user.click(button);
       const copied = await navigator.clipboard.readText();
       assert.equal(copied, displayed, `${platform}: copied command matches rendered text`);
-      const result = spawnSync("/bin/bash", ["-c", copied], {
-        env: { HOME: home, PATH: `${bin}:/usr/bin:/bin`, TMPDIR: temp, STAGE_RECORD: record },
-        encoding: "utf8",
-      });
-      assert.equal(result.status, 0, `${platform}: command failed: ${result.stderr}`);
-      const installer = fs.readFileSync(record, "utf8");
-      assert.equal(path.dirname(path.dirname(installer)), temp, `${platform}: staging directory is under TMPDIR`);
-      assert.equal(path.basename(installer), "install.sh");
-      assert.deepEqual(fs.readdirSync(temp), [], `${platform}: staging directory was cleaned up`);
+      for (const [label, tmpdir, expected] of [
+        ["unset", undefined, "/tmp"],
+        ["empty", "", "/tmp"],
+        ["with spaces", temp, temp],
+      ]) {
+        fs.rmSync(record, { force: true });
+        const env = { HOME: home, PATH: `${bin}:/usr/bin:/bin`, STAGE_RECORD: record };
+        if (tmpdir !== undefined) env.TMPDIR = tmpdir;
+        const result = spawnSync("/bin/bash", ["-c", copied], { env, encoding: "utf8" });
+        assert.equal(result.status, 0, `${platform}, ${label}: command failed: ${result.stderr}`);
+        const installer = fs.readFileSync(record, "utf8");
+        const stage = path.dirname(installer);
+        assert.equal(path.dirname(stage), expected, `${platform}, ${label}: staging parent`);
+        assert.equal(path.basename(installer), "install.sh");
+        assert.equal(fs.existsSync(stage), false, `${platform}, ${label}: staging directory was cleaned up`);
+        assert.deepEqual(fs.readdirSync(temp), [], `${platform}, ${label}: temporary override is empty`);
+      }
     }
   } finally {
     cleanup();
