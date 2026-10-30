@@ -248,6 +248,8 @@ test("rendered and copied Unix install commands use the TMPDIR fallback and pres
   const home = path.join(root, "home");
   const installedBin = path.join(home, ".phantom-secrets", "bin");
   const record = path.join(root, "stage-record");
+  const checksumRecord = path.join(root, "checksum-record");
+  const events = path.join(root, "events");
   for (const temp of tempPaths) fs.mkdirSync(temp);
   fs.mkdirSync(decoy);
   fs.writeFileSync(path.join(decoy, "phantom-install.XXXXXX"), "decoy");
@@ -259,9 +261,12 @@ test("rendered and copied Unix install commands use the TMPDIR fallback and pres
     while [[ $# -gt 0 && "$1" != "--output" ]]; do shift; done
     [[ $# -ge 2 ]] || exit 2
     printf '%s' "$2" > "$STAGE_RECORD"
-    printf '#!/bin/bash\\nexit 0\\n' > "$2"
+    printf 'download\\n' >> "$EVENTS"
+    printf '#!/bin/bash\\nprintf "execute:%%s\\n" "$0" >> "$EVENTS"\\n' > "$2"
   `);
-  for (const name of ["shasum", "sha256sum"]) executable(path.join(bin, name), "cat >/dev/null");
+  for (const name of ["shasum", "sha256sum"]) {
+    executable(path.join(bin, name), 'cat > "$CHECKSUM_RECORD"; printf "checksum\\n" >> "$EVENTS"');
+  }
 
   const user = userEvent.setup();
   render(React.createElement(QuickStart));
@@ -282,7 +287,8 @@ test("rendered and copied Unix install commands use the TMPDIR fallback and pres
         ["empty", "", "/tmp"],
         ...tempPaths.map((temp) => [path.basename(temp), temp, temp]),
       ]) {
-        const env = { HOME: home, PATH: `${bin}:/usr/bin:/bin`, STAGE_RECORD: record };
+        fs.rmSync(events, { force: true });
+        const env = { HOME: home, PATH: `${bin}:/usr/bin:/bin`, STAGE_RECORD: record, CHECKSUM_RECORD: checksumRecord, EVENTS: events };
         if (temp !== undefined) env.TMPDIR = temp;
         const result = spawnSync("/bin/bash", ["-c", copied], {
           env,
@@ -294,6 +300,8 @@ test("rendered and copied Unix install commands use the TMPDIR fallback and pres
         assert.equal(path.dirname(stage), expectedParent, `${platform}, ${label}: staging directory parent`);
         assert.match(path.basename(stage), /^phantom-install\.[A-Za-z0-9]{6}$/, `${platform}, ${label}: mktemp template`);
         assert.equal(path.basename(installer), "install.sh");
+        assert.equal(fs.readFileSync(checksumRecord, "utf8"), `${release.PUBLIC_RELEASE_UNIX_INSTALLER_SHA256}  ${installer}\n`, `${platform}, ${label}: verify the downloaded installer`);
+        assert.equal(fs.readFileSync(events, "utf8"), `download\nchecksum\nexecute:${installer}\n`, `${platform}, ${label}: verify before executing the staged installer`);
         assert.equal(fs.existsSync(stage), false, `${platform}, ${label}: staging directory was cleaned up`);
         if (temp) assert.deepEqual(fs.readdirSync(temp), [], `${platform}: temporary path was cleaned up`);
       }
