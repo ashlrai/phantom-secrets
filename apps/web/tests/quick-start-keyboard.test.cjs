@@ -238,6 +238,42 @@ test("each platform renders and copies its exact installer staging command", asy
   }
 });
 
+test("both Unix examples stage and verify the current public installer before execution", async () => {
+  const user = userEvent.setup();
+  const source = `https://raw.githubusercontent.com/ashlrai/phantom-secrets/${release.PUBLIC_RELEASE_SOURCE_COMMIT}/scripts/install.sh`;
+  render(React.createElement(QuickStart));
+  try {
+    for (const [platform, checksum] of [["macOS", "shasum -a 256 -c -"], ["Linux", "sha256sum -c -"]]) {
+      await user.click(screen.getByRole("button", { name: platform }));
+      const card = screen.getByRole("heading", { level: 3, name: platform }).closest("article");
+      const button = within(card).getByRole("button", { name: /^Copy command:/ });
+      const commandNode = Array.from(button.firstElementChild.childNodes)
+        .find((node) => node.nodeType === dom.window.Node.TEXT_NODE);
+      assert.ok(commandNode, `${platform}: command is displayed`);
+      assert.equal(within(card).getByRole("link", { name: "View exact installer source" }).getAttribute("href"), source);
+      const lines = commandNode.textContent.split("\n");
+      const expected = [
+        'phantom_stage="$(mktemp -d "${TMPDIR:-/tmp}/phantom-install.XXXXXX")"',
+        'phantom_installer="$phantom_stage/install.sh"',
+        `curl --fail --location --proto '=https' --proto-redir '=https' --tlsv1.2 --output "$phantom_installer" ${source}`,
+        `printf '%s  %s\\n' ${release.PUBLIC_RELEASE_UNIX_INSTALLER_SHA256} "$phantom_installer" | ${checksum}`,
+        'bash "$phantom_installer"',
+      ];
+      let previous = -1;
+      for (const line of expected) {
+        const index = lines.indexOf(line);
+        assert.ok(index > previous, `${platform}: expected ordered line: ${line}`);
+        assert.equal(lines.lastIndexOf(line), index, `${platform}: line occurs once`);
+        previous = index;
+      }
+      await user.click(button);
+      assert.equal(await navigator.clipboard.readText(), commandNode.textContent, `${platform}: copied command matches`);
+    }
+  } finally {
+    cleanup();
+  }
+});
+
 test("rendered and copied Unix install commands use the TMPDIR fallback and preserve special paths", async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "phantom-rendered-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
