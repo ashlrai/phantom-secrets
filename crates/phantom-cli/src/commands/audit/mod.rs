@@ -36,6 +36,9 @@ pub use verify::run_verify;
 
 #[derive(Subcommand)]
 pub enum AuditAction {
+    /// Project stdin audit NDJSON into schema-versioned, value-free workbench events.
+    /// Malformed, oversized (>64 KiB), and unterminated records are discarded.
+    Feed,
     /// Print recent audit events (default: last 50)
     Show {
         /// Limit output to the last N events (default 50)
