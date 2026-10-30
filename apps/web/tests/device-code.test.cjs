@@ -35,6 +35,7 @@ test("the internal note's display and canonical example matches the formatter", 
   assert.ok(fs.statSync(path.resolve(path.dirname(notesPath), formLink[1])).isFile());
   const [, displayed, canonical] = example;
   assert.match(notes, /format it as `XXXX-XXXX`: two groups of four code characters separated by a hyphen/);
+  assert.match(notes, /The hyphen is a readability separator/);
   assert.match(notes, /The hyphen is display formatting, not part of the canonical/);
   assert.equal(canonical.length, DEVICE_USER_CODE_LENGTH);
   assert.equal(displayed.length, DEVICE_USER_CODE_LENGTH + 1);
@@ -42,6 +43,41 @@ test("the internal note's display and canonical example matches the formatter", 
   assert.equal(isValidDeviceUserCode(displayed), true);
   assert.equal(formatDeviceUserCode(canonical), displayed);
   assert.equal(normalizeDeviceUserCode(displayed), canonical);
+});
+
+test("initiation returns the formatted user code while storing its canonical form", async () => {
+  const filename = path.join(__dirname, "../src/app/api/v1/auth/device/initiate/route.ts");
+  const route = ts.transpileModule(fs.readFileSync(filename, "utf8"), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+  let issued;
+  const dependencies = {
+    "@/lib/supabase-server": { createServiceClient: () => ({
+      rpc: async (name, args) => {
+        assert.equal(name, "issue_device_code");
+        issued = args;
+        return { data: "issued", error: null };
+      },
+    }) },
+    "@/lib/device-code": deviceCodeModule.exports,
+    "@/lib/commissioning": { requireHostedService: () => null },
+  };
+  const routeModule = { exports: {} };
+  new Function("require", "module", "exports", route)(
+    (name) => dependencies[name] ?? require(name), routeModule, routeModule.exports,
+  );
+  const response = await routeModule.exports.POST(new Request("https://example.test", {
+    method: "POST",
+    headers: { "x-vercel-forwarded-for": "192.0.2.1" },
+  }));
+  const body = await response.json();
+  assert.equal(response.status, 200);
+  assert.match(issued.p_user_code, /^[A-HJKMNP-Z2-9]{8}$/);
+  assert.equal(body.user_code, formatDeviceUserCode(issued.p_user_code));
+  assert.match(body.user_code, /^[A-HJKMNP-Z2-9]{4}-[A-HJKMNP-Z2-9]{4}$/);
+  assert.equal(normalizeDeviceUserCode(body.user_code), issued.p_user_code);
+  assert.equal(body.device_code, issued.p_device_code);
+  assert.notEqual(body.device_code, body.user_code);
 });
 
 test("input normalization accepts lowercase and separators while requiring eight characters", () => {
