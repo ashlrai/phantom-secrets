@@ -432,6 +432,58 @@ test("a page without a title produces a missing-title failure", async () => {
   );
 });
 
+test("a page without description metadata produces a missing-description failure", async () => {
+  await withFixtureServer(
+    async ({ options }) => {
+      const report = await observeProduction(options);
+      assert.equal(report.verdict, "FAIL");
+      assert.deepEqual(report.counts, { fail: 2, warn: 0 });
+      for (const route of ["/docs", "/security"]) {
+        assert.equal(
+          report.technical.public_routes.find((page) => page.route === route).description,
+          null,
+        );
+      }
+      assert.deepEqual(report.findings, [
+        {
+          severity: "fail",
+          code: "description_missing",
+          message: "Meta description is missing",
+          route: "/docs",
+        },
+        {
+          severity: "fail",
+          code: "description_missing",
+          message: "Meta description is missing",
+          route: "/security",
+        },
+      ]);
+      const summary = renderSummary(report);
+      assert.match(summary, /\*\*FAIL description_missing\*\* \(\/docs\): Meta description is missing/);
+      assert.match(summary, /\*\*FAIL description_missing\*\* \(\/security\): Meta description is missing/);
+    },
+    {
+      // The description meta tag is absent entirely on /docs and present but
+      // empty on /security; both must report the same missing-description result.
+      "/docs": (response, origin) => {
+        response.setHeader("content-type", "text/html");
+        response.end(
+          html(origin, "/docs").replace(
+            '<meta name="description" content="Description for /docs">',
+            "",
+          ),
+        );
+      },
+      "/security": (response, origin) => {
+        response.setHeader("content-type", "text/html");
+        response.end(
+          html(origin, "/security").replace('content="Description for /security"', 'content=""'),
+        );
+      },
+    },
+  );
+});
+
 test("the GitHub job summary is deterministically capped with an omitted count", () => {
   const findingCount = 500;
   const report = {
