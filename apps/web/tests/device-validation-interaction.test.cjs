@@ -27,6 +27,46 @@ function compile(file, localRequire) {
   return module.exports;
 }
 
+test("submitting an empty device code shows validation without starting authorization", async () => {
+  let clientCalls = 0;
+  let fetchCalls = 0;
+  const originalFetch = global.fetch;
+  const dependencies = {
+    "next/image": { __esModule: true, default: () => null },
+    "next/link": { __esModule: true, default: ({ children, ...props }) => React.createElement("a", props, children) },
+    "@/lib/device-code": compile("lib/device-code.ts", require),
+    "@/lib/posthog": { capturePostHog: async () => {} },
+    "@supabase/supabase-js": { createClient() { clientCalls++; throw new Error("Unexpected authentication"); } },
+  };
+  global.fetch = async () => { fetchCalls++; throw new Error("Unexpected network request"); };
+  try {
+    const Component = compile("app/device/device-authorization-client.tsx", (name) => dependencies[name] ?? require(name)).default;
+    const user = userEvent.setup();
+    for (const method of ["click", "enter"]) {
+      render(React.createElement(Component));
+      const input = screen.getByRole("textbox", { name: "Device code" });
+      const button = screen.getByRole("button", { name: "Authorize Device" });
+      assert.equal(input.value, "");
+      assert.equal(screen.queryByRole("alert"), null);
+      if (method === "click") await user.click(button);
+      else { await user.click(input); await user.keyboard("{Enter}"); }
+      const alert = screen.getByRole("alert");
+      assert.equal(alert.textContent, "Enter 8 letters or numbers. The code is displayed as XXXX-XXXX.");
+      assert.equal(input.getAttribute("aria-invalid"), "true");
+      assert.ok(input.getAttribute("aria-describedby").split(/\s+/).includes(alert.id));
+      assert.equal(input.value, "");
+      assert.equal(input.disabled, false);
+      assert.equal(button.disabled, false);
+      assert.equal(clientCalls, 0);
+      assert.equal(fetchCalls, 0);
+      cleanup();
+    }
+  } finally {
+    cleanup();
+    global.fetch = originalFetch;
+  }
+});
+
 test("short codes show the format error through the form and a corrected code can be authorized", async () => {
   let clientCalls = 0;
   const requests = [];
