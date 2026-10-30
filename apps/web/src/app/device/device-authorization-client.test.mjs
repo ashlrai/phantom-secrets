@@ -4,6 +4,7 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { compileFunction } from "node:vm";
 import { JSDOM } from "jsdom";
 import ts from "typescript";
 
@@ -16,7 +17,7 @@ function compile(filename, localRequire) {
     fileName: filename,
   }).outputText;
   const compiledModule = { exports: {} };
-  new Function("require", "module", "exports", output)(localRequire, compiledModule, compiledModule.exports);
+  compileFunction(output, ["require", "module", "exports"], { filename })(localRequire, compiledModule, compiledModule.exports);
   return compiledModule.exports;
 }
 
@@ -43,7 +44,7 @@ test("blank device code shows validation without starting authorization", async 
       "next/image": { __esModule: true, default: () => null },
       "next/link": { __esModule: true, default: ({ children, ...props }) => React.createElement("a", props, children) },
       "@/lib/device-code": compile(path.resolve(dirname, "../../lib/device-code.ts"), runtimeRequire),
-      "@/lib/posthog": { capturePostHog: async () => {} },
+      "@/lib/posthog": { capturePostHog: async () => { /* Analytics is intentionally inert in this test. */ } },
       "@supabase/supabase-js": { createClient() { clientCalls++; throw new Error("Unexpected client"); } },
     };
     const Component = compile(path.join(dirname, "device-authorization-client.tsx"),
