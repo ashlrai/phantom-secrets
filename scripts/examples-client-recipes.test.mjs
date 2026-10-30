@@ -5,11 +5,24 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { main } from "../examples/_shared/sandbox.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const suffix = process.platform === "win32" ? ".exe" : "";
 const built = join(root, "target", "debug", `phantom${suffix}`);
 const recipes = ["claude-code", "cursor", "github-actions"];
+
+test("an empty recipe fails with a diagnostic and cleans up", async (t) => {
+  const messages = [];
+  let cleaned = false;
+  t.mock.method(console, "log", (message) => messages.push(message));
+
+  const status = await main("Empty recipe", { cleanup: () => { cleaned = true; } }, []);
+
+  assert.equal(status, 1);
+  assert.deepEqual(messages, ["FAIL recipe has no checks"]);
+  assert.equal(cleaned, true);
+});
 
 function recipe(name, phantom) {
   return spawnSync(process.execPath, [join(root, "examples", name, "run.mjs"), "--phantom", phantom], {
