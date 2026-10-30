@@ -10,7 +10,7 @@ const output = ts.transpileModule(source, {
 }).outputText;
 const deviceCodeModule = { exports: {} };
 new Function("module", "exports", output)(deviceCodeModule, deviceCodeModule.exports);
-const { formatDeviceUserCode, isValidDeviceUserCode, normalizeDeviceUserCode } = deviceCodeModule.exports;
+const { DEVICE_USER_CODE_LENGTH, formatDeviceUserCode, isValidDeviceUserCode, normalizeDeviceUserCode } = deviceCodeModule.exports;
 
 test("complete device user codes display in two four-character groups and normalize for storage", () => {
   for (const canonical of ["ABCD2345", "WXYZ6789"]) {
@@ -26,6 +26,12 @@ test("the internal note's display and canonical example matches the formatter", 
   const example = notes.match(/`([A-Z0-9]{4}-[A-Z0-9]{4})` corresponds to `([A-Z0-9]{8})` in storage/);
   assert.ok(example, "the note should pair a displayed code with its canonical storage value");
   const [, displayed, canonical] = example;
+  assert.match(notes, /format it as `XXXX-XXXX`: two groups of four code characters separated by a hyphen/);
+  assert.match(notes, /The hyphen is display formatting, not part of the canonical/);
+  assert.equal(canonical.length, DEVICE_USER_CODE_LENGTH);
+  assert.equal(displayed.length, DEVICE_USER_CODE_LENGTH + 1);
+  assert.equal(displayed.replace("-", ""), canonical);
+  assert.equal(isValidDeviceUserCode(displayed), true);
   assert.equal(formatDeviceUserCode(canonical), displayed);
   assert.equal(normalizeDeviceUserCode(displayed), canonical);
 });
