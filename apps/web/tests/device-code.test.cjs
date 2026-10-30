@@ -21,6 +21,15 @@ test("complete device user codes display in two four-character groups and normal
   }
 });
 
+test("the internal note's display and canonical example matches the formatter", () => {
+  const notes = fs.readFileSync(path.join(__dirname, "../../../docs/internal/notes.md"), "utf8");
+  const example = notes.match(/`([A-Z0-9]{4}-[A-Z0-9]{4})` corresponds to `([A-Z0-9]{8})` in storage/);
+  assert.ok(example, "the note should pair a displayed code with its canonical storage value");
+  const [, displayed, canonical] = example;
+  assert.equal(formatDeviceUserCode(canonical), displayed);
+  assert.equal(normalizeDeviceUserCode(displayed), canonical);
+});
+
 test("input normalization accepts lowercase and separators while requiring eight characters", () => {
   for (const input of ["abcd2345", "abcd-2345", "ab cd-23 45!"]) {
     assert.equal(normalizeDeviceUserCode(input), "ABCD2345");
