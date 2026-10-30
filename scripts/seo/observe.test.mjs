@@ -307,6 +307,35 @@ test("an empty query in a redirect is rejected before following it", async () =>
   assert.equal(requests, 1);
 });
 
+test("local redirects are followed within the boundary and limited to two hops", async () => {
+  await withFixtureServer(
+    async ({ origin, options, requests }) => {
+      const requestOptions = { fetchImpl: fetch, networkPolicy: options.networkPolicy, retries: 0 };
+      const result = await requestWithinBoundary(`${origin}/start`, requestOptions);
+      assert.equal(result.url.href, `${origin}/final`);
+      assert.equal(result.status, 200);
+      assert.equal(result.headers.get("content-type"), "text/plain");
+      assert.equal(result.body, "redirect destination");
+      assert.deepEqual(requests, ["/start", "/step", "/final"]);
+
+      requests.length = 0;
+      await assert.rejects(requestWithinBoundary(`${origin}/loop`, requestOptions), /too many redirects/);
+      assert.deepEqual(requests, ["/loop", "/loop", "/loop"]);
+
+      requests.length = 0;
+      await assert.rejects(requestWithinBoundary(`${origin}/missing-location`, requestOptions), /has no location/);
+      assert.deepEqual(requests, ["/missing-location"]);
+    },
+    {
+      "/start": (response) => { response.writeHead(301, { location: "/step" }).end(); },
+      "/step": (response) => { response.writeHead(302, { location: "final" }).end(); },
+      "/final": (response) => { response.writeHead(200, { "content-type": "text/plain" }).end("redirect destination"); },
+      "/loop": (response) => { response.writeHead(307, { location: "/loop" }).end(); },
+      "/missing-location": (response) => { response.writeHead(302).end(); },
+    },
+  );
+});
+
 test("one monotonic request deadline covers retries and redirects", async (t) => {
   const temporary = new Response("temporary", { status: 503 });
   const redirect = new Response("", {
@@ -563,6 +592,22 @@ test("canonical, structured-data, and off-origin redirect failures stay visible"
         response.setHeader("location", "https://example.com/attacker-secret");
         response.end();
       },
+    },
+  );
+});
+
+test("a sitemapped redirect is checked against the original route's canonical", async () => {
+  await withFixtureServer(
+    async ({ options, requests }) => {
+      const report = await observeProduction(options);
+      assert.equal(report.verdict, "FAIL");
+      assert.ok(requests.includes("/docs"));
+      assert.ok(requests.filter((route) => route === "/docs/guide").length >= 2);
+      assert.ok(report.findings.some((finding) =>
+        finding.code === "canonical_mismatch" && finding.route === "/docs"));
+    },
+    {
+      "/docs": (response) => { response.writeHead(302, { location: "/docs/guide" }).end(); },
     },
   );
 });
