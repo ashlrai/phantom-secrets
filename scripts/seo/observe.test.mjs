@@ -567,6 +567,27 @@ test("canonical, structured-data, and off-origin redirect failures stay visible"
   );
 });
 
+test("duplicate sitemap URLs fail deterministically before fetching public routes", async () => {
+  await withFixtureServer(
+    async ({ options, requests }) => {
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const start = requests.length;
+        await assert.rejects(observeProduction(options), {
+          message: "sitemap contains duplicate path /docs",
+        });
+        assert.deepEqual(requests.slice(start).sort(), ["/robots.txt", "/sitemap.xml"]);
+      }
+    },
+    {
+      "/sitemap.xml": (response, origin) => {
+        response.end(`<urlset>${["/docs", "/security", "/docs"]
+          .map((route) => `<url><loc>${origin}${route}</loc></url>`)
+          .join("")}</urlset>`);
+      },
+    },
+  );
+});
+
 test("sitemap URLs with an empty query are rejected before fetching the route", async () => {
   await withFixtureServer(
     async ({ options, requests }) => {
