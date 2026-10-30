@@ -70,14 +70,7 @@ fn list_json_never_leaks_secret_values() {
 fn list_json_emits_empty_array_when_vault_has_no_secrets() {
     let dir = common::canonical_tempdir();
 
-    Command::cargo_bin("phantom")
-        .expect("binary not found")
-        .args(["init", "--empty"])
-        .current_dir(dir.path())
-        .env("PHANTOM_VAULT_PASSPHRASE", VAULT_PASS)
-        .env("HOME", dir.path())
-        .assert()
-        .success();
+    phantom(&dir).args(["init", "--empty"]).assert().success();
 
     let output = phantom(&dir).args(["list", "--json"]).assert().success();
     let stdout = String::from_utf8_lossy(&output.get_output().stdout);
