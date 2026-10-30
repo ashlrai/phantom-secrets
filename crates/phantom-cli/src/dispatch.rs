@@ -306,6 +306,7 @@ pub(crate) fn run() -> anyhow::Result<()> {
             allow_cross_owner,
         } => commands::copy::run(&name, &to, &rename, allow_cross_owner),
         Commands::Audit { action } => match action {
+            AuditAction::Feed => crate::audit_feed::run(),
             AuditAction::Show {
                 last,
                 op,

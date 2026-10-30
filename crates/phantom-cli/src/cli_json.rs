@@ -33,7 +33,7 @@ pub(crate) fn apply_global_json(command: &mut Commands) -> Result<(), &'static s
             action: CryptoAction::Inventory { .. },
         }
         | Commands::Audit {
-            action: A::Verify { .. },
+            action: A::Verify { .. } | A::Feed,
         }
         | Commands::Setup { status: true, .. }
         | Commands::Grant { .. }

@@ -1,3 +1,4 @@
+mod audit_feed;
 mod broken_pipe;
 mod cli_actions;
 mod cli_json;
