@@ -232,7 +232,7 @@ test("root metadata supplies a title template without forcing every route canoni
   ]);
 });
 
-test("home page exports a nonempty metadata description", () => {
+function homeMetadata() {
   const ts = require("typescript");
   const compiled = ts.transpileModule(publicPages["/"], {
     compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX },
@@ -241,9 +241,20 @@ test("home page exports a nonempty metadata description", () => {
   const exports = {};
   const localRequire = (name) => name.startsWith("@/") ? {} : require(name);
   new Function("exports", "require", compiled)(exports, localRequire);
+  return exports.metadata;
+}
 
-  assert.equal(typeof exports.metadata?.description, "string");
-  assert.match(exports.metadata.description, /\S/, "home page description must not be empty");
+test("home page exports a nonempty metadata title", () => {
+  const title = homeMetadata()?.title;
+  const resolvedTitle = typeof title === "string" ? title : title?.absolute ?? title?.default;
+  assert.equal(typeof resolvedTitle, "string", "home page title must be a string");
+  assert.match(resolvedTitle, /\S/, "home page title must not be empty");
+});
+
+test("home page exports a nonempty metadata description", () => {
+  const metadata = homeMetadata();
+  assert.equal(typeof metadata?.description, "string");
+  assert.match(metadata.description, /\S/, "home page description must not be empty");
 });
 
 test("both installable manifests and machine references identify the workbench and dedicated Secrets page", () => {
