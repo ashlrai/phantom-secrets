@@ -408,6 +408,26 @@ test("a complete public fixture produces a deterministic, sanitized passing repo
   });
 });
 
+test("observed titles decode supported HTML entities exactly once", async () => {
+  await withFixtureServer(
+    async ({ options }) => {
+      const report = await observeProduction(options);
+      const page = report.technical.public_routes.find((entry) => entry.route === "/docs");
+      assert.ok(page, "the docs route must be observed");
+      assert.equal(page.title, `Phantom & "Docs" 'Guide' <API> &lt;literal&gt;`);
+    },
+    {
+      "/docs": (response, origin) => {
+        response.setHeader("content-type", "text/html; charset=utf-8");
+        response.end(html(origin, "/docs").replace(
+          "<title>/docs — Phantom</title>",
+          "<title>Phantom &amp; &quot;Docs&quot; &#39;Guide&#39; &lt;API&gt; &amp;lt;literal&amp;gt;</title>",
+        ));
+      },
+    },
+  );
+});
+
 test("the GitHub job summary is deterministically capped with an omitted count", () => {
   const findingCount = 500;
   const report = {
