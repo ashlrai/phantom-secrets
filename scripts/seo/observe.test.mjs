@@ -408,6 +408,31 @@ test("a complete public fixture produces a deterministic, sanitized passing repo
   });
 });
 
+test("a non-success public page response reports its status as a failure", async () => {
+  await withFixtureServer(
+    async ({ options }) => {
+      const report = await observeProduction(options);
+      assert.equal(report.verdict, "FAIL");
+      assert.deepEqual(report.counts, { fail: 1, warn: 0 });
+      assert.equal(report.technical.public_routes.find((page) => page.route === "/docs").status, 404);
+      assert.deepEqual(report.findings, [{
+        severity: "fail",
+        code: "public_route_status",
+        message: "Public route returned HTTP 404",
+        route: "/docs",
+      }]);
+      assert.match(renderSummary(report), /\*\*FAIL public_route_status\*\* \(\/docs\): Public route returned HTTP 404/);
+    },
+    {
+      "/docs": (response, origin) => {
+        response.statusCode = 404;
+        response.setHeader("content-type", "text/html");
+        response.end(html(origin, "/docs"));
+      },
+    },
+  );
+});
+
 test("a page without a title produces a missing-title failure", async () => {
   await withFixtureServer(
     async ({ options }) => {
