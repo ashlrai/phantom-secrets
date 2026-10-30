@@ -16,7 +16,11 @@ function executable(product, reportedVersion = version, pathSensitive = false) {
   const output = pathSensitive
     ? `case "$0" in *.install.*) echo '${product} ${reportedVersion}' ;; *) echo '${product} 9.9.9' ;; esac`
     : `echo '${product} ${reportedVersion}'`;
-  return `#!/bin/sh\n[ "$1" = --version ] || exit 2\n${output}\n`;
+  return `#!/bin/sh\n[ "$1" = --version ] || exit 2\n[ -z "\${PHANTOM_TEST_RECORD_INVOCATIONS:-}" ] || printf '%s\\n' "$0" >> "$PHANTOM_TEST_RECORD_INVOCATIONS"\n${output}\n`;
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function makeArchive(root, target = 'x86_64-apple-darwin', options = {}) {
@@ -134,6 +138,7 @@ function runInstaller(options = {}) {
     PHANTOM_TEST_UNAME_S: options.unameS ?? 'Darwin',
     PHANTOM_TEST_UNAME_M: options.unameM ?? 'x86_64',
     PHANTOM_TEST_CURL_DELAY_SECONDS: options.curlDelaySeconds ?? '',
+    PHANTOM_TEST_RECORD_INVOCATIONS: options.recordInvocations ?? '',
     PHANTOM_INSTALL_LOCK_WAIT_SECONDS: options.lockWaitSeconds ?? '30',
     PHANTOM_INSTALL_LOCK_STALE_SECONDS: options.lockStaleSeconds ?? '300',
     PHANTOM_INSTALL_LOCK_HEARTBEAT_SECONDS: options.lockHeartbeatSeconds ?? '5',
@@ -277,7 +282,7 @@ test('Unix installer uses bounded HTTPS downloads and promotes both exact binari
   );
   const curlLog = readFileSync(log, 'utf8');
   for (const option of ['--proto =https', '--proto-redir =https', '--max-redirs 3', '--connect-timeout 10', '--max-time 120', '--max-filesize']) {
-    assert.match(curlLog, new RegExp(option.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    assert.match(curlLog, new RegExp(escapeRegExp(option)));
   }
   assert.doesNotMatch(curlLog, /http:\/\//);
   assert.equal(readdirSync(dirname(install)).filter((name) => name.includes('.bin.install.')).length, 0);
@@ -307,6 +312,41 @@ test('Unix installer rejects unsafe install-directory syntax before download', (
   }
 });
 
+for (const installer of [shellInstaller, join(repo, 'apps/web/public/install.sh')]) {
+  const label = installer === shellInstaller ? 'candidate' : 'public-reference';
+  test(`Unix ${label} installer stages inside a spaced install parent and cleans it up`, () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom installer stage-')));
+    const parent = join(root, 'live dir');
+    const install = join(parent, 'bin');
+    const record = join(root, 'invocations.log');
+    const { result } = runInstaller({ root, install, installer, recordInvocations: record });
+    assert.ifError(result.error);
+    assert.equal(result.status, 0, result.stderr);
+
+    // Every fixture --version probe logs $0: two staged runs must resolve
+    // inside the spaced parent's single private staging directory.
+    const staged = readFileSync(record, 'utf8').trim().split('\n')
+      .filter((path) => path.includes('.bin.install.'));
+    const stagedPattern = new RegExp(
+      `^${escapeRegExp(parent)}/\\.bin\\.install\\.[^/]+/candidate/[^/]+$`,
+    );
+    assert.deepEqual(staged.map((path) => basename(path)).sort(), ['phantom', 'phantom-mcp']);
+    const stageRoots = new Set(staged.map((path) => dirname(dirname(path))));
+    assert.equal(stageRoots.size, 1);
+    for (const path of staged) assert.match(path, stagedPattern);
+    const [stageRoot] = stageRoots;
+    assert.equal(existsSync(stageRoot), false, 'staging directory must be removed');
+    assert.deepEqual(
+      readdirSync(parent).filter((name) => name.startsWith('.bin.')),
+      [],
+    );
+    assert.match(
+      readFileSync(join(root, 'home', '.bashrc'), 'utf8'),
+      new RegExp(`export PATH="${escapeRegExp(install)}:\\$PATH"`),
+    );
+  });
+}
+
 test('Unix installer refuses a linked shell rc without mutating its target', () => {
   const root = mkdtempSync(join(tmpdir(), 'phantom-installer-linked-rc-'));
   const home = join(root, 'home');
@@ -333,7 +373,7 @@ test('Unix installer atomically preserves an existing regular shell rc under GNU
   assert.match(rc, /^# existing\n/);
   assert.match(rc, /# phantom-secrets PATH/);
   const canonicalInstall = realpathSync(install);
-  assert.match(rc, new RegExp(`export PATH="${canonicalInstall.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}:\\$PATH"`));
+  assert.match(rc, new RegExp(`export PATH="${escapeRegExp(canonicalInstall)}:\\$PATH"`));
   assert.deepEqual(
     readdirSync(home).filter((name) => name.startsWith('.phantom-path.')),
     [],
