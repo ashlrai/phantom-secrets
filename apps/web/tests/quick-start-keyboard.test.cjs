@@ -238,7 +238,7 @@ test("each platform renders and copies its exact installer staging command", asy
   }
 });
 
-test("rendered and copied Unix install commands preserve TMPDIR paths with spaces and glob characters", async (t) => {
+test("rendered and copied Unix install commands use the TMPDIR fallback and preserve special paths", async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "phantom-rendered-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const tempPaths = [path.join(root, "temporary files"), path.join(root, "temporary[1]*")];
@@ -277,16 +277,25 @@ test("rendered and copied Unix install commands preserve TMPDIR paths with space
       await user.click(button);
       const copied = await navigator.clipboard.readText();
       assert.equal(copied, displayed, `${platform}: copied command matches rendered text`);
-      for (const temp of tempPaths) {
+      for (const [label, temp, expectedParent] of [
+        ["unset", undefined, "/tmp"],
+        ["empty", "", "/tmp"],
+        ...tempPaths.map((temp) => [path.basename(temp), temp, temp]),
+      ]) {
+        const env = { HOME: home, PATH: `${bin}:/usr/bin:/bin`, STAGE_RECORD: record };
+        if (temp !== undefined) env.TMPDIR = temp;
         const result = spawnSync("/bin/bash", ["-c", copied], {
-          env: { HOME: home, PATH: `${bin}:/usr/bin:/bin`, TMPDIR: temp, STAGE_RECORD: record },
+          env,
           encoding: "utf8",
         });
-        assert.equal(result.status, 0, `${platform}, ${path.basename(temp)}: command failed: ${result.stderr}`);
+        assert.equal(result.status, 0, `${platform}, ${label}: command failed: ${result.stderr}`);
         const installer = fs.readFileSync(record, "utf8");
-        assert.equal(path.dirname(path.dirname(installer)), temp, `${platform}: staging directory is under TMPDIR`);
+        const stage = path.dirname(installer);
+        assert.equal(path.dirname(stage), expectedParent, `${platform}, ${label}: staging directory parent`);
+        assert.match(path.basename(stage), /^phantom-install\.[A-Za-z0-9]{6}$/, `${platform}, ${label}: mktemp template`);
         assert.equal(path.basename(installer), "install.sh");
-        assert.deepEqual(fs.readdirSync(temp), [], `${platform}: staging directory was cleaned up`);
+        assert.equal(fs.existsSync(stage), false, `${platform}, ${label}: staging directory was cleaned up`);
+        if (temp) assert.deepEqual(fs.readdirSync(temp), [], `${platform}: temporary path was cleaned up`);
       }
     }
     assert.equal(fs.readFileSync(path.join(decoy, "phantom-install.XXXXXX"), "utf8"), "decoy");
