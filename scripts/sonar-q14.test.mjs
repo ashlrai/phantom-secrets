@@ -7,8 +7,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { runInNewContext } from "node:vm";
 import { collectTargets } from "./freshness/blocks.mjs";
+import { unmerged } from "./lib/unmerged-paths.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const require = createRequire(import.meta.url);
@@ -33,12 +33,8 @@ test("freshness paths retain UTF-16 code-unit order across directories", (t) => 
 });
 
 test("unmerged fixture paths deduplicate stages and retain code-unit order", () => {
-  // Exercise the existing test helper without running its integration suite twice.
-  const source = readFileSync(join(root, "scripts/resolve-merge-conflicts.test.mjs"), "utf8");
-  const helper = source.slice(source.indexOf("function unmerged("), source.indexOf("function longDoc("));
   const lines = names.flatMap(name => [1, 2, 3].map(stage => `100644 abc ${stage}\t${name}`)).join("\n");
-  const actual = runInNewContext(`${helper}\nunmerged('fixture')`, { git: () => lines });
-  assert.deepEqual(Array.from(actual), ordered);
+  assert.deepEqual(unmerged("fixture", () => lines), ordered);
 });
 
 test("attestation schema accepts reordered keys and rejects unexpected keys", (t) => {
