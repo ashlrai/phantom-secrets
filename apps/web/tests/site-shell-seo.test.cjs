@@ -246,6 +246,23 @@ test("home page exports a nonempty metadata description", () => {
   assert.match(exports.metadata.description, /\S/, "home page description must not be empty");
 });
 
+test("other public pages export nonempty metadata descriptions", () => {
+  const ts = require("typescript");
+  for (const [route, source] of Object.entries(publicPages)) {
+    if (route === "/") continue; // The home page has its own regression above.
+    const compiled = ts.transpileModule(source, {
+      compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX },
+      fileName: "page.tsx",
+    }).outputText;
+    const exports = {};
+    const localRequire = (name) => name.startsWith("@/") ? {} : require(name);
+    new Function("exports", "require", compiled)(exports, localRequire);
+
+    assert.equal(typeof exports.metadata?.description, "string", `${route}: description must be a string`);
+    assert.match(exports.metadata.description, /\S/, `${route}: description must not be empty`);
+  }
+});
+
 test("both installable manifests and machine references identify the workbench and dedicated Secrets page", () => {
   const dynamicManifest = read("src/app/manifest.ts");
   assert.match(dynamicManifest, /name: "Phantom"/);
