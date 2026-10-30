@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -9,6 +8,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { collectTargets } from "./freshness/blocks.mjs";
 import { unmerged } from "./lib/unmerged-paths.mjs";
+import { spawnPosixSync } from "./lib/posix-spawn.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const require = createRequire(import.meta.url);
@@ -73,7 +73,7 @@ test("affected-crates reads option-shaped metadata names literally", (t) => {
   for (const filename of ["metadata.json", "--help", "-metadata.json"]) {
     writeFileSync(join(dir, filename), JSON.stringify(metadata));
     for (const [input, expected] of [["crates/z/src/lib.rs\0crates/a/src/lib.rs\0", "a\nz\n"], ["README.md\0", "--workspace\n"], ["", ""]]) {
-      const result = spawnSync("python3", [join(root, "scripts/affected-crates.py"), filename], { cwd: dir, input, encoding: "utf8" });
+      const result = spawnPosixSync("python3", [join(root, "scripts/affected-crates.py"), filename], { cwd: dir, input, encoding: "utf8" });
       assert.equal(result.status, 0, result.stderr);
       assert.equal(result.stdout, expected);
     }
@@ -86,7 +86,7 @@ test("lock regeneration keeps cwd and package-manager arguments while disabling 
   const helper = source.slice(source.indexOf("resolve_lock()"), source.indexOf("declare -a manual="));
   mkdirSync(join(dir, "nested"));
   for (const [filename, expected] of [["bun.lock", "install --ignore-scripts"], ["bun.lockb", "install --ignore-scripts"], ["package-lock.json", "install --package-lock-only --ignore-scripts"]]) {
-    const result = spawnSync("bash", ["-c", `
+    const result = spawnPosixSync("bash", ["-c", `
       set -euo pipefail
       upstream=3
       blob() { :; }

@@ -298,7 +298,7 @@ test("a malformed site URL fails clearly before any network request", async () =
   let requests = 0;
   await assert.rejects(
     observeProduction({
-      siteOrigin: "http://[invalid",
+      siteOrigin: "https://[invalid",
       fetchImpl: async () => { requests += 1; },
     }),
     { code: "ERR_INVALID_URL", message: /Invalid URL/ },
@@ -308,7 +308,7 @@ test("a malformed site URL fails clearly before any network request", async () =
   const result = spawnSync(process.execPath, ["--input-type=module", "--eval", `
     import { observeProduction } from "./scripts/seo/observe.mjs";
     await observeProduction({
-      siteOrigin: "http://[invalid",
+      siteOrigin: "https://[invalid",
       fetchImpl: async () => { process.stdout.write("unexpected network request"); },
     });
   `], {
