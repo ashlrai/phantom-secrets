@@ -74,6 +74,36 @@ test("the CLI rejects a missing required output or output value", () => {
   }
 });
 
+test("the documented local command writes its report and fails closed on an unreadable ledger", async () => {
+  const readme = await readFile(path.join(repositoryDirectory, "apps/web/README.md"), "utf8");
+  const command = readme.match(/```sh\n(node scripts\/seo\/observe\.mjs [^\n]+)\n```/);
+  assert.ok(command, "README contains the local observer command");
+  const [node, script, ...args] = command[1].split(/\s+/);
+  assert.equal(node, "node");
+  assert.deepEqual(args, ["--experiments", "seo/experiments.json", "--out", "seo/reports/observation.json"]);
+  await readFile(path.join(repositoryDirectory, args[1]));
+
+  const directory = await mkdtemp(path.join(tmpdir(), "phantom-seo-readme-"));
+  try {
+    // A missing ledger exercises the real CLI and report path without network access.
+    args[1] = path.join(directory, "missing-ledger.json");
+    args[3] = path.join(directory, "reports", "observation.json");
+    const result = spawnSync(process.execPath, [script, ...args], {
+      cwd: repositoryDirectory,
+      encoding: "utf8",
+      timeout: 5_000,
+    });
+    assert.ifError(result.error);
+    assert.equal(result.status, 1);
+    const report = JSON.parse(await readFile(args[3], "utf8"));
+    assert.equal(report.verdict, "FAIL");
+    assert.equal(report.findings[0].code, "observer_execution_failed");
+    assert.match(result.stdout, /FAIL/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("HTML entities are decoded exactly once", () => {
   assert.equal(decodeEntities("&amp;&quot;&#39;&lt;&gt;"), "&\"'<>");
   assert.equal(decodeEntities("&amp;lt;script&amp;gt;"), "&lt;script&gt;");
