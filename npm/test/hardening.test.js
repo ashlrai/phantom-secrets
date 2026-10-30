@@ -364,15 +364,22 @@ async function assertPreviousVersionCachePreserved(stage) {
 
     const heartbeatOwner = await acquireInstallLock(paths.lockPath, {
       waitMs: 20,
-      staleMs: 40,
+      staleMs: 10_000,
       heartbeatMs: 5,
       pollMs: 2,
     });
+    // Verify periodic refresh directly; filesystem latency must not decide
+    // whether this live owner looks stale during the contention assertion.
+    const heartbeatPath = join(paths.lockPath, "owner");
+    const expiredHeartbeat = new Date(Date.now() - 20_000);
+    utimesSync(heartbeatPath, expiredHeartbeat, expiredHeartbeat);
+    const initialHeartbeat = lstatSync(heartbeatPath).mtimeMs;
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 70));
+    assert.ok(lstatSync(heartbeatPath).mtimeMs > initialHeartbeat, "timer must refresh the owner");
     await assert.rejects(
       acquireInstallLock(paths.lockPath, {
         waitMs: 15,
-        staleMs: 40,
+        staleMs: 10_000,
         heartbeatMs: 5,
         pollMs: 2,
       }),
