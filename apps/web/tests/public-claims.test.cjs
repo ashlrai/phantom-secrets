@@ -56,6 +56,19 @@ function readRepo(relativePath) {
   return fs.readFileSync(path.join(repoDir, relativePath), "utf8");
 }
 
+function readRepoTree(relativeDir) {
+  const parts = [];
+  const walk = (dir) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (entry.name.endsWith(".rs")) parts.push(fs.readFileSync(full, "utf8"));
+    }
+  };
+  walk(path.join(repoDir, relativeDir));
+  return parts.join("\n");
+}
+
 function exportedString(source, name) {
   const match = source.match(
     new RegExp(`export const ${name}\\s*=\\s*"([^"]+)"`),
@@ -460,7 +473,9 @@ test("authority-sensitive command guidance stays fail-closed and value-blind", (
   assert.match(machineCatalog, /phantom_apply_expiry_policy[\s\S]{0,360}does not recall/i);
   assert.doesNotMatch(machineCatalog, /advisory `VaultMode`/i);
 
-  const cli = readRepo("crates/phantom-cli/src/main.rs");
+  // Command enums move between main.rs and cli_actions/*.rs; the fail-closed
+  // claims must hold across every command module, not one entry-point file.
+  const cli = readRepoTree("crates/phantom-cli/src");
   assert.doesNotMatch(cli, /Skip the standalone self-replacement confirmation prompt/i);
   assert.doesNotMatch(cli, /Role to assign \(member, admin, owner\)/i);
   assert.match(cli, /cannot bypass the standalone replacement ceremonies/i);
