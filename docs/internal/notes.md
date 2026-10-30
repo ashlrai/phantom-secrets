@@ -76,6 +76,7 @@ in `finally`; the Unix `TMPDIR` override does not apply to that command.
 
 ### Device Auth Wave
 - The user code contains eight uppercase letters or digits. For human-readable display, the initiation API and browser format it as `XXXX-XXXX`: two groups of four code characters separated by a hyphen. For example, `ABCD-2345` has eight code characters and nine displayed characters including the separator.
+- The [device authorization form](../../apps/web/src/app/device/device-authorization-client.tsx) displays and formats the code in the browser.
 - The hyphen is display formatting, not part of the canonical `device_tokens.user_code` value: `ABCD-2345` corresponds to `ABCD2345` in storage. The browser strips non-alphanumeric characters and uppercases input before formatting it; approval submits and looks up the canonical form. Incomplete or overlong normalized codes are invalid; extra characters are not silently truncated.
 - Browser device page and approve route now use shared normalization/validation helpers.
 - Initiate rate limit now matches its comment: reject once 10 device codes have been created in the last minute.
