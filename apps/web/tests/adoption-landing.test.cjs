@@ -7,6 +7,45 @@ const webRoot = path.resolve(__dirname, "..");
 const read = (relativePath) =>
   fs.readFileSync(path.join(webRoot, relativePath), "utf8");
 
+test("landing primary navigation has an accessible label", () => {
+  const React = require("react");
+  const ts = require("typescript");
+  const { renderToStaticMarkup } = require("react-dom/server");
+  const { JSDOM } = require("jsdom");
+  const { getByRole } = require("@testing-library/dom");
+  const compiled = ts.transpileModule(read("src/components/landing/Nav.tsx"), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, esModuleInterop: true },
+    fileName: "Nav.tsx",
+  }).outputText;
+
+  for (const pathname of ["/", "/secrets"]) {
+    for (const menuOpen of [false, true]) {
+      let stateIndex = 0;
+      const hooks = { ...React, useState: initial => [stateIndex++ === 1 ? menuOpen : initial, () => {}] };
+      const localRequire = name => {
+        if (name === "react") return hooks;
+        if (name === "next/navigation") return { usePathname: () => pathname };
+        if (name === "next/link") return { __esModule: true, default: ({ children, ...props }) => React.createElement("a", props, children) };
+        if (name === "next/image") return { __esModule: true, default: ({ priority, ...props }) => React.createElement("img", props) };
+        if (name === "@/lib/posthog") return { capturePostHog: async () => {} };
+        if (name === "@/lib/legacy-secrets-fragment") return { legacySecretsDestination: () => null };
+        if (name === "./Icons") return { Github: () => React.createElement("svg", { "aria-hidden": true }) };
+        return require(name);
+      };
+      const exports = {};
+      new Function("exports", "require", compiled)(exports, localRequire);
+      const dom = new JSDOM(renderToStaticMarkup(React.createElement(exports.Nav)));
+      const document = dom.window.document;
+      assert.equal(
+        getByRole(document.body, "navigation", { name: "Primary navigation" }),
+        document.querySelector("nav"),
+        `${pathname}: navigation must remain named when the menu is ${menuOpen ? "open" : "closed"}`,
+      );
+      dom.window.close();
+    }
+  }
+});
+
 test("landing controls explicitly use non-submit button types", () => {
   const ts = require("typescript");
   const { JSDOM } = require("jsdom");
