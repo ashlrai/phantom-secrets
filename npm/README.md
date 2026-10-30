@@ -51,6 +51,18 @@ architecture combinations:
 | Windows (`win32`) | `arm64` | `aarch64-pc-windows-msvc` |
 | Windows (`win32`) | `x64` | `x86_64-pc-windows-msvc` |
 
+Other Node.js platform and architecture combinations are unsupported. For
+example, the wrapper rejects these combinations before using its cache or
+downloading a binary:
+
+| Node.js platform | Node.js architecture |
+|---|---|
+| `darwin` | `ia32` |
+| `linux` | `arm` |
+| `freebsd` | `x64` |
+| `openbsd` | `x64` |
+| `win32` | `ia32` |
+
 Linux archives target glibc; the wrapper does not provide a musl build or
 detect the host's libc. Published archives do not by themselves prove every
 keychain, shell, editor, or provider integration on every host; see the

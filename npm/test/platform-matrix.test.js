@@ -50,13 +50,27 @@ for (const [platformKey, target] of Object.entries(expected)) {
   );
 }
 
-for (const runtime of [
+const unsupported = [
   { platform: "darwin", arch: "ia32" },
   { platform: "linux", arch: "arm" },
   { platform: "freebsd", arch: "x64" },
   { platform: "openbsd", arch: "x64" },
   { platform: "win32", arch: "ia32" },
-]) {
+];
+
+// The examples in the README must be the combinations exercised below.
+const unsupportedTable = readme.match(
+  /\| Node\.js platform \| Node\.js architecture \|\r?\n\|---\|---\|\r?\n((?:\|[^\n]+\|\r?\n)+)/
+);
+assert.ok(unsupportedTable, "README must contain the unsupported platform examples");
+const documentedUnsupported = unsupportedTable[1].trim().split(/\r?\n/).map((row) => {
+  const match = row.match(/^\| `([^`]+)` \| `([^`]+)` \|$/);
+  assert.ok(match, `invalid README unsupported platform row: ${row}`);
+  return { platform: match[1], arch: match[2] };
+});
+assert.deepStrictEqual(documentedUnsupported, unsupported);
+
+for (const runtime of unsupported) {
   assert.throws(() => getPlatformTarget(runtime), (error) => {
     assert.match(error.message, new RegExp(`Unsupported platform: ${runtime.platform}-${runtime.arch}`));
     assert.match(error.message, /releases\/tag\/v0\.7\.9/);
