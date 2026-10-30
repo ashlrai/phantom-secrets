@@ -226,7 +226,7 @@ function mapCfgBody(body, legs, markAll) {
         spans.push([nm.index, end + 1]);
         const inner = inner0.trim();
         const anyM = inner.match(/^any\s*\(([\s\S]*)\)$/);
-        if (inner.match(/^(all|not)\s*\(/)) {
+        if (/^(all|not)\s*\(/.test(inner)) {
             markAll(); // complement of an intersection/nested not: not OS-expressible
         } else {
             const sel = unionSelectors(anyM ? anyM[1] : inner);
@@ -257,7 +257,7 @@ function mapCfgBody(body, legs, markAll) {
             else markAll();
         } else if (!NON_OS_CFG.has(key)) markAll();
     }
-    rest = rest.replace(/\b[a-z_][a-z_0-9]*\s*=\s*"[^"]*"/gi, " ").replace(/"/g, " ");
+    rest = rest.replaceAll(/\b[a-z_][a-z_0-9]*\s*=\s*"[^"]*"/gi, " ").replaceAll('"', " ");
     for (const t of rest.matchAll(/\b([a-z_][a-z_0-9]*)\b/gi)) {
         const tok = t[1].toLowerCase();
         if (OS_TOKENS[tok]) OS_TOKENS[tok].forEach((os) => legs.add(os));
@@ -345,7 +345,7 @@ export function classifyFiles(files, readFile) {
     return {
         os: ALL_OSES.filter((o) => legs.has(o)),
         reasons: Object.fromEntries(
-            [...reasons.entries()].map(([k, v]) => [k, [...v].sort()]),
+            [...reasons.entries()].map(([k, v]) => [k, [...v].toSorted((a, b) => a.localeCompare(b))]),
         ),
     };
 }
@@ -406,7 +406,7 @@ export function parseCron(expr) {
     const field = (f, lo, hi) => {
         const out = new Set();
         for (const part of f.split(",")) {
-            const m = part.match(/^(\*|\d+|\d+-\d+)(?:\/(\d+))?$/);
+            const m = part.match(/^(\*|\d+(?:-\d+)?)(?:\/(\d+))?$/);
             if (!m) throw new Error(`bad field ${part} in ${expr}`);
             let a = lo;
             let b = hi;
