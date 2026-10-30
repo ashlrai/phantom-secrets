@@ -1229,7 +1229,14 @@ async function readJson(file, label) {
 }
 
 async function main() {
-  const args = parseArguments(process.argv.slice(2));
+  let args;
+  try {
+    args = parseArguments(process.argv.slice(2));
+  } catch (error) {
+    process.stderr.write(`${error.message}\nUsage: node scripts/seo/observe.mjs --out <report.json> [--experiments <ledger.json>]\n`);
+    process.exitCode = 1;
+    return;
+  }
   let report;
   try {
     const experiments = await readJson(args.experiments, "experiment ledger");
