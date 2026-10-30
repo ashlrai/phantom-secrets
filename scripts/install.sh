@@ -434,11 +434,13 @@ INSTALL_DIR="$install_parent/$install_name"
 
 acquire_install_lock
 
-stage_root="$(mktemp -d "$install_parent/.${install_name}.install.XXXXXX")"
-chmod 700 "$stage_root"
+stage_root="$(mktemp -d "$install_parent/.${install_name}.install.XXXXXX")" \
+  || die "could not create a private staging directory in $install_parent"
+chmod 700 "$stage_root" || die "could not secure the staging directory"
 download_dir="$stage_root/download"
 candidate_dir="$stage_root/candidate"
-mkdir -m 700 "$download_dir" "$candidate_dir"
+mkdir -m 700 "$download_dir" "$candidate_dir" \
+  || die "could not create staging directories"
 
 tag="$PIN_TAG"
 validate_tag "$tag" || die "release tag is not strict semantic version syntax"
