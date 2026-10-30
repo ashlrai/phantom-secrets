@@ -139,6 +139,7 @@ fn list_scope_is_exact_value_blind_and_preserves_project_state() {
     init_project(&dir);
     let config =
         phantom_core::config::PhantomConfig::load(&dir.path().join(".phantom.toml")).unwrap();
+    #[cfg(not(windows))]
     fn encrypted_file(root: &std::path::Path) -> std::path::PathBuf {
         for entry in fs::read_dir(root).unwrap() {
             let path = entry.unwrap().path();
@@ -153,7 +154,12 @@ fn list_scope_is_exact_value_blind_and_preserves_project_state() {
         }
         std::path::PathBuf::new()
     }
+    #[cfg(not(windows))]
     let encrypted = encrypted_file(dir.path());
+    // Windows KnownFolder ignores HOME/APPDATA overrides; use the exact
+    // temporary-project identity and keep the init-created-file assertion.
+    #[cfg(windows)]
+    let encrypted = phantom_vault::encrypted_file_vault_path(config.local_project_id()).unwrap();
     assert!(encrypted.is_file());
     let vault = phantom_vault::file::FileVault::new(
         encrypted.parent().unwrap().parent().unwrap(),
