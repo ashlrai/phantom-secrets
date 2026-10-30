@@ -95,6 +95,26 @@ const claims = Object.fromEntries(
 );
 const allClaims = Object.values(claims).join("\n");
 
+function assertUniqueIds(document) {
+  const seen = new Set();
+  for (const element of document.querySelectorAll("[id]")) {
+    const id = element.getAttribute("id");
+    assert.equal(seen.has(id), false, `duplicate ID: ${JSON.stringify(id)}`);
+    seen.add(id);
+  }
+}
+
+test("document-wide ID check accepts an empty document", () => {
+  const { JSDOM } = require("jsdom");
+  const dom = new JSDOM("");
+  try {
+    assert.doesNotThrow(() => assertUniqueIds(dom.window.document));
+    assert.doesNotThrow(() => assertUniqueIds(dom.window.document));
+  } finally {
+    dom.window.close();
+  }
+});
+
 test("rendered public homepage has unique IDs across the whole document", async () => {
   const React = require("react");
   const { renderToStaticMarkup } = require("react-dom/server");
@@ -142,23 +162,15 @@ test("rendered public homepage has unique IDs across the whole document", async 
   const dom = new JSDOM(renderToStaticMarkup(React.createElement(Layout, null, React.createElement(Home))));
   try {
     const document = dom.window.document;
-    const assertUniqueIds = () => {
-      const seen = new Set();
-      for (const element of document.querySelectorAll("[id]")) {
-        const id = element.getAttribute("id");
-        assert.equal(seen.has(id), false, `duplicate ID: ${JSON.stringify(id)}`);
-        seen.add(id);
-      }
-    };
     assert.ok(document.querySelector("#main-content"));
     assert.ok(document.querySelector("#phantom-world"), "embedded scene must be rendered");
-    assertUniqueIds();
+    assertUniqueIds(document);
 
     // Exercise the detector with a collision between separate page regions.
     const duplicate = document.createElement("div");
     duplicate.id = "main-content";
     document.querySelector("#phantom-world").append(duplicate);
-    assert.throws(assertUniqueIds, /duplicate ID: "main-content"/);
+    assert.throws(() => assertUniqueIds(document), /duplicate ID: "main-content"/);
   } finally {
     dom.window.close();
   }
