@@ -1,5 +1,6 @@
 const assert = require("assert");
-const { existsSync, mkdtempSync, readFileSync, rmSync } = require("fs");
+const crypto = require("crypto");
+const { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } = require("fs");
 const { tmpdir } = require("os");
 const { join } = require("path");
 
@@ -7,6 +8,7 @@ const {
   SUPPORTED_TARGETS,
   ensureBinary,
   getPlatformTarget,
+  pathSet,
 } = require("../bin/cli.js");
 
 const expected = Object.freeze({
@@ -52,6 +54,7 @@ for (const runtime of [
   { platform: "darwin", arch: "ia32" },
   { platform: "linux", arch: "arm" },
   { platform: "freebsd", arch: "x64" },
+  { platform: "openbsd", arch: "x64" },
   { platform: "win32", arch: "ia32" },
 ]) {
   assert.throws(() => getPlatformTarget(runtime), (error) => {
@@ -86,6 +89,41 @@ assert.doesNotMatch(wrapperSource, /Install from source|cargo install phantom-se
     assert.strictEqual(existsSync(cacheDir), false, "unsupported platforms must not create a cache");
   } finally {
     rmSync(testDir, { recursive: true, force: true });
+  }
+
+  // Even a matching, integrity-valid cache must not bypass OS selection.
+  const populatedCache = mkdtempSync(join(tmpdir(), "phantom-cli-unsupported-cache-"));
+  try {
+    const binary = "cached binary fixture";
+    const binaryPath = join(populatedCache, "phantom");
+    const manifest = JSON.stringify({
+      version: "0.7.9",
+      sha256: crypto.createHash("sha256").update(binary).digest("hex"),
+    }) + "\n";
+    writeFileSync(binaryPath, binary, { mode: 0o700 });
+    writeFileSync(`${binaryPath}.manifest.json`, manifest, { mode: 0o600 });
+    let executions = 0;
+    let downloads = 0;
+    let extractions = 0;
+    await assert.rejects(
+      ensureBinary({
+        cacheDir: populatedCache,
+        runtime: { platform: "openbsd", arch: "x64" },
+        execFileSyncImpl: () => { executions += 1; return Buffer.from("phantom 0.7.9\n"); },
+        downloadImpl: async () => { downloads += 1; throw new Error("unexpected download"); },
+        extractImpl: () => { extractions += 1; },
+      }),
+      /Unsupported platform: openbsd-x64/
+    );
+    assert.strictEqual(executions, 0, "unsupported platforms must not execute a cached binary");
+    assert.strictEqual(downloads, 0, "unsupported platforms must not attempt a download");
+    assert.strictEqual(extractions, 0, "unsupported platforms must not extract a binary");
+    assert.strictEqual(existsSync(pathSet(populatedCache, "openbsd").lockPath), false);
+    assert.deepStrictEqual(readdirSync(populatedCache).sort(), ["phantom", "phantom.manifest.json"]);
+    assert.strictEqual(readFileSync(binaryPath, "utf8"), binary);
+    assert.strictEqual(readFileSync(`${binaryPath}.manifest.json`, "utf8"), manifest);
+  } finally {
+    rmSync(populatedCache, { recursive: true, force: true });
   }
   console.log("npm CLI wrapper platform matrix tests passed");
 })().catch((error) => {
