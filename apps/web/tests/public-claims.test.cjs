@@ -604,6 +604,27 @@ test("public Cloud guidance does not promise machine-portable recovery", () => {
   }
 });
 
+const unpinnedRegistryCommands = [
+  /(?:^|[`"'(])(?:\$\s*)?npm\s+(?:install|i)\s+(?:-g\s+)?phantom-secrets(?:-mcp)?(?=$|[\s`"'<>),;])/im,
+  /(?:^|[`"'(])(?:\$\s*)?npx(?:\s+-y)?\s+phantom-secrets(?:-mcp)?(?!\s+(?:agent|check|exec)\b)(?=$|[\s`"'<>),;])/im,
+  /(?:^|[`"'(])(?:\$\s*)?cargo\s+install\s+phantom-secrets(?:-mcp)?(?=$|[\s`"'<>),;])/im,
+];
+
+function assertRegistryInvocationsAreWarnings(file, source) {
+  for (const command of unpinnedRegistryCommands) {
+    for (const match of source.matchAll(new RegExp(command.source, `${command.flags}g`))) {
+      const start = Math.max(0, match.index - 260);
+      const end = Math.min(source.length, match.index + match[0].length + 260);
+      const context = source.slice(start, end);
+      assert.match(
+        context,
+        /legacy fallback[\s\S]{0,260}(?:older registry track|do not rely)|(?:older registry track|do not rely)[\s\S]{0,260}legacy fallback/i,
+        `${file}: unpinned registry invocation is allowed only as a warning about the released legacy fallback`,
+      );
+    }
+  }
+}
+
 test("current-release guidance routes installs through verified GitHub or Homebrew artifacts", () => {
   const canonicalReleaseGuides = {
     "README.md": repositoryGuidanceClaims["README.md"],
@@ -624,24 +645,26 @@ test("current-release guidance routes installs through verified GitHub or Homebr
     );
   }
 
-  const unpinnedRegistryCommands = [
-    /(?:^|[`"'(])(?:\$\s*)?npm\s+(?:install|i)\s+(?:-g\s+)?phantom-secrets(?:-mcp)?(?=$|[\s`"'<>),;])/im,
-    /(?:^|[`"'(])(?:\$\s*)?npx(?:\s+-y)?\s+phantom-secrets(?:-mcp)?(?!\s+(?:agent|check|exec)\b)(?=$|[\s`"'<>),;])/im,
-    /(?:^|[`"'(])(?:\$\s*)?cargo\s+install\s+phantom-secrets(?:-mcp)?(?=$|[\s`"'<>),;])/im,
-  ];
-
   for (const [file, source] of Object.entries(repositoryGuidanceClaims)) {
-    for (const command of unpinnedRegistryCommands) {
-      for (const match of source.matchAll(new RegExp(command.source, `${command.flags}g`))) {
-        const start = Math.max(0, match.index - 260);
-        const end = Math.min(source.length, match.index + match[0].length + 260);
-        const context = source.slice(start, end);
-        assert.match(
-          context,
-          /legacy fallback[\s\S]{0,260}(?:older registry track|do not rely)|(?:older registry track|do not rely)[\s\S]{0,260}legacy fallback/i,
-          `${file}: unpinned registry invocation is allowed only as a warning about the released legacy fallback`,
-        );
-      }
+    assertRegistryInvocationsAreWarnings(file, source);
+  }
+});
+
+test("each repeated unpinned registry invocation needs its own warning context", () => {
+  const separator = `\n${"x".repeat(600)}\n`;
+  for (const command of ["npm install phantom-secrets", "npx phantom-secrets-mcp", "cargo install phantom-secrets"]) {
+    const warning = `Legacy fallback on the older registry track: \`${command}\``;
+    const unsupported = `\`${command}\``;
+    assert.doesNotThrow(() => assertRegistryInvocationsAreWarnings("fixture", `${warning}${separator}${warning}`));
+    for (const source of [
+      `${warning}${separator}${unsupported}`,
+      `${unsupported}${separator}${warning}`,
+      `${unsupported}${separator}${unsupported}`,
+    ]) {
+      assert.throws(
+        () => assertRegistryInvocationsAreWarnings("fixture", source),
+        /fixture: unpinned registry invocation is allowed only as a warning/,
+      );
     }
   }
 });
