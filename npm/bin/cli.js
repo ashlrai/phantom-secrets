@@ -368,14 +368,14 @@ function readAttestation(binaryPath, manifest, platform = process.platform) {
     const record = JSON.parse(readFileSync(path, "utf8"));
     if (
       !record || typeof record !== "object" ||
-      Object.keys(record).sort().join(",") !== "attestedAtNs,identity,schema,sha256,version,versionChecked" ||
+      Object.keys(record).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)).join(",") !== "attestedAtNs,identity,schema,sha256,version,versionChecked" ||
       record.schema !== ATTESTATION_SCHEMA ||
       record.version !== VERSION ||
       record.sha256 !== manifest.sha256 ||
       manifest.version !== VERSION ||
       typeof record.versionChecked !== "boolean" ||
       !record.identity || typeof record.identity !== "object" ||
-      Object.keys(record.identity).sort().join(",") !== "ctimeNs,dev,ino,mtimeNs,size" ||
+      Object.keys(record.identity).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)).join(",") !== "ctimeNs,dev,ino,mtimeNs,size" ||
       !Object.values(record.identity).every((v) => typeof v === "string" && /^[0-9]{1,40}$/.test(v)) ||
       typeof record.attestedAtNs !== "string" || !/^[0-9]{1,40}$/.test(record.attestedAtNs) ||
       !identitySettledAt(record.identity, BigInt(record.attestedAtNs)) ||
@@ -452,7 +452,7 @@ function readIntegrityVerifiedManifest(binaryPath, manifestPath, platform = proc
     const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
     if (
       !manifest ||
-      Object.keys(manifest).sort().join(",") !== "sha256,version" ||
+      Object.keys(manifest).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)).join(",") !== "sha256,version" ||
       typeof manifest.version !== "string" ||
       !new RegExp(`^${SEMVER_SOURCE}$`).test(manifest.version) ||
       !/^[0-9a-f]{64}$/.test(manifest.sha256) ||
@@ -727,8 +727,8 @@ function extractBinaryFromArchive(archivePath, binaryPath, {
         { encoding: "utf8" },
         { timeoutMs: execTimeoutMs, heartbeat }
       );
-      const entries = listing.split(/\r?\n/).filter(Boolean).sort();
-      const expected = expectedArchiveEntries(platform).slice().sort();
+      const entries = listing.split(/\r?\n/).filter(Boolean).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+      const expected = expectedArchiveEntries(platform).slice().sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
       if (JSON.stringify(entries) !== JSON.stringify(expected)) {
         throw new Error(`archive contains unexpected entries: ${entries.join(", ")}`);
       }

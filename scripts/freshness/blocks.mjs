@@ -195,7 +195,7 @@ export function collectTargets(root) {
   for (const dir of SCANNED_DIRS) {
     walk(root, dir, targets);
   }
-  return targets.sort();
+  return targets.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
 }
 
 // Replace the body of every marked block in `content` with freshly

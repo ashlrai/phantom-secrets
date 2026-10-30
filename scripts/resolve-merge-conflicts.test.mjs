@@ -25,7 +25,7 @@ function write(dir, name, text) {
 
 function unmerged(dir) {
     return [...new Set(git(dir, "ls-files", "-u").trim().split("\n")
-        .filter(Boolean).map((l) => l.split("\t")[1]))].sort();
+        .filter(Boolean).map((l) => l.split("\t")[1]))].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
 }
 
 function longDoc(tag) {
