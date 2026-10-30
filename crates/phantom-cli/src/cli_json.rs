@@ -71,6 +71,7 @@ pub(crate) fn apply_global_json(command: &mut Commands) -> Result<(), &'static s
             action: LeaksAction::Plan { json, .. },
         }
         | Commands::SecretsExpiringSoon { json, .. }
+        | Commands::FleetStatus { json, .. }
         | Commands::Expiry {
             action: ExpiryAction::Enforce { json, .. },
         }

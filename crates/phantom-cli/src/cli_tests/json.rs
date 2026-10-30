@@ -66,6 +66,7 @@ fn global_json_is_routed_or_rejected_for_every_command() {
         "audit anomalies",
         "audit export",
         "audit export-range",
+        "audit feed",
         "audit incidents",
         "audit report",
         "audit show",
@@ -76,6 +77,7 @@ fn global_json_is_routed_or_rejected_for_every_command() {
         "crypto inventory",
         "doctor",
         "expiry enforce",
+        "fleet-status",
         // Not JSON output: its hidden legacy `--json` fails closed with
         // "Plaintext JSON export is disabled".
         "export",

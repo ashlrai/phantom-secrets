@@ -431,6 +431,11 @@ pub(crate) fn run() -> anyhow::Result<()> {
             sync,
             json,
         } => commands::expiry::run(days, auto_rotate, sync, json),
+        Commands::FleetStatus {
+            expiring_within,
+            strict,
+            json,
+        } => crate::fleet_status::run(expiring_within, strict, json || global_json),
         Commands::Expiry { action } => match action {
             ExpiryAction::Set { key, days } => commands::expiry::run_set(&key, days),
             ExpiryAction::Enforce { fail_closed, json } => {

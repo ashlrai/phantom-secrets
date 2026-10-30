@@ -6,6 +6,7 @@ mod commands;
 mod dispatch;
 #[cfg(test)]
 mod doc_facts;
+mod fleet_status;
 mod report_file;
 mod util;
 
@@ -44,7 +45,7 @@ use commands::audit::AuditAction;
                     Setup         init · agent · setup · doctor · workspace · vault · completion · mcp · mcp-approve\n  \
                     Daily use     exec · start · stop · status · check · redact · list · add · remove · reveal · copy · env · why · git-credential\n  \
                     Sync & teams  login · logout · cloud · team · sync · pull · export · import · wrap · unwrap\n  \
-                    Maintenance   upgrade · watch · rotate · grant · validate · expiry · secrets-expiring-soon · open · audit · leaks · crypto",
+                    Maintenance   upgrade · watch · rotate · grant · validate · expiry · secrets-expiring-soon · fleet-status · open · audit · leaks · crypto",
     version
 )]
 struct Cli {
@@ -699,6 +700,20 @@ enum Commands {
         #[arg(long, requires = "auto_rotate")]
         sync: bool,
         /// Emit JSON instead of human-readable output
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Value-free fleet posture: names, expiry, last validation result, overdue rotations
+    #[command(next_help_heading = "Maintenance")]
+    FleetStatus {
+        /// Count secrets expiring within this many days as `expiring_soon` (default: 7)
+        #[arg(long, value_name = "DAYS", default_value_t = 7)]
+        expiring_within: u64,
+        /// Exit 2 when any secret needs attention or the inventory is partial
+        #[arg(long)]
+        strict: bool,
+        /// Emit JSON instead of the human-readable table
         #[arg(long)]
         json: bool,
     },

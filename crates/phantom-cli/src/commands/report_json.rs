@@ -10,6 +10,7 @@ pub(crate) const DOCTOR_SCHEMA: &str = "phantom.doctor.v1";
 pub(crate) const WHY_SCHEMA: &str = "phantom.why.v1";
 pub(crate) const CHECK_SCHEMA: &str = "phantom.check.v1";
 pub(crate) const AGENT_DOCTOR_SCHEMA: &str = "phantom.agent.doctor.v1";
+pub(crate) const FLEET_STATUS_SCHEMA: &str = "phantom.fleet_status.v1";
 
 /// Shared `--strict` status for `phantom doctor`, `phantom why`, and
 /// `phantom agent doctor`.
