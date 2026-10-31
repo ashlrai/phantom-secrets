@@ -477,6 +477,7 @@ function download(inputUrl, {
     }, timeoutMs);
 
     const fetch = (value, redirects) => {
+      if (settled) return;
       let url;
       try {
         url = allowedDownloadUrl(value, allowedHosts);
@@ -485,6 +486,13 @@ function download(inputUrl, {
         return;
       }
       request = httpsGet(url, (response) => {
+        // A response callback may already be queued when timeout/error settles
+        // the download. Do not follow redirects or retain data after that point.
+        response.on("error", finish);
+        if (settled) {
+          if (typeof response.destroy === "function") response.destroy();
+          return;
+        }
         const status = response.statusCode || 0;
         if (status >= 300 && status < 400 && response.headers.location) {
           if (typeof response.resume === "function") response.resume();
@@ -510,6 +518,7 @@ function download(inputUrl, {
         const chunks = [];
         let bytes = 0;
         response.on("data", (chunk) => {
+          if (settled) return;
           bytes += chunk.length;
           if (bytes > maxBytes) {
             if (typeof response.destroy === "function") response.destroy();
@@ -518,8 +527,9 @@ function download(inputUrl, {
           }
           chunks.push(chunk);
         });
-        response.on("end", () => finish(null, Buffer.concat(chunks)));
-        response.on("error", finish);
+        response.on("end", () => {
+          if (!settled) finish(null, Buffer.concat(chunks));
+        });
       });
       request.on("error", finish);
     };

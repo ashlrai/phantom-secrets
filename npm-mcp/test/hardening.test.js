@@ -128,7 +128,68 @@ async function assertPreviousVersionCachePreserved(stage) {
   }
 }
 
+// Network callbacks can arrive after the wrapper has already reported failure.
+// Use synthetic transport events so these races require no actual download.
+async function assertDownloadStopsAfterSettlement() {
+  for (const failure of ["timeout", "request-error"]) {
+    const callbacks = [];
+    const requests = [];
+    const pending = download("https://github.com/release", {
+      timeoutMs: failure === "timeout" ? 5 : 100,
+      httpsGet: (_url, callback) => {
+        callbacks.push(callback);
+        const request = new EventEmitter();
+        request.destroy = () => {};
+        requests.push(request);
+        return request;
+      },
+    });
+    const rejected = assert.rejects(pending, failure === "timeout" ? /timed out/ : /network failed/);
+    if (failure === "request-error") requests[0].emit("error", new Error("network failed"));
+    await rejected;
+
+    const lateResponse = new EventEmitter();
+    lateResponse.statusCode = 302;
+    lateResponse.headers = { location: "/late-redirect" };
+    let destroyed = false;
+    let resumed = false;
+    lateResponse.destroy = () => { destroyed = true; };
+    lateResponse.resume = () => { resumed = true; };
+    callbacks[0](lateResponse);
+    assert.strictEqual(requests.length, 1, `${failure}: no request after settlement`);
+    assert.strictEqual(destroyed, true, `${failure}: discard late response`);
+    assert.strictEqual(resumed, false, `${failure}: do not drain late body`);
+    assert.doesNotThrow(() => lateResponse.emit("error", new Error("late socket failure")));
+  }
+
+  const responses = [];
+  const pending = download("https://github.com/release", {
+    timeoutMs: 100,
+    httpsGet: (_url, callback) => {
+      const request = new EventEmitter();
+      request.destroy = () => {};
+      process.nextTick(() => {
+        const response = new EventEmitter();
+        response.statusCode = responses.length === 0 ? 302 : 200;
+        response.headers = { location: "/asset" };
+        response.resume = () => {};
+        response.destroy = () => {};
+        responses.push(response);
+        callback(response);
+        if (response.statusCode === 200) {
+          response.emit("data", Buffer.from("verified fixture bytes"));
+          response.emit("end");
+        }
+      });
+      return request;
+    },
+  });
+  assert.strictEqual((await pending).toString(), "verified fixture bytes");
+  assert.doesNotThrow(() => responses[0].emit("error", new Error("late redirect stream error")));
+}
+
 (async () => {
+  await assertDownloadStopsAfterSettlement();
   assert.throws(
     () => getCacheDir({ env: {}, homedirImpl: () => "relative-home" }),
     /absolute private home/
