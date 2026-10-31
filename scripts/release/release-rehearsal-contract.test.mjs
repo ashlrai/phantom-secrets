@@ -44,6 +44,13 @@ const npmMcpPackage = JSON.parse(
 const npmReadme = readFileSync(join(repoRoot, "npm/README.md"), "utf8");
 const npmMcpReadme = readFileSync(join(repoRoot, "npm-mcp/README.md"), "utf8");
 
+test("dependency installations cannot replace a tracked node_modules path", () => {
+  const tracked = execFileSync("git", ["ls-files", "-z"], {
+    cwd: repoRoot, encoding: "utf8",
+  }).split("\0").filter(Boolean);
+  assert.deepEqual(tracked.filter((path) => path.split("/").includes("node_modules")), []);
+});
+
 const tagOnlyCondition =
   "if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')";
 
