@@ -9,8 +9,6 @@ mod common;
 
 use assert_cmd::Command;
 use serde_json::Value;
-#[cfg(not(windows))]
-use std::fs;
 use std::process::Output;
 use tempfile::TempDir;
 
@@ -72,52 +70,22 @@ fn json_stdout(output: &Output) -> Value {
     })
 }
 
-/// The `vaults/` directory the encrypted-file backend pinned under this
-/// test's platform data dir (the location differs per OS).
-#[cfg(not(windows))]
-fn find_vaults_dir(root: &std::path::Path) -> Option<std::path::PathBuf> {
-    for entry in fs::read_dir(root).unwrap() {
-        let path = entry.unwrap().path();
-        if !path.is_dir() {
-            continue;
-        }
-        if path.file_name().is_some_and(|name| name == "vaults") {
-            return Some(path);
-        }
-        if let Some(found) = find_vaults_dir(&path) {
-            return Some(found);
-        }
-    }
-    None
-}
-
 fn open_vault(dir: &TempDir) -> phantom_vault::file::FileVault {
     let config =
         phantom_core::config::PhantomConfig::load(&dir.path().join(".phantom.toml")).unwrap();
     // <base>/vaults/<project>.vault — FileVault::new wants the base.
-    #[cfg(not(windows))]
-    let base = find_vaults_dir(dir.path())
-        .and_then(|vaults| vaults.parent().map(std::path::Path::to_path_buf))
-        .expect("init created the encrypted-file vault directory");
-    // Windows KnownFolder ignores the child's HOME/APPDATA overrides. Resolve
-    // only this temporary project's vault, rather than searching user data.
-    #[cfg(windows)]
-    let base = {
-        let encrypted =
-            phantom_vault::encrypted_file_vault_path(config.local_project_id()).unwrap();
-        let vaults = encrypted.parent().unwrap();
-        assert!(
-            vaults.is_dir(),
-            "init created the encrypted-file vault directory"
-        );
-        // Empty init has no ciphertext yet, but must provision its own lock.
-        assert!(
-            encrypted.with_extension("lock").is_file(),
-            "init provisioned this project's encrypted-file vault"
-        );
-        vaults.parent().unwrap().to_path_buf()
-    };
-    phantom_vault::file::FileVault::new(&base, config.local_project_id(), VAULT_PASS.to_string())
+    let encrypted = common::encrypted_file(dir, config.local_project_id());
+    let vaults = encrypted.parent().unwrap();
+    assert!(
+        vaults.is_dir(),
+        "init created the encrypted-file vault directory"
+    );
+    assert!(
+        encrypted.with_extension("lock").is_file(),
+        "init provisioned this project's encrypted-file vault"
+    );
+    let base = vaults.parent().unwrap();
+    phantom_vault::file::FileVault::new(base, config.local_project_id(), VAULT_PASS.to_string())
         .unwrap()
 }
 
