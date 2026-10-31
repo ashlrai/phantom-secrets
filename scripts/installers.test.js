@@ -131,7 +131,7 @@ function runInstaller(options = {}) {
     ...process.env,
     HOME: home,
     SHELL: '/bin/bash',
-    PATH: `${shims}:${process.env.PATH}`,
+    PATH: `${shims}:${options.pathPrefix ? `${options.pathPrefix}:` : ''}${process.env.PATH}`,
     PHANTOM_INSTALL_DIR: install,
     PHANTOM_TEST_FIXTURE_DIR: fixture,
     PHANTOM_TEST_CURL_LOG: log,
@@ -378,6 +378,41 @@ test('Unix installer atomically preserves an existing regular shell rc under GNU
     readdirSync(home).filter((name) => name.startsWith('.phantom-path.')),
     [],
   );
+});
+
+test('Unix installer leaves its existing PATH entry unchanged on a second install', () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-installer-repeat-')));
+  const shims = makeShims(root);
+  const options = { root, shims, install: join(root, 'live', 'bin') };
+  const rcPath = join(root, 'home', '.bashrc');
+
+  const first = runInstaller(options);
+  assert.ifError(first.result.error);
+  assert.equal(first.result.status, 0, first.result.stderr);
+  const originalRc = readFileSync(rcPath, 'utf8');
+  const entry = `export PATH="${options.install}:$PATH"`;
+  assert.equal(originalRc.split('\n').filter((line) => line === entry).length, 1);
+
+  const second = runInstaller(options);
+  assert.ifError(second.result.error);
+  assert.equal(second.result.status, 0, second.result.stderr);
+  assert.equal(readFileSync(rcPath, 'utf8'), originalRc);
+  assert.equal(execFileSync(join(options.install, 'phantom'), ['--version'], { encoding: 'utf8' }).trim(), `phantom ${version}`);
+  assert.equal(execFileSync(join(options.install, 'phantom-mcp'), ['--version'], { encoding: 'utf8' }).trim(), `phantom-mcp ${version}`);
+});
+
+test('Unix installer does not alter the shell rc when the install directory is already in PATH', () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-installer-in-path-')));
+  const home = join(root, 'home');
+  const install = join(root, 'live', 'bin');
+  const rcPath = join(home, '.bashrc');
+  mkdirSync(home, { recursive: true });
+  writeFileSync(rcPath, '# existing shell configuration\n');
+
+  const { result } = runInstaller({ root, home, install, pathPrefix: install });
+  assert.ifError(result.error);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(readFileSync(rcPath, 'utf8'), '# existing shell configuration\n');
 });
 
 test('Unix installer serializes concurrent versions under one owner lock', async () => {
