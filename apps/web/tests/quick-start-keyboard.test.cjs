@@ -520,6 +520,35 @@ test("each displayed installation command includes its temporary staging cleanup
   }
 });
 
+test("displayed Unix install commands quote every staging-directory reference", async () => {
+  const user = userEvent.setup();
+  render(React.createElement(QuickStart));
+  try {
+    for (const platform of ["macOS", "Linux"]) {
+      await user.click(screen.getByRole("button", { name: platform }));
+      const card = screen.getByRole("heading", { level: 3, name: platform }).closest("article");
+      const button = within(card).getByRole("button", { name: /^Copy command:/ });
+      const command = Array.from(button.firstElementChild.childNodes)
+        .find((node) => node.nodeType === dom.window.Node.TEXT_NODE).textContent;
+
+      for (const required of [
+        'mktemp -d "${TMPDIR:-/tmp}/phantom-install.XXXXXX"',
+        'phantom_installer="$phantom_stage/install.sh"',
+        'rmdir -- "$phantom_stage"',
+      ]) {
+        assert.ok(command.includes(required), `${platform}: missing quoted staging reference: ${required}`);
+      }
+      const remaining = command.replace(/"(?:\$\{TMPDIR:-\/tmp\}\/phantom-install\.XXXXXX|\$phantom_stage\/install\.sh|\$phantom_stage)"/g, "");
+      assert.doesNotMatch(remaining, /\$(?:\{(?:TMPDIR|phantom_stage)(?::-[^}]*)?\}|(?:TMPDIR|phantom_stage)\b)/, `${platform}: unquoted staging reference`);
+
+      await user.click(button);
+      assert.equal(await navigator.clipboard.readText(), command, `${platform}: copied command matches displayed text`);
+    }
+  } finally {
+    cleanup();
+  }
+});
+
 test("every displayed QuickStart command can be selected and matches the copied text", async () => {
   const style = document.createElement("style");
   style.textContent = fs.readFileSync(path.join(__dirname, "../src/app/globals.css"), "utf8");
