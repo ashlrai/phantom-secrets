@@ -19,6 +19,7 @@ See [distribution status](distribution-status.md) for dated npm, Homebrew, crate
 | Understand the landing-page install commands | [Quickstart reading guide](quickstart-reading-guide.md) |
 | Copy the landing-page install command safely | [Quickstart copy checklist](quickstart-copy-checklist.md) |
 | Compare the landing-page install commands by platform | [Quickstart platform comparison](quickstart-platform-comparison.md) |
+| Map displayed quickstart steps to their platform and source | [Quickstart platform step map](quickstart-platform-step-map.md) |
 | Review temporary installer cleanup by platform | [Quickstart cleanup review](quickstart-temp-cleanup-review.md) |
 | See a measured Linux install and the agent-CLI audit | [First run](FIRST-RUN.md) |
 | Compare install, exec, and memory with dotenvx and SOPS | [Benchmarks](BENCHMARKS.md) |
