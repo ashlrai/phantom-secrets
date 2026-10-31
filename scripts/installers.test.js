@@ -799,8 +799,12 @@ test('installers retain the closed six-target mapping', () => {
   const powerShell = readFileSync(psInstaller, 'utf8');
   for (const mapping of [
     { unameS: 'Darwin', unameM: 'x86_64', target: 'x86_64-apple-darwin' },
+    { unameS: 'Darwin', unameM: 'amd64', target: 'x86_64-apple-darwin' },
     { unameS: 'Darwin', unameM: 'arm64', target: 'aarch64-apple-darwin' },
+    { unameS: 'Darwin', unameM: 'aarch64', target: 'aarch64-apple-darwin' },
     { unameS: 'Linux', unameM: 'x86_64', target: 'x86_64-unknown-linux-gnu' },
+    { unameS: 'Linux', unameM: 'amd64', target: 'x86_64-unknown-linux-gnu' },
+    { unameS: 'Linux', unameM: 'arm64', target: 'aarch64-unknown-linux-gnu' },
     { unameS: 'Linux', unameM: 'aarch64', target: 'aarch64-unknown-linux-gnu' },
   ]) {
     const { result } = runInstaller(mapping);
@@ -809,6 +813,27 @@ test('installers retain the closed six-target mapping', () => {
   }
   assert.match(powerShell, /x86_64-pc-windows-msvc/);
   assert.match(powerShell, /aarch64-pc-windows-msvc/);
+});
+
+test('Unix installer rejects unsupported OS and architecture before download or installation', () => {
+  for (const { unameS, unameM, error } of [
+    { unameS: 'FreeBSD', unameM: 'x86_64', error: /unsupported OS: FreeBSD/ },
+    { unameS: 'Windows_NT', unameM: 'x86_64', error: /unsupported OS: Windows_NT/ },
+    { unameS: 'linux', unameM: 'x86_64', error: /unsupported OS: linux/ },
+    { unameS: 'Linux', unameM: 'i686', error: /unsupported arch: i686/ },
+    { unameS: 'Darwin', unameM: 'riscv64', error: /unsupported arch: riscv64/ },
+    { unameS: 'FreeBSD', unameM: 'i686', error: /unsupported OS: FreeBSD/ },
+  ]) {
+    const { root, install, log, result } = runInstaller({ unameS, unameM });
+    try {
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, error);
+      assert.equal(existsSync(log), false, 'must not download');
+      assert.equal(existsSync(dirname(install)), false, 'must not create the install parent');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
 });
 
 test('PowerShell installer has a strict offline-verifiable security contract', () => {
