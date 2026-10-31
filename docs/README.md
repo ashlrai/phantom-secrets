@@ -18,6 +18,7 @@ See [distribution status](distribution-status.md) for dated npm, Homebrew, crate
 | Protect a project for the first time | [Getting started](getting-started.md) |
 | Understand the landing-page install commands | [Quickstart reading guide](quickstart-reading-guide.md) |
 | Compare the landing-page install commands by platform | [Quickstart platform comparison](quickstart-platform-comparison.md) |
+| Review temporary installer cleanup by platform | [Quickstart cleanup review](quickstart-temp-cleanup-review.md) |
 | See a measured Linux install and the agent-CLI audit | [First run](FIRST-RUN.md) |
 | Compare install, exec, and memory with dotenvx and SOPS | [Benchmarks](BENCHMARKS.md) |
 | Delegate one bounded task to an AI coding client | [Safe delegation quickstart](delegation-quickstart.md) |

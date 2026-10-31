@@ -254,3 +254,22 @@ test("the install note and public docs describe the same temporary staging the c
   assert.ok(unix.includes("trap "), "macOS: documented exit trap is displayed");
   assert.ok(windows.includes("$env:TEMP"), "Windows: documented $env:TEMP staging is displayed");
 });
+
+test("cleanup review covers each displayed platform's staging and cleanup", () => {
+  const review = readFileSync(path.join(repoRoot, "docs/quickstart-temp-cleanup-review.md"), "utf8");
+  assert.ok(review.includes("../apps/web/src/components/landing/QuickStart.tsx"));
+  for (const { name, installer, checksum } of platforms) {
+    const section = review.split(`## ${name}\n`)[1]?.split("\n## ")[0];
+    assert.ok(section, `${name}: review section`);
+    const { command } = displayedInstall(name);
+    const fragments = installer === "install.sh"
+      ? ["mktemp -d", "TMPDIR", "/tmp", "install.sh", "EXIT", "rm -f", "rmdir", checksum]
+      : ["$env:TEMP", "Invoke-WebRequest", "Get-FileHash", "finally", "Remove-Item -LiteralPath $Installer -Force -ErrorAction SilentlyContinue"];
+    for (const fragment of fragments) {
+      assert.ok(command.includes(fragment), `${name}: command contains ${fragment}`);
+      assert.ok(section.includes(fragment), `${name}: review describes ${fragment}`);
+    }
+  }
+  assert.match(review, /Cleanup is best effort/);
+  assert.ok(review.includes("installer-staging.md"));
+});
