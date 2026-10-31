@@ -1,5 +1,7 @@
 """Bounded codec request framing; synthetic payloads and loopback only."""
 import http.client
+import io
+import socket
 import unittest
 from email.message import Message
 from unittest.mock import AsyncMock, Mock
@@ -21,6 +23,20 @@ class RequestFramingTests(unittest.TestCase):
         handler.send_error = Mock()
         handler.do_POST()
         self.assertEqual(handler.send_error.call_args.args[0], expected)
+        handler.rfile.read.assert_not_called()
+
+    def test_header_parser_defect_never_reads_body(self):
+        handler_type = make_handler(Mock())
+        handler = handler_type.__new__(handler_type)
+        handler.path = '/decode'
+        handler.headers = http.client.parse_headers(io.BytesIO(
+            b'Content-Length: 2\r\nBad\r\nTransfer-Encoding: chunked\r\n\r\n'))
+        self.assertTrue(handler.headers.defects)
+        self.assertIsNone(handler.headers.get('Transfer-Encoding'))
+        handler.rfile = Mock()
+        handler.send_error = Mock()
+        handler.do_POST()
+        self.assertEqual(handler.send_error.call_args.args[0], 400)
         handler.rfile.read.assert_not_called()
 
     def test_invalid_lengths_never_read(self):
@@ -79,6 +95,18 @@ class RequestFramingHttpTests(unittest.TestCase):
                 status, _, _ = self.request(port, 'POST', '/decode',
                                              {'Content-Length': value}, b'{}')
                 self.assertEqual(status, 400)
+
+    def test_malformed_header_is_rejected_and_server_recovers(self):
+        port = self.start(CorsPolicy())
+        with socket.create_connection(('127.0.0.1', port), timeout=1) as sock:
+            sock.sendall(b'POST /decode HTTP/1.1\r\nHost: localhost\r\n'
+                         b'Content-Length: 2\r\nBad\r\n'
+                         b'Transfer-Encoding: chunked\r\n\r\n{}')
+            response = http.client.HTTPResponse(sock)
+            response.begin()
+            self.assertEqual(response.status, 400)
+            response.read()
+        self.assertEqual(self.post(port)[0], 200)
 
     def test_negative_length_is_rejected_without_waiting_for_body(self):
         port = self.start(CorsPolicy())

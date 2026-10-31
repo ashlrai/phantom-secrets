@@ -57,6 +57,11 @@ def make_handler(codec: EncryptionCodec, cors: CorsPolicy = CorsPolicy()):
             if not decision.allowed:
                 self._plain(403)
                 return
+            # The stdlib parser can stop at a malformed header and hide later
+            # framing fields. Never trust a partial header block for body reads.
+            if self.headers.defects:
+                self.send_error(400, "malformed request headers")
+                return
             # Do not let negative lengths turn read(n) into an unbounded read.
             # This HTTP server does not implement chunked request decoding.
             lengths = self.headers.get_all("Content-Length", [])
