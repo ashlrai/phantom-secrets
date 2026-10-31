@@ -1,0 +1,47 @@
+[workspace typecheck]
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 16m 52s
+
+[workspace clippy]
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 18m 33s
+
+[fuzz clippy]
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 18m 10s
+
+[fuzz Rust regressions]
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 14m 34s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test parser_prefix_boundaries_and_binary ... ok
+test empty_binary_and_large_bodies ... ok
+test streaming_carry_at_every_mapping_byte ... ok
+test client_body_boundaries_all_modes_and_mime_types ... ok
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.20s
+
+[existing token tests]
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 23m 47s
+test token::tests::test_is_phantom_token ... ok
+test token::tests::test_from_str ... ok
+test token::tests::test_phantom_token_generate ... ok
+test token::tests::test_token_map_insert_and_resolve ... ok
+test token::tests::test_phantom_tokens_are_unique ... ok
+test token::tests::test_token_map_remove ... ok
+test token::tests::test_token_map_secret_names ... ok
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 945 filtered out; finished in 0.01s
+
+[existing body unit tests]
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 7m 17s
+test body_scope::tests::streaming_compatibility_api_is_byte_preserving ... ok
+test body_scope::tests::every_client_substitution_compatibility_api_is_fail_closed ... ok
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 135 filtered out; finished in 0.00s
+
+[existing body edge cases]
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 49.30s
+test no_client_header_is_eligible_for_substitution ... ok
+test form_text_malformed_binary_and_unknown_bodies_never_resolve ... ok
+test structured_nested_and_injected_fields_never_resolve ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+[live HTTP body forwarding]
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 20.50s
+test server::tests::test_proxy_never_replaces_phantom_token_in_body ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 136 filtered out; finished in 1.31s
+

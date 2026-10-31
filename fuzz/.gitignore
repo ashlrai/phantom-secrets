@@ -1,0 +1,7 @@
+/target/
+/corpus/
+/artifacts/
+/logs/*
+!/logs/acceptance-*.log
+!/logs/acceptance-*.json
+__pycache__/
