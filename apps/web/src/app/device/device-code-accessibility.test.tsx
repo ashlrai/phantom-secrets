@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
-import type { ComponentProps, ComponentType } from "react";
+import { createElement, type ComponentProps, type ComponentType } from "react";
 import test, { after, afterEach } from "node:test";
 import { compileFunction } from "node:vm";
 import ts from "typescript";
@@ -50,7 +50,7 @@ function renderDevice(getSession: () => Promise<unknown>) {
   const dirname = path.dirname(__filename);
   const dependencies: Record<string, unknown> = {
     "next/image": { __esModule: true, default: () => null },
-    "next/link": { __esModule: true, default: ({ children, ...props }: ComponentProps<"a">) => <a {...props}>{children}</a> },
+    "next/link": { __esModule: true, default: ({ children, ...props }: ComponentProps<"a">) => createElement("a", props, children) },
     "@/lib/device-code": compile(path.resolve(dirname, "../../lib/device-code.ts"), runtimeRequire),
     "@/lib/posthog": { capturePostHog: async () => {} },
     "@supabase/supabase-js": { createClient: () => ({ auth: { getSession } }) },
