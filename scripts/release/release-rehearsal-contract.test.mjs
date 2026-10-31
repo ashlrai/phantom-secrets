@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 // without changing workflow behavior or permissions.
 import "./signing-readiness.test.mjs";
 import "./npm-candidate-acceptance.test.mjs";
+import { assertDependencyIndexClean } from "./check-dependency-index.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const release = readFileSync(join(repoRoot, ".github/workflows/release.yml"), "utf8");
@@ -44,11 +45,26 @@ const npmMcpPackage = JSON.parse(
 const npmReadme = readFileSync(join(repoRoot, "npm/README.md"), "utf8");
 const npmMcpReadme = readFileSync(join(repoRoot, "npm-mcp/README.md"), "utf8");
 
-test("dependency installations cannot replace a tracked node_modules path", () => {
-  const tracked = execFileSync("git", ["ls-files", "-z"], {
-    cwd: repoRoot, encoding: "utf8",
-  }).split("\0").filter(Boolean);
-  assert.deepEqual(tracked.filter((path) => path.split("/").includes("node_modules")), []);
+test("dependency index validation rejects tracked installations, not similar names", () => {
+  for (const path of ["node_modules", "apps/web/node_modules", "node_modules/a.js",
+    "nested/node_modules/pkg/file.js", "space here/node_modules/a\nfile.js"]) {
+    assert.throws(() => assertDependencyIndexClean(`${path}\0`), /must not be tracked/);
+  }
+  assert.doesNotThrow(() => assertDependencyIndexClean(""));
+  assert.doesNotThrow(() => assertDependencyIndexClean("apps/web/package.json\0docs/node_modules-guide.md\0"));
+  assert.throws(() => assertDependencyIndexClean("unterminated"), /NUL-terminated/);
+  assert.throws(() => assertDependencyIndexClean("\0"), /empty path/);
+});
+
+test("index hygiene runs before installs on every dependency-policy and release-source path", () => {
+  for (const block of [jobBlock(ci, "dependency-policy", "windows-arm-source-check"),
+    jobBlock(releaseBuild, "verify-source", "build")]) {
+    const check = block.indexOf("/usr/bin/git ls-files -z | node scripts/release/check-dependency-index.mjs");
+    assert.ok(check >= 0, "fixed-path Git index check must run");
+    assert.match(block.slice(0, check), /shell: bash\n        run: \|\n          set -euo pipefail\n          $/);
+    assert.doesNotMatch(block.slice(0, check), /^    if:|^        if:/m);
+    assert.ok(check < block.indexOf("Install verified"), "check precedes tool/dependency installation");
+  }
 });
 
 const tagOnlyCondition =
