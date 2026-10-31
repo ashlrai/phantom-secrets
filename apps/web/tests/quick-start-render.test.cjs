@@ -37,3 +37,4 @@ const quickStart = compile("components/landing/QuickStart.tsx", (name) => {
   return require(name);
 });
 compile("components/landing/QuickStart.test.tsx", (name) => name === "./QuickStart" ? quickStart : require(name));
+compile("components/landing/quickstart-tempdir.test.tsx", (name) => name === "./QuickStart" ? quickStart : require(name));
