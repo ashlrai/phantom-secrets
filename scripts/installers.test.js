@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmodSync, existsSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import test from 'node:test';
@@ -310,6 +310,24 @@ test('Unix installer rejects unsafe install-directory syntax before download', (
     assert.match(result.stderr, /PHANTOM_INSTALL_DIR/);
     assert.equal(existsSync(log), false, 'unsafe path must fail before any download');
   }
+});
+
+test('Unix installer cleans its staging directory after a successful fixture upgrade', (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'phantom-installer-cleanup-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const parent = join(root, 'install-parent');
+  const install = join(parent, 'bin');
+  mkdirSync(parent);
+  writeFileSync(join(parent, 'unrelated'), 'keep');
+
+  const { result } = runInstaller({ root, install, existing: true });
+  assert.ifError(result.error);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(readFileSync(join(install, 'phantom'), 'utf8'), /phantom 1\.2\.3/);
+  assert.match(readFileSync(join(install, 'phantom-mcp'), 'utf8'), /phantom-mcp 1\.2\.3/);
+  assert.equal(existsSync(join(install, 'old-install')), false);
+  assert.equal(readFileSync(join(parent, 'unrelated'), 'utf8'), 'keep');
+  assert.deepEqual(readdirSync(parent).sort(), ['bin', 'unrelated']);
 });
 
 for (const installer of [shellInstaller, join(repo, 'apps/web/public/install.sh')]) {
