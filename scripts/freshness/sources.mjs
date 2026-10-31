@@ -57,14 +57,14 @@ export function loadSources(root) {
     /^## \[(\d+\.\d+\.\d+)\] - (\d{4}-\d{2}-\d{2})/m,
   );
   if (!releaseMatch) {
-    throw new Error("CHANGELOG.md has no released `## [x.y.z] - date` section");
+    throw new Error("CHANGELOG.md has no candidate `## [x.y.z] - date` section");
   }
   const [, releaseVersion, releaseDate] = releaseMatch;
 
   const mismatches = [
     ["npm/package.json", npmCli.version],
     ["npm-mcp/package.json", npmMcp.version],
-    ["CHANGELOG.md latest release", releaseVersion],
+    ["CHANGELOG.md latest candidate", releaseVersion],
   ].filter(([, seen]) => seen !== version);
   if (mismatches.length > 0) {
     const detail = mismatches
@@ -75,7 +75,18 @@ export function loadSources(root) {
     );
   }
 
+  // Published evidence is an explicit, separately reviewed receipt. Never infer
+  // publication from a source-version bump or a dated candidate changelog.
+  const published = JSON.parse(read(root, "scripts/freshness/published-release.json"));
+  if (typeof published.version !== "string" || !SEMVER.test(published.version)) {
+    throw new Error("published release version is missing or not semver");
+  }
+  if (published.url !== `https://github.com/ashlrai/phantom-secrets/releases/tag/v${published.version}`) {
+    throw new Error("published release URL must match its exact canonical tag");
+  }
+
   return {
+    published: { ...published, tag: `v${published.version}` },
     version,
     tag: `v${version}`,
     npmCli,

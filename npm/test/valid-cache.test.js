@@ -16,7 +16,7 @@ const { ensureBinary, getPlatformTarget, pathSet, writePrivateFile } = require("
     const sha256 = crypto.createHash("sha256").update(contents).digest("hex");
     writePrivateFile(
       paths.manifestPath,
-      `${JSON.stringify({ version: "0.7.9", sha256 })}\n`,
+      `${JSON.stringify({ version: "0.8.0", sha256 })}\n`,
       0o600
     );
     let executions = 0;
@@ -26,7 +26,7 @@ const { ensureBinary, getPlatformTarget, pathSet, writePrivateFile } = require("
         executions += 1;
         assert.strictEqual(observedPath, paths.binaryPath);
         assert.deepStrictEqual(args, ["--version"]);
-        return Buffer.from("phantom 0.7.9\n");
+        return Buffer.from("phantom 0.8.0\n");
       },
       downloadImpl: async () => {
         throw new Error("valid cache must not download");
@@ -46,7 +46,7 @@ const { ensureBinary, getPlatformTarget, pathSet, writePrivateFile } = require("
     const paths = pathSet(missingCacheDir);
     const target = getPlatformTarget(process);
     const archiveName = `phantom-${target}.${process.platform === "win32" ? "zip" : "tar.gz"}`;
-    const archiveUrl = `https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9/${archiveName}`;
+    const archiveUrl = `https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.0/${archiveName}`;
     const archive = Buffer.from("verified archive fixture");
     const binary = Buffer.from("installed binary fixture");
     const archiveHash = crypto.createHash("sha256").update(archive).digest("hex");
@@ -74,7 +74,7 @@ const { ensureBinary, getPlatformTarget, pathSet, writePrivateFile } = require("
         executions += 1;
         assert.deepStrictEqual(args, ["--version"]);
         assert.deepStrictEqual(readFileSync(observedPath), binary);
-        return Buffer.from("phantom 0.7.9\n");
+        return Buffer.from("phantom 0.8.0\n");
       },
     };
 
@@ -84,7 +84,7 @@ const { ensureBinary, getPlatformTarget, pathSet, writePrivateFile } = require("
     assert.strictEqual(executions, 1);
     assert.deepStrictEqual(readFileSync(paths.binaryPath), binary);
     assert.deepStrictEqual(JSON.parse(readFileSync(paths.manifestPath, "utf8")), {
-      version: "0.7.9",
+      version: "0.8.0",
       sha256: binaryHash,
     });
     assert.strictEqual(readFileSync(paths.sourceMarkerPath, "utf8"), "npm\n");
