@@ -402,6 +402,36 @@ test('Unix installer atomically preserves an existing regular shell rc under GNU
   );
 });
 
+test('Unix PATH setup removes temporary files on candidate creation or comparison failure', (t) => {
+  for (const failure of ['candidate creation', 'comparison']) {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-path-failure-')));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const home = join(root, 'home');
+    const shims = makeShims(root);
+    mkdirSync(home);
+    const rc = join(home, '.bashrc');
+    writeFileSync(rc, '# original configuration\n');
+    if (failure === 'candidate creation') {
+      const shim = join(shims, 'mktemp');
+      writeFileSync(shim, '#!/bin/sh\ncase "$1" in *.phantom-path.candidate.*) : > "$HOME/.failure-invoked"; exit 1 ;; esac\nexec /usr/bin/mktemp "$@"\n');
+      chmodSync(shim, 0o755);
+    } else {
+      const shim = join(shims, 'cmp');
+      writeFileSync(shim, '#!/bin/sh\n: > "$HOME/.failure-invoked"\nexit 1\n');
+      chmodSync(shim, 0o755);
+    }
+
+    const { install, result } = runInstaller({ root, home, shims });
+    assert.ifError(result.error);
+    assert.equal(result.status, 0, `${failure}: ${result.stderr}`);
+    assert.match(result.stderr, /could not update your shell PATH/);
+    assert.equal(existsSync(join(home, '.failure-invoked')), true, `${failure}: failure seam reached`);
+    assert.equal(readFileSync(rc, 'utf8'), '# original configuration\n');
+    assert.equal(existsSync(join(install, 'phantom')), true);
+    assert.deepEqual(readdirSync(home).filter((name) => name.startsWith('.phantom-path.')), []);
+  }
+});
+
 test('Unix installer leaves its existing PATH entry unchanged on a second install', () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-installer-repeat-')));
   const shims = makeShims(root);
