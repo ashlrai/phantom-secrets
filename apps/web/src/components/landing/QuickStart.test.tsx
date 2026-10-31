@@ -7,11 +7,13 @@ test("Unix installation examples display a temporary staging directory", () => {
   render(<QuickStart />);
   try {
     const selector = screen.getByRole("group", { name: "Choose an operating system" });
+    assert.equal(within(selector).getByRole("button", { name: "macOS" }).getAttribute("aria-pressed"), "true");
     for (const [platform, checksum] of [
       ["macOS", "shasum -a 256 -c -"],
       ["Linux", "sha256sum -c -"],
     ]) {
       fireEvent.click(within(selector).getByRole("button", { name: platform }));
+      assert.equal(within(selector).getByRole("button", { name: platform }).getAttribute("aria-pressed"), "true");
       const card = screen.getByRole("heading", { level: 3, name: platform }).closest("article");
       assert.ok(card);
       const command = within(card).getByRole("button", { name: /^Copy command:/ });

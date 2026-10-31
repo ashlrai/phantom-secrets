@@ -9,6 +9,7 @@ global.window = dom.window;
 global.document = dom.window.document;
 Object.defineProperty(global, "navigator", { value: dom.window.navigator, configurable: true });
 global.HTMLElement = dom.window.HTMLElement;
+global.Node = dom.window.Node;
 
 const React = require("react");
 function load(file, dependencies = {}) {
@@ -37,3 +38,7 @@ load("components/landing/quickstart-accessibility.test.tsx", {
   "./QuickStart": quickStart,
   "@/lib/public-release": release,
 });
+// Keep the colocated rendering tests in the normal web test suite as well.
+for (const file of ["QuickStart.test.tsx", "quickstart-tempdir.test.tsx"]) {
+  load(`components/landing/${file}`, { "./QuickStart": quickStart });
+}
