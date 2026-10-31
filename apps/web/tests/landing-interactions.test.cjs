@@ -147,6 +147,49 @@ test("rendered desktop and mobile GitHub links choose the same correct product s
     }
   }
 });
+test("rerendering the landing page does not duplicate primary navigation links", () => {
+  const { JSDOM } = require("jsdom");
+  const dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "http://localhost/" });
+  const previousGlobals = new Map(["window", "document", "navigator", "HTMLElement"].map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)]));
+  for (const name of previousGlobals.keys()) Object.defineProperty(globalThis, name, { value: dom.window[name], configurable: true, writable: true });
+
+  const { render, cleanup } = require("@testing-library/react");
+  try {
+    const { localRequire } = navigationFixture("/");
+    const { Nav } = compile("Nav.tsx", (name) => name === "react" ? React : localRequire(name), dom.window, dom.window.document);
+    const { default: Home } = compile("../../app/page.tsx", (name) => {
+      if (name === "@/components/landing/Nav") return { Nav };
+      if (name.startsWith("@/components/landing/")) return new Proxy({}, { get: () => () => null });
+      return require(name);
+    });
+    const page = React.createElement(Home);
+    const { container, rerender } = render(page);
+    const expected = [
+      ["Workbench", "/"], ["Phantom Secrets", "/secrets"], ["How it works", "/secrets#how"],
+      ["Pricing", "/pricing"], ["Enterprise", "/enterprise"], ["Security", "/security"], ["Docs", "/docs"],
+    ];
+    const assertNavigation = () => {
+      const navs = container.querySelectorAll('nav[aria-label="Primary navigation"]');
+      assert.equal(navs.length, 1);
+      const mobile = navs[0].querySelector("#mobile-navigation");
+      assert.ok(mobile);
+      const links = [...navs[0].querySelectorAll("a")].filter((link) => expected.some(([label]) => link.textContent === label));
+      const pairs = (region) => links.filter((link) => mobile.contains(link) === region).map((link) => [link.textContent, link.getAttribute("href")]);
+      assert.deepEqual(pairs(false), expected, "desktop links");
+      assert.deepEqual(pairs(true), expected, "mobile links");
+    };
+    assertNavigation();
+    rerender(React.createElement(Home));
+    assertNavigation();
+  } finally {
+    cleanup();
+    dom.window.close();
+    for (const [name, descriptor] of previousGlobals) {
+      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+      else delete globalThis[name];
+    }
+  }
+});
 test("Escape returns focus from the inline mobile disclosure and its listener is cleaned up", () => {
   const f = navigationFixture("/secrets", true); const cleanups = f.effects.map((effect) => effect()).filter(Boolean);
   const escape = new Event("keydown"); Object.defineProperty(escape, "key", { value: "Escape" }); f.window.dispatchEvent(escape);

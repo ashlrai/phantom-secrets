@@ -14,6 +14,7 @@ pub mod env_scope;
 pub mod exec;
 pub mod expiry;
 pub mod export_cmd;
+pub mod git_credential;
 pub mod grant;
 pub mod import_cmd;
 pub mod init;
@@ -25,10 +26,13 @@ pub mod logout;
 pub mod mcp;
 pub mod mcp_approve;
 pub mod open;
+pub(crate) mod plan_print;
 pub mod pq_report;
 pub(crate) mod proxy_lifecycle;
 pub mod pull;
+pub mod redact;
 pub mod remove;
+pub(crate) mod report_json;
 pub mod reveal;
 pub mod rotate;
 pub(crate) mod rotation_gate;
@@ -51,3 +55,8 @@ pub mod watch;
 pub mod why;
 pub mod workspace;
 pub mod wrap;
+
+// Load the golden corpus once for both CLI consumer test modules.
+#[cfg(test)]
+#[path = "../../../phantom-core/tests/support/redact_corpus.rs"]
+mod redact_corpus;

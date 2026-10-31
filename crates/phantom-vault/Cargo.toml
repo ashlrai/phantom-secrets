@@ -31,7 +31,8 @@ hex = { workspace = true }
 
 # Encryption for file vault
 chacha20poly1305 = "0.10"
-argon2 = "0.5"
+# `zeroize` scrubs Argon2 internal hash state (initial hash, final block).
+argon2 = { version = "0.5", features = ["zeroize"] }
 
 # Advisory file locking (cross-platform)
 fs2 = "0.4"
@@ -39,9 +40,6 @@ fs2 = "0.4"
 # Secret-name hashing so keychain metadata doesn't leak names (audit F13)
 sha2 = "0.10"
 libc = "0.2"
-
-[target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
 
 [dev-dependencies]
 tempfile = "3"

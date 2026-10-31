@@ -1,5 +1,6 @@
 mod config;
 mod docs;
+pub(crate) mod dry_run;
 pub(crate) mod env;
 mod hooks;
 pub mod multi;
@@ -221,7 +222,9 @@ pub fn run(env_path_arg: &str) -> Result<()> {
         None
     };
 
+    let env_label = env_name.to_string_lossy().into_owned();
     if real_entries.is_empty() {
+        let commented_notes = commented_entry_notes(&dotenv, &env_label);
         println!(
             "{} No real secrets found in {} (all values are already phantom tokens, public keys, or config)",
             "!".yellow().bold(),
@@ -286,6 +289,7 @@ pub fn run(env_path_arg: &str) -> Result<()> {
                 "ok".green().bold()
             );
         }
+        print_commented_entry_notes(&commented_notes);
         return Ok(());
     }
 
@@ -339,6 +343,10 @@ pub fn run(env_path_arg: &str) -> Result<()> {
         value.zeroize();
     }
     originals.clear();
+    // Line numbers are taken from the rewritten text, which is what the
+    // file holds once init commits: a multi-line value becomes one token line.
+    let commented_notes =
+        commented_entry_notes(&DotenvFile::parse_str(&phantomized_env), &env_label);
 
     let mut files = vec![
         InitFile::replace_if_exact_snapshot(
@@ -494,6 +502,8 @@ pub fn run(env_path_arg: &str) -> Result<()> {
         println!("{}", headless.dimmed());
     }
 
+    print_commented_entry_notes(&commented_notes);
+
     if let Some(prepared) = &claude_setup {
         prompts::finish_auto_setup_claude_code(prepared);
     }
@@ -505,6 +515,28 @@ pub fn run(env_path_arg: &str) -> Result<()> {
     print_next_steps(&config_path);
 
     Ok(())
+}
+
+/// One warning line per commented-out assignment in `dotenv` that still holds
+/// a secret. init protects live entries only and never edits comments, so
+/// such a value stays as plaintext in the file. Key names and line numbers
+/// only; the values are never printed.
+fn commented_entry_notes(dotenv: &DotenvFile, file_label: &str) -> Vec<String> {
+    dotenv
+        .commented_secret_assignments()
+        .into_iter()
+        .map(|(key_name, line)| {
+            format!(
+                "{file_label} line {line}: commented-out {key_name} is still plaintext; delete the line, or store the value under an unused name with `phantom add <NAME> --stdin`"
+            )
+        })
+        .collect()
+}
+
+fn print_commented_entry_notes(lines: &[String]) {
+    for line in lines {
+        println!("{} {}", "warn".yellow().bold(), line);
+    }
 }
 
 /// init keeps an existing `.env.example`, so it must not keep it quietly when
@@ -605,6 +637,21 @@ fn print_next_steps(config_path: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn init_warns_about_commented_out_secrets_by_key_and_line() {
+        // init leaves comments alone, so a commented-out credential would
+        // stay as plaintext with nothing said about it.
+        let old = ["sk", "-proj-", "1n1tC0mmentedValue0123456789abcdefgh"].concat();
+        let text = format!("OPENAI_API_KEY=phm_x\n\n# OPENAI_API_KEY={old}\n# PORT=8080\n");
+        let dotenv = DotenvFile::parse_str(&text);
+        let lines = commented_entry_notes(&dotenv, ".env");
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].contains("OPENAI_API_KEY"), "{}", lines[0]);
+        assert!(lines[0].contains(".env line 3"), "{}", lines[0]);
+        assert!(!lines[0].contains(&old));
+        assert!(commented_entry_notes(&DotenvFile::parse_str("PORT=1\n"), ".env").is_empty());
+    }
 
     #[test]
     fn first_run_next_steps_lead_with_local_checks_not_hosted_surfaces() {

@@ -168,6 +168,45 @@ pub fn refusal_summary(action: &str, refusals: &[String]) -> Option<String> {
     ))
 }
 
+/// The lifecycle refusal for paths that hand real values to new places (a
+/// deployment platform, team members, the cloud copy): `Refusing to {action}:
+/// ...` when any entry was demoted to read-only by the expiry policy, or when
+/// an entry's lifecycle metadata cannot be read. `remedy` follows the list of
+/// read-only names. Entries are judged once each, in sorted order. Reads
+/// metadata only, never a value; the message names secrets only. `None` when
+/// every entry is read-write.
+pub fn read_only_refusal<'e>(
+    vault: &dyn VaultBackend,
+    entries: impl IntoIterator<Item = &'e str>,
+    action: &str,
+    remedy: &str,
+) -> Option<String> {
+    let entries: std::collections::BTreeSet<&str> = entries.into_iter().collect();
+    let mut read_only = Vec::new();
+    for name in entries {
+        match vault.get_metadata(name) {
+            Ok(metadata) => {
+                if metadata.is_some_and(|metadata| metadata.vault_mode.is_read_only()) {
+                    read_only.push(format!("'{name}'"));
+                }
+            }
+            Err(_) => {
+                return Some(format!(
+                    "Refusing to {action}: could not read lifecycle metadata for '{name}'."
+                ));
+            }
+        }
+    }
+    if read_only.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "Refusing to {action}: {} secret(s) are read-only under their lifecycle policy: {}. {remedy}",
+        read_only.len(),
+        read_only.join(", ")
+    ))
+}
+
 /// Current Unix time in seconds.
 pub fn now_secs() -> u64 {
     std::time::SystemTime::now()
@@ -217,6 +256,28 @@ mod tests {
                 .expect("metadata");
         }
         vault
+    }
+
+    #[test]
+    fn read_only_refusal_names_demoted_entries_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = vault_with(&dir, &[("DEMOTED_KEY", 1), ("ACTIVE_KEY", 1)]);
+        let mut metadata = vault.get_metadata("DEMOTED_KEY").unwrap().unwrap();
+        metadata.vault_mode = crate::metadata::VaultMode::ReadOnly;
+        vault.set_metadata("DEMOTED_KEY", metadata).unwrap();
+
+        let refusal = read_only_refusal(
+            &vault,
+            ["DEMOTED_KEY", "ACTIVE_KEY", "DEMOTED_KEY"],
+            "push",
+            "Rotate it.",
+        )
+        .unwrap_or_default();
+        assert_eq!(
+            refusal,
+            "Refusing to push: 1 secret(s) are read-only under their lifecycle policy: 'DEMOTED_KEY'. Rotate it."
+        );
+        assert!(read_only_refusal(&vault, ["ACTIVE_KEY"], "push", "Rotate it.").is_none());
     }
 
     #[test]

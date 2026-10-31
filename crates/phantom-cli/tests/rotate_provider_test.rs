@@ -26,14 +26,7 @@ fn init_project(dir: &TempDir) {
     )
     .expect("write seed .env");
 
-    Command::cargo_bin("phantom")
-        .expect("binary not found")
-        .args(["init", "--from", ".env"])
-        .current_dir(dir.path())
-        .env("PHANTOM_VAULT_PASSPHRASE", VAULT_PASS)
-        .env("HOME", dir.path())
-        .assert()
-        .success();
+    common::init_project(dir, VAULT_PASS);
 
     // Configure a rotation provider for the secret, exactly as an operator
     // would in .phantom.toml.
@@ -48,10 +41,8 @@ fn init_project(dir: &TempDir) {
 }
 
 fn phantom(dir: &TempDir) -> Command {
-    let mut cmd = Command::cargo_bin("phantom").expect("binary not found");
-    cmd.current_dir(dir.path())
-        .env("PHANTOM_VAULT_PASSPHRASE", VAULT_PASS)
-        .env("HOME", dir.path())
+    let mut cmd = common::phantom(dir, VAULT_PASS);
+    cmd
         // Regression input: this legacy runtime flag must be ignored by the
         // shipped CLI binary. Positive mock-provider behavior is covered by
         // phantom-core's compiled unit tests instead.
@@ -262,14 +253,7 @@ fn rotate_provider_dispatches_by_config_not_secret_name() {
     )
     .expect("write seed .env");
 
-    Command::cargo_bin("phantom")
-        .expect("binary not found")
-        .args(["init", "--from", ".env"])
-        .current_dir(dir.path())
-        .env("PHANTOM_VAULT_PASSPHRASE", VAULT_PASS)
-        .env("HOME", dir.path())
-        .assert()
-        .success();
+    common::init_project(&dir, VAULT_PASS);
 
     let config_path = dir.path().join(".phantom.toml");
     let mut config = fs::read_to_string(&config_path).expect("read .phantom.toml");
@@ -324,14 +308,7 @@ fn rotate_name_without_config_fails_with_toml_guidance() {
 
     // Project with a vaulted secret but NO rotation_provider block.
     fs::write(dir.path().join(".env"), "OTHER_API_KEY=sk-other-value\n").expect("write .env");
-    Command::cargo_bin("phantom")
-        .expect("binary not found")
-        .args(["init", "--from", ".env"])
-        .current_dir(dir.path())
-        .env("PHANTOM_VAULT_PASSPHRASE", VAULT_PASS)
-        .env("HOME", dir.path())
-        .assert()
-        .success();
+    common::init_project(&dir, VAULT_PASS);
 
     let output = phantom(&dir)
         .args(["rotate", "--name", "OTHER_API_KEY"])

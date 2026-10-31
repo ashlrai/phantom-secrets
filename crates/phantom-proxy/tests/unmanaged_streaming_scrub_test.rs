@@ -9,90 +9,9 @@ use phantom_core::audit::{LeakLocation, LeakSeverity};
 use phantom_proxy::{ResponseScrubber, ScrubEvent, StreamingScrubState};
 use std::collections::HashMap;
 
-#[derive(Clone, Debug)]
-struct Family {
-    label: &'static str,
-    token: String,
-    incomplete: String,
-    unbounded: bool,
-}
-
-fn families() -> Vec<Family> {
-    vec![
-        Family {
-            label: "sk_*",
-            token: format!("sk-{}", "A".repeat(28)),
-            incomplete: format!("sk-{}", "A".repeat(19)),
-            unbounded: true,
-        },
-        Family {
-            label: "sk_live_*",
-            token: format!("sk_live_{}", "B".repeat(28)),
-            incomplete: format!("sk_live_{}", "B".repeat(19)),
-            unbounded: true,
-        },
-        Family {
-            label: "sk_test_*",
-            token: format!("sk_test_{}", "C".repeat(28)),
-            incomplete: format!("sk_test_{}", "C".repeat(19)),
-            unbounded: true,
-        },
-        Family {
-            label: "ghp_*",
-            token: format!("ghp_{}", "D".repeat(44)),
-            incomplete: format!("ghp_{}", "D".repeat(35)),
-            unbounded: true,
-        },
-        Family {
-            label: "github_pat_*",
-            token: format!("github_pat_{}", "E".repeat(88)),
-            incomplete: format!("github_pat_{}", "E".repeat(79)),
-            unbounded: true,
-        },
-        Family {
-            label: "AKIA*",
-            token: format!("AKIA{}", "F".repeat(16)),
-            incomplete: format!("AKIA{}", "F".repeat(15)),
-            unbounded: false,
-        },
-        Family {
-            label: "AIza*",
-            token: format!("AIza{}", "G".repeat(35)),
-            incomplete: format!("AIza{}", "G".repeat(34)),
-            unbounded: false,
-        },
-        Family {
-            label: "xoxb-*",
-            token: format!("xoxb-{}", "H".repeat(48)),
-            incomplete: format!("xoxb-{}", "H".repeat(39)),
-            unbounded: true,
-        },
-        Family {
-            label: "xoxp-*",
-            token: format!("xoxp-{}", "J".repeat(48)),
-            incomplete: format!("xoxp-{}", "J".repeat(39)),
-            unbounded: true,
-        },
-        Family {
-            label: "SG.*",
-            token: format!("SG.{}.{}", "K".repeat(22), "L".repeat(43)),
-            incomplete: format!("SG.{}.{}", "K".repeat(22), "L".repeat(42)),
-            unbounded: false,
-        },
-        Family {
-            label: "AC*",
-            token: format!("AC{}", "a".repeat(32)),
-            incomplete: format!("AC{}", "a".repeat(31)),
-            unbounded: false,
-        },
-        Family {
-            label: "phm_*",
-            token: format!("phm_{}", "b".repeat(64)),
-            incomplete: format!("phm_{}", "b".repeat(63)),
-            unbounded: false,
-        },
-    ]
-}
+#[path = "../../phantom-core/tests/support/redact_corpus.rs"]
+mod redact_corpus;
+use redact_corpus::families;
 
 fn empty_scrubber() -> ResponseScrubber {
     ResponseScrubber::from_token_map(&HashMap::new())
@@ -481,4 +400,25 @@ fn overlap_len_never_understates_the_typed_streaming_bound() {
         url.clone(),
     )]));
     assert_eq!(not_token.overlap_len(), url.len() - 1);
+}
+
+#[test]
+fn golden_buffered_shapes_preserve_unicode_and_count_repeated_embedded_matches() {
+    for family in families() {
+        let body = format!("π before{}!{}終", family.token, family.token);
+        let expected = format!(
+            "π before{}!{}終",
+            marker(family.label),
+            marker(family.label)
+        );
+        let (output, event) = empty_scrubber().scrub_buffered(Some("text/plain"), body.as_bytes());
+        assert!(output == expected.as_bytes(), "{}", family.label);
+        assert!(event.scrubbed);
+        assert_eq!(event.leak_events.len(), 1, "{}", family.label);
+        let leak = &event.leak_events[0];
+        assert_eq!(leak.pattern, family.label);
+        assert_eq!(leak.match_count, 2);
+        assert_eq!(leak.severity, LeakSeverity::Medium);
+        assert!(leak.secret_name.is_none());
+    }
 }

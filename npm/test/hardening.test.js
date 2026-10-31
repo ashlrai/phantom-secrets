@@ -129,7 +129,111 @@ async function assertPreviousVersionCachePreserved(stage) {
   }
 }
 
+// Network callbacks can arrive after the wrapper has already reported failure.
+// Use synthetic transport events so these races require no actual download.
+async function assertDownloadStopsAfterSettlement() {
+  for (const failure of ["timeout", "request-error"]) {
+    const callbacks = [];
+    const requests = [];
+    const pending = download("https://github.com/release", {
+      timeoutMs: failure === "timeout" ? 5 : 100,
+      httpsGet: (_url, callback) => {
+        callbacks.push(callback);
+        const request = new EventEmitter();
+        request.destroy = () => {};
+        requests.push(request);
+        return request;
+      },
+    });
+    const rejected = assert.rejects(pending, failure === "timeout" ? /timed out/ : /network failed/);
+    if (failure === "request-error") requests[0].emit("error", new Error("network failed"));
+    await rejected;
+
+    const lateResponse = new EventEmitter();
+    lateResponse.statusCode = 302;
+    lateResponse.headers = { location: "/late-redirect" };
+    let destroyed = false;
+    let resumed = false;
+    lateResponse.destroy = () => { destroyed = true; };
+    lateResponse.resume = () => { resumed = true; };
+    callbacks[0](lateResponse);
+    assert.strictEqual(requests.length, 1, `${failure}: no request after settlement`);
+    assert.strictEqual(destroyed, true, `${failure}: discard late response`);
+    assert.strictEqual(resumed, false, `${failure}: do not drain late body`);
+    assert.doesNotThrow(() => lateResponse.emit("error", new Error("late socket failure")));
+  }
+
+
+  // A drained redirect response can fail after its successor has started.
+  // Rejection must cancel that active successor, not merely clear the deadline.
+  for (const successorHasResponse of [false, true]) {
+    const callbacks = [];
+    const requests = [];
+    const pending = download("https://github.com/release", {
+      timeoutMs: 100,
+      httpsGet: (_url, callback) => {
+        callbacks.push(callback);
+        const request = new EventEmitter();
+        request.destroyCount = 0;
+        request.destroy = (error) => {
+          request.destroyCount++;
+          // Exercise synchronous error re-entry during cancellation.
+          request.emit("error", error);
+        };
+        requests.push(request);
+        return request;
+      },
+    });
+    const originalError = new Error("redirect stream failed");
+    const rejected = assert.rejects(pending, (error) => error === originalError);
+    const redirect = new EventEmitter();
+    redirect.statusCode = 302;
+    redirect.headers = { location: "/asset" };
+    redirect.resume = () => {};
+    callbacks[0](redirect);
+    assert.strictEqual(requests.length, 2);
+    if (successorHasResponse) {
+      const response = new EventEmitter();
+      response.statusCode = 200;
+      response.headers = {};
+      callbacks[1](response);
+      response.emit("data", Buffer.from("partial"));
+    }
+    redirect.emit("error", originalError);
+    await rejected;
+    assert.strictEqual(requests[1].destroyCount, 1, "cancel the active redirected request");
+    assert.doesNotThrow(() => redirect.emit("error", new Error("another late error")));
+    assert.strictEqual(requests[1].destroyCount, 1, "settlement is idempotent");
+  }
+
+  const responses = [];
+  const pending = download("https://github.com/release", {
+    timeoutMs: 100,
+    httpsGet: (_url, callback) => {
+      const request = new EventEmitter();
+      request.destroy = () => {};
+      process.nextTick(() => {
+        const response = new EventEmitter();
+        response.statusCode = responses.length === 0 ? 302 : 200;
+        response.headers = { location: "/asset" };
+        response.resume = () => {};
+        response.destroy = () => {};
+        responses.push(response);
+        callback(response);
+        if (response.statusCode === 200) {
+          response.emit("data", Buffer.from("verified fixture bytes"));
+          response.emit("end");
+        }
+      });
+      return request;
+    },
+  });
+  assert.strictEqual((await pending).toString(), "verified fixture bytes");
+  assert.doesNotThrow(() => responses[0].emit("error", new Error("late redirect stream error")));
+}
+
 (async () => {
+  await assertDownloadStopsAfterSettlement();
   assert.throws(
     () => getCacheDir({ env: {}, homedirImpl: () => "relative-home" }),
     /absolute private home/
@@ -364,15 +468,22 @@ async function assertPreviousVersionCachePreserved(stage) {
 
     const heartbeatOwner = await acquireInstallLock(paths.lockPath, {
       waitMs: 20,
-      staleMs: 40,
+      staleMs: 10_000,
       heartbeatMs: 5,
       pollMs: 2,
     });
+    // Verify periodic refresh directly; filesystem latency must not decide
+    // whether this live owner looks stale during the contention assertion.
+    const heartbeatPath = join(paths.lockPath, "owner");
+    const expiredHeartbeat = new Date(Date.now() - 20_000);
+    utimesSync(heartbeatPath, expiredHeartbeat, expiredHeartbeat);
+    const initialHeartbeat = lstatSync(heartbeatPath).mtimeMs;
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 70));
+    assert.ok(lstatSync(heartbeatPath).mtimeMs > initialHeartbeat, "timer must refresh the owner");
     await assert.rejects(
       acquireInstallLock(paths.lockPath, {
         waitMs: 15,
-        staleMs: 40,
+        staleMs: 10_000,
         heartbeatMs: 5,
         pollMs: 2,
       }),

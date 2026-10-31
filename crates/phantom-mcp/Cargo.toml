@@ -33,7 +33,6 @@ schemars = "1"
 anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-colored = "2"
 base64 = { workspace = true }
 zeroize = { workspace = true }
 rand = { workspace = true }

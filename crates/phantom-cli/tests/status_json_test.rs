@@ -38,7 +38,9 @@ fn missing_configuration_emits_a_versioned_uninitialized_contract_without_writes
     assert_eq!(
         report,
         json!({
+            "schemaVersion": 1,
             "schema_version": 1,
+            "kind": "phantom.status",
             "initialized": false,
             "inspection": "metadata-only",
             "managed_dotenv": { "inspected": false },
@@ -235,13 +237,16 @@ fn unsafe_lifecycle_metadata_remains_unknown_and_unmodified() {
         .is_symlink());
 }
 
-/// Contract v1: the exact document for each config state. Any added, removed
-/// or retyped field must bump `schema_version` (see docs/status-json.md).
+/// Contract v1: the exact document for each config state. New optional fields
+/// may appear within v1; removing, renaming or retyping a field bumps
+/// `schema_version` (see docs/hub-status-contract.md).
 #[test]
 fn schema_v1_exact_documents_and_no_canary_leaks() {
     fn expected(initialized: bool, lock: &str, issues: Value) -> Value {
         json!({
+            "schemaVersion": 1,
             "schema_version": 1,
+            "kind": "phantom.status",
             "initialized": initialized,
             "inspection": "metadata-only",
             "managed_dotenv": { "inspected": false },

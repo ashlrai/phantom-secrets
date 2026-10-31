@@ -32,17 +32,45 @@ pub fn split_key(key: &str) -> Option<(&str, &str)> {
 }
 
 /// Read the active environment name from `.phantom/env` in `project_dir`.
-/// Returns `"default"` if the file is absent or empty.
-pub fn read_active_env(project_dir: &Path) -> String {
-    let env_file = project_dir.join(".phantom").join("env");
-    if let Ok(content) = std::fs::read_to_string(&env_file) {
-        let trimmed = content.trim().to_string();
-        if !trimmed.is_empty() {
-            return trimmed;
-        }
-    }
-    DEFAULT_ENV.to_string()
+/// Returns `"default"` if the file is absent or blank.
+///
+/// This is the one selector reader. It fails closed: the selector is read
+/// without following a symlink (or any non-regular file), must be UTF-8, and
+/// the name it holds must pass [`validate_env_name`], so it can never address
+/// vault entries outside its own `<env>/` namespace.
+pub fn read_active_env(project_dir: &Path) -> crate::error::Result<String> {
+    let selector = project_dir.join(".phantom").join("env");
+    let bytes = crate::fs::read_regular_file(&selector).map_err(|error| {
+        crate::error::PhantomError::Other(format!(
+            "Cannot read the active environment selector {}: {error}. {SELECTOR_REMEDY}",
+            selector.display()
+        ))
+    })?;
+    let text = match bytes {
+        Some(bytes) => String::from_utf8(bytes).map_err(|_| {
+            crate::error::PhantomError::Other(format!(
+                "The active environment selector {} is not UTF-8. {SELECTOR_REMEDY}",
+                selector.display()
+            ))
+        })?,
+        None => String::new(),
+    };
+    let name = match text.trim() {
+        "" => DEFAULT_ENV,
+        name => name,
+    };
+    validate_env_name(name).map_err(|error| {
+        crate::error::PhantomError::Other(format!(
+            "The active environment selector {} is unusable: {error} {SELECTOR_REMEDY}",
+            selector.display()
+        ))
+    })?;
+    Ok(name.to_string())
 }
+
+/// The fix every selector refusal names. The CLI has no command that writes
+/// the selector, so the remedy is a file edit.
+const SELECTOR_REMEDY: &str = "Replace it with a regular file holding one valid environment name (letters, digits, '-', '_'), or remove it to serve the default environment.";
 
 /// Write `env_name` as the active environment to `.phantom/env`.
 pub fn write_active_env(project_dir: &Path, env_name: &str) -> crate::error::Result<()> {
@@ -69,12 +97,16 @@ pub fn write_active_env_if_unchanged(
 }
 
 /// Resolve the effective environment: `--env` flag takes priority over the
-/// persisted value, which takes priority over the compiled-in default.
-pub fn resolve_env(project_dir: &Path, flag: Option<&str>) -> String {
-    if let Some(e) = flag {
-        return e.to_string();
+/// persisted value, which takes priority over the compiled-in default. The
+/// result always passes [`validate_env_name`]; see [`read_active_env`].
+pub fn resolve_env(project_dir: &Path, flag: Option<&str>) -> crate::error::Result<String> {
+    match flag {
+        Some(flag) => {
+            validate_env_name(flag)?;
+            Ok(flag.to_string())
+        }
+        None => read_active_env(project_dir),
     }
-    read_active_env(project_dir)
 }
 
 /// Validate an environment name: lowercase alphanumeric plus `-` and `_`,
@@ -165,22 +197,22 @@ mod tests {
     #[test]
     fn read_active_env_returns_default_when_missing() {
         let dir = tempfile::TempDir::new().unwrap();
-        assert_eq!(read_active_env(dir.path()), DEFAULT_ENV);
+        assert_eq!(read_active_env(dir.path()).unwrap(), DEFAULT_ENV);
     }
 
     #[test]
     fn write_and_read_active_env() {
         let dir = tempfile::TempDir::new().unwrap();
         write_active_env(dir.path(), "staging").unwrap();
-        assert_eq!(read_active_env(dir.path()), "staging");
+        assert_eq!(read_active_env(dir.path()).unwrap(), "staging");
     }
 
     #[test]
     fn resolve_env_flag_overrides_file() {
         let dir = tempfile::TempDir::new().unwrap();
         write_active_env(dir.path(), "staging").unwrap();
-        assert_eq!(resolve_env(dir.path(), Some("prod")), "prod");
-        assert_eq!(resolve_env(dir.path(), None), "staging");
+        assert_eq!(resolve_env(dir.path(), Some("prod")).unwrap(), "prod");
+        assert_eq!(resolve_env(dir.path(), None).unwrap(), "staging");
     }
 
     #[test]
@@ -193,7 +225,7 @@ mod tests {
         write_active_env(dir.path(), "concurrent").unwrap();
 
         assert!(write_active_env_if_unchanged(dir.path(), Some(&before), "prod").is_err());
-        assert_eq!(read_active_env(dir.path()), "concurrent");
+        assert_eq!(read_active_env(dir.path()).unwrap(), "concurrent");
     }
 
     #[cfg(unix)]
@@ -209,5 +241,58 @@ mod tests {
 
         assert!(write_active_env(dir.path(), "prod").is_err());
         assert_eq!(std::fs::read_to_string(outside).unwrap(), "owner\n");
+    }
+
+    #[test]
+    fn read_active_env_defaults_when_blank() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir(dir.path().join(".phantom")).unwrap();
+        std::fs::write(dir.path().join(".phantom/env"), " \n").unwrap();
+        assert_eq!(read_active_env(dir.path()).unwrap(), DEFAULT_ENV);
+    }
+
+    #[test]
+    fn read_active_env_rejects_a_name_env_use_would_refuse() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir(dir.path().join(".phantom")).unwrap();
+        for bad in ["../prod", "prod/x", "a b"] {
+            std::fs::write(dir.path().join(".phantom/env"), format!("{bad}\n")).unwrap();
+            let error = read_active_env(dir.path()).unwrap_err().to_string();
+            assert!(error.contains("Invalid environment name"), "{bad:?}");
+            assert!(error.contains("active environment selector"), "{bad:?}");
+            assert!(error.contains("remove it to serve the default"), "{bad:?}");
+            assert!(resolve_env(dir.path(), None).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn read_active_env_rejects_non_utf8() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir(dir.path().join(".phantom")).unwrap();
+        std::fs::write(dir.path().join(".phantom/env"), [0x70, 0xff, 0x0a]).unwrap();
+        let error = read_active_env(dir.path()).unwrap_err().to_string();
+        assert!(error.contains("not UTF-8"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_active_env_does_not_follow_a_symlink() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir(dir.path().join(".phantom")).unwrap();
+        let outside = dir.path().join("outside");
+        std::fs::write(&outside, "prod\n").unwrap();
+        std::os::unix::fs::symlink(&outside, dir.path().join(".phantom/env")).unwrap();
+        let error = read_active_env(dir.path()).unwrap_err().to_string();
+        assert!(error.contains("active environment selector"));
+        assert!(!error.contains("phantom env use"));
+        assert!(resolve_env(dir.path(), None).is_err());
+    }
+
+    #[test]
+    fn resolve_env_validates_the_flag() {
+        let dir = tempfile::TempDir::new().unwrap();
+        for bad in ["../prod", "prod/x", "a b", ""] {
+            assert!(resolve_env(dir.path(), Some(bad)).is_err(), "{bad:?}");
+        }
     }
 }

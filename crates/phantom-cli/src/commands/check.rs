@@ -1,9 +1,13 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
 use phantom_core::config::PhantomConfig;
-use phantom_core::dotenv::{is_example_placeholder, is_example_template_file, DotenvFile};
+use phantom_core::dotenv::{
+    is_example_placeholder, is_example_template_file, line_holds_credential_comment, DotenvFile,
+};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
+use phantom_core::redact::{staged_code_credential_matches, staged_code_patterns};
 use phantom_core::report::{
     CheckConfigWarning as ConfigWarning, CheckFinding as Finding, CheckReport as Report,
 };
@@ -54,7 +58,14 @@ pub fn run(staged_only: bool, runtime: bool, json: bool) -> Result<()> {
             excused: scan.as_ref().map_or(&[], |scan| scan.excused.as_slice()),
             session_warning: scan.as_ref().and_then(|scan| scan.session_warning()),
         };
-        println!("{}", serde_json::to_string_pretty(&report)?);
+        let pretty = serde_json::to_string_pretty(&report)?;
+        println!(
+            "{}",
+            crate::commands::report_json::with_schema_pretty(
+                pretty,
+                crate::commands::report_json::CHECK_SCHEMA
+            )?
+        );
     } else {
         print_warnings(&warnings);
         if let Some(scan) = &scan {
@@ -91,15 +102,21 @@ fn findings_in_listed(project_dir: &Path, listed: Vec<PathBuf>) -> Result<Vec<Fi
             continue;
         };
         dotenv.validate_for_mutation()?;
+        let shown = path.display().to_string();
+        let mut reported = BTreeSet::new();
         for entry in dotenv.real_secret_entries() {
+            reported.insert(entry.key.clone());
             findings.push(Finding {
                 kind: "dotenv",
-                path: Some(path.display().to_string()),
+                path: Some(shown.clone()),
                 name: Some(entry.key.clone()),
                 label: None,
                 pattern: None,
             });
         }
+        // A comment is not an entry, so a credential left in one is
+        // plaintext the entry scan never sees.
+        push_comment_credential_findings(&dotenv, "dotenv", &shown, &mut reported, &mut findings);
     }
     Ok(findings)
 }
@@ -129,6 +146,10 @@ fn staged_findings(cwd: &Path) -> Result<(Vec<Finding>, Vec<ConfigWarning>)> {
         if file.ends_with(".phantom.toml") {
             let content = read_staged_file(cwd, &file)?;
             warnings.extend(config_risks(&file, &content));
+            // The config is committed like code: a key pasted into a comment
+            // or a header value is still a committed credential.
+            let scan_content = staged_added_lines(cwd, &file)?;
+            findings.extend(code_pattern_findings(&file, &scan_content));
             continue;
         }
 
@@ -145,7 +166,21 @@ fn staged_findings(cwd: &Path) -> Result<(Vec<Finding>, Vec<ConfigWarning>)> {
             if is_example_template_file(&file) {
                 real_secrets.retain(|entry| !is_example_placeholder(&entry.value));
             }
+            if real_secrets.is_empty() {
+                // The parser never sees comments, so an old key commented
+                // out (`# OPENAI_API_KEY=sk-...`) or a note after a
+                // placeholder passed as clean. A file already reported by
+                // name is blocked anyway, and a line whose credential sits
+                // in a comment is reported by name or line below; scanning
+                // it again would report the same value twice.
+                let scan_content = staged_added_lines(cwd, &file)?;
+                let reported_lines = reported_comment_line_texts(&dotenv, &content);
+                let uncommented = skip_reported_comment_lines(&scan_content, &reported_lines);
+                findings.extend(code_pattern_findings(&file, &uncommented));
+            }
+            let mut reported = BTreeSet::new();
             for entry in real_secrets {
+                reported.insert(entry.key.clone());
                 findings.push(Finding {
                     kind: "staged_dotenv",
                     path: Some(file.clone()),
@@ -154,117 +189,108 @@ fn staged_findings(cwd: &Path) -> Result<(Vec<Finding>, Vec<ConfigWarning>)> {
                     pattern: None,
                 });
             }
+            // A comment is not an entry, so a credential left in one — an
+            // old key commented out, a note after a placeholder — stays
+            // committed plaintext whatever the entries hold.
+            push_comment_credential_findings(
+                &dotenv,
+                "staged_dotenv",
+                &file,
+                &mut reported,
+                &mut findings,
+            );
             continue;
         }
 
-        // Do not decode arbitrary staged blobs: PNG, PDF, and other
-        // unrelated binary assets are valid. Git emits a textual binary
-        // diff marker and therefore no added lines for those files.
+        if is_direnv_file(&file) {
+            findings.extend(staged_direnv_findings(cwd, &file)?);
+            continue;
+        }
+
+        // Any staged blob is valid to commit, PNG and PDF assets included,
+        // so its added bytes are scanned for the ASCII credential shapes
+        // whatever git thinks of the file (see `staged_added_lines`).
         let scan_content = staged_added_lines(cwd, &file)?;
         findings.extend(code_pattern_findings(&file, &scan_content));
     }
     Ok((findings, warnings))
 }
 
-/// Credential shapes looked for in staged code: the prefix, a label for the
-/// report, and the shortest tail that can follow the prefix in a real key.
-/// A bare prefix is not a key: `task-`, `risk-` and `desk-` all contain `sk-`,
-/// so a match must start a token and carry a key-length tail.
-struct CodePattern {
-    prefix: &'static str,
-    label: &'static str,
-    min_tail: usize,
-    /// AWS access key IDs are upper-case alphanumerics only.
-    upper_alnum_only: bool,
+/// A direnv `.envrc` (or the `.envrc.local` it conventionally sources) holds
+/// the same `export KEY=value` assignments as a dotenv file, so each
+/// assignment the dotenv parser reads is classified exactly as a staged
+/// `.env` entry is. It is shell, not dotenv: stdlib calls (`use nix`,
+/// `PATH_add bin`), conditionals and repeated names are not parse errors, and
+/// a value expanded when direnv loads (`$(op read ...)`, `${VAR}`, backticks)
+/// or left empty commits no credential. Lines the parser skips are still
+/// covered by the code scan of the staged additions.
+///
+/// The parser stops at an unterminated quote, and an unclosed quote can pair
+/// with the next line's opening quote and swallow that assignment, so every
+/// physical line is also parsed on its own and the names are united: a shell
+/// typo never hides a later assignment. Multi-line quoted values are still
+/// read by the whole-file parse. Each name is reported once.
+fn staged_direnv_findings(cwd: &Path, file: &str) -> Result<Vec<Finding>> {
+    let added = staged_added_lines(cwd, file)?;
+    let content = read_staged_bytes(cwd, file)?;
+    let text = String::from_utf8_lossy(&content);
+    let parsed = DotenvFile::parse_str(&text);
+    // A line whose credential sits in a comment is reported by name or
+    // line below; scanning it here would report the same value twice.
+    let reported_lines = reported_comment_line_texts(&parsed, &text);
+    let uncommented = skip_reported_comment_lines(&added, &reported_lines);
+    let mut findings = code_pattern_findings(file, &uncommented);
+    let mut names = BTreeSet::new();
+    collect_direnv_literal_names(&text, &mut names);
+    for line in text.split(['\n', '\r']) {
+        collect_direnv_literal_names(line, &mut names);
+    }
+    let mut reported: BTreeSet<String> = names.iter().cloned().collect();
+    findings.extend(names.into_iter().map(|name| Finding {
+        kind: "staged_dotenv",
+        path: Some(file.to_string()),
+        name: Some(name),
+        label: None,
+        pattern: None,
+    }));
+    push_comment_credential_findings(&parsed, "staged_dotenv", file, &mut reported, &mut findings);
+    Ok(findings)
 }
 
-const CODE_PATTERNS: [CodePattern; 9] = [
-    CodePattern {
-        prefix: "sk-",
-        label: "OpenAI API key",
-        min_tail: 20,
-        upper_alnum_only: false,
-    },
-    CodePattern {
-        prefix: "sk_live_",
-        label: "Stripe live key",
-        min_tail: 16,
-        upper_alnum_only: false,
-    },
-    CodePattern {
-        prefix: "sk_test_",
-        label: "Stripe test key",
-        min_tail: 16,
-        upper_alnum_only: false,
-    },
-    CodePattern {
-        prefix: "ghp_",
-        label: "GitHub personal token",
-        min_tail: 30,
-        upper_alnum_only: false,
-    },
-    CodePattern {
-        prefix: "github_pat_",
-        label: "GitHub PAT",
-        min_tail: 30,
-        upper_alnum_only: false,
-    },
-    CodePattern {
-        prefix: "glpat-",
-        label: "GitLab PAT",
-        min_tail: 20,
-        upper_alnum_only: false,
-    },
-    CodePattern {
-        prefix: "xoxb-",
-        label: "Slack bot token",
-        min_tail: 20,
-        upper_alnum_only: false,
-    },
-    CodePattern {
-        prefix: "xoxp-",
-        label: "Slack user token",
-        min_tail: 20,
-        upper_alnum_only: false,
-    },
-    CodePattern {
-        prefix: "AKIA",
-        label: "AWS access key",
-        min_tail: 16,
-        upper_alnum_only: true,
-    },
-];
-
-/// A tail with no digit and no capital is an identifier
-/// (`sk-third-party-rollback-race`), not an issued key: twenty random base62
-/// characters with neither is a one-in-thirty-million draw.
-fn is_identifier_tail(tail: &[u8]) -> bool {
-    !tail
-        .iter()
-        .any(|b| b.is_ascii_digit() || b.is_ascii_uppercase())
-}
-
-/// Whether `text` holds `pattern.prefix` at the start of a token, followed by
-/// at least `min_tail` key characters that do not read as an identifier.
-fn contains_credential(text: &str, pattern: &CodePattern) -> bool {
-    let bytes = text.as_bytes();
-    text.match_indices(pattern.prefix).any(|(start, _)| {
-        if start > 0 && bytes[start - 1].is_ascii_alphanumeric() {
-            return false;
+/// Add the name of each assignment in `source` whose value classifies as a
+/// real secret and is literal text: not empty, and not a shell expansion
+/// unless single quotes made it literal (`'$2b$...'`, `'$(not run)'`).
+fn collect_direnv_literal_names(source: &str, names: &mut BTreeSet<String>) {
+    let dotenv = DotenvFile::parse_str(source);
+    let real = dotenv.real_secret_entries();
+    for (entry, quote) in dotenv.entries_with_quote() {
+        if !real.iter().any(|candidate| std::ptr::eq(*candidate, entry)) {
+            continue;
         }
-        let rest = &bytes[start + pattern.prefix.len()..];
-        let len = rest
-            .iter()
-            .take_while(|b| {
-                if pattern.upper_alnum_only {
-                    b.is_ascii_uppercase() || b.is_ascii_digit()
-                } else {
-                    b.is_ascii_alphanumeric() || **b == b'_' || **b == b'-'
-                }
-            })
-            .count();
-        len >= pattern.min_tail && !is_identifier_tail(&rest[..len])
-    })
+        let expanded = quote != Some('\'') && is_shell_expansion(&entry.value);
+        if entry.value.is_empty() || expanded {
+            continue;
+        }
+        names.insert(entry.key.clone());
+    }
+}
+
+fn is_direnv_file(file: &str) -> bool {
+    file.rsplit('/')
+        .next()
+        .is_some_and(|name| matches!(name, ".envrc" | ".envrc.local"))
+}
+
+/// A value the shell computes when direnv loads it rather than a literal:
+/// command substitution, a variable reference or a backtick command. Only
+/// meaningful for an unquoted or double-quoted value; single quotes keep it
+/// literal.
+fn is_shell_expansion(value: &str) -> bool {
+    value.starts_with('`')
+        || value.strip_prefix('$').is_some_and(|rest| {
+            rest.starts_with(['(', '{'])
+                || rest.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+        })
 }
 
 /// Label for a LiteLLM-shaped key. Shape only: LiteLLM generates virtual keys
@@ -277,49 +303,106 @@ fn contains_credential(text: &str, pattern: &CodePattern) -> bool {
 const LITELLM_KEY_LABEL: &str = "LiteLLM-style virtual key (sk- plus 22 characters)";
 const LITELLM_TAIL_LEN: usize = 22;
 
-/// Tail lengths of every `sk-` token in `text` that the `sk-` rule accepts.
-fn sk_credential_tail_lens(text: &str, pattern: &CodePattern) -> Vec<usize> {
-    let bytes = text.as_bytes();
-    text.match_indices(pattern.prefix)
-        .filter_map(|(start, _)| {
-            if start > 0 && bytes[start - 1].is_ascii_alphanumeric() {
+fn code_pattern_findings(file: &str, added: &str) -> Vec<Finding> {
+    let matches = staged_code_credential_matches(added.as_bytes());
+    staged_code_patterns()
+        .iter()
+        .filter_map(|pattern| {
+            let matching: Vec<_> = matches
+                .iter()
+                .filter(|found| found.pattern.prefix == pattern.prefix)
+                .collect();
+            if matching.is_empty() {
                 return None;
             }
-            let rest = &bytes[start + pattern.prefix.len()..];
-            let len = rest
-                .iter()
-                .take_while(|b| b.is_ascii_alphanumeric() || **b == b'_' || **b == b'-')
-                .count();
-            (len >= pattern.min_tail && !is_identifier_tail(&rest[..len])).then_some(len)
+            let label = if pattern.prefix == "sk-"
+                && matching
+                    .iter()
+                    .all(|found| found.span.len() - pattern.prefix.len() == LITELLM_TAIL_LEN)
+            {
+                LITELLM_KEY_LABEL
+            } else {
+                pattern.label
+            };
+            Some(Finding {
+                kind: "staged_code",
+                path: Some(file.to_string()),
+                name: None,
+                label: Some(label),
+                pattern: Some(pattern.prefix),
+            })
         })
         .collect()
 }
 
-/// The report label for a matched pattern. Only the `sk-` rule can relabel,
-/// and only when every accepted token has the LiteLLM tail length, so a file
-/// that also holds an OpenAI-shaped key keeps the OpenAI label.
-fn finding_label(pattern: &CodePattern, added: &str) -> &'static str {
-    if pattern.prefix == "sk-" {
-        let tails = sk_credential_tail_lens(added, pattern);
-        if !tails.is_empty() && tails.iter().all(|len| *len == LITELLM_TAIL_LEN) {
-            return LITELLM_KEY_LABEL;
+/// Text of the physical lines the whole-file comment report covers:
+/// commented-out secret assignments and other credential-holding comments
+/// (see [`push_comment_credential_findings`]). Line breaks follow the
+/// dotenv parser: `\r\n`, `\n` or a lone `\r`.
+fn reported_comment_line_texts(dotenv: &DotenvFile, content: &str) -> BTreeSet<String> {
+    let numbers: BTreeSet<usize> = dotenv
+        .commented_secret_assignments()
+        .into_iter()
+        .map(|(_, line)| line)
+        .chain(dotenv.credential_comment_lines())
+        .collect();
+    let normalized = content.replace("\r\n", "\n");
+    normalized
+        .split(['\n', '\r'])
+        .enumerate()
+        .filter(|(index, _)| numbers.contains(&(index + 1)))
+        .map(|(_, line)| line.to_string())
+        .collect()
+}
+
+/// Staged added lines minus those whose credential comment the whole-file
+/// report already names. A line is skipped only when its exact text is a
+/// reported comment line: a `#` line inside a multi-line quoted value
+/// looks like a comment on its own, but the whole-file parse reads it as
+/// value text and never reports it, so it must keep the code scan.
+fn skip_reported_comment_lines(added: &str, reported: &BTreeSet<String>) -> String {
+    added
+        .lines()
+        .filter(|line| !(line_holds_credential_comment(line) && reported.contains(*line)))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Findings for credentials that sit in comments, which the dotenv
+/// parser never reaches as entries: each commented-out secret assignment
+/// by name and line, and each other credential-holding comment by line.
+/// `reported` holds the names already found (live entries, literal
+/// assignments); a name is reported once. A commented name carries its
+/// line, so it never collides with a live entry of the same key and each
+/// repeated line is reported.
+fn push_comment_credential_findings(
+    dotenv: &DotenvFile,
+    kind: &'static str,
+    file: &str,
+    reported: &mut BTreeSet<String>,
+    findings: &mut Vec<Finding>,
+) {
+    for (key, line) in dotenv.commented_secret_assignments() {
+        let shown = phantom_core::report::commented_assignment_name(&key, line);
+        if reported.insert(shown.clone()) {
+            findings.push(Finding {
+                kind,
+                path: Some(file.to_string()),
+                name: Some(shown),
+                label: None,
+                pattern: None,
+            });
         }
     }
-    pattern.label
-}
-
-fn code_pattern_findings(file: &str, added: &str) -> Vec<Finding> {
-    CODE_PATTERNS
-        .iter()
-        .filter(|pattern| contains_credential(added, pattern))
-        .map(|pattern| Finding {
-            kind: "staged_code",
+    for line in dotenv.credential_comment_lines() {
+        findings.push(Finding {
+            kind,
             path: Some(file.to_string()),
-            name: None,
-            label: Some(finding_label(pattern, added)),
-            pattern: Some(pattern.prefix),
-        })
-        .collect()
+            name: Some(phantom_core::report::comment_credential_name(line)),
+            label: None,
+            pattern: None,
+        });
+    }
 }
 
 fn print_findings(findings: &[Finding]) {
@@ -617,6 +700,12 @@ fn inside_git_work_tree(cwd: &Path) -> bool {
 }
 
 fn read_staged_file(cwd: &Path, file: &str) -> Result<String> {
+    String::from_utf8(read_staged_bytes(cwd, file)?).map_err(|_| {
+        anyhow::anyhow!("Staged file is not valid UTF-8; clean status is indeterminate")
+    })
+}
+
+fn read_staged_bytes(cwd: &Path, file: &str) -> Result<Vec<u8>> {
     let output = std::process::Command::new("git")
         .current_dir(cwd)
         .args(["show", &format!(":{file}")])
@@ -627,9 +716,7 @@ fn read_staged_file(cwd: &Path, file: &str) -> Result<String> {
     if !output.status.success() {
         anyhow::bail!("Failed to read staged file; clean status is indeterminate");
     }
-    String::from_utf8(output.stdout).map_err(|_| {
-        anyhow::anyhow!("Staged file is not valid UTF-8; clean status is indeterminate")
-    })
+    Ok(output.stdout)
 }
 
 /// The staged added lines of `file`, read as plain unified diff whatever the
@@ -638,6 +725,13 @@ fn read_staged_file(cwd: &Path, file: &str) -> Result<String> {
 /// would replace the diff with its own output, and a cwd-relative pathspec
 /// or `diff.relative` would match nothing from a subdirectory. Each of those
 /// left no `+` lines, so staged credentials in code were reported clean.
+///
+/// `--text` keeps a file git calls binary (a `-diff` or `binary` attribute,
+/// or a NUL byte in its content) from collapsing to "Binary files differ"
+/// with no `+` lines, which also reported its credentials clean. Every shape
+/// in [`CODE_PATTERNS`] is ASCII, so the diff is decoded lossily: a Latin-1
+/// or binary line still yields its ASCII runs, and a non-UTF-8 byte is not
+/// an indeterminate scan.
 fn staged_added_lines(cwd: &Path, file: &str) -> Result<String> {
     let pathspec = format!(":(top,literal){file}");
     let output = std::process::Command::new("git")
@@ -649,6 +743,7 @@ fn staged_added_lines(cwd: &Path, file: &str) -> Result<String> {
             "--no-ext-diff",
             "--no-textconv",
             "--no-relative",
+            "--text",
             "--unified=0",
             "--",
             &pathspec,
@@ -660,9 +755,7 @@ fn staged_added_lines(cwd: &Path, file: &str) -> Result<String> {
     if !output.status.success() {
         anyhow::bail!("Failed to inspect staged additions; clean status is indeterminate");
     }
-    let diff = String::from_utf8(output.stdout).map_err(|_| {
-        anyhow::anyhow!("Staged diff is not valid UTF-8; clean status is indeterminate")
-    })?;
+    let diff = String::from_utf8_lossy(&output.stdout);
     Ok(diff
         .lines()
         .filter_map(|line| {
@@ -1118,6 +1211,58 @@ mod tests {
         assert_eq!(staged_code_labels(dir.path()), ["GitHub personal token"]);
     }
 
+    /// A `-diff` or `binary` attribute (common for lockfiles, generated
+    /// code and `*.pbxproj`) made git print "Binary files differ" with no
+    /// `+` lines, so a credential staged in such a file was reported clean.
+    #[test]
+    fn staged_code_scan_ignores_binary_and_no_diff_attributes() {
+        for attributes in ["*.ts -diff\n", "*.ts binary\n", "*.ts -text -diff\n"] {
+            let dir = repo_with_staged_credential(&[], "src/app.ts");
+            std::fs::write(dir.path().join(".gitattributes"), attributes).unwrap();
+            assert_eq!(
+                staged_code_labels(dir.path()),
+                ["GitHub personal token"],
+                "attributes {attributes:?}"
+            );
+        }
+    }
+
+    /// Stage `bytes` at `path` in a fresh repository.
+    fn repo_with_staged_bytes(path: &str, bytes: &[u8]) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        git_in(dir.path(), &["init", "-q"]);
+        std::fs::write(dir.path().join(path), bytes).unwrap();
+        git_in(dir.path(), &["add", "--", path]);
+        dir
+    }
+
+    fn credential_line() -> Vec<u8> {
+        format!("key={}{}\n", "ghp_", "Q7rT2mVx9KpL4wZs8NdY3hBc6FjGu5EaR1oW").into_bytes()
+    }
+
+    /// A NUL byte makes git treat a file as binary by content, which hid a
+    /// credential beside it from the scan.
+    #[test]
+    fn staged_code_scan_reads_a_file_git_detects_as_binary() {
+        let mut bytes = b"header\0\n".to_vec();
+        bytes.extend(credential_line());
+        let dir = repo_with_staged_bytes("dump.dat", &bytes);
+        assert_eq!(staged_code_labels(dir.path()), ["GitHub personal token"]);
+    }
+
+    /// A Latin-1 text file is valid to commit. Its diff is not UTF-8, which
+    /// failed the whole hook as indeterminate even though every credential
+    /// shape scanned for is ASCII.
+    #[test]
+    fn staged_code_scan_reads_non_utf8_text() {
+        let dir = repo_with_staged_bytes("notes.txt", b"caf\xe9 au lait\n");
+        assert!(staged_code_labels(dir.path()).is_empty());
+        let mut bytes = b"caf\xe9 au lait\n".to_vec();
+        bytes.extend(credential_line());
+        let dir = repo_with_staged_bytes("notes.txt", &bytes);
+        assert_eq!(staged_code_labels(dir.path()), ["GitHub personal token"]);
+    }
+
     #[test]
     fn staged_code_scan_from_a_subdirectory_sees_the_whole_index() {
         // Run from `docs/` with `diff.relative` on: the listing must still
@@ -1290,5 +1435,410 @@ mod tests {
         stage_entry(dir.path(), "120000", "/etc/hostname", ".env");
         let (findings, _) = staged_findings(dir.path()).unwrap();
         assert!(findings.is_empty());
+    }
+
+    /// Assignment lines holding real-looking values, built at runtime so no
+    /// credential-shaped literal lives in the source. The database URL and
+    /// the signing value carry no prefix the code scan knows.
+    fn direnv_assignment_lines() -> String {
+        let db_url = format!("postgres://app:{}@db.internal:5432/app", "Vq8rLm2Xz7Kt");
+        let signing = ["9f3c1a7e5b", "2d8f4c6a0e", "1b7d3f9a5c"].concat();
+        let openai = ["sk", "-proj-", "Q7rT2mVx9KpL4wZs8NdY3hBc"].concat();
+        format!(
+            "export DATABASE_URL={db_url}\nWEBHOOK_SIGNING={signing}\nexport OPENAI_API_KEY=\"{openai}\"\n"
+        )
+    }
+
+    fn staged_dotenv_names(cwd: &Path) -> Vec<String> {
+        let (findings, _) = staged_findings(cwd).unwrap();
+        let mut names: Vec<String> = findings
+            .iter()
+            .filter(|finding| finding.kind == "staged_dotenv")
+            .filter_map(|finding| finding.name.clone())
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// A direnv `.envrc` holds the same `export KEY=value` lines as a dotenv
+    /// file, mixed with direnv stdlib calls. Its assignments get the same
+    /// dotenv classification by name as `.env`, so a database URL or signing
+    /// value with no known prefix is no longer committed unreported.
+    #[test]
+    fn staged_envrc_assignments_are_classified_like_dotenv() {
+        let assignments = direnv_assignment_lines();
+        let expected = ["DATABASE_URL", "OPENAI_API_KEY", "WEBHOOK_SIGNING"];
+
+        let dotenv = repo_with_staged_bytes(".env", assignments.as_bytes());
+        assert_eq!(staged_dotenv_names(dotenv.path()), expected);
+
+        let envrc = format!(
+            "use nix\nlayout python\nPATH_add bin\nexport NODE_ENV=development\nPORT=3000\n{assignments}"
+        );
+        for path in [".envrc", ".envrc.local", "services/api/.envrc"] {
+            let dir = tempfile::tempdir().unwrap();
+            git_in(dir.path(), &["init", "-q"]);
+            let file = dir.path().join(path);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(&file, &envrc).unwrap();
+            git_in(dir.path(), &["add", "--", path]);
+            assert_eq!(staged_dotenv_names(dir.path()), expected, "{path}");
+        }
+    }
+
+    /// direnv is shell: stdlib calls, conditionals, repeated names and values
+    /// fetched at load time (`$(op read ...)`, `${VAR}`) are the documented
+    /// way to keep credentials out of `.envrc`. None of it is a finding, and
+    /// none of it fails the hook as malformed dotenv.
+    #[test]
+    fn staged_envrc_shell_lines_and_config_are_clean() {
+        let envrc = concat!(
+            "#!/usr/bin/env bash\n",
+            "use flake\n",
+            "layout python3\n",
+            "PATH_add bin\n",
+            "source_env_if_exists .envrc.local\n",
+            "dotenv_if_exists .env.local\n",
+            "watch_file flake.nix\n",
+            "if [ -f .env ]; then\n",
+            "  dotenv\n",
+            "fi\n",
+            "export NODE_ENV=production\n",
+            "export PORT=3000\n",
+            "export PORT=3001\n",
+            "export PATH=\"$PWD/node_modules/.bin:$PATH\"\n",
+            "export OPENAI_API_KEY=\"$(op read op://dev/openai/credential)\"\n",
+            "export GITHUB_TOKEN=$(gh auth token)\n",
+            "export AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}\n",
+            "export SENTRY_AUTH_TOKEN=`cat ~/.config/sentry`\n",
+            "export STRIPE_API_KEY=\n",
+        );
+        let dir = repo_with_staged_bytes(".envrc", envrc.as_bytes());
+        let (findings, _) = staged_findings(dir.path()).unwrap();
+        assert!(findings.is_empty(), "{} finding(s)", findings.len());
+    }
+
+    /// A credential on a shell line the dotenv parser cannot read is still
+    /// caught by the code scan of the staged additions.
+    #[test]
+    fn staged_envrc_still_gets_the_code_scan() {
+        let line = format!(
+            "curl -H \"Authorization: {}{}\" https://example.invalid\n",
+            "ghp_", "Q7rT2mVx9KpL4wZs8NdY3hBc6FjGu5EaR1oW"
+        );
+        let dir = repo_with_staged_bytes(".envrc", line.as_bytes());
+        assert_eq!(staged_code_labels(dir.path()), ["GitHub personal token"]);
+    }
+
+    /// An unclosed quote is a shell typo, not a reason to stop reading: an
+    /// assignment after it is still a committed credential. Unterminated to
+    /// end of file, and closed by the next line's opening quote (which
+    /// swallowed that line into the bad value), both still report.
+    #[test]
+    fn staged_envrc_assignments_after_an_unclosed_quote_are_reported() {
+        let db_url = format!("postgres://app:{}@db.internal:5432/app", "Vq8rLm2Xz7Kt");
+        let signing = ["9f3c1a7e5b", "2d8f4c6a0e", "1b7d3f9a5c"].concat();
+        let cases = [
+            format!("export BANNER=\"welcome\nexport DATABASE_URL={db_url}\n"),
+            format!("export BANNER='welcome\nexport DATABASE_URL={db_url}\n"),
+            format!("export BANNER=\"welcome\nexport WEBHOOK_SIGNING=\"{signing}\"\n"),
+            format!("export BANNER='welcome\nexport WEBHOOK_SIGNING='{signing}'\n"),
+        ];
+        let expected = [
+            ["DATABASE_URL"],
+            ["DATABASE_URL"],
+            ["WEBHOOK_SIGNING"],
+            ["WEBHOOK_SIGNING"],
+        ];
+        for (index, (envrc, expected)) in cases.iter().zip(expected).enumerate() {
+            let dir = repo_with_staged_bytes(".envrc", envrc.as_bytes());
+            assert_eq!(staged_dotenv_names(dir.path()), expected, "case {index}");
+        }
+    }
+
+    /// Single quotes stop the shell expanding anything, so a single-quoted
+    /// value that starts with `$` is the literal text committed. Unquoted and
+    /// double-quoted `$VAR`, `${VAR}` and `$(cmd)` stay unflagged.
+    #[test]
+    fn staged_envrc_single_quoted_dollar_values_are_literals() {
+        let literal = ["$Kq9vT2", "mXz7Lp4w", "Rs8NdY3h"].concat();
+        let hashed = [
+            "$argon2id$v=19$m=65536,t=3,p=1$",
+            "c2FsdHNhbHQ$",
+            "Q7rT2mVx9KpL4wZs8NdY",
+        ]
+        .concat();
+        let envrc = format!(
+            "export DB_PASSWORD='{literal}'\nexport ADMIN_PASSWORD_HASH='{hashed}'\n\
+             export API_KEY='$(not run)'\nexport OTHER_KEY=\"$OTHER_KEY\"\n\
+             export THIRD_KEY=${{THIRD_KEY}}\nexport FOURTH_KEY=$(op read op://dev/x/y)\n"
+        );
+        let dir = repo_with_staged_bytes(".envrc", envrc.as_bytes());
+        assert_eq!(
+            staged_dotenv_names(dir.path()),
+            ["ADMIN_PASSWORD_HASH", "API_KEY", "DB_PASSWORD"]
+        );
+    }
+
+    /// Plain `.env` is strict dotenv: an unclosed quote ahead of an
+    /// assignment makes the file unreadable, and both `phantom check` and
+    /// `--staged` refuse it (a failed check) rather than reporting it clean.
+    #[test]
+    fn dotenv_with_an_unclosed_quote_fails_closed_staged_and_worktree() {
+        let db_url = format!("postgres://app:{}@db.internal:5432/app", "Vq8rLm2Xz7Kt");
+        for opener in ["\"", "'"] {
+            let content = format!("BANNER={opener}welcome\nDATABASE_URL={db_url}\n");
+            let staged = repo_with_staged_bytes(".env", content.as_bytes());
+            assert!(staged_findings(staged.path()).is_err(), "staged {opener}");
+            let worktree = tempfile::tempdir().unwrap();
+            std::fs::write(worktree.path().join(".env"), &content).unwrap();
+            assert!(
+                worktree_findings(worktree.path()).is_err(),
+                "worktree {opener}"
+            );
+        }
+    }
+
+    /// A name assigned more than once (a default, then an override) is one
+    /// finding: the report names the key, so a second entry adds nothing.
+    #[test]
+    fn staged_envrc_repeated_names_are_reported_once() {
+        let first = ["9f3c1a7e5b", "2d8f4c6a0e", "1b7d3f9a5c"].concat();
+        let second = ["4e8a2c6f0b", "7d1f5b9e3a", "8c2e6a0d4f"].concat();
+        let envrc = format!(
+            "export WEBHOOK_SIGNING={first}\nif [ -n \"$CI\" ]; then\n  export WEBHOOK_SIGNING={second}\nfi\n"
+        );
+        let dir = repo_with_staged_bytes(".envrc", envrc.as_bytes());
+        assert_eq!(staged_dotenv_names(dir.path()), ["WEBHOOK_SIGNING"]);
+    }
+
+    /// A GitHub-shaped credential, built at runtime.
+    fn ghp_shape() -> String {
+        ["ghp_", "Q7rT2mVx9KpL4wZs8NdY3hBc6FjGu5EaR1oW"].concat()
+    }
+
+    /// Dotenv entries are classified by the parser, which never sees
+    /// comments. A credential left in a comment of a committable template
+    /// is reported by name or line; the same line is not scanned again,
+    /// so the value is never reported twice.
+    #[test]
+    fn staged_env_template_commented_credentials_are_reported() {
+        let shape = ghp_shape();
+        for (content, expected) in [
+            (
+                format!("GITHUB_TOKEN=\n# GITHUB_TOKEN={shape}\n"),
+                "GITHUB_TOKEN (commented out, line 2)",
+            ),
+            (
+                format!("GITHUB_TOKEN=your_github_token_here # was {shape}\n"),
+                "credential in a comment (line 1)",
+            ),
+            (
+                format!("# rotate: {shape}\nDEBUG=true\n"),
+                "credential in a comment (line 1)",
+            ),
+        ] {
+            for name in [".env.example", "config/.env.sample"] {
+                let dir = repo_with_staged_bytes_at(name, content.as_bytes());
+                assert_eq!(
+                    staged_dotenv_names(dir.path()),
+                    [expected.to_string()],
+                    "{name}"
+                );
+                assert!(
+                    staged_code_labels(dir.path()).is_empty(),
+                    "{name} reported the same value twice"
+                );
+            }
+        }
+    }
+
+    /// A plain `.env` whose entries are all non-secret config still blocks
+    /// on a key left in a comment.
+    #[test]
+    fn staged_dotenv_commented_secret_is_named() {
+        let content = format!("NODE_ENV=production\n# OPENAI_API_KEY={}\n", ghp_shape());
+        let dir = repo_with_staged_bytes_at("apps/api/.env.production.local", content.as_bytes());
+        assert_eq!(
+            staged_dotenv_names(dir.path()),
+            ["OPENAI_API_KEY (commented out, line 2)".to_string()]
+        );
+    }
+
+    /// A `#` line inside a multi-line quoted value is value text, not a
+    /// comment: the whole-file comment report never names it, so the
+    /// staged code scan must still see the credential on that line.
+    #[test]
+    fn staged_dotenv_hash_line_inside_quoted_value_keeps_the_code_scan() {
+        let content = format!("GREETING=\"hello\n# rotate: {}\n\"\n", ghp_shape());
+        for name in [".env", ".env.example"] {
+            let dir = repo_with_staged_bytes_at(name, content.as_bytes());
+            assert_eq!(
+                staged_code_labels(dir.path()),
+                ["GitHub personal token"],
+                "{name}"
+            );
+        }
+    }
+
+    /// A commented-out assignment whose value carries no known token
+    /// prefix — an opaque AWS secret or a database URL — still holds the
+    /// plaintext, so it is named like a live entry.
+    #[test]
+    fn staged_dotenv_commented_secrets_without_token_shapes_are_named() {
+        let aws = ["wJalrXUtnFEMI", "K7MDENG+bPxRfiCYEXAMPLEKEY"].concat();
+        let db_url = ["postgres://app:", "Vq8rLm2Xz7Kt", "@db.internal:5432/app"].concat();
+        let content = format!(
+            "NODE_ENV=production\n# AWS_SECRET_ACCESS_KEY={aws}\n# DATABASE_URL={db_url}\n"
+        );
+        let dir = repo_with_staged_bytes_at(".env", content.as_bytes());
+        assert_eq!(
+            staged_dotenv_names(dir.path()),
+            [
+                "AWS_SECRET_ACCESS_KEY (commented out, line 2)".to_string(),
+                "DATABASE_URL (commented out, line 3)".to_string(),
+            ]
+        );
+        assert!(staged_code_labels(dir.path()).is_empty());
+    }
+
+    /// The same key commented out on two lines is two leaks at two
+    /// locations, so each is named; a live entry of that key is a third,
+    /// distinct finding.
+    #[test]
+    fn staged_dotenv_commented_repeats_name_each_line() {
+        let aws = ["wJalrXUtnFEMI", "K7MDENG+bPxRfiCYEXAMPLEKEY"].concat();
+        let older = ["wJalrXUtnFEMI", "K7MDENG+bPxRfiCYEXAMPLEKEZ"].concat();
+        let content = format!(
+            "AWS_SECRET_ACCESS_KEY={aws}\n# AWS_SECRET_ACCESS_KEY={older}\n# AWS_SECRET_ACCESS_KEY={aws}\n"
+        );
+        let dir = repo_with_staged_bytes_at(".env", content.as_bytes());
+        assert_eq!(
+            staged_dotenv_names(dir.path()),
+            [
+                "AWS_SECRET_ACCESS_KEY".to_string(),
+                "AWS_SECRET_ACCESS_KEY (commented out, line 2)".to_string(),
+                "AWS_SECRET_ACCESS_KEY (commented out, line 3)".to_string(),
+            ]
+        );
+        assert!(staged_code_labels(dir.path()).is_empty());
+    }
+
+    /// A `.envrc` comment holds the same plaintext: a commented-out export
+    /// is named like a live assignment.
+    #[test]
+    fn staged_envrc_commented_secret_is_named() {
+        let aws = ["wJalrXUtnFEMI", "K7MDENG+bPxRfiCYEXAMPLEKEY"].concat();
+        let envrc = format!("use flake\n# export AWS_SECRET_ACCESS_KEY={aws}\nexport PORT=3000\n");
+        let dir = repo_with_staged_bytes(".envrc", envrc.as_bytes());
+        assert_eq!(
+            staged_dotenv_names(dir.path()),
+            ["AWS_SECRET_ACCESS_KEY (commented out, line 2)".to_string()]
+        );
+    }
+
+    /// The worktree scan judges the same comments: a credential left in a
+    /// `.env` comment is unprotected plaintext whatever the entries hold.
+    #[test]
+    fn worktree_dotenv_commented_credentials_are_reported() {
+        let aws = ["wJalrXUtnFEMI", "K7MDENG+bPxRfiCYEXAMPLEKEY"].concat();
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(".env"),
+            format!(
+                "NODE_ENV=production\n# AWS_SECRET_ACCESS_KEY={aws}\n# note: {}\n",
+                ghp_shape()
+            ),
+        )
+        .unwrap();
+        let names: Vec<String> = worktree_findings(dir.path())
+            .unwrap()
+            .into_iter()
+            .filter_map(|finding| finding.name)
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "AWS_SECRET_ACCESS_KEY (commented out, line 2)".to_string(),
+                "credential in a comment (line 3)".to_string(),
+            ]
+        );
+    }
+
+    /// A docs-style placeholder in a comment is not a credential left
+    /// behind, in the worktree scan as in the staged one.
+    #[test]
+    fn worktree_dotenv_commented_placeholder_stays_clean() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(".env"),
+            "NODE_ENV=production\n# OPENAI_API_KEY=your_openai_api_key_here\n# TODO rotate\n",
+        )
+        .unwrap();
+        assert!(worktree_findings(dir.path()).unwrap().is_empty());
+    }
+
+    /// A template with no credential anywhere stays clean.
+    #[test]
+    fn staged_env_template_without_credentials_stays_clean() {
+        let content = "# Get a key at https://example.invalid\nGITHUB_TOKEN=\nDEBUG=true\n";
+        let dir = repo_with_staged_bytes_at(".env.example", content.as_bytes());
+        let (findings, _) = staged_findings(dir.path()).unwrap();
+        assert!(findings.is_empty());
+    }
+
+    /// `.phantom.toml` is committed and was read only for risky routes, so a
+    /// credential pasted into it (a comment, a header value) was never scanned.
+    #[test]
+    fn staged_phantom_config_gets_the_code_scan() {
+        let content = format!(
+            "[phantom]\nproject_id = \"demo\"\n# old key: {}\n",
+            ghp_shape()
+        );
+        for name in [".phantom.toml", "apps/web/.phantom.toml"] {
+            let dir = repo_with_staged_bytes_at(name, content.as_bytes());
+            assert_eq!(
+                staged_code_labels(dir.path()),
+                ["GitHub personal token"],
+                "{name}"
+            );
+        }
+        let dir = repo_with_staged_bytes_at(".phantom.toml", b"[phantom]\nproject_id = \"demo\"\n");
+        assert!(staged_code_labels(dir.path()).is_empty());
+    }
+
+    /// [`repo_with_staged_bytes`] for a path that may sit in a subdirectory.
+    fn repo_with_staged_bytes_at(path: &str, bytes: &[u8]) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        git_in(dir.path(), &["init", "-q"]);
+        let file = dir.path().join(path);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, bytes).unwrap();
+        git_in(dir.path(), &["add", "--", path]);
+        dir
+    }
+}
+
+#[cfg(test)]
+mod shared_redact_tests {
+    use super::*;
+    use crate::commands::redact_corpus;
+
+    #[test]
+    fn shared_golden_corpus_preserves_staged_check_labels() {
+        for case in redact_corpus::code_families()
+            .into_iter()
+            .filter(|case| case.staged)
+        {
+            let findings = code_pattern_findings("fixture.rs", &case.token);
+            assert_eq!(findings.len(), 1, "{}", case.label);
+            assert_eq!(findings[0].label, Some(case.label));
+            assert_eq!(findings[0].pattern, Some(case.prefix));
+            let json = serde_json::to_string(&findings).unwrap();
+            assert!(!json.contains(&case.token));
+        }
+        let findings = code_pattern_findings("fixture.rs", &redact_corpus::litellm());
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].label, Some(LITELLM_KEY_LABEL));
     }
 }

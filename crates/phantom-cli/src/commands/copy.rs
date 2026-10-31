@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use colored::Colorize;
 use phantom_core::config::PhantomConfig;
 use phantom_core::dotenv::DotenvFile;
-use phantom_vault::{InitFile, InitSecret};
+use phantom_vault::{InitFile, InitSecret, SecretMetadata};
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
@@ -17,10 +17,16 @@ struct CopyTargetPlan {
 }
 
 /// Copy the source value observed during preflight into a distinct target
-/// project. Only the target is mutated, so only its canonical project lock is
-/// acquired; avoiding simultaneous source/target locks removes reverse-copy
-/// deadlock risk. The source snapshot remains zeroizing through target commit.
-pub fn run(name: &str, target_dir: &Path, rename: &Option<String>) -> Result<()> {
+/// project. Only the target is mutated; the commit holds both projects'
+/// canonical locks in one global order, so a reverse copy waits instead of
+/// deadlocking and a cooperating source writer cannot change the source
+/// mid-commit. The source snapshot remains zeroizing through target commit.
+pub fn run(
+    name: &str,
+    target_dir: &Path,
+    rename: &Option<String>,
+    allow_cross_owner: bool,
+) -> Result<()> {
     validate_secret_name(name)?;
     let target_name = rename.as_deref().unwrap_or(name);
     validate_secret_name(target_name)?;
@@ -49,6 +55,12 @@ pub fn run(name: &str, target_dir: &Path, rename: &Option<String>) -> Result<()>
                 target_dir.display()
             )
         })?;
+
+    check_owner_boundary(
+        source_config.phantom.owner.as_deref(),
+        target_config.phantom.owner.as_deref(),
+        allow_cross_owner,
+    )?;
 
     let target_preflight =
         phantom_core::managed_dotenv::resolve_dotenv(&target_dir, &target_config, &[])?;
@@ -110,7 +122,7 @@ pub fn run(name: &str, target_dir: &Path, rename: &Option<String>) -> Result<()>
         target_config.local_project_id(),
     )?;
 
-    let secret_value = retrieve_gated_copy_source(
+    let (source_metadata, secret_value) = retrieve_gated_copy_source(
         &source_config,
         source_vault.as_ref(),
         name,
@@ -126,11 +138,19 @@ pub fn run(name: &str, target_dir: &Path, rename: &Option<String>) -> Result<()>
         env_before,
         target_name,
         secret_value.as_str(),
+        name,
+        source_metadata.as_ref(),
     )?;
 
-    phantom_vault::commit_init(
+    // The source project and vault are passed so the transaction holds the
+    // source project's lock (with the target's, in Phantom's global lock
+    // order) and the source entry to the exact value and metadata read above
+    // until the copy commits.
+    phantom_vault::commit_init_with_source_vault(
         &target_dir,
         target_vault.as_ref(),
+        &source_dir,
+        source_vault.as_ref(),
         vec![plan.mutation],
         plan.files,
     )
@@ -150,6 +170,24 @@ pub fn run(name: &str, target_dir: &Path, rename: &Option<String>) -> Result<()>
             .unwrap_or("managed dotenv")
             .cyan()
     );
+    Ok(())
+}
+
+/// Refuse copies between projects labelled with different owners unless the
+/// operator explicitly allows it. Unlabelled projects keep legacy behavior.
+pub(crate) fn check_owner_boundary(
+    source_owner: Option<&str>,
+    target_owner: Option<&str>,
+    allow_cross_owner: bool,
+) -> Result<()> {
+    if let (Some(source), Some(target)) = (source_owner, target_owner) {
+        if source != target && !allow_cross_owner {
+            anyhow::bail!(
+                "Refusing to copy across owners: source and target owner labels differ. \
+                 Re-run with --allow-cross-owner only if this key may intentionally be shared."
+            );
+        }
+    }
     Ok(())
 }
 
@@ -177,13 +215,15 @@ fn list_copy_target_names(
 /// `enforce_rotation_on_access`, then the source read: the target project
 /// does not carry this project's rotation policy, so an overdue enforced
 /// source secret is refused before its value is read, as `phantom exec`
-/// would refuse it.
+/// would refuse it. The source metadata is read before the value, so the
+/// rotation anchor the copy inherits is never newer than the copied value;
+/// the copy transaction then refuses if either changed before it commits.
 fn retrieve_gated_copy_source(
     source_config: &PhantomConfig,
     source_vault: &dyn phantom_vault::VaultBackend,
     name: &str,
     now_secs: u64,
-) -> Result<zeroize::Zeroizing<String>> {
+) -> Result<(Option<SecretMetadata>, zeroize::Zeroizing<String>)> {
     super::rotation_gate::enforce_rotation_on_entries(
         source_config,
         source_vault,
@@ -191,7 +231,11 @@ fn retrieve_gated_copy_source(
         "copy",
         now_secs,
     )?;
-    retrieve_copy_source(source_vault, source_config.local_project_id(), name)
+    let metadata = source_vault
+        .get_metadata(name)
+        .context("Failed to read source secret metadata")?;
+    let value = retrieve_copy_source(source_vault, source_config.local_project_id(), name)?;
+    Ok((metadata, value))
 }
 
 /// Read the approved source secret. Beside a source encrypted-file vault this
@@ -267,9 +311,16 @@ fn prepare_target_plan(
     env_before: Option<Vec<u8>>,
     target_name: &str,
     value: &str,
+    source_name: &str,
+    source_metadata: Option<&SecretMetadata>,
 ) -> Result<CopyTargetPlan> {
     let env_after = rewrite_dotenv(env_before.as_deref(), target_name)?;
-    let mutation = InitSecret::replace_if_unchanged(target_name, None::<String>, value);
+    // The copy keeps the source's lifecycle metadata (rotation age, expiry,
+    // TTL policy and read-only mode), so a duplicate is never less protected
+    // than its source. A source demoted, given an expiry, or rotated after
+    // it was read refuses the commit instead.
+    let mutation = InitSecret::replace_if_unchanged(target_name, None::<String>, value)
+        .inheriting_source_protection(source_name, source_metadata);
     let config_after = if config.phantom.dotenv_path.is_none() && target_vault_names.is_empty() {
         config.phantom.dotenv_path = Some(
             phantom_core::managed_dotenv::dotenv_basename(target_dir, &env_path)
@@ -309,6 +360,22 @@ fn dotenv_has_key(before: Option<&[u8]>, name: &str) -> Result<bool> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn owner_boundary_rules() {
+        use super::check_owner_boundary as c;
+        assert!(c(None, None, false).is_ok());
+        assert!(c(Some("personal"), None, false).is_ok());
+        assert!(c(Some("client:globex"), Some("client:globex"), false).is_ok());
+        assert!(c(Some("client:globex"), Some("personal"), false).is_err());
+        assert!(c(Some("company:ashlr"), Some("client:globex"), false).is_err());
+        assert!(c(Some("company:ashlr"), Some("client:globex"), true).is_ok());
+        assert!(c(None, Some("personal"), false).is_ok());
+        let error = c(Some("client:synthetic-credential"), Some("personal"), false)
+            .unwrap_err()
+            .to_string();
+        assert!(!error.contains("client:synthetic-credential"));
+    }
+
     use super::*;
     use phantom_core::error::PhantomError;
     use phantom_vault::file::FileVault;
@@ -349,7 +416,218 @@ mod tests {
             .unwrap_or_default();
         assert!(message.starts_with("Refusing to copy: rotation enforcement blocked 1 secret(s)."));
         let fresh = retrieve_gated_copy_source(&config, &vault, "FRESH_KEY", NOW);
-        assert!(fresh.is_ok_and(|value| value.as_str() == "fixture-value"));
+        assert!(fresh.is_ok_and(|(_, value)| value.as_str() == "fixture-value"));
+    }
+
+    /// Commit a copy of `name` from `source` into a fresh target project and
+    /// return the target vault with the target directory that owns it.
+    fn copy_into_new_target(
+        source_config: &PhantomConfig,
+        source_dir: &Path,
+        source: &FileVault,
+        name: &str,
+        target_name: &str,
+    ) -> (tempfile::TempDir, FileVault) {
+        let (dir, vault, plan) =
+            plan_copy_into_new_target(source_config, source, name, target_name);
+        let target = dir.path().canonicalize().unwrap();
+        phantom_vault::commit_init_with_source_vault(
+            &target,
+            &vault,
+            source_dir,
+            source,
+            vec![plan.mutation],
+            plan.files,
+        )
+        .unwrap();
+        (dir, vault)
+    }
+
+    /// Read `name` from `source` and plan its copy into a fresh target
+    /// project, without committing it.
+    fn plan_copy_into_new_target(
+        source_config: &PhantomConfig,
+        source: &FileVault,
+        name: &str,
+        target_name: &str,
+    ) -> (tempfile::TempDir, FileVault, CopyTargetPlan) {
+        use crate::commands::rotation_gate::fixtures::NOW;
+        let (metadata, value) =
+            retrieve_gated_copy_source(source_config, source, name, NOW).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().canonicalize().unwrap();
+        let config_path = target.join(".phantom.toml");
+        PhantomConfig::new_with_defaults(PhantomConfig::project_id_from_path(&target))
+            .save(&config_path)
+            .unwrap();
+        let (config, config_before) = load_config_exact(&config_path).unwrap();
+        let vault = FileVault::new(
+            &crate::test_support::canonical_tempdir_path(&dir),
+            "copy-anchor-target",
+            "passphrase".to_string(),
+        )
+        .unwrap();
+        let plan = prepare_target_plan(
+            &target,
+            &config_path,
+            config,
+            config_before,
+            Vec::new(),
+            target.join(".env"),
+            None,
+            target_name,
+            value.as_str(),
+            name,
+            metadata.as_ref(),
+        )
+        .unwrap();
+        (dir, vault, plan)
+    }
+
+    /// The source was demoted to read-only (with an expiry) after `phantom
+    /// copy` read its metadata and value. The target would inherit the stale
+    /// read-write metadata, so the commit is refused and the target keeps no
+    /// vault entry, dotenv mapping or config change.
+    #[test]
+    fn copy_refuses_a_source_demoted_before_the_commit() {
+        use crate::commands::rotation_gate::fixtures::aged_vault;
+        let source_dir = tempfile::tempdir().unwrap();
+        let source = aged_vault(&source_dir, &[("DEMOTED_KEY", 3)]);
+        let source_config = PhantomConfig::new_with_defaults("copy-demoted".to_string());
+        let (target_dir, target, plan) =
+            plan_copy_into_new_target(&source_config, &source, "DEMOTED_KEY", "COPIED_KEY");
+        let mut demoted = source.get_metadata("DEMOTED_KEY").unwrap().unwrap();
+        demoted.vault_mode = phantom_vault::metadata::VaultMode::ReadOnly;
+        demoted.expires_at = Some(1_700_000_000);
+        source.set_metadata("DEMOTED_KEY", demoted.clone()).unwrap();
+        let target_path = target_dir.path().canonicalize().unwrap();
+        let config_before = std::fs::read(target_path.join(".phantom.toml")).unwrap();
+
+        let outcome = phantom_vault::commit_init_with_source_vault(
+            &target_path,
+            &target,
+            source_dir.path(),
+            &source,
+            vec![plan.mutation],
+            plan.files,
+        );
+
+        assert!(outcome.is_err());
+        assert!(!target.exists("COPIED_KEY").unwrap());
+        assert!(!target_path.join(".env").exists());
+        assert_eq!(
+            std::fs::read(target_path.join(".phantom.toml")).unwrap(),
+            config_before
+        );
+        assert_eq!(source.get_metadata("DEMOTED_KEY").unwrap(), Some(demoted));
+    }
+
+    /// `phantom copy` stored the destination as new, so a secret 29 days
+    /// into a 30-day enforced window got a fresh 30-day clock in the target.
+    /// The destination now inherits the source's rotation anchor, and the
+    /// gate judges it overdue exactly when the source is.
+    #[test]
+    fn copy_destination_inherits_the_source_rotation_anchor() {
+        use crate::commands::rotation_gate::fixtures::{aged_vault, enforced_config, DAY, NOW};
+        let source_dir = tempfile::tempdir().unwrap();
+        let source = aged_vault(&source_dir, &[("AGING_KEY", 29)]);
+        let source_config = enforced_config(&["AGING_KEY"]);
+
+        let (_target_dir, target) = copy_into_new_target(
+            &source_config,
+            source_dir.path(),
+            &source,
+            "AGING_KEY",
+            "COPIED_KEY",
+        );
+
+        let anchor = |vault: &FileVault, entry: &str| {
+            phantom_vault::rotation_gate::rotation_anchor(
+                vault.get_metadata(entry).unwrap().as_ref(),
+            )
+        };
+        assert_eq!(anchor(&target, "COPIED_KEY"), Some(NOW - 29 * DAY));
+        assert_eq!(anchor(&target, "COPIED_KEY"), anchor(&source, "AGING_KEY"));
+        let refusals = phantom_vault::rotation_gate::rotation_refusals(
+            &enforced_config(&["COPIED_KEY"]),
+            &target,
+            phantom_vault::rotation_gate::entry_targets(["COPIED_KEY"]),
+            NOW + 2 * DAY,
+        )
+        .unwrap();
+        assert_eq!(
+            refusals.len(),
+            1,
+            "the copy must be overdue with its source"
+        );
+    }
+
+    /// A secret without rotation enforcement still copies, whatever its age,
+    /// and keeps that age.
+    #[test]
+    fn copy_of_an_unenforced_secret_still_works() {
+        use crate::commands::rotation_gate::fixtures::{aged_vault, DAY, NOW};
+        let source_dir = tempfile::tempdir().unwrap();
+        let source = aged_vault(&source_dir, &[("PLAIN_KEY", 400)]);
+        let source_config = PhantomConfig::new_with_defaults("copy-unenforced".to_string());
+
+        let (_target_dir, target) = copy_into_new_target(
+            &source_config,
+            source_dir.path(),
+            &source,
+            "PLAIN_KEY",
+            "PLAIN_KEY",
+        );
+
+        assert!(target.exists("PLAIN_KEY").unwrap());
+        let copied = target.get_metadata("PLAIN_KEY").unwrap().unwrap();
+        assert_eq!(copied.created_at, Some(NOW - 400 * DAY));
+    }
+
+    /// `phantom copy` carried only the rotation anchor, so a source demoted
+    /// to read-only, past its expiry, or under a TTL policy came out of the
+    /// copy as an injectable read-write entry with no expiry. The destination
+    /// now carries every protective lifecycle field of its source.
+    #[test]
+    fn copy_destination_keeps_the_source_protective_metadata() {
+        use crate::commands::rotation_gate::fixtures::{aged_vault, DAY, NOW};
+        let source_dir = tempfile::tempdir().unwrap();
+        let source = aged_vault(&source_dir, &[("DEMOTED_KEY", 40)]);
+        let protected = phantom_vault::SecretMetadata {
+            created_at: Some(NOW - 40 * DAY),
+            rotated_at: Some(NOW - 35 * DAY),
+            expires_at: Some(NOW - 5 * DAY),
+            rotation_policy: Some(phantom_vault::RotationPolicy {
+                days_ttl: 30,
+                auto_rotate: false,
+            }),
+            vault_mode: phantom_vault::metadata::VaultMode::ReadOnly,
+        };
+        source
+            .set_metadata("DEMOTED_KEY", protected.clone())
+            .unwrap();
+        let source_config = PhantomConfig::new_with_defaults("copy-protected".to_string());
+
+        let (_target_dir, target) = copy_into_new_target(
+            &source_config,
+            source_dir.path(),
+            &source,
+            "DEMOTED_KEY",
+            "COPIED_KEY",
+        );
+
+        let copied = target
+            .get_metadata("COPIED_KEY")
+            .unwrap()
+            .unwrap_or_default();
+        assert_eq!(copied.expires_at, protected.expires_at);
+        assert_eq!(copied.rotation_policy, protected.rotation_policy);
+        assert_eq!(copied.vault_mode, protected.vault_mode);
+        assert_eq!(copied, protected);
+        assert!(
+            target.retrieve_for_injection("COPIED_KEY").is_err(),
+            "a copy of a read-only secret must not be injectable"
+        );
     }
 
     /// Beside a target encrypted-file vault this process cannot open, the
@@ -440,6 +718,10 @@ mod tests {
             "passphrase".to_string(),
         )
         .unwrap();
+        let source_dir = tempfile::tempdir().unwrap();
+        let source =
+            crate::commands::rotation_gate::fixtures::aged_vault(&source_dir, &[("SOURCE_KEY", 1)]);
+        let source_metadata = source.get_metadata("SOURCE_KEY").unwrap();
         let env_path = target.join(".env");
         let plan = prepare_target_plan(
             &target,
@@ -450,16 +732,27 @@ mod tests {
             env_path.clone(),
             None,
             "COPIED_KEY",
-            "secret-value",
+            "fixture-value",
+            "SOURCE_KEY",
+            source_metadata.as_ref(),
         )
         .unwrap();
         let mut concurrent_config = std::fs::read(&config_path).unwrap();
         concurrent_config.extend_from_slice(b"\n# concurrent owner\n");
         std::fs::write(&config_path, &concurrent_config).unwrap();
 
-        assert!(
-            phantom_vault::commit_init(&target, &vault, vec![plan.mutation], plan.files).is_err()
+        let outcome = phantom_vault::commit_init_with_source_vault(
+            &target,
+            &vault,
+            source_dir.path(),
+            &source,
+            vec![plan.mutation],
+            plan.files,
         );
+        assert!(matches!(
+            outcome,
+            Err(phantom_vault::InitTransactionError::ConcurrentChange { .. })
+        ));
         assert_eq!(std::fs::read(&config_path).unwrap(), concurrent_config);
         assert!(!env_path.exists());
         assert!(matches!(

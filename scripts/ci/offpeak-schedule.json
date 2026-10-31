@@ -1,0 +1,22 @@
+{
+  "windowUtc": { "startMinutes": 120, "endMinutes": 330 },
+  "cron": "43 3 * * *",
+  "peers": [
+    {
+      "name": "phantom-secrets nightly-full (existing full-matrix run)",
+      "cron": "7 8 * * *"
+    }
+  ],
+  "minPeerGapMinutes": 30,
+  "estimatesSeconds": {
+    "source": "run 40511561300 job durations (win 410s, mac 324s, ubuntu 228s)",
+    "perLeg": {
+      "macos-latest": 324,
+      "ubuntu-latest": 228,
+      "windows-latest": 410
+    },
+    "fixedOverhead": 120
+  },
+  "wallBudgetSeconds": 900,
+  "rationale": "The 08:07 UTC nightly (run 40511561300) spent ~6600s of its 7035s wall queued for macOS/Windows runners inside the org's nightly cluster. The off-peak slot lands before that cluster and before EU business hours; the existing run stays as the full-matrix backstop, so the added cron is purely additive. Required check names are unchanged: the off-peak run emits only the OS legs the day's diff can affect, and every emitted label is one of the exact matrix.os values ci.yml already uses, so `Test (${{ matrix.os }})` check names match today's names verbatim."
+}

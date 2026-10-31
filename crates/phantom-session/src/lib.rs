@@ -11,11 +11,12 @@
 use fs2::FileExt;
 use hmac::{Hmac, Mac};
 use phantom_authority::{canonical_json_v1, SessionId, Sha256Digest};
+use phantom_core::fs::PrivateStateDir;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::fs::{File, OpenOptions};
-use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::fs::File;
+use std::io::Read;
+use std::path::Path;
 use zeroize::Zeroizing;
 
 const VERSION: u8 = 3;
@@ -204,9 +205,9 @@ struct StateFile {
 }
 
 struct Journal {
-    dir: PathBuf,
-    state: PathBuf,
-    lock: PathBuf,
+    dir: PrivateStateDir,
+    state: String,
+    lock: String,
     genesis: GenesisBinding,
     key: Zeroizing<[u8; 32]>,
 }
@@ -237,13 +238,10 @@ impl Journal {
         };
         let journal = Self::prepare(root, workspace, genesis, key)?;
         let lock = journal.lock()?;
-        match std::fs::symlink_metadata(&journal.state) {
-            Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
-                return Err(SessionError::UnsafeStorage);
-            }
+        match journal.dir.open_file(&journal.state, false) {
             Ok(_) => return Err(SessionError::StateAlreadyExists),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
+            Err(error) => return Err(storage_error(error)),
         }
         journal.write(&StateBody {
             version: VERSION,
@@ -267,15 +265,12 @@ impl Journal {
     ) -> Result<Self, SessionError> {
         let journal = Self::prepare(root, workspace, genesis, key)?;
         let lock = journal.lock()?;
-        match std::fs::symlink_metadata(&journal.state) {
-            Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
-                return Err(SessionError::UnsafeStorage);
-            }
+        match journal.dir.open_file(&journal.state, false) {
             Ok(_) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 return Err(SessionError::MissingState);
             }
-            Err(error) => return Err(error.into()),
+            Err(error) => return Err(storage_error(error)),
         }
         journal.load()?;
         drop(lock);
@@ -306,11 +301,12 @@ impl Journal {
         if root.starts_with(&workspace) || workspace.starts_with(&root) {
             return Err(SessionError::StorageOverlap);
         }
-        let dir = root.join("sessions");
-        ensure_private_dir(&dir)?;
+        // Retain the checked directory: every later lock, read and replace
+        // resolves relative to it, never by re-walking `root/sessions`.
+        let dir = PrivateStateDir::ensure(&root.join("sessions")).map_err(storage_error)?;
         Ok(Self {
-            state: dir.join(format!("{}.json", genesis.session_id.as_str())),
-            lock: dir.join(format!("{}.lock", genesis.session_id.as_str())),
+            state: format!("{}.json", genesis.session_id.as_str()),
+            lock: format!("{}.lock", genesis.session_id.as_str()),
             dir,
             genesis,
             key: Zeroizing::new(key),
@@ -436,12 +432,18 @@ impl Journal {
         Ok(r)
     }
     fn lock(&self) -> Result<File, SessionError> {
-        let f = open_file(&self.lock, true, true)?;
+        let f = self
+            .dir
+            .open_file(&self.lock, true)
+            .map_err(storage_error)?;
         f.lock_exclusive()?;
         Ok(f)
     }
     fn load(&self) -> Result<StateBody, SessionError> {
-        let f = open_file(&self.state, true, false)?;
+        let f = self
+            .dir
+            .open_file(&self.state, false)
+            .map_err(storage_error)?;
         if f.metadata()?.len() > MAX_STATE {
             return Err(SessionError::Oversized);
         }
@@ -492,7 +494,9 @@ impl Journal {
         if b.len() as u64 > MAX_STATE {
             return Err(SessionError::Oversized);
         }
-        atomic_write(&self.dir, &self.state, &b)
+        self.dir
+            .replace_file(&self.state, &b)
+            .map_err(storage_error)
     }
 }
 
@@ -639,97 +643,15 @@ fn ensure_real_dir(p: &Path) -> Result<(), SessionError> {
         Ok(())
     }
 }
-fn ensure_private_dir(p: &Path) -> Result<(), SessionError> {
-    match std::fs::symlink_metadata(p) {
-        Ok(m) if m.is_dir() && !m.file_type().is_symlink() => {}
-        Ok(_) => return Err(SessionError::UnsafeStorage),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => std::fs::create_dir(p)?,
-        Err(e) => return Err(e.into()),
-    };
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o700))?;
-    }
-    Ok(())
-}
-fn open_file(p: &Path, read: bool, append: bool) -> Result<File, SessionError> {
-    if let Ok(m) = std::fs::symlink_metadata(p) {
-        if m.file_type().is_symlink() || !m.is_file() {
-            return Err(SessionError::UnsafeStorage);
-        }
-    }
-    let mut o = OpenOptions::new();
-    o.read(read).write(append).append(append).create(append);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        o.mode(0o600).custom_flags(libc::O_NOFOLLOW);
-    }
-    let file = o.open(p)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-    }
-    Ok(file)
-}
-fn atomic_write(dir: &Path, path: &Path, b: &[u8]) -> Result<(), SessionError> {
-    let tmp = dir.join(format!(".session-{:016x}.tmp", rand::random::<u64>()));
-    let mut o = OpenOptions::new();
-    o.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        o.mode(0o600).custom_flags(libc::O_NOFOLLOW);
-    }
-    let result = (|| {
-        let mut f = o.open(&tmp)?;
-        f.write_all(b)?;
-        f.sync_all()?;
-        replace_and_sync(dir, &tmp, path)?;
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(&tmp);
-    }
-    result
-}
-
-#[cfg(unix)]
-fn replace_and_sync(dir: &Path, tmp: &Path, path: &Path) -> std::io::Result<()> {
-    std::fs::rename(tmp, path)?;
-    File::open(dir)?.sync_all()
-}
-
-#[cfg(windows)]
-fn replace_and_sync(_dir: &Path, tmp: &Path, path: &Path) -> std::io::Result<()> {
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Storage::FileSystem::{
-        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
-    };
-
-    let from = tmp
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
-    let to = path
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
-    let flags = MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH;
-    if unsafe { MoveFileExW(from.as_ptr(), to.as_ptr(), flags) } == 0 {
-        Err(std::io::Error::last_os_error())
+/// Map a refusal from the shared private-directory helper (a symlink,
+/// unexpected entry type, multiply-linked file, or foreign owner) onto
+/// `UnsafeStorage`; every other I/O failure keeps its `Io` mapping.
+fn storage_error(error: std::io::Error) -> SessionError {
+    if error.kind() == std::io::ErrorKind::InvalidData {
+        SessionError::UnsafeStorage
     } else {
-        Ok(())
+        SessionError::Io(error)
     }
-}
-
-#[cfg(not(any(unix, windows)))]
-fn replace_and_sync(_dir: &Path, tmp: &Path, path: &Path) -> std::io::Result<()> {
-    std::fs::rename(tmp, path)
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -781,6 +703,8 @@ pub enum SessionError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs::OpenOptions;
+    use std::path::PathBuf;
     use std::sync::{Arc, Barrier};
     use tempfile::TempDir;
 
@@ -1364,5 +1288,80 @@ mod tests {
             ),
             Err(SessionError::StorageOverlap)
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn journal_never_follows_a_sessions_directory_swapped_after_prepare() {
+        use std::os::unix::fs::symlink;
+
+        let fixture = Fixture::new();
+        let journal = fixture.bootstrap().unwrap();
+        let outside = fixture._temp.path().join("outside");
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::rename(fixture.root.join("sessions"), fixture.root.join("moved")).unwrap();
+        symlink(&outside, fixture.root.join("sessions")).unwrap();
+
+        let result = journal.intend(0, authority_allowed());
+
+        assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
+        assert!(result.is_ok());
+        assert!(fixture
+            .root
+            .join("moved")
+            .join(format!("{}.json", fixture.session_id.as_str()))
+            .is_file());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hard_linked_lock_is_refused_without_changing_its_target() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let fixture = Fixture::new();
+        let sessions = fixture.root.join("sessions");
+        std::fs::create_dir(&sessions).unwrap();
+        std::fs::set_permissions(&sessions, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let outside = fixture._temp.path().join("outside-file");
+        std::fs::write(&outside, b"sentinel").unwrap();
+        std::fs::set_permissions(&outside, std::fs::Permissions::from_mode(0o644)).unwrap();
+        std::fs::hard_link(&outside, fixture.lock_path()).unwrap();
+
+        assert!(matches!(
+            fixture.bootstrap(),
+            Err(SessionError::UnsafeStorage)
+        ));
+        assert_eq!(
+            std::fs::metadata(&outside).unwrap().permissions().mode() & 0o777,
+            0o644
+        );
+        assert_eq!(std::fs::read(&outside).unwrap(), b"sentinel");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sessions_directory_owned_by_another_user_is_refused() {
+        use std::os::unix::fs::PermissionsExt;
+
+        // Only a privileged test run can stage a directory another user owns.
+        // SAFETY: geteuid has no preconditions and cannot fail.
+        if unsafe { libc::geteuid() } != 0 {
+            return;
+        }
+        let fixture = Fixture::new();
+        let sessions = fixture.root.join("sessions");
+        std::fs::create_dir(&sessions).unwrap();
+        std::fs::set_permissions(&sessions, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::os::unix::fs::chown(&sessions, Some(65_534), Some(65_534)).unwrap();
+
+        assert!(matches!(
+            fixture.bootstrap(),
+            Err(SessionError::UnsafeStorage)
+        ));
+        assert_eq!(
+            std::fs::metadata(&sessions).unwrap().permissions().mode() & 0o777,
+            0o755
+        );
+        assert!(!fixture.state_path().exists());
     }
 }

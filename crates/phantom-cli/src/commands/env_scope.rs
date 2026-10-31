@@ -10,11 +10,12 @@ use phantom_core::config::PhantomConfig;
 #[cfg(test)]
 use phantom_core::env_scope::write_active_env_if_unchanged;
 use phantom_core::env_scope::{
-    known_envs_from_keys, namespaced_key, resolve_env, split_key, validate_env_name, DEFAULT_ENV,
+    known_envs_from_keys, namespaced_key, split_key, validate_env_name, DEFAULT_ENV,
 };
 use phantom_core::fs::{AnchoredRead, TrustedAnchor};
 use phantom_vault::{
-    InitFile, InitSecret, ProjectDirectoryPreparation, ProjectTransactionLock, VaultBackend,
+    InitFile, InitSecret, ProjectDirectoryPreparation, ProjectTransactionLock, SecretMetadata,
+    VaultBackend,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, IsTerminal, Read, Write};
@@ -318,7 +319,7 @@ pub fn run_list() -> Result<()> {
     };
     let (all_keys, note) = environment_keys(config.local_project_id())?;
 
-    let current = phantom_core::env_scope::read_active_env(&project_dir);
+    let current = effective_env(&project_dir, None)?;
     let envs = known_envs_from_keys(&all_keys, &current);
 
     println!("{} Known environments:\n", "->".blue().bold());
@@ -643,6 +644,10 @@ fn prepare_environment_copy(
     to: &str,
     now_secs: u64,
 ) -> Result<EnvironmentCopyPlan> {
+    // Validate at the planning boundary too: selectors are exact namespaces,
+    // never patterns, even when a caller bypasses the CLI review path.
+    validate_env_name(from)?;
+    validate_env_name(to)?;
     let mut sources = BTreeMap::<String, String>::new();
     for key in all_keys {
         let logical = match split_key(key) {
@@ -694,30 +699,41 @@ fn prepare_environment_copy(
     )?;
 
     // Keep every provider value in zeroizing owners from retrieval until it
-    // moves into InitSecret's zeroizing transaction fields.
-    let mut values = Vec::<(String, String, Zeroizing<String>)>::with_capacity(sources.len());
+    // moves into InitSecret's zeroizing transaction fields. Each source's
+    // metadata is read before its value; the transaction then holds each
+    // source to that exact metadata and value until it commits, so a source
+    // demoted, given an expiry, or rotated after these reads refuses the
+    // copy instead of handing the destination stale, weaker protection.
+    type SourceCopy = (String, String, Option<SecretMetadata>, Zeroizing<String>);
+    let mut values = Vec::<SourceCopy>::with_capacity(sources.len());
     for (name, source_key) in sources {
+        let metadata = vault
+            .get_metadata(&source_key)
+            .with_context(|| format!("Failed to read metadata for source secret '{source_key}'"))?;
         let value = vault
             .retrieve(&source_key)
             .with_context(|| format!("Failed to retrieve source secret '{source_key}'"))?;
-        values.push((name, source_key, value));
+        values.push((name, source_key, metadata, value));
     }
 
-    let mut mutations = Vec::with_capacity(values.len() * 2);
+    let mut mutations = Vec::with_capacity(values.len());
     let mut copied_names = Vec::with_capacity(values.len());
-    for (name, source_key, value) in values {
-        // A no-op exact-CAS source guard makes the snapshot part of the same
-        // locked transaction; all guards are preflighted before any write.
-        mutations.push(InitSecret::replace_if_unchanged(
-            source_key,
-            Some(value.as_str().to_string()),
-            value.as_str().to_string(),
-        ));
-        mutations.push(InitSecret::replace_if_unchanged(
-            namespaced_key(to, &name),
-            None::<String>,
-            value.as_str().to_string(),
-        ));
+    for (name, source_key, metadata, value) in values {
+        // The destination keeps its source's lifecycle metadata (rotation
+        // age, expiry, TTL policy and read-only mode), so the copy is never
+        // less protected than its source. The binding is also the source
+        // guard: the transaction requires `source_key` to still hold this
+        // value and exactly this metadata at preflight (before any write),
+        // atomically with the inherited metadata write, and again before
+        // it commits.
+        mutations.push(
+            InitSecret::replace_if_unchanged(
+                namespaced_key(to, &name),
+                None::<String>,
+                value.as_str().to_string(),
+            )
+            .inheriting_source_protection(source_key, metadata.as_ref()),
+        );
         copied_names.push(name);
     }
     Ok(EnvironmentCopyPlan {
@@ -744,9 +760,15 @@ pub fn run_default(current: &str) -> Result<()> {
     Ok(())
 }
 
-/// Resolve env from flag or persisted file, used by vault call sites.
-pub fn effective_env(project_dir: &std::path::Path, flag: Option<&str>) -> String {
-    resolve_env(project_dir, flag)
+/// Resolve the environment a proxy session serves: the flag when given,
+/// otherwise the `.phantom/env` selector, otherwise the default. A thin
+/// `anyhow` wrapper over [`phantom_core::env_scope::resolve_env`], the one
+/// selector reader: it never follows a symlink and only returns a name
+/// [`validate_env_name`] accepts, so it can never address vault entries
+/// outside its own `<env>/` namespace.
+pub fn effective_env(project_dir: &std::path::Path, flag: Option<&str>) -> Result<String> {
+    phantom_core::env_scope::resolve_env(project_dir, flag)
+        .map_err(|error| anyhow::anyhow!("{error}"))
 }
 
 #[cfg(test)]
@@ -772,6 +794,44 @@ mod tests {
             .unwrap();
         let review = prepare_environment_copy_review(dir.path(), "dev", "prod").unwrap();
         (dir, review)
+    }
+
+    #[test]
+    fn effective_env_follows_the_selector_and_defaults_when_absent_or_blank() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(effective_env(dir.path(), None).unwrap(), DEFAULT_ENV);
+        phantom_core::env_scope::write_active_env(dir.path(), "staging").unwrap();
+        assert_eq!(effective_env(dir.path(), None).unwrap(), "staging");
+        assert_eq!(effective_env(dir.path(), Some("prod")).unwrap(), "prod");
+        std::fs::write(dir.path().join(".phantom/env"), " \n").unwrap();
+        assert_eq!(effective_env(dir.path(), None).unwrap(), DEFAULT_ENV);
+    }
+
+    #[test]
+    fn effective_env_rejects_names_env_use_would_refuse() {
+        let dir = tempfile::tempdir().unwrap();
+        for bad in ["../prod", "prod/x", "a b", ""] {
+            assert!(
+                effective_env(dir.path(), Some(bad)).is_err(),
+                "flag {bad:?}"
+            );
+        }
+        std::fs::create_dir_all(dir.path().join(".phantom")).unwrap();
+        std::fs::write(dir.path().join(".phantom/env"), "../prod\n").unwrap();
+        let error = effective_env(dir.path(), None).unwrap_err().to_string();
+        assert!(error.contains("Invalid environment name"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn effective_env_does_not_follow_a_symlinked_selector() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".phantom")).unwrap();
+        let target = dir.path().join("elsewhere");
+        std::fs::write(&target, "prod\n").unwrap();
+        std::os::unix::fs::symlink(&target, dir.path().join(".phantom/env")).unwrap();
+        let error = effective_env(dir.path(), None).unwrap_err().to_string();
+        assert!(error.contains("active environment selector"));
     }
 
     #[test]
@@ -1021,7 +1081,10 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(phantom_core::env_scope::read_active_env(dir.path()), "prod");
+        assert_eq!(
+            phantom_core::env_scope::read_active_env(dir.path()).unwrap(),
+            "prod"
+        );
     }
 
     #[test]
@@ -1039,7 +1102,7 @@ mod tests {
 
         assert!(error.to_string().contains("atomically update"));
         assert_eq!(
-            phantom_core::env_scope::read_active_env(dir.path()),
+            phantom_core::env_scope::read_active_env(dir.path()).unwrap(),
             "concurrent"
         );
     }
@@ -1151,11 +1214,31 @@ mod tests {
         );
     }
 
+    /// A concurrent writer's effect, run once at a staged point of a copy.
+    type Interleave = Box<dyn FnOnce(&FileVault) + Send>;
+
+    /// Run `slot`'s effect once, the first time `name` reaches its point.
+    fn interleave(
+        slot: &std::sync::Mutex<Option<(String, Interleave)>>,
+        name: &str,
+        inner: &FileVault,
+    ) {
+        let mut slot = slot.lock().unwrap();
+        if slot.as_ref().is_some_and(|(staged, _)| staged == name) {
+            let (_, effect) = slot.take().unwrap();
+            effect(inner);
+        }
+    }
+
     struct FailingCasVault {
         inner: FileVault,
         cas_calls: AtomicUsize,
         retrieve_calls: AtomicUsize,
         fail_at: Option<usize>,
+        /// Runs just before the first read of the named entry's value.
+        before_retrieve: std::sync::Mutex<Option<(String, Interleave)>>,
+        /// Runs just after the CAS that creates the named entry.
+        after_create: std::sync::Mutex<Option<(String, Interleave)>>,
     }
 
     impl VaultBackend for FailingCasVault {
@@ -1165,6 +1248,7 @@ mod tests {
 
         fn retrieve(&self, name: &str) -> PhantomResult<Zeroizing<String>> {
             self.retrieve_calls.fetch_add(1, Ordering::SeqCst);
+            interleave(&self.before_retrieve, name, &self.inner);
             self.inner.retrieve(name)
         }
 
@@ -1180,6 +1264,9 @@ mod tests {
         ) -> PhantomResult<bool> {
             let call = self.cas_calls.fetch_add(1, Ordering::SeqCst);
             let result = self.inner.compare_and_swap(name, expected, replacement)?;
+            if result && expected.is_none() {
+                interleave(&self.after_create, name, &self.inner);
+            }
             if self.fail_at == Some(call) {
                 return Err(PhantomError::VaultError(
                     "injected ambiguous environment-copy CAS failure".to_string(),
@@ -1198,6 +1285,13 @@ mod tests {
 
         fn get_metadata(&self, name: &str) -> PhantomResult<Option<phantom_vault::SecretMetadata>> {
             self.inner.get_metadata(name)
+        }
+
+        fn compare_and_swap_metadata_batch(
+            &self,
+            changes: &[phantom_vault::MetadataCas],
+        ) -> PhantomResult<bool> {
+            self.inner.compare_and_swap_metadata_batch(changes)
         }
     }
 
@@ -1255,6 +1349,216 @@ mod tests {
         assert_eq!(plan.copied_names.len(), 2);
     }
 
+    /// `phantom env copy` stamped the destination entries as stored now, so
+    /// a secret 29 days into a 30-day enforced window got a fresh clock in
+    /// the destination environment. Each destination now inherits its
+    /// source's rotation anchor and is judged overdue when its source is; a
+    /// secret without enforcement still copies.
+    #[test]
+    fn environment_copy_destinations_inherit_the_source_rotation_anchor() {
+        const DAY: u64 = 86_400;
+        const NOW: u64 = 1_800_000_000;
+        let mut config = unenforced();
+        config.phantom.secrets.insert(
+            "API_KEY".to_string(),
+            phantom_core::config::SecretOverride {
+                rotate_every: Some("30d".to_string()),
+                enforce_rotation_on_access: true,
+                ..phantom_core::config::SecretOverride::default()
+            },
+        );
+        let (dir, vault) = vault(None);
+        vault.store("dev/API_KEY", "source-value").unwrap();
+        vault.store("dev/OTHER", "other-value").unwrap();
+        stamp_age(&vault, "dev/API_KEY", NOW - 29 * DAY);
+        stamp_age(&vault, "dev/OTHER", NOW - 400 * DAY);
+        let keys = vault.list().unwrap();
+
+        let plan = prepare_environment_copy(&config, &vault, &keys, "dev", "prod", NOW).unwrap();
+        phantom_vault::commit_init(dir.path(), &vault, plan.mutations, Vec::new()).unwrap();
+
+        let anchor = |entry: &str| {
+            phantom_vault::rotation_gate::rotation_anchor(
+                vault.get_metadata(entry).unwrap().as_ref(),
+            )
+        };
+        assert_eq!(anchor("prod/API_KEY"), Some(NOW - 29 * DAY));
+        assert_eq!(anchor("prod/OTHER"), Some(NOW - 400 * DAY));
+        assert!(vault.exists("prod/OTHER").unwrap());
+        let refusals = phantom_vault::rotation_gate::rotation_refusals(
+            &config,
+            &vault,
+            phantom_vault::rotation_gate::entry_targets(["prod/API_KEY"]),
+            NOW + 2 * DAY,
+        )
+        .unwrap();
+        assert_eq!(
+            refusals.len(),
+            1,
+            "the copy must be overdue with its source"
+        );
+    }
+
+    /// `phantom env copy` carried only the rotation anchor, so a source
+    /// demoted to read-only, past its expiry, or under a TTL policy came out
+    /// of the copy as an injectable read-write entry with no expiry. Each
+    /// destination now carries every protective lifecycle field of its source.
+    #[test]
+    fn environment_copy_destinations_keep_the_source_protective_metadata() {
+        const DAY: u64 = 86_400;
+        const NOW: u64 = 1_800_000_000;
+        let config = unenforced();
+        let (dir, vault) = vault(None);
+        vault.store("dev/API_KEY", "source-value").unwrap();
+        let protected = phantom_vault::SecretMetadata {
+            created_at: Some(NOW - 40 * DAY),
+            rotated_at: Some(NOW - 35 * DAY),
+            expires_at: Some(NOW - 5 * DAY),
+            rotation_policy: Some(phantom_vault::RotationPolicy {
+                days_ttl: 30,
+                auto_rotate: false,
+            }),
+            vault_mode: phantom_vault::metadata::VaultMode::ReadOnly,
+        };
+        vault
+            .inner
+            .set_metadata("dev/API_KEY", protected.clone())
+            .unwrap();
+        let keys = vault.list().unwrap();
+
+        let plan = prepare_environment_copy(&config, &vault, &keys, "dev", "prod", NOW).unwrap();
+        phantom_vault::commit_init(dir.path(), &vault, plan.mutations, Vec::new()).unwrap();
+
+        let copied = vault
+            .get_metadata("prod/API_KEY")
+            .unwrap()
+            .unwrap_or_default();
+        assert_eq!(copied.expires_at, protected.expires_at);
+        assert_eq!(copied.rotation_policy, protected.rotation_policy);
+        assert_eq!(copied.vault_mode, protected.vault_mode);
+        assert_eq!(copied, protected);
+        assert!(
+            vault.inner.retrieve_for_injection("prod/API_KEY").is_err(),
+            "a copy of a read-only secret must not be injectable"
+        );
+    }
+
+    /// Demote `entry` to read-only with an expiry, keeping its value.
+    fn demote(inner: &FileVault, entry: &str) {
+        let mut metadata = inner.get_metadata(entry).unwrap().unwrap_or_default();
+        metadata.vault_mode = phantom_vault::metadata::VaultMode::ReadOnly;
+        metadata.expires_at = Some(1_700_000_000);
+        inner.set_metadata(entry, metadata).unwrap();
+    }
+
+    /// Assert the copy left no destination and the source kept its demotion.
+    fn assert_refused_without_destination(vault: &FailingCasVault) {
+        assert!(matches!(
+            vault.retrieve("prod/API_KEY"),
+            Err(PhantomError::SecretNotFound(_))
+        ));
+        assert!(vault.inner.get_metadata("prod/API_KEY").unwrap().is_none());
+        assert_eq!(
+            vault
+                .inner
+                .get_metadata("dev/API_KEY")
+                .unwrap()
+                .unwrap_or_default()
+                .vault_mode,
+            phantom_vault::metadata::VaultMode::ReadOnly
+        );
+    }
+
+    /// The source was demoted to read-only (with an expiry) after `env copy`
+    /// read its metadata. The destination would inherit the stale read-write
+    /// metadata, so the commit is refused and nothing is created.
+    #[test]
+    fn environment_copy_refuses_a_source_demoted_before_the_commit() {
+        let (dir, vault) = vault(None);
+        vault.store("dev/API_KEY", "source-value").unwrap();
+        let keys = vault.list().unwrap();
+        let plan =
+            prepare_environment_copy(&unenforced(), &vault, &keys, "dev", "prod", 0).unwrap();
+        demote(&vault.inner, "dev/API_KEY");
+
+        let outcome = phantom_vault::commit_init(dir.path(), &vault, plan.mutations, Vec::new());
+
+        assert!(outcome.is_err());
+        assert_refused_without_destination(&vault);
+    }
+
+    /// The source was demoted while the copy transaction was committing,
+    /// after the destination value was written. The commit-time source check
+    /// refuses and rolls the destination back.
+    #[test]
+    fn environment_copy_refuses_a_source_demoted_during_the_commit() {
+        let (dir, vault) = vault(None);
+        vault.store("dev/API_KEY", "source-value").unwrap();
+        let keys = vault.list().unwrap();
+        let plan =
+            prepare_environment_copy(&unenforced(), &vault, &keys, "dev", "prod", 0).unwrap();
+        *vault.after_create.lock().unwrap() = Some((
+            "prod/API_KEY".to_string(),
+            Box::new(|inner: &FileVault| demote(inner, "dev/API_KEY")),
+        ));
+
+        let outcome = phantom_vault::commit_init(dir.path(), &vault, plan.mutations, Vec::new());
+
+        assert!(outcome.is_err());
+        assert!(vault.after_create.lock().unwrap().is_none());
+        assert_refused_without_destination(&vault);
+    }
+
+    /// The source was rotated between `env copy`'s metadata read and its
+    /// value read: the copy would pair the new value with the old rotation
+    /// stamp. The source metadata no longer matches what was inherited, so
+    /// the commit is refused.
+    #[test]
+    fn environment_copy_refuses_a_source_rotated_between_its_metadata_and_value_reads() {
+        let (dir, vault) = vault(None);
+        vault.store("dev/API_KEY", "source-value").unwrap();
+        vault
+            .inner
+            .set_metadata(
+                "dev/API_KEY",
+                phantom_vault::SecretMetadata {
+                    created_at: Some(1_000),
+                    rotated_at: Some(2_000),
+                    ..phantom_vault::SecretMetadata::default()
+                },
+            )
+            .unwrap();
+        *vault.before_retrieve.lock().unwrap() = Some((
+            "dev/API_KEY".to_string(),
+            Box::new(|inner: &FileVault| {
+                inner.store("dev/API_KEY", "rotated-value").unwrap();
+                let mut metadata = inner.get_metadata("dev/API_KEY").unwrap().unwrap();
+                metadata.rotated_at = Some(3_000);
+                inner.set_metadata("dev/API_KEY", metadata).unwrap();
+            }),
+        ));
+        let keys = vault.list().unwrap();
+        let plan =
+            prepare_environment_copy(&unenforced(), &vault, &keys, "dev", "prod", 0).unwrap();
+        assert!(vault.before_retrieve.lock().unwrap().is_none());
+
+        let outcome = phantom_vault::commit_init(dir.path(), &vault, plan.mutations, Vec::new());
+
+        assert!(outcome.is_err());
+        assert!(matches!(
+            vault.retrieve("prod/API_KEY"),
+            Err(PhantomError::SecretNotFound(_))
+        ));
+        assert_eq!(
+            vault
+                .inner
+                .get_metadata("dev/API_KEY")
+                .unwrap()
+                .and_then(|metadata| metadata.rotated_at),
+            Some(3_000)
+        );
+    }
+
     fn vault(fail_at: Option<usize>) -> (tempfile::TempDir, FailingCasVault) {
         let dir = tempfile::tempdir().unwrap();
         let inner = FileVault::new(
@@ -1270,8 +1574,52 @@ mod tests {
                 cas_calls: AtomicUsize::new(0),
                 retrieve_calls: AtomicUsize::new(0),
                 fail_at,
+                before_retrieve: std::sync::Mutex::new(None),
+                after_create: std::sync::Mutex::new(None),
             },
         )
+    }
+
+    #[test]
+    fn environment_copy_rejects_glob_selectors_before_retrieval() {
+        let (_dir, vault) = vault(None);
+        let keys = vec!["dev/API_KEY".to_string(), "prod/API_KEY".to_string()];
+        for pattern in ["*", "dev*", "?", "[dp]ev", "dev/../prod"] {
+            for (from, to) in [(pattern, "target"), ("dev", pattern)] {
+                assert!(
+                    prepare_environment_copy(&unenforced(), &vault, &keys, from, to, 0).is_err()
+                );
+            }
+        }
+        assert_eq!(vault.retrieve_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn environment_copy_treats_glob_names_literally_within_exact_scope() {
+        let (dir, vault) = vault(None);
+        for key in [
+            "dev/API_*",
+            "dev/API_?",
+            "dev/[KEY]",
+            "development/API_*",
+            "prod/API_*",
+            "API_*",
+        ] {
+            vault.store(key, "synthetic-fixture").unwrap();
+        }
+        let keys = vault.list().unwrap();
+        let plan =
+            prepare_environment_copy(&unenforced(), &vault, &keys, "dev", "target", 0).unwrap();
+        assert_eq!(plan.copied_names, ["API_*", "API_?", "[KEY]"]);
+        assert_eq!(vault.retrieve_calls.load(Ordering::SeqCst), 3);
+        phantom_vault::commit_init(dir.path(), &vault, plan.mutations, Vec::new()).unwrap();
+        let targets: Vec<_> = vault
+            .list()
+            .unwrap()
+            .into_iter()
+            .filter(|key| key.starts_with("target/"))
+            .collect();
+        assert_eq!(targets, ["target/API_*", "target/API_?", "target/[KEY]"]);
     }
 
     #[test]
@@ -1293,7 +1641,10 @@ mod tests {
 
     #[test]
     fn nth_ambiguous_cas_rolls_back_every_destination() {
-        let (dir, vault) = vault(Some(3));
+        // CAS calls are the two destination creates (0, 1); the source
+        // guards are value/metadata checks, not writes. Failing the last
+        // one ambiguously, after it wrote, must still roll back both.
+        let (dir, vault) = vault(Some(1));
         vault.store("dev/A", "source-a").unwrap();
         vault.store("dev/B", "source-b").unwrap();
         let keys = vault.list().unwrap();

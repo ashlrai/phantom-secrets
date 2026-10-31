@@ -61,7 +61,7 @@ export default function DeviceAuthorizationClient() {
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!isValidDeviceUserCode(code)) {
-      setError("Code must be 8 characters (XXXX-XXXX)");
+      setError("Enter 8 letters or numbers. The code is displayed as XXXX-XXXX.");
       return;
     }
 
@@ -264,21 +264,24 @@ export default function DeviceAuthorizationClient() {
                 autoCapitalize="characters"
                 spellCheck={false}
                 aria-invalid={Boolean(error)}
-                aria-describedby={error ? "device-error device-help" : "device-help"}
+                aria-describedby={error ? "device-code-hint device-error device-help" : "device-code-hint device-help"}
                 value={code}
                 onChange={(event) => setCode(formatDeviceUserCode(event.target.value))}
                 placeholder="XXXX-XXXX"
                 className="w-full min-w-0 text-center text-2xl sm:text-3xl font-mono tracking-[0.12em] sm:tracking-[0.2em] py-4 px-2 bg-bg border border-border-l rounded-lg text-t1 focus-visible:outline-2 focus-visible:outline-blue-b placeholder:text-t3"
-                maxLength={9}
                 autoFocus
                 disabled={status !== "input"}
               />
+
+              <p id="device-code-hint" className="text-left text-t3 text-sm leading-relaxed">
+                Enter 8 letters or numbers in the format XXXX-XXXX.
+              </p>
 
               {error && <p id="device-error" role="alert" className="text-red-400 text-sm leading-relaxed">{error}</p>}
 
               <button
                 type="submit"
-                disabled={status !== "input" || code.length < 9}
+                disabled={status !== "input"}
                 className="w-full min-h-[48px] py-3 bg-blue-action hover:bg-blue-action-d disabled:bg-s3 disabled:text-t3 rounded-lg font-semibold transition-colors focus-visible:outline-2 focus-visible:outline-blue-b"
               >
                 {status === "authenticating"

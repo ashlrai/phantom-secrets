@@ -3,6 +3,7 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
+const ts = require("typescript");
 
 const webDir = path.resolve(__dirname, "..");
 const repoDir = path.resolve(webDir, "../..");
@@ -55,6 +56,19 @@ function readRepo(relativePath) {
   return fs.readFileSync(path.join(repoDir, relativePath), "utf8");
 }
 
+function readRepoTree(relativeDir) {
+  const parts = [];
+  const walk = (dir) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (entry.name.endsWith(".rs")) parts.push(fs.readFileSync(full, "utf8"));
+    }
+  };
+  walk(path.join(repoDir, relativeDir));
+  return parts.join("\n");
+}
+
 function exportedString(source, name) {
   const match = source.match(
     new RegExp(`export const ${name}\\s*=\\s*"([^"]+)"`),
@@ -80,6 +94,87 @@ const claims = Object.fromEntries(
   claimPaths.map((relativePath) => [relativePath, read(relativePath)]),
 );
 const allClaims = Object.values(claims).join("\n");
+
+function assertUniqueIds(document) {
+  const seen = new Set();
+  for (const element of document.querySelectorAll("[id]")) {
+    const id = element.getAttribute("id");
+    assert.equal(seen.has(id), false, `duplicate ID: ${JSON.stringify(id)}`);
+    seen.add(id);
+  }
+}
+
+test("document-wide ID check accepts an empty document", () => {
+  const { JSDOM } = require("jsdom");
+  const dom = new JSDOM("");
+  try {
+    assert.doesNotThrow(() => assertUniqueIds(dom.window.document));
+    assert.doesNotThrow(() => assertUniqueIds(dom.window.document));
+  } finally {
+    dom.window.close();
+  }
+});
+
+test("rendered public homepage has unique IDs across the whole document", async () => {
+  const React = require("react");
+  const { renderToStaticMarkup } = require("react-dom/server");
+  const { JSDOM } = require("jsdom");
+  const ts = require("typescript");
+  const { pathToFileURL } = require("node:url");
+  const contract = await import(pathToFileURL(path.join(webDir, "src/lib/workbench-release-contract.mjs")).href);
+  const cache = new Map();
+
+  // Render the real page, layout and components; replace only Next's browser
+  // adapters and analytics, which do not determine the page's ID structure.
+  function load(filename) {
+    if (cache.has(filename)) return cache.get(filename).exports;
+    const module = { exports: {} };
+    cache.set(filename, module);
+    const source = fs.readFileSync(filename, "utf8");
+    const output = ts.transpileModule(source, {
+      fileName: filename,
+      compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, esModuleInterop: true, allowJs: true },
+    }).outputText;
+    const localRequire = (specifier) => {
+      if (specifier === "next/navigation") return { usePathname: () => "/" };
+      if (specifier === "next/link") return { __esModule: true, default: ({ children, ...props }) => React.createElement("a", props, children) };
+      if (specifier === "next/image") return { __esModule: true, default: ({ priority, ...props }) => React.createElement("img", props) };
+      if (specifier === "@/lib/posthog") return { capturePostHog: async () => {} };
+      if (specifier.endsWith("workbench-release-contract.mjs")) return contract;
+      if (specifier.endsWith(".css")) return {};
+      if (specifier.startsWith("@/") || specifier.startsWith(".")) {
+        const base = specifier.startsWith("@/")
+          ? path.join(webDir, "src", specifier.slice(2))
+          : path.resolve(path.dirname(filename), specifier);
+        const resolved = [base, `${base}.tsx`, `${base}.ts`, `${base}.js`, `${base}.json`]
+          .find((candidate) => fs.existsSync(candidate) && fs.statSync(candidate).isFile());
+        assert.ok(resolved, `cannot resolve ${specifier} from ${filename}`);
+        return resolved.endsWith(".json") ? JSON.parse(fs.readFileSync(resolved, "utf8")) : load(resolved);
+      }
+      return require(specifier);
+    };
+    new Function("exports", "require", "module", output)(module.exports, localRequire, module);
+    return module.exports;
+  }
+
+  const Home = load(path.join(webDir, "src/app/page.tsx")).default;
+  const Layout = load(path.join(webDir, "src/app/layout.tsx")).default;
+  const dom = new JSDOM(renderToStaticMarkup(React.createElement(Layout, null, React.createElement(Home))));
+  try {
+    const document = dom.window.document;
+    assert.ok(document.querySelector("#main-content"));
+    assert.ok(document.querySelector("#phantom-world"), "embedded scene must be rendered");
+    assertUniqueIds(document);
+
+    // Exercise the detector with a collision between separate page regions.
+    const duplicate = document.createElement("div");
+    duplicate.id = "main-content";
+    document.querySelector("#phantom-world").append(duplicate);
+    assert.throws(() => assertUniqueIds(document), /duplicate ID: "main-content"/);
+  } finally {
+    dom.window.close();
+  }
+});
 
 const staticDocumentationPaths = repoFilesUnder("docs", [".html", ".md"]);
 const staticDocumentationClaims = Object.fromEntries(
@@ -175,6 +270,54 @@ function structuredMetadataBlock(source, type) {
   assert.notEqual(end, -1, `missing boundary after ${type} structured metadata`);
   return source.slice(start, end);
 }
+
+test("public home page has a descriptive document title", () => {
+  const source = ts.createSourceFile(
+    "page.tsx", claims["src/app/page.tsx"], ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX,
+  );
+  const metadata = source.statements
+    .filter(ts.isVariableStatement)
+    .filter((statement) => statement.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword))
+    .flatMap((statement) => statement.declarationList.declarations)
+    .find((declaration) => ts.isIdentifier(declaration.name) && declaration.name.text === "metadata");
+  assert.ok(metadata && metadata.initializer && ts.isObjectLiteralExpression(metadata.initializer), "missing exported page metadata");
+
+  const title = metadata.initializer.properties.find(
+    (property) => ts.isPropertyAssignment(property) && property.name.getText(source) === "title",
+  );
+  assert.ok(title && ts.isPropertyAssignment(title), "missing document title");
+  const absolute = ts.isObjectLiteralExpression(title.initializer)
+    ? title.initializer.properties.find(
+      (property) => ts.isPropertyAssignment(property) && property.name.getText(source) === "absolute",
+    )
+    : undefined;
+  const value = absolute && ts.isPropertyAssignment(absolute) ? absolute.initializer : title.initializer;
+  assert.ok(ts.isStringLiteral(value), "document title must be a literal string or absolute title");
+  assert.match(value.text.trim(), /phantom/i, "title should identify Phantom");
+  assert.match(value.text.trim(), /engineering agents/i, "title should describe the page");
+});
+
+test("public home page supplies a nonempty description", () => {
+  function assertDescription(text) {
+    const source = ts.createSourceFile("page.tsx", text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+    const metadata = source.statements
+      .filter(ts.isVariableStatement)
+      .filter((statement) => statement.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword))
+      .flatMap((statement) => statement.declarationList.declarations)
+      .find((declaration) => ts.isIdentifier(declaration.name) && declaration.name.text === "metadata");
+    assert.ok(metadata && metadata.initializer && ts.isObjectLiteralExpression(metadata.initializer), "missing exported page metadata");
+    const description = metadata.initializer.properties.find(
+      (property) => ts.isPropertyAssignment(property) && property.name.getText(source) === "description",
+    );
+    assert.ok(description && ts.isStringLiteral(description.initializer), "description must be a literal string");
+    assert.ok(description.initializer.text.trim().length > 0, "description must not be empty");
+  }
+
+  assertDescription(claims["src/app/page.tsx"]);
+  assert.throws(() => assertDescription('export const metadata = { description: "" };'), /description must not be empty/);
+  assert.throws(() => assertDescription('export const metadata = { description: "   " };'), /description must not be empty/);
+  assert.throws(() => assertDescription('export const metadata = {};'), /description must be a literal string/);
+});
 
 test("public surfaces reject previously audited absolute claims", () => {
   for (const forbidden of [
@@ -364,7 +507,9 @@ test("authority-sensitive command guidance stays fail-closed and value-blind", (
   assert.match(machineCatalog, /phantom_apply_expiry_policy[\s\S]{0,360}does not recall/i);
   assert.doesNotMatch(machineCatalog, /advisory `VaultMode`/i);
 
-  const cli = readRepo("crates/phantom-cli/src/main.rs");
+  // Command enums move between main.rs and cli_actions/*.rs; the fail-closed
+  // claims must hold across every command module, not one entry-point file.
+  const cli = readRepoTree("crates/phantom-cli/src");
   assert.doesNotMatch(cli, /Skip the standalone self-replacement confirmation prompt/i);
   assert.doesNotMatch(cli, /Role to assign \(member, admin, owner\)/i);
   assert.match(cli, /cannot bypass the standalone replacement ceremonies/i);
@@ -493,6 +638,27 @@ test("public Cloud guidance does not promise machine-portable recovery", () => {
   }
 });
 
+const unpinnedRegistryCommands = [
+  /(?:^|[`"'(])(?:\$\s*)?npm\s+(?:install|i)\s+(?:-g\s+)?phantom-secrets(?:-mcp)?(?=$|[\s`"'<>),;])/im,
+  /(?:^|[`"'(])(?:\$\s*)?npx(?:\s+-y)?\s+phantom-secrets(?:-mcp)?(?!\s+(?:agent|check|exec)\b)(?=$|[\s`"'<>),;])/im,
+  /(?:^|[`"'(])(?:\$\s*)?cargo\s+install\s+phantom-secrets(?:-mcp)?(?=$|[\s`"'<>),;])/im,
+];
+
+function assertRegistryInvocationsAreWarnings(file, source) {
+  for (const command of unpinnedRegistryCommands) {
+    for (const match of source.matchAll(new RegExp(command.source, `${command.flags}g`))) {
+      const start = Math.max(0, match.index - 260);
+      const end = Math.min(source.length, match.index + match[0].length + 260);
+      const context = source.slice(start, end);
+      assert.match(
+        context,
+        /legacy fallback[\s\S]{0,260}(?:older registry track|do not rely)|(?:older registry track|do not rely)[\s\S]{0,260}legacy fallback/i,
+        `${file}: unpinned registry invocation is allowed only as a warning about the released legacy fallback`,
+      );
+    }
+  }
+}
+
 test("current-release guidance routes installs through verified GitHub or Homebrew artifacts", () => {
   const canonicalReleaseGuides = {
     "README.md": repositoryGuidanceClaims["README.md"],
@@ -513,24 +679,26 @@ test("current-release guidance routes installs through verified GitHub or Homebr
     );
   }
 
-  const unpinnedRegistryCommands = [
-    /(?:^|[`"'(])(?:\$\s*)?npm\s+(?:install|i)\s+(?:-g\s+)?phantom-secrets(?:-mcp)?(?=$|[\s`"'<>),;])/im,
-    /(?:^|[`"'(])(?:\$\s*)?npx(?:\s+-y)?\s+phantom-secrets(?:-mcp)?(?!\s+(?:agent|check|exec)\b)(?=$|[\s`"'<>),;])/im,
-    /(?:^|[`"'(])(?:\$\s*)?cargo\s+install\s+phantom-secrets(?:-mcp)?(?=$|[\s`"'<>),;])/im,
-  ];
-
   for (const [file, source] of Object.entries(repositoryGuidanceClaims)) {
-    for (const command of unpinnedRegistryCommands) {
-      for (const match of source.matchAll(new RegExp(command.source, `${command.flags}g`))) {
-        const start = Math.max(0, match.index - 260);
-        const end = Math.min(source.length, match.index + match[0].length + 260);
-        const context = source.slice(start, end);
-        assert.match(
-          context,
-          /legacy fallback[\s\S]{0,260}(?:older registry track|do not rely)|(?:older registry track|do not rely)[\s\S]{0,260}legacy fallback/i,
-          `${file}: unpinned registry invocation is allowed only as a warning about the released legacy fallback`,
-        );
-      }
+    assertRegistryInvocationsAreWarnings(file, source);
+  }
+});
+
+test("each repeated unpinned registry invocation needs its own warning context", () => {
+  const separator = `\n${"x".repeat(600)}\n`;
+  for (const command of ["npm install phantom-secrets", "npx phantom-secrets-mcp", "cargo install phantom-secrets"]) {
+    const warning = `Legacy fallback on the older registry track: \`${command}\``;
+    const unsupported = `\`${command}\``;
+    assert.doesNotThrow(() => assertRegistryInvocationsAreWarnings("fixture", `${warning}${separator}${warning}`));
+    for (const source of [
+      `${warning}${separator}${unsupported}`,
+      `${unsupported}${separator}${warning}`,
+      `${unsupported}${separator}${unsupported}`,
+    ]) {
+      assert.throws(
+        () => assertRegistryInvocationsAreWarnings("fixture", source),
+        /fixture: unpinned registry invocation is allowed only as a warning/,
+      );
     }
   }
 });
@@ -615,7 +783,7 @@ test("registry README catalog exactly matches the staged 54-tool schema", () => 
   assert.equal(documentedNames.length, 54, "README catalog must contain 54 tool names");
   assert.equal(new Set(documentedNames).size, 54, "README catalog names must be unique");
   assert.deepEqual(documentedNames.sort(), schemaNames.sort());
-  assert.match(registryReadme, /npm `0\.7\.4` wrappers are public only under `release-candidate`/i);
+  assert.match(registryReadme, /npm `0\.7\.4` wrappers were public only under `release-candidate`/i);
   assert.match(registryReadme, /local `server\.json` stages version `0\.8\.0`/i);
   assert.match(registryReadme, /do not publish this manifest until/i);
 });
@@ -768,8 +936,8 @@ test("public release references bind v0.7.9 to its immutable publication receipt
     assert.match(source, /19[-\s]assets/i);
     assert.match(source, /all six native|six-row native/i);
     assert.match(source, /attestations/i);
-    // The site reflects the bumped tap; repository docs still name v0.7.8.
-    assert.match(source, site ? /Homebrew[^\n]*v0\.7\.9/i : /Homebrew[^\n]*v0\.7\.8/i);
+    // Repository guides delegate mutable channel status to the dated receipt.
+    assert.match(source, site ? /Homebrew[^\n]*v0\.7\.9/i : /\[distribution status\]\(distribution-status\.md\)/);
     assert.ok(source.includes(workflowUrl));
   }
 
@@ -823,15 +991,16 @@ test("public installer digests bind to the exact release-source bytes", () => {
 
   assert.match(tagObject, /^[a-f0-9]{40}$/);
   assert.match(sourceCommit, /^[a-f0-9]{40}$/);
-  // Candidate release assets may point at a future tag. Public download
-  // evidence stays anchored to the bytes phm.dev actually serves.
-  assert.equal(unixDigest, sha256File("apps/web/public/install.sh"));
-  assert.equal(windowsDigest, sha256File("apps/web/public/install.ps1"));
+  // QuickStart downloads scripts from the immutable source commit. Current
+  // public installers evolve independently; these fixtures are that commit
+  // unmodified scripts/install.sh and scripts/install.ps1 blobs.
+  assert.equal(unixDigest, sha256File("apps/web/tests/fixtures/release-v0.7.9/install.sh"));
+  assert.equal(windowsDigest, sha256File("apps/web/tests/fixtures/release-v0.7.9/install.ps1"));
   // These blob OIDs were resolved from the annotated v0.7.9 tag. Together
   // with the SHA-256 assertions above, they bind the public checksums to the
   // exact repository bytes served by the immutable source-commit URLs.
-  assert.equal(unixBlobOid, gitBlobOid("apps/web/public/install.sh"));
-  assert.equal(windowsBlobOid, gitBlobOid("apps/web/public/install.ps1"));
+  assert.equal(unixBlobOid, gitBlobOid("apps/web/tests/fixtures/release-v0.7.9/install.sh"));
+  assert.equal(windowsBlobOid, gitBlobOid("apps/web/tests/fixtures/release-v0.7.9/install.ps1"));
   assert.match(
     exportedString(publicRelease, "PUBLIC_RELEASE_WORKFLOW_URL"),
     /\/actions\/runs\/\d+$/,
@@ -1059,6 +1228,15 @@ test("quickstart labels machine-dependent output as illustrative", () => {
   assert.match(quickstart, /illustrative output/);
   assert.match(install, /phantom agent doctor/);
   assert.match(install, /phantom exec --/);
+  const claude = install.match(/id: "claude",[\s\S]*?scope: "project"/);
+  assert.ok(claude, "Claude Code must retain its project-scoped setup option");
+  assert.match(claude[0], /config: "\.mcp\.json"/);
+  assert.doesNotMatch(claude[0], /config: "\.claude\/settings\.local\.json"/);
+  assert.match(
+    readRepo("crates/phantom-cli/src/commands/setup.rs"),
+    /Client::ClaudeCode => "\.mcp\.json \(project; approve this server in Claude Code\)"/,
+    "the landing label must match the native setup command's MCP registration path",
+  );
   assert.doesNotMatch(quickstart, /127\.0\.0\.1:8484/);
 });
 
@@ -1178,7 +1356,7 @@ test("contributor templates keep secrets and evidence layers separated", () => {
   assert.match(feature, /Source, artifact, publication, deployment, provider activation, and user acceptance are separate outcomes/i);
   assert.match(feature, /Acceptance and rollback/i);
 
-  const pullRequest = readRepo(".github/pull_request_template.md");
+  const pullRequest = readRepo(".github/PULL_REQUEST_TEMPLATE.md");
   assert.match(pullRequest, /cargo test --workspace --all-targets --locked --no-fail-fast/);
   assert.match(pullRequest, /cargo clippy --workspace --all-targets --locked -- -D warnings/);
   assert.match(pullRequest, /\| Native artifact \| Not claimed \/ \|/);
@@ -1242,5 +1420,85 @@ test("community and entry-point Markdown links resolve inside the repository", (
         );
       }
     }
+  }
+});
+
+test("public page same-page fragment links resolve in the rendered page", async () => {
+  const ts = require("typescript");
+  const React = require("react");
+  const { renderToStaticMarkup } = require("react-dom/server");
+  const { JSDOM } = require("jsdom");
+  const { pathToFileURL } = require("node:url");
+  const { parseWorkbenchRelease } = await import(
+    pathToFileURL(path.join(webDir, "src/lib/workbench-release-contract.mjs")).href
+  );
+  const release = parseWorkbenchRelease(require("../src/lib/workbench-release.json"));
+
+  function loadPageModule(relativePath, pathname, cache = new Map()) {
+    const filename = path.join(webDir, relativePath);
+    if (cache.has(filename)) return cache.get(filename);
+    if (filename.endsWith(".json")) return JSON.parse(fs.readFileSync(filename, "utf8"));
+    const output = ts.transpileModule(fs.readFileSync(filename, "utf8"), {
+      compilerOptions: {
+        module: ts.ModuleKind.CommonJS,
+        jsx: ts.JsxEmit.ReactJSX,
+        esModuleInterop: true,
+      },
+      fileName: filename,
+    }).outputText;
+    const module = { exports: {} };
+    cache.set(filename, module.exports);
+    const localRequire = (specifier) => {
+      if (specifier === "next/link") {
+        return { __esModule: true, default: ({ children, ...props }) => React.createElement("a", props, children) };
+      }
+      if (specifier === "next/image") {
+        return { __esModule: true, default: ({ priority, ...props }) => React.createElement("img", props) };
+      }
+      if (specifier === "next/navigation") {
+        return { usePathname: () => pathname, notFound: () => { throw new Error("Not found"); } };
+      }
+      if (specifier === "@/lib/workbench-release") return { WORKBENCH_RELEASE: release };
+      if (specifier.startsWith("@/") || specifier.startsWith(".")) {
+        const base = specifier.startsWith("@/")
+          ? path.join(webDir, "src", specifier.slice(2))
+          : path.resolve(path.dirname(filename), specifier);
+        const resolved = [base, `${base}.tsx`, `${base}.ts`, `${base}.js`, `${base}.json`]
+          .find((candidate) => fs.existsSync(candidate) && fs.statSync(candidate).isFile());
+        assert.ok(resolved, `cannot resolve ${specifier} from ${relativePath}`);
+        return loadPageModule(path.relative(webDir, resolved), pathname, cache);
+      }
+      return require(specifier);
+    };
+    new Function("require", "module", "exports", output)(localRequire, module, module.exports);
+    cache.set(filename, module.exports);
+    return module.exports;
+  }
+
+  const pages = [
+    ["/", "src/app/page.tsx"],
+    ...["secrets", "pricing", "enterprise", "government", "security"].map((slug) =>
+      [`/${slug}`, `src/app/${slug}/page.tsx`]),
+  ];
+  const useCases = loadPageModule("src/lib/secret-use-cases.ts", "/").SECRET_USE_CASES;
+  pages.push(...useCases.map(({ slug }) => [
+    `/secrets/use-cases/${slug}`,
+    "src/app/secrets/use-cases/[slug]/page.tsx",
+    slug,
+  ]));
+
+  for (const [pathname, file, slug] of pages) {
+    const Page = loadPageModule(file, pathname).default;
+    const element = slug ? await Page({ params: Promise.resolve({ slug }) }) : React.createElement(Page);
+    const document = new JSDOM(renderToStaticMarkup(element), { url: `https://phm.dev${pathname}` }).window.document;
+    let checked = 0;
+    for (const link of document.querySelectorAll("a[href]")) {
+      const target = new URL(link.getAttribute("href"), document.URL);
+      if (target.origin !== document.location.origin || target.pathname !== pathname || !target.hash) continue;
+      const fragment = decodeURIComponent(target.hash.slice(1));
+      assert.ok(document.getElementById(fragment), `${pathname}: ${link.getAttribute("href")} has no target`);
+      checked++;
+    }
+    assert.ok(checked > 0, `${pathname}: expected at least one same-page fragment link`);
   }
 });

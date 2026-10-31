@@ -165,7 +165,7 @@ pub fn compute_windowed_anomalies(
     global_threshold: f64,
 ) -> std::io::Result<Vec<WindowedAnomalyResult>> {
     let path = crate::audit::log_path()?;
-    if !path.exists() {
+    if !crate::audit::log_present(&path)? {
         return Ok(vec![]);
     }
 
@@ -357,7 +357,7 @@ pub fn export_analytics(
 /// log does not exist.
 fn read_window(period: Period, now: u64) -> std::io::Result<Vec<RawEvent>> {
     let path = crate::audit::log_path()?;
-    if !path.exists() {
+    if !crate::audit::log_present(&path)? {
         return Ok(Vec::new());
     }
     read_events_from_path(&path, period.cutoff_ts_at(now))
@@ -511,14 +511,11 @@ fn compute_secret_analytics(name: String, timestamps: &[u64]) -> SecretAnalytics
     let max_daily = daily.values().copied().max().unwrap_or(0);
     let min_daily = daily.values().copied().min().unwrap_or(0);
 
-    // daily_avg = total accesses / span in days (at least 1).
-    let span_days = if last_access > first_access {
-        ((last_access - first_access) as f64 / 86400.0)
-            .ceil()
-            .max(1.0)
-    } else {
-        1.0
-    };
+    // daily_avg = total accesses / calendar days from the first access's day
+    // to the last's, inclusive, matching the day buckets above. Elapsed time
+    // would count 23:59 and 00:01 as one day and push the average above the
+    // busiest day's count.
+    let span_days = (last_access / 86400).saturating_sub(first_access / 86400) as f64 + 1.0;
     let daily_avg = (access_count as f64) / span_days;
     // Round to 2 decimal places.
     let daily_avg = (daily_avg * 100.0).round() / 100.0;
@@ -740,6 +737,21 @@ mod tests {
     use super::*;
     use crate::test_support::ENV_LOCK;
 
+    #[test]
+    fn daily_average_counts_calendar_days_like_the_buckets() {
+        // One access each side of midnight: two days, one access each.
+        let across_midnight = compute_secret_analytics("K".into(), &[86_399, 86_401]);
+        assert_eq!(across_midnight.max_daily, 1);
+        assert_eq!(across_midnight.daily_avg, 1.0);
+
+        // 08:00 on day 0 to 08:00 on day 9 spans ten calendar days.
+        let spread: Vec<u64> = (0..10).map(|day| day * 86_400 + 8 * 3_600).collect();
+        assert_eq!(compute_secret_analytics("K".into(), &spread).daily_avg, 1.0);
+
+        let one_day = compute_secret_analytics("K".into(), &[100, 200, 300]);
+        assert_eq!(one_day.daily_avg, 3.0);
+    }
+
     fn with_audit_home<F: FnOnce(&std::path::Path)>(f: F) {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
@@ -813,6 +825,36 @@ mod tests {
 
         assert!(read_events_from_path(&path, 0).is_err());
         assert_eq!(std::fs::read(owner).unwrap(), b"{}\n");
+    }
+
+    /// A dangling symlink at `audit.log` is not "no log yet": analytics and
+    /// windowed anomalies must fail instead of answering from no events.
+    #[cfg(unix)]
+    #[test]
+    fn analytics_refuses_dangling_symlinked_audit_log() {
+        with_audit_home(|home| {
+            let dir = home.join(".phantom");
+            std::fs::create_dir(&dir).unwrap();
+            std::os::unix::fs::symlink(home.join("missing.log"), dir.join("audit.log")).unwrap();
+            assert!(compute_analytics_at(Period::All, 1_700_000_000).is_err());
+            assert!(compute_windowed_anomalies(None, None, 0.5).is_err());
+        });
+    }
+
+    /// A log reached through a symlinked `~/.phantom` is refused.
+    #[cfg(unix)]
+    #[test]
+    fn analytics_refuses_log_in_symlinked_phantom_dir() {
+        with_audit_home(|home| {
+            let elsewhere = home.join("elsewhere");
+            write_synthetic_log(
+                &elsewhere.join("audit.log"),
+                &[(1_699_999_000, "vault.retrieve", Some("KEY_A"))],
+            );
+            std::os::unix::fs::symlink(&elsewhere, home.join(".phantom")).unwrap();
+            assert!(compute_analytics_at(Period::All, 1_700_000_000).is_err());
+            assert!(compute_windowed_anomalies(None, None, 0.5).is_err());
+        });
     }
 
     // ── Period ────────────────────────────────────────────────────────────────

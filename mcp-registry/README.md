@@ -22,12 +22,19 @@ publication receipt. The exact 2026-09-29 registry snapshot is:
   for six native targets from exact source
   `7a51ce512ec4aee12cc29ff859036af63fbe93db`; its 19 assets were published
   after all native rows and release attestations passed;
-- the separately managed trusted Homebrew formula still publishes the previous reviewed `v0.7.8`;
-- both npm `0.7.4` wrappers are public only under `release-candidate`, while
-  `latest` remains `0.6.0`, and no `0.7.9` MCP Registry record was found; and
+- the separately managed trusted Homebrew formula published the previous reviewed `v0.7.8`;
+- both npm `0.7.4` wrappers were public only under `release-candidate`, while
+  `latest` was `0.6.0`, and no `0.7.9` MCP Registry record was found; and
 - local `server.json` stages version `0.8.0` and points at a `0.8.0` npm wrapper,
   but neither that file nor its README proves the package or registry entry was
   published.
+
+Later rechecks updated those channel observations: on 2026-10-12 the trusted
+Homebrew formula was bumped to `v0.7.9` (ashlrai/homebrew-phantom#7), and on
+2026-10-26 the exact npm dist-tag endpoints returned `latest: 0.7.9` and
+`release-candidate: 0.7.4` for both wrappers. Those rechecks confirm tags, not
+npm-channel native acceptance. See
+[distribution status](../docs/distribution-status.md) for the dated evidence.
 
 Do not publish this manifest until the exact npm wrapper is published and
 independently verified against the matching native release archives. Do not use
@@ -37,7 +44,7 @@ an unpinned npm or package-runner command to configure the current runtime.
 
 Install both current binaries from the
 [`v0.7.9` GitHub release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.9).
-The macOS trusted formula is the separately reviewed path (still `v0.7.8` until bumped):
+The macOS trusted formula is the separately reviewed path (`v0.7.9` since the tap bump):
 
 ```bash
 brew tap ashlrai/phantom
@@ -87,8 +94,12 @@ Prefer an absolute executable path where the client supports it.
 ## Exact current-source tool catalog
 
 The staged `server.json` contains exactly 54 unique tool names generated from
-the current Rust server declarations. This list is checked against that JSON in
-the web claim-regression suite. The installed runtime's `tools/list` response
+the current Rust server declarations in `crates/phantom-mcp/src/server.rs`.
+`crates/phantom-mcp/src/tools/mod.rs` declares helper and parameter modules, not
+the tool catalog. Run `node --test scripts/release/readme-mcp-catalog.test.mjs`
+to compare source registrations, this list, the README catalog, agent guidance,
+and the staged JSON without opening a vault or starting a server.
+The installed runtime's `tools/list` response
 remains canonical for that binary.
 
 <!-- tool-catalog:start -->

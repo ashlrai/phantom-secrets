@@ -43,6 +43,123 @@ test("primary navigation works from the home page and nested routes", () => {
   assert.match(nav, /aria-label="Primary navigation"/);
 });
 
+test("rendered primary navigation links are named and reach local pages and fragments", () => {
+  const React = require("react");
+  const ts = require("typescript");
+  const { renderToStaticMarkup } = require("react-dom/server");
+  const { JSDOM } = require("jsdom");
+  const { getByRole, queryAllByRole } = require("@testing-library/dom");
+  const catalog = JSON.parse(read("docs-catalog.json"));
+  const compiled = ts.transpileModule(nav, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, esModuleInterop: true },
+    fileName: "Nav.tsx",
+  }).outputText;
+
+  for (const pathname of ["/", "/secrets", "/pricing", "/docs", "/docs/workbench-setup", "/docs/getting-started"]) {
+    let stateIndex = 0;
+    let menuOpen = false;
+    const hooks = { ...React, useState: (initial) => [stateIndex++ === 1 ? menuOpen : initial, () => {}] };
+    const localRequire = (name) => {
+      if (name === "react") return hooks;
+      if (name === "next/navigation") return { usePathname: () => pathname };
+      if (name === "next/link") return { __esModule: true, default: ({ children, ...props }) => React.createElement("a", props, children) };
+      if (name === "next/image") return { __esModule: true, default: ({ priority, ...props }) => React.createElement("img", props) };
+      if (name === "@/lib/posthog") return { capturePostHog: async () => {} };
+      if (name === "@/lib/legacy-secrets-fragment") return { legacySecretsDestination: () => null };
+      if (name === "./Icons") return { Github: () => React.createElement("svg", { "aria-hidden": true }) };
+      return require(name);
+    };
+    const exports = {};
+    new Function("exports", "require", compiled)(exports, localRequire);
+    const closed = new JSDOM(renderToStaticMarkup(React.createElement(exports.Nav)));
+    assert.equal(
+      getByRole(closed.window.document.body, "navigation", { name: /\S/ }),
+      closed.window.document.querySelector('nav[aria-label="Primary navigation"]'),
+      `${pathname}: closed menu has a named navigation landmark`,
+    );
+    closed.window.close();
+    stateIndex = 0;
+    menuOpen = true;
+    const document = new JSDOM(renderToStaticMarkup(React.createElement(exports.Nav))).window.document;
+    const primary = document.querySelector('nav[aria-label="Primary navigation"]');
+    assert.ok(primary, pathname);
+    assert.equal(
+      getByRole(document.body, "navigation", { name: /\S/ }),
+      primary,
+      `${pathname}: open menu has a named navigation landmark`,
+    );
+    assert.equal(primary.querySelector("#mobile-navigation").hidden, false, pathname);
+    const links = [...primary.querySelectorAll("a")];
+    const namedLinks = queryAllByRole(primary, "link", { name: /\S/ });
+    assert.ok(links.length >= 18, `${pathname}: desktop and mobile links are present`);
+    for (const link of links) {
+      const href = link.getAttribute("href");
+      assert.ok(namedLinks.includes(link), `${pathname}: link ${href} needs an accessible name`);
+      assert.ok(href, `${pathname}: link needs a destination`);
+      assert.match(href, /\S/, `${pathname}: link destination must not be whitespace`);
+      if (href.startsWith("https://github.com/")) continue;
+      assert.ok((href.startsWith("/") && !href.startsWith("//")) || href.startsWith("#"), `${pathname}: ${href} must be local`);
+      assert.notEqual(href, "#", `${pathname}: fragment must have a target`);
+      const target = new URL(href, `https://phm.dev${pathname}`);
+      assert.equal(target.origin, "https://phm.dev", `${pathname}: ${href}`);
+      let pageFile = `src/app${target.pathname === "/" ? "" : target.pathname}/page.tsx`;
+      if (target.pathname.startsWith("/docs/")) {
+        const slug = target.pathname.slice("/docs/".length);
+        assert.ok(catalog.some((doc) => doc.slug === slug), `${href}: documentation slug exists`);
+        pageFile = "src/app/docs/[slug]/page.tsx";
+      }
+      assert.ok(fs.existsSync(path.join(webDir, pageFile)), `${href}: page exists`);
+      if (target.hash) {
+        const page = read(pageFile);
+        const components = [...page.matchAll(/@\/components\/landing\/([^\"]+)/g)]
+          .map((match) => read(`src/components/landing/${match[1]}.tsx`)).join("\n");
+        const id = decodeURIComponent(target.hash.slice(1));
+        assert.ok((page + components).includes(`id="${id}"`), `${href}: fragment target exists`);
+      }
+    }
+    const hrefs = links.map((link) => link.getAttribute("href"));
+    assert.equal(hrefs.filter((href) => href === (pathname === "/secrets" ? "#how" : "/secrets#how")).length, 2, pathname);
+    assert.ok(hrefs.includes(pathname === "/" || pathname === "/docs" || pathname.startsWith("/docs/workbench") ? "/docs/workbench-setup" : pathname === "/secrets" ? "#install" : "/secrets#install"), pathname);
+  }
+});
+
+test("public footer navigation links have accessible names and nonempty destinations", () => {
+  const React = require("react");
+  const ts = require("typescript");
+  const { renderToStaticMarkup } = require("react-dom/server");
+  const { JSDOM } = require("jsdom");
+  const { queryAllByRole } = require("@testing-library/dom");
+  const compiled = ts.transpileModule(footer, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, esModuleInterop: true },
+    fileName: "SiteFooter.tsx",
+  }).outputText;
+  const localRequire = (name) => {
+    if (name === "next/link") return { __esModule: true, default: ({ children, ...props }) => React.createElement("a", props, children) };
+    if (name === "next/image") return { __esModule: true, default: (props) => React.createElement("img", props) };
+    if (name === "@/lib/commercial-offerings") return { COMMERCIAL_CONTACT: "contact@example.com" };
+    return require(name);
+  };
+  const exports = {};
+  new Function("exports", "require", compiled)(exports, localRequire);
+  const dom = new JSDOM(renderToStaticMarkup(React.createElement(exports.SiteFooter)));
+  try {
+    const footerElement = dom.window.document.querySelector("footer");
+    assert.ok(footerElement);
+    for (const label of ["Product links", "Organization links", "Open-source project links"]) {
+      const group = footerElement.querySelector(`nav[aria-label="${label}"]`);
+      assert.ok(group, `${label} exists`);
+      assert.ok(group.querySelectorAll("a").length > 0, `${label} has links`);
+    }
+    const namedLinks = queryAllByRole(footerElement, "link", { name: /\S/ });
+    for (const link of footerElement.querySelectorAll("a")) {
+      assert.ok(namedLinks.includes(link), `${link.getAttribute("href")}: link needs an accessible name`);
+      assert.match(link.getAttribute("href") ?? "", /\S/, `${link.textContent.trim()}: link needs a nonempty destination`);
+    }
+  } finally {
+    dom.window.close();
+  }
+});
+
 test("mobile navigation exposes state and keyboard-close semantics", () => {
   assert.match(nav, /type="button"/);
   assert.match(nav, /aria-expanded=\{menuOpen\}/);
@@ -73,6 +190,30 @@ test("public shell provides a visible-on-focus skip link with real page-main tar
   assert.match(footer, /src="\/favicon\.svg" alt=""/);
 });
 
+test("public document declares a nonempty language", () => {
+  const React = require("react");
+  const ts = require("typescript");
+  const { renderToStaticMarkup } = require("react-dom/server");
+  const { JSDOM } = require("jsdom");
+  const compiled = ts.transpileModule(layout, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX },
+    fileName: "layout.tsx",
+  }).outputText;
+  const localRequire = (name) => {
+    if (name.endsWith(".css")) return {};
+    if (name === "./providers") return { PostHogProvider: ({ children }) => children };
+    return require(name);
+  };
+  const exports = {};
+  new Function("exports", "require", compiled)(exports, localRequire);
+  const dom = new JSDOM(renderToStaticMarkup(React.createElement(exports.default, null, "Page content")));
+  try {
+    assert.match(dom.window.document.documentElement.getAttribute("lang") ?? "", /\S/, "document language must not be empty");
+  } finally {
+    dom.window.close();
+  }
+});
+
 test("root metadata supplies a title template without forcing every route canonical to home", () => {
   assert.match(layout, /metadataBase: new URL\(SITE_URL\)/);
   assert.match(layout, /template: "%s — Phantom"/);
@@ -89,6 +230,48 @@ test("root metadata supplies a title template without forcing every route canoni
   assert.deepEqual(manifest.icons, [
     { src: "/favicon.svg", sizes: "any", type: "image/svg+xml" },
   ]);
+});
+
+function homeMetadata() {
+  const ts = require("typescript");
+  const compiled = ts.transpileModule(publicPages["/"], {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX },
+    fileName: "page.tsx",
+  }).outputText;
+  const exports = {};
+  const localRequire = (name) => name.startsWith("@/") ? {} : require(name);
+  new Function("exports", "require", compiled)(exports, localRequire);
+  return exports.metadata;
+}
+
+test("home page exports a nonempty metadata title", () => {
+  const title = homeMetadata()?.title;
+  const resolvedTitle = typeof title === "string" ? title : title?.absolute ?? title?.default;
+  assert.equal(typeof resolvedTitle, "string", "home page title must be a string");
+  assert.match(resolvedTitle, /\S/, "home page title must not be empty");
+});
+
+test("home page exports a nonempty metadata description", () => {
+  const metadata = homeMetadata();
+  assert.equal(typeof metadata?.description, "string");
+  assert.match(metadata.description, /\S/, "home page description must not be empty");
+});
+
+test("other public pages export nonempty metadata descriptions", () => {
+  const ts = require("typescript");
+  for (const [route, source] of Object.entries(publicPages)) {
+    if (route === "/") continue; // The home page has its own regression above.
+    const compiled = ts.transpileModule(source, {
+      compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX },
+      fileName: "page.tsx",
+    }).outputText;
+    const exports = {};
+    const localRequire = (name) => name.startsWith("@/") ? {} : require(name);
+    new Function("exports", "require", compiled)(exports, localRequire);
+
+    assert.equal(typeof exports.metadata?.description, "string", `${route}: description must be a string`);
+    assert.match(exports.metadata.description, /\S/, `${route}: description must not be empty`);
+  }
 });
 
 test("both installable manifests and machine references identify the workbench and dedicated Secrets page", () => {
@@ -176,14 +359,15 @@ test("sitemap contains only canonical same-host public surfaces", () => {
     "/enterprise",
     "/government",
     "/security",
-    "/llms.txt",
-    "/llms-full.txt",
+    "/docs",
   ]) {
     assert.match(sitemap, new RegExp(`path: "${route.replace("/", "\\/")}"`));
   }
 
   assert.match(sitemap, /new URL\(path, SITE_URL\)\.toString\(\)/);
-  assert.match(sitemap, /lastModified: modified/);
+  assert.match(sitemap, /lastModified: gitLastModified\(process\.cwd\(\), files\)/);
+  assert.match(sitemap, /dynamic = "force-static"/);
+  assert.doesNotMatch(sitemap, /path: "[^\"]*\.(?:txt|json)"/);
   assert.doesNotMatch(sitemap, /github\.com|REPO_URL/);
   assert.doesNotMatch(sitemap, /\/api\/|\/dashboard|\/device|\/integrations\//);
   assert.doesNotMatch(sitemap, /new Date\(\)/);

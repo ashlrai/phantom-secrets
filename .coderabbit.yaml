@@ -1,0 +1,42 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+language: en-US
+reviews:
+  profile: assertive
+  high_level_summary: true
+  poem: false
+  auto_review:
+    enabled: true
+    drafts: false
+  path_filters:
+    - "!**/Cargo.lock"
+    - "!**/package-lock.json"
+    - "!**/bun.lock"
+    - "!**/pnpm-lock.yaml"
+    - "!**/yarn.lock"
+    - "!**/dist/**"
+    - "!**/.next/**"
+    - "!**/target/**"
+    - "!**/generated/**"
+    - "!**/*.generated.*"
+    - "!apps/web/next-env.d.ts"
+  path_instructions:
+    - path: "crates/phantom-vault/**"
+      instructions: |
+        High scrutiny. Secret handling: encryption, keychain and encrypted-file storage, and value retrieval. Do not log, display, or persist secret values.
+    - path: "crates/phantom-core/**"
+      instructions: |
+        High scrutiny. Secret handling: detection, dotenv rewriting, phantom token generation, and import of secret values. Values stay out of logs, errors, and source files.
+    - path: "crates/phantom-proxy/**"
+      instructions: |
+        High scrutiny. Loopback-only rule: the proxy binds to 127.0.0.1 and does not listen on a public interface. Inject only the matched route's vault value into that route's fixed auth header. Client headers and bodies never resolve phm_ tokens.
+    - path: "crates/phantom-cli/**"
+      instructions: |
+        High scrutiny. Tier-1 secret handling for init, exec, import, export, and reveal. Reveal stays on an attached terminal. Proxy startup stays loopback-only.
+    - path: "crates/phantom-mcp/**"
+      instructions: |
+        High scrutiny. Tier-1 agent boundary: MCP tools stay value-blind. Do not return, log, or write a vault value into model context.
+    - path: "apps/web/src/app/api/**"
+      instructions: |
+        High scrutiny. Tier-1 hosted auth, vault, and billing routes. Do not weaken auth checks or return secret material.
+chat:
+  auto_reply: false

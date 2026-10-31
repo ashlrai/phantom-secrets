@@ -8,6 +8,10 @@ unsound = "all"
 unused-ignored-advisory = "deny"
 ignore = [
     { id = "RUSTSEC-2023-0071", reason = "rsa is a dev-only test dependency; Phantom does not perform network-observable RSA private-key operations, and RustSec lists no fixed release" },
+    # Keyring 4 migration tracked in #242: revisit RUSTSEC-2026-0370
+    # (zvariant), RUSTSEC-2026-0371 (zbus_names), and RUSTSEC-2026-0372
+    # (zvariant_derive). The migration alone may not remove these dependencies;
+    # see docs/design/keyring-4-migration-scoping.md.
     { id = "RUSTSEC-2026-0370", reason = "zvariant is unmaintained, not vulnerable: keyring 3 pulls it in through zbus 4 for the Linux Secret Service backend; the crate was folded into zbus 6, which no keyring 3 release supports, so RustSec lists no safe upgrade. Revisit with the keyring 4 migration" },
     { id = "RUSTSEC-2026-0371", reason = "zbus_names is unmaintained, not vulnerable: keyring 3 pulls it in through zbus 4 for the Linux Secret Service backend; the crate was folded into zbus 6, which no keyring 3 release supports, so RustSec lists no safe upgrade. Revisit with the keyring 4 migration" },
     { id = "RUSTSEC-2026-0372", reason = "zvariant_derive is unmaintained, not vulnerable: keyring 3 pulls it in through zbus 4 for the Linux Secret Service backend; the crate was folded into zbus 6, which no keyring 3 release supports, so RustSec lists no safe upgrade. Revisit with the keyring 4 migration" },

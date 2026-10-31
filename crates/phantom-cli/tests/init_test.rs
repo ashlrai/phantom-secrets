@@ -41,6 +41,47 @@ fn run_init(dir: &TempDir) -> assert_cmd::assert::Assert {
 }
 
 #[test]
+fn init_jobs_without_all_reports_error_without_mutating_fixture() {
+    let dir = common::canonical_tempdir();
+    let env_content = "NODE_ENV=development\n";
+    let gitignore_content = "existing-entry\n";
+    fs::write(dir.path().join(".env"), env_content).unwrap();
+    fs::write(dir.path().join(".gitignore"), gitignore_content).unwrap();
+
+    let output = Command::cargo_bin("phantom")
+        .expect("binary not found")
+        .args(["init", "--jobs", "2"])
+        .current_dir(dir.path())
+        .env("HOME", dir.path())
+        .env("NO_COLOR", "1")
+        .assert()
+        .failure();
+
+    let stderr = String::from_utf8_lossy(&output.get_output().stderr);
+    assert!(stderr.contains("--jobs"), "error should identify --jobs");
+    assert!(stderr.contains("--all"), "error should identify --all");
+    assert!(
+        stderr.contains("required"),
+        "error should explain the requirement"
+    );
+
+    let mut entries: Vec<_> = fs::read_dir(dir.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    entries.sort();
+    assert_eq!(entries, [".env", ".gitignore"]);
+    assert_eq!(
+        fs::read(dir.path().join(".env")).unwrap(),
+        env_content.as_bytes()
+    );
+    assert_eq!(
+        fs::read(dir.path().join(".gitignore")).unwrap(),
+        gitignore_content.as_bytes()
+    );
+}
+
+#[test]
 fn malformed_dotenv_aborts_before_every_project_and_vault_mutation() {
     let dir = common::canonical_tempdir();
     let source = "OPENAI_API_KEY=plaintext-must-not-escape\nBROKEN_RECORD\n";
@@ -74,7 +115,7 @@ fn malformed_dotenv_aborts_before_every_project_and_vault_mutation() {
 }
 
 #[test]
-fn init_rejects_single_project_dry_run_without_mutating() {
+fn init_dry_run_reports_the_plan_without_mutating() {
     let dir = common::canonical_tempdir();
     let env_path = dir.path().join(".env");
     let original = "OPENAI_API_KEY=sk-real-test\n";
@@ -86,17 +127,28 @@ fn init_rejects_single_project_dry_run_without_mutating() {
         .current_dir(dir.path())
         .env("PHANTOM_VAULT_PASSPHRASE", VAULT_PASS)
         .env("HOME", dir.path())
+        .env("NO_COLOR", "1")
         .output()
         .expect("run phantom init --dry-run");
 
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "dry run should succeed: {stderr}");
+    assert!(stdout.contains("would add 1 key(s):"));
+    assert!(stdout.contains("OPENAI_API_KEY"));
+    assert!(stdout.contains("Dry run only. Nothing was written."));
     assert!(
-        !output.status.success(),
-        "unsupported flag combination must fail"
+        !stdout.contains("sk-real-test"),
+        "stdout contained the planted value"
+    );
+    assert!(
+        !stderr.contains("sk-real-test"),
+        "stderr contained the planted value"
     );
     assert_eq!(
         fs::read_to_string(&env_path).expect("read .env"),
         original,
-        "rejected preview must not rewrite .env"
+        "dry run must not rewrite .env"
     );
     assert!(!dir.path().join(".phantom.toml").exists());
     assert!(!dir.path().join(".env.example").exists());

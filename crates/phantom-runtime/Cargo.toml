@@ -27,5 +27,3 @@ sha2 = "0.10"
 hex = { workspace = true }
 libc = "0.2"
 tempfile = "3"
-
-[dev-dependencies]

@@ -6,45 +6,9 @@
 //! value.
 
 use crate::config::{ExecBlocker, ExecDelivery, PhantomConfig};
-use crate::dotenv::{classify, is_public_key, DotenvFile, SecretClassification};
+use crate::dotenv::{classify_with_reason, DotenvFile, SecretClassification};
 use crate::token::PhantomToken;
 use serde_json::{json, Value};
-
-const PUBLIC_PREFIXES: [&str; 6] = [
-    "NEXT_PUBLIC_",
-    "EXPO_PUBLIC_",
-    "VITE_",
-    "REACT_APP_",
-    "NUXT_PUBLIC_",
-    "GATSBY_",
-];
-
-const SECRET_KEY_PATTERNS: [&str; 11] = [
-    "KEY",
-    "SECRET",
-    "TOKEN",
-    "PASSWORD",
-    "PASSWD",
-    "CREDENTIAL",
-    "AUTH",
-    "PRIVATE",
-    "API_KEY",
-    "ACCESS_KEY",
-    "SIGNING",
-];
-
-const CONNECTION_PATTERNS: [&str; 10] = [
-    "DATABASE_URL",
-    "REDIS_URL",
-    "MONGO_URL",
-    "POSTGRES_URL",
-    "MYSQL_URL",
-    "AMQP_URL",
-    "RABBITMQ_URL",
-    "ELASTICSEARCH_URL",
-    "CONNECTION_STRING",
-    "DSN",
-];
 
 /// Where a why report is shown. Its `next_step` names the status command of
 /// that surface: the `phantom_status` MCP tool, or the `phantom status` CLI
@@ -126,36 +90,18 @@ fn build_report(key: &str, dotenv: Option<&DotenvFile>, config: Option<&PhantomC
         return report;
     }
 
-    match classify(entry) {
-        SecretClassification::PublicKey => {
-            let prefix = PUBLIC_PREFIXES
-                .iter()
-                .find(|p| key.starts_with(*p))
-                .unwrap_or(&"unknown");
-            report["classification"] = "public_key".into();
-            report["reason"] = "public_prefix".into();
-            report["matched_pattern"] = (*prefix).into();
-        }
-        SecretClassification::Secret => {
-            report["classification"] = "secret_unprotected".into();
-            report["next_step"] = "Run `phantom init` to protect it with a phantom token.".into();
-            let upper = key.to_uppercase();
-            if let Some(pat) = SECRET_KEY_PATTERNS.iter().find(|p| upper.contains(*p)) {
-                report["reason"] = "key_name".into();
-                report["matched_pattern"] = (*pat).into();
-            } else if let Some(pat) = CONNECTION_PATTERNS.iter().find(|p| upper.contains(*p)) {
-                report["reason"] = "connection_pattern".into();
-                report["matched_pattern"] = (*pat).into();
-            } else if is_public_key(key) {
-                report["reason"] = "public_prefix_with_secret_value".into();
-            } else {
-                report["reason"] = "value_pattern".into();
-            }
-        }
-        SecretClassification::NotSecret => {
-            report["classification"] = "not_secret".into();
-            report["reason"] = "no_secret_pattern".into();
-        }
+    // The reason is the rule `classify` decided by, never a re-derivation.
+    let (classification, reason) = classify_with_reason(entry);
+    report["classification"] = match classification {
+        SecretClassification::PublicKey => "public_key",
+        SecretClassification::Secret => "secret_unprotected",
+        SecretClassification::NotSecret => "not_secret",
+    }
+    .into();
+    report["reason"] = reason.label().into();
+    report["matched_pattern"] = reason.matched_pattern().into();
+    if classification == SecretClassification::Secret {
+        report["next_step"] = "Run `phantom init` to protect it with a phantom token.".into();
     }
     report
 }
@@ -282,6 +228,7 @@ pub fn exec_next_step(key: &str, delivery: &ExecDelivery<'_>) -> Option<String> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dotenv::classify;
 
     fn parse(text: &str) -> DotenvFile {
         DotenvFile::parse_str(text)
@@ -335,6 +282,98 @@ mod tests {
         let missing = why_report("NOPE", Some(&dotenv), None);
         assert_eq!(missing["found"], false);
         assert_eq!(missing["dotenv_exists"], true);
+    }
+
+    /// The reported reason and pattern come from the decision `classify`
+    /// made, not from a second, drifting copy of its heuristics.
+    #[test]
+    fn reason_matches_the_rule_the_classifier_used() {
+        // `PWD` is a key-name rule in the classifier; a short value matches
+        // no value rule, so only the key name can have decided this.
+        let short = parse("DB_PWD=x1\n");
+        let report = why_report("DB_PWD", Some(&short), None);
+        assert_eq!(report["classification"], "secret_unprotected");
+        assert_eq!(report["reason"], "key_name");
+        assert_eq!(report["matched_pattern"], "PWD");
+
+        // A public-prefixed key is never judged by its name: only its value
+        // overrides the public prefix. The name's `KEY` / `TOKEN` fragment
+        // decided nothing.
+        let prefixed_value = ["sk", "live", "abcdef"].join("_");
+        let signed_url = ["https://cdn.example.com/a?", "sig", "=abc"].concat();
+        let dotenv = parse(&format!(
+            "VITE_STRIPE_KEY={prefixed_value}\nNEXT_PUBLIC_ASSET_TOKEN={signed_url}\n"
+        ));
+        for (key, prefix) in [
+            ("VITE_STRIPE_KEY", "VITE_"),
+            ("NEXT_PUBLIC_ASSET_TOKEN", "NEXT_PUBLIC_"),
+        ] {
+            let report = why_report(key, Some(&dotenv), None);
+            assert_eq!(report["classification"], "secret_unprotected", "{key}");
+            assert_eq!(report["reason"], "public_prefix_with_secret_value", "{key}");
+            assert_eq!(report["matched_pattern"], prefix, "{key}");
+            assert!(!report.to_string().contains(&prefixed_value), "{key}");
+            assert!(!report.to_string().contains("sig=abc"), "{key}");
+        }
+
+        // A public-prefixed key whose value is not secret stays public, even
+        // with `KEY` in its name.
+        let public = parse("VITE_MAPS_KEY=demo\n");
+        let report = why_report("VITE_MAPS_KEY", Some(&public), None);
+        assert_eq!(report["classification"], "public_key");
+        assert_eq!(report["reason"], "public_prefix");
+        assert_eq!(report["matched_pattern"], "VITE_");
+    }
+
+    /// The report's classification is always the classifier's, and every
+    /// non-protected key carries exactly one reason.
+    #[test]
+    fn report_classification_is_the_classifier_verdict() {
+        let long = "a1B2c3D4".repeat(5);
+        let cases = [
+            ("DB_PWD", "x1".to_string()),
+            ("SIGNING_SALT", "x1".to_string()),
+            ("POSTGRES_URL", "db".to_string()),
+            ("SENTRY_DSN", "x".to_string()),
+            ("WEBHOOK", ["whsec", "abc"].join("_")),
+            ("CALLBACK", ["https://h/cb?", "token", "="].concat()),
+            ("BLOB", long.clone()),
+            ("VITE_BLOB", long.clone()),
+            ("VITE_KEY", ["gh", "p_abc"].concat()),
+            ("NODE_ENV", "production".to_string()),
+        ];
+        let text: String = cases
+            .iter()
+            .map(|(key, value)| format!("{key}={value}\n"))
+            .collect();
+        let dotenv = parse(&text);
+        for entry in dotenv.entries() {
+            let report = why_report(&entry.key, Some(&dotenv), None);
+            let expected = match classify(entry) {
+                SecretClassification::Secret => "secret_unprotected",
+                SecretClassification::PublicKey => "public_key",
+                SecretClassification::NotSecret => "not_secret",
+            };
+            assert_eq!(report["classification"], expected, "{}", entry.key);
+            assert!(report["reason"].is_string(), "{}", entry.key);
+            if let Some(pattern) = report["matched_pattern"].as_str() {
+                assert!(entry.key.to_uppercase().contains(pattern), "{}", entry.key);
+            }
+        }
+        let report = |key: &str| why_report(key, Some(&dotenv), None);
+        assert_eq!(report("DB_PWD")["matched_pattern"], "PWD");
+        assert_eq!(report("SIGNING_SALT")["matched_pattern"], "SIGNING");
+        assert_eq!(report("POSTGRES_URL")["reason"], "connection_pattern");
+        assert_eq!(report("SENTRY_DSN")["matched_pattern"], "DSN");
+        assert_eq!(report("WEBHOOK")["reason"], "value_pattern");
+        assert_eq!(report("CALLBACK")["reason"], "value_pattern");
+        assert_eq!(report("BLOB")["reason"], "value_pattern");
+        assert_eq!(report("VITE_BLOB")["reason"], "public_prefix");
+        assert_eq!(
+            report("VITE_KEY")["reason"],
+            "public_prefix_with_secret_value"
+        );
+        assert_eq!(report("NODE_ENV")["reason"], "no_secret_pattern");
     }
 
     #[test]

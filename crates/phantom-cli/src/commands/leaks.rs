@@ -10,6 +10,7 @@ use anyhow::Result;
 use colored::Colorize;
 use phantom_core::config::{LeakResponseConfig, OnLeak};
 use phantom_core::leak_correlation::{LeakCorrelationEngine, LeakIncident};
+use phantom_core::redact::redact_text;
 use phantom_core::rotation_provider::default_rotation_providers;
 use serde::Serialize;
 
@@ -49,7 +50,11 @@ pub fn build_plan(
     incidents
         .iter()
         .map(|inc| {
-            let provider = provider_of(&inc.secret_name);
+            // Resolve identity before scrubbing display metadata. Persisted incident
+            // fields are not trusted to be value-free merely because of their names.
+            let provider = provider_of(&inc.secret_name).map(|p| redact_text(&p).into_owned());
+            let secret_name = redact_text(&inc.secret_name).into_owned();
+            let location_label = redact_text(&inc.location_label).into_owned();
             let high = inc.confidence >= REVOKE_THRESHOLD;
             let target = provider
                 .as_deref()
@@ -57,26 +62,26 @@ pub fn build_plan(
                 .unwrap_or_else(|| "the provider that issued it".to_string());
             let mut steps = Vec::new();
             if high {
-                steps.push(format!("Revoke the leaked {} at {target}", inc.secret_name));
+                steps.push(format!("Revoke the leaked {} at {target}", secret_name));
                 steps.push(format!(
                     "Issue a replacement for {} and store it from a trusted terminal",
-                    inc.secret_name
+                    secret_name
                 ));
                 steps.push("Run `phantom sync` after reviewing the change".to_string());
             } else {
                 steps.push(format!(
                     "Review the {} events for {} before changing anything",
-                    inc.location_label, inc.secret_name
+                    location_label, secret_name
                 ));
                 steps.push(format!(
                     "If the leak is real, revoke and replace {} at {target}",
-                    inc.secret_name
+                    secret_name
                 ));
             }
             PlannedResponse {
-                incident_id: inc.incident_id.clone(),
-                secret_name: inc.secret_name.clone(),
-                location_label: inc.location_label.clone(),
+                incident_id: redact_text(&inc.incident_id).into_owned(),
+                secret_name: secret_name.clone(),
+                location_label: location_label.clone(),
                 confidence: inc.confidence,
                 event_count: inc.event_count,
                 manual_rotation_location: provider
@@ -326,5 +331,53 @@ mod tests {
             Some("stripe")
         );
         assert_eq!(provider_name_for("TOTALLY_UNRELATED_NAME"), None);
+    }
+}
+
+#[cfg(test)]
+mod shared_redact_tests {
+    use super::*;
+    use crate::commands::redact_corpus;
+
+    #[test]
+    fn golden_incident_metadata_is_scrubbed_before_serialization_and_display() {
+        for (index, token) in redact_corpus::all_tokens().iter().enumerate() {
+            for confidence in [0.5, 0.95] {
+                let incident = LeakIncident {
+                    incident_id: format!("id='{token}'"),
+                    secret_name: token.clone(),
+                    location_label: format!("body='{token}'"),
+                    first_seen_ts: 1,
+                    last_seen_ts: 2,
+                    event_count: 3,
+                    confidence,
+                    remediation: String::new(),
+                };
+                let plan = build_plan(&[incident], |name| {
+                    assert!(
+                        name == token,
+                        "provider lookup must retain original identity"
+                    );
+                    Some(format!("provider='{token}'"))
+                });
+                let json = serde_json::to_string(&plan).unwrap();
+                assert!(!json.contains(token), "case {index}");
+                assert!(plan[0].secret_name == "[REDACTED]", "case {index}");
+                assert!(plan[0].incident_id == "id='[REDACTED]'", "case {index}");
+                assert!(
+                    plan[0].location_label == "body='[REDACTED]'",
+                    "case {index}"
+                );
+                assert!(
+                    plan[0].provider.as_deref() == Some("provider='[REDACTED]'"),
+                    "case {index}"
+                );
+                assert!(
+                    plan[0].steps.iter().all(|step| !step.contains(token)),
+                    "case {index}"
+                );
+                assert!(!format!("{:?}", plan[0]).contains(token), "case {index}");
+            }
+        }
     }
 }

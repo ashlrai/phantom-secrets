@@ -55,7 +55,7 @@ pub fn run(
     service: Option<String>,
     force: bool,
 ) -> Result<()> {
-    let rt = tokio::runtime::Runtime::new()?;
+    let rt = crate::util::oneshot_runtime()?;
     rt.block_on(run_async(from, project, environment, service, force))
 }
 
@@ -137,9 +137,7 @@ async fn run_async(
         );
     }
 
-    let token = Zeroizing::new(std::env::var(token_env).context(format!(
-        "{token_env} not set. Export your {platform} API token."
-    ))?);
+    let token = provider_token(std::env::var(token_env), token_env, &platform)?;
 
     println!(
         "{} Pulling secrets from {} (project: {})...",
@@ -488,6 +486,18 @@ fn snapshot_secret(vault: &dyn VaultBackend, name: &str) -> Result<Option<Zeroiz
 fn snapshot_regular_file(path: &Path) -> Result<Option<Vec<u8>>> {
     phantom_core::fs::read_regular_file(path)
         .with_context(|| format!("Failed to safely snapshot {}", path.display()))
+}
+
+// VarError::NotUnicode owns the rejected environment bytes. Never retain it
+// as an anyhow source, even under a fixed context string.
+fn provider_token(
+    value: std::result::Result<String, std::env::VarError>,
+    token_env: &str,
+    platform: &Platform,
+) -> Result<Zeroizing<String>> {
+    value.map(Zeroizing::new).map_err(|_| {
+        anyhow::anyhow!("{token_env} missing or not valid UTF-8. Export your {platform} API token.")
+    })
 }
 
 #[cfg(test)]
@@ -1051,5 +1061,37 @@ mod tests {
             .contains("Platform pull transaction failed"));
         assert!(!vault.exists("NEW_SECRET").unwrap());
         assert_eq!(std::fs::read(&env_path).unwrap(), b"OWNER=concurrent\n");
+    }
+}
+
+#[cfg(all(test, unix))]
+mod error_redaction_tests {
+    #[test]
+    fn non_unicode_provider_token_does_not_survive_in_error_chain() {
+        use rand::RngCore;
+        use std::os::unix::ffi::OsStringExt;
+        let mut bytes = [0; 24];
+        rand::thread_rng().fill_bytes(&mut bytes);
+        let canary = hex::encode(bytes);
+        let mut rejected = canary.as_bytes().to_vec();
+        rejected.push(0xff);
+        let error = super::provider_token(
+            Err(std::env::VarError::NotUnicode(
+                std::ffi::OsString::from_vec(rejected),
+            )),
+            "VERCEL_TOKEN",
+            &super::Platform::Vercel,
+        )
+        .unwrap_err();
+        for rendered in [
+            format!("{error}"),
+            format!("{error:#}"),
+            format!("{error:?}"),
+        ] {
+            assert!(
+                !rendered.contains(&canary),
+                "environment bytes were disclosed"
+            );
+        }
     }
 }

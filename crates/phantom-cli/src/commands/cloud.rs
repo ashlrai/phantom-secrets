@@ -11,22 +11,44 @@ use zeroize::{Zeroize, Zeroizing};
 const CLOUD_PUSH_ACTION: &str = "push to Phantom Cloud";
 const CLOUD_PULL_ACTION: &str = "pull from Phantom Cloud";
 
+/// Every machine that later pulls the cloud copy receives these values and
+/// stores them read-write: refuse an overdue enforced secret, as
+/// `phantom exec` would, and an entry the expiry policy demoted to read-only
+/// or whose lifecycle metadata cannot be read. Names and metadata only.
+fn gate_cloud_push(
+    config: &PhantomConfig,
+    vault: &dyn phantom_vault::VaultBackend,
+    names: &[String],
+) -> Result<()> {
+    super::rotation_gate::enforce_lifecycle_on_propagation(
+        config,
+        vault,
+        names.iter().map(String::as_str),
+        CLOUD_PUSH_ACTION,
+        "Rotate or promote them before pushing to the cloud vault.",
+        "No vault plaintext was read and nothing was sent to Phantom Cloud.",
+        super::rotation_gate::now_secs(),
+    )
+}
+
 pub fn run_push() -> Result<()> {
-    let project_dir = std::env::current_dir()?.canonicalize()?;
+    let project_dir = crate::util::project_dir()?.canonicalize()?;
     let (config_path, config_before, config) = load_cloud_config_exact(&project_dir)?;
     ensure_cloud_push_allowed(&config)?;
-    // An overdue enforced secret is known from names and metadata alone:
-    // refuse before asking for consent. Judged again before any value read.
+    // A locked or partial inventory and an overdue enforced, read-only or
+    // unjudgeable entry are known from names and metadata alone: refuse
+    // before asking for consent. All are judged again after consent, before
+    // any value read.
     {
         let vault = crate::util::open_vault(config.local_project_id())?;
         let names = vault.list()?;
-        super::rotation_gate::enforce_rotation_on_entries(
-            &config,
+        crate::util::require_complete_inventory(
             vault.as_ref(),
-            names.iter().map(String::as_str),
-            CLOUD_PUSH_ACTION,
-            super::rotation_gate::now_secs(),
+            config.local_project_id(),
+            names.len(),
+            "push to the cloud vault",
         )?;
+        gate_cloud_push(&config, vault.as_ref(), &names)?;
     }
     require_trusted_terminal_cloud(&cloud_consent_plan("push", &project_dir, &config, false)?)?;
     // Refuse an unreconciled push and require terminal consent before reading
@@ -72,16 +94,10 @@ fn push_after_consent(
         return Ok(());
     }
 
-    // The cloud copy is handed to every machine that later pulls it: refuse
-    // an overdue enforced secret, as `phantom exec` would, before any value
-    // is read, the cloud passphrase is fetched, or anything is sent.
-    super::rotation_gate::enforce_rotation_on_entries(
-        &config,
-        vault.as_ref(),
-        secret_names.iter().map(String::as_str),
-        CLOUD_PUSH_ACTION,
-        super::rotation_gate::now_secs(),
-    )?;
+    // The cloud copy is handed to every machine that later pulls it: judge
+    // the lifecycle gate again before any value is read, the cloud
+    // passphrase is fetched, or anything is sent.
+    gate_cloud_push(&config, vault.as_ref(), &secret_names)?;
 
     phantom_core::audit::log_result("cloud.push", None)
         .context("Failed to write audit event for cloud push")?;
@@ -90,7 +106,9 @@ fn push_after_consent(
     let mut secrets = BTreeMap::new();
     let mut guards = Vec::with_capacity(secret_names.len());
     for name in &secret_names {
-        let value = vault.retrieve(name)?;
+        // The injection read re-checks the mode atomically with the value
+        // read, so an entry demoted after the gate is never sent.
+        let value = vault.retrieve_for_injection(name)?;
         guards.push(phantom_vault::InitSecret::replace_if_unchanged(
             name,
             Some(value.as_str().to_string()),
@@ -119,7 +137,7 @@ fn push_after_consent(
         secret_names.len()
     );
 
-    let rt = tokio::runtime::Runtime::new()?;
+    let rt = crate::util::oneshot_runtime()?;
     let new_version = rt
         .block_on(cloud::push(
             api_base,
@@ -197,7 +215,7 @@ pub fn run_pull(force: bool) -> Result<()> {
     phantom_core::audit::log_result("cloud.pull", None)
         .context("Failed to write audit event for cloud pull")?;
 
-    let rt = tokio::runtime::Runtime::new()?;
+    let rt = crate::util::oneshot_runtime()?;
     let pull_result = rt.block_on(cloud::pull(&api_base, &token, config.portable_project_id()))?;
 
     let pull_data = match pull_result {
@@ -217,7 +235,8 @@ pub fn run_pull(force: bool) -> Result<()> {
     let encrypted = BASE64
         .decode(&pull_data.encrypted_blob)
         .context("Invalid cloud vault data")?;
-    let plaintext = Zeroizing::new(phantom_vault::crypto::decrypt(&encrypted, &passphrase)?);
+    // `decrypt` returns a Zeroizing buffer, scrubbed on drop.
+    let plaintext = phantom_vault::crypto::decrypt(&encrypted, &passphrase)?;
     let secrets = SensitiveCloudSecrets::parse_json(&plaintext)
         .context("Failed to parse cloud vault data")?;
 
@@ -568,7 +587,7 @@ pub fn run_status(json: bool) -> Result<()> {
     let login = match auth::load_token() {
         Some(token) => {
             let token = Zeroizing::new(token);
-            let rt = tokio::runtime::Runtime::new()?;
+            let rt = crate::util::oneshot_runtime()?;
             match rt.block_on(auth::get_user_info(&api_base, &token)) {
                 Ok(user) => CloudLogin::LoggedIn(user),
                 Err(phantom_core::error::PhantomError::AuthRequired) => CloudLogin::TokenRejected,
@@ -1109,7 +1128,7 @@ mod tests {
         let source = include_str!("cloud.rs");
         let run_push = &source[source.find("pub fn run_push()").unwrap()..];
         let pre_gate = run_push
-            .find("CLOUD_PUSH_ACTION")
+            .find("gate_cloud_push(")
             .expect("push must gate rotation before consent");
         let consent = run_push
             .find("require_trusted_terminal_cloud(&cloud_consent_plan(\"push\"")
@@ -1118,9 +1137,9 @@ mod tests {
 
         let after = &source[source.find("fn push_after_consent(").unwrap()..];
         let gate = after
-            .find("CLOUD_PUSH_ACTION")
+            .find("gate_cloud_push(")
             .expect("push must gate rotation after consent");
-        let read = after.find("vault.retrieve(name)").unwrap();
+        let read = after.find("vault.retrieve_for_injection(name)").unwrap();
         let audit = after.find("audit::log_result(\"cloud.push\"").unwrap();
         assert!(gate < audit && gate < read);
     }
@@ -1270,6 +1289,35 @@ mod locked_vault_tests {
         assert!(refusal.starts_with("Vault locked:"));
     }
 
+    /// Entered as the CLI does, before consent. Tests run without a trusted
+    /// terminal, so a run that reached the consent prompt fails there instead.
+    fn run_push_refusal() -> String {
+        super::run_push().unwrap_err().to_string()
+    }
+
+    /// A locked file vault was refused only after typed consent was spent.
+    #[test]
+    fn cloud_push_refuses_a_locked_file_vault_before_consent() {
+        let _project = LockedProject::new(empty_keychain);
+        let refusal = run_push_refusal();
+        assert!(
+            refusal.starts_with("Vault locked:"),
+            "cloud push reached consent before refusing the locked vault"
+        );
+    }
+
+    /// A keychain-only view beside a locked file vault was refused only after
+    /// typed consent was spent.
+    #[test]
+    fn cloud_push_refuses_a_partial_inventory_before_consent() {
+        let _project = LockedProject::new(keychain_with_one);
+        let refusal = run_push_refusal();
+        assert!(
+            refusal.starts_with("Refusing to push to the cloud vault from a partial inventory"),
+            "cloud push reached consent before refusing the partial inventory"
+        );
+    }
+
     #[test]
     fn cloud_pull_judges_the_destination_before_consent() {
         let source = include_str!("cloud.rs");
@@ -1284,5 +1332,60 @@ mod locked_vault_tests {
             .expect("pull must fetch the cloud copy");
         assert!(destination < consent);
         assert!(consent < network);
+    }
+}
+
+#[cfg(test)]
+mod lifecycle_gate_tests {
+    use crate::util::test_seam::{demoted_vault, metadata_unreadable_vault, SeamProject};
+
+    /// Entered after consent and the bearer, as `run_push` does. The stub
+    /// vault panics on a plain value read, and the API base is unroutable.
+    fn push_after_consent(project: &SeamProject) -> String {
+        let (config_path, config_before, config) =
+            super::load_cloud_config_exact(&project.dir).unwrap();
+        super::push_after_consent(
+            &project.dir,
+            &config_path,
+            config_before,
+            config,
+            "http://127.0.0.1:9",
+            "unused-bearer",
+        )
+        .map(|()| String::new())
+        .unwrap_or_else(|error| error.to_string())
+    }
+
+    /// `phantom cloud push` read every value with a plain retrieve, so an
+    /// entry the expiry policy demoted to read-only was copied into the cloud
+    /// snapshot and came back read-write on every machine that pulled it.
+    /// The push is now refused from metadata alone, naming the entry only.
+    #[test]
+    fn cloud_push_refuses_a_read_only_entry_before_any_value_read() {
+        let project = SeamProject::new(demoted_vault);
+        let refusal = push_after_consent(&project);
+        assert!(refusal.starts_with("Refusing to push to Phantom Cloud: 1 secret(s) are read-only"));
+        assert!(refusal.contains("'DEMOTED_KEY'"));
+    }
+
+    #[test]
+    fn cloud_push_refuses_unreadable_lifecycle_metadata_before_any_value_read() {
+        let project = SeamProject::new(metadata_unreadable_vault);
+        let refusal = push_after_consent(&project);
+        assert!(refusal.starts_with("Refusing to push to Phantom Cloud:"));
+        assert!(refusal.contains("'DEMOTED_KEY'"));
+    }
+
+    /// The refusal is known from names and metadata alone, so it comes before
+    /// the trusted-terminal consent prompt: the user is never asked to
+    /// confirm a push that is then refused.
+    #[test]
+    fn cloud_push_refuses_a_read_only_entry_before_consent() {
+        let project = SeamProject::new(demoted_vault);
+        let refusal = super::run_push()
+            .map(|()| String::new())
+            .unwrap_or_else(|error| error.to_string());
+        assert!(refusal.starts_with("Refusing to push to Phantom Cloud: 1 secret(s) are read-only"));
+        drop(project);
     }
 }

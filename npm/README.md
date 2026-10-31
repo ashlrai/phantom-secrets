@@ -16,15 +16,19 @@ unsupported traffic.
 
 ## Install an exact published version
 
+<!-- fresh:begin npm-cli-wrapper-version -->
 This wrapper is version `0.8.0`. Its manifest and this README do not prove that
 the npm package or matching GitHub release has been published. Verify the exact
 npm version before installing it:
+<!-- fresh:end -->
 
+<!-- fresh:begin npm-cli-install -->
 ```bash
 npm view phantom-secrets@0.8.0 version dist.integrity dist.tarball --registry=https://registry.npmjs.org/
 npm install --global phantom-secrets@0.8.0 --registry=https://registry.npmjs.org/
 phantom --version
 ```
+<!-- fresh:end -->
 
 The first invocation downloads the matching native binary from the exact
 [`v0.8.0` GitHub release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.8.0),
@@ -35,9 +39,33 @@ identity. If the npm query, release, checksum, or expected `phantom 0.8.0`
 version is unavailable, stop instead of substituting an unpinned package or
 release.
 
-The wrapper supports macOS arm64/x64, glibc Linux arm64/x64, and Windows
-arm64/x64. Published archives do not by themselves prove every keychain,
-shell, editor, or provider integration on every host; see the
+The wrapper selects a native archive for these Node.js platform and
+architecture combinations:
+
+| Operating system (Node.js platform) | Node.js architecture | Native target |
+|---|---|---|
+| macOS (`darwin`) | `arm64` | `aarch64-apple-darwin` |
+| macOS (`darwin`) | `x64` | `x86_64-apple-darwin` |
+| Linux with glibc (`linux`) | `arm64` | `aarch64-unknown-linux-gnu` |
+| Linux with glibc (`linux`) | `x64` | `x86_64-unknown-linux-gnu` |
+| Windows (`win32`) | `arm64` | `aarch64-pc-windows-msvc` |
+| Windows (`win32`) | `x64` | `x86_64-pc-windows-msvc` |
+
+Other Node.js platform and architecture combinations are unsupported. For
+example, the wrapper rejects these combinations before using its cache or
+downloading a binary:
+
+| Node.js platform | Node.js architecture |
+|---|---|
+| `darwin` | `ia32` |
+| `linux` | `arm` |
+| `freebsd` | `x64` |
+| `openbsd` | `x64` |
+| `win32` | `ia32` |
+
+Linux archives target glibc; the wrapper does not provide a musl build or
+detect the host's libc. Published archives do not by themselves prove every
+keychain, shell, editor, or provider integration on every host; see the
 [platform support matrix](https://github.com/ashlrai/phantom-secrets/blob/main/docs/platform-support.md).
 
 ## Quick start

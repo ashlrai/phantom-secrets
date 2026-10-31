@@ -1,3 +1,6 @@
+"use client";
+
+import { useState } from "react";
 import Link from "next/link";
 import { FaApple, FaLinux, FaWindows } from "react-icons/fa6";
 import { CopyButton } from "./CopyButton";
@@ -30,6 +33,9 @@ const RELEASE_ASSET_BASE =
 const RAW_SOURCE_BASE =
   `https://raw.githubusercontent.com/ashlrai/phantom-secrets/${PUBLIC_RELEASE_SOURCE_COMMIT}/scripts`;
 
+// Quote the Unix staging template and paths so TMPDIR may contain spaces.
+// The Unix subshells attempt to remove the installer and its empty staging
+// directory on exit, including after failures once the EXIT trap is installed.
 const PLATFORMS = [
   {
     name: "macOS",
@@ -122,6 +128,8 @@ const PLATFORMS = [
 ] as const;
 
 export function QuickStart() {
+  const [selectedPlatform, setSelectedPlatform] = useState<(typeof PLATFORMS)[number]["name"]>("macOS");
+
   return (
     <section id="install" className="passage-section" aria-labelledby="passage-title">
       <div className="landing-frame">
@@ -137,7 +145,19 @@ export function QuickStart() {
         </div>
 
         <div className="platform-install-grid" aria-label="Release downloads by operating system">
-          {PLATFORMS.map((platform) => (
+          <div className="platform-install-selector" role="group" aria-label="Choose an operating system">
+            {PLATFORMS.map((platform) => (
+              <button
+                key={platform.name}
+                type="button"
+                aria-pressed={selectedPlatform === platform.name}
+                onClick={() => setSelectedPlatform(platform.name)}
+              >
+                {platform.name}
+              </button>
+            ))}
+          </div>
+          {PLATFORMS.filter((platform) => platform.name === selectedPlatform).map((platform) => (
             <article key={platform.name} className="platform-install-card">
               <div className="platform-install-card__heading">
                 <div className="platform-install-card__identity">
@@ -184,7 +204,12 @@ export function QuickStart() {
           release artifact—not every local shell, policy, or credential-store state.
           The command panels download the installer source from the exact {PUBLIC_RELEASE_TAG}
           source commit, verify the fixed script digest, and only then execute the
-          local file. The scripts verify the selected archive&apos;s adjacent checksum,
+          local file. On macOS and Linux, a staging directory under <code>TMPDIR</code>
+          (or <code>/tmp</code> when unset or empty) holds the downloaded installer
+          script. Once the exit trap is installed, cleanup attempts to remove the
+          script and then the empty directory on exit, including after failures;
+          cleanup is not guaranteed. It is not the install directory. Windows uses a
+          temporary installer file instead. The scripts verify the selected archive&apos;s adjacent checksum,
           exact two-binary shape, and versions before promoting it into a user-owned
           install directory. The Linux encrypted-file path needs its managed
           passphrase configured before <code>phantom init</code>; keep that

@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { performance } from "node:perf_hooks";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -53,6 +55,56 @@ function jsonLd(type, extra = {}) {
     ...extra,
   })}</script>`;
 }
+
+test("the CLI rejects a missing required output or output value", () => {
+  const observer = path.join(scriptDirectory, "observe.mjs");
+  for (const [args, diagnostic] of [
+    [[], /--out is required/],
+    [["--experiments", "missing-ledger.json"], /--out is required/],
+    [["--out"], /missing value for --out/],
+  ]) {
+    const result = spawnSync(process.execPath, [observer, ...args], {
+      cwd: repositoryDirectory,
+      encoding: "utf8",
+      timeout: 5_000,
+    });
+    assert.ifError(result.error);
+    assert.equal(result.status, 1);
+    assert.equal(result.stdout, "");
+    assert.match(result.stderr, diagnostic);
+    assert.match(result.stderr, /Usage: node scripts\/seo\/observe\.mjs --out <report\.json>/);
+  }
+});
+
+test("the documented local command writes its report and fails closed on an unreadable ledger", async () => {
+  const readme = await readFile(path.join(repositoryDirectory, "apps/web/README.md"), "utf8");
+  const command = readme.match(/```sh\n(node scripts\/seo\/observe\.mjs [^\n]+)\n```/);
+  assert.ok(command, "README contains the local observer command");
+  const [node, script, ...args] = command[1].split(/\s+/);
+  assert.equal(node, "node");
+  assert.deepEqual(args, ["--experiments", "seo/experiments.json", "--out", "seo/reports/observation.json"]);
+  await readFile(path.join(repositoryDirectory, args[1]));
+
+  const directory = await mkdtemp(path.join(tmpdir(), "phantom-seo-readme-"));
+  try {
+    // A missing ledger exercises the real CLI and report path without network access.
+    args[1] = path.join(directory, "missing-ledger.json");
+    args[3] = path.join(directory, "reports", "observation.json");
+    const result = spawnSync(process.execPath, [script, ...args], {
+      cwd: repositoryDirectory,
+      encoding: "utf8",
+      timeout: 5_000,
+    });
+    assert.ifError(result.error);
+    assert.equal(result.status, 1);
+    const report = JSON.parse(await readFile(args[3], "utf8"));
+    assert.equal(report.verdict, "FAIL");
+    assert.equal(report.findings[0].code, "observer_execution_failed");
+    assert.match(result.stdout, /FAIL/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 test("HTML entities are decoded exactly once", () => {
   assert.equal(decodeEntities("&amp;&quot;&#39;&lt;&gt;"), "&\"'<>");
@@ -221,6 +273,8 @@ test("the default network policy is closed to phm.dev and two public GitHub reco
     "https://example.com/",
     "http://phm.dev/",
     "https://phm.dev/docs?code=private",
+    "https://phm.dev/docs?",
+    "https://phm.dev/docs#",
     "https://api.github.com/user",
     "https://api.github.com/repos/another/project",
   ]) {
@@ -228,23 +282,100 @@ test("the default network policy is closed to phm.dev and two public GitHub reco
   }
 });
 
-test("one monotonic request deadline covers retries and redirects", async () => {
-  let calls = 0;
-  const fetchImpl = async (_url, { signal }) => {
-    calls += 1;
-    if (calls === 1) {
-      await delay(10, signal);
-      return new Response("temporary", { status: 503 });
+test("an empty query is rejected before a network request", async () => {
+  let requests = 0;
+  await assert.rejects(
+    requestWithinBoundary("https://phm.dev/docs?", {
+      fetchImpl: async () => { requests += 1; },
+      networkPolicy: assertDefaultNetworkUrl,
+    }),
+    /network destination is not allowlisted: https:\/\/phm\.dev\/docs/,
+  );
+  assert.equal(requests, 0);
+});
+
+test("a malformed site URL fails clearly before any network request", async () => {
+  let requests = 0;
+  await assert.rejects(
+    observeProduction({
+      siteOrigin: "https://[invalid",
+      fetchImpl: async () => { requests += 1; },
+    }),
+    { code: "ERR_INVALID_URL", message: /Invalid URL/ },
+  );
+  assert.equal(requests, 0);
+
+  const result = spawnSync(process.execPath, ["--input-type=module", "--eval", `
+    import { observeProduction } from "./scripts/seo/observe.mjs";
+    await observeProduction({
+      siteOrigin: "https://[invalid",
+      fetchImpl: async () => { process.stdout.write("unexpected network request"); },
+    });
+  `], {
+    cwd: repositoryDirectory,
+    encoding: "utf8",
+    timeout: 5_000,
+  });
+  assert.ifError(result.error);
+  assert.equal(result.status, 1);
+  assert.equal(result.stdout, "");
+  assert.match(result.stderr, /Invalid URL/);
+  assert.match(result.stderr, /ERR_INVALID_URL/);
+});
+
+test("an empty query in a redirect is rejected before following it", async () => {
+  let requests = 0;
+  await assert.rejects(
+    requestWithinBoundary("https://phm.dev/", {
+      fetchImpl: async () => {
+        requests += 1;
+        return new Response(null, { status: 302, headers: { location: "/docs?" } });
+      },
+      networkPolicy: assertDefaultNetworkUrl,
+    }),
+    /network destination is not allowlisted: https:\/\/phm\.dev\/docs/,
+  );
+  assert.equal(requests, 1);
+});
+
+test("one monotonic request deadline covers retries and redirects", async (t) => {
+  const temporary = new Response("temporary", { status: 503 });
+  const redirect = new Response("", {
+    status: 302,
+    headers: { location: "https://phm.dev/docs" },
+  });
+  // Drive the monotonic clock and abort timers together so scheduler delays
+  // cannot exhaust the request budget before the retry and redirect are tested.
+  let now = 0;
+  let nextTimer = 0;
+  const timers = new Map();
+  const budgets = [];
+  const requests = [];
+  t.mock.method(performance, "now", () => now);
+  t.mock.method(globalThis, "setTimeout", (callback, milliseconds) => {
+    const id = ++nextTimer;
+    timers.set(id, { callback, milliseconds });
+    budgets.push(milliseconds);
+    return id;
+  });
+  t.mock.method(globalThis, "clearTimeout", (id) => timers.delete(id));
+  const fetchImpl = async (url, { signal }) => {
+    requests.push(url.href);
+    assert.equal(signal.aborted, false);
+    if (requests.length === 1) {
+      now += 40;
+      return temporary;
     }
-    if (calls === 2) {
-      await delay(10, signal);
-      return new Response("", {
-        status: 302,
-        headers: { location: "https://phm.dev/docs" },
-      });
+    if (requests.length === 2) {
+      now += 40;
+      return redirect;
     }
-    await delay(200, signal);
-    return new Response("late", { status: 200 });
+    assert.equal(timers.size, 1);
+    const timer = timers.values().next().value;
+    now += timer.milliseconds;
+    timer.callback();
+    signal.throwIfAborted();
+    assert.fail("the remaining request budget must abort the redirected request");
   };
 
   await assert.rejects(
@@ -256,7 +387,14 @@ test("one monotonic request deadline covers retries and redirects", async () => 
     }),
     /request deadline exceeded/,
   );
-  assert.equal(calls, 3);
+  assert.deepEqual(requests, [
+    "https://phm.dev/",
+    "https://phm.dev/",
+    "https://phm.dev/docs",
+  ]);
+  assert.deepEqual(budgets, [120, 80, 40]);
+  assert.equal(now, 120);
+  assert.equal(timers.size, 0);
 });
 
 test("the global observation deadline aborts concurrent initial requests", async () => {
@@ -299,6 +437,107 @@ test("a complete public fixture produces a deterministic, sanitized passing repo
     assert.ok(requests.length >= publicPaths.size + 6);
     assert.match(renderSummary(first), /does not edit content, publish, deploy, contact people/);
   });
+});
+
+test("a non-success public page response reports its status as a failure", async () => {
+  await withFixtureServer(
+    async ({ options }) => {
+      const report = await observeProduction(options);
+      assert.equal(report.verdict, "FAIL");
+      assert.deepEqual(report.counts, { fail: 1, warn: 0 });
+      assert.equal(report.technical.public_routes.find((page) => page.route === "/docs").status, 404);
+      assert.deepEqual(report.findings, [{
+        severity: "fail",
+        code: "public_route_status",
+        message: "Public route returned HTTP 404",
+        route: "/docs",
+      }]);
+      assert.match(renderSummary(report), /\*\*FAIL public_route_status\*\* \(\/docs\): Public route returned HTTP 404/);
+    },
+    {
+      "/docs": (response, origin) => {
+        response.statusCode = 404;
+        response.setHeader("content-type", "text/html");
+        response.end(html(origin, "/docs"));
+      },
+    },
+  );
+});
+
+test("a page without a title produces a missing-title failure", async () => {
+  await withFixtureServer(
+    async ({ options }) => {
+      const report = await observeProduction(options);
+      assert.equal(report.verdict, "FAIL");
+      assert.deepEqual(report.counts, { fail: 1, warn: 0 });
+      assert.equal(report.technical.public_routes.find((page) => page.route === "/docs").title, null);
+      assert.deepEqual(report.findings, [{
+        severity: "fail",
+        code: "title_missing",
+        message: "Page title is missing",
+        route: "/docs",
+      }]);
+      assert.match(renderSummary(report), /\*\*FAIL title_missing\*\* \(\/docs\): Page title is missing/);
+    },
+    {
+      "/docs": (response, origin) => {
+        response.setHeader("content-type", "text/html");
+        response.end(html(origin, "/docs").replace("<title>/docs — Phantom</title>", ""));
+      },
+    },
+  );
+});
+
+test("a page without description metadata produces a missing-description failure", async () => {
+  await withFixtureServer(
+    async ({ options }) => {
+      const report = await observeProduction(options);
+      assert.equal(report.verdict, "FAIL");
+      assert.deepEqual(report.counts, { fail: 2, warn: 0 });
+      for (const route of ["/docs", "/security"]) {
+        assert.equal(
+          report.technical.public_routes.find((page) => page.route === route).description,
+          null,
+        );
+      }
+      assert.deepEqual(report.findings, [
+        {
+          severity: "fail",
+          code: "description_missing",
+          message: "Meta description is missing",
+          route: "/docs",
+        },
+        {
+          severity: "fail",
+          code: "description_missing",
+          message: "Meta description is missing",
+          route: "/security",
+        },
+      ]);
+      const summary = renderSummary(report);
+      assert.match(summary, /\*\*FAIL description_missing\*\* \(\/docs\): Meta description is missing/);
+      assert.match(summary, /\*\*FAIL description_missing\*\* \(\/security\): Meta description is missing/);
+    },
+    {
+      // The description meta tag is absent entirely on /docs and present but
+      // empty on /security; both must report the same missing-description result.
+      "/docs": (response, origin) => {
+        response.setHeader("content-type", "text/html");
+        response.end(
+          html(origin, "/docs").replace(
+            '<meta name="description" content="Description for /docs">',
+            "",
+          ),
+        );
+      },
+      "/security": (response, origin) => {
+        response.setHeader("content-type", "text/html");
+        response.end(
+          html(origin, "/security").replace('content="Description for /security"', 'content=""'),
+        );
+      },
+    },
+  );
 });
 
 test("the GitHub job summary is deterministically capped with an omitted count", () => {
@@ -379,6 +618,101 @@ test("canonical, structured-data, and off-origin redirect failures stay visible"
         response.statusCode = 302;
         response.setHeader("location", "https://example.com/attacker-secret");
         response.end();
+      },
+    },
+  );
+});
+
+test("duplicate sitemap URLs fail deterministically before fetching public routes", async () => {
+  await withFixtureServer(
+    async ({ options, requests }) => {
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const start = requests.length;
+        await assert.rejects(observeProduction(options), {
+          message: "sitemap contains duplicate path /docs",
+        });
+        assert.deepEqual(requests.slice(start).sort(), ["/robots.txt", "/sitemap.xml"]);
+      }
+    },
+    {
+      "/sitemap.xml": (response, origin) => {
+        response.end(`<urlset>${["/docs", "/security", "/docs"]
+          .map((route) => `<url><loc>${origin}${route}</loc></url>`)
+          .join("")}</urlset>`);
+      },
+    },
+  );
+});
+
+test("sitemap URLs with an empty query are rejected before fetching the route", async () => {
+  await withFixtureServer(
+    async ({ options, requests }) => {
+      await assert.rejects(observeProduction(options), /sitemap URL contains query or hash data: \/docs/);
+      assert.ok(!requests.includes("/docs"));
+    },
+    {
+      "/sitemap.xml": (response, origin) => {
+        response.end(`<urlset><url><loc>${origin}/docs?</loc></url></urlset>`);
+      },
+    },
+  );
+});
+
+test("sitemap URLs with a fragment are rejected before fetching the route", async () => {
+  // The bare "#" delimiter matters: URL.hash is empty even when it is present.
+  for (const fragment of ["#", "#section"]) {
+    await withFixtureServer(
+      async ({ options, requests }) => {
+        await assert.rejects(
+          observeProduction(options),
+          /sitemap URL contains query or hash data: \/docs/,
+        );
+        assert.ok(!requests.includes("/docs"));
+      },
+      {
+        "/sitemap.xml": (response, origin) => {
+          response.end(
+            `<urlset><url><loc>${origin}/docs${fragment}</loc></url></urlset>`,
+          );
+        },
+      },
+    );
+  }
+});
+
+test("canonical URLs with an empty query are reported as mismatches", async () => {
+  await withFixtureServer(
+    async ({ options }) => {
+      const report = await observeProduction(options);
+      assert.ok(report.findings.some(
+        (finding) => finding.code === "canonical_mismatch" && finding.route === "/docs",
+      ));
+    },
+    {
+      "/docs": (response, origin) => {
+        response.setHeader("content-type", "text/html");
+        response.end(html(origin, "/docs", { canonical: `${origin}/docs?` }));
+      },
+    },
+  );
+});
+
+test("canonical URLs with a fragment are reported as mismatches", async () => {
+  await withFixtureServer(
+    async ({ options }) => {
+      const report = await observeProduction(options);
+      assert.ok(report.findings.some(
+        (finding) => finding.code === "canonical_mismatch" && finding.route === "/docs",
+      ));
+      assert.equal(
+        report.technical.public_routes.find((page) => page.route === "/docs").canonical,
+        null,
+      );
+    },
+    {
+      "/docs": (response, origin) => {
+        response.setHeader("content-type", "text/html");
+        response.end(html(origin, "/docs", { canonical: `${origin}/docs#section` }));
       },
     },
   );

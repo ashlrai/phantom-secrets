@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
 use phantom_core::config::PhantomConfig;
-use phantom_core::dotenv::{classify, is_public_key, DotenvFile, EnvEntry, SecretClassification};
+use phantom_core::dotenv::{classify_with_reason, is_public_key, DotenvFile, SecretClassification};
 use phantom_core::why::Surface;
 
 /// Human output for how `phantom exec` treats a protected key. It prints only
@@ -104,22 +104,41 @@ fn load_config(project_dir: &std::path::Path) -> Result<Option<PhantomConfig>> {
     })
 }
 
+fn print_why_json(report: &serde_json::Value) -> Result<()> {
+    let pretty = serde_json::to_string_pretty(report)?;
+    println!(
+        "{}",
+        crate::commands::report_json::with_schema_pretty(
+            pretty,
+            crate::commands::report_json::WHY_SCHEMA
+        )?
+    );
+    Ok(())
+}
+
 /// Explain why a specific key is or isn't protected by Phantom.
 ///
 /// With `json`, prints the value-free report shared with the MCP `phantom_why`
 /// tool instead of the human explanation.
-pub fn run(key: &str, json: bool) -> Result<()> {
-    run_in(&std::env::current_dir()?, key, json)
+pub fn run(key: &str, json: bool, strict: bool) -> Result<()> {
+    run_in(&std::env::current_dir()?, key, json, strict)
 }
 
-fn run_in(project_dir: &std::path::Path, key: &str, json: bool) -> Result<()> {
+fn exit_unless_protected(strict: bool, protected: bool) {
+    if strict && !protected {
+        std::process::exit(crate::commands::report_json::STRICT_ISSUES_FOUND);
+    }
+}
+
+fn run_in(project_dir: &std::path::Path, key: &str, json: bool, strict: bool) -> Result<()> {
     validate_key_argument(key)?;
     let config = load_config(project_dir)?;
     let dotenv = read_dotenv(project_dir, config.as_ref())?;
 
     if json && dotenv.is_none() {
         let report = phantom_core::why::why_report_for(Surface::Cli, key, None, config.as_ref());
-        println!("{}", serde_json::to_string_pretty(&report)?);
+        print_why_json(&report)?;
+        exit_unless_protected(strict, report["protected"].as_bool() == Some(true));
         return Ok(());
     }
 
@@ -136,7 +155,8 @@ fn run_in(project_dir: &std::path::Path, key: &str, json: bool) -> Result<()> {
     if json {
         let report =
             phantom_core::why::why_report_for(Surface::Cli, key, Some(&dotenv), config.as_ref());
-        println!("{}", serde_json::to_string_pretty(&report)?);
+        print_why_json(&report)?;
+        exit_unless_protected(strict, report["protected"].as_bool() == Some(true));
         return Ok(());
     }
     // Find the entry
@@ -176,7 +196,8 @@ fn run_in(project_dir: &std::path::Path, key: &str, json: bool) -> Result<()> {
                     }
                 }
             } else {
-                let classification = classify(entry);
+                // The reason shown is the rule the classifier decided by.
+                let (classification, reason) = classify_with_reason(entry);
                 match classification {
                     SecretClassification::PublicKey => {
                         println!(
@@ -185,22 +206,7 @@ fn run_in(project_dir: &std::path::Path, key: &str, json: bool) -> Result<()> {
                             key.bold(),
                             "NOT PROTECTED".yellow().bold()
                         );
-                        let public_prefixes = [
-                            "NEXT_PUBLIC_",
-                            "EXPO_PUBLIC_",
-                            "VITE_",
-                            "REACT_APP_",
-                            "NUXT_PUBLIC_",
-                            "GATSBY_",
-                        ];
-                        let prefix = public_prefixes
-                            .iter()
-                            .find(|p| key.starts_with(*p))
-                            .unwrap_or(&"PUBLIC_");
-                        println!(
-                            "   Reason: Keys with {} prefix are browser-safe (shipped in client bundles)",
-                            prefix.cyan()
-                        );
+                        println!("   Reason: {}", reason.explanation());
                         println!("   Override: {}", format!("phantom add {key}").dimmed());
                     }
                     SecretClassification::Secret => {
@@ -210,7 +216,7 @@ fn run_in(project_dir: &std::path::Path, key: &str, json: bool) -> Result<()> {
                             key.bold(),
                             "UNPROTECTED".red().bold()
                         );
-                        explain_why_secret(entry);
+                        println!("   Reason: {}", reason.explanation());
                         println!("   Fix: {}", "phantom init".cyan().bold());
                     }
                     SecretClassification::NotSecret => {
@@ -220,10 +226,11 @@ fn run_in(project_dir: &std::path::Path, key: &str, json: bool) -> Result<()> {
                             key.bold(),
                             "NOT PROTECTED".dimmed()
                         );
-                        println!("   Reason: Does not match secret key patterns or value patterns");
+                        println!("   Reason: {}", reason.explanation());
                         println!("   Override: {}", format!("phantom add {key}").dimmed());
                     }
                 }
+                exit_unless_protected(strict, false);
             }
         }
         None => {
@@ -242,67 +249,6 @@ fn run_in(project_dir: &std::path::Path, key: &str, json: bool) -> Result<()> {
     }
 
     Ok(())
-}
-
-fn explain_why_secret(entry: &EnvEntry) {
-    let key = entry.key.to_uppercase();
-    let value = &entry.value;
-
-    let secret_key_patterns = [
-        "KEY",
-        "SECRET",
-        "TOKEN",
-        "PASSWORD",
-        "PASSWD",
-        "CREDENTIAL",
-        "AUTH",
-        "PRIVATE",
-    ];
-    let connection_patterns = ["DATABASE_URL", "REDIS_URL", "MONGO_URL"];
-
-    for pattern in &secret_key_patterns {
-        if key.contains(pattern) {
-            println!(
-                "   Reason: Key name contains \"{}\" (secret key pattern)",
-                pattern
-            );
-            return;
-        }
-    }
-    for pattern in &connection_patterns {
-        if key.contains(pattern) {
-            println!(
-                "   Reason: Key name matches connection string pattern (\"{}\")",
-                pattern
-            );
-            return;
-        }
-    }
-
-    let secret_prefixes = [
-        ("sk-", "OpenAI-style key"),
-        ("sk_", "Stripe-style key"),
-        ("ghp_", "GitHub token"),
-        ("eyJ", "JWT/base64 token"),
-    ];
-    for (prefix, label) in &secret_prefixes {
-        if value.starts_with(prefix) {
-            println!("   Reason: Value starts with \"{}\" ({})", prefix, label);
-            return;
-        }
-    }
-
-    if value.contains("://") && value.contains('@') {
-        println!("   Reason: Value looks like a connection string with credentials");
-        return;
-    }
-
-    if value.len() >= 32 {
-        println!(
-            "   Reason: Value is a high-entropy string ({} chars)",
-            value.len()
-        );
-    }
 }
 
 #[cfg(test)]
@@ -331,7 +277,7 @@ mod tests {
     #[test]
     fn empty_or_blank_key_is_refused_with_an_example() {
         for key in ["", "   ", "\t"] {
-            let error = format!("{:#}", run(key, true).unwrap_err());
+            let error = format!("{:#}", run(key, true, false).unwrap_err());
             assert!(error.contains("No key name given"), "{error}");
             assert!(error.contains("phantom why OPENAI_API_KEY"), "{error}");
         }
@@ -358,7 +304,7 @@ mod tests {
         std::fs::write(project.path().join(".phantom.toml"), "[phantom\nversion = ").unwrap();
 
         for json in [true, false] {
-            let error = run_in(project.path(), "OPENAI_API_KEY", json).unwrap_err();
+            let error = run_in(project.path(), "OPENAI_API_KEY", json, false).unwrap_err();
             assert!(
                 format!("{error:#}").contains("Failed to load .phantom.toml"),
                 "malformed config must not read as not initialized (json={json})"
@@ -369,7 +315,7 @@ mod tests {
         // Only a missing config means "not initialized".
         std::fs::remove_file(project.path().join(".phantom.toml")).unwrap();
         assert!(load_config(project.path()).unwrap().is_none());
-        assert!(run_in(project.path(), "OPENAI_API_KEY", true).is_ok());
+        assert!(run_in(project.path(), "OPENAI_API_KEY", true, false).is_ok());
     }
 
     /// A dangling `.phantom.toml` symlink is not "not initialized", and a

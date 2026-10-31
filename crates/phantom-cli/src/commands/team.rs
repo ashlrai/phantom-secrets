@@ -36,7 +36,7 @@ pub fn run_list(json: bool) -> Result<()> {
     let token = Zeroizing::new(auth::require_token()?);
     let api_base = auth::api_base_url()?;
 
-    let rt = tokio::runtime::Runtime::new()?;
+    let rt = crate::util::oneshot_runtime()?;
     let team_list = rt.block_on(teams::list_teams(&api_base, &token))?;
 
     if json {
@@ -79,7 +79,7 @@ pub fn run_create(name: &str) -> Result<()> {
 
     println!("{}  Creating team \"{}\"...", "->".blue().bold(), name);
 
-    let rt = tokio::runtime::Runtime::new()?;
+    let rt = crate::util::oneshot_runtime()?;
     let team = rt
         .block_on(teams::create_team(&api_base, &token, name))
         .context(
@@ -105,7 +105,7 @@ pub fn run_members(team_id: &str) -> Result<()> {
     let token = Zeroizing::new(auth::require_token()?);
     let api_base = auth::api_base_url()?;
 
-    let rt = tokio::runtime::Runtime::new()?;
+    let rt = crate::util::oneshot_runtime()?;
     let members = rt.block_on(teams::list_members(&api_base, &token, team_id))?;
 
     if members.is_empty() {
@@ -150,7 +150,7 @@ pub fn run_key_publish(team_id: &str) -> Result<()> {
     // server and in the user's keychain — this is just a visual aid.
     let fp_len = 8.min(pk.len());
     let fingerprint = &pk[pk.len() - fp_len..];
-    let rt = tokio::runtime::Runtime::new()?;
+    let rt = crate::util::oneshot_runtime()?;
     rt.block_on(teams::register_team_key(&api_base, &token, team_id, &pk))
         .context("Team key registration did not return a success receipt; a local device keypair may already exist and the remote outcome is unknown. Inspect registered keys before any retry")?;
     println!(
@@ -166,6 +166,26 @@ pub fn run_vault_push(team_id: &str) -> Result<()> {
     let (project_dir, _config_path, _config_before, config) = load_team_project_exact()?;
     let project_id = config.portable_project_id().to_string();
     let project_path = project_dir.to_string_lossy().into_owned();
+    // A locked or partial inventory and an overdue enforced, read-only or
+    // unjudgeable entry are known from names and metadata alone: refuse
+    // before asking for consent, so the user never confirms a push that
+    // cannot run. All are judged again after consent, before any value read.
+    {
+        let vault = crate::util::open_vault(config.local_project_id())?;
+        let names = vault.list()?;
+        crate::util::require_complete_inventory(
+            vault.as_ref(),
+            config.local_project_id(),
+            names.len(),
+            "push to the team vault",
+        )?;
+        gate_team_push(
+            &config,
+            vault.as_ref(),
+            &names,
+            super::rotation_gate::now_secs(),
+        )?;
+    }
     require_trusted_terminal_team(&team_consent_plan(
         "vault-push",
         &[team_id, &project_id, &project_path],
@@ -177,25 +197,45 @@ pub fn run_vault_push(team_id: &str) -> Result<()> {
     vault_push_after_consent(team_id, &project_id, &config, &token, &api_base, &kp)
 }
 
-/// Read every value a team push sends. Team members receive real values, so
-/// `enforce_rotation_on_access` refuses an overdue enforced secret first, as
-/// `phantom exec` would, before any value is read.
+/// "Refusing to ..." wording for the lifecycle gate on a team vault push.
+const TEAM_PUSH_ACTION: &str = "push to the team vault";
+
+/// Team members receive real values and inject them at runtime: refuse an
+/// overdue enforced secret, as `phantom exec` would, and an entry the expiry
+/// policy demoted to read-only (the demotion exists to stop that) or whose
+/// lifecycle metadata cannot be read. Names and metadata only; the whole push
+/// is refused, naming entries only.
+fn gate_team_push(
+    config: &phantom_core::config::PhantomConfig,
+    vault: &dyn phantom_vault::VaultBackend,
+    secret_names: &[String],
+    now_secs: u64,
+) -> Result<()> {
+    super::rotation_gate::enforce_lifecycle_on_propagation(
+        config,
+        vault,
+        secret_names.iter().map(String::as_str),
+        TEAM_PUSH_ACTION,
+        "Rotate or promote them before sharing with the team.",
+        "No vault plaintext was read and no team request was sent.",
+        now_secs,
+    )
+}
+
+/// Read every value a team push sends, after [`gate_team_push`] judges the
+/// inventory again immediately before any value is read.
 fn read_team_push_values(
     config: &phantom_core::config::PhantomConfig,
     vault: &dyn phantom_vault::VaultBackend,
     secret_names: &[String],
     now_secs: u64,
 ) -> Result<BTreeMap<String, Zeroizing<String>>> {
-    super::rotation_gate::enforce_rotation_on_entries(
-        config,
-        vault,
-        secret_names.iter().map(String::as_str),
-        "push to the team vault",
-        now_secs,
-    )?;
+    gate_team_push(config, vault, secret_names, now_secs)?;
     let mut secrets: BTreeMap<String, Zeroizing<String>> = BTreeMap::new();
     for name in secret_names {
-        let value = vault.retrieve(name)?; // Zeroizing<String>
+        // The injection read re-checks the mode atomically with the value
+        // read, so an entry demoted after the preflight is never sent.
+        let value = vault.retrieve_for_injection(name)?; // Zeroizing<String>
         secrets.insert(name.clone(), Zeroizing::new(String::from(value.as_str())));
     }
     Ok(secrets)
@@ -213,7 +253,7 @@ fn vault_push_after_consent(
     api_base: &str,
     kp: &phantom_core::team_crypto::MemberKeypair,
 ) -> Result<()> {
-    let rt = tokio::runtime::Runtime::new()?;
+    let rt = crate::util::oneshot_runtime()?;
 
     // Read the local vault into a Zeroizing-valued map so the secret
     // bytes are scrubbed when the helper drops them.
@@ -280,7 +320,7 @@ pub fn run_vault_pull(team_id: &str) -> Result<()> {
     let token = Zeroizing::new(auth::require_token()?);
     let api_base = auth::api_base_url()?;
     let kp = auth::get_or_create_team_keypair()?;
-    let rt = tokio::runtime::Runtime::new()?;
+    let rt = crate::util::oneshot_runtime()?;
 
     let (secrets, version) = rt.block_on(teams_vault::pull_for_project(
         &api_base,
@@ -409,7 +449,7 @@ pub fn run_rotate_vault(team_id: &str) -> Result<()> {
         team_id
     );
 
-    let rt = tokio::runtime::Runtime::new()?;
+    let rt = crate::util::oneshot_runtime()?;
     let outcome = rt
         .block_on(teams_vault::rotate_vault(
             &api_base,
@@ -458,7 +498,7 @@ pub fn run_invite(team_id: &str, github_login: &str, role: &str) -> Result<()> {
         team_id
     );
 
-    let rt = tokio::runtime::Runtime::new()?;
+    let rt = crate::util::oneshot_runtime()?;
     rt.block_on(teams::invite_member(
         &api_base,
         &token,
@@ -553,7 +593,7 @@ fn confirm_team_effect(
 }
 
 fn load_team_project_exact() -> Result<(PathBuf, PathBuf, Vec<u8>, PhantomConfig)> {
-    let project_dir = std::env::current_dir()?.canonicalize()?;
+    let project_dir = crate::util::project_dir()?.canonicalize()?;
     let config_path = project_dir.join(".phantom.toml");
     let config_before = phantom_core::fs::read_regular_file(&config_path)
         .context("Failed to safely read .phantom.toml")?
@@ -620,6 +660,183 @@ mod tests {
         let fresh = vec!["FRESH_KEY".to_string()];
         let read = read_team_push_values(&config, &vault, &fresh, NOW);
         assert!(read.is_ok_and(|values| values.len() == 1));
+    }
+
+    /// `phantom team vault-push` read every value with a plain retrieve, so a
+    /// secret the expiry policy demoted to read-only was still handed to every
+    /// team member. The whole push is now refused before any value is read,
+    /// naming the entry only; a read-write inventory is still read.
+    #[test]
+    fn team_push_refuses_read_only_entries_before_any_value_read() {
+        use phantom_vault::metadata::VaultMode;
+        let dir = tempfile::tempdir().unwrap();
+        let inner = phantom_vault::file::FileVault::new(
+            &crate::test_support::canonical_tempdir_path(&dir),
+            "team-read-only-fixture",
+            format!("team-{}", std::process::id()),
+        )
+        .unwrap();
+        for (entry, mode) in [
+            ("DEMOTED_KEY", VaultMode::ReadOnly),
+            ("ACTIVE_KEY", VaultMode::ReadWrite),
+        ] {
+            inner.store(entry, "fixture-value").unwrap();
+            inner
+                .set_metadata(
+                    entry,
+                    phantom_vault::SecretMetadata {
+                        created_at: Some(1_800_000_000),
+                        vault_mode: mode,
+                        ..phantom_vault::SecretMetadata::default()
+                    },
+                )
+                .unwrap();
+        }
+        let vault = CountingVault {
+            inner,
+            reads: AtomicUsize::new(0),
+        };
+        let config = unenforced();
+        let names = vec!["ACTIVE_KEY".to_string(), "DEMOTED_KEY".to_string()];
+
+        let refused = read_team_push_values(&config, &vault, &names, 1_800_000_000);
+        assert!(refused.is_err());
+        let message = refused
+            .err()
+            .map(|error| error.to_string())
+            .unwrap_or_default();
+        assert!(
+            message.starts_with("Refusing to push to the team vault: 1 secret(s) are read-only")
+        );
+        assert!(message.contains("'DEMOTED_KEY'"));
+        assert!(!message.contains("'ACTIVE_KEY'"));
+        assert_eq!(vault.reads.load(Ordering::SeqCst), 0);
+
+        let active = vec!["ACTIVE_KEY".to_string()];
+        let read = read_team_push_values(&config, &vault, &active, 1_800_000_000);
+        assert!(read.is_ok_and(|values| values.len() == 1));
+    }
+
+    /// Unreadable lifecycle metadata refuses the push too, before any value
+    /// read.
+    #[test]
+    fn team_push_refuses_when_metadata_cannot_be_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let inner = phantom_vault::file::FileVault::new(
+            &crate::test_support::canonical_tempdir_path(&dir),
+            "team-metadata-fixture",
+            format!("team-meta-{}", std::process::id()),
+        )
+        .unwrap();
+        inner.store("SOME_KEY", "fixture-value").unwrap();
+        let vault = MetadataFailingVault {
+            inner,
+            reads: AtomicUsize::new(0),
+        };
+        let names = vec!["SOME_KEY".to_string()];
+        let refused = read_team_push_values(&unenforced(), &vault, &names, 1_800_000_000);
+        let message = refused
+            .err()
+            .map(|error| error.to_string())
+            .unwrap_or_default();
+        assert!(message.starts_with(
+            "Refusing to push to the team vault: could not read lifecycle metadata for 'SOME_KEY'"
+        ));
+        assert_eq!(vault.reads.load(Ordering::SeqCst), 0);
+    }
+
+    /// Counts value reads; everything else passes through.
+    struct CountingVault {
+        inner: phantom_vault::file::FileVault,
+        reads: AtomicUsize,
+    }
+
+    impl VaultBackend for CountingVault {
+        fn store(&self, name: &str, value: &str) -> PhantomResult<()> {
+            self.inner.store(name, value)
+        }
+        fn retrieve(&self, name: &str) -> PhantomResult<Zeroizing<String>> {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            self.inner.retrieve(name)
+        }
+        fn retrieve_for_injection(&self, name: &str) -> PhantomResult<Zeroizing<String>> {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            self.inner.retrieve_for_injection(name)
+        }
+        fn delete(&self, name: &str) -> PhantomResult<()> {
+            self.inner.delete(name)
+        }
+        fn list(&self) -> PhantomResult<Vec<String>> {
+            self.inner.list()
+        }
+        fn backend_name(&self) -> &str {
+            "counting"
+        }
+        fn get_metadata(&self, name: &str) -> PhantomResult<Option<phantom_vault::SecretMetadata>> {
+            self.inner.get_metadata(name)
+        }
+    }
+
+    /// Fails every metadata read and counts value reads.
+    struct MetadataFailingVault {
+        inner: phantom_vault::file::FileVault,
+        reads: AtomicUsize,
+    }
+
+    impl VaultBackend for MetadataFailingVault {
+        fn store(&self, name: &str, value: &str) -> PhantomResult<()> {
+            self.inner.store(name, value)
+        }
+        fn retrieve(&self, name: &str) -> PhantomResult<Zeroizing<String>> {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            self.inner.retrieve(name)
+        }
+        fn retrieve_for_injection(&self, name: &str) -> PhantomResult<Zeroizing<String>> {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            self.inner.retrieve_for_injection(name)
+        }
+        fn delete(&self, name: &str) -> PhantomResult<()> {
+            self.inner.delete(name)
+        }
+        fn list(&self) -> PhantomResult<Vec<String>> {
+            self.inner.list()
+        }
+        fn backend_name(&self) -> &str {
+            "metadata-failing"
+        }
+        fn get_metadata(&self, _: &str) -> PhantomResult<Option<phantom_vault::SecretMetadata>> {
+            Err(phantom_core::error::PhantomError::VaultError(
+                "metadata unavailable".to_string(),
+            ))
+        }
+    }
+
+    /// `phantom team vault-push` asked for trusted-terminal consent and only
+    /// then refused a read-only entry or unreadable lifecycle metadata, so the
+    /// user typed the confirmation for a push that could never run. The
+    /// refusal now comes first, from names and metadata alone.
+    #[test]
+    fn team_push_refuses_read_only_entries_before_consent() {
+        use crate::util::test_seam::{demoted_vault, SeamProject};
+        let _project = SeamProject::new(demoted_vault);
+        let refusal = super::run_vault_push("team-fixture")
+            .map(|()| String::new())
+            .unwrap_or_else(|error| error.to_string());
+        assert!(
+            refusal.starts_with("Refusing to push to the team vault: 1 secret(s) are read-only")
+        );
+        assert!(refusal.contains("'DEMOTED_KEY'"));
+    }
+
+    #[test]
+    fn team_push_refuses_unreadable_metadata_before_consent() {
+        use crate::util::test_seam::{metadata_unreadable_vault, SeamProject};
+        let _project = SeamProject::new(metadata_unreadable_vault);
+        let refusal = super::run_vault_push("team-fixture")
+            .map(|()| String::new())
+            .unwrap_or_else(|error| error.to_string());
+        assert!(refusal.starts_with("Refusing to push to the team vault:"));
+        assert!(refusal.contains("'DEMOTED_KEY'"));
     }
 
     #[test]
@@ -945,6 +1162,37 @@ mod locked_vault_tests {
         let project = LockedProject::new(empty_keychain);
         let error = push(&project);
         assert!(error.starts_with("Vault locked:"), "{error}");
+    }
+
+    /// Entered as the CLI does, before consent. Tests run without a trusted
+    /// terminal, so a run that reached the consent prompt fails there instead.
+    fn run_push_refusal() -> String {
+        super::run_vault_push("team-fixture")
+            .unwrap_err()
+            .to_string()
+    }
+
+    /// A locked file vault was refused only after typed consent was spent.
+    #[test]
+    fn team_vault_push_refuses_a_locked_file_vault_before_consent() {
+        let _project = LockedProject::new(empty_keychain);
+        let refusal = run_push_refusal();
+        assert!(
+            refusal.starts_with("Vault locked:"),
+            "team vault-push reached consent before refusing the locked vault"
+        );
+    }
+
+    /// A keychain-only view beside a locked file vault was refused only after
+    /// typed consent was spent.
+    #[test]
+    fn team_vault_push_refuses_a_partial_inventory_before_consent() {
+        let _project = LockedProject::new(keychain_with_one);
+        let refusal = run_push_refusal();
+        assert!(
+            refusal.starts_with("Refusing to push to the team vault from a partial inventory"),
+            "team vault-push reached consent before refusing the partial inventory"
+        );
     }
 
     /// Entered as `run_vault_pull` does, before consent. The stub keychain

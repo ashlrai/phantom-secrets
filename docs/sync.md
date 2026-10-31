@@ -2,7 +2,7 @@
 
 `phantom sync` pushes secrets from your local vault to deployment platforms (Vercel and Railway). It reads real values from the OS keychain, applies any filters you configure, and calls the platform API directly — no secrets are written to disk or logged.
 
-Use `--dry-run` before a real push. Dry runs never decrypt secret values and never call platform APIs; they report target configuration, selected key names, skipped key names, token-env presence, and warnings.
+Use `--dry-run` before a real push. Dry runs never decrypt secret values and never call platform APIs; they report target configuration, selected key names, skipped key names, token-env presence, and warnings. A dry run also applies the live run's lifecycle gate from vault metadata alone: when a selected secret is overdue under `enforce_rotation_on_access`, has been demoted to read-only, or has lifecycle metadata that cannot be read, `live_gate_refusal` carries the refusal the live run would return (names only) and the dry run exits non-zero, as the live run would.
 
 ```bash
 phantom sync --dry-run --json

@@ -11,14 +11,15 @@ pub mod traits;
 pub mod transaction_lock;
 
 pub use init_transaction::{
-    commit_init, commit_init_if_project_identity, InitFile, InitReceipt, InitSecret,
-    InitTransactionError,
+    commit_init, commit_init_if_project_identity, commit_init_with_source_vault, InitFile,
+    InitReceipt, InitSecret, InitTransactionError,
 };
 pub use managed_remove::ManagedRemovePlan;
 pub use metadata::{RotationPolicy, SecretMetadata};
 pub use traits::{MetadataCas, ValidationMetadataCas, VaultBackend};
 pub use transaction_lock::{
-    acquire_project_transaction_lock, ProjectDirectoryPreparation, ProjectTransactionLock,
+    acquire_project_transaction_lock, acquire_project_transaction_locks,
+    ProjectDirectoryPreparation, ProjectTransactionLock, ProjectTransactionLockPair,
 };
 
 use phantom_core::error::{PhantomError, Result};
@@ -183,6 +184,17 @@ fn locked_file_vault_notice_in(
     ))
 }
 
+/// Path of the encrypted-file vault for `project_id`.
+///
+/// Computes the location only. It does not create directories, take a lock,
+/// open the keychain, or read a passphrase.
+pub fn encrypted_file_vault_path(project_id: &str) -> Result<std::path::PathBuf> {
+    file::validate_project_id(project_id)?;
+    Ok(file_vault_dir()
+        .join("vaults")
+        .join(format!("{project_id}.vault")))
+}
+
 /// Directory holding encrypted file vaults.
 fn file_vault_dir() -> std::path::PathBuf {
     directories::ProjectDirs::from("ai", "phantom", "phantom-secrets")
@@ -313,6 +325,15 @@ mod tests {
     use std::collections::VecDeque;
     use std::sync::{Arc, Mutex};
     use tempfile::tempdir;
+
+    #[test]
+    fn encrypted_file_vault_path_names_a_vault_file_and_rejects_path_ids() {
+        let path = encrypted_file_vault_path("abc123").unwrap();
+        assert!(path.ends_with("vaults/abc123.vault") || path.ends_with("vaults\\abc123.vault"));
+        assert!(encrypted_file_vault_path("").is_err());
+        assert!(encrypted_file_vault_path("../abc").is_err());
+        assert!(encrypted_file_vault_path("abc/def").is_err());
+    }
 
     #[test]
     fn locked_file_vault_notice_reports_only_unopened_file_vaults() {

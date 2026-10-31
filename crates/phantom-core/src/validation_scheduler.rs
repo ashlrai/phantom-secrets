@@ -272,6 +272,15 @@ impl SchedulerState {
     }
 }
 
+/// Append a finished run to the state file at `path`, so
+/// `phantom validate history` and the schedule status can show it. Counts
+/// only: a record holds no secret name or value.
+pub fn record_run(path: &Path, record: ValidationRunRecord) -> anyhow::Result<()> {
+    let (mut state, before) = SchedulerState::load_exact(path)?;
+    state.push_run(record);
+    state.save_if_unchanged(path, before.as_deref())
+}
+
 // ── State file path helper ────────────────────────────────────────────────────
 
 /// Return the path to the validation state file for the given project ID.
@@ -687,6 +696,7 @@ mod tests {
             invalid: 1,
             unreachable: 0,
             not_checked: 0,
+            refused: 0,
             entries: vec![
                 ValidationEntry {
                     name: "KEY_A".to_string(),

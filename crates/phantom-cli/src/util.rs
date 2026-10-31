@@ -12,6 +12,17 @@ pub fn docs_url(slug: &str) -> String {
     )
 }
 
+/// The async runtime for a one-shot command that `block_on`s one future.
+/// Requests, child waiting and signal forwarding stay asynchronous on a
+/// single thread, so there is no reason to start and join one worker per
+/// CPU for every short-lived invocation. Long-lived servers (`start`,
+/// `mcp`) keep their own multi-thread runtimes.
+pub fn oneshot_runtime() -> std::io::Result<tokio::runtime::Runtime> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+}
+
 /// The project directory a command works on: the current directory. Tests
 /// install their own with [`test_seam::TestProject`].
 pub fn project_dir() -> anyhow::Result<PathBuf> {
@@ -360,6 +371,198 @@ pub(crate) mod test_seam {
 
     pub(crate) fn empty_keychain() -> Box<dyn VaultBackend> {
         Box::new(EmptyKeychain)
+    }
+
+    /// Keychain stand-in that panics on every read or write. A dry run that
+    /// reaches the vault fails the test instead of creating a passphrase entry.
+    pub(crate) struct UntouchedKeychain;
+
+    impl VaultBackend for UntouchedKeychain {
+        fn store(&self, _: &str, _: &str) -> phantom_core::error::Result<()> {
+            panic!("keychain write path reached");
+        }
+        fn retrieve(&self, _: &str) -> phantom_core::error::Result<zeroize::Zeroizing<String>> {
+            panic!("keychain read path reached");
+        }
+        fn delete(&self, _: &str) -> phantom_core::error::Result<()> {
+            panic!("keychain write path reached");
+        }
+        fn list(&self) -> phantom_core::error::Result<Vec<String>> {
+            panic!("keychain read path reached");
+        }
+        fn exists(&self, _: &str) -> phantom_core::error::Result<bool> {
+            panic!("keychain read path reached");
+        }
+        fn backend_name(&self) -> &str {
+            "keychain"
+        }
+    }
+
+    pub(crate) fn untouched_keychain() -> Box<dyn VaultBackend> {
+        Box::new(UntouchedKeychain)
+    }
+
+    /// Restores process environment variables on drop. `apply` points `HOME`
+    /// and the XDG directories at `home` and clears Phantom's vault env
+    /// overrides, so a path that would create app-data directories does so
+    /// under `home` where a tree snapshot can see it.
+    pub(crate) struct EnvRestore {
+        previous: Vec<(&'static str, Option<std::ffi::OsString>)>,
+    }
+
+    impl EnvRestore {
+        pub(crate) fn apply(home: &std::path::Path) -> Self {
+            let keys = [
+                "HOME",
+                "XDG_DATA_HOME",
+                "XDG_CONFIG_HOME",
+                "XDG_STATE_HOME",
+                "XDG_CACHE_HOME",
+                "PHANTOM_VAULT_PASSPHRASE",
+                "PHANTOM_REQUIRE_KEYCHAIN",
+            ];
+            let previous = keys
+                .into_iter()
+                .map(|key| (key, std::env::var_os(key)))
+                .collect();
+            unsafe {
+                std::env::set_var("HOME", home);
+                std::env::set_var("XDG_DATA_HOME", home.join("xdg-data"));
+                std::env::set_var("XDG_CONFIG_HOME", home.join("xdg-config"));
+                std::env::set_var("XDG_STATE_HOME", home.join("xdg-state"));
+                std::env::set_var("XDG_CACHE_HOME", home.join("xdg-cache"));
+                std::env::remove_var("PHANTOM_VAULT_PASSPHRASE");
+                std::env::remove_var("PHANTOM_REQUIRE_KEYCHAIN");
+            }
+            Self { previous }
+        }
+    }
+
+    impl Drop for EnvRestore {
+        fn drop(&mut self) {
+            for (key, value) in &self.previous {
+                unsafe {
+                    match value {
+                        Some(value) => std::env::set_var(key, value),
+                        None => std::env::remove_var(key),
+                    }
+                }
+            }
+        }
+    }
+
+    /// Recursive content map of `root`: `dir/` entries for directories,
+    /// symlink targets as contents. Asserts a run changed nothing on disk.
+    pub(crate) fn tree_snapshot(
+        root: &std::path::Path,
+    ) -> std::collections::BTreeMap<String, Vec<u8>> {
+        fn walk(
+            root: &std::path::Path,
+            dir: &std::path::Path,
+            files: &mut std::collections::BTreeMap<String, Vec<u8>>,
+        ) {
+            let mut entries: Vec<_> = std::fs::read_dir(dir)
+                .unwrap()
+                .map(|entry| entry.unwrap())
+                .collect();
+            entries.sort_by_key(|entry| entry.file_name());
+            for entry in entries {
+                let path = entry.path();
+                let relative = path
+                    .strip_prefix(root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                let file_type = std::fs::symlink_metadata(&path).unwrap().file_type();
+                if file_type.is_symlink() {
+                    let target = std::fs::read_link(&path).unwrap();
+                    files.insert(relative, target.to_string_lossy().into_owned().into_bytes());
+                } else if file_type.is_dir() {
+                    files.insert(format!("{relative}/"), Vec::new());
+                    walk(root, &path, files);
+                } else {
+                    files.insert(relative, std::fs::read(&path).unwrap());
+                }
+            }
+        }
+        let mut files = std::collections::BTreeMap::new();
+        walk(root, root, &mut files);
+        files
+    }
+
+    /// An opened encrypted-file vault holding one entry, `DEMOTED_KEY`, whose
+    /// lifecycle metadata is read-only (`demoted: true`) or cannot be read
+    /// (`demoted: false`). A plain `retrieve` panics: a path that propagates
+    /// values must refuse from metadata alone.
+    pub(crate) struct LifecycleBlockedVault {
+        demoted: bool,
+    }
+
+    impl VaultBackend for LifecycleBlockedVault {
+        fn store(&self, _: &str, _: &str) -> phantom_core::error::Result<()> {
+            unreachable!("a refused push never stores")
+        }
+        fn retrieve(&self, _: &str) -> phantom_core::error::Result<zeroize::Zeroizing<String>> {
+            panic!("a value was read from a lifecycle-blocked entry")
+        }
+        fn delete(&self, _: &str) -> phantom_core::error::Result<()> {
+            unreachable!("a refused push never deletes")
+        }
+        fn list(&self) -> phantom_core::error::Result<Vec<String>> {
+            Ok(vec!["DEMOTED_KEY".to_string()])
+        }
+        fn backend_name(&self) -> &str {
+            "encrypted-file"
+        }
+        fn get_metadata(
+            &self,
+            _: &str,
+        ) -> phantom_core::error::Result<Option<phantom_vault::SecretMetadata>> {
+            if !self.demoted {
+                return Err(phantom_core::error::PhantomError::VaultError(
+                    "metadata unavailable".to_string(),
+                ));
+            }
+            Ok(Some(phantom_vault::SecretMetadata {
+                created_at: Some(1_800_000_000),
+                vault_mode: phantom_vault::metadata::VaultMode::ReadOnly,
+                ..phantom_vault::SecretMetadata::default()
+            }))
+        }
+    }
+
+    pub(crate) fn demoted_vault() -> Box<dyn VaultBackend> {
+        Box::new(LifecycleBlockedVault { demoted: true })
+    }
+
+    pub(crate) fn metadata_unreadable_vault() -> Box<dyn VaultBackend> {
+        Box::new(LifecycleBlockedVault { demoted: false })
+    }
+
+    /// An initialized project (default `.phantom.toml`) with `vault` standing
+    /// in for the opened vault on this thread until dropped.
+    pub(crate) struct SeamProject {
+        pub(crate) dir: PathBuf,
+        _project: tempfile::TempDir,
+        _seam: TestProject,
+    }
+
+    impl SeamProject {
+        pub(crate) fn new(vault: MakeVault) -> Self {
+            let project = tempfile::tempdir().unwrap();
+            let dir = project.path().canonicalize().unwrap();
+            phantom_core::config::PhantomConfig::new_with_defaults(
+                phantom_core::config::PhantomConfig::project_id_from_path(&dir),
+            )
+            .save(&dir.join(".phantom.toml"))
+            .unwrap();
+            let seam = TestProject::install(dir.clone(), vault);
+            SeamProject {
+                dir,
+                _project: project,
+                _seam: seam,
+            }
+        }
     }
 
     #[cfg(unix)]
@@ -751,7 +954,14 @@ mod config_gate_tests {
             ("status --oneline", || status::run(true, false)),
             ("watch", || watch::run_with_rotate(false, false)),
             ("add", || {
-                add::run("FIXTURE_NAME", None, true, add::StdinLines::SingleOnly)
+                add::run(
+                    "FIXTURE_NAME",
+                    None,
+                    true,
+                    add::StdinLines::SingleOnly,
+                    false,
+                    false,
+                )
             }),
             ("expiry", || expiry::run(30, false, false, false)),
             ("expiry set", || expiry::run_set("FIXTURE_NAME", 30)),

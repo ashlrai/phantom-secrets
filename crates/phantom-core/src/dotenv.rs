@@ -1,4 +1,5 @@
 use crate::error::{PhantomError, Result};
+use crate::redact::known_value_prefix;
 use crate::token::{PhantomToken, TokenMap};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -332,6 +333,31 @@ impl DotenvFile {
         &self.issues
     }
 
+    /// Each entry with the quote (`'"'` or `'\''`) that delimited its value in
+    /// the source, or `None` for an unquoted value, in [`Self::entries`]
+    /// order. Shell-flavoured callers need it: a single-quoted `'$NAME'` is
+    /// literal text, an unquoted or double-quoted `$NAME` an expansion.
+    pub fn entries_with_quote(&self) -> Vec<(&EnvEntry, Option<char>)> {
+        self.records
+            .iter()
+            .map(|record| {
+                // A quoted value's inner span starts just past its opening
+                // quote; an unquoted one starts after `=` or blanks.
+                let quote = record
+                    .value_span
+                    .start
+                    .checked_sub(1)
+                    .and_then(|before| self.source.as_bytes().get(before))
+                    .and_then(|byte| match byte {
+                        b'"' => Some('"'),
+                        b'\'' => Some('\''),
+                        _ => None,
+                    });
+                (&record.entry, quote)
+            })
+            .collect()
+    }
+
     /// Require an unambiguous, fully parsed document before producing output.
     pub fn validate_for_mutation(&self) -> Result<()> {
         if let Some(issue) = self.issues.first() {
@@ -449,16 +475,22 @@ impl DotenvFile {
 
     /// Generate .env.example content with secrets replaced by placeholders.
     /// Public keys and non-secret config values are preserved as-is.
+    ///
+    /// A name `config` declares secret (a `[phantom.secrets.NAME]` entry or a
+    /// service's `secret_key`) is always masked, even when neither its name
+    /// nor its value looks like a credential.
     pub fn generate_example_content(
         &self,
         config: Option<&crate::config::PhantomConfig>,
     ) -> Result<String> {
         self.validate_for_mutation()?;
-        let replacements = self
+        let mut replacements = self
             .records
             .iter()
             .filter(|record| {
-                record.entry.is_phantom || classify(&record.entry) == SecretClassification::Secret
+                record.entry.is_phantom
+                    || config_declares_secret(config, &record.entry.key)
+                    || classify(&record.entry) == SecretClassification::Secret
             })
             .map(|record| {
                 (
@@ -470,7 +502,26 @@ impl DotenvFile {
                     ),
                 )
             })
+            .chain(
+                self.commented_secret_value_spans(config)
+                    .into_iter()
+                    .map(|(span, key)| {
+                        let replacement = render_replacement(
+                            &self.source,
+                            &span,
+                            &generate_placeholder(&key, config),
+                        );
+                        (span, replacement)
+                    }),
+            )
+            .chain(
+                self.credential_comment_spans()
+                    .into_iter()
+                    .chain(self.credential_prose_comment_spans(config))
+                    .map(|span| (span, INLINE_COMMENT_REMOVED.to_string())),
+            )
             .collect::<Vec<_>>();
+        replacements.sort_by_key(|(span, _)| span.start);
         let body = splice_source_owned(&self.source, &replacements);
         let (preamble, body) = body
             .strip_prefix(UTF8_BOM)
@@ -499,6 +550,157 @@ impl DotenvFile {
         ]
         .join(eol);
         Ok(format!("{preamble}{header}{eol}{body}"))
+    }
+
+    /// Commented-out assignments that still hold a secret, as (key, 1-based
+    /// physical line number) in source order.
+    ///
+    /// A full-line comment such as `# OPENAI_API_KEY=<old value>` is not an
+    /// entry, so `phantom init` never moves it into the vault and it stays
+    /// as plaintext in the file. Diagnostics use this to name such lines; the
+    /// value itself is never returned. Detection is the one example
+    /// generation masks with, minus placeholder values (empty,
+    /// `your_<name>_here`, and docs-style shapes such as `your.key.here`,
+    /// `...` or `<your-key>`; see [`is_commented_placeholder`]). Lines inside
+    /// a multi-line quoted value are not comments.
+    pub fn commented_secret_assignments(&self) -> Vec<(String, usize)> {
+        // Heuristics only: callers have no project config here.
+        self.commented_secret_value_spans(None)
+            .into_iter()
+            .filter(|(span, _)| !is_commented_placeholder(&self.source[span.clone()]))
+            .map(|(span, key)| (key, physical_line_number(&self.source, span.start)))
+            .collect()
+    }
+
+    /// Physical (1-based) line numbers of comments that hold
+    /// credential-shaped text but are not commented-out secret
+    /// assignments (those [`Self::commented_secret_assignments`] names by
+    /// key): prose notes such as `# old key: <token>` and inline comments
+    /// after a value such as `PORT=3000 # staging key <token>`. A comment
+    /// line already named by [`Self::commented_secret_assignments`] is not
+    /// repeated here, so the two reports stay disjoint. Lines inside a
+    /// multi-line quoted value are not comments and are never returned.
+    pub fn credential_comment_lines(&self) -> Vec<usize> {
+        let named: BTreeSet<usize> = self
+            .commented_secret_assignments()
+            .into_iter()
+            .map(|(_, line)| line)
+            .collect();
+        let mut lines: Vec<usize> = self
+            .credential_comment_spans()
+            .into_iter()
+            .chain(self.credential_prose_comment_spans(None))
+            .map(|span| physical_line_number(&self.source, span.start))
+            .filter(|line| !named.contains(line))
+            .collect();
+        lines.sort_unstable();
+        lines.dedup();
+        lines
+    }
+
+    /// Value spans of commented-out assignments that classify as secrets.
+    ///
+    /// A full-line comment such as `# OPENAI_API_KEY=<old value>` is not an
+    /// entry, but it still holds a credential. Example generation masks these
+    /// spans like live entries so the shareable file never copies them. Lines
+    /// inside a multi-line quoted value belong to that value and are skipped.
+    fn commented_secret_value_spans(
+        &self,
+        config: Option<&crate::config::PhantomConfig>,
+    ) -> Vec<(Range<usize>, String)> {
+        self.commented_tails()
+            .into_iter()
+            .filter_map(|(_, tail_start, tail)| {
+                commented_secret_value_span(tail, config)
+                    .map(|(span, key)| (tail_start + span.start..tail_start + span.end, key))
+            })
+            .collect()
+    }
+
+    /// Spans of inline comments that hold credential-shaped text.
+    ///
+    /// The comment after a live entry's value, or after the value of a
+    /// commented-out assignment, is copied verbatim into `.env.example`
+    /// whatever the entry's own verdict. A comment such as
+    /// `PORT=3000 # staging key <key>` is therefore replaced as a whole when
+    /// [`comment_holds_credential`] finds a credential in it; prose comments
+    /// are kept.
+    fn credential_comment_spans(&self) -> Vec<Range<usize>> {
+        let live = self
+            .records
+            .iter()
+            .filter_map(|record| credential_comment_span(&self.source, &record.value_span));
+        let commented = self
+            .commented_tails()
+            .into_iter()
+            .filter_map(|(_, tail_start, tail)| {
+                let parsed = DotenvFile::parse_str(tail);
+                let record = parsed.records.first()?;
+                credential_comment_span(tail, &record.value_span)
+                    .map(|span| tail_start + span.start..tail_start + span.end)
+            });
+        live.chain(commented).collect()
+    }
+
+    /// Spans of full-line prose comments that hold credential-shaped text.
+    ///
+    /// A comment such as `# old key: <key>` is not a commented-out
+    /// assignment, so neither [`Self::commented_secret_value_spans`] nor
+    /// [`Self::credential_comment_spans`] touches it, yet it is copied
+    /// verbatim into `.env.example`. It is replaced as a whole when
+    /// [`comment_holds_credential`] finds a credential in it. The span runs
+    /// from the first `#` to the end of the physical line, so indentation and
+    /// the line ending stay. Commented-out assignments keep their own
+    /// handling, which keeps every replaced span disjoint.
+    fn credential_prose_comment_spans(
+        &self,
+        config: Option<&crate::config::PhantomConfig>,
+    ) -> Vec<Range<usize>> {
+        self.commented_tails()
+            .into_iter()
+            .filter(|(_, _, tail)| {
+                DotenvFile::parse_str(tail).records.is_empty()
+                    && commented_secret_value_span(tail, config).is_none()
+                    && comment_holds_credential(tail)
+            })
+            .map(|(comment_start, tail_start, tail)| comment_start..tail_start + tail.len())
+            .collect()
+    }
+
+    /// Full-line comments outside any entry, as (offset of the first `#`,
+    /// offset of the text after the leading `#` marks and blanks, that
+    /// text). Lines inside a multi-line quoted value belong to that value
+    /// and are skipped.
+    fn commented_tails(&self) -> Vec<(usize, usize, &str)> {
+        let mut tails = Vec::new();
+        let mut records = self.records.iter().peekable();
+        let mut cursor = usize::from(self.source.starts_with(UTF8_BOM)) * UTF8_BOM.len();
+        while cursor < self.source.len() {
+            while records
+                .peek()
+                .is_some_and(|record| record.record_span.end <= cursor)
+            {
+                records.next();
+            }
+            if let Some(record) = records
+                .peek()
+                .filter(|record| record.record_span.contains(&cursor))
+            {
+                cursor = record.record_span.end;
+                continue;
+            }
+            let (line_end, next_line) = physical_line_bounds(&self.source, cursor);
+            let line = &self.source[cursor..line_end];
+            let trimmed = line.trim_start_matches([' ', '\t']);
+            if trimmed.starts_with('#') {
+                let tail = trimmed
+                    .trim_start_matches('#')
+                    .trim_start_matches([' ', '\t']);
+                tails.push((line_end - trimmed.len(), line_end - tail.len(), tail));
+            }
+            cursor = next_line;
+        }
+        tails
     }
 
     /// Rewrite the .env file, replacing real secret values with phantom tokens.
@@ -717,6 +919,21 @@ fn physical_location(source: &str, offset: usize) -> (usize, usize) {
     (line, column)
 }
 
+/// The 1-based physical line holding byte `offset`, counting `\n`, `\r\n`
+/// and a lone `\r` as one line ending each, as [`physical_line_bounds`] does.
+fn physical_line_number(source: &str, offset: usize) -> usize {
+    let before = &source.as_bytes()[..offset];
+    1 + before
+        .iter()
+        .enumerate()
+        .filter(|(index, byte)| match byte {
+            b'\n' => true,
+            b'\r' => before.get(index + 1) != Some(&b'\n'),
+            _ => false,
+        })
+        .count()
+}
+
 /// Locate the content end and post-newline end of the physical line at `start`.
 fn physical_line_bounds(source: &str, start: usize) -> (usize, usize) {
     let bytes = source.as_bytes();
@@ -794,6 +1011,147 @@ fn normalize_line_endings(source: &str) -> String {
     source.replace("\r\n", "\n").replace('\r', "\n")
 }
 
+/// The value span, relative to `tail`, of a commented-out assignment whose
+/// entry classifies as a secret, with its key.
+///
+/// `tail` is one physical line with the comment markers removed. A tail that
+/// parses as an assignment is judged on its decoded value and keeps its
+/// quotes and trailing comment. A tail with a valid key whose value does not
+/// parse (an unterminated quote from a commented multi-line value) is judged
+/// on the raw remainder after its opening quote, and the whole remainder,
+/// quote included, is masked. Only that one physical line is spanned. Prose such as
+/// `Set API_KEY=...` has no valid key and is left alone.
+fn commented_secret_value_span(
+    tail: &str,
+    config: Option<&crate::config::PhantomConfig>,
+) -> Option<(Range<usize>, String)> {
+    let parsed = DotenvFile::parse_str(tail);
+    if let Some(record) = parsed.records.first() {
+        let secret = !record.entry.is_phantom
+            && (config_declares_secret(config, &record.entry.key)
+                || classify(&record.entry) == SecretClassification::Secret);
+        return secret.then(|| (record.value_span.clone(), record.entry.key.clone()));
+    }
+    let assignment = tail.strip_prefix("export ").unwrap_or(tail);
+    let eq = assignment.find('=')?;
+    let key = assignment[..eq].trim();
+    if key.is_empty()
+        || !key
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'-'))
+    {
+        return None;
+    }
+    let value_offset = tail.len() - assignment.len() + eq + 1;
+    let raw = &tail[value_offset..];
+    let value_start = value_offset + (raw.len() - raw.trim_start_matches([' ', '\t']).len());
+    let value_end = value_offset + raw.trim_end_matches([' ', '\t']).len();
+    if value_start >= value_end {
+        return None;
+    }
+    // The opening quote of an unterminated value is not part of it: judge
+    // `"-----BEGIN ...` or `'sk-...` on what follows, so value rules that
+    // match a prefix still apply whatever the key is called.
+    let judged = tail[value_start..value_end]
+        .strip_prefix(['"', '\''])
+        .unwrap_or(&tail[value_start..value_end]);
+    let entry = EnvEntry {
+        key: key.to_string(),
+        value: judged.to_string(),
+        is_phantom: false,
+    };
+    let secret = config_declares_secret(config, &entry.key)
+        || classify(&entry) == SecretClassification::Secret;
+    let EnvEntry { key, mut value, .. } = entry;
+    value.zeroize();
+    secret.then_some((value_start..value_end, key))
+}
+
+/// The span of the inline comment after the value at `value_span`, when that
+/// comment holds credential-shaped text. The span runs from `#` to the end of
+/// the physical line, so blanks before the comment and the line ending stay.
+fn credential_comment_span(source: &str, value_span: &Range<usize>) -> Option<Range<usize>> {
+    let quoted =
+        value_span.start > 0 && matches!(source.as_bytes()[value_span.start - 1], b'"' | b'\'');
+    let after = value_span.end + usize::from(quoted);
+    let (line_end, _) = physical_line_bounds(source, after);
+    let trailing = &source[after..line_end];
+    let hash = after + (trailing.len() - trailing.trim_start_matches([' ', '\t']).len());
+    (source.as_bytes().get(hash) == Some(&b'#')
+        && comment_holds_credential(&source[hash..line_end]))
+    .then_some(hash..line_end)
+}
+
+/// Whether comment text holds a word the classifier's value rules call a
+/// secret: a known secret prefix, credentials in a URL, or a long
+/// high-entropy string. Each blank-separated word is judged with surrounding
+/// punctuation trimmed, and so is the part after a `=` or `:` in it
+/// (`old=<key>`). Words shorter than 16 characters are prose (`sk-learn`).
+fn comment_holds_credential(comment: &str) -> bool {
+    const MIN_CREDENTIAL_LEN: usize = 16;
+    let trim = |word: &str| {
+        word.trim_matches(|c: char| {
+            matches!(
+                c,
+                '#' | '"'
+                    | '\''
+                    | '`'
+                    | '('
+                    | ')'
+                    | '['
+                    | ']'
+                    | '{'
+                    | '}'
+                    | '<'
+                    | '>'
+                    | ','
+                    | ';'
+                    | '.'
+                    | '!'
+            )
+        })
+        .to_string()
+    };
+    comment.split_whitespace().any(|word| {
+        let word = trim(word);
+        let mut candidates = vec![word.clone()];
+        candidates.extend(word.split_once('=').map(|(_, rest)| trim(rest)));
+        candidates.extend(word.split_once(':').map(|(_, rest)| trim(rest)));
+        let found = candidates.iter().any(|candidate| {
+            candidate.len() >= MIN_CREDENTIAL_LEN && {
+                let mut entry = EnvEntry {
+                    key: String::new(),
+                    value: candidate.clone(),
+                    is_phantom: false,
+                };
+                let secret = deciding_rule(&entry).is_some();
+                entry.value.zeroize();
+                secret
+            }
+        });
+        let mut word = word;
+        word.zeroize();
+        for candidate in &mut candidates {
+            candidate.zeroize();
+        }
+        found
+    })
+}
+
+/// Whether a single dotenv `line` carries a comment that
+/// [`DotenvFile::commented_secret_assignments`] or
+/// [`DotenvFile::credential_comment_lines`] would report: a commented-out
+/// secret assignment, or prose/inline comment text a value rule calls a
+/// credential. Callers that report those comments by name or line use
+/// this to keep a second scan of the same line from reporting the
+/// credential again.
+pub fn line_holds_credential_comment(line: &str) -> bool {
+    let parsed = DotenvFile::parse_str(line);
+    !parsed.commented_secret_assignments().is_empty()
+        || !parsed.credential_comment_spans().is_empty()
+        || !parsed.credential_prose_comment_spans(None).is_empty()
+}
+
 /// Render a replacement that cannot merge with an immediately following
 /// inline comment. Existing whitespace before the zero-width value remains
 /// untouched; one new separator is placed between rendered value and `#`.
@@ -861,90 +1219,211 @@ fn unescape_double_quoted(s: &str) -> String {
     out
 }
 
+/// Key-name fragments that mark an entry as a secret. `PWD` covers short
+/// forms like `DB_PWD=hunter2` that would otherwise miss (audit F11).
+const NAME_RULE_FRAGMENTS: [&str; 12] = [
+    "KEY",
+    "SECRET",
+    "TOKEN",
+    "PASSWORD",
+    "PASSWD",
+    "PWD",
+    "CREDENTIAL",
+    "AUTH",
+    "PRIVATE",
+    "API_KEY",
+    "ACCESS_KEY",
+    "SIGNING",
+];
+
+/// Key-name fragments that indicate connection strings (which contain
+/// credentials).
+const CONNECTION_KEY_PATTERNS: [&str; 10] = [
+    "DATABASE_URL",
+    "REDIS_URL",
+    "MONGO_URL",
+    "POSTGRES_URL",
+    "MYSQL_URL",
+    "AMQP_URL",
+    "RABBITMQ_URL",
+    "ELASTICSEARCH_URL",
+    "CONNECTION_STRING",
+    "DSN",
+];
+
+/// Further value prefixes that mark a non-public key as a secret: JWT-style
+/// base64 and a PEM armor header (audit F11; multi-line PEM bodies depend on
+/// F12 quoted parsing).
+const NON_PUBLIC_VALUE_PREFIXES: [&str; 2] = ["eyJ", "-----BEGIN "];
+
+/// What `.env.example` shows in place of an inline comment that held
+/// credential-shaped text.
+const INLINE_COMMENT_REMOVED: &str = "# [comment removed by Phantom: it held a credential]";
+
+/// Framework prefixes whose keys are shipped in browser bundles.
+const PUBLIC_KEY_PREFIXES: [&str; 6] = [
+    "NEXT_PUBLIC_",
+    "EXPO_PUBLIC_",
+    "VITE_",
+    "REACT_APP_",
+    "NUXT_PUBLIC_",
+    "GATSBY_",
+];
+
+/// The value rule that decided an entry is a secret. Holds fixed labels and
+/// pattern constants only, never any part of the value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ValueRule {
+    /// The value starts with this known secret prefix.
+    KnownPrefix(&'static str),
+    /// A PEM block whose armor header names a private key.
+    PemPrivateKey,
+    /// A URL carrying credentials in its userinfo (`scheme://user:pass@host`).
+    UrlCredentials,
+    /// A URL carrying an auth, token, key or signature parameter.
+    UrlAuthParam,
+    /// A long high-entropy string.
+    HighEntropy,
+}
+
+impl ValueRule {
+    /// A fixed, value-free sentence fragment for human output.
+    pub fn describe(&self) -> String {
+        match self {
+            ValueRule::KnownPrefix(prefix) => {
+                format!(
+                    "starts with \"{}\", a known secret prefix",
+                    prefix.trim_end()
+                )
+            }
+            ValueRule::PemPrivateKey => "is a PEM private key".to_string(),
+            ValueRule::UrlCredentials => "is a URL with embedded credentials".to_string(),
+            ValueRule::UrlAuthParam => {
+                "is a URL with an auth, token or signature parameter".to_string()
+            }
+            ValueRule::HighEntropy => "is a long high-entropy string".to_string(),
+        }
+    }
+}
+
+/// The rule [`classify`] used to reach its verdict. Explanations (`phantom
+/// why`, MCP `phantom_why`) report this instead of re-deriving a reason, so
+/// the reason shown is always the one that decided.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClassificationReason {
+    /// A framework public prefix, with no secret-shaped value.
+    PublicPrefix(&'static str),
+    /// A framework public prefix overridden by a secret-shaped value. Key
+    /// names are never consulted for public-prefixed keys.
+    PublicPrefixWithSecretValue {
+        prefix: &'static str,
+        rule: ValueRule,
+    },
+    /// The key name contains this secret fragment.
+    KeyName(&'static str),
+    /// The key name contains this connection-string fragment.
+    ConnectionPattern(&'static str),
+    /// The value alone matched this rule.
+    Value(ValueRule),
+    /// No rule matched.
+    NoSecretPattern,
+}
+
+impl ClassificationReason {
+    /// The stable label the why report uses as `reason`.
+    pub fn label(&self) -> &'static str {
+        match self {
+            ClassificationReason::PublicPrefix(_) => "public_prefix",
+            ClassificationReason::PublicPrefixWithSecretValue { .. } => {
+                "public_prefix_with_secret_value"
+            }
+            ClassificationReason::KeyName(_) => "key_name",
+            ClassificationReason::ConnectionPattern(_) => "connection_pattern",
+            ClassificationReason::Value(_) => "value_pattern",
+            ClassificationReason::NoSecretPattern => "no_secret_pattern",
+        }
+    }
+
+    /// The one-sentence, value-free explanation `phantom why` and MCP
+    /// `phantom_why` both print as `Reason:`. Fixed sentences and pattern
+    /// constants only; never any part of the value.
+    pub fn explanation(&self) -> String {
+        match self {
+            ClassificationReason::PublicPrefix(prefix) => {
+                format!("Keys with the \"{prefix}\" prefix are browser-safe (shipped in client bundles)")
+            }
+            ClassificationReason::PublicPrefixWithSecretValue { prefix, rule } => format!(
+                "Key has the public prefix \"{prefix}\", but its value {}",
+                rule.describe()
+            ),
+            ClassificationReason::KeyName(pattern) => {
+                format!("Key name contains \"{pattern}\" (secret key pattern)")
+            }
+            ClassificationReason::ConnectionPattern(pattern) => {
+                format!("Key name matches connection string pattern (\"{pattern}\")")
+            }
+            ClassificationReason::Value(rule) => format!("Value {}", rule.describe()),
+            ClassificationReason::NoSecretPattern => {
+                "Does not match secret key patterns or value patterns".to_string()
+            }
+        }
+    }
+
+    /// The matched key fragment or public prefix, if the rule matched one.
+    /// Value rules report none: the report stays value-blind.
+    pub fn matched_pattern(&self) -> Option<&'static str> {
+        match self {
+            ClassificationReason::PublicPrefix(prefix)
+            | ClassificationReason::PublicPrefixWithSecretValue { prefix, .. }
+            | ClassificationReason::KeyName(prefix)
+            | ClassificationReason::ConnectionPattern(prefix) => Some(prefix),
+            ClassificationReason::Value(_) | ClassificationReason::NoSecretPattern => None,
+        }
+    }
+}
+
 /// Heuristic to determine if an env entry is likely a secret.
 /// Checks both the key name and value patterns.
+#[cfg(test)]
 fn looks_like_secret(entry: &EnvEntry) -> bool {
+    deciding_rule(entry).is_some()
+}
+
+/// The rule that makes a non-public entry a secret, or `None` when it is not
+/// one. Rules are tried in order and the first match decides.
+fn deciding_rule(entry: &EnvEntry) -> Option<ClassificationReason> {
     let key = entry.key.to_uppercase();
     let value = &entry.value;
 
-    // Key-name patterns that indicate secrets. `PWD` covers short forms like
-    // `DB_PWD=hunter2` that would otherwise miss (audit F11).
-    let secret_key_patterns = [
-        "KEY",
-        "SECRET",
-        "TOKEN",
-        "PASSWORD",
-        "PASSWD",
-        "PWD",
-        "CREDENTIAL",
-        "AUTH",
-        "PRIVATE",
-        "API_KEY",
-        "ACCESS_KEY",
-        "SIGNING",
-    ];
-
-    // Key-name patterns that indicate connection strings (which contain credentials)
-    let connection_patterns = [
-        "DATABASE_URL",
-        "REDIS_URL",
-        "MONGO_URL",
-        "POSTGRES_URL",
-        "MYSQL_URL",
-        "AMQP_URL",
-        "RABBITMQ_URL",
-        "ELASTICSEARCH_URL",
-        "CONNECTION_STRING",
-        "DSN",
-    ];
-
-    // Value patterns that indicate secrets
-    let secret_value_prefixes = [
-        "sk-",
-        "sk_",
-        "pk_",
-        "rk_",
-        "whsec_",
-        "Bearer ",
-        "ghp_",
-        "gho_",
-        "github_pat_",
-        "glpat-",
-        "xoxb-",
-        "xoxp-",
-        "AKIA",
-        "shpat_",
-        "eyJ",
-        // PEM-encoded private keys — the armor header is a clear marker
-        // (audit F11). Multi-line PEM bodies depend on F12 quoted parsing.
-        "-----BEGIN ",
-    ];
-
     // Check key name
-    if secret_key_patterns.iter().any(|p| key.contains(p)) {
-        return true;
+    if let Some(pattern) = NAME_RULE_FRAGMENTS.iter().find(|p| key.contains(*p)) {
+        return Some(ClassificationReason::KeyName(pattern));
     }
 
     // Check connection string keys
-    if connection_patterns.iter().any(|p| key.contains(p)) {
-        return true;
+    if let Some(pattern) = CONNECTION_KEY_PATTERNS.iter().find(|p| key.contains(*p)) {
+        return Some(ClassificationReason::ConnectionPattern(pattern));
     }
 
     // Check value patterns
-    if secret_value_prefixes.iter().any(|p| value.starts_with(p)) {
-        return true;
+    if let Some(prefix) = known_value_prefix(value).or_else(|| {
+        NON_PUBLIC_VALUE_PREFIXES
+            .into_iter()
+            .find(|p| value.starts_with(p))
+    }) {
+        return Some(ClassificationReason::Value(ValueRule::KnownPrefix(prefix)));
     }
 
     // Connection string URLs with credentials in userinfo (postgres://u:p@host)
     if value.contains("://") && value.contains('@') {
-        return true;
+        return Some(ClassificationReason::Value(ValueRule::UrlCredentials));
     }
 
     // URLs carrying auth material in the query string, e.g.
     // `https://host/endpoint?api_key=xxx` (audit F11). Bare `://` alone is
     // not enough — that matches harmless public endpoints.
     if value.contains("://") && url_has_auth_query_param(value) {
-        return true;
+        return Some(ClassificationReason::Value(ValueRule::UrlAuthParam));
     }
 
     // A Twilio Account SID is a public account identifier, not a credential:
@@ -954,7 +1433,7 @@ fn looks_like_secret(entry: &EnvEntry) -> bool {
     // (`AC` + 32 lowercase hex) under an `*ACCOUNT_SID` key is exempt from the
     // entropy heuristic.
     if is_twilio_account_sid(&key, value) {
-        return false;
+        return None;
     }
 
     // High-entropy long strings are likely secrets (32+ chars of hex/base64)
@@ -963,10 +1442,10 @@ fn looks_like_secret(entry: &EnvEntry) -> bool {
             c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '+' || c == '/' || c == '='
         })
     {
-        return true;
+        return Some(ClassificationReason::Value(ValueRule::HighEntropy));
     }
 
-    false
+    None
 }
 
 fn is_twilio_account_sid(upper_key: &str, value: &str) -> bool {
@@ -1117,44 +1596,53 @@ fn url_has_auth_query_param(value: &str) -> bool {
 /// known secret patterns (sk_live_, ghp_, etc.), it's classified as Secret to prevent
 /// accidental exposure of misnamed keys.
 pub fn classify(entry: &EnvEntry) -> SecretClassification {
-    if is_public_key(&entry.key) {
+    classify_with_reason(entry).0
+}
+
+/// [`classify`], with the rule that decided. This is the one decision path:
+/// `classify` is this verdict, and explanations report this reason.
+pub fn classify_with_reason(entry: &EnvEntry) -> (SecretClassification, ClassificationReason) {
+    if let Some(prefix) = public_key_prefix(&entry.key) {
         // Safety check: if the value looks like a real secret despite the public prefix,
         // classify as Secret to prevent leaking misnamed keys (e.g., VITE_STRIPE_SECRET_KEY=sk_live_...)
-        if has_secret_value_pattern(&entry.value)
-            || is_pem_private_key(&entry.value)
-            || url_has_userinfo_password(&entry.value)
-            || url_has_query_credential(&entry.value)
-        {
-            SecretClassification::Secret
-        } else {
-            SecretClassification::PublicKey
+        match public_value_rule(&entry.value) {
+            Some(rule) => (
+                SecretClassification::Secret,
+                ClassificationReason::PublicPrefixWithSecretValue { prefix, rule },
+            ),
+            None => (
+                SecretClassification::PublicKey,
+                ClassificationReason::PublicPrefix(prefix),
+            ),
         }
-    } else if looks_like_secret(entry) {
-        SecretClassification::Secret
+    } else if let Some(reason) = deciding_rule(entry) {
+        (SecretClassification::Secret, reason)
     } else {
-        SecretClassification::NotSecret
+        (
+            SecretClassification::NotSecret,
+            ClassificationReason::NoSecretPattern,
+        )
+    }
+}
+
+/// The value rule that overrides a public key prefix, if any.
+fn public_value_rule(value: &str) -> Option<ValueRule> {
+    if let Some(prefix) = known_value_prefix(value) {
+        Some(ValueRule::KnownPrefix(prefix))
+    } else if is_pem_private_key(value) {
+        Some(ValueRule::PemPrivateKey)
+    } else if url_has_userinfo_password(value) {
+        Some(ValueRule::UrlCredentials)
+    } else if url_has_query_credential(value) {
+        Some(ValueRule::UrlAuthParam)
+    } else {
+        None
     }
 }
 
 /// Check if a value matches known secret prefixes (independent of key name).
 fn has_secret_value_pattern(value: &str) -> bool {
-    let secret_value_prefixes = [
-        "sk-",
-        "sk_",
-        "pk_",
-        "rk_",
-        "whsec_",
-        "Bearer ",
-        "ghp_",
-        "gho_",
-        "github_pat_",
-        "glpat-",
-        "xoxb-",
-        "xoxp-",
-        "AKIA",
-        "shpat_",
-    ];
-    secret_value_prefixes.iter().any(|p| value.starts_with(p))
+    known_value_prefix(value).is_some()
 }
 
 /// A PEM block whose armor header names a private key (`PRIVATE KEY`,
@@ -1194,15 +1682,14 @@ fn url_has_query_credential(value: &str) -> bool {
 
 /// Check if a key name is a framework public key (safe for browser bundles).
 pub fn is_public_key(key: &str) -> bool {
-    let public_prefixes = [
-        "NEXT_PUBLIC_",
-        "EXPO_PUBLIC_",
-        "VITE_",
-        "REACT_APP_",
-        "NUXT_PUBLIC_",
-        "GATSBY_",
-    ];
-    public_prefixes.iter().any(|prefix| key.starts_with(prefix))
+    public_key_prefix(key).is_some()
+}
+
+/// The framework public prefix `key` starts with, if any.
+pub fn public_key_prefix(key: &str) -> Option<&'static str> {
+    PUBLIC_KEY_PREFIXES
+        .into_iter()
+        .find(|prefix| key.starts_with(prefix))
 }
 
 /// Committable dotenv template basenames (`.env.example`, `.env.sample`,
@@ -1236,7 +1723,81 @@ pub fn is_example_placeholder(value: &str) -> bool {
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
 }
 
+/// True if `value`, the raw value of a commented-out assignment, is a
+/// docs-style placeholder rather than a credential left behind: an
+/// [`is_example_placeholder`] value, filler such as `...`, `xxxx` or `****`,
+/// a short `<your-key>` or `<your api key>`, or `your` ... `here` words joined
+/// by `.`, `_`, `-` or blanks in any case (`your.key.here`,
+/// `YOUR_TOKEN_HERE`). Matching surrounding quotes are ignored. Anything a
+/// value rule calls a secret, in whole or in any one word, and any word
+/// longer than 24 characters, is never a placeholder, so a real credential
+/// wrapped in placeholder punctuation is still reported.
+fn is_commented_placeholder(value: &str) -> bool {
+    const MAX_PLACEHOLDER_LEN: usize = 64;
+    const MAX_WORD_LEN: usize = 24;
+    let unquoted = ['"', '\'']
+        .into_iter()
+        .find_map(|quote| {
+            value
+                .strip_prefix(quote)
+                .and_then(|rest| rest.strip_suffix(quote))
+        })
+        .unwrap_or(value);
+    if is_example_placeholder(unquoted) {
+        return true;
+    }
+    if unquoted.len() > MAX_PLACEHOLDER_LEN {
+        return false;
+    }
+    let (inner, bracketed) = unquoted
+        .strip_prefix('<')
+        .and_then(|rest| rest.strip_suffix('>'))
+        .map_or((unquoted, false), |inner| (inner, true));
+    if inner.is_empty() {
+        return false;
+    }
+    let matches_value_rule = |candidate: &str| {
+        let mut entry = EnvEntry {
+            key: String::new(),
+            value: candidate.to_string(),
+            is_phantom: false,
+        };
+        let secret = deciding_rule(&entry).is_some() || public_value_rule(&entry.value).is_some();
+        entry.value.zeroize();
+        secret
+    };
+    if matches_value_rule(inner) || inner.split(['.', ' ']).any(matches_value_rule) {
+        return false;
+    }
+    if inner
+        .chars()
+        .all(|c| matches!(c, '.' | '*' | 'x' | 'X' | '-' | '_'))
+    {
+        return true;
+    }
+    let words: Vec<&str> = inner.split(['.', '_', '-', ' ']).collect();
+    let plain_words = words.iter().all(|word| {
+        !word.is_empty()
+            && word.len() <= MAX_WORD_LEN
+            && word.chars().all(|c| c.is_ascii_alphanumeric())
+    });
+    let your_here = words.len() >= 2
+        && words[0].eq_ignore_ascii_case("your")
+        && words[words.len() - 1].eq_ignore_ascii_case("here");
+    plain_words && (bracketed || your_here)
+}
+
 /// Generate a descriptive placeholder for a secret key.
+/// Whether the project config declares `key` a secret: it has a
+/// `[phantom.secrets.KEY]` entry or is a service's `secret_key`. Example
+/// generation masks such a key whatever its name or value look like.
+fn config_declares_secret(config: Option<&crate::config::PhantomConfig>, key: &str) -> bool {
+    config.is_some_and(|cfg| {
+        cfg.phantom.secrets.contains_key(key)
+            || cfg.services.values().any(|svc| svc.secret_key == key)
+    })
+}
+
 fn generate_placeholder(key: &str, config: Option<&crate::config::PhantomConfig>) -> String {
     // Check for service mapping to give helpful hints
     if let Some(cfg) = config {
@@ -1473,6 +2034,36 @@ KEY3=unquoted
     }
 
     #[test]
+    fn added_provider_shapes_override_public_keys_but_embedded_prose_does_not() {
+        let region = DotenvFile::parse_str("REGION=ASIA\n");
+        assert!(region.real_secret_entries().is_empty());
+        for prefix in [
+            "xapp-", "xoxa-", "xoxs-", "xoxr-", "gho_", "ghu_", "ghs_", "ghr_", "ASIA",
+        ] {
+            let positive = EnvEntry {
+                key: "NEXT_PUBLIC_EXAMPLE".into(),
+                value: format!("{prefix}{}", "FAKE0".repeat(8)),
+                is_phantom: false,
+            };
+            assert_eq!(
+                classify(&positive),
+                SecretClassification::Secret,
+                "shape {prefix}"
+            );
+            let negative = EnvEntry {
+                key: "NEXT_PUBLIC_EXAMPLE".into(),
+                value: format!("documentation:{prefix}FAKE0"),
+                is_phantom: false,
+            };
+            assert_eq!(
+                classify(&negative),
+                SecretClassification::PublicKey,
+                "shape {prefix}"
+            );
+        }
+    }
+
+    #[test]
     fn test_looks_like_secret_heuristics() {
         // Key name patterns
         assert!(looks_like_secret(&EnvEntry {
@@ -1699,6 +2290,112 @@ KEY3=unquoted
         })
     }
 
+    fn reason_kv(key: &str, value: &str) -> ClassificationReason {
+        classify_with_reason(&EnvEntry {
+            key: key.into(),
+            value: value.into(),
+            is_phantom: false,
+        })
+        .1
+    }
+
+    /// The shared `Reason:` sentence names the deciding rule, with fixed text
+    /// and pattern constants only. `phantom why` and MCP `phantom_why` both
+    /// print it, so they cannot explain one entry differently.
+    #[test]
+    fn explanation_names_the_deciding_rule() {
+        let cases = [
+            (
+                reason_kv("DB_PWD", "x1"),
+                "Key name contains \"PWD\" (secret key pattern)",
+            ),
+            (
+                reason_kv("SENTRY_DSN", "x"),
+                "Key name matches connection string pattern (\"DSN\")",
+            ),
+            (
+                reason_kv("WEBHOOK", &["whsec", "abc"].join("_")),
+                "Value starts with \"whsec_\", a known secret prefix",
+            ),
+            (
+                reason_kv("CALLBACK", &["https://h/cb?", "token", "="].concat()),
+                "Value is a URL with an auth, token or signature parameter",
+            ),
+            (
+                reason_kv("BLOB", &"a1B2c3D4".repeat(5)),
+                "Value is a long high-entropy string",
+            ),
+            (
+                reason_kv("VITE_STRIPE_KEY", &["sk", "live", "abc"].join("_")),
+                "Key has the public prefix \"VITE_\", but its value starts with \"sk_\", a known secret prefix",
+            ),
+            (
+                reason_kv("VITE_SITE", "x"),
+                "Keys with the \"VITE_\" prefix are browser-safe (shipped in client bundles)",
+            ),
+            (
+                reason_kv("LOG_LEVEL", "debug"),
+                "Does not match secret key patterns or value patterns",
+            ),
+        ];
+        for (reason, expected) in cases {
+            assert_eq!(reason.explanation(), expected, "{}", reason.label());
+        }
+    }
+
+    /// `classify_with_reason` names the rule that decided, in the order the
+    /// classifier tries them.
+    #[test]
+    fn classification_reason_is_the_deciding_rule() {
+        let pem = ["-----BEGIN ", "PRIVATE KEY-----\nabc"].concat();
+        let userinfo = ["postgres://u:", "pw", "@db.example.com/app"].concat();
+        let sid = ["AC", &"0123456789abcdef".repeat(2)].concat();
+        assert_eq!(
+            reason_kv("DB_PWD", "x1"),
+            ClassificationReason::KeyName("PWD")
+        );
+        // `KEY` comes first in the key-name list, so it decides `API_KEY`.
+        assert_eq!(
+            reason_kv("OPENAI_API_KEY", "x"),
+            ClassificationReason::KeyName("KEY")
+        );
+        assert_eq!(
+            reason_kv("CERT", &pem),
+            ClassificationReason::Value(ValueRule::KnownPrefix("-----BEGIN "))
+        );
+        assert_eq!(
+            reason_kv("PRIMARY", &userinfo),
+            ClassificationReason::Value(ValueRule::UrlCredentials)
+        );
+        assert_eq!(
+            reason_kv("VITE_CERT", &pem),
+            ClassificationReason::PublicPrefixWithSecretValue {
+                prefix: "VITE_",
+                rule: ValueRule::PemPrivateKey,
+            }
+        );
+        assert_eq!(
+            reason_kv("VITE_DB", &userinfo),
+            ClassificationReason::PublicPrefixWithSecretValue {
+                prefix: "VITE_",
+                rule: ValueRule::UrlCredentials,
+            }
+        );
+        // The Twilio SID exemption leaves no reason behind.
+        assert_eq!(
+            reason_kv("TWILIO_ACCOUNT_SID", &sid),
+            ClassificationReason::NoSecretPattern
+        );
+        assert_eq!(
+            classify_kv("TWILIO_ACCOUNT_SID", &sid),
+            SecretClassification::NotSecret
+        );
+        for reason in [reason_kv("CERT", &pem), reason_kv("VITE_DB", &userinfo)] {
+            assert!(!format!("{reason:?}").contains("pw@"));
+            assert!(!format!("{reason:?}").contains("abc"));
+        }
+    }
+
     #[test]
     fn public_prefix_never_exempts_a_private_key_or_url_credentials() {
         let pem_header = ["-----BEGIN ", "PRIVATE KEY-----"].concat();
@@ -1857,6 +2554,301 @@ KEY3=unquoted
     }
 
     #[test]
+    fn example_masks_commented_out_secret_assignments() {
+        // A key commented out in .env (an old or alternate credential) must not
+        // be copied verbatim into the shareable .env.example.
+        let old = ["sk", "-proj-", "0ldC0mmentedKeyValue0123456789abcdef"].concat();
+        let alt = ["ghp", "_", "AltC0mmentedTokenValue0123456789abcd"].concat();
+        let pem = ["-----BEGIN ", "PRIVATE KEY-----"].concat();
+        let content = format!(
+            "# Current key\nOPENAI_API_KEY=sk-real-secret\n# OPENAI_API_KEY={old}\n  ## export GITHUB_TOKEN=\"{alt}\" # old\n#STRIPE_SECRET_KEY='{pem}\n# PORT=8080\n# Set API_KEY=see the docs\n"
+        );
+        let dotenv = DotenvFile::parse_str(&content);
+        let example = dotenv.generate_example_content(None).unwrap();
+        assert!(!example.contains(&old), "commented OpenAI value copied");
+        assert!(!example.contains(&alt), "commented GitHub value copied");
+        assert!(!example.contains(&pem), "commented PEM header copied");
+        assert!(example.contains("# OPENAI_API_KEY=your_openai_api_key_here\n"));
+        assert!(example.contains("  ## export GITHUB_TOKEN=\"your_github_token_here\" # old\n"));
+        assert!(example.contains("#STRIPE_SECRET_KEY=your_stripe_secret_key_here\n"));
+        // Commented config and prose stay as written.
+        assert!(example.contains("# PORT=8080\n"));
+        assert!(example.contains("# Set API_KEY=see the docs\n"));
+        assert!(example.contains("# Current key\n"));
+    }
+
+    #[test]
+    fn commented_secret_assignments_name_key_and_line_only() {
+        // Commented-out credentials stay as plaintext in .env after init, so
+        // diagnostics need their key and line; never their value.
+        let old = ["sk", "-proj-", "0ldC0mmentedKeyValue0123456789abcdef"].concat();
+        let alt = ["ghp", "_", "AltC0mmentedTokenValue0123456789abcd"].concat();
+        let pem = ["-----BEGIN ", "PRIVATE KEY-----"].concat();
+        let prose = ["sk", "-proj-", "Pr0seC0mmentValue0123456789abcdefgh"].concat();
+        let content = format!(
+            "# Current key\nOPENAI_API_KEY=sk-real-secret\n# OPENAI_API_KEY={old}\r\n  ## export GITHUB_TOKEN=\"{alt}\" # old\n#STRIPE_SECRET_KEY='{pem}\n# PORT=8080\n# Set API_KEY=see the docs\n# OPENAI_API_KEY=your_openai_api_key_here\n# OPENAI_API_KEY=\n# old key: {prose}\nCERT=\"line one\n# AWS_SECRET_ACCESS_KEY={old}\nline three\"\n"
+        );
+        let dotenv = DotenvFile::parse_str(&content);
+        assert_eq!(
+            dotenv.commented_secret_assignments(),
+            vec![
+                ("OPENAI_API_KEY".to_string(), 3),
+                ("GITHUB_TOKEN".to_string(), 4),
+                ("STRIPE_SECRET_KEY".to_string(), 5),
+            ]
+        );
+        assert!(DotenvFile::parse_str("API_KEY=live\n")
+            .commented_secret_assignments()
+            .is_empty());
+        let cr_only = format!("PORT=1\r# OPENAI_API_KEY={old}\r");
+        assert_eq!(
+            DotenvFile::parse_str(&cr_only).commented_secret_assignments(),
+            vec![("OPENAI_API_KEY".to_string(), 2)]
+        );
+    }
+
+    #[test]
+    fn commented_placeholder_values_are_not_reported() {
+        // Docs-style placeholders under a secret-looking key are not
+        // credentials left behind, whatever their separators.
+        let content = "# API_KEY=your.key.here\n# API_KEY=...\n# API_KEY=<your-key>\n# API_KEY=\"your.api.key.here\"\n# SECRET_TOKEN=YOUR_TOKEN_HERE\n# AUTH_TOKEN=your-auth-token-here\n# DB_PASSWORD=xxxxxxxx\n# API_KEY='<your api key>'\n# STRIPE_SECRET_KEY=****\n";
+        assert_eq!(
+            DotenvFile::parse_str(content).commented_secret_assignments(),
+            Vec::<(String, usize)>::new()
+        );
+    }
+
+    #[test]
+    fn commented_placeholder_shapes_never_hide_real_credentials() {
+        // A real credential wrapped in placeholder punctuation is still one.
+        let old = ["sk", "-proj-", "Wr4ppedC0mmentedValue0123456789abc"].concat();
+        let entropy = ["Q2hhbmdlTWVQbGFjZWhv", "bGRlcldyYXBwZWQwOTg3"].concat();
+        let content = format!(
+            "# API_KEY=<{old}>\n# API_KEY=your.{old}.here\n# API_KEY=\"<{entropy}>\"\n# API_KEY=your.{entropy}.here\n# API_KEY=changeme123\n"
+        );
+        let found = DotenvFile::parse_str(&content).commented_secret_assignments();
+        let lines: Vec<usize> = found.iter().map(|(_, line)| *line).collect();
+        assert_eq!(lines, vec![1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn commented_unterminated_quoted_pem_is_detected_on_its_own_line() {
+        // `# NAME="-----BEGIN ...` from a commented multi-line value has no
+        // closing quote on its line. The opening quote must not hide the PEM
+        // header from the value rules, whatever the key is called, and the
+        // span must stay on that one line.
+        let pem = ["-----BEGIN ", "PRIVATE KEY-----"].concat();
+        let body = ["MIIEvQIBADANBgkqhkiG9w0B", "AQEFAASCBKcwggSjAgEAAoIB"].concat();
+        let end = ["-----END ", "PRIVATE KEY-----"].concat();
+        for quote in ["\"", "'"] {
+            let content = format!(
+                "# CERT_BODY={quote}{pem}\n# {body}\n# {end}{quote}\nPORT=8080\n# NEXT_PUBLIC_PEM={quote}{pem}\nDEBUG=true\n"
+            );
+            let dotenv = DotenvFile::parse_str(&content);
+            assert_eq!(
+                dotenv.commented_secret_assignments(),
+                vec![
+                    ("CERT_BODY".to_string(), 1),
+                    ("NEXT_PUBLIC_PEM".to_string(), 5),
+                ],
+                "quote {quote}"
+            );
+            let example = dotenv.generate_example_content(None).unwrap();
+            assert!(!example.contains(&pem), "commented PEM header copied");
+            assert!(!example.contains(&body), "commented PEM body copied");
+            assert!(example.contains("# CERT_BODY=your_cert_body_here\n"));
+            assert!(example.contains("\nPORT=8080\n"));
+            assert!(example.contains("\nDEBUG=true\n"));
+        }
+    }
+
+    #[test]
+    fn credential_comment_lines_cover_prose_and_inline_comments() {
+        // Prose notes and inline comments hold credentials the same way
+        // commented-out assignments do; an assignment is reported by name
+        // instead, so the line sets stay disjoint.
+        let shape = ["ghp", "_", "Pr0seC0mmentGitHub0123456789abcdefg"].concat();
+        let content = format!(
+            "PORT=3000\n# old key: {shape}\nDEBUG=true # rotate {shape}\n# API_KEY={shape}\n# Set API_KEY=see the docs\n"
+        );
+        let dotenv = DotenvFile::parse_str(&content);
+        assert_eq!(dotenv.credential_comment_lines(), vec![2, 3]);
+        assert_eq!(
+            dotenv.commented_secret_assignments(),
+            vec![("API_KEY".to_string(), 4)]
+        );
+    }
+
+    #[test]
+    fn credential_comment_lines_skip_placeholders_and_quoted_values() {
+        // Docs placeholders and text inside a multi-line quoted value are
+        // not credentials left in a comment.
+        let shape = ["ghp", "_", "Q7rT2mVx9KpL4wZs8NdY3hBc6FjGu5EaR1oW"].concat();
+        let content = format!(
+            "# API_KEY=<your-key>\n# TODO rotate\nCERT=\"line one\n# inside value {shape}\nline three\"\n"
+        );
+        let dotenv = DotenvFile::parse_str(&content);
+        assert!(dotenv.credential_comment_lines().is_empty());
+        assert!(dotenv.commented_secret_assignments().is_empty());
+    }
+
+    #[test]
+    fn line_holds_credential_comment_judges_one_line() {
+        // The predicate covers every form the comment reports cover, so a
+        // second scan of the same line can skip exactly those.
+        let shape = ["ghp", "_", "Q7rT2mVx9KpL4wZs8NdY3hBc6FjGu5EaR1oW"].concat();
+        for line in [
+            format!("# API_KEY={shape}"),
+            format!("# rotate: {shape}"),
+            format!("PORT=3000 # was {shape}"),
+            format!("  # export GITHUB_TOKEN={shape}"),
+        ] {
+            assert!(line_holds_credential_comment(&line), "{line}");
+        }
+        for line in [
+            "# API_KEY=<your-key>",
+            "# TODO nothing",
+            "PORT=3000",
+            "NOTE=plain prose",
+        ] {
+            assert!(!line_holds_credential_comment(line), "{line}");
+        }
+    }
+
+    #[test]
+    fn example_removes_inline_comments_that_hold_credentials() {
+        // A trailing comment after a value is shared verbatim unless it holds
+        // credential-shaped text, whether the entry itself is a secret or not.
+        let openai = ["sk", "-proj-", "Inl1neC0mmentValue0123456789abcdef"].concat();
+        let github = ["ghp", "_", "Inl1neC0mmentGitHub0123456789abcdefg"].concat();
+        let url = ["postgres://app:", "Pa55w0rdInl1ne", "@db.internal/app"].concat();
+        let entropy = ["Q2hhbmdlTWVJbmxpbmVD", "b21tZW50RW50cm9weTA5"].concat();
+        let commented = ["sk", "_live_", "C0mmentedTa1lValue0123456789"].concat();
+        let content = format!(
+            "PORT=3000 # staging key {openai}\nAPI_KEY=live-value # rotated from {github}\nDB_HOST=\"db.internal\"   # old: {url}\nREGION=us-east-1 #backup=`{entropy}`\n# OPENAI_BASE_URL=https://api.example.com # alt {commented}\nDEBUG=true # verbose logs, see https://docs.example.com/debug\nTIMEOUT=30 # seconds; sk-learn default\n"
+        );
+        let dotenv = DotenvFile::parse_str(&content);
+        let example = dotenv.generate_example_content(None).unwrap();
+        for (label, fragment) in [
+            ("openai", &openai),
+            ("github", &github),
+            ("url", &url),
+            ("entropy", &entropy),
+            ("commented", &commented),
+        ] {
+            assert!(
+                !example.contains(fragment.as_str()),
+                "{label} comment copied"
+            );
+        }
+        let removed = INLINE_COMMENT_REMOVED;
+        assert!(example.contains(&format!("\nPORT=3000 {removed}\n")));
+        assert!(example.contains(&format!("\nAPI_KEY=your_api_key_here {removed}\n")));
+        assert!(example.contains(&format!("\nDB_HOST=\"db.internal\"   {removed}\n")));
+        assert!(example.contains(&format!("\nREGION=us-east-1 {removed}\n")));
+        assert!(example.contains(&format!(
+            "\n# OPENAI_BASE_URL=https://api.example.com {removed}\n"
+        )));
+        // Ordinary prose comments, URLs and short words stay as written.
+        assert!(
+            example.contains("\nDEBUG=true # verbose logs, see https://docs.example.com/debug\n")
+        );
+        assert!(example.contains("\nTIMEOUT=30 # seconds; sk-learn default\n"));
+    }
+
+    #[test]
+    fn example_inline_comment_removal_keeps_line_endings_and_quotes() {
+        let openai = ["sk", "-proj-", "CrLfInl1neComment0123456789abcdef"].concat();
+        let content =
+            format!("NAME='app' # was {openai}\r\nMULTI=\"one\r\ntwo\" # {openai}\r\nNEXT=ok\r\n");
+        let example = DotenvFile::parse_str(&content)
+            .generate_example_content(None)
+            .unwrap();
+        assert!(!example.contains(&openai), "credential comment copied");
+        let removed = INLINE_COMMENT_REMOVED;
+        assert!(example.ends_with(&format!(
+            "NAME='app' {removed}\r\nMULTI=\"one\r\ntwo\" {removed}\r\nNEXT=ok\r\n"
+        )));
+    }
+
+    #[test]
+    fn example_removes_prose_comments_holding_credentials() {
+        // A full-line prose comment is shared verbatim unless it holds
+        // credential-shaped text, like the inline comments above.
+        let openai = ["sk", "-proj-", "Pr0seC0mmentValue0123456789abcdef"].concat();
+        let github = ["ghp", "_", "Pr0seC0mmentGitHub0123456789abcdefg"].concat();
+        let url = ["postgres://app:", "Pa55w0rdPr0se", "@db.internal/app"].concat();
+        let entropy = ["Q2hhbmdlTWVQcm9zZUNv", "bW1lbnRFbnRyb3B5MDk4"].concat();
+        let prose = ["sk", "_live_", "Pr0seAss1gnmentValue0123456789"].concat();
+        let content = format!(
+            "# old key: {openai}\n  ## rotated from {github} on 2026-01-02\n#{url}\n\t# backup copy `{entropy}`\n# Set API_KEY={prose} to enable\n# Local development settings\n# Docs: https://docs.example.com/setup\n# sk-learn is a dependency, not a key\nPORT=3000\n"
+        );
+        let example = DotenvFile::parse_str(&content)
+            .generate_example_content(None)
+            .unwrap();
+        for (label, fragment) in [
+            ("openai", &openai),
+            ("github", &github),
+            ("url", &url),
+            ("entropy", &entropy),
+            ("prose", &prose),
+        ] {
+            assert!(
+                !example.contains(fragment.as_str()),
+                "{label} comment copied"
+            );
+        }
+        let removed = INLINE_COMMENT_REMOVED;
+        assert!(example.contains(&format!(
+            "\n{removed}\n  {removed}\n{removed}\n\t{removed}\n{removed}\n"
+        )));
+        // Ordinary prose comments, plain URLs, short words and the header
+        // stay as written.
+        assert!(example.ends_with(
+            "\n# Local development settings\n# Docs: https://docs.example.com/setup\n# sk-learn is a dependency, not a key\nPORT=3000\n"
+        ));
+        assert!(example.starts_with("# Environment variables for this project\n"));
+        assert!(example.contains("\n# See https://phm.dev for details\n"));
+        // Regenerating from a generated example keeps its header and markers.
+        let again = DotenvFile::parse_str(&example)
+            .generate_example_content(None)
+            .unwrap();
+        assert!(again.ends_with(&example));
+    }
+
+    #[test]
+    fn example_prose_comment_removal_keeps_bom_line_endings_and_values() {
+        let openai = ["sk", "-proj-", "CrLfPr0seComment0123456789abcdef"].concat();
+        let commented = ["sk", "_live_", "CrLfC0mmentedValue0123456789"].concat();
+        let content = format!(
+            "\u{feff}# was {openai}\r\n# OPENAI_API_KEY={commented} # old {openai}\r\nPRIVATE_KEY=\"one\r\n# old key: {openai}\r\nthree\"\r\n  # plain note\r\nNEXT=ok"
+        );
+        let example = DotenvFile::parse_str(&content)
+            .generate_example_content(None)
+            .unwrap();
+        assert!(!example.contains(&openai), "credential comment copied");
+        assert!(!example.contains(&commented), "commented value copied");
+        let removed = INLINE_COMMENT_REMOVED;
+        assert!(example.starts_with('\u{feff}'));
+        // The commented-out assignment keeps its own masking, and the line
+        // inside the multi-line value stays part of that masked value.
+        assert!(example.ends_with(&format!(
+            "\r\n{removed}\r\n# OPENAI_API_KEY=your_openai_api_key_here {removed}\r\nPRIVATE_KEY=\"your_private_key_here\"\r\n  # plain note\r\nNEXT=ok"
+        )));
+    }
+
+    #[test]
+    fn example_keeps_hash_lines_inside_multiline_values_out_of_comment_scan() {
+        // A `#` line inside a multi-line quoted value belongs to that value,
+        // which is masked as a whole; it is not a comment of its own.
+        let content = "PRIVATE_KEY=\"line one\n# NOT_A_COMMENT=x\nline three\"\nPORT=3000\n";
+        let dotenv = DotenvFile::parse_str(content);
+        let example = dotenv.generate_example_content(None).unwrap();
+        assert!(example.contains("PRIVATE_KEY=\"your_private_key_here\"\nPORT=3000\n"));
+        assert!(!example.contains("NOT_A_COMMENT"));
+    }
+
+    #[test]
     fn test_multiline_double_quoted_pem() {
         // F12: PEM-encoded private key stored across multiple lines in .env.
         let content = "PRIVATE_KEY=\"-----BEGIN RSA PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEF...\n-----END RSA PRIVATE KEY-----\"\nOTHER=value\n";
@@ -1900,6 +2892,28 @@ KEY3=unquoted
         // OTHER may be consumed into the attempted multi-line buffer; the
         // guarantee here is the parser does not panic and still returns.
         let _ = dotenv.entries();
+    }
+
+    #[test]
+    fn entries_with_quote_reports_each_values_delimiter() {
+        let content = "A=plain\nB=\"double\"\nC='single'\nD= 'spaced'\nE=\nF=\"multi\nline\"\n";
+        let dotenv = DotenvFile::parse_str(content);
+        let quotes: Vec<(&str, Option<char>)> = dotenv
+            .entries_with_quote()
+            .into_iter()
+            .map(|(entry, quote)| (entry.key.as_str(), quote))
+            .collect();
+        assert_eq!(
+            quotes,
+            [
+                ("A", None),
+                ("B", Some('"')),
+                ("C", Some('\'')),
+                ("D", Some('\'')),
+                ("E", None),
+                ("F", Some('"')),
+            ]
+        );
     }
 
     #[test]
@@ -2783,5 +3797,67 @@ NEXT=ok
         std::fs::write(&env_path, "NODE_ENV=development\n").unwrap();
         let parsed = DotenvFile::parse_file(&env_path).unwrap();
         assert_eq!(parsed.entries().len(), 1);
+    }
+
+    #[test]
+    fn example_masks_names_the_config_declares_secret() {
+        // Neither the names nor the value look like a credential, so only
+        // the project config says these entries are secret.
+        let plain = ["abc", "123", "xyz"].concat();
+        let source = format!(
+            "MY_SERVICE_CRED={plain}\n\
+             export MY_SERVICE_CRED_EXPORTED={plain}\n\
+             MY_SERVICE_CRED_DQ=\"{plain}\"\n\
+             MY_SERVICE_CRED_SQ='{plain}'\n\
+             # MY_SERVICE_CRED_OLD={plain}\n\
+             CUSTOM_GATEWAY_CRED={plain}\n\
+             APP_MODE={plain}\n"
+        );
+        let env = DotenvFile::parse_str(&source);
+        let mut config = crate::config::PhantomConfig::new_with_defaults("a".repeat(64));
+        for name in [
+            "MY_SERVICE_CRED",
+            "MY_SERVICE_CRED_EXPORTED",
+            "MY_SERVICE_CRED_DQ",
+            "MY_SERVICE_CRED_SQ",
+            "MY_SERVICE_CRED_OLD",
+        ] {
+            config
+                .phantom
+                .secrets
+                .insert(name.to_string(), crate::config::SecretOverride::default());
+        }
+        config.services.insert(
+            "gateway".to_string(),
+            crate::config::ServiceConfig {
+                secret_key: "CUSTOM_GATEWAY_CRED".to_string(),
+                pattern: None,
+                header: None,
+                header_format: None,
+                secret_type: "api_key".to_string(),
+            },
+        );
+
+        let example = env.generate_example_content(Some(&config)).unwrap();
+        let body: Vec<&str> = example.lines().filter(|l| !l.starts_with("# ")).collect();
+        assert_eq!(
+            body,
+            [
+                "#",
+                "",
+                "MY_SERVICE_CRED=your_my_service_cred_here",
+                "export MY_SERVICE_CRED_EXPORTED=your_my_service_cred_exported_here",
+                "MY_SERVICE_CRED_DQ=\"your_my_service_cred_dq_here\"",
+                "MY_SERVICE_CRED_SQ='your_my_service_cred_sq_here'",
+                "CUSTOM_GATEWAY_CRED=your_gateway_here",
+                "APP_MODE=abc123xyz",
+            ]
+        );
+        assert!(example.contains("# MY_SERVICE_CRED_OLD=your_my_service_cred_old_here\n"));
+        assert_eq!(example.matches(plain.as_str()).count(), 1);
+
+        // Without a config the heuristics alone decide, as before.
+        let unconfigured = env.generate_example_content(None).unwrap();
+        assert_eq!(unconfigured.matches(plain.as_str()).count(), 7);
     }
 }

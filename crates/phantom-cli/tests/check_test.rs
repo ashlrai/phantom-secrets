@@ -336,6 +336,44 @@ fn check_staged_placeholder_allowance_does_not_apply_to_dotenv() {
 }
 
 #[test]
+fn check_blocks_commented_out_secret_without_a_token_shape() {
+    // A commented-out assignment whose value has no known token prefix is
+    // still plaintext: the staged code scan cannot see it, so the dotenv
+    // comment scan must name it.
+    let aws = ["wJalrXUtnFEMI", "K7MDENG+bPxRfiCYEXAMPLEKEY"].concat();
+    let content = format!("NODE_ENV=production\n# AWS_SECRET_ACCESS_KEY={aws}\n");
+
+    let dir = common::canonical_tempdir();
+    fs::write(dir.path().join(".env"), &content).unwrap();
+    let output = phantom(&dir).arg("check").assert().failure();
+    let stderr = String::from_utf8_lossy(&output.get_output().stderr);
+    assert!(
+        stderr.contains("AWS_SECRET_ACCESS_KEY") && stderr.contains("commented out"),
+        "worktree comment secret should be reported, got: {stderr}"
+    );
+    assert!(
+        !stderr.contains(&aws),
+        "value must not be printed: {stderr}"
+    );
+
+    let staged = common::canonical_tempdir();
+    git_repo_with_staged(&staged, ".env", &content);
+    let output = phantom(&staged)
+        .args(["check", "--staged"])
+        .assert()
+        .failure();
+    let stderr = String::from_utf8_lossy(&output.get_output().stderr);
+    assert!(
+        stderr.contains("AWS_SECRET_ACCESS_KEY") && stderr.contains("commented out"),
+        "staged comment secret should be reported, got: {stderr}"
+    );
+    assert!(
+        !stderr.contains(&aws),
+        "value must not be printed: {stderr}"
+    );
+}
+
+#[test]
 fn check_json_reports_names_only_and_keeps_failure_status() {
     let dir = common::canonical_tempdir();
     fs::write(

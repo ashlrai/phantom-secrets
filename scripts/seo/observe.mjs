@@ -86,6 +86,11 @@ function invariant(condition, message) {
   if (!condition) throw new Error(message);
 }
 
+// Match JavaScript's default UTF-16 code-unit ordering regardless of locale.
+function compareCodeUnits(left, right) {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
 function isPlainObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
@@ -428,8 +433,13 @@ export function validateExperiments(value, allowedPaths, now = new Date()) {
   };
 }
 
+function hasQueryOrHash(url) {
+  // URL.search and URL.hash are empty even when their delimiters are present.
+  return url.href.includes("?") || url.href.includes("#");
+}
+
 function defaultNetworkPolicy(url) {
-  if (url.username || url.password || url.search || url.hash) return false;
+  if (url.username || url.password || hasQueryOrHash(url)) return false;
   if (url.origin === DEFAULT_SITE_ORIGIN) return true;
   if (url.origin !== "https://api.github.com") return false;
   return [
@@ -650,7 +660,7 @@ function inspectHtml(body) {
     robots,
     canonicals,
     h1_count: h1Count,
-    structured_data_types: [...collectTypes(jsonLd.values)].sort(),
+    structured_data_types: [...collectTypes(jsonLd.values)].sort(compareCodeUnits),
     structured_data_errors: jsonLd.errors,
     json_ld: jsonLd.values,
   };
@@ -666,13 +676,13 @@ function parseSitemap(body, siteOrigin) {
   const seen = new Set();
   for (const url of urls) {
     invariant(url.origin === siteOrigin, `sitemap contains an off-host URL: ${url.origin}`);
-    invariant(!url.search && !url.hash, `sitemap URL contains query or hash data: ${url.pathname}`);
+    invariant(!hasQueryOrHash(url), `sitemap URL contains query or hash data: ${url.pathname}`);
     invariant(url.pathname.length <= 512, "sitemap path exceeds the observation limit");
     invariant(!seen.has(url.pathname), `sitemap contains duplicate path ${url.pathname}`);
     seen.add(url.pathname);
     paths.push(url.pathname);
   }
-  return paths.sort();
+  return paths.sort(compareCodeUnits);
 }
 
 function addFinding(findings, severity, code, message, route = null) {
@@ -682,7 +692,7 @@ function addFinding(findings, severity, code, message, route = null) {
 function canonicalMatches(candidate, expected, siteOrigin) {
   try {
     const url = new URL(candidate, siteOrigin);
-    return url.origin === siteOrigin && !url.search && !url.hash && url.pathname === expected;
+    return url.origin === siteOrigin && !hasQueryOrHash(url) && url.pathname === expected;
   } catch {
     return false;
   }
@@ -1224,7 +1234,14 @@ async function readJson(file, label) {
 }
 
 async function main() {
-  const args = parseArguments(process.argv.slice(2));
+  let args;
+  try {
+    args = parseArguments(process.argv.slice(2));
+  } catch (error) {
+    process.stderr.write(`${error.message}\nUsage: node scripts/seo/observe.mjs --out <report.json> [--experiments <ledger.json>]\n`);
+    process.exitCode = 1;
+    return;
+  }
   let report;
   try {
     const experiments = await readJson(args.experiments, "experiment ledger");

@@ -36,6 +36,8 @@ pub fn run(
     value_arg: Option<String>,
     from_stdin: bool,
     lines: StdinLines,
+    dry_run: bool,
+    generate: bool,
 ) -> Result<()> {
     if let Some(mut value) = value_arg {
         value.zeroize();
@@ -59,8 +61,18 @@ pub fn run(
         }
     })?;
     validate_managed_dotenv_preflight(&project_dir, &config)?;
-    let vault = phantom_vault::try_create_vault(config.local_project_id())?;
+    if dry_run {
+        return dry_run_add(&project_dir, &config_path, &config, name);
+    }
+    let vault = crate::util::open_vault(config.local_project_id())?;
     ensure_secret_absent(vault.as_ref(), config.local_project_id(), name)?;
+
+    if generate {
+        let receipt =
+            phantom_mcp::generate_secret(&project_dir, vault.as_ref(), &config_before, name)?;
+        println!("{}", serde_json::to_string(&receipt)?);
+        return Ok(());
+    }
 
     // Existing-name authority is resolved from value-blind vault metadata
     // before stdin or the hidden prompt is touched. A second check in
@@ -96,6 +108,31 @@ pub fn run(
             .and_then(|part| part.to_str())
             .unwrap_or("managed dotenv")
             .cyan()
+    );
+    Ok(())
+}
+
+/// Plan an add from the config and dotenv only. Vault membership is not
+/// listed: opening the vault can take the project lock and create app-data
+/// directories.
+fn dry_run_add(
+    project_dir: &Path,
+    config_path: &Path,
+    config: &PhantomConfig,
+    name: &str,
+) -> Result<()> {
+    let resolved = phantom_core::managed_dotenv::resolve_dotenv(project_dir, config, &[])
+        .context("Failed to resolve the managed dotenv")?;
+    crate::commands::plan_print::print_plan(
+        "add",
+        &[name.to_string()],
+        &[],
+        &[config_path.to_path_buf(), resolved.path],
+        project_dir,
+        false,
+        &[],
+        true,
+        false,
     );
     Ok(())
 }
@@ -386,6 +423,7 @@ pub(super) fn rewrite_dotenv(before: Option<&[u8]>, name: &str) -> Result<Vec<u8
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::util::test_seam::{tree_snapshot, EnvRestore};
     use phantom_core::error::Result as PhantomResult;
     use phantom_vault::file::FileVault;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -667,13 +705,68 @@ mod tests {
             .find("validate_managed_dotenv_preflight(&project_dir, &config)?")
             .unwrap();
         let vault = source
-            .find("phantom_vault::try_create_vault(config.local_project_id())?")
+            .find("crate::util::open_vault(config.local_project_id())?")
             .unwrap();
         let input = source
             .find("let value = read_secret_value(name, from_stdin, lines)?")
             .unwrap();
         assert!(validate < vault);
         assert!(validate < input);
+        let dry = source.find("if dry_run {").unwrap();
+        assert!(
+            dry < vault,
+            "dry-run must return before the vault is opened"
+        );
+        let dry_fn = source
+            .split("fn dry_run_add(")
+            .nth(1)
+            .unwrap()
+            .split("pub(super) fn validate_managed_dotenv_preflight(")
+            .next()
+            .unwrap();
+        assert!(!dry_fn.contains("try_create_vault"));
+        assert!(!dry_fn.contains("open_vault"));
+        assert!(!dry_fn.contains("acquire_project_lock"));
+        assert!(!dry_fn.contains("get_or_create_passphrase"));
+        assert!(!dry_fn.contains("if from_stdin"));
+    }
+
+    #[test]
+    fn dry_run_add_does_not_reach_the_keychain_or_create_app_data() {
+        let _guard = crate::test_support::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let home = TempDir::new().unwrap();
+        let project = home.path().canonicalize().unwrap();
+        let restore = EnvRestore::apply(&project);
+        std::fs::create_dir(project.join("empty-meta")).unwrap();
+        std::fs::write(project.join(".hidden-lock"), b"lock").unwrap();
+        std::fs::write(project.join("project.lock"), b"lock").unwrap();
+        PhantomConfig::new_with_defaults(PhantomConfig::project_id_from_path(&project))
+            .save(&project.join(".phantom.toml"))
+            .unwrap();
+        std::fs::write(project.join(".env"), "PORT=3000\n").unwrap();
+        let _seam = crate::util::test_seam::TestProject::install(
+            project.clone(),
+            crate::util::test_seam::untouched_keychain,
+        );
+        let before = tree_snapshot(&project);
+
+        run(
+            "NEW_SERVICE_TOKEN",
+            None,
+            false,
+            StdinLines::SingleOnly,
+            true,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(before, tree_snapshot(&project));
+        assert!(!project.join("xdg-data").exists());
+        assert!(!project.join(".local").exists());
+        drop(_seam);
+        drop(restore);
     }
 
     #[test]

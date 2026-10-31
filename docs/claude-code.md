@@ -33,9 +33,9 @@ MCP entry and Phantom-managed dotenv read grants from
 rules. Dotenv denies remain a defense-in-depth boundary.
 
 **Release compatibility:** `v0.7.9` is the first release with this correction.
-`v0.7.8` and earlier binaries (including the Homebrew formula until it is bumped
-to `v0.7.9`) wrote MCP registration into `.claude/settings.local.json`, which is
-not Claude Code's supported MCP registration location. After upgrading to
+`v0.7.8` and earlier binaries (including installs made with the former `v0.7.8`
+Homebrew formula) wrote MCP registration into `.claude/settings.local.json`,
+which is not Claude Code's supported MCP registration location. After upgrading to
 `v0.7.9`, rerun `phantom setup --client claude` to migrate the legacy entry. If
 you must stay on `v0.7.8`, run `phantom setup --client claude --print` and
 manually merge only its `mcpServers.phantom` entry into `.mcp.json`. Keep
@@ -116,7 +116,7 @@ keep that JSON as their only text block and now also attach it as
 | `phantom_status` | Show project ID, managed `.env` protection counts, and service mappings without opening the vault. JSON: `{initialized, project_id, vault_inspected: false, dotenv: {path, entries, phantom_tokens, unprotected} \| null, services: [{name, secret_key, pattern}], next_step}`. |
 | `phantom_why` | Explain why a specific `.env` key is or isn't classified as a secret (shows the matching heuristic). Never opens the vault, and works before `phantom init` (it then classifies `./.env`, as `phantom why` does, with `exec: null`). JSON: `{key, dotenv_exists, found, classification, protected, reason, matched_pattern, service, exec, next_step}`; `classification` is `protected`, `public_key`, `secret_unprotected`, or `not_secret`. For a protected key, `exec.delivery` judges that key alone: `proxied` (a built-in route injects the real value for `exec.upstream`), `no_route` (the child gets only a session token that no provider accepts), `withheld` (a rotation-provider or sync credential exec never hands the child), `connection_string_refused`, or `custom_route_refused`. `exec.blocked_by` is non-null when the config stops `phantom exec` from starting for every key: `{service, reason, key}` with reason `custom_route`, `altered_builtin_route` or `connection_string`. `next_step` explains anything but an unblocked `proxied`. A connection-string key set in the shell environment that runs `phantom exec` also blocks it, and a static check cannot see that. |
 | `phantom_check` | Scan `.env` files for unprotected real secrets, or scan the runtime environment for phantom tokens without an active proxy. Returns a short summary plus the value-blind `phantom check --json` report (`mode`, `clean`, `findings`, `warnings`, and `indeterminate` when a dotenv could not be judged) as JSON text and MCP `structuredContent`. A symlinked dotenv is never followed; it is listed under `indeterminate` with a reason. |
-| `phantom_sync` | Show sync configuration and which secrets would be pushed to Vercel or Railway. Informational only — does not execute the sync. JSON: `{configured, platform_filter, configured_platforms, vault_secret_count, targets: [{platform, project_id, token_env, environments, service_id, environment_id, secrets}], next_step}`. |
+| `phantom_sync` | Show sync configuration and which secrets would be pushed to Vercel or Railway. Informational only — does not execute the sync. JSON: `{configured, platform_filter, configured_platforms, vault_secret_count, targets: [{platform, project_id, token_env, environments, service_id, environment_id, secrets}], live_gate_refusal, next_step}`. `live_gate_refusal` is the refusal the live `phantom sync` would return for the selection (overdue enforced rotation, read-only, unreadable metadata; names only), or null. |
 | `phantom_add_secret_interactive` | Return the `phantom add NAME` command for adding a new secret out-of-band, so the real value is typed only into a trusted terminal prompt. Effect-free: takes a name only, never a value, stores nothing, and needs neither `confirm` nor approval, so it works with `PHANTOM_MCP_EFFECTS` unset. |
 | `phantom_doctor` | Run repository-local health checks: config validity, `.env` protection, `.gitignore`, `.env.example`, pre-commit hook. It does not open the vault (use `phantom doctor` in a terminal for vault checks). Pass `fix=true` to auto-fix safe issues (`fix=true` is effectful and needs both gates below). Returns a short summary plus the value-blind `phantom doctor --json` report (`ok`, `issues`, `fixed`, `checks`, `mcp_clients`) as JSON text and MCP `structuredContent`. |
 
@@ -158,7 +158,7 @@ Claude's shell and PTY authority.
 
 | Tool | What it does |
 |------|-------------|
-| `phantom_add_secret` | Deprecated compatibility tool. Refuses plaintext values passed through MCP. |
+| `phantom_add_secret` | With `generate: true`, create a new locally generated 256-bit secret and return a value-free `name`/`fingerprint` receipt; otherwise refuses plaintext values passed through MCP. |
 | `phantom_remove_secret` | Transactionally remove the vault value, lifecycle record, and exact managed-dotenv mapping. |
 | `phantom_rotate` | Regenerate all phantom tokens in `.env`. Old tokens become invalid immediately — any running dev server that cached them will break until it reloads. Real secrets are unchanged. |
 | `phantom_cloud_push` | With a separately commissioned hosted deployment and entitled account, encrypt and upload the local vault. The public hosted service is not currently commissioned for authenticated use. Overwrites the existing cloud copy and requires `phantom login` first. |

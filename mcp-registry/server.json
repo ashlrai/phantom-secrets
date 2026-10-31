@@ -13,7 +13,7 @@
   "tools": [
     {
       "name": "phantom_add_secret",
-      "description": "Deprecated unsafe plaintext secret entry. This tool refuses values because MCP arguments enter agent context. Use phantom_add_secret_interactive instead (no approval needed). Retained for compatibility: still requires `confirm: true` plus a one-use out-of-band `approval_token` (the operator enables effects with PHANTOM_MCP_EFFECTS=trusted-terminal; a call without the token prints a nonce on the server's stderr for `phantom mcp-approve <NONCE>` in a trusted terminal), and never stores anything.",
+      "description": "Create a new locally generated 256-bit random secret with generate=true. Returns only the key name and SHA-256 fingerprint; never accepts or returns plaintext values or mappings. Existing names are refused. Requires confirm=true and a one-use out-of-band approval_token with operator-enabled PHANTOM_MCP_EFFECTS=trusted-terminal. With generate=false (default), this compatibility tool refuses plaintext entry; use phantom_add_secret_interactive for existing provider credentials. Generated secrets are local application secrets, not provider-issued API keys.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
@@ -29,6 +29,11 @@
           "confirm": {
             "default": false,
             "description": "Required. Must be true — the calling agent must confirm with the user\nbefore invoking this tool. Defends against prompt-injected instructions\nin project content (READMEs, issue comments, dependency docs) silently\nmutating the vault.",
+            "type": "boolean"
+          },
+          "generate": {
+            "default": false,
+            "description": "Generate a new 256-bit random secret locally. No value is accepted or returned.",
             "type": "boolean"
           },
           "name": {
@@ -505,7 +510,7 @@
     },
     {
       "name": "phantom_cloud_push",
-      "description": "Push a client-encrypted local vault to a separately commissioned Phantom Cloud deployment and entitled account; the public hosted service is not currently commissioned for authenticated use. The configured service receives ciphertext rather than decrypted vault values. Requires phantom login first. DESTRUCTIVE — overwrites the existing cloud copy; damage from a prompt-injected push propagates to every machine that later pulls. Requires `confirm: true` plus a one-use out-of-band `approval_token` (the operator enables effects with PHANTOM_MCP_EFFECTS=trusted-terminal; a call without the token prints a nonce on the server's stderr for `phantom mcp-approve <NONCE>` in a trusted terminal); the agent must ask the user for explicit consent before calling.",
+      "description": "Push a client-encrypted local vault to a separately commissioned Phantom Cloud deployment and entitled account; the public hosted service is not currently commissioned for authenticated use. The configured service receives ciphertext rather than decrypted vault values. Requires phantom login first. DESTRUCTIVE — overwrites the existing cloud copy; damage from a prompt-injected push propagates to every machine that later pulls. Refused, before any approval is used or value is read, when any entry is read-only (demoted by expiry policy) or has unreadable lifecycle metadata (names only). Requires `confirm: true` plus a one-use out-of-band `approval_token` (the operator enables effects with PHANTOM_MCP_EFFECTS=trusted-terminal; a call without the token prints a nonce on the server's stderr for `phantom mcp-approve <NONCE>` in a trusted terminal); the agent must ask the user for explicit consent before calling.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
@@ -552,7 +557,7 @@
     },
     {
       "name": "phantom_compliance_status",
-      "description": "Return the compliance state of the current Phantom project as a structured JSON badge. Checks: vault_accessible (every secret of this project can be read here; false for an encrypted-file vault this process cannot open, even when the OS keychain holds some entries, the same rule as `phantom agent doctor`), audit_enabled (PHANTOM_AUDIT env var is set), precommit_installed (git pre-commit hook contains the current local-only phantom check), env_clean (no unprotected real secrets in any dotenv phantom check scans: .env, .env.local, .env.development, .env.development.local, .env.production, .env.production.local, .env.test, .env.test.local and the configured dotenv_path; read without opening the vault, so it is reported before init and with a locked vault), secrets_have_ttl (every vault secret has an expiry (expires_at) or a rotation policy set; false when not every secret can be read; the detail gives the exact count and names at most 20). Each check is true/false with an optional detail string. Overall 'compliant' is true only when all checks pass. Read-only.",
+      "description": "Return the compliance state of the current Phantom project as a structured JSON badge. Checks: vault_accessible (every secret of this project can be read here; false for an encrypted-file vault this process cannot open, even when the OS keychain holds some entries, the same rule as `phantom agent doctor`), audit_enabled (PHANTOM_AUDIT env var is set), precommit_installed (git pre-commit hook contains the current local-only phantom check), env_clean (no unprotected real secrets in any dotenv phantom check scans: .env, .env.local, .env.development, .env.development.local, .env.production, .env.production.local, .env.test, .env.test.local and the configured dotenv_path; commented-out secret assignments and comments holding credential-shaped text count as unprotected; read without opening the vault, so it is reported before init and with a locked vault), secrets_have_ttl (every vault secret has an expiry (expires_at) or a rotation policy set; false when not every secret can be read; the detail gives the exact count and names at most 20). Each check is true/false with an optional detail string. Overall 'compliant' is true only when all checks pass. Read-only.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object"
@@ -1277,7 +1282,7 @@
     },
     {
       "name": "phantom_sync",
-      "description": "Show sync configuration and what secrets would be synced to deployment platforms (Vercel, Railway). This is an informational tool that never pushes: actual sync requires platform API tokens and `phantom sync` in a terminal. platform must be `vercel` or `railway` (case-insensitive); any other value is refused with invalid params before the vault is opened. Use it to understand and explain the sync setup. Returns a summary plus JSON {configured, platform_filter, configured_platforms, vault_secret_count, targets, next_step} (also as structuredContent).",
+      "description": "Show sync configuration and what secrets would be synced to deployment platforms (Vercel, Railway). This is an informational tool that never pushes: actual sync requires platform API tokens and `phantom sync` in a terminal. platform must be `vercel` or `railway` (case-insensitive); any other value is refused with invalid params before the vault is opened. Use it to understand and explain the sync setup. live_gate_refusal is the refusal the live `phantom sync` would return for the selected names (an overdue secret under enforced rotation, a secret demoted to read-only, or unreadable lifecycle metadata; names only, judged from metadata without reading a value), or null when that gate passes. Returns a summary plus JSON {configured, platform_filter, configured_platforms, vault_secret_count, targets, live_gate_refusal, next_step} (also as structuredContent).",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
@@ -1551,7 +1556,7 @@
     },
     {
       "name": "phantom_validate_all",
-      "description": "Run live credential health checks for all secrets in the vault. Each secret is validated against its target API (OpenAI, Stripe, GitHub, Anthropic, AWS, or a generic HTTP check). Returns a JSON compliance report with: total, valid, invalid, unreachable, not_checked counts and per-secret entries (name, validator, status, reason, checked_at). Secret VALUES are never returned or logged. This retrieves credentials, makes real outbound provider requests, and persists value-free validation metadata; it requires confirm plus approval_token and should run during a maintenance window.",
+      "description": "Run live credential health checks for all secrets in the vault. Each secret is validated against its target API (OpenAI, Stripe, GitHub, Anthropic, AWS, or a generic HTTP check). Returns a JSON compliance report with: total, valid, invalid, unreachable, not_checked counts and per-secret entries (name, validator, status, reason, checked_at). A secret blocked by its lifecycle policy (overdue under enforced rotation, demoted to read-only, or unreadable lifecycle metadata) is never read or sent: it is reported with status \"refused\" and its reason, the rest are still validated, and the result is flagged as an error. Secret VALUES are never returned or logged. This retrieves credentials, makes real outbound provider requests, and persists value-free validation metadata; it requires confirm plus approval_token and should run during a maintenance window.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,

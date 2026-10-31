@@ -4,6 +4,10 @@ const path = require('node:path');
 const test = require('node:test');
 const { pathToFileURL } = require('node:url');
 const ts = require('typescript');
+const React = require('react');
+const { renderToStaticMarkup } = require('react-dom/server');
+const { JSDOM } = require('jsdom');
+const markdownLoader = require('../scripts/public-doc-markdown-loader.cjs');
 const root = path.resolve(__dirname, '..');
 const repository = path.resolve(root, '..', '..');
 const read = (file) => fs.readFileSync(path.join(root, file), 'utf8');
@@ -11,18 +15,99 @@ const catalog = JSON.parse(read('docs-catalog.json'));
 const workbench = catalog.filter(({ slug }) => slug === 'workbench' || slug.startsWith('workbench-'));
 const assistant = import(pathToFileURL(path.join(root, 'src/lib/documentation-assistant.mjs')).href);
 function loadTs(file, overrides = {}) {
-  const compiled = ts.transpileModule(read(file), { compilerOptions: { module: ts.ModuleKind.CommonJS, esModuleInterop: true } }).outputText;
+  const compiled = ts.transpileModule(read(file), { compilerOptions: { module: ts.ModuleKind.CommonJS, esModuleInterop: true, jsx: ts.JsxEmit.ReactJSX } }).outputText;
   const exports = {};
   new Function('require', 'exports', '__dirname', compiled)((id) => {
     if (id === 'server-only') return {};
     if (Object.hasOwn(overrides, id)) return overrides[id];
     if (id === '../../docs-catalog.json') return catalog;
+    if (id.endsWith('.md')) {
+      const resourcePath = path.resolve(root, path.dirname(file), id);
+      const javascript = markdownLoader.call({ resourcePath, addDependency() {} }, fs.readFileSync(resourcePath));
+      return JSON.parse(javascript.slice('export default '.length, -1));
+    }
     return require(id);
   }, exports, path.dirname(path.join(root, file)));
   return exports;
 }
 const docs = loadTs('src/lib/public-docs.ts');
 const raw = loadTs('src/app/docs/[slug]/markdown/route.ts', { '@/lib/public-docs': docs });
+const { MarkdownDocument } = loadTs('src/components/docs/MarkdownDocument.tsx', { '@/lib/public-docs': docs });
+const renderedDocuments = new Map();
+
+function renderedDocument(slug) {
+  if (renderedDocuments.has(slug)) return renderedDocuments.get(slug);
+  const doc = docs.getPublicDoc(slug);
+  const html = renderToStaticMarkup(React.createElement(MarkdownDocument, { markdown: doc.markdown, sourceFile: doc.file }));
+  const document = new JSDOM(html).window.document;
+  renderedDocuments.set(slug, document);
+  return document;
+}
+
+async function publicWorkbenchDestination(href) {
+  const url = new URL(href, 'https://phm.dev');
+  if (url.origin !== 'https://phm.dev') return false;
+  const pathname = url.pathname.replace(/\/$/, '') || '/';
+  const guide = /^\/docs\/([^/]+)(\/markdown)?$/.exec(pathname);
+  if (guide && docs.getPublicDoc(guide[1])) {
+    const route = guide[2] ? 'markdown/route.ts' : 'page.tsx';
+    if (!fs.existsSync(path.join(root, 'src/app/docs/[slug]', route))) return false;
+    if (!guide[2]) {
+      if (!url.hash) return true;
+      try {
+        return renderedDocument(guide[1]).getElementById(decodeURIComponent(url.hash.slice(1))) !== null;
+      } catch (error) {
+        if (error instanceof URIError) return false;
+        throw error;
+      }
+    }
+    return (await raw.GET(new Request(url), { params: Promise.resolve({ slug: guide[1] }) })).status === 200;
+  }
+  if (pathname === '/docs/manifest.json') {
+    const release = JSON.parse(read('src/lib/workbench-release.json'));
+    const manifest = loadTs('src/app/docs/manifest.json/route.ts', { '@/lib/public-docs': docs, '@/lib/workbench-release': { WORKBENCH_RELEASE: release } });
+    return manifest.GET().status === 200;
+  }
+  if (pathname === '/') return fs.existsSync(path.join(root, 'src/app/page.tsx'));
+  if (pathname === '/workbench/llms.txt' || pathname === '/workbench/llms-full.txt') {
+    return fs.statSync(path.join(root, 'public', pathname.slice(1)), { throwIfNoEntry: false })?.isFile() ?? false;
+  }
+  return false;
+}
+
+test('workbench public documentation links resolve to existing routes and assets', async () => {
+  const links = [];
+  for (const { slug, file } of workbench) {
+    const document = renderedDocument(slug);
+    for (const anchor of document.querySelectorAll('a[href]')) {
+      links.push({ source: file, href: anchor.getAttribute('href'), base: `/docs/${slug}` });
+    }
+  }
+  for (const file of ['llms.txt', 'llms-full.txt']) {
+    for (const [, href] of read(`public/workbench/${file}`).matchAll(/\]\(([^)]+)\)/g)) {
+      links.push({ source: file, href, base: `/workbench/${file}` });
+    }
+  }
+  const checked = new Set();
+  for (const { source, href, base } of links) {
+    const url = new URL(href, `https://phm.dev${base}`);
+    if (url.origin !== 'https://phm.dev') continue;
+    assert.ok(await publicWorkbenchDestination(url.href), `${source} links to missing public destination ${href}`);
+    checked.add(url.pathname);
+  }
+  for (const target of ['/docs/manifest.json', '/workbench/llms.txt', '/workbench/llms-full.txt', '/docs/workbench-setup/markdown', ...workbench.map(({ slug }) => `/docs/${slug}`)]) {
+    assert.ok(checked.has(target), `expected public link was not checked: ${target}`);
+  }
+  assert.equal(await publicWorkbenchDestination('/docs/nonexistent'), false);
+  assert.equal(await publicWorkbenchDestination('/docs/nonexistent/markdown'), false);
+  assert.equal(await publicWorkbenchDestination('/workbench/missing.txt'), false);
+  assert.equal(await publicWorkbenchDestination('/dashboard'), false);
+  assert.equal(await publicWorkbenchDestination('https://example.com/docs/workbench'), false);
+  assert.equal(await publicWorkbenchDestination('/docs/workbench-setup?from=guide#install-the-reviewed-package'), true);
+  assert.equal(await publicWorkbenchDestination('/docs/workbench-setup#install'), false);
+  assert.equal(await publicWorkbenchDestination('/docs/workbench-setup#%69nstall-the-reviewed-package'), true);
+  assert.equal(await publicWorkbenchDestination('/docs/workbench-setup#%ZZ'), false);
+});
 
 test('workbench articles have immutable evidence and resolvable internal links', () => {
   assert.equal(workbench.length, 6);

@@ -8,18 +8,18 @@ Release-state snapshot verified on 2026-09-29: the immutable GitHub release
 native release rows, checksums, archive-specific SPDX SBOMs, and GitHub
 provenance and SPDX attestations are bound to that immutable release by
 [workflow 34153902556](https://github.com/ashlrai/phantom-secrets/actions/runs/34153902556).
-Exact public registry endpoints were requeried on 2026-09-29. Homebrew
-independently publishes the previous reviewed `v0.7.8` (bump to `v0.7.9` pending); npm `latest` remains `0.6.0`, and both npm
-`0.7.4` wrappers remain only under the failed `release-candidate` track. The
-GitHub receipt alone does not establish `0.7.9` publication on npm, crates.io,
-or MCP Registry, or any hosted-service commissioning, provider activation,
-certification, or customer acceptance.
+See [distribution status](distribution-status.md) for dated npm, Homebrew, crates.io, and MCP Registry evidence. Prefer the checksum-verified `v0.7.9` GitHub assets for an exact install. The GitHub receipt alone does not establish hosted-service commissioning, provider activation, certification, or customer acceptance.
 
 ## Start here
 
 | Goal | Guide |
 |------|-------|
+| Run GitHub PR operations through Phantom with curl | [GitHub box runners](github-box-runners.md) |
 | Protect a project for the first time | [Getting started](getting-started.md) |
+| Understand the landing-page install commands | [Quickstart reading guide](quickstart-reading-guide.md) |
+| Compare the landing-page install commands by platform | [Quickstart platform comparison](quickstart-platform-comparison.md) |
+| See a measured Linux install and the agent-CLI audit | [First run](FIRST-RUN.md) |
+| Compare install, exec, and memory with dotenvx and SOPS | [Benchmarks](BENCHMARKS.md) |
 | Delegate one bounded task to an AI coding client | [Safe delegation quickstart](delegation-quickstart.md) |
 | Keep personal, company, and client keys separate | [Multi-project key separation](multi-project-keys.md) |
 | Plan a team or enterprise pilot | [Enterprise adoption](enterprise-adoption.md) |
@@ -48,12 +48,14 @@ These guides cover installation, MCP setup, the value-blind tool model, and dail
 
 - [Safe delegation quickstart](delegation-quickstart.md) for the common cross-client workflow
 - [Hub status contract](hub-status-contract.md) for value-free local-orchestrator inspection (shipped in v0.7.9)
+- [Generated secrets](generated-secrets.md) for value-free local secret creation via `phantom add --generate` and `phantom_add_secret` `generate: true`
 - [Installed-runtime smoke](../examples/agent-first-five-minutes/README.md) for disposable CLI and MCP checks
 - [Claude Code](claude-code.md)
 - [Codex](codex.md)
 - [Cursor](cursor.md)
 - [Windsurf](windsurf.md)
 - [Temporal workers with no secrets on disk](temporal.md) (optional guidance, untested design)
+- [PostHog fleet capture](posthog.md) (header-only v1 event ingestion)
 - [Copyable agent policy, task brief, and pilot templates](../examples/agent-delegation/README.md)
 - [Examples index](../examples/README.md), including status and safety notes
 
@@ -77,6 +79,7 @@ and retains historical design-status language.
 - [Government evaluation](government-evaluation.md)
 - [Security evaluation](security-evaluation.md)
 - [Cloud login](login.md)
+- [Device authorization code format](device-code-format.md)
 - [Vercel and Railway sync](sync.md)
 - [CI/CD integration](ci-cd.md)
 - [Shell prompt integration](shell-prompt.md)

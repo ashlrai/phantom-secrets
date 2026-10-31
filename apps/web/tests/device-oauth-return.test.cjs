@@ -6,6 +6,11 @@ const ts = require("typescript");
 
 const filename = path.resolve(__dirname, "../src/app/device/device-authorization-client.tsx");
 const source = fs.readFileSync(filename, "utf8");
+const deviceCodeSource = fs.readFileSync(path.resolve(__dirname, "../src/lib/device-code.ts"), "utf8");
+const deviceCodeModule = { exports: {} };
+new Function("module", "exports", ts.transpileModule(deviceCodeSource, {
+  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+}).outputText)(deviceCodeModule, deviceCodeModule.exports);
 const testCode = "ABCD-2345";
 const testToken = "synthetic-callback-bearer";
 
@@ -50,11 +55,7 @@ function harness(options = {}) {
       useRef(initial) { return refs[refCursor++] ??= { current: initial }; },
       useEffect(callback) { if (effects.length === 0) effects.push(callback); },
     },
-    "@/lib/device-code": {
-      normalizeDeviceUserCode: (value) => value.replace(/-/g, "").toUpperCase(),
-      formatDeviceUserCode: (value) => value,
-      isValidDeviceUserCode: (value) => /^[A-Z2-9]{4}-?[A-Z2-9]{4}$/.test(value),
-    },
+    "@/lib/device-code": deviceCodeModule.exports,
     "@/lib/posthog": { capturePostHog: async () => {} },
     "@supabase/supabase-js": {
       createClient() {
@@ -122,6 +123,16 @@ function find(tree, type) {
   if (tree.type === type) return tree;
   for (const child of [tree.props?.children].flat(Infinity)) {
     const match = find(child, type);
+    if (match) return match;
+  }
+  return null;
+}
+
+function findById(tree, id) {
+  if (!tree || typeof tree !== "object") return null;
+  if (tree.props?.id === id) return tree;
+  for (const child of [tree.props?.children].flat(Infinity)) {
+    const match = findById(child, id);
     if (match) return match;
   }
   return null;
@@ -233,6 +244,228 @@ test("ordinary existing-session submission still approves without starting OAuth
   assert.equal(h.states[1], "done");
 });
 
+test("empty device code submission shows validation without authorizing", async () => {
+  const h = harness({ url: "https://phm.dev/device", storedCode: null, previousSession: { access_token: "synthetic-existing-account" } });
+  let tree = h.render();
+  assert.equal(find(tree, "input").props.value, "");
+  assert.equal(find(tree, "button").props.disabled, false);
+
+  let prevented = false;
+  await find(tree, "form").props.onSubmit({ preventDefault() { prevented = true; } });
+  tree = h.render();
+  assert.equal(prevented, true);
+  assert.equal(h.states[1], "input");
+  assert.equal(find(tree, "input").props.value, "");
+  assert.equal(find(tree, "input").props["aria-invalid"], true);
+  assert.equal(findById(tree, "device-error").props.role, "alert");
+  assert.equal(findById(tree, "device-error").props.children, "Enter 8 letters or numbers. The code is displayed as XXXX-XXXX.");
+  assert.ok(find(tree, "form"));
+  assert.equal(find(tree, "button").props.disabled, false);
+  assert.deepEqual(h.events, []);
+  assert.equal(h.requests.length, 0);
+});
+
+for (const [name, code, formatted] of [
+  ["clicking authorize with an empty code displays accessible validation", "", ""],
+  ["submitting an invalid device code exposes the error to assistive technology", "ab12c", "AB12-C"],
+]) test(name, async () => {
+  const { JSDOM } = require("jsdom");
+  const dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "https://phm.dev/device" });
+  const previousGlobals = new Map(["window", "document", "navigator", "HTMLElement"].map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)]));
+  for (const name of previousGlobals.keys()) Object.defineProperty(globalThis, name, { value: dom.window[name], configurable: true, writable: true });
+
+  const React = require("react");
+  const { render, cleanup } = require("@testing-library/react");
+  const userEvent = require("@testing-library/user-event").default;
+  let clientsCreated = 0;
+  const dependencies = {
+    "next/image": { __esModule: true, default: () => null },
+    "next/link": { __esModule: true, default: ({ children, ...props }) => React.createElement("a", props, children) },
+    "@/lib/device-code": deviceCodeModule.exports,
+    "@/lib/posthog": { capturePostHog: async () => {} },
+    "@supabase/supabase-js": { createClient: () => { clientsCreated++; throw new Error("Unexpected client creation"); } },
+  };
+  const compiled = ts.transpileModule(source, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, esModuleInterop: true },
+    fileName: filename,
+  }).outputText;
+  const module = { exports: {} };
+  try {
+    new Function("require", "module", "exports", compiled)(
+      (name) => dependencies[name] ?? require(name), module, module.exports,
+    );
+    const page = render(React.createElement(module.exports.default));
+    const input = page.getByRole("textbox", { name: "Device code" });
+    const button = page.getByRole("button", { name: "Authorize Device" });
+    assert.equal(input.value, "");
+    assert.equal(button.disabled, false);
+    assert.equal(input.getAttribute("aria-invalid"), "false");
+    assert.equal(page.queryByRole("alert"), null);
+    const user = userEvent.setup({ document: dom.window.document });
+    if (code) await user.type(input, code);
+    assert.equal(input.value, formatted);
+    await user.click(button);
+    const alert = page.getByRole("alert");
+    assert.equal(alert.textContent, "Enter 8 letters or numbers. The code is displayed as XXXX-XXXX.");
+    assert.equal(input.getAttribute("aria-invalid"), "true");
+    assert.ok(input.getAttribute("aria-describedby").split(/\s+/).includes(alert.id));
+    assert.equal(page.getByRole("textbox", {
+      name: "Device code",
+      description: /Enter 8 letters or numbers\. The code is displayed as XXXX-XXXX\./,
+    }), input);
+    assert.equal(clientsCreated, 0);
+  } finally {
+    cleanup();
+    dom.window.close();
+    for (const [name, descriptor] of previousGlobals) {
+      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+      else delete globalThis[name];
+    }
+  }
+});
+
+test("correcting an invalid code and resubmitting clears the rendered validation error", async () => {
+  const { JSDOM } = require("jsdom");
+  const dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "https://phm.dev/device" });
+  const globals = ["window", "document", "navigator", "HTMLElement", "sessionStorage", "fetch"];
+  const previousGlobals = new Map(globals.map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)]));
+  for (const name of globals.slice(0, -1)) Object.defineProperty(globalThis, name, { value: dom.window[name], configurable: true, writable: true });
+
+  const React = require("react");
+  const { render, cleanup, waitFor } = require("@testing-library/react");
+  const userEvent = require("@testing-library/user-event").default;
+  let resolveSession;
+  const session = new Promise((resolve) => { resolveSession = resolve; });
+  const requests = [];
+  globalThis.fetch = async (endpoint, request) => {
+    requests.push({ endpoint, request });
+    return Response.json({ status: "approved" });
+  };
+  const dependencies = {
+    "next/image": { __esModule: true, default: () => null },
+    "next/link": { __esModule: true, default: ({ children, ...props }) => React.createElement("a", props, children) },
+    "@/lib/device-code": deviceCodeModule.exports,
+    "@/lib/posthog": { capturePostHog: async () => {} },
+    "@supabase/supabase-js": { createClient: () => ({ auth: { getSession: () => session } }) },
+  };
+  const compiled = ts.transpileModule(source, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, esModuleInterop: true },
+    fileName: filename,
+  }).outputText;
+  const module = { exports: {} };
+  try {
+    new Function("require", "module", "exports", compiled)(
+      (name) => dependencies[name] ?? require(name), module, module.exports,
+    );
+    const page = render(React.createElement(module.exports.default));
+    const user = userEvent.setup({ document: dom.window.document });
+    const input = page.getByRole("textbox", { name: "Device code" });
+    await user.type(input, "abcd234");
+    await user.click(page.getByRole("button", { name: "Authorize Device" }));
+    assert.match(page.getByRole("alert").textContent, /Enter 8 letters or numbers/);
+    assert.equal(input.getAttribute("aria-invalid"), "true");
+    assert.equal(requests.length, 0);
+
+    await user.type(input, "5");
+    assert.equal(input.value, testCode);
+    await user.click(page.getByRole("button", { name: "Authorize Device" }));
+    assert.equal(page.queryByRole("alert"), null);
+    assert.equal(input.getAttribute("aria-invalid"), "false");
+    assert.deepEqual(input.getAttribute("aria-describedby").split(/\s+/), ["device-code-hint", "device-help"]);
+    assert.equal(page.getByRole("button", { name: "Signing in with GitHub..." }).disabled, true);
+
+    resolveSession({ data: { session: { access_token: "synthetic-existing-account" } }, error: null });
+    await waitFor(() => assert.ok(page.getByRole("heading", { name: "Device Authorized" })));
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].endpoint, "/api/v1/auth/device/approve");
+    assert.deepEqual(JSON.parse(requests[0].request.body), { user_code: "ABCD2345" });
+  } finally {
+    cleanup();
+    dom.window.close();
+    for (const [name, descriptor] of previousGlobals) {
+      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+      else delete globalThis[name];
+    }
+  }
+});
+
+test("invalid device code explains the accepted characters and displayed format", async () => {
+  const h = harness({ url: "https://phm.dev/device", storedCode: null });
+  find(h.render(), "input").props.onChange({ target: { value: "ab12c" } });
+  await find(h.render(), "form").props.onSubmit({ preventDefault() {} });
+  const tree = h.render();
+  assert.equal(find(tree, "input").props.value, "AB12-C");
+  assert.equal(find(tree, "input").props["aria-invalid"], true);
+  assert.equal(find(tree, "input").props["aria-describedby"], "device-code-hint device-error device-help");
+  const error = find(tree, "form").props.children.find((child) => child?.props?.id === "device-error");
+  assert.equal(error.props.role, "alert");
+  assert.equal(error.props.children, "Enter 8 letters or numbers. The code is displayed as XXXX-XXXX.");
+  assert.deepEqual(h.events, []);
+  assert.equal(h.requests.length, 0);
+});
+
+test("seven-character device code shows the length error and can be corrected", async () => {
+  const h = harness({ url: "https://phm.dev/device", storedCode: null, previousSession: { access_token: "synthetic-existing-account" } });
+  find(h.render(), "input").props.onChange({ target: { value: "abcd234" } });
+  let tree = h.render();
+  assert.equal(find(tree, "input").props.value, "ABCD-234");
+  assert.equal(find(tree, "button").props.disabled, false);
+
+  await find(tree, "form").props.onSubmit({ preventDefault() {} });
+  tree = h.render();
+  assert.equal(findById(tree, "device-error").props.children, "Enter 8 letters or numbers. The code is displayed as XXXX-XXXX.");
+  assert.equal(find(tree, "input").props["aria-invalid"], true);
+  assert.deepEqual(h.events, []);
+  assert.equal(h.requests.length, 0);
+
+  find(tree, "input").props.onChange({ target: { value: "abcd2345" } });
+  tree = h.render();
+  assert.equal(find(tree, "button").props.disabled, false);
+  await find(tree, "form").props.onSubmit({ preventDefault() {} });
+  assert.equal(h.states[2], "");
+  assert.equal(h.states[1], "done");
+  assert.equal(h.requests.length, 1);
+  assert.deepEqual(JSON.parse(h.requests[0].body), { user_code: "ABCD2345" });
+});
+
+test("eight letters and numbers are formatted and submitted without the display hyphen", async () => {
+  const h = harness({ url: "https://phm.dev/device", previousSession: { access_token: "synthetic-existing-account" } });
+  let input = find(h.render(), "input");
+  assert.equal(input.props.placeholder, "XXXX-XXXX");
+  assert.equal(input.props.maxLength, undefined);
+  input.props.onChange({ target: { value: "ab01" } });
+  assert.equal(find(h.render(), "input").props.value, "AB01");
+  find(h.render(), "input").props.onChange({ target: { value: "ab01-cd23!" } });
+  input = find(h.render(), "input");
+  assert.equal(input.props.value, "AB01-CD23");
+  assert.equal(find(h.render(), "button").props.disabled, false);
+  await find(h.render(), "form").props.onSubmit({ preventDefault() {} });
+  assert.equal(h.states[1], "done");
+  assert.deepEqual(JSON.parse(h.requests[0].body), { user_code: "AB01CD23" });
+});
+
+test("overlong device codes are rejected without starting authorization and can be corrected", async () => {
+  for (const [value, displayed] of [["abcd23456", "ABCD-23456"], ["abcd-234567", "ABCD-234567"]]) {
+    const h = harness({ url: "https://phm.dev/device", storedCode: null, previousSession: { access_token: "synthetic-existing-account" } });
+    find(h.render(), "input").props.onChange({ target: { value } });
+    let tree = h.render();
+    assert.equal(find(tree, "input").props.value, displayed);
+    assert.equal(find(tree, "button").props.disabled, false);
+    await find(tree, "form").props.onSubmit({ preventDefault() {} });
+    tree = h.render();
+    assert.equal(findById(tree, "device-error").props.children, "Enter 8 letters or numbers. The code is displayed as XXXX-XXXX.");
+    assert.equal(find(tree, "input").props["aria-invalid"], true);
+    assert.deepEqual(h.events, []);
+    assert.equal(h.requests.length, 0);
+
+    find(tree, "input").props.onChange({ target: { value: testCode } });
+    await find(h.render(), "form").props.onSubmit({ preventDefault() {} });
+    assert.equal(h.states[2], "");
+    assert.equal(h.states[1], "done");
+    assert.deepEqual(JSON.parse(h.requests[0].body), { user_code: "ABCD2345" });
+  }
+});
+
 test("causal control reproduces prior-account approval when the failed-callback retry guard is removed", async () => {
   const unguardedSource = source.replace("= needsFreshOAuth\n        ?", "= false\n        ?");
   assert.notEqual(unguardedSource, source);
@@ -321,7 +554,7 @@ test("only successful callback verification clears persisted retry intent", asyn
 });
 
 test("missing or invalid pending code still consumes callback and enables manual code entry", async () => {
-  for (const storedCode of [null, "invalid"]) {
+  for (const storedCode of [null, "invalid", "ABCD-23456"]) {
     const h = harness({ storedCode }); h.runEffect(); await h.settle();
     assert.equal(h.requests.length, 0);
     assert.ok(h.events.includes("sdk-session-restored"));
@@ -329,6 +562,12 @@ test("missing or invalid pending code still consumes callback and enables manual
     assert.equal(h.states[1], "input");
     assert.match(h.states[2], /current code from your terminal/);
     assert.equal(find(h.render(), "input").props.disabled, false);
+    if (storedCode === "ABCD-23456") {
+      assert.equal(find(h.render(), "input").props.value, storedCode);
+      await find(h.render(), "form").props.onSubmit({ preventDefault() {} });
+      assert.equal(h.states[2], "Enter 8 letters or numbers. The code is displayed as XXXX-XXXX.");
+      assert.equal(h.requests.length, 0);
+    }
   }
 });
 
@@ -381,12 +620,92 @@ test("submit errors enable retry without reflecting private SDK details", async 
   }
 });
 
+test("rendered device code input exposes the visible format hint", () => {
+  const React = require("react");
+  const { renderToStaticMarkup } = require("react-dom/server");
+  const { JSDOM } = require("jsdom");
+  const { getByRole, getByText } = require("@testing-library/dom");
+  const { isInaccessible } = require("dom-accessibility-api");
+  const compiled = ts.transpileModule(source, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, esModuleInterop: true },
+    fileName: filename,
+  }).outputText;
+  const dependencies = {
+    "next/image": { __esModule: true, default: () => null },
+    "next/link": { __esModule: true, default: ({ children, ...props }) => React.createElement("a", props, children) },
+    "@/lib/device-code": deviceCodeModule.exports,
+    "@/lib/posthog": { capturePostHog: async () => {} },
+  };
+  const module = { exports: {} };
+  new Function("require", "module", "exports", compiled)(
+    (name) => dependencies[name] ?? require(name), module, module.exports,
+  );
+  const dom = new JSDOM(renderToStaticMarkup(React.createElement(module.exports.default)));
+  try {
+    const body = dom.window.document.body;
+    const hint = getByText(body, "Enter 8 letters or numbers in the format XXXX-XXXX.");
+    assert.equal(isInaccessible(hint), false);
+    const input = getByRole(body, "textbox", {
+      name: "Device code",
+      description: /Enter 8 letters or numbers in the format XXXX-XXXX\./,
+    });
+    assert.equal(input.getAttribute("placeholder"), "XXXX-XXXX");
+    assert.ok(input.getAttribute("aria-describedby").split(/\s+/).includes(hint.id));
+  } finally {
+    dom.window.close();
+  }
+});
+
+test("device code format hint remains associated with the input when validation fails", async () => {
+  const h = harness();
+  let tree = h.render();
+  const hint = findById(tree, "device-code-hint");
+  assert.match(hint.props.children, /8 letters or numbers.*XXXX-XXXX/);
+  assert.deepEqual(find(tree, "input").props["aria-describedby"].split(" "), ["device-code-hint", "device-help"]);
+
+  await find(tree, "form").props.onSubmit({ preventDefault() {} });
+  tree = h.render();
+  const input = find(tree, "input");
+  assert.equal(input.props["aria-invalid"], true);
+  assert.deepEqual(input.props["aria-describedby"].split(" "), ["device-code-hint", "device-error", "device-help"]);
+  assert.equal(findById(tree, "device-error").props.role, "alert");
+  for (const id of input.props["aria-describedby"].split(" ")) assert.ok(findById(tree, id));
+});
+
+test("device code input has an accessible name before and after validation", async () => {
+  const React = require("react");
+  const { renderToStaticMarkup } = require("react-dom/server");
+  const { JSDOM } = require("jsdom");
+  const { getByRole } = require("@testing-library/dom");
+  const h = harness({ url: "https://phm.dev/device", storedCode: null });
+
+  function toElement(node) {
+    if (Array.isArray(node)) return node.map(toElement);
+    if (!node || typeof node !== "object") return node;
+    const { children, ...props } = node.props;
+    return React.createElement(node.type, props, ...[children].flat().map(toElement));
+  }
+
+  function assertNamedInput() {
+    const document = new JSDOM(renderToStaticMarkup(toElement(h.render()))).window.document;
+    const input = getByRole(document.body, "textbox", { name: "Device code" });
+    assert.equal(input.id, "device-code");
+    assert.equal(input.labels.length, 1);
+    assert.equal(input.labels[0].textContent.trim(), "Device code");
+  }
+
+  assertNamedInput();
+  await find(h.render(), "form").props.onSubmit({ preventDefault() {} });
+  assert.equal(find(h.render(), "input").props["aria-invalid"], true);
+  assertNamedInput();
+});
+
 test("branded form associates instructions and errors and announces busy and success states", async () => {
   const h = harness({ deferInitialization: true });
   const tree = h.render();
   assert.equal(find(tree, "label").props.htmlFor, "device-code");
   assert.equal(find(tree, "input").props.id, "device-code");
-  assert.equal(find(tree, "input").props["aria-describedby"], "device-help");
+  assert.equal(find(tree, "input").props["aria-describedby"], "device-code-hint device-help");
   assert.equal(find(tree, "button").props.type, "submit");
   assert.match(find(tree, "input").props.className, /text-2xl.*tracking-\[0\.12em\]/);
   assert.equal(find(tree, "a").props.href, "/secrets");

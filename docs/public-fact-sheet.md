@@ -30,12 +30,7 @@ checksums, SPDX SBOMs, and an aggregate checksum manifest after the release
 acceptance matrix passed. The exact execution receipt is
 [workflow 34153902556](https://github.com/ashlrai/phantom-secrets/actions/runs/34153902556).
 
-In the exact 2026-09-29 registry snapshot, the project Homebrew tap still publishes the previous
-`v0.7.8` (a `v0.7.9` bump is pending), npm
-`latest` at `0.6.0`, crates.io at `0.5.1`, and no
-MCP Registry `0.7.9` record was found. An unpinned npm, npx, Cargo, directory,
-or generated installation command must not be described as the reviewed
-`v0.7.9` release.
+See [distribution status](distribution-status.md) for dated npm, Homebrew, crates.io, and MCP Registry evidence. Prefer the checksum-verified `v0.7.9` GitHub assets for an exact install. An unpinned install command does not identify an immutable release.
 
 ## What Phantom does
 

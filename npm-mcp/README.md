@@ -13,15 +13,19 @@ into an agent conversation.
 
 ## Install an exact published version
 
+<!-- fresh:begin npm-mcp-wrapper-version -->
 This wrapper is version `0.8.0`. Its manifest and this README do not prove npm,
 GitHub, or MCP Registry publication. Verify the exact npm version before
 installing it:
+<!-- fresh:end -->
 
+<!-- fresh:begin npm-mcp-install -->
 ```bash
 npm view phantom-secrets-mcp@0.8.0 version dist.integrity dist.tarball --registry=https://registry.npmjs.org/
 npm install --global phantom-secrets-mcp@0.8.0 --registry=https://registry.npmjs.org/
 phantom-mcp --version
 ```
+<!-- fresh:end -->
 
 The first invocation downloads the matching native binary from the exact
 [`v0.8.0` GitHub release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.8.0),

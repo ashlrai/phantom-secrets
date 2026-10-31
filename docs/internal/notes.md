@@ -1,5 +1,38 @@
 # Notes: Phantom North Star Stabilization
 
+## Keyring migration tracking
+
+[Issue #242](https://github.com/ashlrai/phantom-secrets/issues/242) tracks
+the keyring migration and the three existing `deny.toml` advisory ignores:
+
+- `RUSTSEC-2026-0370` — `zvariant`
+- `RUSTSEC-2026-0371` — `zbus_names`
+- `RUSTSEC-2026-0372` — `zvariant_derive`
+
+The migration remains outstanding; these unmaintained-crate advisories come
+through keyring 3's Linux Secret Service dependency chain. Removing the ignores
+depends on eliminating the affected dependencies, not merely upgrading keyring.
+See the [migration scoping note](../design/keyring-4-migration-scoping.md) for
+the evaluated options and remaining compatibility checks.
+
+## Landing-page installer temporary directory
+
+The macOS and Linux commands in `apps/web/src/components/landing/QuickStart.tsx`
+create a private staging directory with
+`mktemp -d "${TMPDIR:-/tmp}/phantom-install.XXXXXX"`. Set and export `TMPDIR`
+to an existing writable directory before running the displayed command to choose
+its parent; if `TMPDIR` is unset or empty, the shell falls back to `/tmp`.
+For example, `export TMPDIR="$HOME/my temporary files"` selects that directory
+if it already exists and is writable. The staging directory contains the
+downloaded `install.sh`, not the installed binaries, which the commands check
+under `$HOME/.phantom-secrets/bin`.
+
+After the exit trap is installed, it attempts to remove the installer and then
+the empty staging directory on exit, including on failure. Cleanup is not
+guaranteed, and a nonempty directory is left in place. Windows instead uses a
+temporary installer file under PowerShell's `$env:TEMP` and attempts to remove it
+in `finally`; the Unix `TMPDIR` override does not apply to that command.
+
 ## Session Context
 - Branch: `main`
 - Entire: `entire resume main` returned no checkpoint.
@@ -42,11 +75,13 @@
 - Docs/action drift: GitHub Action docs reference unsupported flags (`login --ci`, `cloud pull --env`, `list --count`), source install package names are inconsistent, and proxy-auth docs need updating after header-only defaults.
 
 ### Device Auth Wave
-- Fixed initiate/approve mismatch by storing `device_tokens.user_code` as canonical uppercase alphanumeric without hyphens.
-- API still returns readable `XXXX-XXXX` codes using shared formatting helper.
+- The user code contains eight uppercase letters or digits. For human-readable display, the initiation API and browser format it as `XXXX-XXXX`: two groups of four code characters separated by a hyphen. The hyphen is a readability separator, so `ABCD-2345` has eight code characters and nine displayed characters including the separator.
+- The [CLI login flow](../../crates/phantom-cli/src/commands/login.rs) prints this user code for entry in the browser. It is distinct from the `device_code` returned by the initiation API, which the CLI uses for polling.
+- The [device authorization form](../../apps/web/src/app/device/device-authorization-client.tsx) displays and formats the code in the browser.
+- The hyphen is display formatting, not part of the canonical `device_tokens.user_code` value: `ABCD-2345` corresponds to `ABCD2345` in storage. The browser strips non-alphanumeric characters and uppercases input before formatting it; approval submits and looks up the canonical form. Incomplete or overlong normalized codes are invalid; extra characters are not silently truncated.
 - Browser device page and approve route now use shared normalization/validation helpers.
 - Initiate rate limit now matches its comment: reject once 10 device codes have been created in the last minute.
-- Added migration `20260523000016_canonical_device_user_codes.sql` to canonicalize existing user codes and enforce a unique `user_code` index.
+- The [canonical user-code migration](../../apps/web/supabase/migrations/20260523000016_canonical_device_user_codes.sql) uppercases existing codes and removes hyphens; its unique `user_code` index applies only to pending rows.
 - Verification: `npx tsc --noEmit` passed, `npm run build` passed.
 
 ### Config Route Risk Wave

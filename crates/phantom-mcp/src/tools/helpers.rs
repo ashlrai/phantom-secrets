@@ -58,6 +58,30 @@ pub fn enforce_rotation_on_entries<'e>(
     )
 }
 
+/// Refuse an MCP path that hands real values to new places (a team-vault or
+/// cloud push) when any entry was demoted to read-only by the expiry policy:
+/// the recipients would inject it at runtime, which the demotion exists to
+/// stop. Metadata that cannot be read refuses too. Messages carry names only.
+/// The decision is [`phantom_vault::rotation_gate::read_only_refusal`], shared
+/// with the CLI.
+pub fn refuse_read_only_entries<'e>(
+    vault: &dyn phantom_vault::VaultBackend,
+    entries: impl IntoIterator<Item = &'e str>,
+    action: &str,
+) -> Result<(), McpError> {
+    match phantom_vault::rotation_gate::read_only_refusal(
+        vault,
+        entries,
+        action,
+        "Rotate or promote them first.",
+    ) {
+        Some(refusal) => Err(state_err(format!(
+            "{refusal} No vault plaintext was read and no network request was sent."
+        ))),
+        None => Ok(()),
+    }
+}
+
 /// The same gate for MCP paths that write values of unknown age into the
 /// vault (a cloud or team vault pull): the incoming value carries no rotation anchor, so a
 /// new entry would look fresh and an overwrite would inherit the local

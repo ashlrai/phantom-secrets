@@ -19,22 +19,11 @@ fn init_project(dir: &TempDir) {
     )
     .expect("write seed .env");
 
-    Command::cargo_bin("phantom")
-        .expect("binary not found")
-        .args(["init", "--from", ".env"])
-        .current_dir(dir.path())
-        .env("PHANTOM_VAULT_PASSPHRASE", VAULT_PASS)
-        .env("HOME", dir.path())
-        .assert()
-        .success();
+    common::init_project(dir, VAULT_PASS);
 }
 
 fn phantom(dir: &TempDir) -> Command {
-    let mut cmd = Command::cargo_bin("phantom").expect("binary not found");
-    cmd.current_dir(dir.path())
-        .env("PHANTOM_VAULT_PASSPHRASE", VAULT_PASS)
-        .env("HOME", dir.path());
-    cmd
+    common::phantom(dir, VAULT_PASS)
 }
 
 #[test]
@@ -81,14 +70,7 @@ fn list_json_never_leaks_secret_values() {
 fn list_json_emits_empty_array_when_vault_has_no_secrets() {
     let dir = common::canonical_tempdir();
 
-    Command::cargo_bin("phantom")
-        .expect("binary not found")
-        .args(["init", "--empty"])
-        .current_dir(dir.path())
-        .env("PHANTOM_VAULT_PASSPHRASE", VAULT_PASS)
-        .env("HOME", dir.path())
-        .assert()
-        .success();
+    phantom(&dir).args(["init", "--empty"]).assert().success();
 
     let output = phantom(&dir).args(["list", "--json"]).assert().success();
     let stdout = String::from_utf8_lossy(&output.get_output().stdout);
@@ -147,4 +129,108 @@ fn list_from_a_project_subdirectory_names_the_project_root() {
         stderr.contains("No .phantom.toml found. Run phantom init first."),
         "{stderr}"
     );
+}
+
+#[test]
+fn list_scope_is_exact_value_blind_and_preserves_project_state() {
+    use phantom_vault::VaultBackend;
+
+    let dir = common::canonical_tempdir();
+    init_project(&dir);
+    let config =
+        phantom_core::config::PhantomConfig::load(&dir.path().join(".phantom.toml")).unwrap();
+    let encrypted = common::encrypted_file(&dir, config.local_project_id());
+    assert!(encrypted.is_file());
+    let vault = phantom_vault::file::FileVault::new(
+        encrypted.parent().unwrap().parent().unwrap(),
+        config.local_project_id(),
+        VAULT_PASS.to_string(),
+    )
+    .unwrap();
+    let fixture_value = "scope-test-private-fixture";
+    for name in [
+        "dev/DEV_ONLY",
+        "staging/STAGING_ONLY",
+        "prod/PROD_ONLY",
+        "development/OTHER",
+        "default/CANONICAL",
+        "LEGACY",
+    ] {
+        vault.store(name, fixture_value).unwrap();
+    }
+    fs::create_dir_all(dir.path().join(".phantom")).unwrap();
+    let selector = dir.path().join(".phantom/env");
+    fs::write(&selector, "staging\n").unwrap();
+    let before = fs::read(&encrypted).unwrap();
+    let config_before = fs::read(dir.path().join(".phantom.toml")).unwrap();
+    let dotenv_before = fs::read(dir.path().join(".env")).unwrap();
+    for (scope, expected) in [
+        ("dev", vec!["dev/DEV_ONLY"]),
+        ("staging", vec!["staging/STAGING_ONLY"]),
+        ("prod", vec!["prod/PROD_ONLY"]),
+        (
+            "default",
+            vec![
+                "LEGACY",
+                "NON_SECRET",
+                "OPENAI_API_KEY",
+                "default/CANONICAL",
+            ],
+        ),
+        ("absent", vec![]),
+    ] {
+        for json in [false, true] {
+            let mut cmd = phantom(&dir);
+            cmd.args(["list", "--scope", scope, "--show-expiry"]);
+            if json {
+                cmd.arg("--json");
+            }
+            let output = cmd.output().unwrap();
+            assert!(output.status.success());
+            let stdout = String::from_utf8(output.stdout).unwrap();
+            let stderr = String::from_utf8(output.stderr).unwrap();
+            assert!(!stdout.contains(fixture_value));
+            assert!(!stderr.contains(fixture_value));
+            assert!(!stdout.contains("phm_"));
+            assert!(!stderr.contains("phm_"));
+            assert!(!stdout.contains("sk-test-openai-value"));
+            assert!(!stderr.contains("sk-test-openai-value"));
+            if json {
+                let entries: Vec<Value> = serde_json::from_str(&stdout).unwrap();
+                let names: Vec<_> = entries
+                    .iter()
+                    .map(|entry| entry["name"].as_str().unwrap())
+                    .collect();
+                assert_eq!(names, expected);
+                assert!(entries.iter().all(|entry| entry.get("value").is_none()));
+            } else {
+                for name in &expected {
+                    assert!(stdout.contains(name));
+                }
+                for other in [
+                    "dev/DEV_ONLY",
+                    "staging/STAGING_ONLY",
+                    "prod/PROD_ONLY",
+                    "development/OTHER",
+                ] {
+                    if !expected.contains(&other) {
+                        assert!(!stdout.contains(other));
+                    }
+                }
+            }
+        }
+    }
+    for invalid in ["../prod", "prod/x", "", "a b"] {
+        phantom(&dir)
+            .args(["list", "--scope", invalid])
+            .assert()
+            .failure();
+    }
+    assert_eq!(fs::read(encrypted).unwrap(), before);
+    assert_eq!(fs::read(selector).unwrap(), b"staging\n");
+    assert_eq!(
+        fs::read(dir.path().join(".phantom.toml")).unwrap(),
+        config_before
+    );
+    assert_eq!(fs::read(dir.path().join(".env")).unwrap(), dotenv_before);
 }

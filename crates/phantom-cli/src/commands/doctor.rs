@@ -88,11 +88,11 @@ fn check_managed_dotenv(project_dir: &std::path::Path, env_path: &std::path::Pat
     let dotenv = match phantom_core::managed_dotenv::parse_regular_dotenv(project_dir, name) {
         Ok(Some(dotenv)) => dotenv,
         Ok(None) => {
-            check_info("No .env file in current directory");
+            check_info(&format!("No {name} file in current directory"));
             return 0;
         }
         Err(error) => {
-            check_fail(&format!(".env could not be read: {error:#}"));
+            check_fail(&format!("{name} could not be read: {error:#}"));
             // Only to choose the hint; the read above already decided.
             let special = std::fs::symlink_metadata(env_path)
                 .is_ok_and(|metadata| metadata.file_type().is_symlink() || !metadata.is_file());
@@ -106,18 +106,22 @@ fn check_managed_dotenv(project_dir: &std::path::Path, env_path: &std::path::Pat
     };
     let entries = dotenv.entries();
     let real_secrets = dotenv.real_secret_entries();
-    if let Err(error) = dotenv.validate_for_mutation() {
-        check_fail(&format!(".env parse error: {error}"));
+    let issues = if let Err(error) = dotenv.validate_for_mutation() {
+        check_fail(&format!("{name} parse error: {error}"));
         1
     } else if real_secrets.is_empty() {
-        check_pass(&format!(
-            ".env has {} entries, all protected",
-            entries.len()
-        ));
+        // A commented-out secret below is still plaintext, so no clean
+        // pass for the file then.
+        if dotenv.commented_secret_assignments().is_empty() {
+            check_pass(&format!(
+                "{name} has {} entries and no unprotected secrets",
+                entries.len()
+            ));
+        }
         0
     } else {
         check_warn(&format!(
-            ".env has {} unprotected secret(s): {}",
+            "{name} has {} unprotected secret(s): {}",
             real_secrets.len(),
             real_secrets
                 .iter()
@@ -127,18 +131,67 @@ fn check_managed_dotenv(project_dir: &std::path::Path, env_path: &std::path::Pat
         ));
         check_fix("Run: phantom init");
         1
+    };
+    issues + check_commented_entries(&dotenv, name)
+}
+
+/// One warning per commented-out assignment that still holds a secret.
+/// `phantom init` never touches comments, so such a value stays as plaintext
+/// in the file. Key names and line numbers only; the file is not changed.
+fn check_commented_entries(dotenv: &DotenvFile, file_label: &str) -> usize {
+    let found = dotenv.commented_secret_assignments();
+    for (key_name, line) in &found {
+        check_warn(&format!(
+            "{file_label} line {line}: commented-out {key_name} still holds a plaintext secret"
+        ));
+        check_fix(&format!(
+            "Delete line {line} from {file_label}; if the value is still needed, store it under an unused name with `phantom add <NAME> --stdin` (and rotate it if it was ever shared)"
+        ));
     }
+    found.len()
+}
+
+fn doctor_json(report: &DoctorReport) -> Result<String> {
+    #[derive(serde::Serialize)]
+    struct VersionedReport<'a> {
+        #[serde(rename = "schemaVersion")]
+        schema_version: u8,
+        #[serde(flatten)]
+        report: &'a DoctorReport,
+    }
+    let pretty = serde_json::to_string_pretty(&VersionedReport {
+        schema_version: 1,
+        report,
+    })?;
+    crate::commands::report_json::with_schema_pretty(
+        pretty,
+        crate::commands::report_json::DOCTOR_SCHEMA,
+    )
 }
 
 /// Run the full doctor suite. Pass `check_expiry = true` to also scan secret
 /// TTL metadata and warn about expired or soon-to-expire entries.
-pub fn run_doctor(fix: bool, check_expiry: bool, json: bool) -> Result<()> {
+pub fn run_doctor(fix: bool, check_expiry: bool, json: bool, strict: bool) -> Result<()> {
     if json {
         let report = collect_report(fix, check_expiry)?;
-        println!("{}", serde_json::to_string_pretty(&report)?);
+        println!("{}", doctor_json(&report)?);
+        exit_if_strict(strict, report.issues);
         return Ok(());
     }
-    run_checks(fix, check_expiry).map(|_| ())
+    let (issues, _) = run_checks(fix, check_expiry)?;
+    exit_if_strict(strict, issues);
+    Ok(())
+}
+
+/// `--strict` turns a finished report that still has issues into exit 2
+/// ([`crate::commands::report_json::STRICT_ISSUES_FOUND`]).
+/// Every issue counts the same: a warning is an issue, with no severity
+/// weighting. The report itself is unchanged. Without the flag, issues keep
+/// exit 0. Exit 1 stays a command error.
+fn exit_if_strict(strict: bool, issues: usize) {
+    if strict && issues > 0 {
+        std::process::exit(crate::commands::report_json::STRICT_ISSUES_FOUND);
+    }
 }
 
 /// `phantom doctor --output <path>`: write the full report (text, or JSON
@@ -147,16 +200,18 @@ pub fn run_doctor_to_file(
     fix: bool,
     check_expiry: bool,
     json: bool,
+    strict: bool,
     path: &std::path::Path,
 ) -> Result<()> {
     let report = collect_report(fix, check_expiry)?;
     let body = if json {
-        serde_json::to_string_pretty(&report)? + "\n"
+        doctor_json(&report)? + "\n"
     } else {
         render_text(&report)
     };
     crate::report_file::write_new(path, body.as_bytes())?;
     println!("{}", summary_line(&report, path));
+    exit_if_strict(strict, report.issues);
     Ok(())
 }
 
@@ -385,32 +440,48 @@ fn run_checks(fix: bool, check_expiry: bool) -> Result<(usize, usize)> {
         None => issues += check_managed_dotenv(&project_dir, &env_path),
     }
 
-    // Check 4: .gitignore
+    // Check 4: .gitignore, judged for the managed dotenv's own name.
+    let dotenv_name = env_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(".env");
     let gitignore_path = project_dir.join(".gitignore");
     let gitignore_before = phantom_core::fs::read_regular_file(&gitignore_path)
         .map_err(|error| anyhow::anyhow!("Refusing unsafe .gitignore target: {error}"))?;
     if let Some(bytes) = gitignore_before.as_deref() {
         let content = String::from_utf8(bytes.to_vec())
             .map_err(|_| anyhow::anyhow!("Refusing to rewrite non-UTF-8 .gitignore"))?;
-        if content.lines().any(|l| l.trim() == ".env") {
-            check_pass(".env is in .gitignore");
+        let state = phantom_core::gitignore::dotenv_ignore_state(&content, dotenv_name);
+        if state == phantom_core::gitignore::DotenvIgnore::Ignored {
+            check_pass(&format!("{dotenv_name} is in .gitignore"));
         } else {
-            check_warn(".env is NOT in .gitignore — secrets could be committed!");
-            check_fix("Run: echo '.env' >> .gitignore");
+            if state == phantom_core::gitignore::DotenvIgnore::Negated {
+                check_warn(&format!(
+                    "{dotenv_name} is un-ignored by a later `!` rule in .gitignore — secrets could be committed!"
+                ));
+            } else {
+                check_warn(&format!(
+                    "{dotenv_name} is NOT in .gitignore — secrets could be committed!"
+                ));
+            }
+            // Git applies the last matching rule, so an appended name also
+            // overrides an earlier negation.
+            check_fix(&format!("Run: echo '{dotenv_name}' >> .gitignore"));
             if fix && !mutation_applied {
                 ensure_dotenv_repair_guard(repair_dotenv_guard.as_ref())?;
                 let mut c = content;
                 if !c.ends_with('\n') {
                     c.push('\n');
                 }
-                c.push_str(".env\n");
+                c.push_str(dotenv_name);
+                c.push('\n');
                 write_project_file_exact(
                     &project_dir,
                     &gitignore_path,
                     gitignore_before.as_deref(),
                     c.as_bytes(),
                 )?;
-                check_fixed("Added .env to .gitignore");
+                check_fixed(&format!("Added {dotenv_name} to .gitignore"));
                 fixed += 1;
                 mutation_applied = true;
             } else {
@@ -422,12 +493,14 @@ fn run_checks(fix: bool, check_expiry: bool) -> Result<(usize, usize)> {
         check_fix("Run: phantom doctor --fix (creates .gitignore with .env patterns)");
         if fix && !mutation_applied {
             ensure_dotenv_repair_guard(repair_dotenv_guard.as_ref())?;
-            write_project_file_exact(
-                &project_dir,
-                &gitignore_path,
-                None,
-                b".env\n.env.local\n.env.*.local\n.env.backup\n",
-            )?;
+            let mut body = String::from(".env\n.env.local\n.env.*.local\n.env.backup\n");
+            if phantom_core::gitignore::dotenv_ignore_state(&body, dotenv_name)
+                != phantom_core::gitignore::DotenvIgnore::Ignored
+            {
+                body.push_str(dotenv_name);
+                body.push('\n');
+            }
+            write_project_file_exact(&project_dir, &gitignore_path, None, body.as_bytes())?;
             check_fixed("Created .gitignore with .env patterns");
             fixed += 1;
             mutation_applied = true;
@@ -655,7 +728,17 @@ fn run_checks(fix: bool, check_expiry: bool) -> Result<(usize, usize)> {
 
         if phantom_core::audit::enabled() {
             match phantom_core::audit::log_path() {
-                Ok(path) => match std::fs::metadata(&path) {
+                // Not followed: a symlink or non-regular file at the log
+                // path is refused by every audit reader and writer.
+                Ok(path) => match std::fs::symlink_metadata(&path) {
+                    Ok(meta) if !meta.is_file() => {
+                        check_warn(&format!(
+                            "Audit log is a symlink or not a regular file and will be refused: {}",
+                            path.display()
+                        ));
+                        check_fix("Remove it so Phantom can create a private audit log");
+                        issues += 1;
+                    }
                     Ok(meta) => {
                         let bytes = meta.len();
                         let size_str = if bytes >= 1024 {
@@ -1078,6 +1161,31 @@ fn check_fixed(msg: &str) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn json_v1_snapshot_contains_only_diagnostic_metadata() {
+        let mut report = phantom_core::report::DoctorReport::default();
+        report.push("warn", "OPENAI_API_KEY is unprotected");
+        report.issues = 1;
+        let actual = super::doctor_json(&report).unwrap();
+        assert_eq!(
+            actual,
+            r#"{
+  "schema": "phantom.doctor.v1",
+  "schemaVersion": 1,
+  "ok": false,
+  "issues": 1,
+  "fixed": 0,
+  "checks": [
+    {
+      "status": "warn",
+      "message": "OPENAI_API_KEY is unprotected"
+    }
+  ],
+  "mcp_clients": []
+}"#
+        );
+    }
+
     use super::{precommit_hook, HookChange};
     use crate::commands::upgrade::{
         detect_install_source, detect_install_source_from, InstallSource,
@@ -1142,10 +1250,14 @@ mod tests {
     type CheckLine = (&'static str, String, Option<String>);
 
     fn dotenv_check_lines(project: &Path) -> (usize, Vec<CheckLine>) {
+        dotenv_check_lines_for(project, ".env")
+    }
+
+    fn dotenv_check_lines_for(project: &Path, name: &str) -> (usize, Vec<CheckLine>) {
         super::REPORT.with(|report| {
             *report.borrow_mut() = Some(phantom_core::report::DoctorReport::default())
         });
-        let issues = super::check_managed_dotenv(project, &project.join(".env"));
+        let issues = super::check_managed_dotenv(project, &project.join(name));
         let report = super::REPORT
             .with(|report| report.borrow_mut().take())
             .unwrap();
@@ -1229,6 +1341,88 @@ mod tests {
         assert_eq!((issues, lines[0].0), (1, "warn"));
         assert!(lines[0].1.contains("OPENAI_API_KEY"));
         assert_eq!(lines[0].2.as_deref(), Some("Run: phantom init"));
+
+        std::fs::write(
+            project.path().join(".env"),
+            "NODE_ENV=development\nPORT=3000\nOPENAI_API_KEY=phm_placeholder\n",
+        )
+        .unwrap();
+        let (issues, lines) = dotenv_check_lines(project.path());
+        assert_eq!((issues, lines[0].0), (0, "pass"));
+        assert_eq!(lines[0].1, ".env has 3 entries and no unprotected secrets");
+    }
+
+    /// A project managing `.env.local` (`phantom init --from .env.local`) was
+    /// told about ".env" in every line of this check, a file it may not have.
+    #[test]
+    fn dotenv_check_names_the_managed_file() {
+        let project = tempfile::tempdir().unwrap();
+        let (_, lines) = dotenv_check_lines_for(project.path(), ".env.local");
+        assert_eq!(lines[0].1, "No .env.local file in current directory");
+
+        std::fs::write(
+            project.path().join(".env.local"),
+            format!("OPENAI_API_KEY={}-inside\n", "sk"),
+        )
+        .unwrap();
+        let (_, lines) = dotenv_check_lines_for(project.path(), ".env.local");
+        assert!(
+            lines[0]
+                .1
+                .starts_with(".env.local has 1 unprotected secret(s)"),
+            "{lines:?}"
+        );
+
+        std::fs::write(project.path().join(".env.local"), "PORT=3000\n").unwrap();
+        let (_, lines) = dotenv_check_lines_for(project.path(), ".env.local");
+        assert_eq!(
+            lines[0].1,
+            ".env.local has 1 entries and no unprotected secrets"
+        );
+
+        std::fs::write(project.path().join(".env.local"), "BROKEN_RECORD\n").unwrap();
+        let (_, lines) = dotenv_check_lines_for(project.path(), ".env.local");
+        assert!(
+            lines[0].1.starts_with(".env.local parse error"),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn dotenv_check_names_commented_out_secrets_by_key_and_line() {
+        // init protects live entries only; a commented-out credential stays
+        // as plaintext in .env, so doctor names it (key and line, no value).
+        let project = tempfile::tempdir().unwrap();
+        let old = ["sk", "-proj-", "D0ct0rC0mmentedValue0123456789abcdef"].concat();
+        let alt = ["ghp", "_", "D0ct0rC0mmentedGitHub0123456789abcde"].concat();
+        std::fs::write(
+            project.path().join(".env"),
+            format!(
+                "PORT=3000\n# OPENAI_API_KEY={old}\n# PORT=8080\n# export GITHUB_TOKEN=\"{alt}\"\n"
+            ),
+        )
+        .unwrap();
+
+        let (issues, lines) = dotenv_check_lines(project.path());
+
+        assert_eq!(issues, 2, "{lines:?}");
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(lines.iter().all(|line| line.0 != "pass"), "{lines:?}");
+        for (line, (key, number)) in lines
+            .iter()
+            .zip([("OPENAI_API_KEY", 2), ("GITHUB_TOKEN", 4)])
+        {
+            assert_eq!(line.0, "warn");
+            assert!(line.1.contains(key), "{line:?}");
+            assert!(line.1.contains(&format!("line {number}")), "{line:?}");
+            let fix = line
+                .2
+                .as_deref()
+                .expect("a commented secret gets a fix hint");
+            assert!(fix.contains("phantom add"), "{fix}");
+        }
+        let rendered = format!("{lines:?}");
+        assert!(!rendered.contains(&old) && !rendered.contains(&alt));
     }
 
     /// Run doctor's checks on a project whose config `edit` changes and
@@ -1477,6 +1671,101 @@ mod tests {
         assert!(format!("{error:#}").contains("made no repairs"));
         assert!(!dir.join(".gitignore").exists());
         assert!(!dir.join(".env.example").exists());
+    }
+
+    /// Doctor judged `.gitignore` by one literal `.env` line: `/.env` and
+    /// `.env*` (which Git honours) drew a warning, and a later `!.env` (which
+    /// un-ignores it) passed.
+    #[test]
+    fn gitignore_check_follows_git_rules_not_one_literal_line() {
+        let cases: [(&str, &str, &str); 4] = [
+            ("/.env\n", "pass", ".env is in .gitignore"),
+            (".env*\n", "pass", ".env is in .gitignore"),
+            (".env\n!.env\n", "warn", ".env is un-ignored"),
+            ("node_modules\n", "warn", ".env is NOT in .gitignore"),
+        ];
+        for (body, status, message) in cases {
+            let project = tempfile::tempdir().unwrap();
+            let dir = project.path().canonicalize().unwrap();
+            std::fs::write(dir.join(".gitignore"), body).unwrap();
+            let _seam = crate::util::test_seam::TestProject::install(
+                dir.clone(),
+                crate::util::test_seam::empty_keychain,
+            );
+
+            super::REPORT.with(|report| {
+                *report.borrow_mut() = Some(phantom_core::report::DoctorReport::default())
+            });
+            let outcome = super::run_checks(false, false);
+            let report = super::REPORT
+                .with(|report| report.borrow_mut().take())
+                .unwrap();
+            outcome.expect("doctor must report, not abort");
+            let line = report
+                .checks
+                .iter()
+                .find(|check| check.message.contains(".gitignore"))
+                .unwrap_or_else(|| panic!("no .gitignore finding for {body:?}"));
+            assert_eq!(line.status, status, "{body:?}: {}", line.message);
+            assert!(
+                line.message.starts_with(message),
+                "{body:?}: {}",
+                line.message
+            );
+            assert_eq!(
+                std::fs::read_to_string(dir.join(".gitignore")).unwrap(),
+                body
+            );
+        }
+    }
+
+    /// Doctor judged `.gitignore` for a literal `.env` even when
+    /// `.phantom.toml` manages another file: an unignored `.env.production`
+    /// passed because `.env` was listed, and `--fix` appended `.env`.
+    #[test]
+    fn gitignore_check_uses_the_managed_dotenv_name() {
+        let project = tempfile::tempdir().unwrap();
+        let dir = project.path().canonicalize().unwrap();
+        let mut config =
+            phantom_core::config::PhantomConfig::new_with_defaults("doctor-name".to_string());
+        config.phantom.dotenv_path = Some(".env.production".to_string());
+        config.save(&dir.join(".phantom.toml")).unwrap();
+        std::fs::write(dir.join(".env.production"), b"PORT=3000\n").unwrap();
+        std::fs::write(dir.join(".gitignore"), b".env\n").unwrap();
+        let _seam = crate::util::test_seam::TestProject::install(
+            dir.clone(),
+            crate::util::test_seam::empty_keychain,
+        );
+
+        for fix in [false, true] {
+            super::REPORT.with(|report| {
+                *report.borrow_mut() = Some(phantom_core::report::DoctorReport::default())
+            });
+            let outcome = super::run_checks(fix, false);
+            let report = super::REPORT
+                .with(|report| report.borrow_mut().take())
+                .unwrap();
+            outcome.expect("doctor must report, not abort");
+            let line = report
+                .checks
+                .iter()
+                .find(|check| check.message.contains(".gitignore"))
+                .expect("a .gitignore finding");
+            assert!(
+                line.message
+                    .starts_with(".env.production is NOT in .gitignore"),
+                "{}",
+                line.message
+            );
+            assert_eq!(
+                line.fixed.as_deref(),
+                fix.then_some("Added .env.production to .gitignore")
+            );
+        }
+        assert_eq!(
+            std::fs::read_to_string(dir.join(".gitignore")).unwrap(),
+            ".env\n.env.production\n"
+        );
     }
 
     /// The `.env.example` repair derives from the bytes the guard read, not a

@@ -4,7 +4,7 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
-## [0.8.0] - 2026-10-25
+## [0.8.0] - 2026-10-31
 
 Source candidate. Until a `v0.8.0` tag and its tag-bound release workflow
 exist, the immutable `v0.7.9` GitHub release remains the current published
@@ -47,7 +47,851 @@ publication. Everything below, down to 0.7.9, is new since v0.7.9.
   the request and buffered response body cap is 32 MiB (was 10 MiB). Set
   `PHANTOM_RATE_LIMIT_BURST` to restore the old burst value.
 
+- Since the earlier candidate: bounded npm downloader failures and container
+  delivery guidance (#795), strict codec HTTP framing (#797), and a clean
+  dependency index for release packaging (#798).
+- Newer source adds schema identifiers and strict exit-code contracts, local
+  posture history, generated-secret support and expanded first-run integration
+  coverage. These source capabilities do not establish hosted commissioning or
+  publication on any package channel.
+
 The detailed entries follow.
+
+### Fixed (audit show --output, rotate --batch expiry dates, validate history)
+
+- `phantom audit show --output FILE` without `--json` printed the events to
+  the terminal, left the file empty and reported "wrote 0 line(s)". The
+  human-readable events now go into the file, as the flag promises.
+- The Old Expiry and New Expiry columns of `phantom rotate --batch` used
+  365-day years and 30-day months, so 26 Oct 2026 printed as 13 Nov. They
+  now print the real UTC calendar date.
+- `phantom validate history` always ended with "Use --last N to see more",
+  even when every run was shown. It now says "Showing all N run(s)" then.
+
+### Fixed (counts and JSON in audit alerts, batch rotation and analytics)
+
+- `phantom audit alerts` printed the listed count as the total: 120 alerts
+  with the default `--last 50` read "50 leak alert(s) (most recent 50 shown)".
+  The header now counts every alert in the file, and `--last 0` no longer
+  says "No leak alerts found" when alerts exist.
+- `phantom rotate --batch --json` printed "Found N secret(s) due..." on stdout
+  ahead of the JSON array, and plain text when nothing was due, so the output
+  did not parse. Under `--json` stdout now carries only JSON (`[]` when there
+  is nothing to rotate) and the progress line goes to stderr.
+- Audit analytics divided accesses by elapsed time but bucketed them by
+  calendar day, so one access just before midnight and one just after gave
+  an average of 2 a day with a busiest day of 1. The average now divides by
+  the calendar days from the first access to the last, inclusive.
+
+### Fixed (`phantom expiry enforce` text output names every failure)
+
+- With `--fail-closed`, the text output said only how many secrets had no
+  expiry policy and never named them. When expired secrets were also present
+  it dropped that failure entirely, so the exit status was 1 for reasons the
+  output did not show. It now lists each no-policy secret with a hint to run
+  `phantom expiry set`, alongside the expired ones.
+- A secret that expired under a day ago read "0 day(s) overdue"; it now
+  reads "expired less than a day ago".
+
+### Fixed (expiry check at 0 days listed unexpired secrets)
+
+- `phantom secrets-expiring-soon --days 0` and the MCP
+  `phantom_secrets_expiry_check` tool with `days: 0` are documented to list
+  only secrets that have already expired, but they also listed a secret that
+  expires later today. Such a secret now appears from `--days 1` on.
+
+### Fixed (validation history was never recorded)
+
+- `phantom validate history`, MCP `phantom_validation_history` and the last
+  run shown by `phantom validate schedule --status` stayed empty forever:
+  `phantom validate --check-all` and MCP `phantom_validate_all` never
+  recorded a run. Each run that checks values is now recorded (counts only,
+  no names or values). A failed write is reported and never changes the
+  verdict. A run the lifecycle gate refused entirely sends nothing and is not
+  recorded.
+- `phantom validate schedule 6h --json` printed the schedule as a string
+  holding JSON (`{"schedule":"{\"interval\":21600}"}`). It now prints the
+  same value as `--status --json` (`{"schedule":{"interval":21600}}`).
+- `phantom validate --check-all --json` on an empty vault printed a
+  hand-written object without `generated_at` and `refused`. It now prints
+  the same report shape as every other run.
+- Setting a schedule no longer says `--status` starts a background daemon.
+  Nothing runs validation on the schedule by itself.
+
+### Fixed (MCP rotation schedule reported every secret overdue)
+
+- MCP `phantom_rotation_schedule_next` judged the schedule against its own
+  `last_rotated`, which nothing ever writes, so every scheduled secret came
+  back `overdue: true` with `last_rotated_unix: null`, even one stored a
+  minute earlier. It now uses the vault's rotation anchor (the later of when
+  the value was stored and when it was last rotated), the same age that
+  `phantom exec` rotation enforcement checks.
+
+### Fixed (.gitignore checks follow Git's rules for `.env`)
+
+- `phantom doctor` (CLI and MCP) and `phantom agent` decided whether `.env`
+  was ignored by looking for one literal `.env` line. A `.gitignore` using
+  `/.env`, `**/.env`, `/**/.env` or `.env*` drew a warning (and `--fix` appended a
+  duplicate line), while one that ignored `.env` and then un-ignored it with
+  a later `!.env` passed. The checks now apply the last matching rule as Git
+  does, and a negated `.env` gets its own warning; `phantom agent` adds its
+  env patterns again when a later `!.env` cancelled them. Patterns the
+  reader does not understand still count as not covering `.env`.
+  The CLI doctor also checks (and with `--fix` appends) the managed
+  dotenv's own name from `.phantom.toml`, such as `.env.production`, where
+  it used to check `.env` whatever file Phantom managed.
+
+### Added (`phantom add --generate`)
+
+- `phantom add <KEY> --generate` stores a locally generated 256-bit random
+  secret and prints only a value-free JSON receipt (`name` plus its SHA-256
+  `fingerprint`). Creation is create-only inside the same exact-before
+  transaction as `add`, so existing names are always refused.
+- MCP `phantom_add_secret` accepts `generate: true` behind the existing
+  `confirm` plus one-use `approval_token` gates; with `generate` unset it
+  keeps refusing plaintext. See `docs/generated-secrets.md`.
+
+### CI (daily full-suite queue wait)
+
+- Added `scripts/ci/daily-matrix.mjs` and `scripts/ci/offpeak-schedule.json`: the
+  tool computes an affected-only OS matrix for the daily `Test (${{ matrix.os }})`
+  job (per-leg `cfg` routing, failing closed to all three legs) and emits the
+  additive off-peak cron `43 3 * * *`. Required check names are unchanged, and
+  the suite asserts a projected wall time inside the 900-second budget.
+
+### CI (PR classification engine)
+
+- Added `scripts/ci/pr-classify.mjs`: one tested engine computing every
+  changed-file classification `ci.yml` and `codeql.yml` need — suite
+  selection, the `platform` OS-matrix flag, and per-language CodeQL selection.
+  It carries forward the unlanded parts of #547: the `full-ci` label alias for
+  `ci:full-os`, Tier-1 `.github/CODEOWNERS` paths selecting the OS matrix, an
+  unreadable diff failing closed to full coverage, and `.github/` or
+  build/dependency-config changes scanning all five CodeQL languages. The
+  workflow wiring is a G1-gated follow-up documented in
+  `scripts/ci/pr-classify.md`.
+- `scripts/fast-check.sh` now runs `scripts/ci/*.test.mjs`, giving the
+  previously unwired `daily-matrix.test.mjs` suite an executed home.
+
+### Fixed (doctor names the managed dotenv file)
+
+- `phantom doctor` and the MCP `phantom_doctor` tool now name the dotenv file
+  the project manages in their dotenv lines, for example
+  `.env.local has 2 unprotected secret(s)` or `No .env.local file in current directory`.
+  Before, these lines always said `.env`, even when `.phantom.toml` manages
+  another file such as one chosen with `phantom init --from`. Only the
+  message text changes. Which file doctor checks, the issue counts and the
+  exit codes stay the same.
+
+### Security (dotenv file names with control characters are refused)
+
+- A `phantom.dotenv_path`, or an `env_path` argument to the MCP
+  `phantom_init` tool, that contains a control character such as a newline
+  is now refused as an invalid file name. Such a name was echoed into doctor reports, results
+  returned to MCP agents and, with `doctor --fix`, a `.gitignore` line, where
+  it could forge extra lines.
+
+### Added (`--dry-run` for `phantom init`, `phantom add`, and `phantom remove`)
+
+- `phantom init --dry-run` prints the keys it would protect, the project
+  files it would write, and the encrypted-file vault path it would create,
+  then exits without creating a vault or changing any file. When
+  `.claude/settings.local.json` or `.mcp.json` already exist, it prints
+  `may update <path>` and does not take the project lock.
+  `phantom init --all --dry-run` keeps its existing scan report.
+  `phantom init --empty --dry-run` reports the config file and the empty
+  vault it would create.
+- `phantom add --dry-run` and `phantom remove --dry-run` print the key and
+  the files that transaction would write without opening the vault, taking a
+  project lock, or creating app-data directories. Plan lines use `would add`
+  and `would remove`. They print `would add <name> (vault state not checked
+  in dry run)` or `would remove <name> (vault state not checked in dry run)`,
+  and `dotenv token check uses project config key names only (vault key names
+  not checked in dry run)`, because vault key names cannot be listed without
+  opening the vault. Config key names still drive the same dotenv token
+  refusal a real run uses. Remove also applies the real dotenv mapping rules
+  (exactly one phantom mapping for that name) and prints `would remove <name>
+  (not in project config)` when `.phantom.toml` has no `[phantom.secrets]`
+  entry for it. Add does not read a value. Remove does not ask for the
+  trusted-terminal challenge and does not delete the vault entry. None of
+  these previews print secret values.
+
+### Security (`phantom check --staged` scans `#` lines inside quoted values)
+
+- The staged credential-shape scan of `.env`, `.env.*` templates and `.envrc`
+  skipped every added line that looked like a credential comment on its own,
+  so a credential on a `#` line inside a multi-line quoted value was neither
+  reported as a comment nor scanned. The scan now skips only the exact lines
+  the whole-file comment report names.
+
+### Security (Argon2 working memory and vault plaintext buffers are scrubbed)
+
+- Encrypted-file vault key derivation now supplies its own Argon2 block
+  memory and scrubs the whole working set (up to 64 MiB) on drop, including
+  on error paths. `hash_password_into` freed that memory unscrubbed, and the
+  final memory block alone determines the derived key. The `argon2` crate's
+  `zeroize` feature is enabled so its internal hash state is cleared too.
+- `phantom_vault::crypto::decrypt` (and the per-vault warm-unlock cache) now
+  returns plaintext in a `Zeroizing<Vec<u8>>`, so decrypted vault JSON is
+  scrubbed on drop even if a caller forgets to wrap it. Derived keys moved to
+  `Zeroizing<[u8; 32]>`; manual `key.zeroize()` calls were removed.
+- The vault's pretty-JSON write path serializes through a zeroizing `Write`
+  sink that grows by copying into a fresh scrubbed buffer instead of letting
+  `Vec` reallocate plaintext prefixes in place. Emitted bytes are identical.
+
+### Fixed (dotenv comments holding credentials fail every clean check)
+
+- `phantom check`, `phantom check --staged`, the MCP `phantom_check` tool
+  and the compliance `env_clean` check judged dotenv files only by their
+  parsed entries, so a credential left in a comment passed clean unless
+  it matched a code-token shape. A commented-out secret assignment with
+  no known prefix (`# AWS_SECRET_ACCESS_KEY=<opaque>`,
+  `# DATABASE_URL=postgres://<db-host>/<db>`) committed and scanned
+  unreported everywhere, though `phantom doctor` already warned on it.
+  All four surfaces now report each commented-out secret assignment by
+  name and each other credential-holding comment — a prose note or a
+  trailing comment — by line, in both `.env` files and `.envrc`, while
+  the staged code scan skips exactly the lines already reported so a
+  value is never reported twice.
+
+### Fixed (`phantom check --staged` scans dotenv comments and `.phantom.toml`)
+
+- The pre-commit scan classified staged dotenv files only through the
+  dotenv parser, which never sees comments, so a key commented out in a
+  committable `.env.example` (`# OPENAI_API_KEY=<key>`) or left in a note
+  after a placeholder was reported clean and the commit went through. A
+  staged `.phantom.toml` was read only for risky routes and never scanned
+  for credentials at all. Both now also get the staged code scan of their
+  added lines; a dotenv file that already has entries reported by name is
+  not scanned twice.
+
+### Added (schema id on doctor, why, check, and agent doctor JSON)
+
+- `phantom doctor --json`, `phantom why --json`, `phantom check --json`, and
+  `phantom agent doctor --json` already printed machine-readable reports.
+  Each report now starts with a `schema` string: `phantom.doctor.v1`,
+  `phantom.why.v1`, `phantom.check.v1`, or `phantom.agent.doctor.v1`.
+  The rest of the JSON is unchanged, and the human output is unchanged.
+  Reports still omit secret values. Names appear only where the human
+  output already prints them. The new `schema` key is additive, so a
+  consumer that requires an exact key set must accept it. Existing exit statuses
+  are preserved without `--strict`. For a missing key, `phantom why` exits 1
+  in the human view; the JSON view exits 0 by default or 2 with `--strict`.
+  The human `phantom agent doctor` view uses the readiness report's exit code,
+  while its JSON view exits 0 by default or 2 for a non-ready verdict with
+  `--strict`.
+
+  `phantom doctor --strict`, `phantom why --strict`, and
+  `phantom agent doctor --json --strict` share one exit table:
+
+  | Code | Meaning |
+  | --- | --- |
+  | 0 | No issues. Doctor found none, why says the key is protected, or the agent doctor verdict is `ready`. |
+  | 1 | Command failure (usage, IO, parse, or another error). This is not an issues-found result. |
+  | 2 | Issues found, only when `--strict` is set. |
+
+  A usage error also exits 2 and prints no report. An issues-found result
+  prints the report, then exits 2. Doctor counts every issue the same.
+  A warning counts. There is no severity weighting. Why exits 2 when the
+  JSON report is not protected (the key is missing or unprotected) and when
+  the human view classifies the key as not protected. A missing key in the
+  human view is still a command error (exit 1)
+  because that path prints no report. Agent doctor maps `degraded`, `blocked`,
+  and `unknown` to exit 2. That replaces the earlier agent doctor mapping of
+  0 ready, 2 degraded, 1 blocked, 3 not evaluated. `--vault` and `--strict`
+  still apply only to `phantom agent doctor --json`. Without `--strict`,
+  doctor and why keep their previous exits, and `phantom agent doctor --json`
+  stays 0. The human `phantom agent doctor` view still uses the readiness
+  report's own exit code.
+
+  For agent doctor JSON, key on `schema` (`phantom.agent.doctor.v1`). The
+  `.vN` suffix changes only when the JSON shape breaks. `schema_version`
+  (currently 1) and `kind` (`phantom.agent.preflight`) stay so older readers
+  keep working.
+
+### Added (`phantom status --json` schema id)
+
+- The status document now carries `"kind": "phantom.status"`, the same
+  document-id convention `phantom agent doctor --json` uses
+  (`phantom.agent.preflight`), so an orchestrator can distinguish this
+  contract from other Phantom JSON documents that share `schema_version: 1`.
+  The change is additive within schema version 1: consumers keep ignoring
+  unknown fields, and a build predating `kind` simply reports as unknown
+  status to a consumer that requires it. See `docs/hub-status-contract.md`.
+
+### Added (local posture history store)
+
+- `phantom-secrets-core` gains a local posture history store: counts and
+  yes/no flags only, never secret names or values, kept owner-only under
+  `~/.phantom/posture/` and capped at 2000 records. Set
+  `PHANTOM_POSTURE_HISTORY=0` to turn it off; reads and writes then touch
+  nothing. On non-Unix platforms the owner and file-mode check on the host
+  key is skipped, so the key's protection there rests on the user profile's
+  own permissions.
+- History reads and writes validate the schema and metadata and reject unsafe
+  file targets and permissions. Writes refuse records from a different host
+  key. Reads are size-bounded and corrupt histories are preserved without
+  replacing an earlier recovery copy.
+- `phantom-secrets-core` now declares `rust-version = "1.89"` (needed for
+  `std::fs::File::try_lock`).
+
+### Fixed (monthly rotation schedules follow calendar months)
+
+- A `monthly` rotation schedule counted 30-day blocks from 1970, so a schedule
+  for the 1st fired on whatever calendar day the block started, and
+  `phantom_rotation_schedule_next` and validation reported that day. Monthly
+  slots now fall on `day_of_month` of each calendar month in UTC, on the
+  month's last day when it is shorter (the 31st is February 28 or 29).
+  `describe` now says `monthly@1st`, not `monthly@1th`. Enforcement's fixed
+  30-day window is unchanged.
+
+### Fixed (commented-out secret detection: docs placeholders and quoted PEM headers)
+
+- Commented-out assignments whose value is a docs-style placeholder, such as
+  `# API_KEY=your.key.here`, `# API_KEY=...`, `# API_KEY=<your-key>` or
+  `# SECRET_TOKEN=YOUR_TOKEN_HERE`, were reported by `phantom doctor` and
+  `phantom init` as plaintext secrets left in `.env`. They are now ignored;
+  a value that any value rule calls a secret, in whole or in one word, is
+  still reported even inside placeholder punctuation, and `.env.example`
+  masking is unchanged.
+- A commented-out value with an unterminated opening quote, such as the first
+  line of a commented multi-line `# CERT_BODY="-----BEGIN PRIVATE KEY-----`,
+  was judged with its quote, so value rules that match a prefix missed it
+  unless the key name looked secret. It was neither reported nor masked in
+  `.env.example`. The quote is now skipped when judging the value; the span
+  still covers only that one line.
+
+### Fixed (commented-out secrets in .env are now reported)
+
+- `phantom init` moves live secret entries into the vault, but a secret that
+  was only commented out, such as `# OPENAI_API_KEY=<old key>` or
+  `# export GITHUB_TOKEN="<token>"`, stayed as plaintext in `.env` and
+  nothing said so. `phantom doctor` and MCP `phantom_doctor` now report one
+  warning per commented-out assignment that classifies as a secret, naming
+  only the key and line number, with a hint to delete the line or store the
+  value with `phantom add <NAME> --stdin`; `phantom init` prints the same
+  key-and-line warnings when it finishes. Values are never printed, empty
+  and `your_<name>_here` placeholders are ignored, and the `.env` file is
+  never changed by these checks. `DotenvFile::commented_secret_assignments`
+  exposes the existing example-masking detection as (key, line) pairs.
+
+### Fixed (.env.example masks every name the project config declares secret)
+
+- Example generation decided what to mask only from name and value
+  heuristics, so a key that `.phantom.toml` lists as a secret (a
+  `[phantom.secrets.NAME]` entry or a service's `secret_key`) but whose name
+  and value look ordinary, such as `MY_SERVICE_CRED=<short value>`, was copied
+  verbatim into the shareable `.env.example`. Those names are now always
+  replaced with a placeholder, in live, `export`, quoted and commented-out
+  assignments alike. Output for every other entry is unchanged, and without a
+  config the heuristics alone decide as before.
+
+### Fixed (.env.example no longer copies credentials in prose comments)
+
+- Example generation masked commented-out assignments and inline comments
+  that held a credential, but a full-line prose comment such as
+  `# old key: <key>` or `# rotated from <old key> on 2026-01-02` was still
+  copied verbatim into the shareable `.env.example`. Every full-line comment
+  that is not a commented-out assignment is now judged by the same rule as
+  inline comments and, when it holds a credential, replaced with
+  `# [comment removed by Phantom: it held a credential]`, keeping its
+  indentation and line ending. Commented-out assignments keep their own
+  masking, lines inside multi-line quoted values stay part of the value, and
+  ordinary prose comments, plain URLs and the generated header are kept.
+
+### Fixed (one refused secret no longer aborts `phantom validate --check-all`)
+
+- `phantom validate --check-all` and MCP `phantom_validate_all` stopped the
+  whole run at the first secret the lifecycle gate refused (overdue under
+  enforced rotation, demoted to read-only, or unreadable lifecycle metadata),
+  so every other secret went unvalidated and no per-secret report came back.
+  Each secret is now judged on its own: a refused one is never read or sent
+  and appears in the report with status `refused` and its reason (name only),
+  a new `refused` count is added to the report, and the rest go on to the
+  trusted-terminal consent (CLI) or approval (MCP) and are validated. The run
+  still fails when anything was refused: the CLI exits non-zero with each
+  refusal, and the MCP result is flagged as an error. The consent challenge
+  and the MCP approval bind only the names that will be sent. `--watch`
+  keeps refusing the whole name set, since its consent covers a fixed set.
+
+### Fixed (.env.example no longer copies credentials in inline comments)
+
+- Example generation kept every trailing comment after a value verbatim, so
+  `PORT=3000 # staging key <key>` or `API_KEY=... # rotated from <old key>`
+  put a credential into the shareable `.env.example` even when the value
+  itself was masked or was ordinary config. An inline comment (after a live
+  entry or after a commented-out assignment) that holds a word the
+  classifier's value rules call a secret (a known secret prefix, credentials
+  in a URL, or a long high-entropy string; words under 16 characters are
+  ignored) is now replaced as a whole by
+  `# [comment removed by Phantom: it held a credential]`. Prose comments,
+  plain URLs and short words are kept, and quotes, spacing and line endings
+  are unchanged.
+
+### Fixed (.env.example no longer copies commented-out secrets)
+
+- `phantom init`, `phantom env`, `phantom doctor --fix`, `phantom agent` and
+  the MCP example generator masked live secret entries but copied every
+  comment line verbatim, so a key kept commented out in `.env`
+  (`# OPENAI_API_KEY=<old key>`, `# export GITHUB_TOKEN="..."`) landed in the
+  `.env.example` meant to be committed and shared. A full-line comment that
+  holds an assignment the classifier calls a secret now gets the same
+  `your_<name>_here` placeholder as a live entry, keeping its quotes and any
+  trailing comment. Commented config (`# PORT=8080`) and prose comments are
+  unchanged, and `#` lines inside a multi-line quoted value stay part of that
+  value.
+
+### Fixed (`phantom check --staged` reads every `.envrc` assignment)
+
+- A staged `.envrc` or `.envrc.local` with an unclosed quote stopped being
+  read at that line, and an unclosed quote could pair with the next line's
+  opening quote and swallow that assignment, so a credential assigned after a
+  shell typo was committed unreported. Each line is now also read on its own
+  and the names are combined with the whole-file read, so multi-line quoted
+  values are still covered and a typo hides nothing after it.
+- A single-quoted value starting with `$` (a `'$argon2id$...'` hash, a
+  password beginning with `$`) was skipped as a shell expansion although
+  single quotes make it literal text. It is now reported; unquoted and
+  double-quoted `$VAR`, `${VAR}`, `$(cmd)` and backticks stay unflagged.
+- A name assigned more than once in one `.envrc` is reported once.
+- Plain `.env` files are unchanged: an unclosed quote there already fails
+  `phantom check` and `phantom check --staged` as malformed dotenv.
+
+### Fixed (`phantom wrap` skips only scripts that already run through `phantom exec`)
+
+- `phantom wrap`, MCP `phantom_wrap` and the shared
+  `phantom_core::package_scripts::already_wrapped` treated any script that
+  contained `phantom-secrets` or `phantom exec` as already wrapped, so a
+  selected script such as `node ./phantom-secrets-demo/server.js`, `npx
+  phantom-secrets check` or `echo "phantom exec -- node server.js"` was
+  silently left running without the proxy. A script now counts as wrapped only when one of its
+  commands actually runs `phantom exec`: `phantom` or `phantom-secrets` (any
+  path, `phantom-secrets@VERSION` through a launcher), optionally behind
+  `npx`, `pnpx`, `bunx`, `bun x`, `pnpm dlx|exec`, `yarn [dlx|exec]` or
+  `npm exec` and Phantom's global flags, followed by `exec`. Quoted text is
+  an argument, not a command.
+- `phantom unwrap` and MCP `phantom_unwrap` again restore scripts wrapped by
+  releases before 0.7.4, which wrote `npx phantom-secrets exec -- <script>`.
+  Since 0.7.4 only the current `phantom exec -- <script>` form was restored,
+  so those scripts stayed wrapped. A `NAME:raw` that matches neither form is
+  still the user's and is left alone.
+
+### Fixed (agent readiness recommends `phantom wrap` only when it would wrap something)
+
+- `phantom agent report`, `phantom agent status` and `phantom agent doctor`
+  kept their own "are scripts wrapped" check, separate from the one `phantom wrap`
+  uses, so the `package-scripts-not-wrapped` finding could recommend
+  `phantom wrap` for a package.json it leaves unchanged (only lint, test or
+  typecheck scripts; a shell command line such as
+  `NODE_ENV=development next dev`; a script already run through
+  `npx phantom-secrets@latest exec`; a user-owned `dev:raw`), and stayed
+  silent when one script was wrapped but a selected `build` or `predev` was
+  not. The finding now uses the same decision as `phantom wrap`: it is
+  reported exactly when `phantom wrap` with its default selection would wrap
+  at least one script. Its message now says so.
+
+### Fixed (`phantom validate` applies the lifecycle gates `phantom exec` applies)
+
+- `phantom validate --check-all`, `phantom validate --watch` and
+  `phantom_validate_all` read every vault value with a plain retrieve and
+  sent it to its provider, so a secret demoted to read-only by the expiry
+  policy, or overdue under `enforce_rotation_on_access`, still went over the
+  network although `phantom exec` refuses both. Validation now refuses with
+  the same "Refusing to validate: ..." lifecycle refusals (names only) before
+  the trusted-terminal consent or MCP approval, judges again before any value
+  is read, and reads values through the runtime-injection check, so an entry
+  demoted in between is never sent. A watch judges every round and ends when
+  a secret goes overdue or is demoted. `phantom rotate` still reads the
+  outgoing value: rotating is the remedy these refusals name.
+
+### Fixed (why reports the rule the classifier decided by)
+
+- `phantom why`, `phantom why --json` and the MCP `phantom_why` tool
+  explained a key with their own copies of the secret heuristics, which had
+  drifted from the classifier. `DB_PWD` was reported as `value_pattern` with
+  no pattern (the CLI printed no reason at all) although the key-name rule
+  `PWD` decided it, and a public-prefixed key such as `VITE_STRIPE_KEY` with a
+  secret-shaped value was explained by the `KEY` fragment in its name, which
+  the classifier never consults for public-prefixed keys. The classifier now
+  returns the rule it decided by (`phantom_core::dotenv::classify_with_reason`),
+  and every why surface reports that rule: `reason` and `matched_pattern` always
+  match the real classification, `public_prefix_with_secret_value` reports the
+  public prefix as `matched_pattern`, and the CLI `Reason:` line names the exact
+  key fragment or value rule. Classification itself is unchanged.
+- The MCP `phantom_why` summary text still explained a key in its own words:
+  every value rule read "the value matches known secret patterns", a public
+  prefix overridden by its value gave no rule, and non-secret config listed a
+  hand-written subset of the key fragments. The summary now prints the same
+  `Reason:` sentence as `phantom why`, from one shared explanation
+  (`phantom_core::dotenv::ClassificationReason::explanation`), so a person and
+  an agent see the same deciding rule. The JSON report is unchanged.
+
+### Fixed (`phantom wrap` and MCP `phantom_wrap` pick the same scripts)
+
+- The CLI and the MCP tool each kept their own copy of the script selection,
+  so the same package.json wrapped differently for a person and an agent:
+  `phantom wrap` also wrapped `preview`, while `phantom_wrap` also wrapped
+  names containing `type` or `fmt` (`build:types`, `dev:fmt`) that the CLI
+  leaves alone, and the two reported a user-owned `NAME:raw` conflict in
+  different words. Both now call one shared decision
+  (`phantom_core::package_scripts::wrap_scripts` and `unwrap_scripts`) that
+  keeps the narrower rule of each: by default only `dev`, `start`, `serve`,
+  `build` and `deploy` scripts are wrapped, and lint, test, format, `fmt`,
+  `type`, check, clean, prepare and postinstall scripts are not. `preview`
+  is no longer wrapped by default; select it with `phantom wrap --only
+  preview`. Scripts that already run through Phantom are never wrapped again.
+
+### Fixed (`phantom check --staged` scans direnv `.envrc` assignments like `.env`)
+
+- A staged `.envrc` or `.envrc.local` holds the same `export KEY=value` lines
+  as a dotenv file, but the pre-commit scan treated it as code and looked only
+  for credential prefixes such as `sk-`. A committed
+  `export DATABASE_URL=postgres://app:<password>@host/db`, or a signing value
+  with no known prefix, was reported clean, while the same line in `.env` was
+  blocked. Each assignment in a staged `.envrc` is now classified by the same
+  dotenv rules and reported by name only, with or without `export `. The file
+  is still shell: direnv calls (`use nix`, `layout python`, `PATH_add bin`),
+  conditionals and repeated names are not errors, and values computed when
+  direnv loads (`$(op read ...)`, `${VAR}`, backticks) or left empty are not
+  findings. The credential-prefix scan of its added lines still runs.
+
+### Fixed (`phantom check --staged` missed credentials in files git calls binary)
+
+- The pre-commit scan read each staged code file's added lines from
+  `git diff`, which prints only "Binary files differ" for a file with a
+  `-diff` or `binary` attribute (common for lockfiles, generated code and
+  `*.pbxproj`) or with a NUL byte in its content. A credential staged in such
+  a file was reported clean and the commit went through. The scan now reads
+  the added bytes of every staged file (`git diff --text`); unrelated binary
+  assets with no credential shape stay clean.
+- A staged text file that is not UTF-8 (Latin-1, for example) failed the
+  whole hook as "Staged diff is not valid UTF-8; clean status is
+  indeterminate", blocking ordinary commits. Every credential shape scanned
+  for is ASCII, so the added lines are now decoded lossily and scanned.
+  Staged dotenv files are still refused when they are not UTF-8.
+
+### Fixed (`phantom wrap` / `phantom unwrap` no longer reformat package.json)
+
+- `phantom wrap`, `phantom unwrap`, `phantom_wrap` and `phantom_unwrap`
+  re-serialized the whole package.json, which sorted every key alphabetically,
+  switched the indent to two spaces and always added a final newline, so one
+  wrap produced a diff across unrelated fields. They now edit only the
+  affected `scripts` members in the original text: a wrapped script keeps its
+  position, its `NAME:raw` copy goes directly after it with the same layout,
+  and key order, indentation (spaces or tabs, any width), line endings, string
+  escapes and the trailing newline (or its absence) are kept. `phantom unwrap`
+  is the exact inverse and restores the file byte for byte. The edited text is
+  parsed again and must match the intended change; a package.json the editor
+  cannot place the change in (for example a duplicate `scripts` key) is
+  refused with no change written.
+
+### Fixed (one hardened active-environment reader)
+
+- `phantom_core::env_scope::read_active_env` and `resolve_env` still followed
+  a symlinked `.phantom/env` and returned any name, including `../prod`, so
+  only the CLI's own copy of the reader was hardened. They now are the one
+  reader: the selector is read without following a symlink, must be UTF-8,
+  and must hold a valid environment name; both return an error instead of a
+  name, and `resolve_env` validates an explicit environment argument too. `phantom exec` and
+  `phantom start` use this reader.
+- The refusal for a symlinked, non-UTF-8 or invalid selector told users to
+  run `phantom env use <name>`, which the CLI does not accept. It now names
+  the working fix: replace `.phantom/env` with a regular file holding one
+  valid name, or remove it to serve the default environment.
+
+### Fixed (cloud and team pushes refused a locked vault only after consent)
+
+- `phantom cloud push` and `phantom team vault-push` asked for the typed
+  trusted-terminal confirmation before noticing that the project's
+  encrypted-file vault was locked (passphrase absent or wrong) or that only a
+  partial, keychain-only inventory was visible, so the consent was spent on a
+  push that could never succeed. Both now refuse before any consent prompt,
+  with the same "Vault locked:" / "Refusing to push ... from a partial
+  inventory" errors as before; the check still runs again after consent,
+  before any value is read. The MCP `phantom_cloud_push` and
+  `phantom_team_vault_push` tools already refused before approval.
+
+### Fixed (cloud push no longer copies a secret demoted to read-only; team push refuses before consent)
+
+- `phantom cloud push` and `phantom_cloud_push` read every value with a plain
+  vault retrieve, so a secret the expiry policy demoted to read-only was
+  copied into the cloud snapshot, and every machine that later pulled it
+  stored it read-write, where `phantom exec` injects it. Both now refuse the
+  whole push when any entry is read-only or its lifecycle metadata cannot be
+  read, naming entries only: the CLI before the trusted-terminal prompt and
+  again after it, and MCP before the one-use approval is requested or
+  consumed and again after it, in both cases before any value read, cloud
+  passphrase access or network call. Values are then read with the injection
+  check, so an entry demoted after the gate is never sent. Rotate or promote
+  the entry, then push again.
+- `phantom team vault-push` asked for the trusted-terminal confirmation and
+  only then refused an overdue enforced secret, a read-only entry or
+  unreadable lifecycle metadata, so the user typed the confirmation for a push
+  that could not run. These refusals now come before the prompt, from names
+  and metadata alone, and run again after it before any value read.
+- The read-only lifecycle refusal is one shared function in
+  `phantom_vault::rotation_gate` used by `phantom sync`, `phantom_sync`'s
+  `live_gate_refusal`, team push and cloud push in the CLI and MCP, so their
+  wording cannot drift. Messages are unchanged for sync and team push.
+- Unchanged: `phantom reveal` (a trusted-terminal human read), encrypted
+  export, and `phantom env copy`, whose copy keeps the source entry's
+  read-only mode.
+
+### Fixed (`phantom start` ignored the active environment)
+
+- `phantom start` always served the default environment: after
+  `.phantom/env` selected `prod` it quietly mapped the `default/` values (or
+  the legacy bare entry), and refused a key that only had a `prod/` entry, while
+  `phantom exec` in the same directory served `prod`. Start now resolves the
+  environment exactly as exec does and applies the same per-environment
+  rotation-on-access gate, read-only lifecycle check and retrieval path: the
+  `<env>/NAME` entry, with the legacy bare entry only for the default
+  environment. A non-default environment never falls back to default values.
+  The "secret(s) mapped" line now names the environment.
+- The active-environment selector `.phantom/env` is now read without
+  following a symlink, and its contents must be a valid environment name
+  (letters, digits, `-`, `_`). `phantom exec` and `phantom start` refuse a symlinked,
+  non-UTF-8 or invalid selector before reading any secret value, instead of
+  addressing vault entries under an arbitrary prefix.
+
+### Fixed (`phantom wrap` no longer breaks scripts that are a shell command line)
+
+- `phantom wrap` and MCP `phantom_wrap` prefixed each selected script with
+  `phantom exec --`. `phantom exec` runs its arguments as one program without
+  a shell, so a script such as `NODE_ENV=production node server.js` became a
+  script that fails (`NODE_ENV=production` is not a program), and
+  `next build && next start` or `node server.js | pino-pretty` ran only the
+  first command under the proxy while the rest ran without it. Both now leave
+  a script unchanged, with no `:raw` copy, when it is empty, starts with a
+  `VAR=value` assignment, chains commands (`&&`, `||`, `|`, `;`, `&`, a line
+  break) or uses a subshell; quoted operators and redirections such as
+  `2>&1` do not count. The CLI warns once per skipped script (also under
+  `--quiet`) and the MCP result lists them with the reason. Simple scripts are
+  wrapped exactly as before, and `phantom unwrap` is unchanged. The MCP
+  confirmation and approval gates are unchanged.
+
+### Fixed (`phantom sync --dry-run` reports the refusal the live run would return)
+
+- `phantom sync --dry-run` exited 0 and reported a ready plan for a
+  selection that the live run refuses: it skipped the rotation-enforcement
+  gate and the read-only lifecycle gate. The dry run now applies the same
+  gate over the same per-target selection, from vault metadata alone (no
+  value read, no prompt, no provider call). When the live run would refuse,
+  the report's new `live_gate_refusal` field carries the refusal (names
+  only), and the dry run exits non-zero. The `phantom_sync` MCP tool reports
+  the same `live_gate_refusal` and says in `next_step` that the live run
+  would refuse, instead of telling the agent to run `phantom sync`.
+
+### Fixed (expiry-policy promotion and team push of read-only secrets)
+
+- `phantom_apply_expiry_policy` promoted a read-only secret back to
+  read-write whenever `rotated_at` was later than `expires_at`, without
+  checking that this `expires_at` was still ahead. A secret rotated once
+  after an old expiry whose current expiry had also passed was promoted
+  while still expired, only to be demoted again on the next run. Promotion
+  now also requires the secret to be unexpired under the same
+  `now >= expires_at` rule that demotes it; demotion is unchanged.
+- `phantom team vault-push` and `phantom_team_vault_push` read values with a
+  plain vault retrieve, so a secret the expiry policy demoted to read-only
+  was still encrypted to every team member. Both now refuse the whole push
+  before any value read or network call (and, over MCP, before the one-use
+  approval is requested or consumed, and again after it) when any entry is
+  read-only or its lifecycle metadata cannot be read, naming entries only.
+  Values are then read with the injection check, so an entry demoted after
+  the gate is never sent. Cloud push, encrypted export, env copy and reveal
+  are unchanged.
+
+### Fixed (`phantom sync` no longer pushes a secret demoted to read-only)
+
+- `phantom_apply_expiry_policy` demotes an expired secret to read-only so
+  that it is not injected at runtime until it is rotated or promoted, and
+  `phantom exec` and foreground `phantom start` refuse it. A live
+  `phantom sync` still read it with a plain vault retrieval and pushed it to
+  Vercel or Railway, where every deployment injects it. The live sync
+  preflight now refuses the whole run when any selected entry is read-only
+  (or its lifecycle metadata cannot be read), before the trusted-terminal
+  review, any vault value read, or any provider call; the error names the
+  entries only. The value read itself now uses the runtime-injection check,
+  so an entry demoted between the preflight and the read is recorded as a
+  retrieval failure and never sent. `--dry-run` is unchanged. Confirmations
+  and the trusted-terminal challenge are unchanged.
+
+### Fixed (a cross-project copy holds its source project's lock until it commits)
+
+- `phantom copy` and MCP `phantom_copy_secret` verified the source project's
+  entry before and after the destination writes but did not hold the source
+  project's transaction lock, so a source change that landed and was reverted
+  between the checks, or landed after the final check, was not excluded. The
+  copy transaction now holds both projects' locks for the whole commit, taken
+  in one global order (process-local shards by index, then each project's
+  filesystem locks by the digest of its canonical path), so two copies in
+  opposite directions wait for each other instead of deadlocking, and a
+  source and destination that are one canonical project take its lock once.
+  The before/after source checks stay as defence in depth.
+  `commit_init_with_source_vault` now takes the source project directory, and
+  a source change caught mid-commit is reported as
+  `InitTransactionError::SourceChangedDuringCommit` with the same message the
+  generic commit error carried. Confirmations, approvals and the
+  trusted-terminal challenge are unchanged.
+
+### Fixed (evidence verification, MCP approval, workspace-request, leak-profile and compliance-report state resolve through a retained directory)
+
+- `phantom-evidence` receipt verification still opened the lock, integrity
+  key and log by path, so renaming `~/.phantom` or `~/.phantom/evidence` away
+  after the store opened and putting another directory there redirected the
+  reads. Verification now opens each file read-only relative to the
+  directories the store retained, through the new
+  `PrivateStateDir::open_file_readonly`: never created, never chmod-ed, a
+  symlink never followed, and a non-regular, multiply linked, foreign-owned
+  or non-0600 file refused as unsafe storage.
+- The MCP approval store and the workspace-request store opened their lock
+  files by path after checking `~/.phantom`; the approval lock was chmod-ed
+  through the handle, so a lock hard-linked to another file changed that
+  file's mode, and the workspace-request lock accepted a hard link. Their
+  keys (approval HMAC key, request HMAC key, plan-seal and journal roots),
+  approval records, request records and the request directory listing and
+  pruning were also resolved by path. Both stores now hold `~/.phantom` (and
+  `workspace-requests/`, `workspace-journals/`) as `PrivateStateDir`s and
+  open, create, replace and remove every file relative to them; a symlinked,
+  hard-linked, non-regular or foreign-owned entry is refused with
+  `InvalidData` and left unchanged. `load_existing_workspace_plan_key` opens
+  `~/.phantom` with the new `PrivateStateDir::open_existing`, which neither
+  creates nor tightens it.
+- The contextual leak-profile store and saved compliance reports now stage,
+  rename and create their files relative to the checked `~/.phantom` and
+  `~/.phantom/reports` directories instead of by path.
+- `PrivateStateDir` gains `open_existing`, `open_file_readonly`,
+  `remove_file` and `file_names`, all relative to the retained descriptor on
+  Unix; other platforms keep the path-based fallback that refuses symlinks and
+  reparse points.
+
+### Fixed (a copy is refused when its source changes before the commit)
+
+- `phantom copy`, MCP `phantom_copy_secret` and `phantom env copy` read the
+  source's metadata before its value, outside the copy transaction, and only
+  the source value was checked again at commit (`phantom copy` and MCP copy,
+  which write into another project's vault, did not recheck the source at
+  all). A source demoted to read-only, given an expiry, or rotated between
+  that read and the commit left the copy with stale, weaker metadata, or a
+  rotation stamp that did not match its value. The inherited protection is
+  now bound to its source entry: the transaction requires the source to
+  still hold the copied value and exactly the metadata that was read, at
+  preflight, atomically with the destination's inherited-metadata write when
+  both live in one vault, and again after every vault write before the final
+  dotenv commit. Any drift refuses the copy, rolls the destination back, and
+  says to retry. `phantom env copy`'s source guard, which only re-wrote the
+  same value, is replaced by this check. `InitSecret::inheriting_source_protection`
+  now takes the source entry's name, and cross-project copies commit through
+  `commit_init_with_source_vault`. Confirmations, approvals and the
+  trusted-terminal challenge are unchanged.
+
+### Fixed (session and evidence state use the shared private-directory helper)
+
+- The inactive `phantom-session` journal and the `phantom-evidence` store
+  kept their own copies of the private state-directory helpers. They created
+  `sessions/`, `~/.phantom` and `~/.phantom/evidence` with umask permissions
+  and then chmod-ed them by path after a separate symlink check, accepted a
+  directory owned by another user whenever that chmod succeeded, re-walked
+  the directory path for every later lock, state, key, log and receipt
+  operation (so a directory renamed away and replaced by a symlink after the
+  check redirected Phantom's writes outside it), and chmod-ed an existing
+  hard-linked lock or state file, changing its target. Both now use the new
+  `phantom_core::fs::PrivateStateDir`: on Unix the directory is created 0700,
+  opened without following a symlink, required to be owned by the current
+  user, tightened through that descriptor and retained, and every file is
+  created, opened, replaced (staging file plus `renameat`) and fsynced
+  relative to it. Files must be single-link regular files owned by the
+  current user. Refusals keep mapping to each crate's `UnsafeStorage` error;
+  nothing about either crate's fail-closed production posture changes.
+
+### Fixed (proxy lifecycle lock file is opened through a verified directory descriptor)
+
+- After checking that `<data dir>/phantom-secrets/proxy-locks` was a private
+  real directory, the proxy lifecycle lock file was still opened by path, so
+  swapping either directory for a link in that window redirected where the
+  lock file was created and opened. On Unix the app directory and
+  `proxy-locks` are now opened without following a symlink, must be owned by
+  the current user (and private when acquiring), and the lock file is opened
+  relative to that descriptor with `O_NOFOLLOW | O_CLOEXEC` (created 0600)
+  and must be a regular file owned by the current user. `phantom status`
+  inspection uses the same chain and still never creates anything.
+  Non-Unix behavior is unchanged.
+- New `phantom_core::fs::open_owned_directory` and
+  `phantom_core::fs::open_owned_file_at` hold the shared descriptor-relative
+  routine; the workspace setup lock now uses them instead of its own copy.
+
+### Fixed (copies are never less protected than their source)
+
+- `phantom copy`, MCP `phantom_copy_secret` and `phantom env copy` carried
+  only the source's rotation anchor, so the destination came out read-write,
+  with no expiry and no TTL policy even when the source was demoted to
+  read-only, past its `expires_at`, or under a rotation policy. A copy of a
+  read-only secret was therefore injectable by `phantom exec`, and an expired
+  credential's duplicate passed `phantom expiry enforce`. The destination now
+  inherits every lifecycle field of the source (`created_at`, `rotated_at`,
+  `expires_at`, `rotation_policy` and `vault_mode`) by compare-and-swap inside
+  the same create-only vault transaction (`InitSecret::inheriting_source_protection`,
+  replacing `inheriting_rotation_anchor`). Validation metadata, the last
+  provider check verdict, is deliberately not copied: the destination starts
+  never-checked like any new entry. Confirmations, approvals and the
+  trusted-terminal challenge are unchanged.
+
+### Fixed (proxy lifecycle and workspace setup locks never follow a planted symlink)
+
+- The workspace setup lock lived in a shared temp-dir folder
+  (`phantom-workspace-locks`) created with `create_dir_all` and umask
+  permissions, and its `<digest>.lock` file was opened with `O_CREAT`
+  following symlinks. On a shared `/tmp`, another local user could pre-create
+  that folder and plant a predictable link, so Phantom would create or open an
+  arbitrary file the user can write. The folder is now created 0700 and must
+  be a real directory owned by the current user with no group or other
+  access (an owned one is tightened through a no-follow descriptor), and the
+  lock file is opened relative to that descriptor with `O_NOFOLLOW`.
+- The proxy lifecycle lock directory was chmod-ed by path after a separate
+  symlink check, and its app directory (for example
+  `~/.local/share/phantom-secrets`) was created with umask permissions and
+  followed if it was a symlink. Both Phantom-owned directories are now
+  created 0700, refused when they are symlinks or non-directories, and
+  tightened through a no-follow descriptor. A symlinked `~/.local/share` or
+  `XDG_DATA_HOME` (or temp directory) is still followed as before.
+- New `phantom_core::fs::ensure_private_leaf_dir` holds the shared
+  final-component routine; `ensure_private_dir` now calls it after its
+  parent-chain checks.
+
+### Fixed (audit tail and audit readers no longer follow a symlinked audit log or `~/.phantom`)
+
+- `phantom audit tail` and `phantom audit anomalies --realtime` created
+  `~/.phantom` with `create_dir_all` (umask permissions) and opened
+  `audit.log` with a plain create-and-append open, which follows symlinks: a
+  planted `audit.log` or `~/.phantom` symlink redirected the follow (and the
+  file creation) somewhere else, and a dangling `audit.log` link created its
+  target. Both now go through `phantom_core::audit::open_log_for_follow`,
+  which creates `~/.phantom` 0700 and the log 0600, refuses a symlinked or
+  non-directory `~/.phantom`, and refuses a symlink or non-regular file at
+  the log path, failing with a clear error.
+- `phantom audit show`, `phantom audit verify`, the analytics and windowed
+  anomaly readers, and the MCP `phantom_audit_recent` tool decided whether
+  the log existed with `Path::exists`, which follows symlinks: a dangling
+  symlink at `audit.log` read as "no audit events yet" with success, and a
+  log under a symlinked `~/.phantom` was read through the link. They now use
+  `phantom_core::audit::log_present`, which follows nothing: a symlinked
+  `~/.phantom` is refused, and anything at the log path is handed to the
+  no-follow reader, which refuses it. A missing log still reads as empty.
+  `phantom doctor` reports a symlinked or non-regular audit log as an issue.
+  The JSONL schema and HMAC chain are unchanged.
+
+### Fixed (copies keep their source's rotation age)
+
+- `phantom copy`, MCP `phantom_copy_secret` and `phantom env copy` judged
+  the source against `enforce_rotation_on_access` but stored the destination
+  as new, so a secret 29 days into a 30-day window came out of the copy with
+  a fresh 30-day clock. The destination entry now inherits the source's
+  rotation anchor (`created_at` and `rotated_at`) inside the same vault
+  transaction, so the gate judges the copy overdue exactly when the source
+  is. A source with no recorded age gives a copy with no recorded age, which
+  the gate refuses for an enforced secret. Confirmations, approvals and the
+  trusted-terminal challenge are unchanged.
+
 ### Fixed (workspace-request and MCP approval state dirs use the shared private-dir helper; `.env.example` presence is never followed)
 
 - The workspace-request store (`~/.phantom/workspace-requests`, the setup
@@ -660,6 +1504,7 @@ The detailed entries follow.
   the Test job, so until now the check that documented `phantom` commands and
   flags match the CLI never ran on the PRs that change those docs; drift could
   only show up on `main` after merge. It is part of `CI Gate`.
+
 ### Docs (Temporal: codec errors in the CLI)
 
 - `docs/temporal.md`: explains why `temporal workflow show` reports
@@ -2306,15 +3151,18 @@ remain separate evidence gates.
 
 For older release notes and downloadable artifacts, see [GitHub Releases](https://github.com/ashlrai/phantom-secrets/releases).
 
-[Unreleased]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.9...HEAD
+<!-- fresh:begin changelog-unreleased-compare -->
+[Unreleased]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.0...HEAD
+<!-- fresh:end -->
+[0.8.0]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.9...v0.8.0
 [0.7.9]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.8...v0.7.9
 [0.7.8]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.7...v0.7.8
 [0.7.7]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.6...v0.7.7
 [0.7.6]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.5...v0.7.6
 [0.7.5]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.4...v0.7.5
 [0.7.4]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.3...v0.7.4
-[0.7.3]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.0...v0.7.3
-[0.7.2]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.0...v0.7.2
+[0.7.3]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.2...v0.7.3
+[0.7.2]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/ashlrai/phantom-secrets/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/ashlrai/phantom-secrets/releases/tag/v0.6.0

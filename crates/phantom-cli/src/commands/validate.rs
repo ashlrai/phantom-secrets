@@ -12,6 +12,7 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
 use phantom_core::config::PhantomConfig;
+use phantom_core::validation_scheduler::{record_run, state_file_path, ValidationRunRecord};
 use phantom_core::validator::{
     default_validators, run_validation_pipeline, ValidationMetadata, ValidationReport,
     ValidationStatus,
@@ -28,6 +29,94 @@ const DEFAULT_TIMEOUT_SECS: u64 = 10;
 
 /// Default number of concurrent validation jobs.
 const DEFAULT_JOBS: usize = 4;
+
+/// "Refusing to ..." wording for the lifecycle gate on validation.
+const VALIDATE_ACTION: &str = "validate";
+
+/// Validation sends each value to its provider, as a `phantom exec` session
+/// would: refuse an overdue secret whose policy enforces rotation on access
+/// (exec's rotation gate), an entry the expiry policy demoted to read-only
+/// (which exec refuses to inject), and an entry whose lifecycle metadata
+/// cannot be read. Each entry is judged on its own, so one refusal does not
+/// stop the rest from being validated. Names and metadata only; runs before
+/// any value is read.
+fn gate_validation(
+    config: &PhantomConfig,
+    vault: &dyn phantom_vault::VaultBackend,
+    names: &[String],
+) -> ValidationGate {
+    let now = super::rotation_gate::now_secs();
+    let mut gate = ValidationGate::default();
+    for name in names {
+        match super::rotation_gate::enforce_lifecycle_on_propagation(
+            config,
+            vault,
+            std::iter::once(name.as_str()),
+            VALIDATE_ACTION,
+            "Rotate or promote them before validating.",
+            "No vault plaintext was read and no provider request was sent.",
+            now,
+        ) {
+            Ok(()) => gate.allowed.push(name.clone()),
+            Err(refusal) => gate.refused.push((name.clone(), refusal.to_string())),
+        }
+    }
+    gate
+}
+
+/// [`gate_validation`]'s verdict: the names that may be validated and, for
+/// each refused name, its refusal (names only, never a value).
+#[derive(Debug, Default)]
+struct ValidationGate {
+    allowed: Vec<String>,
+    refused: Vec<(String, String)>,
+}
+
+impl ValidationGate {
+    /// All-or-nothing, for watch mode: its consent covers a fixed name set,
+    /// so any refusal ends it, carrying every refusal.
+    fn require_all(self) -> Result<()> {
+        if self.refused.is_empty() {
+            return Ok(());
+        }
+        let reasons: Vec<&str> = self.refused.iter().map(|(_, r)| r.as_str()).collect();
+        anyhow::bail!("{}", reasons.join("\n"))
+    }
+}
+
+/// The exit of a one-shot run, after its report was printed: fail when any
+/// entry was refused (each refusal, one per line) or reported invalid.
+fn one_shot_verdict(report: &ValidationReport) -> Result<()> {
+    let mut failures: Vec<&str> = report
+        .refused_entries()
+        .into_iter()
+        .filter_map(|entry| entry.reason.as_deref())
+        .collect();
+    if failures.is_empty() && report.refused > 0 {
+        failures.push("one or more secrets were refused by the lifecycle gate");
+    }
+    if report.invalid > 0 {
+        failures.push("one or more credentials were reported invalid");
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        anyhow::bail!("{}", failures.join("\n"))
+    }
+}
+
+/// Read the values to validate through the runtime-injection check `phantom
+/// exec` uses, so an entry demoted to read-only after [`gate_validation`]
+/// is never sent to a provider.
+fn retrieve_validation_values(
+    vault: &dyn phantom_vault::VaultBackend,
+    names: &[String],
+) -> Result<Vec<(String, zeroize::Zeroizing<String>)>> {
+    names
+        .iter()
+        .map(|name| Ok((name.clone(), vault.retrieve_for_injection(name)?)))
+        .collect()
+}
 
 /// Path to the validation report file written by `--watch`.
 pub fn watch_report_path() -> PathBuf {
@@ -49,7 +138,8 @@ pub struct WatchReport {
 /// Run `phantom validate [--check-all] [--watch] [--jobs N] [--json]`.
 ///
 /// - Without `--watch`: runs once, prints a report, exits 1 if any secret is
-///   invalid.
+///   invalid or was refused by the lifecycle gate (a refused secret is
+///   reported with its reason and the rest are still validated).
 /// - With `--watch`: polls indefinitely, honouring per-secret schedules from
 ///   `.phantom.toml`, writing results to `~/.phantom/validation-report.json`.
 pub fn run(check_all: bool, jobs: Option<usize>, json: bool) -> Result<()> {
@@ -99,7 +189,7 @@ fn run_inner(check_all: bool, jobs: Option<usize>, json: bool, watch: bool) -> R
 
     if names.is_empty() {
         if json {
-            println!("{{\"total\":0,\"valid\":0,\"invalid\":0,\"unreachable\":0,\"not_checked\":0,\"entries\":[]}}");
+            println!("{}", empty_vault_report_json()?);
         } else {
             println!("{} No secrets in vault to validate.", "info".blue());
         }
@@ -114,59 +204,95 @@ fn run_inner(check_all: bool, jobs: Option<usize>, json: bool, watch: bool) -> R
 
     let n_jobs = jobs.unwrap_or(DEFAULT_JOBS).clamp(1, 16);
     let timeout = Duration::from_secs(DEFAULT_TIMEOUT_SECS);
-    let metadata_before = snapshot_validation_metadata(vault.as_ref(), &names)?;
-    require_trusted_terminal_validation(
-        &project_dir,
-        &project_id,
-        &config_before,
-        &names,
-        n_jobs,
-        timeout.as_secs(),
-        false,
-    )?;
+    // Known from names and metadata alone: each refused entry is reported
+    // as refused and only the rest are put to consent and validated.
+    let gate = gate_validation(&config, vault.as_ref(), &names);
+    let mut refused = gate.refused;
+    let mut validated_from = None;
+    let mut report = if gate.allowed.is_empty() {
+        // Nothing left to send: no consent, no value read, no request.
+        run_validation_pipeline(Vec::new(), &[], n_jobs, timeout)
+    } else {
+        let metadata_before = snapshot_validation_metadata(vault.as_ref(), &gate.allowed)?;
+        require_trusted_terminal_validation(
+            &project_dir,
+            &project_id,
+            &config_before,
+            &gate.allowed,
+            n_jobs,
+            timeout.as_secs(),
+            false,
+        )?;
 
-    // Collect secrets, apply per-secret timeout override where configured.
-    // For one-shot mode, we use the global default timeout but respect the
-    // per-secret validation config's timeout_secs when building the pipeline.
-    let mut secrets: Vec<(String, zeroize::Zeroizing<String>)> = Vec::new();
-    for name in &names {
-        let value = vault.retrieve(name)?;
-        secrets.push((
-            name.clone(),
-            zeroize::Zeroizing::new(String::from(value.as_str())),
-        ));
+        // Judged again after consent: an entry may have been demoted or gone
+        // overdue while the prompt was open. It is refused, never sent.
+        let again = gate_validation(&config, vault.as_ref(), &gate.allowed);
+        refused.extend(again.refused);
+        // Counted from names, before any value is read.
+        let sending = again.allowed.len();
+        let secrets = retrieve_validation_values(vault.as_ref(), &again.allowed)?;
+
+        if !json {
+            println!(
+                "{} Validating {} secret(s) with {} job(s)…",
+                "info".blue(),
+                sending,
+                n_jobs
+            );
+        }
+
+        let validators = default_validators();
+        validated_from = (sending > 0).then(phantom_vault::metadata::now_secs);
+        let report = run_validation_pipeline(secrets, &validators, n_jobs, timeout);
+        persist_validation_metadata(vault.as_ref(), &report, &metadata_before)?;
+        report
+    };
+    for (name, reason) in &refused {
+        report.push_refused(name, reason);
     }
-
-    if !json {
-        println!(
-            "{} Validating {} secret(s) with {} job(s)…",
-            "info".blue(),
-            secrets.len(),
-            n_jobs
-        );
+    // A run the gate refused entirely, before or after consent, sent
+    // nothing, so only a run that checked values is history.
+    if let Some(started_at) = validated_from {
+        record_validation_run(&state_file_path(&project_id), started_at, &report);
     }
-
-    let validators = default_validators();
-    let report = run_validation_pipeline(secrets, &validators, n_jobs, timeout);
-
-    persist_validation_metadata(vault.as_ref(), &report, &metadata_before)?;
 
     if json {
         let out = serde_json::to_string_pretty(&report)?;
         println!("{out}");
-        // Exit 1 if any invalid secrets.
-        if report.invalid > 0 {
-            anyhow::bail!("one or more credentials were reported invalid");
-        }
-        return Ok(());
+    } else {
+        print_report_human(&report);
     }
+    one_shot_verdict(&report)
+}
 
-    print_report_human(&report);
-
-    if report.invalid > 0 {
-        anyhow::bail!("one or more credentials were reported invalid");
+/// Append a finished run to `phantom validate history` and the
+/// `validate schedule --status` last-run fields. Counts only, never a name or
+/// value. A failed write is reported and never changes the run's verdict.
+fn record_validation_run(
+    state_path: &std::path::Path,
+    started_at: u64,
+    report: &phantom_core::validator::ValidationReport,
+) {
+    let record = ValidationRunRecord::from_report(started_at, report);
+    if let Err(error) = record_run(state_path, record) {
+        eprintln!(
+            "{} This run was not added to `phantom validate history`: {error:#}",
+            "warn".yellow()
+        );
     }
-    Ok(())
+}
+
+/// The `--json` report for a vault with nothing in it: the same shape as any
+/// other run (`generated_at` and `refused` included), so a parser written
+/// against a real report does not break on an empty one.
+fn empty_vault_report_json() -> Result<String> {
+    let report = run_validation_pipeline(
+        Vec::new(),
+        &[],
+        1,
+        Duration::from_secs(DEFAULT_TIMEOUT_SECS),
+    );
+    Ok(serde_json::to_string_pretty(&report)?)
 }
 
 /// Watch-mode: poll per-secret schedules in an infinite loop.
@@ -192,6 +318,7 @@ fn run_watch_loop(
         crate::util::inventory_guard(initial_vault.as_ref(), project_id, authorized_names.len())?;
     crate::util::warn_inventory_note(note.as_deref());
     validate_consent_names(&authorized_names)?;
+    gate_validation(config, initial_vault.as_ref(), &authorized_names).require_all()?;
     let watch_timeout_secs = authorized_names
         .iter()
         .filter_map(|name| {
@@ -277,11 +404,11 @@ fn run_watch_loop(
 
         if !due_names.is_empty() {
             let metadata_before = snapshot_validation_metadata(vault.as_ref(), &due_names)?;
-            let mut due_secrets: Vec<(String, zeroize::Zeroizing<String>)> = Vec::new();
-            for name in &due_names {
-                let value = vault.retrieve(name)?;
-                due_secrets.push((name.clone(), value));
-            }
+            // A watch outlives its consent: each round is judged as exec
+            // would judge a launch, so a secret that goes overdue or is
+            // demoted mid-watch ends the watch instead of being sent.
+            gate_validation(config, vault.as_ref(), &due_names).require_all()?;
+            let due_secrets = retrieve_validation_values(vault.as_ref(), &due_names)?;
             let now_ts = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -347,7 +474,9 @@ fn persist_validation_metadata(
                 &entry.validator,
                 entry.reason.as_deref().unwrap_or("network error"),
             ),
-            ValidationStatus::NotChecked | ValidationStatus::Skipped => continue,
+            ValidationStatus::NotChecked
+            | ValidationStatus::Skipped
+            | ValidationStatus::Refused => continue,
         };
         changes.push(phantom_vault::ValidationMetadataCas {
             name: entry.name.clone(),
@@ -477,6 +606,7 @@ fn print_report_human(report: &ValidationReport) {
             ValidationStatus::Unreachable => "  unreachable".yellow().to_string(),
             ValidationStatus::NotChecked => "  not_checked".dimmed().to_string(),
             ValidationStatus::Skipped => "  skipped    ".dimmed().to_string(),
+            ValidationStatus::Refused => "  REFUSED    ".red().bold().to_string(),
         };
 
         let reason = entry
@@ -496,12 +626,17 @@ fn print_report_human(report: &ValidationReport) {
 
     println!();
     println!(
-        "  Total: {}  Valid: {}  {}  {}  Not checked: {}",
+        "  Total: {}  Valid: {}  {}  {}  Not checked: {}{}",
         report.total,
         report.valid.to_string().green(),
         format!("Invalid: {}", report.invalid).red(),
         format!("Unreachable: {}", report.unreachable).yellow(),
-        report.not_checked
+        report.not_checked,
+        if report.refused > 0 {
+            format!("  {}", format!("Refused: {}", report.refused).red())
+        } else {
+            String::new()
+        }
     );
 
     if report.invalid > 0 {
@@ -510,6 +645,14 @@ fn print_report_human(report: &ValidationReport) {
             "  {} {} credential(s) are INVALID — rotate them immediately with `phantom rotate`.",
             "!".red().bold(),
             report.invalid
+        );
+    }
+
+    if report.refused > 0 {
+        println!(
+            "  {} {} secret(s) were refused by the lifecycle gate and not validated — rotate or promote them first.",
+            "!".red().bold(),
+            report.refused
         );
     }
 
@@ -540,6 +683,28 @@ mod tests {
     use phantom_vault::file::FileVault;
     use phantom_vault::VaultBackend;
 
+    /// An empty vault's `--json` used to be a hand-written object missing
+    /// `generated_at` and `refused`, so it parsed differently from every
+    /// other run's report.
+    #[test]
+    fn empty_vault_json_has_the_same_fields_as_any_report() {
+        let empty: serde_json::Value =
+            serde_json::from_str(&empty_vault_report_json().unwrap()).unwrap();
+        let mut full = run_validation_pipeline(Vec::new(), &[], 1, Duration::from_secs(1));
+        full.push_refused("SOME_NAME", "refused for the test");
+        let full = serde_json::to_value(&full).unwrap();
+        let keys = |v: &serde_json::Value| {
+            let mut k: Vec<String> = v.as_object().unwrap().keys().cloned().collect();
+            k.sort();
+            k
+        };
+        assert_eq!(keys(&empty), keys(&full));
+        assert_eq!(empty["total"], 0);
+        assert_eq!(empty["refused"], 0);
+        assert_eq!(empty["entries"], serde_json::json!([]));
+        assert!(empty["generated_at"].as_u64().unwrap() > 0);
+    }
+
     #[test]
     fn stale_validation_before_image_commits_nothing() {
         let dir = tempfile::tempdir().unwrap();
@@ -563,6 +728,7 @@ mod tests {
             invalid: 0,
             unreachable: 0,
             not_checked: 0,
+            refused: 0,
             entries: vec![
                 ValidationEntry {
                     name: "A".into(),
@@ -639,5 +805,347 @@ mod locked_vault_tests {
         let _project = LockedProject::new(empty_keychain);
         let error = super::run_watch(None, true).unwrap_err();
         assert!(error.to_string().starts_with("Vault locked:"), "{error:#}");
+    }
+}
+
+#[cfg(test)]
+mod lifecycle_gate_tests {
+    use crate::util::test_seam::{
+        demoted_vault, metadata_unreadable_vault, SeamProject, TestProject,
+    };
+    use phantom_vault::VaultBackend;
+    use std::io::IsTerminal;
+
+    fn refusal(result: anyhow::Result<()>) -> String {
+        result
+            .map(|()| String::new())
+            .unwrap_or_else(|error| error.to_string())
+    }
+
+    /// `phantom validate --check-all` read every value with a plain
+    /// retrieve and sent it to its provider, so an entry the expiry policy
+    /// demoted to read-only (which `phantom exec` refuses to inject) still
+    /// went over the network. It is now refused from metadata alone, before
+    /// the trusted-terminal consent, naming the entry only.
+    #[test]
+    fn validate_refuses_a_read_only_entry_before_consent() {
+        let _project = SeamProject::new(demoted_vault);
+        for json in [true, false] {
+            let refused = refusal(super::run(true, None, json));
+            assert!(refused.starts_with("Refusing to validate: 1 secret(s) are read-only"));
+            assert!(refused.contains("'DEMOTED_KEY'"));
+            assert!(refused.contains("no provider request was sent"));
+        }
+    }
+
+    #[test]
+    fn validate_watch_refuses_a_read_only_entry_before_consent() {
+        let _project = SeamProject::new(demoted_vault);
+        let refused = refusal(super::run_watch(None, true));
+        assert!(refused.starts_with("Refusing to validate: 1 secret(s) are read-only"));
+        assert!(refused.contains("'DEMOTED_KEY'"));
+    }
+
+    #[test]
+    fn validate_refuses_unreadable_lifecycle_metadata_before_consent() {
+        let _project = SeamProject::new(metadata_unreadable_vault);
+        let refused = refusal(super::run(true, None, true));
+        assert!(refused.starts_with("Refusing to validate:"));
+        assert!(refused.contains("'DEMOTED_KEY'"));
+    }
+
+    /// Names and metadata only: an entry stored long ago under an enforced
+    /// 30-day rotation. Any value read fails the test.
+    struct OverdueVault;
+
+    impl VaultBackend for OverdueVault {
+        fn store(&self, _: &str, _: &str) -> phantom_core::error::Result<()> {
+            unreachable!("a refused validation never stores")
+        }
+        fn retrieve(&self, _: &str) -> phantom_core::error::Result<zeroize::Zeroizing<String>> {
+            panic!("a value was read from an overdue entry")
+        }
+        fn retrieve_for_injection(
+            &self,
+            _: &str,
+        ) -> phantom_core::error::Result<zeroize::Zeroizing<String>> {
+            panic!("a value was read from an overdue entry")
+        }
+        fn delete(&self, _: &str) -> phantom_core::error::Result<()> {
+            unreachable!("a refused validation never deletes")
+        }
+        fn list(&self) -> phantom_core::error::Result<Vec<String>> {
+            Ok(vec!["STALE_KEY".to_string()])
+        }
+        fn backend_name(&self) -> &str {
+            "encrypted-file"
+        }
+        fn get_metadata(
+            &self,
+            _: &str,
+        ) -> phantom_core::error::Result<Option<phantom_vault::SecretMetadata>> {
+            Ok(Some(phantom_vault::SecretMetadata {
+                created_at: Some(1_000),
+                ..phantom_vault::SecretMetadata::default()
+            }))
+        }
+    }
+
+    fn overdue_vault() -> Box<dyn VaultBackend> {
+        Box::new(OverdueVault)
+    }
+
+    /// `phantom exec` refuses to start with an overdue secret whose policy
+    /// sets `enforce_rotation_on_access`; `phantom validate` sent the same
+    /// value to its provider. It now refuses before consent, as exec does.
+    #[test]
+    fn validate_refuses_an_overdue_enforced_secret_before_consent() {
+        let project = tempfile::tempdir().unwrap();
+        let dir = project.path().canonicalize().unwrap();
+        let mut config = phantom_core::config::PhantomConfig::new_with_defaults(
+            phantom_core::config::PhantomConfig::project_id_from_path(&dir),
+        );
+        config.phantom.secrets.insert(
+            "STALE_KEY".to_string(),
+            phantom_core::config::SecretOverride {
+                rotate_every: Some("30d".to_string()),
+                enforce_rotation_on_access: true,
+                ..phantom_core::config::SecretOverride::default()
+            },
+        );
+        config.save(&dir.join(".phantom.toml")).unwrap();
+        let _seam = TestProject::install(dir, overdue_vault);
+
+        let refused = refusal(super::run(true, None, true));
+        assert!(
+            refused.starts_with("Refusing to validate: rotation enforcement blocked 1 secret(s).")
+        );
+        assert!(refused.contains("STALE_KEY"));
+        let refused = refusal(super::run_watch(None, true));
+        assert!(
+            refused.starts_with("Refusing to validate: rotation enforcement blocked 1 secret(s).")
+        );
+    }
+
+    /// One read-only entry beside one usable entry, names and metadata only.
+    /// Any value read fails the test.
+    struct PartlyDemotedVault;
+
+    impl VaultBackend for PartlyDemotedVault {
+        fn store(&self, _: &str, _: &str) -> phantom_core::error::Result<()> {
+            unreachable!("validation never stores")
+        }
+        fn retrieve(&self, _: &str) -> phantom_core::error::Result<zeroize::Zeroizing<String>> {
+            panic!("a value was read before consent")
+        }
+        fn delete(&self, _: &str) -> phantom_core::error::Result<()> {
+            unreachable!("validation never deletes")
+        }
+        fn list(&self) -> phantom_core::error::Result<Vec<String>> {
+            Ok(vec!["ACTIVE_KEY".to_string(), "DEMOTED_KEY".to_string()])
+        }
+        fn backend_name(&self) -> &str {
+            "encrypted-file"
+        }
+        fn get_metadata(
+            &self,
+            name: &str,
+        ) -> phantom_core::error::Result<Option<phantom_vault::SecretMetadata>> {
+            let vault_mode = if name == "DEMOTED_KEY" {
+                phantom_vault::metadata::VaultMode::ReadOnly
+            } else {
+                phantom_vault::metadata::VaultMode::ReadWrite
+            };
+            Ok(Some(phantom_vault::SecretMetadata {
+                created_at: Some(1_000),
+                vault_mode,
+                ..phantom_vault::SecretMetadata::default()
+            }))
+        }
+    }
+
+    fn partly_demoted_vault() -> Box<dyn VaultBackend> {
+        Box::new(PartlyDemotedVault)
+    }
+
+    /// `phantom validate --check-all` aborted the whole run on one refused
+    /// entry, so the usable rest was never validated. The refused entry no
+    /// longer stops the run: the remaining entry goes on to the
+    /// trusted-terminal consent (which a headless test cannot pass).
+    #[test]
+    fn validate_all_continues_past_a_refused_entry_to_consent() {
+        if std::io::stdin().is_terminal()
+            && std::io::stdout().is_terminal()
+            && std::io::stderr().is_terminal()
+        {
+            return;
+        }
+        let _project = SeamProject::new(partly_demoted_vault);
+        for json in [true, false] {
+            let outcome = refusal(super::run(true, None, json));
+            assert!(!outcome.starts_with("Refusing to validate"), "{outcome}");
+            assert!(outcome.contains("live validation requires attached"));
+        }
+    }
+
+    /// The value read after consent applies exec's runtime-injection check,
+    /// so an entry demoted between the gate and the read is never returned.
+    #[test]
+    fn validation_values_are_read_through_the_injection_check() {
+        use crate::commands::rotation_gate::fixtures::aged_vault;
+        let store = tempfile::tempdir().unwrap();
+        let vault = aged_vault(&store, &[("ACTIVE_KEY", 1), ("DEMOTED_KEY", 1)]);
+        let mut demoted = vault.get_metadata("DEMOTED_KEY").unwrap().unwrap();
+        demoted.vault_mode = phantom_vault::metadata::VaultMode::ReadOnly;
+        vault.set_metadata("DEMOTED_KEY", demoted).unwrap();
+
+        let read = super::retrieve_validation_values(&vault, &["ACTIVE_KEY".to_string()]).unwrap();
+        assert_eq!(read.len(), 1);
+        assert_eq!(read[0].0, "ACTIVE_KEY");
+        let refused = super::retrieve_validation_values(
+            &vault,
+            &["ACTIVE_KEY".to_string(), "DEMOTED_KEY".to_string()],
+        )
+        .map(|_| String::new())
+        .unwrap_or_else(|error| error.to_string());
+        assert!(refused.contains("read-only under its lifecycle policy"));
+    }
+
+    /// Each entry is judged on its own: a read-only entry and an overdue
+    /// enforced entry are refused with their own names only, and the usable
+    /// entry is still allowed.
+    #[test]
+    fn the_validation_gate_judges_each_entry_on_its_own() {
+        use crate::commands::rotation_gate::fixtures::{aged_vault, enforced_config};
+        let store = tempfile::tempdir().unwrap();
+        let vault = aged_vault(
+            &store,
+            &[("ACTIVE_KEY", 1), ("DEMOTED_KEY", 1), ("STALE_KEY", 4000)],
+        );
+        let mut demoted = vault.get_metadata("DEMOTED_KEY").unwrap().unwrap();
+        demoted.vault_mode = phantom_vault::metadata::VaultMode::ReadOnly;
+        vault.set_metadata("DEMOTED_KEY", demoted).unwrap();
+        let config = enforced_config(&["STALE_KEY"]);
+        let names: Vec<String> = ["ACTIVE_KEY", "DEMOTED_KEY", "STALE_KEY"]
+            .map(String::from)
+            .to_vec();
+
+        let gate = super::gate_validation(&config, &vault, &names);
+        assert_eq!(gate.allowed, vec!["ACTIVE_KEY".to_string()]);
+        assert_eq!(gate.refused.len(), 2);
+        let (name, reason) = &gate.refused[0];
+        assert_eq!(name, "DEMOTED_KEY");
+        assert!(reason.starts_with("Refusing to validate: 1 secret(s) are read-only"));
+        assert!(reason.contains("'DEMOTED_KEY'") && !reason.contains("STALE_KEY"));
+        let (name, reason) = &gate.refused[1];
+        assert_eq!(name, "STALE_KEY");
+        assert!(reason.starts_with("Refusing to validate: rotation enforcement blocked 1"));
+        assert!(!reason.contains("DEMOTED_KEY"));
+
+        // Watch mode still refuses the whole set, naming every refusal.
+        let whole = super::gate_validation(&config, &vault, &names)
+            .require_all()
+            .unwrap_err()
+            .to_string();
+        assert!(whole.contains("'DEMOTED_KEY'") && whole.contains("STALE_KEY"));
+        assert!(super::gate_validation(&config, &vault, &names[..1])
+            .require_all()
+            .is_ok());
+    }
+
+    /// A one-shot report carries refused entries beside validated ones, and
+    /// its exit fails with each refusal while a clean report passes.
+    #[test]
+    fn a_refused_entry_is_reported_and_fails_the_exit() {
+        use phantom_core::validator::run_validation_pipeline;
+        let mut report = run_validation_pipeline(
+            vec![(
+                "PLAIN_SETTING".to_string(),
+                zeroize::Zeroizing::new(String::new()),
+            )],
+            &[],
+            1,
+            std::time::Duration::from_secs(1),
+        );
+        assert!(super::one_shot_verdict(&report).is_ok());
+        report.push_refused(
+            "DEMOTED_KEY",
+            "Refusing to validate: 'DEMOTED_KEY' is read-only.",
+        );
+        let refused = super::one_shot_verdict(&report).unwrap_err().to_string();
+        assert_eq!(refused, "Refusing to validate: 'DEMOTED_KEY' is read-only.");
+        assert_eq!(
+            (report.total, report.refused, report.not_checked),
+            (2, 1, 1)
+        );
+    }
+
+    /// `phantom validate history` and `schedule --status` read runs that
+    /// nothing wrote: `--check-all` never recorded one.
+    #[test]
+    fn a_checked_run_is_recorded_in_history_with_counts_only() {
+        use phantom_core::validator::run_validation_pipeline;
+        let home = tempfile::tempdir().unwrap();
+        let state_path = home.path().join("project").join("validation-state.json");
+        let mut report = run_validation_pipeline(
+            vec![(
+                "PLAIN_SETTING".to_string(),
+                zeroize::Zeroizing::new(String::new()),
+            )],
+            &[],
+            1,
+            std::time::Duration::from_secs(1),
+        );
+        report.push_refused("DEMOTED_KEY", "read-only");
+
+        super::record_validation_run(&state_path, 1_000, &report);
+        super::record_validation_run(&state_path, 2_000, &report);
+
+        let state = phantom_core::validation_scheduler::SchedulerState::load(&state_path).unwrap();
+        assert_eq!(state.history.len(), 2);
+        assert_eq!(state.history[1].started_at, 2_000);
+        let last = state.last_run.as_ref().unwrap();
+        assert_eq!((last.total, last.not_checked), (2, 1));
+        assert_eq!(state.last_run_at, last.finished_at);
+        assert!(!state.is_stale(3600));
+        let raw = std::fs::read_to_string(&state_path).unwrap();
+        assert!(!raw.contains("PLAIN_SETTING") && !raw.contains("DEMOTED_KEY"));
+    }
+
+    /// One-shot records the run after the values were checked.
+    #[test]
+    fn one_shot_records_the_run_after_checking() {
+        let source = include_str!("validate.rs");
+        let production = &source[..source.find("#[cfg(test)]").unwrap()];
+        let once = &production[production.find("fn run_inner(").unwrap()..];
+        let once = &once[..once.find("fn run_watch_loop(").unwrap()];
+        let checked = once.find("run_validation_pipeline(secrets").unwrap();
+        let recorded = once.find("record_validation_run(&state_file_path").unwrap();
+        assert!(recorded > checked);
+    }
+
+    /// Every path that reads values to validate gates first, and no plain
+    /// `retrieve` remains: one-shot before consent and again before the read,
+    /// watch before consent and on every round before the read.
+    #[test]
+    fn every_validation_read_is_gated() {
+        let source = include_str!("validate.rs");
+        let production = &source[..source.find("#[cfg(test)]").unwrap()];
+        assert!(!production.contains("vault.retrieve("));
+
+        let once = &production[production.find("fn run_inner(").unwrap()..];
+        let once = &once[..once.find("fn run_watch_loop(").unwrap()];
+        let consent = once.find("require_trusted_terminal_validation(").unwrap();
+        let read = once.find("retrieve_validation_values(").unwrap();
+        assert!(once.find("gate_validation(").unwrap() < consent);
+        assert!(once.rfind("gate_validation(").unwrap() > consent);
+        assert!(once.rfind("gate_validation(").unwrap() < read);
+
+        let watch = &production[production.find("fn run_watch_loop(").unwrap()..];
+        let consent = watch.find("require_trusted_terminal_validation(").unwrap();
+        let read = watch.find("retrieve_validation_values(").unwrap();
+        assert!(watch.find("gate_validation(").unwrap() < consent);
+        let round = &watch[watch.find("loop {").unwrap()..read];
+        assert!(round.contains("gate_validation("));
     }
 }

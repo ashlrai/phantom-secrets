@@ -15,10 +15,12 @@ use std::path::{Path, PathBuf};
 use tempfile::NamedTempFile;
 
 pub mod anchored;
+mod private_dir;
 pub use anchored::{
     AnchoredCreatedDirectory, AnchoredDirectoryCreation, AnchoredEffect, AnchoredFilePermissions,
     AnchoredLock, AnchoredRead, AnchoredTarget, FileIdentity, TrustedAnchor,
 };
+pub use private_dir::PrivateStateDir;
 
 /// Atomically write `contents` to `path`.
 ///
@@ -459,6 +461,125 @@ fn tighten_owned_directory(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// Open a Phantom-owned directory without following a symlink at `name`.
+///
+/// With `parent` set, `name` must be one plain path component and is opened
+/// relative to that directory descriptor; without it, `name` is a path whose
+/// ancestors resolve normally (so a symlinked data or temp directory keeps
+/// working) and only the final component is judged. The result must be a
+/// real directory owned by the current user and, when `require_private`,
+/// have no group or other access. Anything else is refused with
+/// `ErrorKind::InvalidData`; an absent entry is `ErrorKind::NotFound`.
+///
+/// Callers chain these descriptors and finish with [`open_owned_file_at`] so
+/// a directory swapped after an earlier path-based check cannot redirect the
+/// final open.
+#[cfg(unix)]
+pub fn open_owned_directory(
+    parent: Option<&std::fs::File>,
+    name: &Path,
+    require_private: bool,
+) -> io::Result<std::fs::File> {
+    use std::os::unix::fs::MetadataExt;
+    let directory = open_nofollow_at(
+        parent,
+        name,
+        libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        0,
+    )?;
+    let metadata = directory.metadata()?;
+    // SAFETY: geteuid has no preconditions and cannot fail.
+    let effective_uid = unsafe { libc::geteuid() };
+    if !metadata.is_dir()
+        || metadata.uid() != effective_uid
+        || (require_private && metadata.mode() & 0o077 != 0)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "Phantom directory is not a private directory owned by the current user: {}",
+                name.display()
+            ),
+        ));
+    }
+    Ok(directory)
+}
+
+/// Open (and with `create`, create with mode 0600) the regular file `name`
+/// inside `directory`, relative to that descriptor and without following a
+/// symlink. The file is opened read-write and close-on-exec; one that is not
+/// a regular file or is owned by another user is refused with
+/// `ErrorKind::InvalidData`. An existing file is never truncated.
+#[cfg(unix)]
+pub fn open_owned_file_at(
+    directory: &std::fs::File,
+    name: &Path,
+    create: bool,
+) -> io::Result<std::fs::File> {
+    use std::os::unix::fs::MetadataExt;
+    let mut flags =
+        libc::O_RDWR | libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK | libc::O_NOCTTY;
+    if create {
+        flags |= libc::O_CREAT;
+    }
+    let file = open_nofollow_at(Some(directory), name, flags, 0o600)?;
+    let metadata = file.metadata()?;
+    // SAFETY: geteuid has no preconditions and cannot fail.
+    if !metadata.is_file() || metadata.uid() != unsafe { libc::geteuid() } {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "Phantom file is not a regular file owned by the current user: {}",
+                name.display()
+            ),
+        ));
+    }
+    Ok(file)
+}
+
+#[cfg(unix)]
+fn open_nofollow_at(
+    parent: Option<&std::fs::File>,
+    name: &Path,
+    flags: libc::c_int,
+    mode: libc::mode_t,
+) -> io::Result<std::fs::File> {
+    use std::os::fd::{AsRawFd, FromRawFd};
+    use std::os::unix::ffi::OsStrExt;
+    let single_component = matches!(
+        name.components().collect::<Vec<_>>().as_slice(),
+        [std::path::Component::Normal(_)]
+    ) && !name.as_os_str().as_bytes().contains(&b'/');
+    if parent.is_some() && !single_component {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("not a single path component: {}", name.display()),
+        ));
+    }
+    let c_name = std::ffi::CString::new(name.as_os_str().as_bytes()).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("path contains a NUL byte: {}", name.display()),
+        )
+    })?;
+    let directory_fd = parent.map_or(libc::AT_FDCWD, |parent| parent.as_raw_fd());
+    // SAFETY: `directory_fd` is AT_FDCWD or a descriptor borrowed for this
+    // call, and `c_name` is NUL-terminated.
+    let descriptor = unsafe {
+        libc::openat(
+            directory_fd,
+            c_name.as_ptr(),
+            flags,
+            libc::c_uint::from(mode),
+        )
+    };
+    if descriptor < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: openat returned a new descriptor that nothing else owns.
+    Ok(unsafe { std::fs::File::from_raw_fd(descriptor) })
+}
+
 /// Create `path` as a new file holding `contents`, never replacing anything.
 ///
 /// The bytes are staged in a same-directory temp file (mode 0600 on POSIX),
@@ -490,6 +611,20 @@ pub fn write_new_file(path: &Path, contents: &[u8]) -> io::Result<()> {
 /// tightened to 0700; one owned by someone else is left as it is.
 pub fn ensure_private_dir(path: &Path) -> io::Result<()> {
     ensure_real_parent(path)?;
+    ensure_private_leaf_dir(path)
+}
+
+/// Create Phantom's own directory `path` inside an existing parent and keep
+/// it private, without judging the parent chain.
+///
+/// Unlike [`ensure_private_dir`], ancestors are resolved normally, so a user
+/// whose `~/.local/share` (or `XDG_DATA_HOME`) or temp directory is itself a
+/// symlink keeps working. Only the final component is Phantom's: it is
+/// created with mode 0700 on Unix, a symlink or non-directory there is
+/// refused, and an existing directory owned by the current user is tightened
+/// to 0700 through a no-follow descriptor. One owned by someone else is left
+/// as it is; callers that need sole ownership check that themselves.
+pub fn ensure_private_leaf_dir(path: &Path) -> io::Result<()> {
     let mut builder = std::fs::DirBuilder::new();
     #[cfg(unix)]
     {
@@ -1032,6 +1167,89 @@ mod tests {
         }
         validate_project_filename(".env.example").unwrap();
         validate_project_filename("env-example").unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn owned_file_at_is_created_private_and_never_follows_a_symlink() {
+        use std::os::unix::fs::{symlink, MetadataExt};
+        let dir = TempDir::new().unwrap();
+        let state = dir.path().join("state");
+        ensure_private_leaf_dir(&state).unwrap();
+        let handle = open_owned_directory(None, &state, true).unwrap();
+        open_owned_file_at(&handle, Path::new("one.lock"), true).unwrap();
+        let metadata = std::fs::metadata(state.join("one.lock")).unwrap();
+        assert_eq!(metadata.mode() & 0o777, 0o600);
+        assert_eq!(metadata.len(), 0);
+
+        let victim = dir.path().join("victim");
+        symlink(&victim, state.join("two.lock")).unwrap();
+        assert!(open_owned_file_at(&handle, Path::new("two.lock"), true).is_err());
+        assert!(std::fs::symlink_metadata(&victim).is_err());
+
+        std::fs::create_dir(state.join("three.lock")).unwrap();
+        assert!(open_owned_file_at(&handle, Path::new("three.lock"), true).is_err());
+        assert!(state.join("three.lock").is_dir());
+
+        let fifo = std::ffi::CString::new(std::os::unix::ffi::OsStrExt::as_bytes(
+            state.join("fifo.lock").as_os_str(),
+        ))
+        .unwrap();
+        // SAFETY: `fifo` is a NUL-terminated path.
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+        let error = open_owned_file_at(&handle, Path::new("fifo.lock"), true).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+
+        let missing = open_owned_file_at(&handle, Path::new("four.lock"), false).unwrap_err();
+        assert_eq!(missing.kind(), io::ErrorKind::NotFound);
+        assert!(!state.join("four.lock").exists());
+
+        for nested in ["a/b", "..", "", "/abs"] {
+            assert!(open_owned_file_at(&handle, Path::new(nested), true).is_err());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn owned_directory_refuses_symlinks_and_open_modes_when_private_is_required() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let dir = TempDir::new().unwrap();
+        let real = dir.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o755)).unwrap();
+        open_owned_directory(None, &real, false).unwrap();
+        let error = open_owned_directory(None, &real, true).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+
+        let link = dir.path().join("link");
+        symlink(&real, &link).unwrap();
+        assert!(open_owned_directory(None, &link, false).is_err());
+
+        let parent = open_owned_directory(None, dir.path(), false).unwrap();
+        assert!(open_owned_directory(Some(&parent), Path::new("link"), false).is_err());
+        open_owned_directory(Some(&parent), Path::new("real"), false).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn owned_file_and_directory_of_another_user_are_refused() {
+        // Staging foreign ownership needs privilege; skip when unprivileged.
+        if unsafe { libc::geteuid() } != 0 {
+            return;
+        }
+        let dir = TempDir::new().unwrap();
+        let foreign_dir = dir.path().join("foreign");
+        std::fs::create_dir(&foreign_dir).unwrap();
+        std::os::unix::fs::chown(&foreign_dir, Some(65534), Some(65534)).unwrap();
+        let error = open_owned_directory(None, &foreign_dir, false).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+
+        let own = open_owned_directory(None, dir.path(), false).unwrap();
+        std::fs::write(dir.path().join("foreign.lock"), b"").unwrap();
+        std::os::unix::fs::chown(dir.path().join("foreign.lock"), Some(65534), Some(65534))
+            .unwrap();
+        let error = open_owned_file_at(&own, Path::new("foreign.lock"), true).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
     }
 
     #[test]
