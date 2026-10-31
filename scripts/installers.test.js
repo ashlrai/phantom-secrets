@@ -163,6 +163,7 @@ function runInstaller(options = {}) {
   const result = spawnSync('/bin/bash', [options.installer ?? shellInstaller], {
     encoding: 'utf8',
     env,
+    cwd: options.cwd,
     timeout: options.timeoutMs,
   });
   return { root, install, log, result };
@@ -400,6 +401,41 @@ test('Unix installer atomically preserves an existing regular shell rc under GNU
     readdirSync(home).filter((name) => name.startsWith('.phantom-path.')),
     [],
   );
+});
+
+test('Unix installer updates only the intended shell rc when its path contains spaces', () => {
+  for (const existing of [false, true]) {
+    const root = mkdtempSync(join(tmpdir(), 'phantom-installer-spaced-rc-'));
+    const home = join(root, 'home with spaces');
+    const rcPath = join(home, '.bashrc');
+    const shims = makeShims(root);
+    const install = join(root, 'live', 'bin');
+    mkdirSync(home);
+    if (existing) writeFileSync(rcPath, '# existing configuration\n', { mode: 0o600 });
+
+    const options = { root, home, shims, install, cwd: root, directLocalRelease: true };
+    const first = runInstaller(options);
+    assert.ifError(first.result.error);
+    assert.equal(first.result.status, 0, first.result.stderr);
+    assert.doesNotMatch(first.result.stderr, /could not update your shell PATH/);
+    const expected = `${existing ? '# existing configuration\n' : ''}\n` +
+      `# phantom-secrets PATH\nexport PATH="${realpathSync(install)}:$PATH"\n`;
+    assert.equal(readFileSync(rcPath, 'utf8'), expected);
+    assert.deepEqual(readdirSync(home), ['.bashrc']);
+    assert.deepEqual(readdirSync(root).sort(), [
+      'fixture-1.2.3', 'home with spaces', 'live', 'payload-fixture-1.2.3', 'shims',
+    ]);
+
+    const second = runInstaller(options);
+    assert.ifError(second.result.error);
+    assert.equal(second.result.status, 0, second.result.stderr);
+    assert.doesNotMatch(second.result.stderr, /could not update your shell PATH/);
+    assert.equal(readFileSync(rcPath, 'utf8'), expected);
+    assert.deepEqual(readdirSync(home), ['.bashrc']);
+    assert.deepEqual(readdirSync(root).sort(), [
+      'fixture-1.2.3', 'home with spaces', 'live', 'payload-fixture-1.2.3', 'shims',
+    ]);
+  }
 });
 
 test('Unix installer serializes concurrent versions under one owner lock', async () => {
