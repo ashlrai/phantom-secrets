@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -54,6 +54,24 @@ test("dependency index validation rejects tracked installations, not similar nam
   assert.doesNotThrow(() => assertDependencyIndexClean("apps/web/package.json\0docs/node_modules-guide.md\0"));
   assert.throws(() => assertDependencyIndexClean("unterminated"), /NUL-terminated/);
   assert.throws(() => assertDependencyIndexClean("\0"), /empty path/);
+});
+
+test("dependency index CLI consumes stdin and propagates validation failure", () => {
+  const script = join(repoRoot, "scripts/release/check-dependency-index.mjs");
+  const run = (input) => spawnSync(process.execPath, [script], {
+    cwd: repoRoot, input, encoding: "utf8", timeout: 10_000, maxBuffer: 1024 * 1024,
+  });
+  const clean = run("apps/web/package.json\0");
+  assert.equal(clean.error, undefined);
+  assert.equal(clean.status, 0, clean.stderr);
+  assert.match(clean.stdout, /dependency index is clean/);
+
+  const rejected = run("apps/web/node_modules\0");
+  assert.equal(rejected.error, undefined);
+  assert.equal(rejected.signal, null);
+  assert.notEqual(rejected.status, 0);
+  assert.match(rejected.stderr, /generated node_modules paths must not be tracked/);
+  assert.doesNotMatch(rejected.stdout, /dependency index is clean/);
 });
 
 test("index hygiene runs before installs on every dependency-policy and release-source path", () => {
