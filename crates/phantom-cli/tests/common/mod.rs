@@ -57,32 +57,49 @@ pub fn phantom(dir: &TempDir, passphrase: &str) -> assert_cmd::Command {
 }
 
 /// Locate only this fixture project's vault, including an empty vault's lock.
-/// Windows Known Folders ignore the child's directory overrides; use the same
-/// platform resolver as the backend rather than searching the temporary HOME.
+///
+/// The child resolves its vault directory through the platform data-dir
+/// resolver against the environment `phantom()` sets. On Unix that is
+/// `$XDG_DATA_HOME`/`$HOME`, so the vault lands beneath this tempdir. On
+/// Windows the Known-Folder lookup expands `%USERPROFILE%` from the child
+/// environment *and verifies the folder exists*: `<tempdir>\AppData\Roaming`
+/// is absent, so the child falls back to the real profile's `<home>/.phantom`
+/// rather than the roaming data dir this process resolves. Search the
+/// tempdir first, then both resolver outcomes; panic naming everything
+/// checked when init left no vault anywhere.
 #[allow(dead_code)]
 pub fn encrypted_file(dir: &TempDir, project_id: &str) -> std::path::PathBuf {
-    #[cfg(windows)]
-    {
-        let _ = dir;
-        phantom_vault::encrypted_file_vault_path(project_id).unwrap()
-    }
-    #[cfg(not(windows))]
-    {
-        fn find(root: &std::path::Path, project_id: &str) -> Option<std::path::PathBuf> {
-            let path = root.join("vaults").join(format!("{project_id}.vault"));
-            if path.is_file() || path.with_extension("lock").is_file() {
-                return Some(path);
-            }
-            for entry in std::fs::read_dir(root).unwrap() {
-                let entry = entry.unwrap();
-                if entry.file_type().unwrap().is_dir() {
-                    if let Some(path) = find(&entry.path(), project_id) {
-                        return Some(path);
-                    }
+    fn find(root: &std::path::Path, project_id: &str) -> Option<std::path::PathBuf> {
+        let path = root.join("vaults").join(format!("{project_id}.vault"));
+        if path.is_file() || path.with_extension("lock").is_file() {
+            return Some(path);
+        }
+        for entry in std::fs::read_dir(root).unwrap() {
+            let entry = entry.unwrap();
+            if entry.file_type().unwrap().is_dir() {
+                if let Some(path) = find(&entry.path(), project_id) {
+                    return Some(path);
                 }
             }
-            None
         }
-        find(dir.path(), project_id).expect("init provisioned this project's encrypted-file vault")
+        None
     }
+    if let Some(found) = find(dir.path(), project_id) {
+        return found;
+    }
+    let mut candidates = Vec::new();
+    if let Ok(path) = phantom_vault::encrypted_file_vault_path(project_id) {
+        candidates.push(path);
+    }
+    candidates.push(
+        phantom_vault::file_vault_fallback_dir()
+            .join("vaults")
+            .join(format!("{project_id}.vault")),
+    );
+    for candidate in &candidates {
+        if candidate.is_file() || candidate.with_extension("lock").is_file() {
+            return candidate.clone();
+        }
+    }
+    panic!("init provisioned no vault for {project_id} under {dir:?} or {candidates:?}")
 }

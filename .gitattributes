@@ -1,1 +1,6 @@
 CHANGELOG.md merge=union
+
+# The ashlr handshake contract is byte-pinned: handshake_conformance_test
+# SHA-256-hashes the checked-out bytes via include_str!. CRLF line endings
+# from a Windows checkout (core.autocrlf) must never alter them.
+crates/phantom-cli/tests/contract/* text eol=lf
