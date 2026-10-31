@@ -48,9 +48,10 @@ function compile(filename: string, localRequire: NodeRequire) {
 
 function renderDevice(getSession: () => Promise<unknown>) {
   const dirname = path.dirname(__filename);
+  const React = runtimeRequire("react") as typeof import("react");
   const dependencies: Record<string, unknown> = {
     "next/image": { __esModule: true, default: () => null },
-    "next/link": { __esModule: true, default: ({ children, ...props }: ComponentProps<"a">) => <a {...props}>{children}</a> },
+    "next/link": { __esModule: true, default: ({ children, ...props }: ComponentProps<"a">) => React.createElement("a", props, children) },
     "@/lib/device-code": compile(path.resolve(dirname, "../../lib/device-code.ts"), runtimeRequire),
     "@/lib/posthog": { capturePostHog: async () => {} },
     "@supabase/supabase-js": { createClient: () => ({ auth: { getSession } }) },
