@@ -734,6 +734,40 @@ test('Unix installer cleans staged candidates and rolls back after a controlled 
   }
 });
 
+test('web Unix installer cleans staging failures and rolls back a promoted candidate', () => {
+  const installer = join(repo, 'apps/web/public/install.sh');
+  for (const seam of ['mktemp', 'chmod', 'mkdir']) {
+    const root = mkdtempSync(join(tmpdir(), `phantom-web-stage-${seam}-`));
+    try {
+      const shims = makeShims(root);
+      addStagingFailureShim(shims, seam);
+      const { install, log, result } = runInstaller({ root, shims, installer, existing: true });
+      assert.ifError(result.error);
+      assert.equal(result.status, 1, `${seam}: ${result.stderr}`);
+      assert.equal(existsSync(log), false, `${seam}: failure must precede downloads`);
+      assert.equal(readFileSync(join(install, 'old-install'), 'utf8'), 'preserve-me');
+      assert.deepEqual(readdirSync(dirname(install)), ['bin']);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+
+  for (const existing of [false, true]) {
+    const root = mkdtempSync(join(tmpdir(), 'phantom-web-rollback-'));
+    try {
+      const { install, result } = runInstaller({ root, installer, existing, failAfterPromotion: true });
+      assert.ifError(result.error);
+      assert.equal(result.status, 1, result.stderr);
+      assert.match(result.stderr, /test-only injected failure after promotion/);
+      assert.deepEqual(readdirSync(dirname(install)), existing ? ['bin'] : []);
+      if (existing) assert.equal(readFileSync(join(install, 'old-install'), 'utf8'), 'preserve-me');
+      else assert.equal(existsSync(install), false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+});
+
 test('Unix installer preserves the prior live install on malformed checksum', () => {
   const { install, result } = runInstaller({ existing: true, sidecar: `${'a'.repeat(64)}  wrong.tar.gz\nextra\n` });
   assert.notEqual(result.status, 0);
