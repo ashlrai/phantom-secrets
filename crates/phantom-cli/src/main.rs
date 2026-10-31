@@ -32,6 +32,8 @@ use commands::audit::AuditAction;
 #[derive(Parser)]
 #[command(
     name = "phantom",
+    // Keep usage stable for Windows .exe paths and renamed installations.
+    bin_name = "phantom",
     about = "Reduce API-key exposure in supported AI-agent workflows",
     long_about = "Phantom replaces managed dotenv secrets with non-provider phantom placeholders.\n\
                   Its authenticated local proxy matches exact routes and injects only route-owned authentication into each route's fixed header; client headers and bodies never resolve placeholders.\n\

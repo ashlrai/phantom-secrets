@@ -55,3 +55,34 @@ pub fn phantom(dir: &TempDir, passphrase: &str) -> assert_cmd::Command {
         .env("XDG_DATA_HOME", dir.path().join("data"));
     command
 }
+
+/// Locate only this fixture project's vault, including an empty vault's lock.
+/// Windows Known Folders ignore the child's directory overrides; use the same
+/// platform resolver as the backend rather than searching the temporary HOME.
+#[allow(dead_code)]
+pub fn encrypted_file(dir: &TempDir, project_id: &str) -> std::path::PathBuf {
+    #[cfg(windows)]
+    {
+        let _ = dir;
+        phantom_vault::encrypted_file_vault_path(project_id).unwrap()
+    }
+    #[cfg(not(windows))]
+    {
+        fn find(root: &std::path::Path, project_id: &str) -> Option<std::path::PathBuf> {
+            let path = root.join("vaults").join(format!("{project_id}.vault"));
+            if path.is_file() || path.with_extension("lock").is_file() {
+                return Some(path);
+            }
+            for entry in std::fs::read_dir(root).unwrap() {
+                let entry = entry.unwrap();
+                if entry.file_type().unwrap().is_dir() {
+                    if let Some(path) = find(&entry.path(), project_id) {
+                        return Some(path);
+                    }
+                }
+            }
+            None
+        }
+        find(dir.path(), project_id).expect("init provisioned this project's encrypted-file vault")
+    }
+}
