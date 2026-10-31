@@ -334,6 +334,48 @@ test('Unix installer cleans its staging directory after a successful fixture upg
   assert.deepEqual(readdirSync(parent).sort(), ['bin', 'unrelated']);
 });
 
+test('Unix installer keeps downloads and extraction in private sibling staging directories', (t) => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-installer-stage-review-')));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const shims = makeShims(root);
+  const record = join(root, 'stage.json');
+  const tar = execFileSync('which', ['tar'], { encoding: 'utf8' }).trim();
+  writeFileSync(join(shims, 'tar'), `#!/usr/bin/env node
+const fs = require('node:fs');
+const path = require('node:path');
+const { spawnSync } = require('node:child_process');
+const args = process.argv.slice(2);
+if (args.includes('-xzf')) {
+  const candidate = args[args.indexOf('-C') + 1];
+  const stage = path.dirname(candidate);
+  const download = path.join(stage, 'download');
+  const mode = (p) => fs.statSync(p).mode & 0o777;
+  fs.writeFileSync(${JSON.stringify(record)}, JSON.stringify({
+    stage, candidate, modes: [mode(stage), mode(download), mode(candidate)],
+    downloads: fs.readdirSync(download).sort(), candidateFiles: fs.readdirSync(candidate),
+  }));
+}
+const result = spawnSync(${JSON.stringify(tar)}, args, { stdio: 'inherit' });
+if (result.error) throw result.error;
+process.exit(result.status ?? 1);
+`);
+  chmodSync(join(shims, 'tar'), 0o755);
+  const install = join(root, 'live', 'bin');
+  const { result } = runInstaller({ root, shims, install });
+  assert.ifError(result.error);
+  assert.equal(result.status, 0, result.stderr);
+  const observed = JSON.parse(readFileSync(record, 'utf8'));
+  assert.match(observed.stage, new RegExp(`^${escapeRegExp(dirname(install))}/\\.bin\\.install\\.[^/]+$`));
+  assert.equal(observed.candidate, join(observed.stage, 'candidate'));
+  assert.deepEqual(observed.modes, [0o700, 0o700, 0o700]);
+  assert.deepEqual(observed.downloads, [
+    'phantom-x86_64-apple-darwin.tar.gz',
+    'phantom-x86_64-apple-darwin.tar.gz.sha256',
+  ]);
+  assert.deepEqual(observed.candidateFiles, []);
+  assert.equal(existsSync(observed.stage), false);
+});
+
 for (const installer of [shellInstaller, join(repo, 'apps/web/public/install.sh')]) {
   const label = installer === shellInstaller ? 'candidate' : 'public-reference';
   test(`Unix ${label} installer stages inside a spaced install parent and cleans it up`, () => {
