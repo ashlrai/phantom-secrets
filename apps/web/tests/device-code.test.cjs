@@ -45,6 +45,28 @@ test("the internal note's display and canonical example matches the formatter", 
   assert.equal(normalizeDeviceUserCode(displayed), canonical);
 });
 
+test("device code guide examples match the current formatter and validator", () => {
+  const guidePath = path.join(__dirname, "../../../docs/device-code-format.md");
+  const guide = fs.readFileSync(guidePath, "utf8");
+  const rows = [...guide.matchAll(/^\| `([^`]+)` \| `([^`]+)` \| (Yes|No) \|$/gm)];
+  assert.equal(rows.length, 5, "the guide should retain its input examples");
+  for (const [, input, displayed, valid] of rows) {
+    assert.equal(formatDeviceUserCode(input), displayed, input);
+    assert.equal(isValidDeviceUserCode(input), valid === "Yes", input);
+  }
+  for (const target of ["../apps/web/src/app/device/device-authorization-client.tsx", "../apps/web/src/lib/device-code.ts", "internal/notes.md"]) {
+    assert.ok(guide.includes(`](${target}`), `missing guide reference: ${target}`);
+    assert.ok(fs.statSync(path.resolve(path.dirname(guidePath), target)).isFile());
+  }
+});
+
+test("normalization removes non-ASCII characters and validation accepts the full ASCII alphabet", () => {
+  assert.equal(formatDeviceUserCode("abé-cd2345"), "ABCD-2345");
+  assert.equal(normalizeDeviceUserCode("ab01-il23"), "AB01IL23");
+  assert.equal(isValidDeviceUserCode("ab01-il23"), true);
+  assert.equal(isValidDeviceUserCode("---"), false);
+});
+
 test("initiation returns the formatted user code while storing its canonical form", async () => {
   const filename = path.join(__dirname, "../src/app/api/v1/auth/device/initiate/route.ts");
   const route = ts.transpileModule(fs.readFileSync(filename, "utf8"), {
