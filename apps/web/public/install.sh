@@ -434,11 +434,13 @@ INSTALL_DIR="$install_parent/$install_name"
 
 acquire_install_lock
 
-stage_root="$(mktemp -d "$install_parent/.${install_name}.install.XXXXXX")"
-chmod 700 "$stage_root"
+stage_root="$(mktemp -d "$install_parent/.${install_name}.install.XXXXXX")" \
+  || die "could not create a private staging directory in $install_parent"
+chmod 700 "$stage_root" || die "could not secure the staging directory"
 download_dir="$stage_root/download"
 candidate_dir="$stage_root/candidate"
-mkdir -m 700 "$download_dir" "$candidate_dir"
+mkdir -m 700 "$download_dir" "$candidate_dir" \
+  || die "could not create staging directories"
 
 tag="$PIN_TAG"
 validate_tag "$tag" || die "release tag is not strict semantic version syntax"
@@ -480,7 +482,8 @@ member_types="$(tar -tvzf "$archive_path" | awk '{ print substr($1, 1, 1) }')" \
   || die "could not inspect release archive member types"
 [ "$member_types" = $'-\n-' ] || die "release archive members must be regular files"
 
-tar -xzf "$archive_path" -C "$candidate_dir" || die "could not extract release archive"
+# --no-same-owner: as root, tar would otherwise keep the release runner's uid on the installed binaries.
+tar --no-same-owner -xzf "$archive_path" -C "$candidate_dir" || die "could not extract release archive"
 [ "$(find "$candidate_dir" -mindepth 1 -maxdepth 1 -print | wc -l | tr -d '[:space:]')" = "2" ] \
   || die "candidate contains unexpected files"
 [ -f "$candidate_dir/phantom" ] && [ ! -L "$candidate_dir/phantom" ] \

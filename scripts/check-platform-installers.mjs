@@ -17,9 +17,15 @@ const publicPowershellInstaller = readFileSync(
   "utf8",
 );
 
-// The checked-in web reference copies are byte-bound to the last immutable
-// public release (v0.7.9). Those reference bytes are independently checked
-// against public-release.ts in apps/web/tests/public-claims.test.cjs.
+assert.ok(
+  readFileSync(new URL("./install.sh", import.meta.url)).equals(
+    readFileSync(new URL("../apps/web/public/install.sh", import.meta.url)),
+  ),
+  "scripts/install.sh and apps/web/public/install.sh must match byte for byte",
+);
+
+// The public installers target the last immutable public release (v0.7.9).
+// Release-source fixtures are independently checked in public-claims.test.cjs.
 assert.match(publicShellInstaller, /CANDIDATE_TAG="v0\.7\.9"/);
 assert.match(publicPowershellInstaller, /\$CandidateTag = 'v0\.7\.9'/);
 assert.doesNotMatch(publicShellInstaller, /v0\.7\.8/);
