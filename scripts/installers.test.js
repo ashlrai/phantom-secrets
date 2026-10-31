@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmodSync, existsSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import test from 'node:test';
@@ -184,6 +184,29 @@ async function waitForPath(path, timeoutMs = 5000) {
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 20));
   }
 }
+
+test('platform installer check requires byte-for-byte shell parity', (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'phantom-installer-parity-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  mkdirSync(join(root, 'scripts'), { recursive: true });
+  mkdirSync(join(root, 'apps/web/public'), { recursive: true });
+  for (const file of [
+    'scripts/check-platform-installers.mjs', 'scripts/install.sh', 'scripts/install.ps1',
+    'apps/web/public/install.sh', 'apps/web/public/install.ps1',
+  ]) {
+    copyFileSync(join(repo, file), join(root, file));
+  }
+
+  const check = () => spawnSync(process.execPath, [join(root, 'scripts/check-platform-installers.mjs')], { encoding: 'utf8' });
+  const matching = check();
+  assert.equal(matching.status, 0, matching.stderr);
+
+  const publicShell = join(root, 'apps/web/public/install.sh');
+  writeFileSync(publicShell, Buffer.concat([readFileSync(publicShell), Buffer.from([0xff])]));
+  const different = check();
+  assert.notEqual(different.status, 0);
+  assert.match(different.stderr, /scripts\/install\.sh and apps\/web\/public\/install\.sh must match byte for byte/);
+});
 
 test('web installer mirrors remain bound to the evidenced public release', () => {
   // Release candidates can target a not-yet-published tag. The phm.dev copies
