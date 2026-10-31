@@ -24,7 +24,7 @@ class RequestFramingTests(unittest.TestCase):
         handler.rfile.read.assert_not_called()
 
     def test_invalid_lengths_never_read(self):
-        for value in ['-1', '+1', '1.0', 'abc', '', '1, 1', '١', '9' * 5000]:
+        for value in ['-1', '+1', '1.0', 'abc', '', '1, 1', '١', '2\v', '2\f', '2\u00a0', '\v2', '2 0', ' \t', '9' * 5000]:
             with self.subTest(value=value[:20]):
                 self.reject_without_read([('Content-Length', value)],
                                          413 if value == '9' * 5000 else 400)
@@ -64,6 +64,22 @@ class RequestFramingHttpTests(unittest.TestCase):
     request = test_cors.ServerCorsTests.request
     post = test_cors.ServerCorsTests.post
     BODY = test_cors.ServerCorsTests.BODY
+    def test_http_optional_whitespace_is_accepted(self):
+        port = self.start(CorsPolicy())
+        for value in ['2 ', '2\t', ' \t002\t ']:
+            with self.subTest(value=value):
+                status, _, _ = self.request(port, 'POST', '/decode',
+                                             {'Content-Length': value}, b'{}')
+                self.assertEqual(status, 200)
+
+    def test_http_non_ows_whitespace_is_rejected(self):
+        port = self.start(CorsPolicy())
+        for value in ['2\v', '2\f', '2\u00a0']:
+            with self.subTest(value=value):
+                status, _, _ = self.request(port, 'POST', '/decode',
+                                             {'Content-Length': value}, b'{}')
+                self.assertEqual(status, 400)
+
     def test_negative_length_is_rejected_without_waiting_for_body(self):
         port = self.start(CorsPolicy())
         conn = http.client.HTTPConnection('127.0.0.1', port, timeout=1)

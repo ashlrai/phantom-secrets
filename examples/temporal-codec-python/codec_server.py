@@ -66,12 +66,15 @@ def make_handler(codec: EncryptionCodec, cors: CorsPolicy = CorsPolicy()):
             if not lengths:
                 self.send_error(411, "Content-Length is required")
                 return
-            if not re.fullmatch(r"[0-9]+", lengths[0]):
+            # HTTP field values permit surrounding SP/HTAB, not arbitrary
+            # Unicode whitespace or whitespace within the decimal digits.
+            length_text = lengths[0].strip(" \t")
+            if not re.fullmatch(r"[0-9]+", length_text):
                 self.send_error(400, "invalid Content-Length")
                 return
             # Compare decimal strings before int(), including huge headers that
             # exceed Python's integer-conversion digit limit.
-            digits = lengths[0].lstrip("0") or "0"
+            digits = length_text.lstrip("0") or "0"
             limit = str(MAX_BODY_BYTES)
             if len(digits) > len(limit) or (len(digits) == len(limit) and digits > limit):
                 self.send_error(413)
