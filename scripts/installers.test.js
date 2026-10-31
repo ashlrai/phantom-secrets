@@ -806,6 +806,41 @@ test('Unix installer cleans staged candidates and rolls back after a controlled 
   }
 });
 
+test('Unix installer leaves recoverable state when a rollback move fails', () => {
+  for (const failedMove of ['failed-live', 'restore']) {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-installer-rollback-move-')));
+    try {
+      const shims = makeShims(root);
+      const shim = join(shims, 'mv');
+      writeFileSync(shim, `#!/bin/sh
+case "$1:$2" in
+  ${failedMove === 'failed-live' ? '*:*/failed-live' : '*.backup.*:*/bin'}) exit 73 ;;
+esac
+exec /bin/mv "$@"
+`);
+      chmodSync(shim, 0o755);
+      const { install, result } = runInstaller({ root, shims, existing: true, failAfterPromotion: true });
+      assert.ifError(result.error);
+      assert.equal(result.status, 1, result.stderr);
+      assert.match(result.stderr, /test-only injected failure after promotion/);
+      const parent = dirname(install);
+      const siblings = readdirSync(parent);
+      const backups = siblings.filter((name) => name.startsWith('.bin.backup.'));
+      assert.equal(backups.length, 1, 'the previous install remains in the backup');
+      assert.equal(readFileSync(join(parent, backups[0], 'old-install'), 'utf8'), 'preserve-me');
+      assert.equal(existsSync(join(parent, '.bin.install.lock')), false);
+      assert.equal(siblings.some((name) => /^\.bin\.install\.(?!lock$)/.test(name)), false);
+      if (failedMove === 'failed-live') {
+        assert.equal(existsSync(join(install, 'phantom')), true, 'the promoted candidate remains live');
+      } else {
+        assert.equal(existsSync(install), false, 'the live destination remains absent');
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+});
+
 test('web Unix installer cleans staging failures and rolls back a promoted candidate', () => {
   const installer = join(repo, 'apps/web/public/install.sh');
   for (const seam of ['mktemp', 'chmod', 'mkdir']) {
