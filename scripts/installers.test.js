@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmodSync, existsSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import test from 'node:test';
@@ -146,6 +146,7 @@ function runInstaller(options = {}) {
   delete env.PHANTOM_REPO;
   delete env.PHANTOM_TAG;
   delete env.PHANTOM_TEST_ALLOW_INSTALLER_OVERRIDES;
+  delete env.PHANTOM_TEST_FAIL_AFTER_PROMOTION;
   if (!options.useCandidateDefaults) {
     env.PHANTOM_TAG = `v${options.version ?? version}`;
     if (options.repo) env.PHANTOM_REPO = options.repo;
@@ -155,6 +156,9 @@ function runInstaller(options = {}) {
   }
   if (options.directLocalRelease) {
     env.PHANTOM_TEST_LOCAL_RELEASE_DIR = fixture;
+  }
+  if (options.failAfterPromotion) {
+    env.PHANTOM_TEST_FAIL_AFTER_PROMOTION = '1';
   }
   const result = spawnSync('/bin/bash', [options.installer ?? shellInstaller], {
     encoding: 'utf8',
@@ -639,6 +643,41 @@ test('Unix installer aborts before download when staging-directory creation fail
       [],
       `${seam}: staging and lock leftovers must be cleaned up`,
     );
+  }
+});
+
+test('Unix installer cleans staged candidates and rolls back after a controlled promotion failure', () => {
+  for (const existing of [false, true]) {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom installer rollback-')));
+    try {
+      const install = join(root, 'live dir', 'bin');
+      const record = join(root, 'invocations.log');
+      const { result } = runInstaller({
+        root, install, existing, recordInvocations: record, failAfterPromotion: true,
+      });
+      assert.ifError(result.error);
+      assert.equal(result.status, 1, result.stderr);
+      assert.match(result.stderr, /test-only injected failure after promotion/);
+
+      const staged = readFileSync(record, 'utf8').trim().split('\n');
+      assert.deepEqual(staged.map((path) => basename(path)).sort(), ['phantom', 'phantom-mcp']);
+      const stageRoots = new Set(staged.map((path) => dirname(dirname(path))));
+      assert.equal(stageRoots.size, 1);
+      const [stageRoot] = stageRoots;
+      assert.match(stageRoot, new RegExp(`^${escapeRegExp(dirname(install))}/\\.bin\\.install\\.[^/]+$`));
+      for (const path of staged) assert.equal(dirname(path), join(stageRoot, 'candidate'));
+      assert.equal(existsSync(stageRoot), false, 'staging tree and candidate must be removed');
+      assert.deepEqual(readdirSync(dirname(install)), existing ? ['bin'] : []);
+      if (existing) {
+        assert.deepEqual(readdirSync(install), ['old-install']);
+        assert.equal(readFileSync(join(install, 'old-install'), 'utf8'), 'preserve-me');
+      } else {
+        assert.equal(existsSync(install), false);
+      }
+      assert.deepEqual(readdirSync(join(root, 'home')), [], 'HOME must contain no temporary files');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   }
 });
 
