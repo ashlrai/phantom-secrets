@@ -7,6 +7,29 @@ import { PUBLIC_RELEASE_TAG } from "@/lib/public-release";
 
 const normalize = (value: string) => value.replace(/\s+/g, " ").trim();
 
+test("all installation controls and links remain named for each platform", async () => {
+  const user = userEvent.setup();
+  render(<QuickStart />);
+  try {
+    const region = screen.getByRole("region", { name: "Install on your OS. Then protect one project." });
+    const selector = within(region).getByRole("group", { name: "Choose an operating system" });
+
+    for (const platform of ["macOS", "Windows", "Linux"]) {
+      await user.click(within(selector).getByRole("button", { name: platform }));
+      const buttons = within(region).getAllByRole("button");
+      assert.equal(buttons.length, 6, `${platform}: three platform and three copy controls`);
+      assert.deepEqual(within(region).getAllByRole("button", { name: /\S/ }), buttons);
+      assert.equal(within(region).getAllByRole("button", { name: /^Copy command: \S/ }).length, 3);
+
+      const links = within(region).getAllByRole("link");
+      assert.ok(links.length > 0);
+      assert.deepEqual(within(region).getAllByRole("link", { name: /\S/ }), links);
+    }
+  } finally {
+    cleanup();
+  }
+});
+
 test("installation examples and download links have accessible names on every platform", async () => {
   const user = userEvent.setup();
   render(<QuickStart />);

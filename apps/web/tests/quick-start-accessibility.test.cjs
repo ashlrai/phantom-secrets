@@ -33,7 +33,7 @@ const quickStart = load("components/landing/QuickStart.tsx", {
   "@/lib/public-release": release,
   "next/link": { __esModule: true, default: ({ children, ...props }) => React.createElement("a", props, children) },
 });
-load("components/landing/QuickStart-accessibility.test.tsx", {
+load("components/landing/quickstart-accessibility.test.tsx", {
   "./QuickStart": quickStart,
   "@/lib/public-release": release,
 });
