@@ -130,7 +130,7 @@ function runInstaller(options = {}) {
   const env = {
     ...process.env,
     HOME: home,
-    SHELL: '/bin/bash',
+    SHELL: options.shell ?? '/bin/bash',
     PATH: `${shims}:${options.pathPrefix ? `${options.pathPrefix}:` : ''}${process.env.PATH}`,
     PHANTOM_INSTALL_DIR: install,
     PHANTOM_TEST_FIXTURE_DIR: fixture,
@@ -472,6 +472,41 @@ test('Unix PATH setup removes temporary files on candidate creation or compariso
     assert.equal(existsSync(join(install, 'phantom')), true);
     assert.deepEqual(readdirSync(home).filter((name) => name.startsWith('.phantom-path.')), []);
   }
+});
+
+test('Unix PATH setup creates an absent fish startup file and removes its temporary siblings', (t) => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-path-fish-')));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const { install, result } = runInstaller({ root, shell: '/usr/bin/fish' });
+  assert.ifError(result.error);
+  assert.equal(result.status, 0, result.stderr);
+  const parent = join(root, 'home', '.config', 'fish');
+  const rc = join(parent, 'config.fish');
+  assert.equal(readFileSync(rc, 'utf8'), `\n# phantom-secrets PATH\nset -gx PATH "${realpathSync(install)}" $PATH\n`);
+  assert.equal(lstatSync(rc).mode & 0o777, 0o600);
+  assert.deepEqual(readdirSync(parent), ['config.fish']);
+});
+
+test('Unix PATH final verification failure warns without restoring the previous startup file', (t) => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-path-final-check-')));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const home = join(root, 'home');
+  const shims = makeShims(root);
+  mkdirSync(home);
+  const rc = join(home, '.bashrc');
+  writeFileSync(rc, '# original configuration\n');
+  const shim = join(shims, 'grep');
+  writeFileSync(shim, '#!/bin/sh\ncase "$*" in *"$HOME/.bashrc"*) : > "$HOME/.final-check-invoked"; exit 1 ;; esac\nexec /usr/bin/grep "$@"\n');
+  chmodSync(shim, 0o755);
+
+  const { install, result } = runInstaller({ root, home, shims });
+  assert.ifError(result.error);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stderr, /could not update your shell PATH/);
+  assert.equal(existsSync(join(home, '.final-check-invoked')), true);
+  assert.match(readFileSync(rc, 'utf8'), /^# original configuration\n\n# phantom-secrets PATH\n/);
+  assert.equal(existsSync(join(install, 'phantom')), true);
+  assert.deepEqual(readdirSync(home).filter((name) => name.startsWith('.phantom-path.')), []);
 });
 
 test('Unix installer leaves its existing PATH entry unchanged on a second install', () => {

@@ -71,6 +71,8 @@ the installer creates sibling `.phantom-path.before.*` and
 checks the existing file and candidate, and moves the candidate into place.
 Handled failures remove the temporary files and produce a warning; PATH failure
 does not roll back the installation. An interruption can leave temporary files.
+See the [PATH update flow](installer-path-update-flow.md) for the two files'
+roles, comparison checks, and cleanup limits in the repository installer.
 See [repository PATH handling](../scripts/install.sh#L305-L399) and
 [final call](../scripts/install.sh#L527-L533), and
 [web PATH handling](../apps/web/public/install.sh#L305-L399) and
