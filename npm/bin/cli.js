@@ -596,13 +596,15 @@ function download(inputUrl, {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      if (error) reject(error);
-      else resolvePromise(value);
+      if (error) {
+        // A previous redirect stream can fail while its successor is active.
+        // Settle first so cancellation errors cannot re-enter cleanup.
+        if (request && typeof request.destroy === "function") request.destroy(error);
+        reject(error);
+      } else resolvePromise(value);
     };
     const timer = setTimeout(() => {
-      const error = new Error(`download timed out after ${timeoutMs}ms`);
-      if (request && typeof request.destroy === "function") request.destroy(error);
-      finish(error);
+      finish(new Error(`download timed out after ${timeoutMs}ms`));
     }, timeoutMs);
 
     const fetch = (value, redirects) => {

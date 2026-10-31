@@ -163,6 +163,49 @@ async function assertDownloadStopsAfterSettlement() {
     assert.doesNotThrow(() => lateResponse.emit("error", new Error("late socket failure")));
   }
 
+
+  // A drained redirect response can fail after its successor has started.
+  // Rejection must cancel that active successor, not merely clear the deadline.
+  for (const successorHasResponse of [false, true]) {
+    const callbacks = [];
+    const requests = [];
+    const pending = download("https://github.com/release", {
+      timeoutMs: 100,
+      httpsGet: (_url, callback) => {
+        callbacks.push(callback);
+        const request = new EventEmitter();
+        request.destroyCount = 0;
+        request.destroy = (error) => {
+          request.destroyCount++;
+          // Exercise synchronous error re-entry during cancellation.
+          request.emit("error", error);
+        };
+        requests.push(request);
+        return request;
+      },
+    });
+    const originalError = new Error("redirect stream failed");
+    const rejected = assert.rejects(pending, (error) => error === originalError);
+    const redirect = new EventEmitter();
+    redirect.statusCode = 302;
+    redirect.headers = { location: "/asset" };
+    redirect.resume = () => {};
+    callbacks[0](redirect);
+    assert.strictEqual(requests.length, 2);
+    if (successorHasResponse) {
+      const response = new EventEmitter();
+      response.statusCode = 200;
+      response.headers = {};
+      callbacks[1](response);
+      response.emit("data", Buffer.from("partial"));
+    }
+    redirect.emit("error", originalError);
+    await rejected;
+    assert.strictEqual(requests[1].destroyCount, 1, "cancel the active redirected request");
+    assert.doesNotThrow(() => redirect.emit("error", new Error("another late error")));
+    assert.strictEqual(requests[1].destroyCount, 1, "settlement is idempotent");
+  }
+
   const responses = [];
   const pending = download("https://github.com/release", {
     timeoutMs: 100,
