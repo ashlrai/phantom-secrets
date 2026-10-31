@@ -128,13 +128,13 @@ test("switching platforms displays the selected install instructions", () => {
   }
 });
 
-test("each Unix install command chooses a staging template when TMPDIR is unset or empty", (t) => {
+test("each Unix install command passes the TMPDIR staging template as one argument", (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "phantom-quickstart-template-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const bin = path.join(root, "bin");
   const record = path.join(root, "mktemp-args");
   fs.mkdirSync(bin);
-  fs.writeFileSync(path.join(bin, "mktemp"), '#!/bin/bash\nprintf "%s\\n" "$@" > "$ARG_RECORD"\nexit 42\n', { mode: 0o755 });
+  fs.writeFileSync(path.join(bin, "mktemp"), '#!/bin/bash\nprintf "%s\\0" "$@" > "$ARG_RECORD"\nexit 42\n', { mode: 0o755 });
 
   let selected = "macOS";
   const hooks = { ...React, useState() { return [selected, (value) => { selected = value; }]; } };
@@ -155,14 +155,27 @@ test("each Unix install command chooses a staging template when TMPDIR is unset 
       ["unset", undefined, "/tmp"],
       ["empty", "", "/tmp"],
       ["override with spaces", path.join(root, "temp with spaces"), path.join(root, "temp with spaces")],
+      ["override with shell metacharacters", path.join(root, "temp\twith [spaces]*"), path.join(root, "temp\twith [spaces]*")],
     ]) {
       fs.rmSync(record, { force: true });
       const env = { PATH: `${bin}:/usr/bin:/bin`, ARG_RECORD: record };
       if (tmpdir !== undefined) env.TMPDIR = tmpdir;
       const result = spawnSync("/bin/bash", ["-c", commands[0].props.text], { env, encoding: "utf8" });
       assert.equal(result.status, 42, `${platform}, ${label}: expected the mktemp stub to stop the command`);
-      assert.equal(fs.readFileSync(record, "utf8"), `-d\n${expected}/phantom-install.XXXXXX\n`, `${platform}, ${label}`);
+      assert.deepEqual(fs.readFileSync(record, "utf8").split("\0"), ["-d", `${expected}/phantom-install.XXXXXX`, ""], `${platform}, ${label}`);
     }
+
+    // Prove this check catches the original shell word-splitting regression.
+    const quotedTemplate = '"${TMPDIR:-/tmp}/phantom-install.XXXXXX"';
+    const command = commands[0].props.text;
+    assert.ok(command.includes(quotedTemplate), `${platform}: quoted staging template exists`);
+    const unquoted = command.replace(quotedTemplate, '${TMPDIR:-/tmp}/phantom-install.XXXXXX');
+    const temp = path.join(root, "temp with spaces");
+    const result = spawnSync("/bin/bash", ["-c", unquoted], {
+      env: { PATH: `${bin}:/usr/bin:/bin`, ARG_RECORD: record, TMPDIR: temp }, encoding: "utf8",
+    });
+    assert.equal(result.status, 42, `${platform}: mktemp stub stops the unquoted command`);
+    assert.notDeepEqual(fs.readFileSync(record, "utf8").split("\0"), ["-d", `${temp}/phantom-install.XXXXXX`, ""], `${platform}: unquoted template splits into multiple arguments`);
   }
 });
 
