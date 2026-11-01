@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 // without changing workflow behavior or permissions.
 import "./signing-readiness.test.mjs";
 import "./npm-candidate-acceptance.test.mjs";
+import { assertDependencyIndexClean } from "./check-dependency-index.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const release = readFileSync(join(repoRoot, ".github/workflows/release.yml"), "utf8");
@@ -43,6 +44,46 @@ const npmMcpPackage = JSON.parse(
 );
 const npmReadme = readFileSync(join(repoRoot, "npm/README.md"), "utf8");
 const npmMcpReadme = readFileSync(join(repoRoot, "npm-mcp/README.md"), "utf8");
+
+test("dependency index validation rejects tracked installations, not similar names", () => {
+  for (const path of ["node_modules", "apps/web/node_modules", "node_modules/a.js",
+    "nested/node_modules/pkg/file.js", "space here/node_modules/a\nfile.js"]) {
+    assert.throws(() => assertDependencyIndexClean(`${path}\0`), /must not be tracked/);
+  }
+  assert.doesNotThrow(() => assertDependencyIndexClean(""));
+  assert.doesNotThrow(() => assertDependencyIndexClean("apps/web/package.json\0docs/node_modules-guide.md\0"));
+  assert.throws(() => assertDependencyIndexClean("unterminated"), /NUL-terminated/);
+  assert.throws(() => assertDependencyIndexClean("\0"), /empty path/);
+});
+
+test("dependency index CLI consumes stdin and propagates validation failure", () => {
+  const script = join(repoRoot, "scripts/release/check-dependency-index.mjs");
+  const run = (input) => spawnSync(process.execPath, [script], {
+    cwd: repoRoot, input, encoding: "utf8", timeout: 10_000, maxBuffer: 1024 * 1024,
+  });
+  const clean = run("apps/web/package.json\0");
+  assert.equal(clean.error, undefined);
+  assert.equal(clean.status, 0, clean.stderr);
+  assert.match(clean.stdout, /dependency index is clean/);
+
+  const rejected = run("apps/web/node_modules\0");
+  assert.equal(rejected.error, undefined);
+  assert.equal(rejected.signal, null);
+  assert.notEqual(rejected.status, 0);
+  assert.match(rejected.stderr, /generated node_modules paths must not be tracked/);
+  assert.doesNotMatch(rejected.stdout, /dependency index is clean/);
+});
+
+test("index hygiene runs before installs on every dependency-policy and release-source path", () => {
+  for (const block of [jobBlock(ci, "dependency-policy", "windows-arm-source-check"),
+    jobBlock(releaseBuild, "verify-source", "build")]) {
+    const check = block.indexOf("/usr/bin/git ls-files -z | node scripts/release/check-dependency-index.mjs");
+    assert.ok(check >= 0, "fixed-path Git index check must run");
+    assert.match(block.slice(0, check), /shell: bash\n        run: \|\n          set -euo pipefail\n          $/);
+    assert.doesNotMatch(block.slice(0, check), /^    if:|^        if:/m);
+    assert.ok(check < block.indexOf("Install verified"), "check precedes tool/dependency installation");
+  }
+});
 
 const tagOnlyCondition =
   "if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')";

@@ -1,5 +1,20 @@
 # Notes: Phantom North Star Stabilization
 
+## Keyring migration tracking
+
+[Issue #242](https://github.com/ashlrai/phantom-secrets/issues/242) tracks
+the keyring migration and the three existing `deny.toml` advisory ignores:
+
+- `RUSTSEC-2026-0370` — `zvariant`
+- `RUSTSEC-2026-0371` — `zbus_names`
+- `RUSTSEC-2026-0372` — `zvariant_derive`
+
+The migration remains outstanding; these unmaintained-crate advisories come
+through keyring 3's Linux Secret Service dependency chain. Removing the ignores
+depends on eliminating the affected dependencies, not merely upgrading keyring.
+See the [migration scoping note](../design/keyring-4-migration-scoping.md) for
+the evaluated options and remaining compatibility checks.
+
 ## Landing-page installer temporary directory
 
 The macOS and Linux commands in `apps/web/src/components/landing/QuickStart.tsx`
@@ -60,12 +75,13 @@ in `finally`; the Unix `TMPDIR` override does not apply to that command.
 - Docs/action drift: GitHub Action docs reference unsupported flags (`login --ci`, `cloud pull --env`, `list --count`), source install package names are inconsistent, and proxy-auth docs need updating after header-only defaults.
 
 ### Device Auth Wave
-- Fixed initiate/approve mismatch by storing `device_tokens.user_code` as canonical uppercase alphanumeric without hyphens.
-- API still returns readable codes as two four-character groups separated by a hyphen (`XXXX-XXXX`) using the shared formatting helper.
-- The browser displays eight letters or numbers in uppercase as `XXXX-XXXX`: the hyphen is a separator, so the complete presentation is nine characters long. As the user types, the page strips non-alphanumeric characters, inserts the hyphen after the fourth character, and limits the code to eight letters or numbers. Approval submits the canonical eight-character code without the hyphen.
+- The user code contains eight uppercase letters or digits. For human-readable display, the initiation API and browser format it as `XXXX-XXXX`: two groups of four code characters separated by a hyphen. The hyphen is a readability separator, so `ABCD-2345` has eight code characters and nine displayed characters including the separator.
+- The [CLI login flow](../../crates/phantom-cli/src/commands/login.rs) prints this user code for entry in the browser. It is distinct from the `device_code` returned by the initiation API, which the CLI uses for polling.
+- The [device authorization form](../../apps/web/src/app/device/device-authorization-client.tsx) displays and formats the code in the browser.
+- The hyphen is display formatting, not part of the canonical `device_tokens.user_code` value: `ABCD-2345` corresponds to `ABCD2345` in storage. The browser strips non-alphanumeric characters and uppercases input before formatting it; approval submits and looks up the canonical form. Incomplete or overlong normalized codes are invalid; extra characters are not silently truncated.
 - Browser device page and approve route now use shared normalization/validation helpers.
 - Initiate rate limit now matches its comment: reject once 10 device codes have been created in the last minute.
-- Added migration `20260523000016_canonical_device_user_codes.sql` to canonicalize existing user codes and enforce a unique `user_code` index.
+- The [canonical user-code migration](../../apps/web/supabase/migrations/20260523000016_canonical_device_user_codes.sql) uppercases existing codes and removes hyphens; its unique `user_code` index applies only to pending rows.
 - Verification: `npx tsc --noEmit` passed, `npm run build` passed.
 
 ### Config Route Risk Wave

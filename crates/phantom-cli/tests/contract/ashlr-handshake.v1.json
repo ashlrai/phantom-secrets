@@ -1,0 +1,121 @@
+{
+  "contract": "ashlr.handshake",
+  "schema_version": 1,
+  "fields": {
+    "kind": {
+      "type": "string",
+      "const": "ashlr.handshake"
+    },
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"
+    },
+    "command": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+([-+][0-9A-Za-z.+-]+)?$"
+    },
+    "protocols": {
+      "type": "object",
+      "values": "integer",
+      "required_keys": [
+        "ashlr.handshake"
+      ]
+    },
+    "capabilities": {
+      "type": "array",
+      "items": "string",
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+      "unique": true
+    },
+    "health": {
+      "type": "object"
+    },
+    "edits": {
+      "type": "array",
+      "items": "string",
+      "not_prefix": "/"
+    },
+    "receipts": {
+      "type": "array",
+      "items": "string"
+    }
+  },
+  "health": {
+    "status": [
+      "ok",
+      "degraded",
+      "unknown"
+    ],
+    "check_id_pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+    "check_status": [
+      "ok",
+      "missing",
+      "absent"
+    ],
+    "missing_means_not_ok": true
+  },
+  "gated_capabilities": {
+    "doctor-fix": {
+      "argv": [
+        "doctor",
+        "--fix",
+        "--json"
+      ],
+      "read_only": true,
+      "exit_codes": [
+        0,
+        1
+      ],
+      "stdout_json_keys": [
+        "mode",
+        "plan"
+      ],
+      "used_by": [
+        "stack doctor --ecosystem --fix",
+        "ashlr doctor companions",
+        "lexicon doctor"
+      ]
+    }
+  },
+  "doctor": {
+    "kind": "ashlr.doctor",
+    "schema_version": 1,
+    "required": [
+      "kind",
+      "schema_version",
+      "tool",
+      "status",
+      "native_status",
+      "checks"
+    ],
+    "status": [
+      "ok",
+      "warn",
+      "fail"
+    ],
+    "check_status": [
+      "ok",
+      "warn",
+      "fail",
+      "info"
+    ],
+    "check_required": [
+      "status",
+      "summary"
+    ],
+    "check_id_pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+    "argv": [
+      "doctor",
+      "--json"
+    ],
+    "additive": true
+  }
+}

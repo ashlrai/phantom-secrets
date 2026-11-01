@@ -70,14 +70,7 @@ fn list_json_never_leaks_secret_values() {
 fn list_json_emits_empty_array_when_vault_has_no_secrets() {
     let dir = common::canonical_tempdir();
 
-    Command::cargo_bin("phantom")
-        .expect("binary not found")
-        .args(["init", "--empty"])
-        .current_dir(dir.path())
-        .env("PHANTOM_VAULT_PASSPHRASE", VAULT_PASS)
-        .env("HOME", dir.path())
-        .assert()
-        .success();
+    phantom(&dir).args(["init", "--empty"]).assert().success();
 
     let output = phantom(&dir).args(["list", "--json"]).assert().success();
     let stdout = String::from_utf8_lossy(&output.get_output().stdout);
@@ -146,21 +139,7 @@ fn list_scope_is_exact_value_blind_and_preserves_project_state() {
     init_project(&dir);
     let config =
         phantom_core::config::PhantomConfig::load(&dir.path().join(".phantom.toml")).unwrap();
-    fn encrypted_file(root: &std::path::Path) -> std::path::PathBuf {
-        for entry in fs::read_dir(root).unwrap() {
-            let path = entry.unwrap().path();
-            if path.is_dir() {
-                let found = encrypted_file(&path);
-                if !found.as_os_str().is_empty() {
-                    return found;
-                }
-            } else if path.extension().is_some_and(|ext| ext == "vault") {
-                return path;
-            }
-        }
-        std::path::PathBuf::new()
-    }
-    let encrypted = encrypted_file(dir.path());
+    let encrypted = common::encrypted_file(&dir, config.local_project_id());
     assert!(encrypted.is_file());
     let vault = phantom_vault::file::FileVault::new(
         encrypted.parent().unwrap().parent().unwrap(),

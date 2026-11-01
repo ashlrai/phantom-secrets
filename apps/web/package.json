@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint . --max-warnings=0",
-    "test": "node --test tests/*.test.cjs",
+    "test": "node --experimental-strip-types --test tests/*.test.cjs src/app/device/*.test.mjs src/app/device/*.test.ts",
     "test:billing-auth": "node --test tests/billing-auth.test.cjs",
     "test:claims": "node --test tests/public-claims.test.cjs",
     "test:responsive": "node --test tests/quick-start-responsive.browser.cjs"

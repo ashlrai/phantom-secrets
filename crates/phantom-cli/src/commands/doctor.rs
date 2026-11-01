@@ -152,7 +152,17 @@ fn check_commented_entries(dotenv: &DotenvFile, file_label: &str) -> usize {
 }
 
 fn doctor_json(report: &DoctorReport) -> Result<String> {
-    let pretty = serde_json::to_string_pretty(report)?;
+    #[derive(serde::Serialize)]
+    struct VersionedReport<'a> {
+        #[serde(rename = "schemaVersion")]
+        schema_version: u8,
+        #[serde(flatten)]
+        report: &'a DoctorReport,
+    }
+    let pretty = serde_json::to_string_pretty(&VersionedReport {
+        schema_version: 1,
+        report,
+    })?;
     crate::commands::report_json::with_schema_pretty(
         pretty,
         crate::commands::report_json::DOCTOR_SCHEMA,
@@ -1151,6 +1161,31 @@ fn check_fixed(msg: &str) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn json_v1_snapshot_contains_only_diagnostic_metadata() {
+        let mut report = phantom_core::report::DoctorReport::default();
+        report.push("warn", "OPENAI_API_KEY is unprotected");
+        report.issues = 1;
+        let actual = super::doctor_json(&report).unwrap();
+        assert_eq!(
+            actual,
+            r#"{
+  "schema": "phantom.doctor.v1",
+  "schemaVersion": 1,
+  "ok": false,
+  "issues": 1,
+  "fixed": 0,
+  "checks": [
+    {
+      "status": "warn",
+      "message": "OPENAI_API_KEY is unprotected"
+    }
+  ],
+  "mcp_clients": []
+}"#
+        );
+    }
+
     use super::{precommit_hook, HookChange};
     use crate::commands::upgrade::{
         detect_install_source, detect_install_source_from, InstallSource,

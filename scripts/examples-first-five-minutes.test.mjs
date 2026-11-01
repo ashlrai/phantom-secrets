@@ -21,27 +21,32 @@ const fixtureRoot = join(repoRoot, "scripts", "fixtures", "first-five-minutes");
 const runner = join(exampleRoot, "run.mjs");
 const expected = readFileSync(join(exampleRoot, "expected-output.txt"), "utf8").replace(/\r\n/gu, "\n");
 
-function runCopiedExample({ environmentFixture, policyFixture } = {}) {
+function runCopiedExample({ environmentFixture, policyFixture, missingFile } = {}) {
   const sandbox = mkdtempSync(join(tmpdir(), "phantom-first-five-minutes-regression-"));
   const copiedExample = join(sandbox, "example");
-  cpSync(exampleRoot, copiedExample, { recursive: true });
-  if (environmentFixture) {
-    copyFileSync(join(fixtureRoot, environmentFixture), join(copiedExample, ".env.example"));
-  }
-  if (policyFixture) {
-    copyFileSync(join(fixtureRoot, policyFixture), join(copiedExample, "policy.json"));
-  }
+  try {
+    cpSync(exampleRoot, copiedExample, { recursive: true });
+    if (environmentFixture) {
+      copyFileSync(join(fixtureRoot, environmentFixture), join(copiedExample, ".env.example"));
+    }
+    if (policyFixture) {
+      copyFileSync(join(fixtureRoot, policyFixture), join(copiedExample, "policy.json"));
+    }
+    if (missingFile) {
+      rmSync(join(copiedExample, missingFile));
+    }
 
-  const result = spawnSync(process.execPath, [join(copiedExample, "run.mjs")], {
-    cwd: sandbox,
-    encoding: "utf8",
-    env: {
-      PATH: process.env.PATH ?? "",
-      SystemRoot: process.env.SystemRoot ?? "",
-    },
-  });
-  rmSync(sandbox, { recursive: true, force: true });
-  return result;
+    return spawnSync(process.execPath, [join(copiedExample, "run.mjs")], {
+      cwd: sandbox,
+      encoding: "utf8",
+      env: {
+        PATH: process.env.PATH ?? "",
+        SystemRoot: process.env.SystemRoot ?? "",
+      },
+    });
+  } finally {
+    rmSync(sandbox, { recursive: true, force: true });
+  }
 }
 
 test("first-five-minutes walkthrough is deterministic and leaves no local state", () => {
@@ -74,6 +79,19 @@ test("first-five-minutes fixtures contain no credential or persistent token mapp
   assert.doesNotMatch(environment, /(?:^|\W)phm_[A-Za-z0-9_-]+/u);
   assert.doesNotMatch(policy, /(?:^|\W)phm_[A-Za-z0-9_-]+/u);
   assert.deepEqual(JSON.parse(policy).secret_names, ["BILLING_API_TOKEN"]);
+});
+
+test("first-five-minutes identifies a missing referenced file", async (context) => {
+  for (const missingFile of [".env.example", "policy.json"]) {
+    await context.test(missingFile, () => {
+      const result = runCopiedExample({ missingFile });
+
+      assert.notEqual(result.status, 0);
+      assert.equal(result.stdout, "");
+      assert.match(result.stderr, /^ERROR ENOENT: no such file or directory, open /u);
+      assert.ok(result.stderr.includes(join("example", missingFile)), result.stderr);
+    });
+  }
 });
 
 test("first-five-minutes rejects a plaintext duplicate before an approved placeholder", () => {

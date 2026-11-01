@@ -269,7 +269,6 @@ export default function DeviceAuthorizationClient() {
                 onChange={(event) => setCode(formatDeviceUserCode(event.target.value))}
                 placeholder="XXXX-XXXX"
                 className="w-full min-w-0 text-center text-2xl sm:text-3xl font-mono tracking-[0.12em] sm:tracking-[0.2em] py-4 px-2 bg-bg border border-border-l rounded-lg text-t1 focus-visible:outline-2 focus-visible:outline-blue-b placeholder:text-t3"
-                maxLength={9}
                 autoFocus
                 disabled={status !== "input"}
               />
@@ -282,7 +281,7 @@ export default function DeviceAuthorizationClient() {
 
               <button
                 type="submit"
-                disabled={status !== "input" || code.length < 9}
+                disabled={status !== "input"}
                 className="w-full min-h-[48px] py-3 bg-blue-action hover:bg-blue-action-d disabled:bg-s3 disabled:text-t3 rounded-lg font-semibold transition-colors focus-visible:outline-2 focus-visible:outline-blue-b"
               >
                 {status === "authenticating"

@@ -38,6 +38,7 @@ fn missing_configuration_emits_a_versioned_uninitialized_contract_without_writes
     assert_eq!(
         report,
         json!({
+            "schemaVersion": 1,
             "schema_version": 1,
             "kind": "phantom.status",
             "initialized": false,
@@ -243,6 +244,7 @@ fn unsafe_lifecycle_metadata_remains_unknown_and_unmodified() {
 fn schema_v1_exact_documents_and_no_canary_leaks() {
     fn expected(initialized: bool, lock: &str, issues: Value) -> Value {
         json!({
+            "schemaVersion": 1,
             "schema_version": 1,
             "kind": "phantom.status",
             "initialized": initialized,

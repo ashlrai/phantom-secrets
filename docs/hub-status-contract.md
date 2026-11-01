@@ -19,6 +19,7 @@ An uninitialized project returns this JSON document with exit code zero:
 
 ```json
 {
+  "schemaVersion": 1,
   "schema_version": 1,
   "kind": "phantom.status",
   "initialized": false,
@@ -92,3 +93,9 @@ actions. Phantom's status report is an observation, not an authorization grant.
 For a real CLI/MCP transport check without credentials, use the
 [installed-runtime smoke example](../examples/agent-first-five-minutes/README.md).
 For a scoped coding workflow, use the [delegation quickstart](delegation-quickstart.md).
+
+`schemaVersion: 1` is the camelCase version field shared with `phantom doctor --json`.
+Status retains `schema_version: 1` for existing consumers; both identify the same
+version. Doctor retains `schema: "phantom.doctor.v1"` and its diagnostic checks,
+fix hints, and client names/states. Neither output includes credential values or
+managed placeholder mappings. Status intentionally also omits secret names.

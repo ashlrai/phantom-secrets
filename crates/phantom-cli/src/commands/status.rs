@@ -169,6 +169,8 @@ pub fn run(oneline: bool, json: bool) -> Result<()> {
 /// checks before `schema_version`, matching `phantom.agent.preflight`.
 #[derive(Serialize)]
 struct MetadataStatus {
+    #[serde(rename = "schemaVersion")]
+    schema_version_camel: u8,
     schema_version: u8,
     kind: &'static str,
     initialized: bool,
@@ -216,6 +218,7 @@ enum StatusIssue {
 
 fn metadata_status(project_dir: &Path) -> MetadataStatus {
     let mut report = MetadataStatus {
+        schema_version_camel: 1,
         schema_version: 1,
         kind: "phantom.status",
         initialized: false,
@@ -283,7 +286,8 @@ mod tests {
             }
             let report = serde_json::to_value(super::metadata_status(project.path())).unwrap();
             assert_eq!(report["kind"], "phantom.status");
-            assert_eq!(report["schema_version"], 1);
+            assert_eq!(report["schemaVersion"], 1);
+            assert_eq!(report["schema_version"], report["schemaVersion"]);
             assert_eq!(report["initialized"], initialized);
         }
     }
