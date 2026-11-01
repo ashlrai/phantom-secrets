@@ -113,6 +113,41 @@ test("each short code submitted with Enter independently shows the format error"
   }
 });
 
+test("a pasted seven-character code is rejected even when its separator makes it eight characters wide", async () => {
+  let clientCalls = 0;
+  let fetchCalls = 0;
+  const originalFetch = global.fetch;
+  const dependencies = {
+    "next/image": { __esModule: true, default: () => null },
+    "next/link": { __esModule: true, default: ({ children, ...props }) => React.createElement("a", props, children) },
+    "@/lib/device-code": compile("lib/device-code.ts", require),
+    "@/lib/posthog": { capturePostHog: async () => {} },
+    "@supabase/supabase-js": { createClient() { clientCalls++; throw new Error("Unexpected authentication"); } },
+  };
+  global.fetch = async () => { fetchCalls++; throw new Error("Unexpected network request"); };
+  try {
+    const Component = compile("app/device/device-authorization-client.tsx", (name) => dependencies[name] ?? require(name)).default;
+    const user = userEvent.setup();
+    render(React.createElement(Component));
+    const input = screen.getByRole("textbox", { name: "Device code" });
+    await user.click(input);
+    await user.paste("abcd-234");
+    assert.equal(input.value, "ABCD-234");
+    assert.equal(screen.queryByRole("alert"), null);
+    await user.click(screen.getByRole("button", { name: "Authorize Device" }));
+    const alert = screen.getByRole("alert");
+    assert.equal(alert.textContent, "Enter 8 letters or numbers. The code is displayed as XXXX-XXXX.");
+    assert.equal(input.getAttribute("aria-invalid"), "true");
+    assert.ok(input.getAttribute("aria-describedby").split(/\s+/).includes(alert.id));
+    assert.equal(input.value, "ABCD-234");
+    assert.equal(clientCalls, 0);
+    assert.equal(fetchCalls, 0);
+  } finally {
+    cleanup();
+    global.fetch = originalFetch;
+  }
+});
+
 test("short codes show the format error through the form and a corrected code can be authorized", async () => {
   let clientCalls = 0;
   const requests = [];
