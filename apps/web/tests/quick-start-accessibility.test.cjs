@@ -3,6 +3,8 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { JSDOM } = require("jsdom");
 const ts = require("typescript");
+const assert = require("node:assert/strict");
+const test = require("node:test");
 
 const dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "http://localhost/" });
 global.window = dom.window;
@@ -37,6 +39,17 @@ const quickStart = load("components/landing/QuickStart.tsx", {
 load("components/landing/quickstart-accessibility.test.tsx", {
   "./QuickStart": quickStart,
   "@/lib/public-release": release,
+});
+test("accessibility review is discoverable and covers the review workflow", () => {
+  const docs = path.join(__dirname, "../../../docs");
+  const review = fs.readFileSync(path.join(docs, "quickstart-accessibility-review.md"), "utf8");
+  assert.match(fs.readFileSync(path.join(docs, "README.md"), "utf8"), /\]\(quickstart-accessibility-review\.md\)/);
+  for (const heading of ["Headings and structure", "Platform selection", "Command readability", "Keyboard access"]) {
+    assert.ok(review.includes(`## ${heading}`), `missing checklist section: ${heading}`);
+  }
+  for (const item of ["macOS", "Windows", "Linux", "aria-pressed", "Shift+Tab", "screen reader", "clipboard success and failure"]) {
+    assert.ok(review.includes(item), `missing review item: ${item}`);
+  }
 });
 // Keep the colocated rendering tests in the normal web test suite as well.
 for (const file of ["QuickStart.test.tsx", "quickstart-tempdir.test.tsx"]) {

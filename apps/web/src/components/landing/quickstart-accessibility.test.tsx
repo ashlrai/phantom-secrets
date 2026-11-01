@@ -7,6 +7,32 @@ import { PUBLIC_RELEASE_TAG } from "@/lib/public-release";
 
 const normalize = (value: string) => value.replace(/\s+/g, " ").trim();
 
+test("reviewed heading and list structure persists across platform selections", async () => {
+  const user = userEvent.setup();
+  render(<QuickStart />);
+  try {
+    const region = screen.getByRole("region", { name: "Install on your OS. Then protect one project." });
+    const heading = within(region).getByRole("heading", { level: 2 });
+    assert.equal(region.getAttribute("aria-labelledby"), heading.id);
+    const selector = within(region).getByRole("group", { name: "Choose an operating system" });
+    for (const platform of ["macOS", "Windows", "Linux"]) {
+      await user.click(within(selector).getByRole("button", { name: platform }));
+      assert.deepEqual(within(region).getAllByRole("heading", { level: 3 }).map((item) => item.textContent), [
+        platform, `Verify both ${PUBLIC_RELEASE_TAG} binaries`, "Protect one supported project",
+      ]);
+      const card = within(region).getByRole("heading", { level: 3, name: platform }).closest("article");
+      assert.equal(card?.querySelector("svg")?.getAttribute("aria-hidden"), "true");
+      const steps = within(region).getByRole("list");
+      assert.equal(steps.tagName, "OL");
+      assert.equal(within(steps).getAllByRole("listitem").length, 2);
+      assert.equal(steps.querySelectorAll('.passage-steps__number[aria-hidden="true"]').length, 2);
+      assert.equal(within(steps).getAllByText("illustrative receipt").length, 2);
+    }
+  } finally {
+    cleanup();
+  }
+});
+
 test("each displayed platform option has a distinct accessible name", async () => {
   const user = userEvent.setup();
   render(<QuickStart />);
