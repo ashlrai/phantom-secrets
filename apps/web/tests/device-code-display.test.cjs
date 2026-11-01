@@ -39,7 +39,10 @@ test("public device form displays eight characters with a separator when typed o
     const screen = render(React.createElement(DeviceAuthorizationClient));
     const input = screen.getByRole("textbox", { name: "Device code", description: /8 letters or numbers.*XXXX-XXXX/ });
     const button = screen.getByRole("button", { name: "Authorize Device" });
+    const guide = fs.readFileSync(path.join(__dirname, "../../../docs/device-code-input-hint.md"), "utf8");
     assert.equal(input.placeholder, "XXXX-XXXX");
+    assert.ok(guide.includes(`placeholder \`${input.placeholder}\``));
+    assert.ok(guide.includes(`> ${screen.container.querySelector("#device-code-hint").textContent.trim()}`));
     // Entered text is never silently truncated: an overlong code stays visible
     // and fails validation instead of mutating into a different valid code.
     assert.equal(input.hasAttribute("maxlength"), false);
@@ -61,6 +64,7 @@ test("public device form displays eight characters with a separator when typed o
       (await screen.findByRole("alert")).textContent,
       "Enter 8 letters or numbers. The code is displayed as XXXX-XXXX."
     );
+    assert.ok(guide.includes(`> ${screen.getByRole("alert").textContent}`));
 
     await user.clear(input);
     await user.click(input);

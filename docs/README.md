@@ -86,6 +86,7 @@ and retains historical design-status language.
 - [Security evaluation](security-evaluation.md)
 - [Cloud login](login.md)
 - [Device authorization code format](device-code-format.md)
+- [Device authorization input hint](device-code-input-hint.md)
 - [Vercel and Railway sync](sync.md)
 - [CI/CD integration](ci-cd.md)
 - [Shell prompt integration](shell-prompt.md)
