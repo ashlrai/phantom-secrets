@@ -596,6 +596,39 @@ test('Unix PATH setup reports and cleans up failures before replacement', (t) =>
   }
 });
 
+test('Unix PATH temporary creation failures stop in order before creating an absent fish rc', (t) => {
+  for (const failure of ['before', 'candidate']) {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-path-temp-failure-')));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const shims = makeShims(root);
+    const mktemp = execFileSync('which', ['mktemp'], { encoding: 'utf8' }).trim();
+    const shellQuote = (value) => `'${value.replace(/'/g, "'\\''")}'`;
+    const shim = join(shims, 'mktemp');
+    writeFileSync(shim, `#!/bin/sh
+case "$1" in
+  *.phantom-path.before.*) printf 'before\\n' >> "$HOME/.temp-attempts" ;;
+  *.phantom-path.candidate.*) printf 'candidate\\n' >> "$HOME/.temp-attempts" ;;
+esac
+case "$1" in *.phantom-path.${failure}.*) echo 'injected mktemp failure' >&2; exit 1 ;; esac
+exec ${shellQuote(mktemp)} "$@"
+`);
+    chmodSync(shim, 0o755);
+
+    const { install, result } = runInstaller({ root, shims, shell: '/usr/bin/fish' });
+    assert.ifError(result.error);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stderr, /injected mktemp failure/);
+    assert.match(result.stderr, /could not update your shell PATH; add .* manually/);
+    assert.match(result.stdout, /done\. phantom/);
+    assert.equal(readFileSync(join(root, 'home', '.temp-attempts'), 'utf8'),
+      failure === 'before' ? 'before\n' : 'before\ncandidate\n');
+    const parent = join(root, 'home', '.config', 'fish');
+    assert.deepEqual(readdirSync(parent), [], 'startup file stays absent and snapshot is removed');
+    assert.ok(existsSync(join(install, 'phantom')));
+    assert.ok(existsSync(join(install, 'phantom-mcp')));
+  }
+});
+
 test('Unix PATH setup creates an absent fish startup file and removes its temporary siblings', (t) => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-path-fish-')));
   t.after(() => rmSync(root, { recursive: true, force: true }));
