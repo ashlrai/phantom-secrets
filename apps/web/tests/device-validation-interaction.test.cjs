@@ -192,6 +192,9 @@ test("short codes show the format error through the form and a corrected code ca
     }
     await user.type(input, "5");
     assert.equal(input.value, "ABCD-2345");
+    assert.equal(screen.getByRole("alert").textContent, "Enter 8 letters or numbers. The code is displayed as XXXX-XXXX.");
+    assert.equal(clientCalls, 0);
+    assert.equal(requests.length, 0);
     await user.click(button);
     assert.ok(await screen.findByRole("heading", { name: "Device Authorized" }));
     assert.equal(clientCalls, 1);
