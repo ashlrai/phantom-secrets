@@ -36,5 +36,9 @@ const quickStart = compile("components/landing/QuickStart.tsx", (name) => {
   if (name === "next/link") return { __esModule: true, default: ({ children, ...props }) => React.createElement("a", props, children) };
   return require(name);
 });
-compile("components/landing/QuickStart.test.tsx", (name) => name === "./QuickStart" ? quickStart : require(name));
+compile("components/landing/QuickStart.test.tsx", (name) => {
+  if (name === "./QuickStart") return quickStart;
+  if (name === "@/lib/public-release") return release;
+  return require(name);
+});
 compile("components/landing/quickstart-tempdir.test.tsx", (name) => name === "./QuickStart" ? quickStart : require(name));
