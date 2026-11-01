@@ -25,10 +25,12 @@ This identical snippet uses `TMPDIR` as the parent, falls back to `/tmp` when
 it is unset or empty, and creates a unique directory with the prefix
 `phantom-install.`.
 
-Both commands quote the template, so a parent path may contain spaces. The
-parent must exist and be usable: an invalid nonempty `TMPDIR` makes `mktemp`
-fail instead of retrying under `/tmp`. The directory holds `install.sh`, not
-the installed binaries. After the exit trap is installed, it attempts to
+Both commands quote the template, so spaces and shell glob characters in the
+parent are treated literally. A relative `TMPDIR` is relative to the shell's
+current working directory. The parent must already exist and be writable:
+an invalid nonempty `TMPDIR` makes `mktemp` fail before the download instead
+of retrying under `/tmp`. The directory holds `install.sh`, not the installed
+binaries. After the exit trap is installed, it attempts to
 remove the script and then the empty directory; cleanup is not guaranteed.
 See the [cleanup review](quickstart-temp-cleanup-review.md) for its limits.
 
