@@ -26,6 +26,7 @@ function find(element, predicate) {
 test("staging snippet count and comparison match the displayed platform commands", () => {
   const docs = path.join(__dirname, "../../../docs");
   const guide = fs.readFileSync(path.join(docs, "quickstart-stage-snippet-count.md"), "utf8");
+  const reference = fs.readFileSync(path.join(docs, "quickstart-temp-prefix-reference.md"), "utf8");
   let selected = "macOS";
   const { QuickStart } = load("src/components/landing/QuickStart.tsx", (name) => {
     if (name === "react") return { ...React, useState: () => [selected, () => {}] };
@@ -42,11 +43,20 @@ test("staging snippet count and comparison match the displayed platform commands
     selected = platform;
     const commands = find(QuickStart(), (node) => typeof node.props.text === "string");
     const lines = commands.flatMap((node) => node.props.text.split("\n").filter((line) => /\bmktemp\s+-d\b/.test(line)));
+    const row = reference.split("\n").find((line) => line.startsWith(`| ${platform} |`));
+    assert.ok(row, `${platform} reference row`);
     if (platform === "Windows") {
       assert.deepEqual(lines, []);
-      assert.match(commands[0].props.text, /\$Installer = Join-Path \$env:TEMP/);
+      assert.match(commands[0].props.text, /\$Installer = Join-Path \$env:TEMP \('phantom-install-[^']+-\{0\}\.ps1' -f \[Guid\]::NewGuid\(\)/);
+      for (const fragment of ["No temporary directory", "`$env:TEMP`", "`phantom-install-`", "release tag", "GUID", "`.ps1`", "no fallback"]) {
+        assert.ok(row.includes(fragment), `${platform} reference: ${fragment}`);
+      }
     } else {
       assert.equal(lines.length, 1, platform);
+      assert.equal(lines[0], 'phantom_stage="$(mktemp -d "${TMPDIR:-/tmp}/phantom-install.XXXXXX")"');
+      for (const fragment of ["`phantom-install.`", "`phantom-install.XXXXXX`", "`TMPDIR`", "`${TMPDIR:-/tmp}`", "`/tmp`", "unset or empty"]) {
+        assert.ok(row.includes(fragment), `${platform} reference: ${fragment}`);
+      }
       staging.push(lines[0]);
     }
   }
@@ -57,4 +67,5 @@ test("staging snippet count and comparison match the displayed platform commands
     assert.ok(guide.includes(fragment), `guide: ${fragment}`);
   }
   assert.match(fs.readFileSync(path.join(docs, "README.md"), "utf8"), /\]\(quickstart-stage-snippet-count\.md\)/);
+  assert.match(fs.readFileSync(path.join(docs, "README.md"), "utf8"), /\]\(quickstart-temp-prefix-reference\.md\)/);
 });
