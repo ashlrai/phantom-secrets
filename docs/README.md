@@ -25,6 +25,7 @@ See [distribution status](distribution-status.md) for dated npm, Homebrew, crate
 | Locate and compare temporary directory snippets | [Quickstart staging snippet count](quickstart-stage-snippet-count.md) |
 | Locate temporary installer files and their environment inputs | [Installer temporary locations](installer-temp-environment.md) |
 | Find the Unix installer's staging parent and directory name | [Installer stage parent](installer-stage-parent.md) |
+| Find the public Unix installer's staging directory template | [Public installer staging prefix](public-installer-staging-prefix.md) |
 | See a measured Linux install and the agent-CLI audit | [First run](FIRST-RUN.md) |
 | Compare install, exec, and memory with dotenvx and SOPS | [Benchmarks](BENCHMARKS.md) |
 | Delegate one bounded task to an AI coding client | [Safe delegation quickstart](delegation-quickstart.md) |
