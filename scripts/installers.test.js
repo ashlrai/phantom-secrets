@@ -438,14 +438,27 @@ exec ${JSON.stringify(mktemp)} "$@"
 
 for (const installer of [shellInstaller, join(repo, 'apps/web/public/install.sh')]) {
   const label = installer === shellInstaller ? 'candidate' : 'public-reference';
-  test(`Unix ${label} installer stages inside a spaced install parent and cleans it up`, () => {
+  test(`Unix ${label} installer stages inside a spaced install parent and cleans it up`, (t) => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom installer stage-')));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
     const parent = join(root, 'live dir');
     const install = join(parent, 'bin');
     const record = join(root, 'invocations.log');
-    const { result } = runInstaller({ root, install, installer, recordInvocations: record });
+    const argsRecord = join(root, 'mktemp-args');
+    const shims = makeShims(root);
+    const mktemp = execFileSync('which', ['mktemp'], { encoding: 'utf8' }).trim();
+    const shellQuote = (value) => `'${value.replace(/'/g, "'\\''")}'`;
+    writeFileSync(join(shims, 'mktemp'), `#!/bin/sh
+if [ "$1" = -d ]; then printf '%s\\0' "$@" > ${shellQuote(argsRecord)}; fi
+exec ${shellQuote(mktemp)} "$@"
+`);
+    chmodSync(join(shims, 'mktemp'), 0o755);
+    const { result } = runInstaller({ root, shims, install, installer, recordInvocations: record });
     assert.ifError(result.error);
     assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(readFileSync(argsRecord, 'utf8').split('\0'), [
+      '-d', join(parent, '.bin.install.XXXXXX'), '',
+    ], 'mktemp receives the complete staging template as one argument');
 
     // Every fixture --version probe logs $0: two staged runs must resolve
     // inside the spaced parent's single private staging directory.
@@ -460,6 +473,8 @@ for (const installer of [shellInstaller, join(repo, 'apps/web/public/install.sh'
     for (const path of staged) assert.match(path, stagedPattern);
     const [stageRoot] = stageRoots;
     assert.equal(existsSync(stageRoot), false, 'staging directory must be removed');
+    assert.ok(existsSync(join(install, 'phantom')));
+    assert.ok(existsSync(join(install, 'phantom-mcp')));
     assert.deepEqual(
       readdirSync(parent).filter((name) => name.startsWith('.bin.')),
       [],
