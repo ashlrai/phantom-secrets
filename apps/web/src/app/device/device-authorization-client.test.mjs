@@ -116,6 +116,63 @@ test("blank device code shows validation without starting authorization", async 
   }
 });
 
+test("pasted hyphenated codes are formatted and validated before authorization", async () => {
+  const originalFetch = globalThis.fetch;
+  let clientCalls = 0;
+  const requests = [];
+  globalThis.fetch = async (endpoint, request) => {
+    requests.push({ endpoint, request });
+    return { ok: true };
+  };
+
+  const React = await import("react");
+  const { cleanup, render, screen } = await import("@testing-library/react");
+  const { default: userEvent } = await import("@testing-library/user-event");
+  try {
+    const dependencies = {
+      "next/image": { __esModule: true, default: () => null },
+      "next/link": { __esModule: true, default: ({ children, ...props }) => React.createElement("a", props, children) },
+      "@/lib/device-code": compile(path.resolve(dirname, "../../lib/device-code.ts"), runtimeRequire),
+      "@/lib/posthog": { capturePostHog: async () => {} },
+      "@supabase/supabase-js": { createClient() {
+        clientCalls++;
+        return { auth: { getSession: async () => ({ data: { session: { access_token: "synthetic-session" } }, error: null }) } };
+      } },
+    };
+    const Component = compile(path.join(dirname, "device-authorization-client.tsx"),
+      (name) => dependencies[name] ?? runtimeRequire(name)).default;
+    const user = userEvent.setup();
+    render(React.createElement(Component));
+    const input = screen.getByRole("textbox", { name: "Device code" });
+    const button = screen.getByRole("button", { name: "Authorize Device" });
+
+    await user.click(input);
+    await user.paste("ab-cd-234");
+    assert.equal(input.value, "ABCD-234");
+    await user.click(button);
+    const alert = screen.getByRole("alert");
+    assert.equal(alert.textContent, "Enter 8 letters or numbers. The code is displayed as XXXX-XXXX.");
+    assert.equal(input.getAttribute("aria-invalid"), "true");
+    assert.ok(input.getAttribute("aria-describedby").split(/\s+/).includes(alert.id));
+    assert.equal(clientCalls, 0);
+    assert.equal(requests.length, 0);
+
+    await user.clear(input);
+    await user.paste("ab-cd-2345");
+    assert.equal(input.value, "ABCD-2345");
+    await user.click(button);
+    assert.ok(await screen.findByRole("heading", { name: "Device Authorized" }));
+    assert.equal(screen.queryByRole("alert"), null);
+    assert.equal(clientCalls, 1);
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].endpoint, "/api/v1/auth/device/approve");
+    assert.deepEqual(JSON.parse(requests[0].request.body), { user_code: "ABCD2345" });
+  } finally {
+    cleanup();
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("corrected device code resubmits past the prior validation error", async () => {
   const originalFetch = globalThis.fetch;
   let clientCalls = 0;
