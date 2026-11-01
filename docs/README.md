@@ -24,6 +24,7 @@ See [distribution status](distribution-status.md) for dated npm, Homebrew, crate
 | Review platform labels, readability, and cleanup | [Quickstart reader checklist](quickstart-reader-checklist.md) |
 | Review the clarity of landing-page installation copy | [Quickstart copy review](quickstart-copy-review.md) |
 | Review platform-specific landing-page copy | [Quickstart platform copy review](quickstart-platform-copy-review.md) |
+| Review landing-page quickstart accessibility | [Quickstart accessibility review](quickstart-accessibility-review.md) |
 | Compare the landing-page install commands by platform | [Quickstart platform comparison](quickstart-platform-comparison.md) |
 | Find each landing-page platform section and command block | [Quickstart platform sections](quickstart-platform-sections.md) |
 | Map displayed quickstart steps to their platform and source | [Quickstart platform step map](quickstart-platform-step-map.md) |
