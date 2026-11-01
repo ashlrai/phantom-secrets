@@ -98,3 +98,43 @@ test("format reference source links resolve to tracked files", () => {
     assert.ok(reference.includes(`](${required}`), `missing source reference: ${required}`);
   }
 });
+
+
+test("copy checklist matches the rendered placeholder and length error", async () => {
+  const checklist = fs.readFileSync(path.join(docsDir, "device-code-copy-checklist.md"), "utf8");
+  const placeholder = checklist.match(/\*\*Placeholder\*\*[^\n]*`([^`]+)`/);
+  const error = checklist.match(/^  > (.+)$/m);
+  assert.ok(placeholder, "checklist should include the placeholder");
+  assert.ok(error, "checklist should include the length error");
+  assert.ok(checklist.includes("](../apps/web/src/app/device/device-authorization-client.tsx)"));
+
+  let authCalls = 0;
+  const dependencies = {
+    "next/image": { __esModule: true, default: () => null },
+    "next/link": { __esModule: true, default: ({ children, ...props }) => React.createElement("a", props, children) },
+    "@/lib/device-code": compile("lib/device-code.ts"),
+    "@/lib/posthog": { capturePostHog: async () => {} },
+    "@supabase/supabase-js": { createClient() { authCalls++; throw new Error("Unexpected authentication"); } },
+  };
+  const originalFetch = global.fetch;
+  let requests = 0;
+  global.fetch = async () => { requests++; throw new Error("Unexpected network request"); };
+  try {
+    const Component = compile("app/device/device-authorization-client.tsx", dependencies).default;
+    const user = userEvent.setup();
+    const screen = render(React.createElement(Component));
+    const input = screen.getByRole("textbox", { name: "Device code" });
+    assert.equal(input.placeholder, placeholder[1]);
+    for (const value of ["", "abcd234", "abcd23456"]) {
+      await user.clear(input);
+      if (value) await user.type(input, value);
+      await user.click(screen.getByRole("button", { name: "Authorize Device" }));
+      assert.equal(screen.getByRole("alert").textContent, error[1]);
+    }
+    assert.equal(authCalls, 0);
+    assert.equal(requests, 0);
+  } finally {
+    cleanup();
+    global.fetch = originalFetch;
+  }
+});
