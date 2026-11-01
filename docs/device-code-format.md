@@ -46,3 +46,5 @@ approve a code from a login you initiated.
 Implementation references: [device authorization form](../apps/web/src/app/device/device-authorization-client.tsx),
 [normalization helpers](../apps/web/src/lib/device-code.ts), and the
 [device auth notes](internal/notes.md#device-auth-wave).
+See also the [display contract](device-code-display-contract.md) for the
+relationship between displayed and stored codes and the migration's scope.
