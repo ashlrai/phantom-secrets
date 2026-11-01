@@ -7,6 +7,30 @@ import { PUBLIC_RELEASE_TAG } from "@/lib/public-release";
 
 const normalize = (value: string) => value.replace(/\s+/g, " ").trim();
 
+test("each displayed platform option has a distinct accessible name", async () => {
+  const user = userEvent.setup();
+  render(<QuickStart />);
+  try {
+    const selector = screen.getByRole("group", { name: "Choose an operating system" });
+    const platforms = ["macOS", "Windows", "Linux"];
+
+    for (const selected of platforms) {
+      await user.click(within(selector).getByRole("button", { name: selected }));
+      const buttons = within(selector).getAllByRole("button");
+      const displayedNames = buttons.map((button) => normalize(button.textContent ?? ""));
+      assert.deepEqual(displayedNames, platforms);
+      assert.equal(new Set(displayedNames).size, buttons.length);
+      for (const [index, name] of displayedNames.entries()) {
+        // getByRole requires exactly one button with this computed accessible name.
+        assert.equal(within(selector).getByRole("button", { name }), buttons[index]);
+      }
+      assert.equal(within(selector).getByRole("button", { name: selected, pressed: true }), buttons[platforms.indexOf(selected)]);
+    }
+  } finally {
+    cleanup();
+  }
+});
+
 test("all installation controls and links remain named for each platform", async () => {
   const user = userEvent.setup();
   render(<QuickStart />);
