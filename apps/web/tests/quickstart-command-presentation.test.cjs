@@ -57,10 +57,16 @@ test("installer and numbered controls appear in order and copy only their comman
       assert.ok(card.compareDocumentPosition(steps) & Node.DOCUMENT_POSITION_FOLLOWING);
       const command = within(card.querySelector(".platform-install-card__command")).getByRole("button");
       assert.equal(command.querySelector('[aria-hidden="true"]').textContent.trim(), prompt);
-      assert.ok(command.firstElementChild.lastChild.textContent.includes("\n"), `${platform}: installer is multiline`);
+      const displayed = command.firstElementChild.lastChild.textContent;
+      assert.ok(displayed.includes("\n"), `${platform}: installer is multiline`);
+      if (platform === "Windows") {
+        assert.match(displayed, /\$Installer = Join-Path \$env:TEMP \('phantom-install-[^'\n]+' -f \[Guid\]::NewGuid\(\)\.ToString\('N'\)\)/, `${platform}: temporary installer prefix`);
+      } else {
+        assert.match(displayed, /phantom_stage="\$\(mktemp -d "\$\{TMPDIR:-\/tmp\}\/phantom-install\.X{6}"\)"/, `${platform}: temporary directory prefix`);
+      }
       fireEvent.click(command);
       await waitFor(() => assert.equal(writes.length, ["macOS", "Windows", "Linux"].indexOf(platform) + 1));
-      assert.equal(writes.at(-1), command.firstElementChild.lastChild.textContent);
+      assert.equal(writes.at(-1), displayed);
     }
     for (const [index, expected] of ["phantom --version\nphantom-mcp --version", "phantom init"].entries()) {
       assert.equal(stepButtons[index].querySelector('[aria-hidden="true"]').textContent.trim(), "$");
