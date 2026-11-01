@@ -10,7 +10,7 @@
     "test": "node --experimental-strip-types --test tests/*.test.cjs src/app/device/*.test.mjs src/app/device/*.test.ts",
     "test:billing-auth": "node --test tests/billing-auth.test.cjs",
     "test:claims": "node --test tests/public-claims.test.cjs",
-    "test:responsive": "node --test tests/quick-start-responsive.browser.cjs"
+    "test:responsive": "next build && node --test tests/quick-start-responsive.browser.cjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2",

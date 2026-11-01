@@ -6,6 +6,7 @@ const net = require("node:net");
 const path = require("node:path");
 const test = require("node:test");
 const { chromium } = require("playwright");
+const { assertClipboardEventuallyEquals } = require("./clipboard-poll.cjs");
 
 async function availablePort() {
   const server = net.createServer();
@@ -35,7 +36,7 @@ async function waitForServer(url, process) {
 test("QuickStart remains usable without horizontal overflow on narrow screens", { timeout: 600000 }, async (t) => {
   const port = await availablePort();
   const baseURL = `http://127.0.0.1:${port}`;
-  const server = spawn(process.execPath, [require.resolve("next/dist/bin/next"), "dev", "--port", String(port)], {
+  const server = spawn(process.execPath, [require.resolve("next/dist/bin/next"), "start", "--port", String(port)], {
     cwd: path.join(__dirname, ".."),
     env: { PATH: process.env.PATH, HOME: process.env.HOME, TMPDIR: process.env.TMPDIR, NEXT_TELEMETRY_DISABLED: "1" },
     stdio: "ignore",
@@ -78,6 +79,9 @@ test("QuickStart remains usable without horizontal overflow on narrow screens", 
         const displayed = await command.locator("span").first().evaluate((node) =>
           Array.from(node.childNodes).filter((child) => child.nodeType === Node.TEXT_NODE).map((child) => child.textContent).join(""));
         assert.ok(displayed.includes(expected));
+        assert.ok(displayed.includes("\n"), `${platform}: command retains line breaks`);
+        assert.equal(await command.locator("span").first().evaluate((node) => getComputedStyle(node).whiteSpace), "pre-wrap",
+          `${platform}: command displays line breaks`);
 
         for (const element of [selector, ...await selector.getByRole("button").all(), card, command]) {
           const bounds = await element.evaluate((node) => {
@@ -93,8 +97,7 @@ test("QuickStart remains usable without horizontal overflow on narrow screens", 
           `${width}px ${platform}: page overflows horizontally`);
 
         await command.click();
-        await page.waitForFunction(async (expected) => (await navigator.clipboard.readText()) === expected, displayed,
-          { timeout: 10000 });
+        await assertClipboardEventuallyEquals(page, displayed);
       }
     } finally {
       await context.close();
