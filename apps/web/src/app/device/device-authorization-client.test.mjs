@@ -116,6 +116,58 @@ test("blank device code shows validation without starting authorization", async 
   }
 });
 
+test("surrounding whitespace is removed before displaying and validating a device code", async () => {
+  const originalFetch = globalThis.fetch;
+  let clientCalls = 0;
+  let requests = 0;
+  globalThis.fetch = async () => { requests++; throw new Error("Unexpected request"); };
+
+  const React = await import("react");
+  const { cleanup, render, screen } = await import("@testing-library/react");
+  const { default: userEvent } = await import("@testing-library/user-event");
+  try {
+    const dependencies = {
+      "next/image": { __esModule: true, default: () => null },
+      "next/link": { __esModule: true, default: ({ children, ...props }) => React.createElement("a", props, children) },
+      "@/lib/device-code": compile(path.resolve(dirname, "../../lib/device-code.ts"), runtimeRequire),
+      "@/lib/posthog": { capturePostHog: async () => {} },
+      "@supabase/supabase-js": { createClient() {
+        clientCalls++;
+        return { auth: { getSession: async () => ({ data: { session: null }, error: new Error("Synthetic session error") }) } };
+      } },
+    };
+    const Component = compile(path.join(dirname, "device-authorization-client.tsx"),
+      (name) => dependencies[name] ?? runtimeRequire(name)).default;
+    const user = userEvent.setup();
+    render(React.createElement(Component));
+    const input = screen.getByRole("textbox", { name: "Device code" });
+
+    for (const [pasted, displayed] of [[" \t \n ", ""], ["  abcd234  ", "ABCD-234"]]) {
+      await user.clear(input);
+      await user.click(input);
+      await user.paste(pasted);
+      assert.equal(input.value, displayed);
+      await user.click(screen.getByRole("button", { name: "Authorize Device" }));
+      assert.equal(input.value, displayed);
+      assert.equal(screen.getByRole("alert").textContent, "Enter 8 letters or numbers. The code is displayed as XXXX-XXXX.");
+      assert.equal(input.getAttribute("aria-invalid"), "true");
+      assert.equal(clientCalls, 0);
+    }
+
+    await user.clear(input);
+    await user.paste(" \tabcd-2345\n ");
+    assert.equal(input.value, "ABCD-2345");
+    await user.click(screen.getByRole("button", { name: "Authorize Device" }));
+    assert.equal((await screen.findByRole("alert")).textContent, "Unable to read your sign-in session. Please try again.");
+    assert.equal(input.value, "ABCD-2345");
+    assert.equal(clientCalls, 1);
+    assert.equal(requests, 0);
+  } finally {
+    cleanup();
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("corrected device code resubmits past the prior validation error", async () => {
   const originalFetch = globalThis.fetch;
   let clientCalls = 0;
