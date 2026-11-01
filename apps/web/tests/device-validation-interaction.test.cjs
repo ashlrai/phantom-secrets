@@ -30,6 +30,9 @@ function compile(file, localRequire) {
 test("submitting an empty or cleared device code shows validation without starting authorization", async () => {
   let clientCalls = 0;
   let fetchCalls = 0;
+  const documentedCopy = fs.readFileSync(path.resolve(__dirname, "../../../docs/device-code-validation-copy.md"), "utf8")
+    .split("\n").filter((line) => line.startsWith("> ")).map((line) => line.slice(2));
+  assert.equal(documentedCopy.length, 2);
   const originalFetch = global.fetch;
   const dependencies = {
     "next/image": { __esModule: true, default: () => null },
@@ -46,6 +49,7 @@ test("submitting an empty or cleared device code shows validation without starti
       render(React.createElement(Component));
       const input = screen.getByRole("textbox", { name: "Device code" });
       const button = screen.getByRole("button", { name: "Authorize Device" });
+      assert.equal(document.getElementById("device-code-hint").textContent.trim(), documentedCopy[0]);
       if (cleared) {
         await user.type(input, "abcd2345");
         assert.equal(input.value, "ABCD-2345");
@@ -57,6 +61,7 @@ test("submitting an empty or cleared device code shows validation without starti
       else { await user.click(input); await user.keyboard("{Enter}"); }
       const alert = screen.getByRole("alert");
       assert.equal(alert.textContent, "Enter 8 letters or numbers. The code is displayed as XXXX-XXXX.");
+      assert.equal(alert.textContent, documentedCopy[1]);
       assert.equal(input.getAttribute("aria-invalid"), "true");
       assert.ok(input.getAttribute("aria-describedby").split(/\s+/).includes(alert.id));
       assert.equal(input.value, "");
