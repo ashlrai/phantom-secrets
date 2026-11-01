@@ -13,7 +13,7 @@ Commands by task:
   Setup         init · agent · setup · doctor · workspace · vault · completion · mcp · mcp-approve
   Daily use     exec · start · stop · status · check · redact · list · add · remove · reveal · copy · env · why · git-credential
   Sync & teams  login · logout · cloud · team · sync · pull · export · import · wrap · unwrap
-  Maintenance   upgrade · watch · rotate · grant · validate · expiry · secrets-expiring-soon · open · audit · leaks · crypto
+  Maintenance   upgrade · watch · rotate · grant · validate · expiry · secrets-expiring-soon · fleet-status · open · audit · leaks · crypto
 
 Usage: phantom [OPTIONS] <COMMAND>
 
@@ -61,6 +61,7 @@ Commands:
   crypto                 Cryptography inventory: algorithms and format tags Phantom uses
   open                   Open a closed-catalog Phantom page after an exact trusted-terminal challenge. Aliases: dashboard, billing, team, docs, pricing, github, issues, site. Other words and arbitrary URLs are rejected before browser access
   secrets-expiring-soon  List expired/expiring secrets; optionally remap their local Phantom tokens
+  fleet-status           Value-free fleet posture: names, expiry, last validation result, overdue rotations
   expiry                 TTL metadata: exact-terminal set, read-only enforce, and deprecated local remap
   help                   Print this message or the help of the given subcommand(s)
 
@@ -73,6 +74,9 @@ Options:
 
       --json
           Output in JSON format (for scripting)
+
+      --ashlr-handshake
+          Print the local, value-free Ashlr companion handshake and exit
 
   -h, --help
           Print help (see a summary with '-h')

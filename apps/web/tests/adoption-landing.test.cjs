@@ -7,6 +7,45 @@ const webRoot = path.resolve(__dirname, "..");
 const read = (relativePath) =>
   fs.readFileSync(path.join(webRoot, relativePath), "utf8");
 
+test("landing primary navigation has an accessible label", () => {
+  const React = require("react");
+  const ts = require("typescript");
+  const { renderToStaticMarkup } = require("react-dom/server");
+  const { JSDOM } = require("jsdom");
+  const { getByRole } = require("@testing-library/dom");
+  const compiled = ts.transpileModule(read("src/components/landing/Nav.tsx"), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, esModuleInterop: true },
+    fileName: "Nav.tsx",
+  }).outputText;
+
+  for (const pathname of ["/", "/secrets"]) {
+    for (const menuOpen of [false, true]) {
+      let stateIndex = 0;
+      const hooks = { ...React, useState: initial => [stateIndex++ === 1 ? menuOpen : initial, () => {}] };
+      const localRequire = name => {
+        if (name === "react") return hooks;
+        if (name === "next/navigation") return { usePathname: () => pathname };
+        if (name === "next/link") return { __esModule: true, default: ({ children, ...props }) => React.createElement("a", props, children) };
+        if (name === "next/image") return { __esModule: true, default: ({ priority, ...props }) => React.createElement("img", props) };
+        if (name === "@/lib/posthog") return { capturePostHog: async () => {} };
+        if (name === "@/lib/legacy-secrets-fragment") return { legacySecretsDestination: () => null };
+        if (name === "./Icons") return { Github: () => React.createElement("svg", { "aria-hidden": true }) };
+        return require(name);
+      };
+      const exports = {};
+      new Function("exports", "require", compiled)(exports, localRequire);
+      const dom = new JSDOM(renderToStaticMarkup(React.createElement(exports.Nav)));
+      const document = dom.window.document;
+      assert.equal(
+        getByRole(document.body, "navigation", { name: "Primary navigation" }),
+        document.querySelector("nav"),
+        `${pathname}: navigation must remain named when the menu is ${menuOpen ? "open" : "closed"}`,
+      );
+      dom.window.close();
+    }
+  }
+});
+
 test("landing controls explicitly use non-submit button types", () => {
   const ts = require("typescript");
   const { JSDOM } = require("jsdom");
@@ -108,6 +147,63 @@ test("landing calls to action have accessible names and destinations", async () 
     ["Follow the install path", "#install"],
     ["View on GitHub", "https://github.com/ashlrai/phantom-secrets"],
   ]);
+});
+
+test("Secrets landing install links reach its quick-start section", () => {
+  const ts = require("typescript");
+  const React = require("react");
+  const { renderToStaticMarkup } = require("react-dom/server");
+  const { JSDOM } = require("jsdom");
+  const { computeAccessibleName, isInaccessible } = require("dom-accessibility-api");
+
+  function load(relativePath, localRequire) {
+    const output = ts.transpileModule(read(relativePath), {
+      compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, esModuleInterop: true },
+    }).outputText;
+    const exports = {};
+    new Function("exports", "require", output)(exports, localRequire);
+    return exports;
+  }
+
+  const release = load("src/lib/public-release.ts", require);
+  const components = {};
+  function localRequire(name) {
+    if (name === "next/link") return { __esModule: true, default: ({ children, ...props }) => React.createElement("a", props, children) };
+    if (name === "@/lib/public-release") return release;
+    if (name === "./BrandLogos") return { EXACT_ROUTE_ENTRIES: [] };
+    if (name === "./Icons") return { Github: props => React.createElement("svg", props) };
+    if (["./CarouselPauseButton", "./SocialProof", "./CopyButton"].includes(name)) {
+      return { [name.slice(2)]: () => null };
+    }
+    if (name.startsWith("@/components/landing/")) {
+      const component = name.split("/").pop();
+      return { [component]: components[component] || (() => null) };
+    }
+    return require(name);
+  }
+  for (const name of ["Hero", "QuickStart", "CTA"]) {
+    components[name] = load(`src/components/landing/${name}.tsx`, localRequire)[name];
+  }
+  const { default: SecretsPage } = load("src/app/secrets/page.tsx", localRequire);
+  const document = new JSDOM(renderToStaticMarkup(React.createElement(SecretsPage)), {
+    url: "https://example.com/secrets",
+  }).window.document;
+  const sections = document.querySelectorAll('[id="install"]');
+  assert.equal(sections.length, 1, "the quick-start destination must be unique");
+  assert.equal(sections[0].tagName, "SECTION");
+  assert.equal(isInaccessible(sections[0]), false);
+  assert.match(computeAccessibleName(sections[0]), /Install on your OS/);
+
+  for (const [selector, name] of [["#phantom-secrets", "Install Phantom Secrets"], [".closing-section", "Follow the install path"]]) {
+    const link = [...document.querySelectorAll(`${selector} a`)]
+      .find(element => computeAccessibleName(element).trim() === name);
+    assert.ok(link, `missing ${name} link`);
+    assert.equal(isInaccessible(link), false, `${name} must be accessible`);
+    const destination = new URL(link.href);
+    assert.equal(destination.pathname, "/secrets", `${name} must remain on the Secrets landing`);
+    assert.equal(destination.hash, "#install", `${name} must point to quick start`);
+    assert.equal(document.getElementById(destination.hash.slice(1)), sections[0]);
+  }
 });
 
 // These images repeat adjacent text or an already named link/button. Keep the
@@ -266,6 +362,21 @@ test("install guidance explains the temporary installer location for each platfo
   assert.match(quickStart, /On macOS and Linux, a staging directory under <code>TMPDIR<\/code>\s+\(or <code>\/tmp<\/code> when unset or empty\) holds the downloaded installer\s+script/);
   assert.match(quickStart, /Once the exit trap is installed, cleanup attempts to remove the\s+script and then the empty directory on exit, including after failures;\s+cleanup is not guaranteed\. It is not the install directory/);
   assert.match(quickStart, /Windows uses a\s+temporary installer file instead/);
+});
+
+test("both Unix install snippets quote every staging directory reference", () => {
+  const quickStart = read("src/components/landing/QuickStart.tsx");
+  const snippets = [
+    ["macOS", quickStart.split('name: "macOS"')[1]?.split('name: "Windows"')[0]],
+    ["Linux", quickStart.split('name: "Linux"')[1]?.split("export function QuickStart")[0]],
+  ];
+
+  for (const [platform, snippet] of snippets) {
+    assert.ok(snippet, `${platform}: install snippet exists`);
+    assert.ok(snippet.includes('phantom_installer="$phantom_stage/install.sh"'), `${platform}: quote the installer path`);
+    assert.ok(snippet.includes('rmdir -- "$phantom_stage"'), `${platform}: quote the cleanup path`);
+    assert.equal((snippet.match(/\$phantom_stage\b/g) || []).length, 2, `${platform}: review all staging directory references`);
+  }
 });
 
 test("activation orders installation before client connection and previews config writes", () => {

@@ -16,6 +16,15 @@ See [distribution status](distribution-status.md) for dated npm, Homebrew, crate
 |------|-------|
 | Run GitHub PR operations through Phantom with curl | [GitHub box runners](github-box-runners.md) |
 | Protect a project for the first time | [Getting started](getting-started.md) |
+| Understand the landing-page install commands | [Quickstart reading guide](quickstart-reading-guide.md) |
+| Follow the order of quickstart staging and cleanup | [Quickstart command sequence](quickstart-command-sequence.md) |
+| Copy the landing-page install command safely | [Quickstart copy checklist](quickstart-copy-checklist.md) |
+| Compare the landing-page install commands by platform | [Quickstart platform comparison](quickstart-platform-comparison.md) |
+| Map displayed quickstart steps to their platform and source | [Quickstart platform step map](quickstart-platform-step-map.md) |
+| Review temporary installer cleanup by platform | [Quickstart cleanup review](quickstart-temp-cleanup-review.md) |
+| Locate and compare temporary directory snippets | [Quickstart staging snippet count](quickstart-stage-snippet-count.md) |
+| Locate temporary installer files and their environment inputs | [Installer temporary locations](installer-temp-environment.md) |
+| Find the Unix installer's staging parent and directory name | [Installer stage parent](installer-stage-parent.md) |
 | See a measured Linux install and the agent-CLI audit | [First run](FIRST-RUN.md) |
 | Compare install, exec, and memory with dotenvx and SOPS | [Benchmarks](BENCHMARKS.md) |
 | Delegate one bounded task to an AI coding client | [Safe delegation quickstart](delegation-quickstart.md) |
@@ -77,6 +86,8 @@ and retains historical design-status language.
 - [Government evaluation](government-evaluation.md)
 - [Security evaluation](security-evaluation.md)
 - [Cloud login](login.md)
+- [Device authorization code format](device-code-format.md)
+- [Device authorization input hint](device-code-input-hint.md)
 - [Vercel and Railway sync](sync.md)
 - [CI/CD integration](ci-cd.md)
 - [Shell prompt integration](shell-prompt.md)

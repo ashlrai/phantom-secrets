@@ -26,6 +26,68 @@ function findElements(element, predicate) {
   ];
 }
 
+function assertStagingOrder(platform, command) {
+  const unix = platform !== "Windows";
+  const creation = unix
+    ? /^\s*phantom_stage="\$\(mktemp -d [^\n]+\)"/m.exec(command)
+    : /^\s*\$Installer\s*=\s*Join-Path\s+\$env:TEMP\b[^\n]*/mi.exec(command);
+  assert.ok(creation, `${platform}: staging location is created or assigned`);
+  const assignmentEnd = creation.index + creation[0].length;
+  const variableIndex = unix ? 0 : creation.index + creation[0].search(/\$Installer\b/i);
+  const use = unix
+    ? /\$(?:phantom_stage\b|\{phantom_stage\})/.exec(command)
+    : /\$Installer\b/i.exec(command.slice(variableIndex + "$Installer".length));
+  assert.ok(use, `${platform}: staging location is used`);
+  if (unix) {
+    assert.ok(assignmentEnd <= use.index, `${platform}: staging directory must exist before its first use`);
+  } else {
+    // The assignment is the first occurrence of the installer variable.
+    assert.equal(command.search(/\$Installer\b/i), variableIndex,
+      `${platform}: temporary installer path must be assigned before its first use`);
+    assert.ok(variableIndex + "$Installer".length + use.index >= assignmentEnd,
+      `${platform}: temporary installer path must be assigned before its first use`);
+  }
+}
+
+test("displayed install commands create or assign staging locations before first use", () => {
+  let selected = "macOS";
+  const hooks = { ...React, useState() { return [selected, (value) => { selected = value; }]; } };
+  const { QuickStart } = load("src/components/landing/QuickStart.tsx", (name) => {
+    if (name === "react") return hooks;
+    if (name === "next/link") return { __esModule: true, default: () => null };
+    if (name === "@/lib/public-release") return load("src/lib/public-release.ts");
+    if (name === "./CopyButton") return { CopyButton: () => null };
+    return require(name);
+  });
+
+  const platforms = findElements(QuickStart(), (element) => element.type === "button")
+    .map((button) => button.props.children);
+  assert.deepEqual(platforms, ["macOS", "Windows", "Linux"]);
+  for (const platform of platforms) {
+    selected = platform;
+    const cards = findElements(QuickStart(), (element) => element.type === "article");
+    assert.equal(cards.length, 1, `${platform}: one displayed install card`);
+    const commands = findElements(cards[0], (element) => typeof element.props.text === "string");
+    assert.equal(commands.length, 1, `${platform}: one displayed install command`);
+    assertStagingOrder(platform, commands[0].props.text);
+  }
+});
+
+test("staging order check rejects missing creation and use before creation", () => {
+  const unix = 'phantom_stage="$(mktemp -d /tmp/phantom-install.XXXXXX)"\nphantom_installer="$phantom_stage/install.sh"';
+  const windows = '$Installer = Join-Path $env:TEMP "installer.ps1"\nInvoke-WebRequest -OutFile $Installer';
+  for (const [platform, command, prematureUse] of [
+    ["macOS", unix, 'echo "$phantom_stage"'],
+    ["Linux", unix, 'echo "${phantom_stage}"'],
+    ["Windows", windows, 'Write-Output $Installer'],
+  ]) {
+    assertStagingOrder(platform, command);
+    assert.throws(() => assertStagingOrder(platform, `${prematureUse}\n${command}`), /before its first use/);
+    assert.throws(() => assertStagingOrder(platform, command.split("\n").slice(1).join("\n")), /staging location is created or assigned/);
+  }
+  assert.throws(() => assertStagingOrder("Windows", windows.replace('"installer.ps1"', '$Installer')), /before its first use/);
+});
+
 test("switching platforms displays the selected install instructions", () => {
   let selected;
   const hooks = { ...React, useState(initial) { selected ??= initial; return [selected, (value) => { selected = value; }]; } };
@@ -66,13 +128,13 @@ test("switching platforms displays the selected install instructions", () => {
   }
 });
 
-test("each Unix install command chooses a staging template when TMPDIR is unset or empty", (t) => {
+test("each Unix install command passes the TMPDIR staging template as one argument", (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "phantom-quickstart-template-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const bin = path.join(root, "bin");
   const record = path.join(root, "mktemp-args");
   fs.mkdirSync(bin);
-  fs.writeFileSync(path.join(bin, "mktemp"), '#!/bin/bash\nprintf "%s\\n" "$@" > "$ARG_RECORD"\nexit 42\n', { mode: 0o755 });
+  fs.writeFileSync(path.join(bin, "mktemp"), '#!/bin/bash\nprintf "%s\\0" "$@" > "$ARG_RECORD"\nexit 42\n', { mode: 0o755 });
 
   let selected = "macOS";
   const hooks = { ...React, useState() { return [selected, (value) => { selected = value; }]; } };
@@ -93,14 +155,27 @@ test("each Unix install command chooses a staging template when TMPDIR is unset 
       ["unset", undefined, "/tmp"],
       ["empty", "", "/tmp"],
       ["override with spaces", path.join(root, "temp with spaces"), path.join(root, "temp with spaces")],
+      ["override with shell metacharacters", path.join(root, "temp\twith [spaces]*"), path.join(root, "temp\twith [spaces]*")],
     ]) {
       fs.rmSync(record, { force: true });
       const env = { PATH: `${bin}:/usr/bin:/bin`, ARG_RECORD: record };
       if (tmpdir !== undefined) env.TMPDIR = tmpdir;
       const result = spawnSync("/bin/bash", ["-c", commands[0].props.text], { env, encoding: "utf8" });
       assert.equal(result.status, 42, `${platform}, ${label}: expected the mktemp stub to stop the command`);
-      assert.equal(fs.readFileSync(record, "utf8"), `-d\n${expected}/phantom-install.XXXXXX\n`, `${platform}, ${label}`);
+      assert.deepEqual(fs.readFileSync(record, "utf8").split("\0"), ["-d", `${expected}/phantom-install.XXXXXX`, ""], `${platform}, ${label}`);
     }
+
+    // Prove this check catches the original shell word-splitting regression.
+    const quotedTemplate = '"${TMPDIR:-/tmp}/phantom-install.XXXXXX"';
+    const command = commands[0].props.text;
+    assert.ok(command.includes(quotedTemplate), `${platform}: quoted staging template exists`);
+    const unquoted = command.replace(quotedTemplate, '${TMPDIR:-/tmp}/phantom-install.XXXXXX');
+    const temp = path.join(root, "temp with spaces");
+    const result = spawnSync("/bin/bash", ["-c", unquoted], {
+      env: { PATH: `${bin}:/usr/bin:/bin`, ARG_RECORD: record, TMPDIR: temp }, encoding: "utf8",
+    });
+    assert.equal(result.status, 42, `${platform}: mktemp stub stops the unquoted command`);
+    assert.notDeepEqual(fs.readFileSync(record, "utf8").split("\0"), ["-d", `${temp}/phantom-install.XXXXXX`, ""], `${platform}: unquoted template splits into multiple arguments`);
   }
 });
 

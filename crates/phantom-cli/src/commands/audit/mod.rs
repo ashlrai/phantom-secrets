@@ -36,6 +36,16 @@ pub use verify::run_verify;
 
 #[derive(Subcommand)]
 pub enum AuditAction {
+    /// Project stdin audit NDJSON into schema-versioned, value-free workbench events.
+    /// Malformed, oversized (>64 KiB), and unterminated records are discarded.
+    Feed {
+        /// Tail this NDJSON file, polling every 100 ms. Restart on replacement or truncation.
+        #[arg(long, value_name = "PATH")]
+        follow: Option<std::path::PathBuf>,
+        /// Resume after a cursor emitted by --follow (at-least-once across log resets).
+        #[arg(long, requires = "follow", value_name = "CURSOR")]
+        cursor: Option<String>,
+    },
     /// Print recent audit events (default: last 50)
     Show {
         /// Limit output to the last N events (default 50)

@@ -248,7 +248,7 @@ test("empty device code submission shows validation without authorizing", async 
   const h = harness({ url: "https://phm.dev/device", storedCode: null, previousSession: { access_token: "synthetic-existing-account" } });
   let tree = h.render();
   assert.equal(find(tree, "input").props.value, "");
-  assert.equal(find(tree, "button").props.disabled, true);
+  assert.equal(find(tree, "button").props.disabled, false);
 
   let prevented = false;
   await find(tree, "form").props.onSubmit({ preventDefault() { prevented = true; } });
@@ -260,9 +260,133 @@ test("empty device code submission shows validation without authorizing", async 
   assert.equal(findById(tree, "device-error").props.role, "alert");
   assert.equal(findById(tree, "device-error").props.children, "Enter 8 letters or numbers. The code is displayed as XXXX-XXXX.");
   assert.ok(find(tree, "form"));
-  assert.equal(find(tree, "button").props.disabled, true);
+  assert.equal(find(tree, "button").props.disabled, false);
   assert.deepEqual(h.events, []);
   assert.equal(h.requests.length, 0);
+});
+
+for (const [name, code, formatted] of [
+  ["clicking authorize with an empty code displays accessible validation", "", ""],
+  ["submitting an invalid device code exposes the error to assistive technology", "ab12c", "AB12-C"],
+]) test(name, async () => {
+  const { JSDOM } = require("jsdom");
+  const dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "https://phm.dev/device" });
+  const previousGlobals = new Map(["window", "document", "navigator", "HTMLElement"].map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)]));
+  for (const name of previousGlobals.keys()) Object.defineProperty(globalThis, name, { value: dom.window[name], configurable: true, writable: true });
+
+  const React = require("react");
+  const { render, cleanup } = require("@testing-library/react");
+  const userEvent = require("@testing-library/user-event").default;
+  let clientsCreated = 0;
+  const dependencies = {
+    "next/image": { __esModule: true, default: () => null },
+    "next/link": { __esModule: true, default: ({ children, ...props }) => React.createElement("a", props, children) },
+    "@/lib/device-code": deviceCodeModule.exports,
+    "@/lib/posthog": { capturePostHog: async () => {} },
+    "@supabase/supabase-js": { createClient: () => { clientsCreated++; throw new Error("Unexpected client creation"); } },
+  };
+  const compiled = ts.transpileModule(source, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, esModuleInterop: true },
+    fileName: filename,
+  }).outputText;
+  const module = { exports: {} };
+  try {
+    new Function("require", "module", "exports", compiled)(
+      (name) => dependencies[name] ?? require(name), module, module.exports,
+    );
+    const page = render(React.createElement(module.exports.default));
+    const input = page.getByRole("textbox", { name: "Device code" });
+    const button = page.getByRole("button", { name: "Authorize Device" });
+    assert.equal(input.value, "");
+    assert.equal(button.disabled, false);
+    assert.equal(input.getAttribute("aria-invalid"), "false");
+    assert.equal(page.queryByRole("alert"), null);
+    const user = userEvent.setup({ document: dom.window.document });
+    if (code) await user.type(input, code);
+    assert.equal(input.value, formatted);
+    await user.click(button);
+    const alert = page.getByRole("alert");
+    assert.equal(alert.textContent, "Enter 8 letters or numbers. The code is displayed as XXXX-XXXX.");
+    assert.equal(input.getAttribute("aria-invalid"), "true");
+    assert.ok(input.getAttribute("aria-describedby").split(/\s+/).includes(alert.id));
+    assert.equal(page.getByRole("textbox", {
+      name: "Device code",
+      description: /Enter 8 letters or numbers\. The code is displayed as XXXX-XXXX\./,
+    }), input);
+    assert.equal(clientsCreated, 0);
+  } finally {
+    cleanup();
+    dom.window.close();
+    for (const [name, descriptor] of previousGlobals) {
+      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+      else delete globalThis[name];
+    }
+  }
+});
+
+test("correcting an invalid code and resubmitting clears the rendered validation error", async () => {
+  const { JSDOM } = require("jsdom");
+  const dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "https://phm.dev/device" });
+  const globals = ["window", "document", "navigator", "HTMLElement", "sessionStorage", "fetch"];
+  const previousGlobals = new Map(globals.map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)]));
+  for (const name of globals.slice(0, -1)) Object.defineProperty(globalThis, name, { value: dom.window[name], configurable: true, writable: true });
+
+  const React = require("react");
+  const { render, cleanup, waitFor } = require("@testing-library/react");
+  const userEvent = require("@testing-library/user-event").default;
+  let resolveSession;
+  const session = new Promise((resolve) => { resolveSession = resolve; });
+  const requests = [];
+  globalThis.fetch = async (endpoint, request) => {
+    requests.push({ endpoint, request });
+    return Response.json({ status: "approved" });
+  };
+  const dependencies = {
+    "next/image": { __esModule: true, default: () => null },
+    "next/link": { __esModule: true, default: ({ children, ...props }) => React.createElement("a", props, children) },
+    "@/lib/device-code": deviceCodeModule.exports,
+    "@/lib/posthog": { capturePostHog: async () => {} },
+    "@supabase/supabase-js": { createClient: () => ({ auth: { getSession: () => session } }) },
+  };
+  const compiled = ts.transpileModule(source, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, esModuleInterop: true },
+    fileName: filename,
+  }).outputText;
+  const module = { exports: {} };
+  try {
+    new Function("require", "module", "exports", compiled)(
+      (name) => dependencies[name] ?? require(name), module, module.exports,
+    );
+    const page = render(React.createElement(module.exports.default));
+    const user = userEvent.setup({ document: dom.window.document });
+    const input = page.getByRole("textbox", { name: "Device code" });
+    await user.type(input, "abcd234");
+    await user.click(page.getByRole("button", { name: "Authorize Device" }));
+    assert.match(page.getByRole("alert").textContent, /Enter 8 letters or numbers/);
+    assert.equal(input.getAttribute("aria-invalid"), "true");
+    assert.equal(requests.length, 0);
+
+    await user.type(input, "5");
+    assert.equal(input.value, testCode);
+    await user.click(page.getByRole("button", { name: "Authorize Device" }));
+    assert.equal(page.queryByRole("alert"), null);
+    assert.equal(input.getAttribute("aria-invalid"), "false");
+    assert.deepEqual(input.getAttribute("aria-describedby").split(/\s+/), ["device-code-hint", "device-help"]);
+    assert.equal(page.getByRole("button", { name: "Signing in with GitHub..." }).disabled, true);
+
+    resolveSession({ data: { session: { access_token: "synthetic-existing-account" } }, error: null });
+    await waitFor(() => assert.ok(page.getByRole("heading", { name: "Device Authorized" })));
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].endpoint, "/api/v1/auth/device/approve");
+    assert.deepEqual(JSON.parse(requests[0].request.body), { user_code: "ABCD2345" });
+  } finally {
+    cleanup();
+    dom.window.close();
+    for (const [name, descriptor] of previousGlobals) {
+      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+      else delete globalThis[name];
+    }
+  }
 });
 
 test("invalid device code explains the accepted characters and displayed format", async () => {
@@ -285,7 +409,7 @@ test("seven-character device code shows the length error and can be corrected", 
   find(h.render(), "input").props.onChange({ target: { value: "abcd234" } });
   let tree = h.render();
   assert.equal(find(tree, "input").props.value, "ABCD-234");
-  assert.equal(find(tree, "button").props.disabled, true);
+  assert.equal(find(tree, "button").props.disabled, false);
 
   await find(tree, "form").props.onSubmit({ preventDefault() {} });
   tree = h.render();
@@ -308,16 +432,38 @@ test("eight letters and numbers are formatted and submitted without the display 
   const h = harness({ url: "https://phm.dev/device", previousSession: { access_token: "synthetic-existing-account" } });
   let input = find(h.render(), "input");
   assert.equal(input.props.placeholder, "XXXX-XXXX");
-  assert.equal(input.props.maxLength, 9);
+  assert.equal(input.props.maxLength, undefined);
   input.props.onChange({ target: { value: "ab01" } });
   assert.equal(find(h.render(), "input").props.value, "AB01");
-  find(h.render(), "input").props.onChange({ target: { value: "ab01-cd23!45" } });
+  find(h.render(), "input").props.onChange({ target: { value: "ab01-cd23!" } });
   input = find(h.render(), "input");
   assert.equal(input.props.value, "AB01-CD23");
   assert.equal(find(h.render(), "button").props.disabled, false);
   await find(h.render(), "form").props.onSubmit({ preventDefault() {} });
   assert.equal(h.states[1], "done");
   assert.deepEqual(JSON.parse(h.requests[0].body), { user_code: "AB01CD23" });
+});
+
+test("overlong device codes are rejected without starting authorization and can be corrected", async () => {
+  for (const [value, displayed] of [["abcd23456", "ABCD-23456"], ["abcd-234567", "ABCD-234567"]]) {
+    const h = harness({ url: "https://phm.dev/device", storedCode: null, previousSession: { access_token: "synthetic-existing-account" } });
+    find(h.render(), "input").props.onChange({ target: { value } });
+    let tree = h.render();
+    assert.equal(find(tree, "input").props.value, displayed);
+    assert.equal(find(tree, "button").props.disabled, false);
+    await find(tree, "form").props.onSubmit({ preventDefault() {} });
+    tree = h.render();
+    assert.equal(findById(tree, "device-error").props.children, "Enter 8 letters or numbers. The code is displayed as XXXX-XXXX.");
+    assert.equal(find(tree, "input").props["aria-invalid"], true);
+    assert.deepEqual(h.events, []);
+    assert.equal(h.requests.length, 0);
+
+    find(tree, "input").props.onChange({ target: { value: testCode } });
+    await find(h.render(), "form").props.onSubmit({ preventDefault() {} });
+    assert.equal(h.states[2], "");
+    assert.equal(h.states[1], "done");
+    assert.deepEqual(JSON.parse(h.requests[0].body), { user_code: "ABCD2345" });
+  }
 });
 
 test("causal control reproduces prior-account approval when the failed-callback retry guard is removed", async () => {
@@ -408,7 +554,7 @@ test("only successful callback verification clears persisted retry intent", asyn
 });
 
 test("missing or invalid pending code still consumes callback and enables manual code entry", async () => {
-  for (const storedCode of [null, "invalid"]) {
+  for (const storedCode of [null, "invalid", "ABCD-23456"]) {
     const h = harness({ storedCode }); h.runEffect(); await h.settle();
     assert.equal(h.requests.length, 0);
     assert.ok(h.events.includes("sdk-session-restored"));
@@ -416,6 +562,12 @@ test("missing or invalid pending code still consumes callback and enables manual
     assert.equal(h.states[1], "input");
     assert.match(h.states[2], /current code from your terminal/);
     assert.equal(find(h.render(), "input").props.disabled, false);
+    if (storedCode === "ABCD-23456") {
+      assert.equal(find(h.render(), "input").props.value, storedCode);
+      await find(h.render(), "form").props.onSubmit({ preventDefault() {} });
+      assert.equal(h.states[2], "Enter 8 letters or numbers. The code is displayed as XXXX-XXXX.");
+      assert.equal(h.requests.length, 0);
+    }
   }
 });
 

@@ -368,14 +368,14 @@ function readAttestation(binaryPath, manifest, platform = process.platform) {
     const record = JSON.parse(readFileSync(path, "utf8"));
     if (
       !record || typeof record !== "object" ||
-      Object.keys(record).sort().join(",") !== "attestedAtNs,identity,schema,sha256,version,versionChecked" ||
+      Object.keys(record).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)).join(",") !== "attestedAtNs,identity,schema,sha256,version,versionChecked" ||
       record.schema !== ATTESTATION_SCHEMA ||
       record.version !== VERSION ||
       record.sha256 !== manifest.sha256 ||
       manifest.version !== VERSION ||
       typeof record.versionChecked !== "boolean" ||
       !record.identity || typeof record.identity !== "object" ||
-      Object.keys(record.identity).sort().join(",") !== "ctimeNs,dev,ino,mtimeNs,size" ||
+      Object.keys(record.identity).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)).join(",") !== "ctimeNs,dev,ino,mtimeNs,size" ||
       !Object.values(record.identity).every((v) => typeof v === "string" && /^[0-9]{1,40}$/.test(v)) ||
       typeof record.attestedAtNs !== "string" || !/^[0-9]{1,40}$/.test(record.attestedAtNs) ||
       !identitySettledAt(record.identity, BigInt(record.attestedAtNs)) ||
@@ -452,7 +452,7 @@ function readIntegrityVerifiedManifest(binaryPath, manifestPath, platform = proc
     const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
     if (
       !manifest ||
-      Object.keys(manifest).sort().join(",") !== "sha256,version" ||
+      Object.keys(manifest).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)).join(",") !== "sha256,version" ||
       typeof manifest.version !== "string" ||
       !new RegExp(`^${SEMVER_SOURCE}$`).test(manifest.version) ||
       !/^[0-9a-f]{64}$/.test(manifest.sha256) ||
@@ -596,16 +596,19 @@ function download(inputUrl, {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      if (error) reject(error);
-      else resolvePromise(value);
+      if (error) {
+        // A previous redirect stream can fail while its successor is active.
+        // Settle first so cancellation errors cannot re-enter cleanup.
+        if (request && typeof request.destroy === "function") request.destroy(error);
+        reject(error);
+      } else resolvePromise(value);
     };
     const timer = setTimeout(() => {
-      const error = new Error(`download timed out after ${timeoutMs}ms`);
-      if (request && typeof request.destroy === "function") request.destroy(error);
-      finish(error);
+      finish(new Error(`download timed out after ${timeoutMs}ms`));
     }, timeoutMs);
 
     const fetch = (value, redirects) => {
+      if (settled) return;
       let url;
       try {
         url = allowedDownloadUrl(value, allowedHosts);
@@ -614,6 +617,13 @@ function download(inputUrl, {
         return;
       }
       request = httpsGet(url, (response) => {
+        // A response callback may already be queued when timeout/error settles
+        // the download. Do not follow redirects or retain data after that point.
+        response.on("error", finish);
+        if (settled) {
+          if (typeof response.destroy === "function") response.destroy();
+          return;
+        }
         const status = response.statusCode || 0;
         if (status >= 300 && status < 400 && response.headers.location) {
           if (typeof response.resume === "function") response.resume();
@@ -639,6 +649,7 @@ function download(inputUrl, {
         const chunks = [];
         let bytes = 0;
         response.on("data", (chunk) => {
+          if (settled) return;
           bytes += chunk.length;
           if (bytes > maxBytes) {
             if (typeof response.destroy === "function") response.destroy();
@@ -647,8 +658,9 @@ function download(inputUrl, {
           }
           chunks.push(chunk);
         });
-        response.on("end", () => finish(null, Buffer.concat(chunks)));
-        response.on("error", finish);
+        response.on("end", () => {
+          if (!settled) finish(null, Buffer.concat(chunks));
+        });
       });
       request.on("error", finish);
     };
@@ -727,8 +739,8 @@ function extractBinaryFromArchive(archivePath, binaryPath, {
         { encoding: "utf8" },
         { timeoutMs: execTimeoutMs, heartbeat }
       );
-      const entries = listing.split(/\r?\n/).filter(Boolean).sort();
-      const expected = expectedArchiveEntries(platform).slice().sort();
+      const entries = listing.split(/\r?\n/).filter(Boolean).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+      const expected = expectedArchiveEntries(platform).slice().sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
       if (JSON.stringify(entries) !== JSON.stringify(expected)) {
         throw new Error(`archive contains unexpected entries: ${entries.join(", ")}`);
       }
@@ -961,6 +973,7 @@ async function ensureBinary({
   if (!Number.isFinite(execTimeoutMs) || execTimeoutMs < 1 || execTimeoutMs >= staleMs) {
     throw new Error("child execution timeout must be positive and shorter than lock stale timeout");
   }
+  const target = getPlatformTarget(runtime);
   ensurePrivateCacheDir(cacheDir, runtime.platform);
   const paths = pathSet(cacheDir, runtime.platform);
   const releaseLock = await acquireInstallLock(paths.lockPath, { ...lockOptions, platform: runtime.platform });
@@ -976,7 +989,6 @@ async function ensureBinary({
       heartbeat,
     })) return paths.binaryPath;
 
-    const target = getPlatformTarget(runtime);
     const archiveExt = runtime.platform === "win32" ? "zip" : "tar.gz";
     const archiveName = `phantom-${target}.${archiveExt}`;
     const url = `https://github.com/${REPO}/releases/download/v${VERSION}/${archiveName}`;

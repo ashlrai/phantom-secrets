@@ -7,25 +7,25 @@ const ts = require("typescript");
 const repoDir = path.resolve(__dirname, "..");
 const helperPath = path.join(repoDir, "src/lib/http-body.ts");
 
-function loadBodyHelper() {
-  const source = fs.readFileSync(helperPath, "utf8");
+function loadModule(filePath, localRequire = require) {
+  const source = fs.readFileSync(filePath, "utf8");
   const output = ts.transpileModule(source, {
     compilerOptions: {
       module: ts.ModuleKind.CommonJS,
       target: ts.ScriptTarget.ES2022,
     },
-    fileName: helperPath,
+    fileName: filePath,
   }).outputText;
   const module = { exports: {} };
   new Function("exports", "require", "module", output)(
     module.exports,
-    require,
+    localRequire,
     module,
   );
   return module.exports;
 }
 
-const body = loadBodyHelper();
+const body = loadModule(helperPath);
 
 test("bounded JSON accepts an object at the exact byte limit", async () => {
   const payload = JSON.stringify({ key: "value" });
@@ -37,6 +37,31 @@ test("bounded JSON accepts an object at the exact byte limit", async () => {
     await body.readBoundedJsonObject(request, Buffer.byteLength(payload)),
     { key: "value" },
   );
+});
+
+test("device poll returns a client error for an empty request body", async () => {
+  let databaseCalls = 0;
+  const route = loadModule(
+    path.join(repoDir, "src/app/api/v1/auth/device/poll/route.ts"),
+    (specifier) => {
+      if (specifier === "@/lib/http-body") return body;
+      if (specifier === "@/lib/commissioning") return { requireHostedService: () => null };
+      if (specifier === "@/lib/supabase-server") return { createServiceClient: () => { databaseCalls++; } };
+      if (specifier === "@/lib/plan") return {};
+      return require(specifier);
+    },
+  );
+
+  for (const requestBody of [undefined, ""]) {
+    const response = await route.POST(new Request("https://phm.dev/api/v1/auth/device/poll", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: requestBody,
+    }));
+    assert.equal(response.status, 400);
+    assert.deepEqual(await response.json(), { error: "invalid_body" });
+  }
+  assert.equal(databaseCalls, 0);
 });
 
 test("declared and streamed oversized bodies fail with 413", async () => {

@@ -163,6 +163,7 @@ fn doctor_json_reports_checks_hints_and_mcp_clients() {
         let report: serde_json::Value =
             serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("{args:?}: {e}: {stdout}"));
 
+        assert_eq!(report["schemaVersion"], 1);
         assert_eq!(report["ok"], false, "{stdout}");
         assert!(report["issues"].as_u64().unwrap() >= 2, "{stdout}");
         let checks = report["checks"].as_array().unwrap();
@@ -645,5 +646,31 @@ fn doctor_output_file_holds_no_secret_value_or_phantom_token() {
             }
         }
         assert!(file.contains("pass") || file.contains("warn"), "{file}");
+    }
+}
+
+#[test]
+fn doctor_json_stdout_excludes_values_and_mappings() {
+    let dir = common::canonical_tempdir();
+    let fake = format!("sk-fake-json-{}-abcdefghijklmnopqrstuv", std::process::id());
+    let mapping = phantom_core::token::PhantomToken::generate();
+    fs::write(
+        dir.path().join(".env"),
+        format!("OPENAI_API_KEY={fake}\nSTRIPE_SECRET_KEY={mapping}\n"),
+    )
+    .unwrap();
+    for args in [["doctor", "--json"], ["--json", "doctor"]] {
+        let output = phantom(&dir).args(args).output().unwrap();
+        assert!(output.status.success());
+        for bytes in [&output.stdout, &output.stderr] {
+            let text = String::from_utf8_lossy(bytes);
+            assert!(!text.contains(&fake), "plaintext canary leaked");
+            assert!(
+                !text.contains(&mapping.to_string()),
+                "mapping canary leaked"
+            );
+        }
+        let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(report["schemaVersion"], 1);
     }
 }

@@ -5,6 +5,7 @@ const test = require("node:test");
 const ts = require("typescript");
 const React = require("react");
 const { renderToStaticMarkup } = require("react-dom/server");
+const { JSDOM } = require("jsdom");
 
 function load(relativePath, dependencies = {}) {
   const source = fs.readFileSync(path.join(__dirname, "..", relativePath), "utf8");
@@ -15,6 +16,31 @@ function load(relativePath, dependencies = {}) {
   new Function("exports", "require", output)(exports, (name) => dependencies[name] ?? require(name));
   return exports;
 }
+
+test("initial QuickStart render displays the six-X mktemp staging template", () => {
+  const icons = load("src/components/landing/Icons.tsx");
+  const copyButton = load("src/components/landing/CopyButton.tsx", {
+    "./Icons": icons,
+    "@/lib/posthog": { capturePostHog: async () => {} },
+  });
+  const { QuickStart } = load("src/components/landing/QuickStart.tsx", {
+    "@/lib/public-release": load("src/lib/public-release.ts"),
+    "./CopyButton": copyButton,
+    "next/link": { __esModule: true, default: ({ children, ...props }) => React.createElement("a", props, children) },
+  });
+  const html = renderToStaticMarkup(React.createElement(QuickStart));
+  const dom = new JSDOM(html);
+  try {
+    const command = dom.window.document.querySelector(".platform-install-card__command .copy-command > span:first-child");
+    assert.ok(command, "the initial platform install command is displayed");
+    const stagingLines = command.textContent.split("\n").filter((line) => line.includes("mktemp"));
+    assert.deepEqual(stagingLines, [
+      'phantom_stage="$(mktemp -d "${TMPDIR:-/tmp}/phantom-install.XXXXXX")"',
+    ]);
+  } finally {
+    dom.window.close();
+  }
+});
 
 test("rendered quick start is a named section with a clear heading hierarchy", () => {
   const release = load("src/lib/public-release.ts");

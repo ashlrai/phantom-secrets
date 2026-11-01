@@ -277,7 +277,7 @@ describe("classifyAll", () => {
 
     test("output names match the workflow contract exactly", () => {
         const keys = Object.keys(classifyAll({ event: PR, files: ["a.rs"], readFile: map({ "a.rs": PLAIN_RS }) }));
-        assert.deepEqual(keys.sort(), [
+        assert.deepEqual(keys.toSorted((a, b) => a.localeCompare(b)), [
             "code", "docs_commands", "languages", "platform",
             "rust", "temporal_example", "web",
         ]);

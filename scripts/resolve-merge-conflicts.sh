@@ -66,7 +66,7 @@ resolve_reapply() {
         git apply --reject --whitespace=nowarn "$tmp/lane.patch" 2> "$tmp/apply.err" || apply_rc=$?
         if [[ -f "$path.rej" ]]; then
             # grep -c exits 1 on a zero count; exit 2 is a real read error.
-            rejects=$(grep -c '^@@' "$path.rej" || [ $? -eq 1 ]) || {
+            rejects=$(grep -c '^@@' "$path.rej" || (( $? == 1 ))) || {
                 echo "  !  $path: could not count rejected hunks" >&2
                 return 1
             }
@@ -84,7 +84,8 @@ resolve_reapply() {
 }
 
 resolve_lock() {
-    local path=$1 dir how="regenerated"
+    local path=$1
+    local dir how="regenerated"
     dir=$(dirname "$path")
     if ! blob "$upstream" "$path" "$path"; then
         echo "  !  $path: no upstream stage, left for manual resolution" >&2
@@ -99,13 +100,14 @@ resolve_lock() {
                 (cd "$dir" && cargo generate-lockfile && cargo metadata --locked --format-version 1 > /dev/null)
             fi
             ;;
+        # Lock regeneration must not execute package lifecycle hooks.
         bun.lock | bun.lockb)
             command -v bun > /dev/null || { echo "  !  $path: bun not on PATH" >&2; return 1; }
-            (cd "$dir" && bun install)
+            (cd "$dir" && bun install --ignore-scripts)
             ;;
         package-lock.json)
             command -v npm > /dev/null || { echo "  !  $path: npm not on PATH" >&2; return 1; }
-            (cd "$dir" && npm install --package-lock-only)
+            (cd "$dir" && npm install --package-lock-only --ignore-scripts)
             ;;
     esac && { git add "$path"; echo "  ok $path ($how)"; } || {
         echo "  !  $path: package manager could not regenerate it" >&2; return 1; }

@@ -86,6 +86,11 @@ function invariant(condition, message) {
   if (!condition) throw new Error(message);
 }
 
+// Match JavaScript's default UTF-16 code-unit ordering regardless of locale.
+function compareCodeUnits(left, right) {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
 function isPlainObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
@@ -655,7 +660,7 @@ function inspectHtml(body) {
     robots,
     canonicals,
     h1_count: h1Count,
-    structured_data_types: [...collectTypes(jsonLd.values)].sort(),
+    structured_data_types: [...collectTypes(jsonLd.values)].sort(compareCodeUnits),
     structured_data_errors: jsonLd.errors,
     json_ld: jsonLd.values,
   };
@@ -677,7 +682,7 @@ function parseSitemap(body, siteOrigin) {
     seen.add(url.pathname);
     paths.push(url.pathname);
   }
-  return paths.sort();
+  return paths.sort(compareCodeUnits);
 }
 
 function addFinding(findings, severity, code, message, route = null) {
@@ -1229,7 +1234,14 @@ async function readJson(file, label) {
 }
 
 async function main() {
-  const args = parseArguments(process.argv.slice(2));
+  let args;
+  try {
+    args = parseArguments(process.argv.slice(2));
+  } catch (error) {
+    process.stderr.write(`${error.message}\nUsage: node scripts/seo/observe.mjs --out <report.json> [--experiments <ledger.json>]\n`);
+    process.exitCode = 1;
+    return;
+  }
   let report;
   try {
     const experiments = await readJson(args.experiments, "experiment ledger");

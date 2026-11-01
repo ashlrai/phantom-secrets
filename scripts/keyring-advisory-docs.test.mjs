@@ -19,3 +19,21 @@ test('contributor guidance tracks the keyring advisory exceptions', () => {
   assert.match(guidance, /docs\/design\/keyring-4-migration-scoping\.md/);
   assert.ok(read('docs/design/keyring-4-migration-scoping.md'));
 });
+
+test('internal notes track the outstanding keyring migration and each ignore', () => {
+  const policy = read('deny.toml');
+  const note = read('docs/internal/notes.md').split('## Keyring migration tracking')[1]?.split('\n## ')[0];
+  assert.ok(note, 'missing keyring migration tracking note');
+  assert.match(note, /https:\/\/github\.com\/ashlrai\/phantom-secrets\/issues\/242/);
+  assert.match(note, /migration remains outstanding/i);
+  assert.match(note, /eliminating the affected dependencies/i);
+  assert.match(note, /\.\.\/design\/keyring-4-migration-scoping\.md/);
+  for (const [id, crate] of [
+    ['RUSTSEC-2026-0370', 'zvariant'],
+    ['RUSTSEC-2026-0371', 'zbus_names'],
+    ['RUSTSEC-2026-0372', 'zvariant_derive'],
+  ]) {
+    assert.ok(policy.includes(`id = "${id}"`), `${id} is no longer ignored; update the note`);
+    assert.ok(note.includes(`\`${id}\` — \`${crate}\``), `${id} and ${crate} are undocumented`);
+  }
+});
