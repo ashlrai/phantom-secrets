@@ -445,6 +445,26 @@ fs.writeFileSync(output, "#!/bin/bash\\nexit 0\\n");
   }
 });
 
+test("rendered macOS and Linux installers create their staging directory before downloading", async () => {
+  const user = userEvent.setup();
+  render(React.createElement(QuickStart));
+  try {
+    const selector = screen.getByRole("group", { name: "Choose an operating system" });
+    for (const platform of ["macOS", "Linux", "macOS"]) {
+      await user.click(within(selector).getByRole("button", { name: platform }));
+      const card = screen.getByRole("heading", { level: 3, name: platform }).closest("article");
+      assert.ok(card, `${platform}: displayed install card`);
+      const command = within(card).getByRole("button", { name: /^Copy command:/ }).textContent;
+      const creation = command.indexOf('phantom_stage="$(mktemp -d "${TMPDIR:-/tmp}/phantom-install.XXXXXX")"');
+      const download = command.indexOf("curl --fail");
+      assert.ok(creation >= 0, `${platform}: staging directory creation is displayed`);
+      assert.ok(download > creation, `${platform}: directory creation precedes the download`);
+    }
+  } finally {
+    cleanup();
+  }
+});
+
 test("every displayed mktemp staging template has the Phantom prefix and random suffix", async () => {
   const user = userEvent.setup();
   render(React.createElement(QuickStart));
