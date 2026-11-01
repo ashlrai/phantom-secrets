@@ -32,9 +32,9 @@ test("version-badge blocks pin the release tag and changelog anchor", () => {
   assert.equal(type, "version-badge");
   assert.match(
     output,
-    new RegExp(`verified_GitHub_release-${ctx.tag}-`),
+    new RegExp(`verified_GitHub_release-${ctx.published.tag}-`),
   );
-  assert.match(output, new RegExp(`releases/tag/${ctx.tag}`));
+  assert.match(output, new RegExp(`releases/tag/${ctx.published.tag}`));
   assert.match(output, new RegExp(`CHANGELOG.md#${ctx.release.anchor}`));
 });
 
@@ -63,7 +63,7 @@ test("version-table blocks regenerate the release asset matrix", () => {
   assert.equal(type, "version-table");
   const rows = output.split("\n").filter((line) => line.startsWith("| "));
   assert.equal(rows.length, 7);
-  assert.match(output, new RegExp(`\\| Platform \\| \`${ctx.tag}\` archive`));
+  assert.match(output, new RegExp(`\\| Platform \\| \`${ctx.published.tag}\` archive`));
   for (const artifact of [
     "phantom-aarch64-apple-darwin.tar.gz",
     "phantom-x86_64-apple-darwin.tar.gz",
@@ -74,7 +74,7 @@ test("version-table blocks regenerate the release asset matrix", () => {
   ]) {
     assert.match(
       output,
-      new RegExp(`releases/download/${ctx.tag}/${artifact}`),
+      new RegExp(`releases/download/${ctx.published.tag}/${artifact}`),
     );
     assert.match(output, new RegExp(`${artifact}\\.sha256`));
   }
@@ -93,8 +93,8 @@ test("version-pin blocks pin the release tag in prose and link refs", () => {
   assert.match(wrapper.output, new RegExp(`version \`${ctx.version}\``));
 
   const verify = render("docs-verify-version-output");
-  assert.match(verify.output, new RegExp(`# phantom ${ctx.version}\n`));
-  assert.match(verify.output, new RegExp(`# phantom-mcp ${ctx.version}`));
+  assert.match(verify.output, new RegExp(`# phantom ${ctx.published.version}\n`));
+  assert.match(verify.output, new RegExp(`# phantom-mcp ${ctx.published.version}`));
 });
 
 test("the changelog anchor matches the GitHub heading slug", () => {
@@ -164,6 +164,11 @@ test("check exits nonzero on a seeded drift fixture and zero after sync", (t) =>
     join(fixture, "npm-mcp/package.json"),
     JSON.stringify({ name: "phantom-secrets-mcp", version: "9.8.7" }),
   );
+  mkdirSync(join(fixture, "scripts", "freshness"), { recursive: true });
+  writeFileSync(join(fixture, "scripts/freshness/published-release.json"), JSON.stringify({
+    version: "9.8.6",
+    url: "https://github.com/ashlrai/phantom-secrets/releases/tag/v9.8.6",
+  }));
   mkdirSync(join(fixture, "docs"), { recursive: true });
   const docPath = join(fixture, "docs", "guide.md");
   writeFileSync(
@@ -192,7 +197,7 @@ test("check exits nonzero on a seeded drift fixture and zero after sync", (t) =>
   const synced = run(syncScript, ["--root", fixture]);
   assert.equal(synced.status, 0, synced.stderr);
   const rewritten = readFileSync(docPath, "utf8");
-  assert.match(rewritten, /# phantom 9\.8\.7\n# phantom-mcp 9\.8\.7/);
+  assert.match(rewritten, /# phantom 9\.8\.6\n# phantom-mcp 9\.8\.6/);
   assert.match(rewritten, /Sentinel line outside the block\./);
 
   const fresh = run(checkScript, ["--root", fixture]);
@@ -203,4 +208,38 @@ test("committed blocks are in sync with the workspace version", () => {
   const result = run(checkScript, []);
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.match(result.stdout, /freshness check passed/);
+});
+
+
+test("candidate bumps never advertise candidate assets as published", () => {
+  const candidate = { ...ctx, version: "9.8.7", tag: "v9.8.7" };
+  for (const name of ["readme-release-asset-table", "docs-release-asset-table",
+    "docs-verify-version-output", "examples-gate-verified-release"]) {
+    const output = GENERATORS.get(name).render(candidate);
+    assert.ok(output.includes(ctx.published.version), name);
+    assert.ok(!output.includes("9.8.7"), name);
+  }
+  const badges = GENERATORS.get("readme-release-badges").render(candidate);
+  assert.ok(badges.includes(`verified_GitHub_release-${ctx.published.tag}`));
+  assert.ok(badges.includes("source_version-v9.8.7"));
+});
+
+
+test("published evidence refuses malformed or noncanonical metadata", (t) => {
+  const fixture = mkdtempSync(join(tmpdir(), "freshness-evidence-"));
+  t.after(() => rmSync(fixture, { recursive: true, force: true }));
+  for (const file of ["Cargo.toml", "CHANGELOG.md", "npm/package.json", "npm-mcp/package.json"]) {
+    mkdirSync(dirname(join(fixture, file)), { recursive: true });
+    writeFileSync(join(fixture, file), readFileSync(join(repoRoot, file)));
+  }
+  const metadata = join(fixture, "scripts/freshness/published-release.json");
+  mkdirSync(dirname(metadata), { recursive: true });
+  assert.throws(() => loadSources(fixture), /ENOENT/);
+  writeFileSync(metadata, JSON.stringify({ version: "not-a-version" }));
+  assert.throws(() => loadSources(fixture), /published release version/);
+  writeFileSync(metadata, JSON.stringify({ version: "0.7.9", url: "https://example.com/v0.7.9" }));
+  assert.throws(() => loadSources(fixture), /exact canonical tag/);
+  writeFileSync(metadata, JSON.stringify({ version: "0.7.9",
+    url: "https://github.com/ashlrai/phantom-secrets/releases/tag/v0.8.0" }));
+  assert.throws(() => loadSources(fixture), /exact canonical tag/);
 });

@@ -1,10 +1,15 @@
 # Freshness generator
 
 Source-of-truth regeneration for versioned documentation blocks. The
-release version is read from the `Cargo.toml` `[workspace.package]`
+source candidate version is read from the `Cargo.toml` `[workspace.package]`
 version and cross-checked against `npm/package.json`,
-`npm-mcp/package.json`, and the latest released `CHANGELOG.md` section.
-When those sources disagree the tools fail closed.
+`npm-mcp/package.json`, and the latest dated `CHANGELOG.md` candidate section.
+When those sources disagree the tools fail closed. Published badges, native
+asset tables, public verification output and recorded example receipts instead
+use `published-release.json`. Update that receipt only after verifying the exact
+immutable GitHub release and its assets, never merely because source versions
+or changelog dates changed. npm wrapper instructions retain source versions
+and explicitly require querying publication before installing.
 
 ## Invocation
 

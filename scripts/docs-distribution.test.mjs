@@ -73,3 +73,9 @@ test('missing status and release version drift fail', () => {
   assert.match(checkGuide('hello', 'README.md').join(), /missing distribution/);
   assert.equal(checkVersion('GitHub v0.0.0 assets latest: 0.7.9 release-candidate: 0.7.4').length, 1);
 });
+
+
+test('source candidates do not replace the published distribution receipt', () => {
+  assert.deepEqual(checkVersion('GitHub v0.7.9 assets latest: 0.7.9 release-candidate: 0.7.4'), []);
+  assert.equal(checkVersion('GitHub v0.8.0 assets latest: 0.7.9 release-candidate: 0.7.4').length, 1);
+});
