@@ -19,6 +19,7 @@ See [distribution status](distribution-status.md) for dated npm, Homebrew, crate
 | Understand the landing-page install commands | [Quickstart reading guide](quickstart-reading-guide.md) |
 | Locate and compare the landing-page command controls | [Quickstart command presentation](quickstart-command-presentation.md) |
 | Read and copy multiline commands for each platform | [Quickstart command rendering](quickstart-command-rendering.md) |
+| Review quickstart platform rendering and line breaks | [Quickstart rendering review](quickstart-rendering-review.md) |
 | Follow the order of quickstart staging and cleanup | [Quickstart command sequence](quickstart-command-sequence.md) |
 | Copy the landing-page install command safely | [Quickstart copy checklist](quickstart-copy-checklist.md) |
 | Review platform labels, readability, and cleanup | [Quickstart reader checklist](quickstart-reader-checklist.md) |
