@@ -70,6 +70,44 @@ test("device code input presents its label and format hint", async () => {
   }
 });
 
+test("device code label and format hint remain available while editing and after validation", async () => {
+  const React = await import("react");
+  const { cleanup, isInaccessible, render, screen } = await import("@testing-library/react");
+  const { default: userEvent } = await import("@testing-library/user-event");
+  try {
+    const dependencies = {
+      "next/image": { __esModule: true, default: () => null },
+      "next/link": { __esModule: true, default: ({ children, ...props }) => React.createElement("a", props, children) },
+      "@/lib/device-code": compile(path.resolve(dirname, "../../lib/device-code.ts"), runtimeRequire),
+      "@/lib/posthog": { capturePostHog: async () => {} },
+      "@supabase/supabase-js": { createClient() { throw new Error("Unexpected client"); } },
+    };
+    const Component = compile(path.join(dirname, "device-authorization-client.tsx"),
+      (name) => dependencies[name] ?? runtimeRequire(name)).default;
+    const user = userEvent.setup();
+    render(React.createElement(Component));
+
+    const hintText = "Enter 8 letters or numbers in the format XXXX-XXXX.";
+    const hint = screen.getByText(hintText);
+    const input = screen.getByRole("textbox", { name: "Device code", description: (value) => value.includes(hintText) });
+    await user.type(input, "ab12");
+    assert.equal(input.value, "AB12");
+    assert.equal(isInaccessible(hint), false);
+    assert.equal(screen.getByRole("textbox", { name: "Device code", description: (value) => value.includes(hintText) }), input);
+
+    await user.click(screen.getByRole("button", { name: "Authorize Device" }));
+    const error = screen.getByRole("alert");
+    assert.equal(input.getAttribute("aria-invalid"), "true");
+    assert.equal(isInaccessible(hint), false);
+    assert.equal(screen.getByRole("textbox", {
+      name: "Device code",
+      description: (value) => value.includes(hintText) && value.includes(error.textContent),
+    }), input);
+  } finally {
+    cleanup();
+  }
+});
+
 test("lowercase device code characters are displayed uppercase as they are entered", async () => {
   const React = await import("react");
   const { cleanup, render, screen } = await import("@testing-library/react");
