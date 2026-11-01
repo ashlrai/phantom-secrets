@@ -40,6 +40,34 @@ after(() => {
   }
 });
 
+test("device code input presents its label and format hint", async () => {
+  const React = await import("react");
+  const { cleanup, isInaccessible, render, screen } = await import("@testing-library/react");
+  try {
+    const dependencies = {
+      "next/image": { __esModule: true, default: () => null },
+      "next/link": { __esModule: true, default: ({ children, ...props }) => React.createElement("a", props, children) },
+      "@/lib/device-code": compile(path.resolve(dirname, "../../lib/device-code.ts"), runtimeRequire),
+      "@/lib/posthog": { capturePostHog: async () => {} },
+      "@supabase/supabase-js": { createClient() { throw new Error("Unexpected client"); } },
+    };
+    const Component = compile(path.join(dirname, "device-authorization-client.tsx"),
+      (name) => dependencies[name] ?? runtimeRequire(name)).default;
+    render(React.createElement(Component));
+
+    const hintText = "Enter 8 letters or numbers in the format XXXX-XXXX.";
+    const input = screen.getByRole("textbox", { name: "Device code", description: (value) => value.includes(hintText) });
+    const label = screen.getByText("Device code", { selector: "label" });
+    const hint = screen.getByText(hintText);
+    assert.equal(screen.getByLabelText("Device code"), input);
+    assert.equal(label.control, input);
+    assert.equal(isInaccessible(label), false);
+    assert.equal(isInaccessible(hint), false);
+  } finally {
+    cleanup();
+  }
+});
+
 test("lowercase device code characters are displayed uppercase as they are entered", async () => {
   const React = await import("react");
   const { cleanup, render, screen } = await import("@testing-library/react");
