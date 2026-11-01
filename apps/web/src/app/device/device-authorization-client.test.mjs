@@ -40,6 +40,43 @@ after(() => {
   }
 });
 
+test("lowercase device code characters are displayed uppercase as they are entered", async () => {
+  const React = await import("react");
+  const { cleanup, render, screen } = await import("@testing-library/react");
+  const { default: userEvent } = await import("@testing-library/user-event");
+  try {
+    const dependencies = {
+      "next/image": { __esModule: true, default: () => null },
+      "next/link": { __esModule: true, default: ({ children, ...props }) => React.createElement("a", props, children) },
+      "@/lib/device-code": compile(path.resolve(dirname, "../../lib/device-code.ts"), runtimeRequire),
+      "@/lib/posthog": { capturePostHog: async () => {} },
+      "@supabase/supabase-js": { createClient() { throw new Error("Unexpected client"); } },
+    };
+    const Component = compile(path.join(dirname, "device-authorization-client.tsx"),
+      (name) => dependencies[name] ?? runtimeRequire(name)).default;
+    const user = userEvent.setup();
+    render(React.createElement(Component));
+    const input = screen.getByRole("textbox", { name: "Device code" });
+
+    for (const [character, displayed] of [
+      ["a", "A"], ["b", "AB"], ["c", "ABC"], ["d", "ABCD"],
+      ["e", "ABCD-E"], ["f", "ABCD-EF"], ["g", "ABCD-EFG"], ["h", "ABCD-EFGH"],
+    ]) {
+      await user.type(input, character);
+      assert.equal(input.value, displayed);
+    }
+    assert.equal(screen.queryByRole("alert"), null);
+
+    await user.clear(input);
+    await user.click(input);
+    await user.paste("aBcD-eFgH");
+    assert.equal(input.value, "ABCD-EFGH");
+    assert.equal(screen.queryByRole("alert"), null);
+  } finally {
+    cleanup();
+  }
+});
+
 test("blank device code shows validation without starting authorization", async () => {
   const originalFetch = globalThis.fetch;
   let clientCalls = 0;
