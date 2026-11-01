@@ -6,6 +6,7 @@ const net = require("node:net");
 const path = require("node:path");
 const test = require("node:test");
 const { chromium } = require("playwright");
+const { assertClipboardEventuallyEquals } = require("./clipboard-poll.cjs");
 
 async function availablePort() {
   const server = net.createServer();
@@ -96,8 +97,7 @@ test("QuickStart remains usable without horizontal overflow on narrow screens", 
           `${width}px ${platform}: page overflows horizontally`);
 
         await command.click();
-        await page.waitForFunction(async (expected) => (await navigator.clipboard.readText()) === expected, displayed,
-          { timeout: 10000 });
+        await assertClipboardEventuallyEquals(page, displayed);
       }
     } finally {
       await context.close();
