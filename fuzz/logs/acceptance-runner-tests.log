@@ -1,0 +1,24 @@
+test_artifact_fails_even_with_zero_exit (test_runner.RunnerTests.test_artifact_fails_even_with_zero_exit) ... ok
+test_build_failure_retains_failing_receipt (test_runner.RunnerTests.test_build_failure_retains_failing_receipt) ... ok
+test_build_time_cannot_substitute_for_fuzz_time (test_runner.RunnerTests.test_build_time_cannot_substitute_for_fuzz_time) ... ok
+test_clean_full_duration (test_runner.RunnerTests.test_clean_full_duration) ... ok
+test_command_check_rejects_nonzero_exit (test_runner.RunnerTests.test_command_check_rejects_nonzero_exit) ... ok
+test_command_cleanup_handles_already_exited_group (test_runner.RunnerTests.test_command_cleanup_handles_already_exited_group) ... ok
+test_command_timeout_kills_group_and_reaps (test_runner.RunnerTests.test_command_timeout_kills_group_and_reaps) ... ok
+test_command_uses_own_process_group (test_runner.RunnerTests.test_command_uses_own_process_group) ... ok
+test_launch_error_fails (test_runner.RunnerTests.test_launch_error_fails) ... ok
+test_lock_drift_fails (test_runner.RunnerTests.test_lock_drift_fails) ... ok
+test_missing_completion_fails (test_runner.RunnerTests.test_missing_completion_fails) ... ok
+test_no_executions_fails (test_runner.RunnerTests.test_no_executions_fails) ... ok
+test_nonzero_exit_fails (test_runner.RunnerTests.test_nonzero_exit_fails) ... ok
+test_rejects_unbounded_duration (test_runner.RunnerTests.test_rejects_unbounded_duration) ... ok
+test_short_run_fails (test_runner.RunnerTests.test_short_run_fails) ... ok
+test_smoke_never_claims_ten_minute_acceptance (test_runner.RunnerTests.test_smoke_never_claims_ten_minute_acceptance) ... ok
+test_timeout_closes_real_grandchild_pipe (test_runner.RunnerTests.test_timeout_closes_real_grandchild_pipe) ... ok
+test_timeout_fails (test_runner.RunnerTests.test_timeout_fails) ... ok
+test_worker_error_retains_failing_receipt (test_runner.RunnerTests.test_worker_error_retains_failing_receipt) ... ok
+
+----------------------------------------------------------------------
+Ran 19 tests in 3.697s
+
+OK
