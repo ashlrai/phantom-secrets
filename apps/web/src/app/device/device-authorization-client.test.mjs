@@ -60,6 +60,8 @@ test("device code input presents its label and format hint", async () => {
     const label = screen.getByText("Device code", { selector: "label" });
     const hint = screen.getByText(hintText);
     assert.equal(screen.getByLabelText("Device code"), input);
+    assert.equal(screen.getByPlaceholderText("XXXX-XXXX"), input);
+    assert.equal(input.value, "");
     assert.equal(label.control, input);
     assert.equal(isInaccessible(label), false);
     assert.equal(isInaccessible(hint), false);
