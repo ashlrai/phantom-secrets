@@ -32,7 +32,10 @@ test("submitting an empty or cleared device code shows validation without starti
   let fetchCalls = 0;
   const documentedCopy = fs.readFileSync(path.resolve(__dirname, "../../../docs/device-code-validation-copy.md"), "utf8")
     .split("\n").filter((line) => line.startsWith("> ")).map((line) => line.slice(2));
+  const errorCopyPage = fs.readFileSync(path.resolve(__dirname, "../../../docs/device-code-error-copy.md"), "utf8");
+  const errorPageQuotes = errorCopyPage.split("\n").filter((line) => line.startsWith("> ")).map((line) => line.slice(2));
   assert.equal(documentedCopy.length, 2);
+  assert.deepEqual(errorPageQuotes, documentedCopy);
   const originalFetch = global.fetch;
   const dependencies = {
     "next/image": { __esModule: true, default: () => null },
@@ -49,6 +52,7 @@ test("submitting an empty or cleared device code shows validation without starti
       render(React.createElement(Component));
       const input = screen.getByRole("textbox", { name: "Device code" });
       const button = screen.getByRole("button", { name: "Authorize Device" });
+      assert.ok(errorCopyPage.includes(`\`${input.placeholder}\``));
       assert.equal(document.getElementById("device-code-hint").textContent.trim(), documentedCopy[0]);
       if (cleared) {
         await user.type(input, "abcd2345");
