@@ -4,6 +4,7 @@ import test from 'node:test';
 
 const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
 const doc = read('docs/installer-temp-environment.md');
+const pathReference = read('docs/installer-path-update-reference.md');
 const installer = read('scripts/install.sh');
 const quickstart = read('apps/web/src/components/landing/QuickStart.tsx');
 
@@ -21,6 +22,22 @@ test('documented temporary locations remain tied to their source templates', () 
   for (const [term, sourcePattern, source, count] of pairs) {
     assert.ok(doc.includes(term), `document must cover ${term}`);
     assert.equal([...source.matchAll(sourcePattern)].length, count, `review documentation for ${term}`);
+  }
+});
+
+test('PATH update reference identifies both temporary siblings and their source', () => {
+  assert.match(read('docs/README.md'), /\]\(installer-path-update-reference\.md\)/);
+  for (const name of ['before', 'candidate']) {
+    assert.ok(pathReference.includes(`.phantom-path.${name}.XXXXXX`));
+    assert.ok(installer.includes(`mktemp "$rc_parent/.phantom-path.${name}.XXXXXX"`));
+  }
+  assert.match(pathReference, /exit trap/);
+  const links = [...pathReference.matchAll(/\]\(\.\.\/scripts\/install\.sh#L(\d+)(?:-L(\d+))?\)/g)];
+  assert.ok(links.length >= 4);
+  const lines = installer.split('\n');
+  for (const [, first, last = first] of links) {
+    assert.ok(+first > 0 && +last >= +first && +last <= lines.length);
+    assert.ok(lines.slice(+first - 1, +last).some((line) => line.trim()));
   }
 });
 

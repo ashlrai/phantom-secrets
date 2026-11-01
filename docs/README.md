@@ -38,6 +38,7 @@ See [distribution status](distribution-status.md) for dated npm, Homebrew, crate
 | Understand the Unix quickstart temporary directory fallback | [Quickstart temporary directory fallback](quickstart-temp-fallback.md) |
 | Compare quickstart temporary prefixes and fallbacks | [Quickstart temporary prefix reference](quickstart-temp-prefix-reference.md) |
 | Locate temporary installer files and their environment inputs | [Installer temporary locations](installer-temp-environment.md) |
+| Identify PATH update temporary files and their cleanup | [Installer PATH update reference](installer-path-update-reference.md) |
 | Review failure-reporting questions for Unix PATH setup | [Installer PATH update questions](installer-path-update-questions.md) |
 | Find the Unix installer's staging parent and directory name | [Installer stage parent](installer-stage-parent.md) |
 | Reference the repository installer's staging directory | [Installer staging directory reference](installer-staging-directory-reference.md) |

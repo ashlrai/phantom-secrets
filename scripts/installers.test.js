@@ -559,6 +559,34 @@ test('Unix installer atomically preserves an existing regular shell rc under GNU
   );
 });
 
+test('Unix PATH setup removes both temporary files when the marker already exists', (t) => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-path-marker-')));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const home = join(root, 'home');
+  const shims = makeShims(root);
+  mkdirSync(home);
+  const rc = join(home, '.zshrc');
+  const original = '# existing\n# phantom-secrets PATH\nexport PATH="/old/bin:$PATH"\n';
+  writeFileSync(rc, original);
+  const originalInode = lstatSync(rc).ino;
+  const record = join(root, 'templates');
+  const mktemp = execFileSync('which', ['mktemp'], { encoding: 'utf8' }).trim();
+  const shellQuote = (value) => `'${value.replace(/'/g, "'\\''")}'`;
+  writeFileSync(join(shims, 'mktemp'), `#!/bin/sh\nprintf '%s\\n' "$1" >> ${shellQuote(record)}\nexec ${shellQuote(mktemp)} "$@"\n`);
+  chmodSync(join(shims, 'mktemp'), 0o755);
+
+  const { result } = runInstaller({ root, home, shims, shell: '/bin/zsh' });
+  assert.ifError(result.error);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /already wired/);
+  assert.equal(readFileSync(rc, 'utf8'), original);
+  assert.equal(lstatSync(rc).ino, originalInode);
+  const templates = readFileSync(record, 'utf8').split('\n');
+  assert.ok(templates.includes(join(home, '.phantom-path.before.XXXXXX')));
+  assert.ok(templates.includes(join(home, '.phantom-path.candidate.XXXXXX')));
+  assert.deepEqual(readdirSync(home).filter((name) => name.startsWith('.phantom-path.')), []);
+});
+
 test('Unix PATH setup reports and cleans up failures before replacement', (t) => {
   for (const failure of ['snapshot creation', 'candidate creation', 'comparison', 'replacement']) {
     const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-path-failure-')));
