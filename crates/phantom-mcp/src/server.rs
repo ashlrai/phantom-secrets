@@ -79,9 +79,6 @@ fn commit_mcp_precommit_repair(project_dir: &Path) -> Result<Option<HookChange>,
 
 #[derive(Debug, Clone)]
 pub struct PhantomMcpServer {
-    // rmcp's #[tool_router] / #[tool_handler] macros consume this field via
-    // generated code that clippy's dead-code pass can't see through.
-    #[allow(dead_code)]
     tool_router: ToolRouter<Self>,
     project_dir: PathBuf,
 }
@@ -2028,7 +2025,7 @@ impl PhantomMcpServer {
             .map_err(|e| internal_err(format!("Decryption failed: {e}")))?;
 
         let secrets = SensitiveSecretMap::parse_json(&plaintext)
-            .map_err(|e| internal_err(format!("Invalid vault data: {e}")))?;
+            .map_err(|_| internal_err("Invalid vault data: expected a map of secret names to strings; plaintext diagnostics withheld"))?;
 
         // SensitiveSecretMap owns zeroizing values before TOML serialization,
         // so every early-return path below scrubs the parsed plaintext map.
@@ -3984,10 +3981,7 @@ impl PhantomMcpServer {
         Parameters(params): Parameters<AuditStatsParams>,
     ) -> Result<CallToolResult, McpError> {
         let period = phantom_core::analytics::Period::parse(&params.period).ok_or_else(|| {
-            crate::tools::helpers::invalid_params_err(format!(
-                "Invalid period '{}'. Use: 7d, 30d, or all",
-                params.period
-            ))
+            crate::tools::helpers::invalid_params_err("Invalid period. Use: 7d, 30d, or all")
         })?;
 
         let min_anomaly_score = params
@@ -4084,12 +4078,8 @@ impl PhantomMcpServer {
         &self,
         Parameters(params): Parameters<AuditAnomaliesParams>,
     ) -> Result<CallToolResult, McpError> {
-        let period = phantom_core::analytics::Period::parse(&params.period).ok_or_else(|| {
-            invalid_params_err(format!(
-                "Invalid period '{}'. Use: 7d, 30d, or all",
-                params.period
-            ))
-        })?;
+        let period = phantom_core::analytics::Period::parse(&params.period)
+            .ok_or_else(|| invalid_params_err("Invalid period. Use: 7d, 30d, or all"))?;
 
         let min_score =
             crate::tools::helpers::score_threshold_param("min_score", params.min_score)?;
@@ -4788,7 +4778,16 @@ impl PhantomMcpServer {
             params.from.as_deref().unwrap_or(""),
             params.to.as_deref().unwrap_or(""),
         )
-        .map_err(|e| invalid_params_err(format!("{e}. Omit it for no bound.")))?;
+        .map_err(|error| {
+            let message = if error.starts_with("Invalid 'from' date") {
+                "Invalid 'from' date: expected YYYY-MM-DD. Omit it for no lower bound."
+            } else if error.starts_with("Invalid 'to' date") {
+                "Invalid 'to' date: expected YYYY-MM-DD. Omit it for no upper bound."
+            } else {
+                "Invalid date range: 'from' is after 'to'. Use from <= to."
+            };
+            invalid_params_err(message)
+        })?;
 
         if params.save {
             if params.action == "export" {
@@ -4889,9 +4888,9 @@ impl PhantomMcpServer {
                 }
             }
 
-            other => Err(invalid_params_err(format!(
-                "Unknown action '{other}'. Retry with action 'export' or 'report'."
-            ))),
+            _ => Err(invalid_params_err(
+                "Unknown action. Retry with action 'export' or 'report'.",
+            )),
         }
     }
 
@@ -5475,8 +5474,8 @@ impl PhantomMcpServer {
         // If an interval was provided, update the schedule.
         if let Some(ref interval_str) = params.interval {
             require_confirm("phantom_validation_schedule", params.confirm)?;
-            let sched = Schedule::parse(interval_str).map_err(|e| {
-                crate::tools::helpers::invalid_params_err(format!("Invalid schedule interval: {e}"))
+            let sched = Schedule::parse(interval_str).map_err(|_| {
+                invalid_params_err("Invalid schedule interval. Use hourly, 6h, daily, daily@2am, weekly, or disabled.")
             })?;
             let params_json = serde_json::to_string(&serde_json::json!({
                 "request": &params,
@@ -7526,8 +7525,45 @@ fn server_identity() -> Implementation {
         .with_website_url("https://phm.dev/secrets")
 }
 
-#[tool_handler]
+#[tool_handler(router = self.tool_router)]
 impl ServerHandler for PhantomMcpServer {
+    async fn call_tool(
+        &self,
+        request: CallToolRequestParams,
+        context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<CallToolResponse, McpError> {
+        if request.arguments.as_ref().is_some_and(|arguments| {
+            arguments.iter().any(|(key, value)| {
+                crate::tools::helpers::credential_shaped_input(&serde_json::Value::String(
+                    key.clone(),
+                )) || crate::tools::helpers::credential_shaped_input(value)
+            })
+        }) {
+            return Err(invalid_params_err(
+                "Credential-shaped input is forbidden through MCP, including identifiers and paths. Supply secret names only; add values through a trusted terminal.",
+            ));
+        }
+        let context = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
+        let response = self.tool_router.call(context).await?;
+        // rmcp turns serde argument failures into successful protocol responses
+        // with isError=true. Those diagnostics quote rejected enum values,
+        // unknown field names, and nested input. Never forward that payload.
+        if let CallToolResponse::Complete(result) = &response {
+            if result.is_error == Some(true)
+                && result.content.iter().any(|content| {
+                    content.as_text().is_some_and(|text| {
+                        text.text.starts_with("failed to deserialize parameters:")
+                    })
+                })
+            {
+                return Ok(CallToolResult::error(vec![ContentBlock::text(
+                    "Invalid tool arguments. Use the tool's inputSchema; argument values are omitted from diagnostics.",
+                )]).into());
+            }
+        }
+        Ok(response)
+    }
+
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(server_identity())
@@ -7623,6 +7659,19 @@ fn audit_recent_report(
             continue;
         };
         if v.get("hmac_chain_started_at").is_some() {
+            continue;
+        }
+        // Do not forward arbitrary JSON under an allowlisted field name.
+        // A malformed/foreign log row can hide plaintext inside nested data.
+        let valid_metadata = ["seq", "ts", "pid"]
+            .iter()
+            .all(|field| v.get(*field).is_none_or(|value| value.is_u64()))
+            && ["process", "name"].iter().all(|field| {
+                v.get(*field)
+                    .is_none_or(|value| value.is_null() || value.is_string())
+            });
+        if !valid_metadata {
+            unparsable += 1;
             continue;
         }
         let Some(op) = v.get("op").and_then(|o| o.as_str()) else {
