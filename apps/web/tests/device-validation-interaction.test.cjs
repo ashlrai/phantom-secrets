@@ -34,6 +34,13 @@ test("submitting an empty or cleared device code shows validation without starti
     .split("\n").filter((line) => line.startsWith("> ")).map((line) => line.slice(2));
   const errorCopyPage = fs.readFileSync(path.resolve(__dirname, "../../../docs/device-code-error-copy.md"), "utf8");
   const errorPageQuotes = errorCopyPage.split("\n").filter((line) => line.startsWith("> ")).map((line) => line.slice(2));
+  const review = fs.readFileSync(path.resolve(__dirname, "../../../docs/device-form-error-review.md"), "utf8");
+  const reviewError = review.match(/^\s*> (.+)$/m);
+  assert.ok(reviewError, "review should record the visible error");
+  for (const target of ["../apps/web/src/app/device/device-authorization-client.tsx", "../apps/web/tests/device-validation-interaction.test.cjs"]) {
+    assert.ok(review.includes(`](${target})`), `review should link to ${target}`);
+    assert.ok(fs.statSync(path.resolve(__dirname, "../../../docs", target)).isFile());
+  }
   assert.equal(documentedCopy.length, 2);
   assert.deepEqual(errorPageQuotes, documentedCopy);
   const originalFetch = global.fetch;
@@ -61,11 +68,15 @@ test("submitting an empty or cleared device code shows validation without starti
       }
       assert.equal(input.value, "");
       assert.equal(screen.queryByRole("alert"), null);
+      assert.equal(input.getAttribute("aria-invalid"), "false");
+      assert.ok(!input.getAttribute("aria-describedby").split(/\s+/).includes("device-error"));
       if (method === "click") await user.click(button);
       else { await user.click(input); await user.keyboard("{Enter}"); }
       const alert = screen.getByRole("alert");
       assert.equal(alert.textContent, "Enter 8 letters or numbers. The code is displayed as XXXX-XXXX.");
       assert.equal(alert.textContent, documentedCopy[1]);
+      assert.equal(alert.textContent, reviewError[1]);
+      assert.equal(alert.id, "device-error");
       assert.equal(input.getAttribute("aria-invalid"), "true");
       assert.ok(input.getAttribute("aria-describedby").split(/\s+/).includes(alert.id));
       assert.equal(input.value, "");
