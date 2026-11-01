@@ -147,6 +147,7 @@ function runInstaller(options = {}) {
   delete env.PHANTOM_TAG;
   delete env.PHANTOM_TEST_ALLOW_INSTALLER_OVERRIDES;
   delete env.PHANTOM_TEST_FAIL_AFTER_PROMOTION;
+  if (options.tmpdir) env.TMPDIR = options.tmpdir;
   if (!options.useCandidateDefaults) {
     env.PHANTOM_TAG = `v${options.version ?? version}`;
     if (options.repo) env.PHANTOM_REPO = options.repo;
@@ -410,6 +411,33 @@ for (const installer of [shellInstaller, join(repo, 'apps/web/public/install.sh'
     );
   });
 }
+
+test('public Unix installer stages beside the physical custom install parent, independent of TMPDIR', (t) => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-public-stage-')));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const parent = join(root, 'physical parent');
+  const alias = join(root, 'parent alias');
+  const alternateTmp = join(root, 'alternate tmp');
+  const record = join(root, 'invocations.log');
+  mkdirSync(parent);
+  mkdirSync(alternateTmp);
+  symlinkSync(parent, alias);
+  const { result } = runInstaller({
+    root, install: join(alias, 'custom-bin'), tmpdir: alternateTmp,
+    installer: join(repo, 'apps/web/public/install.sh'), recordInvocations: record,
+  });
+  assert.ifError(result.error);
+  assert.equal(result.status, 0, result.stderr);
+  const staged = readFileSync(record, 'utf8').trim().split('\n')
+    .filter((path) => path.includes('.custom-bin.install.'));
+  assert.deepEqual(staged.map((path) => basename(path)).sort(), ['phantom', 'phantom-mcp']);
+  const stageRoots = new Set(staged.map((path) => dirname(dirname(path))));
+  assert.equal(stageRoots.size, 1);
+  const [stageRoot] = stageRoots;
+  assert.match(stageRoot, new RegExp(`^${escapeRegExp(parent)}/\\.custom-bin\\.install\\.[^/]+$`));
+  assert.equal(existsSync(stageRoot), false);
+  assert.deepEqual(readdirSync(alternateTmp), []);
+});
 
 test('Unix installer refuses a linked shell rc without mutating its target', () => {
   const root = mkdtempSync(join(tmpdir(), 'phantom-installer-linked-rc-'));
