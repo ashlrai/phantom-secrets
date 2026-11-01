@@ -36,10 +36,22 @@ test("platform comparison tracks the displayed cards and their temporary staging
 
   assert.deepEqual(find(QuickStart(), (node) => node.type === "button").map((node) => node.props.children),
     ["macOS", "Windows", "Linux"]);
-  for (const [platform, digest] of [["macOS", "shasum -a 256 -c -"], ["Windows", "Get-FileHash -Algorithm SHA256"], ["Linux", "sha256sum -c -"]]) {
+  const comparisons = [
+    { platform: "macOS", digest: "shasum -a 256 -c -", download: "curl", installer: "install.sh", prompt: "$", binary: "$HOME/.phantom-secrets/bin/phantom" },
+    { platform: "Windows", digest: "Get-FileHash -Algorithm SHA256", download: "Invoke-WebRequest", installer: "install.ps1", prompt: "PS>", binary: "$env:USERPROFILE\\.phantom-secrets\\bin\\phantom.exe" },
+    { platform: "Linux", digest: "sha256sum -c -", download: "curl", installer: "install.sh", prompt: "$", binary: "$HOME/.phantom-secrets/bin/phantom" },
+  ];
+  for (const { platform, digest, download, installer, prompt, binary } of comparisons) {
     selected = platform;
     const card = find(QuickStart(), (node) => node.type === "article")[0];
-    const command = find(card, (node) => typeof node.props.text === "string")[0].props.text;
+    const copy = find(card, (node) => typeof node.props.text === "string")[0];
+    const command = copy.props.text;
+    assert.equal(copy.props.prompt, prompt, `${platform} displayed prompt`);
+    for (const fragment of [download, installer, binary, digest]) {
+      assert.ok(command.includes(fragment), `${platform} command: ${fragment}`);
+      assert.ok(guide.includes(fragment), `${platform} guide: ${fragment}`);
+    }
+    assert.ok(command.indexOf(download) < command.indexOf(digest), `${platform}: download before verification`);
     assert.ok(command.includes(digest), `${platform} command digest check`);
     assert.ok(guide.includes(digest), `${platform} guide digest check`);
     const archives = find(card, (node) => node.type === "a" && /\.(?:zip|tar\.gz)$/.test(node.props.href));
@@ -50,6 +62,10 @@ test("platform comparison tracks the displayed cards and their temporary staging
       : ["umask 077", "mktemp -d", "TMPDIR", "trap ", "rmdir "]) {
       assert.ok(command.includes(fragment), `${platform} command: ${fragment}`);
     }
+  }
+  assert.match(guide, /prompts are display-only/i);
+  for (const fragment of ["`PS>`", "`$`", "Keychain", "Credential Manager", "keyutils", "session-persistent", "Secret Service"]) {
+    assert.ok(guide.includes(fragment), `guide: ${fragment}`);
   }
   for (const fragment of ["`TMPDIR`", "`/tmp`", "`$env:TEMP`", "`finally`", "not guaranteed", "not the install directory", "`phantom --version`", "`phantom-mcp --version`"]) {
     assert.ok(guide.includes(fragment), `guide: ${fragment}`);
