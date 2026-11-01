@@ -23,6 +23,7 @@ See [distribution status](distribution-status.md) for dated npm, Homebrew, crate
 | Map displayed quickstart steps to their platform and source | [Quickstart platform step map](quickstart-platform-step-map.md) |
 | Review temporary installer cleanup by platform | [Quickstart cleanup review](quickstart-temp-cleanup-review.md) |
 | Locate temporary installer files and their environment inputs | [Installer temporary locations](installer-temp-environment.md) |
+| Find the Unix installer's staging parent and directory name | [Installer stage parent](installer-stage-parent.md) |
 | See a measured Linux install and the agent-CLI audit | [First run](FIRST-RUN.md) |
 | Compare install, exec, and memory with dotenvx and SOPS | [Benchmarks](BENCHMARKS.md) |
 | Delegate one bounded task to an AI coding client | [Safe delegation quickstart](delegation-quickstart.md) |

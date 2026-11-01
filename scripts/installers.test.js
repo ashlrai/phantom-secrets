@@ -130,6 +130,7 @@ function runInstaller(options = {}) {
   const env = {
     ...process.env,
     HOME: home,
+    TMPDIR: options.tempDir ?? process.env.TMPDIR,
     SHELL: options.shell ?? '/bin/bash',
     PATH: `${shims}:${options.pathPrefix ? `${options.pathPrefix}:` : ''}${process.env.PATH}`,
     PHANTOM_INSTALL_DIR: install,
@@ -374,6 +375,33 @@ process.exit(result.status ?? 1);
   ]);
   assert.deepEqual(observed.candidateFiles, []);
   assert.equal(existsSync(observed.stage), false);
+});
+
+test('Unix installer stages under the physical install parent regardless of TMPDIR', (t) => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-stage-parent-')));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const parent = join(root, 'physical parent');
+  const alias = join(root, 'parent alias');
+  const tempDir = join(root, 'separate temp');
+  mkdirSync(parent);
+  mkdirSync(tempDir);
+  symlinkSync(parent, alias);
+  const record = join(root, 'invocations.log');
+  const { result } = runInstaller({
+    root, install: join(alias, 'custom-bin'), tempDir, recordInvocations: record,
+  });
+  assert.ifError(result.error);
+  assert.equal(result.status, 0, result.stderr);
+  const staged = readFileSync(record, 'utf8').trim().split('\n')
+    .filter((path) => path.includes('.custom-bin.install.'));
+  assert.deepEqual(staged.map((path) => basename(path)).sort(), ['phantom', 'phantom-mcp']);
+  const stageRoots = new Set(staged.map((path) => dirname(dirname(path))));
+  assert.equal(stageRoots.size, 1);
+  const [stage] = stageRoots;
+  assert.equal(dirname(stage), parent);
+  assert.match(basename(stage), /^\.custom-bin\.install\.[^/]+$/);
+  assert.equal(existsSync(stage), false);
+  assert.deepEqual(readdirSync(tempDir), []);
 });
 
 for (const installer of [shellInstaller, join(repo, 'apps/web/public/install.sh')]) {
