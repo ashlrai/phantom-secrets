@@ -40,5 +40,5 @@ load("components/landing/quickstart-accessibility.test.tsx", {
 });
 // Keep the colocated rendering tests in the normal web test suite as well.
 for (const file of ["QuickStart.test.tsx", "quickstart-tempdir.test.tsx"]) {
-  load(`components/landing/${file}`, { "./QuickStart": quickStart });
+  load(`components/landing/${file}`, { "./QuickStart": quickStart, "@/lib/public-release": release });
 }
