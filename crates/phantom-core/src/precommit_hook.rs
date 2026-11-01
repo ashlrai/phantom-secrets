@@ -1154,6 +1154,9 @@ mod tests {
 
     fn git(project: &Path, args: &[&str]) {
         let output = Command::new("git")
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_COMMON_DIR")
             .args(args)
             .current_dir(project)
             .output()
