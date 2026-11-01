@@ -594,9 +594,9 @@ test("switching platforms renders the selected multiline install snippet", async
   document.head.append(style);
   const user = userEvent.setup();
   const snippets = {
-    macOS: { lines: 12, opening: "(\nset -euo pipefail\numask 077", verification: "shasum -a 256 -c -", ending: '"$HOME/.phantom-secrets/bin/phantom-mcp" --version\n)' },
-    Windows: { lines: 18, opening: "& {\n$ErrorActionPreference = 'Stop'\n$Installer =", verification: "Get-FileHash -Algorithm SHA256", ending: "  Remove-Item -LiteralPath $Installer -Force -ErrorAction SilentlyContinue\n}\n}" },
-    Linux: { lines: 12, opening: "(\nset -euo pipefail\numask 077", verification: "sha256sum -c -", ending: '"$HOME/.phantom-secrets/bin/phantom-mcp" --version\n)' },
+    macOS: { lines: 12, opening: "(\nset -euo pipefail\numask 077", verification: "shasum -a 256 -c -", execution: "\nbash \"$phantom_installer\"\n", ending: '"$HOME/.phantom-secrets/bin/phantom-mcp" --version\n)' },
+    Windows: { lines: 18, opening: "& {\n$ErrorActionPreference = 'Stop'\n$Installer =", verification: "Get-FileHash -Algorithm SHA256", execution: "\n  & $Installer\n", ending: "  Remove-Item -LiteralPath $Installer -Force -ErrorAction SilentlyContinue\n}\n}" },
+    Linux: { lines: 12, opening: "(\nset -euo pipefail\numask 077", verification: "sha256sum -c -", execution: "\nbash \"$phantom_installer\"\n", ending: '"$HOME/.phantom-secrets/bin/phantom-mcp" --version\n)' },
   };
   try {
     render(React.createElement(QuickStart));
@@ -614,6 +614,7 @@ test("switching platforms renders the selected multiline install snippet", async
       const expected = snippets[platform];
       assert.ok(snippet.startsWith(expected.opening), `${platform}: opening lines`);
       assert.ok(snippet.includes(expected.verification), `${platform}: verification command`);
+      assert.ok(snippet.includes(expected.execution), `${platform}: installer execution line`);
       assert.ok(snippet.endsWith(expected.ending), `${platform}: final lines`);
       assert.equal(snippet.split("\n").length, expected.lines, `${platform}: line breaks`);
       assert.equal(window.getComputedStyle(container).whiteSpace, "pre-wrap", `${platform}: line breaks are rendered`);
