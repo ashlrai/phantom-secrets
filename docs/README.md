@@ -40,6 +40,7 @@ See [distribution status](distribution-status.md) for dated npm, Homebrew, crate
 | Locate temporary installer files and their environment inputs | [Installer temporary locations](installer-temp-environment.md) |
 | Review failure-reporting questions for Unix PATH setup | [Installer PATH update questions](installer-path-update-questions.md) |
 | Find the Unix installer's staging parent and directory name | [Installer stage parent](installer-stage-parent.md) |
+| Reference the repository installer's staging directory | [Installer staging directory reference](installer-staging-directory-reference.md) |
 | Interpret the Unix installer staging prefix | [Installer staging prefix](installer-staging-prefix.md) |
 | Identify the staging prefix and parent in each Unix installer copy | [Installer staging prefixes](installer-staging-prefixes.md) |
 | Follow the public Unix installer staging and cleanup flow | [Public installer staging flow](public-installer-staging-flow.md) |
