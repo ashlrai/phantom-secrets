@@ -436,6 +436,44 @@ exec ${JSON.stringify(mktemp)} "$@"
   assert.equal(existsSync(stage), false);
 });
 
+test('Unix installer passes a spaced installation path to mktemp as one template argument', (t) => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-stage-argv-')));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const shims = makeShims(root);
+  const record = join(root, 'mktemp-args.json');
+  const mktemp = execFileSync('which', ['mktemp'], { encoding: 'utf8' }).trim();
+  writeFileSync(join(shims, 'mktemp'), `#!/usr/bin/env node
+const fs = require('node:fs');
+const { spawnSync } = require('node:child_process');
+const args = process.argv.slice(2);
+if (args[0] === '-d') fs.writeFileSync(${JSON.stringify(record)}, JSON.stringify(args));
+const result = spawnSync(${JSON.stringify(mktemp)}, args, { stdio: 'inherit' });
+if (result.error) throw result.error;
+process.exit(result.status ?? 1);
+`);
+  chmodSync(join(shims, 'mktemp'), 0o755);
+  const parent = join(root, 'installation parent with spaces');
+  const install = join(parent, 'phantom tools');
+  const invocations = join(root, 'invocations.log');
+  const { result } = runInstaller({ root, shims, install, recordInvocations: invocations });
+  assert.ifError(result.error);
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(readFileSync(record, 'utf8')), [
+    '-d', join(parent, '.phantom tools.install.XXXXXX'),
+  ]);
+  const staged = readFileSync(invocations, 'utf8').trim().split('\n')
+    .filter((path) => path.includes('.phantom tools.install.'));
+  assert.deepEqual(staged.map((path) => basename(path)).sort(), ['phantom', 'phantom-mcp']);
+  const stageRoots = new Set(staged.map((path) => dirname(dirname(path))));
+  assert.equal(stageRoots.size, 1);
+  const [stage] = stageRoots;
+  assert.equal(dirname(stage), parent);
+  assert.match(basename(stage), /^\.phantom tools\.install\.[A-Za-z0-9]{6}$/);
+  assert.equal(existsSync(stage), false);
+  assert.ok(existsSync(join(install, 'phantom')));
+  assert.ok(existsSync(join(install, 'phantom-mcp')));
+});
+
 for (const installer of [shellInstaller, join(repo, 'apps/web/public/install.sh')]) {
   const label = installer === shellInstaller ? 'candidate' : 'public-reference';
   test(`Unix ${label} installer stages inside a spaced install parent and cleans it up`, () => {
