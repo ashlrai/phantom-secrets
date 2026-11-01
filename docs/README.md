@@ -17,6 +17,7 @@ See [distribution status](distribution-status.md) for dated npm, Homebrew, crate
 | Run GitHub PR operations through Phantom with curl | [GitHub box runners](github-box-runners.md) |
 | Protect a project for the first time | [Getting started](getting-started.md) |
 | Understand the landing-page install commands | [Quickstart reading guide](quickstart-reading-guide.md) |
+| Locate and compare the landing-page command controls | [Quickstart command presentation](quickstart-command-presentation.md) |
 | Follow the order of quickstart staging and cleanup | [Quickstart command sequence](quickstart-command-sequence.md) |
 | Copy the landing-page install command safely | [Quickstart copy checklist](quickstart-copy-checklist.md) |
 | Compare the landing-page install commands by platform | [Quickstart platform comparison](quickstart-platform-comparison.md) |
