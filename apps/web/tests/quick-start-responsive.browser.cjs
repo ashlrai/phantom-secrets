@@ -35,7 +35,7 @@ async function waitForServer(url, process) {
 test("QuickStart remains usable without horizontal overflow on narrow screens", { timeout: 600000 }, async (t) => {
   const port = await availablePort();
   const baseURL = `http://127.0.0.1:${port}`;
-  const server = spawn(process.execPath, [require.resolve("next/dist/bin/next"), "dev", "--port", String(port)], {
+  const server = spawn(process.execPath, [require.resolve("next/dist/bin/next"), "start", "--port", String(port)], {
     cwd: path.join(__dirname, ".."),
     env: { PATH: process.env.PATH, HOME: process.env.HOME, TMPDIR: process.env.TMPDIR, NEXT_TELEMETRY_DISABLED: "1" },
     stdio: "ignore",
