@@ -337,7 +337,8 @@ test('Unix installer cleans its staging directory after a successful fixture upg
   assert.deepEqual(readdirSync(parent).sort(), ['bin', 'unrelated']);
 });
 
-test('Unix installer keeps downloads and extraction in private sibling staging directories', (t) => {
+for (const installer of [shellInstaller, join(repo, 'apps/web/public/install.sh')]) {
+test(`${installer} keeps downloads and extraction in private sibling staging directories`, (t) => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-installer-stage-review-')));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const shims = makeShims(root);
@@ -364,7 +365,7 @@ process.exit(result.status ?? 1);
 `);
   chmodSync(join(shims, 'tar'), 0o755);
   const install = join(root, 'live', 'bin');
-  const { result } = runInstaller({ root, shims, install });
+  const { result } = runInstaller({ root, shims, install, installer });
   assert.ifError(result.error);
   assert.equal(result.status, 0, result.stderr);
   const observed = JSON.parse(readFileSync(record, 'utf8'));
@@ -379,7 +380,7 @@ process.exit(result.status ?? 1);
   assert.equal(existsSync(observed.stage), false);
 });
 
-test('Unix installer stages under the physical install parent regardless of TMPDIR', (t) => {
+test(`${installer} stages under the physical install parent regardless of TMPDIR`, (t) => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-stage-parent-')));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const parent = join(root, 'physical parent');
@@ -390,7 +391,7 @@ test('Unix installer stages under the physical install parent regardless of TMPD
   symlinkSync(parent, alias);
   const record = join(root, 'invocations.log');
   const { result } = runInstaller({
-    root, install: join(alias, 'custom-bin'), tempDir, recordInvocations: record,
+    root, install: join(alias, 'custom-bin'), tempDir, recordInvocations: record, installer,
   });
   assert.ifError(result.error);
   assert.equal(result.status, 0, result.stderr);
@@ -405,6 +406,7 @@ test('Unix installer stages under the physical install parent regardless of TMPD
   assert.equal(existsSync(stage), false);
   assert.deepEqual(readdirSync(tempDir), []);
 });
+}
 
 test('Unix installer passes the default destination-derived template to mktemp', (t) => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-stage-prefix-')));
