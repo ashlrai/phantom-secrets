@@ -23,6 +23,7 @@ See [distribution status](distribution-status.md) for dated npm, Homebrew, crate
 | Map displayed quickstart steps to their platform and source | [Quickstart platform step map](quickstart-platform-step-map.md) |
 | Review temporary installer cleanup by platform | [Quickstart cleanup review](quickstart-temp-cleanup-review.md) |
 | Locate and compare temporary directory snippets | [Quickstart staging snippet count](quickstart-stage-snippet-count.md) |
+| Understand the Unix quickstart temporary directory fallback | [Quickstart temporary directory fallback](quickstart-temp-fallback.md) |
 | Locate temporary installer files and their environment inputs | [Installer temporary locations](installer-temp-environment.md) |
 | Find the Unix installer's staging parent and directory name | [Installer stage parent](installer-stage-parent.md) |
 | Interpret the Unix installer staging prefix | [Installer staging prefix](installer-staging-prefix.md) |
