@@ -40,6 +40,8 @@ test("both documented staging assignments match the displayed commands and their
   t.after(() => fs.rmSync(tempRoot, { recursive: true, force: true }));
   const spacedParent = path.join(tempRoot, "parent with spaces");
   fs.mkdirSync(spacedParent);
+  const relativeParent = "relative parent [1]*";
+  fs.mkdirSync(path.join(tempRoot, relativeParent));
 
   for (const platform of ["macOS", "Linux"]) {
     selected = platform;
@@ -58,14 +60,25 @@ test("both documented staging assignments match the displayed commands and their
       ["unset", undefined, "/tmp"],
       ["empty", "", "/tmp"],
       ["spaces", spacedParent, spacedParent],
+      ["relative and glob characters", relativeParent, relativeParent],
       ["missing parent", path.join(tempRoot, "missing"), null],
     ]) {
       const env = { PATH: "/usr/bin:/bin", HOME: process.env.HOME, EXPECTED_PARENT: expected || "" };
       if (value !== undefined) env.TMPDIR = value;
       const script = `set -eu\n${assignment}\ntrap 'rmdir -- "$phantom_stage"' EXIT\ncase "$phantom_stage" in "$EXPECTED_PARENT"/phantom-install.??????) test -d "$phantom_stage" ;; *) exit 1 ;; esac`;
-      const result = spawnSync("bash", ["-c", script], { env, encoding: "utf8" });
+      const result = spawnSync("bash", ["-c", script], { cwd: tempRoot, env, encoding: "utf8" });
       assert.equal(result.status, expected === null ? 1 : 0, `${platform}: ${label}`);
     }
   }
+  assert.match(guide, /relative `TMPDIR` is relative to the shell's\s+current working directory/);
+  assert.match(guide, /shell glob characters[\s\S]*?treated literally/);
+  assert.match(guide, /fail before the download instead\s+of retrying under `\/tmp`/);
+
+  selected = "Windows";
+  const windowsCard = find(QuickStart(), (node) => node.type === "article")[0];
+  const windowsCommand = find(windowsCard, (node) => typeof node.props.text === "string")[0].props.text;
+  assert.match(windowsCommand, /Join-Path \$env:TEMP/);
+  assert.doesNotMatch(windowsCommand, /TMPDIR|mktemp/);
+  assert.match(guide, /Windows instead uses a temporary installer file under `\$env:TEMP`/);
   assert.match(fs.readFileSync(path.join(root, "docs/README.md"), "utf8"), /\]\(quickstart-temp-fallback\.md\)/);
 });
