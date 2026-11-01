@@ -82,6 +82,46 @@ test("platform sections match the selectable cards and their displayed commands"
   }
 });
 
+test("rendering review tracks the visible platform cards and manual checks", () => {
+  const review = fs.readFileSync(path.join(root, "docs/quickstart-rendering-review.md"), "utf8");
+  const { container } = render(React.createElement(QuickStart));
+  try {
+    const selector = screen.getByRole("group", { name: "Choose an operating system" });
+    const platforms = within(selector).getAllByRole("button");
+    const rows = [...review.matchAll(/^\| (macOS|Windows|Linux) \|.*$/gm)].map((match) => match[0]);
+    assert.deepEqual(rows.map((row) => row.split("|")[1].trim()), platforms.map((button) => button.textContent));
+    const checks = {
+      macOS: ["install.sh", "shasum -a 256 -c -", "not notarized"],
+      Windows: ["install.ps1", "Get-FileHash -Algorithm SHA256", "not Authenticode-signed"],
+      Linux: ["install.sh", "sha256sum -c -", "session-persistent"],
+    };
+    for (const [index, button] of platforms.entries()) {
+      fireEvent.click(button);
+      const card = container.querySelector(".platform-install-card");
+      const row = rows[index];
+      const command = within(card.querySelector(".platform-install-card__command")).getByRole("button");
+      const source = within(card).getByRole("link", { name: "View exact installer source" });
+      const displayed = commandText(command);
+      assert.ok(row.includes(card.querySelector(".platform-install-card__heading > span").textContent));
+      for (const link of within(card.querySelector(".platform-install-card__targets")).getAllByRole("link", { name: /^Download Phantom / })) {
+        assert.ok(row.includes(link.querySelector("span").textContent));
+      }
+      assert.ok(row.includes(command.querySelector('[aria-hidden="true"]').textContent.trim()));
+      for (const fragment of checks[button.textContent]) {
+        assert.ok(row.includes(fragment), `${button.textContent}: review missing ${fragment}`);
+        assert.ok([source.getAttribute("href"), displayed, card.textContent].some((value) => value.includes(fragment)),
+          `${button.textContent}: card missing ${fragment}`);
+      }
+    }
+    for (const fragment of ["320px", "375px", "original line breaks and indentation", "visual", "without running it", "illustrative"]) {
+      assert.ok(review.includes(fragment), `manual review missing ${fragment}`);
+    }
+    assert.match(fs.readFileSync(path.join(root, "docs/README.md"), "utf8"), /\]\(quickstart-rendering-review\.md\)/);
+  } finally {
+    cleanup();
+  }
+});
+
 test("shared command blocks and documentation index stay in sync", () => {
   const { container } = render(React.createElement(QuickStart));
   try {
