@@ -57,6 +57,7 @@ test("installer and numbered controls appear in order and copy only their comman
       assert.ok(card.compareDocumentPosition(steps) & Node.DOCUMENT_POSITION_FOLLOWING);
       const command = within(card.querySelector(".platform-install-card__command")).getByRole("button");
       assert.equal(command.querySelector('[aria-hidden="true"]').textContent.trim(), prompt);
+      assert.ok(command.firstElementChild.lastChild.textContent.includes("\n"), `${platform}: installer is multiline`);
       fireEvent.click(command);
       await waitFor(() => assert.equal(writes.length, ["macOS", "Windows", "Linux"].indexOf(platform) + 1));
       assert.equal(writes.at(-1), command.firstElementChild.lastChild.textContent);
@@ -71,6 +72,17 @@ test("installer and numbered controls appear in order and copy only their comman
     cleanup();
     dom.window.close();
   }
+});
+
+test("rendering guide describes selection, wrapping, and copying", () => {
+  const root = path.join(__dirname, "../../..");
+  const guide = fs.readFileSync(path.join(root, "docs/quickstart-command-rendering.md"), "utf8");
+  const css = fs.readFileSync(path.join(root, "apps/web/src/app/globals.css"), "utf8");
+  assert.match(fs.readFileSync(path.join(root, "docs/README.md"), "utf8"), /\]\(quickstart-command-rendering\.md\)/);
+  for (const phrase of ["macOS", "Windows", "Linux", "selected initially", "Enter or\nSpace", "line breaks and indentation", "wrap visually", "without the prompt", "select and copy", "illustrative"]) {
+    assert.ok(guide.includes(phrase), `guide describes ${phrase}`);
+  }
+  assert.match(css, /\.copy-command > span:first-child\s*\{[^}]*overflow-wrap:\s*anywhere;[^}]*user-select:\s*text;[^}]*white-space:\s*pre-wrap/s);
 });
 
 test("presentation guide is discoverable and describes the styled controls", () => {
