@@ -138,3 +138,41 @@ test("copy checklist matches the rendered placeholder and length error", async (
     global.fetch = originalFetch;
   }
 });
+
+test("display example matches the form's placeholder, hint, and length message", async () => {
+  const exampleDoc = fs.readFileSync(path.join(docsDir, "device-code-display-example.md"), "utf8");
+  const example = exampleDoc.match(/`([A-Z0-9]{4}-[A-Z0-9]{4})` is a\s+fictional/)?.[1];
+  assert.ok(example, "include a fictional formatted example");
+  assert.equal(example.length, 9);
+  assert.equal(example.replace("-", "").length, 8);
+  assert.ok(exampleDoc.includes("](internal/notes.md#device-auth-wave)"));
+  assert.ok(exampleDoc.includes("](../apps/web/src/app/device/device-authorization-client.tsx)"));
+  assert.ok(fs.readFileSync(path.join(docsDir, "README.md"), "utf8").includes("](device-code-display-example.md)"));
+
+  const dependencies = {
+    "next/image": { __esModule: true, default: () => null },
+    "next/link": { __esModule: true, default: ({ children, ...props }) => React.createElement("a", props, children) },
+    "@/lib/device-code": compile("lib/device-code.ts"),
+    "@/lib/posthog": { capturePostHog: async () => {} },
+    "@supabase/supabase-js": { createClient() { throw new Error("Unexpected authentication"); } },
+  };
+  try {
+    const Component = compile("app/device/device-authorization-client.tsx", dependencies).default;
+    const user = userEvent.setup();
+    const screen = render(React.createElement(Component));
+    const input = screen.getByRole("textbox", { name: "Device code" });
+    assert.ok(exampleDoc.includes(`placeholder and this hint`) && exampleDoc.includes(`\`${input.placeholder}\``));
+    assert.ok(exampleDoc.includes(`> ${screen.container.querySelector("#device-code-hint").textContent.trim()}`));
+    for (const value of ["abcd234", "abcd23456"]) {
+      await user.clear(input);
+      await user.type(input, value);
+      await user.click(screen.getByRole("button", { name: "Authorize Device" }));
+      assert.ok(exampleDoc.includes(`> ${screen.getByRole("alert").textContent}`));
+    }
+    await user.clear(input);
+    await user.type(input, example.replace("-", "").toLowerCase());
+    assert.equal(input.value, example);
+  } finally {
+    cleanup();
+  }
+});

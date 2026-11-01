@@ -107,6 +107,7 @@ and retains historical design-status language.
 - [Cloud login](login.md)
 - [Device authorization code format](device-code-format.md)
 - [Readable device authorization code format](device-code-readable-format.md)
+- [Device code display example](device-code-display-example.md)
 - [Device authorization input hint](device-code-input-hint.md)
 - [Vercel and Railway sync](sync.md)
 - [CI/CD integration](ci-cd.md)
