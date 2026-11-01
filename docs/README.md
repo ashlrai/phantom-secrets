@@ -20,6 +20,7 @@ See [distribution status](distribution-status.md) for dated npm, Homebrew, crate
 | Locate and compare the landing-page command controls | [Quickstart command presentation](quickstart-command-presentation.md) |
 | Follow the order of quickstart staging and cleanup | [Quickstart command sequence](quickstart-command-sequence.md) |
 | Copy the landing-page install command safely | [Quickstart copy checklist](quickstart-copy-checklist.md) |
+| Review the clarity of landing-page installation copy | [Quickstart copy review](quickstart-copy-review.md) |
 | Compare the landing-page install commands by platform | [Quickstart platform comparison](quickstart-platform-comparison.md) |
 | Map displayed quickstart steps to their platform and source | [Quickstart platform step map](quickstart-platform-step-map.md) |
 | Understand when quickstart commands use temporary directories | [Quickstart temporary directory usage](quickstart-temp-directory-usage.md) |
