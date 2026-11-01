@@ -33,6 +33,7 @@ See [distribution status](distribution-status.md) for dated npm, Homebrew, crate
 | Trace each displayed command's staging lifecycle | [Quickstart staging lifecycle](quickstart-staging-lifecycle.md) |
 | Locate and compare temporary directory snippets | [Quickstart staging snippet count](quickstart-stage-snippet-count.md) |
 | Understand the Unix quickstart temporary directory fallback | [Quickstart temporary directory fallback](quickstart-temp-fallback.md) |
+| Compare quickstart temporary prefixes and fallbacks | [Quickstart temporary prefix reference](quickstart-temp-prefix-reference.md) |
 | Locate temporary installer files and their environment inputs | [Installer temporary locations](installer-temp-environment.md) |
 | Review failure-reporting questions for Unix PATH setup | [Installer PATH update questions](installer-path-update-questions.md) |
 | Find the Unix installer's staging parent and directory name | [Installer stage parent](installer-stage-parent.md) |
