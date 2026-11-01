@@ -23,6 +23,7 @@ See [distribution status](distribution-status.md) for dated npm, Homebrew, crate
 | Copy the landing-page install command safely | [Quickstart copy checklist](quickstart-copy-checklist.md) |
 | Review platform labels, readability, and cleanup | [Quickstart reader checklist](quickstart-reader-checklist.md) |
 | Review the clarity of landing-page installation copy | [Quickstart copy review](quickstart-copy-review.md) |
+| Maintain landing-page quickstart content after a change | [Quickstart content maintenance](quickstart-content-maintenance.md) |
 | Review platform-specific landing-page copy | [Quickstart platform copy review](quickstart-platform-copy-review.md) |
 | Compare the landing-page install commands by platform | [Quickstart platform comparison](quickstart-platform-comparison.md) |
 | Find each landing-page platform section and command block | [Quickstart platform sections](quickstart-platform-sections.md) |
