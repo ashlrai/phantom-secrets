@@ -31,6 +31,7 @@ See [distribution status](distribution-status.md) for dated npm, Homebrew, crate
 | Find the Unix installer's staging parent and directory name | [Installer stage parent](installer-stage-parent.md) |
 | Interpret the Unix installer staging prefix | [Installer staging prefix](installer-staging-prefix.md) |
 | Identify the staging prefix and parent in each Unix installer copy | [Installer staging prefixes](installer-staging-prefixes.md) |
+| Review cleanup questions for the public Unix installer | [Public installer staging questions](public-installer-staging-questions.md) |
 | See a measured Linux install and the agent-CLI audit | [First run](FIRST-RUN.md) |
 | Compare install, exec, and memory with dotenvx and SOPS | [Benchmarks](BENCHMARKS.md) |
 | Delegate one bounded task to an AI coding client | [Safe delegation quickstart](delegation-quickstart.md) |
