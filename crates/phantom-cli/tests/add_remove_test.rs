@@ -77,7 +77,11 @@ fn headless_remove_is_denied_and_preserves_the_key() {
 #[test]
 fn add_without_init_fails_before_project_mutation() {
     let dir = common::canonical_tempdir();
-    let output = phantom(&dir)
+    // Isolate the machine profile outside the project: on Windows the
+    // Known-Folder resolver's AppData folders live there, not inside the
+    // project tree this assertion inspects.
+    let home = common::canonical_tempdir();
+    let output = common::phantom_with_home(&dir, &home, VAULT_PASS)
         .args(["add", "SOME_KEY", "--stdin"])
         .write_stdin("some-value\n")
         .assert()
