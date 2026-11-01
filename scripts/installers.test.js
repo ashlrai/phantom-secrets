@@ -557,8 +557,8 @@ test('Unix installer atomically preserves an existing regular shell rc under GNU
   );
 });
 
-test('Unix PATH setup removes temporary files on candidate creation or comparison failure', (t) => {
-  for (const failure of ['candidate creation', 'comparison']) {
+test('Unix PATH setup reports and cleans up failures before replacement', (t) => {
+  for (const failure of ['snapshot creation', 'candidate creation', 'comparison', 'replacement']) {
     const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-path-failure-')));
     t.after(() => rmSync(root, { recursive: true, force: true }));
     const home = join(root, 'home');
@@ -566,13 +566,18 @@ test('Unix PATH setup removes temporary files on candidate creation or compariso
     mkdirSync(home);
     const rc = join(home, '.bashrc');
     writeFileSync(rc, '# original configuration\n');
-    if (failure === 'candidate creation') {
+    if (failure === 'snapshot creation' || failure === 'candidate creation') {
       const shim = join(shims, 'mktemp');
-      writeFileSync(shim, '#!/bin/sh\ncase "$1" in *.phantom-path.candidate.*) : > "$HOME/.failure-invoked"; exit 1 ;; esac\nexec /usr/bin/mktemp "$@"\n');
+      const prefix = failure === 'snapshot creation' ? 'before' : 'candidate';
+      writeFileSync(shim, `#!/bin/sh\ncase "$1" in *.phantom-path.${prefix}.*) : > "$HOME/.failure-invoked"; exit 1 ;; esac\nexec /usr/bin/mktemp "$@"\n`);
       chmodSync(shim, 0o755);
-    } else {
+    } else if (failure === 'comparison') {
       const shim = join(shims, 'cmp');
       writeFileSync(shim, '#!/bin/sh\n: > "$HOME/.failure-invoked"\nexit 1\n');
+      chmodSync(shim, 0o755);
+    } else {
+      const shim = join(shims, 'mv');
+      writeFileSync(shim, '#!/bin/sh\ncase "$*" in *.phantom-path.candidate.*) : > "$HOME/.failure-invoked"; exit 1 ;; esac\nexec /bin/mv "$@"\n');
       chmodSync(shim, 0o755);
     }
 
@@ -583,6 +588,8 @@ test('Unix PATH setup removes temporary files on candidate creation or compariso
     assert.equal(existsSync(join(home, '.failure-invoked')), true, `${failure}: failure seam reached`);
     assert.equal(readFileSync(rc, 'utf8'), '# original configuration\n');
     assert.equal(existsSync(join(install, 'phantom')), true);
+    assert.equal(existsSync(join(install, 'phantom-mcp')), true);
+    assert.match(result.stdout, /done\. phantom/);
     assert.deepEqual(readdirSync(home).filter((name) => name.startsWith('.phantom-path.')), []);
   }
 });
