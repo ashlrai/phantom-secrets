@@ -120,7 +120,8 @@ function runInstaller(options = {}) {
   const fixture = makeArchive(root, target, options);
   const shims = options.shims ?? makeShims(root);
   const home = options.home ?? join(root, 'home');
-  const install = options.install ?? join(root, 'live', 'bin');
+  const install = options.install ?? (options.defaultInstall
+    ? join(home, '.phantom-secrets', 'bin') : join(root, 'live', 'bin'));
   mkdirSync(home, { recursive: true });
   if (options.existing) {
     mkdirSync(install, { recursive: true });
@@ -144,6 +145,7 @@ function runInstaller(options = {}) {
     PHANTOM_INSTALL_LOCK_STALE_SECONDS: options.lockStaleSeconds ?? '300',
     PHANTOM_INSTALL_LOCK_HEARTBEAT_SECONDS: options.lockHeartbeatSeconds ?? '5',
   };
+  if (options.defaultInstall) delete env.PHANTOM_INSTALL_DIR;
   delete env.PHANTOM_REPO;
   delete env.PHANTOM_TAG;
   delete env.PHANTOM_TEST_ALLOW_INSTALLER_OVERRIDES;
@@ -402,6 +404,36 @@ test('Unix installer stages under the physical install parent regardless of TMPD
   assert.match(basename(stage), /^\.custom-bin\.install\.[^/]+$/);
   assert.equal(existsSync(stage), false);
   assert.deepEqual(readdirSync(tempDir), []);
+});
+
+test('Unix installer passes the default destination-derived template to mktemp', (t) => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-stage-prefix-')));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const shims = makeShims(root);
+  const record = join(root, 'mktemp-template');
+  const mktemp = execFileSync('which', ['mktemp'], { encoding: 'utf8' }).trim();
+  writeFileSync(join(shims, 'mktemp'), `#!/bin/sh
+if [ "$1" = -d ]; then printf '%s\\n' "$2" > ${JSON.stringify(record)}; fi
+exec ${JSON.stringify(mktemp)} "$@"
+`);
+  chmodSync(join(shims, 'mktemp'), 0o755);
+  const invocations = join(root, 'invocations.log');
+  const { install, result } = runInstaller({
+    root, shims, defaultInstall: true, recordInvocations: invocations,
+  });
+  assert.ifError(result.error);
+  assert.equal(result.status, 0, result.stderr);
+  const parent = realpathSync(dirname(install));
+  assert.equal(readFileSync(record, 'utf8').trim(), join(parent, '.bin.install.XXXXXX'));
+  const staged = readFileSync(invocations, 'utf8').trim().split('\n')
+    .filter((path) => path.includes('.bin.install.'));
+  assert.deepEqual(staged.map((path) => basename(path)).sort(), ['phantom', 'phantom-mcp']);
+  const stageRoots = new Set(staged.map((path) => dirname(dirname(path))));
+  assert.equal(stageRoots.size, 1);
+  const [stage] = stageRoots;
+  assert.equal(dirname(stage), parent);
+  assert.match(basename(stage), /^\.bin\.install\.[A-Za-z0-9]{6}$/);
+  assert.equal(existsSync(stage), false);
 });
 
 for (const installer of [shellInstaller, join(repo, 'apps/web/public/install.sh')]) {
