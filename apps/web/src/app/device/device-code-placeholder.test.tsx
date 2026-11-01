@@ -102,3 +102,20 @@ test("the placeholder never stands in for the label or a real value", async () =
   assert.equal(input.getAttribute("placeholder"), placeholder);
   assert.equal(screen.getByRole("textbox", { name: label }), input);
 });
+
+test("the label and placeholder remain usable after a validation error", async () => {
+  renderDevice(async () => { throw new Error("Unexpected sign-in"); });
+  const user = userEvent.setup();
+  const input = screen.getByRole("textbox", { name: label }) as HTMLInputElement;
+
+  await user.click(screen.getByRole("button", { name: "Authorize Device" }));
+  const error = screen.getByRole("alert");
+  assert.equal(input.getAttribute("aria-invalid"), "true");
+  assert.equal(screen.getByPlaceholderText(placeholder), input);
+  assert.equal(screen.getByRole("textbox", { name: label, description: /Enter 8 letters or numbers.*code is displayed/ }), input);
+  assert.ok(input.getAttribute("aria-describedby")?.split(/\s+/).includes(error.id));
+
+  // A click on the visible label must focus the same field even after errors.
+  await user.click(screen.getByText(label, { selector: "label" }));
+  assert.equal(document.activeElement, input);
+});
