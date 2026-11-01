@@ -44,62 +44,61 @@ pub fn init_project(dir: &TempDir, passphrase: &str) {
 /// Build a CLI command scoped to a temporary project and test vault.
 #[allow(dead_code)] // Common is compiled once per integration-test binary.
 pub fn phantom(dir: &TempDir, passphrase: &str) -> assert_cmd::Command {
+    // Known Folders expands USERPROFILE and verifies both AppData folders.
+    // Use an ordinary Win32 path: canonical temp roots may carry `\\?\`.
+    let profile = profile_path(dir.path());
+    #[cfg(windows)]
+    for folder in ["Roaming", "Local"] {
+        std::fs::create_dir_all(profile.join("AppData").join(folder)).unwrap();
+    }
     let mut command = assert_cmd::Command::cargo_bin("phantom").expect("binary not found");
     command
         .current_dir(dir.path())
         .env("PHANTOM_VAULT_PASSPHRASE", passphrase)
         .env("HOME", dir.path())
-        .env("USERPROFILE", dir.path())
-        .env("APPDATA", dir.path().join("appdata"))
-        .env("LOCALAPPDATA", dir.path().join("localappdata"))
+        .env("USERPROFILE", &profile)
+        .env("APPDATA", profile.join("AppData/Roaming"))
+        .env("LOCALAPPDATA", profile.join("AppData/Local"))
         .env("XDG_DATA_HOME", dir.path().join("data"));
     command
 }
 
-/// Locate only this fixture project's vault, including an empty vault's lock.
-///
-/// The child resolves its vault directory through the platform data-dir
-/// resolver against the environment `phantom()` sets. On Unix that is
-/// `$XDG_DATA_HOME`/`$HOME`, so the vault lands beneath this tempdir. On
-/// Windows the Known-Folder lookup expands `%USERPROFILE%` from the child
-/// environment *and verifies the folder exists*: `<tempdir>\AppData\Roaming`
-/// is absent, so the child falls back to the real profile's `<home>/.phantom`
-/// rather than the roaming data dir this process resolves. Search the
-/// tempdir first, then both resolver outcomes; panic naming everything
-/// checked when init left no vault anywhere.
+/// Windows profile APIs expect ordinary drive/UNC paths, unlike filesystem APIs
+/// which also accept canonical verbatim paths. Preserve UNC's leading slashes.
+#[allow(dead_code)]
+pub fn profile_path(path: &std::path::Path) -> std::path::PathBuf {
+    #[cfg(windows)]
+    {
+        use std::path::{Component, Prefix};
+        let mut components = path.components();
+        if let Some(Component::Prefix(prefix)) = components.next() {
+            let ordinary = match prefix.kind() {
+                Prefix::VerbatimDisk(drive) => format!("{}:", char::from(drive)),
+                Prefix::VerbatimUNC(server, share) => {
+                    let mut root = std::path::PathBuf::from(r"\\");
+                    root.push(server);
+                    root.push(share);
+                    return root.join(components.as_path());
+                }
+                _ => return path.to_path_buf(),
+            };
+            return std::path::PathBuf::from(ordinary).join(components.as_path());
+        }
+    }
+    path.to_path_buf()
+}
+
+/// Exact data directory selected by the environment in `phantom()`.
+/// Never search the operator's vault or accept an unrelated fallback file.
 #[allow(dead_code)]
 pub fn encrypted_file(dir: &TempDir, project_id: &str) -> std::path::PathBuf {
-    fn find(root: &std::path::Path, project_id: &str) -> Option<std::path::PathBuf> {
-        let path = root.join("vaults").join(format!("{project_id}.vault"));
-        if path.is_file() || path.with_extension("lock").is_file() {
-            return Some(path);
-        }
-        for entry in std::fs::read_dir(root).unwrap() {
-            let entry = entry.unwrap();
-            if entry.file_type().unwrap().is_dir() {
-                if let Some(path) = find(&entry.path(), project_id) {
-                    return Some(path);
-                }
-            }
-        }
-        None
-    }
-    if let Some(found) = find(dir.path(), project_id) {
-        return found;
-    }
-    let mut candidates = Vec::new();
-    if let Ok(path) = phantom_vault::encrypted_file_vault_path(project_id) {
-        candidates.push(path);
-    }
-    candidates.push(
-        phantom_vault::file_vault_fallback_dir()
-            .join("vaults")
-            .join(format!("{project_id}.vault")),
-    );
-    for candidate in &candidates {
-        if candidate.is_file() || candidate.with_extension("lock").is_file() {
-            return candidate.clone();
-        }
-    }
-    panic!("init provisioned no vault for {project_id} under {dir:?} or {candidates:?}")
+    #[cfg(windows)]
+    let base = profile_path(dir.path()).join("AppData/Roaming/phantom/phantom-secrets/data");
+    #[cfg(target_os = "macos")]
+    let base = dir
+        .path()
+        .join("Library/Application Support/ai.phantom.phantom-secrets");
+    #[cfg(not(any(windows, target_os = "macos")))]
+    let base = dir.path().join("data/phantom-secrets");
+    base.join("vaults").join(format!("{project_id}.vault"))
 }
