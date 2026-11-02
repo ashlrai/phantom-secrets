@@ -257,6 +257,6 @@ test("the history workflow publishes an exact branch ref and no credential", () 
   const workflow = readFileSync(path.join(repo, ".github/workflows/star-history.yml"), "utf8");
   assert.match(workflow, /refs\/heads\/star-history/);
   assert.doesNotMatch(workflow, /ls-remote[^\n]*--heads/);
-  assert.match(workflow, /secrets\.GITHUB_TOKEN/);
+  assert.match(workflow, /\$\{\{\s*(?:secrets\.GITHUB_TOKEN|github\.token)\s*\}\}/);
   assert.doesNotMatch(workflow, /ghp_|github_pat_|PHANTOM_STARS_GITHUB_TOKEN:\s*\S+/);
 });
