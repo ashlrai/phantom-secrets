@@ -89,7 +89,7 @@ parameter names match the runtime JSON schema exactly.
 | `phantom_status` | Show project ID, managed dotenv protection counts, and service mappings without opening the vault | None |
 | `phantom_doctor` | Run repository-local health checks (config, dotenv protection, `.gitignore`, `.env.example`, pre-commit hook) without opening the vault; `fix=true` mutates files and activates both gates | fix, confirm, approval_token |
 | `phantom_why` | Explain why a key is or is not protected and how `phantom exec` delivers it (`exec.delivery`, e.g. `no_route`). Never opens the vault; works before init and with a locked vault | key |
-| `phantom_check` | Scan supported dotenv files, or every process variable with `runtime=true` | runtime |
+| `phantom_check` | Scan supported dotenv files, a log file, or every process variable with `runtime=true` | log_path (optional), runtime |
 | `phantom_env` | Generate an env example file with secret placeholders | output (default `.env.example`), confirm, approval_token |
 | `phantom_sync` | Preview deployment-platform sync configuration (Vercel, Railway) | platform (optional), project_id (optional) |
 | `phantom_add_secret` | With `generate: true`, create a new locally generated 256-bit secret and return a value-free `name`/`fingerprint` receipt; otherwise refuses plaintext via MCP — use `phantom_add_secret_interactive` for provider credentials | name, generate (optional), confirm, approval_token |

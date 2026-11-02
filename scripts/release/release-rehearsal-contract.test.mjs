@@ -45,6 +45,46 @@ const npmMcpPackage = JSON.parse(
 const npmReadme = readFileSync(join(repoRoot, "npm/README.md"), "utf8");
 const npmMcpReadme = readFileSync(join(repoRoot, "npm-mcp/README.md"), "utf8");
 
+// Source-candidate commands track source metadata, never a dated public receipt.
+const cargo = readFileSync(join(repoRoot, "Cargo.toml"), "utf8");
+const workspaceSections = cargo.split(/^\[workspace\.package\]\s*$/m);
+assert.equal(workspaceSections.length, 2, "one Cargo workspace.package section");
+const workspacePackage = workspaceSections[1].split(/^\[/m)[0];
+const versionRows = [...workspacePackage.matchAll(/^version\s*=\s*"([^"]+)"\s*$/gm)];
+assert.equal(versionRows.length, 1, "one Cargo source version");
+const sourceVersion = versionRows[0][1];
+
+function candidateCommands(version) {
+  return [
+    ["gh workflow run release-rehearsal.yml", `gh workflow run release-rehearsal.yml -f release_tag=v${version}`],
+    ["node scripts/release/pre-tag-preflight.mjs", `node scripts/release/pre-tag-preflight.mjs v${version} REHEARSAL_RUN_ID_OR_URL`],
+    ["node scripts/release/check-version-parity.mjs", `node scripts/release/check-version-parity.mjs v${version}`],
+    ["./scripts/publish-crates.sh --verify-only", `./scripts/publish-crates.sh --verify-only --version ${version}`],
+    ["./scripts/publish-crates.sh --dry-run", `./scripts/publish-crates.sh --dry-run --version ${version}`],
+    ["PHANTOM_PUBLISH_CONFIRM=", `PHANTOM_PUBLISH_CONFIRM=publish-phantom-secrets-${version} \\`],
+    ["./scripts/publish-crates.sh --publish", `./scripts/publish-crates.sh --publish --version ${version}`],
+  ];
+}
+
+function assertCandidateExamples(document, version) {
+  const lines = document.split(/\r?\n/).map((line) => line.trim());
+  for (const [prefix, expected] of candidateCommands(version)) {
+    assert.deepEqual(lines.filter((line) => line.startsWith(prefix)), [expected],
+      `one exact current-source candidate example: ${prefix}`);
+  }
+}
+
+test("candidate runbook examples reject stale, missing and duplicate commands", () => {
+  assertCandidateExamples(readiness, sourceVersion);
+  for (const [, expected] of candidateCommands(sourceVersion)) {
+    assert.throws(() => assertCandidateExamples(readiness.replace(expected,
+      expected.replace(sourceVersion, "99.98.97")), sourceVersion), /current-source candidate/);
+    assert.throws(() => assertCandidateExamples(readiness.replace(expected, ""), sourceVersion), /current-source candidate/);
+    assert.throws(() => assertCandidateExamples(readiness + `\n${expected}\n`, sourceVersion), /current-source candidate/);
+  }
+  assertCandidateExamples(readiness.replaceAll(sourceVersion, "99.98.97"), "99.98.97");
+});
+
 test("dependency index validation rejects tracked installations, not similar names", () => {
   for (const path of ["node_modules", "apps/web/node_modules", "node_modules/a.js",
     "nested/node_modules/pkg/file.js", "space here/node_modules/a\nfile.js"]) {
@@ -337,9 +377,9 @@ test("npm and MCP distribution metadata and runbooks remain publication-safe", (
   assert.match(readiness, /stage both under `release-candidate`/);
   assert.match(readiness, /six-target npm-channel\s+acceptance gate/);
   assert.match(readiness, /MCP\s+wrapper to `latest` first and the primary CLI to `latest` last/);
-  assert.match(readiness, /release_tag=v0\.7\.9/);
-  assert.match(readiness, /pre-tag-preflight\.mjs v0\.7\.9/);
-  assert.match(readiness, /publish-crates\.sh --verify-only --version 0\.7\.9/);
+  assert.equal(npmPackage.version, sourceVersion, "CLI wrapper follows Cargo source version");
+  assert.equal(npmMcpPackage.version, sourceVersion, "MCP wrapper follows Cargo source version");
+  assertCandidateExamples(readiness, sourceVersion);
 
   const npmPlan = markdownSection(
     npmPublication,

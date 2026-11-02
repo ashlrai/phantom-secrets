@@ -3149,6 +3149,7 @@ For older release notes and downloadable artifacts, see [GitHub Releases](https:
 [Unreleased]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.0...HEAD
 <!-- fresh:end -->
 [0.8.0]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.10...v0.8.0
+[0.7.10]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.9...v0.7.10
 [0.7.9]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.8...v0.7.9
 [0.7.8]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.7...v0.7.8
 [0.7.7]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.6...v0.7.7
