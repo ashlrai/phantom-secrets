@@ -47,6 +47,23 @@ readers, and vault memory hygiene. It adds no live provider issuance: provider
 issuance and rotation stay hard-denied before credential or network access.
 The `v0.7.9` tag and GitHub Release are not moved or replaced.
 
+### Added (built-in fleet exec routes)
+
+- `phantom exec` has three more built-in proxy routes, each with one vault
+  name, one upstream and one fixed `Authorization: Bearer` header:
+  `fleet_devin` (`DEVIN_API_KEY` to `api.devin.ai`), `fleet_cursor_cloud`
+  (`CURSOR_API_KEY` to `api.cursor.com`) and `fleet_email`
+  (`FLEET_EMAIL_API_KEY` to `api.resend.com`). Telegram needs path injection
+  and is not a built-in route.
+
+### Changed (README leads with agent commands, site agent console)
+
+- The README opens with copy-paste install, JSON status, and MCP setup for
+  Claude, Cursor, and Codex, plus diagrams, an FAQ, and a star link.
+- The website adds an agent quickstart console with the same snippets and a
+  combined GitHub star count. Pageviews are recorded only when
+  `NEXT_PUBLIC_POSTHOG_KEY` is set and Do Not Track is off.
+
 ### Fixed (audit show --output, rotate --batch expiry dates, validate history)
 
 - `phantom audit show --output FILE` without `--json` printed the events to
