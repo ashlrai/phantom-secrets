@@ -3,6 +3,7 @@ import { Nav } from "@/components/landing/Nav";
 import { SiteFooter } from "@/components/landing/SiteFooter";
 import { WorkbenchHero } from "@/components/landing/WorkbenchHero";
 import { PhantomWorldScene } from "@/components/landing/PhantomWorldScene";
+import { EcosystemStars } from "@/components/landing/EcosystemStars";
 import { WorkbenchIntegrations } from "@/components/landing/WorkbenchIntegrations";
 import { WorkbenchStructuredData } from "@/components/landing/WorkbenchStructuredData";
 
@@ -31,6 +32,7 @@ export default function Home() {
   return <><Nav /><WorkbenchStructuredData /><main id="main-content" tabIndex={-1} className="phantom-workbench-surface">
     <WorkbenchHero />
     <div className="phantom-home-content">
+      <EcosystemStars />
       <PhantomWorldScene />
       <WorkbenchIntegrations />
       <section id="phantom-secrets" className="phantom-secrets-bridge" aria-labelledby="secrets-bridge-title">

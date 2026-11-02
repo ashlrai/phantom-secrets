@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "snapshots": [
+    {
+      "date": "2026-10-12",
+      "total": 41,
+      "repos": {
+        "ashlrai/phantom": 5,
+        "ashlrai/phantom-secrets": 18,
+        "ashlrai/locus": 2,
+        "ashlrai/lexicon": 2,
+        "ashlrai/ashlr-md": 3,
+        "ashlrai/ashlr-stack": 2,
+        "ashlrai/ashlr-plugin": 3,
+        "ashlrai/ashlr-core-efficiency": 2,
+        "ashlrai/binshield": 3,
+        "ashlrai/homebrew-phantom": 1,
+        "ashlrai/homebrew-tap": 0
+      }
+    },
+    {
+      "date": "2026-11-02",
+      "total": 46,
+      "repos": {
+        "ashlrai/phantom-secrets": 20,
+        "ashlrai/phantom": 5,
+        "ashlrai/ashlr-md": 4,
+        "ashlrai/ashlr-plugin": 3,
+        "ashlrai/binshield": 3,
+        "ashlrai/locus": 3,
+        "ashlrai/ashlr-core-efficiency": 2,
+        "ashlrai/ashlr-stack": 2,
+        "ashlrai/homebrew-phantom": 2,
+        "ashlrai/lexicon": 2,
+        "ashlrai/homebrew-tap": 0
+      }
+    }
+  ]
+}
