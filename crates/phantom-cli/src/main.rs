@@ -284,11 +284,14 @@ enum Commands {
     #[command(next_help_heading = "Daily use")]
     Check {
         /// Only scan git-staged files (skip .env scanning, faster for pre-commit hooks)
-        #[arg(long)]
+        #[arg(long, conflicts_with = "log")]
         staged: bool,
         /// Scan every environment variable for phantom tokens a live proxy session does not own
-        #[arg(long)]
+        #[arg(long, conflicts_with = "log")]
         runtime: bool,
+        /// Scan one agent log or transcript. Reports the file, line, and credential shape only.
+        #[arg(long, value_name = "PATH", conflicts_with_all = ["staged", "runtime"])]
+        log: Option<std::path::PathBuf>,
         /// Emit a names-only JSON report on stdout (exit status unchanged)
         #[arg(long)]
         json: bool,

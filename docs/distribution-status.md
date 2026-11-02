@@ -1,6 +1,8 @@
 # Distribution status
 
-Package publication and native acceptance are separate evidence. Use the
+Package publication and native acceptance are separate evidence. The source
+candidate identity for this tree is GitHub v0.8.0 assets, published by the
+tag workflow when that release exists. Until that receipt is recorded, use the
 checksum-verified [GitHub v0.7.9 assets](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.9)
 for an exact install; an unpinned command can change independently.
 

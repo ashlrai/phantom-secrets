@@ -4,6 +4,26 @@ This guide records what the current repository automates and what still needs
 separate evidence. It does not authorize a tag, package publication, Homebrew
 update, signing operation, provider consent, or deployment.
 
+## Version bump, then the existing tag
+
+`.github/workflows/auto-tag.yml` already creates `v<version>` when
+`Cargo.toml` `[workspace.package].version` changes on `main` and every
+required check on that commit is green. It uses the existing
+`ashlr-release` GitHub App (`ASHLR_RELEASE_APP_ID` /
+`ASHLR_RELEASE_APP_KEY`). It does not add a secret. A `v*` tag then runs
+`.github/workflows/release.yml`.
+
+Renovate opens dependency updates from `renovate.json`. Non-major updates
+are set to automerge through the pull request. Major updates stay open.
+That config does not add a workflow secret. The Renovate GitHub App has to
+be installed on the repository for those pull requests to appear.
+
+The tag-creation ruleset `Restrict release tag creation` (`21997435`)
+allows no bypass actor for the token that reads it (`current_user_can_bypass:
+never`). If the release app is not a bypass actor, auto-tag cannot create
+`v*` tags and a release stops there. Do not weaken that ruleset from a
+workflow.
+
 ## Current automated release path
 
 A `v*` tag starts `.github/workflows/release.yml`. Its tag-only wrapper delegates

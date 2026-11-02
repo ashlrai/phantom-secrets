@@ -4,7 +4,38 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
-No additional unreleased changes are recorded after the `0.7.10` release.
+Changes after 0.8.0 land in this section.
+
+## [0.8.0] - 2026-11-02
+
+This minor release adds a value-blind scan of agent logs and transcripts
+on top of `0.7.10`. Vault files and `phm_` mappings stay readable. The
+`v0.7.10` tag is not moved or replaced. GitHub and npm publication of
+`0.8.0` follow the existing tag workflow.
+
+### Added
+
+- `phantom check --log PATH` and MCP `phantom_check` with `log_path` scan
+  one agent log or transcript. The report names the file, the line, and
+  the credential shape. It does not print the matched text, a `phm_`
+  mapping, or any other secret value. A symlink is refused. A file over
+  8 MiB, or a line over 1 MiB, is refused instead of scanned in part.
+  `log_path` cannot be combined with `runtime=true`.
+
+### CI
+
+- Auto-tag creates an annotated `v<version>` tag. The release workflow
+  rejects a lightweight tag, which is why the `v0.7.10` tag push did not
+  publish a GitHub Release. That tag is immutable and is not moved.
+
+### Breaking changes and migration
+
+Pre-1.0 minor releases may change unstable interfaces. This release does
+not change the vault format. Existing `v0.7.10` artifacts stay immutable.
+`phantom check --json` and MCP `phantom_check` can report `mode` `log`
+and findings with `kind` `log`. Existing worktree, staged, and runtime
+reports keep their fields. A consumer that rejects an unknown `mode` or
+`kind` must accept `log`. Live provider issuance stays hard-denied.
 
 ## [0.7.10] - 2026-11-01
 
@@ -2474,56 +2505,36 @@ The `v0.7.9` tag and GitHub Release are not moved or replaced.
 
 ### Fixed
 
-- **SDKs under `phantom exec` reach the versioned API.** `phantom exec`
-  exports `OPENAI_BASE_URL=http://127.0.0.1:PORT/openai/_phantom/TOKEN/`, but
-  the official OpenAI SDKs and Codex treat `OPENAI_BASE_URL` as the `/v1` root
-  and request `<base>/models`, `<base>/chat/completions`. The proxy forwarded
-  those to `https://api.openai.com/models` (404). Each built-in route now
-  carries the version path its official SDK keeps in the default base URL:
-  `/v1` for OpenAI, xAI, Mistral, and Replicate. Unversioned requests on those
-  routes get the prefix; requests already starting with a version segment are
-  unchanged. Anthropic, Perplexity, Cohere, Gemini, Hugging Face, and the
-  non-LLM routes keep their paths as sent. Every route also collapses the
-  leading `//` produced when a caller appends `/v1/...` to the slash-terminated
-  base URL.
-- `phantom exec` / `phantom start` proxy: the upstream timeout is now a 600 s
-  idle (per-read) timeout instead of a 30 s total deadline. Previously any SSE
-  stream or slow non-streaming reasoning call longer than 30 s (routine for
-  Claude Code, Codex and the OpenAI/Anthropic SDKs, which allow 600 s) was cut
-  off mid-response.
-- A streaming response that the upstream drops midway now aborts the client
-  connection instead of ending cleanly, so SDKs see a transport error instead
-  of silently accepting a truncated stream.
-- Base-URL overrides are exported only for routes whose credential is loaded
-  in the session. Previously the default config pointed every supported SDK
-  at the proxy, so for example `phantom exec -- claude` with only an OpenAI
-  key protected sent every Claude Code request to a proxy 503.
-- Also export the base-URL variables the official SDKs actually read:
-  `GOOGLE_GEMINI_BASE_URL` (google-genai, Gemini CLI) and `CO_API_URL`
-  (Cohere), alongside the existing names. `REPLICATE_BASE_URL` is not
-  exported: replicate-python 1.x reads it as the host root while 2.x expects
-  it to include `/v1`.
-- `phantom start` prints shell `unset` lines for base-URL variables it no
-  longer exports, so a stale value from an earlier session is cleared.
-- The default global burst guard (`PHANTOM_RATE_LIMIT_BURST`) is now 100
-  requests per 10 s. It was 20, below the 50-per-secret limit, so a single
-  agent session hit proxy 429s before the per-secret limit could ever apply.
-- Upstream responses without a declared `content-length` (close-delimited or
-  otherwise unframed bodies such as NDJSON and JSON-array streams) are now
-  streamed through the byte-level scrubber instead of buffered until the
-  upstream closes and capped at the body limit.
-- When the client disconnects mid-stream, the proxy now closes the upstream
-  connection immediately instead of holding it until the next upstream byte
-  or the idle timeout.
-- The default request (and buffered response) body cap is now 32 MiB,
-  matching Anthropic's request limit; it was 10 MiB, which image-heavy agent
-  turns exceeded. A shared 320 MiB budget (the old 10 MiB x 32-slot worst
-  case) bounds bytes buffered across all in-flight requests; a request that
-  would exceed it gets a 503 with `retry-after`.
-- Proxy-generated error bodies are built with a JSON encoder, and the 429 and
-  503 bodies now carry `"source":"phantom-proxy"`,
-  the service or secret name, and a fix hint, so agents can tell them apart
-  from provider errors.
+- Commented-out secret assignments and other credential-shaped comments
+  fail `phantom check`, MCP `phantom_check`, and the compliance env check.
+- `phantom check --staged` also scans dotenv comments, `.phantom.toml`,
+  and direnv `.envrc` assignments.
+- A locked encrypted-file vault is no longer reported as an empty vault.
+- Dotenv, audit, proxy, and workspace state opens do not follow a planted
+  symlink.
+- A secret demoted to read-only is not injected by `phantom exec` and is
+  not pushed by `phantom sync` or a team vault push.
+- `phantom wrap` and `phantom unwrap` keep `package.json` formatting and
+  no longer break a script that is a shell command line.
+
+### Security
+
+- A dotenv read checks the file it opened, not a path that was swapped
+  for a symlink after the lookup.
+- Proxy lifecycle locks, audit readers, and workspace state directories
+  refuse a symlinked target.
+
+### Breaking changes and migration
+
+Pre-1.0 minor releases may change unstable interfaces. This release does
+not change the vault format. Existing `v0.7.9` artifacts stay immutable.
+`phantom check --json` and MCP `phantom_check` can report `mode` `log`
+and findings with `kind` `log`. Existing worktree, staged, and runtime
+reports keep their fields. A consumer that rejects an unknown `mode` or
+`kind` must accept `log`. Live provider issuance stays hard-denied.
+Run `phantom setup --client <client>` again only when you want the
+current MCP command path.
+
 
 ### Breaking changes and migration
 
@@ -3118,9 +3129,9 @@ remain separate evidence gates.
 For older release notes and downloadable artifacts, see [GitHub Releases](https://github.com/ashlrai/phantom-secrets/releases).
 
 <!-- fresh:begin changelog-unreleased-compare -->
-[Unreleased]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.10...HEAD
-[0.7.10]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.9...v0.7.10
+[Unreleased]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.0...HEAD
 <!-- fresh:end -->
+[0.8.0]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.10...v0.8.0
 [0.7.9]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.8...v0.7.9
 [0.7.8]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.7...v0.7.8
 [0.7.7]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.6...v0.7.7
