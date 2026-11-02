@@ -163,6 +163,35 @@ test("a pasted seven-character code is rejected even when its separator makes it
   }
 });
 
+test("invalid code lengths present the eight-character requirement as an input error", async () => {
+  const dependencies = {
+    "next/image": { __esModule: true, default: () => null },
+    "next/link": { __esModule: true, default: ({ children, ...props }) => React.createElement("a", props, children) },
+    "@/lib/device-code": compile("lib/device-code.ts", require),
+    "@/lib/posthog": { capturePostHog: async () => {} },
+    "@supabase/supabase-js": { createClient() { throw new Error("Unexpected authentication"); } },
+  };
+  const Component = compile("app/device/device-authorization-client.tsx", (name) => dependencies[name] ?? require(name)).default;
+  const user = userEvent.setup();
+  try {
+    render(React.createElement(Component));
+    const input = screen.getByRole("textbox", { name: "Device code" });
+    for (const code of ["ABCD234", "ABCD23456"]) {
+      await user.clear(input);
+      await user.type(input, code);
+      await user.click(screen.getByRole("button", { name: "Authorize Device" }));
+
+      const alert = screen.getByRole("alert");
+      assert.equal(alert.textContent, "Enter 8 letters or numbers. The code is displayed as XXXX-XXXX.");
+      assert.equal(alert.id, "device-error");
+      assert.equal(input.getAttribute("aria-invalid"), "true");
+      assert.ok(input.getAttribute("aria-describedby").split(/\s+/).includes(alert.id));
+    }
+  } finally {
+    cleanup();
+  }
+});
+
 test("short codes show the format error through the form and a corrected code can be authorized", async () => {
   let clientCalls = 0;
   const requests = [];
