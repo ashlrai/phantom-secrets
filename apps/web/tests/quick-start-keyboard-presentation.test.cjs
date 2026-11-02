@@ -109,3 +109,51 @@ test("keyboard focus reaches every platform control and Enter or Space activates
     cleanup();
   }
 });
+
+for (const key of ["{Enter}", " "]) {
+  for (const [name, archive, command] of [
+    ["macOS", "Apple Silicon", "shasum -a 256 -c -"],
+    ["Windows", "ARM64", "Get-FileHash -Algorithm SHA256"],
+    ["Linux", "ARM64", "sha256sum -c -"],
+  ]) {
+    test(`${name} presents its install instructions after keyboard activation with ${key === " " ? "Space" : "Enter"}`, async () => {
+      const user = userEvent.setup();
+      render(React.createElement(QuickStart));
+      try {
+        const selector = screen.getByRole("group", { name: "Choose an operating system" });
+        const controls = within(selector).getAllByRole("button");
+        const target = within(selector).getByRole("button", { name });
+
+        // Start with a different selection, including for the default platform.
+        if (name === "macOS") {
+          await user.tab();
+          await user.tab();
+          await user.keyboard("{Enter}");
+          await user.tab({ shift: true });
+        } else {
+          for (let i = 0; i <= controls.indexOf(target); i++) await user.tab();
+        }
+        assert.equal(document.activeElement, target);
+        assert.equal(target.getAttribute("aria-pressed"), "false");
+
+        await user.keyboard(key);
+        assert.equal(document.activeElement, target);
+        for (const control of controls) {
+          assert.equal(control.getAttribute("aria-pressed"), String(control === target));
+        }
+        const cards = screen.getAllByRole("article");
+        assert.equal(cards.length, 1);
+        const card = cards[0];
+        assert.ok(within(card).getByRole("heading", { level: 3, name }));
+        const download = within(card).getByRole("link", { name: new RegExp(`^Download Phantom .* for ${name} ${archive}$`) });
+        assert.ok(within(card).getByRole("button", { name: /^Copy command:/ }).textContent.includes(command));
+
+        // Tab from the activated button through remaining choices to its card.
+        for (let i = controls.indexOf(target); i < controls.length; i++) await user.tab();
+        assert.equal(document.activeElement, download);
+      } finally {
+        cleanup();
+      }
+    });
+  }
+}
