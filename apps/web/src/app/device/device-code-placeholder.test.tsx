@@ -86,6 +86,16 @@ test("the device code input pairs the XXXX-XXXX placeholder with an accessible l
   assert.ok(descriptions.some((text) => text.includes(placeholder)));
 });
 
+test("the placeholder is derived from the code length and the formatter's grouping", () => {
+  renderDevice(async () => { throw new Error("Unexpected sign-in"); });
+  const shown = screen.getByRole("textbox", { name: label }).getAttribute("placeholder") ?? "";
+  // Exactly the formatter's shape: two equal groups joined by one dash,
+  // together holding DEVICE_USER_CODE_LENGTH characters.
+  assert.match(shown, /^X+-X+$/);
+  assert.equal(shown.replace("-", "").length, deviceCode.DEVICE_USER_CODE_LENGTH);
+  assert.equal(deviceCode.formatDeviceUserCode("A".repeat(deviceCode.DEVICE_USER_CODE_LENGTH)), shown.replace(/X/g, "A"));
+});
+
 test("the placeholder never stands in for the label or a real value", async () => {
   renderDevice(async () => { throw new Error("Unexpected sign-in"); });
   const user = userEvent.setup();
