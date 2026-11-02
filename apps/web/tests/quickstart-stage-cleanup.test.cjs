@@ -87,3 +87,25 @@ test("Windows stages a file and attempts cleanup in finally", () => {
   for (const phrase of ["creates neither a directory nor", "creates no staging directory", "no\nfallback",
     "`finally`", "Removal errors are suppressed", "can leave the file"]) assert.ok(section("Windows").includes(phrase), phrase);
 });
+
+test("temporary directory note matches the displayed template and cleanup", () => {
+  const note = fs.readFileSync(path.join(docs, "quickstart-temp-directory-note.md"), "utf8");
+  for (const platform of ["macOS", "Linux"]) {
+    const lines = command(platform).split("\n");
+    for (const prefix of ["phantom_stage=", "trap '"]) {
+      const line = lines.find((entry) => entry.startsWith(prefix));
+      assert.ok(line, `${platform}: ${prefix}`);
+      assert.ok(note.includes(`\n${line}\n`), `${platform}: documented ${prefix}`);
+    }
+  }
+  for (const phrase of ["unset or empty", "does not trigger a retry", "`rm -f`", "`rmdir`",
+    "only if it is empty", "Directory removal errors are suppressed", "Cleanup is best",
+    "extra files can leave artifacts", "does not remove the installed binaries"]) {
+    assert.ok(note.includes(phrase), phrase);
+  }
+  const windows = command("Windows");
+  assert.match(windows, /Join-Path \$env:TEMP[\s\S]*\[Guid\]::NewGuid\(\)/);
+  assert.match(windows, /finally \{[\s\S]*Remove-Item -LiteralPath \$Installer -Force -ErrorAction SilentlyContinue/);
+  assert.match(note, /Windows command instead[\s\S]*`finally`[\s\S]*suppresses removal errors/);
+  assert.match(fs.readFileSync(path.join(docs, "README.md"), "utf8"), /\]\(quickstart-temp-directory-note\.md\)/);
+});
