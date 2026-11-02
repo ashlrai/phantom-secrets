@@ -85,6 +85,37 @@ test("candidate runbook examples reject stale, missing and duplicate commands", 
   assertCandidateExamples(readiness.replaceAll(sourceVersion, "99.98.97"), "99.98.97");
 });
 
+function assertReleaseEligibilityWarnings(document) {
+  const warnings = [
+    /Source-version agreement does not establish release eligibility or permission to publish\./,
+    /the annotated `v0\.8\.0` tag already exists and\s+peels to `1a881e82dad94f766d15c1caea43139b7022e817`/,
+    /A tag reservation does not\s+prove a published GitHub Release or package\./,
+    /illustrative fail-closed check: it must reject this reserved identity\./,
+    /Do not reuse, delete, move, or overwrite that tag\./,
+    /separately reviewed unreserved version, matching source metadata,/,
+    /this guide selects no such version\./,
+    /linked npm and MCP Registry runbooks retain version-specific `0\.7\.8`\s+examples/,
+    /are not current `0\.8\.0` source facts or copy-ready instructions for this candidate\./,
+    /Do not mechanically execute or substitute versions in those recipes\./,
+    /reconcile the exact approved source, tag, package versions,\s+manifest, acceptance receipts, and publication authorization/,
+  ];
+  for (const warning of warnings) assert.match(document, warning, "release eligibility warning");
+  assert.ok(document.indexOf("Source-version agreement") <
+    document.indexOf("gh workflow run release-rehearsal.yml"), "qualify examples before the first command");
+  return warnings;
+}
+
+test("source examples retain reserved-tag and older linked-recipe warnings", () => {
+  const warnings = assertReleaseEligibilityWarnings(readiness);
+  for (const warning of warnings) {
+    assert.throws(() => assertReleaseEligibilityWarnings(readiness.replace(warning, "")),
+      /release eligibility warning/);
+  }
+  // This is a dated reservation receipt, not a live remote lookup or future-version claim.
+  assert.throws(() => assertReleaseEligibilityWarnings(readiness.replace(
+    "it must reject this reserved identity", "it may reuse this reserved identity")), /release eligibility warning/);
+});
+
 test("dependency index validation rejects tracked installations, not similar names", () => {
   for (const path of ["node_modules", "apps/web/node_modules", "node_modules/a.js",
     "nested/node_modules/pkg/file.js", "space here/node_modules/a\nfile.js"]) {

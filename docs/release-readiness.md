@@ -93,6 +93,18 @@ the tag-push wrapper and therefore cannot enter a rehearsal run. This is the
 preferred way to find release-only platform failures before requesting a
 consequential tag.
 
+The concrete `0.8.0` examples in this runbook follow the current Cargo/npm source metadata.
+Source-version agreement does not establish release eligibility or permission to publish.
+Dated public-channel receipts remain separate evidence.
+
+Reservation checked on 2026-11-02: the annotated `v0.8.0` tag already exists and
+peels to `1a881e82dad94f766d15c1caea43139b7022e817`. A tag reservation does not
+prove a published GitHub Release or package. The `v0.8.0` pre-tag command below
+is an illustrative fail-closed check: it must reject this reserved identity.
+Do not reuse, delete, move, or overwrite that tag. Creating a new release identity
+requires a separately reviewed unreserved version, matching source metadata,
+rehearsal evidence, and explicit authorization; this guide selects no such version.
+
 Starting a hosted rehearsal consumes GitHub Actions capacity and therefore
 requires repository authorization. For an approved exact candidate, run:
 
@@ -168,10 +180,6 @@ guarantee, authorization to create a tag, or evidence that a tag/release exists.
 Requery both rulesets and the environment immediately before any release.
 
 ## Source-candidate gates
-
-The concrete `0.8.0` examples in this runbook follow the current Cargo/npm source metadata.
-They identify an unqualified source candidate, not a published release or permission
-to publish. Dated public-channel receipts remain separate evidence.
 
 Run these on the exact clean source SHA intended for a release:
 
@@ -313,6 +321,15 @@ wrapper to `latest` first and the primary CLI to `latest` last; verify both
 promotions before removing either candidate tag. Only after all npm gates pass
 should an operator use the separate
 [MCP Registry publication runbook](mcp-registry-publication.md).
+
+The linked npm and MCP Registry runbooks retain version-specific `0.7.8`
+examples. Those older examples, including the MCP manifest-version description,
+are not current `0.8.0` source facts or copy-ready instructions for this candidate.
+Do not mechanically execute or substitute versions in those recipes. Before any
+registry effect, reconcile the exact approved source, tag, package versions,
+manifest, acceptance receipts, and publication authorization for the selected
+identity. Their examples do not establish that any current version is available
+or approved for publication.
 
 Both runbooks keep public reads and local package inspection separate from
 human-approved registry writes. They also define idempotent reconciliation and
