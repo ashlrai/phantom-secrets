@@ -36,6 +36,7 @@ See [distribution status](distribution-status.md) for dated npm, Homebrew, crate
 | Identify the quickstart temporary directory template and cleanup trap | [Quickstart temporary directory note](quickstart-temp-directory-note.md) |
 | Trace each displayed command's staging lifecycle | [Quickstart staging lifecycle](quickstart-staging-lifecycle.md) |
 | Locate and compare temporary directory snippets | [Quickstart staging snippet count](quickstart-stage-snippet-count.md) |
+| Compare shared and platform-specific staging lines | [Quickstart staging comparison](quickstart-staging-comparison.md) |
 | Understand the Unix quickstart temporary directory fallback | [Quickstart temporary directory fallback](quickstart-temp-fallback.md) |
 | Compare quickstart temporary prefixes and fallbacks | [Quickstart temporary prefix reference](quickstart-temp-prefix-reference.md) |
 | Locate temporary installer files and their environment inputs | [Installer temporary locations](installer-temp-environment.md) |
