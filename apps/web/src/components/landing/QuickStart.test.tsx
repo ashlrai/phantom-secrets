@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
 import test from "node:test";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { QuickStart } from "./QuickStart";
@@ -142,5 +144,31 @@ test("Windows installation example displays a temporary installer file", () => {
     assert.match(command, /Remove-Item -LiteralPath \$Installer -Force/);
   } finally {
     cleanup();
+  }
+});
+
+test("every displayed quick-start command is selectable text without its prompt", () => {
+  const style = document.createElement("style");
+  style.textContent = fs.readFileSync(path.join(process.cwd(), "src/app/globals.css"), "utf8");
+  document.head.append(style);
+  render(<QuickStart />);
+  try {
+    for (const platform of ["macOS", "Windows", "Linux"]) {
+      fireEvent.click(screen.getByRole("button", { name: platform }));
+      const buttons = screen.getAllByRole("button", { name: /^Copy command:/ });
+      assert.equal(buttons.length, 3, `${platform}: install and both follow-up commands are shown`);
+      for (const button of buttons) {
+        const container = button.firstElementChild as HTMLElement;
+        const textNodes = Array.from(container.childNodes).filter((node) => node.nodeType === Node.TEXT_NODE);
+        assert.equal(textNodes.length, 1, `${platform}: command is one real text node, not an image or pseudo-element`);
+        assert.ok(textNodes[0].textContent?.trim());
+        assert.equal(window.getComputedStyle(container).userSelect, "text", `${platform}: command text is selectable`);
+        const prompt = container.querySelector('[aria-hidden="true"]') as HTMLElement;
+        assert.equal(window.getComputedStyle(prompt).userSelect, "none", `${platform}: prompt is not part of a selection`);
+      }
+    }
+  } finally {
+    cleanup();
+    style.remove();
   }
 });
