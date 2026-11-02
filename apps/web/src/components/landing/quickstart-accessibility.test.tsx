@@ -48,6 +48,17 @@ test("each displayed platform option has a distinct accessible name", async () =
       const displayedNames = buttons.map((button) => normalize(button.textContent ?? ""));
       assert.deepEqual(displayedNames, platforms);
       assert.equal(new Set(displayedNames).size, buttons.length);
+      const accessibleNames = new Map<Element, string>();
+      const namedButtons = within(selector).getAllByRole("button", {
+        name: (name, element) => {
+          if (element) accessibleNames.set(element, name);
+          return true;
+        },
+      });
+      assert.deepEqual(namedButtons, buttons);
+      const names = buttons.map((button) => accessibleNames.get(button));
+      assert.deepEqual(names, platforms, `${selected}: each control exposes its platform name`);
+      assert.equal(new Set(names).size, buttons.length, `${selected}: accessible names are distinct`);
       for (const [index, name] of displayedNames.entries()) {
         // getByRole requires exactly one button with this computed accessible name.
         assert.equal(within(selector).getByRole("button", { name }), buttons[index]);
