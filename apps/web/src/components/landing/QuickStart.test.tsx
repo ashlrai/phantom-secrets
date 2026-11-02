@@ -4,6 +4,21 @@ import { cleanup, fireEvent, render, screen, within } from "@testing-library/rea
 import { QuickStart } from "./QuickStart";
 import { PUBLIC_RELEASE_RECEIPT, PUBLIC_RELEASE_TAG } from "@/lib/public-release";
 
+test("quick-start section presents its title as a heading", () => {
+  render(<QuickStart />);
+  try {
+    const title = "Install on your OS. Then protect one project.";
+    const heading = screen.getByRole("heading", { level: 2, name: title });
+    const section = screen.getByRole("region", { name: title });
+
+    assert.equal(heading.textContent, title);
+    assert.ok(section.contains(heading));
+    assert.equal(section.getAttribute("aria-labelledby"), heading.id);
+  } finally {
+    cleanup();
+  }
+});
+
 test("rendered installation instructions keep their order for every platform", () => {
   render(<QuickStart />);
   try {
