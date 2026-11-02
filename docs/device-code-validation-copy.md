@@ -23,4 +23,6 @@ the length check clears it and continues authorization. A format-valid code
 may still be rejected by the server. A missing or invalid stored code after an
 OAuth return instead shows a separate instruction to enter the current code.
 See [device authorization code format](device-code-format.md) for more input
-examples and server-side context.
+examples and server-side context. The distinction between the readable
+`XXXX-XXXX` presentation and this eight-character validation count is recorded
+in the [device code display convention note](internal/notes.md#device-code-display-convention-wave).
