@@ -215,3 +215,105 @@ test("macOS instructions display before any selection and stay after re-selectio
     cleanup();
   }
 });
+
+test("switching platforms replaces the previous platform's visible instructions", () => {
+  render(<QuickStart />);
+  try {
+    const region = screen.getByRole("region", { name: "Install on your OS. Then protect one project." });
+    const selector = within(region).getByRole("group", { name: "Choose an operating system" });
+    const names = EXPECTED.map((platform) => platform.name);
+
+    // A command fragment only this platform renders.
+    const fragments: Record<string, string> = {
+      macOS: "shasum -a 256 -c -",
+      Windows: "Get-FileHash -Algorithm SHA256",
+      Linux: "sha256sum -c -",
+    };
+    // Target labels shared across platforms (ARM64, x64) cannot prove
+    // staleness, so only labels unique to one platform are signatures.
+    const labels = EXPECTED.flatMap((platform) => platform.targets.map((target) => target.label));
+    const uniqueLabel = (label: string) => labels.filter((other) => other === label).length === 1;
+    // Strings a platform's card renders as visible text or markup; any of
+    // them surviving a switch means stale instructions are still visible.
+    const signatures = new Map(
+      EXPECTED.map((platform) => [
+        platform.name,
+        {
+          text: [
+            platform.vault,
+            platform.detail,
+            platform.caveat,
+            // "$" is shared with Linux commands; "PS>" only marks Windows.
+            ...(platform.prompt === "$" ? [] : [platform.prompt]),
+            fragments[platform.name],
+            ...platform.targets.map((target) => target.label).filter(uniqueLabel),
+          ],
+          markup: platform.targets.flatMap((target) => [
+            target.filename,
+            `Download Phantom ${PUBLIC_RELEASE_TAG} for ${platform.name} ${target.label}`,
+            `Download the SHA-256 checksum for Phantom ${PUBLIC_RELEASE_TAG} on ${platform.name} ${target.label}`,
+          ]),
+        },
+      ]),
+    );
+
+    const onlyCard = () => {
+      const cards = within(region).getAllByRole("article");
+      assert.equal(cards.length, 1);
+      return cards[0];
+    };
+
+    for (const from of names) {
+      for (const to of names.filter((name) => name !== from)) {
+        fireEvent.click(within(selector).getByRole("button", { name: from }));
+        const previous = onlyCard();
+        assert.equal(within(previous).getByRole("heading", { level: 3 }).textContent, from);
+
+        fireEvent.click(within(selector).getByRole("button", { name: to }));
+        const card = onlyCard();
+        assert.notStrictEqual(card, previous);
+        assert.ok(!previous.isConnected, `${from} -> ${to}: previous instructions removed, not hidden`);
+
+        // The selected platform's instructions are the ones now visible.
+        const expected = EXPECTED.find((platform) => platform.name === to)!;
+        assert.ok(within(card).getByRole("heading", { level: 3, name: to }));
+        assert.ok(within(card).getByText(expected.vault));
+        assert.ok(within(card).getByText(expected.detail));
+        assert.ok(within(card).getByText(expected.caveat));
+        const command = within(card).getByRole("button", { name: /^Copy command:/ });
+        assert.equal(command.querySelector('[aria-hidden="true"]')?.textContent?.trim(), expected.prompt);
+        assert.equal(displayedCommand(command), expected.command, `${from} -> ${to}: displayed install command`);
+        for (const target of expected.targets) {
+          assert.ok(within(card).getByRole("link", {
+            name: `Download Phantom ${PUBLIC_RELEASE_TAG} for ${to} ${target.label}`,
+          }));
+          assert.ok(within(card).getByRole("link", {
+            name: `Download the SHA-256 checksum for Phantom ${PUBLIC_RELEASE_TAG} on ${to} ${target.label}`,
+          }));
+        }
+
+        // Nothing rendered only by a deselected platform remains visible.
+        for (const other of names.filter((name) => name !== to)) {
+          assert.equal(
+            within(region).queryByRole("heading", { level: 3, name: other }),
+            null,
+            `${from} -> ${to}: ${other} instructions still present`,
+          );
+          for (const text of signatures.get(other)!.text) {
+            assert.ok(!(region.textContent ?? "").includes(text),
+              `${from} -> ${to}: stale ${other} instruction visible: ${JSON.stringify(text.slice(0, 60))}`);
+          }
+          for (const markup of signatures.get(other)!.markup) {
+            assert.ok(!region.innerHTML.includes(markup),
+              `${from} -> ${to}: stale ${other} markup visible: ${JSON.stringify(markup.slice(0, 60))}`);
+          }
+        }
+
+        // The shared numbered steps are not displaced by the switch.
+        assert.equal(within(region).getAllByRole("listitem").length, 2);
+      }
+    }
+  } finally {
+    cleanup();
+  }
+});
