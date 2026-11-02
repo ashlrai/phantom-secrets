@@ -28,6 +28,62 @@ for (const platform of ["macOS", "Linux"]) {
   });
 }
 
+// The component quotes the staging template and every staged path so TMPDIR
+// and HOME may contain spaces; the rendered text must keep exactly those
+// quotes for the copied command to behave the way it is displayed.
+const QUOTED_STAGED_PATHS = {
+  unix: [
+    '"${TMPDIR:-/tmp}/phantom-install.XXXXXX"',
+    '"$phantom_stage/install.sh"',
+    '"$phantom_installer"',
+    '"$phantom_stage"',
+    '"$HOME/.phantom-secrets/bin/phantom"',
+    '"$HOME/.phantom-secrets/bin/phantom-mcp"',
+  ],
+  windows: [
+    '"$env:USERPROFILE\\.phantom-secrets\\bin\\phantom.exe"',
+    '"$env:USERPROFILE\\.phantom-secrets\\bin\\phantom-mcp.exe"',
+  ],
+} as const;
+
+test("displayed temporary-directory commands keep every quoted path", () => {
+  render(<QuickStart />);
+  try {
+    const selector = screen.getByRole("group", { name: "Choose an operating system" });
+    for (const platform of ["macOS", "Windows", "Linux"]) {
+      fireEvent.click(within(selector).getByRole("button", { name: platform }));
+      const card = screen.getByRole("heading", { level: 3, name: platform }).closest("article");
+      assert.ok(card);
+      const copy = within(card).getByRole("button", { name: /^Copy command:/ });
+      const displayed = Array.from(copy.firstElementChild!.childNodes)
+        .filter((node) => node.nodeType === Node.TEXT_NODE)
+        .map((node) => node.textContent)
+        .join("");
+
+      const quoted = platform === "Windows" ? QUOTED_STAGED_PATHS.windows : QUOTED_STAGED_PATHS.unix;
+      for (const fragment of quoted) {
+        assert.ok(displayed.includes(fragment), `${platform}: displayed command keeps ${fragment}`);
+      }
+      if (platform !== "Windows") {
+        assert.ok(
+          displayed.includes('phantom_stage="$(mktemp -d "${TMPDIR:-/tmp}/phantom-install.XXXXXX")"'),
+          `${platform}: mktemp template keeps both quote pairs`,
+        );
+      }
+      // Removing each quoted span must leave no staged-path expansion behind:
+      // a path outside quotes would split on spaces in TMPDIR or HOME.
+      const unquoted = quoted.reduce((text, fragment) => text.split(fragment).join(""), displayed);
+      if (platform === "Windows") {
+        assert.doesNotMatch(unquoted, /\$env:USERPROFILE/, platform);
+      } else {
+        assert.doesNotMatch(unquoted, /\$[A-Za-z_{]/, `${platform}: unquoted staged-path expansion`);
+      }
+    }
+  } finally {
+    cleanup();
+  }
+});
+
 test("every displayed installer stages under a temporary directory and cleans up", () => {
   render(<QuickStart />);
   try {
