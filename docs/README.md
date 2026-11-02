@@ -113,6 +113,7 @@ and retains historical design-status language.
 - [Cloud login](login.md)
 - [Device authorization code format](device-code-format.md)
 - [Readable device authorization code format](device-code-readable-format.md)
+- [Device code readability](device-code-readability.md)
 - [Device code display example](device-code-display-example.md)
 - [Device code display reference](device-code-display-reference.md)
 - [Device authorization input hint](device-code-input-hint.md)
