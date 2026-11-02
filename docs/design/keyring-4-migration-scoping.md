@@ -1,5 +1,43 @@
 # keyring 4 migration scoping (issue #242)
 
+## Implementation update (2026-10-26)
+
+The migration uses the keyring 4 ecosystem's `keyring-core` API and explicit
+platform stores, as [upstream recommends](https://docs.rs/keyring/4.2.0/keyring/)
+for applications controlling more than one store. It does not link the
+automatic-store `keyring` facade or install a process-global default.
+
+- Linux Secret Service uses `dbus-secret-service-keyring-store` with
+  OS-maintained libdbus and Rust cryptography. Linux source builds require
+  libdbus development files and `pkg-config` (on Debian/Ubuntu:
+  `sudo apt-get install libdbus-1-dev pkg-config`); binaries require the system
+  libdbus runtime (`libdbus-1-3` on Debian/Ubuntu). An unlocked Secret Service is
+  still required at runtime for explicitly migrated projects. Vendoring is
+  disabled: the C source has separate AFL/GPL licensing that the Rust wrapper's
+  Cargo license metadata does not describe. The existing license policy is
+  unchanged; no C source is bundled by this change.
+- Unmigrated Linux vaults, fallback passphrases, and cloud/team keys stay in
+  keyutils. Its new default prefix is **not** compatible with keyring 3, so
+  Phantom explicitly retains `keyring-rs:{user}@{service}`.
+- Secret Service retains `target=default` in its search modifiers, preserving
+  Phantom's keyring 3 entries and collection boundary. Additional existing
+  attributes such as `application=rust-keyring` do not prevent matching. The
+  keyring 3 fallback for ancient non-Phantom v1 entries without a `target`
+  attribute is not provided by the new store.
+- macOS retains the User Keychain with identical service/account attributes;
+  Windows retains `{user}.{service}` targets and Enterprise persistence.
+- Backend error diagnostics use fixed categories; raw data, nested platform
+  messages, and ambiguous credential metadata are not formatted.
+
+The zbus/zvariant dependency chain and its three advisory ignores are removed,
+along with the now-unused `nix@0.29.0` and `security-framework@2.11.1` duplicate
+exceptions. The unrelated RSA advisory exception and security bans remain.
+Linux lease-key provisioning continues to fail closed; this dependency change
+does not enable a new durable lease store.
+
+The original exploration below is historical. Current verification commands
+and platform limitations are recorded in the change's `BRIDGE_NOTES.md`.
+
 Status: scoping note. Docs only. Nothing here changes code, dependencies or `deny.toml`.
 
 Facts were checked on 2026-10-18 against `main` at `6895ecb`, the crates.io API, and a trial dependency resolution in a scratch worktree (no code was built or run against the new crates). Anything not checked is marked UNVERIFIED.

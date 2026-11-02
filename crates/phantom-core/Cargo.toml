@@ -32,7 +32,7 @@ reqwest = { version = "0.12", features = ["blocking", "rustls-tls", "json"], def
 base64 = { workspace = true }
 cap-std = { workspace = true }
 cap-fs-ext = { workspace = true }
-keyring = { version = "3", features = ["apple-native", "linux-native", "windows-native"] }
+keyring-core = { workspace = true }
 tokio = { workspace = true }
 tempfile = "3"
 
@@ -60,7 +60,14 @@ jsonwebtoken = { version = "10.3.0", features = ["aws_lc_rs"] }
 # Off by default. The crate has never been independently audited.
 x-wing = { version = "0.1.1", default-features = false, features = ["getrandom", "zeroize"], optional = true }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+apple-native-keyring-store = { version = "1.0.2", features = ["keychain"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+linux-keyutils-keyring-store = "1.0.0"
+
 [target.'cfg(windows)'.dependencies]
+windows-native-keyring-store = { version = "1.1.0", default-features = false }
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Security",
