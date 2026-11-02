@@ -18,6 +18,29 @@ fn phantom(project: &TempDir, home: &TempDir) -> Command {
     common::phantom_with_home(project, home, VAULT_PASS)
 }
 
+/// Profile preparation happens in the harness, before the child is spawned.
+/// Catch project pollution at that boundary as well as after CLI rejection.
+#[test]
+fn command_construction_keeps_profile_outside_project() {
+    let project = common::canonical_tempdir();
+    let home = common::canonical_tempdir();
+    let command = phantom(&project, &home);
+    let profile = common::profile_path(home.path());
+    let env = command.get_envs().collect::<BTreeMap<_, _>>();
+    for (name, expected) in [
+        ("USERPROFILE", profile.clone()),
+        ("APPDATA", profile.join("AppData/Roaming")),
+        ("LOCALAPPDATA", profile.join("AppData/Local")),
+    ] {
+        assert_eq!(env[std::ffi::OsStr::new(name)], Some(expected.as_os_str()));
+    }
+    #[cfg(windows)]
+    for folder in ["Roaming", "Local"] {
+        assert!(profile.join("AppData").join(folder).is_dir());
+    }
+    assert!(snapshot(project.path()).is_empty());
+}
+
 fn init_project(project: &TempDir, home: &TempDir) {
     fs::write(project.path().join(".env"), "SEED_SECRET=sk-seed-value\n").expect("write seed .env");
     phantom(project, home)
