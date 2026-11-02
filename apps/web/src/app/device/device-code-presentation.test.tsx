@@ -104,6 +104,18 @@ test("the empty field presents a visible label above the input and a visible for
   assert.ok(hintNode.compareDocumentPosition(submit) & follows, "the submit renders after the hint");
 });
 
+test("the empty field displays the XXXX-XXXX placeholder inside the input", () => {
+  renderDevice(async () => { throw new Error("Unexpected sign-in"); });
+  const input = screen.getByRole("textbox", { name: label }) as HTMLInputElement;
+
+  // The format picture is drawn inside the empty field itself: the rendered
+  // input carries the exact placeholder a user sees before typing, so the
+  // field can be found by that displayed text.
+  assert.equal(input.value, "");
+  assert.equal(input.placeholder, "XXXX-XXXX");
+  assert.equal(screen.getByPlaceholderText("XXXX-XXXX"), input);
+});
+
 test("the label and hint stay visible once typed text replaces the placeholder and after validation feedback", async () => {
   renderDevice(async () => { throw new Error("Unexpected sign-in"); });
   const user = userEvent.setup();
