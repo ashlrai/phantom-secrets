@@ -192,6 +192,19 @@ async function waitForPath(path, timeoutMs = 5000) {
   }
 }
 
+test('Unix installer copies use the same staging directory template', () => {
+  const installers = [shellInstaller, join(repo, 'apps', 'web', 'public', 'install.sh')];
+  const assignments = installers.map((file) => {
+    const source = readFileSync(file, 'utf8');
+    // Ignore the empty initialization, but require exactly one staging assignment.
+    const matches = [...source.matchAll(/^[ \t]*stage_root=(?!""[ \t]*$)(.*)$/gm)];
+    assert.equal(matches.length, 1, `${file} must have one staging directory assignment`);
+    return matches[0][1].replace(/[ \t]*\\[ \t]*$/, '').trimEnd();
+  });
+  assert.equal(assignments[0], assignments[1], 'installer staging templates must match');
+  assert.equal(assignments[0], '"$(mktemp -d "$install_parent/.${install_name}.install.XXXXXX")"');
+});
+
 test('web installer mirrors remain bound to the evidenced public release', () => {
   // Release candidates can target a not-yet-published tag. The phm.dev copies
   // must not advance until public-release.ts has immutable release evidence.
