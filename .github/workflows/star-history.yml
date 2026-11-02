@@ -1,0 +1,88 @@
+name: star-history
+
+# Daily public star totals for phm.dev. Appends one UTC snapshot to the
+# star-history branch (exact ref refs/heads/star-history). Does not push to
+# the default branch. Uses the workflow token only; no committed credential.
+on:
+  schedule:
+    - cron: "23 13 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: star-history
+  cancel-in-progress: false
+
+jobs:
+  record:
+    name: Record ecosystem stars
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+      - name: Probe the history branch
+        id: probe
+        run: |
+          set -euo pipefail
+          if git ls-remote --exit-code "https://github.com/${GITHUB_REPOSITORY}.git" refs/heads/star-history >/dev/null; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Check out the history branch
+        if: steps.probe.outputs.exists == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: star-history
+          path: star-history-publish
+          persist-credentials: true
+      - name: Start an orphan history branch
+        if: steps.probe.outputs.exists != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git init --quiet star-history-publish
+          git -C star-history-publish checkout --quiet --orphan star-history
+          git -C star-history-publish remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          gh auth setup-git
+      - name: Record today's snapshot
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          prior=()
+          if [ -f star-history-publish/star-history.json ]; then
+            prior=(--prior star-history-publish/star-history.json)
+          fi
+          node apps/web/scripts/record-star-snapshot.mjs --out "$RUNNER_TEMP/star-history.json" "${prior[@]}"
+      - name: Publish refs/heads/star-history
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cp "$RUNNER_TEMP/star-history.json" star-history-publish/star-history.json
+          cat > star-history-publish/README.md <<'MD'
+          # Phantom ecosystem star history
+
+          Daily public GitHub star totals written by `.github/workflows/star-history.yml`.
+          The list of repositories is `apps/web/ecosystem-repos.json` on the default branch.
+          MD
+          cd star-history-publish
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "no change"
+            exit 0
+          fi
+          git commit --quiet -m "stars: $(node -e 'const h=require("./star-history.json"); const s=h.snapshots.at(-1); process.stdout.write(s.total+" on "+s.date)')"
+          git push --quiet origin HEAD:refs/heads/star-history
