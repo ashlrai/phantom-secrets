@@ -2965,3 +2965,19 @@ code, pre, .mono {
 .docs-assistant :focus-visible, .docs-workbench a:focus-visible { outline: 3px solid var(--verified); outline-offset: 3px; }
 .docs-article-page__aside .docs-assistant__actions a { font-size: 0.8rem; }
 @media (max-width: 680px) { .docs-workbench { grid-template-columns: minmax(0, 1fr); gap: 1.5rem; padding-block: 2.5rem; } }
+
+.agent-console { padding: 3.5rem 0 2rem; background: #050508; color: #f5f5f7; }
+.agent-console .landing-kicker { color: #60a5fa; }
+.agent-console h2 { margin: 0.4rem 0 0.6rem; color: #f5f5f7; font-size: clamp(1.8rem, 4vw, 2.6rem); letter-spacing: -0.04em; }
+.agent-console .landing-frame > p { max-width: 68ch; color: #a1a1b5; line-height: 1.7; }
+.agent-console__tabs { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 1.25rem 0 0.8rem; }
+.agent-console__tabs button { min-height: 44px; border: 1px solid #252538; border-radius: 999px; background: #101018; color: #a1a1b5; padding: 0.4rem 0.9rem; font: inherit; font-size: 0.84rem; font-weight: 650; cursor: pointer; }
+.agent-console__tabs button[aria-selected="true"] { background: #2563eb; border-color: #2563eb; color: #fff; }
+.agent-console__panel { border: 1px solid #252538; border-radius: 16px; background: #0b0b14; overflow: hidden; }
+.agent-console__bar { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 0.7rem 0.9rem; border-bottom: 1px solid #252538; color: #808096; font-family: ui-monospace, monospace; font-size: 0.78rem; }
+.agent-console__bar button { min-height: 36px; border: 0; border-radius: 8px; background: #1d4ed8; color: #fff; padding: 0.35rem 0.75rem; font: inherit; font-size: 0.78rem; font-weight: 700; cursor: pointer; }
+.agent-console pre { margin: 0; padding: 1rem 1.1rem 0.4rem; overflow-x: auto; color: #f5f5f7; font-size: 0.86rem; line-height: 1.55; }
+.agent-console__panel > p { margin: 0; padding: 0.2rem 1.1rem 1rem; color: #808096; font-size: 0.84rem; }
+.agent-console__links { display: flex; flex-wrap: wrap; gap: 0.8rem 1.2rem; margin-top: 1rem; }
+.agent-console__links a { color: #60a5fa; font-weight: 650; }
+.agent-console button:focus-visible, .agent-console a:focus-visible { outline: 3px solid #60a5fa; outline-offset: 3px; }

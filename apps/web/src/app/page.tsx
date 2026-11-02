@@ -37,6 +37,7 @@ export default function Home() {
         <h2 id="secrets-bridge-title">Phantom Secrets. A boundary for your credentials.</h2>
         <p>The local-first Secrets CLI and MCP server keep real API keys out of supported agent paths. See its installation, client setup and reviewed release evidence on the dedicated product page.</p>
         <a href="/secrets">Explore Phantom Secrets →</a>
+        <a href="/secrets#agent">Agent quickstart</a>
         <p>Looking for an existing Secrets section?</p>
         <div className="phantom-workbench__actions">
           <a id="how" href="/secrets#how">How it works</a>
