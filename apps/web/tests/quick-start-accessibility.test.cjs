@@ -14,6 +14,7 @@ global.HTMLElement = dom.window.HTMLElement;
 global.Node = dom.window.Node;
 
 const React = require("react");
+const { cleanup, fireEvent, render, screen, waitFor, within } = require("@testing-library/react");
 function load(file, dependencies = {}) {
   const source = fs.readFileSync(path.join(__dirname, "../src", file), "utf8");
   const output = ts.transpileModule(source, {
@@ -39,6 +40,41 @@ const quickStart = load("components/landing/QuickStart.tsx", {
 load("components/landing/quickstart-accessibility.test.tsx", {
   "./QuickStart": quickStart,
   "@/lib/public-release": release,
+});
+
+test("a successful QuickStart copy displays feedback for the selected command", async () => {
+  const originalClipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+  const copied = [];
+  let finishCopy;
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: { writeText: (text) => { copied.push(text); return new Promise((resolve) => { finishCopy = resolve; }); } },
+  });
+  const style = document.createElement("style");
+  style.textContent = fs.readFileSync(path.join(__dirname, "../src/app/globals.css"), "utf8");
+  document.head.append(style);
+  try {
+    render(React.createElement(quickStart.QuickStart));
+    const button = screen.getByRole("button", { name: "Copy command: phantom init" });
+    const feedback = button.querySelector('[aria-live="polite"]');
+    assert.ok(feedback);
+    assert.equal(feedback.textContent, "");
+    fireEvent.click(button);
+    assert.deepEqual(copied, ["phantom init"]);
+    assert.equal(feedback.textContent, "", "feedback waits for the clipboard operation to succeed");
+    finishCopy();
+    await waitFor(() => assert.equal(feedback.textContent, "Copied"));
+    assert.equal(feedback.classList.contains("sr-only"), false);
+    assert.equal(window.getComputedStyle(feedback).visibility, "visible");
+    assert.notEqual(window.getComputedStyle(feedback).display, "none");
+    assert.equal(within(button).getByText("Copied"), feedback);
+    assert.equal(screen.getAllByText("Copied").length, 1);
+  } finally {
+    cleanup();
+    style.remove();
+    if (originalClipboard) Object.defineProperty(navigator, "clipboard", originalClipboard);
+    else delete navigator.clipboard;
+  }
 });
 test("accessibility review is discoverable and covers the review workflow", () => {
   const docs = path.join(__dirname, "../../../docs");

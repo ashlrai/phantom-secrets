@@ -318,7 +318,11 @@ code, pre, .mono {
 }
 
 .copy-command__icon {
+  display: flex;
   flex: 0 0 auto;
+  align-items: center;
+  gap: 0.35rem;
+  max-width: 45%;
   color: var(--ink-faint);
 }
 
