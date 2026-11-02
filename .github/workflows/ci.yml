@@ -243,6 +243,12 @@ jobs:
       - name: Verify MCP registry catalog matches runtime tools/list
         if: runner.os == 'Linux'
         run: node scripts/release/mcp-stdio-smoke.mjs target/debug/phantom-mcp 54
+      # bash -n parses without executing. The macOS leg still ships bash 3.2,
+      # so it also catches syntax only newer bash accepts. Windows legs have
+      # no reliable bash.
+      - name: Check installer shell syntax
+        if: runner.os != 'Windows'
+        run: node --test scripts/installer-syntax.test.mjs
       - name: Run direct installer offline tests
         if: runner.os == 'Linux'
         run: node --test scripts/installers.test.js scripts/release/native-installer-acceptance.test.mjs
@@ -351,6 +357,10 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      # Seconds-fast gate: a syntax-broken installer fails the PR here instead
+      # of surfacing in the nightly matrix.
+      - name: Check installer shell syntax
+        run: node --test scripts/installer-syntax.test.mjs
 
   dependency-policy:
     name: Rust dependency policy

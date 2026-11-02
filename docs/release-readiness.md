@@ -189,6 +189,7 @@ npm --prefix apps/web run lint
 npm --prefix apps/web test
 npm --prefix apps/web run build
 node --test scripts/installers.test.js
+node --test scripts/installer-syntax.test.mjs
 node --test scripts/examples-first-five-minutes.test.mjs
 node --test scripts/release/native-installer-acceptance.test.mjs
 node --test scripts/release/pre-tag-preflight.test.mjs
