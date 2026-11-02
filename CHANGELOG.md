@@ -22,6 +22,12 @@ on top of `0.7.10`. Vault files and `phm_` mappings stay readable. The
   8 MiB, or a line over 1 MiB, is refused instead of scanned in part.
   `log_path` cannot be combined with `runtime=true`.
 
+### CI
+
+- Auto-tag creates an annotated `v<version>` tag. The release workflow
+  rejects a lightweight tag, which is why the `v0.7.10` tag push did not
+  publish a GitHub Release. That tag is immutable and is not moved.
+
 ### Breaking changes and migration
 
 Pre-1.0 minor releases may change unstable interfaces. This release does
