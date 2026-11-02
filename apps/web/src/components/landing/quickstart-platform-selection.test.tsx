@@ -101,6 +101,41 @@ function displayedCommand(command: HTMLElement) {
     .join("");
 }
 
+test("platform controls expose exactly one selected choice through every transition", () => {
+  render(<QuickStart />);
+  try {
+    const selector = screen.getByRole("group", { name: "Choose an operating system" });
+    const names = ["macOS", "Windows", "Linux"];
+    const assertSelection = (selected: string) => {
+      assert.deepEqual(
+        within(selector).getAllByRole("button", { pressed: true }).map((button) => button.textContent),
+        [selected],
+      );
+      assert.deepEqual(
+        within(selector).getAllByRole("button", { pressed: false }).map((button) => button.textContent),
+        names.filter((name) => name !== selected),
+      );
+      assert.equal(within(selector).getAllByRole("button").length, names.length);
+      assert.equal(screen.getAllByRole("article").length, 1);
+      assert.ok(screen.getByRole("heading", { level: 3, name: selected }).closest("article"));
+    };
+
+    assertSelection("macOS");
+    for (const from of names) {
+      fireEvent.click(within(selector).getByRole("button", { name: from }));
+      assertSelection(from);
+      for (const to of names) {
+        fireEvent.click(within(selector).getByRole("button", { name: to }));
+        assertSelection(to);
+        fireEvent.click(within(selector).getByRole("button", { name: from }));
+        assertSelection(from);
+      }
+    }
+  } finally {
+    cleanup();
+  }
+});
+
 test("selecting each platform displays its corresponding instructions", () => {
   render(<QuickStart />);
   try {
