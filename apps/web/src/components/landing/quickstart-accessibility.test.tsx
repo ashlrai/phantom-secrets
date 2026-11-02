@@ -43,6 +43,8 @@ test("each displayed platform option has a distinct accessible name", async () =
     for (const selected of platforms) {
       await user.click(within(selector).getByRole("button", { name: selected }));
       const buttons = within(selector).getAllByRole("button");
+      // A rendered option must not disappear from the accessibility tree.
+      assert.deepEqual(buttons, Array.from(selector.querySelectorAll("button")));
       const displayedNames = buttons.map((button) => normalize(button.textContent ?? ""));
       assert.deepEqual(displayedNames, platforms);
       assert.equal(new Set(displayedNames).size, buttons.length);
