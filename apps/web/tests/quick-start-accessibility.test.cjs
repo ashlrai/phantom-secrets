@@ -80,10 +80,32 @@ test("accessibility review is discoverable and covers the review workflow", () =
   const docs = path.join(__dirname, "../../../docs");
   const review = fs.readFileSync(path.join(docs, "quickstart-accessibility-review.md"), "utf8");
   assert.match(fs.readFileSync(path.join(docs, "README.md"), "utf8"), /\]\(quickstart-accessibility-review\.md\)/);
-  for (const heading of ["Headings and structure", "Platform selection", "Command readability", "Keyboard access"]) {
+  for (const heading of ["Controls inventory", "Headings and structure", "Platform selection", "Command readability", "Keyboard access"]) {
     assert.ok(review.includes(`## ${heading}`), `missing checklist section: ${heading}`);
   }
-  for (const item of ["macOS", "Windows", "Linux", "aria-pressed", "Shift+Tab", "screen reader", "clipboard success and failure"]) {
+  for (const item of [
+    "macOS",
+    "Windows",
+    "Linux",
+    "aria-pressed",
+    "Shift+Tab",
+    "screen reader",
+    "clipboard success and failure",
+    // The note must identify the platform controls and the copy control.
+    "Choose an operating system",
+    "View exact installer source",
+    "platform installation guide",
+    "Copy command:",
+    // Concrete accessible-name checks.
+    "aria-hidden",
+    "accessibility tree",
+    "distinct",
+    // Concrete keyboard checks.
+    "Enter and Space",
+    "focus remains on the activated button",
+    // Live-region copy feedback.
+    "aria-live",
+  ]) {
     assert.ok(review.includes(item), `missing review item: ${item}`);
   }
 });
