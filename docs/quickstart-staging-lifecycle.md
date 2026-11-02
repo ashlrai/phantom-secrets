@@ -24,6 +24,13 @@ creation and trap installation, termination that prevents the trap from
 running, filesystem errors, or extra contents can leave artifacts. Cleanup
 does not remove the installed binaries.
 
+For a leftover from a finished run, first identify its exact
+`phantom-install.*` directory under the temporary parent used by that run.
+Check its contents and ownership before removing anything. The trap removes
+only `install.sh` and then tries to remove the directory if empty; it does not
+remove unexpected files. Investigate those files before deciding how to clean
+them up. Do not remove a directory belonging to an active installation.
+
 ## Linux
 
 The install block uses the same subshell, private umask, directory template,
