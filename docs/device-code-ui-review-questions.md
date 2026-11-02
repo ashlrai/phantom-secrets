@@ -53,9 +53,11 @@ Submit an empty field, then a short code such as `ABCD-234`. Both should show:
    and an uncertain approval, where the user should check the terminal before
    retrying. Do not assume every approval failure means no approval occurred.
 
-The existing [placeholder](../apps/web/src/app/device/device-code-placeholder.test.tsx)
-and [accessibility](../apps/web/src/app/device/device-code-accessibility.test.tsx)
-tests cover DOM semantics and interactions; they do not measure rendered contrast,
+The existing [placeholder](../apps/web/src/app/device/device-code-placeholder.test.tsx),
+[accessibility](../apps/web/src/app/device/device-code-accessibility.test.tsx),
+and [presentation](../apps/web/src/app/device/device-code-presentation.test.tsx)
+tests cover DOM semantics, interactions, and the rendered visibility and order
+of the label and hint; they do not measure rendered contrast,
 layout, or actual screen-reader announcements. See the
 [format reference](device-code-format-reference.md) for the exact copy and
 counting rules.
