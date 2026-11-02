@@ -2,6 +2,43 @@
 
 > Open-source CLI that helps keep provider credential values out of the managed dotenv and MCP path for supported AI workflows. It replaces managed dotenv values with non-provider `phm_` tokens and proxies exact supported API routes through an authenticated local service. Unmanaged files, same-user processes, proxy-bearer theft, and provider content remain outside that boundary.
 
+## Agents
+
+Paste this after install. Output is value-free. The longer walkthrough is [agent-quickstart.md](agent-quickstart.md). Full reference: [llms-full.txt](llms-full.txt).
+
+```bash
+phantom init
+phantom status --json
+phantom list --json
+phantom agent doctor --json
+phantom setup --client claude
+phantom setup --client cursor
+phantom setup --client codex
+phantom check
+phantom why OPENAI_API_KEY --json
+```
+
+Claude Code and Cursor receive this MCP shape. Setup writes the absolute path it found:
+
+```json
+{
+  "mcpServers": {
+    "phantom": {
+      "command": "phantom",
+      "args": ["mcp", "serve"]
+    }
+  }
+}
+```
+
+Codex receives:
+
+```toml
+[mcp_servers.phantom]
+command = "phantom"
+args = ["mcp", "serve"]
+```
+
 ## Install
 
 Release evidence verified on 2026-09-29. The immutable GitHub `v0.7.9` release at
@@ -26,7 +63,7 @@ release executables on PATH. See [distribution status](distribution-status.md) f
 ## MCP Server
 
 Setup (recommended, one command per AI client):
-- Claude Code: `phantom setup --client claude` (writes .claude/settings.local.json)
+- Claude Code: `phantom setup --client claude` (writes project .mcp.json and hardens .claude/settings.local.json)
 - Cursor: `phantom setup --client cursor` (writes ~/.cursor/mcp.json)
 - Windsurf: `phantom setup --client windsurf` (writes ~/.codeium/windsurf/mcp_config.json)
 - Codex: `phantom setup --client codex` (writes ~/.codex/config.toml)

@@ -1,4 +1,4 @@
-# Phantom — Delegate Supported Secret Workflows to AI
+# Phantom. Delegate supported secret workflows to AI
 
 Phantom is an open-source CLI that helps keep provider credential values out of the managed dotenv and MCP path for supported AI workflows. It replaces heuristically detected, managed dotenv values with random `phm_` placeholders and uses an authenticated local proxy for reviewed HTTP API routes. It reduces one credential-exposure path; it does not eliminate risk from unmanaged files, same-user processes, proxy-bearer theft, provider endpoints, arbitrary tools, or unsupported protocols.
 
@@ -9,6 +9,45 @@ Language: Rust
 Release evidence was verified on 2026-09-29. The immutable GitHub `v0.7.9` release at https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.9 resolves to `7a51ce512ec4aee12cc29ff859036af63fbe93db`. Its 19 assets were verified after all six native acceptance rows and release attestations passed in https://github.com/ashlrai/phantom-secrets/actions/runs/34153902556.
 Install: use the exact checksum-verified `v0.7.9` GitHub assets below on macOS, Linux, and Windows. See [distribution status](distribution-status.md) for dated npm, Homebrew, crates.io, and MCP Registry evidence. Prefer the checksum-verified `v0.7.9` GitHub assets for an exact install.
 MCP: after installing both release binaries, run `phantom setup --client claude|cursor|windsurf|codex|gemini`.
+
+## Agents start here
+
+Paste these. They do not print secret values. Shorter copy: [llms.txt](llms.txt) and [agent-quickstart.md](agent-quickstart.md).
+
+```bash
+phantom init
+phantom status --json
+phantom list --json
+phantom agent doctor --json
+phantom setup --client claude
+phantom setup --client cursor
+phantom setup --client codex
+phantom check
+phantom why OPENAI_API_KEY --json
+```
+
+Claude Code (`.mcp.json`) and Cursor (`~/.cursor/mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "phantom": {
+      "command": "phantom",
+      "args": ["mcp", "serve"]
+    }
+  }
+}
+```
+
+Codex (`~/.codex/config.toml`):
+
+```toml
+[mcp_servers.phantom]
+command = "phantom"
+args = ["mcp", "serve"]
+```
+
+`phantom setup` writes the absolute path of the local binary it found. The snippets above use `phantom` on `PATH`.
 
 ## The Problem
 

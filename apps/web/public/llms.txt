@@ -35,6 +35,24 @@ Phantom Secrets is the open-source CLI that helps keep provider credential value
 - Architecture diagram: https://phm.dev/architecture-diagram.png
 - License: MIT
 
+## Agent commands
+
+Paste these after install. They do not print secret values.
+
+```bash
+phantom init
+phantom status --json
+phantom list --json
+phantom agent doctor --json
+phantom setup --client claude
+phantom setup --client cursor
+phantom setup --client codex
+phantom check
+phantom why OPENAI_API_KEY --json
+```
+
+Claude Code writes project `.mcp.json`. Cursor writes `~/.cursor/mcp.json`. Codex writes `~/.codex/config.toml` with `[mcp_servers.phantom]`. Each `command` is `phantom` and each `args` list is `mcp` then `serve`. `phantom setup` writes the absolute path of the local binary it found.
+
 ## Install
 
 Release evidence verified on 2026-10-06. The immutable GitHub `v0.7.9` release at
@@ -65,7 +83,7 @@ certification or customer acceptance.
 
 ## Editor MCP setup
 
-One command per AI client — Phantom writes the right config file for each:
+One command per AI client. Phantom writes the right config file for each:
 
 | Editor | Command | Writes to |
 |---|---|---|
