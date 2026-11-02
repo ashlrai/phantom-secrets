@@ -5,11 +5,21 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import test from 'node:test';
 
-const installer = readFileSync(resolve(import.meta.dirname, 'install.sh'), 'utf8');
-const start = installer.indexOf('add_to_user_path() {\n');
-const end = installer.indexOf('\n}\n\ncommand -v curl', start);
-assert.ok(start >= 0 && end > start, 'locate the installer PATH-update function');
-const pathUpdate = installer.slice(start, end + '\n}'.length);
+const copies = {
+  'scripts/install.sh': resolve(import.meta.dirname, 'install.sh'),
+  'apps/web/public/install.sh': resolve(import.meta.dirname, '..', 'apps', 'web', 'public', 'install.sh'),
+};
+const installer = readFileSync(copies['scripts/install.sh'], 'utf8');
+const publicInstaller = readFileSync(copies['apps/web/public/install.sh'], 'utf8');
+
+function pathUpdateFunction(source, file) {
+  const start = source.indexOf('add_to_user_path() {\n');
+  const end = source.indexOf('\n}\n\ncommand -v curl', start);
+  assert.ok(start >= 0 && end > start, `${file}: locate the installer PATH-update function`);
+  return source.slice(start, end + '\n}'.length);
+}
+
+const pathUpdate = pathUpdateFunction(installer, 'scripts/install.sh');
 
 for (const failedTemp of ['before', 'candidate']) {
   test(`PATH update fails safely when ${failedTemp} temporary-file creation fails`, (t) => {
@@ -52,3 +62,60 @@ exec /usr/bin/mktemp "$@"
     assert.deepEqual(readdirSync(home), ['.bashrc'], 'temporary siblings must be removed');
   });
 }
+
+// A failed before-file creation must abort the update outright; a failed
+// candidate-file creation must first remove the already-created before file
+// and then abort. Both installer copies must carry those guards.
+function creationGuard(body, kind, file) {
+  const creations = [...body.matchAll(
+    new RegExp(`^\\s*${kind}_tmp="\\$\\(mktemp "([^"\\n]+)"\\)"`, 'gm'),
+  )];
+  assert.equal(creations.length, 1, `${file}: expected one ${kind} temporary-file creation`);
+  assert.equal(
+    creations[0][1],
+    `$rc_parent/.phantom-path.${kind}.XXXXXX`,
+    `${file}: the ${kind} file must be a private sibling of the startup file`,
+  );
+  const tail = body.slice(creations[0].index + creations[0][0].length);
+  if (kind === 'before') {
+    assert.match(
+      tail,
+      /^[ \t]*\|\|[ \t]*return 1[ \t]*\n/,
+      `${file}: a failed before-file creation must abort the PATH update`,
+    );
+  } else {
+    assert.match(
+      tail,
+      /^[ \t]*\\[ \t]*\n[ \t]*\|\|[ \t]*\{[ \t]*rm -f -- "\$before_tmp";[ \t]*return 1;[ \t]*\}[ \t]*\n/,
+      `${file}: a failed candidate-file creation must remove the before file and abort`,
+    );
+  }
+  return creations[0].index;
+}
+
+for (const [file, source] of [
+  ['scripts/install.sh', installer],
+  ['apps/web/public/install.sh', publicInstaller],
+]) {
+  test(`${file} checks creation of the before and candidate temporary files`, () => {
+    const body = pathUpdateFunction(source, file);
+    const beforeIndex = creationGuard(body, 'before', file);
+    const candidateIndex = creationGuard(body, 'candidate', file);
+    assert.ok(beforeIndex < candidateIndex, `${file}: the before file must be created first`);
+  });
+}
+
+test('both installer copies carry the identical PATH-update function', () => {
+  assert.equal(
+    pathUpdate,
+    pathUpdateFunction(publicInstaller, 'apps/web/public/install.sh'),
+    'PATH-update temporary-file guards must match across installer copies',
+  );
+});
+
+test('the creation-guard check rejects unguarded temporary-file creation', () => {
+  const unguardedBefore = pathUpdate.replace('before.XXXXXX")" || return 1', 'before.XXXXXX")"');
+  assert.throws(() => creationGuard(unguardedBefore, 'before', 'fixture'), /must abort/);
+  const unguardedCandidate = pathUpdate.replace('|| { rm -f -- "$before_tmp"; return 1; }', '');
+  assert.throws(() => creationGuard(unguardedCandidate, 'candidate', 'fixture'), /must remove the before file/);
+});
