@@ -325,3 +325,70 @@ test("corrected device code resubmits past the prior validation error", async ()
     globalThis.fetch = originalFetch;
   }
 });
+
+test("validation remains visible during correction and clears on valid submission", async () => {
+  const React = await import("react");
+  const { cleanup, render, screen } = await import("@testing-library/react");
+  const { default: userEvent } = await import("@testing-library/user-event");
+  let resolveSession;
+  let sessionCalls = 0;
+  const originalFetch = globalThis.fetch;
+  let requests = 0;
+  globalThis.fetch = async () => { requests++; throw new Error("Unexpected request"); };
+
+  try {
+    const dependencies = {
+      "next/image": { __esModule: true, default: () => null },
+      "next/link": { __esModule: true, default: ({ children, ...props }) => React.createElement("a", props, children) },
+      "@/lib/device-code": compile(path.resolve(dirname, "../../lib/device-code.ts"), runtimeRequire),
+      "@/lib/posthog": { capturePostHog: async () => {} },
+      "@supabase/supabase-js": { createClient: () => ({ auth: { getSession: () => {
+        sessionCalls++;
+        return new Promise((resolve) => { resolveSession = resolve; });
+      } } }) },
+    };
+    const Component = compile(path.join(dirname, "device-authorization-client.tsx"),
+      (name) => dependencies[name] ?? runtimeRequire(name)).default;
+    const user = userEvent.setup();
+    render(React.createElement(Component));
+    const input = screen.getByRole("textbox", { name: "Device code" });
+    const button = screen.getByRole("button", { name: "Authorize Device" });
+
+    await user.type(input, "abc");
+    await user.click(button);
+    const message = "Enter 8 letters or numbers. The code is displayed as XXXX-XXXX.";
+    const assertValidation = (value) => {
+      const alert = screen.getByRole("alert");
+      assert.equal(alert.textContent, message);
+      assert.equal(input.value, value);
+      assert.equal(input.getAttribute("aria-invalid"), "true");
+      assert.ok(input.getAttribute("aria-describedby").split(/\s+/).includes(alert.id));
+      assert.equal(input.disabled, false);
+      assert.equal(button.disabled, false);
+      assert.equal(sessionCalls, 0);
+      assert.equal(requests, 0);
+    };
+    assertValidation("ABC");
+    await user.type(input, "d23");
+    assertValidation("ABCD-23");
+    await user.type(input, "45");
+    assertValidation("ABCD-2345");
+
+    await user.click(button);
+    assert.equal(sessionCalls, 1);
+    assert.equal(requests, 0);
+    assert.equal(screen.queryByRole("alert"), null);
+    assert.equal(input.getAttribute("aria-invalid"), "false");
+    assert.ok(!input.getAttribute("aria-describedby").split(/\s+/).includes("device-error"));
+    assert.equal(input.disabled, true);
+    assert.equal(screen.getByRole("button", { name: "Signing in with GitHub..." }).disabled, true);
+
+    resolveSession({ data: { session: null }, error: new Error("Synthetic session error") });
+    assert.equal((await screen.findByRole("alert")).textContent, "Unable to read your sign-in session. Please try again.");
+    assert.equal(input.value, "ABCD-2345");
+    assert.equal(input.disabled, false);
+  } finally {
+    cleanup();
+    globalThis.fetch = originalFetch;
+  }
+});
