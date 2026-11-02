@@ -12,6 +12,7 @@ import { fileURLToPath } from "node:url";
 import "./signing-readiness.test.mjs";
 import "./npm-candidate-acceptance.test.mjs";
 import { assertDependencyIndexClean } from "./check-dependency-index.mjs";
+import { assertPowershellCandidate } from "./check-powershell-candidate.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const release = readFileSync(join(repoRoot, ".github/workflows/release.yml"), "utf8");
@@ -857,4 +858,32 @@ test("npm package contents remain the exact five reviewed files", () => {
       expectedFiles
     );
   }
+});
+
+test("PowerShell candidate pin follows source metadata while public reference stays fixed", () => {
+  const installer = readFileSync(join(repoRoot, "scripts/install.ps1"), "utf8");
+  assertPowershellCandidate(installer, npmPackage.version, npmMcpPackage.version);
+  const pin = `$CandidateTag = 'v${npmPackage.version}'`;
+  for (const mutant of [installer.replace(pin, "$CandidateTag = 'v0.7.10'"),
+    installer.replace(pin, ""), `${installer}\n${pin}\n`,
+    `${installer}\n$candidatetag = 'v99.98.97'\n`]) {
+    assert.throws(() => assertPowershellCandidate(mutant, npmPackage.version, npmMcpPackage.version), /one exact source-version assignment/);
+  }
+  for (const invalid of [undefined, 8, "", "01.2.3", "0.8.0'", "0.8.0\n"]) {
+    assert.throws(() => assertPowershellCandidate(installer, invalid, invalid), /candidate source version/);
+  }
+  assert.throws(() => assertPowershellCandidate(installer, npmPackage.version, "99.98.97"), /source versions must agree/);
+  assertPowershellCandidate("$CandidateTag = 'v99.98.97'\r\n", "99.98.97", "99.98.97");
+
+  const start = ci.indexOf("      - name: Parse candidate and public-reference PowerShell installers");
+  const end = ci.indexOf("      - name: Exercise the Windows installer", start);
+  assert.ok(start >= 0 && end > start);
+  const block = ci.slice(start, end);
+  assert.ok(block.includes("node scripts/release/check-powershell-candidate.mjs"));
+  assert.ok(block.includes("[void][scriptblock]::Create((Get-Content -LiteralPath scripts/install.ps1 -Raw))"));
+  assert.ok(block.includes("[void][scriptblock]::Create((Get-Content -LiteralPath apps/web/public/install.ps1 -Raw))"));
+  assert.ok(block.includes("$PSNativeCommandUseErrorActionPreference = $true"));
+  assert.ok(block.includes("Select-String -LiteralPath apps/web/public/install.ps1 -Pattern '\\$CandidateTag = ''v0.7.9''' -Quiet"));
+  assert.doesNotMatch(block, /v0\.7\.10/);
+  execFileSync(process.execPath, [join(repoRoot, "scripts/release/check-powershell-candidate.mjs")], { cwd: repoRoot });
 });
