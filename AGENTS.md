@@ -204,6 +204,15 @@ and still requires attached-terminal consent.
 - If a tool answers "Vault locked: ..." (MCP error -32600), the project's secrets are in an encrypted-file vault this process cannot open, usually because `PHANTOM_VAULT_PASSPHRASE` is not set in the MCP server's env config. Do not treat it as "no secrets"; pass on the unlock step in the message to the user. `phantom_list_secrets` reports the same state as "Vault locked, not empty."
 - When a call fails with 401 under `phantom exec`, run `phantom_why` on the key: `exec.delivery: no_route` means no built-in proxy route injects it, so the child only has a session token
 
+## Hot-file rule: avoid merge conflicts
+
+Parallel PRs repeatedly collide on a few shared files (`apps/web/tests/quick-start-keyboard.test.cjs` sat in 7 of the 30 newest open PRs, `docs/README.md` in 4, and two PRs went DIRTY within minutes). To keep PRs independently mergeable:
+
+- A new doc does not edit `docs/README.md`. Add the doc file and let it be discovered by path; the index is updated in a dedicated change.
+- A new web test goes in a new file under `apps/web/tests/`. Never append it to an existing `.cjs` test file.
+
+`node --test scripts/hot-file-rule.test.mjs` checks that this section stays in place.
+
 ## Build and test
 
 ```bash
