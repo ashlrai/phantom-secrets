@@ -72,10 +72,10 @@ test('an in-process byte scan reports the same mismatch location', (t) => {
   assert.equal(Number(reported[1]), char);
   assert.equal(Number(reported[2]), line);
 
-  // The first divergence is the reviewed staging difference at line 437
+  // The first divergence is the reviewed candidate-tag difference at line 19
   // (docs/installer-copy-source-map.md); an earlier byte means unreviewed
   // drift that the approved-difference list cannot explain.
-  assert.equal(line, 437, `first mismatch moved to line ${line}; re-review the installer copies`);
+  assert.equal(line, 19, `first mismatch moved to line ${line}; re-review the installer copies`);
 });
 
 test('the byte scan reports no mismatch for equal inputs', () => {

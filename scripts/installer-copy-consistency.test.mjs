@@ -15,6 +15,11 @@ const webCopy = 'apps/web/public/install.sh';
 // list — an added, removed, or reworded line — fails the consistency check.
 const approvedDifferences = [
   {
+    name: 'the repository copy targets the next candidate tag while the web copy stays bound to the evidenced release',
+    minus: ['CANDIDATE_TAG="v0.8.0"'],
+    plus: ['CANDIDATE_TAG="v0.7.9"'],
+  },
+  {
     name: 'staging directory creation and permission changes keep die() guards only in the repository copy',
     minus: [
       'stage_root="$(mktemp -d "$install_parent/.${install_name}.install.XXXXXX")" \\',
