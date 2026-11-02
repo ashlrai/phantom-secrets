@@ -246,13 +246,18 @@ export default function DeviceAuthorizationClient() {
           </div>
         ) : (
           <div>
-            <h1 className="text-2xl font-bold mb-2">Authorize Device</h1>
-            <p className="text-t2 mb-8">
+            <h1 id="device-authorization-heading" className="text-2xl font-bold mb-2">Authorize Device</h1>
+            <p id="device-authorization-purpose" className="text-t2 mb-8">
               Enter the code shown in your terminal to authorize this device
               with Phantom Cloud.
             </p>
 
-            <form onSubmit={handleSubmit} className="space-y-4">
+            <form
+              onSubmit={handleSubmit}
+              aria-labelledby="device-authorization-heading"
+              aria-describedby="device-authorization-purpose"
+              className="space-y-4"
+            >
               <label htmlFor="device-code" className="block text-left text-sm font-medium text-t1">
                 Device code
               </label>
