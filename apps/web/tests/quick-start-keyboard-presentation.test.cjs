@@ -38,6 +38,35 @@ const { QuickStart } = load("components/landing/QuickStart.tsx", {
   "next/link": { __esModule: true, default: ({ children, ...props }) => React.createElement("a", props, children) },
 });
 
+test("platform selection exposes exactly one pressed button after each click", async () => {
+  const user = userEvent.setup();
+  render(React.createElement(QuickStart));
+  try {
+    const selector = screen.getByRole("group", { name: "Choose an operating system" });
+    const names = ["macOS", "Windows", "Linux"];
+    const assertSelection = (selected) => {
+      assert.deepEqual(
+        within(selector).getAllByRole("button", { pressed: true }).map((button) => button.textContent),
+        [selected],
+      );
+      assert.deepEqual(
+        within(selector).getAllByRole("button", { pressed: false }).map((button) => button.textContent),
+        names.filter((name) => name !== selected),
+      );
+      assert.equal(screen.getAllByRole("article").length, 1);
+      assert.ok(screen.getByRole("heading", { level: 3, name: selected }).closest("article"));
+    };
+
+    assertSelection("macOS");
+    for (const selected of ["Windows", "Linux", "Linux", "macOS"]) {
+      await user.click(within(selector).getByRole("button", { name: selected }));
+      assertSelection(selected);
+    }
+  } finally {
+    cleanup();
+  }
+});
+
 test("keyboard focus reaches every platform control and Enter or Space activates it", async () => {
   const user = userEvent.setup();
   render(React.createElement(QuickStart));
