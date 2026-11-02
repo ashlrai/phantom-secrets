@@ -99,6 +99,52 @@ test("device code input presents its label and format hint", async () => {
   }
 });
 
+test("device code input is associated with its visible label", async () => {
+  const React = await import("react");
+  const { cleanup, isInaccessible, render, screen } = await import("@testing-library/react");
+  const { default: userEvent } = await import("@testing-library/user-event");
+  const { computeAccessibleName } = runtimeRequire("dom-accessibility-api");
+  try {
+    const dependencies = {
+      "next/image": { __esModule: true, default: () => null },
+      "next/link": { __esModule: true, default: ({ children, ...props }) => React.createElement("a", props, children) },
+      "@/lib/device-code": compile(path.resolve(dirname, "../../lib/device-code.ts"), runtimeRequire),
+      "@/lib/posthog": { capturePostHog: async () => {} },
+      "@supabase/supabase-js": { createClient() { throw new Error("Unexpected client"); } },
+    };
+    const Component = compile(path.join(dirname, "device-authorization-client.tsx"),
+      (name) => dependencies[name] ?? runtimeRequire(name)).default;
+    const user = userEvent.setup();
+    render(React.createElement(Component));
+
+    const label = screen.getByText("Device code", { selector: "label" });
+    const input = screen.getByRole("textbox");
+
+    // The rendered label is visible and is the field's only name source: no
+    // aria-label or aria-labelledby surrogate substitutes for it.
+    assert.equal(isInaccessible(label), false);
+    assert.equal(input.hasAttribute("aria-label"), false);
+    assert.equal(input.hasAttribute("aria-labelledby"), false);
+    assert.equal(computeAccessibleName(input), "Device code");
+
+    // The pairing is explicit: the label's htmlFor names the input's id, and
+    // the association resolves through every DOM path.
+    assert.equal(label.htmlFor, "device-code");
+    assert.equal(input.id, "device-code");
+    assert.equal(document.getElementById(label.htmlFor), input);
+    assert.equal(label.control, input);
+    assert.deepEqual([...input.labels], [label]);
+    assert.equal(screen.getByLabelText("Device code"), input);
+    assert.equal(screen.getByRole("textbox", { name: "Device code" }), input);
+
+    // Activating the visible label focuses the field it names.
+    await user.click(label);
+    assert.equal(document.activeElement, input);
+  } finally {
+    cleanup();
+  }
+});
+
 test("device code label and format hint remain available while editing and after validation", async () => {
   const React = await import("react");
   const { cleanup, isInaccessible, render, screen } = await import("@testing-library/react");
