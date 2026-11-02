@@ -30,7 +30,7 @@ test("current workspace version release notes include the complete candidate tra
   assert.match(result.stdout, /phantom check --log PATH/);
   assert.match(result.stdout, /does not print the matched text/);
   assert.match(result.stdout, /findings with `kind` `log`/);
-  assert.match(result.stdout, /Existing `v0\.7\.9` artifacts stay immutable/);
+  assert.match(result.stdout, /Existing `v0\.7\.10` artifacts stay immutable/);
   assert.doesNotMatch(result.stdout, /^## \\[Unreleased\\]$/m);
   assert.doesNotMatch(result.stdout, /^## \\[0\.7\.9\\]/m);
 });
