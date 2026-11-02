@@ -27,13 +27,11 @@ test("current workspace version release notes include the complete candidate tra
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, new RegExp(`^## \\[${version.replaceAll(".", "\\.")}\\]`, "m"));
   assert.match(result.stdout, /^### Breaking changes and migration$/m);
-  assert.match(result.stdout, /metadata-only `phantom status --json`/);
-  assert.match(result.stdout, /without opening the vault, using a bearer/);
-  assert.match(result.stdout, /Claude project MCP registration to `.mcp.json`/);
-  assert.match(result.stdout, /legacy-only registration/);
-  assert.match(result.stdout, /cross-platform CI matrix/);
-  assert.doesNotMatch(result.stdout, /^## \\[Unreleased\\]$/m);
-  assert.match(result.stdout, /Existing `v0\.7\.8` artifacts stay immutable/);
+  assert.match(result.stdout, /rolls up the hardening and fixes merged since `0\.7\.9`/);
+  assert.match(result.stdout, /provider\s+issuance and rotation stay hard-denied before credential or network access/);
+  assert.match(result.stdout, /credentials left in dotenv comments/);
+  assert.match(result.stdout, /`v0\.7\.9` tag and GitHub Release are not moved or replaced/);
+  assert.doesNotMatch(result.stdout, /^## \[Unreleased\]$/m);
 });
 
 test("missing release notes fail closed", () => {
