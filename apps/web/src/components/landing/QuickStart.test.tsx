@@ -19,6 +19,33 @@ test("quick-start section presents its title as a heading", () => {
   }
 });
 
+test("the quick-start heading labels the installation content for every platform", () => {
+  render(<QuickStart />);
+  try {
+    const title = "Install on your OS. Then protect one project.";
+    const section = screen.getByRole("region", { name: title });
+    const heading = within(section).getByRole("heading", { level: 2, name: title });
+    const selector = within(section).getByRole("group", { name: "Choose an operating system" });
+
+    assert.equal(section.tagName, "SECTION");
+    assert.equal(section.id, "install");
+    assert.ok(heading.id);
+    assert.equal(section.getAttribute("aria-labelledby"), heading.id);
+    assert.equal(Array.from(document.querySelectorAll("[id]")).filter((element) => element.id === heading.id).length, 1);
+
+    for (const platform of ["macOS", "Windows", "Linux"]) {
+      fireEvent.click(within(selector).getByRole("button", { name: platform }));
+      assert.equal(screen.getByRole("region", { name: title }), section);
+      assert.equal(within(section).getByRole("heading", { level: 2, name: title }), heading);
+      assert.ok(within(section).getByRole("heading", { level: 3, name: platform }));
+      assert.ok(within(section).getByRole("link", { name: "View exact installer source" }));
+      assert.ok(within(section).getByRole("heading", { level: 3, name: "Protect one supported project" }));
+    }
+  } finally {
+    cleanup();
+  }
+});
+
 test("rendered installation instructions keep their order for every platform", () => {
   render(<QuickStart />);
   try {
