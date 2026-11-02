@@ -35,6 +35,55 @@ const { QuickStart } = load("components/landing/QuickStart.tsx", {
   "next/link": { __esModule: true, default: ({ children, ...props }) => React.createElement("a", props, children) },
 });
 
+test("every quick-start copy control announces its action and command through clipboard outcomes", async () => {
+  const originalClipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+  let fail = false;
+  const writes = [];
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: { writeText: async (text) => {
+      if (fail) throw new Error("clipboard denied");
+      writes.push(text);
+    } },
+  });
+  render(React.createElement(QuickStart));
+  try {
+    const selector = screen.getByRole("group", { name: "Choose an operating system" });
+    const normalize = (text) => text.replace(/\s+/g, " ").trim();
+    const checkControl = async (scope) => {
+      const button = within(scope).getByRole("button", { name: /^Copy command: / });
+      const displayed = button.firstElementChild.lastChild.textContent;
+      const namedForCommand = (name) => normalize(name).startsWith(`Copy command: ${normalize(displayed)}`);
+      assert.equal(within(scope).getByRole("button", { name: namedForCommand }), button);
+
+      fail = false;
+      fireEvent.click(button);
+      await waitFor(() => assert.equal(within(button).getByText("Copied").getAttribute("aria-live"), "polite"));
+      assert.equal(writes.at(-1), displayed);
+      assert.equal(within(scope).getByRole("button", { name: namedForCommand }), button);
+
+      fail = true;
+      fireEvent.click(button);
+      await waitFor(() => assert.equal(within(button).getByText("Copy failed; select the command manually").getAttribute("aria-live"), "polite"));
+      assert.equal(within(scope).getByRole("button", { name: namedForCommand }), button);
+    };
+
+    for (const platform of ["macOS", "Windows", "Linux"]) {
+      fireEvent.click(within(selector).getByRole("button", { name: platform }));
+      const card = screen.getByRole("heading", { level: 3, name: platform }).closest("article");
+      await checkControl(card);
+    }
+    for (const step of within(screen.getByRole("list")).getAllByRole("listitem")) {
+      await checkControl(step);
+    }
+    assert.equal(writes.length, 5);
+  } finally {
+    cleanup();
+    if (originalClipboard) Object.defineProperty(navigator, "clipboard", originalClipboard);
+    else delete navigator.clipboard;
+  }
+});
+
 test("installer and numbered controls appear in order and copy only their commands", async () => {
   const writes = [];
   Object.defineProperty(navigator, "clipboard", { value: { writeText: async (text) => writes.push(text) }, configurable: true });
