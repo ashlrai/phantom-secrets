@@ -9,7 +9,7 @@
     "source": "github",
     "subfolder": "crates/phantom-mcp"
   },
-  "version": "0.7.9",
+  "version": "0.8.0",
   "tools": [
     {
       "name": "phantom_add_secret",
@@ -467,10 +467,18 @@
     },
     {
       "name": "phantom_check",
-      "description": "Check for security issues. With runtime=true, scans every environment variable of this server for a phantom token (leak detection). A variable is excused only when PHANTOM_PROXY_PORT and PHANTOM_PROXY_TOKEN lead to a live Phantom proxy (its health endpoint answers) and the session lists the variable in PHANTOM_SESSION_KEYS; excused names are reported in `excused` and `proxy_session` is true. Session variables with no live proxy are reported in `session_warning` and excuse nothing. Otherwise, scans the same dotenv files as `phantom check` for unprotected real secrets: .env, .env.local, .env.development, .env.development.local, .env.production, .env.production.local, .env.test, .env.test.local, plus the configured dotenv_path; a symlink is not followed and makes the result indeterminate. Returns a human summary plus a value-blind JSON report (also as structuredContent) shaped like `phantom check --json`: {mode, clean, findings: [{kind, path?, name?}], warnings, indeterminate?, proxy_session?, excused?, session_warning?}. Reports names and paths only, never values or phantom tokens.",
+      "description": "Check for security issues. With runtime=true, scans every environment variable of this server for a phantom token (leak detection). A variable is excused only when PHANTOM_PROXY_PORT and PHANTOM_PROXY_TOKEN lead to a live Phantom proxy (its health endpoint answers) and the session lists the variable in PHANTOM_SESSION_KEYS; excused names are reported in `excused` and `proxy_session` is true. Session variables with no live proxy are reported in `session_warning` and excuse nothing. With log_path set, scans that one regular file (an agent transcript or log) for credential shapes and returns mode \"log\". Findings name the file, the 1-based line, and the shape label. Symlinks are refused. Files over 8 MiB are refused. log_path cannot be combined with runtime=true. Otherwise, scans the same dotenv files as `phantom check` for unprotected real secrets: .env, .env.local, .env.development, .env.development.local, .env.production, .env.production.local, .env.test, .env.test.local, plus the configured dotenv_path; a symlink is not followed and makes the result indeterminate. Returns a human summary plus a value-blind JSON report (also as structuredContent) shaped like `phantom check --json`: {mode, clean, findings: [{kind, path?, name?, label?, pattern?}], warnings, indeterminate?, proxy_session?, excused?, session_warning?}. Reports names, paths, lines, and shape labels only, never values or phantom tokens.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
+          "log_path": {
+            "default": null,
+            "description": "Scan one agent log or transcript. Reports the file, line, and credential\nshape only. Never a secret value. Cannot be combined with runtime=true.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "runtime": {
             "default": false,
             "description": "Check if phantom tokens are in environment without proxy running",
@@ -1713,7 +1721,7 @@
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "phantom-secrets-mcp",
-      "version": "0.7.9",
+      "version": "0.8.0",
       "transport": {
         "type": "stdio"
       }

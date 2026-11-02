@@ -26,9 +26,21 @@ use phantom_core::report::{
 /// With `json`, prints one machine-readable report on stdout and keeps the
 /// same exit status: 0 when clean, 1 when findings exist. An indeterminate
 /// scan is still an error with no report.
-pub fn run(staged_only: bool, runtime: bool, json: bool) -> Result<()> {
+pub fn run(
+    staged_only: bool,
+    runtime: bool,
+    log: Option<&std::path::Path>,
+    json: bool,
+) -> Result<()> {
     let mut scan = None;
-    let (mode, findings, warnings) = if runtime {
+    let (mode, findings, warnings) = if let Some(log) = log {
+        (
+            "log",
+            phantom_core::report::agent_log_findings(log)
+                .with_context(|| "could not scan agent log".to_string())?,
+            Vec::new(),
+        )
+    } else if runtime {
         let mut result = phantom_core::report::scan_runtime_env(
             std::env::vars_os(),
             phantom_core::report::proxy_answers,
@@ -412,6 +424,11 @@ fn print_findings(findings: &[Finding]) {
     };
     if first.kind == "staged_code" {
         eprintln!("\n{} Potential secrets in code!\n", "BLOCKED".red().bold());
+    } else if first.kind == "log" {
+        eprintln!(
+            "\n{} Credential shapes in an agent log\n",
+            "BLOCKED".red().bold()
+        );
     } else {
         eprintln!(
             "\n{} Unprotected secrets detected!\n",
@@ -423,6 +440,14 @@ fn print_findings(findings: &[Finding]) {
     for finding in findings {
         let path = finding.path.as_deref().unwrap_or_default();
         match finding.kind {
+            "log" => eprintln!(
+                "  {} {} {} {} ({})",
+                "!".red().bold(),
+                path,
+                finding.name.as_deref().unwrap_or("line"),
+                finding.label.unwrap_or("credential shape"),
+                finding.pattern.unwrap_or("shape")
+            ),
             "staged_code" => eprintln!(
                 "  {} {} may contain {} ({})",
                 "!".red().bold(),

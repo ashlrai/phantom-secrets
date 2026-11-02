@@ -23,13 +23,13 @@ function pinClock(binaryPath, ageNs = 10_000_000_000n) {
 }
 setAttestationClockForTest(clockNs);
 
-const okVersion = () => Buffer.from("phantom 0.7.9\n");
+const okVersion = () => Buffer.from("phantom 0.8.0\n");
 const noSpawn = () => { throw new Error("must not spawn"); };
 
 function writePair(paths, contents, ageNs) {
   writePrivateFile(paths.binaryPath, contents, 0o700);
   const sha256 = crypto.createHash("sha256").update(contents).digest("hex");
-  writePrivateFile(paths.manifestPath, `${JSON.stringify({ version: "0.7.9", sha256 })}\n`, 0o600);
+  writePrivateFile(paths.manifestPath, `${JSON.stringify({ version: "0.8.0", sha256 })}\n`, 0o600);
   pinClock(paths.binaryPath, ageNs);
   return sha256;
 }
@@ -44,7 +44,7 @@ function identity(path) {
 // so each refusal case below proves the forged record is ignored and the full
 // hash then rejects the tampered binary.
 function forge(paths, sha256, mode = 0o600) {
-  const record = { schema: 1, version: "0.7.9", sha256, versionChecked: true, identity: identity(paths.binaryPath), attestedAtNs: `${clockNs()}` };
+  const record = { schema: 1, version: "0.8.0", sha256, versionChecked: true, identity: identity(paths.binaryPath), attestedAtNs: `${clockNs()}` };
   writePrivateFile(attestationPath(paths.binaryPath), `${JSON.stringify(record)}\n`, 0o600);
   if (mode !== 0o600) chmodSync(attestationPath(paths.binaryPath), mode);
 }
@@ -168,7 +168,7 @@ try {
   writePair(paths, "EEEEEEEEEEEEEEEE");
   assert.strictEqual(validateCachedBinary(paths.binaryPath, paths.manifestPath, { execFileSyncImpl: okVersion }), true);
   rmSync(paths.manifestPath);
-  writePrivateFile(paths.manifestPath, `${JSON.stringify({ version: "0.7.9", sha256: "f".repeat(64) })}\n`, 0o600);
+  writePrivateFile(paths.manifestPath, `${JSON.stringify({ version: "0.8.0", sha256: "f".repeat(64) })}\n`, 0o600);
   assert.strictEqual(readVerifiedManifest(paths.binaryPath, paths.manifestPath), null);
 } finally {
   chmodSync(dir, 0o700);
