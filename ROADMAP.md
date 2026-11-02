@@ -30,8 +30,8 @@ represented by the GitHub release receipt.
 - Scan one agent log or transcript with `phantom check --log` and MCP
   `phantom_check` `log_path`. The report names the file, the line, and the
   credential shape. It does not print the value.
-- Ship the fixes and additions recorded since the immutable `v0.7.9` tag.
-  The per-change record is [docs/changelog-0.8.0.md](docs/changelog-0.8.0.md).
+- Ship the log scan on top of the immutable `v0.7.10` tag. The rollup
+  since `v0.7.9` is the `0.7.10` changelog section.
 
 This milestone is the source candidate. It is not a publication receipt.
 The immutable GitHub release remains `v0.7.9` until the tag workflow
