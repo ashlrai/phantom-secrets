@@ -27,6 +27,14 @@ Prerequisites:
 - Node.js 22 and npm when changing npm wrappers or `apps/web`
 - A platform keychain only for explicitly ignored/manual keychain tests
 
+Linux source builds also need the system libdbus development package and
+`pkg-config`. On Debian/Ubuntu, install them with
+`sudo apt-get install libdbus-1-dev pkg-config`; running Linux binaries needs
+`libdbus-1-3`. This is the Secret Service transport used by the keyring 4 stores;
+Phantom uses Rust cryptography and does not bundle libdbus or link OpenSSL.
+The default Linux credential backend remains kernel keyutils until an explicit
+per-project migration selects Secret Service.
+
 ```bash
 git clone https://github.com/ashlrai/phantom-secrets.git
 cd phantom-secrets
