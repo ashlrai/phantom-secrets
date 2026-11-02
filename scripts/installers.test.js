@@ -291,6 +291,30 @@ test('Unix unsupported-target failures point to reviewed release assets', () => 
   }
 });
 
+test('Unix installer on an unsupported OS fails clearly and leaves the destination untouched', () => {
+  for (const unameS of ['FreeBSD', 'SunOS', 'MINGW64_NT-10.0']) {
+    for (const existing of [true, false]) {
+      const root = mkdtempSync(join(tmpdir(), 'phantom-installer-test-'));
+      const install = join(root, 'live', 'bin');
+      // `existing: false` leaves even the install parent absent, so any mkdir/lock/stage shows up.
+      const { result, log } = runInstaller({ root, install, existing, unameS });
+      const home = join(root, 'home');
+      assert.equal(result.status, 1, `${unameS}: expected exit 1`);
+      assert.match(result.stderr, new RegExp(`unsupported OS: ${escapeRegExp(unameS)}`));
+      assert.match(result.stderr, /checksum-verifiable asset from https:\/\/github\.com\/ashlrai\/phantom-secrets\/releases/);
+      assert.equal(existsSync(log), false, `${unameS}: must not reach the network`);
+      assert.equal(readdirSync(home).length, 0, `${unameS}: must not touch HOME or shell rc files`);
+      if (existing) {
+        assert.deepEqual(readdirSync(install), ['old-install']);
+        assert.equal(readFileSync(join(install, 'old-install'), 'utf8'), 'preserve-me');
+        assert.deepEqual(readdirSync(dirname(install)), ['bin'], `${unameS}: no lock/stage/backup siblings`);
+      } else {
+        assert.equal(existsSync(dirname(install)), false, `${unameS}: must not create the install parent`);
+      }
+    }
+  }
+});
+
 test('Unix installer uses bounded HTTPS downloads and promotes both exact binaries', () => {
   const { install, log, result, root } = runInstaller();
   assert.equal(result.status, 0, result.stderr);
