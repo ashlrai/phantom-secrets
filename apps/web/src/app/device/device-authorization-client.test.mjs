@@ -99,6 +99,50 @@ test("device code input presents its label and format hint", async () => {
   }
 });
 
+test("the XXXX-XXXX placeholder is present on and associated with the device-code field", async () => {
+  const React = await import("react");
+  const { cleanup, render, screen } = await import("@testing-library/react");
+  try {
+    const dependencies = {
+      "next/image": { __esModule: true, default: () => null },
+      "next/link": { __esModule: true, default: ({ children, ...props }) => React.createElement("a", props, children) },
+      "@/lib/device-code": compile(path.resolve(dirname, "../../lib/device-code.ts"), runtimeRequire),
+      "@/lib/posthog": { capturePostHog: async () => {} },
+      "@supabase/supabase-js": { createClient() { throw new Error("Unexpected client"); } },
+    };
+    const deviceCode = dependencies["@/lib/device-code"];
+    const Component = compile(path.join(dirname, "device-authorization-client.tsx"),
+      (name) => dependencies[name] ?? runtimeRequire(name)).default;
+    render(React.createElement(Component));
+
+    // The placeholder resolves to the page's single textbox: the device-code
+    // field, reached identically through its id, name, and visible label.
+    const input = screen.getByPlaceholderText("XXXX-XXXX");
+    assert.equal(input.id, "device-code");
+    assert.equal(input.name, "device-code");
+    assert.equal(screen.getAllByRole("textbox").length, 1);
+    assert.equal(screen.getByRole("textbox", { name: "Device code" }), input);
+    assert.equal(screen.getByLabelText("Device code"), input);
+    assert.equal(screen.getByText("Device code", { selector: "label" }).control, input);
+
+    // The placeholder previews the field's own format: filling each X with a
+    // code character is exactly what the formatter displays and validates.
+    const preview = "XXXX-XXXX".replace(/X/g, "A");
+    assert.equal(deviceCode.formatDeviceUserCode(preview.toLowerCase()), preview);
+    assert.equal(deviceCode.isValidDeviceUserCode(preview), true);
+
+    // The visible hint repeats the format, and the field points at it.
+    const hint = screen.getByText("Enter 8 letters or numbers in the format XXXX-XXXX.");
+    assert.ok(input.getAttribute("aria-describedby").split(/\s+/).includes(hint.id));
+
+    // The placeholder never names the field: the visible label does.
+    assert.equal(input.hasAttribute("aria-label"), false);
+    assert.equal(input.hasAttribute("aria-labelledby"), false);
+  } finally {
+    cleanup();
+  }
+});
+
 test("device code input is associated with its visible label", async () => {
   const React = await import("react");
   const { cleanup, isInaccessible, render, screen } = await import("@testing-library/react");
