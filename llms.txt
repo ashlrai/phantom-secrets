@@ -1,0 +1,54 @@
+# Phantom Secrets
+
+> Agents start here. Commands below are copy-paste. They do not print secret values.
+
+Full reference: [docs/llms.txt](docs/llms.txt) and [docs/llms-full.txt](docs/llms-full.txt).
+Published copies: https://phm.dev/llms.txt and https://phm.dev/llms-full.txt.
+Repository: https://github.com/ashlrai/phantom-secrets
+Walkthrough: [docs/agent-quickstart.md](docs/agent-quickstart.md)
+Distribution evidence: [docs/distribution-status.md](docs/distribution-status.md)
+
+## Install on macOS
+
+```bash
+brew tap ashlrai/phantom && brew trust --formula ashlrai/phantom/phantom && brew install ashlrai/phantom/phantom
+```
+
+## Commands
+
+```bash
+phantom init
+phantom status --json
+phantom list --json
+phantom agent doctor --json
+phantom setup --client claude
+phantom setup --client cursor
+phantom setup --client codex
+phantom check
+phantom why OPENAI_API_KEY --json
+```
+
+Install both verified `v0.7.9` binaries before setup. Version `0.7.9` has no network package-runner fallback and fails closed when neither local runtime is executable.
+
+## MCP files
+
+Claude Code writes `.mcp.json`. Cursor writes `~/.cursor/mcp.json`. Both use this shape. Setup fills `command` with the binary path it found:
+
+```json
+{
+  "mcpServers": {
+    "phantom": {
+      "command": "phantom",
+      "args": ["mcp", "serve"]
+    }
+  }
+}
+```
+
+Codex writes `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.phantom]
+command = "phantom"
+args = ["mcp", "serve"]
+```

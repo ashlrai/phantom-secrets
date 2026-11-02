@@ -2,6 +2,22 @@
 
 > Phantom is an open-source CLI that keeps real API-key values out of supported, value-blind AI-agent paths. It replaces managed secrets with persistent `phm_` mappings; an authenticated local proxy injects only a matched route's vault value into its fixed auth header. Client headers and bodies never resolve mappings. Treat project mappings as sensitive metadata.
 
+## Agent quickstart
+
+Paste this in the project after Phantom is installed. These commands do not print secret values. The full copy, including MCP file shapes, is [docs/agent-quickstart.md](docs/agent-quickstart.md). Compact and full machine-readable docs are [docs/llms.txt](docs/llms.txt) and [docs/llms-full.txt](docs/llms-full.txt).
+
+```bash
+phantom init
+phantom status --json
+phantom list --json
+phantom agent doctor --json
+phantom setup --client claude
+phantom setup --client cursor
+phantom setup --client codex
+phantom check
+phantom why OPENAI_API_KEY --json
+```
+
 ## MCP Server: Let AI manage secrets directly
 
 Phantom includes an MCP server with core secret-management tools plus advanced
