@@ -71,10 +71,12 @@ export function CopyButton({ text, prompt = "$" }: CopyButtonProps) {
         <span aria-hidden="true">{prompt} </span>
         {text}
       </span>
-      <span className="copy-command__icon" aria-hidden="true">
-        {copyState === "copied" ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+      <span className="copy-command__icon">
+        <span aria-hidden="true">
+          {copyState === "copied" ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+        </span>
+        <span aria-live="polite">{copyState === "idle" ? "" : label}</span>
       </span>
-      <span className="sr-only" aria-live="polite">{copyState === "idle" ? "" : label}</span>
     </button>
   );
 }
