@@ -42,6 +42,44 @@ load("components/landing/quickstart-accessibility.test.tsx", {
   "@/lib/public-release": release,
 });
 
+test("visible platform choices have distinct accessible names before and after selection", () => {
+  const style = document.createElement("style");
+  style.textContent = fs.readFileSync(path.join(__dirname, "../src/app/globals.css"), "utf8");
+  document.head.append(style);
+  try {
+    render(React.createElement(quickStart.QuickStart));
+    const selector = screen.getByRole("group", { name: "Choose an operating system" });
+    const expected = ["macOS", "Windows", "Linux"];
+
+    function checkChoices(selected) {
+      const choices = Array.from(selector.querySelectorAll("button"));
+      assert.equal(choices.length, expected.length);
+      const names = new Map();
+      const accessibleChoices = within(selector).getAllByRole("button", {
+        name: (name, element) => { names.set(element, name); return true; },
+      });
+      assert.deepEqual(accessibleChoices, choices, `${selected}: every displayed choice is accessible`);
+      assert.deepEqual(choices.map((choice) => names.get(choice)), expected);
+      assert.equal(new Set(names.values()).size, choices.length);
+      for (const [index, choice] of choices.entries()) {
+        assert.equal(choice.textContent.trim(), expected[index]);
+        assert.notEqual(window.getComputedStyle(choice).display, "none");
+        assert.equal(window.getComputedStyle(choice).visibility, "visible");
+        assert.equal(choice.getAttribute("aria-pressed"), String(expected[index] === selected));
+      }
+    }
+
+    checkChoices("macOS");
+    for (const platform of expected) {
+      fireEvent.click(within(selector).getByRole("button", { name: platform, exact: true }));
+      checkChoices(platform);
+    }
+  } finally {
+    cleanup();
+    style.remove();
+  }
+});
+
 test("a successful QuickStart copy displays feedback for the selected command", async () => {
   const originalClipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
   const copied = [];
