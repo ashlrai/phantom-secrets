@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import {
   chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync,
-  realpathSync, rmSync, writeFileSync,
+  realpathSync, rmSync, statSync, writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -17,17 +17,26 @@ const installers = {
 // A stubbed curl that records the staging path it was asked to write to,
 // proves that path exists while curl runs, then fails like `curl --fail` on
 // an HTTP error. Nothing touches the network.
-function runInstaller(installer, root) {
+function runInstaller(installer, root, { failOnly } = {}) {
   const shims = join(root, 'shims');
   mkdirSync(shims);
   writeFileSync(join(shims, 'curl'), `#!/bin/sh
 # Answer the capability probe without failing; fail only real downloads.
 case "$*" in *--help*) exit 0 ;; esac
 out=""
+url=""
 while [ $# -gt 0 ]; do
   if [ "$1" = "--output" ]; then out="$2"; fi
+  url="$1"
   shift
 done
+# With PHANTOM_TEST_FAIL_ONLY set, downloads succeed until a URL ends with it.
+if [ -n "$PHANTOM_TEST_FAIL_ONLY" ]; then
+  case "$url" in
+    *"$PHANTOM_TEST_FAIL_ONLY") ;;
+    *) printf 'stub-bytes' > "$out"; printf '%s' "$url"; exit 0 ;;
+  esac
+fi
 printf '%s\\n' "$out" >> "$PHANTOM_TEST_CURL_LOG"
 [ -d "$(dirname "$out")" ] && printf 'present\\n' >> "$PHANTOM_TEST_CURL_LOG"
 printf 'curl: (22) The requested URL returned error: 404\\n' >&2
@@ -40,6 +49,8 @@ exit 22
   mkdirSync(home);
   mkdirSync(install, { recursive: true });
   writeFileSync(join(install, 'old-install'), 'preserve-me');
+  writeFileSync(join(install, 'phantom'), '#!/bin/sh\necho phantom old\n');
+  chmodSync(join(install, 'phantom'), 0o755);
   const env = { ...process.env };
   for (const name of [
     'PHANTOM_REPO', 'PHANTOM_TAG', 'PHANTOM_TEST_ALLOW_INSTALLER_OVERRIDES',
@@ -55,6 +66,7 @@ exit 22
       PATH: `${shims}:${process.env.PATH}`,
       PHANTOM_INSTALL_DIR: install,
       PHANTOM_TEST_CURL_LOG: curlLog,
+      PHANTOM_TEST_FAIL_ONLY: failOnly ?? '',
     },
   });
   return { result, install, curlLog };
@@ -81,5 +93,25 @@ for (const [name, installer] of Object.entries(installers)) {
     assert.equal(existsSync(stage), false, 'staging directory must be removed');
     assert.equal(readFileSync(join(install, 'old-install'), 'utf8'), 'preserve-me');
     assert.deepEqual(readdirSync(parent), ['bin'], 'no lock or staging leftovers');
+  });
+
+  test(`${name} installer leaves an existing executable installation unchanged when a download fails`, (t) => {
+    // '' fails every download; '.tar.gz' fails the archive; '.sha256' fails the
+    // sidecar after the archive download already succeeded.
+    for (const failOnly of ['', '.tar.gz', '.sha256']) {
+      const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-download-preserve-')));
+      t.after(() => rmSync(root, { recursive: true, force: true }));
+      const { result, install } = runInstaller(installer, root, { failOnly });
+      const live = join(install, 'phantom');
+      const label = `failOnly=${failOnly}`;
+
+      assert.ifError(result.error);
+      assert.notEqual(result.status, 0, `${label}: a failed download must fail the install`);
+      assert.doesNotMatch(result.stdout, /installed to/, label);
+      assert.equal(readFileSync(live, 'utf8'), '#!/bin/sh\necho phantom old\n', label);
+      assert.equal(statSync(live).mode & 0o777, 0o755, `${label}: executable bit preserved`);
+      assert.deepEqual(readdirSync(install).sort(), ['old-install', 'phantom'], label);
+      assert.equal(spawnSync(live, { encoding: 'utf8' }).stdout.trim(), 'phantom old', label);
+    }
   });
 }
