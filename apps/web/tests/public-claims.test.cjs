@@ -260,7 +260,7 @@ const publicReleaseEvidencePaths = [
 const verifiedReleaseUrl =
   "https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.9";
 const candidateReleaseUrl =
-  "https://github.com/ashlrai/phantom-secrets/releases/tag/v0.8.0";
+  "https://github.com/ashlrai/phantom-secrets/releases/tag/v0.8.1";
 
 function structuredMetadataBlock(source, type) {
   const marker = `"@type": "${type}"`;
@@ -734,7 +734,7 @@ test("published package READMEs use verified local binaries and bounded claims",
       assert.ok(source.includes(candidateReleaseUrl), file);
       assert.match(
         source,
-        /version `0\.8\.0`[\s\S]{0,180}(?:do not prove|does not prove)[\s\S]{0,80}(?:npm|published)/i,
+        /version `0\.8\.1`[\s\S]{0,180}(?:do not prove|does not prove)[\s\S]{0,80}(?:npm|published)/i,
         file,
       );
       assert.match(
@@ -744,7 +744,7 @@ test("published package READMEs use verified local binaries and bounded claims",
       );
       assert.match(
         source,
-        /Version `0\.8\.0`[\s\S]{0,250}no network package-runner fallback[\s\S]{0,80}fails closed/i,
+        /Version `0\.8\.1`[\s\S]{0,250}no network package-runner fallback[\s\S]{0,80}fails closed/i,
         file,
       );
       assert.doesNotMatch(source, /releases\/tag\/v0\.7\.3/i, file);
@@ -1301,7 +1301,7 @@ test("community health metadata preserves release and support boundaries", () =>
 
   const citation = readRepo("CITATION.cff");
   assert.match(citation, /^cff-version: 1\.2\.0$/m);
-  assert.match(citation, /^version: 0\.8\.0$/m);
+  assert.match(citation, /^version: 0\.8\.1$/m);
   assert.match(citation, /immutable v0\.7\.9 GitHub\s+release/i);
   assert.match(citation, /repository URL and full commit SHA/i);
   assert.match(citation, /^date-released: 2026-11-02$/m);

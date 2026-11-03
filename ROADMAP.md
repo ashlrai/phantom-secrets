@@ -1,6 +1,6 @@
 # Roadmap
 
-<!-- phantom-release-version: 0.8.0 -->
+<!-- phantom-release-version: 0.8.1 -->
 
 This roadmap describes ordered engineering gates, not delivery dates or shipped
 capabilities. This status snapshot was verified on 2026-09-29. The immutable
@@ -25,17 +25,26 @@ represented by the GitHub release receipt.
 
 ## Current milestones
 
-### 0.8.0 agent log scan and the post-0.7.9 source tranche — source candidate
+### 0.8.1 installer hardening and test coverage patch: source candidate
+
+- Harden the installer and release-rehearsal checks: the PowerShell
+  candidate pin is derived from source metadata, and `install.sh` has a
+  shell syntax check.
+- Add CLI exit-code tests for help, unknown commands, and unknown flags,
+  and installer failure-path tests.
+- Update the dependency set to drop the vulnerable `async-executor`.
+
+This milestone is the source candidate. It is not a publication receipt.
+The immutable GitHub release remains `v0.8.0` until the tag workflow
+finishes.
+
+### 0.8.0 agent log scan and the post-0.7.9 source tranche: released
 
 - Scan one agent log or transcript with `phantom check --log` and MCP
   `phantom_check` `log_path`. The report names the file, the line, and the
   credential shape. It does not print the value.
 - Ship the log scan on top of the immutable `v0.7.10` tag. The rollup
   since `v0.7.9` is the `0.7.10` changelog section.
-
-This milestone is the source candidate. It is not a publication receipt.
-The immutable GitHub release remains `v0.7.9` until the tag workflow
-finishes. npm `latest` recorded below stays a dated observation of `0.7.9`.
 
 ### 0.7.9 agent onboarding and Hub status compatibility — released
 
