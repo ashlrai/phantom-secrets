@@ -48,7 +48,8 @@ for (const [name, installer] of Object.entries(installers)) {
 
       assert.ifError(result.error);
       assert.equal(result.status, 1);
-      assert.match(result.stderr, new RegExp(`phantom: ${missing} is required`));
+      assert.match(result.stderr, new RegExp(`phantom: ${missing} is required to \\w+ Phantom\\. Install ${missing} with your package manager`));
+      assert.match(result.stderr, /then re-run this installer/);
       assert.doesNotMatch(result.stdout, /downloading|installed/i);
       assert.equal(existsSync(join(install, 'phantom')), false, 'no phantom executable');
       assert.equal(existsSync(join(install, 'phantom-mcp')), false, 'no phantom-mcp executable');
