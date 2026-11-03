@@ -402,8 +402,8 @@ add_to_user_path() {
   say "added $bin to PATH in $rc (open a new shell or run: source $rc)"
 }
 
-command -v curl >/dev/null 2>&1 || die "curl is required"
-command -v tar >/dev/null 2>&1 || die "tar is required"
+command -v curl >/dev/null 2>&1 || die "curl is required to download Phantom. Install curl with your package manager (e.g. apt install curl, brew install curl), then re-run this installer."
+command -v tar >/dev/null 2>&1 || die "tar is required to unpack Phantom. Install tar with your package manager (e.g. apt install tar), then re-run this installer."
 [[ "$REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || die "invalid PHANTOM_REPO"
 if [ "${PHANTOM_INSTALL_DIR+x}" = x ]; then
   validate_install_dir_override "$PHANTOM_INSTALL_DIR"
