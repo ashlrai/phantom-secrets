@@ -33,9 +33,9 @@ COMPLETE: GitHub Actions secret gate recipe (4 checks)
 ```
 
 <!-- fresh:begin examples-gate-verified-release -->
-This recipe passes against both the v0.8.0 release and the workspace build.
+This recipe passes against both the v0.8.1 release and the workspace build.
 The install step in the workflow was also run as written on Linux x86_64
-(`gh release download`, `sha256sum -c`, `phantom --version` → `phantom 0.8.0`).
+(`gh release download`, `sha256sum -c`, `phantom --version` → `phantom 0.8.1`).
 <!-- fresh:end -->
 
 ## Scope

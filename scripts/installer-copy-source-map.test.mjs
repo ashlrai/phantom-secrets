@@ -47,7 +47,7 @@ test('staging differences remain the ones described in the map', () => {
   const [repository, web] = sources.map((lines) => lines.join('\n'));
   // Removing only the documented differences must make the complete copies equal.
   const normalized = repository
-    .replace('CANDIDATE_TAG="v0.8.0"', 'CANDIDATE_TAG="v0.7.9"')
+    .replace('CANDIDATE_TAG="v0.8.1"', 'CANDIDATE_TAG="v0.7.9"')
     .replace(' \\\n  || die "could not create a private staging directory in $install_parent"', '')
     .replace(' || die "could not secure the staging directory"', '')
     .replace(' \\\n  || die "could not create staging directories"', '')

@@ -27,10 +27,10 @@ To inspect differences, run `diff -u scripts/install.sh apps/web/public/install.
 Reviewed **2026-11-02**: the files **differ**. SHA-256 hashes identify the
 exact bytes reviewed:
 
-- `scripts/install.sh`: `482aff94c25e14f4dd397949cf0eea044f508fbdcf51a1ee440450a6bc814334`
+- `scripts/install.sh`: `64787ada872c82a586b19e0285dc4d42e348ea1277284ba3f4dea6ea1b6d0dc1`
 - `apps/web/public/install.sh`: `eaa1040cc7766b46c1f7f685057d5232184795b2ad678655e25854004416272e`
 
-The repository copy targets the next candidate with `CANDIDATE_TAG="v0.8.0"`;
+The repository copy targets the next candidate with `CANDIDATE_TAG="v0.8.1"`;
 the web copy stays bound to the evidenced `v0.7.9` release. The repository
 copy emits explicit errors if staging directory creation or permission
 changes fail; the web copy relies on Bash error handling and command

@@ -27,10 +27,9 @@ test("current workspace version release notes include the complete candidate tra
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, new RegExp(`^## \\[${version.replaceAll(".", "\\.")}\\]`, "m"));
   assert.match(result.stdout, /^### Breaking changes and migration$/m);
-  assert.match(result.stdout, /phantom check --log PATH/);
-  assert.match(result.stdout, /does not print the matched text/);
-  assert.match(result.stdout, /findings with `kind` `log`/);
-  assert.match(result.stdout, /Existing `v0\.7\.10` artifacts stay immutable/);
+  assert.match(result.stdout, /async-executor/);
+  assert.match(result.stdout, /PowerShell installer candidate pin/);
+  assert.match(result.stdout, /Existing `v0\.8\.0` artifacts\s+stay\s+immutable/);
   assert.doesNotMatch(result.stdout, /^## \\[Unreleased\\]$/m);
   assert.doesNotMatch(result.stdout, /^## \\[0\.7\.9\\]/m);
 });

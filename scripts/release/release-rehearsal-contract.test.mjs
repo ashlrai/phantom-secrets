@@ -96,7 +96,7 @@ function assertReleaseEligibilityWarnings(document) {
     /separately reviewed unreserved version, matching source metadata,/,
     /this guide selects no such version\./,
     /linked npm and MCP Registry runbooks retain version-specific `0\.7\.8`\s+examples/,
-    /are not current `0\.8\.0` source facts or copy-ready instructions for this candidate\./,
+    /are not current `0\.8\.1` source facts or copy-ready instructions for this candidate\./,
     /Do not mechanically execute or substitute versions in those recipes\./,
     /reconcile the exact approved source, tag, package versions,\s+manifest, acceptance receipts, and publication authorization/,
   ];
@@ -201,10 +201,10 @@ test("manual rehearsal delegates to the shared graph with read-only authority", 
 });
 
 test("release defaults and lockfiles are part of the exact version parity contract", () => {
-  assert.match(rehearsal, /default: v0\.8\.0/);
+  assert.match(rehearsal, /default: v0\.8\.1/);
   assert.match(
     npmCandidateAcceptance,
-    /^      version:\n[\s\S]*?^        default: 0\.8\.0$/m
+    /^      version:\n[\s\S]*?^        default: 0\.8\.1$/m
   );
   assert.match(versionParity, /json\("apps\/web\/package-lock\.json"\)/);
   assert.match(versionParity, /Hosted web lockfile root/);
@@ -218,10 +218,10 @@ test("release defaults and lockfiles are part of the exact version parity contra
   assert.equal(
     execFileSync(
       process.execPath,
-      [join(repoRoot, "scripts/release/check-version-parity.mjs"), "v0.8.0"],
+      [join(repoRoot, "scripts/release/check-version-parity.mjs"), "v0.8.1"],
       { cwd: repoRoot, encoding: "utf8" }
     ).trim(),
-    "release version parity passed: 0.8.0 across 21 surfaces and 12 crates"
+    "release version parity passed: 0.8.1 across 21 surfaces and 12 crates"
   );
 });
 
@@ -851,7 +851,7 @@ test("npm package contents remain the exact five reviewed files", () => {
   ]) {
     const pack = inspectPack(directory);
     assert.equal(pack.name, packageName);
-    assert.equal(pack.version, "0.8.0");
+    assert.equal(pack.version, "0.8.1");
     assert.equal(pack.entryCount, 5);
     assert.deepEqual(
       pack.files.map(({ path }) => path).sort(),
@@ -869,7 +869,7 @@ test("PowerShell candidate pin follows source metadata while public reference st
     `${installer}\n$candidatetag = 'v99.98.97'\n`]) {
     assert.throws(() => assertPowershellCandidate(mutant, npmPackage.version, npmMcpPackage.version), /one exact source-version assignment/);
   }
-  for (const invalid of [undefined, 8, "", "01.2.3", "0.8.0'", "0.8.0\n"]) {
+  for (const invalid of [undefined, 8, "", "01.2.3", "0.8.1'", "0.8.1\n"]) {
     assert.throws(() => assertPowershellCandidate(installer, invalid, invalid), /candidate source version/);
   }
   assert.throws(() => assertPowershellCandidate(installer, npmPackage.version, "99.98.97"), /source versions must agree/);

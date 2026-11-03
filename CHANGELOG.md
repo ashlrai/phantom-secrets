@@ -4,7 +4,39 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
-Changes after 0.8.0 land in this section.
+Changes after 0.8.1 land in this section.
+
+## [0.8.1] - 2026-11-03
+
+This patch release rolls up the installer, CLI-contract, and dependency
+work merged since `0.8.0`. It does not change the vault format, the proxy,
+or the MCP tool catalog. The `v0.8.0` tag is not moved or replaced.
+GitHub and npm publication of `0.8.1` follow the existing tag workflow.
+
+### Fixed
+
+- `Cargo.lock` moves `async-executor` from 1.14.0 to 1.14.1, which
+  removes a use-after-free advisory from the dependency tree.
+- The PowerShell installer candidate pin is derived from source metadata
+  by the release check instead of a separately maintained copy.
+- `scripts/install.sh` passes a shell syntax check, and its candidate
+  copy stays byte-consistent with the documented quickstart.
+
+### Added
+
+- CLI tests pin the exit status for `--help`, an unknown command, and an
+  unknown flag.
+- Installer tests cover download failure, a missing tool or executable,
+  an unsupported platform or architecture, a staging directory with
+  spaces, staging uniqueness, and extraction failure.
+- Documentation covers the installer PATH update steps, device-code
+  readability, and the quickstart staging copy check.
+
+### Breaking changes and migration
+
+None. This release does not change the vault format, the proxy, the MCP
+tool catalog, or any CLI output field. Existing `v0.8.0` artifacts stay
+immutable.
 
 ## [0.8.0] - 2026-11-02
 
@@ -3146,8 +3178,9 @@ remain separate evidence gates.
 For older release notes and downloadable artifacts, see [GitHub Releases](https://github.com/ashlrai/phantom-secrets/releases).
 
 <!-- fresh:begin changelog-unreleased-compare -->
-[Unreleased]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.1...HEAD
 <!-- fresh:end -->
+[0.8.1]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.10...v0.8.0
 [0.7.10]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.9...v0.7.10
 [0.7.9]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.8...v0.7.9

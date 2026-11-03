@@ -18,7 +18,7 @@ them and this comparison when either copy changes.
 | PATH check and update call | [lines 529–531](../scripts/install.sh#L529-L531) | [lines 526–528](../apps/web/public/install.sh#L526-L528) |
 
 The complete files differ in three places. The repository copy pins
-`CANDIDATE_TAG="v0.8.0"` for the next release candidate while the web copy
+`CANDIDATE_TAG="v0.8.1"` for the next release candidate while the web copy
 stays bound to the evidenced `v0.7.9` release. In stage creation, the repository
 copy adds explicit `die` messages for `mktemp`, `chmod`, and `mkdir` failures;
 the web copy relies on Bash's `set -e` and the commands' diagnostics. During
