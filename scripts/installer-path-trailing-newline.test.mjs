@@ -192,10 +192,12 @@ for (const [label, url] of Object.entries(installers)) {
       );
     });
 
-    test(`${label} leaves a terminated ${shellName} file mentioning the marker untouched`, (t) => {
-      // grep -qF matches the marker as a substring, so an unrelated line that
-      // merely quotes the marker text already counts as wired: the update is
-      // a no-op and the newline-terminated file is preserved byte-for-byte.
+    test(`${label} still wires a terminated ${shellName} file that only mentions the marker`, (t) => {
+      // grep -qxF recognizes the marker only as a whole line, so an unrelated
+      // comment that merely quotes the marker text does not count as wired:
+      // the update appends its block while the mentioning line and the final
+      // newline survive byte-for-byte, and a repeat update then finds the real
+      // marker and leaves the file untouched.
       const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-path-trailing-mention-')));
       t.after(() => rmSync(root, { recursive: true, force: true }));
       const home = join(root, 'home');
@@ -207,18 +209,20 @@ for (const [label, url] of Object.entries(installers)) {
       writeFileSync(rc, text, { mode: 0o600 });
 
       const result = runPathUpdate(harness, config, home, bin);
-      assert.match(result.stdout, /already wired into/);
-      assert.doesNotMatch(result.stdout, /added .* to PATH/,
-        'a file already naming the marker must not gain a second block');
-      assert.equal(readFileSync(rc, 'utf8'), text,
-        'the mentioning file is byte-for-byte unchanged');
-      assert.equal(statSync(rc).mode & 0o777, 0o600,
-        'startup file mode is preserved');
-      assert.deepEqual(
-        readdirSync(dirname(rc)).filter((name) => name.startsWith('.phantom-path.')),
-        [],
-        'no PATH-update temporary files remain beside the startup file',
-      );
+      assert.match(result.stdout, /added .* to PATH/);
+      assert.doesNotMatch(result.stdout, /already wired into/,
+        'a file that only mentions the marker is not wired yet');
+      assertPreservedTerminatedFile(rc, bin, config, text);
+      assert.ok(readFileSync(rc, 'utf8').split('\n')
+        .includes(`# review note: keep the ${marker} line`),
+        'the mentioning line is byte-for-byte unchanged');
+
+      const second = runPathUpdate(harness, config, home, bin);
+      assert.match(second.stdout, /already wired into/);
+      assert.doesNotMatch(second.stdout, /added .* to PATH/,
+        'the second update must not append a second PATH block');
+      assert.equal(readFileSync(rc, 'utf8'), `${text}\n${marker}\n${config.pathLine(bin)}\n`,
+        'the repeat update leaves the wired file byte-for-byte unchanged');
     });
   }
 }
