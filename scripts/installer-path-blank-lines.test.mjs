@@ -34,6 +34,7 @@ const shells = {
 };
 
 const shapes = [
+  ['a single blank line between unrelated lines', 'alias ll="ls -l"\n\nexport EDITOR=vim\n'],
   ['leading blank lines', '\n\n# first\nexport A=1\n'],
   ['consecutive blank lines between content', 'export A=1\n\n\n\nexport B=2\n'],
   ['whitespace-only blank lines', 'export A=1\n  \n\t\nexport B=2\n'],
