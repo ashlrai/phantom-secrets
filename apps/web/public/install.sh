@@ -341,7 +341,7 @@ add_to_user_path() {
       rm -f -- "$before_tmp" "$candidate_tmp"
       return 1
     }
-    if grep -qF "$marker" "$before_tmp" 2>/dev/null; then
+    if grep -qxF "$marker" "$before_tmp" 2>/dev/null; then
       rm -f -- "$before_tmp" "$candidate_tmp"
       say "$bin already wired into $rc"
       return 0
@@ -396,7 +396,7 @@ add_to_user_path() {
   after_identity="$(file_identity "$rc")" || after_identity=""
   if [ "$after_identity" != "$candidate_identity" ] \
     || [ ! -f "$rc" ] || [ -L "$rc" ] \
-    || ! grep -qF "$marker" "$rc" 2>/dev/null; then
+    || ! grep -qxF "$marker" "$rc" 2>/dev/null; then
     return 1
   fi
   say "added $bin to PATH in $rc (open a new shell or run: source $rc)"
