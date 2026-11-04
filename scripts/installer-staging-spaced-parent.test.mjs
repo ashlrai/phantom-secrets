@@ -18,7 +18,10 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-const installer = fileURLToPath(new URL('install.sh', import.meta.url));
+const installers = {
+  repository: fileURLToPath(new URL('install.sh', import.meta.url)),
+  public: fileURLToPath(new URL('../apps/web/public/install.sh', import.meta.url)),
+};
 
 // Builds an offline release fixture plus a mktemp shim that records its argv,
 // so a test can prove where the installer asked for its staging directory.
@@ -51,7 +54,7 @@ exec ${JSON.stringify(realMktemp)} "$@"
   return { root, fixture, home, shims, mktempLog };
 }
 
-function run({ fixture, home, shims }, install, extra = {}) {
+function run({ fixture, home, shims }, installer, install, extra = {}) {
   const env = { ...process.env };
   for (const name of ['PHANTOM_REPO', 'PHANTOM_TEST_FAIL_AFTER_PROMOTION',
     'PHANTOM_INSTALL_LOCK_WAIT_SECONDS', 'PHANTOM_INSTALL_LOCK_STALE_SECONDS',
@@ -76,46 +79,48 @@ function run({ fixture, home, shims }, install, extra = {}) {
 const stagingTemplates = (log) => readFileSync(log, 'utf8').split('\n')
   .filter((line) => line.startsWith('-d '));
 
-test('staging is requested under the resolved, newly created spaced parent', (t) => {
-  const ctx = setup(t);
-  // The spaced parent is reached through a symlink and does not exist yet:
-  // the installer must create it and stage under its physical path.
-  const real = join(ctx.root, 'real root');
-  mkdirSync(real);
-  const link = join(ctx.root, 'link root');
-  symlinkSync(real, link);
-  const install = join(link, 'new parent', 'bin');
-  const result = run(ctx, install);
-  assert.ifError(result.error);
-  assert.equal(result.status, 0, result.stderr);
+for (const [name, installer] of Object.entries(installers)) {
+  test(`${name} installer: staging is requested under the resolved, newly created spaced parent`, (t) => {
+    const ctx = setup(t);
+    // The spaced parent is reached through a symlink and does not exist yet:
+    // the installer must create it and stage under its physical path.
+    const real = join(ctx.root, 'real root');
+    mkdirSync(real);
+    const link = join(ctx.root, 'link root');
+    symlinkSync(real, link);
+    const install = join(link, 'new parent', 'bin');
+    const result = run(ctx, installer, install);
+    assert.ifError(result.error);
+    assert.equal(result.status, 0, result.stderr);
 
-  const physicalParent = join(real, 'new parent');
-  assert.deepEqual(
-    stagingTemplates(ctx.mktempLog),
-    [`-d ${join(physicalParent, '.bin.install.XXXXXX')}`],
-    'staging template must be one path under the resolved spaced parent',
-  );
-  assert.ok(existsSync(join(physicalParent, 'bin', 'phantom')));
-  assert.ok(existsSync(join(physicalParent, 'bin', 'phantom-mcp')));
-  assert.deepEqual(readdirSync(physicalParent), ['bin'], 'no staging, backup, or lock left behind');
-});
+    const physicalParent = join(real, 'new parent');
+    assert.deepEqual(
+      stagingTemplates(ctx.mktempLog),
+      [`-d ${join(physicalParent, '.bin.install.XXXXXX')}`],
+      'staging template must be one path under the resolved spaced parent',
+    );
+    assert.ok(existsSync(join(physicalParent, 'bin', 'phantom')));
+    assert.ok(existsSync(join(physicalParent, 'bin', 'phantom-mcp')));
+    assert.deepEqual(readdirSync(physicalParent), ['bin'], 'no staging, backup, or lock left behind');
+  });
 
-test('a failed install in a spaced parent rolls back and removes its staging', (t) => {
-  const ctx = setup(t);
-  const parent = join(ctx.root, 'parent with spaces');
-  const install = join(parent, 'bin');
-  mkdirSync(install, { recursive: true });
-  writeFileSync(join(install, 'old-install'), 'preserve-me');
-  const result = run(ctx, install, { PHANTOM_TEST_FAIL_AFTER_PROMOTION: '1' });
-  assert.ifError(result.error);
-  assert.notEqual(result.status, 0, 'the injected post-promotion fault must fail the install');
+  test(`${name} installer: a failed install in a spaced parent rolls back and removes its staging`, (t) => {
+    const ctx = setup(t);
+    const parent = join(ctx.root, 'parent with spaces');
+    const install = join(parent, 'bin');
+    mkdirSync(install, { recursive: true });
+    writeFileSync(join(install, 'old-install'), 'preserve-me');
+    const result = run(ctx, installer, install, { PHANTOM_TEST_FAIL_AFTER_PROMOTION: '1' });
+    assert.ifError(result.error);
+    assert.notEqual(result.status, 0, 'the injected post-promotion fault must fail the install');
 
-  assert.deepEqual(
-    stagingTemplates(ctx.mktempLog),
-    [`-d ${join(parent, '.bin.install.XXXXXX')}`],
-    'staging was created directly under the spaced parent',
-  );
-  assert.equal(readFileSync(join(install, 'old-install'), 'utf8'), 'preserve-me');
-  assert.equal(existsSync(join(install, 'phantom')), false, 'the failed candidate is not live');
-  assert.deepEqual(readdirSync(parent), ['bin'], 'staging, backup, and lock siblings are removed');
-});
+    assert.deepEqual(
+      stagingTemplates(ctx.mktempLog),
+      [`-d ${join(parent, '.bin.install.XXXXXX')}`],
+      'staging was created directly under the spaced parent',
+    );
+    assert.equal(readFileSync(join(install, 'old-install'), 'utf8'), 'preserve-me');
+    assert.equal(existsSync(join(install, 'phantom')), false, 'the failed candidate is not live');
+    assert.deepEqual(readdirSync(parent), ['bin'], 'staging, backup, and lock siblings are removed');
+  });
+}
