@@ -249,9 +249,65 @@ jobs:
       - name: Check installer shell syntax
         if: runner.os != 'Windows'
         run: node --test scripts/installer-syntax.test.mjs
+      # Every checked-in offline installer test runs here. Several were added
+      # without a workflow reference and never executed; keep this list complete
+      # when adding scripts/installer-*.test.mjs or public-installer tests.
       - name: Run direct installer offline tests
         if: runner.os == 'Linux'
-        run: node --test scripts/installers.test.js scripts/installer-executable-permissions.test.mjs scripts/installer-path-final-newline.test.mjs scripts/installer-path-comment-punctuation.test.mjs scripts/installer-path-idempotence.test.mjs scripts/installer-path-existing-entry.test.mjs scripts/installer-path-snapshot-cleanup.test.mjs scripts/installer-path-snapshot-failure.test.mjs scripts/installer-path-snapshot-spaces.test.mjs scripts/release/native-installer-acceptance.test.mjs
+        run: >-
+          node --test
+          scripts/installer-copy-byte-consistency.test.mjs
+          scripts/installer-copy-comparison.test.mjs
+          scripts/installer-copy-consistency.test.mjs
+          scripts/installer-copy-maintenance.test.mjs
+          scripts/installer-copy-source-map.test.mjs
+          scripts/installer-copy-sync.test.mjs
+          scripts/installer-default-staging-root.test.mjs
+          scripts/installer-download-failure.test.mjs
+          scripts/installer-executable-permissions.test.mjs
+          scripts/installer-installed-contents.test.mjs
+          scripts/installer-missing-executable.test.mjs
+          scripts/installer-missing-tool.test.mjs
+          scripts/installer-offline-suite.test.mjs
+          scripts/installer-path-candidate-spaces.test.mjs
+          scripts/installer-path-candidate-unicode-parent.test.mjs
+          scripts/installer-path-comment-punctuation.test.mjs
+          scripts/installer-path-existing-entry.test.mjs
+          scripts/installer-path-final-newline.test.mjs
+          scripts/installer-path-idempotence.test.mjs
+          scripts/installer-path-snapshot-cleanup.test.mjs
+          scripts/installer-path-snapshot-distinct.test.mjs
+          scripts/installer-path-snapshot-failure.test.mjs
+          scripts/installer-path-snapshot-spaces.test.mjs
+          scripts/installer-path-temp-failure.test.mjs
+          scripts/installer-path-temp-placement.test.mjs
+          scripts/installer-path-template-names.test.mjs
+          scripts/installer-path-templates.test.mjs
+          scripts/installer-path-update-steps.test.mjs
+          scripts/installer-stage-parent.test.mjs
+          scripts/installer-staging-cleanup.test.mjs
+          scripts/installer-staging-contract.test.mjs
+          scripts/installer-staging-directory-reference.test.mjs
+          scripts/installer-staging-explicit-parent.test.mjs
+          scripts/installer-staging-expression-match.test.mjs
+          scripts/installer-staging-failure.test.mjs
+          scripts/installer-staging-prefix.test.mjs
+          scripts/installer-staging-prefixes.test.mjs
+          scripts/installer-staging-spaced-parent.test.mjs
+          scripts/installer-staging-spaces.test.mjs
+          scripts/installer-staging-success.test.mjs
+          scripts/installer-staging-tmpdir-spaces.test.mjs
+          scripts/installer-staging-uniqueness.test.mjs
+          scripts/installer-temp-environment.test.mjs
+          scripts/installer-temporary-paths.test.mjs
+          scripts/installer-tmpdir-fallback.test.mjs
+          scripts/installer-unsupported-arch.test.mjs
+          scripts/installer-unsupported-platform.test.mjs
+          scripts/installers.test.js
+          scripts/public-installer-extraction-failure.test.mjs
+          scripts/public-installer-staging-unicode-parent.test.mjs
+          scripts/public-installer-staging.test.mjs
+          scripts/release/native-installer-acceptance.test.mjs
       - name: Parse candidate and public-reference PowerShell installers
         if: runner.os == 'Windows'
         shell: pwsh
