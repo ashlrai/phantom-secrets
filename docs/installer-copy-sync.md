@@ -13,7 +13,7 @@ Exit status 0 means the files match, 1 means they differ, and a status greater
 than 1 means the comparison failed. The output is a unified diff, with the
 repository copy on the minus side and the web copy on the plus side.
 
-The copies currently have reviewed differences in staging error handling and
+The copies currently have reviewed differences in release pinning and
 archive extraction. See the dated [comparison and hashes](installer-copy-comparison.md)
 and [source map](installer-copy-source-map.md) for the exact review. The web
 copy is bound to separately reviewed release evidence: do not overwrite it

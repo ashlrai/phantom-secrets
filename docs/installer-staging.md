@@ -23,11 +23,10 @@ See the [repository installer setup](../scripts/install.sh#L18-L54) and
 2. `mktemp` creates `.<install-name>.install.XXXXXX` in the canonical install
    parent, with mode 700; its `download` and `candidate` subdirectories also
    have mode 700. The archive and its checksum sidecar go into `download`, not
-   the live install. The repository script reports explicit errors for staging
-   creation and permission failures; the web copy relies on Bash error exit
-   and the underlying command's diagnostic. See
+   the live install. Both copies report explicit errors for staging
+   creation and permission failures on top of Bash error exit. See
    [repository staging](../scripts/install.sh#L437-L457) and
-   [web staging](../apps/web/public/install.sh#L437-L455).
+   [web staging](../apps/web/public/install.sh#L437-L457).
 3. The installer validates the one-line SHA-256 sidecar and archive digest,
    requires exactly two regular archive members (`phantom` and `phantom-mcp`),
    and extracts into `candidate`. It makes the binaries executable, checks each

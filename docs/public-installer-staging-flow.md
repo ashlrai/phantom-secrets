@@ -12,7 +12,8 @@ parent, resolves that parent with `pwd -P`, rejects a symlink destination, and
 acquires the sibling install lock before creating the stage. It runs:
 
 ```bash
-stage_root="$(mktemp -d "$install_parent/.${install_name}.install.XXXXXX")"
+stage_root="$(mktemp -d "$install_parent/.${install_name}.install.XXXXXX")" \
+  || die "could not create a private staging directory in $install_parent"
 ```
 
 Thus the stage is a fresh, hidden sibling of the live destination in its
@@ -27,7 +28,7 @@ The archive and SHA-256 sidecar are placed in `download`. After checking the
 sidecar and digest, the installer requires exactly the two regular archive
 members `phantom` and `phantom-mcp`, extracts them into `candidate`, verifies
 their versions, and writes a source receipt there. This keeps incomplete or
-unverified downloads out of the live install. See [validation](../apps/web/public/install.sh#L445-L496).
+unverified downloads out of the live install. See [validation](../apps/web/public/install.sh#L445-L498).
 
 With lock ownership checked, an existing live directory is moved to the sibling
 `.<install-name>.backup.<stage-suffix>` and `candidate` is moved into place.

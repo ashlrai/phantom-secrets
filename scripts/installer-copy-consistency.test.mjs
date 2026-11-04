@@ -20,26 +20,6 @@ const approvedDifferences = [
     plus: ['CANDIDATE_TAG="v0.7.9"'],
   },
   {
-    name: 'staging directory creation and permission changes keep die() guards only in the repository copy',
-    minus: [
-      'stage_root="$(mktemp -d "$install_parent/.${install_name}.install.XXXXXX")" \\',
-      '  || die "could not create a private staging directory in $install_parent"',
-      'chmod 700 "$stage_root" || die "could not secure the staging directory"',
-    ],
-    plus: [
-      'stage_root="$(mktemp -d "$install_parent/.${install_name}.install.XXXXXX")"',
-      'chmod 700 "$stage_root"',
-    ],
-  },
-  {
-    name: 'staging subdirectory creation keeps a die() guard only in the repository copy',
-    minus: [
-      'mkdir -m 700 "$download_dir" "$candidate_dir" \\',
-      '  || die "could not create staging directories"',
-    ],
-    plus: ['mkdir -m 700 "$download_dir" "$candidate_dir"'],
-  },
-  {
     name: 'the repository copy extracts the release archive with tar --no-same-owner',
     minus: [
       "# --no-same-owner: as root, tar would otherwise keep the release runner's uid on the installed binaries.",
