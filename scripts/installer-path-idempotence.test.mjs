@@ -89,6 +89,28 @@ function runPathUpdate(harness, config, home, bin) {
 for (const [file, installer] of Object.entries(copies)) {
   const harness = pathUpdateHarness(readFileSync(installer, 'utf8'), file);
   for (const [shellName, config] of Object.entries(shells)) {
+    for (const finalNewline of [true, false]) {
+      test(`${file} preserves unrelated ${shellName} settings in order (${finalNewline ? 'with' : 'without'} final newline)`, (t) => {
+        const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-path-settings-')));
+        t.after(() => rmSync(root, { recursive: true, force: true }));
+        const home = join(root, 'home');
+        const bin = join(root, 'bin');
+        const rc = config.rc(home);
+        mkdirSync(dirname(rc), { recursive: true });
+        mkdirSync(bin, { recursive: true });
+        const settings = shellName === 'fish'
+          ? ['# personal settings', 'set -gx EDITOR vim', '', 'alias ll "ls -la"', 'set -g fish_greeting "hello world"']
+          : ['# personal settings', 'export EDITOR=vim', '', 'alias ll="ls -la"', 'export GREETING="hello world"'];
+        const original = settings.join('\n') + (finalNewline ? '\n' : '');
+        writeFileSync(rc, original, { mode: 0o600 });
+
+        const result = runPathUpdate(harness, config, home, bin);
+        assert.match(result.stdout, /added .* to PATH/);
+        assert.equal(readFileSync(rc, 'utf8'),
+          `${original}\n${marker}\n${config.pathLine(bin)}\n`,
+          'all original bytes remain in order before the appended PATH block');
+      });
+    }
     for (const scenario of ['pre-existing', 'absent']) {
       test(`${file} keeps one PATH entry across repeated ${shellName} updates (${scenario} startup file)`, (t) => {
         const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-path-idempotence-')));
