@@ -48,7 +48,7 @@ function setup(t) {
   const createdLog = join(root, 'created.log');
   const realMktemp = execFileSync('which', ['mktemp'], { encoding: 'utf8' }).trim();
   writeFileSync(join(shims, 'mktemp'), `#!/bin/sh
-printf '%s\\n' "$*" >> ${JSON.stringify(mktempLog)}
+if [ "$1" = -d ]; then printf '%s\\0' "$@" >> ${JSON.stringify(mktempLog)}; fi
 created="$(${JSON.stringify(realMktemp)} "$@")" || exit $?
 printf '%s\\n' "$created" >> ${JSON.stringify(createdLog)}
 printf '%s\\n' "$created"
@@ -79,8 +79,8 @@ function run({ fixture, home, shims }, installer, install, extra = {}) {
   });
 }
 
-const stagingTemplates = (log) => readFileSync(log, 'utf8').split('\n')
-  .filter((line) => line.startsWith('-d '));
+// NUL delimiters preserve argument boundaries even when the template has spaces.
+const stagingArguments = (log) => readFileSync(log, 'utf8').split('\0').slice(0, -1);
 
 for (const [name, installer] of Object.entries(installers)) {
   for (const failure of [false, true]) {
@@ -108,8 +108,8 @@ for (const [name, installer] of Object.entries(installers)) {
         assert.ok(existsSync(join(install, 'phantom')));
         assert.ok(existsSync(join(install, 'phantom-mcp')));
       }
-      assert.deepEqual(stagingTemplates(ctx.mktempLog),
-        [`-d ${join(parent, '.bin.install.XXXXXX')}`]);
+      assert.deepEqual(stagingArguments(ctx.mktempLog),
+        ['-d', join(parent, '.bin.install.XXXXXX')]);
       const created = readFileSync(ctx.createdLog, 'utf8').trim().split('\n');
       assert.equal(created.length, 1, 'exactly one staging directory was created');
       assert.ok(created[0].startsWith(join(parent, '.bin.install.')));
@@ -133,8 +133,8 @@ for (const [name, installer] of Object.entries(installers)) {
 
     const physicalParent = join(real, 'new parent');
     assert.deepEqual(
-      stagingTemplates(ctx.mktempLog),
-      [`-d ${join(physicalParent, '.bin.install.XXXXXX')}`],
+      stagingArguments(ctx.mktempLog),
+      ['-d', join(physicalParent, '.bin.install.XXXXXX')],
       'staging template must be one path under the resolved spaced parent',
     );
     assert.ok(existsSync(join(physicalParent, 'bin', 'phantom')));
@@ -153,8 +153,8 @@ for (const [name, installer] of Object.entries(installers)) {
     assert.notEqual(result.status, 0, 'the injected post-promotion fault must fail the install');
 
     assert.deepEqual(
-      stagingTemplates(ctx.mktempLog),
-      [`-d ${join(parent, '.bin.install.XXXXXX')}`],
+      stagingArguments(ctx.mktempLog),
+      ['-d', join(parent, '.bin.install.XXXXXX')],
       'staging was created directly under the spaced parent',
     );
     assert.equal(readFileSync(join(install, 'old-install'), 'utf8'), 'preserve-me');
