@@ -164,3 +164,32 @@ for (const [file, installer] of Object.entries(copies)) {
     }
   }
 }
+
+// An update that targets a different bin directory (for example a changed
+// PHANTOM_INSTALL_DIR) must still leave a single installer entry: the marker
+// owns the block, so the second run is a no-op rather than a second PATH line.
+for (const [file, installer] of Object.entries(copies)) {
+  const harness = pathUpdateHarness(readFileSync(installer, 'utf8'), file);
+  for (const [shellName, config] of Object.entries(shells)) {
+    test(`${file} keeps one ${shellName} PATH entry when a repeat update uses a different bin dir`, (t) => {
+      const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-path-rebin-')));
+      t.after(() => rmSync(root, { recursive: true, force: true }));
+      const home = join(root, 'home');
+      const binA = join(root, 'a', 'bin');
+      const binB = join(root, 'b', 'bin');
+      mkdirSync(home, { recursive: true });
+      mkdirSync(binA, { recursive: true });
+      mkdirSync(binB, { recursive: true });
+      const rc = config.rc(home);
+
+      runPathUpdate(harness, config, home, binA);
+      const wired = readFileSync(rc, 'utf8');
+      const again = runPathUpdate(harness, config, home, binB);
+      assert.match(again.stdout, /already wired into/);
+      assert.equal(readFileSync(rc, 'utf8'), wired, 'repeat update left the startup file unchanged');
+      const lines = wired.split('\n');
+      assert.equal(lines.filter((line) => line === marker).length, 1);
+      assert.equal(lines.filter((line) => line.includes('PATH "') || line.startsWith('export PATH=')).length, 1);
+    });
+  }
+}
