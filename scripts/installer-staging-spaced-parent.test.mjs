@@ -45,13 +45,16 @@ function setup(t) {
   const digest = createHash('sha256').update(readFileSync(join(fixture, archive))).digest('hex');
   writeFileSync(join(fixture, `${archive}.sha256`), `${digest}  ${archive}\n`);
   const mktempLog = join(root, 'mktemp.log');
+  const createdLog = join(root, 'created.log');
   const realMktemp = execFileSync('which', ['mktemp'], { encoding: 'utf8' }).trim();
   writeFileSync(join(shims, 'mktemp'), `#!/bin/sh
 printf '%s\\n' "$*" >> ${JSON.stringify(mktempLog)}
-exec ${JSON.stringify(realMktemp)} "$@"
+created="$(${JSON.stringify(realMktemp)} "$@")" || exit $?
+printf '%s\\n' "$created" >> ${JSON.stringify(createdLog)}
+printf '%s\\n' "$created"
 `);
   chmodSync(join(shims, 'mktemp'), 0o755);
-  return { root, fixture, home, shims, mktempLog };
+  return { root, fixture, home, shims, mktempLog, createdLog };
 }
 
 function run({ fixture, home, shims }, installer, install, extra = {}) {
@@ -80,6 +83,41 @@ const stagingTemplates = (log) => readFileSync(log, 'utf8').split('\n')
   .filter((line) => line.startsWith('-d '));
 
 for (const [name, installer] of Object.entries(installers)) {
+  for (const failure of [false, true]) {
+    test(`${name} installer: quoted parent staging is cleaned after ${failure ? 'rollback' : 'success'}`, (t) => {
+      const ctx = setup(t);
+      const parent = join(ctx.root, "owner's install");
+      mkdirSync(parent);
+      const alias = join(ctx.root, 'install-alias');
+      symlinkSync(parent, alias);
+      // The override rejects shell-significant characters; its physical parent
+      // may still contain them after the installer resolves a symlink.
+      const install = join(alias, 'bin');
+      mkdirSync(install);
+      writeFileSync(join(install, 'old-install'), 'preserve-me');
+      const result = run(ctx, installer, install,
+        failure ? { PHANTOM_TEST_FAIL_AFTER_PROMOTION: '1' } : {});
+      assert.ifError(result.error);
+      if (failure) {
+        assert.notEqual(result.status, 0, 'the injected post-promotion fault must fail');
+        assert.match(result.stderr, /test-only injected failure after promotion/);
+        assert.equal(readFileSync(join(install, 'old-install'), 'utf8'), 'preserve-me');
+        assert.equal(existsSync(join(install, 'phantom')), false);
+      } else {
+        assert.equal(result.status, 0, result.stderr);
+        assert.ok(existsSync(join(install, 'phantom')));
+        assert.ok(existsSync(join(install, 'phantom-mcp')));
+      }
+      assert.deepEqual(stagingTemplates(ctx.mktempLog),
+        [`-d ${join(parent, '.bin.install.XXXXXX')}`]);
+      const created = readFileSync(ctx.createdLog, 'utf8').trim().split('\n');
+      assert.equal(created.length, 1, 'exactly one staging directory was created');
+      assert.ok(created[0].startsWith(join(parent, '.bin.install.')));
+      assert.equal(existsSync(created[0]), false, 'the actual staging directory was removed');
+      assert.deepEqual(readdirSync(parent), ['bin'], 'no staging, backup, or lock remains');
+    });
+  }
+
   test(`${name} installer: staging is requested under the resolved, newly created spaced parent`, (t) => {
     const ctx = setup(t);
     // The spaced parent is reached through a symlink and does not exist yet:
