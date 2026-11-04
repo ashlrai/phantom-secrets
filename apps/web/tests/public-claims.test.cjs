@@ -1302,9 +1302,9 @@ test("community health metadata preserves release and support boundaries", () =>
   const citation = readRepo("CITATION.cff");
   assert.match(citation, /^cff-version: 1\.2\.0$/m);
   assert.match(citation, /^version: 0\.8\.1$/m);
-  assert.match(citation, /immutable v0\.7\.9 GitHub\s+release/i);
+  assert.match(citation, /immutable v0\.8\.0 GitHub\s+release/i);
   assert.match(citation, /repository URL and full commit SHA/i);
-  assert.match(citation, /^date-released: 2026-11-02$/m);
+  assert.match(citation, /^date-released: 2026-11-03$/m);
 });
 
 test("cloud-signed audit remains an explicit network-free protocol foundation", () => {
