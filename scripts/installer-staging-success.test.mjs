@@ -20,7 +20,8 @@ import { fileURLToPath } from 'node:url';
 // A successful install promotes the candidate and must then remove the whole
 // staging tree (including the displaced previous install) and the lock, so the
 // install directory's parent holds only the installed `bin`.
-test('repository installer installs a stubbed local archive and leaves no staging directory', (t) => {
+for (const installer of ['install.sh', '../apps/web/public/install.sh']) {
+test(`${installer} preserves an existing PATH entry during installation`, (t) => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-installer-staging-success-')));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const fixture = join(root, 'fixture');
@@ -29,6 +30,9 @@ test('repository installer installs a stubbed local archive and leaves no stagin
   const install = join(root, 'live', 'bin');
   for (const dir of [fixture, payload, home, install]) mkdirSync(dir, { recursive: true });
   writeFileSync(join(install, 'old-install'), 'previous');
+  const rc = join(home, '.bashrc');
+  const originalRc = `# existing configuration\nexport PATH="${install}:$PATH"\n`;
+  writeFileSync(rc, originalRc);
   for (const name of ['phantom', 'phantom-mcp']) {
     writeFileSync(join(payload, name), `#!/bin/sh\necho "${name} 1.2.3"\n`);
     chmodSync(join(payload, name), 0o755);
@@ -45,14 +49,15 @@ test('repository installer installs a stubbed local archive and leaves no stagin
   for (const name of ['PHANTOM_REPO', 'PHANTOM_TEST_FAIL_AFTER_PROMOTION',
     'PHANTOM_INSTALL_LOCK_WAIT_SECONDS', 'PHANTOM_INSTALL_LOCK_STALE_SECONDS',
     'PHANTOM_INSTALL_LOCK_HEARTBEAT_SECONDS']) delete env[name];
-  const result = spawnSync('/bin/bash', [fileURLToPath(new URL('install.sh', import.meta.url))], {
+  const result = spawnSync('/bin/bash', [fileURLToPath(new URL(installer, import.meta.url))], {
     encoding: 'utf8',
     timeout: 30000,
     env: {
       ...env,
       HOME: home,
+      SHELL: '/bin/bash',
       // Already on PATH, so the installer does not touch shell rc files.
-      PATH: `${install}:${env.PATH}`,
+      PATH: `/usr/local/bin:${install}:/usr/bin:/bin`,
       PHANTOM_INSTALL_DIR: install,
       PHANTOM_TEST_ALLOW_INSTALLER_OVERRIDES: '1',
       PHANTOM_TEST_LOCAL_RELEASE_DIR: fixture,
@@ -68,5 +73,16 @@ test('repository installer installs a stubbed local archive and leaves no stagin
   }
   assert.equal(existsSync(join(install, 'old-install')), false, 'previous install is replaced');
   assert.deepEqual(readdirSync(dirname(install)), ['bin'], 'no staging, backup, or lock beside install');
-  assert.deepEqual(readdirSync(home), [], 'HOME must contain no temporary files');
+  assert.deepEqual(readdirSync(home), ['.bashrc'], 'HOME must contain no temporary files');
+  assert.equal(readFileSync(rc, 'utf8'), originalRc, 'existing PATH configuration is unchanged');
+  const shell = spawnSync('/bin/bash', ['--noprofile', '--norc', '-c',
+    '. "$HOME/.bashrc"; printf %s "$PATH"'], {
+    encoding: 'utf8',
+    env: { HOME: home, PATH: '/usr/local/bin:/usr/bin:/bin' },
+  });
+  assert.ifError(shell.error);
+  assert.equal(shell.status, 0);
+  assert.deepEqual(shell.stdout.split(':'), [install, '/usr/local/bin', '/usr/bin', '/bin'],
+    'sourcing the unchanged startup file adds the install directory once and preserves other entries');
 });
+}
