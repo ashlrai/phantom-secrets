@@ -9,8 +9,10 @@ import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
 
 const repo = resolve(import.meta.dirname, '..');
-const repositoryInstaller = join(repo, 'scripts', 'install.sh');
-const publicInstaller = join(repo, 'apps', 'web', 'public', 'install.sh');
+const installers = [
+  ['repository', join(repo, 'scripts', 'install.sh')],
+  ['public', join(repo, 'apps', 'web', 'public', 'install.sh')],
+];
 
 function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -82,46 +84,36 @@ function runInstaller({ installer, root }) {
   return { result, install, home, calls, curlLog };
 }
 
-test('repository installer exits nonzero before proceeding when mktemp cannot create the staging directory', (t) => {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-staging-failure-')));
-  t.after(() => rmSync(root, { recursive: true, force: true }));
-  const { result, install, calls, curlLog } = runInstaller({ installer: repositoryInstaller, root });
-  const parent = dirname(install);
+for (const [label, installer] of installers) {
+  test(`${label} installer exits nonzero before download when mktemp cannot create the staging directory`, (t) => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), `phantom-staging-failure-${label}-`)));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const { result, install, home, calls, curlLog } = runInstaller({ installer, root });
+    const parent = dirname(install);
 
-  assert.ifError(result.error);
-  assert.equal(result.status, 1, result.stderr);
-  assert.match(result.stderr, /could not create a private staging directory in /);
-  assert.match(result.stderr, new RegExp(escapeRegExp(parent)));
-  assert.match(result.stdout, /target: /, 'the real installer ran up to the staging step');
-  assert.doesNotMatch(result.stdout, /downloading|checksum/);
-  assert.deepEqual(
-    calls,
-    [['-d', join(parent, '.bin.install.XXXXXX')]],
-    'the only mktemp call must be the install-parent staging template',
-  );
-  assert.equal(existsSync(curlLog), false, 'staging failure must precede any download');
-  assert.equal(readFileSync(join(install, 'old-install'), 'utf8'), 'preserve-me');
-  assert.deepEqual(
-    readdirSync(parent),
-    ['bin'],
-    'the lock and any staging leftovers must be cleaned up',
-  );
-});
-
-test('public installer copy also fails closed on staging-directory creation failure', (t) => {
-  // The web copy drops the die() guards as a reviewed difference; `set -e`
-  // must still stop it before downloads with an equally clean aftermath.
-  const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-staging-failure-web-')));
-  t.after(() => rmSync(root, { recursive: true, force: true }));
-  const { result, install, calls, curlLog } = runInstaller({ installer: publicInstaller, root });
-  const parent = dirname(install);
-
-  assert.ifError(result.error);
-  assert.equal(result.status, 1, result.stderr);
-  assert.match(result.stderr, /mktemp: injected staging-directory failure/);
-  assert.doesNotMatch(result.stdout, /downloading|checksum/);
-  assert.deepEqual(calls, [['-d', join(parent, '.bin.install.XXXXXX')]]);
-  assert.equal(existsSync(curlLog), false, 'staging failure must precede any download');
-  assert.equal(readFileSync(join(install, 'old-install'), 'utf8'), 'preserve-me');
-  assert.deepEqual(readdirSync(parent), ['bin']);
-});
+    assert.ifError(result.error);
+    assert.equal(result.status, 1, result.stderr);
+    // Both copies carry the die() guard on top of errexit, so stderr names the
+    // failed step and the parent it could not stage in, and the shim marker
+    // proves the injected mktemp failure is what fired.
+    assert.match(result.stderr, /could not create a private staging directory in /);
+    assert.match(result.stderr, new RegExp(escapeRegExp(parent)));
+    assert.match(result.stderr, /mktemp: injected staging-directory failure/);
+    assert.match(result.stdout, /target: /, 'the real installer ran up to the staging step');
+    assert.doesNotMatch(result.stdout, /downloading|checksum/);
+    assert.deepEqual(
+      calls,
+      [['-d', join(parent, '.bin.install.XXXXXX')]],
+      'the only mktemp call must be the install-parent staging template',
+    );
+    assert.equal(existsSync(curlLog), false, 'staging failure must precede any download');
+    assert.deepEqual(readdirSync(install), ['old-install']);
+    assert.equal(readFileSync(join(install, 'old-install'), 'utf8'), 'preserve-me');
+    assert.deepEqual(
+      readdirSync(parent),
+      ['bin'],
+      'the lock and any staging leftovers must be cleaned up',
+    );
+    assert.deepEqual(readdirSync(home), [], 'HOME must contain no leftover files');
+  });
+}
