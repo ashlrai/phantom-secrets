@@ -53,7 +53,7 @@ siblings are managed by `add_to_user_path` alone.
    non-symlink file with exactly one link; the script records its
    device:inode:links:mode identity, `cp -p` copies it to the before file, and
    the identity is recorded again to catch a replacement mid-copy.
-8. **Marker short-circuit** — if the snapshot contains the
+8. **Marker short-circuit** — if a line of the snapshot is exactly the
    `# phantom-secrets PATH` marker, both siblings are removed, the directory
    is reported as already wired, and the function returns 0 without editing
    `rc`.
@@ -70,8 +70,8 @@ siblings are managed by `add_to_user_path` alone.
 13. **Move** — `mv -f` replaces `rc` with the candidate, then the before file
     is removed.
 14. **Post-move verification** — `rc` must carry the recorded candidate
-    identity, remain a regular non-symlink file, and contain the marker; a
-    failure returns 1 and the original file is not restored.
+    identity, remain a regular non-symlink file, and contain the marker as a
+    whole line; a failure returns 1 and the original file is not restored.
 15. **Reporting** — success prints a "added to PATH" note pointing at the
     startup file; a `return 1` surfaces as the call-site `warn` telling the
     user to add the directory manually. The installed binaries stay in place

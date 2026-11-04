@@ -24,11 +24,11 @@ To inspect differences, run `diff -u scripts/install.sh apps/web/public/install.
 
 ## Review snapshot
 
-Reviewed **2026-11-03**: the files **differ**. SHA-256 hashes identify the
+Reviewed **2026-11-04**: the files **differ**. SHA-256 hashes identify the
 exact bytes reviewed:
 
-- `scripts/install.sh`: `64787ada872c82a586b19e0285dc4d42e348ea1277284ba3f4dea6ea1b6d0dc1`
-- `apps/web/public/install.sh`: `3d6326bff1c12065c58f02dd93220f6ab6ce2def11b03e2194f11ce9a8c1cdc8`
+- `scripts/install.sh`: `5dbf84e4cb70f4a4a138b468176fce1b31813f7c7b8f463b4281f3b607158fdc`
+- `apps/web/public/install.sh`: `9d23f8a5c730371a44f6a04b95bf13ad7fa8a80c1d0373c6179c2bdd8604effb`
 
 The repository copy targets the next candidate with `CANDIDATE_TAG="v0.8.1"`;
 the web copy stays bound to the evidenced `v0.7.9` release. The repository
