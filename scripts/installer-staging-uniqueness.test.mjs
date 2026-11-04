@@ -2,18 +2,21 @@ import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
-  chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync,
+  chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-const installer = fileURLToPath(new URL('../apps/web/public/install.sh', import.meta.url));
+// The source installer and its published web copy must both stage freshly.
+const installers = ['../scripts/install.sh', '../apps/web/public/install.sh']
+  .map((path) => fileURLToPath(new URL(path, import.meta.url)));
 
 // Two isolated offline installs (own HOME, same install parent) must each stage
 // in a fresh mktemp directory: never a shared or reused fixed path.
-test('installer staging directories are distinct per invocation under one parent', (t) => {
+for (const installer of installers) {
+test(`installer staging directories are distinct per invocation under one parent: ${basename(dirname(installer))}`, (t) => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-staging-unique-')));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const fixture = join(root, 'fixture');
@@ -84,5 +87,35 @@ case "$1" in -s) echo Darwin ;; -m) echo x86_64 ;; *) exit 2 ;; esac
     assert.equal(dirname(stage), parent, 'staging lives under the shared parent');
     assert.match(basename(stage), /^\.bin\.install\.[A-Za-z0-9]{6,}$/);
     assert.equal(existsSync(stage), false, 'staging is cleaned up');
+  }
+});
+}
+
+// Executes the installer's own staging-creation lines (extracted from the
+// source, so they cannot drift) twice against one parent. Needs no release
+// fixture or executable payload, so it also runs where fake binaries cannot.
+test('scripts/install.sh staging creation yields distinct private directories', (t) => {
+  const source = readFileSync(installers[0], 'utf8');
+  const block = source.match(/^stage_root="\$\(mktemp -d [^\n]*\n(?:  \|\| die [^\n]*\n)?chmod 700 "\$stage_root"[^\n]*\n/m);
+  assert.ok(block, 'staging creation block not found in scripts/install.sh');
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-staging-block-')));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const script = `die() { echo "$1" >&2; exit 1; }
+install_parent=${JSON.stringify(root)}
+install_name=bin
+${block[0]}printf '%s' "$stage_root"
+`;
+  const stage = () => {
+    const result = spawnSync('/bin/bash', ['-c', script], { encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout;
+  };
+  const first = stage();
+  const second = stage();
+  assert.notEqual(first, second, 'two staging creations must not share a directory');
+  for (const dir of [first, second]) {
+    assert.equal(dirname(dir), root);
+    assert.match(basename(dir), /^\.bin\.install\.[A-Za-z0-9]{6,}$/);
+    assert.equal(statSync(dir).mode & 0o777, 0o700, 'staging directory is private');
   }
 });
