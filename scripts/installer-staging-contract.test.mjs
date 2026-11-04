@@ -4,12 +4,12 @@ import test from 'node:test';
 
 const installers = [
   ['scripts/install.sh', true],
-  ['apps/web/public/install.sh', false],
+  ['apps/web/public/install.sh', true],
 ];
 
-// The web copy is bound to the published release and uses errexit instead of
-// explicit die guards. Pin both forms at top level between the lock and the
-// release setup, so a failed creation cannot fall through to a download.
+// Both copies use explicit die guards on top of errexit. Pin the guarded form
+// at top level between the lock and the release setup, so a failed creation
+// cannot fall through to a download.
 function assertStagingContract(source, guarded) {
   const lines = source.split('\n');
   assert.deepEqual(lines.filter((line) => /^\s*set\s/.test(line)), ['set -euo pipefail']);
@@ -56,8 +56,8 @@ test('the staging contract rejects lost guards, errexit, and cleanup', () => {
     assert.throws(() => assertStagingContract(repository.replace(diagnostic, 'ignored'), true));
   }
   assert.throws(() => assertStagingContract(repository.replace('; exit 1; }', '; exit 0; }'), true));
-  assert.throws(() => assertStagingContract(web.replace('set -euo pipefail', 'set -uo pipefail'), false));
-  assert.throws(() => assertStagingContract(web.replace('acquire_install_lock\n\n', 'acquire_install_lock\nset +e\n\n'), false));
-  assert.throws(() => assertStagingContract(web.replace('trap cleanup EXIT', 'trap : EXIT'), false));
-  assert.throws(() => assertStagingContract(web.replace('chmod 700 "$stage_root"', 'chmod 700 "$stage_root" || true'), false));
+  assert.throws(() => assertStagingContract(web.replace('set -euo pipefail', 'set -uo pipefail'), true));
+  assert.throws(() => assertStagingContract(web.replace('acquire_install_lock\n\n', 'acquire_install_lock\nset +e\n\n'), true));
+  assert.throws(() => assertStagingContract(web.replace('trap cleanup EXIT', 'trap : EXIT'), true));
+  assert.throws(() => assertStagingContract(web.replace('chmod 700 "$stage_root"', 'chmod 700 "$stage_root" || true'), true));
 });

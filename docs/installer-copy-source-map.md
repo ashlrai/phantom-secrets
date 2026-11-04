@@ -1,6 +1,6 @@
 # Unix installer copy source map
 
-Reviewed 2026-11-02 against the checked-in [repository installer](../scripts/install.sh)
+Reviewed 2026-11-03 against the checked-in [repository installer](../scripts/install.sh)
 and [web installer](../apps/web/public/install.sh). This maps source files,
 not a deployed website or a release asset. Line links are a snapshot; update
 them and this comparison when either copy changes.
@@ -11,22 +11,20 @@ them and this comparison when either copy changes.
 | Lock release, rollback, stage cleanup, and traps | [lines 90–139](../scripts/install.sh#L90-L139) | [lines 90–139](../apps/web/public/install.sh#L90-L139) |
 | Lock acquisition and stale-lock handling | [lines 206–303](../scripts/install.sh#L206-L303) | [lines 206–303](../apps/web/public/install.sh#L206-L303) |
 | Destination validation and lock acquisition | [lines 425–435](../scripts/install.sh#L425-L435) | [lines 425–435](../apps/web/public/install.sh#L425-L435) |
-| Create private stage, download and candidate directories | [lines 437–443](../scripts/install.sh#L437-L443) | [lines 437–441](../apps/web/public/install.sh#L437-L441) |
-| Download, verify, extract, and prepare candidate | [lines 445–499](../scripts/install.sh#L445-L499) | [lines 443–496](../apps/web/public/install.sh#L443-L496) |
-| Backup, promote, and validate live installation | [lines 501–527](../scripts/install.sh#L501-L527) | [lines 498–524](../apps/web/public/install.sh#L498-L524) |
+| Create private stage, download and candidate directories | [lines 437–443](../scripts/install.sh#L437-L443) | [lines 437–443](../apps/web/public/install.sh#L437-L443) |
+| Download, verify, extract, and prepare candidate | [lines 445–499](../scripts/install.sh#L445-L499) | [lines 445–498](../apps/web/public/install.sh#L445-L498) |
+| Backup, promote, and validate live installation | [lines 501–527](../scripts/install.sh#L501-L527) | [lines 500–526](../apps/web/public/install.sh#L500-L526) |
 | PATH startup-file update function | [lines 305–403](../scripts/install.sh#L305-L403) | [lines 305–403](../apps/web/public/install.sh#L305-L403) |
-| PATH check and update call | [lines 529–531](../scripts/install.sh#L529-L531) | [lines 526–528](../apps/web/public/install.sh#L526-L528) |
+| PATH check and update call | [lines 529–531](../scripts/install.sh#L529-L531) | [lines 528–530](../apps/web/public/install.sh#L528-L530) |
 
-The complete files differ in three places. The repository copy pins
+The complete files differ in two places. The repository copy pins
 `CANDIDATE_TAG="v0.8.1"` for the next release candidate while the web copy
-stays bound to the evidenced `v0.7.9` release. In stage creation, the repository
-copy adds explicit `die` messages for `mktemp`, `chmod`, and `mkdir` failures;
-the web copy relies on Bash's `set -e` and the commands' diagnostics. During
-extraction, the repository copy uses `tar --no-same-owner` and explains why;
-the web copy omits both the option and comment. When run as root, that option
-can change the extracted files' ownership. The PATH function and its call
-site are byte-identical across copies; the call-site line numbers differ
-because of the preceding staging changes.
+stays bound to the evidenced `v0.7.9` release. During extraction, the
+repository copy uses `tar --no-same-owner` and explains why; the web copy
+omits both the option and comment. When run as root, that option can change
+the extracted files' ownership. The PATH function and its call site are
+byte-identical across copies; the call-site line numbers differ because the
+repository copy's extraction comment adds one line.
 
 Both installers stage beside the resolved installation directory, check lock
 ownership around promotion, and attempt rollback and cleanup on ordinary

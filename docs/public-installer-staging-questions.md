@@ -12,7 +12,8 @@ resolving it with `pwd -P`, and acquiring the sibling lock, the installer
 creates the staging directory at [line 437](../apps/web/public/install.sh#L437):
 
 ```bash
-stage_root="$(mktemp -d "$install_parent/.${install_name}.install.XXXXXX")"
+stage_root="$(mktemp -d "$install_parent/.${install_name}.install.XXXXXX")" \
+  || die "could not create a private staging directory in $install_parent"
 ```
 
 The stage is a sibling of the live install, under the resolved install parent,
@@ -21,8 +22,8 @@ the template is `$HOME/.phantom-secrets/.bin.install.XXXXXX`, subject to parent
 resolution. The installer sets the stage and its `download` and `candidate`
 children to mode 700. The archive and checksum are downloaded there, and the
 verified binaries and receipt are assembled in `candidate`. See
-[destination and staging](../apps/web/public/install.sh#L425-L455) and
-[validation](../apps/web/public/install.sh#L457-L496).
+[destination and staging](../apps/web/public/install.sh#L425-L457) and
+[validation](../apps/web/public/install.sh#L445-L498).
 
 ## Current cleanup and questions for review
 

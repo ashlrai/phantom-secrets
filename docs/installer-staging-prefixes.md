@@ -22,10 +22,9 @@ parts; `mktemp -d` replaces the final `XXXXXX` with a unique suffix, and the
 resulting path is stored in `stage_root`. The actual commands are
 `mktemp -d "$install_parent/.${install_name}.install.XXXXXX"` in
 [repository staging](../scripts/install.sh#L437-L443) and
-[web staging](../apps/web/public/install.sh#L437-L441). In the repository
-copy each staging step carries an explicit `|| die` diagnosis; the web copy
-relies on Bash error exit and the underlying command's diagnostic. The prefix
-itself is byte-identical.
+[web staging](../apps/web/public/install.sh#L437-L443). In both copies each
+staging step carries an explicit `|| die` diagnosis on top of Bash error
+exit. The prefix itself is byte-identical.
 
 ## Parent directory
 
