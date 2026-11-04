@@ -269,3 +269,33 @@ for (const [label, url] of Object.entries(installers)) {
     });
   }
 }
+
+// The UTF-8 reads above would hide a rewritten byte. A startup file may hold
+// Latin-1 or other non-UTF-8 bytes; the original bytes must come back exactly,
+// followed only by the added terminator and the managed block.
+for (const [label, url] of Object.entries(installers)) {
+  const harness = pathUpdateHarness(readFileSync(fileURLToPath(url), 'utf8'), label);
+  for (const [shellName, config] of Object.entries(shells)) {
+    test(`${label} keeps non-UTF-8 bytes in an unterminated ${shellName} file exactly`, (t) => {
+      const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-path-newline-bytes-')));
+      t.after(() => rmSync(root, { recursive: true, force: true }));
+      const home = join(root, 'home');
+      const bin = join(root, 'live', 'bin');
+      const rc = config.rcPath(home);
+      mkdirSync(dirname(rc), { recursive: true });
+      mkdirSync(bin, { recursive: true });
+      const original = Buffer.concat([
+        Buffer.from('# caf'), Buffer.from([0xe9, 0xff, 0xfe]), Buffer.from('\nexport NAME=a'),
+      ]);
+      writeFileSync(rc, original, { mode: 0o600 });
+
+      const result = runPathUpdate(harness, config, home, bin);
+      assert.match(result.stdout, /added .* to PATH/);
+      const expected = Buffer.concat([
+        original, Buffer.from(`\n${marker}\n${config.pathLine(bin)}\n`),
+      ]);
+      assert.ok(readFileSync(rc).equals(expected),
+        'original bytes are preserved; only the block is appended');
+    });
+  }
+}
