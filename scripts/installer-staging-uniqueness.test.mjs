@@ -5,7 +5,7 @@ import {
   chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, dirname, join } from 'node:path';
+import { basename, dirname, join, relative } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
@@ -91,13 +91,17 @@ case "$1" in -s) echo Darwin ;; -m) echo x86_64 ;; *) exit 2 ;; esac
 });
 }
 
-// Executes the installer's own staging-creation lines (extracted from the
-// source, so they cannot drift) twice against one parent. Needs no release
-// fixture or executable payload, so it also runs where fake binaries cannot.
-test('scripts/install.sh staging creation yields distinct private directories', (t) => {
-  const source = readFileSync(installers[0], 'utf8');
+// Executes each checked-in installer's own staging-creation lines (extracted
+// from its source, so they cannot drift) twice against one parent. Needs no
+// release fixture or executable payload, so it also runs where fake binaries
+// cannot.
+const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+for (const installer of installers) {
+const label = relative(repoRoot, installer);
+test(`${label} staging creation yields distinct private directories`, (t) => {
+  const source = readFileSync(installer, 'utf8');
   const block = source.match(/^stage_root="\$\(mktemp -d [^\n]*\n(?:  \|\| die [^\n]*\n)?chmod 700 "\$stage_root"[^\n]*\n/m);
-  assert.ok(block, 'staging creation block not found in scripts/install.sh');
+  assert.ok(block, `staging creation block not found in ${label}`);
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-staging-block-')));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const script = `die() { echo "$1" >&2; exit 1; }
@@ -119,3 +123,4 @@ ${block[0]}printf '%s' "$stage_root"
     assert.equal(statSync(dir).mode & 0o777, 0o700, 'staging directory is private');
   }
 });
+}
