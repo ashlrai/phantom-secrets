@@ -14,7 +14,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
@@ -47,7 +47,21 @@ printf '%s\\n' "$*" >> ${JSON.stringify(mktempLog)}
 exec ${JSON.stringify(realMktemp)} "$@"
 `);
   chmodSync(join(shims, 'mktemp'), 0o755);
-  return { root, fixture, shims, mktempLog };
+  // Recording which path the installer hashes proves the staging tree was
+  // populated at failure time, so cleanup assertions cannot pass vacuously.
+  const hashLog = join(root, 'hashed-paths');
+  for (const tool of ['sha256sum', 'shasum']) {
+    writeFileSync(join(shims, tool), `#!/usr/bin/env node
+const { createHash } = require('node:crypto');
+const { appendFileSync, readFileSync } = require('node:fs');
+const target = process.argv.at(-1);
+appendFileSync(${JSON.stringify(hashLog)}, target + '\\n');
+const digest = createHash('sha256').update(readFileSync(target)).digest('hex');
+process.stdout.write(digest + '  ' + target + '\\n');
+`);
+    chmodSync(join(shims, tool), 0o755);
+  }
+  return { root, fixture, shims, mktempLog, hashLog, archive };
 }
 
 function run({ fixture, shims }, { home, pathPrefix, installDir }) {
@@ -127,4 +141,51 @@ test('the default install dir stages and cleans up under a Unicode HOME', (t) =>
   assert.ok(existsSync(join(resolvedParent, 'bin', 'phantom-mcp')));
   assert.deepEqual(readdirSync(resolvedParent), ['bin'], 'no staging, backup, or lock left behind');
   assert.deepEqual(readdirSync(resolvedHome), ['.phantom-secrets'], 'HOME holds no stray files');
+});
+
+test('a failed install under a Unicode parent removes its staging tree', (t) => {
+  const ctx = setup(t);
+  const home = join(ctx.root, 'home');
+  mkdirSync(home);
+  const parent = join(ctx.root, 'ünïcödé-失敗');
+  mkdirSync(parent);
+  const resolvedParent = realpathSync(parent);
+  const link = join(ctx.root, 'fail-link');
+  symlinkSync(parent, link);
+  mkdirSync(join(resolvedParent, 'bin'));
+  writeFileSync(join(resolvedParent, 'bin', 'old-install'), 'preserve-me');
+  // The mismatched sidecar stops the installer after it has downloaded into
+  // and hashed inside the staging tree, but before any candidate binary is
+  // executed — so this failure stays reproducible where fixture binaries
+  // cannot run.
+  writeFileSync(
+    join(ctx.fixture, `${ctx.archive}.sha256`),
+    `${'0'.repeat(64)}  ${ctx.archive}\n`,
+  );
+
+  const result = run(ctx, {
+    home,
+    pathPrefix: join(resolvedParent, 'bin'),
+    installDir: join(link, 'bin'),
+  });
+  assert.ifError(result.error);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /SHA-256 mismatch/);
+
+  assert.deepEqual(
+    stagingTemplates(ctx.mktempLog),
+    [`-d ${join(resolvedParent, '.bin.install.XXXXXX')}`],
+    'staging template must be one path under the resolved Unicode parent',
+  );
+  const hashed = readFileSync(ctx.hashLog, 'utf8').trim().split('\n');
+  assert.equal(hashed.length, 1, 'the staged download is hashed exactly once');
+  const [staged] = hashed;
+  assert.equal(basename(staged), ctx.archive);
+  assert.equal(basename(dirname(staged)), 'download');
+  const stageRoot = dirname(dirname(staged));
+  assert.equal(dirname(stageRoot), resolvedParent);
+  assert.match(basename(stageRoot), /^\.bin\.install\.[^/]+$/);
+  assert.equal(existsSync(stageRoot), false, 'staging directory must be removed');
+  assert.equal(readFileSync(join(resolvedParent, 'bin', 'old-install'), 'utf8'), 'preserve-me');
+  assert.deepEqual(readdirSync(resolvedParent), ['bin'], 'no staging, backup, or lock left behind');
 });
