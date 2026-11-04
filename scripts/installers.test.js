@@ -993,6 +993,29 @@ test('Unix installer aborts before download when staging-directory creation fail
   }
 });
 
+test('web Unix installer aborts before download when staging-directory creation fails', () => {
+  const installer = join(repo, 'apps/web/public/install.sh');
+  for (const seam of ['mktemp', 'chmod', 'mkdir']) {
+    const root = mkdtempSync(join(tmpdir(), `phantom-web-installer-stage-${seam}-`));
+    const shims = makeShims(root);
+    addStagingFailureShim(shims, seam);
+    const install = join(root, 'live', 'bin');
+    const parent = dirname(install);
+    const { result, log } = runInstaller({ root, shims, installer, install, existing: true });
+    assert.ifError(result.error);
+    assert.equal(result.status, 1, `${seam}: ${result.stderr}`);
+    assert.match(result.stderr, /could not .*staging director/, `${seam}: must report a useful error`);
+    assert.equal(existsSync(log), false, `${seam}: staging failure must precede downloads`);
+    assert.equal(readFileSync(join(install, 'old-install'), 'utf8'), 'preserve-me');
+    assert.equal(existsSync(join(parent, '.bin.install.lock')), false, `${seam}: lock released`);
+    assert.deepEqual(
+      readdirSync(parent).filter((name) => name.startsWith('.')),
+      [],
+      `${seam}: staging and lock leftovers must be cleaned up`,
+    );
+  }
+});
+
 test('Unix installer cleans staged candidates and rolls back after a controlled promotion failure', () => {
   for (const existing of [false, true]) {
     const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom installer rollback-')));
@@ -1073,6 +1096,7 @@ test('web Unix installer cleans staging failures and rolls back a promoted candi
       const { install, log, result } = runInstaller({ root, shims, installer, existing: true });
       assert.ifError(result.error);
       assert.equal(result.status, 1, `${seam}: ${result.stderr}`);
+      assert.match(result.stderr, /could not .*staging director/, `${seam}: must report a useful error`);
       assert.equal(existsSync(log), false, `${seam}: failure must precede downloads`);
       assert.equal(readFileSync(join(install, 'old-install'), 'utf8'), 'preserve-me');
       assert.deepEqual(readdirSync(dirname(install)), ['bin']);
