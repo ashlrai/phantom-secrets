@@ -47,10 +47,14 @@ const shells = {
 // Unrelated export: odd spacing, quotes, a dollar sign, a tab and non-ASCII.
 const unrelatedExport = 'export   GREETING=\'héllo  "world" $HOME\'\t# keep me';
 
+// Final-line endings the original file may have: the export must survive each.
+const endings = { 'final newline': '\n', 'no final newline': '', 'CRLF final line': '\r\n' };
+
 for (const [file, installer] of Object.entries(copies)) {
   const harness = harnessFor(readFileSync(installer, 'utf8'), file);
   for (const [name, config] of Object.entries(shells)) {
-    test(`${file} keeps an unrelated export byte-for-byte when updating a ${name} PATH`, (t) => {
+   for (const [ending, tail] of Object.entries(endings)) {
+    test(`${file} keeps an unrelated export byte-for-byte when updating a ${name} PATH (${ending})`, (t) => {
       const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-path-unrelated-')));
       t.after(() => rmSync(root, { recursive: true, force: true }));
       const home = join(root, 'home');
@@ -59,7 +63,7 @@ for (const [file, installer] of Object.entries(copies)) {
       mkdirSync(dirname(rc), { recursive: true });
       mkdirSync(bin, { recursive: true });
 
-      const original = Buffer.from(`# user config\n${unrelatedExport}\nexport PATH_NOTE=1\n`, 'utf8');
+      const original = Buffer.from(`# user config\n${unrelatedExport}\nexport PATH_NOTE=1${tail}`, 'utf8');
       writeFileSync(rc, original, { mode: 0o600 });
 
       const result = spawnSync('/bin/bash', ['-c', harness, 'path-test', bin], {
@@ -80,5 +84,6 @@ for (const [file, installer] of Object.entries(copies)) {
       );
       assert.ok(after.toString('utf8').split('\n').includes(unrelatedExport), 'the unrelated export line is intact');
     });
+   }
   }
 }
