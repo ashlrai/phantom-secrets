@@ -144,6 +144,28 @@ function runPathUpdate(harness, config, home, bin) {
 for (const [file, installer] of Object.entries(copies)) {
   const harness = harnessFor(readFileSync(installer, 'utf8'), file);
   for (const [shellName, config] of Object.entries(shells)) {
+    test(`${file} preserves a comment between unrelated ${shellName} assignments`, (t) => {
+      const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-path-comment-order-')));
+      t.after(() => rmSync(root, { recursive: true, force: true }));
+      const home = join(root, 'home');
+      const bin = join(root, 'bin');
+      const rc = config.rc(home);
+      mkdirSync(dirname(rc), { recursive: true });
+      mkdirSync(bin, { recursive: true });
+      const assignments = shellName === 'fish'
+        ? ['set -gx EDITOR vim', '# keep this comment between assignments', 'set -gx PAGER less']
+        : ['export EDITOR=vim', '# keep this comment between assignments', 'export PAGER=less'];
+      const original = `${assignments.join('\n')}\n`;
+      writeFileSync(rc, original, { mode: 0o600 });
+
+      runPathUpdate(harness, config, home, bin);
+
+      assert.equal(readFileSync(rc, 'utf8'),
+        `${original}\n${marker}\n${config.line(bin)}\n`,
+        'all three lines remain intact and in order before the PATH block');
+    });
+  }
+  for (const [shellName, config] of Object.entries(shells)) {
     for (const finalNewline of [true, false]) {
       test(`${file} keeps unrelated ${shellName} lines in their original order (${finalNewline ? 'with' : 'without'} final newline)`, (t) => {
         const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-path-order-')));
