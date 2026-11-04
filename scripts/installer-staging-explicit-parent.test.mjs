@@ -10,11 +10,16 @@ import { basename, dirname, join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
+const installers = {
+  repository: fileURLToPath(new URL('install.sh', import.meta.url)),
+  public: fileURLToPath(new URL('../apps/web/public/install.sh', import.meta.url)),
+};
+
 // With an explicit temporary install parent (one that does not exist yet and
 // whose TMPDIR points elsewhere), the staging directory must be created
 // beneath that selected parent, be private, and be gone after a good install.
 // A mktemp shim records what the real mktemp returned and the mode it had.
-test('repository installer creates its staging directory beneath the selected install parent', (t) => {
+for (const [name, installer] of Object.entries(installers)) test(`${name} installer creates its staging directory beneath the selected install parent`, (t) => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-installer-explicit-parent-')));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const fixture = join(root, 'fixture');
@@ -57,7 +62,7 @@ printf '%s\\n' "$out"
   for (const name of ['PHANTOM_REPO', 'PHANTOM_TEST_FAIL_AFTER_PROMOTION',
     'PHANTOM_INSTALL_LOCK_WAIT_SECONDS', 'PHANTOM_INSTALL_LOCK_STALE_SECONDS',
     'PHANTOM_INSTALL_LOCK_HEARTBEAT_SECONDS']) delete env[name];
-  const result = spawnSync('/bin/bash', [fileURLToPath(new URL('install.sh', import.meta.url))], {
+  const result = spawnSync('/bin/bash', [installer], {
     encoding: 'utf8',
     timeout: 30000,
     env: {
