@@ -22,7 +22,11 @@ import test from 'node:test';
 // line so a swap would detach them. The shipped add_to_user_path is extracted
 // and run as in the sibling PATH tests, each original line is located by a
 // forward scan, and a bash leg proves the sourced state is identical before
-// and after the update — order preserved is order observed.
+// and after the update — order preserved is order observed. Three order
+// shapes are covered: the fixture as written, the same fixture reversed so
+// "original relative order" is the file's own and not the fixture's, and a
+// repeat update over a file whose managed block already has unrelated lines
+// below it.
 const copies = {
   'scripts/install.sh': resolve(import.meta.dirname, 'install.sh'),
   'apps/web/public/install.sh': resolve(import.meta.dirname, '..', 'apps', 'web', 'public', 'install.sh'),
@@ -85,6 +89,11 @@ const shells = {
       'export PATH="/opt/aaa-later/bin:$PATH"',
       'export SHARED=final',
     ],
+    later: [
+      '# appended by a later tool',
+      'export LATE_TOOL=on',
+      'alias gs="git status"',
+    ],
   },
   zsh: {
     shell: '/bin/zsh',
@@ -105,6 +114,11 @@ const shells = {
       'export PATH="/opt/zzz-earlier/bin:$PATH"',
       'export PATH="/opt/aaa-later/bin:$PATH"',
       'export SHARED=final',
+    ],
+    later: [
+      '# appended by a later tool',
+      'export LATE_TOOL=on',
+      'alias gs="git status"',
     ],
   },
   fish: {
@@ -127,6 +141,11 @@ const shells = {
       'set -gx PATH /opt/aaa-later/bin $PATH',
       'set -gx SHARED final',
     ],
+    later: [
+      '# appended by a later tool',
+      'set -gx LATE_TOOL on',
+      'alias gs "git status"',
+    ],
   },
 };
 
@@ -139,6 +158,47 @@ function runPathUpdate(harness, config, home, bin) {
   assert.ifError(result.error);
   assert.equal(result.status, 0, result.stderr);
   return result;
+}
+
+// One order case, shared by the canonical and reversed legs: write the
+// unrelated lines exactly as given, run the update, then prove the updated
+// file keeps every original line as one strictly ordered, contiguous run
+// followed by exactly the managed block.
+function runOrderCase(t, harness, config, unrelated, finalNewline) {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-path-order-')));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const home = join(root, 'home');
+  const bin = join(root, 'live', 'bin');
+  const rc = config.rc(home);
+  mkdirSync(dirname(rc), { recursive: true });
+  mkdirSync(bin, { recursive: true });
+  const original = unrelated.join('\n') + (finalNewline ? '\n' : '');
+  writeFileSync(rc, original, { mode: 0o600 });
+
+  const result = runPathUpdate(harness, config, home, bin);
+  assert.match(result.stdout, /added .* to PATH/);
+
+  const originalLines = original.split('\n');
+  const updatedLines = readFileSync(rc, 'utf8').split('\n');
+  // Relative order: every original line is found scanning forward, so
+  // their positions are strictly increasing — the exact acceptance.
+  const indexes = orderedIndexes(updatedLines, originalLines);
+  // And nothing interleaves them: the original lines still form one
+  // contiguous run, so the managed block cannot land between them.
+  assert.equal(indexes.at(-1) - indexes[0], originalLines.length - 1,
+    'no added line may be interleaved among the unrelated lines');
+  assert.equal(updatedLines.length, originalLines.length + 3,
+    'the update adds exactly the managed block');
+  assert.deepEqual(updatedLines.slice(originalLines.length),
+    [marker, config.line(bin), ''],
+    'the appended tail is exactly the marker, the PATH line, and the final newline');
+  assert.equal(statSync(rc).mode & 0o777, 0o600,
+    'the startup file keeps its permissions');
+  assert.deepEqual(
+    readdirSync(dirname(rc)).filter((name) => name.startsWith('.phantom-path.')),
+    [],
+    'no PATH-update temporary files are left behind',
+  );
 }
 
 for (const [file, installer] of Object.entries(copies)) {
@@ -168,42 +228,48 @@ for (const [file, installer] of Object.entries(copies)) {
   for (const [shellName, config] of Object.entries(shells)) {
     for (const finalNewline of [true, false]) {
       test(`${file} keeps unrelated ${shellName} lines in their original order (${finalNewline ? 'with' : 'without'} final newline)`, (t) => {
-        const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-path-order-')));
-        t.after(() => rmSync(root, { recursive: true, force: true }));
-        const home = join(root, 'home');
-        const bin = join(root, 'live', 'bin');
-        const rc = config.rc(home);
-        mkdirSync(dirname(rc), { recursive: true });
-        mkdirSync(bin, { recursive: true });
-        const original = config.unrelated.join('\n') + (finalNewline ? '\n' : '');
-        writeFileSync(rc, original, { mode: 0o600 });
-
-        const result = runPathUpdate(harness, config, home, bin);
-        assert.match(result.stdout, /added .* to PATH/);
-
-        const originalLines = original.split('\n');
-        const updatedLines = readFileSync(rc, 'utf8').split('\n');
-        // Relative order: every original line is found scanning forward, so
-        // their positions are strictly increasing — the exact acceptance.
-        const indexes = orderedIndexes(updatedLines, originalLines);
-        // And nothing interleaves them: the original lines still form one
-        // contiguous run, so the managed block cannot land between them.
-        assert.equal(indexes.at(-1) - indexes[0], originalLines.length - 1,
-          'no added line may be interleaved among the unrelated lines');
-        assert.equal(updatedLines.length, originalLines.length + 3,
-          'the update adds exactly the managed block');
-        assert.deepEqual(updatedLines.slice(originalLines.length),
-          [marker, config.line(bin), ''],
-          'the appended tail is exactly the marker, the PATH line, and the final newline');
-        assert.equal(statSync(rc).mode & 0o777, 0o600,
-          'the startup file keeps its permissions');
-        assert.deepEqual(
-          readdirSync(dirname(rc)).filter((name) => name.startsWith('.phantom-path.')),
-          [],
-          'no PATH-update temporary files are left behind',
-        );
+        runOrderCase(t, harness, config, config.unrelated, finalNewline);
+      });
+      // The acceptance property is the file's own order, not this fixture's:
+      // the same unrelated lines written in reverse must come back in exactly
+      // that reversed order, so the update cannot impose an order of its own.
+      test(`${file} keeps unrelated ${shellName} lines in a reversed original order (${finalNewline ? 'with' : 'without'} final newline)`, (t) => {
+        runOrderCase(t, harness, config, [...config.unrelated].reverse(), finalNewline);
       });
     }
+    test(`${file} keeps unrelated ${shellName} lines below the managed block untouched on a repeat update`, (t) => {
+      const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-path-after-block-')));
+      t.after(() => rmSync(root, { recursive: true, force: true }));
+      const home = join(root, 'home');
+      const earlierBin = join(root, 'earlier', 'bin');
+      const bin = join(root, 'live', 'bin');
+      const rc = config.rc(home);
+      mkdirSync(dirname(rc), { recursive: true });
+      mkdirSync(earlierBin, { recursive: true });
+      mkdirSync(bin, { recursive: true });
+      // A previous install wired its block; the user and other tools then
+      // appended unrelated lines below it. The repeat update must see the
+      // marker, report "already wired", and leave every line — before and
+      // after the block — exactly where it was.
+      const original = `${config.unrelated.slice(0, 3).join('\n')}\n${marker}\n${config.line(earlierBin)}\n${config.later.join('\n')}\n`;
+      writeFileSync(rc, original, { mode: 0o600 });
+
+      const result = runPathUpdate(harness, config, home, bin);
+      assert.match(result.stdout, /already wired into/);
+      assert.doesNotMatch(result.stdout, /added .* to PATH/);
+
+      assert.equal(readFileSync(rc, 'utf8'), original,
+        'unrelated lines on both sides of the managed block keep their bytes and order');
+      assert.equal(original.split('\n').filter((line) => line === marker).length, 1,
+        'the managed block stays a single block');
+      assert.equal(statSync(rc).mode & 0o777, 0o600,
+        'the startup file keeps its permissions');
+      assert.deepEqual(
+        readdirSync(dirname(rc)).filter((name) => name.startsWith('.phantom-path.')),
+        [],
+        'no PATH-update temporary files are left behind',
+      );
+    });
   }
 
   test(`${file} keeps the same shell state when bash sources the file before and after`, (t) => {
