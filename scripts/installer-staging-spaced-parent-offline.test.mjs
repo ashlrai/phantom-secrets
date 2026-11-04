@@ -93,3 +93,39 @@ printf '%s\\n' "$out"
     assert.equal(existsSync(join(root, 'link')), false, 'nothing was created at a split prefix');
   });
 }
+
+for (const [name, installer] of Object.entries(installers)) {
+  test(`${name} installer keeps an existing install and leaves no staging in a spaced parent`, (t) => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-spaced-existing-')));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const release = fixture(root);
+    const home = join(root, 'home');
+    mkdirSync(home);
+    const parent = join(root, 'my apps');
+    const install = join(parent, 'bin');
+    mkdirSync(install, { recursive: true });
+    writeFileSync(join(install, 'phantom'), 'old-install');
+
+    const env = { ...process.env };
+    for (const key of ['TMPDIR', 'PHANTOM_REPO', 'PHANTOM_TEST_FAIL_AFTER_PROMOTION']) delete env[key];
+    const result = spawnSync('/bin/bash', [installer], {
+      encoding: 'utf8',
+      timeout: 30000,
+      env: {
+        ...env,
+        HOME: home,
+        SHELL: '/bin/bash',
+        PHANTOM_INSTALL_DIR: install,
+        PHANTOM_TEST_ALLOW_INSTALLER_OVERRIDES: '1',
+        PHANTOM_TEST_LOCAL_RELEASE_DIR: release,
+        PHANTOM_TAG: 'v1.2.3',
+      },
+    });
+    assert.ifError(result.error);
+    assert.notEqual(result.status, 0, 'the wrong checksum fails the install');
+    assert.match(result.stderr, /SHA-256 mismatch/);
+    assert.equal(readFileSync(join(install, 'phantom'), 'utf8'), 'old-install');
+    assert.deepEqual(readdirSync(parent), ['bin'], 'no staging, backup, or lock left behind');
+    assert.deepEqual(readdirSync(root).sort(), ['home', 'my apps', 'payload', 'release']);
+  });
+}
