@@ -82,3 +82,30 @@ test("both documented staging assignments match the displayed commands and their
   assert.match(guide, /Windows instead uses a temporary installer file under `\$env:TEMP`/);
   assert.match(fs.readFileSync(path.join(root, "docs/README.md"), "utf8"), /\]\(quickstart-temp-fallback\.md\)/);
 });
+
+test("unset TMPDIR stages the generated command under /tmp and cleans up on exit", () => {
+  let selected = "macOS";
+  const { QuickStart } = load("src/components/landing/QuickStart.tsx", (name) => {
+    if (name === "react") return { ...React, useState: () => [selected, () => {}] };
+    if (name === "next/link") return { __esModule: true, default: () => null };
+    if (name === "@/lib/public-release") return load("src/lib/public-release.ts");
+    if (name === "./CopyButton") return { CopyButton: () => null };
+    return require(name);
+  });
+  for (const platform of ["macOS", "Linux"]) {
+    selected = platform;
+    const card = find(QuickStart(), (node) => node.type === "article")[0];
+    const command = find(card, (node) => typeof node.props.text === "string")[0].props.text;
+    const lines = command.split("\n");
+    // Run the real generated lines through the EXIT trap, stopping before the download.
+    const prefix = lines.slice(0, lines.findIndex((line) => line.startsWith("curl ")));
+    prefix.push('printf "%s\\n" "$phantom_installer"', ")");
+    const env = { PATH: "/usr/bin:/bin", HOME: process.env.HOME };
+    assert.ok(!("TMPDIR" in env));
+    const result = spawnSync("bash", ["-c", prefix.join("\n")], { env, encoding: "utf8" });
+    assert.equal(result.status, 0, `${platform}: ${result.stderr}`);
+    const installer = result.stdout.trim();
+    assert.match(installer, /^\/tmp\/phantom-install\.[A-Za-z0-9]{6}\/install\.sh$/, platform);
+    assert.equal(fs.existsSync(path.dirname(installer)), false, `${platform}: staging dir removed`);
+  }
+});
