@@ -9,6 +9,7 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -20,7 +21,11 @@ import test from 'node:test';
 // (.phantom-path.candidate.XXXXXX). When the startup file's parent directory
 // contains spaces, each mktemp template must still reach mktemp as exactly one
 // argument and the snapshot must be created inside that same spaced parent —
-// never split into the filesystem around it.
+// never split into the filesystem around it. That holds on all three branches:
+// an existing startup file is snapshotted with cp -p, an absent one still gets
+// both empty siblings under the spaced parent (mkdir -p included), and an
+// already-wired one is snapshotted for the marker check before both siblings
+// are removed again.
 const copies = {
   'scripts/install.sh': resolve(import.meta.dirname, 'install.sh'),
   'apps/web/public/install.sh': resolve(import.meta.dirname, '..', 'apps', 'web', 'public', 'install.sh'),
@@ -99,69 +104,85 @@ exec ${JSON.stringify(cp)} "$@"
   return shims;
 }
 
+// Runs the extracted add_to_user_path under a scratch HOME inside a
+// space-containing directory, with mktemp and cp shimmed to record argv. With
+// rcContent the startup file is written at mode 600 first; without it the
+// file (and, for fish, its nested parent) is left absent so the installer's
+// own mkdir -p must create the spaced parents.
+function runPathUpdate(t, harness, config, rcContent) {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-path-snapshot-spaces-')));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const home = join(root, 'home dir with spaces');
+  const bin = join(root, 'bin');
+  const scratch = join(root, 'scratch');
+  const rc = config.rc(home);
+  if (rcContent === undefined) {
+    mkdirSync(home, { recursive: true });
+  } else {
+    mkdirSync(dirname(rc), { recursive: true });
+    writeFileSync(rc, rcContent, { mode: 0o600 });
+  }
+  mkdirSync(bin);
+  mkdirSync(scratch);
+  const logs = {
+    mktempCalls: join(root, 'mktemp-calls'),
+    mktempCreated: join(root, 'mktemp-created'),
+    cpCalls: join(root, 'cp-calls'),
+  };
+  const result = spawnSync('/bin/bash', ['-c', harness, 'path-test', bin], {
+    encoding: 'utf8',
+    timeout: 30000,
+    cwd: scratch,
+    env: {
+      HOME: home,
+      SHELL: config.shell,
+      PATH: `${makeShims(root)}:/usr/bin:/bin`,
+      PHANTOM_TEST_MKTEMP_CALLS: logs.mktempCalls,
+      PHANTOM_TEST_MKTEMP_CREATED: logs.mktempCreated,
+      PHANTOM_TEST_CP_CALLS: logs.cpCalls,
+    },
+  });
+  assert.ifError(result.error);
+  return { bin, logs, rc, result, scratch };
+}
+
+// Proves each PATH-update template reached mktemp as exactly one argument —
+// a word-split spaced parent would appear as extra argv lines — and that
+// mktemp really created both siblings inside the spaced startup parent, not
+// in a truncated or split-off location.
+function createdSiblings({ mktempCalls, mktempCreated }, rcParent) {
+  const pathCalls = callsLog(mktempCalls)
+    .filter((call) => call.some((arg) => arg.includes('.phantom-path.')));
+  assert.deepEqual(pathCalls, [
+    [join(rcParent, '.phantom-path.before.XXXXXX')],
+    [join(rcParent, '.phantom-path.candidate.XXXXXX')],
+  ], 'before and candidate templates are each a single argument in the spaced parent');
+  const created = readFileSync(mktempCreated, 'utf8').trim().split('\n')
+    .filter((path) => path.includes('.phantom-path.'));
+  assert.equal(created.length, 2, 'both PATH-update temporary files were created');
+  for (const createdPath of created) {
+    assert.equal(dirname(createdPath), rcParent,
+      'the snapshot must be created directly inside the spaced rc parent');
+  }
+  assert.match(basename(created[0]), /^\.phantom-path\.before\.[^/]+$/);
+  assert.match(basename(created[1]), /^\.phantom-path\.candidate\.[^/]+$/);
+  return created;
+}
+
 for (const [file, installer] of Object.entries(copies)) {
   const harness = pathUpdateHarness(readFileSync(installer, 'utf8'), file);
   for (const [shellName, config] of Object.entries(shells)) {
     test(`${file} creates the PATH snapshot inside a space-containing ${shellName} rc parent`, (t) => {
-      const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-path-snapshot-spaces-')));
-      t.after(() => rmSync(root, { recursive: true, force: true }));
-      const home = join(root, 'home dir with spaces');
-      const bin = join(root, 'bin');
-      const scratch = join(root, 'scratch');
-      const rc = config.rc(home);
-      mkdirSync(dirname(rc), { recursive: true });
-      mkdirSync(bin);
-      mkdirSync(scratch);
       const original = '# user shell config\nexport EDITOR=vim\n';
-      writeFileSync(rc, original, { mode: 0o600 });
+      const { bin, logs, rc, result, scratch } = runPathUpdate(t, harness, config, original);
       const rcParent = dirname(rc);
-
-      const shims = makeShims(root);
-      const mktempCalls = join(root, 'mktemp-calls');
-      const mktempCreated = join(root, 'mktemp-created');
-      const cpCalls = join(root, 'cp-calls');
-      const result = spawnSync('/bin/bash', ['-c', harness, 'path-test', bin], {
-        encoding: 'utf8',
-        timeout: 30000,
-        cwd: scratch,
-        env: {
-          HOME: home,
-          SHELL: config.shell,
-          PATH: `${shims}:/usr/bin:/bin`,
-          PHANTOM_TEST_MKTEMP_CALLS: mktempCalls,
-          PHANTOM_TEST_MKTEMP_CREATED: mktempCreated,
-          PHANTOM_TEST_CP_CALLS: cpCalls,
-        },
-      });
-      assert.ifError(result.error);
       assert.equal(result.status, 0, result.stderr);
       assert.match(result.stdout, /added .* to PATH/);
 
-      // Each PATH-update template must arrive as exactly one mktemp argument;
-      // a word-split spaced parent would appear as extra argv lines here.
-      const pathCalls = callsLog(mktempCalls)
-        .filter((call) => call.some((arg) => arg.includes('.phantom-path.')));
-      assert.deepEqual(pathCalls, [
-        [join(rcParent, '.phantom-path.before.XXXXXX')],
-        [join(rcParent, '.phantom-path.candidate.XXXXXX')],
-      ], 'before and candidate templates are each a single argument in the spaced parent');
-
-      // mktemp really created both sibling files inside the spaced parent, not
-      // in a truncated or split-off location.
-      const created = readFileSync(mktempCreated, 'utf8').trim().split('\n')
-        .filter((path) => path.includes('.phantom-path.'));
-      assert.equal(created.length, 2, 'both PATH-update temporary files were created');
-      const [beforePath, candidatePath] = created;
-      for (const createdPath of created) {
-        assert.equal(dirname(createdPath), rcParent,
-          'the snapshot must be created directly inside the spaced rc parent');
-      }
-      assert.match(basename(beforePath), /^\.phantom-path\.before\.[^/]+$/);
-      assert.match(basename(candidatePath), /^\.phantom-path\.candidate\.[^/]+$/);
-
       // The snapshot is a private copy of the startup file at that spaced
       // path, and the candidate is built from the snapshot beside it.
-      const snapshotCopies = callsLog(cpCalls).filter((call) => call[0] === '-p');
+      const [beforePath, candidatePath] = createdSiblings(logs, rcParent);
+      const snapshotCopies = callsLog(logs.cpCalls).filter((call) => call[0] === '-p');
       assert.deepEqual(snapshotCopies, [
         ['-p', rc, beforePath],
         ['-p', beforePath, candidatePath],
@@ -175,6 +196,51 @@ for (const [file, installer] of Object.entries(copies)) {
         'the spaced parent must be left with only the updated startup file');
       assert.equal(readFileSync(rc, 'utf8'),
         `${original}\n# phantom-secrets PATH\n${config.pathLine(bin)}\n`);
+    });
+
+    test(`${file} creates the empty PATH snapshot inside a space-containing ${shellName} rc parent when the startup file is absent`, (t) => {
+      const { bin, logs, rc, result, scratch } = runPathUpdate(t, harness, config, undefined);
+      const rcParent = dirname(rc);
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(result.stdout, /added .* to PATH/);
+
+      // Both siblings still belong to the spaced parent; there is no startup
+      // file to copy, so the snapshot stays empty and no cp -p runs.
+      createdSiblings(logs, rcParent);
+      assert.deepEqual(callsLog(logs.cpCalls).filter((call) => call[0] === '-p'), [],
+        'without a startup file there is nothing to snapshot with cp -p');
+
+      assert.deepEqual(readdirSync(scratch), [],
+        'no path fragment may be created beside the working directory');
+      assert.deepEqual(readdirSync(rcParent), [basename(rc)],
+        'the spaced parent must be left with only the new startup file');
+      assert.equal(readFileSync(rc, 'utf8'),
+        `\n# phantom-secrets PATH\n${config.pathLine(bin)}\n`);
+      assert.equal(statSync(rc).mode & 0o777, 0o600,
+        'a startup file created from scratch keeps private permissions');
+    });
+
+    test(`${file} creates then removes the PATH snapshot inside a space-containing ${shellName} rc parent that is already wired`, (t) => {
+      const wired = '# user shell config\n\n# phantom-secrets PATH\n'
+        + `${config.pathLine('/opt/phantom-secrets/bin')}\n`;
+      const { logs, rc, result, scratch } = runPathUpdate(t, harness, config, wired);
+      const rcParent = dirname(rc);
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(result.stdout, /already wired into/);
+
+      // The marker check reads the snapshot, so cp -p still takes it inside
+      // the spaced parent before both siblings are removed again.
+      const [beforePath] = createdSiblings(logs, rcParent);
+      assert.deepEqual(callsLog(logs.cpCalls).filter((call) => call[0] === '-p'),
+        [['-p', rc, beforePath]],
+        'the snapshot is taken inside the spaced parent before the marker check');
+
+      assert.deepEqual(readdirSync(scratch), [],
+        'no path fragment may be created beside the working directory');
+      assert.deepEqual(readdirSync(rcParent), [basename(rc)],
+        'the short-circuit must remove both siblings from the spaced parent');
+      assert.equal(readFileSync(rc, 'utf8'), wired,
+        'an already-wired startup file is left byte-for-byte unchanged');
     });
   }
 }
