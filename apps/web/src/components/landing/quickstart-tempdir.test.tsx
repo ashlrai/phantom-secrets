@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import test from "node:test";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { QuickStart } from "./QuickStart";
@@ -114,3 +116,45 @@ test("every displayed installer stages under a temporary directory and cleans up
     cleanup();
   }
 });
+
+// Run the displayed staging prologue (set -e through the EXIT trap) in real bash
+// with TMPDIR unset, so the `${TMPDIR:-/tmp}` default is exercised, not just read.
+for (const platform of ["macOS", "Linux"]) {
+  test(`${platform} staging falls back to /tmp when TMPDIR is unset and cleans up`, () => {
+    render(<QuickStart />);
+    let displayed = "";
+    try {
+      const selector = screen.getByRole("group", { name: "Choose an operating system" });
+      fireEvent.click(within(selector).getByRole("button", { name: platform }));
+      const card = screen.getByRole("heading", { level: 3, name: platform }).closest("article");
+      assert.ok(card);
+      const copy = within(card).getByRole("button", { name: /^Copy command:/ });
+      displayed = Array.from(copy.firstElementChild!.childNodes)
+        .filter((node) => node.nodeType === Node.TEXT_NODE)
+        .map((node) => node.textContent)
+        .join("");
+    } finally {
+      cleanup();
+    }
+
+    const lines = displayed.split("\n");
+    const trap = lines.findIndex((line) => line.startsWith("trap "));
+    assert.ok(trap > 0, `${platform}: displayed command installs an EXIT trap`);
+    // Keep the real prologue; replace the download/install steps with a fixture
+    // file standing in for the installer so nothing touches the network.
+    const script = [
+      ...lines.slice(0, trap + 1),
+      'printf "%s\\n" "$phantom_stage"',
+      'printf fixture > "$phantom_installer"',
+      ")",
+    ].join("\n");
+
+    const env = { ...process.env };
+    delete env.TMPDIR;
+    const result = spawnSync("bash", ["-c", script], { env, encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    const stage = result.stdout.trim();
+    assert.match(stage, /^\/tmp\/phantom-install\.[A-Za-z0-9]{6}$/, `${platform}: staged under /tmp`);
+    assert.equal(existsSync(stage), false, `${platform}: fixture and staging directory removed on exit`);
+  });
+}
