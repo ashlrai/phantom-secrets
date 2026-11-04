@@ -17,9 +17,9 @@ merely to make the files match.
 
    Exit 0 means the files match, 1 means they differ, and a higher status
    means comparison failed. Review the whole diff, including changes outside
-   the templates below. The current reviewed differences cover explicit
-   staging failure messages and `tar --no-same-owner` in the repository copy;
-   see the [copy comparison](installer-copy-comparison.md). Do not assume all
+   the templates below. The current reviewed differences cover the candidate
+   release tag and `tar --no-same-owner` in the repository copy; see the
+   [copy comparison](installer-copy-comparison.md). Do not assume all
    differences are mistakes or silently approve new ones.
 2. Compare staging in both files: destination selection and physical parent
    resolution, the `mktemp` template, permissions, download and candidate
@@ -31,9 +31,9 @@ merely to make the files match.
    $install_parent/.${install_name}.install.XXXXXX
    ```
 
-   The repository copy adds explicit failure diagnostics around stage creation;
-   the web copy relies on Bash error handling and command diagnostics. Review
-   a change in behavior as well as a change to the template.
+   Both copies use the same guarded staging block with explicit failure
+   diagnostics around stage creation. Review a change in behavior as well as
+   a change to the template.
 3. Compare `add_to_user_path` and its call site in both files. Check shell
    selection, the physically resolved startup-file parent, both temporary
    templates, marker and shell-specific PATH commands, file checks, replacement,
@@ -54,13 +54,13 @@ merely to make the files match.
    [comparison snapshot](installer-copy-comparison.md), and other affected
    staging or PATH documentation. If a difference is intentional, document its
    effect and update the reviewed differences in
-   [`installer-copy-consistency.test.mjs`](../scripts/installer-copy-consistency.test.mjs)
+   [`lib/installer-copy-differences.mjs`](../scripts/lib/installer-copy-differences.mjs)
    only after review. Follow the separate release process for any change to
    release-bound evidence; a local comparison is not publication evidence.
 5. Run the focused checks below and the relevant behavioral installer tests:
 
    ```sh
-   node --test scripts/installer-copy-maintenance.test.mjs scripts/installer-copy-consistency.test.mjs scripts/installer-copy-comparison.test.mjs scripts/installer-copy-source-map.test.mjs scripts/installers.test.js
+   node --test scripts/installer-copy-maintenance.test.mjs scripts/installer-copy-consistency.test.mjs scripts/installer-copy-parity.test.mjs scripts/installer-copy-comparison.test.mjs scripts/installer-copy-source-map.test.mjs scripts/installers.test.js
    ```
 
 The focused maintenance test checks that the three templates recorded above

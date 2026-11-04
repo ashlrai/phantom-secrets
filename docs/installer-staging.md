@@ -23,11 +23,10 @@ See the [repository installer setup](../scripts/install.sh#L18-L54) and
 2. `mktemp` creates `.<install-name>.install.XXXXXX` in the canonical install
    parent, with mode 700; its `download` and `candidate` subdirectories also
    have mode 700. The archive and its checksum sidecar go into `download`, not
-   the live install. The repository script reports explicit errors for staging
-   creation and permission failures; the web copy relies on Bash error exit
-   and the underlying command's diagnostic. See
+   the live install. Both scripts report explicit errors for staging creation
+   and permission failures through the same `|| die` guards. See
    [repository staging](../scripts/install.sh#L437-L457) and
-   [web staging](../apps/web/public/install.sh#L437-L455).
+   [web staging](../apps/web/public/install.sh#L437-L457).
 3. The installer validates the one-line SHA-256 sidecar and archive digest,
    requires exactly two regular archive members (`phantom` and `phantom-mcp`),
    and extracts into `candidate`. It makes the binaries executable, checks each
@@ -35,7 +34,7 @@ See the [repository installer setup](../scripts/install.sh#L18-L54) and
    repository script extracts with `tar --no-same-owner`; the web copy uses
    `tar` without that option, so ownership behavior when run as root can differ.
    See [repository validation](../scripts/install.sh#L459-L499) and
-   [web validation](../apps/web/public/install.sh#L457-L496).
+   [web validation](../apps/web/public/install.sh#L459-L498).
 4. Under the lock, an existing install directory is moved to the sibling
    `.<install-name>.backup.<stage-suffix>`, then the candidate is moved into
    place. Both binaries and the receipt are checked again at the final path.
@@ -43,7 +42,7 @@ See the [repository installer setup](../scripts/install.sh#L18-L54) and
    `previous-live` for cleanup. Promotion uses separate moves, so readers can
    observe a brief interval without the live directory. See
    [repository promotion](../scripts/install.sh#L501-L525) and
-   [web promotion](../apps/web/public/install.sh#L498-L522).
+   [web promotion](../apps/web/public/install.sh#L500-L524).
 
 ## Cleanup and recovery limits
 
@@ -76,4 +75,4 @@ roles, comparison checks, and cleanup limits in the repository installer.
 See [repository PATH handling](../scripts/install.sh#L305-L399) and
 [final call](../scripts/install.sh#L527-L533), and
 [web PATH handling](../apps/web/public/install.sh#L305-L399) and
-[final call](../apps/web/public/install.sh#L524-L530).
+[final call](../apps/web/public/install.sh#L526-L532).

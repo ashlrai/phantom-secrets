@@ -21,21 +21,22 @@ the template is `$HOME/.phantom-secrets/.bin.install.XXXXXX`, subject to parent
 resolution. The installer sets the stage and its `download` and `candidate`
 children to mode 700. The archive and checksum are downloaded there, and the
 verified binaries and receipt are assembled in `candidate`. See
-[destination and staging](../apps/web/public/install.sh#L425-L455) and
-[validation](../apps/web/public/install.sh#L457-L496).
+[destination and staging](../apps/web/public/install.sh#L425-L457) and
+[validation](../apps/web/public/install.sh#L459-L498).
 
 ## Current cleanup and questions for review
 
 The [exit trap](../apps/web/public/install.sh#L119-L139) attempts rollback on
 failure only while the lock is still owned, removes the stage, then releases
 the lock. HUP, INT, and TERM exit through that trap. During
-[promotion](../apps/web/public/install.sh#L498-L522), a prior live install is
+[promotion](../apps/web/public/install.sh#L500-L524), a prior live install is
 first moved to a sibling backup and, after validation, into the stage as
 `previous-live`. The rollback moves are best effort, and a cleanup filesystem
 error can interrupt subsequent cleanup. These observations raise questions:
 
-- If stage creation or permissions fail, should the public script report a
-  more specific error, and how should any remaining stage be identified?
+- Stage creation and permission failures now report the same explicit
+  `|| die` diagnostics as the repository copy; is that reporting sufficient
+  for identifying any remaining stage?
 - When a signal or validation failure occurs, are removal of the stage and
   release of the lock sufficiently observable if either operation fails?
 - If moving the failed live install or restoring the backup fails, what should

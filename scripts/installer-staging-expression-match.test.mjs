@@ -4,8 +4,8 @@ import test from 'node:test';
 
 const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
 
-// The repository copy adds `|| die` guards that the published copy replaces
-// with errexit; the creation expressions themselves must stay identical.
+// Both copies guard staging commands with the same `|| die` calls; the
+// creation expressions themselves must stay identical.
 function stagingExpressions(source) {
   const lines = source.split('\n');
   const grab = (re) => {

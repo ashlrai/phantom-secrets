@@ -22,10 +22,9 @@ parts; `mktemp -d` replaces the final `XXXXXX` with a unique suffix, and the
 resulting path is stored in `stage_root`. The actual commands are
 `mktemp -d "$install_parent/.${install_name}.install.XXXXXX"` in
 [repository staging](../scripts/install.sh#L437-L443) and
-[web staging](../apps/web/public/install.sh#L437-L441). In the repository
-copy each staging step carries an explicit `|| die` diagnosis; the web copy
-relies on Bash error exit and the underlying command's diagnostic. The prefix
-itself is byte-identical.
+[web staging](../apps/web/public/install.sh#L437-L443). In both copies each
+staging step carries an explicit `|| die` diagnosis. The prefix itself is
+byte-identical.
 
 ## Parent directory
 
@@ -61,7 +60,7 @@ with the installer's other private paths in both scripts:
 - `.<install_name>.backup.<stage-suffix>` — the rollback target for a
   replaced live directory, where the suffix is the stage's generated
   `mktemp` tail ([repository](../scripts/install.sh#L501),
-  [web](../apps/web/public/install.sh#L498)).
+  [web](../apps/web/public/install.sh#L500)).
 
 The stage and its `download` and `candidate` children are mode 700, and the
 exit trap attempts to remove the stage; uncatchable termination or
