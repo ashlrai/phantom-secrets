@@ -206,6 +206,50 @@ for (const [file, installer] of Object.entries(copies)) {
     }
   }
 
+  for (const [shellName, config] of Object.entries(shells)) {
+    test(`${file} keeps CRLF unrelated ${shellName} lines in order and byte-exact`, (t) => {
+      const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-path-crlf-order-')));
+      t.after(() => rmSync(root, { recursive: true, force: true }));
+      const home = join(root, 'home');
+      const bin = join(root, 'live', 'bin');
+      const rc = config.rc(home);
+      mkdirSync(dirname(rc), { recursive: true });
+      mkdirSync(bin, { recursive: true });
+      const original = `${config.unrelated.join('\r\n')}\r\n`;
+      writeFileSync(rc, original, { mode: 0o600 });
+
+      runPathUpdate(harness, config, home, bin);
+
+      assert.equal(readFileSync(rc, 'utf8'),
+        `${original}\n${marker}\n${config.line(bin)}\n`,
+        'CRLF lines keep their bytes and order; the block is appended after them');
+    });
+
+    test(`${file} leaves a wired ${shellName} file with unrelated lines on both sides byte-identical`, (t) => {
+      const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-path-wired-order-')));
+      t.after(() => rmSync(root, { recursive: true, force: true }));
+      const home = join(root, 'home');
+      const bin = join(root, 'live', 'bin');
+      const rc = config.rc(home);
+      mkdirSync(dirname(rc), { recursive: true });
+      mkdirSync(bin, { recursive: true });
+      const half = config.unrelated.length >> 1;
+      const original = [
+        ...config.unrelated.slice(0, half),
+        marker,
+        config.line(bin),
+        ...config.unrelated.slice(half),
+      ].join('\n') + '\n';
+      writeFileSync(rc, original, { mode: 0o600 });
+
+      const result = runPathUpdate(harness, config, home, bin);
+
+      assert.match(result.stdout, /already wired/);
+      assert.equal(readFileSync(rc, 'utf8'), original,
+        'an already-wired file is not rewritten, so no line moves');
+    });
+  }
+
   test(`${file} keeps the same shell state when bash sources the file before and after`, (t) => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-path-order-eval-')));
     t.after(() => rmSync(root, { recursive: true, force: true }));
