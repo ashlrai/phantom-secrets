@@ -153,6 +153,13 @@ test("machine-readable links require exact canonical URLs", () => {
   }
 });
 
+test("exact URL matching rejects a longer URL with the same prefix", () => {
+  const expected = "https://phm.dev/llms.txt";
+  assert.equal(containsExactUrl(`See ${expected}`, expected), true);
+  assert.equal(containsExactUrl(`See ${expected}/extra`, expected), false);
+  assert.equal(containsExactUrl(`See ${expected}-backup`, expected), false);
+});
+
 function html(origin, route, options = {}) {
   const guide = options.guideSchema ?? route === "/";
   const schema = route === "/"
