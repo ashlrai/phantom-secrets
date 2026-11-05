@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 
 import { verifyMigrationManifest } from "./verify-migrations.mjs";
@@ -10,20 +11,21 @@ import { verifyMigrationManifest } from "./verify-migrations.mjs";
 const repositoryRoot = resolve(import.meta.dirname, "../..");
 const projectSupabaseDirectory = join(repositoryRoot, "apps/web/supabase");
 
-async function fixture({ migrations, entries }) {
+async function fixture({ migrations, entries, directory }) {
   const root = await mkdtemp(join(tmpdir(), "phantom-supabase-contract-"));
-  const migrationDirectory = join(root, "migrations");
-  await mkdir(migrationDirectory);
+  const base = directory ? join(root, directory) : root;
+  const migrationDirectory = join(base, "migrations");
+  await mkdir(migrationDirectory, { recursive: true });
   await Promise.all(
     Object.entries(migrations).map(([file, contents]) =>
       writeFile(join(migrationDirectory, file), contents),
     ),
   );
   await writeFile(
-    join(root, "migration-manifest.json"),
+    join(base, "migration-manifest.json"),
     JSON.stringify({ version: 1, algorithm: "sha256", migrations: entries }),
   );
-  return root;
+  return base;
 }
 
 test("the committed migration set matches its ordered digest manifest", async () => {
@@ -228,6 +230,58 @@ test("ignores non-regular entries that are not SQL migrations", async () => {
   const result = await verifyMigrationManifest({ supabaseDirectory: root });
   assert.equal(result.count, 1);
   assert.deepEqual(result.files, ["001_initial.sql"]);
+});
+
+test("reads the spaced fixture directory instead of an unspaced sibling", async () => {
+  const sql = "select 1;\n";
+  const sha256 = createHash("sha256").update(sql).digest("hex");
+  const supabaseDirectory = await fixture({
+    directory: "supabase with spaces",
+    migrations: { "001_initial.sql": sql },
+    entries: [{ file: "001_initial.sql", sha256 }],
+  });
+  assert.ok(supabaseDirectory.includes(" "));
+
+  // A sibling decoy proves the spaced directory, not the temp root, is read.
+  const decoySql = "select 9;\n";
+  const decoyRoot = dirname(supabaseDirectory);
+  await mkdir(join(decoyRoot, "migrations"));
+  await writeFile(join(decoyRoot, "migrations/999_decoy.sql"), decoySql);
+  await writeFile(
+    join(decoyRoot, "migration-manifest.json"),
+    JSON.stringify({
+      version: 1,
+      algorithm: "sha256",
+      migrations: [
+        {
+          file: "999_decoy.sql",
+          sha256: createHash("sha256").update(decoySql).digest("hex"),
+        },
+      ],
+    }),
+  );
+
+  const result = await verifyMigrationManifest({ supabaseDirectory });
+  assert.equal(result.count, 1);
+  assert.deepEqual(result.files, ["001_initial.sql"]);
+});
+
+test("the CLI verifies a supabase directory whose path contains spaces", async () => {
+  const sql = "select 1;\n";
+  const sha256 = createHash("sha256").update(sql).digest("hex");
+  const supabaseDirectory = await fixture({
+    directory: "supabase with spaces",
+    migrations: { "001_initial.sql": sql },
+    entries: [{ file: "001_initial.sql", sha256 }],
+  });
+  const result = spawnSync(
+    process.execPath,
+    [join(import.meta.dirname, "verify-migrations.mjs"), supabaseDirectory],
+    { encoding: "utf8" },
+  );
+  assert.ifError(result.error);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Verified 1 ordered Supabase migration digests\./);
 });
 
 test("workflow remains local-only and supply-chain pinned", async () => {
