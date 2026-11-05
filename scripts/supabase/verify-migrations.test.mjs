@@ -121,6 +121,36 @@ test("fails closed when a SQL migration is a symlink", async () => {
   );
 });
 
+test("fails closed on an empty migration directory with an empty manifest", async () => {
+  const root = await fixture({ migrations: {}, entries: [] });
+  await assert.rejects(
+    verifyMigrationManifest({ supabaseDirectory: root }),
+    /migration manifest must contain at least one migration/,
+  );
+});
+
+test("fails closed when the manifest lists migrations but the directory is empty", async () => {
+  const root = await fixture({
+    migrations: {},
+    entries: [{ file: "001_initial.sql", sha256: "0".repeat(64) }],
+  });
+  await assert.rejects(
+    verifyMigrationManifest({ supabaseDirectory: root }),
+    /does not match the SQL migration set\nmanifest: 001_initial\.sql\nfiles: $/,
+  );
+});
+
+test("ignores non-SQL files so a directory holding only notes counts as empty", async () => {
+  const root = await fixture({
+    migrations: { "README.md": "notes\n" },
+    entries: [],
+  });
+  await assert.rejects(
+    verifyMigrationManifest({ supabaseDirectory: root }),
+    /migration manifest must contain at least one migration/,
+  );
+});
+
 test("workflow remains local-only and supply-chain pinned", async () => {
   const workflow = await readFile(
     join(repositoryRoot, ".github/workflows/ci.yml"),
