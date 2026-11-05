@@ -266,6 +266,9 @@ jobs:
       - name: Run isolated spaced-parent staging shell test
         if: runner.os == 'Linux'
         run: bash scripts/installer-staging-spaced-parent.test.sh
+      - name: Run isolated staging-failure shell test
+        if: runner.os == 'Linux'
+        run: bash scripts/installer-staging-failure.test.sh
       - name: Parse candidate and public-reference PowerShell installers
         if: runner.os == 'Windows'
         shell: pwsh
