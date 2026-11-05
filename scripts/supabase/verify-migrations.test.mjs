@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -105,7 +106,53 @@ test("fails closed on duplicate migration versions", async () => {
   });
   await assert.rejects(
     verifyMigrationManifest({ supabaseDirectory: root }),
-    /duplicate migration version/,
+    /duplicate migration version: 001 \(001_first\.sql, 001_second\.sql\)/,
+  );
+});
+
+test("names the conflicting version when the duplicate is not the first migration", async () => {
+  const sha256 = "0".repeat(64);
+  const root = await fixture({
+    migrations: {
+      "001_initial.sql": "select 1;\n",
+      "20260902000000_alpha.sql": "select 2;\n",
+      "20260902000000_beta.sql": "select 3;\n",
+      "20260903000000_gamma.sql": "select 4;\n",
+    },
+    entries: [
+      { file: "001_initial.sql", sha256 },
+      { file: "20260902000000_alpha.sql", sha256 },
+      { file: "20260902000000_beta.sql", sha256 },
+      { file: "20260903000000_gamma.sql", sha256 },
+    ],
+  });
+  await assert.rejects(
+    verifyMigrationManifest({ supabaseDirectory: root }),
+    (error) => {
+      assert.match(
+        error.message,
+        /duplicate migration version: 20260902000000 \(20260902000000_alpha\.sql, 20260902000000_beta\.sql\)/,
+      );
+      assert.doesNotMatch(error.message, /version: 001/);
+      return true;
+    },
+  );
+});
+
+test("rejects a duplicate version even when every digest is correct", async () => {
+  const first = "select 1;\n";
+  const second = "select 2;\n";
+  const digest = (text) => createHash("sha256").update(text).digest("hex");
+  const root = await fixture({
+    migrations: { "007_a.sql": first, "007_b.sql": second },
+    entries: [
+      { file: "007_a.sql", sha256: digest(first) },
+      { file: "007_b.sql", sha256: digest(second) },
+    ],
+  });
+  await assert.rejects(
+    verifyMigrationManifest({ supabaseDirectory: root }),
+    /duplicate migration version: 007 /,
   );
 });
 

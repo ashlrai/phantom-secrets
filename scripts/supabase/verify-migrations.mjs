@@ -53,16 +53,19 @@ export async function verifyMigrationManifest({
     );
   }
 
-  const versions = new Set();
+  const versions = new Map();
   for (const entry of manifest.migrations) {
     const match = MIGRATION_NAME.exec(entry.file);
     if (!match) {
       throw new Error(`invalid imperative migration filename: ${entry.file}`);
     }
-    if (versions.has(match.groups.version)) {
-      throw new Error(`duplicate migration version: ${match.groups.version}`);
+    const earlier = versions.get(match.groups.version);
+    if (earlier) {
+      throw new Error(
+        `duplicate migration version: ${match.groups.version} (${earlier}, ${entry.file})`,
+      );
     }
-    versions.add(match.groups.version);
+    versions.set(match.groups.version, entry.file);
 
     if (!SHA256.test(entry.sha256)) {
       throw new Error(`invalid sha256 for ${entry.file}`);
