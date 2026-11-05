@@ -17,7 +17,16 @@ export async function verifyMigrationManifest({
   }
 
   const migrationDirectory = join(supabaseDirectory, "migrations");
-  const migrationEntries = (await readdir(migrationDirectory, { withFileTypes: true }))
+  let directoryEntries;
+  try {
+    directoryEntries = await readdir(migrationDirectory, { withFileTypes: true });
+  } catch (error) {
+    if (error.code === "ENOENT" || error.code === "ENOTDIR") {
+      throw new Error(`migration directory not found: ${migrationDirectory}`);
+    }
+    throw error;
+  }
+  const migrationEntries = directoryEntries
     .filter((entry) => entry.name.endsWith(".sql"));
   const nonRegularMigration = migrationEntries.find((entry) => !entry.isFile());
   if (nonRegularMigration) {

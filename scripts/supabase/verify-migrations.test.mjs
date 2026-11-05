@@ -284,6 +284,42 @@ test("the CLI verifies a supabase directory whose path contains spaces", async (
   assert.match(result.stdout, /Verified 1 ordered Supabase migration digests\./);
 });
 
+test("fails closed and names the directory when the migrations directory is missing", async () => {
+  const root = await mkdtemp(join(tmpdir(), "phantom-supabase-contract-"));
+  await writeFile(
+    join(root, "migration-manifest.json"),
+    JSON.stringify({
+      version: 1,
+      algorithm: "sha256",
+      migrations: [{ file: "001_initial.sql", sha256: "0".repeat(64) }],
+    }),
+  );
+  const missing = join(root, "migrations");
+  await assert.rejects(
+    verifyMigrationManifest({ supabaseDirectory: root }),
+    (error) => {
+      assert.equal(error.message, `migration directory not found: ${missing}`);
+      return true;
+    },
+  );
+});
+
+test("the CLI exits nonzero and names the missing migrations directory", async () => {
+  const root = await mkdtemp(join(tmpdir(), "phantom-supabase-contract-"));
+  const result = spawnSync(
+    process.execPath,
+    [join(import.meta.dirname, "verify-migrations.mjs"), root],
+    { encoding: "utf8" },
+  );
+  assert.ifError(result.error);
+  assert.notEqual(result.status, 0);
+  assert.equal(result.stdout, "");
+  assert.ok(
+    result.stderr.includes(`migration directory not found: ${join(root, "migrations")}`),
+    result.stderr,
+  );
+});
+
 test("workflow remains local-only and supply-chain pinned", async () => {
   const workflow = await readFile(
     join(repositoryRoot, ".github/workflows/ci.yml"),
