@@ -392,13 +392,19 @@ add_to_user_path() {
     rm -f -- "$before_tmp" "$candidate_tmp"
     return 1
   }
-  rm -f -- "$before_tmp"
   after_identity="$(file_identity "$rc")" || after_identity=""
   if [ "$after_identity" != "$candidate_identity" ] \
     || [ ! -f "$rc" ] || [ -L "$rc" ] \
     || ! grep -qxF "$marker" "$rc" 2>/dev/null; then
+    if [ "$before_identity" = "absent" ]; then
+      rm -f -- "$rc" "$before_tmp" "$candidate_tmp"
+    else
+      cp -p "$before_tmp" "$rc" 2>/dev/null || true
+      rm -f -- "$before_tmp" "$candidate_tmp"
+    fi
     return 1
   fi
+  rm -f -- "$before_tmp"
   say "added $bin to PATH in $rc (open a new shell or run: source $rc)"
 }
 

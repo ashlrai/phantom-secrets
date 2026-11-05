@@ -67,11 +67,11 @@ siblings are managed by `add_to_user_path` alone.
     file, and match the snapshot byte-for-byte (`cmp -s`).
 12. **Candidate identity** — the script records the candidate's identity for
     the post-move comparison.
-13. **Move** — `mv -f` replaces `rc` with the candidate, then the before file
-    is removed.
+13. **Move** — `mv -f` replaces `rc` with the candidate.
 14. **Post-move verification** — `rc` must carry the recorded candidate
     identity, remain a regular non-symlink file, and contain the marker as a
-    whole line; a failure returns 1 and the original file is not restored.
+    whole line; a failure restores the original file from the snapshot,
+    removes both siblings, and returns 1.
 15. **Reporting** — success prints a "added to PATH" note pointing at the
     startup file; a `return 1` surfaces as the call-site `warn` telling the
     user to add the directory manually. The installed binaries stay in place
@@ -81,8 +81,9 @@ siblings are managed by `add_to_user_path` alone.
 
 - Every explicitly handled failure before the move removes both siblings — or
   only the before file when the candidate itself could not be created.
-- After the move the candidate is gone and the before file is removed, so a
-  post-move failure does not roll back the startup file.
+- After the move the snapshot remains until post-move verification passes.
+  If verification fails, the snapshot restores the startup file and both
+  siblings are removed; the startup file is left in its original state.
 - The installer's exit trap cleans the staging root and install lock, not the
   PATH siblings; interruption or filesystem errors can leave
   `.phantom-path.before.*` or `.phantom-path.candidate.*` files beside the
