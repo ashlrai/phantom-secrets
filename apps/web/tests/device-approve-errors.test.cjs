@@ -43,6 +43,9 @@ function fixture(options = {}) {
         upsert(update, config) { assert.equal(table, "users"); assert.deepEqual(config, { onConflict: "id" }); values = update; return this; },
         update(update) { assert.equal(table, "device_tokens"); values = update; return this; },
         async result() {
+          if (options.throwAt === "upsert" && table === "users") throw new Error(privateError.message);
+          if (options.throwAt === "approve" && values) throw new Error(privateError.message);
+          if (options.throwAt === "lookup" && table === "device_tokens" && !values) throw new Error(privateError.message);
           if (table === "users") {
             state.upserts++;
             return { error: state.upsertError };
@@ -191,6 +194,16 @@ test("upsert failure and unverified GitHub identity still prevent all device que
   assert.equal((await unverified.approve()).status, 403);
   assert.equal(unverified.state.upserts, 0);
   assert.equal(unverified.state.lookups, 0);
+});
+
+test("unexpected thrown errors return the fixed fallback without internal details", async () => {
+  for (const phase of ["lookup", "approve", "upsert"]) {
+    const { state, approve } = fixture({ throwAt: phase });
+    const response = await approve();
+    await assertSafeFailure(response.clone(), "Unexpected server error. Please try again.");
+    assert.ok(!JSON.stringify(await response.json()).includes(privateError.message));
+    assert.equal(state.token.status, "pending");
+  }
 });
 
 test("closed hosted service performs no auth, user or device work", async () => {
