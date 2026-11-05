@@ -1016,6 +1016,50 @@ test('web Unix installer aborts before download when staging-directory creation 
   }
 });
 
+test('web Unix installer never uses a staging directory that mktemp reports but did not create', () => {
+  const installer = join(repo, 'apps/web/public/install.sh');
+  const root = mkdtempSync(join(tmpdir(), 'phantom-web-stage-missing-'));
+  try {
+    const shims = makeShims(root);
+    const missing = join(root, 'live', '.bin.install.missing');
+    const touched = join(root, 'shim-touched-missing');
+    // mktemp claims success and prints a path that does not exist; any later
+    // command naming that path is recorded, so reuse would be observable.
+    writeFileSync(join(shims, 'mktemp'), `#!/bin/sh
+for arg do
+  case "$arg" in
+    *.install.XXXXXX) printf '%s\\n' ${JSON.stringify(missing)}; exit 0 ;;
+  esac
+done
+exec /usr/bin/mktemp "$@"
+`);
+    chmodSync(join(shims, 'mktemp'), 0o755);
+    for (const name of ['mkdir', 'tar']) {
+      const real = execFileSync('which', [name], { encoding: 'utf8' }).trim();
+      writeFileSync(join(shims, name), `#!/bin/sh
+for arg do
+  case "$arg" in
+    ${JSON.stringify(missing)}*) printf '%s\\n' "$0 $*" >> ${JSON.stringify(touched)} ;;
+  esac
+done
+exec ${JSON.stringify(real)} "$@"
+`);
+      chmodSync(join(shims, name), 0o755);
+    }
+    const { install, log, result } = runInstaller({ root, shims, installer, existing: true });
+    assert.ifError(result.error);
+    assert.notEqual(result.status, 0, result.stderr);
+    assert.match(result.stderr, /could not secure the staging directory/);
+    assert.equal(existsSync(log), false, 'no download may start without a staging directory');
+    assert.equal(existsSync(touched), false, 'mkdir/tar must never be pointed at the missing directory');
+    assert.equal(existsSync(missing), false);
+    assert.equal(readFileSync(join(install, 'old-install'), 'utf8'), 'preserve-me');
+    assert.deepEqual(readdirSync(dirname(install)), ['bin']);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('Unix installer cleans staged candidates and rolls back after a controlled promotion failure', () => {
   for (const existing of [false, true]) {
     const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom installer rollback-')));
