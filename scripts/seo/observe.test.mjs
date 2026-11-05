@@ -678,6 +678,60 @@ test("a page without JSON-LD reports empty structured data, not an error", async
   );
 });
 
+test("a page with one malformed and one valid JSON-LD block keeps both", async () => {
+  // The malformed block sits first so extraction must continue past its error:
+  // the valid value is still returned and the bad block is still reported.
+  const valid = {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    headline: "Mixed JSON-LD blocks",
+  };
+  const page = (origin) =>
+    `<!doctype html><html><head><title>/mixed — Phantom</title>` +
+    `<meta name="description" content="Description for /mixed">` +
+    `<link rel="canonical" href="${origin}/mixed">` +
+    `<script type="application/ld+json">{broken</script>` +
+    `<script type="application/ld+json">${JSON.stringify(valid)}</script>` +
+    `</head><body><h1>Page /mixed</h1></body></html>`;
+  assert.deepEqual(structuredData(page("https://phm.dev")), {
+    values: [valid],
+    errors: ["invalid_json_ld"],
+  });
+  await withFixtureServer(
+    async ({ options }) => {
+      const report = await observeProduction(options);
+      const route = report.technical.public_routes.find((entry) => entry.route === "/mixed");
+      assert.ok(route, "the mixed-JSON-LD page is observed through the sitemap");
+      assert.equal(route.status, 200);
+      assert.deepEqual(route.structured_data_types, ["Article"]);
+      assert.deepEqual(report.findings, [
+        {
+          severity: "fail",
+          code: "structured_data_invalid",
+          message: "Page contains invalid JSON-LD",
+          route: "/mixed",
+        },
+      ]);
+      assert.deepEqual(report.counts, { fail: 1, warn: 0 });
+      assert.equal(report.verdict, "FAIL");
+    },
+    {
+      "/sitemap.xml": (response, origin) => {
+        response.setHeader("content-type", "application/xml");
+        response.end(
+          `<?xml version="1.0"?><urlset>${[...publicPaths, "/mixed"]
+            .map((route) => `<url><loc>${origin}${route}</loc></url>`)
+            .join("")}</urlset>`,
+        );
+      },
+      "/mixed": (response, origin) => {
+        response.setHeader("content-type", "text/html; charset=utf-8");
+        response.end(page(origin));
+      },
+    },
+  );
+});
+
 test("duplicate sitemap URLs fail deterministically before fetching public routes", async () => {
   await withFixtureServer(
     async ({ options, requests }) => {
