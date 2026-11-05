@@ -39,8 +39,9 @@ node --test scripts/examples-first-five-minutes.test.mjs
 ```
 
 That test runs the example from an empty temporary working directory, compares
-the exact transcript, rejects duplicate or unreviewed contract fields, and
-enforces a narrow source contract: three exact read-only imports plus explicit
-denials for dynamic module loading and known network, subprocess, and
-filesystem-write escape hatches. The same test is part of the tiered CI and
-release-source graphs.
+the exact transcript, rejects duplicate or unreviewed contract fields, reruns a
+copied fixture from a space-containing path to prove the checker path stays a
+single argument, and enforces a narrow source contract: three exact read-only
+imports plus explicit denials for dynamic module loading and known network,
+subprocess, and filesystem-write escape hatches. The same test is part of the
+tiered CI and release-source graphs.
