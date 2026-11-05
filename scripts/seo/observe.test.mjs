@@ -111,6 +111,16 @@ test("HTML entities are decoded exactly once", () => {
   assert.equal(decodeEntities("&amp;lt;script&amp;gt;"), "&lt;script&gt;");
 });
 
+test("decimal HTML entities are decoded exactly once", () => {
+  assert.equal(decodeEntities("&#65;"), "A");
+  assert.equal(decodeEntities("&#233;&#128512;"), "é😀");
+  // A decoded "&" must not start a second decode.
+  assert.equal(decodeEntities("&#38;#65;"), "&#65;");
+  assert.equal(decodeEntities("&#38;amp;"), "&amp;");
+  // Out-of-range or surrogate references stay literal.
+  assert.equal(decodeEntities("&#0;&#1114112;&#55296;"), "&#0;&#1114112;&#55296;");
+});
+
 test("JSON-LD extraction accepts HTML-compatible script endings", () => {
   const result = structuredData(
     '<script type="application/ld+json">{"@type":"SoftwareApplication"}</ScRiPt >',
