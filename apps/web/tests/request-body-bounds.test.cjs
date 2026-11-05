@@ -64,6 +64,37 @@ test("device poll returns a client error for an empty request body", async () =>
   assert.equal(databaseCalls, 0);
 });
 
+test("device poll accepts a JSON body at its 4096-byte limit", async () => {
+  let databaseCalls = 0;
+  const route = loadModule(
+    path.join(repoDir, "src/app/api/v1/auth/device/poll/route.ts"),
+    (specifier) => {
+      if (specifier === "@/lib/http-body") return body;
+      if (specifier === "@/lib/commissioning") return { requireHostedService: () => null };
+      if (specifier === "@/lib/supabase-server") return { createServiceClient: () => { databaseCalls++; } };
+      if (specifier === "@/lib/plan") return {};
+      return require(specifier);
+    },
+  );
+
+  // JSON whitespace keeps the object valid while testing the actual byte limit.
+  for (const [size, status, error] of [
+    [4096, 400, "device_code required"],
+    [4097, 413, "body_too_large"],
+  ]) {
+    const payload = "{}" + " ".repeat(size - 2);
+    assert.equal(Buffer.byteLength(payload), size);
+    const response = await route.POST(new Request("https://phm.dev/api/v1/auth/device/poll", {
+      method: "POST",
+      headers: { "content-length": String(size) },
+      body: payload,
+    }));
+    assert.equal(response.status, status);
+    assert.deepEqual(await response.json(), { error });
+  }
+  assert.equal(databaseCalls, 0);
+});
+
 test("declared and streamed oversized bodies fail with 413", async () => {
   const declared = new Request("https://phm.dev/test", {
     method: "POST",
