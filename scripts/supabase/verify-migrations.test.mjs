@@ -198,6 +198,38 @@ test("ignores non-SQL files so a directory holding only notes counts as empty", 
   );
 });
 
+test("ignores unrelated files alongside valid migrations", async () => {
+  const sql = "select 1;\n";
+  const sha256 = createHash("sha256").update(sql).digest("hex");
+  const root = await fixture({
+    migrations: {
+      "001_initial.sql": sql,
+      "README.md": "# scratch notes\n",
+      ".DS_Store": "",
+      "001_initial.sql.bak": sql,
+      "DRAFT.SQL": "select 2;\n",
+    },
+    entries: [{ file: "001_initial.sql", sha256 }],
+  });
+  const result = await verifyMigrationManifest({ supabaseDirectory: root });
+  assert.equal(result.count, 1);
+  assert.deepEqual(result.files, ["001_initial.sql"]);
+});
+
+test("ignores non-regular entries that are not SQL migrations", async () => {
+  const sql = "select 1;\n";
+  const sha256 = createHash("sha256").update(sql).digest("hex");
+  const root = await fixture({
+    migrations: { "001_initial.sql": sql },
+    entries: [{ file: "001_initial.sql", sha256 }],
+  });
+  await symlink("missing-target", join(root, "migrations/notes.txt"));
+  await mkdir(join(root, "migrations/attic"));
+  const result = await verifyMigrationManifest({ supabaseDirectory: root });
+  assert.equal(result.count, 1);
+  assert.deepEqual(result.files, ["001_initial.sql"]);
+});
+
 test("workflow remains local-only and supply-chain pinned", async () => {
   const workflow = await readFile(
     join(repositoryRoot, ".github/workflows/ci.yml"),
