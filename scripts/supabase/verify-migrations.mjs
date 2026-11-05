@@ -18,7 +18,8 @@ export async function verifyMigrationManifest({
 
   const migrationDirectory = join(supabaseDirectory, "migrations");
   const migrationEntries = (await readdir(migrationDirectory, { withFileTypes: true }))
-    .filter((entry) => entry.name.endsWith(".sql"));
+    .filter((entry) => entry.name.endsWith(".sql"))
+    .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
   const nonRegularMigration = migrationEntries.find((entry) => !entry.isFile());
   if (nonRegularMigration) {
     throw new Error(
@@ -26,8 +27,7 @@ export async function verifyMigrationManifest({
     );
   }
   const migrationFiles = migrationEntries
-    .map((entry) => entry.name)
-    .sort();
+    .map((entry) => entry.name);
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
 
   if (manifest.version !== 1 || manifest.algorithm !== "sha256") {
