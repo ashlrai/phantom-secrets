@@ -623,6 +623,51 @@ test("canonical, structured-data, and off-origin redirect failures stay visible"
   );
 });
 
+test("a page without JSON-LD reports empty structured data, not an error", async () => {
+  // The page loads other scripts (a deferred src, an inline module, and a
+  // text/plain block holding JSON-lookalike content) but no ld+json, so
+  // extraction returns empty arrays rather than flagging anything.
+  const page = (origin) =>
+    `<!doctype html><html><head><title>/about — Phantom</title>` +
+    `<meta name="description" content="Description for /about">` +
+    `<link rel="canonical" href="${origin}/about">` +
+    `<script src="${origin}/app.js" defer></script>` +
+    `<script type="module">navigator.sendBeacon("/ping")</script>` +
+    `<script type="text/plain">{"not":"json-ld"}</script>` +
+    `</head><body><h1>Page /about</h1></body></html>`;
+  assert.deepEqual(structuredData(page("https://phm.dev")), { values: [], errors: [] });
+  await withFixtureServer(
+    async ({ origin, options }) => {
+      const report = await observeProduction(options);
+      const route = report.technical.public_routes.find((entry) => entry.route === "/about");
+      assert.ok(route, "the no-JSON-LD page is observed through the sitemap");
+      assert.equal(route.status, 200);
+      assert.equal(route.canonical, `${origin}/about`);
+      assert.deepEqual(route.structured_data_types, []);
+      assert.deepEqual(
+        report.findings.filter((finding) => finding.route === "/about"),
+        [],
+      );
+      assert.equal(report.technical.sitemap.route_count, publicPaths.size + 1);
+      assert.equal(report.verdict, "PASS");
+    },
+    {
+      "/sitemap.xml": (response, origin) => {
+        response.setHeader("content-type", "application/xml");
+        response.end(
+          `<?xml version="1.0"?><urlset>${[...publicPaths, "/about"]
+            .map((route) => `<url><loc>${origin}${route}</loc></url>`)
+            .join("")}</urlset>`,
+        );
+      },
+      "/about": (response, origin) => {
+        response.setHeader("content-type", "text/html; charset=utf-8");
+        response.end(page(origin));
+      },
+    },
+  );
+});
+
 test("duplicate sitemap URLs fail deterministically before fetching public routes", async () => {
   await withFixtureServer(
     async ({ options, requests }) => {
