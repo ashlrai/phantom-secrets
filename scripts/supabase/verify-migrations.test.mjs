@@ -16,17 +16,56 @@ async function fixture({ migrations, entries, directory }) {
   const base = directory ? join(root, directory) : root;
   const migrationDirectory = join(base, "migrations");
   await mkdir(migrationDirectory, { recursive: true });
-  await Promise.all(
-    Object.entries(migrations).map(([file, contents]) =>
-      writeFile(join(migrationDirectory, file), contents),
-    ),
-  );
+  for (const [file, contents] of Object.entries(migrations)) {
+    await writeFile(join(migrationDirectory, file), contents);
+  }
   await writeFile(
     join(base, "migration-manifest.json"),
     JSON.stringify({ version: 1, algorithm: "sha256", migrations: entries }),
   );
   return base;
 }
+
+test("verifies valid migrations created in reverse filename order", async () => {
+  const migrations = {
+    "003_third.sql": "select 3;\n",
+    "002_second.sql": "select 2;\n",
+    "001_first.sql": "select 1;\n",
+  };
+  const entries = Object.entries(migrations)
+    .sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)
+    .map(([file, contents]) => ({
+      file,
+      sha256: createHash("sha256").update(contents).digest("hex"),
+    }));
+  const root = await fixture({ migrations, entries });
+  const result = await verifyMigrationManifest({ supabaseDirectory: root });
+  assert.deepEqual(result, {
+    count: 3,
+    files: ["001_first.sql", "002_second.sql", "003_third.sql"],
+  });
+
+  // Force reverse enumeration even on filesystems that return sorted entries.
+  const preload = `
+    import fs from "node:fs";
+    import { syncBuiltinESMExports } from "node:module";
+    const original = fs.promises.readdir;
+    fs.promises.readdir = async (...args) => {
+      const entries = await original(...args);
+      return entries.sort((a, b) => a.name < b.name ? 1 : a.name > b.name ? -1 : 0);
+    };
+    syncBuiltinESMExports();
+  `;
+  const resultWithReverseEnumeration = spawnSync(
+    process.execPath,
+    ["--import", `data:text/javascript,${encodeURIComponent(preload)}`,
+      join(import.meta.dirname, "verify-migrations.mjs"), root],
+    { encoding: "utf8" },
+  );
+  assert.ifError(resultWithReverseEnumeration.error);
+  assert.equal(resultWithReverseEnumeration.status, 0, resultWithReverseEnumeration.stderr);
+  assert.match(resultWithReverseEnumeration.stdout, /Verified 3 ordered Supabase migration digests\./);
+});
 
 test("the committed migration set matches its ordered digest manifest", async () => {
   const result = await verifyMigrationManifest({
@@ -167,6 +206,16 @@ test("fails closed when a SQL migration is a symlink", async () => {
   await assert.rejects(
     verifyMigrationManifest({ supabaseDirectory: root }),
     /migration must be a regular file/,
+  );
+});
+
+test("reports the first non-regular SQL entry in filename order", async () => {
+  const root = await fixture({ migrations: {}, entries: [] });
+  await symlink("missing", join(root, "migrations/002_second.sql"));
+  await symlink("missing", join(root, "migrations/001_first.sql"));
+  await assert.rejects(
+    verifyMigrationManifest({ supabaseDirectory: root }),
+    /migration must be a regular file: 001_first\.sql/,
   );
 });
 
