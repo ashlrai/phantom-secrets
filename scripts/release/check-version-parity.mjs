@@ -83,8 +83,12 @@ if (!registryPackage) {
 }
 
 function packagedWrapperVersion(path, version) {
-  // Data-only source validation: never execute candidate wrapper code here.
-  if (!/^const VERSION = require\("\.\.\/package\.json"\)\.version;$/m.test(read(path))) {
+  // Data-only source validation: never execute candidate wrapper/helper code.
+  const imports = read(path).match(/^const \{ VERSION, SEMVER_SOURCE \} = require\("\.\/package-version\.js"\);$/gm) ?? [];
+  const helper = read(join(dirname(path), "package-version.js"));
+  const bindings = helper.match(/^const VERSION = require\("\.\.\/package\.json"\)\.version;$/gm) ?? [];
+  const exports = helper.match(/^module\.exports = Object\.freeze\(\{ VERSION, SEMVER_SOURCE \}\);$/gm) ?? [];
+  if (imports.length !== 1 || bindings.length !== 1 || exports.length !== 1) {
     throw new Error(`${path} must bind VERSION to its own packaged package.json`);
   }
   if (typeof version !== "string" || semverPattern.exec(version)?.[0] !== version) {

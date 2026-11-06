@@ -26,8 +26,7 @@ const { homedir } = require("os");
 const { basename, dirname, join, posix: posixPath, resolve, win32: win32Path } = require("path");
 const { performance } = require("perf_hooks");
 
-// Resolve the installed package itself; cwd and environment never select the release.
-const VERSION = require("../package.json").version;
+const { VERSION, SEMVER_SOURCE } = require("./package-version.js");
 const REPO = "ashlrai/phantom-secrets";
 const BINARY_NAME = "phantom-mcp";
 const REVIEWED_RELEASE_URL = `https://github.com/${REPO}/releases/tag/v${VERSION}`;
@@ -304,15 +303,6 @@ function ensureNpmSourceMarker(path, platform = process.platform) {
 
 function sha256File(path) {
   return crypto.createHash("sha256").update(readFileSync(path)).digest("hex");
-}
-
-const SEMVER_SOURCE =
-  "(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)" +
-  "(?:-((?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*))?" +
-  "(?:\\+([0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*))?";
-
-if (typeof VERSION !== "string" || new RegExp(`^${SEMVER_SOURCE}$`).exec(VERSION)?.[0] !== VERSION) {
-  throw new Error("invalid packaged Phantom version");
 }
 
 function parseBinaryVersion(output) {

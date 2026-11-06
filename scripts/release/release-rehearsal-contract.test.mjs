@@ -237,6 +237,7 @@ test("installed wrappers bind release identity to their own package, independent
       mkdirSync(join(installed, "bin"), { recursive: true });
       const wrapper = join(installed, "bin", "cli.js");
       writeFileSync(wrapper, readFileSync(join(repoRoot, directory, "bin", "cli.js")));
+      writeFileSync(join(installed, "bin", "package-version.js"), readFileSync(join(repoRoot, directory, "bin", "package-version.js")));
       const metadata = join(installed, "package.json");
       const run = () => spawnSync(process.execPath, ["-e", `
         const wrapper = require(process.argv[1]);
@@ -270,6 +271,7 @@ test("source parity refuses alternate wrapper version bindings and mismatched pa
       "scripts/release/check-version-parity.mjs", "Cargo.toml", "npm/package.json", "npm-mcp/package.json",
       "apps/web/package.json", "apps/web/package-lock.json", "CITATION.cff", "npm/README.md", "npm-mcp/README.md",
       "README.md", "ROADMAP.md", "CHANGELOG.md", "mcp-registry/server.json", "npm/bin/cli.js", "npm-mcp/bin/cli.js",
+      "npm/bin/package-version.js", "npm-mcp/bin/package-version.js",
       "scripts/install.sh", "scripts/install.ps1", ".github/workflows/release-rehearsal.yml",
       ".github/workflows/npm-candidate-acceptance.yml", "apps/web/src/lib/public-release.ts",
       ...readdirSync(join(repoRoot, "crates"), { withFileTypes: true }).filter(p => p.isDirectory()).map(p => `crates/${p.name}/Cargo.toml`),
@@ -282,7 +284,15 @@ test("source parity refuses alternate wrapper version bindings and mismatched pa
       cwd: root, encoding: "utf8", timeout: 5_000, maxBuffer: 64 * 1024,
     });
     assert.equal(check().status, 0);
-    const wrapper = join(root, "npm/bin/cli.js"), source = readFileSync(wrapper, "utf8");
+    const entrypoint = join(root, "npm/bin/cli.js"), entrySource = readFileSync(entrypoint, "utf8");
+    for (const alternate of ['require(process.env.PHANTOM_VERSION_MODULE)', 'require("./unexpected.js")']) {
+      writeFileSync(entrypoint, entrySource.replace('require("./package-version.js")', alternate));
+      const invalid = check();
+      assert.notEqual(invalid.status, 0);
+      assert.match(invalid.stderr, /must bind VERSION to its own packaged package\.json/);
+    }
+    writeFileSync(entrypoint, entrySource);
+    const wrapper = join(root, "npm/bin/package-version.js"), source = readFileSync(wrapper, "utf8");
     for (const alternate of [`"${sourceVersion}"`, "process.env.npm_package_version", 'require(process.cwd() + "/package.json").version']) {
       writeFileSync(wrapper, source.replace('require("../package.json").version', alternate));
       const invalid = check();
@@ -541,7 +551,8 @@ test("npm and MCP distribution metadata and runbooks remain publication-safe", (
   assert.match(npmStage, /PRIMARY_TARBALL="\$\{NPM_STAGE_DIR\}\/phantom-secrets-\$\{VERSION\}\.tgz"/);
   assert.match(npmStage, /MCP_TARBALL="\$\{NPM_STAGE_DIR\}\/phantom-secrets-mcp-\$\{VERSION\}\.tgz"/);
   assert.match(npmStage, /packs\[0\]\.filename !== `\$\{name\}-\$\{version\}\.tgz`/);
-  assert.match(npmStage, /packs\[0\]\.entryCount !== 5/);
+  assert.match(npmStage, /packs\[0\]\.entryCount !== expectedFiles\.length/);
+  assert.match(npmStage, /expectedPackFiles\(version\)/);
   assert.match(npmStage, /packs\[0\]\.integrity !== approvedIntegrity/);
   assert.equal(
     npmStage.match(/npm pack --json --pack-destination/g)?.length,
@@ -916,8 +927,8 @@ test("npm and MCP distribution metadata and runbooks remain publication-safe", (
   );
 });
 
-test("npm package contents remain the exact five reviewed files", () => {
-  const expectedFiles = ["LICENSE", "README.md", "bin/cli.js", "install.js", "package.json"];
+test("0.8.4 npm package contents are exactly the six reviewed files", () => {
+  const expectedFiles = ["LICENSE", "README.md", "bin/cli.js", "bin/package-version.js", "install.js", "package.json"];
 
   for (const [directory, packageName] of [
     ["npm", "phantom-secrets"],
@@ -926,7 +937,7 @@ test("npm package contents remain the exact five reviewed files", () => {
     const pack = inspectPack(directory);
     assert.equal(pack.name, packageName);
     assert.equal(pack.version, "0.8.4");
-    assert.equal(pack.entryCount, 5);
+    assert.equal(pack.entryCount, 6);
     assert.deepEqual(
       pack.files.map(({ path }) => path).sort(),
       expectedFiles

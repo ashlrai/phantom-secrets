@@ -19,13 +19,21 @@ const REGISTRY = "https://registry.npmjs.org/";
 const REPOSITORY = "ashlrai/phantom-secrets";
 const REQUIRED_NODE = [22, 14, 0];
 const REQUIRED_NPM = "11.15.0";
-const EXACT_PACK_FILES = Object.freeze([
+const LEGACY_PACK_FILES = Object.freeze([
   "LICENSE",
   "README.md",
   "bin/cli.js",
   "install.js",
   "package.json",
 ]);
+const METADATA_PACK_FILES = Object.freeze([...LEGACY_PACK_FILES, "bin/package-version.js"].sort());
+
+export function expectedPackFiles(version) {
+  const match = typeof version === "string" && /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/.exec(version);
+  if (!match || match[0] !== version) throw new Error("package profile requires an exact stable SemVer");
+  const [major, minor, patch] = match.slice(1).map(BigInt);
+  return major > 0n || minor > 8n || (minor === 8n && patch >= 4n) ? METADATA_PACK_FILES : LEGACY_PACK_FILES;
+}
 const MODES = new Set(["prepublication", "published-candidate"]);
 const SAFE_HOST_ENV_KEYS = Object.freeze([
   "PATH",
@@ -123,6 +131,7 @@ export function validateAcceptanceConfig(env) {
 
   const version = env.PHANTOM_NPM_ACCEPTANCE_VERSION;
   parseVersion(version, "PHANTOM_NPM_ACCEPTANCE_VERSION");
+  expectedPackFiles(version);
   const previousLatest = env.PHANTOM_PREVIOUS_NPM_LATEST;
   parseVersion(previousLatest, "PHANTOM_PREVIOUS_NPM_LATEST");
   const previousCandidate = env.PHANTOM_PREVIOUS_NPM_CANDIDATE;
@@ -236,6 +245,7 @@ export function validatePackReceipt(packs, name, version) {
     fail(`${name} must produce exactly one npm pack receipt`);
   }
   const pack = packs[0];
+  const expectedFiles = expectedPackFiles(version);
   const files = Array.isArray(pack.files)
     ? pack.files.map(({ path }) => path).sort()
     : [];
@@ -243,8 +253,8 @@ export function validatePackReceipt(packs, name, version) {
     pack.name !== name ||
     pack.version !== version ||
     pack.filename !== `${name}-${version}.tgz` ||
-    pack.entryCount !== EXACT_PACK_FILES.length ||
-    JSON.stringify(files) !== JSON.stringify(EXACT_PACK_FILES) ||
+    pack.entryCount !== expectedFiles.length ||
+    JSON.stringify(files) !== JSON.stringify(expectedFiles) ||
     !isSha512Integrity(pack.integrity) ||
     !/^[0-9a-f]{40}$/.test(pack.shasum ?? "")
   ) {
