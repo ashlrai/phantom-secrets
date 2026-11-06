@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 // Keep signing-readiness contracts on the existing release source-test path
 // without changing workflow behavior or permissions.
 import "./signing-readiness.test.mjs";
+import "./qualify-full-ci.test.mjs";
 import "./npm-candidate-acceptance.test.mjs";
 import { assertDependencyIndexClean } from "./check-dependency-index.mjs";
 import { assertPowershellCandidate } from "./check-powershell-candidate.mjs";
@@ -202,10 +203,11 @@ test("manual rehearsal delegates to the shared graph with read-only authority", 
 });
 
 test("release defaults and lockfiles are part of the exact version parity contract", () => {
-  assert.match(rehearsal, /default: v0\.8\.4/);
+  const escapedVersion = sourceVersion.replace(/\./g, "\\.");
+  assert.match(rehearsal, new RegExp(`default: v${escapedVersion}`));
   assert.match(
     npmCandidateAcceptance,
-    /^      version:\n[\s\S]*?^        default: 0\.8\.4$/m
+    new RegExp(`^      version:\\n[\\s\\S]*?^        default: ${escapedVersion}$`, 'm')
   );
   assert.match(versionParity, /json\("apps\/web\/package-lock\.json"\)/);
   assert.match(versionParity, /Hosted web lockfile root/);
@@ -219,10 +221,10 @@ test("release defaults and lockfiles are part of the exact version parity contra
   assert.equal(
     execFileSync(
       process.execPath,
-      [join(repoRoot, "scripts/release/check-version-parity.mjs"), "v0.8.4"],
+      [join(repoRoot, "scripts/release/check-version-parity.mjs"), `v${sourceVersion}`],
       { cwd: repoRoot, encoding: "utf8" }
     ).trim(),
-    "release version parity passed: 0.8.4 across 21 surfaces and 12 crates"
+    `release version parity passed: ${sourceVersion} across 21 surfaces and 12 crates`
   );
 });
 
@@ -443,12 +445,12 @@ test("attestation verification gates release approval and remains tag-push-only"
     verifyAttestations,
     /(?:contents|attestations|id-token): write|environment:/
   );
-  assert.match(publish, /needs: verify-attestations/);
+  assert.match(publish, /needs: \[qualify, verify-attestations\]/);
   assert.match(publish, /environment:\n      name: release/);
   assert.match(publish, /contents: write/);
   assert.match(release, /^  build-and-verify:\n(?:.|\n)*?uses: \.\/\.github\/workflows\/release-build\.yml/m);
   assert.match(release, /release_tag: \$\{\{ github\.ref_name \}\}/);
-  assert.match(attest, /needs: build-and-verify/);
+  assert.match(attest, /needs: \[qualify, build-and-verify\]/);
   assert.match(release, /^on:\n  push:\n    tags:\n      - 'v\*'$/m);
   assert.doesNotMatch(release, /^  workflow_call:/m);
 });
