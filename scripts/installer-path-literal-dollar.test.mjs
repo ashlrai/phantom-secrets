@@ -1,10 +1,8 @@
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
-import { pathUpdateHarness } from './lib/installer-path-harness.mjs';
+import { pathUpdateHarness, createPathUpdateFixture } from './lib/installer-path-harness.mjs';
 
 // An unrelated line with a literal dollar sign must survive the PATH update
 // byte-for-byte. These shapes break rewrites that expand variables, pass the
@@ -44,26 +42,16 @@ for (const [file, installer] of Object.entries(copies)) {
   for (const [name, config] of Object.entries(shells)) {
     for (const wired of [false, true]) {
       test(`${file} keeps literal-dollar lines byte-for-byte (${name}, ${wired ? 'already wired' : 'PATH appended'})`, (t) => {
-        const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-path-dollar-')));
-        t.after(() => rmSync(root, { recursive: true, force: true }));
-        const home = join(root, 'home');
-        const bin = join(root, 'live', 'bin');
-        const rc = config.rc(home);
-        mkdirSync(dirname(rc), { recursive: true });
-        mkdirSync(bin, { recursive: true });
+        const { bin, rc, run } = createPathUpdateFixture(t, {
+          prefix: 'phantom-path-dollar-', harness, config,
+        });
 
         const body = `# mine\n${dollarLines.join('\n')}\n`;
         const original = Buffer.from(
           wired ? `${body}\n${marker}\n${config.line(bin)}\n${dollarLines.join('\n')}\n` : body, 'utf8');
         writeFileSync(rc, original, { mode: 0o600 });
 
-        const result = spawnSync('/bin/bash', ['-c', harness, 'path-test', bin], {
-          encoding: 'utf8',
-          timeout: 30000,
-          env: { HOME: home, SHELL: config.shell, PATH: '/usr/bin:/bin' },
-        });
-        assert.ifError(result.error);
-        assert.equal(result.status, 0, result.stderr);
+        const result = run();
 
         const after = readFileSync(rc);
         if (wired) {
@@ -129,26 +117,12 @@ for (const [file, installer] of Object.entries(copies)) {
   for (const [shellName, config] of Object.entries(shells)) {
     for (const [ending, tail] of Object.entries(endings)) {
       test(`${file} keeps an unrelated ${shellName} line with a literal $ byte-for-byte (${ending})`, (t) => {
-        const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-path-dollar-')));
-        t.after(() => rmSync(root, { recursive: true, force: true }));
-        const home = join(root, 'home');
-        const bin = join(root, 'live', 'bin');
-        const rc = config.rc(home);
-        mkdirSync(dirname(rc), { recursive: true });
-        mkdirSync(bin, { recursive: true });
+        const { bin, rc, run } = createPathUpdateFixture(t, {
+          prefix: 'phantom-path-dollar-', harness, config,
+        });
         const original = Buffer.concat([Buffer.from('# mine\n'), config.dollar, Buffer.from(tail)]);
         writeFileSync(rc, original, { mode: 0o600 });
 
-        const run = () => {
-          const r = spawnSync('/bin/bash', ['-c', harness, 'path-test', bin], {
-            encoding: 'utf8',
-            timeout: 30000,
-            env: { HOME: home, SHELL: config.shell, PATH: '/usr/bin:/bin' },
-          });
-          assert.ifError(r.error);
-          assert.equal(r.status, 0, r.stderr);
-          return r;
-        };
 
         const first = run();
         assert.match(first.stdout, /added .* to PATH/);
@@ -173,26 +147,16 @@ for (const [file, installer] of Object.entries(copies)) {
     }
 
     test(`${file} keeps an unrelated ${shellName} line with a literal $ when the PATH entry is already wired`, (t) => {
-      const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-path-dollar-wired-')));
-      t.after(() => rmSync(root, { recursive: true, force: true }));
-      const home = join(root, 'home');
-      const bin = join(root, 'live', 'bin');
-      const rc = config.rc(home);
-      mkdirSync(dirname(rc), { recursive: true });
-      mkdirSync(bin, { recursive: true });
+      const { bin, rc, run } = createPathUpdateFixture(t, {
+        prefix: 'phantom-path-dollar-wired-', harness, config,
+      });
       const original = Buffer.concat([
         Buffer.from('# mine\n'), config.dollar,
         Buffer.from(`\n${marker}\n${config.line(bin)}\n`),
       ]);
       writeFileSync(rc, original, { mode: 0o600 });
 
-      const result = spawnSync('/bin/bash', ['-c', harness, 'path-test', bin], {
-        encoding: 'utf8',
-        timeout: 30000,
-        env: { HOME: home, SHELL: config.shell, PATH: '/usr/bin:/bin' },
-      });
-      assert.ifError(result.error);
-      assert.equal(result.status, 0, result.stderr);
+      const result = run();
       assert.match(result.stdout, /already wired into/);
       assert.ok(readFileSync(rc).equals(original),
         'the whole startup file, dollar line included, is byte-for-byte unchanged');
