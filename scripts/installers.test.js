@@ -674,7 +674,7 @@ test('Unix PATH setup creates an absent fish startup file and removes its tempor
   assert.deepEqual(readdirSync(parent), ['config.fish']);
 });
 
-test('Unix PATH final verification failure warns without restoring the previous startup file', (t) => {
+test('Unix PATH final verification failure warns and restores the previous startup file', (t) => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-path-final-check-')));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const home = join(root, 'home');
@@ -691,7 +691,7 @@ test('Unix PATH final verification failure warns without restoring the previous 
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stderr, /could not update your shell PATH/);
   assert.equal(existsSync(join(home, '.final-check-invoked')), true);
-  assert.match(readFileSync(rc, 'utf8'), /^# original configuration\n\n# phantom-secrets PATH\n/);
+  assert.equal(readFileSync(rc, 'utf8'), '# original configuration\n');
   assert.equal(existsSync(join(install, 'phantom')), true);
   assert.deepEqual(readdirSync(home).filter((name) => name.startsWith('.phantom-path.')), []);
 });
