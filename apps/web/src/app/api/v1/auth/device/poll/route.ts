@@ -8,6 +8,18 @@ const CLI_TOKEN_TTL_DAYS = 90;
 const MAX_DEVICE_AUTH_BODY_BYTES = 4_096;
 
 export async function POST(req: Request) {
+  try {
+    return await pollDevice(req);
+  } catch {
+    // Never surface thrown details (database, network, config) to the caller.
+    return Response.json(
+      { error: "Unexpected server error. Please try again." },
+      { status: 500, headers: { "cache-control": "no-store" } }
+    );
+  }
+}
+
+async function pollDevice(req: Request) {
   const commissioningGate = requireHostedService("personal_vaults");
   if (commissioningGate) return commissioningGate;
 

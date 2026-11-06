@@ -302,10 +302,10 @@ const existingRcSeams = [
   { seam: 'rc-replaced', label: 'the startup file is replaced mid-update', expect: racedReplacement },
   { seam: 'rc-modified', label: 'the startup file is edited mid-update', expect: (bin) => `${original}${racedAppend}` },
   { seam: 'rc-removed', label: 'the startup file is deleted mid-update', expect: 'absent' },
-  // The moved candidate is not restored when the post-move validation
-  // cannot confirm the update: the startup file already holds the PATH line
-  // even though the update reports failure — the documented failure limit.
-  { seam: 'post-move', label: 'the post-move validation cannot confirm the update', expect: (bin) => updatedRc(bin) },
+  // The startup file is restored from its snapshot when the post-move validation
+  // cannot confirm the update: before_tmp serves as the rollback target,
+  // and no .phantom-path temporary file survives.
+  { seam: 'post-move', label: 'the post-move validation cannot confirm the update', expect: 'restored' },
 ];
 
 // Failure exits reachable when the startup file is absent: securing the
@@ -316,7 +316,7 @@ const absentRcSeams = [
   { seam: 'rc-appeared', label: 'a startup file appears mid-update', expect: racedArrival },
   { seam: 'candidate-identity', label: 'the candidate cannot be inspected', expect: 'absent' },
   { seam: 'move', label: 'the candidate cannot be moved over the startup file', expect: 'absent' },
-  { seam: 'post-move', label: 'the post-move validation cannot confirm the update', expect: (bin) => createdRc(bin) },
+  { seam: 'post-move', label: 'the post-move validation cannot confirm the update', expect: 'absent' },
 ];
 
 function assertRcExpectation({ bin, beforeStat, rc }, expect) {
@@ -324,6 +324,12 @@ function assertRcExpectation({ bin, beforeStat, rc }, expect) {
   if (expect === 'absent') {
     assert.equal(existsSync(rc), false, 'the update must not recreate the startup file');
     return;
+  }
+  if (expect === 'restored') {
+    assert.equal(readFileSync(rc, 'utf8'), original, 'startup file content restored')
+    const restored = lstatSync(rc)
+    assert.equal(restored.mode & 0o777, 0o600, 'startup file mode restored')
+    return
   }
   const content = typeof expect === 'function' ? expect(bin) : expect;
   assert.equal(readFileSync(rc, 'utf8'), content, 'startup file left in its raced state');
@@ -536,7 +542,8 @@ for (const [file, installer] of Object.entries(copies)) {
   test(`${file} warns and removes the PATH-update temporary files when the post-move validation cannot confirm the update`, (t) => {
     const run = runInstaller(t, installer, { seam: 'post-move', rcState: 'file' });
     assertReportedInstallerFailure(run);
-    assert.equal(readFileSync(run.rc, 'utf8'), updatedRc(run.bin),
-      'the moved candidate is not restored after a failed post-move validation');
+    assert.equal(readFileSync(run.rc, 'utf8'), original,
+      'the original startup file is restored after a failed post-move validation');
+    assert.deepEqual(readdirSync(run.home), ['.bashrc'], 'HOME holds only the startup file')
   });
 }

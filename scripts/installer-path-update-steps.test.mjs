@@ -43,12 +43,12 @@ test('the installer creates temporary files and updates PATH in the documented o
   assertOrdered(pathUpdateFunction(installer, 'scripts/install.sh'), [
     'before_tmp="$(mktemp "$rc_parent/.phantom-path.before.XXXXXX")"',
     'candidate_tmp="$(mktemp "$rc_parent/.phantom-path.candidate.XXXXXX")"',
-    'grep -qF "$marker" "$before_tmp"',
+    'grep -qxF "$marker" "$before_tmp"',
     '>> "$candidate_tmp"',
     'cmp -s "$before_tmp" "$rc"',
     'mv -f "$candidate_tmp" "$rc"',
+    'grep -qxF "$marker" "$rc"',
     '\n  rm -f -- "$before_tmp"\n',
-    'grep -qF "$marker" "$rc"',
   ], 'install.sh PATH update');
 
   // The call site checks exact PATH membership before invoking the update.
@@ -71,7 +71,7 @@ test('the document describes the PATH update steps in the same order', () => {
     '# phantom-secrets PATH',          // marker short-circuit
     'cmp -s',                          // pre-move re-verification
     'mv -f',                           // replacement
-    'not restored',                    // post-move failure limit
+    'restores',                         // post-move rollback
   ], 'installer-path-update-steps.md PATH update steps');
 });
 
