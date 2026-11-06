@@ -1,13 +1,16 @@
 import assert from 'node:assert/strict';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFile, execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
   chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, dirname, join } from 'node:path';
+import { basename, dirname, join, relative } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
+
+const execFileAsync = promisify(execFile);
 
 // The source installer and its published web copy must both stage freshly.
 const installers = ['../scripts/install.sh', '../apps/web/public/install.sh']
@@ -91,31 +94,91 @@ case "$1" in -s) echo Darwin ;; -m) echo x86_64 ;; *) exit 2 ;; esac
 });
 }
 
-// Executes the installer's own staging-creation lines (extracted from the
-// source, so they cannot drift) twice against one parent. Needs no release
-// fixture or executable payload, so it also runs where fake binaries cannot.
-test('scripts/install.sh staging creation yields distinct private directories', (t) => {
-  const source = readFileSync(installers[0], 'utf8');
+// Executes each checked-in installer's own staging-creation lines (extracted
+// from its source, so they cannot drift) against a fixture parent. Needs no
+// release fixture or executable payload, so it also runs where fake binaries
+// cannot.
+const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+
+const stagingScript = (installer, label, parent) => {
+  const source = readFileSync(installer, 'utf8');
   const block = source.match(/^stage_root="\$\(mktemp -d [^\n]*\n(?:  \|\| die [^\n]*\n)?chmod 700 "\$stage_root"[^\n]*\n/m);
-  assert.ok(block, 'staging creation block not found in scripts/install.sh');
-  const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-staging-block-')));
-  t.after(() => rmSync(root, { recursive: true, force: true }));
-  const script = `die() { echo "$1" >&2; exit 1; }
-install_parent=${JSON.stringify(root)}
+  assert.ok(block, `staging creation block not found in ${label}`);
+  return `die() { echo "$1" >&2; exit 1; }
+install_parent=${JSON.stringify(parent)}
 install_name=bin
 ${block[0]}printf '%s' "$stage_root"
 `;
-  const stage = () => {
-    const result = spawnSync('/bin/bash', ['-c', script], { encoding: 'utf8' });
-    assert.equal(result.status, 0, result.stderr);
-    return result.stdout;
-  };
-  const first = stage();
-  const second = stage();
+};
+
+const stage = (script) => {
+  const result = spawnSync('/bin/bash', ['-c', script], { encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+  return result.stdout;
+};
+
+const assertStagingShape = (dir, parent) => {
+  assert.equal(dirname(dir), parent, 'staging lives under the fixture parent');
+  assert.match(basename(dir), /^\.bin\.install\.[A-Za-z0-9]{6,}$/);
+  assert.equal(statSync(dir).mode & 0o777, 0o700, 'staging directory is private');
+};
+
+for (const installer of installers) {
+const label = relative(repoRoot, installer);
+test(`${label} staging creation yields distinct private directories`, (t) => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-staging-block-')));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const script = stagingScript(installer, label, root);
+  const first = stage(script);
+  const second = stage(script);
+  assert.notEqual(first, second, 'two staging creations must not share a directory');
+  for (const dir of [first, second]) assertStagingShape(dir, root);
+});
+}
+
+// Concurrency is where a non-atomic staging creation would collide: mktemp -d
+// is the atomicity boundary, so parallel creations under one parent must all
+// land in distinct private directories.
+for (const installer of installers) {
+const label = relative(repoRoot, installer);
+test(`${label} concurrent staging creations never share a directory`, async (t) => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-staging-race-')));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const script = stagingScript(installer, label, root);
+  const runs = 8;
+  const results = await Promise.all(
+    Array.from({ length: runs }, () => execFileAsync('/bin/bash', ['-c', script])),
+  );
+  const dirs = results.map(({ stdout }) => stdout);
+  assert.equal(new Set(dirs).size, runs, 'concurrent staging creations must all differ');
+  for (const dir of dirs) assertStagingShape(dir, root);
+});
+}
+
+// A killed install can abandon same-pattern staging directories in the
+// parent. New creations must pick unused names: never reuse a leftover, never
+// fail because one exists, and never touch its contents.
+for (const installer of installers) {
+const label = relative(repoRoot, installer);
+test(`${label} staging creation skips abandoned same-pattern directories`, (t) => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-staging-leftover-')));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const leftovers = ['.bin.install.aa11bb22', '.bin.install.Zz9Zz9Zz'];
+  for (const name of leftovers) {
+    mkdirSync(join(root, name), { mode: 0o700 });
+    writeFileSync(join(root, name, 'candidate'), 'left');
+  }
+  const script = stagingScript(installer, label, root);
+  const first = stage(script);
+  const second = stage(script);
   assert.notEqual(first, second, 'two staging creations must not share a directory');
   for (const dir of [first, second]) {
-    assert.equal(dirname(dir), root);
-    assert.match(basename(dir), /^\.bin\.install\.[A-Za-z0-9]{6,}$/);
-    assert.equal(statSync(dir).mode & 0o777, 0o700, 'staging directory is private');
+    assertStagingShape(dir, root);
+    assert.ok(!leftovers.includes(basename(dir)), 'staging must not reuse an abandoned directory');
+  }
+  for (const name of leftovers) {
+    assert.equal(readFileSync(join(root, name, 'candidate'), 'utf8'), 'left',
+      'abandoned staging directory is untouched');
   }
 });
+}
