@@ -14,7 +14,7 @@ export const installerCopies = [repositoryCopy, webCopy];
 export const approvedDifferences = [
   {
     name: "the repository copy targets the next candidate tag while the web copy stays bound to the evidenced release",
-    minus: ['CANDIDATE_TAG="v0.8.1"'],
+    minus: ['CANDIDATE_TAG="v0.8.2"'],
     plus: ['CANDIDATE_TAG="v0.7.9"'],
   },
   {
