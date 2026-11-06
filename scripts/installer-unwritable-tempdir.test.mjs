@@ -5,7 +5,7 @@ import {
   realpathSync, rmSync, writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
 import test from 'node:test';
 
 const repo = resolve(import.meta.dirname, '..');
@@ -19,12 +19,18 @@ function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-function permissionDiagnostic(stderr, paths) {
+function permissionDiagnostic(stderr, paths, invocation = null) {
   const names = paths.map(escapeRegExp).join('|');
-  return new RegExp(
+  const named = new RegExp(
     `^mkdir: (?:(?:cannot create directory [‘'](?:${names})[’'])|(?:${names})): Permission denied$`,
     'm',
   ).test(stderr);
+  if (named) return true;
+  // Some native coreutils emit no operand at all. Bind that exact denial to
+  // the observed real command and its failure, never to an incidental path.
+  return /^mkdir: Permission denied$/m.test(stderr) && invocation?.status === 1 &&
+    Array.isArray(invocation.args) && invocation.args.length === 2 &&
+    invocation.args[0] === '-p' && invocation.args[1] === paths.at(-1);
 }
 
 test('permission diagnostics bind the denied operation to the exact parent or ancestor', () => {
@@ -34,6 +40,17 @@ test('permission diagnostics bind the denied operation to the exact parent or an
     `mkdir: cannot create directory ‘${name}’: Permission denied`,
     `mkdir: cannot create directory '${name}': Permission denied`,
   ]) assert.equal(permissionDiagnostic(report, [sealed, parent]), true);
+  assert.equal(permissionDiagnostic('mkdir: Permission denied', [sealed, parent],
+    { args: ['-p', parent], status: 1 }), true);
+  for (const invocation of [
+    null, { args: ['-p', sealed], status: 1 }, { args: ['--version', parent], status: 1 },
+    { args: ['-p', parent, '/other'], status: 1 }, { args: ['-p', parent], status: 0 },
+    { args: ['-p', parent], status: 2 },
+  ]) assert.equal(permissionDiagnostic('mkdir: Permission denied', [sealed, parent], invocation), false);
+  for (const report of ['other: Permission denied', 'mkdir: File exists',
+    'mkdir: /other: Permission denied', 'mkdir: Permission denied extra',
+    `mkdir: /other: Permission denied\n${parent}`,
+  ]) assert.equal(permissionDiagnostic(report, [sealed, parent], { args: ['-p', parent], status: 1 }), false);
   for (const report of [
     'mkdir: /fixture/sealed: Permission denied', 'mkdir: /other: Permission denied',
     `mkdir: ${parent}: File exists`, `mkdir: ${parent}: Permission denied extra`,
@@ -181,10 +198,20 @@ exec ${JSON.stringify(realMktemp)} "$@"
     const parent = join(sealed, 'missing');
     const install = join(parent, 'bin');
     const curlLog = join(root, 'curl.log');
+    const mkdirArgsLog = join(root, 'mkdir-args');
+    const realMkdir = execFileSync('which', ['mkdir'], { encoding: 'utf8' }).trim();
+    assert.ok(isAbsolute(realMkdir), 'the observer must exec the actual absolute system mkdir');
     mkdirSync(home);
     mkdirSync(shims);
     mkdirSync(sealed);
     curlShim(shims);
+    // Observe only argv, then replace the shim with the real OS command: its
+    // permissions, stderr and exit status are not mocked or translated.
+    writeFileSync(join(shims, 'mkdir'), `#!/bin/sh
+printf '%s\\0' "$@" >> "$PHANTOM_TEST_MKDIR_ARGS"
+exec "$PHANTOM_TEST_REAL_MKDIR" "$@"
+`);
+    chmodSync(join(shims, 'mkdir'), 0o755);
     chmodSync(sealed, 0o555);
     t.after(() => {
       chmodSync(sealed, 0o755);
@@ -200,6 +227,8 @@ exec ${JSON.stringify(realMktemp)} "$@"
         SHELL: '/bin/bash',
         PHANTOM_INSTALL_DIR: install,
         PHANTOM_TEST_CURL_LOG: curlLog,
+        PHANTOM_TEST_MKDIR_ARGS: mkdirArgsLog,
+        PHANTOM_TEST_REAL_MKDIR: realMkdir,
       },
     });
 
@@ -209,8 +238,14 @@ exec ${JSON.stringify(realMktemp)} "$@"
     // BSD mkdir names the requested parent; GNU mkdir -p can name the
     // existing sealed ancestor it tried to traverse. Bind the path to the
     // same Permission denied diagnostic, rather than accepting any error.
-    assert.ok(permissionDiagnostic(result.stderr, [sealed, parent]),
-      'the permission diagnostic must name the exact requested parent or its sealed ancestor');
+    const deniedOperation = result.stderr.split(/\r?\n/)
+      .filter(line => /Permission denied/i.test(line))
+      .map(line => line.replaceAll(root, '/fixture')).join('\n').slice(0, 1024);
+    const observedArgs = readFileSync(mkdirArgsLog, 'utf8').split('\0');
+    assert.equal(observedArgs.pop(), '', 'the real command observer must finish its NUL-delimited record');
+    assert.deepEqual(observedArgs, ['-p', parent], 'the failing real mkdir must target exactly the requested parent');
+    assert.ok(permissionDiagnostic(result.stderr, [sealed, parent], { args: observedArgs, status: result.status }),
+      'the permission diagnostic must name the exact requested parent or its sealed ancestor; received: ' + deniedOperation);
     assert.doesNotMatch(result.stdout, /downloading|checksum|installed to/);
     assert.equal(existsSync(curlLog), false, 'an uncreatable parent must fail before the network');
     assert.equal(existsSync(install), false, 'the destination must not appear');
