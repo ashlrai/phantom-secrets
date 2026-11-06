@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSy
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
+import { pathUpdateHarness } from './lib/installer-path-harness.mjs';
 
 // Unrelated startup-file lines that contain spaces — leading and trailing runs,
 // runs of several spaces inside quotes, a tab/space mix, a path with spaces,
@@ -15,22 +16,6 @@ const copies = {
   'scripts/install.sh': resolve(import.meta.dirname, 'install.sh'),
   'apps/web/public/install.sh': resolve(import.meta.dirname, '..', 'apps', 'web', 'public', 'install.sh'),
 };
-
-function extractFunction(source, name, file) {
-  const start = source.indexOf(`${name}()`);
-  assert.ok(start >= 0, `${file}: locate ${name}`);
-  const lineEnd = source.indexOf('\n', start);
-  if (source.slice(start, lineEnd).trimEnd().endsWith('}')) return source.slice(start, lineEnd + 1);
-  const end = source.indexOf('\n}\n', start);
-  assert.ok(end > start, `${file}: locate end of ${name}`);
-  return source.slice(start, end + 3);
-}
-
-const harnessFor = (source, file) => ['set -euo pipefail', 'umask 077',
-  ...['say', 'file_identity', 'file_link_count', 'add_to_user_path']
-    .map((name) => extractFunction(source, name, file)),
-  'add_to_user_path "$1"',
-].join('\n');
 
 const marker = '# phantom-secrets PATH';
 const shells = {
@@ -77,8 +62,37 @@ const shells = {
   },
 };
 
+const originalSpaced = [
+  '   leading spaces kept',
+  'trailing spaces kept   ',
+  'two  inner   gaps  here',
+  '  # indented comment with  spaces  ',
+  'alias gs="git status  --short"',
+  'export MY_DIR="/Users/Jane Doe/My Tools/bin"',
+  'cd "$HOME/Library/Application Support"',
+  ' ',
+  '    ',
+];
+const originalShells = {
+  bash: {
+    shell: '/bin/bash', rc: (h) => join(h, '.bashrc'),
+    line: (b) => `export PATH="${b}:$PATH"`,
+    lines: [...originalSpaced, 'export PATH="/Users/Jane Doe/My Tools/bin:$PATH"'],
+  },
+  zsh: {
+    shell: '/bin/zsh', rc: (h) => join(h, '.zshrc'),
+    line: (b) => `export PATH="${b}:$PATH"`,
+    lines: [...originalSpaced, 'export PATH="/Users/Jane Doe/My Tools/bin:$PATH"'],
+  },
+  fish: {
+    shell: '/usr/bin/fish', rc: (h) => join(h, '.config', 'fish', 'config.fish'),
+    line: (b) => `set -gx PATH "${b}" $PATH`,
+    lines: [...originalSpaced, 'set -gx PATH "/Users/Jane Doe/My Tools/bin" $PATH'],
+  },
+};
+
 for (const [file, installer] of Object.entries(copies)) {
-  const harness = harnessFor(readFileSync(installer, 'utf8'), file);
+  const harness = pathUpdateHarness(readFileSync(installer, 'utf8'), file);
   for (const [shellName, config] of Object.entries(shells)) {
     const setup = (t) => {
       const root = realpathSync(mkdtempSync(join(tmpdir(), `phantom-path-spaced-${shellName}-`)));
@@ -101,10 +115,11 @@ for (const [file, installer] of Object.entries(copies)) {
       return { rc, bin, run };
     };
 
+    for (const [fixtureName, fixture] of [['current', config.spaced], ['original', originalShells[shellName].lines]]) {
     for (const trailing of ['\n', '']) {
-      test(`${file} keeps unrelated ${shellName} lines with spaces byte-for-byte (${trailing ? 'with' : 'without'} final newline)`, (t) => {
+      test(`${file} keeps unrelated ${shellName} lines with spaces byte-for-byte (${fixtureName}, ${trailing ? 'with' : 'without'} final newline)`, (t) => {
         const { rc, bin, run } = setup(t);
-        const original = Buffer.from(config.spaced.join('\n') + trailing);
+        const original = Buffer.from(fixture.join('\n') + trailing);
         writeFileSync(rc, original, { mode: 0o600 });
 
         assert.match(run().stdout, /added .* to PATH/);
@@ -117,6 +132,8 @@ for (const [file, installer] of Object.entries(copies)) {
         run();
         assert.ok(readFileSync(rc).equals(updated), 'a second update changes nothing');
       });
+    }
+
     }
 
     test(`${file} keeps unrelated ${shellName} lines with spaces byte-for-byte when the PATH entry is already wired`, (t) => {

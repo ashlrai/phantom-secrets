@@ -391,6 +391,9 @@ jobs:
           scripts/installer-path-leading-indent.test.mjs
           scripts/installer-path-shell-fallback.test.mjs
           scripts/installer-path-trailing-comment.test.mjs
+          scripts/installer-path-source-line.test.mjs
+          scripts/installer-path-unrelated-comment.test.mjs
+          scripts/installer-path-unrelated-order-integration.test.mjs
       - name: Run isolated alias fallback shell test
         if: runner.os == 'Linux'
         run: bash scripts/installer-path-alias-fallback.test.sh
