@@ -2,6 +2,8 @@
 
 This matrix separates source compilation, release packaging, installer or
 wrapper mapping, and native acceptance. One does not prove the next.
+For the Unix installer's exact `uname` mappings and rejection behavior, see
+[installer platform detection](installer-platforms.md).
 
 ## Evidence vocabulary
 
@@ -36,8 +38,10 @@ The current workflow defines six target archives, each containing `phantom`
 and `phantom-mcp`: four Unix `.tar.gz` files and two Windows `.zip` files. Both
 npm wrappers and the direct installers share that six-target lookup contract.
 The separate `npm-candidate-acceptance.yml` workflow is configured to exercise
-the exact tagged five-file npm tarballs from fresh caches on these same six
-native host classes before npm publication, then to repeat acceptance against
+the exact tagged npm tarballs from fresh caches on these same six native host
+classes. The inventory remains five files through `0.8.3`; the `0.8.4` source
+candidate adds only `bin/package-version.js` for six reviewed files. The gate
+rejects any extra or substituted member. It runs before npm publication, then repeats acceptance against
 the integrity-pinned public `release-candidate` packages before either `latest`
 tag changes. A workflow definition is not a receipt; retain all six successful
 jobs for each mode. No exact npm `0.7.9` receipt is claimed here.

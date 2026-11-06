@@ -17,6 +17,10 @@ pub fn run(name: &str, dry_run: bool) -> Result<()> {
     if dry_run {
         return dry_run_remove(&project_dir, &config_path, &config, name);
     }
+    // Refuse headless invocation before opening the vault: opening it takes
+    // project locks and creates app-data directories, and a run without all
+    // three terminals could never finish the confirmation ceremony anyway.
+    ensure_attached_terminals()?;
     let vault = crate::util::open_vault(config.local_project_id())?;
     let plan = prepare_remove(
         &project_dir,
@@ -101,7 +105,11 @@ fn prepare_remove(
         .context(PREFLIGHT_FAILED)
 }
 
-fn require_trusted_terminal_remove(plan: &phantom_vault::ManagedRemovePlan) -> Result<()> {
+/// Refuse a `phantom remove` that cannot run its trusted-terminal ceremony,
+/// before the vault is opened: opening it takes project locks and creates
+/// app-data directories, so the headless rejection must not leave profile
+/// files behind.
+fn ensure_attached_terminals() -> Result<()> {
     if !std::io::stdin().is_terminal()
         || !std::io::stdout().is_terminal()
         || !std::io::stderr().is_terminal()
@@ -110,6 +118,10 @@ fn require_trusted_terminal_remove(plan: &phantom_vault::ManagedRemovePlan) -> R
             "`phantom remove` requires attached stdin, stdout, and stderr terminals and cannot run headlessly. No secret value was read and no state changed. Use the approved MCP remove flow when the calling agent cannot be excluded from terminal authority."
         );
     }
+    Ok(())
+}
+
+fn require_trusted_terminal_remove(plan: &phantom_vault::ManagedRemovePlan) -> Result<()> {
     let challenge = format!(
         "REMOVE {} FROM {} ID {} DIGEST {}",
         plan.name(),
@@ -155,6 +167,11 @@ mod source_tests {
         assert!(
             dry < vault,
             "dry-run must return before the vault is opened"
+        );
+        let terminals = run_body.find("ensure_attached_terminals()?").unwrap();
+        assert!(
+            dry < terminals && terminals < vault,
+            "the headless refusal must run after dry-run and before the vault is opened"
         );
         let dry_fn = source
             .split("fn dry_run_remove(")

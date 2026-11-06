@@ -139,7 +139,7 @@ pub fn run() -> Result<()> {
             },
             Err(_) => {
                 spinner.finish_and_clear();
-                anyhow::bail!("Login polling failed; no authorization was stored");
+                return Err(polling_failed_error());
             }
         }
     }
@@ -179,6 +179,14 @@ struct PollSchedule {
     poll_interval: Duration,
     max_attempts: usize,
     timeout_seconds: u64,
+}
+
+/// Polling failed before the provider returned an authorization. Nothing was
+/// stored, so the next step is a fresh sign-in.
+fn polling_failed_error() -> anyhow::Error {
+    anyhow::anyhow!(
+        "Login polling failed and no authorization was stored. Run `phantom login` again to start a new sign-in."
+    )
 }
 
 fn require_login_terminals() -> Result<()> {
@@ -306,6 +314,14 @@ fn safe_display_field(value: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn polling_failure_names_the_failure_and_the_retry() {
+        assert_eq!(
+            polling_failed_error().to_string(),
+            "Login polling failed and no authorization was stored. Run `phantom login` again to start a new sign-in."
+        );
+    }
 
     fn flow(uri: &str) -> auth::DeviceFlowResponse {
         auth::DeviceFlowResponse {
