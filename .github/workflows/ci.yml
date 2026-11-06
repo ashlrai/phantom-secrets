@@ -319,6 +319,7 @@ jobs:
           scripts/installer-path-temp-placement.test.mjs
           scripts/installer-path-template-names.test.mjs
           scripts/installer-path-templates.test.mjs
+          scripts/installer-path-term-integration.test.mjs
           scripts/installer-path-trailing-newline.test.mjs
           scripts/installer-path-tz-export.test.mjs
           scripts/installer-path-unicode-comment.test.mjs
