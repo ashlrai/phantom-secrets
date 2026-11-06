@@ -40,7 +40,9 @@ while [ $# -gt 0 ]; do
   shift
 done
 printf 'partial-bytes' > "$out"
-printf '%s\\n' "$out" > "$PHANTOM_TEST_CURL_STARTED"
+# Publish readiness only after the complete staging path has been written.
+printf '%s\\n' "$out" > "$PHANTOM_TEST_CURL_STARTED.tmp"
+mv "$PHANTOM_TEST_CURL_STARTED.tmp" "$PHANTOM_TEST_CURL_STARTED"
 sleep 2
 exit 22
 `);
