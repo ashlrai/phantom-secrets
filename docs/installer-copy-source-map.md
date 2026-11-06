@@ -10,12 +10,12 @@ them and this comparison when either copy changes.
 | Initial staging and lock state | [lines 28–35](../scripts/install.sh#L28-L35) | [lines 28–35](../apps/web/public/install.sh#L28-L35) |
 | Lock release, rollback, stage cleanup, and traps | [lines 90–139](../scripts/install.sh#L90-L139) | [lines 90–139](../apps/web/public/install.sh#L90-L139) |
 | Lock acquisition and stale-lock handling | [lines 206–303](../scripts/install.sh#L206-L303) | [lines 206–303](../apps/web/public/install.sh#L206-L303) |
-| Destination validation and lock acquisition | [lines 425–435](../scripts/install.sh#L425-L435) | [lines 425–435](../apps/web/public/install.sh#L425-L435) |
-| Create private stage, download and candidate directories | [lines 437–443](../scripts/install.sh#L437-L443) | [lines 437–443](../apps/web/public/install.sh#L437-L443) |
-| Download, verify, extract, and prepare candidate | [lines 445–499](../scripts/install.sh#L445-L499) | [lines 445–498](../apps/web/public/install.sh#L445-L498) |
-| Backup, promote, and validate live installation | [lines 501–527](../scripts/install.sh#L501-L527) | [lines 500–526](../apps/web/public/install.sh#L500-L526) |
-| PATH startup-file update function | [lines 305–403](../scripts/install.sh#L305-L403) | [lines 305–403](../apps/web/public/install.sh#L305-L403) |
-| PATH check and update call | [lines 529–531](../scripts/install.sh#L529-L531) | [lines 528–530](../apps/web/public/install.sh#L528-L530) |
+| Destination validation and lock acquisition | [lines 431–441](../scripts/install.sh#L431-L441) | [lines 431–441](../apps/web/public/install.sh#L431-L441) |
+| Create private stage, download and candidate directories | [lines 443–449](../scripts/install.sh#L443-L449) | [lines 443–449](../apps/web/public/install.sh#L443-L449) |
+| Download, verify, extract, and prepare candidate | [lines 451–505](../scripts/install.sh#L451-L505) | [lines 451–504](../apps/web/public/install.sh#L451-L504) |
+| Backup, promote, and validate live installation | [lines 507–533](../scripts/install.sh#L507-L533) | [lines 506–532](../apps/web/public/install.sh#L506-L532) |
+| PATH startup-file update function | [lines 305–409](../scripts/install.sh#L305-L409) | [lines 305–409](../apps/web/public/install.sh#L305-L409) |
+| PATH check and update call | [lines 535–537](../scripts/install.sh#L535-L537) | [lines 534–536](../apps/web/public/install.sh#L534-L536) |
 
 The complete files differ in two places. The repository copy pins
 `CANDIDATE_TAG="v0.8.1"` for the next release candidate while the web copy
