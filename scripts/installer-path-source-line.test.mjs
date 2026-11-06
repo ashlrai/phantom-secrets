@@ -1,18 +1,15 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import {
-  mkdirSync,
-  mkdtempSync,
-  readdirSync,
-  readFileSync,
-  realpathSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs';
-import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import test from 'node:test';
 import { pathUpdateHarness } from './lib/installer-path-harness.mjs';
+import {
+  assertNoPathTempFiles,
+  assertOriginalPrefixThenBlock,
+  createStartupFixture,
+  pathShellConfigs,
+} from './lib/installer-path-test-fixtures.mjs';
 
 // Startup files routinely pull in other files: nvm, cargo, oh-my-zsh, local
 // overrides. Those unrelated `source` lines — in both `source` and `.`
@@ -28,12 +25,8 @@ const copies = {
   'apps/web/public/install.sh': resolve(import.meta.dirname, '..', 'apps', 'web', 'public', 'install.sh'),
 };
 
-const marker = '# phantom-secrets PATH';
-const shells = {
+const shells = pathShellConfigs({
   bash: {
-    shell: '/bin/bash',
-    rc: (h) => join(h, '.bashrc'),
-    line: (b) => `export PATH="${b}:$PATH"`,
     sources: [
       '# user shell config',
       'source "$HOME/.extra_aliases.sh"',
@@ -46,9 +39,6 @@ const shells = {
     ],
   },
   zsh: {
-    shell: '/bin/zsh',
-    rc: (h) => join(h, '.zshrc'),
-    line: (b) => `export PATH="${b}:$PATH"`,
     sources: [
       '# user shell config',
       'source "$HOME/.zsh_local"',
@@ -60,9 +50,6 @@ const shells = {
     ],
   },
   fish: {
-    shell: '/usr/bin/fish',
-    rc: (h) => join(h, '.config', 'fish', 'config.fish'),
-    line: (b) => `set -gx PATH "${b}" $PATH`,
     sources: [
       '# user shell config',
       'source ~/.config/fish/conf.d/local.fish',
@@ -73,56 +60,34 @@ const shells = {
       'set -gx EDITOR vim',
     ],
   },
-};
-
-function runPathUpdate(harness, config, home, bin) {
-  const result = spawnSync('/bin/bash', ['-c', harness, 'path-test', bin], {
-    encoding: 'utf8',
-    timeout: 30000,
-    env: { HOME: home, SHELL: config.shell, PATH: '/usr/bin:/bin' },
-  });
-  assert.ifError(result.error);
-  assert.equal(result.status, 0, result.stderr);
-  return result;
-}
+});
 
 for (const [file, installer] of Object.entries(copies)) {
   const harness = pathUpdateHarness(readFileSync(installer, 'utf8'), file);
   for (const [shellName, config] of Object.entries(shells)) {
     for (const finalNewline of [true, false]) {
       test(`${file} keeps every unrelated ${shellName} source line byte-for-byte (${finalNewline ? 'with' : 'without'} final newline)`, (t) => {
-        const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-path-source-')));
-        t.after(() => rmSync(root, { recursive: true, force: true }));
-        const home = join(root, 'home');
-        const bin = join(root, 'live', 'bin');
-        const rc = config.rc(home);
-        mkdirSync(dirname(rc), { recursive: true });
-        mkdirSync(bin, { recursive: true });
         const original = Buffer.from(
           config.sources.join('\n') + (finalNewline ? '\n' : ''), 'utf8');
-        writeFileSync(rc, original, { mode: 0o600 });
+        const { rc, bin, run } = createStartupFixture(t, {
+          prefix: 'phantom-path-source-', harness, config, content: original,
+        });
 
-        const result = runPathUpdate(harness, config, home, bin);
+        const result = run();
         assert.match(result.stdout, /added .* to PATH/);
 
-        const after = readFileSync(rc);
-        assert.ok(after.subarray(0, original.length).equals(original),
-          'every original byte, source lines included, is unchanged at its offset');
-        assert.equal(after.subarray(original.length).toString('utf8'),
-          `\n${marker}\n${config.line(bin)}\n`,
-          'only the managed block is appended');
+        const after = assertOriginalPrefixThenBlock(rc, original, config, bin, {
+          prefix: 'every original byte, source lines included, is unchanged at its offset',
+          appended: 'only the managed block is appended',
+        });
         const updatedText = after.toString('utf8');
         for (const line of config.sources) {
           assert.equal(updatedText.split('\n').filter((l) => l === line).length, 1,
             `source line ${JSON.stringify(line)} is intact and appears exactly once`);
         }
-        assert.deepEqual(
-          readdirSync(dirname(rc)).filter((name) => name.startsWith('.phantom-path.')),
-          [],
-          'no PATH-update temporary files are left behind',
-        );
+        assertNoPathTempFiles(rc);
 
-        const second = runPathUpdate(harness, config, home, bin);
+        const second = run();
         assert.match(second.stdout, /already wired into/);
         assert.ok(readFileSync(rc).equals(after),
           'the already-wired no-op leaves the file, source lines included, byte-identical');
@@ -131,24 +96,21 @@ for (const [file, installer] of Object.entries(copies)) {
   }
 
   test(`${file} keeps a live bash source line working after the update`, (t) => {
-    const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-path-source-eval-')));
-    t.after(() => rmSync(root, { recursive: true, force: true }));
-    const home = join(root, 'home');
-    const bin = join(root, 'live', 'bin');
-    const rc = shells.bash.rc(home);
-    mkdirSync(home, { recursive: true });
-    mkdirSync(bin, { recursive: true });
+    const config = shells.bash;
+    const { home, rc, bin, run } = createStartupFixture(t, {
+      prefix: 'phantom-path-source-eval-', harness, config,
+      content: [
+        '# user shell config',
+        'source "$HOME/.sourced_env.sh"',
+        '[ -r "$HOME/.pathrc" ] && source "$HOME/.pathrc" # guarded, absent',
+        'export EDITOR=vim',
+        '',
+      ].join('\n'),
+    });
     writeFileSync(join(home, '.sourced_env.sh'),
       'SOURCED_ENV_LOADED=yes\nexport PATH="/opt/sourced/bin:$PATH"\n', { mode: 0o600 });
-    writeFileSync(rc, [
-      '# user shell config',
-      'source "$HOME/.sourced_env.sh"',
-      '[ -r "$HOME/.pathrc" ] && source "$HOME/.pathrc" # guarded, absent',
-      'export EDITOR=vim',
-      '',
-    ].join('\n'), { mode: 0o600 });
 
-    const result = runPathUpdate(harness, shells.bash, home, bin);
+    const result = run();
     assert.match(result.stdout, /added .* to PATH/);
 
     // Source the updated file in a clean bash: the sourced file must still
