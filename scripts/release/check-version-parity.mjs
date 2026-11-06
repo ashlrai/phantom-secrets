@@ -82,16 +82,18 @@ if (!registryPackage) {
   throw new Error("MCP registry package phantom-secrets-mcp is missing");
 }
 
-const wrapperVersion = requireMatch(
-  read("npm-mcp/bin/cli.js"),
-  /^const VERSION\s*=\s*"([^"]+)";/m,
-  "npm MCP wrapper version"
-);
-const cliWrapperVersion = requireMatch(
-  read("npm/bin/cli.js"),
-  /^const VERSION\s*=\s*"([^"]+)";/m,
-  "npm CLI wrapper version"
-);
+function packagedWrapperVersion(path, version) {
+  // Data-only source validation: never execute candidate wrapper code here.
+  if (!/^const VERSION = require\("\.\.\/package\.json"\)\.version;$/m.test(read(path))) {
+    throw new Error(`${path} must bind VERSION to its own packaged package.json`);
+  }
+  if (typeof version !== "string" || semverPattern.exec(version)?.[0] !== version) {
+    throw new Error(`${path} package version is not valid SemVer`);
+  }
+  return version;
+}
+const wrapperVersion = packagedWrapperVersion("npm-mcp/bin/cli.js", npmMcpVersion);
+const cliWrapperVersion = packagedWrapperVersion("npm/bin/cli.js", npmCliVersion);
 const shellInstallerVersion = requireMatch(
   read("scripts/install.sh"),
   /^CANDIDATE_TAG="v([^"]+)"$/m,

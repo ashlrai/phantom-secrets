@@ -26,7 +26,8 @@ const { homedir } = require("os");
 const { basename, dirname, join, posix: posixPath, resolve, win32: win32Path } = require("path");
 const { performance } = require("perf_hooks");
 
-const VERSION = "0.8.4";
+// Resolve the installed package itself; cwd and environment never select the release.
+const VERSION = require("../package.json").version;
 const REPO = "ashlrai/phantom-secrets";
 const BINARY_NAME = "phantom";
 const REVIEWED_RELEASE_URL = `https://github.com/${REPO}/releases/tag/v${VERSION}`;
@@ -429,6 +430,10 @@ const SEMVER_SOURCE =
   "(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)" +
   "(?:-((?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*))?" +
   "(?:\\+([0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*))?";
+
+if (typeof VERSION !== "string" || new RegExp(`^${SEMVER_SOURCE}$`).exec(VERSION)?.[0] !== VERSION) {
+  throw new Error("invalid packaged Phantom version");
+}
 
 function parseBinaryVersion(output) {
   const text = Buffer.isBuffer(output) ? output.toString("utf8") : String(output);
