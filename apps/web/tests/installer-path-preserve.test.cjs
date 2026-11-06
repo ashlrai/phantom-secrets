@@ -59,17 +59,24 @@ for (const c of cases) {
   });
 }
 
-// Unrelated PAGER lines: quoting, spacing, a `$PATH` mention, CRLF, and a last
-// line without a trailing newline must all survive, before and after the marker.
+// Unrelated PAGER and LESS lines: quoting, spacing, a `$PATH` mention, CRLF,
+// and a last line without a trailing newline must all survive, before and
+// after the marker.
 const PAGER_LINES = [
   "export PAGER=less\n",
   'export PAGER="less -FRX"   # keep  spacing\n',
   "export PAGER='/usr/bin/less -R'\r\n",
   "export PAGER=\"$HOME/bin/pager:$PATH\"",
 ];
+const LESS_LINES = [
+  "export LESS=-R\n",
+  'export LESS="-FRX --shift 5"\t# pager options\n',
+  "export LESS='-i -j4 -z-4'\r\n",
+  'export LESS="$LESS -S"',
+];
 
 for (const c of cases) {
-  for (const line of PAGER_LINES) {
+  for (const line of [...PAGER_LINES, ...LESS_LINES]) {
     test(`PATH update keeps ${JSON.stringify(line)} byte-for-byte (${c.shell})`, () => {
       const home = fs.mkdtempSync(path.join(os.tmpdir(), "phantom-path-"));
       try {
@@ -84,7 +91,7 @@ for (const c of cases) {
           });
           assert.equal(r.status, 0, r.stderr);
           const after = fs.readFileSync(rc);
-          assert.ok(after.subarray(0, before.length).equals(before), "PAGER line changed");
+          assert.ok(after.subarray(0, before.length).equals(before), "unrelated line changed");
           assert.ok(after.toString().includes(c.wired));
           assert.equal(after.toString().split("# phantom-secrets PATH").length - 1, 1, "marker duplicated");
         }
