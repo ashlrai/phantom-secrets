@@ -292,7 +292,13 @@ test("rendered and copied Unix install commands use the TMPDIR fallback and pres
   fs.mkdirSync(bin);
   fs.mkdirSync(installedBin, { recursive: true });
   const executable = (file, body) => fs.writeFileSync(file, `#!/bin/bash\n${body}\n`, { mode: 0o755 });
-  for (const name of ["phantom", "phantom-mcp"]) executable(path.join(installedBin, name), "exit 0");
+  // The version-check paths must exist verbatim, but the stubs behind them
+  // are reached through relative symlinks: some hardened macOS policies
+  // refuse to exec a temp file literally named phantom*.
+  for (const name of ["phantom", "phantom-mcp"]) {
+    executable(path.join(installedBin, `.${name}-stub`), "exit 0");
+    fs.symlinkSync(`.${name}-stub`, path.join(installedBin, name));
+  }
   executable(path.join(bin, "curl"), `
     while [[ $# -gt 0 && "$1" != "--output" ]]; do shift; done
     [[ $# -ge 2 ]] || exit 2
@@ -382,8 +388,8 @@ test("rendered Unix commands stop before downloading when TMPDIR does not exist"
   }
 });
 
-test("displayed Linux install command creates a fresh private temporary directory on each run", async (t) => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "phantom-linux-stage-"));
+test("displayed Unix install commands create fresh private temporary directories on each run", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "phantom-unix-stage-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const temp = path.join(root, "temporary files");
   const bin = path.join(root, "bin");
@@ -396,8 +402,14 @@ test("displayed Linux install command creates a fresh private temporary director
   const sentinel = path.join(temp, "install.sh");
   fs.writeFileSync(sentinel, "untouched");
   const executable = (file, body) => fs.writeFileSync(file, `#!/bin/bash\n${body}\n`, { mode: 0o755 });
-  for (const name of ["phantom", "phantom-mcp"]) executable(path.join(installedBin, name), "exit 0");
-  executable(path.join(bin, "sha256sum"), "cat >/dev/null");
+  // The version-check paths must exist verbatim, but the stubs behind them
+  // are reached through relative symlinks: some hardened macOS policies
+  // refuse to exec a temp file literally named phantom*.
+  for (const name of ["phantom", "phantom-mcp"]) {
+    executable(path.join(installedBin, `.${name}-stub`), "exit 0");
+    fs.symlinkSync(`.${name}-stub`, path.join(installedBin, name));
+  }
+  for (const checksum of ["shasum", "sha256sum"]) executable(path.join(bin, checksum), "cat >/dev/null");
   fs.writeFileSync(path.join(bin, "curl"), `#!${process.execPath}
 const fs = require("node:fs");
 const path = require("node:path");
@@ -410,33 +422,36 @@ fs.writeFileSync(output, "#!/bin/bash\\nexit 0\\n");
   const user = userEvent.setup();
   render(React.createElement(QuickStart));
   try {
-    await user.click(screen.getByRole("button", { name: "Linux" }));
-    const card = screen.getByRole("heading", { level: 3, name: "Linux" }).closest("article");
-    const button = within(card).getByRole("button", { name: /^Copy command:/ });
-    const commandNode = Array.from(button.firstElementChild.childNodes)
-      .find((node) => node.nodeType === dom.window.Node.TEXT_NODE);
-    assert.ok(commandNode, "Linux command is displayed as text");
-    for (let run = 0; run < 2; run++) {
-      const result = spawnSync("/bin/bash", ["-c", commandNode.textContent], {
-        env: { HOME: home, PATH: `${bin}:/usr/bin:/bin`, TMPDIR: temp, RECORD: record },
-        encoding: "utf8",
+    for (const platform of ["macOS", "Linux"]) {
+      await user.click(screen.getByRole("button", { name: platform }));
+      const card = screen.getByRole("heading", { level: 3, name: platform }).closest("article");
+      const button = within(card).getByRole("button", { name: /^Copy command:/ });
+      const commandNode = Array.from(button.firstElementChild.childNodes)
+        .find((node) => node.nodeType === dom.window.Node.TEXT_NODE);
+      assert.ok(commandNode, `${platform} command is displayed as text`);
+      fs.rmSync(record, { force: true });
+      for (let run = 0; run < 2; run++) {
+        const result = spawnSync("/bin/bash", ["-c", commandNode.textContent], {
+          env: { HOME: home, PATH: `${bin}:/usr/bin:/bin`, TMPDIR: temp, RECORD: record },
+          encoding: "utf8",
+        });
+        assert.equal(result.status, 0, `${platform}, run ${run + 1}: ${result.stderr}`);
+      }
+      const downloads = fs.readFileSync(record, "utf8").trim().split("\n").map(JSON.parse);
+      assert.equal(downloads.length, 2, platform);
+      const stages = downloads.map(({ output, mode }) => {
+        const stage = path.dirname(output);
+        assert.equal(path.dirname(stage), temp);
+        assert.match(path.basename(stage), /^phantom-install\.[A-Za-z0-9]{6}$/, `${platform}: documented staging prefix`);
+        assert.equal(path.basename(output), "install.sh");
+        assert.equal(mode, 0o700, "staging directory is private");
+        assert.equal(fs.existsSync(stage), false, "staging directory is cleaned up");
+        return stage;
       });
-      assert.equal(result.status, 0, `run ${run + 1}: ${result.stderr}`);
+      assert.notEqual(stages[0], stages[1], `${platform}: each run uses a fresh staging directory`);
+      assert.equal(fs.readFileSync(sentinel, "utf8"), "untouched");
+      assert.deepEqual(fs.readdirSync(temp), ["install.sh"]);
     }
-    const downloads = fs.readFileSync(record, "utf8").trim().split("\n").map(JSON.parse);
-    assert.equal(downloads.length, 2);
-    const stages = downloads.map(({ output, mode }) => {
-      const stage = path.dirname(output);
-      assert.equal(path.dirname(stage), temp);
-      assert.match(path.basename(stage), /^phantom-install\.[A-Za-z0-9]{6}$/);
-      assert.equal(path.basename(output), "install.sh");
-      assert.equal(mode, 0o700, "staging directory is private");
-      assert.equal(fs.existsSync(stage), false, "staging directory is cleaned up");
-      return stage;
-    });
-    assert.notEqual(stages[0], stages[1], "each run uses a fresh staging directory");
-    assert.equal(fs.readFileSync(sentinel, "utf8"), "untouched");
-    assert.deepEqual(fs.readdirSync(temp), ["install.sh"]);
   } finally {
     cleanup();
   }
@@ -520,6 +535,36 @@ test("each displayed installation command includes its temporary staging cleanup
   }
 });
 
+test("displayed Unix install commands quote every staging-directory reference", async () => {
+  const user = userEvent.setup();
+  render(React.createElement(QuickStart));
+  try {
+    for (const platform of ["macOS", "Linux"]) {
+      await user.click(screen.getByRole("button", { name: platform }));
+      const card = screen.getByRole("heading", { level: 3, name: platform }).closest("article");
+      const button = within(card).getByRole("button", { name: /^Copy command:/ });
+      const command = Array.from(button.firstElementChild.childNodes)
+        .find((node) => node.nodeType === dom.window.Node.TEXT_NODE).textContent;
+
+      for (const required of [
+        'mktemp -d "${TMPDIR:-/tmp}/phantom-install.XXXXXX"',
+        'phantom_installer="$phantom_stage/install.sh"',
+        'rmdir -- "$phantom_stage"',
+      ]) {
+        assert.ok(command.includes(required), `${platform}: missing quoted staging reference: ${required}`);
+      }
+      // Strict textual allowlist of the current quoted forms, not a shell parser.
+      const remaining = command.replace(/"(?:\$\{TMPDIR:-\/tmp\}\/phantom-install\.XXXXXX|\$phantom_stage\/install\.sh|\$phantom_stage|\$phantom_installer)"/g, "");
+      assert.doesNotMatch(remaining, /\$(?:\{(?:TMPDIR|phantom_stage|phantom_installer)(?::-[^}]*)?\}|(?:TMPDIR|phantom_stage|phantom_installer)\b)/, `${platform}: staging reference outside reviewed quoted forms`);
+
+      await user.click(button);
+      assert.equal(await navigator.clipboard.readText(), command, `${platform}: copied command matches displayed text`);
+    }
+  } finally {
+    cleanup();
+  }
+});
+
 test("every displayed QuickStart command can be selected and matches the copied text", async () => {
   const style = document.createElement("style");
   style.textContent = fs.readFileSync(path.join(__dirname, "../src/app/globals.css"), "utf8");
@@ -585,6 +630,50 @@ test("every displayed QuickStart command is nonempty and has no trailing whitesp
     }
   } finally {
     cleanup();
+  }
+});
+
+test("switching platforms renders the selected multiline install snippet", async () => {
+  const style = document.createElement("style");
+  style.textContent = fs.readFileSync(path.join(__dirname, "../src/app/globals.css"), "utf8");
+  document.head.append(style);
+  const user = userEvent.setup();
+  const snippets = {
+    macOS: { lines: 12, opening: "(\nset -euo pipefail\numask 077", verification: "shasum -a 256 -c -", execution: "\nbash \"$phantom_installer\"\n", ending: '"$HOME/.phantom-secrets/bin/phantom-mcp" --version\n)' },
+    Windows: { lines: 18, opening: "& {\n$ErrorActionPreference = 'Stop'\n$Installer =", verification: "Get-FileHash -Algorithm SHA256", execution: "\n  & $Installer\n", ending: "  Remove-Item -LiteralPath $Installer -Force -ErrorAction SilentlyContinue\n}\n}" },
+    Linux: { lines: 12, opening: "(\nset -euo pipefail\numask 077", verification: "sha256sum -c -", execution: "\nbash \"$phantom_installer\"\n", ending: '"$HOME/.phantom-secrets/bin/phantom-mcp" --version\n)' },
+  };
+  try {
+    render(React.createElement(QuickStart));
+    const selector = screen.getByRole("group", { name: "Choose an operating system" });
+    const seen = new Map();
+    for (const platform of ["macOS", "Windows", "Linux", "macOS", "Windows"]) {
+      await user.click(within(selector).getByRole("button", { name: platform }));
+      const card = screen.getByRole("heading", { level: 3, name: platform }).closest("article");
+      assert.ok(card);
+      const button = within(card).getByRole("button", { name: /^Copy command:/ });
+      const container = button.firstElementChild;
+      const nodes = Array.from(container.childNodes).filter((node) => node.nodeType === dom.window.Node.TEXT_NODE);
+      assert.equal(nodes.length, 1, `${platform}: snippet is visible text`);
+      const snippet = nodes[0].textContent;
+      const expected = snippets[platform];
+      assert.ok(snippet.startsWith(expected.opening), `${platform}: opening lines`);
+      assert.ok(snippet.includes(expected.verification), `${platform}: verification command`);
+      assert.ok(snippet.includes(expected.execution), `${platform}: installer execution line`);
+      assert.ok(snippet.endsWith(expected.ending), `${platform}: final lines`);
+      assert.equal(snippet.split("\n").length, expected.lines, `${platform}: line breaks`);
+      assert.equal(window.getComputedStyle(container).whiteSpace, "pre-wrap", `${platform}: line breaks are rendered`);
+      for (const [other, value] of Object.entries(snippets)) {
+        if (other !== platform) assert.ok(!snippet.includes(value.verification), `${platform}: no stale ${other} snippet`);
+      }
+      if (seen.has(platform)) assert.equal(snippet, seen.get(platform), `${platform}: switching back restores the snippet`);
+      seen.set(platform, snippet);
+      await user.click(button);
+      await waitFor(async () => assert.equal(await navigator.clipboard.readText(), snippet));
+    }
+  } finally {
+    cleanup();
+    style.remove();
   }
 });
 

@@ -2,7 +2,8 @@
 
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -12,6 +13,7 @@ import { fileURLToPath } from "node:url";
 import "./signing-readiness.test.mjs";
 import "./npm-candidate-acceptance.test.mjs";
 import { assertDependencyIndexClean } from "./check-dependency-index.mjs";
+import { assertPowershellCandidate } from "./check-powershell-candidate.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const release = readFileSync(join(repoRoot, ".github/workflows/release.yml"), "utf8");
@@ -44,6 +46,77 @@ const npmMcpPackage = JSON.parse(
 );
 const npmReadme = readFileSync(join(repoRoot, "npm/README.md"), "utf8");
 const npmMcpReadme = readFileSync(join(repoRoot, "npm-mcp/README.md"), "utf8");
+
+// Source-candidate commands track source metadata, never a dated public receipt.
+const cargo = readFileSync(join(repoRoot, "Cargo.toml"), "utf8");
+const workspaceSections = cargo.split(/^\[workspace\.package\]\s*$/m);
+assert.equal(workspaceSections.length, 2, "one Cargo workspace.package section");
+const workspacePackage = workspaceSections[1].split(/^\[/m)[0];
+const versionRows = [...workspacePackage.matchAll(/^version\s*=\s*"([^"]+)"\s*$/gm)];
+assert.equal(versionRows.length, 1, "one Cargo source version");
+const sourceVersion = versionRows[0][1];
+
+function candidateCommands(version) {
+  return [
+    ["gh workflow run release-rehearsal.yml", `gh workflow run release-rehearsal.yml -f release_tag=v${version}`],
+    ["node scripts/release/pre-tag-preflight.mjs", `node scripts/release/pre-tag-preflight.mjs v${version} REHEARSAL_RUN_ID_OR_URL`],
+    ["node scripts/release/check-version-parity.mjs", `node scripts/release/check-version-parity.mjs v${version}`],
+    ["./scripts/publish-crates.sh --verify-only", `./scripts/publish-crates.sh --verify-only --version ${version}`],
+    ["./scripts/publish-crates.sh --dry-run", `./scripts/publish-crates.sh --dry-run --version ${version}`],
+    ["PHANTOM_PUBLISH_CONFIRM=", `PHANTOM_PUBLISH_CONFIRM=publish-phantom-secrets-${version} \\`],
+    ["./scripts/publish-crates.sh --publish", `./scripts/publish-crates.sh --publish --version ${version}`],
+  ];
+}
+
+function assertCandidateExamples(document, version) {
+  const lines = document.split(/\r?\n/).map((line) => line.trim());
+  for (const [prefix, expected] of candidateCommands(version)) {
+    assert.deepEqual(lines.filter((line) => line.startsWith(prefix)), [expected],
+      `one exact current-source candidate example: ${prefix}`);
+  }
+}
+
+test("candidate runbook examples reject stale, missing and duplicate commands", () => {
+  assertCandidateExamples(readiness, sourceVersion);
+  for (const [, expected] of candidateCommands(sourceVersion)) {
+    assert.throws(() => assertCandidateExamples(readiness.replace(expected,
+      expected.replace(sourceVersion, "99.98.97")), sourceVersion), /current-source candidate/);
+    assert.throws(() => assertCandidateExamples(readiness.replace(expected, ""), sourceVersion), /current-source candidate/);
+    assert.throws(() => assertCandidateExamples(readiness + `\n${expected}\n`, sourceVersion), /current-source candidate/);
+  }
+  assertCandidateExamples(readiness.replaceAll(sourceVersion, "99.98.97"), "99.98.97");
+});
+
+function assertReleaseEligibilityWarnings(document) {
+  const warnings = [
+    /Source-version agreement does not establish release eligibility or permission to publish\./,
+    /the annotated `v0\.8\.0` tag already exists and\s+peels to `1a881e82dad94f766d15c1caea43139b7022e817`/,
+    /A tag reservation does not\s+prove a published GitHub Release or package\./,
+    /illustrative fail-closed check: it must reject this reserved identity\./,
+    /Do not reuse, delete, move, or overwrite that tag\./,
+    /separately reviewed unreserved version, matching source metadata,/,
+    /this guide selects no such version\./,
+    /linked npm and MCP Registry runbooks retain version-specific `0\.7\.8`\s+examples/,
+    /are not current `0\.8\.4` source facts or copy-ready instructions for this candidate\./,
+    /Do not mechanically execute or substitute versions in those recipes\./,
+    /reconcile the exact approved source, tag, package versions,\s+manifest, acceptance receipts, and publication authorization/,
+  ];
+  for (const warning of warnings) assert.match(document, warning, "release eligibility warning");
+  assert.ok(document.indexOf("Source-version agreement") <
+    document.indexOf("gh workflow run release-rehearsal.yml"), "qualify examples before the first command");
+  return warnings;
+}
+
+test("source examples retain reserved-tag and older linked-recipe warnings", () => {
+  const warnings = assertReleaseEligibilityWarnings(readiness);
+  for (const warning of warnings) {
+    assert.throws(() => assertReleaseEligibilityWarnings(readiness.replace(warning, "")),
+      /release eligibility warning/);
+  }
+  // This is a dated reservation receipt, not a live remote lookup or future-version claim.
+  assert.throws(() => assertReleaseEligibilityWarnings(readiness.replace(
+    "it must reject this reserved identity", "it may reuse this reserved identity")), /release eligibility warning/);
+});
 
 test("dependency index validation rejects tracked installations, not similar names", () => {
   for (const path of ["node_modules", "apps/web/node_modules", "node_modules/a.js",
@@ -129,10 +202,10 @@ test("manual rehearsal delegates to the shared graph with read-only authority", 
 });
 
 test("release defaults and lockfiles are part of the exact version parity contract", () => {
-  assert.match(rehearsal, /default: v0\.7\.9/);
+  assert.match(rehearsal, /default: v0\.8\.4/);
   assert.match(
     npmCandidateAcceptance,
-    /^      version:\n[\s\S]*?^        default: 0\.7\.9$/m
+    /^      version:\n[\s\S]*?^        default: 0\.8\.4$/m
   );
   assert.match(versionParity, /json\("apps\/web\/package-lock\.json"\)/);
   assert.match(versionParity, /Hosted web lockfile root/);
@@ -146,11 +219,94 @@ test("release defaults and lockfiles are part of the exact version parity contra
   assert.equal(
     execFileSync(
       process.execPath,
-      [join(repoRoot, "scripts/release/check-version-parity.mjs"), "v0.7.9"],
+      [join(repoRoot, "scripts/release/check-version-parity.mjs"), "v0.8.4"],
       { cwd: repoRoot, encoding: "utf8" }
     ).trim(),
-    "release version parity passed: 0.7.9 across 21 surfaces and 12 crates"
+    "release version parity passed: 0.8.4 across 21 surfaces and 12 crates"
   );
+});
+
+test("installed wrappers bind release identity to their own package, independent of cwd and environment", () => {
+  const home = mkdtempSync(join(tmpdir(), "phantom-wrapper-layout-"));
+  try {
+    const cwd = join(home, "unrelated-project");
+    mkdirSync(cwd);
+    writeFileSync(join(cwd, "package.json"), JSON.stringify({ version: "9.9.9" }));
+    for (const directory of ["npm", "npm-mcp"]) {
+      const installed = join(home, "consumer", "node_modules", directory);
+      mkdirSync(join(installed, "bin"), { recursive: true });
+      const wrapper = join(installed, "bin", "cli.js");
+      writeFileSync(wrapper, readFileSync(join(repoRoot, directory, "bin", "cli.js")));
+      writeFileSync(join(installed, "bin", "package-version.js"), readFileSync(join(repoRoot, directory, "bin", "package-version.js")));
+      const metadata = join(installed, "package.json");
+      const run = () => spawnSync(process.execPath, ["-e", `
+        const wrapper = require(process.argv[1]);
+        try { wrapper.getPlatformTarget({ platform: "unsupported", arch: "fixture" }); }
+        catch (error) { process.stdout.write(error.message); }
+      `, wrapper], {
+        cwd, encoding: "utf8", timeout: 5_000, maxBuffer: 64 * 1024,
+        env: { PATH: process.env.PATH, HOME: home, npm_package_version: "8.8.8", PHANTOM_VERSION: "7.7.7" },
+      });
+      writeFileSync(metadata, JSON.stringify({ version: "1.2.3-rc.1+build.7" }));
+      const valid = run();
+      assert.equal(valid.status, 0, valid.stderr);
+      assert.match(valid.stdout, /releases\/tag\/v1\.2\.3-rc\.1\+build\.7/);
+      assert.doesNotMatch(valid.stdout, /9\.9\.9|8\.8\.8|7\.7\.7/);
+      for (const version of [null, 123, {}, "01.2.3", "1.2.3-01", "1.2.3\n", "../1.2.3", "1.2.3+bad space"]) {
+        writeFileSync(metadata, JSON.stringify({ version }));
+        const invalid = run();
+        assert.notEqual(invalid.status, 0, `${directory} accepted ${JSON.stringify(version)}`);
+        assert.match(invalid.stderr, /invalid packaged Phantom version/);
+        assert.equal(invalid.stdout, "");
+      }
+    }
+    assert.deepEqual(readdirSync(home).sort(), ["consumer", "unrelated-project"]);
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+test("source parity refuses alternate wrapper version bindings and mismatched package metadata", () => {
+  const root = mkdtempSync(join(tmpdir(), "phantom-version-binding-"));
+  try {
+    const carriers = [
+      "scripts/release/check-version-parity.mjs", "Cargo.toml", "npm/package.json", "npm-mcp/package.json",
+      "apps/web/package.json", "apps/web/package-lock.json", "CITATION.cff", "npm/README.md", "npm-mcp/README.md",
+      "README.md", "ROADMAP.md", "CHANGELOG.md", "mcp-registry/server.json", "npm/bin/cli.js", "npm-mcp/bin/cli.js",
+      "npm/bin/package-version.js", "npm-mcp/bin/package-version.js",
+      "scripts/install.sh", "scripts/install.ps1", ".github/workflows/release-rehearsal.yml",
+      ".github/workflows/npm-candidate-acceptance.yml", "apps/web/src/lib/public-release.ts",
+      ...readdirSync(join(repoRoot, "crates"), { withFileTypes: true }).filter(p => p.isDirectory()).map(p => `crates/${p.name}/Cargo.toml`),
+    ];
+    for (const path of carriers) {
+      mkdirSync(dirname(join(root, path)), { recursive: true });
+      writeFileSync(join(root, path), readFileSync(join(repoRoot, path)));
+    }
+    const check = () => spawnSync(process.execPath, [join(root, "scripts/release/check-version-parity.mjs"), `v${sourceVersion}`], {
+      cwd: root, encoding: "utf8", timeout: 5_000, maxBuffer: 64 * 1024,
+    });
+    assert.equal(check().status, 0);
+    const entrypoint = join(root, "npm/bin/cli.js"), entrySource = readFileSync(entrypoint, "utf8");
+    for (const alternate of ['require(process.env.PHANTOM_VERSION_MODULE)', 'require("./unexpected.js")']) {
+      writeFileSync(entrypoint, entrySource.replace('require("./package-version.js")', alternate));
+      const invalid = check();
+      assert.notEqual(invalid.status, 0);
+      assert.match(invalid.stderr, /must bind VERSION to its own packaged package\.json/);
+    }
+    writeFileSync(entrypoint, entrySource);
+    const wrapper = join(root, "npm/bin/package-version.js"), source = readFileSync(wrapper, "utf8");
+    for (const alternate of [`"${sourceVersion}"`, "process.env.npm_package_version", 'require(process.cwd() + "/package.json").version']) {
+      writeFileSync(wrapper, source.replace('require("../package.json").version', alternate));
+      const invalid = check();
+      assert.notEqual(invalid.status, 0);
+      assert.match(invalid.stderr, /must bind VERSION to its own packaged package\.json/);
+    }
+    writeFileSync(wrapper, source);
+    const metadata = join(root, "npm/package.json");
+    const packageJson = JSON.parse(readFileSync(metadata, "utf8")); packageJson.version = "9.9.9";
+    writeFileSync(metadata, JSON.stringify(packageJson));
+    const mismatch = check();
+    assert.notEqual(mismatch.status, 0);
+    assert.match(mismatch.stderr, /release version mismatch/);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 test("web dependency audits use the exact supported npm CLI and stay fail closed", () => {
@@ -337,9 +493,9 @@ test("npm and MCP distribution metadata and runbooks remain publication-safe", (
   assert.match(readiness, /stage both under `release-candidate`/);
   assert.match(readiness, /six-target npm-channel\s+acceptance gate/);
   assert.match(readiness, /MCP\s+wrapper to `latest` first and the primary CLI to `latest` last/);
-  assert.match(readiness, /release_tag=v0\.7\.9/);
-  assert.match(readiness, /pre-tag-preflight\.mjs v0\.7\.9/);
-  assert.match(readiness, /publish-crates\.sh --verify-only --version 0\.7\.9/);
+  assert.equal(npmPackage.version, sourceVersion, "CLI wrapper follows Cargo source version");
+  assert.equal(npmMcpPackage.version, sourceVersion, "MCP wrapper follows Cargo source version");
+  assertCandidateExamples(readiness, sourceVersion);
 
   const npmPlan = markdownSection(
     npmPublication,
@@ -395,7 +551,8 @@ test("npm and MCP distribution metadata and runbooks remain publication-safe", (
   assert.match(npmStage, /PRIMARY_TARBALL="\$\{NPM_STAGE_DIR\}\/phantom-secrets-\$\{VERSION\}\.tgz"/);
   assert.match(npmStage, /MCP_TARBALL="\$\{NPM_STAGE_DIR\}\/phantom-secrets-mcp-\$\{VERSION\}\.tgz"/);
   assert.match(npmStage, /packs\[0\]\.filename !== `\$\{name\}-\$\{version\}\.tgz`/);
-  assert.match(npmStage, /packs\[0\]\.entryCount !== 5/);
+  assert.match(npmStage, /packs\[0\]\.entryCount !== expectedFiles\.length/);
+  assert.match(npmStage, /expectedPackFiles\(version\)/);
   assert.match(npmStage, /packs\[0\]\.integrity !== approvedIntegrity/);
   assert.equal(
     npmStage.match(/npm pack --json --pack-destination/g)?.length,
@@ -770,8 +927,8 @@ test("npm and MCP distribution metadata and runbooks remain publication-safe", (
   );
 });
 
-test("npm package contents remain the exact five reviewed files", () => {
-  const expectedFiles = ["LICENSE", "README.md", "bin/cli.js", "install.js", "package.json"];
+test("0.8.4 npm package contents are exactly the six reviewed files", () => {
+  const expectedFiles = ["LICENSE", "README.md", "bin/cli.js", "bin/package-version.js", "install.js", "package.json"];
 
   for (const [directory, packageName] of [
     ["npm", "phantom-secrets"],
@@ -779,11 +936,39 @@ test("npm package contents remain the exact five reviewed files", () => {
   ]) {
     const pack = inspectPack(directory);
     assert.equal(pack.name, packageName);
-    assert.equal(pack.version, "0.7.9");
-    assert.equal(pack.entryCount, 5);
+    assert.equal(pack.version, "0.8.4");
+    assert.equal(pack.entryCount, 6);
     assert.deepEqual(
       pack.files.map(({ path }) => path).sort(),
       expectedFiles
     );
   }
+});
+
+test("PowerShell candidate pin follows source metadata while public reference stays fixed", () => {
+  const installer = readFileSync(join(repoRoot, "scripts/install.ps1"), "utf8");
+  assertPowershellCandidate(installer, npmPackage.version, npmMcpPackage.version);
+  const pin = `$CandidateTag = 'v${npmPackage.version}'`;
+  for (const mutant of [installer.replace(pin, "$CandidateTag = 'v0.7.10'"),
+    installer.replace(pin, ""), `${installer}\n${pin}\n`,
+    `${installer}\n$candidatetag = 'v99.98.97'\n`]) {
+    assert.throws(() => assertPowershellCandidate(mutant, npmPackage.version, npmMcpPackage.version), /one exact source-version assignment/);
+  }
+  for (const invalid of [undefined, 8, "", "01.2.3", "0.8.2'", "0.8.2\n"]) {
+    assert.throws(() => assertPowershellCandidate(installer, invalid, invalid), /candidate source version/);
+  }
+  assert.throws(() => assertPowershellCandidate(installer, npmPackage.version, "99.98.97"), /source versions must agree/);
+  assertPowershellCandidate("$CandidateTag = 'v99.98.97'\r\n", "99.98.97", "99.98.97");
+
+  const start = ci.indexOf("      - name: Parse candidate and public-reference PowerShell installers");
+  const end = ci.indexOf("      - name: Exercise the Windows installer", start);
+  assert.ok(start >= 0 && end > start);
+  const block = ci.slice(start, end);
+  assert.ok(block.includes("node scripts/release/check-powershell-candidate.mjs"));
+  assert.ok(block.includes("[void][scriptblock]::Create((Get-Content -LiteralPath scripts/install.ps1 -Raw))"));
+  assert.ok(block.includes("[void][scriptblock]::Create((Get-Content -LiteralPath apps/web/public/install.ps1 -Raw))"));
+  assert.ok(block.includes("$PSNativeCommandUseErrorActionPreference = $true"));
+  assert.ok(block.includes("Select-String -LiteralPath apps/web/public/install.ps1 -Pattern '\\$CandidateTag = ''v0.7.9''' -Quiet"));
+  assert.doesNotMatch(block, /v0\.7\.10/);
+  execFileSync(process.execPath, [join(repoRoot, "scripts/release/check-powershell-candidate.mjs")], { cwd: repoRoot });
 });

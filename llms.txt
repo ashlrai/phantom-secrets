@@ -1,0 +1,27 @@
+# Phantom Secrets
+
+Your agent can call the API. The key stays in a local vault.
+
+Phantom replaces managed secrets in `.env` with `phm_` placeholders. A proxy on `127.0.0.1` adds the vault value only to the auth header of a matched route. Secret values are not printed, logged, or returned to a model.
+
+## 30-second start
+
+```bash
+brew tap ashlrai/phantom && brew trust --formula ashlrai/phantom/phantom && brew install ashlrai/phantom/phantom
+phantom init
+phantom setup --client claude
+phantom status --json
+phantom list --json
+phantom check --log agent-transcript.jsonl --json
+```
+
+Linux and Windows installs, and the limits of each package channel, are in [docs/distribution-status.md](docs/distribution-status.md).
+
+`phantom status --json`, `phantom list --json`, and `phantom check --log` are value-free. The log scan reports the file, the line, and the credential shape. The same scan is MCP `phantom_check` with `log_path`.
+
+## Agents
+
+- Full guide: [docs/llms.txt](docs/llms.txt)
+- Longer guide: [docs/llms-full.txt](docs/llms-full.txt)
+- Repository instructions: [AGENTS.md](AGENTS.md)
+- MCP clients: `phantom setup --client claude|cursor|windsurf|codex|gemini`

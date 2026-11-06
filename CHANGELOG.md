@@ -4,6 +4,391 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+Changes after 0.8.4 land in this section.
+
+## [0.8.4] - 2026-11-06
+
+This source candidate carries the unpublished 0.8.3 source tranche and earlier
+changes since the last verified public release, v0.7.9. The v0.8.3 tag is
+reserved and remains immutable. Source metadata does not establish publication.
+
+### Included since the last published release
+
+- Value-blind agent-log scanning through `phantom check --log PATH` and MCP
+  `phantom_check` `log_path`, with bounded input and symlink refusal.
+- Broader dotenv and config scanning, schema-tagged JSON reports, safer env
+  examples, wrap/sync fixes, bounded audit reads, and vault memory hygiene.
+- Fixed route-owned fleet proxy authentication for Devin, Cursor Cloud, and
+  Resend; client headers and bodies still never resolve mappings.
+- The `async-executor` security update and installer failure-path coverage
+  prepared in `0.8.1`. These source changes were not separate public releases.
+
+### Fixed
+
+- Shell PATH setup requires an exact standalone Phantom marker, handles
+  unterminated shell-config lines and trailing backslashes, and restores the
+  previous config if verification after replacement fails.
+- CLI proxy bind, audit read/cursor, multi-project init, login, and cloud
+  failures include actionable recovery guidance without printing secret values.
+- Hosted device approval and polling return generic, non-cacheable errors
+  when their backing operations fail.
+- Citation metadata and generated public installation guidance retain the
+  verified published release rather than promoting the source candidate.
+- Supabase migration verification names duplicate migration files and explains
+  a missing migration directory.
+
+### Breaking changes and migration
+
+When upgrading from the last published `0.7.9`, JSON consumers of
+`phantom check --json` and MCP `phantom_check` must accept `mode: log` and
+findings with `kind: log`. `log_path` cannot be combined with `runtime=true`.
+Existing worktree, staged, and runtime reports retain their fields. Consumers
+must tolerate additive schema identifiers and `status.kind`; `validate schedule
+--json` now returns the schedule object rather than a JSON-encoded string.
+Credential comments and additional supported config files can now make
+`phantom check` fail: remove or protect the credentials rather than relaxing
+the check. Under `agent doctor --strict --json`, non-ready results use exit 2;
+non-strict defaults remain unchanged. Review the `0.7.10` and `0.8.0`
+source-tranche entries below for detailed output fixes.
+The vault format and route-owned proxy authentication boundaries are unchanged.
+This candidate does not commission hosted services or enable live provider
+issuance. Existing `v0.8.0` and `v0.8.1` tags stay immutable. Install the
+checksum-verified `v0.7.9` assets until a new release receipt exists.
+
+
+## [0.8.3] - 2026-11-06
+
+This source candidate includes the 0.8.2 source tranche and subsequent installer fixes. The `v0.8.2` tag is reserved; the latest verified published release remains `v0.7.9` until publication is established.
+
+### Installer
+
+- Preserve installer PATH handling and staging security checks across supported environments.
+
+## [0.8.2] - 2026-11-05
+
+This source candidate includes the unpublished `0.7.10`, `0.8.0`, and `0.8.1`
+source tranches plus installer recovery, CLI diagnostics, and hosted device-auth
+error handling merged since the reserved `v0.8.1` tag.
+The latest published immutable GitHub release remains `v0.7.9`; neither the
+`v0.8.0` nor `v0.8.1` tag proves publication. This candidate must complete the
+sanctioned release workflow before its artifacts or packages are available.
+
+### Included since the last published release
+
+- Value-blind agent-log scanning through `phantom check --log PATH` and MCP
+  `phantom_check` `log_path`, with bounded input and symlink refusal.
+- Broader dotenv and config scanning, schema-tagged JSON reports, safer env
+  examples, wrap/sync fixes, bounded audit reads, and vault memory hygiene.
+- Fixed route-owned fleet proxy authentication for Devin, Cursor Cloud, and
+  Resend; client headers and bodies still never resolve mappings.
+- The `async-executor` security update and installer failure-path coverage
+  prepared in `0.8.1`. These source changes were not separate public releases.
+
+### Fixed
+
+- Shell PATH setup requires an exact standalone Phantom marker, handles
+  unterminated shell-config lines and trailing backslashes, and restores the
+  previous config if verification after replacement fails.
+- CLI proxy bind, audit read/cursor, multi-project init, login, and cloud
+  failures include actionable recovery guidance without printing secret values.
+- Hosted device approval and polling return generic, non-cacheable errors
+  when their backing operations fail.
+- Citation metadata and generated public installation guidance retain the
+  verified published release rather than promoting the source candidate.
+- Supabase migration verification names duplicate migration files and explains
+  a missing migration directory.
+
+### Breaking changes and migration
+
+When upgrading from the last published `0.7.9`, JSON consumers of
+`phantom check --json` and MCP `phantom_check` must accept `mode: log` and
+findings with `kind: log`. `log_path` cannot be combined with `runtime=true`.
+Existing worktree, staged, and runtime reports retain their fields. Consumers
+must tolerate additive schema identifiers and `status.kind`; `validate schedule
+--json` now returns the schedule object rather than a JSON-encoded string.
+Credential comments and additional supported config files can now make
+`phantom check` fail: remove or protect the credentials rather than relaxing
+the check. Under `agent doctor --strict --json`, non-ready results use exit 2;
+non-strict defaults remain unchanged. Review the `0.7.10` and `0.8.0`
+source-tranche entries below for detailed output fixes.
+The vault format and route-owned proxy authentication boundaries are unchanged.
+This candidate does not commission hosted services or enable live provider
+issuance. Existing `v0.8.0` and `v0.8.1` tags stay immutable. Install the
+checksum-verified `v0.7.9` assets until a new release receipt exists.
+
+
+## [0.8.1] - 2026-11-03
+
+This patch release rolls up the installer, CLI-contract, and dependency
+work merged since `0.8.0`. It does not change the vault format, the proxy,
+or the MCP tool catalog. The `v0.8.0` tag is not moved or replaced.
+GitHub and npm publication of `0.8.1` follow the existing tag workflow.
+
+### Fixed
+
+- `Cargo.lock` moves `async-executor` from 1.14.0 to 1.14.1, which
+  removes a use-after-free advisory from the dependency tree.
+- The PowerShell installer candidate pin is derived from source metadata
+  by the release check instead of a separately maintained copy.
+- `scripts/install.sh` passes a shell syntax check, and its candidate
+  copy stays byte-consistent with the documented quickstart.
+
+### Added
+
+- CLI tests pin the exit status for `--help`, an unknown command, and an
+  unknown flag.
+- Installer tests cover download failure, a missing tool or executable,
+  an unsupported platform or architecture, a staging directory with
+  spaces, staging uniqueness, and extraction failure.
+- Documentation covers the installer PATH update steps, device-code
+  readability, and the quickstart staging copy check.
+
+### Breaking changes and migration
+
+None. This release does not change the vault format, the proxy, the MCP
+tool catalog, or any CLI output field. Existing `v0.8.0` artifacts stay
+immutable.
+
+## [0.8.0] - 2026-11-02
+
+This minor release adds a value-blind scan of agent logs and transcripts
+on top of `0.7.10`. Vault files and `phm_` mappings stay readable. The
+`v0.7.10` tag is not moved or replaced. GitHub and npm publication of
+`0.8.0` follow the existing tag workflow.
+
+### Added
+
+- `phantom check --log PATH` and MCP `phantom_check` with `log_path` scan
+  one agent log or transcript. The report names the file, the line, and
+  the credential shape. It does not print the matched text, a `phm_`
+  mapping, or any other secret value. A symlink is refused. A file over
+  8 MiB, or a line over 1 MiB, is refused instead of scanned in part.
+  `log_path` cannot be combined with `runtime=true`.
+
+### CI
+
+- Auto-tag creates an annotated `v<version>` tag. The release workflow
+  rejects a lightweight tag, which is why the `v0.7.10` tag push did not
+  publish a GitHub Release. That tag is immutable and is not moved.
+
+### Breaking changes and migration
+
+Pre-1.0 minor releases may change unstable interfaces. This release does
+not change the vault format. Existing `v0.7.10` artifacts stay immutable.
+`phantom check --json` and MCP `phantom_check` can report `mode` `log`
+and findings with `kind` `log`. Existing worktree, staged, and runtime
+reports keep their fields. A consumer that rejects an unknown `mode` or
+`kind` must accept `log`. Live provider issuance stays hard-denied.
+
+## [0.7.10] - 2026-11-01
+
+This release rolls up the hardening and fixes merged since `0.7.9`: dotenv,
+comment, and `.phantom.toml` scanning in `phantom check` and the pre-commit
+scan, value-blind schema-tagged JSON reports, safer `.env.example`
+generation, `phantom wrap` and `phantom sync` correctness, symlink-safe audit
+readers, and vault memory hygiene. It adds no live provider issuance: provider
+issuance and rotation stay hard-denied before credential or network access.
+The `v0.7.9` tag and GitHub Release are not moved or replaced.
+
+### Added (built-in fleet exec routes)
+
+- `phantom exec` has three more built-in proxy routes, each with one vault
+  name, one upstream and one fixed `Authorization: Bearer` header:
+  `fleet_devin` (`DEVIN_API_KEY` to `api.devin.ai`), `fleet_cursor_cloud`
+  (`CURSOR_API_KEY` to `api.cursor.com`) and `fleet_email`
+  (`FLEET_EMAIL_API_KEY` to `api.resend.com`). Telegram needs path injection
+  and is not a built-in route.
+
+### Changed (README leads with agent commands, site agent console)
+
+- The README opens with copy-paste install, JSON status, and MCP setup for
+  Claude, Cursor, and Codex, plus diagrams, an FAQ, and a star link.
+- The website adds an agent quickstart console with the same snippets and a
+  combined GitHub star count. Pageviews are recorded only when
+  `NEXT_PUBLIC_POSTHOG_KEY` is set and Do Not Track is off.
+
+### Fixed (audit show --output, rotate --batch expiry dates, validate history)
+
+- `phantom audit show --output FILE` without `--json` printed the events to
+  the terminal, left the file empty and reported "wrote 0 line(s)". The
+  human-readable events now go into the file, as the flag promises.
+- The Old Expiry and New Expiry columns of `phantom rotate --batch` used
+  365-day years and 30-day months, so 26 Oct 2026 printed as 13 Nov. They
+  now print the real UTC calendar date.
+- `phantom validate history` always ended with "Use --last N to see more",
+  even when every run was shown. It now says "Showing all N run(s)" then.
+
+### Fixed (counts and JSON in audit alerts, batch rotation and analytics)
+
+- `phantom audit alerts` printed the listed count as the total: 120 alerts
+  with the default `--last 50` read "50 leak alert(s) (most recent 50 shown)".
+  The header now counts every alert in the file, and `--last 0` no longer
+  says "No leak alerts found" when alerts exist.
+- `phantom rotate --batch --json` printed "Found N secret(s) due..." on stdout
+  ahead of the JSON array, and plain text when nothing was due, so the output
+  did not parse. Under `--json` stdout now carries only JSON (`[]` when there
+  is nothing to rotate) and the progress line goes to stderr.
+- Audit analytics divided accesses by elapsed time but bucketed them by
+  calendar day, so one access just before midnight and one just after gave
+  an average of 2 a day with a busiest day of 1. The average now divides by
+  the calendar days from the first access to the last, inclusive.
+
+### Fixed (`phantom expiry enforce` text output names every failure)
+
+- With `--fail-closed`, the text output said only how many secrets had no
+  expiry policy and never named them. When expired secrets were also present
+  it dropped that failure entirely, so the exit status was 1 for reasons the
+  output did not show. It now lists each no-policy secret with a hint to run
+  `phantom expiry set`, alongside the expired ones.
+- A secret that expired under a day ago read "0 day(s) overdue"; it now
+  reads "expired less than a day ago".
+
+### Fixed (expiry check at 0 days listed unexpired secrets)
+
+- `phantom secrets-expiring-soon --days 0` and the MCP
+  `phantom_secrets_expiry_check` tool with `days: 0` are documented to list
+  only secrets that have already expired, but they also listed a secret that
+  expires later today. Such a secret now appears from `--days 1` on.
+
+### Fixed (validation history was never recorded)
+
+- `phantom validate history`, MCP `phantom_validation_history` and the last
+  run shown by `phantom validate schedule --status` stayed empty forever:
+  `phantom validate --check-all` and MCP `phantom_validate_all` never
+  recorded a run. Each run that checks values is now recorded (counts only,
+  no names or values). A failed write is reported and never changes the
+  verdict. A run the lifecycle gate refused entirely sends nothing and is not
+  recorded.
+- `phantom validate schedule 6h --json` printed the schedule as a string
+  holding JSON (`{"schedule":"{\"interval\":21600}"}`). It now prints the
+  same value as `--status --json` (`{"schedule":{"interval":21600}}`).
+- `phantom validate --check-all --json` on an empty vault printed a
+  hand-written object without `generated_at` and `refused`. It now prints
+  the same report shape as every other run.
+- Setting a schedule no longer says `--status` starts a background daemon.
+  Nothing runs validation on the schedule by itself.
+
+### Fixed (MCP rotation schedule reported every secret overdue)
+
+- MCP `phantom_rotation_schedule_next` judged the schedule against its own
+  `last_rotated`, which nothing ever writes, so every scheduled secret came
+  back `overdue: true` with `last_rotated_unix: null`, even one stored a
+  minute earlier. It now uses the vault's rotation anchor (the later of when
+  the value was stored and when it was last rotated), the same age that
+  `phantom exec` rotation enforcement checks.
+
+### Fixed (.gitignore checks follow Git's rules for `.env`)
+
+- `phantom doctor` (CLI and MCP) and `phantom agent` decided whether `.env`
+  was ignored by looking for one literal `.env` line. A `.gitignore` using
+  `/.env`, `**/.env`, `/**/.env` or `.env*` drew a warning (and `--fix` appended a
+  duplicate line), while one that ignored `.env` and then un-ignored it with
+  a later `!.env` passed. The checks now apply the last matching rule as Git
+  does, and a negated `.env` gets its own warning; `phantom agent` adds its
+  env patterns again when a later `!.env` cancelled them. Patterns the
+  reader does not understand still count as not covering `.env`.
+  The CLI doctor also checks (and with `--fix` appends) the managed
+  dotenv's own name from `.phantom.toml`, such as `.env.production`, where
+  it used to check `.env` whatever file Phantom managed.
+
+### Added (`phantom add --generate`)
+
+- `phantom add <KEY> --generate` stores a locally generated 256-bit random
+  secret and prints only a value-free JSON receipt (`name` plus its SHA-256
+  `fingerprint`). Creation is create-only inside the same exact-before
+  transaction as `add`, so existing names are always refused.
+- MCP `phantom_add_secret` accepts `generate: true` behind the existing
+  `confirm` plus one-use `approval_token` gates; with `generate` unset it
+  keeps refusing plaintext. See `docs/generated-secrets.md`.
+
+### CI (daily full-suite queue wait)
+
+- Added `scripts/ci/daily-matrix.mjs` and `scripts/ci/offpeak-schedule.json`: the
+  tool computes an affected-only OS matrix for the daily `Test (${{ matrix.os }})`
+  job (per-leg `cfg` routing, failing closed to all three legs) and emits the
+  additive off-peak cron `43 3 * * *`. Required check names are unchanged, and
+  the suite asserts a projected wall time inside the 900-second budget.
+
+### CI (PR classification engine)
+
+- Added `scripts/ci/pr-classify.mjs`: one tested engine computing every
+  changed-file classification `ci.yml` and `codeql.yml` need, suite
+  selection, the `platform` OS-matrix flag, and per-language CodeQL selection.
+  It carries forward the unlanded parts of #547: the `full-ci` label alias for
+  `ci:full-os`, Tier-1 `.github/CODEOWNERS` paths selecting the OS matrix, an
+  unreadable diff failing closed to full coverage, and `.github/` or
+  build/dependency-config changes scanning all five CodeQL languages. The
+  workflow wiring is a G1-gated follow-up documented in
+  `scripts/ci/pr-classify.md`.
+- `scripts/fast-check.sh` now runs `scripts/ci/*.test.mjs`, giving the
+  previously unwired `daily-matrix.test.mjs` suite an executed home.
+
+### Fixed (doctor names the managed dotenv file)
+
+- `phantom doctor` and the MCP `phantom_doctor` tool now name the dotenv file
+  the project manages in their dotenv lines, for example
+  `.env.local has 2 unprotected secret(s)` or `No .env.local file in current directory`.
+  Before, these lines always said `.env`, even when `.phantom.toml` manages
+  another file such as one chosen with `phantom init --from`. Only the
+  message text changes. Which file doctor checks, the issue counts and the
+  exit codes stay the same.
+
+### Security (dotenv file names with control characters are refused)
+
+- A `phantom.dotenv_path`, or an `env_path` argument to the MCP
+  `phantom_init` tool, that contains a control character such as a newline
+  is now refused as an invalid file name. Such a name was echoed into doctor reports, results
+  returned to MCP agents and, with `doctor --fix`, a `.gitignore` line, where
+  it could forge extra lines.
+
+### Added (`--dry-run` for `phantom init`, `phantom add`, and `phantom remove`)
+
+- `phantom init --dry-run` prints the keys it would protect, the project
+  files it would write, and the encrypted-file vault path it would create,
+  then exits without creating a vault or changing any file. When
+  `.claude/settings.local.json` or `.mcp.json` already exist, it prints
+  `may update <path>` and does not take the project lock.
+  `phantom init --all --dry-run` keeps its existing scan report.
+  `phantom init --empty --dry-run` reports the config file and the empty
+  vault it would create.
+- `phantom add --dry-run` and `phantom remove --dry-run` print the key and
+  the files that transaction would write without opening the vault, taking a
+  project lock, or creating app-data directories. Plan lines use `would add`
+  and `would remove`. They print `would add <name> (vault state not checked
+  in dry run)` or `would remove <name> (vault state not checked in dry run)`,
+  and `dotenv token check uses project config key names only (vault key names
+  not checked in dry run)`, because vault key names cannot be listed without
+  opening the vault. Config key names still drive the same dotenv token
+  refusal a real run uses. Remove also applies the real dotenv mapping rules
+  (exactly one phantom mapping for that name) and prints `would remove <name>
+  (not in project config)` when `.phantom.toml` has no `[phantom.secrets]`
+  entry for it. Add does not read a value. Remove does not ask for the
+  trusted-terminal challenge and does not delete the vault entry. None of
+  these previews print secret values.
+
+### Security (`phantom check --staged` scans `#` lines inside quoted values)
+
+- The staged credential-shape scan of `.env`, `.env.*` templates and `.envrc`
+  skipped every added line that looked like a credential comment on its own,
+  so a credential on a `#` line inside a multi-line quoted value was neither
+  reported as a comment nor scanned. The scan now skips only the exact lines
+  the whole-file comment report names.
+
+### Security (Argon2 working memory and vault plaintext buffers are scrubbed)
+
+- Encrypted-file vault key derivation now supplies its own Argon2 block
+  memory and scrubs the whole working set (up to 64 MiB) on drop, including
+  on error paths. `hash_password_into` freed that memory unscrubbed, and the
+  final memory block alone determines the derived key. The `argon2` crate's
+  `zeroize` feature is enabled so its internal hash state is cleared too.
+- `phantom_vault::crypto::decrypt` (and the per-vault warm-unlock cache) now
+  returns plaintext in a `Zeroizing<Vec<u8>>`, so decrypted vault JSON is
+  scrubbed on drop even if a caller forgets to wrap it. Derived keys moved to
+  `Zeroizing<[u8; 32]>`; manual `key.zeroize()` calls were removed.
+- The vault's pretty-JSON write path serializes through a zeroizing `Write`
+  sink that grows by copying into a fresh scrubbed buffer instead of letting
+  `Vec` reallocate plaintext prefixes in place. Emitted bytes are identical.
+
 ### Fixed (dotenv comments holding credentials fail every clean check)
 
 - `phantom check`, `phantom check --staged`, the MCP `phantom_check` tool
@@ -2280,56 +2665,43 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ### Fixed
 
-- **SDKs under `phantom exec` reach the versioned API.** `phantom exec`
-  exports `OPENAI_BASE_URL=http://127.0.0.1:PORT/openai/_phantom/TOKEN/`, but
-  the official OpenAI SDKs and Codex treat `OPENAI_BASE_URL` as the `/v1` root
-  and request `<base>/models`, `<base>/chat/completions`. The proxy forwarded
-  those to `https://api.openai.com/models` (404). Each built-in route now
-  carries the version path its official SDK keeps in the default base URL:
-  `/v1` for OpenAI, xAI, Mistral, and Replicate. Unversioned requests on those
-  routes get the prefix; requests already starting with a version segment are
-  unchanged. Anthropic, Perplexity, Cohere, Gemini, Hugging Face, and the
-  non-LLM routes keep their paths as sent. Every route also collapses the
-  leading `//` produced when a caller appends `/v1/...` to the slash-terminated
-  base URL.
-- `phantom exec` / `phantom start` proxy: the upstream timeout is now a 600 s
-  idle (per-read) timeout instead of a 30 s total deadline. Previously any SSE
-  stream or slow non-streaming reasoning call longer than 30 s (routine for
-  Claude Code, Codex and the OpenAI/Anthropic SDKs, which allow 600 s) was cut
-  off mid-response.
-- A streaming response that the upstream drops midway now aborts the client
-  connection instead of ending cleanly, so SDKs see a transport error instead
-  of silently accepting a truncated stream.
-- Base-URL overrides are exported only for routes whose credential is loaded
-  in the session. Previously the default config pointed every supported SDK
-  at the proxy, so for example `phantom exec -- claude` with only an OpenAI
-  key protected sent every Claude Code request to a proxy 503.
-- Also export the base-URL variables the official SDKs actually read:
-  `GOOGLE_GEMINI_BASE_URL` (google-genai, Gemini CLI) and `CO_API_URL`
-  (Cohere), alongside the existing names. `REPLICATE_BASE_URL` is not
-  exported: replicate-python 1.x reads it as the host root while 2.x expects
-  it to include `/v1`.
-- `phantom start` prints shell `unset` lines for base-URL variables it no
-  longer exports, so a stale value from an earlier session is cleared.
-- The default global burst guard (`PHANTOM_RATE_LIMIT_BURST`) is now 100
-  requests per 10 s. It was 20, below the 50-per-secret limit, so a single
-  agent session hit proxy 429s before the per-secret limit could ever apply.
-- Upstream responses without a declared `content-length` (close-delimited or
-  otherwise unframed bodies such as NDJSON and JSON-array streams) are now
-  streamed through the byte-level scrubber instead of buffered until the
-  upstream closes and capped at the body limit.
-- When the client disconnects mid-stream, the proxy now closes the upstream
-  connection immediately instead of holding it until the next upstream byte
-  or the idle timeout.
-- The default request (and buffered response) body cap is now 32 MiB,
-  matching Anthropic's request limit; it was 10 MiB, which image-heavy agent
-  turns exceeded. A shared 320 MiB budget (the old 10 MiB x 32-slot worst
-  case) bounds bytes buffered across all in-flight requests; a request that
-  would exceed it gets a 503 with `retry-after`.
-- Proxy-generated error bodies are built with a JSON encoder, and the 429 and
-  503 bodies now carry `"source":"phantom-proxy"`,
-  the service or secret name, and a fix hint, so agents can tell them apart
-  from provider errors.
+- Commented-out secret assignments and other credential-shaped comments
+  fail `phantom check`, MCP `phantom_check`, and the compliance env check.
+- `phantom check --staged` also scans dotenv comments, `.phantom.toml`,
+  and direnv `.envrc` assignments.
+- A locked encrypted-file vault is no longer reported as an empty vault.
+- Dotenv, audit, proxy, and workspace state opens do not follow a planted
+  symlink.
+- A secret demoted to read-only is not injected by `phantom exec` and is
+  not pushed by `phantom sync` or a team vault push.
+- `phantom wrap` and `phantom unwrap` keep `package.json` formatting and
+  no longer break a script that is a shell command line.
+
+### Security
+
+- A dotenv read checks the file it opened, not a path that was swapped
+  for a symlink after the lookup.
+- Proxy lifecycle locks, audit readers, and workspace state directories
+  refuse a symlinked target.
+
+### Breaking changes and migration
+
+Pre-1.0 minor releases may change unstable interfaces. This release does
+not change the vault format. Existing `v0.7.9` artifacts stay immutable.
+`phantom check --json` and MCP `phantom_check` can report `mode` `log`
+and findings with `kind` `log`. Existing worktree, staged, and runtime
+reports keep their fields. A consumer that rejects an unknown `mode` or
+`kind` must accept `log`. Live provider issuance stays hard-denied.
+Run `phantom setup --client <client>` again only when you want the
+current MCP command path.
+
+
+### Breaking changes and migration
+
+There are no intentional CLI, proxy, vault, or network-policy breaking changes.
+`phantom check` now reports credentials left in dotenv comments, so a project
+that was clean under `0.7.9` can fail `phantom check` until those comments are
+removed.
 
 ## [0.7.9] - 2026-09-06
 
@@ -2917,8 +3289,14 @@ remain separate evidence gates.
 For older release notes and downloadable artifacts, see [GitHub Releases](https://github.com/ashlrai/phantom-secrets/releases).
 
 <!-- fresh:begin changelog-unreleased-compare -->
-[Unreleased]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.9...HEAD
+[Unreleased]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.4...HEAD
+[0.8.4]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.3...v0.8.4
 <!-- fresh:end -->
+[0.8.3]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.2...v0.8.3
+[0.8.2]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.1...v0.8.2
+[0.8.1]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.0...v0.8.1
+[0.8.0]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.10...v0.8.0
+[0.7.10]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.9...v0.7.10
 [0.7.9]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.8...v0.7.9
 [0.7.8]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.7...v0.7.8
 [0.7.7]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.6...v0.7.7
