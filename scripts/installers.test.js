@@ -234,15 +234,15 @@ test('direct installers bind normal use to the canonical repository and exact ca
   const powerShell = readFileSync(psInstaller, 'utf8');
   for (const source of [shell, powerShell]) {
     assert.match(source, /ashlrai\/phantom-secrets/);
-    assert.match(source, /v0\.8\.1/);
+    assert.match(source, /v0\.8\.2/);
     assert.match(source, /PHANTOM_TEST_ALLOW_INSTALLER_OVERRIDES/);
     assert.doesNotMatch(source, /releases\/latest|api\.github\.com/);
   }
 
-  const { log, result } = runInstaller({ version: '0.8.1', useCandidateDefaults: true });
+  const { log, result } = runInstaller({ version: '0.8.2', useCandidateDefaults: true });
   assert.equal(result.status, 0, result.stderr);
   const curlLog = readFileSync(log, 'utf8');
-  assert.match(curlLog, /ashlrai\/phantom-secrets\/releases\/download\/v0\.8\.1\//);
+  assert.match(curlLog, /ashlrai\/phantom-secrets\/releases\/download\/v0\.8\.2\//);
   assert.doesNotMatch(curlLog, /releases\/latest|api\.github\.com/);
 });
 
@@ -674,7 +674,7 @@ test('Unix PATH setup creates an absent fish startup file and removes its tempor
   assert.deepEqual(readdirSync(parent), ['config.fish']);
 });
 
-test('Unix PATH final verification failure warns without restoring the previous startup file', (t) => {
+test('Unix PATH final verification failure warns and restores the previous startup file', (t) => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-path-final-check-')));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const home = join(root, 'home');
@@ -691,7 +691,7 @@ test('Unix PATH final verification failure warns without restoring the previous 
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stderr, /could not update your shell PATH/);
   assert.equal(existsSync(join(home, '.final-check-invoked')), true);
-  assert.match(readFileSync(rc, 'utf8'), /^# original configuration\n\n# phantom-secrets PATH\n/);
+  assert.equal(readFileSync(rc, 'utf8'), '# original configuration\n');
   assert.equal(existsSync(join(install, 'phantom')), true);
   assert.deepEqual(readdirSync(home).filter((name) => name.startsWith('.phantom-path.')), []);
 });
@@ -1256,7 +1256,7 @@ test('PowerShell installer has a strict offline-verifiable security contract', (
   assert.match(source, /PHANTOM_INSTALL_DIR must be a local absolute path/);
   assert.match(source, /install source receipt failed final validation/);
   assert.match(source, /\$CanonicalRepo = 'ashlrai\/phantom-secrets'/);
-  assert.match(source, /\$CandidateTag = 'v0\.8\.1'/);
+  assert.match(source, /\$CandidateTag = 'v0\.8\.2'/);
   assert.match(source, /PHANTOM_TEST_ALLOW_INSTALLER_OVERRIDES -ceq '1'/);
   assert.match(source, /PHANTOM_TEST_LOCAL_RELEASE_DIR/);
   assert.match(source, /PHANTOM_TEST_DISABLE_PATH_PERSISTENCE/);

@@ -305,6 +305,7 @@ acquire_install_lock() {
 add_to_user_path() {
   local bin="$1" marker="# phantom-secrets PATH" shell_name rc rc_parent
   local before_tmp candidate_tmp before_identity after_identity candidate_identity
+  local last_line backslashes
   [[ "$bin" =~ ^[A-Za-z0-9_./\ -]+$ ]] || return 1
   shell_name="$(basename "${SHELL:-bash}")"
   case "$shell_name" in
@@ -358,6 +359,24 @@ add_to_user_path() {
       return 1
     }
     before_identity="absent"
+  fi
+  # The marker block's own leading newline ends an unterminated last line, but
+  # a last line ending in an odd backslash run is a line continuation: sourcing
+  # the file would fold the marker into the user's content. A blank line
+  # absorbs the continuation so the block still occupies lines of its own.
+  if [ -n "$(tail -c 1 "$candidate_tmp" 2>/dev/null)" ]; then
+    last_line="$(tail -n 1 "$candidate_tmp")"
+    case "$last_line" in
+      *\\)
+        backslashes="${last_line##*[!\\]}"
+        if [ $(( ${#backslashes} % 2 )) -eq 1 ]; then
+          printf '\n' >> "$candidate_tmp" || {
+            rm -f -- "$before_tmp" "$candidate_tmp"
+            return 1
+          }
+        fi
+        ;;
+    esac
   fi
   if [ "$shell_name" = "fish" ]; then
     printf '\n%s\nset -gx PATH "%s" $PATH\n' "$marker" "$bin" >> "$candidate_tmp" || {
