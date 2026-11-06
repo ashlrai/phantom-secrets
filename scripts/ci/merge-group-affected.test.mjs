@@ -38,7 +38,8 @@ describe("merge_group is affected-only", () => {
     test("coverage job is not selected by merge_group", () => {
         const job = /\n  coverage:\n[\s\S]*?\n    runs-on:/.exec(CI)?.[0] ?? "";
         const cond = /\n    if: (.*)/.exec(job)?.[1] ?? "";
-        assert.ok(cond.startsWith(FULL_ONLY), cond);
+        assert.ok(cond.includes(FULL_ONLY), cond);
+        assert.ok(cond.includes("inputs.validation_scope != 'windows-native-diagnostics'"), cond);
         assert.ok(!cond.includes("merge_group"), cond);
     });
 

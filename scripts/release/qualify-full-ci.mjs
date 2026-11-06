@@ -10,7 +10,7 @@ export const CI_WORKFLOW_ID = 252681774;
 export const RELEASE_WORKFLOW_ID = 252681777;
 export const POLICY_FILES = [
   '.github/workflows/ci.yml', '.github/workflows/release.yml', '.github/workflows/release-build.yml',
-  '.github/workflows/auto-tag.yml', 'scripts/release/qualify-full-ci.mjs',
+  '.github/workflows/auto-tag.yml', 'scripts/release/qualify-full-ci.mjs', 'scripts/ci/validation-scope.mjs',
   'scripts/release/verify-github-tag-binding.mjs', 'scripts/release/verify-release-artifacts.mjs',
   'scripts/release/verify-github-release-receipt.mjs', 'scripts/release/compare-release-artifacts.mjs',
   'scripts/release/extract-release-notes.mjs',
@@ -25,6 +25,7 @@ export const REQUIRED_JOBS = [
 const COMMON_TEST = ['Build', 'Verify examples', 'Verify installed CLI and MCP onboarding',
   'Verify platform and installer mappings', 'Verify MCP platform mappings'];
 export const CRITICAL_STEPS = {
+  'Classify changes': ['Validate full scope'],
   'Test (macos-latest)': [...COMMON_TEST, 'Run tests', 'Check installer shell syntax'],
   'Test (windows-latest)': [...COMMON_TEST, 'Run tests', 'Parse candidate and public-reference PowerShell installers',
     'Exercise the Windows installer with the existing debug binaries'],
@@ -218,7 +219,7 @@ export async function runGate(mode, env, deps = {}) {
       // dispatch whose response/evidence was lost by the original attempt.
       require(env.GITHUB_RUN_ATTEMPT === '1', 'retried-release-dispatch-unresolved-no-resend');
       // A single dispatch attempt; lost responses reconcile by reads only.
-      try { await api(`actions/workflows/${CI_WORKFLOW_ID}/dispatches`, { method: 'POST', body: { ref: input.tag } }); }
+      try { await api(`actions/workflows/${CI_WORKFLOW_ID}/dispatches`, { method: 'POST', body: { ref: input.tag, inputs: { validation_scope: 'full' } } }); }
       catch { /* uncertain response: poll, never resend */ }
       const deadline = now() + 120_000;
       while (!found && now() < deadline) { await sleep(5_000); found = (await exactProducers())[0]; }
