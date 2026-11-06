@@ -1,6 +1,6 @@
 # Unix installer copy source map
 
-Reviewed 2026-11-03 against the checked-in [repository installer](../scripts/install.sh)
+Reviewed 2026-11-06 against the checked-in [repository installer](../scripts/install.sh)
 and [web installer](../apps/web/public/install.sh). This maps source files,
 not a deployed website or a release asset. Line links are a snapshot; update
 them and this comparison when either copy changes.
@@ -18,7 +18,7 @@ them and this comparison when either copy changes.
 | PATH check and update call | [lines 554–556](../scripts/install.sh#L554-L556) | [lines 553–555](../apps/web/public/install.sh#L553-L555) |
 
 The complete files differ in two places. The repository copy pins
-`CANDIDATE_TAG="v0.8.1"` for the next release candidate while the web copy
+`CANDIDATE_TAG="v0.8.7"` for the next release candidate while the web copy
 stays bound to the evidenced `v0.7.9` release. During extraction, the
 repository copy uses `tar --no-same-owner` and explains why; the web copy
 omits both the option and comment. When run as root, that option can change
