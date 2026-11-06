@@ -251,6 +251,10 @@ jobs:
       - name: Check installer shell syntax
         if: runner.os != 'Windows'
         run: node --test scripts/installer-syntax.test.mjs
+      - name: Install zsh for installer startup tests
+        if: runner.os == 'Linux'
+        timeout-minutes: 3
+        run: sudo apt-get update && sudo apt-get install -y zsh
       - name: Run direct installer offline tests
         if: runner.os == 'Linux'
         run: >-
