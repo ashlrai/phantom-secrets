@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
+import { loadSources } from './freshness/sources.mjs';
 
+const { version: sourceVersion } = loadSources(fileURLToPath(new URL('..', import.meta.url)));
 const doc = readFileSync(new URL('../docs/installer-copy-source-map.md', import.meta.url), 'utf8');
 const paths = ['scripts/install.sh', 'apps/web/public/install.sh'];
 const sources = paths.map((path) => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8').split('\n'));
@@ -47,7 +50,7 @@ test('staging differences remain the ones described in the map', () => {
   const [repository, web] = sources.map((lines) => lines.join('\n'));
   // Removing only the documented differences must make the complete copies equal.
   const normalized = repository
-    .replace('CANDIDATE_TAG="v0.8.1"', 'CANDIDATE_TAG="v0.7.9"')
+    .replace(`CANDIDATE_TAG="v${sourceVersion}"`, 'CANDIDATE_TAG="v0.7.9"')
     .replace('# --no-same-owner: as root, tar would otherwise keep the release runner\'s uid on the installed binaries.\n', '')
     .replace('tar --no-same-owner -xzf', 'tar -xzf');
   assert.notEqual(repository, web);

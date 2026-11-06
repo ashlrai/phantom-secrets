@@ -1,45 +1,26 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
 import {
   chmodSync,
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readdirSync,
   readFileSync,
   realpathSync,
-  rmSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { createStagingFixture, installHashRecorders } from './lib/installer-staging-fixture.mjs';
 
 const installer = fileURLToPath(new URL('../apps/web/public/install.sh', import.meta.url));
 
 // Builds an offline release fixture plus a mktemp shim that records its argv,
 // so a test can prove where the installer asked for its staging directory.
 function setup(t) {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-staging-unicode-parent-')));
-  t.after(() => rmSync(root, { recursive: true, force: true }));
-  const fixture = join(root, 'fixture');
-  const payload = join(root, 'payload');
-  const shims = join(root, 'shims');
-  for (const dir of [fixture, payload, shims]) mkdirSync(dir);
-  for (const name of ['phantom', 'phantom-mcp']) {
-    writeFileSync(join(payload, name), `#!/bin/sh\necho "${name} 1.2.3"\n`);
-    chmodSync(join(payload, name), 0o755);
-  }
-  const os = { darwin: 'apple-darwin', linux: 'unknown-linux-gnu' }[process.platform];
-  const arch = { x64: 'x86_64', arm64: 'aarch64' }[process.arch];
-  assert.ok(os && arch, 'test requires a supported Unix installer target');
-  const archive = `phantom-${arch}-${os}.tar.gz`;
-  execFileSync('tar', ['-czf', join(fixture, archive), '-C', payload, 'phantom', 'phantom-mcp']);
-  const digest = createHash('sha256').update(readFileSync(join(fixture, archive))).digest('hex');
-  writeFileSync(join(fixture, `${archive}.sha256`), `${digest}  ${archive}\n`);
+  const { root, fixture, shims, archive } = createStagingFixture(t, 'phantom-staging-unicode-parent-');
   const mktempLog = join(root, 'mktemp.log');
   const realMktemp = execFileSync('which', ['mktemp'], { encoding: 'utf8' }).trim();
   writeFileSync(join(shims, 'mktemp'), `#!/bin/sh
@@ -49,18 +30,7 @@ exec ${JSON.stringify(realMktemp)} "$@"
   chmodSync(join(shims, 'mktemp'), 0o755);
   // Recording which path the installer hashes proves the staging tree was
   // populated at failure time, so cleanup assertions cannot pass vacuously.
-  const hashLog = join(root, 'hashed-paths');
-  for (const tool of ['sha256sum', 'shasum']) {
-    writeFileSync(join(shims, tool), `#!/usr/bin/env node
-const { createHash } = require('node:crypto');
-const { appendFileSync, readFileSync } = require('node:fs');
-const target = process.argv.at(-1);
-appendFileSync(${JSON.stringify(hashLog)}, target + '\\n');
-const digest = createHash('sha256').update(readFileSync(target)).digest('hex');
-process.stdout.write(digest + '  ' + target + '\\n');
-`);
-    chmodSync(join(shims, tool), 0o755);
-  }
+  const hashLog = installHashRecorders(root, shims);
   return { root, fixture, shims, mktempLog, hashLog, archive };
 }
 
