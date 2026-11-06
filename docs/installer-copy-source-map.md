@@ -22,9 +22,9 @@ The complete files differ in two places. The repository copy pins
 stays bound to the evidenced `v0.7.9` release. During extraction, the
 repository copy uses `tar --no-same-owner` and explains why; the web copy
 omits both the option and comment. When run as root, that option can change
-the extracted files' ownership. The PATH function and its call site are
-byte-identical across copies; the call-site line numbers differ because the
-repository copy's extraction comment adds one line.
+the extracted files' ownership. Stage creation, the PATH function, and its
+call site are byte-identical across copies; the web copy's line numbers after
+the extraction point shift by one because it omits the comment line.
 
 Both installers stage beside the resolved installation directory, check lock
 ownership around promotion, and attempt rollback and cleanup on ordinary
@@ -36,4 +36,4 @@ The web copy is tied to separately reviewed release evidence; this map does
 not authorize replacing it with the repository copy.
 
 Run `node --test scripts/installer-copy-source-map.test.mjs` to check the
-linked ranges, the mapped PATH equality, and the documented staging differences.
+linked ranges, the mapped PATH equality, and the documented differences.

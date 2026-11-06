@@ -119,7 +119,6 @@ const versions = new Map([
   ["Hosted web application", webVersion],
   ["Hosted web lockfile", webLockVersion],
   ["Hosted web lockfile root", webLockRootVersion],
-  ["Citation metadata", citationVersion],
   ["npm CLI README", npmCliReadmeVersion],
   ["npm MCP README", npmMcpReadmeVersion],
   ["README source badge", readmeSourceVersion],
@@ -134,6 +133,15 @@ const versions = new Map([
   ["MCP registry server", registry.version],
   ["MCP registry npm package", registryPackage.version],
 ]);
+
+const publicReleaseVersion = requireMatch(
+  read("apps/web/src/lib/public-release.ts"),
+  /PUBLIC_RELEASE_VERSION = "([^"]+)"/,
+  "published release version"
+);
+if (citationVersion !== publicReleaseVersion) {
+  throw new Error(`citation version ${citationVersion} does not match published release ${publicReleaseVersion}`);
+}
 
 const expectedTag = process.argv[2];
 if (process.argv.length > 3 || (expectedTag && !tagPattern.test(expectedTag))) {
@@ -170,5 +178,5 @@ for (const crateDir of crateDirs) {
 }
 
 console.log(
-  `release version parity passed: ${workspaceVersion} across ${versions.size} surfaces and ${crateDirs.length} crates`
+  `release version parity passed: ${workspaceVersion} across ${versions.size + 1} surfaces and ${crateDirs.length} crates`
 );

@@ -23,9 +23,9 @@ test('public installer cleans staging after an offline checksum mismatch', () =>
     const arch = { x64: 'x86_64', arm64: 'aarch64' }[process.arch];
     assert.ok(os && arch, 'test requires a supported Unix installer target');
     const archive = `phantom-${arch}-${os}.tar.gz`;
-    execFileSync('tar', ['-czf', join(fixture, archive), '-C', payload, 'phantom', 'phantom-mcp']);
+    execFileSync('/usr/bin/tar', ['-czf', join(fixture, archive), '-C', payload, 'phantom', 'phantom-mcp']);
     writeFileSync(join(fixture, `${archive}.sha256`), `${'0'.repeat(64)}  ${archive}\n`);
-    const mktemp = execFileSync('which', ['mktemp'], { encoding: 'utf8' }).trim();
+    const mktemp = execFileSync('/usr/bin/which', ['mktemp'], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin' } }).trim();
     const shim = join(shims, 'mktemp');
     writeFileSync(shim, `#!/bin/sh\nstage="$(${JSON.stringify(mktemp)} "$@")" || exit $?\nif [ "$1" = -d ]; then printf '%s\\n' "$stage" >> ${JSON.stringify(stageLog)}; fi\nprintf '%s\\n' "$stage"\n`);
     chmodSync(shim, 0o755);
@@ -59,4 +59,43 @@ test('public installer cleans staging after an offline checksum mismatch', () =>
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test('public installer cleans staging after failure with a nonexistent install parent', (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'phantom-public-missing-parent-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const fixture = join(root, 'fixture');
+  const payload = join(root, 'payload');
+  const home = join(root, 'home');
+  const parent = join(root, 'new', 'parent');
+  const install = join(parent, 'bin');
+  assert.equal(existsSync(parent), false);
+  for (const dir of [fixture, payload, home]) mkdirSync(dir);
+  for (const name of ['phantom', 'phantom-mcp']) writeFileSync(join(payload, name), 'fixture');
+  const os = { darwin: 'apple-darwin', linux: 'unknown-linux-gnu' }[process.platform];
+  const arch = { x64: 'x86_64', arm64: 'aarch64' }[process.arch];
+  assert.ok(os && arch, 'test requires a supported Unix installer target');
+  const archive = `phantom-${arch}-${os}.tar.gz`;
+  execFileSync('/usr/bin/tar', ['-czf', join(fixture, archive), '-C', payload, 'phantom', 'phantom-mcp']);
+  writeFileSync(join(fixture, `${archive}.sha256`), `${'0'.repeat(64)}  ${archive}\n`);
+
+  const result = spawnSync('/bin/bash', [fileURLToPath(new URL('../apps/web/public/install.sh', import.meta.url))], {
+    encoding: 'utf8',
+    timeout: 30000,
+    env: {
+      PATH: process.env.PATH,
+      HOME: home,
+      SHELL: '/bin/bash',
+      PHANTOM_INSTALL_DIR: install,
+      PHANTOM_TEST_ALLOW_INSTALLER_OVERRIDES: '1',
+      PHANTOM_TEST_LOCAL_RELEASE_DIR: fixture,
+      PHANTOM_TAG: 'v1.2.3',
+    },
+  });
+  assert.ifError(result.error);
+  assert.notEqual(result.status, 0);
+  // The checksum is checked after staging is created and populated.
+  assert.match(result.stderr, /SHA-256 mismatch/);
+  assert.deepEqual(readdirSync(parent), [], 'no install, staging, or lock remains');
+  assert.deepEqual(readdirSync(home), []);
 });

@@ -21,8 +21,8 @@ The leading dot, `.install.`, and the six `X` characters are literal template
 parts; `mktemp -d` replaces the final `XXXXXX` with a unique suffix, and the
 resulting path is stored in `stage_root`. The actual commands are
 `mktemp -d "$install_parent/.${install_name}.install.XXXXXX"` in
-[repository staging](../scripts/install.sh#L437-L443) and
-[web staging](../apps/web/public/install.sh#L437-L443). In both copies each
+[repository staging](../scripts/install.sh#L443-L449) and
+[web staging](../apps/web/public/install.sh#L443-L449). In both copies each
 staging step carries an explicit `|| die` diagnosis on top of Bash error
 exit. The prefix itself is byte-identical.
 
@@ -34,8 +34,8 @@ must be a nonempty absolute path with restricted characters. The installer
 takes `install_parent` from `dirname` and `install_name` from `basename` of
 the selected destination, creates the parent if necessary, then resolves it
 with `pwd -P`. See
-[repository destination selection](../scripts/install.sh#L425-L435) and
-[web destination selection](../apps/web/public/install.sh#L425-L435).
+[repository destination selection](../scripts/install.sh#L431-L441) and
+[web destination selection](../apps/web/public/install.sh#L431-L441).
 
 The default template is therefore
 `$HOME/.phantom-secrets/.bin.install.XXXXXX`, where `$HOME/.phantom-secrets`
@@ -59,8 +59,8 @@ with the installer's other private paths in both scripts:
   [web](../apps/web/public/install.sh#L294)).
 - `.<install_name>.backup.<stage-suffix>` — the rollback target for a
   replaced live directory, where the suffix is the stage's generated
-  `mktemp` tail ([repository](../scripts/install.sh#L501),
-  [web](../apps/web/public/install.sh#L498)).
+  `mktemp` tail ([repository](../scripts/install.sh#L507),
+  [web](../apps/web/public/install.sh#L506)).
 
 The stage and its `download` and `candidate` children are mode 700, and the
 exit trap attempts to remove the stage; uncatchable termination or

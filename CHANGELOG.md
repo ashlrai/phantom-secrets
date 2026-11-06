@@ -4,7 +4,15 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
-Changes after 0.8.2 land in this section.
+Changes after 0.8.3 land in this section.
+
+## [0.8.3] - 2026-11-06
+
+This source candidate includes the 0.8.2 source tranche and subsequent installer fixes. The `v0.8.2` tag is reserved; the latest verified published release remains `v0.7.9` until publication is established.
+
+### Installer
+
+- Preserve installer PATH handling and staging security checks across supported environments.
 
 ## [0.8.2] - 2026-11-05
 
@@ -3231,8 +3239,9 @@ remain separate evidence gates.
 For older release notes and downloadable artifacts, see [GitHub Releases](https://github.com/ashlrai/phantom-secrets/releases).
 
 <!-- fresh:begin changelog-unreleased-compare -->
-[Unreleased]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.2...HEAD
+[Unreleased]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.3...HEAD
 <!-- fresh:end -->
+[0.8.3]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.2...v0.8.3
 [0.8.2]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.10...v0.8.0
