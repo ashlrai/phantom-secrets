@@ -101,3 +101,38 @@ for (const c of cases) {
     });
   }
 }
+
+// A comment full of shell metacharacters must not be expanded, split, or
+// rewritten, whether it sits before the marker or is the unterminated last line.
+const META_COMMENTS = [
+  "# $(touch /tmp/pwned) `id` ${HOME} $PATH; rm -rf * | tee & >out <in 'q' \"d\" \\ !! {a,b} [a-z]* ~\n",
+  "#\t;|&<>()$`\\\"'*?[]{}~!#%^ trailing  \r\n",
+  "# $(echo hi) `echo hi` \\n \\\\ *",
+];
+
+for (const c of cases) {
+  for (const comment of META_COMMENTS) {
+    test(`PATH update keeps metacharacter comment ${JSON.stringify(comment)} byte-for-byte (${c.shell})`, () => {
+      const home = fs.mkdtempSync(path.join(os.tmpdir(), "phantom-path-"));
+      try {
+        const rc = path.join(home, c.rc);
+        fs.mkdirSync(path.dirname(rc), { recursive: true });
+        const before = Buffer.from(`# top\n${comment}`);
+        fs.writeFileSync(rc, before);
+        for (let i = 0; i < 2; i++) {
+          const r = spawnSync("bash", ["-c", harness, "bash", "/opt/phantom/bin"], {
+            env: { PATH: process.env.PATH, HOME: home, SHELL: `/bin/${c.shell}` },
+            encoding: "utf8",
+          });
+          assert.equal(r.status, 0, r.stderr);
+          const after = fs.readFileSync(rc);
+          assert.ok(after.subarray(0, before.length).equals(before), "comment changed");
+          assert.ok(after.toString().includes(c.wired));
+          assert.equal(after.toString().split("# phantom-secrets PATH").length - 1, 1, "marker duplicated");
+        }
+      } finally {
+        fs.rmSync(home, { recursive: true, force: true });
+      }
+    });
+  }
+}
