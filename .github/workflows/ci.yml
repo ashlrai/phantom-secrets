@@ -150,18 +150,19 @@ jobs:
       - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2
         with:
           tool: cargo-nextest
-      # Coverage tools install only on Linux merge_group and the nightly run
-      # (nightly-full.yml calls this workflow, so event_name is schedule).
-      # Pull requests and pushes to main skip these steps, so a merge does not
-      # pay for a second, uncached instrumented build.
+      # Coverage tools install only on Linux schedule and workflow_dispatch
+      # (nightly-full.yml calls this workflow, so the caller's event_name is
+      # schedule or workflow_dispatch). Pull requests, merge_group and pushes
+      # to main skip these steps, so a merge does not pay for a second,
+      # uncached instrumented build.
       - name: Install coverage tools
-        if: runner.os == 'Linux' && (github.event_name == 'merge_group' || github.event_name == 'schedule')
+        if: runner.os == 'Linux' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (2026-04-24)
         with:
           toolchain: 1.95.0
           components: llvm-tools-preview
       - name: Install cargo-llvm-cov
-        if: runner.os == 'Linux' && (github.event_name == 'merge_group' || github.event_name == 'schedule')
+        if: runner.os == 'Linux' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
         uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2
         with:
           tool: cargo-llvm-cov@0.9.1
@@ -174,16 +175,17 @@ jobs:
       # them (nextest rdeps filterset); workspace-wide changes (manifests,
       # lockfile, toolchain, CI) select all(). Pushes to main always run the
       # complete suite on every OS.
-      # Linux nightly and merge_group call the same nextest binary with
-      # the same flags. show-env only exports coverage variables.
+      # Linux schedule and workflow_dispatch call the same nextest binary with
+      # the same flags; merge_group uses the affected filterset like pull_request.
+      # show-env only exports coverage variables.
       - name: Run tests
         # PRs test only crates the diff touches plus their reverse deps
         # (computed in `changes`); main pushes always run all().
-        if: needs.changes.outputs.filterset != 'none()' && (runner.os != 'Linux' || (github.event_name != 'merge_group' && github.event_name != 'schedule'))
+        if: needs.changes.outputs.filterset != 'none()' && (runner.os != 'Linux' || (github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'))
         shell: bash
         run: cargo nextest run --workspace --all-targets --locked --no-fail-fast -E "${{ needs.changes.outputs.filterset }}"
       - name: Run tests with coverage
-        if: runner.os == 'Linux' && (github.event_name == 'merge_group' || github.event_name == 'schedule') && needs.changes.outputs.filterset != 'none()'
+        if: runner.os == 'Linux' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && needs.changes.outputs.filterset != 'none()'
         shell: bash
         env:
           # Outside ./target so rust-cache does not save the instrumented
@@ -202,7 +204,7 @@ jobs:
             exit 1
           fi
       - name: Upload coverage report
-        if: runner.os == 'Linux' && (github.event_name == 'merge_group' || github.event_name == 'schedule') && needs.changes.outputs.filterset != 'none()'
+        if: runner.os == 'Linux' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && needs.changes.outputs.filterset != 'none()'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coverage-lcov
@@ -249,42 +251,94 @@ jobs:
       - name: Check installer shell syntax
         if: runner.os != 'Windows'
         run: node --test scripts/installer-syntax.test.mjs
-      # Every checked-in offline installer test runs here. Several were added
-      # without a workflow reference and never executed; keep this list complete
-      # when adding scripts/installer-*.test.mjs or public-installer tests.
+      - name: Install zsh for installer startup tests
+        if: runner.os == 'Linux'
+        timeout-minutes: 3
+        run: sudo apt-get update && sudo apt-get install -y zsh
       - name: Run direct installer offline tests
         if: runner.os == 'Linux'
         run: >-
           node --test
           scripts/installer-copy-byte-consistency.test.mjs
+          scripts/installer-copy-checker.test.mjs
           scripts/installer-copy-comparison.test.mjs
           scripts/installer-copy-consistency.test.mjs
           scripts/installer-copy-maintenance.test.mjs
+          scripts/installer-copy-parity.test.mjs
           scripts/installer-copy-source-map.test.mjs
           scripts/installer-copy-sync.test.mjs
           scripts/installer-default-staging-root.test.mjs
           scripts/installer-download-failure.test.mjs
+          scripts/installer-download-interrupt.test.mjs
           scripts/installer-executable-permissions.test.mjs
+          scripts/installer-extraction-cleanup.test.mjs
+          scripts/installer-failure-cleanup.test.mjs
           scripts/installer-installed-contents.test.mjs
           scripts/installer-missing-executable.test.mjs
+          scripts/installer-missing-parent.test.mjs
           scripts/installer-missing-tool.test.mjs
           scripts/installer-offline-suite.test.mjs
+          scripts/installer-path-alias-bytes.test.mjs
+          scripts/installer-path-alias-fallback.test.mjs
+          scripts/installer-path-alias-integration.test.mjs
+          scripts/installer-path-alias-lookalike.test.mjs
+          scripts/installer-path-blank-lines.test.mjs
+          scripts/installer-path-candidate-distinct.test.mjs
           scripts/installer-path-candidate-spaces.test.mjs
           scripts/installer-path-candidate-unicode-parent.test.mjs
+          scripts/installer-path-columns-export.test.mjs
           scripts/installer-path-comment-punctuation.test.mjs
+          scripts/installer-path-comment-with-spaces.test.mjs
+          scripts/installer-path-comments-integration.test.mjs
+          scripts/installer-path-conditional-bytes.test.mjs
+          scripts/installer-path-editor-export.test.mjs
+          scripts/installer-path-empty-config.test.mjs
+          scripts/installer-path-empty-file.test.mjs
           scripts/installer-path-existing-entry.test.mjs
           scripts/installer-path-final-newline.test.mjs
+          scripts/installer-path-function-bytes.test.mjs
           scripts/installer-path-idempotence.test.mjs
+          scripts/installer-path-lang-export.test.mjs
+          scripts/installer-path-lc-all-export.test.mjs
+          scripts/installer-path-lc-ctype-export.test.mjs
+          scripts/installer-path-leading-comment.test.mjs
+          scripts/installer-path-less-preservation.test.mjs
+          scripts/installer-path-lines-export.test.mjs
+          scripts/installer-path-literal-dollar.test.mjs
+          scripts/installer-path-post-move-recovery.test.mjs
+          scripts/installer-path-repeat-untouched.test.mjs
           scripts/installer-path-snapshot-cleanup.test.mjs
           scripts/installer-path-snapshot-distinct.test.mjs
           scripts/installer-path-snapshot-failure.test.mjs
           scripts/installer-path-snapshot-spaces.test.mjs
+          scripts/installer-path-spaced-config-dir.test.mjs
+          scripts/installer-path-spaced-install-dir.test.mjs
+          scripts/installer-path-spaced-lines.test.mjs
+          scripts/installer-path-spaced-parent-full-install.test.mjs
+          scripts/installer-path-spaced-parent-target.test.mjs
+          scripts/installer-path-spaced-symlink-parent.test.mjs
+          scripts/installer-path-success-cleanup.test.mjs
+          scripts/installer-path-success-integration.test.mjs
           scripts/installer-path-temp-failure.test.mjs
           scripts/installer-path-temp-placement.test.mjs
           scripts/installer-path-template-names.test.mjs
           scripts/installer-path-templates.test.mjs
+          scripts/installer-path-term-integration.test.mjs
+          scripts/installer-path-trailing-newline.test.mjs
+          scripts/installer-path-tz-export.test.mjs
+          scripts/installer-path-unicode-comment.test.mjs
+          scripts/installer-path-unicode-comments.test.mjs
+          scripts/installer-path-unrelated-export.test.mjs
+          scripts/installer-path-unrelated-final-line.test.mjs
+          scripts/installer-path-unrelated-lines.test.mjs
+          scripts/installer-path-unrelated-order.test.mjs
+          scripts/installer-path-update-failure-cleanup.test.mjs
           scripts/installer-path-update-steps.test.mjs
+          scripts/installer-path-visual-export.test.mjs
+          scripts/installer-path-working-directory.test.mjs
+          scripts/installer-promotion-failure-cleanup.test.mjs
           scripts/installer-stage-parent.test.mjs
+          scripts/installer-staging-apostrophe-parent.test.mjs
           scripts/installer-staging-cleanup.test.mjs
           scripts/installer-staging-contract.test.mjs
           scripts/installer-staging-directory-reference.test.mjs
@@ -293,21 +347,53 @@ jobs:
           scripts/installer-staging-failure.test.mjs
           scripts/installer-staging-prefix.test.mjs
           scripts/installer-staging-prefixes.test.mjs
+          scripts/installer-staging-setup-failure.test.mjs
+          scripts/installer-staging-spaced-home.test.mjs
+          scripts/installer-staging-spaced-install-parent.test.mjs
+          scripts/installer-staging-spaced-parent-offline.test.mjs
           scripts/installer-staging-spaced-parent.test.mjs
           scripts/installer-staging-spaces.test.mjs
           scripts/installer-staging-success.test.mjs
           scripts/installer-staging-tmpdir-spaces.test.mjs
+          scripts/installer-staging-unicode-parent.test.mjs
           scripts/installer-staging-uniqueness.test.mjs
           scripts/installer-temp-environment.test.mjs
           scripts/installer-temporary-paths.test.mjs
           scripts/installer-tmpdir-fallback.test.mjs
           scripts/installer-unsupported-arch.test.mjs
           scripts/installer-unsupported-platform.test.mjs
+          scripts/installer-unusable-parent.test.mjs
+          scripts/installer-unwritable-tempdir.test.mjs
           scripts/installers.test.js
           scripts/public-installer-extraction-failure.test.mjs
+          scripts/public-installer-failure-cleanup.test.mjs
           scripts/public-installer-staging-unicode-parent.test.mjs
           scripts/public-installer-staging.test.mjs
           scripts/release/native-installer-acceptance.test.mjs
+      - name: Run isolated alias fallback shell test
+        if: runner.os == 'Linux'
+        run: bash scripts/installer-path-alias-fallback.test.sh
+      - name: Run isolated LC_ALL preservation shell test
+        if: runner.os == 'Linux'
+        run: bash scripts/installer-path-lc-all.test.sh
+      - name: Run isolated LC_CTYPE preservation shell test
+        if: runner.os == 'Linux'
+        run: bash scripts/installer-path-lc-ctype.test.sh
+      - name: Run isolated LANG preservation shell test
+        if: runner.os == 'Linux'
+        run: bash scripts/installer-path-lang.test.sh
+      - name: Run isolated TZ preservation shell test
+        if: runner.os == 'Linux'
+        run: bash scripts/installer-path-tz.test.sh
+      - name: Run isolated COLUMNS preservation shell test
+        if: runner.os == 'Linux'
+        run: bash scripts/installer-path-columns.test.sh
+      - name: Run isolated spaced-parent staging shell test
+        if: runner.os == 'Linux'
+        run: bash scripts/installer-staging-spaced-parent.test.sh
+      - name: Run isolated staging-failure shell test
+        if: runner.os == 'Linux'
+        run: bash scripts/installer-staging-failure.test.sh
       - name: Parse candidate and public-reference PowerShell installers
         if: runner.os == 'Windows'
         shell: pwsh
@@ -341,7 +427,8 @@ jobs:
 
   # Not part of CI Gate, so a Codecov outage does not become a required check.
   # This is the only job in this workflow with id-token: write. It runs on
-  # the nightly schedule and merge_group, never on pull_request or push.
+  # the nightly schedule and workflow_dispatch, never on pull_request,
+  # merge_group or push.
   # A newer push to the same ref cancels an in-progress coverage upload.
   # Workflow concurrency still leaves the rest of a main push running.
   coverage:
@@ -350,7 +437,7 @@ jobs:
     concurrency:
       group: coverage-${{ github.workflow }}-${{ github.ref }}
       cancel-in-progress: true
-    if: (github.event_name == 'merge_group' || github.event_name == 'schedule') && needs.test.result == 'success'
+    if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && needs.test.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -402,6 +489,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # Exercise the same real permission failures before expensive Rust work.
+      - name: Check installer shell syntax
+        run: node --test scripts/installer-syntax.test.mjs scripts/installer-unwritable-tempdir.test.mjs
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (2026-04-24)
         with:
           toolchain: 1.95.0
@@ -411,10 +501,6 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      # Seconds-fast gate: a syntax-broken installer fails the PR here instead
-      # of surfacing in the nightly matrix.
-      - name: Check installer shell syntax
-        run: node --test scripts/installer-syntax.test.mjs
 
   dependency-policy:
     name: Rust dependency policy

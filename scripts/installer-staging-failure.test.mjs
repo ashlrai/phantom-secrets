@@ -18,10 +18,14 @@ function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-// A point-failure shim for the private stage's mktemp call. It records every
-// invocation, fails only the `.<name>.install.XXXXXX` template, and delegates
-// everything else to the real tool, so the installer reaches its staging step
-// and must then stop before any download or promotion.
+// Point-failure shims for every staging-creation step. PHANTOM_TEST_FAIL_SEAM
+// names the one step that fails; every shim delegates all other calls to the
+// real tool, so the installer reaches the named step and must then stop
+// before any download or promotion. mktemp always records its invocations,
+// which lets the later seams prove the stage itself was created before they
+// fired. The mkdir shim reproduces mkdir's left-to-right behavior: it creates
+// `download` and then fails on `candidate`, leaving a partially created stage
+// tree that the cleanup trap must still remove.
 function makeShims(root) {
   const shims = join(root, 'shims');
   mkdirSync(shims);
@@ -33,22 +37,62 @@ function makeShims(root) {
 for arg do
   case "$arg" in
     *.install.XXXXXX)
-      printf 'mktemp: injected staging-directory failure\\n' >&2
-      exit 1
+      if [ "$PHANTOM_TEST_FAIL_SEAM" = mktemp ]; then
+        printf 'mktemp: injected staging-directory failure\\n' >&2
+        exit 1
+      fi
+      # mktemp "succeeds" but names a directory that does not exist.
+      if [ "$PHANTOM_TEST_FAIL_SEAM" = missing ]; then
+        printf '%s\\n' "\${arg%.install.XXXXXX}.install.missing-stage"
+        exit 0
+      fi
       ;;
   esac
 done
 exec /usr/bin/mktemp "$@"
 `);
+  writeFileSync(join(shims, 'chmod'), `#!/bin/sh
+if [ "$PHANTOM_TEST_FAIL_SEAM" = chmod ] && [ "$1" = '700' ]; then
+  case "$2" in
+    *.install.*)
+      printf 'chmod: injected staging-directory failure\\n' >&2
+      exit 1
+      ;;
+  esac
+fi
+exec /bin/chmod "$@"
+`);
+  writeFileSync(join(shims, 'mkdir'), `#!/bin/sh
+if [ "$PHANTOM_TEST_FAIL_SEAM" = mkdir ]; then
+  staging=0
+  for arg do
+    case "$arg" in */download|*/candidate) staging=1 ;; esac
+  done
+  if [ "$staging" -eq 1 ]; then
+    for arg do
+      case "$arg" in
+        */download) /bin/mkdir -m 700 "$arg" || exit 1 ;;
+        */candidate)
+          printf 'mkdir: injected staging-directory failure\\n' >&2
+          exit 1
+          ;;
+      esac
+    done
+  fi
+fi
+exec /bin/mkdir "$@"
+`);
   writeFileSync(join(shims, 'curl'), `#!/bin/sh
 printf '%s\\n' "$*" >> "$PHANTOM_TEST_CURL_LOG"
 exit 22
 `);
-  for (const name of ['mktemp', 'curl']) chmodSync(join(shims, name), 0o755);
+  for (const name of ['mktemp', 'chmod', 'mkdir', 'curl']) {
+    chmodSync(join(shims, name), 0o755);
+  }
   return shims;
 }
 
-function runInstaller({ installer, root }) {
+function runInstaller({ installer, root, seam }) {
   const shims = makeShims(root);
   const home = join(root, 'home');
   const install = join(root, 'live', 'bin');
@@ -75,6 +119,7 @@ function runInstaller({ installer, root }) {
       PHANTOM_INSTALL_DIR: install,
       PHANTOM_TEST_MKTEMP_CALLS: mktempCalls,
       PHANTOM_TEST_CURL_LOG: curlLog,
+      PHANTOM_TEST_FAIL_SEAM: seam,
     },
   });
   const calls = existsSync(mktempCalls)
@@ -84,36 +129,109 @@ function runInstaller({ installer, root }) {
   return { result, install, home, calls, curlLog };
 }
 
+// Every staging-creation failure shares the contract: exit 1 with the failed
+// step named on stderr, no download attempted, the existing install
+// byte-identical, and no stage, lock, or HOME leftovers.
+function assertFailedStaging({ result, install, home, calls, curlLog, diagnostic, marker }) {
+  const parent = dirname(install);
+  assert.ifError(result.error);
+  assert.equal(result.status, 1, result.stderr);
+  // Both copies carry die() guards on top of errexit, so stderr names the
+  // failed step, and the shim marker proves the injected failure is what fired.
+  assert.match(result.stderr, diagnostic);
+  assert.match(result.stderr, marker);
+  assert.match(result.stdout, /target: /, 'the real installer ran up to the staging step');
+  assert.doesNotMatch(result.stdout, /downloading|checksum/);
+  assert.deepEqual(
+    calls,
+    [['-d', join(parent, '.bin.install.XXXXXX')]],
+    'the only mktemp call must be the install-parent staging template',
+  );
+  assert.equal(existsSync(curlLog), false, 'staging failure must precede any download');
+  assert.deepEqual(readdirSync(install), ['old-install']);
+  assert.equal(readFileSync(join(install, 'old-install'), 'utf8'), 'preserve-me');
+  assert.deepEqual(
+    readdirSync(parent),
+    ['bin'],
+    'the lock and any staging leftovers must be cleaned up',
+  );
+  assert.deepEqual(readdirSync(home), [], 'HOME must contain no leftover files');
+}
+
 for (const [label, installer] of installers) {
   test(`${label} installer exits nonzero before download when mktemp cannot create the staging directory`, (t) => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), `phantom-staging-failure-${label}-`)));
     t.after(() => rmSync(root, { recursive: true, force: true }));
-    const { result, install, home, calls, curlLog } = runInstaller({ installer, root });
-    const parent = dirname(install);
+    const { result, install, home, calls, curlLog } = runInstaller({
+      installer, root, seam: 'mktemp',
+    });
 
-    assert.ifError(result.error);
-    assert.equal(result.status, 1, result.stderr);
-    // Both copies carry the die() guard on top of errexit, so stderr names the
-    // failed step and the parent it could not stage in, and the shim marker
-    // proves the injected mktemp failure is what fired.
-    assert.match(result.stderr, /could not create a private staging directory in /);
-    assert.match(result.stderr, new RegExp(escapeRegExp(parent)));
-    assert.match(result.stderr, /mktemp: injected staging-directory failure/);
-    assert.match(result.stdout, /target: /, 'the real installer ran up to the staging step');
-    assert.doesNotMatch(result.stdout, /downloading|checksum/);
-    assert.deepEqual(
+    assertFailedStaging({
+      result,
+      install,
+      home,
       calls,
-      [['-d', join(parent, '.bin.install.XXXXXX')]],
-      'the only mktemp call must be the install-parent staging template',
-    );
-    assert.equal(existsSync(curlLog), false, 'staging failure must precede any download');
-    assert.deepEqual(readdirSync(install), ['old-install']);
-    assert.equal(readFileSync(join(install, 'old-install'), 'utf8'), 'preserve-me');
-    assert.deepEqual(
-      readdirSync(parent),
-      ['bin'],
-      'the lock and any staging leftovers must be cleaned up',
-    );
-    assert.deepEqual(readdirSync(home), [], 'HOME must contain no leftover files');
+      curlLog,
+      // The failed step also names the parent it could not stage in.
+      diagnostic: new RegExp(
+        `could not create a private staging directory in ${escapeRegExp(dirname(install))}`,
+      ),
+      marker: /mktemp: injected staging-directory failure/,
+    });
+  });
+
+  test(`${label} installer exits nonzero before download when chmod cannot secure the staging directory`, (t) => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), `phantom-staging-failure-${label}-`)));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const { result, install, home, calls, curlLog } = runInstaller({ installer, root, seam: 'chmod' });
+
+    // The recorded mktemp call proves the stage existed; cleanup must remove
+    // the empty stage root along with the lock.
+    assertFailedStaging({
+      result,
+      install,
+      home,
+      calls,
+      curlLog,
+      diagnostic: /could not secure the staging directory/,
+      marker: /chmod: injected staging-directory failure/,
+    });
+  });
+
+  test(`${label} installer exits nonzero before download when mkdir cannot create the staging subdirectories`, (t) => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), `phantom-staging-failure-${label}-`)));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const { result, install, home, calls, curlLog } = runInstaller({ installer, root, seam: 'mkdir' });
+
+    // The shim created `download` before failing on `candidate`, so the
+    // readdirSync(parent) check proves a partially created stage tree is
+    // removed, not just an empty one.
+    assertFailedStaging({
+      result,
+      install,
+      home,
+      calls,
+      curlLog,
+      diagnostic: /could not create staging directories/,
+      marker: /mkdir: injected staging-directory failure/,
+    });
+  });
+
+  test(`${label} installer exits nonzero before download when the staging directory is missing after mktemp`, (t) => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), `phantom-staging-failure-${label}-`)));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const { result, install, home, calls, curlLog } = runInstaller({ installer, root, seam: 'missing' });
+
+    // The installer must stop at the first use of the absent stage (chmod)
+    // instead of downloading into, or promoting from, a path that is not there.
+    assertFailedStaging({
+      result,
+      install,
+      home,
+      calls,
+      curlLog,
+      diagnostic: /could not secure the staging directory/,
+      marker: /\.bin\.install\.missing-stage/,
+    });
   });
 }
