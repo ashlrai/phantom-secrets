@@ -15,6 +15,7 @@ import {
 import { basename, dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
+import { stripVTControlCharacters } from "node:util";
 
 import { validateNativeRuntime } from "./native-release-smoke.mjs";
 
@@ -24,8 +25,34 @@ function fail(message) {
   throw new Error(message);
 }
 
-function run(command, args, label, env, expectFailure = false) {
-  const result = spawnSync(command, args, {
+/** Closed facts from existing installer progress; never emit captured bodies. */
+export function installerFailureFacts(result, elapsedMs) {
+  const stdout = typeof result.stdout === "string" ? result.stdout : "";
+  const stderr = typeof result.stderr === "string" ? result.stderr : "";
+  let lastStage = "unknown";
+  const stages = [
+    ["target: ", "target"], ["release: ", "release"], ["downloading ", "download"],
+    ["checksum verified", "checksum"], ["archive identity verified", "archive-identity"],
+    ["installed to ", "installed"],
+  ];
+  for (const line of stripVTControlCharacters(stdout.slice(-8192)).split(/\r?\n/)) {
+    const progress = line.match(/^\s*-> phantom: (.*)$/)?.[1];
+    if (progress === undefined) continue;
+    for (const [prefix, stage] of stages) if (progress.startsWith(prefix)) lastStage = stage;
+  }
+  let errorCode = "UNKNOWN";
+  try {
+    const code = result.error?.code;
+    if (typeof code === "string" && /^[A-Z0-9_]{1,32}$/.test(code)) errorCode = code;
+  } catch { /* A diagnostic getter cannot change failure handling. */ }
+  return { lastStage, elapsedMs: Number.isFinite(elapsedMs) && elapsedMs >= 0 ? Math.round(elapsedMs) : 0,
+    stdoutBytes: Buffer.byteLength(stdout), stderrBytes: Buffer.byteLength(stderr), errorCode };
+}
+
+/** @internal The default executor and all process bounds remain source-owned. */
+export function runInstallerProcess(command, args, label, env, expectFailure = false, execute = spawnSync) {
+  const started = performance.now();
+  const result = execute(command, args, {
     cwd: repoRoot,
     encoding: "utf8",
     env,
@@ -34,7 +61,7 @@ function run(command, args, label, env, expectFailure = false) {
     timeout: 120_000,
     windowsHide: true,
   });
-  if (result.error) fail(`${label} could not run: ${result.error.message}`);
+  if (result.error) fail(`${label} could not run: ${result.error.message}; facts=${JSON.stringify(installerFailureFacts(result, performance.now() - started))}`);
   const failed = result.status !== 0 || result.signal !== null;
   if (failed !== expectFailure) {
     const detail = (result.stderr || result.stdout).trim();
@@ -155,7 +182,7 @@ export function runNativeInstallerAcceptance({
   const command = installerCommand(contract.platform, installerEnv);
 
   try {
-    run(command.command, command.args, `native ${target} installer`, installerEnv);
+    runInstallerProcess(command.command, command.args, `native ${target} installer`, installerEnv);
     const receiptPath = join(install, ".phantom-install-source.json");
     const receipt = JSON.parse(readFileSync(receiptPath, "utf8"));
     const expectedReceipt = {
@@ -169,7 +196,7 @@ export function runNativeInstallerAcceptance({
     }
     for (const [index, binaryName] of contract.binaries.entries()) {
       const product = index === 0 ? "phantom" : "phantom-mcp";
-      const output = run(
+      const output = runInstallerProcess(
         join(install, binaryName),
         ["--version"],
         `installed ${product} --version`,
@@ -196,7 +223,7 @@ export function runNativeInstallerAcceptance({
       }
     };
 
-    const rollbackFailure = run(
+    const rollbackFailure = runInstallerProcess(
       command.command,
       command.args,
       `native ${target} installer controlled post-promotion failure`,
@@ -211,7 +238,7 @@ export function runNativeInstallerAcceptance({
     assertAcceptedInstallationPreserved("controlled post-promotion rollback");
 
     writeFileSync(sidecar, `${"0".repeat(64)}  ${contract.archive}\n`, { mode: 0o600 });
-    run(
+    runInstallerProcess(
       command.command,
       command.args,
       `native ${target} installer controlled checksum failure`,

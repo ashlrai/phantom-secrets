@@ -16,7 +16,8 @@ import { fileURLToPath } from 'node:url';
 // The PATH update appends to a candidate copy of the startup file, so every
 // pre-existing line (blank ones included) must stay where it was, in order.
 // The shipped add_to_user_path is extracted verbatim and run against files
-// whose blank lines are leading, doubled, whitespace-only, or trailing.
+// whose blank lines are leading, scattered between unrelated lines, doubled,
+// whitespace-only, or trailing.
 const installers = {
   'scripts/install.sh': new URL('install.sh', import.meta.url),
   'apps/web/public/install.sh': new URL('../apps/web/public/install.sh', import.meta.url),
@@ -34,6 +35,11 @@ const shells = {
 };
 
 const shapes = [
+  ['a single blank line between unrelated lines', 'alias ll="ls -l"\n\nexport EDITOR=vim\n'],
+  ['multiple blank lines scattered between unrelated lines',
+    'alias ll="ls -l"\n\nexport EDITOR=vim\n\n\nexport PAGER=less\n   \nmkcd() { mkdir -p "$1" && cd "$1"; }\n\n# end\n'],
+  ['multiple blank lines between unrelated lines, no final newline',
+    'export A=1\n\nexport B=2\n\nexport C=3'],
   ['leading blank lines', '\n\n# first\nexport A=1\n'],
   ['consecutive blank lines between content', 'export A=1\n\n\n\nexport B=2\n'],
   ['whitespace-only blank lines', 'export A=1\n  \n\t\nexport B=2\n'],
@@ -51,6 +57,10 @@ function extractFunction(source, name) {
   assert.ok(end > start, `locate end of ${name}`);
   return source.slice(start, end + 3);
 }
+
+// Blank lines are lines that trim to nothing: empty, whitespace-only, or a
+// bare CR from a CRLF ending. Their indexes make count and order exact.
+const blanks = (s) => s.split('\n').flatMap((l, i) => (l.trim() === '' ? [i] : []));
 
 for (const [label, url] of Object.entries(installers)) {
   const source = readFileSync(fileURLToPath(url), 'utf8');
@@ -81,11 +91,22 @@ for (const [label, url] of Object.entries(installers)) {
         const updated = readFileSync(rc, 'utf8');
         assert.ok(updated.startsWith(text), 'original bytes are an untouched prefix');
         assert.equal(updated, `${text}\n${marker}\n${cfg.line(bin)}\n`);
-        const blanks = (s) => s.split('\n').flatMap((l, i) => (l.trim() === '' ? [i] : []));
         const before = blanks(text);
-        assert.deepEqual(blanks(updated).slice(0, before.length), before,
+        const after = blanks(updated.slice(0, text.length));
+        assert.equal(after.length, before.length,
+          'the original blank-line count is unchanged');
+        assert.deepEqual(after, before,
           'every original blank line keeps its position and order');
       });
     }
   }
 }
+
+// The index comparison is the acceptance check: it must fail when an update
+// drops, moves, or inserts a blank line inside the original region.
+test('the blank-line assertions reject dropped, moved, and added blanks', () => {
+  const before = blanks('a\n\nb\n\n\nc\n');
+  assert.throws(() => assert.deepEqual(blanks('a\n\nb\nc\n'), before), assert.AssertionError);
+  assert.throws(() => assert.deepEqual(blanks('a\nb\n\n\nc\n'), before), assert.AssertionError);
+  assert.throws(() => assert.deepEqual(blanks('a\n\n\nb\n\n\nc\n'), before), assert.AssertionError);
+});

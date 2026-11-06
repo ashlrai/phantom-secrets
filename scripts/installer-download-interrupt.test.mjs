@@ -18,8 +18,10 @@ const installers = {
 // the installer is terminated mid-download. The EXIT/TERM trap must still
 // remove the private staging tree and release the lock, and the exit status
 // must be the conventional 128+15.
+const signals = { SIGHUP: 129, SIGINT: 130, SIGTERM: 143 };
 for (const [name, installer] of Object.entries(installers)) {
-  test(`${name} installer removes its staging directory when terminated during a download`, async (t) => {
+  for (const [sig, expectedCode] of Object.entries(signals)) {
+  test(`${name} installer removes its staging directory and partial download on ${sig} during a download`, async (t) => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-download-interrupt-')));
     t.after(() => rmSync(root, { recursive: true, force: true }));
     const shims = join(root, 'shims');
@@ -37,6 +39,7 @@ while [ $# -gt 0 ]; do
   if [ "$1" = "--output" ]; then out="$2"; fi
   shift
 done
+printf 'partial-bytes' > "$out"
 printf '%s\\n' "$out" > "$PHANTOM_TEST_CURL_STARTED"
 sleep 2
 exit 22
@@ -72,13 +75,15 @@ exit 22
     const stage = dirname(dirname(readFileSync(started, 'utf8').trim()));
     assert.match(stage, /\.bin\.install\.[A-Za-z0-9]{6}$/);
     assert.ok(existsSync(stage), 'staging existed during the download');
-    child.kill('SIGTERM');
+    assert.ok(existsSync(join(stage, 'download')), 'partial download existed in staging');
+    child.kill(sig);
 
     const { code, signal } = await exited;
-    assert.equal(signal, null, 'installer handles SIGTERM itself');
-    assert.equal(code, 143, 'terminated installer exits 128+SIGTERM');
+    assert.equal(signal, null, 'installer handles the signal itself');
+    assert.equal(code, expectedCode, `interrupted installer exits 128+${sig}`);
     assert.equal(existsSync(stage), false, 'staging directory must be removed');
     assert.equal(readFileSync(join(install, 'old-install'), 'utf8'), 'preserve-me');
     assert.deepEqual(readdirSync(dirname(install)), ['bin'], 'no lock or staging leftovers');
   });
+  }
 }

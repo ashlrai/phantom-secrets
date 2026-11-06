@@ -15,8 +15,34 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  qualify:
+    name: Qualify exact manual full CI
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    permissions:
+      contents: read
+      actions: write
+    outputs:
+      run_id: ${{ steps.full.outputs.full_ci_run_id }}
+      attempt: ${{ steps.full.outputs.full_ci_attempt }}
+      source: ${{ steps.full.outputs.source_sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+      - name: Reuse or dispatch exact manual full CI once
+        id: full
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: node scripts/release/qualify-full-ci.mjs qualify
+
   build-and-verify:
     name: Build and verify release candidate
+    needs: qualify
     uses: ./.github/workflows/release-build.yml
     with:
       release_tag: ${{ github.ref_name }}
@@ -26,22 +52,44 @@ jobs:
   attest:
     name: Request artifact attestations
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    needs: build-and-verify
+    needs: [qualify, build-and-verify]
     runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ github.ref_name }}
+      FULL_CI_RUN_ID: ${{ needs.qualify.outputs.run_id }}
+      FULL_CI_ATTEMPT: ${{ needs.qualify.outputs.attempt }}
+      FULL_CI_SOURCE: ${{ needs.qualify.outputs.source }}
     permissions:
       contents: read
+      actions: read
       id-token: write
       attestations: write
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: verified-release-bundle
           path: artifacts
 
+      - name: Recheck full CI before request build provenance for the six exact archives
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/release/qualify-full-ci.mjs verify
+
       - name: Request build provenance for the six exact archives
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-checksums: artifacts/SHA256SUMS
+
+      - name: Recheck full CI before request sbom attestation for macos arm64 archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/release/qualify-full-ci.mjs verify
 
       - name: Request SBOM attestation for macOS arm64 archive
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
@@ -49,11 +97,21 @@ jobs:
           subject-path: artifacts/phantom-aarch64-apple-darwin/phantom-aarch64-apple-darwin.tar.gz
           sbom-path: artifacts/phantom-aarch64-apple-darwin/phantom-aarch64-apple-darwin.tar.gz.spdx.json
 
+      - name: Recheck full CI before request sbom attestation for macos x64 archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/release/qualify-full-ci.mjs verify
+
       - name: Request SBOM attestation for macOS x64 archive
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-path: artifacts/phantom-x86_64-apple-darwin/phantom-x86_64-apple-darwin.tar.gz
           sbom-path: artifacts/phantom-x86_64-apple-darwin/phantom-x86_64-apple-darwin.tar.gz.spdx.json
+
+      - name: Recheck full CI before request sbom attestation for linux arm64 archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/release/qualify-full-ci.mjs verify
 
       - name: Request SBOM attestation for Linux arm64 archive
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
@@ -61,17 +119,32 @@ jobs:
           subject-path: artifacts/phantom-aarch64-unknown-linux-gnu/phantom-aarch64-unknown-linux-gnu.tar.gz
           sbom-path: artifacts/phantom-aarch64-unknown-linux-gnu/phantom-aarch64-unknown-linux-gnu.tar.gz.spdx.json
 
+      - name: Recheck full CI before request sbom attestation for linux x64 archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/release/qualify-full-ci.mjs verify
+
       - name: Request SBOM attestation for Linux x64 archive
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-path: artifacts/phantom-x86_64-unknown-linux-gnu/phantom-x86_64-unknown-linux-gnu.tar.gz
           sbom-path: artifacts/phantom-x86_64-unknown-linux-gnu/phantom-x86_64-unknown-linux-gnu.tar.gz.spdx.json
 
+      - name: Recheck full CI before request sbom attestation for windows arm64 archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/release/qualify-full-ci.mjs verify
+
       - name: Request SBOM attestation for Windows arm64 archive
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-path: artifacts/phantom-aarch64-pc-windows-msvc/phantom-aarch64-pc-windows-msvc.zip
           sbom-path: artifacts/phantom-aarch64-pc-windows-msvc/phantom-aarch64-pc-windows-msvc.zip.spdx.json
+
+      - name: Recheck full CI before request sbom attestation for windows x64 archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/release/qualify-full-ci.mjs verify
 
       - name: Request SBOM attestation for Windows x64 archive
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
@@ -134,8 +207,13 @@ jobs:
   release:
     name: Create Release
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    needs: verify-attestations
+    needs: [qualify, verify-attestations]
     runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ github.ref_name }}
+      FULL_CI_RUN_ID: ${{ needs.qualify.outputs.run_id }}
+      FULL_CI_ATTEMPT: ${{ needs.qualify.outputs.attempt }}
+      FULL_CI_SOURCE: ${{ needs.qualify.outputs.source }}
     # Configure this environment in GitHub with a required human reviewer.
     # Tags may build, attest, and verify, but publication keeps a separate
     # approval gate.
@@ -144,6 +222,7 @@ jobs:
     # Release job needs write to publish the Release and upload assets.
     permissions:
       contents: write
+      actions: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -178,6 +257,7 @@ jobs:
             200) echo "release ${GITHUB_REF_NAME} already exists; publish a new fix-forward tag" >&2; exit 1 ;;
             *) echo "could not prove release absence (HTTP ${status:-none})" >&2; exit 1 ;;
           esac
+          node scripts/release/qualify-full-ci.mjs verify
 
       - name: Create release
         id: create-draft-release
@@ -221,7 +301,10 @@ jobs:
       - name: Publish the organization-enforced immutable release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release edit "$GITHUB_REF_NAME" --draft=false
+        run: |
+          set -euo pipefail
+          node scripts/release/qualify-full-ci.mjs verify
+          gh release edit "$GITHUB_REF_NAME" --draft=false
 
       - name: Verify the published immutable release receipt
         env:
@@ -248,14 +331,20 @@ jobs:
     # Release tags only. Runs after the GitHub Release is created and
     # re-verified, behind the same human-reviewed `release` environment.
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    needs: release
+    needs: [qualify, release]
     runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ github.ref_name }}
+      FULL_CI_RUN_ID: ${{ needs.qualify.outputs.run_id }}
+      FULL_CI_ATTEMPT: ${{ needs.qualify.outputs.attempt }}
+      FULL_CI_SOURCE: ${{ needs.qualify.outputs.source }}
     environment:
       name: release
     # OIDC trusted publishing: npm exchanges the GitHub id-token for a
     # short-lived publish credential. No NPM_TOKEN secret is used.
     permissions:
       contents: read
+      actions: read
       id-token: write
     strategy:
       max-parallel: 1
@@ -296,6 +385,7 @@ jobs:
         working-directory: ${{ matrix.package.dir }}
         env:
           PKG_NAME: ${{ matrix.package.name }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           version=$(node -p "require('./package.json').version")
@@ -303,4 +393,5 @@ jobs:
             echo "${PKG_NAME}@${version} is already published; skipping."
             exit 0
           fi
+          node ../scripts/release/qualify-full-ci.mjs verify
           npm publish --provenance --access public
