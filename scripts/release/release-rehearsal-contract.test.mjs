@@ -13,8 +13,9 @@ import { fileURLToPath } from "node:url";
 import "./signing-readiness.test.mjs";
 import "./qualify-full-ci.test.mjs";
 import "./npm-candidate-acceptance.test.mjs";
+import { loadSources } from "../freshness/sources.mjs";
 import { assertDependencyIndexClean } from "./check-dependency-index.mjs";
-import { assertPowershellCandidate } from "./check-powershell-candidate.mjs";
+import { assertPowershellCandidate, assertShellCandidate } from "./check-powershell-candidate.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const release = readFileSync(join(repoRoot, ".github/workflows/release.yml"), "utf8");
@@ -55,7 +56,8 @@ assert.equal(workspaceSections.length, 2, "one Cargo workspace.package section")
 const workspacePackage = workspaceSections[1].split(/^\[/m)[0];
 const versionRows = [...workspacePackage.matchAll(/^version\s*=\s*"([^"]+)"\s*$/gm)];
 assert.equal(versionRows.length, 1, "one Cargo source version");
-const sourceVersion = versionRows[0][1];
+const { version: sourceVersion } = loadSources(repoRoot);
+assert.equal(versionRows[0][1], sourceVersion, "unique workspace row matches canonical source metadata");
 
 function candidateCommands(version) {
   return [
@@ -98,7 +100,7 @@ function assertReleaseEligibilityWarnings(document) {
     /separately reviewed unreserved version, matching source metadata,/,
     /this guide selects no such version\./,
     /linked npm and MCP Registry runbooks retain version-specific `0\.7\.8`\s+examples/,
-    /are not current `0\.8\.5` source facts or copy-ready instructions for this candidate\./,
+    new RegExp("are not current `" + sourceVersion.replaceAll(".", "\\.") + "` source facts or copy-ready instructions for this candidate\\."),
     /Do not mechanically execute or substitute versions in those recipes\./,
     /reconcile the exact approved source, tag, package versions,\s+manifest, acceptance receipts, and publication authorization/,
   ];
@@ -942,7 +944,7 @@ test("current npm package contents are exactly the six reviewed files", () => {
   ]) {
     const pack = inspectPack(directory);
     assert.equal(pack.name, packageName);
-    assert.equal(pack.version, "0.8.5");
+    assert.equal(pack.version, sourceVersion);
     assert.equal(pack.entryCount, 6);
     assert.deepEqual(
       pack.files.map(({ path }) => path).sort(),
@@ -977,4 +979,21 @@ test("PowerShell candidate pin follows source metadata while public reference st
   assert.ok(block.includes("Select-String -LiteralPath apps/web/public/install.ps1 -Pattern '\\$CandidateTag = ''v0.7.9''' -Quiet"));
   assert.doesNotMatch(block, /v0\.7\.10/);
   execFileSync(process.execPath, [join(repoRoot, "scripts/release/check-powershell-candidate.mjs")], { cwd: repoRoot });
+});
+
+test("Unix candidate pin rejects stale, missing, duplicate and malformed source bindings", () => {
+  const installer = readFileSync(join(repoRoot, "scripts/install.sh"), "utf8");
+  const pin = `CANDIDATE_TAG="v${sourceVersion}"`;
+  assertShellCandidate(installer, npmPackage.version, npmMcpPackage.version);
+  for (const mutant of [installer.replace(pin, 'CANDIDATE_TAG="v0.7.10"'),
+    installer.replace(pin, ""), `${installer}\n${pin}\n`,
+    installer.replace(pin, ` ${pin}`), installer.replace(pin, `${pin} # trailing`),
+    `${installer}\nexport CANDIDATE_TAG="v99.98.97"\n`, `${installer}\nreadonly CANDIDATE_TAG="v99.98.97"\n`]) {
+    assert.throws(() => assertShellCandidate(mutant, npmPackage.version, npmMcpPackage.version), /one exact source-version assignment/);
+  }
+  for (const invalid of [undefined, 8, "", "01.2.3", "0.8.2'", "0.8.2\n"]) {
+    assert.throws(() => assertShellCandidate(installer, invalid, invalid), /candidate source version/);
+  }
+  assert.throws(() => assertShellCandidate(installer, sourceVersion, "99.98.97"), /source versions must agree/);
+  assertShellCandidate('CANDIDATE_TAG="v99.98.97"\r\n', "99.98.97", "99.98.97");
 });
