@@ -11,6 +11,14 @@ const shellInstaller = join(repo, 'scripts', 'install.sh');
 const psInstaller = join(repo, 'scripts', 'install.ps1');
 const tag = 'v1.2.3';
 const version = '1.2.3';
+// The candidate pin must match the independently owned workspace carrier;
+// fixture versions remain distinct so override/default behavior stays tested.
+const packageSection = readFileSync(join(repo, 'Cargo.toml'), 'utf8')
+  .split('[workspace.package]')[1]?.split(/\n\[/)[0];
+const candidateVersion = packageSection?.match(/^version\s*=\s*"(\d+\.\d+\.\d+)"$/m)?.[1];
+assert.ok(candidateVersion, 'workspace candidate version is required');
+const candidateTag = `v${candidateVersion}`;
+
 
 function executable(product, reportedVersion = version, pathSensitive = false) {
   const output = pathSensitive
@@ -166,6 +174,7 @@ function runInstaller(options = {}) {
   const result = spawnSync('/bin/bash', [options.installer ?? shellInstaller], {
     encoding: 'utf8',
     env,
+    cwd: options.cwd,
     timeout: options.timeoutMs,
   });
   return { root, install, log, result };
@@ -234,15 +243,17 @@ test('direct installers bind normal use to the canonical repository and exact ca
   const powerShell = readFileSync(psInstaller, 'utf8');
   for (const source of [shell, powerShell]) {
     assert.match(source, /ashlrai\/phantom-secrets/);
-    assert.match(source, /v0\.8\.1/);
+    assert.match(source, new RegExp(escapeRegExp(candidateTag)));
     assert.match(source, /PHANTOM_TEST_ALLOW_INSTALLER_OVERRIDES/);
     assert.doesNotMatch(source, /releases\/latest|api\.github\.com/);
   }
 
-  const { log, result } = runInstaller({ version: '0.8.1', useCandidateDefaults: true });
+  assert.ok(shell.includes(`CANDIDATE_TAG="${candidateTag}"`));
+  assert.ok(powerShell.includes(`$CandidateTag = '${candidateTag}'`));
+  const { log, result } = runInstaller({ version: candidateVersion, useCandidateDefaults: true });
   assert.equal(result.status, 0, result.stderr);
   const curlLog = readFileSync(log, 'utf8');
-  assert.match(curlLog, /ashlrai\/phantom-secrets\/releases\/download\/v0\.8\.1\//);
+  assert.ok(curlLog.includes(`ashlrai/phantom-secrets/releases/download/${candidateTag}/`));
   assert.doesNotMatch(curlLog, /releases\/latest|api\.github\.com/);
 });
 
@@ -674,7 +685,7 @@ test('Unix PATH setup creates an absent fish startup file and removes its tempor
   assert.deepEqual(readdirSync(parent), ['config.fish']);
 });
 
-test('Unix PATH final verification failure warns without restoring the previous startup file', (t) => {
+test('Unix PATH final verification failure warns and restores the previous startup file', (t) => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-path-final-check-')));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const home = join(root, 'home');
@@ -691,7 +702,7 @@ test('Unix PATH final verification failure warns without restoring the previous 
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stderr, /could not update your shell PATH/);
   assert.equal(existsSync(join(home, '.final-check-invoked')), true);
-  assert.match(readFileSync(rc, 'utf8'), /^# original configuration\n\n# phantom-secrets PATH\n/);
+  assert.equal(readFileSync(rc, 'utf8'), '# original configuration\n');
   assert.equal(existsSync(join(install, 'phantom')), true);
   assert.deepEqual(readdirSync(home).filter((name) => name.startsWith('.phantom-path.')), []);
 });
@@ -1016,6 +1027,50 @@ test('web Unix installer aborts before download when staging-directory creation 
   }
 });
 
+test('web Unix installer never uses a staging directory that mktemp reports but did not create', () => {
+  const installer = join(repo, 'apps/web/public/install.sh');
+  const root = mkdtempSync(join(tmpdir(), 'phantom-web-stage-missing-'));
+  try {
+    const shims = makeShims(root);
+    const missing = join(root, 'live', '.bin.install.missing');
+    const touched = join(root, 'shim-touched-missing');
+    // mktemp claims success and prints a path that does not exist; any later
+    // command naming that path is recorded, so reuse would be observable.
+    writeFileSync(join(shims, 'mktemp'), `#!/bin/sh
+for arg do
+  case "$arg" in
+    *.install.XXXXXX) printf '%s\\n' ${JSON.stringify(missing)}; exit 0 ;;
+  esac
+done
+exec /usr/bin/mktemp "$@"
+`);
+    chmodSync(join(shims, 'mktemp'), 0o755);
+    for (const name of ['mkdir', 'tar']) {
+      const real = execFileSync('which', [name], { encoding: 'utf8' }).trim();
+      writeFileSync(join(shims, name), `#!/bin/sh
+for arg do
+  case "$arg" in
+    ${JSON.stringify(missing)}*) printf '%s\\n' "$0 $*" >> ${JSON.stringify(touched)} ;;
+  esac
+done
+exec ${JSON.stringify(real)} "$@"
+`);
+      chmodSync(join(shims, name), 0o755);
+    }
+    const { install, log, result } = runInstaller({ root, shims, installer, existing: true });
+    assert.ifError(result.error);
+    assert.notEqual(result.status, 0, result.stderr);
+    assert.match(result.stderr, /could not secure the staging directory/);
+    assert.equal(existsSync(log), false, 'no download may start without a staging directory');
+    assert.equal(existsSync(touched), false, 'mkdir/tar must never be pointed at the missing directory');
+    assert.equal(existsSync(missing), false);
+    assert.equal(readFileSync(join(install, 'old-install'), 'utf8'), 'preserve-me');
+    assert.deepEqual(readdirSync(dirname(install)), ['bin']);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('Unix installer cleans staged candidates and rolls back after a controlled promotion failure', () => {
   for (const existing of [false, true]) {
     const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom installer rollback-')));
@@ -1212,7 +1267,7 @@ test('PowerShell installer has a strict offline-verifiable security contract', (
   assert.match(source, /PHANTOM_INSTALL_DIR must be a local absolute path/);
   assert.match(source, /install source receipt failed final validation/);
   assert.match(source, /\$CanonicalRepo = 'ashlrai\/phantom-secrets'/);
-  assert.match(source, /\$CandidateTag = 'v0\.8\.1'/);
+  assert.ok(source.includes(`$CandidateTag = '${candidateTag}'`));
   assert.match(source, /PHANTOM_TEST_ALLOW_INSTALLER_OVERRIDES -ceq '1'/);
   assert.match(source, /PHANTOM_TEST_LOCAL_RELEASE_DIR/);
   assert.match(source, /PHANTOM_TEST_DISABLE_PATH_PERSISTENCE/);
@@ -1226,4 +1281,40 @@ test('PowerShell parses when a native PowerShell host is available', { skip: !pr
     '-NoProfile', '-NonInteractive', '-Command',
     `[void][scriptblock]::Create((Get-Content -LiteralPath '${psInstaller.replaceAll("'", "''")}' -Raw))`,
   ]);
+});
+
+
+test('Unix installer updates only the intended shell rc when its path contains spaces', () => {
+  for (const existing of [false, true]) {
+    const root = mkdtempSync(join(tmpdir(), 'phantom-installer-spaced-rc-'));
+    const home = join(root, 'home with spaces');
+    const rcPath = join(home, '.bashrc');
+    const shims = makeShims(root);
+    const install = join(root, 'live', 'bin');
+    mkdirSync(home);
+    if (existing) writeFileSync(rcPath, '# existing configuration\n', { mode: 0o600 });
+
+    const options = { root, home, shims, install, cwd: root, directLocalRelease: true };
+    const first = runInstaller(options);
+    assert.ifError(first.result.error);
+    assert.equal(first.result.status, 0, first.result.stderr);
+    assert.doesNotMatch(first.result.stderr, /could not update your shell PATH/);
+    const expected = `${existing ? '# existing configuration\n' : ''}\n` +
+      `# phantom-secrets PATH\nexport PATH="${realpathSync(install)}:$PATH"\n`;
+    assert.equal(readFileSync(rcPath, 'utf8'), expected);
+    assert.deepEqual(readdirSync(home), ['.bashrc']);
+    assert.deepEqual(readdirSync(root).sort(), [
+      'fixture-1.2.3', 'home with spaces', 'live', 'payload-fixture-1.2.3', 'shims',
+    ]);
+
+    const second = runInstaller(options);
+    assert.ifError(second.result.error);
+    assert.equal(second.result.status, 0, second.result.stderr);
+    assert.doesNotMatch(second.result.stderr, /could not update your shell PATH/);
+    assert.equal(readFileSync(rcPath, 'utf8'), expected);
+    assert.deepEqual(readdirSync(home), ['.bashrc']);
+    assert.deepEqual(readdirSync(root).sort(), [
+      'fixture-1.2.3', 'home with spaces', 'live', 'payload-fixture-1.2.3', 'shims',
+    ]);
+  }
 });

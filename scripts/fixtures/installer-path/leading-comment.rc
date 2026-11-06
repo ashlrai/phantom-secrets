@@ -1,0 +1,3 @@
+# ~/.profile: my hand-written settings — do not edit $HOME `here`  
+#!not-a-shebang
+export KEEP=yes
