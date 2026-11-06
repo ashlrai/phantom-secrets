@@ -14,6 +14,7 @@ import {
 import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import test from 'node:test';
+import { pathUpdateHarness } from './lib/installer-path-harness.mjs';
 
 // add_to_user_path picks the startup file from `basename "${SHELL:-bash}"`:
 // zsh gets ~/.zshrc, fish gets ~/.config/fish/config.fish, and every other
@@ -32,21 +33,8 @@ const copies = {
 
 // Same extraction as installer-path-idempotence.test.mjs: the exercised code
 // is the shipped code, including its `set -euo pipefail` environment.
-function extractFunction(source, name, file) {
-  const start = source.indexOf(`${name}()`);
-  assert.ok(start >= 0, `${file}: locate ${name}`);
-  const lineEnd = source.indexOf('\n', start);
-  if (source.slice(start, lineEnd).trimEnd().endsWith('}')) return source.slice(start, lineEnd + 1);
-  const end = source.indexOf('\n}\n', start);
-  assert.ok(end > start, `${file}: locate end of ${name}`);
-  return source.slice(start, end + '\n}\n'.length);
-}
 
-const harnessFor = (source, file) => ['set -euo pipefail', 'umask 077',
-  ...['say', 'file_identity', 'file_link_count', 'add_to_user_path']
-    .map((name) => extractFunction(source, name, file)),
-  'add_to_user_path "$1"',
-].join('\n');
+const harnessFor = pathUpdateHarness;
 
 const marker = '# phantom-secrets PATH';
 const exportLine = (bin) => `export PATH="${bin}:$PATH"`;

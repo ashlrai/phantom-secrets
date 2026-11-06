@@ -23,9 +23,10 @@ using `mktemp` and the script's `umask 077`:
 For an existing startup file, the script requires a regular, non-symlink file
 with exactly one link. It records the file identity, copies the file to the
 snapshot with `cp -p`, and verifies the original identity again. If the
-snapshot contains the literal marker `# phantom-secrets PATH`, it removes both
-temporary files and returns without changing the startup file; it does not
-check whether the existing entry points to the current install directory.
+snapshot contains a line that is exactly the literal marker
+`# phantom-secrets PATH`, it removes both temporary files and returns without
+changing the startup file; it does not check whether the existing entry
+points to the current install directory.
 Otherwise it copies the snapshot to the candidate with `cp -p`.
 
 For an absent startup file, both temporary files start empty and are set to
