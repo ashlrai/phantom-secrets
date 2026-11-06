@@ -97,8 +97,12 @@ if [ "\${PHANTOM_TEST_EXTRA:-0}" = 1 ]; then touch "$(dirname "$installer")/unex
     for (const checksum of ["shasum", "sha256sum"]) {
       executable(path.join(bin, checksum), '#!/bin/bash\ncat >/dev/null\nexit "${PHANTOM_TEST_CHECKSUM_EXIT:-0}"\n');
     }
+    // The version-check paths must exist verbatim, but the stubs behind them
+    // are reached through relative symlinks: some hardened macOS policies
+    // refuse to exec a temp file literally named phantom*.
     for (const binary of ["phantom", "phantom-mcp"]) {
-      executable(path.join(installedBin, binary), "#!/bin/bash\nexit 0\n");
+      executable(path.join(installedBin, `.${binary}-stub`), "#!/bin/bash\nexit 0\n");
+      fs.symlinkSync(`.${binary}-stub`, path.join(installedBin, binary));
     }
     for (const platform of ["macOS", "Linux"]) {
       for (const scenario of ["success", "checksum failure", "extra file"]) {
