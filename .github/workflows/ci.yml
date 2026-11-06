@@ -323,6 +323,7 @@ jobs:
           scripts/installer-path-literal-dollar.test.mjs
           scripts/installer-path-post-move-recovery.test.mjs
           scripts/installer-path-repeat-untouched.test.mjs
+          scripts/installer-path-repeated-update.test.mjs
           scripts/installer-path-snapshot-cleanup.test.mjs
           scripts/installer-path-snapshot-distinct.test.mjs
           scripts/installer-path-snapshot-failure.test.mjs
@@ -352,6 +353,7 @@ jobs:
           scripts/installer-path-update-steps.test.mjs
           scripts/installer-path-visual-export.test.mjs
           scripts/installer-path-working-directory.test.mjs
+          scripts/public-installer-path-idempotence.test.mjs
           scripts/installer-promotion-failure-cleanup.test.mjs
           scripts/installer-stage-parent.test.mjs
           scripts/installer-staging-apostrophe-parent.test.mjs

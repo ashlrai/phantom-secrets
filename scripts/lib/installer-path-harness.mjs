@@ -48,3 +48,17 @@ export function createPathUpdateFixture(t, { prefix, harness, config }) {
   };
   return { root, home, bin, rc, run };
 }
+
+// Exact startup-file locations and managed line forms shared by the full-install
+// regressions. Optional preseed text belongs to each caller's fixture contract.
+export function installerPathShellCases(preseed = {}) {
+  const rows = [
+    ['bash', '/bin/bash', (home) => join(home, '.bashrc'), (bin) => `export PATH="${bin}:$PATH"`],
+    ['zsh', '/bin/zsh', (home) => join(home, '.zshrc'), (bin) => `export PATH="${bin}:$PATH"`],
+    ['fish', '/usr/bin/fish', (home) => join(home, '.config', 'fish', 'config.fish'), (bin) => `set -gx PATH "${bin}" $PATH`],
+  ];
+  return Object.fromEntries(rows.map(([name, shell, rc, pathLine]) => [name, {
+    shell, rc, pathLine,
+    ...(Object.hasOwn(preseed, name) ? { preseed: preseed[name] } : {}),
+  }]));
+}

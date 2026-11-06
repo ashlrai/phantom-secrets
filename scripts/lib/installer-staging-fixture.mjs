@@ -18,16 +18,25 @@ export function createStagingFixture(t, prefix) {
     writeFileSync(join(payload, name), `#!/bin/sh\necho "${name} 1.2.3"\n`);
     chmodSync(join(payload, name), 0o755);
   }
-  const os = { darwin: 'apple-darwin', linux: 'unknown-linux-gnu' }[process.platform];
-  const arch = { x64: 'x86_64', arm64: 'aarch64' }[process.arch];
-  assert.ok(os && arch, 'test requires a supported Unix installer target');
-  const archive = `phantom-${arch}-${os}.tar.gz`;
-  const result = spawnPosixSync('tar', ['-czf', join(fixture, archive), '-C', payload, 'phantom', 'phantom-mcp']);
+  const archive = writeInstallerArchive(fixture, payload);
+  return { root, fixture, shims, archive };
+}
+
+// Archive an already-populated synthetic payload. Callers retain their exact
+// binary program bytes and directory layout; this owns only tar/checksum format.
+export function writeInstallerArchive(fixture, payload) {
+  const targets = { darwin: 'apple-darwin', linux: 'unknown-linux-gnu' };
+  const architectures = { x64: 'x86_64', arm64: 'aarch64' };
+  const target = targets[process.platform];
+  const architecture = architectures[process.arch];
+  assert.ok(target && architecture, 'test requires a supported Unix installer target');
+  const archive = `phantom-${architecture}-${target}.tar.gz`;
+  const result = spawnPosixSync('tar', ['-czf', join(fixture, archive), '-C', payload, 'phantom', 'phantom-mcp'], { timeout: 30000 });
   assert.ifError(result.error);
   assert.equal(result.status, 0, result.stderr?.toString());
   const digest = createHash('sha256').update(readFileSync(join(fixture, archive))).digest('hex');
   writeFileSync(join(fixture, `${archive}.sha256`), `${digest}  ${archive}\n`);
-  return { root, fixture, shims, archive };
+  return archive;
 }
 
 // Record the hashed path while calculating the real digest, so failure tests
