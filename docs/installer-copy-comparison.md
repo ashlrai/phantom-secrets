@@ -27,10 +27,10 @@ To inspect differences, run `diff -u scripts/install.sh apps/web/public/install.
 Reviewed **2026-11-06**: the files **differ**. SHA-256 hashes identify the
 exact bytes reviewed:
 
-- `scripts/install.sh`: `fd94575515a52f0753fe563ba3a8b01ab8cad8f1ab00842ce39c8809534e8b11`
+- `scripts/install.sh`: `dd29a2d9c8c0790f326cee4b7778b4d4cb6e26609a3280d0ff806fa6fd652579`
 - `apps/web/public/install.sh`: `36492564008f5501798f780a4801d4db41345469518693f5f6142535eaca13f0`
 
-The repository copy targets the next candidate with `CANDIDATE_TAG="v0.8.3"`;
+The repository copy targets the next candidate with `CANDIDATE_TAG="v0.8.4"`;
 the web copy stays bound to the evidenced `v0.7.9` release. The repository
 copy also extracts with `tar --no-same-owner`; the web copy omits that
 option, which can affect ownership when run as root. Both copies share the

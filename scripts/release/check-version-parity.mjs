@@ -82,16 +82,22 @@ if (!registryPackage) {
   throw new Error("MCP registry package phantom-secrets-mcp is missing");
 }
 
-const wrapperVersion = requireMatch(
-  read("npm-mcp/bin/cli.js"),
-  /^const VERSION\s*=\s*"([^"]+)";/m,
-  "npm MCP wrapper version"
-);
-const cliWrapperVersion = requireMatch(
-  read("npm/bin/cli.js"),
-  /^const VERSION\s*=\s*"([^"]+)";/m,
-  "npm CLI wrapper version"
-);
+function packagedWrapperVersion(path, version) {
+  // Data-only source validation: never execute candidate wrapper/helper code.
+  const imports = read(path).match(/^const \{ VERSION, SEMVER_SOURCE \} = require\("\.\/package-version\.js"\);$/gm) ?? [];
+  const helper = read(join(dirname(path), "package-version.js"));
+  const bindings = helper.match(/^const VERSION = require\("\.\.\/package\.json"\)\.version;$/gm) ?? [];
+  const exports = helper.match(/^module\.exports = Object\.freeze\(\{ VERSION, SEMVER_SOURCE \}\);$/gm) ?? [];
+  if (imports.length !== 1 || bindings.length !== 1 || exports.length !== 1) {
+    throw new Error(`${path} must bind VERSION to its own packaged package.json`);
+  }
+  if (typeof version !== "string" || semverPattern.exec(version)?.[0] !== version) {
+    throw new Error(`${path} package version is not valid SemVer`);
+  }
+  return version;
+}
+const wrapperVersion = packagedWrapperVersion("npm-mcp/bin/cli.js", npmMcpVersion);
+const cliWrapperVersion = packagedWrapperVersion("npm/bin/cli.js", npmCliVersion);
 const shellInstallerVersion = requireMatch(
   read("scripts/install.sh"),
   /^CANDIDATE_TAG="v([^"]+)"$/m,
