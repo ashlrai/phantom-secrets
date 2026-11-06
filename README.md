@@ -10,10 +10,10 @@ Phantom replaces managed secrets in `.env` with `phm_` placeholders. Agents and 
 [![CI](https://img.shields.io/github/actions/workflow/status/ashlrai/phantom-secrets/ci.yml?style=for-the-badge&label=CI&logo=github&labelColor=0b0b14)](https://github.com/ashlrai/phantom-secrets/actions/workflows/ci.yml)
 <!-- fresh:begin readme-release-badges -->
 [![Verified GitHub release](https://img.shields.io/badge/verified_GitHub_release-v0.7.9-2f81f7?style=for-the-badge&labelColor=0b0b14)](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.9)
-[![Source version](https://img.shields.io/badge/source_version-v0.8.3-f5a623?style=for-the-badge&labelColor=0b0b14)](CHANGELOG.md#083---2026-11-06)
+[![Source version](https://img.shields.io/badge/source_version-v0.8.4-f5a623?style=for-the-badge&labelColor=0b0b14)](CHANGELOG.md#084---2026-11-06)
 <!-- fresh:end -->
 
-Source `0.8.3` is a release candidate. The verified public GitHub release remains `v0.7.9`; source metadata does not establish publication.
+Source `0.8.4` is a release candidate. The verified public GitHub release remains `v0.7.9`; source metadata does not establish publication.
 
 [![Pinned toolchain: Rust 1.95](https://img.shields.io/badge/pinned_toolchain-Rust_1.95-CE412B?style=for-the-badge&logo=rust&labelColor=0b0b14)](rust-toolchain.toml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg?style=for-the-badge&labelColor=0b0b14)](LICENSE)

@@ -43,7 +43,7 @@ for (const [pattern, label] of [
   [/SHA-256 mismatch/, "Unix checksum enforcement"],
   [/phantom-mcp/, "Unix two-binary installation"],
   [/CANONICAL_REPO="ashlrai\/phantom-secrets"/, "Unix canonical repository binding"],
-  [/CANDIDATE_TAG="v0\.8\.3"/, "Unix exact candidate tag binding"],
+  [/CANDIDATE_TAG="v0\.8\.4"/, "Unix exact candidate tag binding"],
   [/PHANTOM_TEST_ALLOW_INSTALLER_OVERRIDES/, "Unix test-only override gate"],
 ]) {
   requires(shellInstaller, pattern, label);
@@ -56,7 +56,7 @@ for (const [pattern, label] of [
   [/SHA-256 mismatch/, "Windows checksum enforcement"],
   [/phantom-mcp\.exe/, "Windows two-binary installation"],
   [/\$CanonicalRepo = 'ashlrai\/phantom-secrets'/, "Windows canonical repository binding"],
-  [/\$CandidateTag = 'v0\.8\.3'/, "Windows exact candidate tag binding"],
+  [/\$CandidateTag = 'v0\.8\.4'/, "Windows exact candidate tag binding"],
   [/PHANTOM_TEST_ALLOW_INSTALLER_OVERRIDES/, "Windows test-only override gate"],
 ]) {
   requires(powershellInstaller, pattern, label);

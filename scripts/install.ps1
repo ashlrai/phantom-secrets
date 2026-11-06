@@ -439,7 +439,7 @@ function Assert-ExactVersion {
 }
 
 $CanonicalRepo = 'ashlrai/phantom-secrets'
-$CandidateTag = 'v0.8.3'
+$CandidateTag = 'v0.8.4'
 $Repo = $CanonicalRepo
 $PinTag = $CandidateTag
 $script:TestLocalReleaseDir = $null

@@ -1,7 +1,7 @@
 # Distribution status
 
 Package publication and native acceptance are separate evidence. The source
-candidate identity for this tree is v0.8.3, with assets to be published by the
+candidate identity for this tree is v0.8.4, with assets to be published by the
 tag workflow when that release exists. Until that receipt is recorded, use the
 checksum-verified [GitHub v0.7.9 assets](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.9)
 for an exact install; an unpinned command can change independently.
@@ -35,7 +35,7 @@ immutable release, with 19 assets. Both public npm registries still returned
 `latest: 0.7.9` and `release-candidate: 0.7.4`; neither public version list
 contained `0.8.1` or `0.8.2`, and both exact `0.8.2` endpoints returned HTTP 404.
 This does not inspect private npm stage reservations. The `v0.8.0` and `v0.8.1`
-tags remain reserved; their existence is not publication evidence. The `v0.8.2` tag is also reserved; the `0.8.3` source candidate still requires exact-commit release qualification.
+tags remain reserved; their existence is not publication evidence. The `v0.8.2` tag is also reserved; the `0.8.4` source candidate still requires exact-commit release qualification.
 
 Neither package metadata nor the GitHub release proves hosted-service
 commissioning, live provider activation, certification, or customer acceptance.

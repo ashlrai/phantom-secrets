@@ -1161,7 +1161,7 @@ checksum = "34aa73646ffb006b8f5147f3dc182bd4bcb190227ce861fc4a4844bf8e3cb2c0"
 
 [[package]]
 name = "encoding_rs"
-version = "0.8.35"
+version = "0.8.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "75030f3c4f45dafd7586dd6780965a8c7e8e285a5ecb86713e63a79c5b2766f3"
 dependencies = [
@@ -2643,7 +2643,7 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "phantom-secrets"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "anyhow",
  "arboard",
@@ -2686,7 +2686,7 @@ dependencies = [
 
 [[package]]
 name = "phantom-secrets-authority"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "serde",
  "serde_json",
@@ -2695,7 +2695,7 @@ dependencies = [
 
 [[package]]
 name = "phantom-secrets-broker"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "fs2",
  "hex",
@@ -2713,7 +2713,7 @@ dependencies = [
 
 [[package]]
 name = "phantom-secrets-core"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -2751,7 +2751,7 @@ dependencies = [
 
 [[package]]
 name = "phantom-secrets-evidence"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "fs2",
  "hex",
@@ -2770,7 +2770,7 @@ dependencies = [
 
 [[package]]
 name = "phantom-secrets-locus-contract"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "phantom-secrets-authority",
  "serde",
@@ -2781,7 +2781,7 @@ dependencies = [
 
 [[package]]
 name = "phantom-secrets-mcp"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -2806,7 +2806,7 @@ dependencies = [
 
 [[package]]
 name = "phantom-secrets-proxy"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "aws-lc-rs",
  "base64 0.22.1",
@@ -2834,7 +2834,7 @@ dependencies = [
 
 [[package]]
 name = "phantom-secrets-runtime"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "hex",
  "libc",
@@ -2851,7 +2851,7 @@ dependencies = [
 
 [[package]]
 name = "phantom-secrets-session"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "fs2",
  "hex",
@@ -2870,7 +2870,7 @@ dependencies = [
 
 [[package]]
 name = "phantom-secrets-vault"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "argon2",
  "chacha20poly1305",
@@ -2893,7 +2893,7 @@ dependencies = [
 
 [[package]]
 name = "phantom-secrets-workspace"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "chacha20poly1305",
  "fs2",
@@ -4234,7 +4234,7 @@ dependencies = [
 
 [[package]]
 name = "tinystr"
-version = "0.8.3"
+version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c8323304221c2a851516f22236c5722a72eaa19749016521d6dff0824447d96d"
 dependencies = [
