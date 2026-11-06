@@ -24,16 +24,18 @@ To inspect differences, run `diff -u scripts/install.sh apps/web/public/install.
 
 ## Review snapshot
 
-Reviewed **2026-10-31**: the files **differ**. SHA-256 hashes identify the
+Reviewed **2026-11-06**: the files **differ**. SHA-256 hashes identify the
 exact bytes reviewed:
 
-- `scripts/install.sh`: `db9daf91f04c6125576cb95551f1f318be3405f277405e36f37ed8decfa87026`
-- `apps/web/public/install.sh`: `a430c238fd92a8a2481973c3c56750553b550f897663eaebe992e729ef311e04`
+- `scripts/install.sh`: `dd29a2d9c8c0790f326cee4b7778b4d4cb6e26609a3280d0ff806fa6fd652579`
+- `apps/web/public/install.sh`: `36492564008f5501798f780a4801d4db41345469518693f5f6142535eaca13f0`
 
-The repository copy emits explicit errors if staging directory creation or
-permission changes fail; the web copy relies on Bash error handling and command
-diagnostics. The repository copy also extracts with `tar --no-same-owner`;
-the web copy omits that option, which can affect ownership when run as root.
+The repository copy targets the next candidate with `CANDIDATE_TAG="v0.8.4"`;
+the web copy stays bound to the evidenced `v0.7.9` release. The repository
+copy also extracts with `tar --no-same-owner`; the web copy omits that
+option, which can affect ownership when run as root. Both copies share the
+same guarded staging block, so staging creation and permission failures are
+reported identically.
 See [installer staging](installer-staging.md) for the surrounding behavior.
 Re-run the comparison and update this snapshot and its hashes whenever either
 file changes; `node --test scripts/installer-copy-comparison.test.mjs` checks

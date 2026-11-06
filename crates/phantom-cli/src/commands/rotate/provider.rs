@@ -407,7 +407,11 @@ pub fn run_with_provider(
         .context("Managed dotenv became malformed; no provider call was made")?;
 
     let new_value = auto_sync_rotation_with_bootstrap(name, provider_config, &providers, bootstrap)
-        .map_err(|e| anyhow::anyhow!("Provider rotation failed for '{}': {}", name, e))?;
+        .map_err(|e| {
+        anyhow::anyhow!(
+            "Provider rotation failed for '{name}': {e}. Fix that cause, then run `phantom rotate {name}` again."
+        )
+    })?;
 
     match new_value {
         Some(secret) => {

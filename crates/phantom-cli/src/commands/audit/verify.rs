@@ -1,17 +1,24 @@
 use super::*;
 
+/// The audit log could not be inspected. The path is checked without following
+/// symlinks, so the likely fixes are local: a real `~/.phantom` directory and a
+/// log this user can read. The error text is the I/O failure, never log content.
+fn audit_log_read_error(error: impl std::fmt::Display) -> anyhow::Error {
+    anyhow::anyhow!(
+        "Failed to verify audit log: {error}. Check that ~/.phantom is a real directory (not a symlink) and that the audit log is readable by this user, then run `phantom audit verify` again."
+    )
+}
+
 pub fn run_verify(with_context: bool, json: bool) -> Result<()> {
     let path = resolve_path()?;
     // Nothing is followed: a dangling symlink at the log is not "no log",
     // and a symlinked `~/.phantom` is refused.
-    let log_present = phantom_core::audit::log_present(&path)
-        .map_err(|e| anyhow::anyhow!("Failed to verify audit log: {e}"))?;
+    let log_present = phantom_core::audit::log_present(&path).map_err(audit_log_read_error)?;
     // A retained head checkpoint proves a signed era existed, so a missing log
     // beside it is a deletion: verify it (the walk reports a head mismatch)
     // instead of reporting a log that never started.
     let head_present = match phantom_core::audit::head_checkpoint_path() {
-        Ok(head) => phantom_core::audit::log_present(&head)
-            .map_err(|e| anyhow::anyhow!("Failed to verify audit log: {e}"))?,
+        Ok(head) => phantom_core::audit::log_present(&head).map_err(audit_log_read_error)?,
         Err(_) => false,
     };
     if !log_present && !head_present {
@@ -45,8 +52,7 @@ pub fn run_verify(with_context: bool, json: bool) -> Result<()> {
         return run_verify_with_context();
     }
 
-    let report = phantom_core::audit::verify_log()
-        .map_err(|e| anyhow::anyhow!("Failed to verify audit log: {e}"))?;
+    let report = phantom_core::audit::verify_log().map_err(audit_log_read_error)?;
 
     if json {
         println!(
@@ -204,8 +210,8 @@ fn verify_report_json(report: &phantom_core::audit::VerifyReport, log_present: b
 /// `phantom audit verify --with-context`: decrypt and display `encrypted_context`
 /// for every event in the log, providing a forensics-grade view of audit metadata.
 fn run_verify_with_context() -> Result<()> {
-    let (report, events) = phantom_core::audit::verify_log_with_context()
-        .map_err(|e| anyhow::anyhow!("Failed to verify audit log: {e}"))?;
+    let (report, events) =
+        phantom_core::audit::verify_log_with_context().map_err(audit_log_read_error)?;
 
     let status = if report.is_clean() {
         "ok".green().bold().to_string()
@@ -286,4 +292,23 @@ fn run_verify_with_context() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn audit_log_read_error_says_what_failed_and_what_to_do() {
+        let message = audit_log_read_error("Permission denied").to_string();
+        assert!(
+            message.starts_with("Failed to verify audit log: Permission denied."),
+            "{message}"
+        );
+        assert!(message.contains("not a symlink"), "{message}");
+        assert!(
+            message.contains("`phantom audit verify` again"),
+            "{message}"
+        );
+    }
 }

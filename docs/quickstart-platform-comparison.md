@@ -11,9 +11,16 @@ running them.
 | | macOS | Windows | Linux |
 |---|---|---|---|
 | Shell and installer | Bash, `install.sh` | PowerShell, `install.ps1` | Bash, `install.sh` |
+| Displayed prompt | `$` | `PS>` | `$` |
 | Linked archives | Apple Silicon: `phantom-aarch64-apple-darwin.tar.gz`; Intel: `phantom-x86_64-apple-darwin.tar.gz` | ARM64: `phantom-aarch64-pc-windows-msvc.zip`; x64: `phantom-x86_64-pc-windows-msvc.zip` | ARM64: `phantom-aarch64-unknown-linux-gnu.tar.gz`; x64: `phantom-x86_64-unknown-linux-gnu.tar.gz` |
+| Script download | `curl` with HTTPS and TLS restrictions | `Invoke-WebRequest` | `curl` with HTTPS and TLS restrictions |
 | Script digest check | `shasum -a 256 -c -` | `Get-FileHash -Algorithm SHA256` | `sha256sum -c -` |
-| Installed version checks | `~/.phantom-secrets/bin/phantom` and `phantom-mcp` | `$env:USERPROFILE\.phantom-secrets\bin\phantom.exe` and `phantom-mcp.exe` | `~/.phantom-secrets/bin/phantom` and `phantom-mcp` |
+| Installed version checks | `$HOME/.phantom-secrets/bin/phantom` and `phantom-mcp` | `$env:USERPROFILE\.phantom-secrets\bin\phantom.exe` and `phantom-mcp.exe` | `$HOME/.phantom-secrets/bin/phantom` and `phantom-mcp` |
+
+The prompts are display-only; the copy button copies the command without the
+prompt. The Unix blocks invoke the verified script with `bash`; the PowerShell
+block invokes the file directly and explicitly checks for installer and
+version-check failures.
 
 Each card links both architecture-specific archives and their SHA-256 sidecars.
 The command downloads the script from the pinned source commit, checks its
@@ -49,7 +56,13 @@ recovery limits.
 - Windows selects ARM64 or x64. Archives are not Authenticode-signed; unblock
   only after checksum verification and when local policy permits it.
 - Published Linux GNU targets enforce a glibc 2.35 symbol ceiling; musl and
-  Alpine are not published.
+  Alpine are not published. The card identifies keyutils as the initial vault,
+  which is session-persistent rather than reboot-persistent. It points desktop
+  users to Secret Service and headless users to a managed encrypted-file
+  passphrase.
+
+The macOS card names Keychain, and the Windows card names current-user
+Credential Manager, when available.
 
 For the full installation instructions and manual archive option, see
 [getting started](getting-started.md#exact-github-assets-macos-linux-and-windows).

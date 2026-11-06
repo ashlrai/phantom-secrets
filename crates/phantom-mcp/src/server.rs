@@ -2975,14 +2975,69 @@ impl PhantomMcpServer {
         report_result(output, &report)
     }
 
+    fn log_check_report(&self, log_path: &str) -> Result<CallToolResult, McpError> {
+        if log_path.contains('\0') || log_path.len() > 4096 {
+            return Err(invalid_params_err(
+                "log_path must be one file path under 4096 bytes",
+            ));
+        }
+        let path = std::path::Path::new(log_path);
+        let full = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            self.project_dir.join(path)
+        };
+        let findings = phantom_core::report::agent_log_findings(&full).map_err(|_| {
+            invalid_params_err(
+                "agent log could not be scanned: it is missing, not a regular file, a symlink, or larger than 8 MiB",
+            )
+        })?;
+        let report = CheckReport {
+            mode: "log",
+            clean: findings.is_empty(),
+            findings: &findings,
+            warnings: &[],
+            indeterminate: &[],
+            proxy_session: false,
+            excused: &[],
+            session_warning: None,
+        };
+        if findings.is_empty() {
+            return report_result("No credential shapes found in the agent log.", &report);
+        }
+        let mut output = format!(
+            "Found {} credential shape(s) in the agent log. Values are not shown.\n",
+            findings.len()
+        );
+        for finding in &findings {
+            output.push_str(&format!(
+                "  - {} {} {} ({})\n",
+                finding.path.as_deref().unwrap_or("log"),
+                finding.name.as_deref().unwrap_or("line"),
+                finding.label.unwrap_or("credential shape"),
+                finding.pattern.unwrap_or("shape")
+            ));
+        }
+        report_result(output, &report)
+    }
+
     /// Check for leaked secrets or orphaned phantom tokens.
     #[tool(
-        description = "Check for security issues. With runtime=true, scans every environment variable of this server for a phantom token (leak detection). A variable is excused only when PHANTOM_PROXY_PORT and PHANTOM_PROXY_TOKEN lead to a live Phantom proxy (its health endpoint answers) and the session lists the variable in PHANTOM_SESSION_KEYS; excused names are reported in `excused` and `proxy_session` is true. Session variables with no live proxy are reported in `session_warning` and excuse nothing. Otherwise, scans the same dotenv files as `phantom check` for unprotected real secrets: .env, .env.local, .env.development, .env.development.local, .env.production, .env.production.local, .env.test, .env.test.local, plus the configured dotenv_path; a symlink is not followed and makes the result indeterminate. Returns a human summary plus a value-blind JSON report (also as structuredContent) shaped like `phantom check --json`: {mode, clean, findings: [{kind, path?, name?}], warnings, indeterminate?, proxy_session?, excused?, session_warning?}. Reports names and paths only, never values or phantom tokens."
+        description = "Check for security issues. With runtime=true, scans every environment variable of this server for a phantom token (leak detection). A variable is excused only when PHANTOM_PROXY_PORT and PHANTOM_PROXY_TOKEN lead to a live Phantom proxy (its health endpoint answers) and the session lists the variable in PHANTOM_SESSION_KEYS; excused names are reported in `excused` and `proxy_session` is true. Session variables with no live proxy are reported in `session_warning` and excuse nothing. With log_path set, scans that one regular file (an agent transcript or log) for credential shapes and returns mode \"log\". Findings name the file, the 1-based line, and the shape label. Symlinks are refused. Files over 8 MiB are refused. log_path cannot be combined with runtime=true. Otherwise, scans the same dotenv files as `phantom check` for unprotected real secrets: .env, .env.local, .env.development, .env.development.local, .env.production, .env.production.local, .env.test, .env.test.local, plus the configured dotenv_path; a symlink is not followed and makes the result indeterminate. Returns a human summary plus a value-blind JSON report (also as structuredContent) shaped like `phantom check --json`: {mode, clean, findings: [{kind, path?, name?, label?, pattern?}], warnings, indeterminate?, proxy_session?, excused?, session_warning?}. Reports names, paths, lines, and shape labels only, never values or phantom tokens."
     )]
     fn phantom_check(
         &self,
         Parameters(params): Parameters<CheckParams>,
     ) -> Result<CallToolResult, McpError> {
+        let log_path = params.log_path.as_deref().filter(|path| !path.is_empty());
+        if let Some(log_path) = log_path {
+            if params.runtime {
+                return Err(invalid_params_err(
+                    "log_path and runtime cannot be combined",
+                ));
+            }
+            return self.log_check_report(log_path);
+        }
         if params.runtime {
             // Every variable, not a list of well-known names: a token in any
             // other variable used to be reported clean. A variable is excused
@@ -10658,7 +10713,10 @@ mod tests {
         )
         .unwrap();
         let result = server
-            .phantom_check(Parameters(CheckParams { runtime: false }))
+            .phantom_check(Parameters(CheckParams {
+                runtime: false,
+                log_path: None,
+            }))
             .unwrap();
         let text = extract_content_text(&result);
         assert!(text.starts_with("Found 2 unprotected secret(s)"), "{text}");
@@ -10683,6 +10741,45 @@ mod tests {
     }
 
     #[test]
+    fn check_log_path_reports_the_line_and_shape_without_the_value() {
+        let _environment = TestEnvironment::new();
+        let (server, dir) = setup_test_project();
+        let tail = "QW".repeat(16);
+        let token = format!("sk-{tail}");
+        std::fs::write(
+            dir.path().join("agent.jsonl"),
+            format!("note\nmodel wrote {token}\n"),
+        )
+        .unwrap();
+        let result = server
+            .phantom_check(Parameters(CheckParams {
+                runtime: false,
+                log_path: Some("agent.jsonl".to_string()),
+            }))
+            .unwrap();
+        let report = structured_report(&result);
+        assert_eq!(report["mode"], "log");
+        assert_eq!(report["clean"], false);
+        assert_eq!(report["findings"][0]["kind"], "log");
+        assert_eq!(report["findings"][0]["name"], "line 2");
+        assert_eq!(report["findings"][0]["label"], "OpenAI API key");
+        assert_eq!(report["findings"][0]["pattern"], "sk-");
+        assert_no_value_leak(&result, &[&token, &tail]);
+
+        let refused = server
+            .phantom_check(Parameters(CheckParams {
+                runtime: true,
+                log_path: Some("agent.jsonl".to_string()),
+            }))
+            .unwrap_err();
+        assert!(
+            refused.message.contains("cannot be combined"),
+            "{}",
+            refused.message
+        );
+    }
+
+    #[test]
     fn check_clean_worktree_matches_cli_shape() {
         let _environment = TestEnvironment::new();
         let dir = TempDir::new().unwrap();
@@ -10694,7 +10791,10 @@ mod tests {
         .unwrap();
         let server = PhantomMcpServer::with_dir(dir.path().to_path_buf());
         let result = server
-            .phantom_check(Parameters(CheckParams { runtime: false }))
+            .phantom_check(Parameters(CheckParams {
+                runtime: false,
+                log_path: None,
+            }))
             .unwrap();
         assert_eq!(
             structured_report(&result),
@@ -10717,7 +10817,10 @@ mod tests {
         .unwrap();
         let server = PhantomMcpServer::with_dir(dir.path().to_path_buf());
         let result = server
-            .phantom_check(Parameters(CheckParams { runtime: false }))
+            .phantom_check(Parameters(CheckParams {
+                runtime: false,
+                log_path: None,
+            }))
             .unwrap();
         let report = structured_report(&result);
         assert_eq!(report["clean"], false);
@@ -10781,7 +10884,10 @@ mod tests {
         let server = PhantomMcpServer::with_dir(project.clone());
 
         let result = server
-            .phantom_check(Parameters(CheckParams { runtime: false }))
+            .phantom_check(Parameters(CheckParams {
+                runtime: false,
+                log_path: None,
+            }))
             .unwrap();
 
         let report = structured_report(&result);
@@ -11998,7 +12104,10 @@ mod tests {
         // SAFETY: serialized by TestEnvironment's process env lock; restored below.
         unsafe { std::env::set_var(var, token.as_str()) };
         let server = PhantomMcpServer::with_dir(TempDir::new().unwrap().path().to_path_buf());
-        let result = server.phantom_check(Parameters(CheckParams { runtime: true }));
+        let result = server.phantom_check(Parameters(CheckParams {
+            runtime: true,
+            log_path: None,
+        }));
         unsafe {
             match previous {
                 Some(value) => std::env::set_var(var, value),
@@ -12033,7 +12142,10 @@ mod tests {
             }
         }
         let server = PhantomMcpServer::with_dir(TempDir::new().unwrap().path().to_path_buf());
-        let result = server.phantom_check(Parameters(CheckParams { runtime: true }));
+        let result = server.phantom_check(Parameters(CheckParams {
+            runtime: true,
+            log_path: None,
+        }));
         for (name, before) in previous {
             // SAFETY: as above.
             unsafe {
@@ -18363,7 +18475,10 @@ mod tests {
         let (server, _dir) = project_with_unscanned_plaintext();
         std::os::unix::fs::symlink("missing.toml", server.config_path()).unwrap();
         let result = server
-            .phantom_check(Parameters(CheckParams { runtime: false }))
+            .phantom_check(Parameters(CheckParams {
+                runtime: false,
+                log_path: None,
+            }))
             .unwrap();
         let report = structured_report(&result);
         assert_eq!(report["clean"], false);
@@ -18389,7 +18504,10 @@ mod tests {
         std::os::unix::fs::symlink(outside_path.join(".phantom.toml"), server.config_path())
             .unwrap();
         let result = server
-            .phantom_check(Parameters(CheckParams { runtime: false }))
+            .phantom_check(Parameters(CheckParams {
+                runtime: false,
+                log_path: None,
+            }))
             .unwrap();
         let report = structured_report(&result);
         assert_eq!(report["clean"], false);
@@ -18412,7 +18530,10 @@ mod tests {
         let report = run_unblocked(&fifo, move || {
             structured_report(
                 &server
-                    .phantom_check(Parameters(CheckParams { runtime: false }))
+                    .phantom_check(Parameters(CheckParams {
+                        runtime: false,
+                        log_path: None,
+                    }))
                     .unwrap(),
             )
         });

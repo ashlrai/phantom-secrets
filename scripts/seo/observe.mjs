@@ -544,11 +544,16 @@ export function decodeEntities(value) {
   const entities = {
     "&amp;": "&",
     "&quot;": '"',
-    "&#39;": "'",
     "&lt;": "<",
     "&gt;": ">",
   };
-  return value.replace(/&(?:amp|quot|#39|lt|gt);/g, (entity) => entities[entity]);
+  // Single pass, so a decoded "&" can never start a second entity.
+  return value.replace(/&(?:amp|quot|lt|gt|#(\d{1,7}));/g, (entity, decimal) => {
+    if (decimal === undefined) return entities[entity];
+    const codePoint = Number(decimal);
+    const valid = codePoint > 0 && codePoint <= 0x10ffff && !(codePoint >= 0xd800 && codePoint <= 0xdfff);
+    return valid ? String.fromCodePoint(codePoint) : entity;
+  });
 }
 
 function cleanText(value) {

@@ -111,6 +111,16 @@ test("HTML entities are decoded exactly once", () => {
   assert.equal(decodeEntities("&amp;lt;script&amp;gt;"), "&lt;script&gt;");
 });
 
+test("decimal HTML entities are decoded exactly once", () => {
+  assert.equal(decodeEntities("&#65;"), "A");
+  assert.equal(decodeEntities("&#233;&#128512;"), "é😀");
+  // A decoded "&" must not start a second decode.
+  assert.equal(decodeEntities("&#38;#65;"), "&#65;");
+  assert.equal(decodeEntities("&#38;amp;"), "&amp;");
+  // Out-of-range or surrogate references stay literal.
+  assert.equal(decodeEntities("&#0;&#1114112;&#55296;"), "&#0;&#1114112;&#55296;");
+});
+
 test("JSON-LD extraction accepts HTML-compatible script endings", () => {
   const result = structuredData(
     '<script type="application/ld+json">{"@type":"SoftwareApplication"}</ScRiPt >',
@@ -141,6 +151,13 @@ test("machine-readable links require exact canonical URLs", () => {
   ]) {
     assert.equal(containsExactUrl(candidate, expected), false);
   }
+});
+
+test("exact URL matching rejects a longer URL with the same prefix", () => {
+  const expected = "https://phm.dev/llms.txt";
+  assert.equal(containsExactUrl(`See ${expected}`, expected), true);
+  assert.equal(containsExactUrl(`See ${expected}/extra`, expected), false);
+  assert.equal(containsExactUrl(`See ${expected}-backup`, expected), false);
 });
 
 function html(origin, route, options = {}) {
@@ -336,6 +353,35 @@ test("an empty query in a redirect is rejected before following it", async () =>
     /network destination is not allowlisted: https:\/\/phm\.dev\/docs/,
   );
   assert.equal(requests, 1);
+});
+
+test("local redirects are followed within the boundary and limited to two hops", async () => {
+  await withFixtureServer(
+    async ({ origin, options, requests }) => {
+      const requestOptions = { fetchImpl: fetch, networkPolicy: options.networkPolicy, retries: 0 };
+      const result = await requestWithinBoundary(`${origin}/start`, requestOptions);
+      assert.equal(result.url.href, `${origin}/final`);
+      assert.equal(result.status, 200);
+      assert.equal(result.headers.get("content-type"), "text/plain");
+      assert.equal(result.body, "redirect destination");
+      assert.deepEqual(requests, ["/start", "/step", "/final"]);
+
+      requests.length = 0;
+      await assert.rejects(requestWithinBoundary(`${origin}/loop`, requestOptions), /too many redirects/);
+      assert.deepEqual(requests, ["/loop", "/loop", "/loop"]);
+
+      requests.length = 0;
+      await assert.rejects(requestWithinBoundary(`${origin}/missing-location`, requestOptions), /has no location/);
+      assert.deepEqual(requests, ["/missing-location"]);
+    },
+    {
+      "/start": (response) => { response.writeHead(301, { location: "/step" }).end(); },
+      "/step": (response) => { response.writeHead(302, { location: "final" }).end(); },
+      "/final": (response) => { response.writeHead(200, { "content-type": "text/plain" }).end("redirect destination"); },
+      "/loop": (response) => { response.writeHead(307, { location: "/loop" }).end(); },
+      "/missing-location": (response) => { response.writeHead(302).end(); },
+    },
+  );
 });
 
 test("one monotonic request deadline covers retries and redirects", async (t) => {
@@ -623,6 +669,105 @@ test("canonical, structured-data, and off-origin redirect failures stay visible"
   );
 });
 
+test("a page without JSON-LD reports empty structured data, not an error", async () => {
+  // The page loads other scripts (a deferred src, an inline module, and a
+  // text/plain block holding JSON-lookalike content) but no ld+json, so
+  // extraction returns empty arrays rather than flagging anything.
+  const page = (origin) =>
+    `<!doctype html><html><head><title>/about — Phantom</title>` +
+    `<meta name="description" content="Description for /about">` +
+    `<link rel="canonical" href="${origin}/about">` +
+    `<script src="${origin}/app.js" defer></script>` +
+    `<script type="module">navigator.sendBeacon("/ping")</script>` +
+    `<script type="text/plain">{"not":"json-ld"}</script>` +
+    `</head><body><h1>Page /about</h1></body></html>`;
+  assert.deepEqual(structuredData(page("https://phm.dev")), { values: [], errors: [] });
+  await withFixtureServer(
+    async ({ origin, options }) => {
+      const report = await observeProduction(options);
+      const route = report.technical.public_routes.find((entry) => entry.route === "/about");
+      assert.ok(route, "the no-JSON-LD page is observed through the sitemap");
+      assert.equal(route.status, 200);
+      assert.equal(route.canonical, `${origin}/about`);
+      assert.deepEqual(route.structured_data_types, []);
+      assert.deepEqual(
+        report.findings.filter((finding) => finding.route === "/about"),
+        [],
+      );
+      assert.equal(report.technical.sitemap.route_count, publicPaths.size + 1);
+      assert.equal(report.verdict, "PASS");
+    },
+    {
+      "/sitemap.xml": (response, origin) => {
+        response.setHeader("content-type", "application/xml");
+        response.end(
+          `<?xml version="1.0"?><urlset>${[...publicPaths, "/about"]
+            .map((route) => `<url><loc>${origin}${route}</loc></url>`)
+            .join("")}</urlset>`,
+        );
+      },
+      "/about": (response, origin) => {
+        response.setHeader("content-type", "text/html; charset=utf-8");
+        response.end(page(origin));
+      },
+    },
+  );
+});
+
+test("a page with one malformed and one valid JSON-LD block keeps both", async () => {
+  // The malformed block sits first so extraction must continue past its error:
+  // the valid value is still returned and the bad block is still reported.
+  const valid = {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    headline: "Mixed JSON-LD blocks",
+  };
+  const page = (origin) =>
+    `<!doctype html><html><head><title>/mixed — Phantom</title>` +
+    `<meta name="description" content="Description for /mixed">` +
+    `<link rel="canonical" href="${origin}/mixed">` +
+    `<script type="application/ld+json">{broken</script>` +
+    `<script type="application/ld+json">${JSON.stringify(valid)}</script>` +
+    `</head><body><h1>Page /mixed</h1></body></html>`;
+  assert.deepEqual(structuredData(page("https://phm.dev")), {
+    values: [valid],
+    errors: ["invalid_json_ld"],
+  });
+  await withFixtureServer(
+    async ({ options }) => {
+      const report = await observeProduction(options);
+      const route = report.technical.public_routes.find((entry) => entry.route === "/mixed");
+      assert.ok(route, "the mixed-JSON-LD page is observed through the sitemap");
+      assert.equal(route.status, 200);
+      assert.deepEqual(route.structured_data_types, ["Article"]);
+      assert.deepEqual(report.findings, [
+        {
+          severity: "fail",
+          code: "structured_data_invalid",
+          message: "Page contains invalid JSON-LD",
+          route: "/mixed",
+        },
+      ]);
+      assert.deepEqual(report.counts, { fail: 1, warn: 0 });
+      assert.equal(report.verdict, "FAIL");
+    },
+    {
+      "/sitemap.xml": (response, origin) => {
+        response.setHeader("content-type", "application/xml");
+        response.end(
+          `<?xml version="1.0"?><urlset>${[...publicPaths, "/mixed"]
+            .map((route) => `<url><loc>${origin}${route}</loc></url>`)
+            .join("")}</urlset>`,
+        );
+      },
+      "/mixed": (response, origin) => {
+        response.setHeader("content-type", "text/html; charset=utf-8");
+        response.end(page(origin));
+      },
+    },
+  );
+});
+
 test("duplicate sitemap URLs fail deterministically before fetching public routes", async () => {
   await withFixtureServer(
     async ({ options, requests }) => {
@@ -640,6 +785,22 @@ test("duplicate sitemap URLs fail deterministically before fetching public route
           .map((route) => `<url><loc>${origin}${route}</loc></url>`)
           .join("")}</urlset>`);
       },
+    },
+  );
+});
+
+test("a sitemapped redirect is checked against the original route's canonical", async () => {
+  await withFixtureServer(
+    async ({ options, requests }) => {
+      const report = await observeProduction(options);
+      assert.equal(report.verdict, "FAIL");
+      assert.ok(requests.includes("/docs"));
+      assert.ok(requests.filter((route) => route === "/docs/guide").length >= 2);
+      assert.ok(report.findings.some((finding) =>
+        finding.code === "canonical_mismatch" && finding.route === "/docs"));
+    },
+    {
+      "/docs": (response) => { response.writeHead(302, { location: "/docs/guide" }).end(); },
     },
   );
 });
@@ -1091,5 +1252,26 @@ test("release drift compares the Phantom Secrets SoftwareApplication, not the um
       assert.match(drift[0].message, /0\.0\.1/);
     },
     { "/": umbrella, "/secrets": secrets("0.0.1") },
+  );
+});
+
+
+test("observed titles decode supported HTML entities exactly once", async () => {
+  await withFixtureServer(
+    async ({ options }) => {
+      const report = await observeProduction(options);
+      const page = report.technical.public_routes.find((entry) => entry.route === "/docs");
+      assert.ok(page, "the docs route must be observed");
+      assert.equal(page.title, `Phantom & "Docs" 'Guide' <API> &lt;literal&gt;`);
+    },
+    {
+      "/docs": (response, origin) => {
+        response.setHeader("content-type", "text/html; charset=utf-8");
+        response.end(html(origin, "/docs").replace(
+          "<title>/docs — Phantom</title>",
+          "<title>Phantom &amp; &quot;Docs&quot; &#39;Guide&#39; &lt;API&gt; &amp;lt;literal&amp;gt;</title>",
+        ));
+      },
+    },
   );
 });

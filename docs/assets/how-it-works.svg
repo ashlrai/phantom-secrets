@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="180" viewBox="0 0 960 180" role="img" aria-labelledby="flowTitle flowDesc">
+  <title id="flowTitle">How Phantom works</title>
+  <desc id="flowDesc">Init stores values, the project keeps placeholders, exec starts a local proxy, and a matched route receives the vault value.</desc>
+  <rect width="960" height="180" rx="24" fill="#0b0b14"/>
+  <g font-family="ui-sans-serif, system-ui, sans-serif">
+    <rect x="24" y="36" width="200" height="108" rx="16" fill="#101018" stroke="#252538"/>
+    <text x="44" y="72" fill="#60a5fa" font-size="13" font-weight="700">1. phantom init</text>
+    <text x="44" y="100" fill="#f5f5f7" font-size="14">Store detected values</text>
+    <text x="44" y="122" fill="#a1a1b5" font-size="13">Rewrite managed .env</text>
+    <rect x="256" y="36" width="200" height="108" rx="16" fill="#101018" stroke="#252538"/>
+    <text x="276" y="72" fill="#60a5fa" font-size="13" font-weight="700">2. phm_ placeholders</text>
+    <text x="276" y="100" fill="#f5f5f7" font-size="14">Agent reads names</text>
+    <text x="276" y="122" fill="#a1a1b5" font-size="13">MCP stays value-blind</text>
+    <rect x="488" y="36" width="200" height="108" rx="16" fill="#101018" stroke="#3b82f6"/>
+    <text x="508" y="72" fill="#60a5fa" font-size="13" font-weight="700">3. phantom exec</text>
+    <text x="508" y="100" fill="#f5f5f7" font-size="14">Proxy on 127.0.0.1</text>
+    <text x="508" y="122" fill="#a1a1b5" font-size="13">Fresh session bearer</text>
+    <rect x="720" y="36" width="216" height="108" rx="16" fill="#101018" stroke="#252538"/>
+    <text x="740" y="72" fill="#22c55e" font-size="13" font-weight="700">4. Matched route</text>
+    <text x="740" y="100" fill="#f5f5f7" font-size="14">Auth header only</text>
+    <text x="740" y="122" fill="#a1a1b5" font-size="13">Other paths fail closed</text>
+  </g>
+</svg>
