@@ -292,7 +292,13 @@ test("rendered and copied Unix install commands use the TMPDIR fallback and pres
   fs.mkdirSync(bin);
   fs.mkdirSync(installedBin, { recursive: true });
   const executable = (file, body) => fs.writeFileSync(file, `#!/bin/bash\n${body}\n`, { mode: 0o755 });
-  for (const name of ["phantom", "phantom-mcp"]) executable(path.join(installedBin, name), "exit 0");
+  // The version-check paths must exist verbatim, but the stubs behind them
+  // are reached through relative symlinks: some hardened macOS policies
+  // refuse to exec a temp file literally named phantom*.
+  for (const name of ["phantom", "phantom-mcp"]) {
+    executable(path.join(installedBin, `.${name}-stub`), "exit 0");
+    fs.symlinkSync(`.${name}-stub`, path.join(installedBin, name));
+  }
   executable(path.join(bin, "curl"), `
     while [[ $# -gt 0 && "$1" != "--output" ]]; do shift; done
     [[ $# -ge 2 ]] || exit 2
@@ -396,7 +402,13 @@ test("displayed Unix install commands create fresh private temporary directories
   const sentinel = path.join(temp, "install.sh");
   fs.writeFileSync(sentinel, "untouched");
   const executable = (file, body) => fs.writeFileSync(file, `#!/bin/bash\n${body}\n`, { mode: 0o755 });
-  for (const name of ["phantom", "phantom-mcp"]) executable(path.join(installedBin, name), "exit 0");
+  // The version-check paths must exist verbatim, but the stubs behind them
+  // are reached through relative symlinks: some hardened macOS policies
+  // refuse to exec a temp file literally named phantom*.
+  for (const name of ["phantom", "phantom-mcp"]) {
+    executable(path.join(installedBin, `.${name}-stub`), "exit 0");
+    fs.symlinkSync(`.${name}-stub`, path.join(installedBin, name));
+  }
   for (const checksum of ["shasum", "sha256sum"]) executable(path.join(bin, checksum), "cat >/dev/null");
   fs.writeFileSync(path.join(bin, "curl"), `#!${process.execPath}
 const fs = require("node:fs");
