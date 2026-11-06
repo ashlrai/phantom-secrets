@@ -3,33 +3,10 @@ import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { approvedDifferences, repositoryCopy, webCopy } from './lib/installer-copy-differences.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
-const repositoryCopy = 'scripts/install.sh';
-const webCopy = 'apps/web/public/install.sh';
-
-// Reviewed differences between the repository installer and the web-served
-// copy; docs/installer-copy-comparison.md carries the prose record. Each entry
-// pins one changed region exactly: `minus` lines exist only in the repository
-// copy and `plus` lines replace them in the web copy. Any drift beyond this
-// list — an added, removed, or reworded line — fails the consistency check.
-const approvedDifferences = [
-  {
-    name: 'the repository copy targets the next candidate tag while the web copy stays bound to the evidenced release',
-    minus: ['CANDIDATE_TAG="v0.8.1"'],
-    plus: ['CANDIDATE_TAG="v0.7.9"'],
-  },
-  {
-    name: 'the repository copy extracts the release archive with tar --no-same-owner',
-    minus: [
-      "# --no-same-owner: as root, tar would otherwise keep the release runner's uid on the installed binaries.",
-      'tar --no-same-owner -xzf "$archive_path" -C "$candidate_dir" || die "could not extract release archive"',
-    ],
-    plus: [
-      'tar -xzf "$archive_path" -C "$candidate_dir" || die "could not extract release archive"',
-    ],
-  },
-];
+// Keep the diff-group checks as well as the byte-preserving platform gate.
 
 function installerDiff(contextLines) {
   const result = spawnSync('diff', [`-U${contextLines}`, repositoryCopy, webCopy], { cwd: root, encoding: 'utf8' });

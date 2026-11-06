@@ -204,7 +204,7 @@ test("release workflows remain unsigned with read-only attestation verification"
   assert.match(release, /^on:\n  push:\n    tags:\n      - 'v\*'$/m);
   assert.deepEqual(
     [...release.matchAll(/^  ([a-z][a-z0-9-]+):$/gm)].map((match) => match[1]),
-    ["push", "build-and-verify", "attest", "verify-attestations", "release", "npm-publish"]
+    ["push", "qualify", "build-and-verify", "attest", "verify-attestations", "release", "npm-publish"]
   );
   assert.deepEqual(
     [...build.matchAll(/^  ([a-z][a-z0-9_-]+):$/gm)].map((match) => match[1]),
@@ -262,9 +262,9 @@ test("npm publish uses OIDC trusted publishing after the gated release, never a 
   assert.ok(start > release.indexOf("\n  release:\n"), "npm-publish follows release");
   const job = release.slice(start);
   assert.match(job, /if: github\.event_name == 'push' && startsWith\(github\.ref, 'refs\/tags\/v'\)/);
-  assert.match(job, /needs: release/);
+  assert.match(job, /needs: \[qualify, release\]/);
   assert.match(job, /environment:\n      name: release/);
-  assert.match(job, /^    permissions:\n      contents: read\n      id-token: write$/m);
+  assert.match(job, /^    permissions:\n      contents: read\n      actions: read\n      id-token: write$/m);
   assert.match(job, /npm publish --provenance --access public/);
   assert.match(job, /dir: npm, name: phantom-secrets \}/);
   assert.match(job, /dir: npm-mcp, name: phantom-secrets-mcp \}/);

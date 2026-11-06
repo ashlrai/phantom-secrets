@@ -28,5 +28,5 @@ when their reviewed state changes. Run the relevant installer behavior tests
 and the copy checks, including:
 
 ```sh
-node --test scripts/installer-copy-comparison.test.mjs scripts/installer-copy-consistency.test.mjs scripts/installer-copy-byte-consistency.test.mjs scripts/installer-copy-source-map.test.mjs scripts/installer-copy-sync.test.mjs
+node --test scripts/installer-copy-comparison.test.mjs scripts/installer-copy-consistency.test.mjs scripts/installer-copy-parity.test.mjs scripts/installer-copy-byte-consistency.test.mjs scripts/installer-copy-source-map.test.mjs scripts/installer-copy-sync.test.mjs
 ```

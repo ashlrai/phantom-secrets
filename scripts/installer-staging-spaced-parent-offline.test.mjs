@@ -53,10 +53,12 @@ for (const [name, installer] of Object.entries(installers)) {
 
     // Records each mktemp argv and the staging directory it created.
     const log = join(root, 'mktemp.log');
+    const createdLog = join(root, 'created.log');
     const realMktemp = execFileSync('which', ['mktemp'], { encoding: 'utf8' }).trim();
     writeFileSync(join(shims, 'mktemp'), `#!/bin/sh
 out="$(${JSON.stringify(realMktemp)} "$@")" || exit $?
-printf '%s\\t%s\\n' "$*" "$out" >> ${JSON.stringify(log)}
+printf '%s\\0' "$@" >> ${JSON.stringify(log)}
+printf '%s\\n' "$out" >> ${JSON.stringify(createdLog)}
 printf '%s\\n' "$out"
 `);
     chmodSync(join(shims, 'mktemp'), 0o755);
@@ -81,11 +83,10 @@ printf '%s\\n' "$out"
     assert.notEqual(result.status, 0, 'the wrong checksum fails the install');
     assert.match(result.stderr, /SHA-256 mismatch/, 'the installer got past staging and download');
 
-    const calls = readFileSync(log, 'utf8').split('\n').filter((l) => l.startsWith('-d '));
-    assert.equal(calls.length, 1, 'exactly one staging directory was requested');
-    const [template, created] = calls[0].split('\t');
-    assert.equal(template, `-d ${join(physicalParent, '.bin.install.XXXXXX')}`,
+    const args = readFileSync(log, 'utf8').split('\0');
+    assert.deepEqual(args, ['-d', join(physicalParent, '.bin.install.XXXXXX'), ''],
       'the template is one path under the resolved spaced parent');
+    const created = readFileSync(createdLog, 'utf8').trim();
     assert.ok(created.startsWith(`${join(physicalParent, '.bin.install.')}`));
     assert.equal(existsSync(created), false, 'staging is removed after the failure');
     assert.deepEqual(readdirSync(physicalParent), [], 'no staging, backup, or lock left behind');
