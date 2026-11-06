@@ -2,6 +2,12 @@
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { assertInstallerCopyParity } from "./lib/installer-copy-differences.mjs";
+
+assertInstallerCopyParity(
+  readFileSync(new URL("./install.sh", import.meta.url)),
+  readFileSync(new URL("../apps/web/public/install.sh", import.meta.url)),
+);
 
 const shellInstaller = readFileSync(new URL("./install.sh", import.meta.url), "utf8");
 const powershellInstaller = readFileSync(

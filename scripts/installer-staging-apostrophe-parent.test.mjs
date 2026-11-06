@@ -163,6 +163,36 @@ for (const [name, installer] of Object.entries(installers)) {
     assert.deepEqual(readdirSync(resolvedHome), ['.phantom-secrets'], 'HOME holds no stray files');
   });
 
+  test(`${name} installer: the default install dir stages and cleans up under a spaced HOME with two apostrophes`, (t) => {
+    const ctx = setup(t);
+    const home = join(ctx.root, "o'brien's home");
+    mkdirSync(home);
+    // HOME is not governed by the install-dir override grammar, so a real
+    // account directory may carry an apostrophe into the default parent.
+    const resolvedHome = realpathSync(home);
+    const resolvedParent = join(resolvedHome, '.phantom-secrets');
+    const result = run(ctx, installer, {
+      home,
+      pathPrefix: join(resolvedParent, 'bin'),
+    });
+    assert.ifError(result.error);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /installed to /);
+
+    assert.deepEqual(
+      stagingTemplates(ctx.mktempLog),
+      [`-d ${join(resolvedParent, '.bin.install.XXXXXX')}`],
+      'staging template must be one path under the apostrophe install parent',
+    );
+    const created = createdRoots(ctx.createdLog);
+    assert.equal(created.length, 1, 'exactly one staging directory was created');
+    assert.equal(existsSync(created[0]), false, 'the actual staging directory was removed');
+    assert.ok(existsSync(join(resolvedParent, 'bin', 'phantom')));
+    assert.ok(existsSync(join(resolvedParent, 'bin', 'phantom-mcp')));
+    assert.deepEqual(readdirSync(resolvedParent), ['bin'], 'no staging, backup, or lock left behind');
+    assert.deepEqual(readdirSync(resolvedHome), ['.phantom-secrets'], 'HOME holds no stray files');
+  });
+
   test(`${name} installer: a failed install beneath an apostrophe parent removes its staging tree`, (t) => {
     const ctx = setup(t);
     const home = join(ctx.root, 'home');

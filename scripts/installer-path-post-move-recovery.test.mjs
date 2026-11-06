@@ -58,8 +58,9 @@ function makeShims(root) {
   const shims = join(root, 'shims');
   mkdirSync(shims);
   writeFileSync(join(shims, 'mktemp'), `#!/bin/sh
-printf '%s\\n' "$(${realMktemp} "$@")" >> "$PHANTOM_CREATED"
-${realMktemp} "$@"
+created="$("${realMktemp}" "$@")" || exit $?
+printf '%s\\n' "$created" >> "$PHANTOM_CREATED"
+printf '%s\\n' "$created"
 `);
   writeFileSync(join(shims, 'grep'), `#!/bin/sh
 for arg do last="$arg"; done
