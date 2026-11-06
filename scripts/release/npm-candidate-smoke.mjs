@@ -26,7 +26,14 @@ const LEGACY_PACK_FILES = Object.freeze([
   "install.js",
   "package.json",
 ]);
-const METADATA_PACK_FILES = Object.freeze([...LEGACY_PACK_FILES, "bin/package-version.js"].sort());
+const METADATA_PACK_FILES = Object.freeze([
+  "LICENSE",
+  "README.md",
+  "bin/cli.js",
+  "bin/package-version.js",
+  "install.js",
+  "package.json",
+]);
 
 export function expectedPackFiles(version) {
   const match = typeof version === "string" && /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/.exec(version);
