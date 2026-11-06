@@ -209,8 +209,11 @@ exec ${JSON.stringify(realMktemp)} "$@"
     // BSD mkdir names the requested parent; GNU mkdir -p can name the
     // existing sealed ancestor it tried to traverse. Bind the path to the
     // same Permission denied diagnostic, rather than accepting any error.
+    const deniedOperation = result.stderr.split(/\r?\n/)
+      .filter(line => /Permission denied/i.test(line))
+      .map(line => line.replaceAll(root, '/fixture')).join('\n').slice(0, 1024);
     assert.ok(permissionDiagnostic(result.stderr, [sealed, parent]),
-      'the permission diagnostic must name the exact requested parent or its sealed ancestor');
+      'the permission diagnostic must name the exact requested parent or its sealed ancestor; received: ' + deniedOperation);
     assert.doesNotMatch(result.stdout, /downloading|checksum|installed to/);
     assert.equal(existsSync(curlLog), false, 'an uncreatable parent must fail before the network');
     assert.equal(existsSync(install), false, 'the destination must not appear');
