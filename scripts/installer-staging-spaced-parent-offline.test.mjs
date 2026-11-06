@@ -53,10 +53,12 @@ for (const [name, installer] of Object.entries(installers)) {
 
     // Records each mktemp argv and the staging directory it created.
     const log = join(root, 'mktemp.log');
+    const createdLog = join(root, 'created.log');
     const realMktemp = execFileSync('which', ['mktemp'], { encoding: 'utf8' }).trim();
     writeFileSync(join(shims, 'mktemp'), `#!/bin/sh
 out="$(${JSON.stringify(realMktemp)} "$@")" || exit $?
-printf '%s\\t%s\\n' "$*" "$out" >> ${JSON.stringify(log)}
+printf '%s\\0' "$@" >> ${JSON.stringify(log)}
+printf '%s\\n' "$out" >> ${JSON.stringify(createdLog)}
 printf '%s\\n' "$out"
 `);
     chmodSync(join(shims, 'mktemp'), 0o755);
@@ -81,15 +83,50 @@ printf '%s\\n' "$out"
     assert.notEqual(result.status, 0, 'the wrong checksum fails the install');
     assert.match(result.stderr, /SHA-256 mismatch/, 'the installer got past staging and download');
 
-    const calls = readFileSync(log, 'utf8').split('\n').filter((l) => l.startsWith('-d '));
-    assert.equal(calls.length, 1, 'exactly one staging directory was requested');
-    const [template, created] = calls[0].split('\t');
-    assert.equal(template, `-d ${join(physicalParent, '.bin.install.XXXXXX')}`,
+    const args = readFileSync(log, 'utf8').split('\0');
+    assert.deepEqual(args, ['-d', join(physicalParent, '.bin.install.XXXXXX'), ''],
       'the template is one path under the resolved spaced parent');
+    const created = readFileSync(createdLog, 'utf8').trim();
     assert.ok(created.startsWith(`${join(physicalParent, '.bin.install.')}`));
     assert.equal(existsSync(created), false, 'staging is removed after the failure');
     assert.deepEqual(readdirSync(physicalParent), [], 'no staging, backup, or lock left behind');
     assert.equal(existsSync(join(root, 'new parent')), false, 'the parent was not split at its space');
     assert.equal(existsSync(join(root, 'link')), false, 'nothing was created at a split prefix');
+  });
+}
+
+for (const [name, installer] of Object.entries(installers)) {
+  test(`${name} installer keeps an existing install and leaves no staging in a spaced parent`, (t) => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-spaced-existing-')));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const release = fixture(root);
+    const home = join(root, 'home');
+    mkdirSync(home);
+    const parent = join(root, 'my apps');
+    const install = join(parent, 'bin');
+    mkdirSync(install, { recursive: true });
+    writeFileSync(join(install, 'phantom'), 'old-install');
+
+    const env = { ...process.env };
+    for (const key of ['TMPDIR', 'PHANTOM_REPO', 'PHANTOM_TEST_FAIL_AFTER_PROMOTION']) delete env[key];
+    const result = spawnSync('/bin/bash', [installer], {
+      encoding: 'utf8',
+      timeout: 30000,
+      env: {
+        ...env,
+        HOME: home,
+        SHELL: '/bin/bash',
+        PHANTOM_INSTALL_DIR: install,
+        PHANTOM_TEST_ALLOW_INSTALLER_OVERRIDES: '1',
+        PHANTOM_TEST_LOCAL_RELEASE_DIR: release,
+        PHANTOM_TAG: 'v1.2.3',
+      },
+    });
+    assert.ifError(result.error);
+    assert.notEqual(result.status, 0, 'the wrong checksum fails the install');
+    assert.match(result.stderr, /SHA-256 mismatch/);
+    assert.equal(readFileSync(join(install, 'phantom'), 'utf8'), 'old-install');
+    assert.deepEqual(readdirSync(parent), ['bin'], 'no staging, backup, or lock left behind');
+    assert.deepEqual(readdirSync(root).sort(), ['home', 'my apps', 'payload', 'release']);
   });
 }

@@ -64,6 +64,11 @@ const shells = {
     rc: (home) => join(home, '.bashrc'),
     pathLine: (bin) => `export PATH="${bin}:$PATH"`,
   },
+  zsh: {
+    shell: '/bin/zsh',
+    rc: (home) => join(home, '.zshrc'),
+    pathLine: (bin) => `export PATH="${bin}:$PATH"`,
+  },
   fish: {
     shell: '/usr/bin/fish',
     rc: (home) => join(home, '.config', 'fish', 'config.fish'),
