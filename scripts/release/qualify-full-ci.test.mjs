@@ -1,3 +1,4 @@
+import '../ci/validation-scope.test.mjs';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -154,7 +155,7 @@ function harness(options = {}) {
       return { total_count: values.length + (options.incompleteList ? 1 : 0), workflow_runs: values };
     }
     if (path === `actions/workflows/${CI_WORKFLOW_ID}/dispatches`) {
-      dispatched++; assert.deepEqual(request, { method: 'POST', body: { ref: TAG } });
+      dispatched++; assert.deepEqual(request, { method: 'POST', body: { ref: TAG, inputs: { validation_scope: 'full' } } });
       visible = !options.neverVisible;
       if (options.uncertain) throw new Error('synthetic lost response');
       return;
@@ -283,7 +284,7 @@ test('a retried release reuses visible proof but never replays an unresolved dis
 test('critical evidence steps are bound to the actual owning CI jobs and manual-full selection', () => {
   const ci = readFileSync(new URL('../../.github/workflows/ci.yml', import.meta.url), 'utf8');
   const owners = {
-    'Test (macos-latest)': 'test', 'Test (ubuntu-latest)': 'test', 'Test (windows-latest)': 'test',
+    'Classify changes': 'changes', 'Test (macos-latest)': 'test', 'Test (ubuntu-latest)': 'test', 'Test (windows-latest)': 'test',
     'Ignored Tests (macos-latest)': 'test-ignored', 'Ignored Tests (ubuntu-latest)': 'test-ignored', 'Ignored Tests (windows-latest)': 'test-ignored',
     'Lint': 'lint', 'Rust dependency policy': 'dependency-policy', 'Windows ARM64 source check': 'windows-arm-source-check',
     'npm wrapper tests and package inspection': 'npm-wrappers', 'Web security, tests, and build': 'web',
@@ -297,7 +298,7 @@ test('critical evidence steps are bound to the actual owning CI jobs and manual-
       assert.equal([...block.matchAll(new RegExp(`^ {6}(?:- name: |  name: )${escaped}$`, 'gm'))].length, 1, `${name}: ${step} must exist once in its actual producer`);
     }
   }
-  assert.match(jobBlock(ci, 'test-ignored'), /if: github\.event_name == 'workflow_dispatch'/);
+  assert.match(jobBlock(ci, 'test-ignored'), /inputs\.validation_scope != 'windows-native-diagnostics' && \(github\.event_name == 'workflow_dispatch'\)/);
   assert.match(jobBlock(ci, 'test'), /cargo nextest run --workspace --all-targets --locked --no-fail-fast/);
   assert.match(jobBlock(ci, 'test'), /node --test\n\s+scripts\/installer-copy-byte-consistency\.test\.mjs/);
   assert.match(jobBlock(ci, 'coverage'), /github\.event_name == 'workflow_dispatch'/);
@@ -310,4 +311,17 @@ test('a fresh later exact producer revokes the frozen tuple without switching or
     await assert.rejects(runGate(mode, env, h.deps), /latest-exact-producer-changed/);
     assert.equal(h.counts().dispatched, 0);
   }
+});
+
+
+test('a successful diagnostic gate never substitutes for a complete full-scope tag producer', () => {
+  const doc = jobs();
+  doc.jobs.find(job => job.name === 'Classify changes').steps.find(step => step.name === 'Validate full scope').conclusion = 'skipped';
+  assert.throws(() => validateJobs(doc, RUN, ATTEMPT), /required-full-step/);
+  const diagnostic = jobs();
+  for (const job of diagnostic.jobs) if (!['Classify changes', 'Test (windows-latest)', 'CI Gate'].includes(job.name)) {
+    job.conclusion = 'skipped';
+  }
+  assert.throws(() => validateJobs(diagnostic, RUN, ATTEMPT));
+  assert.throws(() => validateRun({ ...run(), head_branch: 'main' }, C, TAG, RUN, ATTEMPT, true));
 });

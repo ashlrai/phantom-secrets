@@ -154,7 +154,11 @@ test("index hygiene runs before installs on every dependency-policy and release-
     const check = block.indexOf("/usr/bin/git ls-files -z | node scripts/release/check-dependency-index.mjs");
     assert.ok(check >= 0, "fixed-path Git index check must run");
     assert.match(block.slice(0, check), /shell: bash\n        run: \|\n          set -euo pipefail\n          $/);
-    assert.doesNotMatch(block.slice(0, check), /^    if:|^        if:/m);
+    const before = block.slice(0, check);
+    const jobConditions = before.match(/^    if:.*$/gm) ?? [];
+    assert.deepEqual(jobConditions, block.includes("  dependency-policy:")
+      ? ["    if: inputs.validation_scope != 'windows-native-diagnostics'"] : []);
+    assert.doesNotMatch(before, /^        if:/m);
     assert.ok(check < block.indexOf("Install verified"), "check precedes tool/dependency installation");
   }
 });
