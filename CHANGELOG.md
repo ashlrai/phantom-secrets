@@ -4,7 +4,47 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
-Changes after 0.8.4 land in this section.
+Changes after 0.8.5 land in this section.
+
+## [0.8.5] - 2026-11-06
+
+This candidate carries the unpublished 0.8.4 source and the changes since the
+last published `0.7.9`. Tags v0.8.0 through v0.8.4 remain
+immutable; none establishes a qualified public release.
+
+### Fixed
+
+- Shell PATH setup requires an exact standalone Phantom marker, handles
+  unterminated shell-config lines and trailing backslashes, and restores the
+  previous config if verification after replacement fails.
+- Citation metadata and generated public installation guidance retain the
+  verified published release instead of promoting an unqualified source version.
+- npm wrappers derive their strict release identity from their own packaged
+  metadata before cache access or binary execution. The reviewed six-file
+  inventory is closed against missing, extra, duplicate, or substituted files.
+- Installer regressions retain independent GNU/BSD diagnostics, real zsh
+  startup coverage, literal-dollar and shell-fallback paths, leading whitespace,
+  trailing comments, exact operation/path checks, and foreign-byte sentinels.
+- Release qualification reuses or dispatches one exact manual tag producer,
+  requires all 20 roles and critical steps, and revokes stale run/attempt or
+  source-policy evidence before native work and every public/npm write.
+- A closed native Windows diagnostic mode preserves the original installer
+  bounds and reports safe timeout facts; partial diagnostics cannot qualify a
+  release or trigger publication.
+
+### Breaking changes and migration
+
+Upgrading from the last published `0.7.9` includes the output changes recorded
+in the 0.8.4 source tranche. JSON consumers must accept `mode: log` and
+findings with `kind: log`, plus additive schema identifiers and `status.kind`.
+Do not combine `log_path` with `runtime=true`. `validate schedule --json` returns an object; strict agent
+readiness failures use exit 2. Broader credential scanning can require removing
+or protecting exposed values. Review the 0.7.10, 0.8.0 and 0.8.4 source entries
+for details. Vault format and route-owned proxy authentication stay unchanged;
+this candidate grants no new reveal, hosted-service or provider authority.
+Existing `v0.8.0` and `v0.8.1` tags stay immutable, as do reserved v0.8.2,
+v0.8.3 and v0.8.4. Keep using checksum-verified v0.7.9 assets until a new
+release receipt exists.
 
 ## [0.8.4] - 2026-11-06
 
@@ -3289,9 +3329,10 @@ remain separate evidence gates.
 For older release notes and downloadable artifacts, see [GitHub Releases](https://github.com/ashlrai/phantom-secrets/releases).
 
 <!-- fresh:begin changelog-unreleased-compare -->
-[Unreleased]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.4...HEAD
-[0.8.4]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.3...v0.8.4
+[Unreleased]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.5...HEAD
 <!-- fresh:end -->
+[0.8.5]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.4...v0.8.5
+[0.8.4]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.3...v0.8.4
 [0.8.3]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.2...v0.8.3
 [0.8.2]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.0...v0.8.1

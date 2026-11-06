@@ -93,7 +93,7 @@ the tag-push wrapper and therefore cannot enter a rehearsal run. This is the
 preferred way to find release-only platform failures before requesting a
 consequential tag.
 
-The concrete `0.8.4` examples in this runbook follow the current Cargo/npm source metadata.
+The concrete `0.8.5` examples in this runbook follow the current Cargo/npm source metadata.
 Source-version agreement does not establish release eligibility or permission to publish.
 Dated public-channel receipts remain separate evidence.
 
@@ -109,7 +109,7 @@ Starting a hosted rehearsal consumes GitHub Actions capacity and therefore
 requires repository authorization. For an approved exact candidate, run:
 
 ```bash
-gh workflow run release-rehearsal.yml -f release_tag=v0.8.4
+gh workflow run release-rehearsal.yml -f release_tag=v0.8.5
 ```
 
 Retain the workflow URL, source SHA, resolved runner images, six native job
@@ -129,7 +129,7 @@ or later on `PATH`; an unavailable, unauthenticated, malformed, or older client
 blocks the preflight rather than treating the reservation as absent:
 
 ```bash
-node scripts/release/pre-tag-preflight.mjs v0.8.4 REHEARSAL_RUN_ID_OR_URL
+node scripts/release/pre-tag-preflight.mjs v0.8.5 REHEARSAL_RUN_ID_OR_URL
 ```
 
 The script never creates or pushes a tag. Only after every gate passes does it
@@ -208,7 +208,7 @@ node --test scripts/release/pre-tag-preflight.test.mjs
 node --test scripts/release/release-rehearsal-contract.test.mjs
 node --test scripts/publish-crates.test.js
 node scripts/check-platform-installers.mjs
-node scripts/release/check-version-parity.mjs v0.8.4
+node scripts/release/check-version-parity.mjs v0.8.5
 git diff --check
 ```
 
@@ -251,14 +251,14 @@ publication tiers are:
 Run the non-publishing gate while preparing a candidate:
 
 ```bash
-./scripts/publish-crates.sh --verify-only --version 0.8.4
+./scripts/publish-crates.sh --verify-only --version 0.8.5
 ```
 
 Use `--allow-dirty` only for local development diagnostics. Before requesting
 publication authorization, perform the read-only crates.io reconciliation:
 
 ```bash
-./scripts/publish-crates.sh --dry-run --version 0.8.4
+./scripts/publish-crates.sh --dry-run --version 0.8.5
 ```
 
 The dry run builds each local `.crate`, queries the exact crates.io package
@@ -289,8 +289,8 @@ normal credentials or `CARGO_REGISTRY_TOKEN` and an exact confirmation value
 are also required:
 
 ```bash
-PHANTOM_PUBLISH_CONFIRM=publish-phantom-secrets-0.8.4 \
-  ./scripts/publish-crates.sh --publish --version 0.8.4
+PHANTOM_PUBLISH_CONFIRM=publish-phantom-secrets-0.8.5 \
+  ./scripts/publish-crates.sh --publish --version 0.8.5
 ```
 
 Do not place the registry token on the command line. The script removes registry
@@ -315,7 +315,7 @@ the exact tagged tarballs from fresh caches on all six native hosts while the
 npm versions are still absent. Only after that prepublication gate passes,
 re-pack both wrappers, stage both under `release-candidate`, inspect the staged
 tarballs, approve each stage with interactive 2FA, and reconcile exact integrity
-and provenance. Both exact public `0.8.4` packages must then pass the separate
+and provenance. Both exact public `0.8.5` packages must then pass the separate
 postpublication six-target npm-channel acceptance gate before any default tag changes. Separately promote the MCP
 wrapper to `latest` first and the primary CLI to `latest` last; verify both
 promotions before removing either candidate tag. Only after all npm gates pass
@@ -324,7 +324,7 @@ should an operator use the separate
 
 The linked npm and MCP Registry runbooks retain version-specific `0.7.8`
 examples. Those older examples, including the MCP manifest-version description,
-are not current `0.8.4` source facts or copy-ready instructions for this candidate.
+are not current `0.8.5` source facts or copy-ready instructions for this candidate.
 Do not mechanically execute or substitute versions in those recipes. Before any
 registry effect, reconcile the exact approved source, tag, package versions,
 manifest, acceptance receipts, and publication authorization for the selected
