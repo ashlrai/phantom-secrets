@@ -17,7 +17,7 @@ const installers = {
 // A stubbed curl that records the staging path it was asked to write to,
 // proves that path exists while curl runs, then fails like `curl --fail` on
 // an HTTP error. Nothing touches the network.
-function runInstaller(installer, root, { failOnly } = {}) {
+function runInstaller(installer, root, { failOnly, fresh = false } = {}) {
   const shims = join(root, 'shims');
   mkdirSync(shims);
   writeFileSync(join(shims, 'curl'), `#!/bin/sh
@@ -39,6 +39,7 @@ if [ -n "$PHANTOM_TEST_FAIL_ONLY" ]; then
 fi
 printf '%s\\n' "$out" >> "$PHANTOM_TEST_CURL_LOG"
 [ -d "$(dirname "$out")" ] && printf 'present\\n' >> "$PHANTOM_TEST_CURL_LOG"
+printf 'partial-download' > "$out"
 printf 'curl: (22) The requested URL returned error: 404\\n' >&2
 exit 22
 `);
@@ -47,10 +48,13 @@ exit 22
   const install = join(root, 'live', 'bin');
   const curlLog = join(root, 'curl.log');
   mkdirSync(home);
-  mkdirSync(install, { recursive: true });
-  writeFileSync(join(install, 'old-install'), 'preserve-me');
-  writeFileSync(join(install, 'phantom'), '#!/bin/sh\necho phantom old\n');
-  chmodSync(join(install, 'phantom'), 0o755);
+  mkdirSync(dirname(install), { recursive: true });
+  if (!fresh) {
+    mkdirSync(install);
+    writeFileSync(join(install, 'old-install'), 'preserve-me');
+    writeFileSync(join(install, 'phantom'), '#!/bin/sh\necho phantom old\n');
+    chmodSync(join(install, 'phantom'), 0o755);
+  }
   const env = { ...process.env };
   for (const name of [
     'PHANTOM_REPO', 'PHANTOM_TAG', 'PHANTOM_TEST_ALLOW_INSTALLER_OVERRIDES',
@@ -81,6 +85,7 @@ for (const [name, installer] of Object.entries(installers)) {
 
     assert.ifError(result.error);
     assert.notEqual(result.status, 0, 'a failed download must fail the install');
+    assert.match(result.stderr, /download failed/);
     assert.match(result.stdout, /downloading /);
     assert.doesNotMatch(result.stdout, /checksum|installed/i);
 
@@ -95,19 +100,38 @@ for (const [name, installer] of Object.entries(installers)) {
     assert.deepEqual(readdirSync(parent), ['bin'], 'no lock or staging leftovers');
   });
 
+  test(`${name} installer leaves no installation after a failed first download`, (t) => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-download-fresh-')));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const { result, install, curlLog } = runInstaller(installer, root, { fresh: true });
+    assert.ifError(result.error);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /download failed/);
+    const [stagedPath, present] = readFileSync(curlLog, 'utf8').trim().split('\n');
+    assert.equal(present, 'present', 'staging existed during download');
+    assert.equal(existsSync(dirname(dirname(stagedPath))), false);
+    assert.equal(existsSync(install), false);
+    assert.deepEqual(readdirSync(dirname(install)), [], 'no staging or lock leftovers');
+  });
+
   test(`${name} installer leaves an existing executable installation unchanged when a download fails`, (t) => {
     // '' fails every download; '.tar.gz' fails the archive; '.sha256' fails the
     // sidecar after the archive download already succeeded.
     for (const failOnly of ['', '.tar.gz', '.sha256']) {
       const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-download-preserve-')));
       t.after(() => rmSync(root, { recursive: true, force: true }));
-      const { result, install } = runInstaller(installer, root, { failOnly });
+      const { result, install, curlLog } = runInstaller(installer, root, { failOnly });
       const live = join(install, 'phantom');
       const label = `failOnly=${failOnly}`;
 
       assert.ifError(result.error);
       assert.notEqual(result.status, 0, `${label}: a failed download must fail the install`);
+      assert.match(result.stderr, /download failed/, label);
       assert.doesNotMatch(result.stdout, /installed to/, label);
+      const [stagedPath, present] = readFileSync(curlLog, 'utf8').trim().split('\n');
+      assert.equal(present, 'present', `${label}: staging existed during download`);
+      assert.equal(existsSync(dirname(dirname(stagedPath))), false, `${label}: staging removed`);
+      assert.deepEqual(readdirSync(dirname(install)), ['bin'], `${label}: no staging or lock leftovers`);
       assert.equal(readFileSync(live, 'utf8'), '#!/bin/sh\necho phantom old\n', label);
       assert.equal(statSync(live).mode & 0o777, 0o755, `${label}: executable bit preserved`);
       assert.deepEqual(readdirSync(install).sort(), ['old-install', 'phantom'], label);

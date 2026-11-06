@@ -105,12 +105,14 @@ for (const [file, installer] of Object.entries(copies)) {
         });
         assert.ifError(r.error);
         assert.equal(r.status, 0, r.stderr);
+        return r;
       };
 
-      run();
+      assert.match(run().stdout, /added .* to PATH/);
       const updated = readFileSync(rc);
-      assert.ok(updated.subarray(0, original.length).equals(original),
-        'original bytes are an exact prefix of the updated file');
+      assert.deepEqual(updated, Buffer.concat([
+        original, Buffer.from(`\n${marker}\n${shells.bash.line(bin)}\n`),
+      ]), 'the original bytes are unchanged and only the managed PATH block is appended');
       assert.ok(updated.includes(fn), 'the function bytes are intact');
       assert.equal(updated.indexOf(fn), updated.lastIndexOf(fn), 'the function appears once');
 

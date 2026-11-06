@@ -44,8 +44,7 @@ test('repository installer rolls back and removes staging after a post-promotion
   const digest = createHash('sha256').update(readFileSync(archivePath)).digest('hex');
   writeFileSync(`${archivePath}.sha256`, `${digest}  ${archive}\n`);
 
-  // Record the promotion move so the rollback assertions cannot pass
-  // vacuously on an install that never reached the promoted state.
+  // Record moves into the live directory to verify both promotion and rollback.
   const record = join(root, 'promoted');
   const realMv = execFileSync('which', ['mv'], { encoding: 'utf8' }).trim();
   writeFileSync(join(shims, 'mv'), `#!/bin/bash
@@ -78,10 +77,11 @@ exec ${JSON.stringify(realMv)} "$@"
   assert.match(result.stderr, /test-only injected failure after promotion/);
   assert.doesNotMatch(result.stdout, /installed to/);
 
-  const promoted = readFileSync(record, 'utf8').trim().split('\n');
-  assert.equal(promoted.length, 1, 'the candidate was promoted exactly once');
-  assert.match(promoted[0], /\.bin\.install\.[^/]+\/candidate$/);
-  assert.equal(existsSync(promoted[0]), false, 'candidate was moved into the live directory');
+  const moves = readFileSync(record, 'utf8').trim().split('\n');
+  assert.equal(moves.length, 2, 'one promotion and one rollback move into the live directory');
+  assert.match(moves[0], /\.bin\.install\.[^/]+\/candidate$/);
+  assert.match(moves[1], /\.bin\.backup\.[^/]+$/);
+  assert.equal(existsSync(moves[0]), false, 'candidate was moved into the live directory');
 
   assert.deepEqual(readdirSync(join(root, 'live')), ['bin'], 'staging, backup and lock are removed');
   assert.deepEqual(readdirSync(install), ['old-install'], 'failed install is rolled back');

@@ -41,6 +41,11 @@ for arg do
         printf 'mktemp: injected staging-directory failure\\n' >&2
         exit 1
       fi
+      # mktemp "succeeds" but names a directory that does not exist.
+      if [ "$PHANTOM_TEST_FAIL_SEAM" = missing ]; then
+        printf '%s\\n' "\${arg%.install.XXXXXX}.install.missing-stage"
+        exit 0
+      fi
       ;;
   esac
 done
@@ -209,6 +214,24 @@ for (const [label, installer] of installers) {
       curlLog,
       diagnostic: /could not create staging directories/,
       marker: /mkdir: injected staging-directory failure/,
+    });
+  });
+
+  test(`${label} installer exits nonzero before download when the staging directory is missing after mktemp`, (t) => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), `phantom-staging-failure-${label}-`)));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const { result, install, home, calls, curlLog } = runInstaller({ installer, root, seam: 'missing' });
+
+    // The installer must stop at the first use of the absent stage (chmod)
+    // instead of downloading into, or promoting from, a path that is not there.
+    assertFailedStaging({
+      result,
+      install,
+      home,
+      calls,
+      curlLog,
+      diagnostic: /could not secure the staging directory/,
+      marker: /\.bin\.install\.missing-stage/,
     });
   });
 }

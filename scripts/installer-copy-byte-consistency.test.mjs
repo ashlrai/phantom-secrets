@@ -38,6 +38,25 @@ function byteComparison() {
   return result;
 }
 
+// GNU cmp calls this a byte; BSD cmp calls the same 1-based offset a char.
+function parseComparisonReport(report) {
+  const match = /^scripts\/install\.sh apps\/web\/public\/install\.sh differ: (?:byte|char) ([1-9]\d*), line ([1-9]\d*)$/.exec(report);
+  return match ? { byte: Number(match[1]), line: Number(match[2]) } : null;
+}
+
+test('cmp report parser accepts only the two complete mismatch formats', () => {
+  for (const unit of ['byte', 'char']) {
+    assert.deepEqual(parseComparisonReport(`scripts/install.sh apps/web/public/install.sh differ: ${unit} 730, line 19`), { byte: 730, line: 19 });
+  }
+  for (const report of [
+    'other/install.sh apps/web/public/install.sh differ: byte 730, line 19',
+    'scripts/install.sh apps/web/public/install.sh differ: bytes 730, line 19',
+    'scripts/install.sh apps/web/public/install.sh differ: byte 0, line 19',
+    'scripts/install.sh apps/web/public/install.sh differ: char 730, line 19 extra',
+    'scripts/install.sh apps/web/public/install.sh are identical',
+  ]) assert.equal(parseComparisonReport(report), null);
+});
+
 test('byte-for-byte comparison reports the reviewed mismatch', (t) => {
   // The web copy is byte-bound to separately reviewed release bytes, so the
   // reviewed state is a mismatch; docs/installer-copy-comparison.md pins the
@@ -52,11 +71,7 @@ test('byte-for-byte comparison reports the reviewed mismatch', (t) => {
   const result = byteComparison();
   assert.equal(result.status, 1, `cmp should report a mismatch: ${result.stderr.trim()}`);
   const report = result.stdout.trim();
-  assert.match(
-    report,
-    new RegExp(`^${repositoryCopy} ${webCopy} differ: char \\d+, line \\d+$`),
-    'cmp must report the mismatch location',
-  );
+  assert.ok(parseComparisonReport(report), 'cmp must report the mismatch location');
   t.diagnostic(`byte-for-byte comparison reports a mismatch: ${report}`);
 });
 
@@ -67,10 +82,10 @@ test('an in-process byte scan reports the same mismatch location', (t) => {
   t.diagnostic(`first differing byte: char ${char}, line ${line}`);
 
   // The scan must agree with cmp's own mismatch report.
-  const reported = byteComparison().stdout.match(/differ: char (\d+), line (\d+)/);
+  const reported = parseComparisonReport(byteComparison().stdout.trim());
   assert.ok(reported, 'cmp must report the mismatch location');
-  assert.equal(Number(reported[1]), char);
-  assert.equal(Number(reported[2]), line);
+  assert.equal(reported.byte, char);
+  assert.equal(reported.line, line);
 
   // The first divergence is the reviewed candidate-tag difference at line 19
   // (docs/installer-copy-source-map.md); an earlier byte means unreviewed
