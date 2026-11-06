@@ -288,6 +288,7 @@ jobs:
           scripts/installer-path-comments-integration.test.mjs
           scripts/installer-path-conditional-bytes.test.mjs
           scripts/installer-path-editor-export.test.mjs
+          scripts/installer-path-empty-config.test.mjs
           scripts/installer-path-empty-file.test.mjs
           scripts/installer-path-existing-entry.test.mjs
           scripts/installer-path-final-newline.test.mjs
@@ -306,10 +307,10 @@ jobs:
           scripts/installer-path-snapshot-distinct.test.mjs
           scripts/installer-path-snapshot-failure.test.mjs
           scripts/installer-path-snapshot-spaces.test.mjs
+          scripts/installer-path-spaced-config-dir.test.mjs
           scripts/installer-path-spaced-install-dir.test.mjs
           scripts/installer-path-spaced-lines.test.mjs
           scripts/installer-path-spaced-parent-full-install.test.mjs
-          scripts/installer-path-spaced-config-dir.test.mjs
           scripts/installer-path-spaced-parent-target.test.mjs
           scripts/installer-path-spaced-symlink-parent.test.mjs
           scripts/installer-path-success-cleanup.test.mjs

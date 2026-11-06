@@ -1,6 +1,6 @@
 # Unix installer PATH temporary files
 
-This review describes `add_to_user_path` in [`scripts/install.sh`](../scripts/install.sh#L305-L399).
+This review describes `add_to_user_path` in [`scripts/install.sh`](../scripts/install.sh#L305-L428).
 It runs after the binaries have been installed, only when the install directory
 is not already a PATH entry. PATH setup is best effort: failure produces a
 warning and does not undo the installation.
@@ -19,8 +19,11 @@ For an existing startup file the script requires a regular, non-symlink file
 with one link, records its identity, copies it with `cp -p`, and checks the
 identity again. If the snapshot already contains `# phantom-secrets PATH`, it
 removes both temporary files and leaves the startup file alone. Otherwise it
-copies the snapshot to the candidate. For an absent startup file, both files
-are emptied and set to mode 600. Existing-file copies preserve attributes via
+copies the snapshot to the candidate. The marker block ends an unterminated
+last line with its own leading newline; when that line ends in an odd
+backslash run — a shell line continuation — the candidate gains one blank
+line first so sourcing cannot fold the marker into the user's content. For an
+absent startup file, both files are emptied and set to mode 600. Existing-file copies preserve attributes via
 `cp -p`; they are not necessarily mode 600. Both files can contain the user's
 startup configuration and should be treated accordingly.
 
