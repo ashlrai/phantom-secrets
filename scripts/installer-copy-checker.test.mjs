@@ -16,6 +16,9 @@ test('platform installer check enforces byte parity outside reviewed release dif
   t.after(() => rmSync(sandbox, { recursive: true, force: true }));
   for (const path of [
     'scripts/check-platform-installers.mjs', 'scripts/lib/installer-copy-differences.mjs',
+    'scripts/freshness/sources.mjs', 'scripts/release/check-powershell-candidate.mjs',
+    'Cargo.toml', 'npm/package.json', 'npm-mcp/package.json', 'CHANGELOG.md',
+    'apps/web/src/lib/public-release.ts',
     'scripts/install.sh', 'scripts/install.ps1',
     'apps/web/public/install.sh', 'apps/web/public/install.ps1',
   ]) {
