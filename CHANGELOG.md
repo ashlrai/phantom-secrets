@@ -4,7 +4,60 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
-Changes after 0.8.1 land in this section.
+Changes after 0.8.2 land in this section.
+
+## [0.8.2] - 2026-11-05
+
+This source candidate includes the unpublished `0.7.10`, `0.8.0`, and `0.8.1`
+source tranches plus installer recovery, CLI diagnostics, and hosted device-auth
+error handling merged since the reserved `v0.8.1` tag.
+The latest published immutable GitHub release remains `v0.7.9`; neither the
+`v0.8.0` nor `v0.8.1` tag proves publication. This candidate must complete the
+sanctioned release workflow before its artifacts or packages are available.
+
+### Included since the last published release
+
+- Value-blind agent-log scanning through `phantom check --log PATH` and MCP
+  `phantom_check` `log_path`, with bounded input and symlink refusal.
+- Broader dotenv and config scanning, schema-tagged JSON reports, safer env
+  examples, wrap/sync fixes, bounded audit reads, and vault memory hygiene.
+- Fixed route-owned fleet proxy authentication for Devin, Cursor Cloud, and
+  Resend; client headers and bodies still never resolve mappings.
+- The `async-executor` security update and installer failure-path coverage
+  prepared in `0.8.1`. These source changes were not separate public releases.
+
+### Fixed
+
+- Shell PATH setup requires an exact standalone Phantom marker, handles
+  unterminated shell-config lines and trailing backslashes, and restores the
+  previous config if verification after replacement fails.
+- CLI proxy bind, audit read/cursor, multi-project init, login, and cloud
+  failures include actionable recovery guidance without printing secret values.
+- Hosted device approval and polling return generic, non-cacheable errors
+  when their backing operations fail.
+- Citation metadata and generated public installation guidance retain the
+  verified published release rather than promoting the source candidate.
+- Supabase migration verification names duplicate migration files and explains
+  a missing migration directory.
+
+### Breaking changes and migration
+
+When upgrading from the last published `0.7.9`, JSON consumers of
+`phantom check --json` and MCP `phantom_check` must accept `mode: log` and
+findings with `kind: log`. `log_path` cannot be combined with `runtime=true`.
+Existing worktree, staged, and runtime reports retain their fields. Consumers
+must tolerate additive schema identifiers and `status.kind`; `validate schedule
+--json` now returns the schedule object rather than a JSON-encoded string.
+Credential comments and additional supported config files can now make
+`phantom check` fail: remove or protect the credentials rather than relaxing
+the check. Under `agent doctor --strict --json`, non-ready results use exit 2;
+non-strict defaults remain unchanged. Review the `0.7.10` and `0.8.0`
+source-tranche entries below for detailed output fixes.
+The vault format and route-owned proxy authentication boundaries are unchanged.
+This candidate does not commission hosted services or enable live provider
+issuance. Existing `v0.8.0` and `v0.8.1` tags stay immutable. Install the
+checksum-verified `v0.7.9` assets until a new release receipt exists.
+
 
 ## [0.8.1] - 2026-11-03
 
@@ -3178,8 +3231,9 @@ remain separate evidence gates.
 For older release notes and downloadable artifacts, see [GitHub Releases](https://github.com/ashlrai/phantom-secrets/releases).
 
 <!-- fresh:begin changelog-unreleased-compare -->
-[Unreleased]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.1...HEAD
+[Unreleased]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.2...HEAD
 <!-- fresh:end -->
+[0.8.2]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.10...v0.8.0
 [0.7.10]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.9...v0.7.10
