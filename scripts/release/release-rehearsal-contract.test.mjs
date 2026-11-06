@@ -203,7 +203,7 @@ test("manual rehearsal delegates to the shared graph with read-only authority", 
 });
 
 test("release defaults and lockfiles are part of the exact version parity contract", () => {
-  const escapedVersion = sourceVersion.replace(/\./g, "\\.");
+  const escapedVersion = sourceVersion.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   assert.match(rehearsal, new RegExp(`default: v${escapedVersion}`));
   assert.match(
     npmCandidateAcceptance,
