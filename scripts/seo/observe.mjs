@@ -86,6 +86,11 @@ function invariant(condition, message) {
   if (!condition) throw new Error(message);
 }
 
+// Match JavaScript's default UTF-16 code-unit ordering regardless of locale.
+function compareCodeUnits(left, right) {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
 function isPlainObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
@@ -539,11 +544,16 @@ export function decodeEntities(value) {
   const entities = {
     "&amp;": "&",
     "&quot;": '"',
-    "&#39;": "'",
     "&lt;": "<",
     "&gt;": ">",
   };
-  return value.replace(/&(?:amp|quot|#39|lt|gt);/g, (entity) => entities[entity]);
+  // Single pass, so a decoded "&" can never start a second entity.
+  return value.replace(/&(?:amp|quot|lt|gt|#(\d{1,7}));/g, (entity, decimal) => {
+    if (decimal === undefined) return entities[entity];
+    const codePoint = Number(decimal);
+    const valid = codePoint > 0 && codePoint <= 0x10ffff && !(codePoint >= 0xd800 && codePoint <= 0xdfff);
+    return valid ? String.fromCodePoint(codePoint) : entity;
+  });
 }
 
 function cleanText(value) {
@@ -655,7 +665,7 @@ function inspectHtml(body) {
     robots,
     canonicals,
     h1_count: h1Count,
-    structured_data_types: [...collectTypes(jsonLd.values)].sort(),
+    structured_data_types: [...collectTypes(jsonLd.values)].sort(compareCodeUnits),
     structured_data_errors: jsonLd.errors,
     json_ld: jsonLd.values,
   };
@@ -677,7 +687,7 @@ function parseSitemap(body, siteOrigin) {
     seen.add(url.pathname);
     paths.push(url.pathname);
   }
-  return paths.sort();
+  return paths.sort(compareCodeUnits);
 }
 
 function addFinding(findings, severity, code, message, route = null) {
@@ -1229,7 +1239,14 @@ async function readJson(file, label) {
 }
 
 async function main() {
-  const args = parseArguments(process.argv.slice(2));
+  let args;
+  try {
+    args = parseArguments(process.argv.slice(2));
+  } catch (error) {
+    process.stderr.write(`${error.message}\nUsage: node scripts/seo/observe.mjs --out <report.json> [--experiments <ledger.json>]\n`);
+    process.exitCode = 1;
+    return;
+  }
   let report;
   try {
     const experiments = await readJson(args.experiments, "experiment ledger");

@@ -1,3 +1,5 @@
+// Fixtures follow the independent package carrier, not the wrapper implementation.
+const candidateVersion = require("../package.json").version;
 const assert = require("assert");
 const crypto = require("crypto");
 const { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } = require("fs");
@@ -50,16 +52,30 @@ for (const [platformKey, target] of Object.entries(expected)) {
   );
 }
 
-for (const runtime of [
+const unsupported = [
   { platform: "darwin", arch: "ia32" },
   { platform: "linux", arch: "arm" },
   { platform: "freebsd", arch: "x64" },
   { platform: "openbsd", arch: "x64" },
   { platform: "win32", arch: "ia32" },
-]) {
+];
+
+// The examples in the README must be the combinations exercised below.
+const unsupportedTable = readme.match(
+  /\| Node\.js platform \| Node\.js architecture \|\r?\n\|---\|---\|\r?\n((?:\|[^\n]+\|\r?\n)+)/
+);
+assert.ok(unsupportedTable, "README must contain the unsupported platform examples");
+const documentedUnsupported = unsupportedTable[1].trim().split(/\r?\n/).map((row) => {
+  const match = row.match(/^\| `([^`]+)` \| `([^`]+)` \|$/);
+  assert.ok(match, `invalid README unsupported platform row: ${row}`);
+  return { platform: match[1], arch: match[2] };
+});
+assert.deepStrictEqual(documentedUnsupported, unsupported);
+
+for (const runtime of unsupported) {
   assert.throws(() => getPlatformTarget(runtime), (error) => {
     assert.match(error.message, new RegExp(`Unsupported platform: ${runtime.platform}-${runtime.arch}`));
-    assert.match(error.message, /releases\/tag\/v0\.7\.9/);
+    assert.match(error.message, new RegExp("releases\\/tag\\/v" + candidateVersion.replaceAll(".", "\\.") + "",""));
     assert.match(error.message, /checksum-verifiable/);
     assert.doesNotMatch(error.message, /cargo install|npm install|npx |curl[^\n]*\|/i);
     return true;
@@ -97,7 +113,7 @@ assert.doesNotMatch(wrapperSource, /Install from source|cargo install phantom-se
     const binary = "cached binary fixture";
     const binaryPath = join(populatedCache, "phantom");
     const manifest = JSON.stringify({
-      version: "0.7.9",
+      version: candidateVersion,
       sha256: crypto.createHash("sha256").update(binary).digest("hex"),
     }) + "\n";
     writeFileSync(binaryPath, binary, { mode: 0o700 });
@@ -109,7 +125,7 @@ assert.doesNotMatch(wrapperSource, /Install from source|cargo install phantom-se
       ensureBinary({
         cacheDir: populatedCache,
         runtime: { platform: "openbsd", arch: "x64" },
-        execFileSyncImpl: () => { executions += 1; return Buffer.from("phantom 0.7.9\n"); },
+        execFileSyncImpl: () => { executions += 1; return Buffer.from(("phantom " + candidateVersion + "\n")); },
         downloadImpl: async () => { downloads += 1; throw new Error("unexpected download"); },
         extractImpl: () => { extractions += 1; },
       }),

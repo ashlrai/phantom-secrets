@@ -75,6 +75,9 @@ Options:
       --json
           Output in JSON format (for scripting)
 
+      --ashlr-handshake
+          Print the local, value-free Ashlr companion handshake and exit
+
   -h, --help
           Print help (see a summary with '-h')
 

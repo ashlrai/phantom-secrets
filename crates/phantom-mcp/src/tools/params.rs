@@ -306,6 +306,10 @@ pub struct CheckParams {
     /// Check if phantom tokens are in environment without proxy running
     #[serde(default)]
     pub runtime: bool,
+    /// Scan one agent log or transcript. Reports the file, line, and credential
+    /// shape only. Never a secret value. Cannot be combined with runtime=true.
+    #[serde(default)]
+    pub log_path: Option<String>,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]

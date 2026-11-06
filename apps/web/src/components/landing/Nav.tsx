@@ -33,7 +33,25 @@ export function Nav() {
   const pathname = usePathname();
   const [scrolled, setScrolled] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [starTotal, setStarTotal] = useState<number | null>(null);
   const menuTrigger = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/github-stars")
+      .then((response) => (response.ok ? response.json() : null))
+      .then((body: { stars?: unknown } | null) => {
+        if (!cancelled && body && typeof body.stars === "number" && Number.isInteger(body.stars) && body.stars >= 0) {
+          setStarTotal(body.stars);
+        }
+      })
+      .catch(() => {
+        // A missing live count stays hidden. Do not invent a number.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     const onScroll = () => setScrolled(window.scrollY > 8);
@@ -139,6 +157,15 @@ export function Nav() {
             <Github aria-hidden className="h-3.5 w-3.5" />
             View on GitHub
           </a>
+          {starTotal !== null && (
+            <a
+              href="https://github.com/ashlrai/phantom-secrets"
+              aria-label={`${starTotal.toLocaleString("en-US")} GitHub stars across Phantom repositories`}
+              className="hidden min-h-10 items-center rounded-md px-2 text-[0.82rem] font-semibold text-t2 no-underline transition-colors hover:text-t1 sm:inline-flex"
+            >
+              {starTotal.toLocaleString("en-US")} stars
+            </a>
+          )}
 
           <Link
             href={installHref}

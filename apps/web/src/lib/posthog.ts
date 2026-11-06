@@ -2,15 +2,40 @@ type EventProperties = Record<string, string | number | boolean | null | undefin
 
 let clientPromise: Promise<typeof import("posthog-js")["default"] | null> | null = null;
 
+// Pageviews are for PostHog project 688217. NEXT_PUBLIC_POSTHOG_KEY selects
+// that project. The public key is never hardcoded. An unset key or Do Not
+// Track skips capture.
+
 function canonicalBrowserUrl() {
   return `${window.location.origin}${window.location.pathname}`;
+}
+
+export function trackingAllowed(key: string | undefined, doNotTrackValue: string | null | undefined) {
+  if (!key) return false;
+  return doNotTrackValue !== "1" && doNotTrackValue !== "yes";
+}
+
+function doNotTrackEnabled() {
+  if (typeof navigator === "undefined") return false;
+  const navigatorWithLegacy = navigator as Navigator & { msDoNotTrack?: string };
+  const windowWithLegacy = window as Window & { doNotTrack?: string };
+  return [navigator.doNotTrack, navigatorWithLegacy.msDoNotTrack, windowWithLegacy.doNotTrack]
+    .some((value) => !trackingAllowed("present", value));
+}
+
+function pageProperties() {
+  return {
+    $current_url: canonicalBrowserUrl(),
+    $pathname: window.location.pathname,
+    $host: window.location.host,
+  };
 }
 
 export function initPostHog() {
   if (typeof window === "undefined") return Promise.resolve(null);
 
   const key = process.env.NEXT_PUBLIC_POSTHOG_KEY;
-  if (!key) return Promise.resolve(null);
+  if (!key || !trackingAllowed(key, null) || doNotTrackEnabled()) return Promise.resolve(null);
   if (clientPromise) return clientPromise;
 
   clientPromise = import("posthog-js")
@@ -33,11 +58,10 @@ export function initPostHog() {
           advanced_disable_flags: true,
           advanced_disable_toolbar_metrics: true,
           before_send: (event) => {
-            if (!event) return null;
+            if (!event || doNotTrackEnabled()) return null;
             event.properties = {
               ...event.properties,
-              $current_url: canonicalBrowserUrl(),
-              $pathname: window.location.pathname,
+              ...pageProperties(),
             };
             return event;
           },
@@ -52,14 +76,14 @@ export function initPostHog() {
 }
 
 export async function capturePostHog(event: string, properties?: EventProperties) {
+  if (typeof window === "undefined" || doNotTrackEnabled()) return;
   const posthog = await initPostHog();
-  if (!posthog?.__loaded || typeof window === "undefined") return;
+  if (!posthog?.__loaded) return;
 
   try {
     posthog.capture(event, {
       ...properties,
-      $current_url: canonicalBrowserUrl(),
-      $pathname: window.location.pathname,
+      ...pageProperties(),
     });
   } catch {
     // Analytics is optional and must never disrupt the user workflow.

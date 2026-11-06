@@ -1,0 +1,188 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { QuickStart } from "./QuickStart";
+import { PUBLIC_RELEASE_TAG } from "@/lib/public-release";
+
+const normalize = (value: string) => value.replace(/\s+/g, " ").trim();
+
+test("reviewed heading and list structure persists across platform selections", async () => {
+  const user = userEvent.setup();
+  render(<QuickStart />);
+  try {
+    const region = screen.getByRole("region", { name: "Install on your OS. Then protect one project." });
+    const heading = within(region).getByRole("heading", { level: 2 });
+    assert.equal(region.getAttribute("aria-labelledby"), heading.id);
+    const selector = within(region).getByRole("group", { name: "Choose an operating system" });
+    for (const platform of ["macOS", "Windows", "Linux"]) {
+      await user.click(within(selector).getByRole("button", { name: platform }));
+      assert.deepEqual(within(region).getAllByRole("heading", { level: 3 }).map((item) => item.textContent), [
+        platform, `Verify both ${PUBLIC_RELEASE_TAG} binaries`, "Protect one supported project",
+      ]);
+      const card = within(region).getByRole("heading", { level: 3, name: platform }).closest("article");
+      assert.equal(card?.querySelector("svg")?.getAttribute("aria-hidden"), "true");
+      const steps = within(region).getByRole("list");
+      assert.equal(steps.tagName, "OL");
+      assert.equal(within(steps).getAllByRole("listitem").length, 2);
+      assert.equal(steps.querySelectorAll('.passage-steps__number[aria-hidden="true"]').length, 2);
+      assert.equal(within(steps).getAllByText("illustrative receipt").length, 2);
+    }
+  } finally {
+    cleanup();
+  }
+});
+
+test("each displayed platform option has a distinct accessible name", async () => {
+  const user = userEvent.setup();
+  render(<QuickStart />);
+  try {
+    const selector = screen.getByRole("group", { name: "Choose an operating system" });
+    const platforms = ["macOS", "Windows", "Linux"];
+
+    for (const selected of platforms) {
+      await user.click(within(selector).getByRole("button", { name: selected }));
+      const buttons = within(selector).getAllByRole("button");
+      // A rendered option must not disappear from the accessibility tree.
+      assert.deepEqual(buttons, Array.from(selector.querySelectorAll("button")));
+      const displayedNames = buttons.map((button) => normalize(button.textContent ?? ""));
+      assert.deepEqual(displayedNames, platforms);
+      assert.equal(new Set(displayedNames).size, buttons.length);
+      const accessibleNames = new Map<Element, string>();
+      const namedButtons = within(selector).getAllByRole("button", {
+        name: (name, element) => {
+          if (element) accessibleNames.set(element, name);
+          return true;
+        },
+      });
+      assert.deepEqual(namedButtons, buttons);
+      const names = buttons.map((button) => accessibleNames.get(button));
+      assert.deepEqual(names, platforms, `${selected}: each control exposes its platform name`);
+      assert.equal(new Set(names).size, buttons.length, `${selected}: accessible names are distinct`);
+      for (const [index, name] of displayedNames.entries()) {
+        // getByRole requires exactly one button with this computed accessible name.
+        assert.equal(within(selector).getByRole("button", { name }), buttons[index]);
+      }
+      assert.equal(within(selector).getByRole("button", { name: selected, pressed: true }), buttons[platforms.indexOf(selected)]);
+    }
+  } finally {
+    cleanup();
+  }
+});
+
+test("all installation controls and links remain named for each platform", async () => {
+  const user = userEvent.setup();
+  render(<QuickStart />);
+  try {
+    const region = screen.getByRole("region", { name: "Install on your OS. Then protect one project." });
+    const selector = within(region).getByRole("group", { name: "Choose an operating system" });
+
+    for (const platform of ["macOS", "Windows", "Linux"]) {
+      await user.click(within(selector).getByRole("button", { name: platform }));
+      const buttons = within(region).getAllByRole("button");
+      assert.equal(buttons.length, 6, `${platform}: three platform and three copy controls`);
+      assert.deepEqual(within(region).getAllByRole("button", { name: /\S/ }), buttons);
+      assert.equal(within(region).getAllByRole("button", { name: /^Copy command: \S/ }).length, 3);
+
+      const links = within(region).getAllByRole("link");
+      assert.ok(links.length > 0);
+      assert.deepEqual(within(region).getAllByRole("link", { name: /\S/ }), links);
+    }
+  } finally {
+    cleanup();
+  }
+});
+
+test("installation examples and download links have accessible names on every platform", async () => {
+  const user = userEvent.setup();
+  render(<QuickStart />);
+  try {
+    const selector = screen.getByRole("group", { name: "Choose an operating system" });
+    const cases = [
+      { name: "macOS", targets: ["Apple Silicon", "Intel"], command: /shasum -a 256 -c -/ },
+      { name: "Windows", targets: ["ARM64", "x64"], command: /Get-FileHash -Algorithm SHA256/ },
+      { name: "Linux", targets: ["ARM64", "x64"], command: /sha256sum -c -/ },
+    ];
+
+    for (const platform of cases) {
+      await user.click(within(selector).getByRole("button", { name: platform.name }));
+      assert.ok(within(selector).getByRole("button", { name: platform.name, pressed: true }));
+      const card = screen.getByRole("heading", { level: 3, name: platform.name }).closest("article");
+      assert.ok(card);
+      for (const target of platform.targets) {
+        assert.ok(within(card).getByRole("link", {
+          name: `Download Phantom ${PUBLIC_RELEASE_TAG} for ${platform.name} ${target}`,
+        }));
+        assert.ok(within(card).getByRole("link", {
+          name: `Download the SHA-256 checksum for Phantom ${PUBLIC_RELEASE_TAG} on ${platform.name} ${target}`,
+        }));
+      }
+
+      const copy = within(card).getByRole("button", { name: /^Copy command:/ });
+      assert.match(copy.textContent ?? "", platform.command);
+      await user.click(copy);
+      const copied = await navigator.clipboard.readText();
+      assert.match(copied, platform.command);
+      // The accessible name must include the entire displayed command, not just a generic label.
+      assert.equal(within(card).getByRole("button", {
+        name: (name) => normalize(name).startsWith("Copy command: ") && normalize(name).includes(normalize(copied)),
+      }), copy);
+    }
+  } finally {
+    cleanup();
+  }
+});
+
+test("follow-up examples have distinct named copy controls and copy their commands", async () => {
+  const user = userEvent.setup();
+  render(<QuickStart />);
+  try {
+    for (const [heading, command] of [
+      [`Verify both ${PUBLIC_RELEASE_TAG} binaries`, "phantom --version\nphantom-mcp --version"],
+      ["Protect one supported project", "phantom init"],
+    ]) {
+      const step = screen.getByRole("heading", { level: 3, name: heading }).closest("li");
+      assert.ok(step);
+      const copy = within(step).getByRole("button", { name: (name) => normalize(name) === `Copy command: ${normalize(command)}` });
+      await user.click(copy);
+      assert.equal(await navigator.clipboard.readText(), command);
+      assert.equal(document.activeElement, copy);
+      assert.equal(within(copy).getByText("Copied").getAttribute("aria-live"), "polite");
+    }
+  } finally {
+    cleanup();
+  }
+});
+
+test("each copy control is named for copying its command and reports a blocked copy", async () => {
+  const user = userEvent.setup();
+  render(<QuickStart />);
+  try {
+    const region = screen.getByRole("region", { name: "Install on your OS. Then protect one project." });
+    const copyControls = within(region).getAllByRole("button", { name: /^Copy command: \S/ });
+    assert.equal(copyControls.length, 3, "one install control and two follow-up controls");
+    for (const control of copyControls) {
+      assert.equal(control.getAttribute("type"), "button");
+      assert.equal(control.getAttribute("title"), "Copy command");
+      // The icon and prompt are decorative; only the verb and command are announced.
+      assert.equal(control.querySelectorAll('[aria-hidden="true"]').length, 2);
+    }
+
+    // A clipboard rejection must be announced, and the control must stay named and usable.
+    const clipboard = navigator.clipboard;
+    const originalWrite = clipboard.writeText;
+    clipboard.writeText = () => Promise.reject(new Error("denied"));
+    try {
+      const control = within(region).getByRole("button", { name: "Copy command: phantom init" });
+      await user.click(control);
+      await waitFor(() => assert.ok(within(control).getByText("Copy failed; select the command manually")));
+      assert.equal(within(control).getByText("Copy failed; select the command manually").getAttribute("aria-live"), "polite");
+      assert.equal(control.getAttribute("title"), "Copy failed; select the command manually");
+      assert.match(normalize(control.textContent ?? ""), /^Copy command: .*phantom init/);
+    } finally {
+      clipboard.writeText = originalWrite;
+    }
+  } finally {
+    cleanup();
+  }
+});

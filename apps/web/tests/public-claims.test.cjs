@@ -95,6 +95,26 @@ const claims = Object.fromEntries(
 );
 const allClaims = Object.values(claims).join("\n");
 
+function assertUniqueIds(document) {
+  const seen = new Set();
+  for (const element of document.querySelectorAll("[id]")) {
+    const id = element.getAttribute("id");
+    assert.equal(seen.has(id), false, `duplicate ID: ${JSON.stringify(id)}`);
+    seen.add(id);
+  }
+}
+
+test("document-wide ID check accepts an empty document", () => {
+  const { JSDOM } = require("jsdom");
+  const dom = new JSDOM("");
+  try {
+    assert.doesNotThrow(() => assertUniqueIds(dom.window.document));
+    assert.doesNotThrow(() => assertUniqueIds(dom.window.document));
+  } finally {
+    dom.window.close();
+  }
+});
+
 test("rendered public homepage has unique IDs across the whole document", async () => {
   const React = require("react");
   const { renderToStaticMarkup } = require("react-dom/server");
@@ -142,23 +162,15 @@ test("rendered public homepage has unique IDs across the whole document", async 
   const dom = new JSDOM(renderToStaticMarkup(React.createElement(Layout, null, React.createElement(Home))));
   try {
     const document = dom.window.document;
-    const assertUniqueIds = () => {
-      const seen = new Set();
-      for (const element of document.querySelectorAll("[id]")) {
-        const id = element.getAttribute("id");
-        assert.equal(seen.has(id), false, `duplicate ID: ${JSON.stringify(id)}`);
-        seen.add(id);
-      }
-    };
     assert.ok(document.querySelector("#main-content"));
     assert.ok(document.querySelector("#phantom-world"), "embedded scene must be rendered");
-    assertUniqueIds();
+    assertUniqueIds(document);
 
     // Exercise the detector with a collision between separate page regions.
     const duplicate = document.createElement("div");
     duplicate.id = "main-content";
     document.querySelector("#phantom-world").append(duplicate);
-    assert.throws(assertUniqueIds, /duplicate ID: "main-content"/);
+    assert.throws(() => assertUniqueIds(document), /duplicate ID: "main-content"/);
   } finally {
     dom.window.close();
   }
@@ -248,7 +260,7 @@ const publicReleaseEvidencePaths = [
 const verifiedReleaseUrl =
   "https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.9";
 const candidateReleaseUrl =
-  "https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.9";
+  "https://github.com/ashlrai/phantom-secrets/releases/tag/v0.8.4";
 
 function structuredMetadataBlock(source, type) {
   const marker = `"@type": "${type}"`;
@@ -283,6 +295,28 @@ test("public home page has a descriptive document title", () => {
   assert.ok(ts.isStringLiteral(value), "document title must be a literal string or absolute title");
   assert.match(value.text.trim(), /phantom/i, "title should identify Phantom");
   assert.match(value.text.trim(), /engineering agents/i, "title should describe the page");
+});
+
+test("public home page supplies a nonempty description", () => {
+  function assertDescription(text) {
+    const source = ts.createSourceFile("page.tsx", text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+    const metadata = source.statements
+      .filter(ts.isVariableStatement)
+      .filter((statement) => statement.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword))
+      .flatMap((statement) => statement.declarationList.declarations)
+      .find((declaration) => ts.isIdentifier(declaration.name) && declaration.name.text === "metadata");
+    assert.ok(metadata && metadata.initializer && ts.isObjectLiteralExpression(metadata.initializer), "missing exported page metadata");
+    const description = metadata.initializer.properties.find(
+      (property) => ts.isPropertyAssignment(property) && property.name.getText(source) === "description",
+    );
+    assert.ok(description && ts.isStringLiteral(description.initializer), "description must be a literal string");
+    assert.ok(description.initializer.text.trim().length > 0, "description must not be empty");
+  }
+
+  assertDescription(claims["src/app/page.tsx"]);
+  assert.throws(() => assertDescription('export const metadata = { description: "" };'), /description must not be empty/);
+  assert.throws(() => assertDescription('export const metadata = { description: "   " };'), /description must not be empty/);
+  assert.throws(() => assertDescription('export const metadata = {};'), /description must be a literal string/);
 });
 
 test("public surfaces reject previously audited absolute claims", () => {
@@ -604,6 +638,27 @@ test("public Cloud guidance does not promise machine-portable recovery", () => {
   }
 });
 
+const unpinnedRegistryCommands = [
+  /(?:^|[`"'(])(?:\$\s*)?npm\s+(?:install|i)\s+(?:-g\s+)?phantom-secrets(?:-mcp)?(?=$|[\s`"'<>),;])/im,
+  /(?:^|[`"'(])(?:\$\s*)?npx(?:\s+-y)?\s+phantom-secrets(?:-mcp)?(?!\s+(?:agent|check|exec)\b)(?=$|[\s`"'<>),;])/im,
+  /(?:^|[`"'(])(?:\$\s*)?cargo\s+install\s+phantom-secrets(?:-mcp)?(?=$|[\s`"'<>),;])/im,
+];
+
+function assertRegistryInvocationsAreWarnings(file, source) {
+  for (const command of unpinnedRegistryCommands) {
+    for (const match of source.matchAll(new RegExp(command.source, `${command.flags}g`))) {
+      const start = Math.max(0, match.index - 260);
+      const end = Math.min(source.length, match.index + match[0].length + 260);
+      const context = source.slice(start, end);
+      assert.match(
+        context,
+        /legacy fallback[\s\S]{0,260}(?:older registry track|do not rely)|(?:older registry track|do not rely)[\s\S]{0,260}legacy fallback/i,
+        `${file}: unpinned registry invocation is allowed only as a warning about the released legacy fallback`,
+      );
+    }
+  }
+}
+
 test("current-release guidance routes installs through verified GitHub or Homebrew artifacts", () => {
   const canonicalReleaseGuides = {
     "README.md": repositoryGuidanceClaims["README.md"],
@@ -624,24 +679,26 @@ test("current-release guidance routes installs through verified GitHub or Homebr
     );
   }
 
-  const unpinnedRegistryCommands = [
-    /(?:^|[`"'(])(?:\$\s*)?npm\s+(?:install|i)\s+(?:-g\s+)?phantom-secrets(?:-mcp)?(?=$|[\s`"'<>),;])/im,
-    /(?:^|[`"'(])(?:\$\s*)?npx(?:\s+-y)?\s+phantom-secrets(?:-mcp)?(?!\s+(?:agent|check|exec)\b)(?=$|[\s`"'<>),;])/im,
-    /(?:^|[`"'(])(?:\$\s*)?cargo\s+install\s+phantom-secrets(?:-mcp)?(?=$|[\s`"'<>),;])/im,
-  ];
-
   for (const [file, source] of Object.entries(repositoryGuidanceClaims)) {
-    for (const command of unpinnedRegistryCommands) {
-      for (const match of source.matchAll(new RegExp(command.source, `${command.flags}g`))) {
-        const start = Math.max(0, match.index - 260);
-        const end = Math.min(source.length, match.index + match[0].length + 260);
-        const context = source.slice(start, end);
-        assert.match(
-          context,
-          /legacy fallback[\s\S]{0,260}(?:older registry track|do not rely)|(?:older registry track|do not rely)[\s\S]{0,260}legacy fallback/i,
-          `${file}: unpinned registry invocation is allowed only as a warning about the released legacy fallback`,
-        );
-      }
+    assertRegistryInvocationsAreWarnings(file, source);
+  }
+});
+
+test("each repeated unpinned registry invocation needs its own warning context", () => {
+  const separator = `\n${"x".repeat(600)}\n`;
+  for (const command of ["npm install phantom-secrets", "npx phantom-secrets-mcp", "cargo install phantom-secrets"]) {
+    const warning = `Legacy fallback on the older registry track: \`${command}\``;
+    const unsupported = `\`${command}\``;
+    assert.doesNotThrow(() => assertRegistryInvocationsAreWarnings("fixture", `${warning}${separator}${warning}`));
+    for (const source of [
+      `${warning}${separator}${unsupported}`,
+      `${unsupported}${separator}${warning}`,
+      `${unsupported}${separator}${unsupported}`,
+    ]) {
+      assert.throws(
+        () => assertRegistryInvocationsAreWarnings("fixture", source),
+        /fixture: unpinned registry invocation is allowed only as a warning/,
+      );
     }
   }
 });
@@ -677,7 +734,7 @@ test("published package READMEs use verified local binaries and bounded claims",
       assert.ok(source.includes(candidateReleaseUrl), file);
       assert.match(
         source,
-        /version `0\.7\.9`[\s\S]{0,180}(?:do not prove|does not prove)[\s\S]{0,80}(?:npm|published)/i,
+        /version `0\.8\.4`[\s\S]{0,180}(?:do not prove|does not prove)[\s\S]{0,80}(?:npm|published)/i,
         file,
       );
       assert.match(
@@ -687,7 +744,7 @@ test("published package READMEs use verified local binaries and bounded claims",
       );
       assert.match(
         source,
-        /Version `0\.7\.9`[\s\S]{0,250}no network package-runner fallback[\s\S]{0,80}fails closed/i,
+        /Version `0\.8\.4`[\s\S]{0,250}no network package-runner fallback[\s\S]{0,80}fails closed/i,
         file,
       );
       assert.doesNotMatch(source, /releases\/tag\/v0\.7\.3/i, file);
@@ -1246,8 +1303,10 @@ test("community health metadata preserves release and support boundaries", () =>
   assert.match(citation, /^cff-version: 1\.2\.0$/m);
   assert.match(citation, /^version: 0\.7\.9$/m);
   assert.match(citation, /immutable v0\.7\.9 GitHub\s+release/i);
+  assert.doesNotMatch(citation, /immutable v0\.8\.[0-9]+ GitHub\s+release/i);
+  assert.match(citation, /Source candidate 0\.8\.4/);
   assert.match(citation, /repository URL and full commit SHA/i);
-  assert.match(citation, /^date-released: 2026-09-07$/m);
+  assert.match(citation, /^date-released: 2026-09-06$/m);
 });
 
 test("cloud-signed audit remains an explicit network-free protocol foundation", () => {

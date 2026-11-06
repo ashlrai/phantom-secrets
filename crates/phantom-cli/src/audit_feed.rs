@@ -112,17 +112,21 @@ fn identity(metadata: &std::fs::Metadata) -> String {
     }
 }
 
+/// A `--cursor` that was not printed by `--follow` (or was edited). Names the
+/// source of a valid cursor and the way to start without one.
+const INVALID_CURSOR: &str = "invalid audit cursor: pass a cursor printed by `phantom audit feed --follow` for this same file, or omit --cursor to follow without a resume point";
+
 fn follow_file(path: &std::path::Path, resume: Option<&str>) -> anyhow::Result<()> {
     use sha2::{Digest, Sha256};
     use std::io::Read;
     let mut cursor: Option<Cursor> = match resume {
         Some(raw) => {
-            anyhow::ensure!(raw.len() <= 1024, "invalid audit cursor");
+            anyhow::ensure!(raw.len() <= 1024, INVALID_CURSOR);
             let parsed = hex::decode(raw)
                 .ok()
                 .and_then(|bytes| serde_json::from_slice::<Cursor>(&bytes).ok())
                 .filter(|c| c.version == 1 && c.digest.len() == 64 && c.identity.len() <= 128)
-                .ok_or_else(|| anyhow::anyhow!("invalid audit cursor"))?;
+                .ok_or_else(|| anyhow::anyhow!(INVALID_CURSOR))?;
             Some(parsed)
         }
         None => None,
@@ -206,5 +210,28 @@ fn follow_file(path: &std::path::Path, resume: Option<&str>) -> anyhow::Result<(
             }
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn malformed_cursor_is_refused_with_next_step() {
+        // The cursor is rejected before the file is opened, so the path is never read.
+        let path = std::path::Path::new("/nonexistent/phantom-audit-cursor-test.log");
+        for raw in ["zz", "00"] {
+            let message = follow_file(path, Some(raw)).unwrap_err().to_string();
+            assert!(
+                message.starts_with("invalid audit cursor: pass a cursor"),
+                "{message}"
+            );
+            assert!(
+                message.contains("`phantom audit feed --follow`"),
+                "{message}"
+            );
+            assert!(message.contains("omit --cursor"), "{message}");
+        }
     }
 }
