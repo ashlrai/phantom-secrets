@@ -1,6 +1,6 @@
 cff-version: 1.2.0
 message: >-
-  Source candidate 0.8.4. The immutable v0.7.9 GitHub release remains the
+  Source candidate 0.8.5. The immutable v0.7.9 GitHub release remains the
   latest published release until this candidate's tag workflow finishes.
   Include the repository URL and full commit SHA when citing a commit.
 title: Phantom

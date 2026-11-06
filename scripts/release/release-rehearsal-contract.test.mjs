@@ -98,7 +98,7 @@ function assertReleaseEligibilityWarnings(document) {
     /separately reviewed unreserved version, matching source metadata,/,
     /this guide selects no such version\./,
     /linked npm and MCP Registry runbooks retain version-specific `0\.7\.8`\s+examples/,
-    /are not current `0\.8\.4` source facts or copy-ready instructions for this candidate\./,
+    /are not current `0\.8\.5` source facts or copy-ready instructions for this candidate\./,
     /Do not mechanically execute or substitute versions in those recipes\./,
     /reconcile the exact approved source, tag, package versions,\s+manifest, acceptance receipts, and publication authorization/,
   ];
@@ -933,7 +933,7 @@ test("npm and MCP distribution metadata and runbooks remain publication-safe", (
   );
 });
 
-test("0.8.4 npm package contents are exactly the six reviewed files", () => {
+test("current npm package contents are exactly the six reviewed files", () => {
   const expectedFiles = ["LICENSE", "README.md", "bin/cli.js", "bin/package-version.js", "install.js", "package.json"];
 
   for (const [directory, packageName] of [
@@ -942,7 +942,7 @@ test("0.8.4 npm package contents are exactly the six reviewed files", () => {
   ]) {
     const pack = inspectPack(directory);
     assert.equal(pack.name, packageName);
-    assert.equal(pack.version, "0.8.4");
+    assert.equal(pack.version, "0.8.5");
     assert.equal(pack.entryCount, 6);
     assert.deepEqual(
       pack.files.map(({ path }) => path).sort(),

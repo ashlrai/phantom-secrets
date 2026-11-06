@@ -113,7 +113,7 @@ npm view "phantom-secrets-mcp@${VERSION}" version dist.integrity dist.tarball \
 Require Node and npm to meet the minimums; a lexical string comparison is not a
 version check. Review each pack against its exact versioned inventory. Versions
 through `0.8.3` retain five files: `LICENSE`, `README.md`, `bin/cli.js`,
-`install.js`, and `package.json`. The `0.8.4` source candidate adds exactly
+`install.js`, and `package.json`. Source candidates from `0.8.4` onward add exactly
 `bin/package-version.js`, making six files; it validates package-local release
 metadata before cache access, download, or execution. `expectedPackFiles` in
 `scripts/release/npm-candidate-smoke.mjs` selects the closed inventory. No
