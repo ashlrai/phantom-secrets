@@ -1,3 +1,5 @@
+// Fixtures follow the independent package carrier, not the wrapper implementation.
+const candidateVersion = require("../package.json").version;
 const assert = require("assert");
 const { readFileSync } = require("fs");
 const { join, resolve } = require("path");
@@ -110,7 +112,7 @@ function assertWrapperMatchesReleaseMatrix(name, wrapper) {
   ]) {
     assert.throws(() => wrapper.getPlatformTarget(runtime), (error) => {
       assert.match(error.message, new RegExp(`Unsupported platform: ${runtime.platform}-${runtime.arch}`));
-      assert.match(error.message, /releases\/tag\/v0\.8\.2/);
+      assert.match(error.message, new RegExp("releases\\/tag\\/v" + candidateVersion.replaceAll(".", "\\.") + "",""));
       assert.match(error.message, /checksum-verifiable/);
       assert.doesNotMatch(error.message, /cargo install|npm install|npx |curl[^\n]*\|/i);
       return true;
