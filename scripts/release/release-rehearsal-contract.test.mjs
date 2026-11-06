@@ -96,7 +96,7 @@ function assertReleaseEligibilityWarnings(document) {
     /separately reviewed unreserved version, matching source metadata,/,
     /this guide selects no such version\./,
     /linked npm and MCP Registry runbooks retain version-specific `0\.7\.8`\s+examples/,
-    /are not current `0\.8\.2` source facts or copy-ready instructions for this candidate\./,
+    /are not current `0\.8\.3` source facts or copy-ready instructions for this candidate\./,
     /Do not mechanically execute or substitute versions in those recipes\./,
     /reconcile the exact approved source, tag, package versions,\s+manifest, acceptance receipts, and publication authorization/,
   ];
@@ -201,10 +201,10 @@ test("manual rehearsal delegates to the shared graph with read-only authority", 
 });
 
 test("release defaults and lockfiles are part of the exact version parity contract", () => {
-  assert.match(rehearsal, /default: v0\.8\.2/);
+  assert.match(rehearsal, /default: v0\.8\.3/);
   assert.match(
     npmCandidateAcceptance,
-    /^      version:\n[\s\S]*?^        default: 0\.8\.2$/m
+    /^      version:\n[\s\S]*?^        default: 0\.8\.3$/m
   );
   assert.match(versionParity, /json\("apps\/web\/package-lock\.json"\)/);
   assert.match(versionParity, /Hosted web lockfile root/);
@@ -218,10 +218,10 @@ test("release defaults and lockfiles are part of the exact version parity contra
   assert.equal(
     execFileSync(
       process.execPath,
-      [join(repoRoot, "scripts/release/check-version-parity.mjs"), "v0.8.2"],
+      [join(repoRoot, "scripts/release/check-version-parity.mjs"), "v0.8.3"],
       { cwd: repoRoot, encoding: "utf8" }
     ).trim(),
-    "release version parity passed: 0.8.2 across 21 surfaces and 12 crates"
+    "release version parity passed: 0.8.3 across 21 surfaces and 12 crates"
   );
 });
 
@@ -851,7 +851,7 @@ test("npm package contents remain the exact five reviewed files", () => {
   ]) {
     const pack = inspectPack(directory);
     assert.equal(pack.name, packageName);
-    assert.equal(pack.version, "0.8.2");
+    assert.equal(pack.version, "0.8.3");
     assert.equal(pack.entryCount, 5);
     assert.deepEqual(
       pack.files.map(({ path }) => path).sort(),

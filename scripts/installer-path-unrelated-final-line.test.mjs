@@ -15,6 +15,7 @@ import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
+import { pathUpdateHarness } from './lib/installer-path-harness.mjs';
 import { fileURLToPath } from 'node:url';
 
 // A hand-edited startup file can end in an unrelated line with no trailing
@@ -56,25 +57,8 @@ const marker = '# phantom-secrets PATH';
 
 // add_to_user_path runs under `set -euo pipefail` in the installer and calls
 // these helpers; extract the exact same text so the exercised code is the
-// shipped code. Same extraction as installer-path-idempotence.test.mjs.
-function extractFunction(source, name, file) {
-  const start = source.indexOf(`${name}()`);
-  assert.ok(start >= 0, `${file}: locate ${name}`);
-  const lineEnd = source.indexOf('\n', start);
-  assert.ok(lineEnd > start, `${file}: locate end of ${name}`);
-  if (source.slice(start, lineEnd).trimEnd().endsWith('}')) {
-    return source.slice(start, lineEnd + 1);
-  }
-  const end = source.indexOf('\n}\n', start);
-  assert.ok(end > start, `${file}: locate end of ${name}`);
-  return source.slice(start, end + '\n}\n'.length);
-}
-
-const harnessFor = (source, file) => ['set -euo pipefail', 'umask 077',
-  ...['say', 'file_identity', 'file_link_count', 'add_to_user_path']
-    .map((name) => extractFunction(source, name, file)),
-  'add_to_user_path "$1"',
-].join('\n');
+// shipped code.
+const harnessFor = pathUpdateHarness;
 
 // spawnSync feeds the child a socketpair as stdin, and bash treats a socket
 // on fd 0 as a remote-shell invocation: it sources ~/.bashrc before running
@@ -233,7 +217,7 @@ for (const [label, url] of Object.entries(installers)) {
     const arch = { x64: 'x86_64', arm64: 'aarch64' }[process.arch];
     assert.ok(os && arch, 'test requires a supported Unix installer target');
     const archive = `phantom-${arch}-${os}.tar.gz`;
-    execFileSync('tar', ['-czf', join(fixture, archive), '-C', payload, 'phantom', 'phantom-mcp']);
+    execFileSync('/usr/bin/tar', ['-czf', join(fixture, archive), '-C', payload, 'phantom', 'phantom-mcp']);
     const digest = createHash('sha256').update(readFileSync(join(fixture, archive))).digest('hex');
     writeFileSync(join(fixture, `${archive}.sha256`), `${digest}  ${archive}\n`);
 

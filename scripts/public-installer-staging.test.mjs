@@ -23,9 +23,9 @@ test('public installer cleans staging after an offline checksum mismatch', () =>
     const arch = { x64: 'x86_64', arm64: 'aarch64' }[process.arch];
     assert.ok(os && arch, 'test requires a supported Unix installer target');
     const archive = `phantom-${arch}-${os}.tar.gz`;
-    execFileSync('tar', ['-czf', join(fixture, archive), '-C', payload, 'phantom', 'phantom-mcp']);
+    execFileSync('/usr/bin/tar', ['-czf', join(fixture, archive), '-C', payload, 'phantom', 'phantom-mcp']);
     writeFileSync(join(fixture, `${archive}.sha256`), `${'0'.repeat(64)}  ${archive}\n`);
-    const mktemp = execFileSync('which', ['mktemp'], { encoding: 'utf8' }).trim();
+    const mktemp = execFileSync('/usr/bin/which', ['mktemp'], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin' } }).trim();
     const shim = join(shims, 'mktemp');
     writeFileSync(shim, `#!/bin/sh\nstage="$(${JSON.stringify(mktemp)} "$@")" || exit $?\nif [ "$1" = -d ]; then printf '%s\\n' "$stage" >> ${JSON.stringify(stageLog)}; fi\nprintf '%s\\n' "$stage"\n`);
     chmodSync(shim, 0o755);
@@ -76,7 +76,7 @@ test('public installer cleans staging after failure with a nonexistent install p
   const arch = { x64: 'x86_64', arm64: 'aarch64' }[process.arch];
   assert.ok(os && arch, 'test requires a supported Unix installer target');
   const archive = `phantom-${arch}-${os}.tar.gz`;
-  execFileSync('tar', ['-czf', join(fixture, archive), '-C', payload, 'phantom', 'phantom-mcp']);
+  execFileSync('/usr/bin/tar', ['-czf', join(fixture, archive), '-C', payload, 'phantom', 'phantom-mcp']);
   writeFileSync(join(fixture, `${archive}.sha256`), `${'0'.repeat(64)}  ${archive}\n`);
 
   const result = spawnSync('/bin/bash', [fileURLToPath(new URL('../apps/web/public/install.sh', import.meta.url))], {

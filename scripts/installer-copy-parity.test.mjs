@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawnPosixSync } from './lib/posix-spawn.mjs';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -20,7 +20,7 @@ function diffNormalized(repository, web) {
     const right = join(directory, 'web.normalized');
     writeFileSync(left, repository);
     writeFileSync(right, web);
-    const result = spawnSync('diff', ['-u', '--label', repositoryCopy, '--label', webCopy, left, right], { encoding: 'utf8' });
+    const result = spawnPosixSync('diff', ['-u', '--label', repositoryCopy, '--label', webCopy, left, right], { encoding: 'utf8' });
     return result.status === 1 ? result.stdout : result.stderr;
   } finally {
     rmSync(directory, { recursive: true, force: true });

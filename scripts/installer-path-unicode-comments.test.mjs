@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSy
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
+import { pathUpdateHarness } from './lib/installer-path-harness.mjs';
 
 // The PATH update rewrites the user's shell startup file. Unrelated Unicode
 // comments (CJK, emoji, RTL, combining marks, NFC vs NFD) must come out
@@ -12,16 +13,6 @@ const copies = {
   'scripts/install.sh': resolve(import.meta.dirname, 'install.sh'),
   'apps/web/public/install.sh': resolve(import.meta.dirname, '..', 'apps', 'web', 'public', 'install.sh'),
 };
-
-function extractFunction(source, name, file) {
-  const start = source.indexOf(`${name}()`);
-  assert.ok(start >= 0, `${file}: locate ${name}`);
-  const lineEnd = source.indexOf('\n', start);
-  if (source.slice(start, lineEnd).trimEnd().endsWith('}')) return source.slice(start, lineEnd + 1);
-  const end = source.indexOf('\n}\n', start);
-  assert.ok(end > start, `${file}: locate end of ${name}`);
-  return source.slice(start, end + '\n}\n'.length);
-}
 
 const shells = {
   bash: { shell: '/bin/bash', rc: (h) => join(h, '.bashrc'), line: (b) => `export PATH="${b}:$PATH"` },
@@ -39,9 +30,7 @@ const comments = [
 
 for (const [file, installer] of Object.entries(copies)) {
   const source = readFileSync(installer, 'utf8');
-  const harness = ['set -euo pipefail', 'umask 077',
-    ...['say', 'file_identity', 'file_link_count', 'add_to_user_path'].map((n) => extractFunction(source, n, file)),
-    'add_to_user_path "$1"'].join('\n');
+  const harness = pathUpdateHarness(source, file);
 
   for (const [name, cfg] of Object.entries(shells)) {
     for (const locale of ['C', 'en_US.UTF-8']) {

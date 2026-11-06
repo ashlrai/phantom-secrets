@@ -9,8 +9,8 @@ const readRepo = (file) => fs.readFileSync(path.join(repoDir, file), "utf8");
 test("generated public install guidance retains the verified release while source advances", () => {
   const readme = readRepo("README.md");
   assert.match(readme, /verified_GitHub_release-v0\.7\.9/);
-  assert.match(readme, /source_version-v0\.8\.2/);
-  assert.match(readme, /CHANGELOG\.md#082---2026-11-05/);
+  assert.match(readme, /source_version-v0\.8\.3/);
+  assert.match(readme, /CHANGELOG\.md#083---2026-11-06/);
 
   for (const file of ["README.md", "docs/getting-started.md"]) {
     const source = readRepo(file);
