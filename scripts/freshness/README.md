@@ -1,10 +1,16 @@
 # Freshness generator
 
 Source-of-truth regeneration for versioned documentation blocks. The
-release version is read from the `Cargo.toml` `[workspace.package]`
+source candidate version is read from the `Cargo.toml` `[workspace.package]`
 version and cross-checked against `npm/package.json`,
-`npm-mcp/package.json`, and the latest released `CHANGELOG.md` section.
+`npm-mcp/package.json`, and the latest versioned `CHANGELOG.md` section.
 When those sources disagree the tools fail closed.
+
+Published badges, archive links, installed-version output, and verified-recipe
+claims instead read the bound public release in
+`apps/web/src/lib/public-release.ts`. A source bump does not advance those
+claims. Missing or unbound publication metadata fails closed. Update that
+separate receipt only after reconciling the immutable public artifacts.
 
 ## Invocation
 
