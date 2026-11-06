@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmodSync, existsSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import test from 'node:test';
@@ -120,7 +120,8 @@ function runInstaller(options = {}) {
   const fixture = makeArchive(root, target, options);
   const shims = options.shims ?? makeShims(root);
   const home = options.home ?? join(root, 'home');
-  const install = options.install ?? join(root, 'live', 'bin');
+  const install = options.install ?? (options.defaultInstall
+    ? join(home, '.phantom-secrets', 'bin') : join(root, 'live', 'bin'));
   mkdirSync(home, { recursive: true });
   if (options.existing) {
     mkdirSync(install, { recursive: true });
@@ -130,8 +131,9 @@ function runInstaller(options = {}) {
   const env = {
     ...process.env,
     HOME: home,
-    SHELL: '/bin/bash',
-    PATH: `${shims}:${process.env.PATH}`,
+    TMPDIR: options.tempDir ?? process.env.TMPDIR,
+    SHELL: options.shell ?? '/bin/bash',
+    PATH: `${shims}:${options.pathPrefix ? `${options.pathPrefix}:` : ''}${process.env.PATH}`,
     PHANTOM_INSTALL_DIR: install,
     PHANTOM_TEST_FIXTURE_DIR: fixture,
     PHANTOM_TEST_CURL_LOG: log,
@@ -143,9 +145,11 @@ function runInstaller(options = {}) {
     PHANTOM_INSTALL_LOCK_STALE_SECONDS: options.lockStaleSeconds ?? '300',
     PHANTOM_INSTALL_LOCK_HEARTBEAT_SECONDS: options.lockHeartbeatSeconds ?? '5',
   };
+  if (options.defaultInstall) delete env.PHANTOM_INSTALL_DIR;
   delete env.PHANTOM_REPO;
   delete env.PHANTOM_TAG;
   delete env.PHANTOM_TEST_ALLOW_INSTALLER_OVERRIDES;
+  delete env.PHANTOM_TEST_FAIL_AFTER_PROMOTION;
   if (!options.useCandidateDefaults) {
     env.PHANTOM_TAG = `v${options.version ?? version}`;
     if (options.repo) env.PHANTOM_REPO = options.repo;
@@ -155,6 +159,9 @@ function runInstaller(options = {}) {
   }
   if (options.directLocalRelease) {
     env.PHANTOM_TEST_LOCAL_RELEASE_DIR = fixture;
+  }
+  if (options.failAfterPromotion) {
+    env.PHANTOM_TEST_FAIL_AFTER_PROMOTION = '1';
   }
   const result = spawnSync('/bin/bash', [options.installer ?? shellInstaller], {
     encoding: 'utf8',
@@ -185,6 +192,19 @@ async function waitForPath(path, timeoutMs = 5000) {
   }
 }
 
+test('Unix installer copies use the same staging directory template', () => {
+  const installers = [shellInstaller, join(repo, 'apps', 'web', 'public', 'install.sh')];
+  const assignments = installers.map((file) => {
+    const source = readFileSync(file, 'utf8');
+    // Ignore the empty initialization, but require exactly one staging assignment.
+    const matches = [...source.matchAll(/^[ \t]*stage_root=(?!""[ \t]*$)(.*)$/gm)];
+    assert.equal(matches.length, 1, `${file} must have one staging directory assignment`);
+    return matches[0][1].replace(/[ \t]*\\[ \t]*$/, '').trimEnd();
+  });
+  assert.equal(assignments[0], assignments[1], 'installer staging templates must match');
+  assert.equal(assignments[0], '"$(mktemp -d "$install_parent/.${install_name}.install.XXXXXX")"');
+});
+
 test('web installer mirrors remain bound to the evidenced public release', () => {
   // Release candidates can target a not-yet-published tag. The phm.dev copies
   // must not advance until public-release.ts has immutable release evidence.
@@ -214,15 +234,15 @@ test('direct installers bind normal use to the canonical repository and exact ca
   const powerShell = readFileSync(psInstaller, 'utf8');
   for (const source of [shell, powerShell]) {
     assert.match(source, /ashlrai\/phantom-secrets/);
-    assert.match(source, /v0\.7\.9/);
+    assert.match(source, /v0\.8\.2/);
     assert.match(source, /PHANTOM_TEST_ALLOW_INSTALLER_OVERRIDES/);
     assert.doesNotMatch(source, /releases\/latest|api\.github\.com/);
   }
 
-  const { log, result } = runInstaller({ version: '0.7.9', useCandidateDefaults: true });
+  const { log, result } = runInstaller({ version: '0.8.2', useCandidateDefaults: true });
   assert.equal(result.status, 0, result.stderr);
   const curlLog = readFileSync(log, 'utf8');
-  assert.match(curlLog, /ashlrai\/phantom-secrets\/releases\/download\/v0\.7\.9\//);
+  assert.match(curlLog, /ashlrai\/phantom-secrets\/releases\/download\/v0\.8\.2\//);
   assert.doesNotMatch(curlLog, /releases\/latest|api\.github\.com/);
 });
 
@@ -271,6 +291,30 @@ test('Unix unsupported-target failures point to reviewed release assets', () => 
   }
 });
 
+test('Unix installer on an unsupported OS fails clearly and leaves the destination untouched', () => {
+  for (const unameS of ['FreeBSD', 'SunOS', 'MINGW64_NT-10.0']) {
+    for (const existing of [true, false]) {
+      const root = mkdtempSync(join(tmpdir(), 'phantom-installer-test-'));
+      const install = join(root, 'live', 'bin');
+      // `existing: false` leaves even the install parent absent, so any mkdir/lock/stage shows up.
+      const { result, log } = runInstaller({ root, install, existing, unameS });
+      const home = join(root, 'home');
+      assert.equal(result.status, 1, `${unameS}: expected exit 1`);
+      assert.match(result.stderr, new RegExp(`unsupported OS: ${escapeRegExp(unameS)}`));
+      assert.match(result.stderr, /checksum-verifiable asset from https:\/\/github\.com\/ashlrai\/phantom-secrets\/releases/);
+      assert.equal(existsSync(log), false, `${unameS}: must not reach the network`);
+      assert.equal(readdirSync(home).length, 0, `${unameS}: must not touch HOME or shell rc files`);
+      if (existing) {
+        assert.deepEqual(readdirSync(install), ['old-install']);
+        assert.equal(readFileSync(join(install, 'old-install'), 'utf8'), 'preserve-me');
+        assert.deepEqual(readdirSync(dirname(install)), ['bin'], `${unameS}: no lock/stage/backup siblings`);
+      } else {
+        assert.equal(existsSync(dirname(install)), false, `${unameS}: must not create the install parent`);
+      }
+    }
+  }
+});
+
 test('Unix installer uses bounded HTTPS downloads and promotes both exact binaries', () => {
   const { install, log, result, root } = runInstaller();
   assert.equal(result.status, 0, result.stderr);
@@ -312,16 +356,186 @@ test('Unix installer rejects unsafe install-directory syntax before download', (
   }
 });
 
+test('Unix installer cleans its staging directory after a successful fixture upgrade', (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'phantom-installer-cleanup-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const parent = join(root, 'install-parent');
+  const install = join(parent, 'bin');
+  mkdirSync(parent);
+  writeFileSync(join(parent, 'unrelated'), 'keep');
+
+  const { result } = runInstaller({ root, install, existing: true });
+  assert.ifError(result.error);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(readFileSync(join(install, 'phantom'), 'utf8'), /phantom 1\.2\.3/);
+  assert.match(readFileSync(join(install, 'phantom-mcp'), 'utf8'), /phantom-mcp 1\.2\.3/);
+  assert.equal(existsSync(join(install, 'old-install')), false);
+  assert.equal(readFileSync(join(parent, 'unrelated'), 'utf8'), 'keep');
+  assert.deepEqual(readdirSync(parent).sort(), ['bin', 'unrelated']);
+});
+
+for (const installer of [shellInstaller, join(repo, 'apps/web/public/install.sh')]) {
+test(`${installer} keeps downloads and extraction in private sibling staging directories`, (t) => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-installer-stage-review-')));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const shims = makeShims(root);
+  const record = join(root, 'stage.json');
+  const tar = execFileSync('which', ['tar'], { encoding: 'utf8' }).trim();
+  writeFileSync(join(shims, 'tar'), `#!/usr/bin/env node
+const fs = require('node:fs');
+const path = require('node:path');
+const { spawnSync } = require('node:child_process');
+const args = process.argv.slice(2);
+if (args.includes('-xzf')) {
+  const candidate = args[args.indexOf('-C') + 1];
+  const stage = path.dirname(candidate);
+  const download = path.join(stage, 'download');
+  const mode = (p) => fs.statSync(p).mode & 0o777;
+  fs.writeFileSync(${JSON.stringify(record)}, JSON.stringify({
+    stage, candidate, modes: [mode(stage), mode(download), mode(candidate)],
+    downloads: fs.readdirSync(download).sort(), candidateFiles: fs.readdirSync(candidate),
+  }));
+}
+const result = spawnSync(${JSON.stringify(tar)}, args, { stdio: 'inherit' });
+if (result.error) throw result.error;
+process.exit(result.status ?? 1);
+`);
+  chmodSync(join(shims, 'tar'), 0o755);
+  const install = join(root, 'live', 'bin');
+  const { result } = runInstaller({ root, shims, install, installer });
+  assert.ifError(result.error);
+  assert.equal(result.status, 0, result.stderr);
+  const observed = JSON.parse(readFileSync(record, 'utf8'));
+  assert.match(observed.stage, new RegExp(`^${escapeRegExp(dirname(install))}/\\.bin\\.install\\.[^/]+$`));
+  assert.equal(observed.candidate, join(observed.stage, 'candidate'));
+  assert.deepEqual(observed.modes, [0o700, 0o700, 0o700]);
+  assert.deepEqual(observed.downloads, [
+    'phantom-x86_64-apple-darwin.tar.gz',
+    'phantom-x86_64-apple-darwin.tar.gz.sha256',
+  ]);
+  assert.deepEqual(observed.candidateFiles, []);
+  assert.equal(existsSync(observed.stage), false);
+});
+
+test(`${installer} stages under the physical install parent regardless of TMPDIR`, (t) => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-stage-parent-')));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const parent = join(root, 'physical parent');
+  const alias = join(root, 'parent alias');
+  const tempDir = join(root, 'separate temp');
+  mkdirSync(parent);
+  mkdirSync(tempDir);
+  symlinkSync(parent, alias);
+  const record = join(root, 'invocations.log');
+  const { result } = runInstaller({
+    root, install: join(alias, 'custom-bin'), tempDir, recordInvocations: record, installer,
+  });
+  assert.ifError(result.error);
+  assert.equal(result.status, 0, result.stderr);
+  const staged = readFileSync(record, 'utf8').trim().split('\n')
+    .filter((path) => path.includes('.custom-bin.install.'));
+  assert.deepEqual(staged.map((path) => basename(path)).sort(), ['phantom', 'phantom-mcp']);
+  const stageRoots = new Set(staged.map((path) => dirname(dirname(path))));
+  assert.equal(stageRoots.size, 1);
+  const [stage] = stageRoots;
+  assert.equal(dirname(stage), parent);
+  assert.match(basename(stage), /^\.custom-bin\.install\.[^/]+$/);
+  assert.equal(existsSync(stage), false);
+  assert.deepEqual(readdirSync(tempDir), []);
+});
+}
+
+test('Unix installer passes the default destination-derived template to mktemp', (t) => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-stage-prefix-')));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const shims = makeShims(root);
+  const record = join(root, 'mktemp-template');
+  const mktemp = execFileSync('which', ['mktemp'], { encoding: 'utf8' }).trim();
+  writeFileSync(join(shims, 'mktemp'), `#!/bin/sh
+if [ "$1" = -d ]; then printf '%s\\n' "$2" > ${JSON.stringify(record)}; fi
+exec ${JSON.stringify(mktemp)} "$@"
+`);
+  chmodSync(join(shims, 'mktemp'), 0o755);
+  const invocations = join(root, 'invocations.log');
+  const { install, result } = runInstaller({
+    root, shims, defaultInstall: true, recordInvocations: invocations,
+  });
+  assert.ifError(result.error);
+  assert.equal(result.status, 0, result.stderr);
+  const parent = realpathSync(dirname(install));
+  assert.equal(readFileSync(record, 'utf8').trim(), join(parent, '.bin.install.XXXXXX'));
+  const staged = readFileSync(invocations, 'utf8').trim().split('\n')
+    .filter((path) => path.includes('.bin.install.'));
+  assert.deepEqual(staged.map((path) => basename(path)).sort(), ['phantom', 'phantom-mcp']);
+  const stageRoots = new Set(staged.map((path) => dirname(dirname(path))));
+  assert.equal(stageRoots.size, 1);
+  const [stage] = stageRoots;
+  assert.equal(dirname(stage), parent);
+  assert.match(basename(stage), /^\.bin\.install\.[A-Za-z0-9]{6}$/);
+  assert.equal(existsSync(stage), false);
+});
+
+test('Unix installer passes a spaced installation path to mktemp as one template argument', (t) => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-stage-argv-')));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const shims = makeShims(root);
+  const record = join(root, 'mktemp-args.json');
+  const mktemp = execFileSync('which', ['mktemp'], { encoding: 'utf8' }).trim();
+  writeFileSync(join(shims, 'mktemp'), `#!/usr/bin/env node
+const fs = require('node:fs');
+const { spawnSync } = require('node:child_process');
+const args = process.argv.slice(2);
+if (args[0] === '-d') fs.writeFileSync(${JSON.stringify(record)}, JSON.stringify(args));
+const result = spawnSync(${JSON.stringify(mktemp)}, args, { stdio: 'inherit' });
+if (result.error) throw result.error;
+process.exit(result.status ?? 1);
+`);
+  chmodSync(join(shims, 'mktemp'), 0o755);
+  const parent = join(root, 'installation parent with spaces');
+  const install = join(parent, 'phantom tools');
+  const invocations = join(root, 'invocations.log');
+  const { result } = runInstaller({ root, shims, install, recordInvocations: invocations });
+  assert.ifError(result.error);
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(readFileSync(record, 'utf8')), [
+    '-d', join(parent, '.phantom tools.install.XXXXXX'),
+  ]);
+  const staged = readFileSync(invocations, 'utf8').trim().split('\n')
+    .filter((path) => path.includes('.phantom tools.install.'));
+  assert.deepEqual(staged.map((path) => basename(path)).sort(), ['phantom', 'phantom-mcp']);
+  const stageRoots = new Set(staged.map((path) => dirname(dirname(path))));
+  assert.equal(stageRoots.size, 1);
+  const [stage] = stageRoots;
+  assert.equal(dirname(stage), parent);
+  assert.match(basename(stage), /^\.phantom tools\.install\.[A-Za-z0-9]{6}$/);
+  assert.equal(existsSync(stage), false);
+  assert.ok(existsSync(join(install, 'phantom')));
+  assert.ok(existsSync(join(install, 'phantom-mcp')));
+});
+
 for (const installer of [shellInstaller, join(repo, 'apps/web/public/install.sh')]) {
   const label = installer === shellInstaller ? 'candidate' : 'public-reference';
-  test(`Unix ${label} installer stages inside a spaced install parent and cleans it up`, () => {
+  test(`Unix ${label} installer stages inside a spaced install parent and cleans it up`, (t) => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom installer stage-')));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
     const parent = join(root, 'live dir');
     const install = join(parent, 'bin');
     const record = join(root, 'invocations.log');
-    const { result } = runInstaller({ root, install, installer, recordInvocations: record });
+    const argsRecord = join(root, 'mktemp-args');
+    const shims = makeShims(root);
+    const mktemp = execFileSync('which', ['mktemp'], { encoding: 'utf8' }).trim();
+    const shellQuote = (value) => `'${value.replace(/'/g, "'\\''")}'`;
+    writeFileSync(join(shims, 'mktemp'), `#!/bin/sh
+if [ "$1" = -d ]; then printf '%s\\0' "$@" > ${shellQuote(argsRecord)}; fi
+exec ${shellQuote(mktemp)} "$@"
+`);
+    chmodSync(join(shims, 'mktemp'), 0o755);
+    const { result } = runInstaller({ root, shims, install, installer, recordInvocations: record });
     assert.ifError(result.error);
     assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(readFileSync(argsRecord, 'utf8').split('\0'), [
+      '-d', join(parent, '.bin.install.XXXXXX'), '',
+    ], 'mktemp receives the complete staging template as one argument');
 
     // Every fixture --version probe logs $0: two staged runs must resolve
     // inside the spaced parent's single private staging directory.
@@ -336,6 +550,8 @@ for (const installer of [shellInstaller, join(repo, 'apps/web/public/install.sh'
     for (const path of staged) assert.match(path, stagedPattern);
     const [stageRoot] = stageRoots;
     assert.equal(existsSync(stageRoot), false, 'staging directory must be removed');
+    assert.ok(existsSync(join(install, 'phantom')));
+    assert.ok(existsSync(join(install, 'phantom-mcp')));
     assert.deepEqual(
       readdirSync(parent).filter((name) => name.startsWith('.bin.')),
       [],
@@ -378,6 +594,141 @@ test('Unix installer atomically preserves an existing regular shell rc under GNU
     readdirSync(home).filter((name) => name.startsWith('.phantom-path.')),
     [],
   );
+});
+
+test('Unix PATH setup removes both temporary files when the marker already exists', (t) => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-path-marker-')));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const home = join(root, 'home');
+  const shims = makeShims(root);
+  mkdirSync(home);
+  const rc = join(home, '.zshrc');
+  const original = '# existing\n# phantom-secrets PATH\nexport PATH="/old/bin:$PATH"\n';
+  writeFileSync(rc, original);
+  const originalInode = lstatSync(rc).ino;
+  const record = join(root, 'templates');
+  const mktemp = execFileSync('which', ['mktemp'], { encoding: 'utf8' }).trim();
+  const shellQuote = (value) => `'${value.replace(/'/g, "'\\''")}'`;
+  writeFileSync(join(shims, 'mktemp'), `#!/bin/sh\nprintf '%s\\n' "$1" >> ${shellQuote(record)}\nexec ${shellQuote(mktemp)} "$@"\n`);
+  chmodSync(join(shims, 'mktemp'), 0o755);
+
+  const { result } = runInstaller({ root, home, shims, shell: '/bin/zsh' });
+  assert.ifError(result.error);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /already wired/);
+  assert.equal(readFileSync(rc, 'utf8'), original);
+  assert.equal(lstatSync(rc).ino, originalInode);
+  const templates = readFileSync(record, 'utf8').split('\n');
+  assert.ok(templates.includes(join(home, '.phantom-path.before.XXXXXX')));
+  assert.ok(templates.includes(join(home, '.phantom-path.candidate.XXXXXX')));
+  assert.deepEqual(readdirSync(home).filter((name) => name.startsWith('.phantom-path.')), []);
+});
+
+test('Unix PATH setup reports and cleans up failures before replacement', (t) => {
+  for (const failure of ['snapshot creation', 'candidate creation', 'comparison', 'replacement']) {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-path-failure-')));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const home = join(root, 'home');
+    const shims = makeShims(root);
+    mkdirSync(home);
+    const rc = join(home, '.bashrc');
+    writeFileSync(rc, '# original configuration\n');
+    if (failure === 'snapshot creation' || failure === 'candidate creation') {
+      const shim = join(shims, 'mktemp');
+      const prefix = failure === 'snapshot creation' ? 'before' : 'candidate';
+      writeFileSync(shim, `#!/bin/sh\ncase "$1" in *.phantom-path.${prefix}.*) : > "$HOME/.failure-invoked"; exit 1 ;; esac\nexec /usr/bin/mktemp "$@"\n`);
+      chmodSync(shim, 0o755);
+    } else if (failure === 'comparison') {
+      const shim = join(shims, 'cmp');
+      writeFileSync(shim, '#!/bin/sh\n: > "$HOME/.failure-invoked"\nexit 1\n');
+      chmodSync(shim, 0o755);
+    } else {
+      const shim = join(shims, 'mv');
+      writeFileSync(shim, '#!/bin/sh\ncase "$*" in *.phantom-path.candidate.*) : > "$HOME/.failure-invoked"; exit 1 ;; esac\nexec /bin/mv "$@"\n');
+      chmodSync(shim, 0o755);
+    }
+
+    const { install, result } = runInstaller({ root, home, shims });
+    assert.ifError(result.error);
+    assert.equal(result.status, 0, `${failure}: ${result.stderr}`);
+    assert.match(result.stderr, /could not update your shell PATH/);
+    assert.equal(existsSync(join(home, '.failure-invoked')), true, `${failure}: failure seam reached`);
+    assert.equal(readFileSync(rc, 'utf8'), '# original configuration\n');
+    assert.equal(existsSync(join(install, 'phantom')), true);
+    assert.equal(existsSync(join(install, 'phantom-mcp')), true);
+    assert.match(result.stdout, /done\. phantom/);
+    assert.deepEqual(readdirSync(home).filter((name) => name.startsWith('.phantom-path.')), []);
+  }
+});
+
+test('Unix PATH setup creates an absent fish startup file and removes its temporary siblings', (t) => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-path-fish-')));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const { install, result } = runInstaller({ root, shell: '/usr/bin/fish' });
+  assert.ifError(result.error);
+  assert.equal(result.status, 0, result.stderr);
+  const parent = join(root, 'home', '.config', 'fish');
+  const rc = join(parent, 'config.fish');
+  assert.equal(readFileSync(rc, 'utf8'), `\n# phantom-secrets PATH\nset -gx PATH "${realpathSync(install)}" $PATH\n`);
+  assert.equal(lstatSync(rc).mode & 0o777, 0o600);
+  assert.deepEqual(readdirSync(parent), ['config.fish']);
+});
+
+test('Unix PATH final verification failure warns and restores the previous startup file', (t) => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-path-final-check-')));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const home = join(root, 'home');
+  const shims = makeShims(root);
+  mkdirSync(home);
+  const rc = join(home, '.bashrc');
+  writeFileSync(rc, '# original configuration\n');
+  const shim = join(shims, 'grep');
+  writeFileSync(shim, '#!/bin/sh\ncase "$*" in *"$HOME/.bashrc"*) : > "$HOME/.final-check-invoked"; exit 1 ;; esac\nexec /usr/bin/grep "$@"\n');
+  chmodSync(shim, 0o755);
+
+  const { install, result } = runInstaller({ root, home, shims });
+  assert.ifError(result.error);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stderr, /could not update your shell PATH/);
+  assert.equal(existsSync(join(home, '.final-check-invoked')), true);
+  assert.equal(readFileSync(rc, 'utf8'), '# original configuration\n');
+  assert.equal(existsSync(join(install, 'phantom')), true);
+  assert.deepEqual(readdirSync(home).filter((name) => name.startsWith('.phantom-path.')), []);
+});
+
+test('Unix installer leaves its existing PATH entry unchanged on a second install', () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-installer-repeat-')));
+  const shims = makeShims(root);
+  const options = { root, shims, install: join(root, 'live', 'bin') };
+  const rcPath = join(root, 'home', '.bashrc');
+
+  const first = runInstaller(options);
+  assert.ifError(first.result.error);
+  assert.equal(first.result.status, 0, first.result.stderr);
+  const originalRc = readFileSync(rcPath, 'utf8');
+  const entry = `export PATH="${options.install}:$PATH"`;
+  assert.equal(originalRc.split('\n').filter((line) => line === entry).length, 1);
+
+  const second = runInstaller(options);
+  assert.ifError(second.result.error);
+  assert.equal(second.result.status, 0, second.result.stderr);
+  assert.equal(readFileSync(rcPath, 'utf8'), originalRc);
+  assert.equal(execFileSync(join(options.install, 'phantom'), ['--version'], { encoding: 'utf8' }).trim(), `phantom ${version}`);
+  assert.equal(execFileSync(join(options.install, 'phantom-mcp'), ['--version'], { encoding: 'utf8' }).trim(), `phantom-mcp ${version}`);
+});
+
+test('Unix installer does not alter the shell rc when the install directory is already in PATH', () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-installer-in-path-')));
+  const home = join(root, 'home');
+  const install = join(root, 'live', 'bin');
+  const rcPath = join(home, '.bashrc');
+  mkdirSync(home, { recursive: true });
+  writeFileSync(rcPath, '# existing shell configuration\n');
+
+  const { result } = runInstaller({ root, home, install, pathPrefix: install });
+  assert.ifError(result.error);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(readFileSync(rcPath, 'utf8'), '# existing shell configuration\n');
 });
 
 test('Unix installer serializes concurrent versions under one owner lock', async () => {
@@ -642,6 +993,178 @@ test('Unix installer aborts before download when staging-directory creation fail
   }
 });
 
+test('web Unix installer aborts before download when staging-directory creation fails', () => {
+  const installer = join(repo, 'apps/web/public/install.sh');
+  for (const seam of ['mktemp', 'chmod', 'mkdir']) {
+    const root = mkdtempSync(join(tmpdir(), `phantom-web-installer-stage-${seam}-`));
+    const shims = makeShims(root);
+    addStagingFailureShim(shims, seam);
+    const install = join(root, 'live', 'bin');
+    const parent = dirname(install);
+    const { result, log } = runInstaller({ root, shims, installer, install, existing: true });
+    assert.ifError(result.error);
+    assert.equal(result.status, 1, `${seam}: ${result.stderr}`);
+    assert.match(result.stderr, /could not .*staging director/, `${seam}: must report a useful error`);
+    assert.equal(existsSync(log), false, `${seam}: staging failure must precede downloads`);
+    assert.equal(readFileSync(join(install, 'old-install'), 'utf8'), 'preserve-me');
+    assert.equal(existsSync(join(parent, '.bin.install.lock')), false, `${seam}: lock released`);
+    assert.deepEqual(
+      readdirSync(parent).filter((name) => name.startsWith('.')),
+      [],
+      `${seam}: staging and lock leftovers must be cleaned up`,
+    );
+  }
+});
+
+test('web Unix installer never uses a staging directory that mktemp reports but did not create', () => {
+  const installer = join(repo, 'apps/web/public/install.sh');
+  const root = mkdtempSync(join(tmpdir(), 'phantom-web-stage-missing-'));
+  try {
+    const shims = makeShims(root);
+    const missing = join(root, 'live', '.bin.install.missing');
+    const touched = join(root, 'shim-touched-missing');
+    // mktemp claims success and prints a path that does not exist; any later
+    // command naming that path is recorded, so reuse would be observable.
+    writeFileSync(join(shims, 'mktemp'), `#!/bin/sh
+for arg do
+  case "$arg" in
+    *.install.XXXXXX) printf '%s\\n' ${JSON.stringify(missing)}; exit 0 ;;
+  esac
+done
+exec /usr/bin/mktemp "$@"
+`);
+    chmodSync(join(shims, 'mktemp'), 0o755);
+    for (const name of ['mkdir', 'tar']) {
+      const real = execFileSync('which', [name], { encoding: 'utf8' }).trim();
+      writeFileSync(join(shims, name), `#!/bin/sh
+for arg do
+  case "$arg" in
+    ${JSON.stringify(missing)}*) printf '%s\\n' "$0 $*" >> ${JSON.stringify(touched)} ;;
+  esac
+done
+exec ${JSON.stringify(real)} "$@"
+`);
+      chmodSync(join(shims, name), 0o755);
+    }
+    const { install, log, result } = runInstaller({ root, shims, installer, existing: true });
+    assert.ifError(result.error);
+    assert.notEqual(result.status, 0, result.stderr);
+    assert.match(result.stderr, /could not secure the staging directory/);
+    assert.equal(existsSync(log), false, 'no download may start without a staging directory');
+    assert.equal(existsSync(touched), false, 'mkdir/tar must never be pointed at the missing directory');
+    assert.equal(existsSync(missing), false);
+    assert.equal(readFileSync(join(install, 'old-install'), 'utf8'), 'preserve-me');
+    assert.deepEqual(readdirSync(dirname(install)), ['bin']);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('Unix installer cleans staged candidates and rolls back after a controlled promotion failure', () => {
+  for (const existing of [false, true]) {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom installer rollback-')));
+    try {
+      const install = join(root, 'live dir', 'bin');
+      const record = join(root, 'invocations.log');
+      const { result } = runInstaller({
+        root, install, existing, recordInvocations: record, failAfterPromotion: true,
+      });
+      assert.ifError(result.error);
+      assert.equal(result.status, 1, result.stderr);
+      assert.match(result.stderr, /test-only injected failure after promotion/);
+
+      const staged = readFileSync(record, 'utf8').trim().split('\n');
+      assert.deepEqual(staged.map((path) => basename(path)).sort(), ['phantom', 'phantom-mcp']);
+      const stageRoots = new Set(staged.map((path) => dirname(dirname(path))));
+      assert.equal(stageRoots.size, 1);
+      const [stageRoot] = stageRoots;
+      assert.match(stageRoot, new RegExp(`^${escapeRegExp(dirname(install))}/\\.bin\\.install\\.[^/]+$`));
+      for (const path of staged) assert.equal(dirname(path), join(stageRoot, 'candidate'));
+      assert.equal(existsSync(stageRoot), false, 'staging tree and candidate must be removed');
+      assert.deepEqual(readdirSync(dirname(install)), existing ? ['bin'] : []);
+      if (existing) {
+        assert.deepEqual(readdirSync(install), ['old-install']);
+        assert.equal(readFileSync(join(install, 'old-install'), 'utf8'), 'preserve-me');
+      } else {
+        assert.equal(existsSync(install), false);
+      }
+      assert.deepEqual(readdirSync(join(root, 'home')), [], 'HOME must contain no temporary files');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test('Unix installer leaves recoverable state when a rollback move fails', () => {
+  for (const failedMove of ['failed-live', 'restore']) {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-installer-rollback-move-')));
+    try {
+      const shims = makeShims(root);
+      const shim = join(shims, 'mv');
+      writeFileSync(shim, `#!/bin/sh
+case "$1:$2" in
+  ${failedMove === 'failed-live' ? '*:*/failed-live' : '*.backup.*:*/bin'}) exit 73 ;;
+esac
+exec /bin/mv "$@"
+`);
+      chmodSync(shim, 0o755);
+      const { install, result } = runInstaller({ root, shims, existing: true, failAfterPromotion: true });
+      assert.ifError(result.error);
+      assert.equal(result.status, 1, result.stderr);
+      assert.match(result.stderr, /test-only injected failure after promotion/);
+      const parent = dirname(install);
+      const siblings = readdirSync(parent);
+      const backups = siblings.filter((name) => name.startsWith('.bin.backup.'));
+      assert.equal(backups.length, 1, 'the previous install remains in the backup');
+      assert.equal(readFileSync(join(parent, backups[0], 'old-install'), 'utf8'), 'preserve-me');
+      assert.equal(existsSync(join(parent, '.bin.install.lock')), false);
+      assert.equal(siblings.some((name) => /^\.bin\.install\.(?!lock$)/.test(name)), false);
+      if (failedMove === 'failed-live') {
+        assert.equal(existsSync(join(install, 'phantom')), true, 'the promoted candidate remains live');
+      } else {
+        assert.equal(existsSync(install), false, 'the live destination remains absent');
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test('web Unix installer cleans staging failures and rolls back a promoted candidate', () => {
+  const installer = join(repo, 'apps/web/public/install.sh');
+  for (const seam of ['mktemp', 'chmod', 'mkdir']) {
+    const root = mkdtempSync(join(tmpdir(), `phantom-web-stage-${seam}-`));
+    try {
+      const shims = makeShims(root);
+      addStagingFailureShim(shims, seam);
+      const { install, log, result } = runInstaller({ root, shims, installer, existing: true });
+      assert.ifError(result.error);
+      assert.equal(result.status, 1, `${seam}: ${result.stderr}`);
+      assert.match(result.stderr, /could not .*staging director/, `${seam}: must report a useful error`);
+      assert.equal(existsSync(log), false, `${seam}: failure must precede downloads`);
+      assert.equal(readFileSync(join(install, 'old-install'), 'utf8'), 'preserve-me');
+      assert.deepEqual(readdirSync(dirname(install)), ['bin']);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+
+  for (const existing of [false, true]) {
+    const root = mkdtempSync(join(tmpdir(), 'phantom-web-rollback-'));
+    try {
+      const { install, result } = runInstaller({ root, installer, existing, failAfterPromotion: true });
+      assert.ifError(result.error);
+      assert.equal(result.status, 1, result.stderr);
+      assert.match(result.stderr, /test-only injected failure after promotion/);
+      assert.deepEqual(readdirSync(dirname(install)), existing ? ['bin'] : []);
+      if (existing) assert.equal(readFileSync(join(install, 'old-install'), 'utf8'), 'preserve-me');
+      else assert.equal(existsSync(install), false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+});
+
 test('Unix installer preserves the prior live install on malformed checksum', () => {
   const { install, result } = runInstaller({ existing: true, sidecar: `${'a'.repeat(64)}  wrong.tar.gz\nextra\n` });
   assert.notEqual(result.status, 0);
@@ -673,8 +1196,12 @@ test('installers retain the closed six-target mapping', () => {
   const powerShell = readFileSync(psInstaller, 'utf8');
   for (const mapping of [
     { unameS: 'Darwin', unameM: 'x86_64', target: 'x86_64-apple-darwin' },
+    { unameS: 'Darwin', unameM: 'amd64', target: 'x86_64-apple-darwin' },
     { unameS: 'Darwin', unameM: 'arm64', target: 'aarch64-apple-darwin' },
+    { unameS: 'Darwin', unameM: 'aarch64', target: 'aarch64-apple-darwin' },
     { unameS: 'Linux', unameM: 'x86_64', target: 'x86_64-unknown-linux-gnu' },
+    { unameS: 'Linux', unameM: 'amd64', target: 'x86_64-unknown-linux-gnu' },
+    { unameS: 'Linux', unameM: 'arm64', target: 'aarch64-unknown-linux-gnu' },
     { unameS: 'Linux', unameM: 'aarch64', target: 'aarch64-unknown-linux-gnu' },
   ]) {
     const { result } = runInstaller(mapping);
@@ -683,6 +1210,27 @@ test('installers retain the closed six-target mapping', () => {
   }
   assert.match(powerShell, /x86_64-pc-windows-msvc/);
   assert.match(powerShell, /aarch64-pc-windows-msvc/);
+});
+
+test('Unix installer rejects unsupported OS and architecture before download or installation', () => {
+  for (const { unameS, unameM, error } of [
+    { unameS: 'FreeBSD', unameM: 'x86_64', error: /unsupported OS: FreeBSD/ },
+    { unameS: 'Windows_NT', unameM: 'x86_64', error: /unsupported OS: Windows_NT/ },
+    { unameS: 'linux', unameM: 'x86_64', error: /unsupported OS: linux/ },
+    { unameS: 'Linux', unameM: 'i686', error: /unsupported arch: i686/ },
+    { unameS: 'Darwin', unameM: 'riscv64', error: /unsupported arch: riscv64/ },
+    { unameS: 'FreeBSD', unameM: 'i686', error: /unsupported OS: FreeBSD/ },
+  ]) {
+    const { root, install, log, result } = runInstaller({ unameS, unameM });
+    try {
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, error);
+      assert.equal(existsSync(log), false, 'must not download');
+      assert.equal(existsSync(dirname(install)), false, 'must not create the install parent');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
 });
 
 test('PowerShell installer has a strict offline-verifiable security contract', () => {
@@ -708,7 +1256,7 @@ test('PowerShell installer has a strict offline-verifiable security contract', (
   assert.match(source, /PHANTOM_INSTALL_DIR must be a local absolute path/);
   assert.match(source, /install source receipt failed final validation/);
   assert.match(source, /\$CanonicalRepo = 'ashlrai\/phantom-secrets'/);
-  assert.match(source, /\$CandidateTag = 'v0\.7\.9'/);
+  assert.match(source, /\$CandidateTag = 'v0\.8\.2'/);
   assert.match(source, /PHANTOM_TEST_ALLOW_INSTALLER_OVERRIDES -ceq '1'/);
   assert.match(source, /PHANTOM_TEST_LOCAL_RELEASE_DIR/);
   assert.match(source, /PHANTOM_TEST_DISABLE_PATH_PERSISTENCE/);

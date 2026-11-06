@@ -66,7 +66,9 @@ jobs:
             if has '\.(js|jsx|mjs|cjs|ts|tsx|mts|cts|vue|html?)$|(^|/)package(-lock)?\.json$'; then langs+=(javascript-typescript); fi
             if has '\.(py|pyi)$|(^|/)(requirements[^/]*\.txt|pyproject\.toml|setup\.(py|cfg))$'; then langs+=(python); fi
             if has '\.(rb|erb|gemspec|rake)$|(^|/)(Gemfile(\.lock)?|Rakefile)$'; then langs+=(ruby); fi
-            if has '\.rs$|(^|/)Cargo\.(toml|lock)$'; then langs+=(rust); fi
+            # Rust analysis (~9 min) runs on PRs only when workflows change
+            # (G1); merge_group, main pushes, nightly and dispatch still scan it.
+            if has '^\.github/workflows/'; then langs+=(rust); fi
           fi
           if [ "${#langs[@]}" -eq 0 ]; then code=false; json='[]'
           else json="[$(printf '"%s",' "${langs[@]}" | sed 's/,$//')]"; fi

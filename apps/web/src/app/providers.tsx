@@ -10,6 +10,7 @@ export function PostHogProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     void capturePostHog("$pageview", {
       $current_url: `${window.location.origin}${pathname}`,
+      $host: window.location.host,
     });
   }, [pathname]);
 

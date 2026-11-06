@@ -236,7 +236,7 @@ async fn run_async() -> Result<()> {
         interceptor,
     )
     .await
-    .map_err(|e| anyhow::anyhow!("Failed to start proxy: {e}"))?;
+    .map_err(crate::util::proxy_start_error)?;
 
     let port = proxy.port();
 

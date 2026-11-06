@@ -2,6 +2,8 @@
 
 This matrix separates source compilation, release packaging, installer or
 wrapper mapping, and native acceptance. One does not prove the next.
+For the Unix installer's exact `uname` mappings and rejection behavior, see
+[installer platform detection](installer-platforms.md).
 
 ## Evidence vocabulary
 

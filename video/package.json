@@ -14,5 +14,8 @@
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "remotion": "4.0.519"
+  },
+  "overrides": {
+    "zod": "^4.6.6"
   }
 }
