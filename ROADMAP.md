@@ -1,6 +1,6 @@
 # Roadmap
 
-<!-- phantom-release-version: 0.8.5 -->
+<!-- phantom-release-version: 0.8.6 -->
 
 This roadmap describes ordered engineering gates, not delivery dates or shipped
 capabilities. This opening historical snapshot was verified on 2026-09-29. The immutable
