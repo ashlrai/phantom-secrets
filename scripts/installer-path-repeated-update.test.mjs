@@ -1,5 +1,6 @@
+import { writeInstallerArchive } from './lib/installer-staging-fixture.mjs';
 import assert from 'node:assert/strict';
-import { execFileSync, spawn, spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import {
   chmodSync,
   existsSync,
@@ -12,11 +13,10 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs';
-import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
-import { extractFunction, pathUpdateHarness } from './lib/installer-path-harness.mjs';
+import { extractFunction, pathUpdateHarness, installerPathShellCases } from './lib/installer-path-harness.mjs';
 import { fileURLToPath } from 'node:url';
 
 // Re-running the installer must never stack PATH entries. Two distinct
@@ -38,26 +38,11 @@ const installers = {
 };
 
 const marker = '# phantom-secrets PATH';
-const shells = {
-  bash: {
-    shell: '/bin/bash',
-    rc: (home) => join(home, '.bashrc'),
-    pathLine: (bin) => `export PATH="${bin}:$PATH"`,
-    preseed: '# user shell config\nexport EDITOR=vim\n',
-  },
-  zsh: {
-    shell: '/bin/zsh',
-    rc: (home) => join(home, '.zshrc'),
-    pathLine: (bin) => `export PATH="${bin}:$PATH"`,
-    preseed: '# user shell config\nexport EDITOR=vim\n',
-  },
-  fish: {
-    shell: '/usr/bin/fish',
-    rc: (home) => join(home, '.config', 'fish', 'config.fish'),
-    pathLine: (bin) => `set -gx PATH "${bin}" $PATH`,
-    preseed: '# user settings\nset -gx EDITOR vim\n',
-  },
-};
+const shells = installerPathShellCases({
+  bash: '# user shell config\nexport EDITOR=vim\n',
+  zsh: '# user shell config\nexport EDITOR=vim\n',
+  fish: '# user settings\nset -gx EDITOR vim\n',
+});
 
 // Stub release: two binaries that answer --version, packed and checksummed
 // exactly like a real asset so the offline path downloads from a directory.
@@ -70,13 +55,7 @@ function buildFixture(root) {
     writeFileSync(join(payload, name), `#!/bin/sh\necho "${name} 1.2.3"\n`);
     chmodSync(join(payload, name), 0o755);
   }
-  const os = { darwin: 'apple-darwin', linux: 'unknown-linux-gnu' }[process.platform];
-  const arch = { x64: 'x86_64', arm64: 'aarch64' }[process.arch];
-  assert.ok(os && arch, 'test requires a supported Unix installer target');
-  const archive = `phantom-${arch}-${os}.tar.gz`;
-  execFileSync('tar', ['-czf', join(fixture, archive), '-C', payload, 'phantom', 'phantom-mcp']);
-  const digest = createHash('sha256').update(readFileSync(join(fixture, archive))).digest('hex');
-  writeFileSync(join(fixture, `${archive}.sha256`), `${digest}  ${archive}\n`);
+  writeInstallerArchive(fixture, payload);
   return fixture;
 }
 
