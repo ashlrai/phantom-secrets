@@ -409,3 +409,34 @@ for (const [file, installer] of Object.entries(copies)) {
     assert.equal(check.status, 0, check.stderr);
   });
 }
+
+// Same live check for zsh: the preserved TZ line must still evaluate and the
+// new PATH entry must lead PATH when the updated .zshrc is sourced.
+for (const [file, installer] of Object.entries(copies)) {
+  const harness = harnessFor(readFileSync(installer, 'utf8'), file);
+  test(`${file} keeps TZ live when the updated zshrc is sourced`, (t) => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-path-tz-zsh-eval-')));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const home = join(root, 'home');
+    const bin = join(root, 'live', 'bin');
+    const rc = shells.zsh.rc(home);
+    mkdirSync(home, { recursive: true });
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(rc, `# user config\n${shells.zsh.tz}\n`, { mode: 0o600 });
+
+    const result = runUpdate(harness, shells.zsh, home, bin);
+    assert.match(result.stdout, /added .* to PATH/);
+
+    const check = spawnSync('/bin/zsh', [
+      '-f', '-c',
+      '. "$HOME/.zshrc" && [[ "$TZ" == "America/New_York" ]] && [[ "$PATH" == "$1:"* ]]',
+      'path-test', bin,
+    ], {
+      encoding: 'utf8',
+      timeout: 30000,
+      env: { HOME: home, PATH: '/usr/bin:/bin' },
+    });
+    assert.ifError(check.error);
+    assert.equal(check.status, 0, check.stderr);
+  });
+}
