@@ -1,22 +1,19 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
 import {
   chmodSync,
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readdirSync,
   readFileSync,
   realpathSync,
-  rmSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { createStagingFixture, installHashRecorders } from './lib/installer-staging-fixture.mjs';
 
 const installers = {
   repository: fileURLToPath(new URL('install.sh', import.meta.url)),
@@ -27,23 +24,7 @@ const installers = {
 // their argv, so a test can prove where the installer asked for and populated
 // its staging directory beneath a parent whose name contains an apostrophe.
 function setup(t) {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-staging-apostrophe-parent-')));
-  t.after(() => rmSync(root, { recursive: true, force: true }));
-  const fixture = join(root, 'fixture');
-  const payload = join(root, 'payload');
-  const shims = join(root, 'shims');
-  for (const dir of [fixture, payload, shims]) mkdirSync(dir);
-  for (const name of ['phantom', 'phantom-mcp']) {
-    writeFileSync(join(payload, name), `#!/bin/sh\necho "${name} 1.2.3"\n`);
-    chmodSync(join(payload, name), 0o755);
-  }
-  const os = { darwin: 'apple-darwin', linux: 'unknown-linux-gnu' }[process.platform];
-  const arch = { x64: 'x86_64', arm64: 'aarch64' }[process.arch];
-  assert.ok(os && arch, 'test requires a supported Unix installer target');
-  const archive = `phantom-${arch}-${os}.tar.gz`;
-  execFileSync('tar', ['-czf', join(fixture, archive), '-C', payload, 'phantom', 'phantom-mcp']);
-  const digest = createHash('sha256').update(readFileSync(join(fixture, archive))).digest('hex');
-  writeFileSync(join(fixture, `${archive}.sha256`), `${digest}  ${archive}\n`);
+  const { root, fixture, shims, archive } = createStagingFixture(t, 'phantom-staging-apostrophe-parent-');
   const mktempLog = join(root, 'mktemp.log');
   const createdLog = join(root, 'created.log');
   const realMktemp = execFileSync('which', ['mktemp'], { encoding: 'utf8' }).trim();
@@ -56,18 +37,7 @@ printf '%s\\n' "$created"
   chmodSync(join(shims, 'mktemp'), 0o755);
   // Recording which path the installer hashes proves the staging tree was
   // populated at failure time, so cleanup assertions cannot pass vacuously.
-  const hashLog = join(root, 'hashed-paths');
-  for (const tool of ['sha256sum', 'shasum']) {
-    writeFileSync(join(shims, tool), `#!/usr/bin/env node
-const { createHash } = require('node:crypto');
-const { appendFileSync, readFileSync } = require('node:fs');
-const target = process.argv.at(-1);
-appendFileSync(${JSON.stringify(hashLog)}, target + '\\n');
-const digest = createHash('sha256').update(readFileSync(target)).digest('hex');
-process.stdout.write(digest + '  ' + target + '\\n');
-`);
-    chmodSync(join(shims, tool), 0o755);
-  }
+  const hashLog = installHashRecorders(root, shims);
   return { root, fixture, shims, mktempLog, createdLog, hashLog, archive };
 }
 
@@ -133,17 +103,18 @@ for (const [name, installer] of Object.entries(installers)) {
     assert.deepEqual(readdirSync(resolvedParent), ['bin'], 'no staging, backup, or lock left behind');
   });
 
-  test(`${name} installer: the default install dir stages and cleans up under an apostrophe HOME`, (t) => {
-    const ctx = setup(t);
-    const home = join(ctx.root, "mason's-home");
-    mkdirSync(home);
-    // HOME is not governed by the install-dir override grammar, so a real
-    // account directory may carry an apostrophe into the default parent.
-    const resolvedHome = realpathSync(home);
-    const resolvedParent = join(resolvedHome, '.phantom-secrets');
-    const result = run(ctx, installer, {
-      home,
-      pathPrefix: join(resolvedParent, 'bin'),
+  for (const homeName of ["mason's-home", "o'brien's home"]) {
+    test(`${name} installer: the default install dir stages and cleans up under ${homeName}`, (t) => {
+      const ctx = setup(t);
+      const home = join(ctx.root, homeName);
+      mkdirSync(home);
+      // HOME is not governed by the install-dir override grammar, so a real
+      // account directory may carry an apostrophe into the default parent.
+      const resolvedHome = realpathSync(home);
+      const resolvedParent = join(resolvedHome, '.phantom-secrets');
+      const result = run(ctx, installer, {
+        home,
+        pathPrefix: join(resolvedParent, 'bin'),
     });
     assert.ifError(result.error);
     assert.equal(result.status, 0, result.stderr);
@@ -161,7 +132,8 @@ for (const [name, installer] of Object.entries(installers)) {
     assert.ok(existsSync(join(resolvedParent, 'bin', 'phantom-mcp')));
     assert.deepEqual(readdirSync(resolvedParent), ['bin'], 'no staging, backup, or lock left behind');
     assert.deepEqual(readdirSync(resolvedHome), ['.phantom-secrets'], 'HOME holds no stray files');
-  });
+    });
+  }
 
   test(`${name} installer: a failed install beneath an apostrophe parent removes its staging tree`, (t) => {
     const ctx = setup(t);

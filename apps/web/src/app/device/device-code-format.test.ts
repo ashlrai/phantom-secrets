@@ -25,6 +25,9 @@ test("partial and overlong codes remain visible and fail validation", () => {
     ["abcd23456", "ABCD-23456"],
     ["abcd23456789", "ABCD-23456789"],
     ["---", ""],
+    [" ", ""],
+    ["  \t\n  ", ""],
+    ["\u00a0\u2007", ""],
   ]) {
     assert.equal(formatDeviceUserCode(input), displayed);
     assert.equal(isValidDeviceUserCode(displayed), false, input);

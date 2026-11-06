@@ -21,13 +21,14 @@ import { fileURLToPath } from 'node:url';
 // staging tree (including the displaced previous install) and the lock, so the
 // install directory's parent holds only the installed `bin`.
 for (const installer of ['install.sh', '../apps/web/public/install.sh']) {
-test(`${installer} preserves an existing PATH entry during installation`, (t) => {
+for (const parentName of ['live', 'installation parent with spaces']) {
+test(`${installer} installs and cleans staging under ${parentName}`, (t) => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-installer-staging-success-')));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const fixture = join(root, 'fixture');
   const payload = join(root, 'payload');
   const home = join(root, 'home');
-  const install = join(root, 'live', 'bin');
+  const install = join(root, parentName, 'bin');
   for (const dir of [fixture, payload, home, install]) mkdirSync(dir, { recursive: true });
   writeFileSync(join(install, 'old-install'), 'previous');
   const rc = join(home, '.bashrc');
@@ -70,6 +71,8 @@ test(`${installer} preserves an existing PATH entry during installation`, (t) =>
 
   for (const name of ['phantom', 'phantom-mcp']) {
     assert.ok(existsSync(join(install, name)), `${name} is installed`);
+    assert.equal(readFileSync(join(install, name), 'utf8'), readFileSync(join(payload, name), 'utf8'),
+      `${name} matches the local release fixture`);
   }
   assert.equal(existsSync(join(install, 'old-install')), false, 'previous install is replaced');
   assert.deepEqual(readdirSync(dirname(install)), ['bin'], 'no staging, backup, or lock beside install');
@@ -85,4 +88,5 @@ test(`${installer} preserves an existing PATH entry during installation`, (t) =>
   assert.deepEqual(shell.stdout.split(':'), [install, '/usr/local/bin', '/usr/bin', '/bin'],
     'sourcing the unchanged startup file adds the install directory once and preserves other entries');
 });
+}
 }

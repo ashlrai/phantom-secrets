@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSy
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
+import { pathUpdateHarness } from './lib/installer-path-harness.mjs';
 
 // A startup-file line that begins with indentation (spaces, a tab, or a mix)
 // must come through the PATH update byte-for-byte: the leading whitespace is
@@ -14,21 +15,8 @@ const copies = {
   'apps/web/public/install.sh': resolve(import.meta.dirname, '..', 'apps', 'web', 'public', 'install.sh'),
 };
 
-function extractFunction(source, name, file) {
-  const start = source.indexOf(`${name}()`);
-  assert.ok(start >= 0, `${file}: locate ${name}`);
-  const lineEnd = source.indexOf('\n', start);
-  if (source.slice(start, lineEnd).trimEnd().endsWith('}')) return source.slice(start, lineEnd + 1);
-  const end = source.indexOf('\n}\n', start);
-  assert.ok(end > start, `${file}: locate end of ${name}`);
-  return source.slice(start, end + '\n}\n'.length);
-}
 
-const harnessFor = (source, file) => ['set -euo pipefail', 'umask 077',
-  ...['say', 'file_identity', 'file_link_count', 'add_to_user_path']
-    .map((name) => extractFunction(source, name, file)),
-  'add_to_user_path "$1"',
-].join('\n');
+const harnessFor = pathUpdateHarness;
 
 const marker = '# phantom-secrets PATH';
 const shells = {

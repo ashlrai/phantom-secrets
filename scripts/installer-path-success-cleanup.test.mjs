@@ -63,5 +63,6 @@ for (const installer of installers) for (const shell of shells) for (const exist
       assert.equal(existsSync(path), false, 'created temporary file was removed');
     }
     assert.deepEqual(readdirSync(dirname(rc)).filter((name) => /^\.phantom-path\.(before|candidate)\./.test(name)), []);
+    assert.deepEqual(readdirSync(home, { recursive: true }).filter((name) => basename(name).startsWith('.phantom-path')), [], 'no .phantom-path files anywhere under home');
   });
 }
