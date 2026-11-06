@@ -15,6 +15,7 @@ import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
+import { pathUpdateHarness } from './lib/installer-path-harness.mjs';
 import { fileURLToPath } from 'node:url';
 
 // A hand-edited startup file can end in an unrelated line with no trailing
@@ -23,7 +24,7 @@ import { fileURLToPath } from 'node:url';
 // as opaque bytes — it copies it into a private candidate and appends
 // '\n# phantom-secrets PATH\n<PATH line>\n' — so the last line's bytes must
 // survive untouched and the appended '\n' must terminate it, never glue the
-// managed block onto it. When the marker already appears anywhere in the file
+// managed block onto it. When the exact marker already occupies a whole line in the file
 // the update is a no-op, so the whole file — unterminated tail included —
 // comes back byte-for-byte. One end-to-end leg pins the call-site gate: when
 // the install dir is already on PATH the startup file is never opened at all.
@@ -56,25 +57,8 @@ const marker = '# phantom-secrets PATH';
 
 // add_to_user_path runs under `set -euo pipefail` in the installer and calls
 // these helpers; extract the exact same text so the exercised code is the
-// shipped code. Same extraction as installer-path-idempotence.test.mjs.
-function extractFunction(source, name, file) {
-  const start = source.indexOf(`${name}()`);
-  assert.ok(start >= 0, `${file}: locate ${name}`);
-  const lineEnd = source.indexOf('\n', start);
-  assert.ok(lineEnd > start, `${file}: locate end of ${name}`);
-  if (source.slice(start, lineEnd).trimEnd().endsWith('}')) {
-    return source.slice(start, lineEnd + 1);
-  }
-  const end = source.indexOf('\n}\n', start);
-  assert.ok(end > start, `${file}: locate end of ${name}`);
-  return source.slice(start, end + '\n}\n'.length);
-}
-
-const harnessFor = (source, file) => ['set -euo pipefail', 'umask 077',
-  ...['say', 'file_identity', 'file_link_count', 'add_to_user_path']
-    .map((name) => extractFunction(source, name, file)),
-  'add_to_user_path "$1"',
-].join('\n');
+// shipped code.
+const harnessFor = pathUpdateHarness;
 
 // spawnSync feeds the child a socketpair as stdin, and bash treats a socket
 // on fd 0 as a remote-shell invocation: it sources ~/.bashrc before running
@@ -106,7 +90,7 @@ const resolveShape = (shape, config, bin) => {
 };
 
 // The marker is the only idempotence key, so none of these may contain the
-// exact '# phantom-secrets PATH' substring: every one must still get the
+// exact '# phantom-secrets PATH' whole line: every one must still get the
 // managed block appended after the preserved tail.
 const unterminatedUnrelated = [
   ['a dangling shell keyword', 'fi'],
@@ -117,6 +101,9 @@ const unterminatedUnrelated = [
   ['a near-miss marker missing the space', '#phantom-secrets PATH'],
   ['a near-miss marker with a doubled space', '# phantom-secrets  PATH'],
   ['a differently-cased marker', '# Phantom-Secrets PATH'],
+  ['a doubled-hash marker line', '## phantom-secrets PATH'],
+  ['a marker with trailing text', '# phantom-secrets PATH v2 notes'],
+  ['a marker inside a quoted setting', 'export NOTE="# phantom-secrets PATH"'],
   ['trailing whitespace', 'export EDITOR=vim \t '],
   ['a carriage-return tail', 'export EDITOR=vim\r'],
   ['a single character', 'x'],
@@ -177,13 +164,9 @@ for (const [label, url] of Object.entries(installers)) {
       });
     }
 
-    // A marker already anywhere in the file — even as a substring of an
-    // unrelated line — short-circuits the update, so the unterminated tail
+    // An exact whole-line marker short-circuits the update, so the unterminated tail
     // is preserved in the strongest way: the file is never rewritten.
     const markerBearing = [
-      ['a doubled-hash marker line', '## phantom-secrets PATH'],
-      ['a marker with trailing text', '# phantom-secrets PATH v2 notes'],
-      ['a marker inside a quoted setting', 'export NOTE="# phantom-secrets PATH"'],
       ['a managed block followed by an unrelated tail',
         `# cfg\n${marker}\nexport PATH="/old/bin:$PATH"\nunrelated-tail`],
     ];
@@ -234,7 +217,7 @@ for (const [label, url] of Object.entries(installers)) {
     const arch = { x64: 'x86_64', arm64: 'aarch64' }[process.arch];
     assert.ok(os && arch, 'test requires a supported Unix installer target');
     const archive = `phantom-${arch}-${os}.tar.gz`;
-    execFileSync('tar', ['-czf', join(fixture, archive), '-C', payload, 'phantom', 'phantom-mcp']);
+    execFileSync('/usr/bin/tar', ['-czf', join(fixture, archive), '-C', payload, 'phantom', 'phantom-mcp']);
     const digest = createHash('sha256').update(readFileSync(join(fixture, archive))).digest('hex');
     writeFileSync(join(fixture, `${archive}.sha256`), `${digest}  ${archive}\n`);
 

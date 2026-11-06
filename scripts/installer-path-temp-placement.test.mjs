@@ -224,6 +224,36 @@ for (const [file, body] of Object.entries(harnesses)) {
     });
   }
 
+  // A home directory containing spaces must not split the mktemp templates:
+  // both temporary files still land beside the startup file, inside that parent.
+  for (const config of shells) {
+    test(`${file} creates both PATH temporary files under a space-containing ${config.name} startup parent`, (t) => {
+      const original = '# user shell configuration\n';
+      const run = runPathUpdate(t, {
+        body,
+        shellEnv: config.env,
+        rcRel: config.rcRel,
+        rcContent: original,
+        homeName: 'home dir with spaces',
+      });
+      assert.equal(run.result.status, 0, run.result.stderr);
+      assert.match(run.result.stdout, /added .* to PATH/);
+      assert.ok(run.rcParent.includes('home dir with spaces'), 'the startup parent contains spaces');
+
+      const created = verifyCreatedUnderParent(run);
+      const listing = readFileSync(run.premoveList, 'utf8').trim().split('\n');
+      for (const path of created) {
+        assert.equal(dirname(path).startsWith(run.home), true,
+          `${path} must be created inside the spaced home`);
+        assert.ok(listing.includes(basename(path)),
+          `${basename(path)} must sit beside the startup file at promotion`);
+      }
+      verifyRemoved(run);
+      assert.equal(readFileSync(run.rc, 'utf8'),
+        `${original}\n# phantom-secrets PATH\n${config.pathLine(run.bin)}\n`);
+    });
+  }
+
   test(`${file} creates and removes both PATH temporary files when the fish startup file is absent`, (t) => {
     const config = shells[2];
     const run = runPathUpdate(t, { body, shellEnv: config.env, rcRel: config.rcRel });

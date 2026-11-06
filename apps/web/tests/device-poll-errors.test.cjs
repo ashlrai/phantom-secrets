@@ -40,6 +40,9 @@ function fixture(options = {}) {
         is(key, value) { filters.push(["is", key, value]); return this; },
         update(update) { values = update; return this; },
         async result() {
+          if (state.throwAt === "lookup" && table === "device_tokens" && !values) throw new Error(privateError.message);
+          if (state.throwAt === "profile" && table === "users") throw new Error(privateError.message);
+          if (state.throwAt === "claim" && values && values.token_hash) throw new Error(privateError.message);
           if (values) {
             state.writes.push(values);
             if (!values.token_hash) return { error: null };
@@ -192,4 +195,54 @@ test("an approved row past its device deadline cannot be claimed", async () => {
   assert.equal(state.mints, 0);
   assert.equal(state.claims, 0);
   assert.deepEqual(state.writes, [{ status: "expired" }]);
+});
+
+test("an unrecognized error response still gets the fixed safe fallback", async () => {
+  for (const [field, message] of [
+    ["lookupError", "Failed to load device authorization"],
+    ["profileError", "Failed to load user"],
+    ["claimError", "Failed to claim device authorization"],
+  ]) {
+    // Truthy errors that are not the recognized PostgrestError { message, code }
+    // shape — a bare string and a fetch-shaped object — take the same fallback.
+    for (const unrecognized of ["synthetic-transport-failure", { status: 503, statusText: "synthetic-gateway-detail" }]) {
+      const { state, poll } = fixture({ [field]: unrecognized });
+      const response = await poll();
+      assert.equal(response.status, 500);
+      assert.deepEqual(await response.json(), { error: message });
+      assert.equal(state.token.token_hash, null);
+      state[field] = null;
+      const retried = await poll();
+      assert.equal(retried.status, 200);
+      assert.equal((await retried.json()).status, "approved");
+    }
+  }
+});
+
+test("unexpected thrown errors return the fixed fallback without internal details", async () => {
+  for (const phase of ["lookup", "profile", "claim"]) {
+    const { state, poll } = fixture({ throwAt: phase });
+    const response = await poll();
+    assert.equal(response.status, 500);
+    assert.equal(response.headers.get("cache-control"), "no-store");
+    assert.deepEqual(await response.json(), { error: "Unexpected server error. Please try again." });
+    assert.equal(state.token.token_hash, null);
+    state.throwAt = null;
+    assert.equal((await (await poll()).json()).status, "approved");
+  }
+});
+
+test("an unrecognized device status passes through the fallback untouched", async () => {
+  for (const status of ["denied", "suspended"]) {
+    const { state, poll } = fixture({ token: {
+      id: "synthetic-device", status, device_expires_at: "2099-01-01T00:00:00.000Z", token_hash: null,
+    } });
+    const response = await poll();
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { status });
+    assert.equal(state.profiles, 0);
+    assert.equal(state.mints, 0);
+    assert.equal(state.claims, 0);
+    assert.deepEqual(state.writes, []);
+  }
 });

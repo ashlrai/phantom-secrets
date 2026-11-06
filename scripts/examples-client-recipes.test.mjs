@@ -67,3 +67,18 @@ test("recipes reject relative binary paths", () => {
   assert.equal(result.status, 1);
   assert.match(result.stderr, /Usage:/);
 });
+
+test("a missing example path is reported by name and exits nonzero", () => {
+  const dir = mkdtempSync(join(tmpdir(), "phantom-recipe-missing-"));
+  try {
+    // The fixture examples directory exists but holds no recipe.
+    const missing = join(dir, "examples", "no-such-recipe", "run.mjs");
+    const result = spawnSync(process.execPath, [missing, "--phantom", join(dir, `phantom${suffix}`)], { encoding: "utf8", timeout: 30_000 });
+    assert.notEqual(result.status, 0, result.stdout + result.stderr);
+    assert.notEqual(result.status, null, "the checker was killed instead of exiting");
+    assert.ok(result.stderr.includes(missing), `stderr should name the missing path: ${result.stderr}`);
+    assert.doesNotMatch(result.stdout, /^(COMPLETE|PASS): /m);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

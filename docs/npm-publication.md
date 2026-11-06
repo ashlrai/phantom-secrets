@@ -111,9 +111,13 @@ npm view "phantom-secrets-mcp@${VERSION}" version dist.integrity dist.tarball \
 ```
 
 Require Node and npm to meet the minimums; a lexical string comparison is not a
-version check. Review each pack result for one package with `entryCount: 5` and
-exactly these sorted files: `LICENSE`, `README.md`, `bin/cli.js`, `install.js`,
-and `package.json`. Record each approved `integrity` value.
+version check. Review each pack against its exact versioned inventory. Versions
+through `0.8.3` retain five files: `LICENSE`, `README.md`, `bin/cli.js`,
+`install.js`, and `package.json`. Source candidates from `0.8.4` onward add exactly
+`bin/package-version.js`, making six files; it validates package-local release
+metadata before cache access, download, or execution. `expectedPackFiles` in
+`scripts/release/npm-candidate-smoke.mjs` selects the closed inventory. No
+additional member is allowed. Record each approved `integrity` value.
 
 A missing exact public npm version is the expected pre-stage state. An existing
 exact version or stage reserves that immutable name/version. Reconcile it and
@@ -126,7 +130,7 @@ dispatch the read-only gate from the exact release tag. Its workflow definition,
 checkout, and recorded workflow SHA must all bind to that annotated tag and
 source commit. It proves both npm versions are still absent, requires the prior
 `latest` and `release-candidate` maps to remain unchanged, packs each exact
-five-file wrapper once per disposable host, and executes those local tarballs
+version-profiled wrapper once per disposable host, and executes those local tarballs
 through fresh npm and Phantom binary caches:
 
 ```bash
@@ -188,11 +192,14 @@ node - "${PRIMARY_PACK_RECEIPT}" phantom-secrets "${VERSION}" \
 const fs = require("fs");
 const [receiptPath, name, version, approvedIntegrity] = process.argv.slice(2);
 const packs = JSON.parse(fs.readFileSync(receiptPath, "utf8"));
-const expectedFiles = ["LICENSE", "README.md", "bin/cli.js", "install.js", "package.json"];
-if (packs.length !== 1 || packs[0].name !== name || packs[0].version !== version ||
-    packs[0].filename !== `${name}-${version}.tgz` || packs[0].entryCount !== 5 ||
-    JSON.stringify(packs[0].files.map(({path}) => path).sort()) !== JSON.stringify(expectedFiles) ||
-    packs[0].integrity !== approvedIntegrity) process.exit(1);
+(async () => {
+  const { expectedPackFiles } = await import("./scripts/release/npm-candidate-smoke.mjs");
+  const expectedFiles = expectedPackFiles(version);
+  if (packs.length !== 1 || packs[0].name !== name || packs[0].version !== version ||
+      packs[0].filename !== `${name}-${version}.tgz` || packs[0].entryCount !== expectedFiles.length ||
+      JSON.stringify(packs[0].files.map(({path}) => path).sort()) !== JSON.stringify(expectedFiles) ||
+      packs[0].integrity !== approvedIntegrity) process.exit(1);
+})().catch(() => process.exit(1));
 NODE
 
 node - "${MCP_PACK_RECEIPT}" phantom-secrets-mcp "${VERSION}" \
@@ -200,11 +207,14 @@ node - "${MCP_PACK_RECEIPT}" phantom-secrets-mcp "${VERSION}" \
 const fs = require("fs");
 const [receiptPath, name, version, approvedIntegrity] = process.argv.slice(2);
 const packs = JSON.parse(fs.readFileSync(receiptPath, "utf8"));
-const expectedFiles = ["LICENSE", "README.md", "bin/cli.js", "install.js", "package.json"];
-if (packs.length !== 1 || packs[0].name !== name || packs[0].version !== version ||
-    packs[0].filename !== `${name}-${version}.tgz` || packs[0].entryCount !== 5 ||
-    JSON.stringify(packs[0].files.map(({path}) => path).sort()) !== JSON.stringify(expectedFiles) ||
-    packs[0].integrity !== approvedIntegrity) process.exit(1);
+(async () => {
+  const { expectedPackFiles } = await import("./scripts/release/npm-candidate-smoke.mjs");
+  const expectedFiles = expectedPackFiles(version);
+  if (packs.length !== 1 || packs[0].name !== name || packs[0].version !== version ||
+      packs[0].filename !== `${name}-${version}.tgz` || packs[0].entryCount !== expectedFiles.length ||
+      JSON.stringify(packs[0].files.map(({path}) => path).sort()) !== JSON.stringify(expectedFiles) ||
+      packs[0].integrity !== approvedIntegrity) process.exit(1);
+})().catch(() => process.exit(1));
 NODE
 
 test -f "${PRIMARY_TARBALL}"

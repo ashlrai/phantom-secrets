@@ -200,9 +200,21 @@ test("build identity is exact, bounded, and all-or-nothing", () => {
       "deployment_id_missing_or_invalid",
     ],
     [
+      "absent deployment id",
+      "VERCEL_DEPLOYMENT_ID",
+      undefined,
+      "deployment_id_missing_or_invalid",
+    ],
+    [
       "unknown environment",
       "VERCEL_ENV",
       "Production",
+      "deployment_environment_missing_or_invalid",
+    ],
+    [
+      "absent deployment environment",
+      "VERCEL_ENV",
+      undefined,
       "deployment_environment_missing_or_invalid",
     ],
   ];
@@ -234,6 +246,50 @@ test("clean build source identifies prebuilt deployments without a platform Git 
   const identity = observability.readBuildIdentity(env);
   assert.equal(identity.identified, true);
   assert.equal(identity.source_revision, sourceRevision);
+});
+
+test("an absent optional platform source identifier falls back to the frozen build observation", async () => {
+  const observability = loadObservability();
+  const route = loadRoute("src/app/api/v1/ready/route.ts", observability);
+  const env = validEnvironment();
+  delete env.VERCEL_GIT_COMMIT_SHA;
+
+  const calls = [];
+  const originalWarn = console.warn;
+  console.warn = (...args) => calls.push(args);
+  try {
+    await withEnvironment(env, async () => {
+      // An absent env argument falls back to process.env.
+      assert.deepEqual(observability.readBuildIdentity(), {
+        identified: true,
+        release_version: "0.7.5",
+        source_revision: sourceRevision,
+        deployment_environment: "production",
+        unavailable_reasons: [],
+      });
+      assert.deepEqual(observability.sourceBindingDiagnostic(), {
+        build_observation: "valid",
+        platform_source: "absent",
+      });
+
+      const response = route.GET();
+      assert.equal(response.status, 200);
+      assert.equal(response.headers.get("cache-control"), "no-store");
+      assert.deepEqual(await response.json(), {
+        status: "configuration_ready",
+        service: "phantom-web",
+        release_version: "0.7.5",
+      });
+      assert.equal(calls.length, 0);
+
+      const snapshot = observability.readinessSnapshot();
+      assert.equal(snapshot.build.identified, true);
+      assert.equal(snapshot.build.source_revision, sourceRevision);
+      assert.equal(snapshot.checks.build_identity, "ready");
+    });
+  } finally {
+    console.warn = originalWarn;
+  }
 });
 
 test("runtime source variables cannot repair missing or conflicting frozen source", () => {
