@@ -24,6 +24,7 @@ const harness = [
   'add_to_user_path "$1"',
 ].join("\n");
 
+const marker = "# phantom-secrets PATH";
 const UNRELATED = "export COLUMNS=200\n";
 const cases = [
   { shell: "bash", rc: ".bashrc", wired: 'export PATH="/opt/phantom/bin:$PATH"' },
@@ -50,8 +51,9 @@ for (const c of cases) {
         assert.equal(r.status, 0, r.stderr);
         const after = fs.readFileSync(rc);
         assert.ok(after.subarray(0, before.length).equals(before), "original bytes changed");
-        assert.ok(after.toString().includes(c.wired));
-        assert.equal(after.toString().split("# phantom-secrets PATH").length - 1, 1, "marker duplicated");
+        assert.ok(after.toString().includes(`\n${marker}\n`), "marker not on its own line");
+        assert.ok(after.toString().includes(`\n${c.wired}\n`), "PATH entry not on its own line");
+        assert.equal(after.toString().split(marker).length - 1, 1, "marker duplicated");
       }
     } finally {
       fs.rmSync(home, { recursive: true, force: true });
@@ -92,8 +94,9 @@ for (const c of cases) {
           assert.equal(r.status, 0, r.stderr);
           const after = fs.readFileSync(rc);
           assert.ok(after.subarray(0, before.length).equals(before), "unrelated line changed");
-          assert.ok(after.toString().includes(c.wired));
-          assert.equal(after.toString().split("# phantom-secrets PATH").length - 1, 1, "marker duplicated");
+          assert.ok(after.toString().includes(`\n${marker}\n`), "marker not on its own line");
+          assert.ok(after.toString().includes(`\n${c.wired}\n`), "PATH entry not on its own line");
+          assert.equal(after.toString().split(marker).length - 1, 1, "marker duplicated");
         }
       } finally {
         fs.rmSync(home, { recursive: true, force: true });
@@ -127,8 +130,67 @@ for (const c of cases) {
           assert.equal(r.status, 0, r.stderr);
           const after = fs.readFileSync(rc);
           assert.ok(after.subarray(0, before.length).equals(before), "comment changed");
-          assert.ok(after.toString().includes(c.wired));
-          assert.equal(after.toString().split("# phantom-secrets PATH").length - 1, 1, "marker duplicated");
+          assert.ok(after.toString().includes(`\n${marker}\n`), "marker not on its own line");
+          assert.ok(after.toString().includes(`\n${c.wired}\n`), "PATH entry not on its own line");
+          assert.equal(after.toString().split(marker).length - 1, 1, "marker duplicated");
+        }
+      } finally {
+        fs.rmSync(home, { recursive: true, force: true });
+      }
+    });
+  }
+}
+
+// A startup file that lacks a final newline must keep its last line intact
+// while the marker and the PATH entry land on lines of their own — never
+// glued onto user content. A last line ending in an odd backslash run is a
+// line continuation: writing the marker directly after the gained terminator
+// would let the shell fold it into the user's line the next time the file is
+// sourced, so the update separates the block with a blank line there instead.
+const UNTERMINATED = [
+  "alias ll='ls -l'",
+  "export NOTES=keep\\",
+  "export ESCAPED=even\\\\",
+  "   ",
+];
+
+for (const c of cases) {
+  for (const content of UNTERMINATED) {
+    test(`PATH entry stays a separate line in unterminated ${JSON.stringify(content)} (${c.shell})`, () => {
+      const home = fs.mkdtempSync(path.join(os.tmpdir(), "phantom-path-"));
+      try {
+        const rc = path.join(home, c.rc);
+        fs.mkdirSync(path.dirname(rc), { recursive: true });
+        const before = Buffer.from(content);
+        fs.writeFileSync(rc, before);
+        for (let i = 0; i < 2; i++) {
+          const r = spawnSync("bash", ["-c", harness, "bash", "/opt/phantom/bin"], {
+            env: { PATH: process.env.PATH, HOME: home, SHELL: `/bin/${c.shell}` },
+            encoding: "utf8",
+          });
+          assert.equal(r.status, 0, r.stderr);
+          const after = fs.readFileSync(rc);
+          assert.ok(after.subarray(0, before.length).equals(before), "original bytes changed");
+          const text = after.toString();
+          assert.ok(text.includes(`\n${marker}\n`), "marker not on its own line");
+          assert.ok(text.includes(`\n${c.wired}\n`), "PATH entry not on its own line");
+          assert.equal(text.split(marker).length - 1, 1, "marker duplicated");
+          if (c.shell !== "fish") {
+            // fish syntax is not bash-sourceable; for bash and zsh files the
+            // update must leave the file sourcing cleanly with PATH wired.
+            const s = spawnSync("bash", ["-c",
+              'source "$1" >/dev/null && case ":$PATH:" in *":/opt/phantom/bin:"*) exit 0;; *) exit 1;; esac',
+              "bash", rc], { encoding: "utf8" });
+            assert.equal(s.status, 0, s.stderr);
+            assert.equal(s.stderr, "", "updated rc prints errors when sourced");
+            if (content === "export NOTES=keep\\") {
+              const v = spawnSync("bash", ["-c",
+                'source "$1" >/dev/null && printf %s "$NOTES"', "bash", rc],
+                { encoding: "utf8" });
+              assert.equal(v.stdout, "keep",
+                'line continuation corrupted user content to "keep#"');
+            }
+          }
         }
       } finally {
         fs.rmSync(home, { recursive: true, force: true });
