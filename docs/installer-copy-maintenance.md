@@ -53,13 +53,13 @@ merely to make the files match.
    [comparison snapshot](installer-copy-comparison.md), and other affected
    staging or PATH documentation. If a difference is intentional, document its
    effect and update the reviewed differences in
-   [`installer-copy-consistency.test.mjs`](../scripts/installer-copy-consistency.test.mjs)
+   [`lib/installer-copy-differences.mjs`](../scripts/lib/installer-copy-differences.mjs)
    only after review. Follow the separate release process for any change to
    release-bound evidence; a local comparison is not publication evidence.
 5. Run the focused checks below and the relevant behavioral installer tests:
 
    ```sh
-   node --test scripts/installer-copy-maintenance.test.mjs scripts/installer-copy-consistency.test.mjs scripts/installer-copy-comparison.test.mjs scripts/installer-copy-source-map.test.mjs scripts/installers.test.js
+   node --test scripts/installer-copy-maintenance.test.mjs scripts/installer-copy-consistency.test.mjs scripts/installer-copy-parity.test.mjs scripts/installer-copy-comparison.test.mjs scripts/installer-copy-source-map.test.mjs scripts/installers.test.js
    ```
 
 The focused maintenance test checks that the three templates recorded above
