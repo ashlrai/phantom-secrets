@@ -5,6 +5,8 @@ import test from "node:test";
 
 import {
   acceptanceTempRoot,
+  installerFailureFacts,
+  runInstallerProcess,
   runNativeInstallerAcceptance,
 } from "./native-installer-acceptance.mjs";
 
@@ -206,5 +208,51 @@ test("Windows installer contract still requires every acceptance assertion", () 
     steps:
 ${windowsInstallerStep.replace(required, "removed-required-contract")}
 `), { code: "ERR_ASSERTION", operator: "match" });
+  }
+});
+
+
+test("native installer timeout facts retain only the last recognized progress stage", () => {
+  const privateBody = "PRIVATE_FIXTURE_BODY_NEVER_EMITTED";
+  const result = { error: { code: "ETIMEDOUT", message: privateBody },
+    stdout: "  -> phantom: target: fixture\n  -> phantom: checksum verified\n" +
+      "\u001b[35m  -> phantom: archive identity verified\u001b[0m\n" + privateBody,
+    stderr: "/owned/fixture/path " + privateBody };
+  const facts = installerFailureFacts(result, 120123.4);
+  assert.deepEqual(facts, { lastStage: "archive-identity", elapsedMs: 120123,
+    stdoutBytes: Buffer.byteLength(result.stdout), stderrBytes: Buffer.byteLength(result.stderr), errorCode: "ETIMEDOUT" });
+  assert.doesNotMatch(JSON.stringify(facts), /PRIVATE_FIXTURE_BODY|owned|fixture|path/);
+});
+
+test("missing or malformed native installer markers stay unknown and parsing is bounded", () => {
+  for (const stdout of ["installed to somewhere", "  -> other: installed to somewhere", "-> phantom installed to somewhere",
+    "  -> phantom: installed to old\n" + "x".repeat(16384)]) {
+    assert.equal(installerFailureFacts({ stdout, stderr: "", error: { code: "ETIMEDOUT" } }, 1).lastStage, "unknown");
+  }
+  const error = Object.defineProperty({}, "code", { get() { throw new Error("private getter"); } });
+  assert.equal(installerFailureFacts({ stdout: "", stderr: "", error }, 0).errorCode, "UNKNOWN");
+});
+
+test("a timed-out native installer remains a failure even for expected rollback failures", () => {
+  for (const expectFailure of [false, true]) {
+    let calls = 0;
+    assert.throws(() => runInstallerProcess("fixture-pwsh", ["-NoProfile", "-File", "fixture.ps1"], "fixture installer", {}, expectFailure,
+      (command, args, options) => {
+        calls++;
+        assert.equal(command, "fixture-pwsh");
+        assert.deepEqual(args, ["-NoProfile", "-File", "fixture.ps1"]);
+        assert.equal(options.timeout, 120000);
+        assert.equal(options.maxBuffer, 16 * 1024 * 1024);
+        assert.deepEqual(options.stdio, ["ignore", "pipe", "pipe"]);
+        return { error: Object.assign(new Error("fixture timeout"), { code: "ETIMEDOUT" }), status: null, signal: "SIGTERM",
+          stdout: "  -> phantom: target: fixture\n", stderr: "PRIVATE_FIXTURE_BODY_NEVER_EMITTED" };
+      }), error => {
+        assert.match(error.message, /could not run: fixture timeout/);
+        assert.match(error.message, /"lastStage":"target"/);
+        assert.match(error.message, /"errorCode":"ETIMEDOUT"/);
+        assert.doesNotMatch(error.message, /PRIVATE_FIXTURE_BODY/);
+        return true;
+      });
+    assert.equal(calls, 1);
   }
 });

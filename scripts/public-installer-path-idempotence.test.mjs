@@ -1,6 +1,7 @@
+import { writeInstallerArchive } from './lib/installer-staging-fixture.mjs';
+import { installerPathShellCases } from './lib/installer-path-harness.mjs';
 import assert from 'node:assert/strict';
-import { execFileSync, spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import {
   chmodSync,
   mkdirSync,
@@ -30,23 +31,7 @@ const marker = '# phantom-secrets PATH';
 // A minimal PATH that cannot already contain the fresh temp install dir.
 const BASE_PATH = '/usr/local/bin:/usr/bin:/bin';
 
-const shells = {
-  bash: {
-    shell: '/bin/bash',
-    rc: (home) => join(home, '.bashrc'),
-    pathLine: (bin) => `export PATH="${bin}:$PATH"`,
-  },
-  zsh: {
-    shell: '/bin/zsh',
-    rc: (home) => join(home, '.zshrc'),
-    pathLine: (bin) => `export PATH="${bin}:$PATH"`,
-  },
-  fish: {
-    shell: '/usr/bin/fish',
-    rc: (home) => join(home, '.config', 'fish', 'config.fish'),
-    pathLine: (bin) => `set -gx PATH "${bin}" $PATH`,
-  },
-};
+const shells = installerPathShellCases();
 
 // An offline release for `version`: the two fixture binaries plus the
 // checksum sidecar the installer verifies before promotion.
@@ -60,13 +45,7 @@ function buildFixture(root, version) {
       `#!/bin/sh\n[ "$1" = --version ] || exit 2\necho '${name} ${version}'\n`);
     chmodSync(join(payload, name), 0o755);
   }
-  const os = { darwin: 'apple-darwin', linux: 'unknown-linux-gnu' }[process.platform];
-  const arch = { x64: 'x86_64', arm64: 'aarch64' }[process.arch];
-  assert.ok(os && arch, 'test requires a supported Unix installer target');
-  const archive = `phantom-${arch}-${os}.tar.gz`;
-  execFileSync('tar', ['-czf', join(fixture, archive), '-C', payload, 'phantom', 'phantom-mcp']);
-  const digest = createHash('sha256').update(readFileSync(join(fixture, archive))).digest('hex');
-  writeFileSync(join(fixture, `${archive}.sha256`), `${digest}  ${archive}\n`);
+  writeInstallerArchive(fixture, payload);
   return fixture;
 }
 
