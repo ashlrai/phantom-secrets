@@ -21,27 +21,32 @@ const fixtureRoot = join(repoRoot, "scripts", "fixtures", "first-five-minutes");
 const runner = join(exampleRoot, "run.mjs");
 const expected = readFileSync(join(exampleRoot, "expected-output.txt"), "utf8").replace(/\r\n/gu, "\n");
 
-function runCopiedExample({ environmentFixture, policyFixture } = {}) {
+function runCopiedExample({ environmentFixture, policyFixture, missingFile, exampleDirectoryName = "example" } = {}) {
   const sandbox = mkdtempSync(join(tmpdir(), "phantom-first-five-minutes-regression-"));
-  const copiedExample = join(sandbox, "example");
-  cpSync(exampleRoot, copiedExample, { recursive: true });
-  if (environmentFixture) {
-    copyFileSync(join(fixtureRoot, environmentFixture), join(copiedExample, ".env.example"));
-  }
-  if (policyFixture) {
-    copyFileSync(join(fixtureRoot, policyFixture), join(copiedExample, "policy.json"));
-  }
+  const copiedExample = join(sandbox, exampleDirectoryName);
+  try {
+    cpSync(exampleRoot, copiedExample, { recursive: true });
+    if (environmentFixture) {
+      copyFileSync(join(fixtureRoot, environmentFixture), join(copiedExample, ".env.example"));
+    }
+    if (policyFixture) {
+      copyFileSync(join(fixtureRoot, policyFixture), join(copiedExample, "policy.json"));
+    }
+    if (missingFile) {
+      rmSync(join(copiedExample, missingFile));
+    }
 
-  const result = spawnSync(process.execPath, [join(copiedExample, "run.mjs")], {
-    cwd: sandbox,
-    encoding: "utf8",
-    env: {
-      PATH: process.env.PATH ?? "",
-      SystemRoot: process.env.SystemRoot ?? "",
-    },
-  });
-  rmSync(sandbox, { recursive: true, force: true });
-  return result;
+    return spawnSync(process.execPath, [join(copiedExample, "run.mjs")], {
+      cwd: sandbox,
+      encoding: "utf8",
+      env: {
+        PATH: process.env.PATH ?? "",
+        SystemRoot: process.env.SystemRoot ?? "",
+      },
+    });
+  } finally {
+    rmSync(sandbox, { recursive: true, force: true });
+  }
 }
 
 test("first-five-minutes walkthrough is deterministic and leaves no local state", () => {
@@ -76,6 +81,19 @@ test("first-five-minutes fixtures contain no credential or persistent token mapp
   assert.deepEqual(JSON.parse(policy).secret_names, ["BILLING_API_TOKEN"]);
 });
 
+test("first-five-minutes identifies a missing referenced file", async (context) => {
+  for (const missingFile of [".env.example", "policy.json"]) {
+    await context.test(missingFile, () => {
+      const result = runCopiedExample({ missingFile });
+
+      assert.notEqual(result.status, 0);
+      assert.equal(result.stdout, "");
+      assert.match(result.stderr, /^ERROR ENOENT: no such file or directory, open /u);
+      assert.ok(result.stderr.includes(join("example", missingFile)), result.stderr);
+    });
+  }
+});
+
 test("first-five-minutes rejects a plaintext duplicate before an approved placeholder", () => {
   const result = runCopiedExample({ environmentFixture: "duplicate-secret.env" });
 
@@ -104,6 +122,30 @@ test("first-five-minutes rejects duplicate policy keys before trusting parsed va
   assert.notEqual(result.status, 0);
   assert.equal(result.stdout, "");
   assert.equal(result.stderr, "ERROR the policy must use canonical unique-key JSON\n");
+});
+
+test("first-five-minutes checker handles a space-containing path as one argument", async (context) => {
+  const spacedDirectory = "example copy with spaces";
+
+  await context.test("the copied checker runs from a spaced path", () => {
+    const result = runCopiedExample({ exampleDirectoryName: spacedDirectory });
+
+    assert.equal(result.error, undefined);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stderr, "");
+    assert.equal(result.stdout, expected);
+  });
+
+  await context.test("diagnostics report the unsplit spaced path", () => {
+    const result = runCopiedExample({ exampleDirectoryName: spacedDirectory, missingFile: "policy.json" });
+
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /^ERROR ENOENT: no such file or directory, open /u);
+    assert.ok(
+      result.stderr.includes(join(spacedDirectory, "policy.json")),
+      `stderr must name the whole spaced path: ${result.stderr}`
+    );
+  });
 });
 
 test("first-five-minutes runner remains read-only, local-only, and subprocess-free", () => {

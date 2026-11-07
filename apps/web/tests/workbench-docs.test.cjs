@@ -7,6 +7,7 @@ const ts = require('typescript');
 const React = require('react');
 const { renderToStaticMarkup } = require('react-dom/server');
 const { JSDOM } = require('jsdom');
+const { computeAccessibleName } = require('dom-accessibility-api');
 const markdownLoader = require('../scripts/public-doc-markdown-loader.cjs');
 const root = path.resolve(__dirname, '..');
 const repository = path.resolve(root, '..', '..');
@@ -15,7 +16,7 @@ const catalog = JSON.parse(read('docs-catalog.json'));
 const workbench = catalog.filter(({ slug }) => slug === 'workbench' || slug.startsWith('workbench-'));
 const assistant = import(pathToFileURL(path.join(root, 'src/lib/documentation-assistant.mjs')).href);
 function loadTs(file, overrides = {}) {
-  const compiled = ts.transpileModule(read(file), { compilerOptions: { module: ts.ModuleKind.CommonJS, esModuleInterop: true, jsx: ts.JsxEmit.ReactJSX } }).outputText;
+  const compiled = ts.transpileModule(read(file), { compilerOptions: { module: ts.ModuleKind.CommonJS, esModuleInterop: true, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2022 } }).outputText;
   const exports = {};
   new Function('require', 'exports', '__dirname', compiled)((id) => {
     if (id === 'server-only') return {};
@@ -32,6 +33,17 @@ function loadTs(file, overrides = {}) {
 }
 const docs = loadTs('src/lib/public-docs.ts');
 const raw = loadTs('src/app/docs/[slug]/markdown/route.ts', { '@/lib/public-docs': docs });
+const { MarkdownDocument } = loadTs('src/components/docs/MarkdownDocument.tsx', { '@/lib/public-docs': docs });
+const renderedDocuments = new Map();
+
+function renderedDocument(slug) {
+  if (renderedDocuments.has(slug)) return renderedDocuments.get(slug);
+  const doc = docs.getPublicDoc(slug);
+  const html = renderToStaticMarkup(React.createElement(MarkdownDocument, { markdown: doc.markdown, sourceFile: doc.file }));
+  const document = new JSDOM(html).window.document;
+  renderedDocuments.set(slug, document);
+  return document;
+}
 
 async function publicWorkbenchDestination(href) {
   const url = new URL(href, 'https://phm.dev');
@@ -41,7 +53,15 @@ async function publicWorkbenchDestination(href) {
   if (guide && docs.getPublicDoc(guide[1])) {
     const route = guide[2] ? 'markdown/route.ts' : 'page.tsx';
     if (!fs.existsSync(path.join(root, 'src/app/docs/[slug]', route))) return false;
-    if (!guide[2]) return true;
+    if (!guide[2]) {
+      if (!url.hash) return true;
+      try {
+        return renderedDocument(guide[1]).getElementById(decodeURIComponent(url.hash.slice(1))) !== null;
+      } catch (error) {
+        if (error instanceof URIError) return false;
+        throw error;
+      }
+    }
     return (await raw.GET(new Request(url), { params: Promise.resolve({ slug: guide[1] }) })).status === 200;
   }
   if (pathname === '/docs/manifest.json') {
@@ -57,11 +77,9 @@ async function publicWorkbenchDestination(href) {
 }
 
 test('workbench public documentation links resolve to existing routes and assets', async () => {
-  const { MarkdownDocument } = loadTs('src/components/docs/MarkdownDocument.tsx', { '@/lib/public-docs': docs });
   const links = [];
   for (const { slug, file } of workbench) {
-    const html = renderToStaticMarkup(React.createElement(MarkdownDocument, { markdown: docs.getPublicDoc(slug).markdown, sourceFile: file }));
-    const document = new JSDOM(html).window.document;
+    const document = renderedDocument(slug);
     for (const anchor of document.querySelectorAll('a[href]')) {
       links.push({ source: file, href: anchor.getAttribute('href'), base: `/docs/${slug}` });
     }
@@ -86,7 +104,10 @@ test('workbench public documentation links resolve to existing routes and assets
   assert.equal(await publicWorkbenchDestination('/workbench/missing.txt'), false);
   assert.equal(await publicWorkbenchDestination('/dashboard'), false);
   assert.equal(await publicWorkbenchDestination('https://example.com/docs/workbench'), false);
-  assert.equal(await publicWorkbenchDestination('/docs/workbench-setup?from=guide#install'), true);
+  assert.equal(await publicWorkbenchDestination('/docs/workbench-setup?from=guide#install-the-reviewed-package'), true);
+  assert.equal(await publicWorkbenchDestination('/docs/workbench-setup#install'), false);
+  assert.equal(await publicWorkbenchDestination('/docs/workbench-setup#%69nstall-the-reviewed-package'), true);
+  assert.equal(await publicWorkbenchDestination('/docs/workbench-setup#%ZZ'), false);
 });
 
 test('workbench articles have immutable evidence and resolvable internal links', () => {
@@ -98,6 +119,15 @@ test('workbench articles have immutable evidence and resolvable internal links',
     assert.doesNotMatch(body, /phm authority resident start\s*\n|phm authority grant\s*\n/);
   }
   assert.match(fs.readFileSync(path.join(repository, 'docs/workbench-agents.md'), 'utf8'), /must not imitate Touch ID/);
+});
+
+test('workbench overview renders an accessible link to the public setup guide', () => {
+  const link = [...renderedDocument('workbench').querySelectorAll('a')].find((anchor) =>
+    computeAccessibleName(anchor) === 'Install and open Phantom');
+  assert.ok(link, 'the setup guide link must have accessible text');
+  assert.ok(link.getAttribute('href')?.trim(), 'the setup guide link must have a destination');
+  assert.equal(link.getAttribute('href'), '/docs/workbench-setup');
+  assert.ok(docs.getPublicDoc('workbench-setup'), 'the destination must be a public document');
 });
 
 test('every immutable upstream target belongs to the verified pinned source tree', () => {

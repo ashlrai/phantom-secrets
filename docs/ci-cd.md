@@ -113,17 +113,51 @@ EAS does not support arbitrary local proxy injection during hosted builds. Sync 
 
 ## Docker
 
-For Docker builds, use build-time secret mounting:
+A Phantom-protected `.env` contains persistent `phm_` mappings, not usable
+provider credentials. BuildKit secret mounts pass the selected file's bytes
+through unchanged: mounting that `.env` does not resolve its placeholders.
+Wrapping `docker build` in `phantom exec` does not make this a supported
+credential-delivery path. Exec configures its direct child; it does not
+configure the Docker daemon or forward session environment variables into
+build steps. Its authenticated proxy binds loopback in the namespace where
+Phantom runs, not the isolated build container's loopback.
 
-```dockerfile
-# syntax=docker/dockerfile:1
-RUN --mount=type=secret,id=env,target=/app/.env npm run build
-```
+For a build that genuinely requires a credential, use the build platform's
+separately approved secret provisioning and
+[BuildKit secret mounts](https://docs.docker.com/build/building/secrets/). Do not
+export or reveal Phantom vault values to assemble a build input, bake secrets
+into image layers, or copy vault/unlock material into an agent image. A
+BuildKit mount is not itself Phantom's value-blind proxy boundary.
 
-```bash
-# Build with secrets from a local Phantom-protected checkout
-phantom exec -- docker build --secret id=env,src=.env .
-```
+For an unattended worker using Phantom's supported routes:
+
+- Install a pinned, verified native release for the worker's platform before
+  starting the workload; see the installation guidance above.
+- Have the operator provision and unlock the worker's vault through an
+  approved setup outside agent authority. As noted in [GitHub Actions](#github-actions),
+  direct headless Cloud pull has no supported non-interactive login flow;
+  [`phantom login`](../crates/phantom-cli/src/commands/login.rs) requires
+  attached stdin, stdout, and stderr terminals before accessing credentials
+  or the network.
+- Launch the worker with `phantom exec -- <worker command>` where the child
+  can reach Phantom's loopback proxy. A separate pod or container with a
+  different network namespace does not share that loopback. Do not expose the proxy on a public interface
+  or enable host networking as a shortcut.
+- Confirm the client honors the injected route URL and preserves its path.
+  Placeholder presence alone is not proof of usable credentials; consult
+  [CLI coverage](exec.md) and [the agent walkthrough](agents.md).
+- Use [the value-free preflight](agent-preflight-contract.md) without
+  `--vault` for project readiness. It does not prove vault unlock or provider
+  acceptance. MCP effects are disabled by default. Follow the existing
+  [MCP approval contract](../AGENTS.md#selected-mcp-tools): leave effects
+  disabled unless the approval command and approval storage are outside
+  the requesting agent's authority. Operator enablement does not remove
+  the per-call confirmation and one-use approval-token requirements.
+
+These are integration requirements, not a Kubernetes deployment manifest or
+proof of container isolation. Keep resource, process-lifecycle, and network
+policy decisions in the worker's deployment layer; Phantom is not a process
+or network sandbox.
 
 ## General Pattern
 

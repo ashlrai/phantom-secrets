@@ -47,6 +47,11 @@ pub struct UserInfo {
     pub vaults_count: Option<u64>,
 }
 
+/// Shown when the device-flow or identity request never reaches Phantom Cloud.
+/// Names the network as the likely fault and the command that retries the login.
+const CLOUD_UNREACHABLE: &str =
+    "could not reach Phantom Cloud; check your network connection, then run `phantom login` again";
+
 /// Initiate the device auth flow. Returns a code the user must enter in the browser.
 pub async fn initiate_device_flow(api_base: &str) -> Result<DeviceFlowResponse> {
     let client = crate::cloud_http::client()?;
@@ -55,7 +60,7 @@ pub async fn initiate_device_flow(api_base: &str) -> Result<DeviceFlowResponse> 
         .json(&serde_json::json!({}))
         .send()
         .await
-        .map_err(|_| PhantomError::AuthError("Failed to connect to Phantom Cloud".to_string()))?;
+        .map_err(|_| PhantomError::AuthError(CLOUD_UNREACHABLE.to_string()))?;
 
     if !resp.status().is_success() {
         let status = resp.status().as_u16();
@@ -104,7 +109,7 @@ pub async fn get_user_info(api_base: &str, token: &str) -> Result<UserInfo> {
         .bearer_auth(token)
         .send()
         .await
-        .map_err(|_| PhantomError::AuthError("Failed to connect to Phantom Cloud".to_string()))?;
+        .map_err(|_| PhantomError::AuthError(CLOUD_UNREACHABLE.to_string()))?;
 
     if resp.status().as_u16() == 401 {
         return Err(PhantomError::AuthRequired);
@@ -281,6 +286,28 @@ mod tests {
     #[test]
     fn uses_the_canonical_phantom_cloud_origin() {
         assert_eq!(api_base_url().unwrap(), "https://phm.dev/api/v1");
+    }
+
+    #[tokio::test]
+    async fn unreachable_cloud_error_says_what_failed_and_what_to_do() {
+        // Bind then drop a loopback listener so the port is closed for the call.
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let api_base = format!("http://127.0.0.1:{port}/api/v1");
+        let error = initiate_device_flow(&api_base).await.unwrap_err();
+        let message = error.to_string();
+        assert!(
+            message.contains("could not reach Phantom Cloud"),
+            "{message}"
+        );
+        assert!(
+            message.contains("check your network connection"),
+            "{message}"
+        );
+        assert!(message.contains("`phantom login` again"), "{message}");
     }
 
     fn mock_entry() -> keyring::Entry {

@@ -9,7 +9,8 @@ export function gitLastModified(directory: string, files: readonly string[]): st
     Object.entries(process.env).filter(([name]) => !name.startsWith("GIT_")),
   ) as NodeJS.ProcessEnv;
   function git(args: string[]) {
-    return execFileSync("git", ["--literal-pathspecs", "-c", "core.fsmonitor=false", ...args], {
+    // Build hosts use the system Git, never a binary from a caller-controlled PATH.
+    return execFileSync("/usr/bin/git", ["--literal-pathspecs", "-c", "core.fsmonitor=false", ...args], {
       cwd: directory,
       env: safeEnv,
       encoding: "utf8",

@@ -26,7 +26,7 @@ release executables on PATH. See [distribution status](distribution-status.md) f
 ## MCP Server
 
 Setup (recommended, one command per AI client):
-- Claude Code: `phantom setup --client claude` (writes .claude/settings.local.json)
+- Claude Code: `phantom setup --client claude` (writes project `.mcp.json` and hardens `.claude/settings.local.json`)
 - Cursor: `phantom setup --client cursor` (writes ~/.cursor/mcp.json)
 - Windsurf: `phantom setup --client windsurf` (writes ~/.codeium/windsurf/mcp_config.json)
 - Codex: `phantom setup --client codex` (writes ~/.codex/config.toml)
@@ -51,7 +51,10 @@ effects disabled unless approval command and storage are outside agent
 authority. Advanced audit,
 validation, rotation, and expiry tools have distinct schemas; inspect
 `tools/list` rather than extrapolating these gates. `phantom_check` accepts
-`runtime`; staged index scanning is a CLI-only `phantom check --staged` option.
+`runtime` and `log_path` (one agent log or transcript; the report names the
+file, line, and credential shape, never the value). Staged index scanning is a
+CLI-only `phantom check --staged` option. `phantom check --log PATH` is the
+same scan from the CLI.
 
 `phantom_rotate_with_candidate` and `phantom_rotate_promote` are deprecated
 hard denials retained only for schema compatibility; they mutate nothing.
@@ -66,7 +69,7 @@ Teams: phantom_team_list, phantom_team_create, phantom_team_members, phantom_tea
 
 ## CLI surface (--help is grouped: Setup · Daily use · Sync & teams · Maintenance)
 
-init (--from <file>, --empty, --all <DIR>, --dry-run, --jobs/-j N), agent (report --json / doctor / setup --dry-run|--apply), exec, start, stop, list (--json), add (--stdin or --dry-run; new names only; initialized project required; positional values rejected), remove (--dry-run or trusted-terminal exact removal), reveal, rotate, status, doctor (--fix), check (--staged, --runtime), sync (--dry-run --json, --only PATTERN), pull, env, setup (--client claude|cursor|windsurf|codex|gemini, --print), login, logout, cloud (push/pull/status), wrap, unwrap, watch, why, copy (trusted-terminal confirmation, no target overwrite), export (trusted-terminal hidden prompt only; passphrase files and plaintext disabled), import (--from doppler|infisical|dotenvx|1password|env --file <path>; trusted-terminal exact consent), audit (show [--last N] [--op OP] [--name NAME] [--json] / tail / path / verify), team (list/create/members/invite/key-publish/vault-push/vault-pull/rotate-vault), validate (live/watch/schedule/history), expiry (set/enforce/rotate), open (closed alias catalog), upgrade (managed-owner routing; force denied), completion (bash/zsh/fish/powershell/elvish)
+init (--from <file>, --empty, --all <DIR>, --dry-run, --jobs/-j N), agent (report --json / doctor / setup --dry-run|--apply), exec, start, stop, list (--json), add (--stdin or --dry-run; new names only; initialized project required; positional values rejected), remove (--dry-run or trusted-terminal exact removal), reveal, rotate, status, doctor (--fix), check (--staged, --runtime, --log PATH), sync (--dry-run --json, --only PATTERN), pull, env, setup (--client claude|cursor|windsurf|codex|gemini, --print), login, logout, cloud (push/pull/status), wrap, unwrap, watch, why, copy (trusted-terminal confirmation, no target overwrite), export (trusted-terminal hidden prompt only; passphrase files and plaintext disabled), import (--from doppler|infisical|dotenvx|1password|env --file <path>; trusted-terminal exact consent), audit (show [--last N] [--op OP] [--name NAME] [--json] / tail / path / verify), team (list/create/members/invite/key-publish/vault-push/vault-pull/rotate-vault), validate (live/watch/schedule/history), expiry (set/enforce/rotate), open (closed alias catalog), upgrade (managed-owner routing; force denied), completion (bash/zsh/fish/powershell/elvish)
 
 ## Dashboard
 
