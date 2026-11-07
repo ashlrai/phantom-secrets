@@ -26,7 +26,7 @@ const { homedir } = require("os");
 const { basename, dirname, join, posix: posixPath, resolve, win32: win32Path } = require("path");
 const { performance } = require("perf_hooks");
 
-const VERSION = "0.7.9";
+const { VERSION, SEMVER_SOURCE } = require("./package-version.js");
 const REPO = "ashlrai/phantom-secrets";
 const BINARY_NAME = "phantom-mcp";
 const REVIEWED_RELEASE_URL = `https://github.com/${REPO}/releases/tag/v${VERSION}`;
@@ -305,11 +305,6 @@ function sha256File(path) {
   return crypto.createHash("sha256").update(readFileSync(path)).digest("hex");
 }
 
-const SEMVER_SOURCE =
-  "(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)" +
-  "(?:-((?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*))?" +
-  "(?:\\+([0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*))?";
-
 function parseBinaryVersion(output) {
   const text = Buffer.isBuffer(output) ? output.toString("utf8") : String(output);
   const match = text.match(new RegExp(`^${BINARY_NAME} (${SEMVER_SOURCE})\\r?\\n?$`));
@@ -467,16 +462,19 @@ function download(inputUrl, {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      if (error) reject(error);
-      else resolvePromise(value);
+      if (error) {
+        // A previous redirect stream can fail while its successor is active.
+        // Settle first so cancellation errors cannot re-enter cleanup.
+        if (request && typeof request.destroy === "function") request.destroy(error);
+        reject(error);
+      } else resolvePromise(value);
     };
     const timer = setTimeout(() => {
-      const error = new Error(`download timed out after ${timeoutMs}ms`);
-      if (request && typeof request.destroy === "function") request.destroy(error);
-      finish(error);
+      finish(new Error(`download timed out after ${timeoutMs}ms`));
     }, timeoutMs);
 
     const fetch = (value, redirects) => {
+      if (settled) return;
       let url;
       try {
         url = allowedDownloadUrl(value, allowedHosts);
@@ -485,6 +483,13 @@ function download(inputUrl, {
         return;
       }
       request = httpsGet(url, (response) => {
+        // A response callback may already be queued when timeout/error settles
+        // the download. Do not follow redirects or retain data after that point.
+        response.on("error", finish);
+        if (settled) {
+          if (typeof response.destroy === "function") response.destroy();
+          return;
+        }
         const status = response.statusCode || 0;
         if (status >= 300 && status < 400 && response.headers.location) {
           if (typeof response.resume === "function") response.resume();
@@ -510,6 +515,7 @@ function download(inputUrl, {
         const chunks = [];
         let bytes = 0;
         response.on("data", (chunk) => {
+          if (settled) return;
           bytes += chunk.length;
           if (bytes > maxBytes) {
             if (typeof response.destroy === "function") response.destroy();
@@ -518,8 +524,9 @@ function download(inputUrl, {
           }
           chunks.push(chunk);
         });
-        response.on("end", () => finish(null, Buffer.concat(chunks)));
-        response.on("error", finish);
+        response.on("end", () => {
+          if (!settled) finish(null, Buffer.concat(chunks));
+        });
       });
       request.on("error", finish);
     };

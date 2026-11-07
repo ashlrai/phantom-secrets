@@ -27,6 +27,171 @@ function compile(file, localRequire) {
   return module.exports;
 }
 
+test("submitting an empty or cleared device code shows validation without starting authorization", async () => {
+  let clientCalls = 0;
+  let fetchCalls = 0;
+  const documentedCopy = fs.readFileSync(path.resolve(__dirname, "../../../docs/device-code-validation-copy.md"), "utf8")
+    .split("\n").filter((line) => line.startsWith("> ")).map((line) => line.slice(2));
+  const errorCopyPage = fs.readFileSync(path.resolve(__dirname, "../../../docs/device-code-error-copy.md"), "utf8");
+  const errorPageQuotes = errorCopyPage.split("\n").filter((line) => line.startsWith("> ")).map((line) => line.slice(2));
+  const review = fs.readFileSync(path.resolve(__dirname, "../../../docs/device-form-error-review.md"), "utf8");
+  const reviewError = review.match(/^\s*> (.+)$/m);
+  assert.ok(reviewError, "review should record the visible error");
+  for (const target of ["../apps/web/src/app/device/device-authorization-client.tsx", "../apps/web/tests/device-validation-interaction.test.cjs"]) {
+    assert.ok(review.includes(`](${target})`), `review should link to ${target}`);
+    assert.ok(fs.statSync(path.resolve(__dirname, "../../../docs", target)).isFile());
+  }
+  assert.equal(documentedCopy.length, 2);
+  assert.deepEqual(errorPageQuotes, documentedCopy);
+  const originalFetch = global.fetch;
+  const dependencies = {
+    "next/image": { __esModule: true, default: () => null },
+    "next/link": { __esModule: true, default: ({ children, ...props }) => React.createElement("a", props, children) },
+    "@/lib/device-code": compile("lib/device-code.ts", require),
+    "@/lib/posthog": { capturePostHog: async () => {} },
+    "@supabase/supabase-js": { createClient() { clientCalls++; throw new Error("Unexpected authentication"); } },
+  };
+  global.fetch = async () => { fetchCalls++; throw new Error("Unexpected network request"); };
+  try {
+    const Component = compile("app/device/device-authorization-client.tsx", (name) => dependencies[name] ?? require(name)).default;
+    const user = userEvent.setup();
+    for (const [method, cleared] of [["click", false], ["enter", false], ["click", true], ["enter", true]]) {
+      render(React.createElement(Component));
+      const input = screen.getByRole("textbox", { name: "Device code" });
+      const button = screen.getByRole("button", { name: "Authorize Device" });
+      assert.ok(errorCopyPage.includes(`\`${input.placeholder}\``));
+      assert.equal(document.getElementById("device-code-hint").textContent.trim(), documentedCopy[0]);
+      if (cleared) {
+        await user.type(input, "abcd2345");
+        assert.equal(input.value, "ABCD-2345");
+        await user.clear(input);
+      }
+      assert.equal(input.value, "");
+      assert.equal(screen.queryByRole("alert"), null);
+      assert.equal(input.getAttribute("aria-invalid"), "false");
+      assert.ok(!input.getAttribute("aria-describedby").split(/\s+/).includes("device-error"));
+      if (method === "click") await user.click(button);
+      else { await user.click(input); await user.keyboard("{Enter}"); }
+      const alert = screen.getByRole("alert");
+      assert.equal(alert.textContent, "Enter 8 letters or numbers. The code is displayed as XXXX-XXXX.");
+      assert.equal(alert.textContent, documentedCopy[1]);
+      assert.equal(alert.textContent, reviewError[1]);
+      assert.equal(alert.id, "device-error");
+      assert.equal(input.getAttribute("aria-invalid"), "true");
+      assert.ok(input.getAttribute("aria-describedby").split(/\s+/).includes(alert.id));
+      assert.equal(input.value, "");
+      assert.equal(input.disabled, false);
+      assert.equal(button.disabled, false);
+      assert.equal(clientCalls, 0);
+      assert.equal(fetchCalls, 0);
+      cleanup();
+    }
+  } finally {
+    cleanup();
+    global.fetch = originalFetch;
+  }
+});
+
+test("each short code submitted with Enter independently shows the format error", async () => {
+  let clientCalls = 0;
+  let fetchCalls = 0;
+  const originalFetch = global.fetch;
+  const dependencies = {
+    "next/image": { __esModule: true, default: () => null },
+    "next/link": { __esModule: true, default: ({ children, ...props }) => React.createElement("a", props, children) },
+    "@/lib/device-code": compile("lib/device-code.ts", require),
+    "@/lib/posthog": { capturePostHog: async () => {} },
+    "@supabase/supabase-js": { createClient() { clientCalls++; throw new Error("Unexpected authentication"); } },
+  };
+  global.fetch = async () => { fetchCalls++; throw new Error("Unexpected network request"); };
+  try {
+    const Component = compile("app/device/device-authorization-client.tsx", (name) => dependencies[name] ?? require(name)).default;
+    const user = userEvent.setup();
+    for (let length = 1; length < 8; length++) {
+      render(React.createElement(Component));
+      const input = screen.getByRole("textbox", { name: "Device code" });
+      await user.type(input, "abcd2345".slice(0, length));
+      assert.equal(screen.queryByRole("alert"), null);
+      await user.keyboard("{Enter}");
+      const alert = screen.getByRole("alert");
+      assert.equal(alert.textContent, "Enter 8 letters or numbers. The code is displayed as XXXX-XXXX.");
+      assert.equal(input.getAttribute("aria-invalid"), "true");
+      assert.ok(input.getAttribute("aria-describedby").split(/\s+/).includes(alert.id));
+      assert.equal(input.disabled, false);
+      assert.equal(clientCalls, 0);
+      assert.equal(fetchCalls, 0);
+      cleanup();
+    }
+  } finally {
+    cleanup();
+    global.fetch = originalFetch;
+  }
+});
+
+test("a pasted seven-character code is rejected even when its separator makes it eight characters wide", async () => {
+  let clientCalls = 0;
+  let fetchCalls = 0;
+  const originalFetch = global.fetch;
+  const dependencies = {
+    "next/image": { __esModule: true, default: () => null },
+    "next/link": { __esModule: true, default: ({ children, ...props }) => React.createElement("a", props, children) },
+    "@/lib/device-code": compile("lib/device-code.ts", require),
+    "@/lib/posthog": { capturePostHog: async () => {} },
+    "@supabase/supabase-js": { createClient() { clientCalls++; throw new Error("Unexpected authentication"); } },
+  };
+  global.fetch = async () => { fetchCalls++; throw new Error("Unexpected network request"); };
+  try {
+    const Component = compile("app/device/device-authorization-client.tsx", (name) => dependencies[name] ?? require(name)).default;
+    const user = userEvent.setup();
+    render(React.createElement(Component));
+    const input = screen.getByRole("textbox", { name: "Device code" });
+    await user.click(input);
+    await user.paste("abcd-234");
+    assert.equal(input.value, "ABCD-234");
+    assert.equal(screen.queryByRole("alert"), null);
+    await user.click(screen.getByRole("button", { name: "Authorize Device" }));
+    const alert = screen.getByRole("alert");
+    assert.equal(alert.textContent, "Enter 8 letters or numbers. The code is displayed as XXXX-XXXX.");
+    assert.equal(input.getAttribute("aria-invalid"), "true");
+    assert.ok(input.getAttribute("aria-describedby").split(/\s+/).includes(alert.id));
+    assert.equal(input.value, "ABCD-234");
+    assert.equal(clientCalls, 0);
+    assert.equal(fetchCalls, 0);
+  } finally {
+    cleanup();
+    global.fetch = originalFetch;
+  }
+});
+
+test("invalid code lengths present the eight-character requirement as an input error", async () => {
+  const dependencies = {
+    "next/image": { __esModule: true, default: () => null },
+    "next/link": { __esModule: true, default: ({ children, ...props }) => React.createElement("a", props, children) },
+    "@/lib/device-code": compile("lib/device-code.ts", require),
+    "@/lib/posthog": { capturePostHog: async () => {} },
+    "@supabase/supabase-js": { createClient() { throw new Error("Unexpected authentication"); } },
+  };
+  const Component = compile("app/device/device-authorization-client.tsx", (name) => dependencies[name] ?? require(name)).default;
+  const user = userEvent.setup();
+  try {
+    render(React.createElement(Component));
+    const input = screen.getByRole("textbox", { name: "Device code" });
+    for (const code of ["ABCD234", "ABCD23456"]) {
+      await user.clear(input);
+      await user.type(input, code);
+      await user.click(screen.getByRole("button", { name: "Authorize Device" }));
+
+      const alert = screen.getByRole("alert");
+      assert.equal(alert.textContent, "Enter 8 letters or numbers. The code is displayed as XXXX-XXXX.");
+      assert.equal(alert.id, "device-error");
+      assert.equal(input.getAttribute("aria-invalid"), "true");
+      assert.ok(input.getAttribute("aria-describedby").split(/\s+/).includes(alert.id));
+    }
+  } finally {
+    cleanup();
+  }
+});
+
 test("short codes show the format error through the form and a corrected code can be authorized", async () => {
   let clientCalls = 0;
   const requests = [];
@@ -67,6 +232,9 @@ test("short codes show the format error through the form and a corrected code ca
     }
     await user.type(input, "5");
     assert.equal(input.value, "ABCD-2345");
+    assert.equal(screen.getByRole("alert").textContent, "Enter 8 letters or numbers. The code is displayed as XXXX-XXXX.");
+    assert.equal(clientCalls, 0);
+    assert.equal(requests.length, 0);
     await user.click(button);
     assert.ok(await screen.findByRole("heading", { name: "Device Authorized" }));
     assert.equal(clientCalls, 1);

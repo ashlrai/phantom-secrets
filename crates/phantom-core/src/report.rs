@@ -4,12 +4,20 @@
 //! Every field carries names, paths, labels, or fixed diagnostic text. Secret
 //! values and phantom token values are never recorded in these types.
 
+use std::collections::BTreeSet;
+use std::io::{self, Read};
+use std::ops::Range;
+use std::path::Path;
+
 use serde::Serialize;
+use zeroize::Zeroize;
+
+use crate::redact::{credential_spans, CREDENTIAL_PATTERNS};
 
 /// One unprotected-secret finding.
 #[derive(Debug, Serialize, PartialEq, Eq)]
 pub struct CheckFinding {
-    /// `dotenv`, `staged_dotenv`, `staged_code`, or `runtime_env`.
+    /// `dotenv`, `staged_dotenv`, `staged_code`, `runtime_env`, or `log`.
     pub kind: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
@@ -332,6 +340,127 @@ impl DoctorReport {
     }
 }
 
+/// Agent logs and transcripts above this size are refused rather than scanned
+/// in part. A partial scan could call a file clean while a credential sat past
+/// the cut.
+pub const AGENT_LOG_MAX_BYTES: u64 = 8 * 1024 * 1024;
+
+const AGENT_LOG_MAX_LINE_BYTES: usize = 1024 * 1024;
+
+/// One credential shape in an agent log. The line number, shape label, and
+/// public pattern id are the whole record. The matched bytes are not stored.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentLogHit {
+    pub line: u32,
+    pub label: &'static str,
+    pub pattern: &'static str,
+}
+
+/// Scan one regular file for credential shapes.
+///
+/// The final path component is not followed when it is a symlink. The file is
+/// read only up to [`AGENT_LOG_MAX_BYTES`]. The returned hits name the line and
+/// the shape. They do not contain the matched text.
+pub fn scan_agent_log(path: &Path) -> io::Result<Vec<AgentLogHit>> {
+    let mut file = match crate::fs::open_regular_nofollow(path) {
+        Ok(Some(file)) => file,
+        Ok(None) => {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "agent log not found",
+            ))
+        }
+        Err(crate::fs::RegularOpenError::NotRegular | crate::fs::RegularOpenError::Reopen(_)) => {
+            return Err(io::Error::other(
+                "agent log must be a regular file, not a symlink or directory",
+            ))
+        }
+        Err(
+            crate::fs::RegularOpenError::Open(error) | crate::fs::RegularOpenError::Inspect(error),
+        ) => return Err(error),
+    };
+    let mut bytes = Vec::new();
+    file.by_ref()
+        .take(AGENT_LOG_MAX_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > AGENT_LOG_MAX_BYTES {
+        bytes.zeroize();
+        return Err(io::Error::other("agent log exceeds 8 MiB"));
+    }
+    let result = scan_agent_log_bytes(&bytes);
+    bytes.zeroize();
+    result
+}
+
+/// Scan log bytes. A line over 1 MiB is an error, matching `phantom redact`.
+pub fn scan_agent_log_bytes(bytes: &[u8]) -> io::Result<Vec<AgentLogHit>> {
+    let mut hits = Vec::new();
+    let mut seen = BTreeSet::new();
+    let mut offset = 0usize;
+    let mut line_no: u32 = 1;
+    while offset < bytes.len() {
+        let rest = &bytes[offset..];
+        let newline = rest.iter().position(|byte| *byte == b'\n');
+        let (mut line, next) = match newline {
+            Some(index) => (&rest[..index], offset + index + 1),
+            None => (rest, bytes.len()),
+        };
+        if line.len() > AGENT_LOG_MAX_LINE_BYTES {
+            return Err(io::Error::other("agent log line exceeds the 1 MiB limit"));
+        }
+        if let Some(stripped) = line.strip_suffix(b"\r") {
+            line = stripped;
+        }
+        for span in credential_spans(line) {
+            let (label, pattern) = label_for_log_span(line, span);
+            if seen.insert((line_no, pattern)) {
+                hits.push(AgentLogHit {
+                    line: line_no,
+                    label,
+                    pattern,
+                });
+            }
+        }
+        offset = next;
+        if newline.is_some() {
+            line_no = line_no.saturating_add(1);
+        }
+    }
+    Ok(hits)
+}
+
+fn label_for_log_span(line: &[u8], span: Range<usize>) -> (&'static str, &'static str) {
+    let bytes = &line[span.start..span.end];
+    let mut best: Option<&crate::redact::CredentialPattern> = None;
+    for pattern in CREDENTIAL_PATTERNS {
+        let prefix = pattern.prefix.as_bytes();
+        if bytes.starts_with(prefix)
+            && best.is_none_or(|current| prefix.len() > current.prefix.len())
+        {
+            best = Some(pattern);
+        }
+    }
+    match best {
+        Some(pattern) => (pattern.label, pattern.prefix),
+        None => ("credential shape", "shape"),
+    }
+}
+
+/// Value-blind `phantom check` findings for one agent log.
+pub fn agent_log_findings(path: &Path) -> io::Result<Vec<CheckFinding>> {
+    let shown = path.display().to_string();
+    Ok(scan_agent_log(path)?
+        .into_iter()
+        .map(|hit| CheckFinding {
+            kind: "log",
+            path: Some(shown.clone()),
+            name: Some(format!("line {}", hit.line)),
+            label: Some(hit.label),
+            pattern: Some(hit.pattern),
+        })
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -551,5 +680,40 @@ mod tests {
         assert_eq!(report.checks[1].fix.as_deref(), Some("do it"));
         assert_eq!(report.checks[2].fix.as_deref(), Some("do it"));
         assert_eq!(report.checks[2].fixed.as_deref(), Some("done"));
+    }
+
+    #[test]
+    fn agent_log_scan_reports_the_line_and_shape_without_the_value() {
+        let tail = "QW".repeat(16);
+        let token = format!("sk-{tail}");
+        let log = format!("hello\nassistant used {token} today\nclean line\n");
+        let hits = scan_agent_log_bytes(log.as_bytes()).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].line, 2);
+        assert_eq!(hits[0].label, "OpenAI API key");
+        assert_eq!(hits[0].pattern, "sk-");
+        let rendered = format!("{hits:?}");
+        assert!(!rendered.contains(&tail));
+        assert!(!rendered.contains(&token));
+    }
+
+    #[test]
+    fn agent_log_scan_refuses_an_oversize_line() {
+        let mut long = vec![b'a'; super::AGENT_LOG_MAX_LINE_BYTES + 1];
+        long.extend_from_slice(b"\n");
+        let error = scan_agent_log_bytes(&long).unwrap_err();
+        assert!(error.to_string().contains("1 MiB"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn agent_log_scan_refuses_a_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("real.log");
+        std::fs::write(&target, "clean\n").unwrap();
+        let link = dir.path().join("link.log");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let error = scan_agent_log(&link).unwrap_err();
+        assert!(error.to_string().contains("regular file"), "{error}");
     }
 }

@@ -100,13 +100,14 @@ resolve_lock() {
                 (cd "$dir" && cargo generate-lockfile && cargo metadata --locked --format-version 1 > /dev/null)
             fi
             ;;
+        # Lock regeneration must not execute package lifecycle hooks.
         bun.lock | bun.lockb)
             command -v bun > /dev/null || { echo "  !  $path: bun not on PATH" >&2; return 1; }
-            (cd "$dir" && bun install)
+            (cd "$dir" && bun install --ignore-scripts)
             ;;
         package-lock.json)
             command -v npm > /dev/null || { echo "  !  $path: npm not on PATH" >&2; return 1; }
-            (cd "$dir" && npm install --package-lock-only)
+            (cd "$dir" && npm install --package-lock-only --ignore-scripts)
             ;;
     esac && { git add "$path"; echo "  ok $path ($how)"; } || {
         echo "  !  $path: package manager could not regenerate it" >&2; return 1; }

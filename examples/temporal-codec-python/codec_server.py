@@ -12,6 +12,7 @@ that carries an Origin not on the list is refused with 403 and no CORS headers.
 
 import asyncio
 import os
+import re
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import urlsplit
 
@@ -56,10 +57,34 @@ def make_handler(codec: EncryptionCodec, cors: CorsPolicy = CorsPolicy()):
             if not decision.allowed:
                 self._plain(403)
                 return
-            length = int(self.headers.get("Content-Length", "0"))
-            if length > MAX_BODY_BYTES:
+            # The stdlib parser can stop at a malformed header and hide later
+            # framing fields. Never trust a partial header block for body reads.
+            if self.headers.defects:
+                self.send_error(400, "malformed request headers")
+                return
+            # Do not let negative lengths turn read(n) into an unbounded read.
+            # This HTTP server does not implement chunked request decoding.
+            lengths = self.headers.get_all("Content-Length", [])
+            if self.headers.get_all("Transfer-Encoding") or len(lengths) > 1:
+                self.send_error(400, "ambiguous or unsupported request framing")
+                return
+            if not lengths:
+                self.send_error(411, "Content-Length is required")
+                return
+            # HTTP field values permit surrounding SP/HTAB, not arbitrary
+            # Unicode whitespace or whitespace within the decimal digits.
+            length_text = lengths[0].strip(" \t")
+            if not re.fullmatch(r"[0-9]+", length_text):
+                self.send_error(400, "invalid Content-Length")
+                return
+            # Compare decimal strings before int(), including huge headers that
+            # exceed Python's integer-conversion digit limit.
+            digits = length_text.lstrip("0") or "0"
+            limit = str(MAX_BODY_BYTES)
+            if len(digits) > len(limit) or (len(digits) == len(limit) and digits > limit):
                 self.send_error(413)
                 return
+            length = int(digits)
             try:
                 body = json_format.Parse(self.rfile.read(length), Payloads())
             except json_format.ParseError:

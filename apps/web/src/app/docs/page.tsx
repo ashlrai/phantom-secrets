@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { Nav } from "@/components/landing/Nav";
 import { SiteFooter } from "@/components/landing/SiteFooter";
+import { AgentQuickstart } from "@/components/landing/AgentQuickstart";
 import { CopyButton } from "@/components/landing/CopyButton";
 import { AskDocumentation } from "@/components/docs/AskDocumentation";
 import { WORKBENCH_RELEASE } from "@/lib/workbench-release";
@@ -101,6 +102,7 @@ export default function DocsPage() {
             <AskDocumentation path="/docs" />
           </div>
         </header>
+        <AgentQuickstart />
 
         <section className="landing-frame docs-workbench" aria-labelledby="workbench-guides-title">
           <div className="docs-workbench__intro">
