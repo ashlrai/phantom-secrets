@@ -7,9 +7,9 @@ capabilities. This opening historical snapshot was verified on 2026-09-29. The i
 `v0.7.9` GitHub release binds 19 assets to source commit
 `7a51ce512ec4aee12cc29ff859036af63fbe93db`; all six native rows and GitHub
 provenance and SPDX attestations passed in workflow 34153902556. Homebrew
-still publishes the previous reviewed `v0.7.8`; its `v0.7.9` bump is pending.
-Both npm `0.7.4` wrappers remain public only under the
-failed `release-candidate` track, while npm `latest` remains `0.6.0`.
+then published the previous reviewed `v0.7.8`; its `v0.7.9` bump was pending.
+Both npm `0.7.4` wrappers were public only under the
+failed `release-candidate` track, while npm `latest` was `0.6.0`.
 No `0.7.9` npm, crates.io, or MCP Registry publication, hosted-service
 commissioning, provider activation, certification, or customer acceptance is
 represented by the GitHub release receipt. For later package-channel receipts,
@@ -24,7 +24,11 @@ see [distribution status](docs/distribution-status.md).
 | Gated | Intended direction with explicit prerequisites; not available. |
 | Exploratory | Research or design work with no compatibility or delivery commitment. |
 
-## Current milestones
+## Historical milestones
+
+The immutable `v0.8.7` release was verified on 2026-11-06; see
+[distribution status](docs/distribution-status.md). The milestones below
+retain their original context and do not describe the current release state.
 
 ### 0.8.2 publication-truth fix-forward: source candidate
 
@@ -34,7 +38,7 @@ see [distribution status](docs/distribution-status.md).
 - Preserve every existing tag. A source candidate and a reserved tag are
   not published artifacts.
 
-The immutable GitHub release remains `v0.7.9`. Publication of `0.8.2`
+At that stage, the immutable GitHub release was `v0.7.9`. Publication of `0.8.2`
 requires its own successful sanctioned release workflow and artifact receipt.
 
 ### 0.8.1 installer hardening and test coverage patch: source candidate
@@ -47,7 +51,7 @@ requires its own successful sanctioned release workflow and artifact receipt.
 - Update the dependency set to drop the vulnerable `async-executor`.
 
 This earlier source milestone is included in the `0.8.2` candidate. It is
-not a publication receipt. The immutable GitHub release remains `v0.7.9`.
+not a publication receipt. At that stage, the immutable GitHub release was `v0.7.9`.
 
 ### 0.8.0 agent log scan and the post-0.7.9 source tranche: staged
 

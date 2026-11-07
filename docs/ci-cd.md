@@ -16,11 +16,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install the immutable Phantom v0.7.9 Linux release
+      - name: Install the immutable Phantom v0.8.7 Linux release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release download v0.7.9 --repo ashlrai/phantom-secrets \
+          gh release download v0.8.7 --repo ashlrai/phantom-secrets \
             --pattern phantom-x86_64-unknown-linux-gnu.tar.gz \
             --pattern phantom-x86_64-unknown-linux-gnu.tar.gz.sha256
           sha256sum -c phantom-x86_64-unknown-linux-gnu.tar.gz.sha256
@@ -37,10 +37,10 @@ jobs:
 ```
 
 The repository action at `integrations/github-actions/action.yml` is a fail-fast placeholder until a supported non-interactive Phantom Cloud auth flow exists.
-The example downloads immutable `v0.7.9`, whose tag resolves to source commit
-`7a51ce512ec4aee12cc29ff859036af63fbe93db`, and verifies its published
+The example downloads immutable `v0.8.7`, whose tag resolves to source commit
+`a6a0413991c0bd7f3d6601f467c0b5770d0dce0c`, and verifies its published
 checksum before executing it; do not replace it with an unpinned registry
-command. See [distribution status](distribution-status.md) for dated npm, Homebrew, crates.io, and MCP Registry evidence. Prefer the checksum-verified `v0.7.9` GitHub assets for an exact install.
+command. See [distribution status](distribution-status.md) for dated npm, Homebrew, crates.io, and MCP Registry evidence. Prefer the checksum-verified `v0.8.7` GitHub assets for an exact install.
 Select the matching asset for ARM64 or a non-Linux runner.
 
 ## Vercel

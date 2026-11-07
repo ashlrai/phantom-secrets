@@ -2,7 +2,7 @@
 
 [phantom-secret-gate.yml](phantom-secret-gate.yml) is a pull-request check you
 can copy into `.github/workflows/`. It needs no vault and no secrets. It
-installs the checksum-verified v0.7.9 release and runs two steps:
+installs the checksum-verified v0.8.7 release and runs two steps:
 
 1. `phantom check`: fails if a committed dotenv file (`.env`, `.env.local`,
    `.env.development`, `.env.production`, or the configured `dotenv_path`)
@@ -33,9 +33,10 @@ COMPLETE: GitHub Actions secret gate recipe (4 checks)
 ```
 
 <!-- fresh:begin examples-gate-verified-release -->
-This recipe passes against both the v0.7.9 release and the workspace build.
-The install step in the workflow was also run as written on Linux x86_64
-(`gh release download`, `sha256sum -c`, `phantom --version` → `phantom 0.7.9`).
+The recipe targets the v0.8.7 release.
+The install step was previously run as written on Linux x86_64 against
+the v0.7.9 release (`gh release download`, `sha256sum -c`, `phantom --version` → `phantom 0.7.9`).
+That historical run does not establish acceptance of a later release.
 <!-- fresh:end -->
 
 ## Scope

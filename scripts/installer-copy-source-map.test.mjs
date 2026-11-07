@@ -46,11 +46,9 @@ test('the mapped PATH function and call site are identical', () => {
   for (const row of rows.slice(-2)) assert.equal(section(row, 0), section(row, 1));
 });
 
-test('staging differences remain the ones described in the map', () => {
+test('complete copies match as described in the map', () => {
   const [repository, web] = sources.map((lines) => lines.join('\n'));
-  // Removing only the documented differences must make the complete copies equal.
-  const normalized = repository
-    .replace(`CANDIDATE_TAG="v${sourceVersion}"`, 'CANDIDATE_TAG="v0.7.9"');
-  assert.notEqual(repository, web);
-  assert.equal(normalized, web, 'Review and update the source map for installer drift');
+  // The complete copies currently match, including their candidate tags.
+  assert.ok(repository.includes(`CANDIDATE_TAG="v${sourceVersion}"`));
+  assert.equal(repository, web, 'Review and update the source map for installer drift');
 });

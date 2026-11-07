@@ -16,7 +16,7 @@ Cascade chat. The current release contract enforces 54 unique tools; runtime
 
 ### Step 1: install Phantom
 
-Install the reviewed `v0.7.9` binary using the platform-specific, checksum-
+Install the reviewed `v0.8.7` binary using the platform-specific, checksum-
 verified path in [getting started](./getting-started.md#install), then run
 `phantom init` in the project.
 
@@ -39,7 +39,7 @@ This writes `~/.codeium/windsurf/mcp_config.json` with the `phantom` MCP server 
 }
 ```
 
-Install both `v0.7.9` release binaries before setup. Version `0.7.9` records the
+Install both `v0.8.7` release binaries before setup. Version `0.8.7` records the
 running `phantom` executable with `mcp serve` when it can resolve that runtime,
 otherwise it looks for a local `phantom-mcp`. Setup has no network
 package-runner fallback and fails closed when neither local runtime is
