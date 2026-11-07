@@ -302,6 +302,7 @@ jobs:
           scripts/installer-path-candidate-distinct.test.mjs
           scripts/installer-path-candidate-spaces.test.mjs
           scripts/installer-path-candidate-unicode-parent.test.mjs
+          scripts/installer-path-cd-command.test.mjs
           scripts/installer-path-columns-export.test.mjs
           scripts/installer-path-comment-punctuation.test.mjs
           scripts/installer-path-comment-with-spaces.test.mjs
@@ -393,7 +394,9 @@ jobs:
           scripts/installer-path-trailing-comment.test.mjs
           scripts/installer-path-source-line.test.mjs
           scripts/installer-path-unrelated-comment.test.mjs
+          scripts/installer-path-unrelated-comments.test.mjs
           scripts/installer-path-unrelated-order-integration.test.mjs
+          scripts/installer-path-unrelated-source.test.mjs
       - name: Run isolated alias fallback shell test
         if: runner.os == 'Linux'
         run: bash scripts/installer-path-alias-fallback.test.sh
