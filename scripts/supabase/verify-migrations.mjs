@@ -27,16 +27,15 @@ export async function verifyMigrationManifest({
     throw error;
   }
   const migrationEntries = directoryEntries
-    .filter((entry) => entry.name.endsWith(".sql"));
+    .filter((entry) => entry.name.endsWith(".sql"))
+    .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
   const nonRegularMigration = migrationEntries.find((entry) => !entry.isFile());
   if (nonRegularMigration) {
     throw new Error(
       `migration must be a regular file: ${nonRegularMigration.name}`,
     );
   }
-  const migrationFiles = migrationEntries
-    .map((entry) => entry.name)
-    .sort();
+  const migrationFiles = migrationEntries.map((entry) => entry.name);
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
 
   if (manifest.version !== 1 || manifest.algorithm !== "sha256") {
