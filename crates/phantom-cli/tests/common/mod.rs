@@ -44,9 +44,21 @@ pub fn init_project(dir: &TempDir, passphrase: &str) {
 /// Build a CLI command scoped to a temporary project and test vault.
 #[allow(dead_code)] // Common is compiled once per integration-test binary.
 pub fn phantom(dir: &TempDir, passphrase: &str) -> assert_cmd::Command {
+    phantom_with_home(dir, dir, passphrase)
+}
+
+/// Build a CLI command whose machine profile lives in `home`, a directory
+/// separate from the project directory in `dir`.
+///
+/// Tests that assert a rejected invocation leaves the project tree untouched
+/// need this: the Windows Known-Folder resolver requires both AppData
+/// folders to exist, so `phantom` creates them under the profile — which
+/// must not be the project directory for those assertions to hold.
+#[allow(dead_code)] // Common is compiled once per integration-test binary.
+pub fn phantom_with_home(dir: &TempDir, home: &TempDir, passphrase: &str) -> assert_cmd::Command {
     // Known Folders expands USERPROFILE and verifies both AppData folders.
     // Use an ordinary Win32 path: canonical temp roots may carry `\\?\`.
-    let profile = profile_path(dir.path());
+    let profile = profile_path(home.path());
     #[cfg(windows)]
     for folder in ["Roaming", "Local"] {
         std::fs::create_dir_all(profile.join("AppData").join(folder)).unwrap();
@@ -55,11 +67,11 @@ pub fn phantom(dir: &TempDir, passphrase: &str) -> assert_cmd::Command {
     command
         .current_dir(dir.path())
         .env("PHANTOM_VAULT_PASSPHRASE", passphrase)
-        .env("HOME", dir.path())
+        .env("HOME", home.path())
         .env("USERPROFILE", &profile)
         .env("APPDATA", profile.join("AppData/Roaming"))
         .env("LOCALAPPDATA", profile.join("AppData/Local"))
-        .env("XDG_DATA_HOME", dir.path().join("data"));
+        .env("XDG_DATA_HOME", home.path().join("data"));
     command
 }
 

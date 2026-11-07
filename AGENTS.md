@@ -2,6 +2,19 @@
 
 > Phantom is an open-source CLI that keeps real API-key values out of supported, value-blind AI-agent paths. It replaces managed secrets with persistent `phm_` mappings; an authenticated local proxy injects only a matched route's vault value into its fixed auth header. Client headers and bodies never resolve mappings. Treat project mappings as sensitive metadata.
 
+## Article 1: Full autonomy, always forward
+
+Synced from the Ashlr Fleet Constitution v3.0 (Nov 1, 2026). This overrides any older text in this file.
+
+**Full autonomy, always forward (Mason t1287u, Nov 1 2026 11:47 PM ET).** Every agent may merge PRs to main and push to production (releases through each repo's sanctioned workflow, any agent may dispatch them). Take the human out of the loop; let nothing slow us down; do the highest-leverage, most ambitious work. No approval, manual-merge, wait-for-per-PR-CI or ask-Mason steps. Mason is needed only for passwords, 2FA, device approvals and payments. The only kept limits are Security GATES v3, the hold list below, and making private things public. Any new gate must be justified against this article or it is rejected.
+
+### Hard floor (the only fixed rules)
+- Security GATES v3: pins only on the secret gate (scrub.pl, secret-shape gate, publish.sh), sandbox profiles and leader wrappers/prompts/plists, secret-leaking workflow diffs, and the MACCU TCC helper plus loopback auth. No force-push to default branches, no ruleset or admin bypass, no ~/.codex auth changes, no billing changes, no secret values in logs.
+- Merge-queue required checks stay where a repo has them; full CI daily; main-guardian fixes main forward.
+- Fork-only pushes through publish.sh. Local models loopback-only.
+- Mason only for passwords, 2FA, device approvals and payments (no new spending without him). Nothing private made public.
+- Hold list (Mason's own holds): phantom #197 #878 #743 #725 #738 #744 #693 #1228; phantom-secrets #140 #197 #375 #168 #418 #136; ashlr-plugin #152 #157.
+
 ## MCP Server: Let AI manage secrets directly
 
 Phantom includes an MCP server with core secret-management tools plus advanced
@@ -76,7 +89,7 @@ parameter names match the runtime JSON schema exactly.
 | `phantom_status` | Show project ID, managed dotenv protection counts, and service mappings without opening the vault | None |
 | `phantom_doctor` | Run repository-local health checks (config, dotenv protection, `.gitignore`, `.env.example`, pre-commit hook) without opening the vault; `fix=true` mutates files and activates both gates | fix, confirm, approval_token |
 | `phantom_why` | Explain why a key is or is not protected and how `phantom exec` delivers it (`exec.delivery`, e.g. `no_route`). Never opens the vault; works before init and with a locked vault | key |
-| `phantom_check` | Scan supported dotenv files, or every process variable with `runtime=true` | runtime |
+| `phantom_check` | Scan supported dotenv files, a log file, or every process variable with `runtime=true` | log_path (optional), runtime |
 | `phantom_env` | Generate an env example file with secret placeholders | output (default `.env.example`), confirm, approval_token |
 | `phantom_sync` | Preview deployment-platform sync configuration (Vercel, Railway) | platform (optional), project_id (optional) |
 | `phantom_add_secret` | With `generate: true`, create a new locally generated 256-bit secret and return a value-free `name`/`fingerprint` receipt; otherwise refuses plaintext via MCP — use `phantom_add_secret_interactive` for provider credentials | name, generate (optional), confirm, approval_token |
@@ -190,6 +203,15 @@ and still requires attached-terminal consent.
 - Use `phantom_init` to protect an unprotected `.env` file
 - If a tool answers "Vault locked: ..." (MCP error -32600), the project's secrets are in an encrypted-file vault this process cannot open, usually because `PHANTOM_VAULT_PASSPHRASE` is not set in the MCP server's env config. Do not treat it as "no secrets"; pass on the unlock step in the message to the user. `phantom_list_secrets` reports the same state as "Vault locked, not empty."
 - When a call fails with 401 under `phantom exec`, run `phantom_why` on the key: `exec.delivery: no_route` means no built-in proxy route injects it, so the child only has a session token
+
+## Hot-file rule: avoid merge conflicts
+
+Parallel PRs repeatedly collide on a few shared files (`apps/web/tests/quick-start-keyboard.test.cjs` sat in 7 of the 30 newest open PRs, `docs/README.md` in 4, and two PRs went DIRTY within minutes). To keep PRs independently mergeable:
+
+- A new doc does not edit `docs/README.md`. Add the doc file and let it be discovered by path; the index is updated in a dedicated change.
+- A new web test goes in a new file under `apps/web/tests/`. Never append it to an existing `.cjs` test file.
+
+`node --test scripts/hot-file-rule.test.mjs` checks that this section stays in place.
 
 ## Build and test
 

@@ -86,6 +86,16 @@ test("the device code input pairs the XXXX-XXXX placeholder with an accessible l
   assert.ok(descriptions.some((text) => text.includes(placeholder)));
 });
 
+test("the placeholder is derived from the code length and the formatter's grouping", () => {
+  renderDevice(async () => { throw new Error("Unexpected sign-in"); });
+  const shown = screen.getByRole("textbox", { name: label }).getAttribute("placeholder") ?? "";
+  // Exactly the formatter's shape: two equal groups joined by one dash,
+  // together holding DEVICE_USER_CODE_LENGTH characters.
+  assert.match(shown, /^X+-X+$/);
+  assert.equal(shown.replace("-", "").length, deviceCode.DEVICE_USER_CODE_LENGTH);
+  assert.equal(deviceCode.formatDeviceUserCode("A".repeat(deviceCode.DEVICE_USER_CODE_LENGTH)), shown.replace(/X/g, "A"));
+});
+
 test("the placeholder never stands in for the label or a real value", async () => {
   renderDevice(async () => { throw new Error("Unexpected sign-in"); });
   const user = userEvent.setup();
@@ -118,4 +128,57 @@ test("the label and placeholder remain usable after a validation error", async (
   // A click on the visible label must focus the same field even after errors.
   await user.click(screen.getByText(label, { selector: "label" }));
   assert.equal(document.activeElement, input);
+});
+
+test("the field's entry presentation keeps typed input faithful to the placeholder", () => {
+  renderDevice(async () => { throw new Error("Unexpected sign-in"); });
+  const input = screen.getByRole("textbox", { name: label }) as HTMLInputElement;
+  assert.equal(input.getAttribute("placeholder"), placeholder);
+
+  // The placeholder advertises two uppercase groups. The control's entry
+  // presentation keeps real input faithful to that picture: a plain text
+  // field with no autocomplete suggestions covering the guidance, keyboards
+  // asked for capitals like the X glyphs, and no spellcheck underlining.
+  assert.equal(input.type, "text");
+  assert.equal(input.getAttribute("autocomplete"), "off");
+  assert.equal(input.getAttribute("autocapitalize"), "characters");
+  assert.equal(input.getAttribute("spellcheck"), "false");
+
+  // Focus starts on the field, so the placeholder is the first format
+  // guidance a user meets.
+  assert.equal(document.activeElement, input);
+});
+
+test("the labeled placeholder stays attached while disabled, then retires on completion", async () => {
+  let resolveSession: (value: unknown) => void = () => {};
+  let resolveApprove: (value: Response) => void = () => {};
+  renderDevice(() => new Promise((resolve) => { resolveSession = resolve; }));
+  globalThis.fetch = () => new Promise<Response>((resolve) => { resolveApprove = resolve; });
+  const user = userEvent.setup();
+  const input = screen.getByRole("textbox", { name: label }) as HTMLInputElement;
+
+  await user.type(input, "wxyz6789");
+  await user.click(screen.getByRole("button", { name: "Authorize Device" }));
+
+  // While sign-in is in flight the field is disabled, but the same labeled
+  // control keeps its placeholder instead of being swapped out.
+  assert.equal(screen.getByRole("button", { name: "Signing in with GitHub..." }).hasAttribute("disabled"), true);
+  assert.equal(input.disabled, true);
+  assert.equal(input.getAttribute("placeholder"), placeholder);
+  assert.equal(screen.getByRole("textbox", { name: label }), input);
+  assert.equal(input.closest("section")?.getAttribute("aria-busy"), "true");
+
+  resolveSession({ data: { session: { access_token: "synthetic-session" } }, error: null });
+  await screen.findByRole("button", { name: "Approving..." });
+  assert.equal(input.disabled, true);
+  assert.equal(input.getAttribute("placeholder"), placeholder);
+  assert.equal(screen.getByRole("textbox", { name: label }), input);
+
+  // Once authorization completes, the code form — including its placeholder —
+  // is retired entirely; nothing stale sits behind the success panel.
+  resolveApprove({ ok: true } as Response);
+  assert.ok(await screen.findByRole("heading", { name: "Device Authorized" }));
+  assert.equal(screen.queryByRole("textbox"), null);
+  assert.equal(screen.queryByPlaceholderText(placeholder), null);
+  assert.equal(screen.queryByText(label, { selector: "label" }), null);
 });

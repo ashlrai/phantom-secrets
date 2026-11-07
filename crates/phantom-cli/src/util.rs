@@ -23,6 +23,16 @@ pub fn oneshot_runtime() -> std::io::Result<tokio::runtime::Runtime> {
         .build()
 }
 
+/// Error for a local proxy that failed to start. The proxy binds an ephemeral
+/// port on 127.0.0.1, so the usual cause is an environment that blocks local
+/// listeners, not a bad config. The error text is the bind or setup failure,
+/// which never carries vault values.
+pub fn proxy_start_error(error: impl std::fmt::Display) -> anyhow::Error {
+    anyhow::anyhow!(
+        "Failed to start the local proxy on 127.0.0.1: {error}. Check that this environment allows local TCP listeners, run `phantom doctor` for details, then retry."
+    )
+}
+
 /// The project directory a command works on: the current directory. Tests
 /// install their own with [`test_seam::TestProject`].
 pub fn project_dir() -> anyhow::Result<PathBuf> {
@@ -1083,5 +1093,23 @@ mod config_gate_tests {
         let (_dir, project) = project();
         std::fs::create_dir(project.join(".phantom.toml")).unwrap();
         assert_every_command_refuses(&project, "directory");
+    }
+}
+
+#[cfg(test)]
+mod proxy_start_error_tests {
+    use super::*;
+
+    #[test]
+    fn proxy_start_error_says_what_failed_and_what_to_do() {
+        let message = proxy_start_error("address already in use").to_string();
+        assert!(
+            message.starts_with(
+                "Failed to start the local proxy on 127.0.0.1: address already in use."
+            ),
+            "{message}"
+        );
+        assert!(message.contains("allows local TCP listeners"), "{message}");
+        assert!(message.contains("`phantom doctor`"), "{message}");
     }
 }

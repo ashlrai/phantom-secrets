@@ -1,6 +1,8 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
+const os = require("node:os");
+const { spawnSync } = require("node:child_process");
 const test = require("node:test");
 const React = require("react");
 const ts = require("typescript");
@@ -75,6 +77,57 @@ test("Unix lifecycle matches the displayed ordering and cleanup limits", () => {
     assert.ok(section("macOS").includes(phrase), phrase);
   }
   assert.match(section("Linux"), /same best-effort removal/i);
+});
+
+test("Unix commands attempt cleanup on success and failure without removing extra files", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "phantom-lifecycle-test-"));
+  try {
+    const home = path.join(root, "home");
+    const temp = path.join(root, "temp with spaces");
+    const bin = path.join(root, "bin");
+    const installedBin = path.join(home, ".phantom-secrets", "bin");
+    for (const dir of [temp, bin, installedBin]) fs.mkdirSync(dir, { recursive: true });
+    const executable = (file, content) => fs.writeFileSync(file, content, { mode: 0o755 });
+    executable(path.join(bin, "curl"), `#!/bin/bash
+while [ "$1" != "--output" ]; do shift; done
+installer="$2"
+printf '#!/bin/bash\\nexit 0\\n' > "$installer"
+if [ "\${PHANTOM_TEST_EXTRA:-0}" = 1 ]; then touch "$(dirname "$installer")/unexpected"; fi
+`);
+    for (const checksum of ["shasum", "sha256sum"]) {
+      executable(path.join(bin, checksum), '#!/bin/bash\ncat >/dev/null\nexit "${PHANTOM_TEST_CHECKSUM_EXIT:-0}"\n');
+    }
+    // The version-check paths must exist verbatim, but the stubs behind them
+    // are reached through relative symlinks: some hardened macOS policies
+    // refuse to exec a temp file literally named phantom*.
+    for (const binary of ["phantom", "phantom-mcp"]) {
+      executable(path.join(installedBin, `.${binary}-stub`), "#!/bin/bash\nexit 0\n");
+      fs.symlinkSync(`.${binary}-stub`, path.join(installedBin, binary));
+    }
+    for (const platform of ["macOS", "Linux"]) {
+      for (const scenario of ["success", "checksum failure", "extra file"]) {
+        const result = spawnSync("bash", ["-c", commands(platform)[0]], {
+          env: { ...process.env, HOME: home, TMPDIR: temp, PATH: `${bin}:/usr/bin:/bin`,
+            PHANTOM_TEST_CHECKSUM_EXIT: scenario === "checksum failure" ? "1" : "0",
+            PHANTOM_TEST_EXTRA: scenario === "extra file" ? "1" : "0" },
+          encoding: "utf8",
+        });
+        assert.equal(result.status, scenario === "checksum failure" ? 1 : 0, `${platform}: ${scenario}`);
+        const remaining = fs.readdirSync(temp);
+        if (scenario === "extra file") {
+          assert.equal(remaining.length, 1);
+          const stage = path.join(temp, remaining[0]);
+          assert.match(remaining[0], /^phantom-install\./);
+          assert.deepEqual(fs.readdirSync(stage), ["unexpected"]);
+          fs.rmSync(stage, { recursive: true });
+        } else {
+          assert.deepEqual(remaining, [], `${platform}: ${scenario}`);
+        }
+      }
+    }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("Windows and later commands do not explicitly create a staging directory", () => {

@@ -1,8 +1,52 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
 import test from "node:test";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { QuickStart } from "./QuickStart";
 import { PUBLIC_RELEASE_RECEIPT, PUBLIC_RELEASE_TAG } from "@/lib/public-release";
+
+test("quick-start section presents its title as a heading", () => {
+  render(<QuickStart />);
+  try {
+    const title = "Install on your OS. Then protect one project.";
+    const heading = screen.getByRole("heading", { level: 2, name: title });
+    const section = screen.getByRole("region", { name: title });
+
+    assert.equal(heading.textContent, title);
+    assert.ok(section.contains(heading));
+    assert.equal(section.getAttribute("aria-labelledby"), heading.id);
+  } finally {
+    cleanup();
+  }
+});
+
+test("the quick-start heading labels the installation content for every platform", () => {
+  render(<QuickStart />);
+  try {
+    const title = "Install on your OS. Then protect one project.";
+    const section = screen.getByRole("region", { name: title });
+    const heading = within(section).getByRole("heading", { level: 2, name: title });
+    const selector = within(section).getByRole("group", { name: "Choose an operating system" });
+
+    assert.equal(section.tagName, "SECTION");
+    assert.equal(section.id, "install");
+    assert.ok(heading.id);
+    assert.equal(section.getAttribute("aria-labelledby"), heading.id);
+    assert.equal(Array.from(document.querySelectorAll("[id]")).filter((element) => element.id === heading.id).length, 1);
+
+    for (const platform of ["macOS", "Windows", "Linux"]) {
+      fireEvent.click(within(selector).getByRole("button", { name: platform }));
+      assert.equal(screen.getByRole("region", { name: title }), section);
+      assert.equal(within(section).getByRole("heading", { level: 2, name: title }), heading);
+      assert.ok(within(section).getByRole("heading", { level: 3, name: platform }));
+      assert.ok(within(section).getByRole("link", { name: "View exact installer source" }));
+      assert.ok(within(section).getByRole("heading", { level: 3, name: "Protect one supported project" }));
+    }
+  } finally {
+    cleanup();
+  }
+});
 
 test("rendered installation instructions keep their order for every platform", () => {
   render(<QuickStart />);
@@ -100,5 +144,31 @@ test("Windows installation example displays a temporary installer file", () => {
     assert.match(command, /Remove-Item -LiteralPath \$Installer -Force/);
   } finally {
     cleanup();
+  }
+});
+
+test("every displayed quick-start command is selectable text without its prompt", () => {
+  const style = document.createElement("style");
+  style.textContent = fs.readFileSync(path.join(process.cwd(), "src/app/globals.css"), "utf8");
+  document.head.append(style);
+  render(<QuickStart />);
+  try {
+    for (const platform of ["macOS", "Windows", "Linux"]) {
+      fireEvent.click(screen.getByRole("button", { name: platform }));
+      const buttons = screen.getAllByRole("button", { name: /^Copy command:/ });
+      assert.equal(buttons.length, 3, `${platform}: install and both follow-up commands are shown`);
+      for (const button of buttons) {
+        const container = button.firstElementChild as HTMLElement;
+        const textNodes = Array.from(container.childNodes).filter((node) => node.nodeType === Node.TEXT_NODE);
+        assert.equal(textNodes.length, 1, `${platform}: command is one real text node, not an image or pseudo-element`);
+        assert.ok(textNodes[0].textContent?.trim());
+        assert.equal(window.getComputedStyle(container).userSelect, "text", `${platform}: command text is selectable`);
+        const prompt = container.querySelector('[aria-hidden="true"]') as HTMLElement;
+        assert.equal(window.getComputedStyle(prompt).userSelect, "none", `${platform}: prompt is not part of a selection`);
+      }
+    }
+  } finally {
+    cleanup();
+    style.remove();
   }
 });

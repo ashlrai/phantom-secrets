@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QuickStart } from "./QuickStart";
 import { PUBLIC_RELEASE_TAG } from "@/lib/public-release";
@@ -43,9 +43,22 @@ test("each displayed platform option has a distinct accessible name", async () =
     for (const selected of platforms) {
       await user.click(within(selector).getByRole("button", { name: selected }));
       const buttons = within(selector).getAllByRole("button");
+      // A rendered option must not disappear from the accessibility tree.
+      assert.deepEqual(buttons, Array.from(selector.querySelectorAll("button")));
       const displayedNames = buttons.map((button) => normalize(button.textContent ?? ""));
       assert.deepEqual(displayedNames, platforms);
       assert.equal(new Set(displayedNames).size, buttons.length);
+      const accessibleNames = new Map<Element, string>();
+      const namedButtons = within(selector).getAllByRole("button", {
+        name: (name, element) => {
+          if (element) accessibleNames.set(element, name);
+          return true;
+        },
+      });
+      assert.deepEqual(namedButtons, buttons);
+      const names = buttons.map((button) => accessibleNames.get(button));
+      assert.deepEqual(names, platforms, `${selected}: each control exposes its platform name`);
+      assert.equal(new Set(names).size, buttons.length, `${selected}: accessible names are distinct`);
       for (const [index, name] of displayedNames.entries()) {
         // getByRole requires exactly one button with this computed accessible name.
         assert.equal(within(selector).getByRole("button", { name }), buttons[index]);
@@ -135,6 +148,39 @@ test("follow-up examples have distinct named copy controls and copy their comman
       assert.equal(await navigator.clipboard.readText(), command);
       assert.equal(document.activeElement, copy);
       assert.equal(within(copy).getByText("Copied").getAttribute("aria-live"), "polite");
+    }
+  } finally {
+    cleanup();
+  }
+});
+
+test("each copy control is named for copying its command and reports a blocked copy", async () => {
+  const user = userEvent.setup();
+  render(<QuickStart />);
+  try {
+    const region = screen.getByRole("region", { name: "Install on your OS. Then protect one project." });
+    const copyControls = within(region).getAllByRole("button", { name: /^Copy command: \S/ });
+    assert.equal(copyControls.length, 3, "one install control and two follow-up controls");
+    for (const control of copyControls) {
+      assert.equal(control.getAttribute("type"), "button");
+      assert.equal(control.getAttribute("title"), "Copy command");
+      // The icon and prompt are decorative; only the verb and command are announced.
+      assert.equal(control.querySelectorAll('[aria-hidden="true"]').length, 2);
+    }
+
+    // A clipboard rejection must be announced, and the control must stay named and usable.
+    const clipboard = navigator.clipboard;
+    const originalWrite = clipboard.writeText;
+    clipboard.writeText = () => Promise.reject(new Error("denied"));
+    try {
+      const control = within(region).getByRole("button", { name: "Copy command: phantom init" });
+      await user.click(control);
+      await waitFor(() => assert.ok(within(control).getByText("Copy failed; select the command manually")));
+      assert.equal(within(control).getByText("Copy failed; select the command manually").getAttribute("aria-live"), "polite");
+      assert.equal(control.getAttribute("title"), "Copy failed; select the command manually");
+      assert.match(normalize(control.textContent ?? ""), /^Copy command: .*phantom init/);
+    } finally {
+      clipboard.writeText = originalWrite;
     }
   } finally {
     cleanup();

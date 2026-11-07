@@ -1,6 +1,6 @@
 # Unix installer copy source map
 
-Reviewed 2026-10-31 against the checked-in [repository installer](../scripts/install.sh)
+Reviewed 2026-11-06 against the checked-in [repository installer](../scripts/install.sh)
 and [web installer](../apps/web/public/install.sh). This maps source files,
 not a deployed website or a release asset. Line links are a snapshot; update
 them and this comparison when either copy changes.
@@ -10,21 +10,21 @@ them and this comparison when either copy changes.
 | Initial staging and lock state | [lines 28–35](../scripts/install.sh#L28-L35) | [lines 28–35](../apps/web/public/install.sh#L28-L35) |
 | Lock release, rollback, stage cleanup, and traps | [lines 90–139](../scripts/install.sh#L90-L139) | [lines 90–139](../apps/web/public/install.sh#L90-L139) |
 | Lock acquisition and stale-lock handling | [lines 206–303](../scripts/install.sh#L206-L303) | [lines 206–303](../apps/web/public/install.sh#L206-L303) |
-| Destination validation and lock acquisition | [lines 425–435](../scripts/install.sh#L425-L435) | [lines 425–435](../apps/web/public/install.sh#L425-L435) |
-| Create private stage, download and candidate directories | [lines 437–443](../scripts/install.sh#L437-L443) | [lines 437–441](../apps/web/public/install.sh#L437-L441) |
-| Download, verify, extract, and prepare candidate | [lines 445–499](../scripts/install.sh#L445-L499) | [lines 443–496](../apps/web/public/install.sh#L443-L496) |
-| Backup, promote, and validate live installation | [lines 501–527](../scripts/install.sh#L501-L527) | [lines 498–524](../apps/web/public/install.sh#L498-L524) |
-| PATH startup-file update function | [lines 305–403](../scripts/install.sh#L305-L403) | [lines 305–403](../apps/web/public/install.sh#L305-L403) |
-| PATH check and update call | [lines 529–531](../scripts/install.sh#L529-L531) | [lines 526–528](../apps/web/public/install.sh#L526-L528) |
+| Destination validation and lock acquisition | [lines 450–460](../scripts/install.sh#L450-L460) | [lines 450–460](../apps/web/public/install.sh#L450-L460) |
+| Create private stage, download and candidate directories | [lines 462–468](../scripts/install.sh#L462-L468) | [lines 462–468](../apps/web/public/install.sh#L462-L468) |
+| Download, verify, extract, and prepare candidate | [lines 470–524](../scripts/install.sh#L470-L524) | [lines 470–524](../apps/web/public/install.sh#L470-L524) |
+| Backup, promote, and validate live installation | [lines 526–552](../scripts/install.sh#L526-L552) | [lines 526–552](../apps/web/public/install.sh#L526-L552) |
+| PATH startup-file update function | [lines 305–428](../scripts/install.sh#L305-L428) | [lines 305–428](../apps/web/public/install.sh#L305-L428) |
+| PATH check and update call | [lines 554–556](../scripts/install.sh#L554-L556) | [lines 554–556](../apps/web/public/install.sh#L554-L556) |
 
-The complete files differ in two places. In stage creation, the repository
-copy adds explicit `die` messages for `mktemp`, `chmod`, and `mkdir` failures;
-the web copy relies on Bash's `set -e` and the commands' diagnostics. During
-extraction, the repository copy uses `tar --no-same-owner` and explains why;
-the web copy omits both the option and comment. When run as root, that option
-can change the extracted files' ownership. The PATH function and its call
-site are byte-identical across copies; the call-site line numbers differ
-because of the preceding staging changes.
+The complete files differ in one place. The repository copy pins
+`CANDIDATE_TAG="v0.8.7"` for the already published and qualified release while the web copy
+stays bound to the evidenced `v0.7.9` release. Both copies extract the
+release archive with `tar --no-same-owner` and carry the same explanatory
+comment, so a root-run install never keeps the release runner's uid on the
+installed binaries. Stage creation, extraction, the PATH function, and its
+call site are byte-identical across copies, and every line number below is
+identical in both files.
 
 Both installers stage beside the resolved installation directory, check lock
 ownership around promotion, and attempt rollback and cleanup on ordinary
@@ -36,4 +36,4 @@ The web copy is tied to separately reviewed release evidence; this map does
 not authorize replacing it with the repository copy.
 
 Run `node --test scripts/installer-copy-source-map.test.mjs` to check the
-linked ranges, the mapped PATH equality, and the documented staging differences.
+linked ranges, the mapped PATH equality, and the documented differences.

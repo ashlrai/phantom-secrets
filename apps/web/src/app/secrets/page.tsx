@@ -6,6 +6,7 @@ import { Ecosystem } from "@/components/landing/Ecosystem";
 import { EvidenceLedger } from "@/components/landing/EvidenceLedger";
 import { FAQ } from "@/components/landing/FAQ";
 import { Features } from "@/components/landing/Features";
+import { AgentQuickstart } from "@/components/landing/AgentQuickstart";
 import { Hero } from "@/components/landing/Hero";
 import { Install } from "@/components/landing/Install";
 import { LandingStructuredData } from "@/components/landing/LandingStructuredData";
@@ -40,6 +41,7 @@ export default function SecretsPage() {
       <LandingStructuredData />
       <main id="main-content" tabIndex={-1} className="landing-shell elite-landing">
         <Hero />
+        <AgentQuickstart />
         <Ecosystem />
         <Transformation />
         <RequestTrace />

@@ -33,13 +33,20 @@ See [distribution status](distribution-status.md) for dated npm, Homebrew, crate
 | Understand when quickstart commands use temporary directories | [Quickstart temporary directory usage](quickstart-temp-directory-usage.md) |
 | Review temporary installer cleanup by platform | [Quickstart cleanup review](quickstart-temp-cleanup-review.md) |
 | Find the displayed installer staging and cleanup steps | [Quickstart staging and cleanup](quickstart-stage-cleanup.md) |
+| Identify the quickstart temporary directory template and cleanup trap | [Quickstart temporary directory note](quickstart-temp-directory-note.md) |
 | Trace each displayed command's staging lifecycle | [Quickstart staging lifecycle](quickstart-staging-lifecycle.md) |
 | Locate and compare temporary directory snippets | [Quickstart staging snippet count](quickstart-stage-snippet-count.md) |
+| Compare shared and platform-specific staging lines | [Quickstart staging comparison](quickstart-staging-comparison.md) |
+| Keep both displayed staging commands consistent | [Quickstart staging copy check](quickstart-staging-copy-check.md) |
 | Understand the Unix quickstart temporary directory fallback | [Quickstart temporary directory fallback](quickstart-temp-fallback.md) |
 | Compare quickstart temporary prefixes and fallbacks | [Quickstart temporary prefix reference](quickstart-temp-prefix-reference.md) |
 | Locate temporary installer files and their environment inputs | [Installer temporary locations](installer-temp-environment.md) |
+| Find staging and PATH-update temporary paths in both Unix installers | [Installer temporary paths](installer-temporary-paths.md) |
+| Identify PATH update temporary files and their cleanup | [Installer PATH update reference](installer-path-update-reference.md) |
+| Review both Unix installer copies after edits | [Installer copy maintenance](installer-copy-maintenance.md) |
 | Review failure-reporting questions for Unix PATH setup | [Installer PATH update questions](installer-path-update-questions.md) |
 | Find the Unix installer's staging parent and directory name | [Installer stage parent](installer-stage-parent.md) |
+| Reference the repository installer's staging directory | [Installer staging directory reference](installer-staging-directory-reference.md) |
 | Interpret the Unix installer staging prefix | [Installer staging prefix](installer-staging-prefix.md) |
 | Identify the staging prefix and parent in each Unix installer copy | [Installer staging prefixes](installer-staging-prefixes.md) |
 | Follow the public Unix installer staging and cleanup flow | [Public installer staging flow](public-installer-staging-flow.md) |
@@ -107,7 +114,11 @@ and retains historical design-status language.
 - [Cloud login](login.md)
 - [Device authorization code format](device-code-format.md)
 - [Readable device authorization code format](device-code-readable-format.md)
+- [Device code readability](device-code-readability.md)
+- [Device code display example](device-code-display-example.md)
+- [Device code display reference](device-code-display-reference.md)
 - [Device authorization input hint](device-code-input-hint.md)
+- [Device authorization page UI](device-code-ui.md)
 - [Vercel and Railway sync](sync.md)
 - [CI/CD integration](ci-cd.md)
 - [Shell prompt integration](shell-prompt.md)

@@ -66,6 +66,75 @@ the number of omitted findings while the artifact retains the complete report.
 The workflow has no credential input and no mutation or communication
 permission.
 
+## The sanitized JSON report
+
+`--out` writes one JSON document (`schema_version`
+`phantom-seo-observation-v1`) containing `captured_at` (UTC), `scope`
+(`site_origin`, `repository`, and `network_policy`), `verdict`, `counts`,
+`technical`, `github`, `experiments`, `aggregate_inputs`, and `findings`.
+`verdict` is `FAIL` when `counts.fail` is nonzero, `WARN` when only
+`counts.warn` is nonzero, and `PASS` otherwise. `findings` is deterministically
+sorted by severity, code, route, and message; each entry carries `severity`
+(`fail` or `warn`), `code`, `message`, and `route` when it applies to one.
+The Markdown summary shows the verdict, route count, capture time, finding
+counts, external-data states, and per-experiment `observed_status`; it may
+truncate findings under its byte budget and reports the omitted count, while
+the JSON report always retains the complete findings. The report file is
+created exclusively with mode `0600` and an existing path is never
+overwritten; the command exits with status 1 for a `FAIL` verdict or when it
+cannot write the report.
+
+`technical.sitemap` records the sitemap HTTP `status` and `route_count`;
+`technical.robots` records its HTTP `status`. `technical.public_routes` holds
+one record per sitemap path:
+
+| Record | Fields |
+| --- | --- |
+| HTML page | `route`, `status`, `content_type`, `title`, `description`, `canonical`, `h1_count`, `structured_data_types` |
+| `.txt` route | `route`, `status`, `content_type`, `text_length`; the body is omitted |
+| Other non-HTML | `route`, `status`, `content_type`, `skipped: "non_html"`; only the status check applies |
+| Request failure | `route`, `status: null`, `error: "request_failed"` plus a `public_route_unreachable` finding; metadata fields are absent rather than reported missing |
+
+`content_type` is the response header, or `""` when absent. For HTML,
+`title` is the cleaned `<title>` text: `null` when the tag is absent and `""`
+when it cleans to empty; both produce `title_missing`. `description` is the
+cleaned content of the first `meta name="description"`: `null` when the tag
+or its content is absent or empty, and `""` when whitespace-only content
+cleans to empty; both produce `description_missing`. `canonical` is the
+normalized absolute URL of the route only when exactly one nonempty canonical
+href is present and it matches the same origin and path without query or
+hash; otherwise `null`. `canonical_count` reports zero or multiple hrefs and
+`canonical_mismatch` a single nonmatching href. `h1_count` counts opening H1
+tags; any value other than one produces the `h1_count` finding.
+`structured_data_types` lists the sorted unique `@type` values collected from
+parseable JSON-LD (`[]` when none); invalid JSON-LD produces
+`structured_data_invalid`, and raw JSON-LD never appears in the route record.
+
+`technical.operational` records `health` and `ready` HTTP statuses, or
+`status: null` with `error: "request_failed"` when a fetch fails.
+
+`github` is `state: "observed"` with `stargazers`, `forks`,
+`latest_release`, `latest_release_immutable`, and `release_published_at`
+(`null` when GitHub omits it) when both public API responses are usable;
+otherwise it is `state: "unavailable"` with a `github_public_api_unavailable`
+warning rather than zero counts.
+
+`experiments` echoes the validated ledger and adds `observed_status` to each
+entry: `implemented` and `observing` entries report `observing` until their
+`not_before` instant and `ready_for_review` after it; every other status is
+reported unchanged. The derived status never rewrites the ledger.
+`aggregate_inputs` reports each of `gsc`, `ga4`, and `ahrefs` as
+`{ "state": "not_supplied" }` or as `supplied` with the validated
+`schema_version`, `period`, and sorted `rows`; supplied GA4 input also reports
+`suppressed_rows`, the count of cohorts under ten sessions that were dropped.
+
+If the observer fails before completing the public-surface report, it still
+writes a fail-closed report: `verdict` `FAIL` with a single
+`observer_execution_failed` finding, null sitemap and robots statuses, zero
+routes, empty operational data, `github` `state: "unavailable"`, an empty
+experiment ledger, and not-supplied aggregates. Those defaults are not
+evidence that the site has no routes or analytics.
+
 ## Optional aggregate inputs
 
 An operator may supply local JSON files with `--gsc-file`, `--ga4-file`, or

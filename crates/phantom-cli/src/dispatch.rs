@@ -212,8 +212,9 @@ pub(crate) fn run() -> anyhow::Result<()> {
         Commands::Check {
             staged,
             runtime,
+            log,
             json,
-        } => commands::check::run(staged, runtime, json || global_json),
+        } => commands::check::run(staged, runtime, log.as_deref(), json || global_json),
         Commands::Pull {
             from,
             project,

@@ -168,7 +168,11 @@ fn error_causes_are_kept_without_a_backtrace() {
 #[test]
 fn positional_secret_value_is_rejected_before_project_mutation() {
     let dir = common::canonical_tempdir();
-    let output = phantom(&dir)
+    // Isolate the machine profile outside the project: on Windows the
+    // Known-Folder resolver's AppData folders live there, not inside the
+    // project tree this assertion inspects.
+    let home = common::canonical_tempdir();
+    let output = common::phantom_with_home(&dir, &home, VAULT_PASS)
         .args(["add", "UNSAFE_KEY", "secret-in-argv"])
         .assert()
         .failure();
