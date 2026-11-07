@@ -1,63 +1,39 @@
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
-import {
-  mkdirSync,
-  mkdtempSync,
-  readdirSync,
-  readFileSync,
-  realpathSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from 'node:fs';
-import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import test from 'node:test';
+import { pathUpdateHarness } from './lib/installer-path-harness.mjs';
+import {
+  assertMode600,
+  assertNoPathTempFiles,
+  assertOriginalPrefixThenBlock,
+  createStartupFixture,
+  marker,
+  pathShellConfigs,
+} from './lib/installer-path-test-fixtures.mjs';
 
 // An isolated shell configuration keeps every comment byte-for-byte through
 // the PATH update. Compared as raw Buffers, not decoded text: a file whose
 // lines are all comments — shebang-style, bare #, indented, no-space,
 // punctuation-heavy, non-UTF-8 — may only gain the managed marker block after
 // its original bytes. Comments that nearly contain the marker still get the
-// block appended; comments that literally embed "# phantom-secrets PATH" make
-// the fixed-string probe report "already wired" before any rewrite, so the
-// whole file stays untouched. A repeat update never moves a byte.
+// block appended; a repeat update never moves a byte.
+//
+// Policy note (retention of the original comments suite): the original
+// expected comments that embed "# phantom-secrets PATH" as a substring to
+// short-circuit as "already wired". The shipped probe is now `grep -qxF` —
+// only a whole line exactly equal to the marker counts as wired — so those
+// same comments correctly take the append path, exactly as
+// installer-path-unrelated-comment.test.mjs documents for its embedded
+// near-matches and installer-path-unrelated-final-line.test.mjs covers with
+// its doubled-hash marker line. The embedded vectors below are retained with
+// the current-policy expectation: appended once, every byte preserved.
 const copies = {
   'scripts/install.sh': resolve(import.meta.dirname, 'install.sh'),
   'apps/web/public/install.sh': resolve(import.meta.dirname, '..', 'apps', 'web', 'public', 'install.sh'),
 };
 
-function extractFunction(source, name, file) {
-  const start = source.indexOf(`${name}()`);
-  assert.ok(start >= 0, `${file}: locate ${name}`);
-  const lineEnd = source.indexOf('\n', start);
-  if (source.slice(start, lineEnd).trimEnd().endsWith('}')) return source.slice(start, lineEnd + 1);
-  const end = source.indexOf('\n}\n', start);
-  assert.ok(end > start, `${file}: locate end of ${name}`);
-  return source.slice(start, end + '\n}\n'.length);
-}
-
-const harnessFor = (source, file) => ['set -euo pipefail', 'umask 077',
-  ...['say', 'file_identity', 'file_link_count', 'add_to_user_path']
-    .map((name) => extractFunction(source, name, file)),
-  'add_to_user_path "$1"',
-].join('\n');
-
-const marker = '# phantom-secrets PATH';
-const shells = {
-  bash: {
-    shell: '/bin/bash', rc: (h) => join(h, '.bashrc'),
-    line: (b) => `export PATH="${b}:$PATH"`,
-  },
-  zsh: {
-    shell: '/bin/zsh', rc: (h) => join(h, '.zshrc'),
-    line: (b) => `export PATH="${b}:$PATH"`,
-  },
-  fish: {
-    shell: '/usr/bin/fish', rc: (h) => join(h, '.config', 'fish', 'config.fish'),
-    line: (b) => `set -gx PATH "${b}" $PATH`,
-  },
-};
+const shells = pathShellConfigs({});
 
 // Every line is a comment; the last one has no newline of its own.
 const commentOnly = Buffer.concat([
@@ -86,8 +62,9 @@ const lookalikes = [
   '# a phantom-secrets PATH note',
 ];
 
-// Each of these embeds the marker, so the probe short-circuits to "already
-// wired" and the file is never rewritten.
+// Each of these embeds the marker as a substring but none is a whole-line
+// marker, so under the exact-line `grep -qxF` probe the update appends its
+// block and every comment stays put.
 const embedded = Buffer.from([
   '# note from an earlier install attempt',
   '## phantom-secrets PATH',
@@ -96,55 +73,29 @@ const embedded = Buffer.from([
   '# see # phantom-secrets PATH above',
 ].join('\n') + '\n');
 
-function runPathUpdate(harness, config, home, bin) {
-  const result = spawnSync('/bin/bash', ['-c', harness, 'path-test', bin], {
-    encoding: 'utf8',
-    timeout: 30000,
-    env: { HOME: home, SHELL: config.shell, PATH: '/usr/bin:/bin' },
-  });
-  assert.ifError(result.error);
-  assert.equal(result.status, 0, result.stderr);
-  return result;
-}
-
-function makeHome(t, config, tag) {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), `phantom-path-comments-${tag}-`)));
-  t.after(() => rmSync(root, { recursive: true, force: true }));
-  const home = join(root, 'home');
-  const bin = join(root, 'live', 'bin');
-  const rc = config.rc(home);
-  mkdirSync(dirname(rc), { recursive: true });
-  mkdirSync(bin, { recursive: true });
-  return { home, bin, rc };
-}
-
+// The original bytes must stay an exact prefix, the only addition must be the
+// managed block, the mode must be kept, and no temporary files may remain.
 function assertCleanUpdate(config, rc, original, bin) {
-  const updated = readFileSync(rc);
-  assert.ok(updated.subarray(0, original.length).equals(original),
-    'every pre-existing byte, comments included, is unchanged');
-  assert.equal(updated.subarray(original.length).toString('utf8'),
-    `\n${marker}\n${config.line(bin)}\n`,
-    'only the managed block is appended');
-  assert.equal(statSync(rc).mode & 0o777, 0o600,
-    'the startup file keeps its permissions');
-  assert.deepEqual(
-    readdirSync(dirname(rc)).filter((name) => name.startsWith('.phantom-path.')),
-    [],
-    'no PATH-update temporary files are left behind',
-  );
+  const updated = assertOriginalPrefixThenBlock(rc, original, config, bin, {
+    prefix: 'every pre-existing byte, comments included, is unchanged',
+    appended: 'only the managed block is appended',
+  });
+  assertMode600(rc);
+  assertNoPathTempFiles(rc);
   return updated;
 }
 
 for (const [file, installer] of Object.entries(copies)) {
-  const harness = harnessFor(readFileSync(installer, 'utf8'), file);
+  const harness = pathUpdateHarness(readFileSync(installer, 'utf8'), file);
   for (const [shellName, config] of Object.entries(shells)) {
     for (const trailing of ['\n', '']) {
       test(`${file} keeps an all-comment ${shellName} file byte-for-byte (${trailing ? 'with' : 'without'} final newline)`, (t) => {
-        const { home, bin, rc } = makeHome(t, config, shellName);
         const original = Buffer.concat([commentOnly, Buffer.from(trailing)]);
-        writeFileSync(rc, original, { mode: 0o600 });
+        const { rc, bin, run } = createStartupFixture(t, {
+          prefix: `phantom-path-comments-${shellName}-`, harness, config, content: original,
+        });
 
-        const first = runPathUpdate(harness, config, home, bin);
+        const first = run();
         assert.match(first.stdout, /added .* to PATH/);
         const updated = assertCleanUpdate(config, rc, original, bin);
         for (const line of original.toString('latin1').split('\n').filter((l) => l.startsWith('#') || l.match(/^\s+#/))) {
@@ -153,18 +104,19 @@ for (const [file, installer] of Object.entries(copies)) {
             `comment ${JSON.stringify(line)} stays at its offset`);
         }
 
-        const second = runPathUpdate(harness, config, home, bin);
+        const second = run();
         assert.match(second.stdout, /already wired into/);
         assert.ok(readFileSync(rc).equals(updated), 'a repeat update changes nothing');
       });
     }
 
     test(`${file} appends after marker-lookalike comments in a ${shellName} file`, (t) => {
-      const { home, bin, rc } = makeHome(t, config, `${shellName}-lookalike`);
       const original = Buffer.from(lookalikes.join('\n') + '\n');
-      writeFileSync(rc, original, { mode: 0o600 });
+      const { rc, bin, run } = createStartupFixture(t, {
+        prefix: `phantom-path-comments-${shellName}-lookalike-`, harness, config, content: original,
+      });
 
-      const result = runPathUpdate(harness, config, home, bin);
+      const result = run();
       assert.match(result.stdout, /added .* to PATH/);
       const updated = assertCleanUpdate(config, rc, original, bin);
       for (const line of lookalikes) {
@@ -173,19 +125,25 @@ for (const [file, installer] of Object.entries(copies)) {
       }
     });
 
-    test(`${file} leaves a ${shellName} file whose comments embed the marker untouched`, (t) => {
-      const { home, bin, rc } = makeHome(t, config, `${shellName}-embedded`);
-      writeFileSync(rc, embedded, { mode: 0o600 });
+    test(`${file} appends one managed block after ${shellName} comments embedding the marker`, (t) => {
+      const { rc, bin, run } = createStartupFixture(t, {
+        prefix: `phantom-path-comments-${shellName}-embedded-`, harness, config, content: embedded,
+      });
 
-      const result = runPathUpdate(harness, config, home, bin);
-      assert.match(result.stdout, /already wired into/);
-      assert.ok(readFileSync(rc).equals(embedded),
-        'the whole startup file, comments included, is byte-for-byte unchanged');
-      assert.deepEqual(
-        readdirSync(dirname(rc)).filter((name) => name.startsWith('.phantom-path.')),
-        [],
-        'no PATH-update temporary files are left behind',
-      );
+      const result = run();
+      assert.match(result.stdout, /added .* to PATH/);
+      const updated = assertCleanUpdate(config, rc, embedded, bin);
+      const updatedLines = updated.toString('utf8').split('\n');
+      assert.equal(updatedLines.filter((l) => l === marker).length, 1,
+        'exactly one real marker line after the update');
+      for (const line of embedded.toString('utf8').split('\n').filter(Boolean)) {
+        assert.equal(updatedLines.filter((l) => l === line).length, 1,
+          `embedded comment ${JSON.stringify(line)} appears exactly once`);
+      }
+
+      const second = run();
+      assert.match(second.stdout, /already wired into/);
+      assert.ok(readFileSync(rc).equals(updated), 'a repeat update changes nothing');
     });
   }
 }

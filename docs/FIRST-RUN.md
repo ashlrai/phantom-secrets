@@ -17,7 +17,7 @@ Related numbers for dotenvx and SOPS are in [Benchmarks](BENCHMARKS.md).
 ## What the README says to do
 
 The Install section leads with Homebrew. For Linux it points at the
-[v0.7.9 asset table](../README.md#exact-v079-github-assets): download the
+[v0.7.9 historical release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.9): download the
 matching archive and its `.sha256` sidecar, run `sha256sum -c`, and place
 `phantom` and `phantom-mcp` on `PATH`. The quick start then runs `phantom init`,
 `phantom agent doctor`, and `phantom exec -- claude`.

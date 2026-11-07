@@ -287,7 +287,7 @@ test("both installable manifests and machine references identify the workbench a
     assert.match(reference, /https:\/\/www\.npmjs\.com\/package\/@ashlr\/phantom/);
     assert.match(reference, /## Phantom Secrets/);
     assert.match(reference, /https:\/\/phm\.dev\/secrets/);
-    assert.match(reference, /`v0\.7\.9` evidence below describes Phantom Secrets only/);
+    assert.match(reference, /`v0\.8\.7` evidence below describes Phantom Secrets only/);
   }
 });
 

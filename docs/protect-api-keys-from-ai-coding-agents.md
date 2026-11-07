@@ -10,7 +10,7 @@ into a local vault, leaves non-provider `phm_` placeholders in the project, and
 injects a route-owned credential only when an authenticated request matches an
 explicitly supported HTTP route. The agent does not receive the real value.
 
-This guide uses the reviewed public `v0.7.9` release. Source may be newer than
+This guide uses the reviewed public `v0.8.7` release. Source may be newer than
 that release; verify the release-state notice before choosing an install path.
 
 ## The short workflow
@@ -23,9 +23,9 @@ brew trust --formula ashlrai/phantom/phantom
 brew install ashlrai/phantom/phantom
 ```
 
-For Linux, Windows, or direct verification, download the matching `v0.7.9`
+For Linux, Windows, or direct verification, download the matching `v0.8.7`
 archive and adjacent checksum from the
-[`v0.7.9` release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.9).
+[`v0.8.7` release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.8.7).
 The [getting-started guide](./getting-started.md#install) lists all six native
 targets and verification commands.
 
