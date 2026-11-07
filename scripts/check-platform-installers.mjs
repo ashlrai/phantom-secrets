@@ -31,10 +31,10 @@ assertShellCandidate(shellInstaller, source.npmCli.version, source.npmMcp.versio
 assertPowershellCandidate(powershellInstaller, source.npmCli.version, source.npmMcp.version);
 
 // The checked-in web reference copies are byte-bound to the last immutable
-// public release (v0.7.9). Those reference bytes are independently checked
+// public release (v0.8.7). Those reference bytes are independently checked
 // against public-release.ts in apps/web/tests/public-claims.test.cjs.
-assert.match(publicShellInstaller, /CANDIDATE_TAG="v0\.7\.9"/);
-assert.match(publicPowershellInstaller, /\$CandidateTag = 'v0\.7\.9'/);
+assert.ok(publicShellInstaller.includes(`CANDIDATE_TAG="${source.publicRelease.tag}"`));
+assert.ok(publicPowershellInstaller.includes(`$CandidateTag = '${source.publicRelease.tag}'`));
 assert.doesNotMatch(publicShellInstaller, /v0\.7\.8/);
 assert.doesNotMatch(publicPowershellInstaller, /v0\.7\.8/);
 

@@ -11,13 +11,17 @@ export const repositoryCopy = "scripts/install.sh";
 export const webCopy = "apps/web/public/install.sh";
 export const installerCopies = [repositoryCopy, webCopy];
 
-export const approvedDifferences = [
-  {
-    name: "the repository copy targets the next candidate tag while the web copy stays bound to the evidenced release",
-    minus: ['CANDIDATE_TAG="v0.8.7"'],
-    plus: ['CANDIDATE_TAG="v0.7.9"'],
-  },
-];
+// No differences are currently approved: both copies target v0.8.7. A future
+// evidence-bound divergence must be reviewed and limited to the candidate tag.
+export const approvedDifferences = [];
+// Identical copies need no byte exception, but each actual default path still
+// requires the evidenced tag exactly once on a complete line. This binding is
+// source-owned; callers cannot supply an alternate normalization inventory.
+const currentTagBinding = {
+  name: "the repository and public copies bind the same evidenced candidate tag",
+  minus: ['CANDIDATE_TAG="v0.8.7"'],
+  plus: ['CANDIDATE_TAG="v0.8.7"'],
+};
 
 // Latin-1 is a reversible byte mapping here, not a text encoding assumption:
 // decoding UTF-8 would collapse distinct invalid bytes into the same U+FFFD.
@@ -27,7 +31,8 @@ export function normalizeInstallerCopy(source, side) {
   let output = source.toString("latin1");
   const marker = "# @@ reviewed-difference:";
   assert.ok(!output.includes(marker), "installer contains a reserved parity marker");
-  for (const entry of approvedDifferences) {
+  const regions = approvedDifferences.length ? approvedDifferences : [currentTagBinding];
+  for (const entry of regions) {
     const region = entry[side].join("\n");
     const index = output.indexOf(region);
     assert.ok(

@@ -5,7 +5,7 @@ AI retrieval systems a concise, versioned description of Phantom. Cite the
 linked primary source for each claim and preserve the limitations. Do not treat
 this first-party fact sheet as independent validation or endorsement.
 
-Release evidence verified: **2026-09-29** (GitHub release receipt, npm dist-tags, crates.io, and the Homebrew formula were requeried that day).
+Release evidence verified: **2026-11-06** (immutable GitHub release and exact npm package provenance; other channel observations are separately dated).
 
 ## Canonical identity
 
@@ -22,15 +22,15 @@ Release evidence verified: **2026-09-29** (GitHub release receipt, npm dist-tags
 ## Verified public release
 
 The verified release is immutable GitHub tag
-[`v0.7.9`](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.9),
+[`v0.8.7`](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.8.7),
 resolving to source commit
-`7a51ce512ec4aee12cc29ff859036af63fbe93db`. Its tag-bound release workflow
+`a6a0413991c0bd7f3d6601f467c0b5770d0dce0c`. Its tag-bound release workflow
 published six native archives for macOS, Linux, and Windows, adjacent SHA-256
 checksums, SPDX SBOMs, and an aggregate checksum manifest after the release
 acceptance matrix passed. The exact execution receipt is
-[workflow 34153902556](https://github.com/ashlrai/phantom-secrets/actions/runs/34153902556).
+[workflow 42262099223](https://github.com/ashlrai/phantom-secrets/actions/runs/42262099223).
 
-See [distribution status](distribution-status.md) for dated npm, Homebrew, crates.io, and MCP Registry evidence. Prefer the checksum-verified `v0.7.9` GitHub assets for an exact install. An unpinned install command does not identify an immutable release.
+See [distribution status](distribution-status.md) for dated npm, Homebrew, crates.io, and MCP Registry evidence. Prefer the checksum-verified `v0.8.7` GitHub assets for an exact install. An unpinned install command does not identify an immutable release.
 
 ## What Phantom does
 

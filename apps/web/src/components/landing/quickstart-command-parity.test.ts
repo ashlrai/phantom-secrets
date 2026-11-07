@@ -141,7 +141,7 @@ test("displayed install commands download the existing public installer at the p
     // the release blob OIDs in tests/public-claims.test.cjs).
     const fixture = path.join(
       repoRoot,
-      "apps/web/tests/fixtures/release-v0.7.9",
+      "apps/web/tests/fixtures/release-v0.8.7",
       platform.installer,
     );
     const pinned = createHash("sha256").update(readFileSync(fixture)).digest("hex");

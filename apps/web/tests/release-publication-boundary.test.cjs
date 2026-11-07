@@ -8,7 +8,7 @@ const repoDir = path.resolve(__dirname, "../../..");
 const readRepo = (file) => fs.readFileSync(path.join(repoDir, file), "utf8");
 
 function assertSourceGuidance(readme, source) {
-  assert.match(readme, /verified_GitHub_release-v0\.7\.9/);
+  assert.match(readme, /verified_GitHub_release-v0\.8\.7/);
   const badges = readme.match(/source_version-v[^-\s)]+/g) || [];
   assert.deepEqual(badges, [`source_version-${source.tag}`]);
   const links = readme.match(/CHANGELOG\.md#[a-z0-9-]+/g) || [];
@@ -33,7 +33,7 @@ test("source guidance rejects stale, missing and duplicate candidate metadata", 
   const futureReadme = readme.replace(`source_version-${source.tag}`, `source_version-${future.tag}`)
     .replace(`CHANGELOG.md#${source.release.anchor}`, `CHANGELOG.md#${future.release.anchor}`);
   assertSourceGuidance(futureReadme, future);
-  assert.throws(() => assertSourceGuidance(futureReadme.replace("verified_GitHub_release-v0.7.9", "verified_GitHub_release-v99.98.97"), future));
+  assert.throws(() => assertSourceGuidance(futureReadme.replace("verified_GitHub_release-v0.8.7", "verified_GitHub_release-v99.98.97"), future));
 });
 
 test("generated public install guidance retains the verified release while source advances", async () => {
@@ -42,25 +42,25 @@ test("generated public install guidance retains the verified release while sourc
   for (const file of ["README.md", "docs/getting-started.md"]) {
     const source = readRepo(file);
     assert.equal(
-      source.match(/releases\/download\/v0\.7\.9\/phantom-(?:aarch64|x86_64)-(?:apple-darwin|unknown-linux-gnu|pc-windows-msvc)\.(?:tar\.gz|zip)\)/g)?.length,
+      source.match(/releases\/download\/v0\.8\.7\/phantom-(?:aarch64|x86_64)-(?:apple-darwin|unknown-linux-gnu|pc-windows-msvc)\.(?:tar\.gz|zip)\)/g)?.length,
       6,
       `${file} must retain all six verified public archive links`,
     );
-    assert.doesNotMatch(source, /releases\/(?:tag|download)\/v0\.8\.[0-9]+/,
-      `${file} must not describe a source candidate as a published release`);
+    assert.doesNotMatch(source, /releases\/(?:tag|download)\/v99\.98\.97/,
+      `${file} must not describe a unbound future candidate as a published release`);
   }
 
   const gettingStarted = readRepo("docs/getting-started.md");
   const verifyBlock = gettingStarted.split("<!-- fresh:begin docs-verify-version-output -->")[1]
     ?.split("<!-- fresh:end -->")[0];
   assert.ok(verifyBlock, "missing public version verification block");
-  assert.match(verifyBlock, /# phantom 0\.7\.9/);
-  assert.match(verifyBlock, /# phantom-mcp 0\.7\.9/);
-  assert.doesNotMatch(verifyBlock, /0\.8\.[0-9]+/);
+  assert.match(verifyBlock, /# phantom 0\.8\.7/);
+  assert.match(verifyBlock, /# phantom-mcp 0\.8\.7/);
+  assert.doesNotMatch(verifyBlock, /99\.98\.97/);
 
   const recipe = readRepo("examples/github-actions/README.md");
-  assert.match(recipe, /v0\.7\.9 release/);
-  assert.doesNotMatch(recipe, /v0\.8\.[0-9]+ release/);
+  assert.match(recipe, /v0\.8\.7 release/);
+  assert.doesNotMatch(recipe, /v99\.98\.97 release/);
   assert.match(readRepo("ROADMAP.md"), /0\.8\.0[^\n]+: staged/);
 });
 

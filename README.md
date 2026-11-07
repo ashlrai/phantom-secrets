@@ -9,11 +9,11 @@ Phantom replaces managed secrets in `.env` with `phm_` placeholders. Agents and 
 [![GitHub stars](https://img.shields.io/github/stars/ashlrai/phantom-secrets?style=for-the-badge&logo=github&color=blue&labelColor=0b0b14)](https://github.com/ashlrai/phantom-secrets)
 [![CI](https://img.shields.io/github/actions/workflow/status/ashlrai/phantom-secrets/ci.yml?style=for-the-badge&label=CI&logo=github&labelColor=0b0b14)](https://github.com/ashlrai/phantom-secrets/actions/workflows/ci.yml)
 <!-- fresh:begin readme-release-badges -->
-[![Verified GitHub release](https://img.shields.io/badge/verified_GitHub_release-v0.7.9-2f81f7?style=for-the-badge&labelColor=0b0b14)](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.9)
+[![Verified GitHub release](https://img.shields.io/badge/verified_GitHub_release-v0.8.7-2f81f7?style=for-the-badge&labelColor=0b0b14)](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.8.7)
 [![Source version](https://img.shields.io/badge/source_version-v0.8.7-f5a623?style=for-the-badge&labelColor=0b0b14)](CHANGELOG.md#087---2026-11-06)
 <!-- fresh:end -->
 
-Source `0.8.7` is a release candidate. The verified public GitHub release remains `v0.7.9`; source metadata does not establish publication.
+Source candidate `0.8.7` and the independently qualified public `v0.8.7` release share a version; subsequent source changes are not implied to be released.
 
 [![Pinned toolchain: Rust 1.95](https://img.shields.io/badge/pinned_toolchain-Rust_1.95-CE412B?style=for-the-badge&logo=rust&labelColor=0b0b14)](rust-toolchain.toml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg?style=for-the-badge&labelColor=0b0b14)](LICENSE)
@@ -59,7 +59,7 @@ phantom why OPENAI_API_KEY --json
 
 `phantom check --log` reads one agent transcript or log and reports the file, the line, and the credential shape. It does not print the secret. The same scan is the MCP tool `phantom_check` with `log_path`.
 
-`phantom status --json`, `phantom list --json`, and `phantom why OPENAI_API_KEY --json` are value-free. `phantom setup` writes that client's MCP config. Install both verified `v0.7.9` binaries first. Version `0.7.9` has no network package-runner fallback and fails closed when neither local runtime is executable.
+`phantom status --json`, `phantom list --json`, and `phantom why OPENAI_API_KEY --json` are value-free. `phantom setup` writes that client's MCP config. Install both verified `v0.8.7` binaries first. Version `0.8.7` has no network package-runner fallback and fails closed when neither local runtime is executable.
 
 Machine-readable docs for agents:
 
@@ -143,7 +143,7 @@ No. `phantom init` works on this machine. Cloud backup is a separate hosted serv
 
 ### Where do Windows and Linux installs live?
 
-Use the matching [v0.7.9 archive](#exact-v079-github-assets), check its `.sha256` file, and put both `phantom` and `phantom-mcp` on `PATH`. Windows archives are not Authenticode-signed. The pre-commit hook is a `#!/bin/sh` script, so run commits from a terminal that has Git's `sh.exe`, or run `phantom check --staged`.
+Use the matching [v0.8.7 archive](#exact-v087-github-assets), check its `.sha256` file, and put both `phantom` and `phantom-mcp` on `PATH`. Windows archives are not Authenticode-signed. The pre-commit hook is a `#!/bin/sh` script, so run commits from a terminal that has Git's `sh.exe`, or run `phantom check --staged`.
 
 ## Star Phantom
 
@@ -167,14 +167,14 @@ What this does not show: it is a scripted worst case, not an LLM, so it measures
 ## Provider grants
 
 `phantom grant` retains value-blind lifecycle metadata and provider protocol
-design foundations. In 0.7.9, all live provider issuance, enrollment exchange,
+design foundations. In 0.8.7, all live provider issuance, enrollment exchange,
 refresh, renewal, and revocation execution is hard-denied before Phantom reads a
 provider credential or opens a provider network connection. Do not use grant or
 rotation commands expecting a vendor-side change. Test-only mocks demonstrate
 local transaction behavior only; they are not live-provider acceptance.
 
 In these docs, **provider grant** means design-era credential lifecycle metadata;
-no live grant flow runs in 0.7.9. **Authority grant** means the inactive, value-free execution
+no live grant flow runs in 0.8.7. **Authority grant** means the inactive, value-free execution
 authority type in `phantom-authority`. A provider grant cannot be reinterpreted
 as an authority grant, Locus credential, broker lease, or execution permit. See
 the [design-era grant lifecycle specification](docs/grants-spec.md); the
@@ -191,7 +191,7 @@ values.
 
 Use this read-only path before exploring the full tool catalog:
 
-1. Install both binaries from the reviewed [`v0.7.9` GitHub release](#installation).
+1. Install both binaries from the reviewed [`v0.8.7` GitHub release](#installation).
 2. From the project you want to inspect, run `phantom setup --client codex`,
    replacing `codex` with `claude`, `cursor`, or `windsurf` when appropriate.
 3. Restart the AI client so it loads the generated MCP configuration.
@@ -216,7 +216,7 @@ or accepted.
 compatibility names for approved local `phm_` token remaps. They do not rotate
 a provider credential, renew TTL/`rotated_at` metadata, clear leak incidents,
 or sync credentials. `phantom_rotate_provider` is also hard-denied before
-credential or network access in 0.7.9. Team invites may assign only `member` or `admin`; ownership transfer
+credential or network access in 0.8.7. Team invites may assign only `member` or `admin`; ownership transfer
 is not an invite role.
 
 Tools that write state, retrieve or use credentials, or make provider/network
@@ -240,7 +240,7 @@ reject any drift.
 54-tool compatibility catalog as deprecated hard denials. They never create,
 validate, or promote a candidate and never change vault or shadow metadata;
 `phantom_rotate_provider` is also hard-denied before credential or network
-access in 0.7.9. `phantom add` creates new names only and refuses existing-name
+access in 0.8.7. `phantom add` creates new names only and refuses existing-name
 replacement before reading a value. Replacing a credential therefore requires
 a separately reviewed provider rotation plus an explicit trusted-terminal
 remove-and-add sequence; those are distinct, non-atomic operations.
@@ -265,7 +265,7 @@ phantom setup --client gemini     # ~/.gemini/settings.json (Gemini CLI)
 phantom setup --client claude --print   # snippet to stdout for any other client
 ```
 
-Install both `v0.7.9` release binaries before setup. Version `0.7.9` records the
+Install both `v0.8.7` release binaries before setup. Version `0.8.7` records the
 running `phantom` executable with `mcp serve` when it can resolve that executable,
 otherwise it looks for a local standalone `phantom-mcp`. Setup has no network
 package-runner fallback and fails closed when neither local runtime is
@@ -390,8 +390,8 @@ dashboard is designed to show team memberships and member lists.
 | `phantom reveal <KEY>` | From an attached trusted terminal, review and type the exact challenge before printing one value or copying it for an auto-cleared 30-second clipboard window |
 | `phantom git-credential get`, `phantom git-credential store`, `phantom git-credential erase` | Supply the selected project vault credential only to a pipe for HTTPS github.com; terminals and files are refused. See [GitHub credential helper](docs/git-credential.md) for setup and the plaintext handoff boundary. |
 | `phantom status` | Show vault/mapping state and whether the machine-local lifecycle lock is held; a held lock does not authenticate or identify a listener. `--json` emits the value-free [status contract](docs/hub-status-contract.md) |
-| `phantom rotate` | After an exact attached-terminal challenge bound to the project, config, managed dotenv, and sorted protected-name digest, regenerate every local phantom token (old mappings become invalid). Headless use fails before vault access or mutation. Provider-backed `--name`/`--provider` execution is hard-denied before credential or network access in 0.7.9. |
-| `phantom grant add <provider>` | Reserved provider-enrollment surface; hard-denied before credential or network access in 0.7.9. See [Provider grants](#provider-grants). |
+| `phantom rotate` | After an exact attached-terminal challenge bound to the project, config, managed dotenv, and sorted protected-name digest, regenerate every local phantom token (old mappings become invalid). Headless use fails before vault access or mutation. Provider-backed `--name`/`--provider` execution is hard-denied before credential or network access in 0.8.7. |
+| `phantom grant add <provider>` | Reserved provider-enrollment surface; hard-denied before credential or network access in 0.8.7. See [Provider grants](#provider-grants). |
 | `phantom grant list` / `phantom grant status` | Read provider-grant names, providers, lifecycle state, and expiry metadata without returning credential values. |
 | `phantom grant revoke <provider>` | Reserved remote-revocation surface; currently fails closed before local mutation because provider revocation is not wired. |
 | `phantom doctor` | Check configuration and vault health (`--fix` to auto-repair). Reports install source, vault backend, audit-log status, Argon2 params, and MCP wiring per client |
@@ -424,7 +424,7 @@ dashboard is designed to show team memberships and member lists.
 | `phantom cloud status` | Authenticated provider read; requires attached trusted terminals and an exact challenge before stored-bearer or network access |
 | `phantom wrap` | Wrap package.json scripts with `phantom exec` automatically |
 | `phantom unwrap` | Restore original package.json scripts |
-| `phantom watch` | Watch managed dotenv files and report new unprotected secrets. `--auto` hard-denies before mutation in 0.7.9; use transactional `phantom init`. |
+| `phantom watch` | Watch managed dotenv files and report new unprotected secrets. `--auto` hard-denies before mutation in 0.8.7; use transactional `phantom init`. |
 | `phantom why <KEY>` | Explain why a key is or is not protected and how `phantom exec` delivers it (`no_route` means no built-in proxy route injects it). Works before init; `--json` prints the same shape as MCP `phantom_why` |
 | `phantom copy <KEY>` | Copy a secret to an initialized target after exact trusted-terminal confirmation; refuses existing target vault, config, or managed-dotenv ownership rather than overwriting. If both projects set `owner` in `.phantom.toml` (`personal`, `company[:name]`, `client:name`) and they differ, the copy is refused unless `--allow-cross-owner` is passed |
 | `phantom team list` / `phantom team members` | Authenticated, value-blind provider reads. CLI requires attached trusted terminals and an exact challenge before bearer/network access; MCP requires `confirm` plus out-of-band approval. |
@@ -462,7 +462,7 @@ encoded credentials, or multiline private keys. It does not rotate leaked keys.
 
 ## Rotating real provider credentials
 
-Phantom 0.7.9 does **not** execute live provider issuance or rotation. Every
+Phantom 0.8.7 does **not** execute live provider issuance or rotation. Every
 provider path, single-provider CLI, batch CLI, MCP, grant enrollment, additive
 issuance, and destructive/rolling refresh, is hard-denied before provider
 credential access and before network I/O. Operators must rotate at the vendor,
@@ -474,7 +474,7 @@ commissioning, or acceptance.
 
 | Provider | Support | Notes |
 |----------|---------|-------|
-| `vercel` | Hard denied | Additive issuance can orphan a live successor after a local failure; no provider call in 0.7.9 |
+| `vercel` | Hard denied | Additive issuance can orphan a live successor after a local failure; no provider call in 0.8.7 |
 | `google` | Hard denied | Secret Manager version creation remains disabled pending durable successor recovery and verified abort |
 | `github` | Hard denied | GitHub App installation-token issuance remains disabled pending the same recovery contract |
 | `stripe` | Hard denied | Raw keys are manual; rolling OAuth refresh can invalidate the predecessor before successor recovery |
@@ -529,23 +529,23 @@ This formula installs both `phantom` and `phantom-mcp` from the immutable
 The tap was bumped from `v0.7.8` to `v0.7.9` in ashlrai/homebrew-phantom#7. A `v0.7.8` Homebrew install wrote
 Claude Code MCP registration to the legacy location; see the
 [Claude Code guide](docs/claude-code.md) for the manual `.mcp.json` step, or use
-the `v0.7.9` assets below.
+the `v0.8.7` assets below.
 
-### Exact v0.7.9 GitHub assets
+### Exact v0.8.7 GitHub assets
 
 Use the asset matching your OS and architecture. Download its adjacent
 `.sha256` file from the release, verify it before extraction, and place both
 `phantom` and `phantom-mcp` (`.exe` on Windows) on `PATH`.
 
 <!-- fresh:begin readme-release-asset-table -->
-| Platform | `v0.7.9` archive | Published checksum |
+| Platform | `v0.8.7` archive | Published checksum |
 |---|---|---|
-| macOS Apple Silicon | [`phantom-aarch64-apple-darwin.tar.gz`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9/phantom-aarch64-apple-darwin.tar.gz) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9/phantom-aarch64-apple-darwin.tar.gz.sha256) |
-| macOS Intel | [`phantom-x86_64-apple-darwin.tar.gz`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9/phantom-x86_64-apple-darwin.tar.gz) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9/phantom-x86_64-apple-darwin.tar.gz.sha256) |
-| Linux x86_64 | [`phantom-x86_64-unknown-linux-gnu.tar.gz`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9/phantom-x86_64-unknown-linux-gnu.tar.gz) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9/phantom-x86_64-unknown-linux-gnu.tar.gz.sha256) |
-| Linux ARM64 | [`phantom-aarch64-unknown-linux-gnu.tar.gz`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9/phantom-aarch64-unknown-linux-gnu.tar.gz) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9/phantom-aarch64-unknown-linux-gnu.tar.gz.sha256) |
-| Windows x64 | [`phantom-x86_64-pc-windows-msvc.zip`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9/phantom-x86_64-pc-windows-msvc.zip) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9/phantom-x86_64-pc-windows-msvc.zip.sha256) |
-| Windows ARM64 | [`phantom-aarch64-pc-windows-msvc.zip`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9/phantom-aarch64-pc-windows-msvc.zip) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9/phantom-aarch64-pc-windows-msvc.zip.sha256) |
+| macOS Apple Silicon | [`phantom-aarch64-apple-darwin.tar.gz`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.7/phantom-aarch64-apple-darwin.tar.gz) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.7/phantom-aarch64-apple-darwin.tar.gz.sha256) |
+| macOS Intel | [`phantom-x86_64-apple-darwin.tar.gz`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.7/phantom-x86_64-apple-darwin.tar.gz) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.7/phantom-x86_64-apple-darwin.tar.gz.sha256) |
+| Linux x86_64 | [`phantom-x86_64-unknown-linux-gnu.tar.gz`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.7/phantom-x86_64-unknown-linux-gnu.tar.gz) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.7/phantom-x86_64-unknown-linux-gnu.tar.gz.sha256) |
+| Linux ARM64 | [`phantom-aarch64-unknown-linux-gnu.tar.gz`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.7/phantom-aarch64-unknown-linux-gnu.tar.gz) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.7/phantom-aarch64-unknown-linux-gnu.tar.gz.sha256) |
+| Windows x64 | [`phantom-x86_64-pc-windows-msvc.zip`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.7/phantom-x86_64-pc-windows-msvc.zip) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.7/phantom-x86_64-pc-windows-msvc.zip.sha256) |
+| Windows ARM64 | [`phantom-aarch64-pc-windows-msvc.zip`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.7/phantom-aarch64-pc-windows-msvc.zip) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.7/phantom-aarch64-pc-windows-msvc.zip.sha256) |
 <!-- fresh:end -->
 
 On Linux, verify with `sha256sum -c <archive>.sha256`. On Windows, compare
@@ -555,7 +555,7 @@ Linux x86_64, as one shell script:
 
 ```bash
 archive=phantom-x86_64-unknown-linux-gnu.tar.gz
-base=https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9
+base=https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.7
 curl -fsSL -o "$archive" "$base/$archive"
 curl -fsSL -o "$archive.sha256" "$base/$archive.sha256"
 sha256sum -c "$archive.sha256"
@@ -573,28 +573,28 @@ timed on a measurement VM are recorded in
 
 ### Build the exact release source
 
-The `v0.7.9` tag resolves to source commit
-`7a51ce512ec4aee12cc29ff859036af63fbe93db`:
+The `v0.8.7` tag resolves to source commit
+`a6a0413991c0bd7f3d6601f467c0b5770d0dce0c`:
 
 ```bash
 $ git clone https://github.com/ashlrai/phantom-secrets.git
 $ cd phantom-secrets
-$ git checkout 7a51ce512ec4aee12cc29ff859036af63fbe93db
+$ git checkout a6a0413991c0bd7f3d6601f467c0b5770d0dce0c
 $ cargo build --release --locked --bin phantom --bin phantom-mcp
 ```
 
-See [distribution status](docs/distribution-status.md) for dated npm, Homebrew, crates.io, and MCP Registry evidence. Prefer the checksum-verified `v0.7.9` GitHub assets for an exact install.
+See [distribution status](docs/distribution-status.md) for dated npm, Homebrew, crates.io, and MCP Registry evidence. Prefer the checksum-verified `v0.8.7` GitHub assets for an exact install.
 
 ### Release-state snapshot
 
 > [!IMPORTANT]
-> **Release-state snapshot (verified 2026-09-29):** the current release is the
-> immutable `v0.7.9` GitHub release at source commit
-> `7a51ce512ec4aee12cc29ff859036af63fbe93db`. Its 19-asset release set,
+> **Release-state snapshot (verified 2026-11-06):** the current release is the
+> immutable `v0.8.7` GitHub release at source commit
+> `a6a0413991c0bd7f3d6601f467c0b5770d0dce0c`. Its 19-asset release set,
 > checksums, archive-specific SPDX SBOMs, GitHub provenance and SBOM
 > attestations, and all six native release rows are bound to that immutable
 > release record by tag-bound workflow
-> [34153902556](https://github.com/ashlrai/phantom-secrets/actions/runs/34153902556).
+> [42262099223](https://github.com/ashlrai/phantom-secrets/actions/runs/42262099223).
 > See [distribution status](docs/distribution-status.md) for the separately dated
 > package-channel snapshot and its verification limits. The GitHub receipt alone
 > does not prove npm, Homebrew, crates.io, MCP Registry, or hosted-service
@@ -620,7 +620,7 @@ The Rust workspace is organized as product crates plus fail-closed execution-ker
 | Product | `phantom-proxy` | Authenticated loopback reverse proxy with fixed route-owned auth-header injection, inert client tokens, response scrubbing, and streaming support. |
 | Product | `phantom-cli` | Operator CLI for initialization, proxy lifecycle, readiness, audit, import/export, sync, team, and workspace workflows. |
 | Product | `phantom-mcp` | Stdio MCP server. The governed conversation facade is narrow; the advanced compatibility catalog uses separate legacy gates. |
-| Product | `phantom-core/src/issuance`, CLI `grant` | Provider protocol/design foundations and value-free grant metadata. All live provider issuance/enrollment execution is hard-denied before credential or network access in 0.7.9. |
+| Product | `phantom-core/src/issuance`, CLI `grant` | Provider protocol/design foundations and value-free grant metadata. All live provider issuance/enrollment execution is hard-denied before credential or network access in 0.8.7. |
 | Local effect layer | `phantom-core::fs`, `phantom-vault` transactions | Retained project/config directory capabilities, exact identity/content/permission before-images, no-follow targets, single-link checks, and typed durable, committed-verified-with-durability-warning, or `CommittedButUncertain` (**Partial**) effects. |
 | Setup kernel | `phantom-workspace` | Value-blind discovery, sealed planning, and recoverable trusted-terminal setup transactions. Non-Unix durable mutation fails closed. |
 | Inactive foundation | `phantom-authority` | Closed authority contracts and deny-all production verification boundary. No live Locus verifier. |
@@ -666,7 +666,7 @@ dependency, and the comparison is not a feature or platform-parity claim.
 
 **`apps/web`** contains the Next.js site and backend routes for cloud vault sync, GitHub device authentication, and Stripe billing. The repository source and local tests are separate evidence from the currently deployed state at [phm.dev](https://phm.dev).
 
-**Registry tracks**: See [distribution status](docs/distribution-status.md) for dated npm, Homebrew, crates.io, and MCP Registry evidence. Prefer the checksum-verified `v0.7.9` GitHub assets for an exact install.
+**Registry tracks**: See [distribution status](docs/distribution-status.md) for dated npm, Homebrew, crates.io, and MCP Registry evidence. Prefer the checksum-verified `v0.8.7` GitHub assets for an exact install.
 
 CI runs locked, all-target workspace builds and tests on macOS, Linux, and Windows runner environments, plus formatting, Clippy, and npm release-mapping checks. Release builds and native end-to-end acceptance are separate evidence layers; see [Platform support](docs/platform-support.md).
 
