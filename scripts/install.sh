@@ -16,7 +16,7 @@ warn() { printf "  \033[1;33m!\033[0m phantom: %s\n" "$1" >&2; }
 die()  { printf "  \033[1;31m✗\033[0m phantom: %s\n" "$1" >&2; exit 1; }
 
 CANONICAL_REPO="ashlrai/phantom-secrets"
-CANDIDATE_TAG="v0.7.9"
+CANDIDATE_TAG="v0.8.7"
 REPO="$CANONICAL_REPO"
 RELEASES_URL="https://github.com/ashlrai/phantom-secrets/releases"
 INSTALL_DIR="${PHANTOM_INSTALL_DIR:-$HOME/.phantom-secrets/bin}"
@@ -305,6 +305,7 @@ acquire_install_lock() {
 add_to_user_path() {
   local bin="$1" marker="# phantom-secrets PATH" shell_name rc rc_parent
   local before_tmp candidate_tmp before_identity after_identity candidate_identity
+  local last_line backslashes
   [[ "$bin" =~ ^[A-Za-z0-9_./\ -]+$ ]] || return 1
   shell_name="$(basename "${SHELL:-bash}")"
   case "$shell_name" in
@@ -341,7 +342,7 @@ add_to_user_path() {
       rm -f -- "$before_tmp" "$candidate_tmp"
       return 1
     }
-    if grep -qF "$marker" "$before_tmp" 2>/dev/null; then
+    if grep -qxF "$marker" "$before_tmp" 2>/dev/null; then
       rm -f -- "$before_tmp" "$candidate_tmp"
       say "$bin already wired into $rc"
       return 0
@@ -358,6 +359,24 @@ add_to_user_path() {
       return 1
     }
     before_identity="absent"
+  fi
+  # The marker block's own leading newline ends an unterminated last line, but
+  # a last line ending in an odd backslash run is a line continuation: sourcing
+  # the file would fold the marker into the user's content. A blank line
+  # absorbs the continuation so the block still occupies lines of its own.
+  if [ -n "$(tail -c 1 "$candidate_tmp" 2>/dev/null)" ]; then
+    last_line="$(tail -n 1 "$candidate_tmp")"
+    case "$last_line" in
+      *\\)
+        backslashes="${last_line##*[!\\]}"
+        if [ $(( ${#backslashes} % 2 )) -eq 1 ]; then
+          printf '\n' >> "$candidate_tmp" || {
+            rm -f -- "$before_tmp" "$candidate_tmp"
+            return 1
+          }
+        fi
+        ;;
+    esac
   fi
   if [ "$shell_name" = "fish" ]; then
     printf '\n%s\nset -gx PATH "%s" $PATH\n' "$marker" "$bin" >> "$candidate_tmp" || {
@@ -392,18 +411,24 @@ add_to_user_path() {
     rm -f -- "$before_tmp" "$candidate_tmp"
     return 1
   }
-  rm -f -- "$before_tmp"
   after_identity="$(file_identity "$rc")" || after_identity=""
   if [ "$after_identity" != "$candidate_identity" ] \
     || [ ! -f "$rc" ] || [ -L "$rc" ] \
-    || ! grep -qF "$marker" "$rc" 2>/dev/null; then
+    || ! grep -qxF "$marker" "$rc" 2>/dev/null; then
+    if [ "$before_identity" = "absent" ]; then
+      rm -f -- "$rc" "$before_tmp" "$candidate_tmp"
+    else
+      cp -p "$before_tmp" "$rc" 2>/dev/null || true
+      rm -f -- "$before_tmp" "$candidate_tmp"
+    fi
     return 1
   fi
+  rm -f -- "$before_tmp"
   say "added $bin to PATH in $rc (open a new shell or run: source $rc)"
 }
 
-command -v curl >/dev/null 2>&1 || die "curl is required"
-command -v tar >/dev/null 2>&1 || die "tar is required"
+command -v curl >/dev/null 2>&1 || die "curl is required to download Phantom. Install curl with your package manager (e.g. apt install curl, brew install curl), then re-run this installer."
+command -v tar >/dev/null 2>&1 || die "tar is required to unpack Phantom. Install tar with your package manager (e.g. apt install tar), then re-run this installer."
 [[ "$REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || die "invalid PHANTOM_REPO"
 if [ "${PHANTOM_INSTALL_DIR+x}" = x ]; then
   validate_install_dir_override "$PHANTOM_INSTALL_DIR"

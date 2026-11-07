@@ -118,3 +118,22 @@ test("shallow history never substitutes an unrelated boundary commit for a page'
     }
   });
 });
+
+test("lastmod ignores a caller PATH containing a counterfeit Git", () => {
+  withRepository(({ directory, commit }) => {
+    commit("page.tsx", "2025-01-01T12:00:00+00:00");
+    const fakeBin = path.join(directory, "bin");
+    fs.mkdirSync(fakeBin);
+    const marker = path.join(directory, "counterfeit-ran");
+    fs.writeFileSync(path.join(fakeBin, "git"), `#!/bin/sh\n: > '${marker}'\nexit 1\n`, { mode: 0o755 });
+    const previous = process.env.PATH;
+    try {
+      process.env.PATH = fakeBin;
+      assertDate(gitLastModified(directory, ["page.tsx"]), "2025-01-01T12:00:00+00:00");
+      assert.equal(fs.existsSync(marker), false);
+    } finally {
+      if (previous === undefined) delete process.env.PATH;
+      else process.env.PATH = previous;
+    }
+  });
+});

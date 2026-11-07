@@ -143,6 +143,9 @@ node scripts/release/mcp-stdio-smoke.mjs target/debug/phantom-mcp 54
 # Changelog headings, dates, ordering, and compare links
 node scripts/release/lint-changelog.mjs
 
+# Markdown fence balance: docs/internal/notes.md and every tracked *.md
+node --test scripts/internal-notes-fences.test.mjs
+
 # Provider hard-denial and exact cfg(test) transaction-scaffolding tests
 cargo test --locked -p phantom-secrets --test grant_github_app_test
 cargo test --locked -p phantom-secrets --test grant_vercel_integration_test

@@ -141,3 +141,70 @@ test("device poll selects expiry and returns only the normalized plan", async ()
     ),
   );
 });
+
+test("device poll on an already expired window reports expired and issues nothing", async () => {
+  const calls = [];
+  const expiredToken = {
+    id: "device-token-expired",
+    user_id: "user-1",
+    status: "approved",
+    expires_at: "2000-01-01T00:00:00.000Z",
+    device_expires_at: "2000-01-01T00:00:00.000Z",
+    token_hash: null,
+  };
+  const serviceClient = {
+    from(table) {
+      const query = { table, update: null, select: null };
+      const builder = {
+        select(columns) {
+          query.select = columns;
+          return this;
+        },
+        update(values) {
+          query.update = values;
+          return this;
+        },
+        eq() {
+          return this;
+        },
+        is() {
+          return this;
+        },
+        async maybeSingle() {
+          calls.push({ ...query });
+          return { data: table === "device_tokens" ? expiredToken : null, error: null };
+        },
+        // Awaiting the builder directly resolves a bare update().eq().
+        then(resolve) {
+          calls.push({ ...query });
+          resolve({ error: null });
+        },
+      };
+      return builder;
+    },
+  };
+  const { POST } = loadRoute(serviceClient);
+
+  const poll = () =>
+    POST(
+      new Request("https://phm.dev/api/v1/auth/device/poll", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ device_code: "device-code-expired" }),
+      }),
+    );
+
+  for (let i = 0; i < 2; i++) {
+    const response = await poll();
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    // "expired" tells the CLI to stop polling; nothing else is returned.
+    assert.deepEqual(body, { status: "expired" });
+  }
+
+  assert.ok(
+    calls.some(({ table, update }) => table === "device_tokens" && update?.status === "expired"),
+  );
+  assert.ok(!calls.some(({ table }) => table === "users"));
+  assert.ok(!calls.some(({ update }) => update && "token_hash" in update));
+});

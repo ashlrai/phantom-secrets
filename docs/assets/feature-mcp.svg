@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="280" height="160" viewBox="0 0 280 160" role="img" aria-label="MCP for coding agents">
+  <rect width="280" height="160" rx="18" fill="#101018"/>
+  <rect x="16" y="16" width="248" height="128" rx="14" fill="#0b0b14" stroke="#252538"/>
+  <text x="32" y="52" fill="#60a5fa" font-family="ui-sans-serif, system-ui, sans-serif" font-size="14" font-weight="700">MCP for agents</text>
+  <text x="32" y="84" fill="#f5f5f7" font-family="ui-sans-serif, system-ui, sans-serif" font-size="15">Claude, Cursor, Codex</text>
+  <text x="32" y="112" fill="#a1a1b5" font-family="ui-sans-serif, system-ui, sans-serif" font-size="13">Names and status, not values</text>
+</svg>

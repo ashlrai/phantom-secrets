@@ -1,3 +1,5 @@
+// Fixtures follow the independent package carrier, not the wrapper implementation.
+const candidateVersion = require("../package.json").version;
 const assert = require("assert");
 const crypto = require("crypto");
 const { execFileSync } = require("child_process");
@@ -74,7 +76,7 @@ async function assertPreviousVersionCachePreserved(stage) {
     const archiveExt = process.platform === "win32" ? "zip" : "tar.gz";
     const archiveName = `phantom-${target}.${archiveExt}`;
     const archiveUrl =
-      `https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9/${archiveName}`;
+      `https://github.com/ashlrai/phantom-secrets/releases/download/v${candidateVersion}/${archiveName}`;
     const archiveBytes = Buffer.from(`verified archive for ${stage}`);
     const archiveSha = crypto.createHash("sha256").update(archiveBytes).digest("hex");
     const observedUrls = [];
@@ -109,7 +111,7 @@ async function assertPreviousVersionCachePreserved(stage) {
         },
       }),
       stage === "version"
-        ? /did not report exact version 0\.7\.9/
+        ? new RegExp("did not report exact version " + candidateVersion.replaceAll(".", "\\.") + "","")
         : (error) => error === stagedFailure
     );
 
@@ -128,7 +130,111 @@ async function assertPreviousVersionCachePreserved(stage) {
   }
 }
 
+// Network callbacks can arrive after the wrapper has already reported failure.
+// Use synthetic transport events so these races require no actual download.
+async function assertDownloadStopsAfterSettlement() {
+  for (const failure of ["timeout", "request-error"]) {
+    const callbacks = [];
+    const requests = [];
+    const pending = download("https://github.com/release", {
+      timeoutMs: failure === "timeout" ? 5 : 100,
+      httpsGet: (_url, callback) => {
+        callbacks.push(callback);
+        const request = new EventEmitter();
+        request.destroy = () => {};
+        requests.push(request);
+        return request;
+      },
+    });
+    const rejected = assert.rejects(pending, failure === "timeout" ? /timed out/ : /network failed/);
+    if (failure === "request-error") requests[0].emit("error", new Error("network failed"));
+    await rejected;
+
+    const lateResponse = new EventEmitter();
+    lateResponse.statusCode = 302;
+    lateResponse.headers = { location: "/late-redirect" };
+    let destroyed = false;
+    let resumed = false;
+    lateResponse.destroy = () => { destroyed = true; };
+    lateResponse.resume = () => { resumed = true; };
+    callbacks[0](lateResponse);
+    assert.strictEqual(requests.length, 1, `${failure}: no request after settlement`);
+    assert.strictEqual(destroyed, true, `${failure}: discard late response`);
+    assert.strictEqual(resumed, false, `${failure}: do not drain late body`);
+    assert.doesNotThrow(() => lateResponse.emit("error", new Error("late socket failure")));
+  }
+
+
+  // A drained redirect response can fail after its successor has started.
+  // Rejection must cancel that active successor, not merely clear the deadline.
+  for (const successorHasResponse of [false, true]) {
+    const callbacks = [];
+    const requests = [];
+    const pending = download("https://github.com/release", {
+      timeoutMs: 100,
+      httpsGet: (_url, callback) => {
+        callbacks.push(callback);
+        const request = new EventEmitter();
+        request.destroyCount = 0;
+        request.destroy = (error) => {
+          request.destroyCount++;
+          // Exercise synchronous error re-entry during cancellation.
+          request.emit("error", error);
+        };
+        requests.push(request);
+        return request;
+      },
+    });
+    const originalError = new Error("redirect stream failed");
+    const rejected = assert.rejects(pending, (error) => error === originalError);
+    const redirect = new EventEmitter();
+    redirect.statusCode = 302;
+    redirect.headers = { location: "/asset" };
+    redirect.resume = () => {};
+    callbacks[0](redirect);
+    assert.strictEqual(requests.length, 2);
+    if (successorHasResponse) {
+      const response = new EventEmitter();
+      response.statusCode = 200;
+      response.headers = {};
+      callbacks[1](response);
+      response.emit("data", Buffer.from("partial"));
+    }
+    redirect.emit("error", originalError);
+    await rejected;
+    assert.strictEqual(requests[1].destroyCount, 1, "cancel the active redirected request");
+    assert.doesNotThrow(() => redirect.emit("error", new Error("another late error")));
+    assert.strictEqual(requests[1].destroyCount, 1, "settlement is idempotent");
+  }
+
+  const responses = [];
+  const pending = download("https://github.com/release", {
+    timeoutMs: 100,
+    httpsGet: (_url, callback) => {
+      const request = new EventEmitter();
+      request.destroy = () => {};
+      process.nextTick(() => {
+        const response = new EventEmitter();
+        response.statusCode = responses.length === 0 ? 302 : 200;
+        response.headers = { location: "/asset" };
+        response.resume = () => {};
+        response.destroy = () => {};
+        responses.push(response);
+        callback(response);
+        if (response.statusCode === 200) {
+          response.emit("data", Buffer.from("verified fixture bytes"));
+          response.emit("end");
+        }
+      });
+      return request;
+    },
+  });
+  assert.strictEqual((await pending).toString(), "verified fixture bytes");
+  assert.doesNotThrow(() => responses[0].emit("error", new Error("late redirect stream error")));
+}
+
 (async () => {
+  await assertDownloadStopsAfterSettlement();
   assert.throws(
     () => getCacheDir({ env: {}, homedirImpl: () => "relative-home" }),
     /absolute private home/
@@ -405,7 +511,7 @@ async function assertPreviousVersionCachePreserved(stage) {
       },
       execFileSyncImpl: (_path, _args, options) => {
         assert.ok(options.timeout > 0 && options.timeout < 120_000);
-        return Buffer.from("phantom-mcp 0.7.9\n");
+        return Buffer.from(("phantom-mcp " + candidateVersion + "\n"));
       },
     });
     assert.ok(dirname(observedArchivePath).startsWith(join(fixtureDir, ".install-")));
