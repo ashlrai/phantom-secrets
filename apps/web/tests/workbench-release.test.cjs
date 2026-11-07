@@ -20,7 +20,7 @@ test('published workbench record drives version, install links and SEO independe
   assert.match(schema, /softwareVersion: WORKBENCH_RELEASE\.version/);
   assert.doesNotMatch(hero, /@ashlr\/phantom@\d+\.\d+\.\d+/);
   const secrets = fs.readFileSync(path.join(root, 'src/lib/public-release.ts'), 'utf8');
-  assert.match(secrets, /PUBLIC_RELEASE_VERSION = "0\.7\.9"/);
+  assert.match(secrets, /PUBLIC_RELEASE_VERSION = "0\.8\.7"/);
 });
 
 test('candidate-only, foreign, malformed and executable-link records produce no release claims', async () => {
