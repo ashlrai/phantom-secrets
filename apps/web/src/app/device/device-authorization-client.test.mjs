@@ -131,6 +131,46 @@ test("device code input presents its label and format hint", async () => {
   }
 });
 
+test("invalid-length device codes present accessible format feedback", async () => {
+  const React = await import("react");
+  const { cleanup, isInaccessible, render } = await import("@testing-library/react");
+  const { default: userEvent } = await import("@testing-library/user-event");
+  try {
+    const dependencies = {
+      "next/image": { __esModule: true, default: () => null },
+      "next/link": { __esModule: true, default: ({ children, ...props }) => React.createElement("a", props, children) },
+      "@/lib/device-code": compile(path.resolve(dirname, "../../lib/device-code.ts"), runtimeRequire),
+      "@/lib/posthog": { capturePostHog: async () => {} },
+      "@supabase/supabase-js": { createClient() { throw new Error("Unexpected client"); } },
+    };
+    const Component = compile(path.join(dirname, "device-authorization-client.tsx"),
+      (name) => dependencies[name] ?? runtimeRequire(name)).default;
+    // user-event and `screen` bind the module-load document; pass this test's
+    // document to setup and query the render result so both target this JSDOM.
+    const user = userEvent.setup({ document: dom.window.document });
+    const message = "Enter 8 letters or numbers. The code is displayed as XXXX-XXXX.";
+    const view = render(React.createElement(Component));
+    const input = view.getByRole("textbox", { name: "Device code" });
+
+    for (const [code, displayed] of [["abcd234", "ABCD-234"], ["abcd23456", "ABCD-23456"]]) {
+      await user.clear(input);
+      await user.type(input, code);
+      await user.click(view.getByRole("button", { name: "Authorize Device" }));
+
+      const alert = view.getByRole("alert");
+      assert.equal(alert.textContent, message);
+      assert.equal(isInaccessible(alert), false);
+      assert.equal(input.value, displayed);
+      assert.equal(input.getAttribute("aria-invalid"), "true");
+      assert.equal(view.getByRole("textbox", {
+        name: "Device code", description: (value) => value.includes(message),
+      }), input);
+    }
+  } finally {
+    cleanup();
+  }
+});
+
 test("the XXXX-XXXX placeholder is present on and associated with the device-code field", async () => {
   const React = await import("react");
   const { cleanup, render, screen } = await import("@testing-library/react");
