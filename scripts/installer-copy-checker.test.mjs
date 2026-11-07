@@ -67,7 +67,7 @@ test('a varied tag is refused until that exact source-owned region is reviewed',
 });
 for (const [side, source] of [['minus', repository], ['plus', web]]) {
   test(`reviewed ${side} regions must be exact, unique, and complete lines`, () => {
-    const region = 'CANDIDATE_TAG="v0.8.7"';
+    const region = side === 'minus' ? 'CANDIDATE_TAG="v0.8.8"' : 'CANDIDATE_TAG="v0.8.7"';
     assert.throws(() => normalizeInstallerCopy(Buffer.from(source.toString().replace(region, '# stale tag')), side), /exactly once/);
     assert.throws(() => normalizeInstallerCopy(Buffer.concat([source, Buffer.from(`\n${region}\n`)]), side), /exactly once/);
     assert.throws(() => normalizeInstallerCopy(Buffer.from(source.toString().replace(region, `# ${region}`)), side), /complete lines/);

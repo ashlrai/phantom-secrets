@@ -4,7 +4,140 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
-Changes after 0.8.7 land in this section.
+## [0.8.8] - 2026-11-07
+
+### Added (Unix installer PATH-update tests)
+
+- New `installer-path-alias-fallback` coverage pins an unrelated shell alias
+  surviving the installer PATH update byte-for-byte across the startup-file
+  fallbacks: unset `SHELL` (the installer runs under bash, which assigns the
+  login shell at startup, the update lands in that shell's startup file),
+  empty `SHELL` (the `${SHELL:-bash}` default → `.bashrc`), unrecognized
+  shells (`sh`, `dash`, `tcsh` → `.bashrc`), and pathless names (`zsh`,
+  `fish`) that `basename` maps to their own startup files, each routed to
+  the file the installer actually chooses, with every other shell's startup
+  file left byte-for-byte untouched, in both installer copies. A marker-only
+  file (marker line present, PATH line absent) is already wired for
+  `grep -qxF`, so its alias stays untouched, and a full offline install with
+  `SHELL` unset proves the login-shell wiring end to end. A node-free
+  `installer-path-alias-fallback.test.sh` leg checks the same fallbacks in
+  `apps/web/public/install.sh` with the shipped `add_to_user_path` alone.
+  Both legs are wired into CI.
+
+### Added (Unix installer PATH-update tests)
+
+- New `installer-path-columns-export` coverage pins an unrelated `export
+  COLUMNS` line surviving the installer PATH update byte-for-byte, plain,
+  quoted, odd-spaced, dollar-referencing, PATH-mentioning, and
+  marker-lookalike values; every supported final-line ending; beside
+  commented-out, sibling `LINES`, and bare-assignment lookalike lines; a
+  sole-line startup file; before and after an already-wired block, across
+  the bash, zsh, and fish startup files of both installer copies and the
+  full offline install, and proves the preserved line still evaluates when
+  the updated `.bashrc` is sourced. A node-free
+  `installer-path-columns.test.sh` leg checks the same preservation in
+  `apps/web/public/install.sh` with the shipped `add_to_user_path` alone.
+  The previously orphaned `installer-path-lines-export.test.mjs` is also
+  wired into the CI installer-test step so it actually runs.
+
+### Added (Unix installer PATH-update tests)
+
+- New `installer-path-editor-export` coverage pins an unrelated `export
+  EDITOR` line surviving the installer PATH update byte-for-byte, plain,
+  quoted, PATH-lookalike, and marker-lookalike values; every supported
+  final-line ending; a sole-line startup file; before and after an
+  already-wired block, across the bash, zsh, and fish startup files of both
+  installer copies and the full offline install, and proves the preserved
+  line still evaluates when the updated `.bashrc` is sourced.
+
+### Fixed (Unix installer PATH-update tests)
+
+- `installer-path-trailing-newline` no longer expects the pre-0.8.1
+  substring marker check: a startup file that merely mentions the
+  `# phantom-secrets PATH` text is now wired like any unmarked file and its
+  mentioning line preserved, matching the line-exact `grep -qxF` contract.
+
+### Added (Unix installer PATH-update tests)
+
+- New `installer-path-lang-export` coverage pins an unrelated `export LANG`
+  line surviving the installer PATH update byte-for-byte, plain, quoted,
+  odd-spaced, dollar-referencing, PATH-mentioning, and marker-lookalike
+  values; every supported final-line ending; a sole-line startup file;
+  inside a realistic LC_ALL/LANGUAGE/LC_CTYPE locale block; before and after
+  an already-wired block, across the bash, zsh, and fish startup files of
+  both installer copies and the full offline install, and proves the
+  preserved line still evaluates when the updated `.bashrc` is sourced. A
+  node-free `installer-path-lang.test.sh` leg checks the same preservation
+  in `apps/web/public/install.sh` with the shipped `add_to_user_path` alone.
+
+### Added (Unix installer PATH-update tests)
+
+- New `installer-path-lc-all-export` coverage pins an unrelated `export
+  LC_ALL` line surviving the installer PATH update byte-for-byte, plain,
+  quoted, odd-spaced, dollar-referencing, PATH-mentioning, and
+  marker-lookalike values; every supported final-line ending; a sole-line
+  startup file; before and after an already-wired block, across the bash,
+  zsh, and fish startup files of both installer copies and the full offline
+  install, and proves the preserved line still evaluates when the updated
+  `.bashrc` is sourced.
+
+### Added (Unix installer PATH-update tests)
+
+- New `installer-path-lc-ctype-export` coverage pins an unrelated `export
+  LC_CTYPE` line surviving the installer PATH update byte-for-byte, plain,
+  quoted, odd-spaced, dollar-referencing, PATH-mentioning, and
+  marker-lookalike values; every supported final-line ending; commented-out,
+  sibling `LC_*`, and bare-assignment lookalike lines beside the export; a
+  sole-line startup file; before and after an already-wired block, across
+  the bash, zsh, and fish startup files of both installer copies and the
+  full offline install, and proves the preserved line still evaluates when
+  the updated `.bashrc` is sourced. A node-free
+  `installer-path-lc-ctype.test.sh` leg checks the same preservation in
+  `apps/web/public/install.sh` with the shipped `add_to_user_path` alone.
+
+### Fixed (Unix installer PATH update)
+
+- `install.sh` now recognizes its `# phantom-secrets PATH` marker only as a
+  whole line, so an unrelated export or comment that merely mentions the
+  marker text no longer suppresses the PATH update with a misleading
+  "already wired" report.
+
+### Added (Unix installer PATH-update tests)
+
+- New `installer-path-tz-export` coverage pins an unrelated `export TZ`
+  line surviving the installer PATH update byte-for-byte, plain, quoted,
+  odd-spaced, dollar-referencing, POSIX rule, colon-prefixed zone path,
+  PATH-mentioning, and marker-lookalike values; every supported final-line
+  ending; a sole-line startup file; beside commented-out, TZDIR, and
+  bare-assignment lookalike lines; before and after an already-wired block ,
+  across the bash, zsh, and fish startup files of both installer copies and
+  the full offline install, and proves the preserved line still evaluates
+  when the updated `.bashrc` is sourced. A node-free
+  `installer-path-tz.test.sh` leg checks the same preservation in
+  `apps/web/public/install.sh` with the shipped `add_to_user_path` alone.
+
+### Added (Unix installer PATH-update tests)
+
+- Restore comment, source-line, whitespace, and order-preservation fixtures for both installer copies, including exact marker near-matches and repeated updates.
+- Exercise reversed order and complete offline installs for bash, zsh, and fish startup-file formats, including observable Bash sourcing behavior.
+
+### Added (Unix installer staging tests)
+
+- A node-free `installer-staging-failure.test.sh` leg runs the shipped
+  `scripts/install.sh` end-to-end under `env -i` while PATH shims make each
+  staging-creation step fail in turn, `mktemp -d` refusing the private
+  template, `chmod 700` failing on the created stage, the staging
+  subdirectories failing halfway, and `mktemp` reporting success for a
+  directory that does not exist. Every run must exit nonzero before any
+  download, leave a preexisting destination byte-for-byte intact, and
+  release the install lock with no stage, backup, or lock sibling left
+  beside the destination.
+
+This source candidate includes installer regression coverage and public release evidence updates since 0.8.7. Publication remains subject to the release workflow.
+
+### Breaking changes and migration
+
+No breaking changes since v0.8.7. Existing installations require no migration.
 
 ## [0.8.7] - 2026-11-06
 
@@ -3417,8 +3550,10 @@ remain separate evidence gates.
 For older release notes and downloadable artifacts, see [GitHub Releases](https://github.com/ashlrai/phantom-secrets/releases).
 
 <!-- fresh:begin changelog-unreleased-compare -->
-[Unreleased]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.7...HEAD
+[Unreleased]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.8...HEAD
 <!-- fresh:end -->
+[0.8.8]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.7...v0.8.8
+[0.8.7]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.6...v0.8.7
 [0.8.6]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.5...v0.8.6
 [0.8.5]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.4...v0.8.5
 [0.8.4]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.3...v0.8.4
