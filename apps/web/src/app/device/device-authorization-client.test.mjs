@@ -40,7 +40,7 @@ after(() => {
   }
 });
 
-async function withAuthorizedDeviceFixture(run) {
+async function withAuthorizedDeviceFixture(run, { refuseClient = false } = {}) {
   const React = await import("react");
   const { cleanup, render, screen } = await import("@testing-library/react");
   const { default: userEvent } = await import("@testing-library/user-event");
@@ -57,6 +57,7 @@ async function withAuthorizedDeviceFixture(run) {
       "@/lib/device-code": compile(path.resolve(dirname, "../../lib/device-code.ts"), runtimeRequire),
       "@/lib/posthog": { capturePostHog: async () => {} },
       "@supabase/supabase-js": { createClient() {
+        if (refuseClient) throw new Error("Unexpected client");
         fixture.clientCalls++;
         return { auth: { getSession: async () => ({ data: { session: { access_token: "synthetic-session" } }, error: null }) } };
       } },
@@ -129,6 +130,27 @@ test("device code input presents its label and format hint", async () => {
   } finally {
     cleanup();
   }
+});
+
+test("invalid-length device codes present accessible format feedback", async () => {
+  const { isInaccessible } = await import("@testing-library/react");
+  await withAuthorizedDeviceFixture(async ({ screen, user }) => {
+    const message = "Enter 8 letters or numbers. The code is displayed as XXXX-XXXX.";
+    const input = screen.getByRole("textbox", { name: "Device code" });
+    for (const [code, displayed] of [["abcd234", "ABCD-234"], ["abcd23456", "ABCD-23456"]]) {
+      await user.clear(input);
+      await user.type(input, code);
+      await user.click(screen.getByRole("button", { name: "Authorize Device" }));
+      const alert = screen.getByRole("alert");
+      assert.equal(alert.textContent, message);
+      assert.equal(isInaccessible(alert), false);
+      assert.equal(input.value, displayed);
+      assert.equal(input.getAttribute("aria-invalid"), "true");
+      assert.equal(screen.getByRole("textbox", {
+        name: "Device code", description: (value) => value.includes(message),
+      }), input);
+    }
+  }, { refuseClient: true });
 });
 
 test("the XXXX-XXXX placeholder is present on and associated with the device-code field", async () => {
