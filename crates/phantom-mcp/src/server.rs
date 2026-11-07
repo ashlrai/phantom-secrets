@@ -4377,21 +4377,7 @@ impl PhantomMcpServer {
             .map(|d| d.as_secs())
             .unwrap_or(0);
 
-        let alert_records: Vec<serde_json::Value> = alerts
-            .iter()
-            .map(|a| {
-                serde_json::json!({
-                    "secret_name": a.secret_name,
-                    "current_velocity": a.current_velocity,
-                    "baseline_velocity": a.baseline_velocity,
-                    "alert_level": a.alert_level,
-                    "first_spike_ts": phantom_core::analytics::unix_to_iso8601(a.first_spike_ts),
-                    "ack_status": a.ack_status.as_str(),
-                    "peak_5m_count": a.peak_5m_count,
-                    "trigger": a.trigger,
-                })
-            })
-            .collect();
+        let alert_records: Vec<serde_json::Value> = alerts.iter().map(|a| a.to_json()).collect();
 
         // Unacked first, then fastest: the cut keeps the most urgent alerts.
         // ack=true above acknowledged every matching alert, listed or not.

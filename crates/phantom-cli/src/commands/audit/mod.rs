@@ -5,6 +5,7 @@
 //!   phantom audit tail       [--op OP] [--name NAME]
 //!   phantom audit path
 //!   phantom audit verify
+//!   phantom audit hotspots   [--name NAME] [--include-acked] [--json]
 //!   phantom audit stats      [--json] [--top N] [--analytics] [--min-anomaly-score F]
 //!   phantom audit export     [--format csv|json] [--period 7d|30d] [--min-anomaly-score F]
 //!   phantom audit analytics  [--window DAYS] [--min-anomaly-score F] [--format json|csv]
@@ -20,12 +21,14 @@ use std::path::PathBuf;
 
 mod alerts;
 mod analytics;
+mod hotspots;
 mod log;
 mod report;
 mod verify;
 
 pub use alerts::{run_alerts, run_anomalies, run_incidents};
 pub use analytics::{run_analytics, run_export, run_stats};
+pub use hotspots::run_hotspots;
 pub use log::{run_path, run_show, run_tail};
 pub use report::{run_export_range, run_report};
 pub use verify::run_verify;
@@ -149,6 +152,29 @@ pub enum AuditAction {
         #[arg(long, value_name = "DAYS")]
         max_quiet_days: Option<u64>,
         /// Emit output as JSON lines instead of human-readable text
+        #[arg(long)]
+        json: bool,
+    },
+    /// List per-secret access-spike (hotspot) alerts without writing to the audit log
+    ///
+    /// A secret alerts when its last-24h accesses exceed 5x its 7-day daily
+    /// baseline, or when 100+ accesses fall within any 5-minute window.
+    /// Acknowledging or snoozing is the approval-gated MCP tool
+    /// `phantom_audit_hotspot_alerts`.
+    ///
+    /// Examples:
+    ///   phantom audit hotspots
+    ///   phantom audit hotspots --name OPENAI_API_KEY --include-acked
+    ///   phantom audit hotspots --json
+    #[command(verbatim_doc_comment)]
+    Hotspots {
+        /// Only show alerts for this secret name (exact match)
+        #[arg(long, value_name = "NAME")]
+        name: Option<String>,
+        /// Also list alerts already acknowledged or snoozed
+        #[arg(long)]
+        include_acked: bool,
+        /// Emit JSON instead of the table
         #[arg(long)]
         json: bool,
     },

@@ -83,6 +83,7 @@ pub(crate) fn apply_global_json(command: &mut Commands) -> Result<(), &'static s
                 A::Show { json, .. }
                 | A::Stats { json, .. }
                 | A::Anomalies { json, .. }
+                | A::Hotspots { json, .. }
                 | A::Incidents { json, .. }
                 | A::Alerts { json, .. },
         } => {
