@@ -88,6 +88,45 @@ fn verify_fails_when_the_log_is_deleted_but_its_head_checkpoint_remains() {
     assert_eq!(v["head"], "mismatch");
 }
 
+/// A failed verification used to print counts and exit 1 with no next step.
+/// Both the human report and `--json` now carry fixed-vocabulary guidance.
+#[test]
+fn verify_failure_reports_an_actionable_next_step() {
+    let tmp = common::canonical_tempdir();
+    write_signed_events(tmp.path());
+
+    // An unsigned line inside the signed era fails the chain.
+    let log = tmp.path().join(".phantom/audit.log");
+    let mut content = std::fs::read_to_string(&log).unwrap();
+    content.push_str("{\"ts\":1,\"op\":\"forged\"}\n");
+    std::fs::write(&log, content).unwrap();
+
+    let out = verify(tmp.path(), false);
+    assert_eq!(out.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("Treat the audit log as unreliable"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("If tampering is suspected"), "{stdout}");
+    assert!(stdout.contains("`phantom audit incidents`"), "{stdout}");
+
+    let out = verify(tmp.path(), true);
+    assert_eq!(out.status.code(), Some(1));
+    let v = parse(&out);
+    assert_eq!(v["clean"], false);
+    assert!(v["tampered"].as_u64().unwrap() >= 1);
+    let step = v["next_step"]
+        .as_str()
+        .expect("failed verify has a next_step");
+    assert!(step.contains("unreliable for the flagged period"), "{step}");
+    assert!(step.contains("`phantom leaks plan`"), "{step}");
+    assert!(
+        !String::from_utf8_lossy(&out.stdout).contains("forged"),
+        "next_step stays value-free"
+    );
+}
+
 #[test]
 fn verify_json_reports_an_intact_chain() {
     let tmp = common::canonical_tempdir();
@@ -101,6 +140,7 @@ fn verify_json_reports_an_intact_chain() {
     assert_eq!(v["verified"], 2);
     assert_eq!(v["tampered"], 0);
     assert_eq!(v["head"], "ok");
+    assert!(v["next_step"].is_null());
     assert!(
         !String::from_utf8_lossy(&out.stdout).contains("VERIFY_FIXTURE_KEY"),
         "verify --json carries counts only"
