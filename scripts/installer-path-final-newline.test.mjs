@@ -21,8 +21,10 @@ import { fileURLToPath } from 'node:url';
 // appends its PATH block through a candidate copy with a leading newline, so
 // the existing last line is preserved byte-for-byte (it only gains its missing
 // terminator) while the marker and PATH line land on lines of their own instead
-// of being glued onto the previous content. Binaries are stubs; nothing is
-// downloaded.
+// of being glued onto the previous content. When that last line ends in an odd
+// backslash run — a line continuation — a blank line goes in first instead, so
+// sourcing the file cannot fold the marker into the user's content. Binaries
+// are stubs; nothing is downloaded.
 const installers = {
   'scripts/install.sh': new URL('install.sh', import.meta.url),
   'apps/web/public/install.sh': new URL('../apps/web/public/install.sh', import.meta.url),
@@ -113,6 +115,253 @@ for (const [label, url] of Object.entries(installers)) {
         [],
         'no PATH-update temporary files remain beside the startup file',
       );
+    });
+  }
+}
+
+// Function-level edges the single end-to-end run above does not reach. The
+// shipped add_to_user_path is extracted verbatim — same as
+// installer-path-idempotence.test.mjs — and driven against the other
+// unterminated shapes a hand-edited startup file can take: a lone line, a
+// trailing comment, a trailing hand-written PATH entry, an empty file, a
+// marker-bearing file, and a repeat update. In every case the pre-existing
+// bytes must survive untouched and the managed block must occupy lines of
+// its own.
+const marker = '# phantom-secrets PATH';
+
+function extractFunction(source, name, file) {
+  const start = source.indexOf(`${name}()`);
+  assert.ok(start >= 0, `${file}: locate ${name}`);
+  const lineEnd = source.indexOf('\n', start);
+  assert.ok(lineEnd > start, `${file}: locate end of ${name}`);
+  if (source.slice(start, lineEnd).trimEnd().endsWith('}')) {
+    return source.slice(start, lineEnd + 1);
+  }
+  const end = source.indexOf('\n}\n', start);
+  assert.ok(end > start, `${file}: locate end of ${name}`);
+  return source.slice(start, end + '\n}\n'.length);
+}
+
+const pathUpdateHarness = (source, file) => ['set -euo pipefail', 'umask 077',
+  ...['say', 'file_identity', 'file_link_count', 'add_to_user_path']
+    .map((name) => extractFunction(source, name, file)),
+  'add_to_user_path "$1"',
+].join('\n');
+
+function runPathUpdate(harness, config, home, bin) {
+  const result = spawnSync('/bin/bash', ['-c', harness, 'path-test', bin], {
+    encoding: 'utf8',
+    timeout: 30000,
+    env: { HOME: home, SHELL: config.shell, PATH: '/usr/bin:/bin' },
+  });
+  assert.ifError(result.error);
+  assert.equal(result.status, 0, result.stderr);
+  return result;
+}
+
+// The third field is the separator the update inserts between the gained
+// terminator and the marker block: a last line ending in an odd backslash run
+// is a line continuation that would swallow the marker when the file is next
+// sourced, so those shapes get a blank line; every other shape gets none.
+const unterminatedShapes = (shellName) => [
+  ['a single unterminated line', 'export EDITOR=vim', ''],
+  ['an unterminated comment', '# user shell config\n# hand-written note', ''],
+  ['an unterminated line continuation', 'export NOTES=keep\\', '\n'],
+  ['an unterminated escaped backslash', 'export ESCAPED=even\\\\', ''],
+  ['an unterminated continuation run', 'export TRIPLE=odd\\\\\\', '\n'],
+  ['an unterminated carriage return', 'export CR=old\r', ''],
+  ['an unterminated PATH entry of its own',
+    `# user shell config\n${shellName === 'fish'
+      ? 'set -gx PATH "/opt/tools/bin" $PATH'
+      : 'export PATH="/opt/tools/bin:$PATH"'}`, ''],
+  ['no content at all', '', ''],
+];
+
+function assertSeparatePathBlock(rc, bin, config, text, separator) {
+  const updated = readFileSync(rc, 'utf8');
+  assert.equal(updated, `${text}\n${separator}${marker}\n${config.pathLine(bin)}\n`);
+  const lines = updated.split('\n');
+  if (text.length > 0) {
+    const lastLine = text.slice(text.lastIndexOf('\n') + 1);
+    assert.ok(lines.includes(lastLine),
+      'the unterminated last line is preserved as its own line');
+  }
+  assert.equal(lines.filter((line) => line === marker).length, 1,
+    'the marker is a separate line');
+  assert.ok(lines.includes(config.pathLine(bin)),
+    'the PATH line is a separate line');
+  assert.equal(statSync(rc).mode & 0o777, 0o600,
+    'startup file mode is preserved');
+  assert.deepEqual(
+    readdirSync(dirname(rc)).filter((name) => name.startsWith('.phantom-path.')),
+    [],
+    'no PATH-update temporary files remain beside the startup file',
+  );
+  if (config.shell !== '/usr/bin/fish') {
+    // Occupying a physical line is not enough on its own: sourcing the
+    // updated file must keep the user's content intact and wire PATH without
+    // printing errors. A trailing line continuation would otherwise fold the
+    // marker into the last user line and make export fail on every shell
+    // startup — a failure byte comparison alone cannot see.
+    const sourced = spawnSync('/bin/bash', ['-c',
+      'source "$1" >/dev/null && case ":$PATH:" in *":$2:"*) exit 0;; *) exit 1;; esac',
+      'rc-source', rc, bin], { encoding: 'utf8', timeout: 30000 });
+    assert.ifError(sourced.error);
+    assert.equal(sourced.status, 0,
+      `the updated startup file does not source cleanly or PATH is not wired: ${sourced.stderr}`);
+    assert.equal(sourced.stderr, '',
+      'sourcing the updated startup file prints nothing to stderr');
+  }
+}
+
+for (const [label, url] of Object.entries(installers)) {
+  const harness = pathUpdateHarness(readFileSync(fileURLToPath(url), 'utf8'), label);
+  for (const [shellName, config] of Object.entries(shells)) {
+    for (const [shape, text, separator] of unterminatedShapes(shellName)) {
+      test(`${label} appends a separate PATH line to a ${shellName} file with ${shape}`, (t) => {
+        const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-path-newline-shape-')));
+        t.after(() => rmSync(root, { recursive: true, force: true }));
+        const home = join(root, 'home');
+        const bin = join(root, 'live', 'bin');
+        const rc = config.rcPath(home);
+        mkdirSync(dirname(rc), { recursive: true });
+        mkdirSync(bin, { recursive: true });
+        writeFileSync(rc, text, { mode: 0o600 });
+
+        const result = runPathUpdate(harness, config, home, bin);
+        assert.match(result.stdout, /added .* to PATH/);
+        assertSeparatePathBlock(rc, bin, config, text, separator);
+      });
+    }
+
+    test(`${label} leaves a wired ${shellName} file without a final newline untouched`, (t) => {
+      // A file the installer already recognizes — the marker is present but
+      // the file still lacks its final newline — comes back byte-for-byte
+      // identical: the update neither appends nor rewrites a file it did not
+      // write, so the missing terminator survives too.
+      const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-path-newline-wired-')));
+      t.after(() => rmSync(root, { recursive: true, force: true }));
+      const home = join(root, 'home');
+      const bin = join(root, 'live', 'bin');
+      const rc = config.rcPath(home);
+      mkdirSync(dirname(rc), { recursive: true });
+      mkdirSync(bin, { recursive: true });
+      const text = `# user shell config\nexport EDITOR=vim\n\n${marker}\n${config.pathLine(bin)}`;
+      writeFileSync(rc, text, { mode: 0o600 });
+
+      const result = runPathUpdate(harness, config, home, bin);
+      assert.match(result.stdout, /already wired into/);
+      assert.doesNotMatch(result.stdout, /added .* to PATH/);
+      assert.equal(readFileSync(rc, 'utf8'), text,
+        'the recognized startup file is byte-for-byte unchanged');
+      assert.equal(statSync(rc).mode & 0o777, 0o600,
+        'startup file mode is preserved');
+      assert.deepEqual(
+        readdirSync(dirname(rc)).filter((name) => name.startsWith('.phantom-path.')),
+        [],
+        'no PATH-update temporary files remain beside the startup file',
+      );
+    });
+
+    test(`${label} adds nothing on a second ${shellName} update after an unterminated file`, (t) => {
+      const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-path-newline-repeat-')));
+      t.after(() => rmSync(root, { recursive: true, force: true }));
+      const home = join(root, 'home');
+      const bin = join(root, 'live', 'bin');
+      const rc = config.rcPath(home);
+      mkdirSync(dirname(rc), { recursive: true });
+      mkdirSync(bin, { recursive: true });
+      const text = '# user shell config\nexport EDITOR=vim';
+      writeFileSync(rc, text, { mode: 0o600 });
+
+      const first = runPathUpdate(harness, config, home, bin);
+      assert.match(first.stdout, /added .* to PATH/);
+      assertSeparatePathBlock(rc, bin, config, text, '');
+      const wired = readFileSync(rc, 'utf8');
+
+      const second = runPathUpdate(harness, config, home, bin);
+      assert.match(second.stdout, /already wired into/);
+      assert.doesNotMatch(second.stdout, /added .* to PATH/,
+        'the second update must not append a second PATH block');
+      assert.equal(readFileSync(rc, 'utf8'), wired,
+        'the second update leaves the startup file byte-for-byte unchanged');
+      assert.deepEqual(
+        readdirSync(dirname(rc)).filter((name) => name.startsWith('.phantom-path.')),
+        [],
+        'no PATH-update temporary files remain beside the startup file',
+      );
+    });
+  }
+}
+
+// The UTF-8 reads above would hide a rewritten byte. A startup file may hold
+// Latin-1 or other non-UTF-8 bytes; the original bytes must come back exactly,
+// followed only by the added terminator and the managed block.
+for (const [label, url] of Object.entries(installers)) {
+  const harness = pathUpdateHarness(readFileSync(fileURLToPath(url), 'utf8'), label);
+  for (const [shellName, config] of Object.entries(shells)) {
+    test(`${label} keeps non-UTF-8 bytes in an unterminated ${shellName} file exactly`, (t) => {
+      const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-path-newline-bytes-')));
+      t.after(() => rmSync(root, { recursive: true, force: true }));
+      const home = join(root, 'home');
+      const bin = join(root, 'live', 'bin');
+      const rc = config.rcPath(home);
+      mkdirSync(dirname(rc), { recursive: true });
+      mkdirSync(bin, { recursive: true });
+      const original = Buffer.concat([
+        Buffer.from('# caf'), Buffer.from([0xe9, 0xff, 0xfe]), Buffer.from('\nexport NAME=a'),
+      ]);
+      writeFileSync(rc, original, { mode: 0o600 });
+
+      const result = runPathUpdate(harness, config, home, bin);
+      assert.match(result.stdout, /added .* to PATH/);
+      const expected = Buffer.concat([
+        original, Buffer.from(`\n${marker}\n${config.pathLine(bin)}\n`),
+      ]);
+      assert.ok(readFileSync(rc).equals(expected),
+        'original bytes are preserved; only the block is appended');
+    });
+  }
+}
+
+// The sourcing check above runs per shape; this block pins the hazard it
+// guards against. An unterminated last line ending in an odd backslash run is
+// a line continuation: ending it with the block's own newline would let the
+// shell fold the marker into the user's content on the next source — the
+// variable silently corrupts (keep -> keep#) and export reports an invalid
+// identifier on every shell startup. The blank separator absorbs the
+// continuation so the user's line, the marker, and the PATH entry each stay
+// intact. Fish is covered by the byte-level shape assertions above; its
+// startup syntax is not bash-sourceable here.
+for (const [label, url] of Object.entries(installers)) {
+  const harness = pathUpdateHarness(readFileSync(fileURLToPath(url), 'utf8'), label);
+  for (const [shellName, config] of Object.entries(shells)) {
+    if (shellName === 'fish') continue;
+    test(`${label} keeps an unterminated ${shellName} continuation intact when sourced`, (t) => {
+      const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-path-continuation-')));
+      t.after(() => rmSync(root, { recursive: true, force: true }));
+      const home = join(root, 'home');
+      const bin = join(root, 'live', 'bin');
+      const rc = config.rcPath(home);
+      mkdirSync(dirname(rc), { recursive: true });
+      mkdirSync(bin, { recursive: true });
+      writeFileSync(rc, 'export NOTES=keep\\', { mode: 0o600 });
+
+      const result = runPathUpdate(harness, config, home, bin);
+      assert.match(result.stdout, /added .* to PATH/);
+      assert.equal(readFileSync(rc, 'utf8'),
+        `export NOTES=keep\\\n\n${marker}\n${config.pathLine(bin)}\n`,
+        'a blank separator line absorbs the trailing continuation');
+
+      const sourced = spawnSync('/bin/bash', ['-c',
+        'source "$1" >/dev/null && printf %s "$NOTES" && case ":$PATH:" in *":$2:"*) exit 0;; *) exit 1;; esac',
+        'rc-source', rc, bin], { encoding: 'utf8', timeout: 30000 });
+      assert.ifError(sourced.error);
+      assert.equal(sourced.status, 0, sourced.stderr);
+      assert.equal(sourced.stderr, '',
+        'sourcing must not fold the marker into the continued user line');
+      assert.equal(sourced.stdout, 'keep',
+        'the continued line keeps its value instead of corrupting to "keep#"');
     });
   }
 }

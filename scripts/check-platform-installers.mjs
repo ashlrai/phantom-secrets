@@ -2,6 +2,15 @@
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { loadSources } from "./freshness/sources.mjs";
+import { assertPowershellCandidate, assertShellCandidate } from "./release/check-powershell-candidate.mjs";
+import { assertInstallerCopyParity } from "./lib/installer-copy-differences.mjs";
+
+assertInstallerCopyParity(
+  readFileSync(new URL("./install.sh", import.meta.url)),
+  readFileSync(new URL("../apps/web/public/install.sh", import.meta.url)),
+);
 
 const shellInstaller = readFileSync(new URL("./install.sh", import.meta.url), "utf8");
 const powershellInstaller = readFileSync(
@@ -17,11 +26,15 @@ const publicPowershellInstaller = readFileSync(
   "utf8",
 );
 
+const source = loadSources(fileURLToPath(new URL("../", import.meta.url)));
+assertShellCandidate(shellInstaller, source.npmCli.version, source.npmMcp.version);
+assertPowershellCandidate(powershellInstaller, source.npmCli.version, source.npmMcp.version);
+
 // The checked-in web reference copies are byte-bound to the last immutable
-// public release (v0.7.9). Those reference bytes are independently checked
+// public release (v0.8.7). Those reference bytes are independently checked
 // against public-release.ts in apps/web/tests/public-claims.test.cjs.
-assert.match(publicShellInstaller, /CANDIDATE_TAG="v0\.7\.9"/);
-assert.match(publicPowershellInstaller, /\$CandidateTag = 'v0\.7\.9'/);
+assert.ok(publicShellInstaller.includes(`CANDIDATE_TAG="${source.publicRelease.tag}"`));
+assert.ok(publicPowershellInstaller.includes(`$CandidateTag = '${source.publicRelease.tag}'`));
 assert.doesNotMatch(publicShellInstaller, /v0\.7\.8/);
 assert.doesNotMatch(publicPowershellInstaller, /v0\.7\.8/);
 
@@ -37,7 +50,6 @@ for (const [pattern, label] of [
   [/SHA-256 mismatch/, "Unix checksum enforcement"],
   [/phantom-mcp/, "Unix two-binary installation"],
   [/CANONICAL_REPO="ashlrai\/phantom-secrets"/, "Unix canonical repository binding"],
-  [/CANDIDATE_TAG="v0\.8\.1"/, "Unix exact candidate tag binding"],
   [/PHANTOM_TEST_ALLOW_INSTALLER_OVERRIDES/, "Unix test-only override gate"],
 ]) {
   requires(shellInstaller, pattern, label);
@@ -50,7 +62,6 @@ for (const [pattern, label] of [
   [/SHA-256 mismatch/, "Windows checksum enforcement"],
   [/phantom-mcp\.exe/, "Windows two-binary installation"],
   [/\$CanonicalRepo = 'ashlrai\/phantom-secrets'/, "Windows canonical repository binding"],
-  [/\$CandidateTag = 'v0\.8\.1'/, "Windows exact candidate tag binding"],
   [/PHANTOM_TEST_ALLOW_INSTALLER_OVERRIDES/, "Windows test-only override gate"],
 ]) {
   requires(powershellInstaller, pattern, label);

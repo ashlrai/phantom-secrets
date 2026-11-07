@@ -135,6 +135,40 @@ test("empty revision output produces unidentified build metadata", () => {
   });
 });
 
+test("missing revision metadata produces unidentified build metadata", () => {
+  withRepository(({ directory, git, revision }) => {
+    const head = git("symbolic-ref", "HEAD");
+    git("symbolic-ref", "HEAD", "refs/heads/never-born");
+    try {
+      assert.equal(readBuildSourceRevision(directory), null);
+      assert.equal(buildMetadata(directory), "unidentified");
+    } finally {
+      git("symbolic-ref", "HEAD", head);
+    }
+    assert.equal(readBuildSourceRevision(directory), revision);
+    assert.equal(buildMetadata(directory), revision);
+
+    for (const output of ["", " \n"]) {
+      let treeReads = 0;
+      const module = { exports: {} };
+      function localRequire(name) {
+        if (name !== "node:child_process") return require(name);
+        return { execFileSync(command, args, options) {
+          if (args.includes("HEAD^{tree}")) {
+            treeReads++;
+            return output;
+          }
+          return execFileSync(command, args, options);
+        } };
+      }
+      new Function("require", "exports", "module", compiled)(localRequire, module.exports, module);
+      assert.equal(module.exports.readBuildSourceRevision(directory), null);
+      assert.equal(buildMetadata(directory, module.exports), "unidentified");
+      assert.equal(treeReads, 2);
+    }
+  });
+});
+
 test("caller source and Git environment overrides cannot bind a different checkout", () => {
   withRepository(({ directory, revision }) => {
     withRepository(({ directory: other, git: otherGit }) => {

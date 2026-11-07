@@ -259,7 +259,7 @@ support requires an explicit reviewed trust design and is not supported in this 
 
 ### An older registry-based install command fails
 
-See [distribution status](distribution-status.md) for dated npm, Homebrew, crates.io, and MCP Registry evidence. Prefer the checksum-verified `v0.7.9` GitHub assets for an exact install.
+See [distribution status](distribution-status.md) for dated npm, Homebrew, crates.io, and MCP Registry evidence. Prefer the checksum-verified `v0.8.7` GitHub assets for an exact install.
 
 1. Select the matching asset in [getting started](./getting-started.md#install).
 2. Verify its adjacent `.sha256` checksum before executing either binary.
@@ -272,7 +272,7 @@ See [distribution status](distribution-status.md) for dated npm, Homebrew, crate
 ```yaml
 - name: Set up Phantom
   run: |
-    cargo install --locked --git https://github.com/ashlrai/phantom-secrets.git --rev 7a51ce512ec4aee12cc29ff859036af63fbe93db phantom-secrets
+    cargo install --locked --git https://github.com/ashlrai/phantom-secrets.git --rev a6a0413991c0bd7f3d6601f467c0b5770d0dce0c phantom-secrets
     echo "PHANTOM_VAULT_PASSPHRASE=${{ secrets.PHANTOM_VAULT_PASSPHRASE }}" >> $GITHUB_ENV
     phantom pull --from vercel --project ${{ vars.VERCEL_PROJECT_ID }}
   env:
@@ -283,7 +283,7 @@ See [distribution status](distribution-status.md) for dated npm, Homebrew, crate
 
 ```dockerfile
 # Install phantom
-RUN cargo install --locked --git https://github.com/ashlrai/phantom-secrets.git --rev 7a51ce512ec4aee12cc29ff859036af63fbe93db phantom-secrets
+RUN cargo install --locked --git https://github.com/ashlrai/phantom-secrets.git --rev a6a0413991c0bd7f3d6601f467c0b5770d0dce0c phantom-secrets
 
 # Set passphrase for encrypted vault (pass at runtime, not build time)
 ENV PHANTOM_VAULT_PASSPHRASE=""
@@ -562,7 +562,7 @@ An npm-owned binary is also not replaced in place because the wrapper would over
 Older shared-root installs may have no receipt. Phantom recognizes a structurally valid legacy npm manifest, but otherwise reports an ambiguous legacy install and fails closed. Re-running a checksum-verified direct installer establishes the receipt without relying on a path guess.
 
 For Homebrew installs, use the reviewed tap and fully qualified formula. The
-formula currently publishes `v0.7.9`; direct GitHub assets remain available for
+formula was last observed publishing `v0.7.9`; direct GitHub assets remain available for
 explicit checksum verification:
 
 ```bash

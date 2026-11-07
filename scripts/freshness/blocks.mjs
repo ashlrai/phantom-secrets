@@ -62,7 +62,7 @@ export const GENERATORS = new Map([
       type: "version-badge",
       render: (ctx) =>
         [
-          `[![Verified GitHub release](https://img.shields.io/badge/verified_GitHub_release-${ctx.tag}-2f81f7?style=for-the-badge&labelColor=0b0b14)](${RELEASES}/tag/${ctx.tag})`,
+          `[![Verified GitHub release](https://img.shields.io/badge/verified_GitHub_release-${ctx.publicRelease.tag}-2f81f7?style=for-the-badge&labelColor=0b0b14)](${RELEASES}/tag/${ctx.publicRelease.tag})`,
           `[![Source version](https://img.shields.io/badge/source_version-${ctx.tag}-f5a623?style=for-the-badge&labelColor=0b0b14)](CHANGELOG.md#${ctx.release.anchor})`,
         ].join("\n"),
     },
@@ -71,14 +71,14 @@ export const GENERATORS = new Map([
     "readme-release-asset-table",
     {
       type: "version-table",
-      render: (ctx) => assetTable(ctx.tag, "macOS Apple Silicon"),
+      render: (ctx) => assetTable(ctx.publicRelease.tag, "macOS Apple Silicon"),
     },
   ],
   [
     "docs-release-asset-table",
     {
       type: "version-table",
-      render: (ctx) => assetTable(ctx.tag, "macOS Apple silicon"),
+      render: (ctx) => assetTable(ctx.publicRelease.tag, "macOS Apple silicon"),
     },
   ],
   [
@@ -138,8 +138,8 @@ export const GENERATORS = new Map([
           "```bash",
           "phantom --version",
           "phantom-mcp --version",
-          `# phantom ${ctx.version}`,
-          `# phantom-mcp ${ctx.version}`,
+          `# phantom ${ctx.publicRelease.version}`,
+          `# phantom-mcp ${ctx.publicRelease.version}`,
           "```",
         ].join("\n"),
     },
@@ -150,9 +150,10 @@ export const GENERATORS = new Map([
       type: "version-pin",
       render: (ctx) =>
         [
-          `This recipe passes against both the ${ctx.tag} release and the workspace build.`,
-          "The install step in the workflow was also run as written on Linux x86_64",
-          `(\`gh release download\`, \`sha256sum -c\`, \`phantom --version\` → \`phantom ${ctx.version}\`).`,
+          `The recipe targets the ${ctx.publicRelease.tag} release.`,
+          "The install step was previously run as written on Linux x86_64 against",
+          "the v0.7.9 release (`gh release download`, `sha256sum -c`, `phantom --version` → `phantom 0.7.9`).",
+          "That historical run does not establish acceptance of a later release.",
         ].join("\n"),
     },
   ],

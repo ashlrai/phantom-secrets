@@ -40,6 +40,39 @@ after(() => {
   }
 });
 
+async function withAuthorizedDeviceFixture(run, { refuseClient = false } = {}) {
+  const React = await import("react");
+  const { cleanup, render, screen } = await import("@testing-library/react");
+  const { default: userEvent } = await import("@testing-library/user-event");
+  const originalFetch = globalThis.fetch;
+  const fixture = { clientCalls: 0, requests: [] };
+  try {
+    globalThis.fetch = async (endpoint, request) => {
+      fixture.requests.push({ endpoint, request });
+      return { ok: true };
+    };
+    const dependencies = {
+      "next/image": { __esModule: true, default: () => null },
+      "next/link": { __esModule: true, default: ({ children, ...props }) => React.createElement("a", props, children) },
+      "@/lib/device-code": compile(path.resolve(dirname, "../../lib/device-code.ts"), runtimeRequire),
+      "@/lib/posthog": { capturePostHog: async () => {} },
+      "@supabase/supabase-js": { createClient() {
+        if (refuseClient) throw new Error("Unexpected client");
+        fixture.clientCalls++;
+        return { auth: { getSession: async () => ({ data: { session: { access_token: "synthetic-session" } }, error: null }) } };
+      } },
+    };
+    const Component = compile(path.join(dirname, "device-authorization-client.tsx"),
+      (name) => dependencies[name] ?? runtimeRequire(name)).default;
+    const user = userEvent.setup();
+    render(React.createElement(Component));
+    await run({ fixture, screen, user });
+  } finally {
+    cleanup();
+    globalThis.fetch = originalFetch;
+  }
+}
+
 test("initial render presents the code input and submission control without a validation error", async () => {
   const React = await import("react");
   const { cleanup, render, screen } = await import("@testing-library/react");
@@ -97,6 +130,27 @@ test("device code input presents its label and format hint", async () => {
   } finally {
     cleanup();
   }
+});
+
+test("invalid-length device codes present accessible format feedback", async () => {
+  const { isInaccessible } = await import("@testing-library/react");
+  await withAuthorizedDeviceFixture(async ({ screen, user }) => {
+    const message = "Enter 8 letters or numbers. The code is displayed as XXXX-XXXX.";
+    const input = screen.getByRole("textbox", { name: "Device code" });
+    for (const [code, displayed] of [["abcd234", "ABCD-234"], ["abcd23456", "ABCD-23456"]]) {
+      await user.clear(input);
+      await user.type(input, code);
+      await user.click(screen.getByRole("button", { name: "Authorize Device" }));
+      const alert = screen.getByRole("alert");
+      assert.equal(alert.textContent, message);
+      assert.equal(isInaccessible(alert), false);
+      assert.equal(input.value, displayed);
+      assert.equal(input.getAttribute("aria-invalid"), "true");
+      assert.equal(screen.getByRole("textbox", {
+        name: "Device code", description: (value) => value.includes(message),
+      }), input);
+    }
+  }, { refuseClient: true });
 });
 
 test("the XXXX-XXXX placeholder is present on and associated with the device-code field", async () => {
@@ -356,33 +410,8 @@ test("surrounding whitespace is removed before displaying and validating a devic
 });
 
 test("corrected device code resubmits past the prior validation error", async () => {
-  const originalFetch = globalThis.fetch;
-  let clientCalls = 0;
-  const requests = [];
-  globalThis.fetch = async (endpoint, request) => {
-    requests.push({ endpoint, request });
-    return { ok: true };
-  };
-
-  const React = await import("react");
-  const { cleanup, render, screen } = await import("@testing-library/react");
-  const { default: userEvent } = await import("@testing-library/user-event");
   const validationError = "Enter 8 letters or numbers. The code is displayed as XXXX-XXXX.";
-  try {
-    const dependencies = {
-      "next/image": { __esModule: true, default: () => null },
-      "next/link": { __esModule: true, default: ({ children, ...props }) => React.createElement("a", props, children) },
-      "@/lib/device-code": compile(path.resolve(dirname, "../../lib/device-code.ts"), runtimeRequire),
-      "@/lib/posthog": { capturePostHog: async () => { /* Analytics is intentionally inert in this test. */ } },
-      "@supabase/supabase-js": { createClient() {
-        clientCalls++;
-        return { auth: { getSession: async () => ({ data: { session: { access_token: "synthetic-session" } }, error: null }) } };
-      } },
-    };
-    const Component = compile(path.join(dirname, "device-authorization-client.tsx"),
-      (name) => dependencies[name] ?? runtimeRequire(name)).default;
-    const user = userEvent.setup();
-    render(React.createElement(Component));
+  await withAuthorizedDeviceFixture(async ({ fixture, screen, user }) => {
     const input = screen.getByRole("textbox", { name: "Device code" });
     const button = screen.getByRole("button", { name: "Authorize Device" });
 
@@ -391,8 +420,8 @@ test("corrected device code resubmits past the prior validation error", async ()
     await user.click(button);
     assert.equal(screen.getByRole("alert").textContent, validationError);
     assert.equal(input.getAttribute("aria-invalid"), "true");
-    assert.equal(clientCalls, 0);
-    assert.equal(requests.length, 0);
+    assert.equal(fixture.clientCalls, 0);
+    assert.equal(fixture.requests.length, 0);
 
     // Correcting the entry leaves the prior error rendered; resubmitting must
     // clear it instead of letting it block the now-valid submission.
@@ -404,16 +433,13 @@ test("corrected device code resubmits past the prior validation error", async ()
 
     assert.ok(await screen.findByRole("heading", { name: "Device Authorized" }));
     assert.equal(screen.queryByRole("alert"), null);
-    assert.equal(clientCalls, 1);
-    assert.equal(requests.length, 1);
-    assert.equal(requests[0].endpoint, "/api/v1/auth/device/approve");
-    assert.equal(requests[0].request.headers.Authorization, "Bearer synthetic-session");
-    assert.deepEqual(JSON.parse(requests[0].request.body), { user_code: "WXYZ6789" });
+    assert.equal(fixture.clientCalls, 1);
+    assert.equal(fixture.requests.length, 1);
+    assert.equal(fixture.requests[0].endpoint, "/api/v1/auth/device/approve");
+    assert.equal(fixture.requests[0].request.headers.Authorization, "Bearer synthetic-session");
+    assert.deepEqual(JSON.parse(fixture.requests[0].request.body), { user_code: "WXYZ6789" });
     assert.equal(dom.window.sessionStorage.length, 0);
-  } finally {
-    cleanup();
-    globalThis.fetch = originalFetch;
-  }
+  });
 });
 
 test("validation remains visible during correction and clears on valid submission", async () => {
@@ -477,6 +503,121 @@ test("validation remains visible during correction and clears on valid submissio
     assert.equal((await screen.findByRole("alert")).textContent, "Unable to read your sign-in session. Please try again.");
     assert.equal(input.value, "ABCD-2345");
     assert.equal(input.disabled, false);
+  } finally {
+    cleanup();
+    globalThis.fetch = originalFetch;
+  }
+});
+
+
+test("pasted hyphenated codes are formatted and validated before authorization", async () => {
+  await withAuthorizedDeviceFixture(async ({ fixture, screen, user }) => {
+    const input = screen.getByRole("textbox", { name: "Device code" });
+    const button = screen.getByRole("button", { name: "Authorize Device" });
+
+    await user.click(input);
+    await user.paste("ab-cd-234");
+    assert.equal(input.value, "ABCD-234");
+    await user.click(button);
+    const alert = screen.getByRole("alert");
+    assert.equal(alert.textContent, "Enter 8 letters or numbers. The code is displayed as XXXX-XXXX.");
+    assert.equal(input.getAttribute("aria-invalid"), "true");
+    assert.ok(input.getAttribute("aria-describedby").split(/\s+/).includes(alert.id));
+    assert.equal(fixture.clientCalls, 0);
+    assert.equal(fixture.requests.length, 0);
+
+    await user.clear(input);
+    await user.paste("ab-cd-2345");
+    assert.equal(input.value, "ABCD-2345");
+    await user.click(button);
+    assert.ok(await screen.findByRole("heading", { name: "Device Authorized" }));
+    assert.equal(screen.queryByRole("alert"), null);
+    assert.equal(fixture.clientCalls, 1);
+    assert.equal(fixture.requests.length, 1);
+    assert.equal(fixture.requests[0].endpoint, "/api/v1/auth/device/approve");
+    assert.deepEqual(JSON.parse(fixture.requests[0].request.body), { user_code: "ABCD2345" });
+  });
+});
+
+test("punctuation outside the displayed format shows validation and prevents submission", async () => {
+  const originalFetch = globalThis.fetch;
+  let clientCalls = 0;
+  let sessionCalls = 0;
+  let requests = 0;
+  globalThis.fetch = async () => { requests++; throw new Error("Unexpected request"); };
+
+  const React = await import("react");
+  const { cleanup, render } = await import("@testing-library/react");
+  const { default: userEvent } = await import("@testing-library/user-event");
+  try {
+    const dependencies = {
+      "next/image": { __esModule: true, default: () => null },
+      "next/link": { __esModule: true, default: ({ children, ...props }) => React.createElement("a", props, children) },
+      "@/lib/device-code": compile(path.resolve(dirname, "../../lib/device-code.ts"), runtimeRequire),
+      "@/lib/posthog": { capturePostHog: async () => { /* Analytics is intentionally inert in this test. */ } },
+      "@supabase/supabase-js": { createClient() {
+        clientCalls++;
+        return { auth: { getSession: async () => {
+          sessionCalls++;
+          return { data: { session: null }, error: new Error("synthetic session error") };
+        } } };
+      } },
+    };
+    const Component = compile(path.join(dirname, "device-authorization-client.tsx"),
+      (name) => dependencies[name] ?? runtimeRequire(name)).default;
+    // user-event and `screen` bind the module-load document; pass this test's
+    // document to setup and query the render result so both target this JSDOM.
+    const user = userEvent.setup({ document: dom.window.document });
+    const view = render(React.createElement(Component));
+    const input = view.getByRole("textbox", { name: "Device code" });
+    const button = view.getByRole("button", { name: "Authorize Device" });
+
+    // Separators the XXXX-XXXX display never shows must not count toward the
+    // eight characters or leave stray punctuation behind in the field.
+    for (const [pasted, displayed] of [
+      ["ABCD-2345-6", "ABCD-23456"],
+      ["AB.CD-EF.G", "ABCD-EFG"],
+      ["ab cd_ef", "ABCD-EF"],
+      ["ABCD–EFGHI", "ABCD-EFGHI"],
+      ["-.-.-.-", ""],
+    ]) {
+      await user.clear(input);
+      await user.click(input);
+      await user.paste(pasted);
+      assert.equal(input.value, displayed);
+      await user.click(button);
+      const alert = view.getByRole("alert");
+      assert.equal(alert.textContent, "Enter 8 letters or numbers. The code is displayed as XXXX-XXXX.");
+      assert.equal(input.getAttribute("aria-invalid"), "true");
+      assert.ok(input.getAttribute("aria-describedby").split(/\s+/).includes(alert.id));
+      assert.equal(input.value, displayed);
+      assert.equal(input.disabled, false);
+      assert.equal(button.disabled, false);
+      assert.equal(clientCalls, 0);
+      assert.equal(sessionCalls, 0);
+      assert.equal(requests, 0);
+      assert.equal(dom.window.sessionStorage.length, 0);
+    }
+
+    await user.clear(input);
+    await user.type(input, "ab.cd.ef");
+    assert.equal(input.value, "ABCD-EF");
+    await user.click(button);
+    assert.equal(view.getByRole("alert").textContent, "Enter 8 letters or numbers. The code is displayed as XXXX-XXXX.");
+    assert.equal(clientCalls, 0);
+    assert.equal(sessionCalls, 0);
+    assert.equal(requests, 0);
+
+    // A corrected code reaches sign-in, so validation alone blocked submission.
+    await user.clear(input);
+    await user.type(input, "wxyz6789");
+    assert.equal(input.value, "WXYZ-6789");
+    await user.click(button);
+    assert.equal((await view.findByRole("alert")).textContent,
+      "Unable to read your sign-in session. Please try again.");
+    assert.equal(clientCalls, 1);
+    assert.equal(sessionCalls, 1);
+    assert.equal(requests, 0);
   } finally {
     cleanup();
     globalThis.fetch = originalFetch;
