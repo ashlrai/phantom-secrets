@@ -461,6 +461,8 @@ phantom setup --client claude     # project MCP; see claude-code.md for v0.7.9 m
 phantom setup --client cursor     # ~/.cursor/mcp.json
 phantom setup --client windsurf   # ~/.codeium/windsurf/mcp_config.json
 phantom setup --client codex      # ~/.codex/config.toml
+phantom setup --client gemini     # ~/.gemini/settings.json
+phantom setup --status            # read-only client wiring status
 phantom setup --client claude --print   # snippet to stdout for any other client
 ```
 

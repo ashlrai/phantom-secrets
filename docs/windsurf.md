@@ -26,14 +26,14 @@ verified path in [getting started](./getting-started.md#install), then run
 phantom setup --client windsurf
 ```
 
-This writes `~/.codeium/windsurf/mcp_config.json` with the `phantom` MCP server entry:
+This writes `~/.codeium/windsurf/mcp_config.json` with a `phantom` MCP server entry. A typical bundled-runtime entry looks like this; setup supplies the actual absolute path:
 
 ```json
 {
   "mcpServers": {
     "phantom": {
-      "command": "phantom-mcp",
-      "args": []
+      "command": "/path/to/phantom",
+      "args": ["mcp", "serve"]
     }
   }
 }
@@ -74,7 +74,7 @@ migration guidance and never kills a process or deletes the record.
 
 ## MCP tools Windsurf can use
 
-Once `phantom-secrets-mcp` is registered, Cascade can call the same runtime
+Once `phantom` is registered, Cascade can call the same runtime
 catalog as other MCP clients. See the [core tool examples in the Claude Code
 guide](./claude-code.md#core-mcp-tools-claude-can-use), and use MCP `tools/list`
 for the canonical catalog.
@@ -84,8 +84,14 @@ Frequently used tools in Windsurf sessions:
 - `phantom_status` — verify `.env` protection state and service mappings (does not open the vault; use `phantom_list_secrets` for stored names)
 - `phantom_list_secrets` — list secret names (values never returned)
 - `phantom_add_secret_interactive` — returns the terminal command to enter a new secret out-of-band
-- `phantom_doctor` — run all health checks; pass `fix=true` to auto-repair safe issues
+- `phantom_doctor`: run health checks; `fix=true` requests gated repairs
 - `phantom_sync` — show which secrets and platforms are configured for deployment sync
+
+Effectful MCP calls, including `phantom_doctor` with `fix=true`, are disabled
+by default. They require `PHANTOM_MCP_EFFECTS=trusted-terminal` set outside
+agent authority, `confirm: true`, and a one-use approval token from an
+attached-terminal `phantom mcp-approve` ceremony outside the agent's shell
+and PTY authority.
 
 ---
 
