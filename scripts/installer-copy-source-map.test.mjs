@@ -48,7 +48,7 @@ test('the mapped PATH function and call site are identical', () => {
 
 test('complete copies match as described in the map', () => {
   const [repository, web] = sources.map((lines) => lines.join('\n'));
-  // The complete copies currently match, including their candidate tags.
+  // Only the reviewed source and published release tags differ.
   assert.ok(repository.includes(`CANDIDATE_TAG="v${sourceVersion}"`));
-  assert.equal(repository, web, 'Review and update the source map for installer drift');
+  assert.equal(repository.replace(`CANDIDATE_TAG="v${sourceVersion}"`, 'CANDIDATE_TAG="v0.8.7"'), web, 'Review and update the source map for installer drift');
 });
