@@ -271,3 +271,5 @@ for (const [file, installer] of Object.entries(copies)) {
     });
   }
 }
+
+import "./installer-path-shell-export.test.mjs";
