@@ -163,6 +163,7 @@ export function textOf(result) {
 export async function main(title, sandbox, steps) {
   let passed = 0;
   try {
+    if (steps.length === 0) throw new Error("recipe has no checks");
     for (const [name, step] of steps) {
       await step();
       passed += 1;

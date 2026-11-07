@@ -8,6 +8,18 @@ import { createClient } from "@supabase/supabase-js";
 const MAX_DEVICE_AUTH_BODY_BYTES = 4_096;
 
 export async function POST(req: Request) {
+  try {
+    return await approveDevice(req);
+  } catch {
+    // Never surface thrown details (database, network, config) to the caller.
+    return Response.json(
+      { error: "Unexpected server error. Please try again." },
+      { status: 500, headers: { "cache-control": "no-store" } }
+    );
+  }
+}
+
+async function approveDevice(req: Request) {
   const commissioningGate = requireHostedService("personal_vaults");
   if (commissioningGate) return commissioningGate;
 

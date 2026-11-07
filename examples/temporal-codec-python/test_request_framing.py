@@ -1,0 +1,128 @@
+"""Bounded codec request framing; synthetic payloads and loopback only."""
+import http.client
+import io
+import socket
+import unittest
+from email.message import Message
+from unittest.mock import AsyncMock, Mock
+
+from codec_server import MAX_BODY_BYTES, make_handler
+import test_cors
+from cors import CorsPolicy
+
+
+class RequestFramingTests(unittest.TestCase):
+    def reject_without_read(self, headers, expected):
+        handler_type = make_handler(Mock())
+        handler = handler_type.__new__(handler_type)
+        handler.path = '/decode'
+        handler.headers = Message()
+        for name, value in headers:
+            handler.headers[name] = value
+        handler.rfile = Mock()
+        handler.send_error = Mock()
+        handler.do_POST()
+        self.assertEqual(handler.send_error.call_args.args[0], expected)
+        handler.rfile.read.assert_not_called()
+
+    def test_header_parser_defect_never_reads_body(self):
+        handler_type = make_handler(Mock())
+        handler = handler_type.__new__(handler_type)
+        handler.path = '/decode'
+        handler.headers = http.client.parse_headers(io.BytesIO(
+            b'Content-Length: 2\r\nBad\r\nTransfer-Encoding: chunked\r\n\r\n'))
+        self.assertTrue(handler.headers.defects)
+        self.assertIsNone(handler.headers.get('Transfer-Encoding'))
+        handler.rfile = Mock()
+        handler.send_error = Mock()
+        handler.do_POST()
+        self.assertEqual(handler.send_error.call_args.args[0], 400)
+        handler.rfile.read.assert_not_called()
+
+    def test_invalid_lengths_never_read(self):
+        for value in ['-1', '+1', '1.0', 'abc', '', '1, 1', '١', '2\v', '2\f', '2\u00a0', '\v2', '2 0', ' \t', '9' * 5000]:
+            with self.subTest(value=value[:20]):
+                self.reject_without_read([('Content-Length', value)],
+                                         413 if value == '9' * 5000 else 400)
+
+    def test_missing_duplicate_and_transfer_encoding_never_read(self):
+        self.reject_without_read([], 411)
+        self.reject_without_read([('Content-Length', '2'), ('Content-Length', '2')], 400)
+        for value in ['chunked', 'identity']:
+            self.reject_without_read([('Content-Length', '2'), ('Transfer-Encoding', value)], 400)
+
+    def test_exact_limit_and_leading_zeros_remain_supported(self):
+        codec = Mock()
+        codec.decode = AsyncMock(return_value=[])
+        handler_type = make_handler(codec)
+        handler = handler_type.__new__(handler_type)
+        handler.path = '/decode'
+        handler.headers = Message()
+        handler.headers['Content-Length'] = '000' + str(MAX_BODY_BYTES)
+        handler.rfile = Mock()
+        handler.rfile.read.return_value = b'{}' + b' ' * (MAX_BODY_BYTES - 2)
+        handler.wfile = Mock()
+        handler.send_response = Mock()
+        handler.send_header = Mock()
+        handler.end_headers = Mock()
+        handler.do_POST()
+        handler.rfile.read.assert_called_once_with(MAX_BODY_BYTES)
+        handler.send_response.assert_called_once_with(200)
+        codec.decode.assert_awaited_once()
+
+    def test_oversize_never_reads(self):
+        for value in [str(MAX_BODY_BYTES + 1), '000' + str(MAX_BODY_BYTES + 1)]:
+            self.reject_without_read([('Content-Length', value)], 413)
+
+
+class RequestFramingHttpTests(unittest.TestCase):
+    start = test_cors.ServerCorsTests.start
+    request = test_cors.ServerCorsTests.request
+    post = test_cors.ServerCorsTests.post
+    BODY = test_cors.ServerCorsTests.BODY
+    def test_http_optional_whitespace_is_accepted(self):
+        port = self.start(CorsPolicy())
+        for value in ['2 ', '2\t', ' \t002\t ']:
+            with self.subTest(value=value):
+                status, _, _ = self.request(port, 'POST', '/decode',
+                                             {'Content-Length': value}, b'{}')
+                self.assertEqual(status, 200)
+
+    def test_http_non_ows_whitespace_is_rejected(self):
+        port = self.start(CorsPolicy())
+        for value in ['2\v', '2\f', '2\u00a0']:
+            with self.subTest(value=value):
+                status, _, _ = self.request(port, 'POST', '/decode',
+                                             {'Content-Length': value}, b'{}')
+                self.assertEqual(status, 400)
+
+    def test_malformed_header_is_rejected_and_server_recovers(self):
+        port = self.start(CorsPolicy())
+        with socket.create_connection(('127.0.0.1', port), timeout=1) as sock:
+            sock.sendall(b'POST /decode HTTP/1.1\r\nHost: localhost\r\n'
+                         b'Content-Length: 2\r\nBad\r\n'
+                         b'Transfer-Encoding: chunked\r\n\r\n{}')
+            response = http.client.HTTPResponse(sock)
+            response.begin()
+            self.assertEqual(response.status, 400)
+            response.read()
+        self.assertEqual(self.post(port)[0], 200)
+
+    def test_negative_length_is_rejected_without_waiting_for_body(self):
+        port = self.start(CorsPolicy())
+        conn = http.client.HTTPConnection('127.0.0.1', port, timeout=1)
+        try:
+            conn.putrequest('POST', '/decode')
+            conn.putheader('Content-Length', '-1')
+            conn.endheaders()
+            response = conn.getresponse()
+            self.assertEqual(response.status, 400)
+            response.read()
+        finally:
+            conn.close()
+        # A rejected request must not leave the single server wedged.
+        self.assertEqual(self.post(port)[0], 200)
+
+
+if __name__ == '__main__':
+    unittest.main()

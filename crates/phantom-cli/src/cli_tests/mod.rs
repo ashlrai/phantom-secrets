@@ -2,4 +2,5 @@
 mod agent;
 mod help;
 mod json;
+mod readme_commands;
 mod validate;

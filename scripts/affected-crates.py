@@ -3,6 +3,7 @@
 import json
 import os
 import sys
+from pathlib import Path
 
 
 def select(metadata, paths):
@@ -48,7 +49,9 @@ def select(metadata, paths):
 
 
 def main():
-    with open(sys.argv[1], encoding='utf-8') as f:
+    # This is a literal filesystem path, including names beginning with '-'.
+    metadata_path = Path(sys.argv[1]).resolve(strict=True)
+    with metadata_path.open(encoding='utf-8') as f:
         metadata = json.load(f)
     paths = [os.fsdecode(p) for p in sys.stdin.buffer.read().split(b'\0') if p]
     result = select(metadata, paths)

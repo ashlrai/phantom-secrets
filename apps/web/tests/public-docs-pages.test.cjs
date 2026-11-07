@@ -141,6 +141,7 @@ test("every public documentation page renders a nonempty primary heading", async
     "@/components/landing/Nav": { Nav: empty },
     "@/components/landing/SiteFooter": { SiteFooter: empty },
     "@/components/landing/CopyButton": { CopyButton: empty },
+    "@/components/landing/AgentQuickstart": { AgentQuickstart: empty },
     "@/components/landing/SecretUseCases": { SecretUseCases: empty },
     "@/components/docs/AskDocumentation": { AskDocumentation: empty },
     "@/lib/workbench-release": { WORKBENCH_RELEASE: null },
@@ -302,6 +303,7 @@ registerPublicDocsLinkLabelTests(async () => {
   const hub = loadComponent("src/app/docs/page.tsx", {
     ...shared,
     "@/components/landing/CopyButton": { CopyButton: empty },
+    "@/components/landing/AgentQuickstart": { AgentQuickstart: empty },
     "@/components/landing/SecretUseCases": loadComponent("src/components/landing/SecretUseCases.tsx", {
       "next/link": Link,
       "@/lib/secret-use-cases": loadComponent("src/lib/secret-use-cases.ts", {}),
@@ -353,6 +355,7 @@ test("rendered documentation navigation points to existing local pages", () => {
     "@/components/landing/Nav": { Nav: empty },
     "@/components/landing/SiteFooter": { SiteFooter: empty },
     "@/components/landing/CopyButton": { CopyButton: empty },
+    "@/components/landing/AgentQuickstart": { AgentQuickstart: empty },
     "@/components/docs/AskDocumentation": { AskDocumentation: empty },
     "@/components/landing/SecretUseCases": { SecretUseCases: empty },
     "@/lib/workbench-release": { WORKBENCH_RELEASE: null },
@@ -436,6 +439,7 @@ test("documented same-origin links resolve to public routes or assets", () => {
     "@/components/landing/Nav": { Nav: empty },
     "@/components/landing/SiteFooter": { SiteFooter: empty },
     "@/components/landing/CopyButton": { CopyButton: empty },
+    "@/components/landing/AgentQuickstart": { AgentQuickstart: empty },
     "@/components/docs/AskDocumentation": { AskDocumentation: empty },
     "@/components/landing/SecretUseCases": loadComponent("src/components/landing/SecretUseCases.tsx", {
       "next/link": Link,

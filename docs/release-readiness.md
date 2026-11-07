@@ -4,6 +4,26 @@ This guide records what the current repository automates and what still needs
 separate evidence. It does not authorize a tag, package publication, Homebrew
 update, signing operation, provider consent, or deployment.
 
+## Version bump, then the existing tag
+
+`.github/workflows/auto-tag.yml` already creates `v<version>` when
+`Cargo.toml` `[workspace.package].version` changes on `main` and every
+required check on that commit is green. It uses the existing
+`ashlr-release` GitHub App (`ASHLR_RELEASE_APP_ID` /
+`ASHLR_RELEASE_APP_KEY`). It does not add a secret. A `v*` tag then runs
+`.github/workflows/release.yml`.
+
+Renovate opens dependency updates from `renovate.json`. Non-major updates
+are set to automerge through the pull request. Major updates stay open.
+That config does not add a workflow secret. The Renovate GitHub App has to
+be installed on the repository for those pull requests to appear.
+
+The tag-creation ruleset `Restrict release tag creation` (`21997435`)
+allows no bypass actor for the token that reads it (`current_user_can_bypass:
+never`). If the release app is not a bypass actor, auto-tag cannot create
+`v*` tags and a release stops there. Do not weaken that ruleset from a
+workflow.
+
 ## Current automated release path
 
 A `v*` tag starts `.github/workflows/release.yml`. Its tag-only wrapper delegates
@@ -73,11 +93,23 @@ the tag-push wrapper and therefore cannot enter a rehearsal run. This is the
 preferred way to find release-only platform failures before requesting a
 consequential tag.
 
+The concrete `0.8.7` examples in this runbook follow the current Cargo/npm source metadata.
+Source-version agreement does not establish release eligibility or permission to publish.
+Dated public-channel receipts remain separate evidence.
+
+Reservation checked on 2026-11-02: the annotated `v0.8.0` tag already exists and
+peels to `1a881e82dad94f766d15c1caea43139b7022e817`. A tag reservation does not
+prove a published GitHub Release or package. The pre-tag command below, run with `v0.8.0`,
+is an illustrative fail-closed check: it must reject this reserved identity.
+Do not reuse, delete, move, or overwrite that tag. Creating a new release identity
+requires a separately reviewed unreserved version, matching source metadata,
+rehearsal evidence, and explicit authorization; this guide selects no such version.
+
 Starting a hosted rehearsal consumes GitHub Actions capacity and therefore
 requires repository authorization. For an approved exact candidate, run:
 
 ```bash
-gh workflow run release-rehearsal.yml -f release_tag=v0.7.9
+gh workflow run release-rehearsal.yml -f release_tag=v0.8.7
 ```
 
 Retain the workflow URL, source SHA, resolved runner images, six native job
@@ -97,7 +129,7 @@ or later on `PATH`; an unavailable, unauthenticated, malformed, or older client
 blocks the preflight rather than treating the reservation as absent:
 
 ```bash
-node scripts/release/pre-tag-preflight.mjs v0.7.9 REHEARSAL_RUN_ID_OR_URL
+node scripts/release/pre-tag-preflight.mjs v0.8.7 REHEARSAL_RUN_ID_OR_URL
 ```
 
 The script never creates or pushes a tag. Only after every gate passes does it
@@ -169,13 +201,14 @@ npm --prefix apps/web run lint
 npm --prefix apps/web test
 npm --prefix apps/web run build
 node --test scripts/installers.test.js
+node --test scripts/installer-syntax.test.mjs
 node --test scripts/examples-first-five-minutes.test.mjs
 node --test scripts/release/native-installer-acceptance.test.mjs
 node --test scripts/release/pre-tag-preflight.test.mjs
 node --test scripts/release/release-rehearsal-contract.test.mjs
 node --test scripts/publish-crates.test.js
 node scripts/check-platform-installers.mjs
-node scripts/release/check-version-parity.mjs v0.7.9
+node scripts/release/check-version-parity.mjs v0.8.7
 git diff --check
 ```
 
@@ -218,14 +251,14 @@ publication tiers are:
 Run the non-publishing gate while preparing a candidate:
 
 ```bash
-./scripts/publish-crates.sh --verify-only --version 0.7.9
+./scripts/publish-crates.sh --verify-only --version 0.8.7
 ```
 
 Use `--allow-dirty` only for local development diagnostics. Before requesting
 publication authorization, perform the read-only crates.io reconciliation:
 
 ```bash
-./scripts/publish-crates.sh --dry-run --version 0.7.9
+./scripts/publish-crates.sh --dry-run --version 0.8.7
 ```
 
 The dry run builds each local `.crate`, queries the exact crates.io package
@@ -256,8 +289,8 @@ normal credentials or `CARGO_REGISTRY_TOKEN` and an exact confirmation value
 are also required:
 
 ```bash
-PHANTOM_PUBLISH_CONFIRM=publish-phantom-secrets-0.7.9 \
-  ./scripts/publish-crates.sh --publish --version 0.7.9
+PHANTOM_PUBLISH_CONFIRM=publish-phantom-secrets-0.8.7 \
+  ./scripts/publish-crates.sh --publish --version 0.8.7
 ```
 
 Do not place the registry token on the command line. The script removes registry
@@ -282,12 +315,21 @@ the exact tagged tarballs from fresh caches on all six native hosts while the
 npm versions are still absent. Only after that prepublication gate passes,
 re-pack both wrappers, stage both under `release-candidate`, inspect the staged
 tarballs, approve each stage with interactive 2FA, and reconcile exact integrity
-and provenance. Both exact public `0.7.9` packages must then pass the separate
+and provenance. Both exact public `0.8.7` packages must then pass the separate
 postpublication six-target npm-channel acceptance gate before any default tag changes. Separately promote the MCP
 wrapper to `latest` first and the primary CLI to `latest` last; verify both
 promotions before removing either candidate tag. Only after all npm gates pass
 should an operator use the separate
 [MCP Registry publication runbook](mcp-registry-publication.md).
+
+The linked npm and MCP Registry runbooks retain version-specific `0.7.8`
+examples. Those older examples, including the MCP manifest-version description,
+are not current `0.8.7` source facts or copy-ready instructions for this candidate.
+Do not mechanically execute or substitute versions in those recipes. Before any
+registry effect, reconcile the exact approved source, tag, package versions,
+manifest, acceptance receipts, and publication authorization for the selected
+identity. Their examples do not establish that any current version is available
+or approved for publication.
 
 Both runbooks keep public reads and local package inspection separate from
 human-approved registry writes. They also define idempotent reconciliation and
