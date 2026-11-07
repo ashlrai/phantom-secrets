@@ -17,9 +17,8 @@ them and this comparison when either copy changes.
 | PATH startup-file update function | [lines 305–428](../scripts/install.sh#L305-L428) | [lines 305–428](../apps/web/public/install.sh#L305-L428) |
 | PATH check and update call | [lines 554–556](../scripts/install.sh#L554-L556) | [lines 554–556](../apps/web/public/install.sh#L554-L556) |
 
-The complete files differ in one place. The repository copy pins
-`CANDIDATE_TAG="v0.8.7"` for the already published and qualified release while the web copy
-stays bound to the evidenced `v0.7.9` release. Both copies extract the
+The complete files match. Both copies pin `CANDIDATE_TAG="v0.8.7"`
+for the evidenced release. Both copies extract the
 release archive with `tar --no-same-owner` and carry the same explanatory
 comment, so a root-run install never keeps the release runner's uid on the
 installed binaries. Stage creation, extraction, the PATH function, and its

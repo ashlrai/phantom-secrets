@@ -141,6 +141,16 @@ test("a source bump cannot advance published claims or download links", (t) => {
   assert.throws(() => loadSources(fixture), /no bound public release version/);
 });
 
+test("recipe freshness keeps execution evidence on its historical release", () => {
+  const output = GENERATORS.get("examples-gate-verified-release").render({
+    publicRelease: { tag: "v9.8.7", version: "9.8.7" },
+  });
+  assert.match(output, /recipe targets the v9\.8\.7 release/);
+  assert.match(output, /previously run[\s\S]*v0\.7\.9/);
+  assert.match(output, /does not establish acceptance of a later release/);
+  assert.doesNotMatch(output, /passes against|phantom 9\.8\.7/);
+});
+
 test("structural marker errors fail closed", () => {
   assert.throws(
     () =>

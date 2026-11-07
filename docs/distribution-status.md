@@ -3,12 +3,15 @@
 Package publication and native acceptance are separate evidence. The source
 candidate identity for this tree is v0.8.7. On November 6, 2026, the exact
 [v0.8.7 release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.8.7)
-was qualified from source `a6a0413991c0bd7f3d6601f467c0b5770d0dce0c`:
+was published at 18:17:06 UTC and qualified from source
+`a6a0413991c0bd7f3d6601f467c0b5770d0dce0c`; annotated tag object
+`60f78437316cdfbd5c5aef43f7a1947a9e35b11f` binds that source:
 [full CI](https://github.com/ashlrai/phantom-secrets/actions/runs/42262122760)
 and the [release workflow](https://github.com/ashlrai/phantom-secrets/actions/runs/42262099223)
 completed, all six native archive targets passed acceptance, and the 19 public
 assets were verified. Both exact npm `0.8.7` packages had verified registry
-signatures and source provenance. This receipt binds that immutable release;
+signatures and source provenance. This review was recorded on November 6.
+This receipt binds that immutable release;
 later source changes and local default aliases are separate observations.
 The dated `0.7.9` records below remain historical, and an unpinned command can
 change independently.

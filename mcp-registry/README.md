@@ -43,8 +43,8 @@ an unpinned npm or package-runner command to configure the current runtime.
 ## Verified local runtime
 
 Install both current binaries from the
-[`v0.7.9` GitHub release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.9).
-The macOS trusted formula is the separately reviewed path (`v0.7.9` since the tap bump):
+[`v0.8.7` GitHub release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.8.7).
+The macOS trusted formula is separately reviewed (observed at `v0.7.9` after the tap bump):
 
 ```bash
 brew tap ashlrai/phantom
@@ -69,10 +69,10 @@ phantom setup --client windsurf
 phantom setup --client codex
 ```
 
-Released `v0.7.9` records its bundled local `phantom mcp serve` command when it
+Released `v0.8.7` records its bundled local `phantom mcp serve` command when it
 can resolve that executable, otherwise it looks for local `phantom-mcp`. Setup
 has no network package-runner fallback and fails closed when no local MCP
-runtime is available. Install both verified `v0.7.9` GitHub release binaries and inspect the
+runtime is available. Install both verified `v0.8.7` GitHub release binaries and inspect the
 generated command.
 
 Manual stdio configuration can call the reviewed local executable:

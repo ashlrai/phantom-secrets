@@ -11,7 +11,7 @@ phantom agent doctor       # verify the repo is safe for AI agents
 phantom exec -- claude     # run Claude Code through the local proxy
 ```
 
-The Homebrew block is the macOS path. See [distribution status](distribution-status.md) for dated npm, Homebrew, crates.io, and MCP Registry evidence. Prefer the checksum-verified `v0.7.9` GitHub assets for an exact install. Select the matching platform asset below on Linux or Windows, or to verify an exact archive directly. A timed Linux walk-through is in [First run](FIRST-RUN.md).
+The Homebrew block is the macOS path. See [distribution status](distribution-status.md) for dated npm, Homebrew, crates.io, and MCP Registry evidence. Prefer the checksum-verified `v0.8.7` GitHub assets for an exact install. Select the matching platform asset below on Linux or Windows, or to verify an exact archive directly. A timed Linux walk-through is in [First run](FIRST-RUN.md).
 
 That's the local setup. Keep agent dotenv reads denied and launch supported API
 work through `phantom exec`; Phantom reduces credential exposure, but it does
@@ -37,7 +37,7 @@ For a detailed breakdown of assets protected, threat actors, mitigations, and kn
 
 ## Install
 
-### Homebrew (macOS; formula currently at v0.7.9)
+### Homebrew (macOS; last observed formula v0.7.9)
 
 ```bash
 brew tap ashlrai/phantom
@@ -45,7 +45,7 @@ brew trust --formula ashlrai/phantom/phantom
 brew install ashlrai/phantom/phantom
 ```
 
-The formula currently installs both `phantom` and `phantom-mcp` from the
+The formula was last observed installing both `phantom` and `phantom-mcp` from the
 immutable [`v0.7.9` release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.9).
 Installs from the former `v0.7.8` formula registered Claude Code MCP in the
 legacy location; after `brew upgrade`, rerun `phantom setup --client claude`
@@ -55,11 +55,11 @@ Releases; use a direct asset below when you want explicit archive verification.
 
 ### Exact GitHub assets (macOS, Linux, and Windows)
 
-The immutable [`v0.7.9` release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.9)
+The immutable [`v0.8.7` release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.8.7)
 contains six native archives, each with a checksum sidecar and SPDX document,
-plus the aggregate [`SHA256SUMS`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9/SHA256SUMS)
+plus the aggregate [`SHA256SUMS`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.7/SHA256SUMS)
 file. All six release targets passed native acceptance before publication in
-[workflow 34153902556](https://github.com/ashlrai/phantom-secrets/actions/runs/34153902556).
+[workflow 42262099223](https://github.com/ashlrai/phantom-secrets/actions/runs/42262099223).
 
 The macOS and Linux installer commands on the [landing page](https://phm.dev/#install)
 create a temporary `phantom-install.*` staging directory under `TMPDIR`, or
@@ -71,14 +71,14 @@ not guaranteed. These details apply to the landing-page commands, not the
 manual archive steps below.
 
 <!-- fresh:begin docs-release-asset-table -->
-| Platform | `v0.7.9` archive | Published checksum |
+| Platform | `v0.8.7` archive | Published checksum |
 |---|---|---|
-| macOS Apple silicon | [`phantom-aarch64-apple-darwin.tar.gz`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9/phantom-aarch64-apple-darwin.tar.gz) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9/phantom-aarch64-apple-darwin.tar.gz.sha256) |
-| macOS Intel | [`phantom-x86_64-apple-darwin.tar.gz`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9/phantom-x86_64-apple-darwin.tar.gz) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9/phantom-x86_64-apple-darwin.tar.gz.sha256) |
-| Linux x86_64 | [`phantom-x86_64-unknown-linux-gnu.tar.gz`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9/phantom-x86_64-unknown-linux-gnu.tar.gz) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9/phantom-x86_64-unknown-linux-gnu.tar.gz.sha256) |
-| Linux ARM64 | [`phantom-aarch64-unknown-linux-gnu.tar.gz`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9/phantom-aarch64-unknown-linux-gnu.tar.gz) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9/phantom-aarch64-unknown-linux-gnu.tar.gz.sha256) |
-| Windows x64 | [`phantom-x86_64-pc-windows-msvc.zip`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9/phantom-x86_64-pc-windows-msvc.zip) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9/phantom-x86_64-pc-windows-msvc.zip.sha256) |
-| Windows ARM64 | [`phantom-aarch64-pc-windows-msvc.zip`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9/phantom-aarch64-pc-windows-msvc.zip) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9/phantom-aarch64-pc-windows-msvc.zip.sha256) |
+| macOS Apple silicon | [`phantom-aarch64-apple-darwin.tar.gz`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.7/phantom-aarch64-apple-darwin.tar.gz) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.7/phantom-aarch64-apple-darwin.tar.gz.sha256) |
+| macOS Intel | [`phantom-x86_64-apple-darwin.tar.gz`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.7/phantom-x86_64-apple-darwin.tar.gz) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.7/phantom-x86_64-apple-darwin.tar.gz.sha256) |
+| Linux x86_64 | [`phantom-x86_64-unknown-linux-gnu.tar.gz`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.7/phantom-x86_64-unknown-linux-gnu.tar.gz) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.7/phantom-x86_64-unknown-linux-gnu.tar.gz.sha256) |
+| Linux ARM64 | [`phantom-aarch64-unknown-linux-gnu.tar.gz`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.7/phantom-aarch64-unknown-linux-gnu.tar.gz) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.7/phantom-aarch64-unknown-linux-gnu.tar.gz.sha256) |
+| Windows x64 | [`phantom-x86_64-pc-windows-msvc.zip`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.7/phantom-x86_64-pc-windows-msvc.zip) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.7/phantom-x86_64-pc-windows-msvc.zip.sha256) |
+| Windows ARM64 | [`phantom-aarch64-pc-windows-msvc.zip`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.7/phantom-aarch64-pc-windows-msvc.zip) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.7/phantom-aarch64-pc-windows-msvc.zip.sha256) |
 <!-- fresh:end -->
 
 Download the archive and its sidecar, then verify before extraction. On Linux,
@@ -90,7 +90,7 @@ Linux x86_64, as one shell script:
 
 ```bash
 archive=phantom-x86_64-unknown-linux-gnu.tar.gz
-base=https://github.com/ashlrai/phantom-secrets/releases/download/v0.7.9
+base=https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.7
 curl -fsSL -o "$archive" "$base/$archive"
 curl -fsSL -o "$archive.sha256" "$base/$archive.sha256"
 sha256sum -c "$archive.sha256"
@@ -110,11 +110,11 @@ the measurement VM are recorded in [First run](FIRST-RUN.md).
 ```bash
 git clone https://github.com/ashlrai/phantom-secrets.git
 cd phantom-secrets
-git checkout 7a51ce512ec4aee12cc29ff859036af63fbe93db
+git checkout a6a0413991c0bd7f3d6601f467c0b5770d0dce0c
 cargo build --release --locked --bin phantom --bin phantom-mcp
 ```
 
-The full SHA above is the source commit resolved by `v0.7.9`. See [distribution status](distribution-status.md) for dated npm, Homebrew, crates.io, and MCP Registry evidence. Prefer the checksum-verified `v0.7.9` GitHub assets for an exact install.
+The full SHA above is the source commit resolved by `v0.8.7`. See [distribution status](distribution-status.md) for dated npm, Homebrew, crates.io, and MCP Registry evidence. Prefer the checksum-verified `v0.8.7` GitHub assets for an exact install.
 
 ### Verify
 
@@ -122,13 +122,13 @@ The full SHA above is the source commit resolved by `v0.7.9`. See [distribution 
 ```bash
 phantom --version
 phantom-mcp --version
-# phantom 0.7.9
-# phantom-mcp 0.7.9
+# phantom 0.8.7
+# phantom-mcp 0.8.7
 ```
 <!-- fresh:end -->
 
-A Homebrew install of the current formula prints `0.7.9`; an install made
-before the tap bump prints `0.7.8` until `brew upgrade`.
+The last dated Homebrew observation recorded `0.7.9`; see the distribution
+status for channel observations. The exact GitHub assets above are `0.8.7`.
 
 ---
 
@@ -464,7 +464,7 @@ phantom setup --client codex      # ~/.codex/config.toml
 phantom setup --client claude --print   # snippet to stdout for any other client
 ```
 
-Install both `v0.7.9` release binaries before setup. Version `0.7.9` records the
+Install both `v0.8.7` release binaries before setup. Version `0.8.7` records the
 running `phantom` executable with `mcp serve` when it can resolve that
 executable, otherwise it looks for a local standalone `phantom-mcp`. Setup has
 no network package-runner fallback and fails closed when neither local runtime
@@ -659,18 +659,18 @@ export, so avoid launching agents outside `phantom exec` while it is set.
 
 ### An older registry-based install command fails
 
-The reviewed binaries ship from the immutable `v0.7.9` GitHub Release, not the
+The reviewed binaries ship from the immutable `v0.8.7` GitHub Release, not the
 older registry tracks. Download and verify the platform asset above, or build
 the exact tagged source:
 
 ```bash
 git clone https://github.com/ashlrai/phantom-secrets.git
 cd phantom-secrets
-git checkout 7a51ce512ec4aee12cc29ff859036af63fbe93db
+git checkout a6a0413991c0bd7f3d6601f467c0b5770d0dce0c
 cargo build --release --locked --bin phantom --bin phantom-mcp
 ```
 
-The full SHA above is the source commit resolved by `v0.7.9`.
+The full SHA above is the source commit resolved by `v0.8.7`.
 
 ### Claude Code cannot read `.env` after setup — is this broken?
 

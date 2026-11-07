@@ -16,7 +16,7 @@ catalog for value-free secret workflows. The current release contract enforces
 
 ### Step 1: install Phantom
 
-Install the reviewed `v0.7.9` binary using the platform-specific, checksum-
+Install the reviewed `v0.8.7` binary using the platform-specific, checksum-
 verified path in [getting started](./getting-started.md#install), then run
 `phantom init` in the project.
 
@@ -56,7 +56,7 @@ configuration before starting automated sessions. See the
 The generated command is a machine-local executable path; review it before
 sharing `.mcp.json` with teammates, whose installed paths may differ.
 
-Install both `v0.7.9` release binaries before setup. Version `0.7.9` records the
+Install both `v0.8.7` release binaries before setup. Version `0.8.7` records the
 running `phantom` executable with `mcp serve` when it can resolve that runtime,
 otherwise it looks for a local `phantom-mcp`. Setup has no network
 package-runner fallback and fails closed when neither local runtime is
@@ -311,7 +311,7 @@ never kills a process or deletes the record.
 
 ## Reference
 
-- MCP setup: `phantom setup --client claude` after installing both `v0.7.9` binaries
+- MCP setup: `phantom setup --client claude` after installing both `v0.8.7` binaries
 - Full command list: [getting-started.md](./getting-started.md)
 - Troubleshooting: [troubleshooting.md](./troubleshooting.md)
 - GitHub: [https://github.com/ashlrai/phantom-secrets](https://github.com/ashlrai/phantom-secrets)

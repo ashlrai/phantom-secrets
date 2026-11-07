@@ -150,9 +150,10 @@ export const GENERATORS = new Map([
       type: "version-pin",
       render: (ctx) =>
         [
-          `This recipe passes against both the ${ctx.publicRelease.tag} release and the workspace build.`,
-          "The install step in the workflow was also run as written on Linux x86_64",
-          `(\`gh release download\`, \`sha256sum -c\`, \`phantom --version\` → \`phantom ${ctx.publicRelease.version}\`).`,
+          `The recipe targets the ${ctx.publicRelease.tag} release.`,
+          "The install step was previously run as written on Linux x86_64 against",
+          "the v0.7.9 release (`gh release download`, `sha256sum -c`, `phantom --version` → `phantom 0.7.9`).",
+          "That historical run does not establish acceptance of a later release.",
         ].join("\n"),
     },
   ],
