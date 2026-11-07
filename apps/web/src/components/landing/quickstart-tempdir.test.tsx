@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -204,5 +204,55 @@ for (const platform of ["macOS", "Linux"]) {
     assert.equal(path.dirname(stage), parent, `${platform}: staged inside the space-containing parent`);
     assert.match(path.basename(stage), /^phantom-install\.[A-Za-z0-9]{6}$/, `${platform}: unique staging name`);
     assert.equal(existsSync(stage), false, `${platform}: fixture and staging directory removed on exit`);
+  });
+}
+
+// A failing mktemp binary is a different cause than a bad TMPDIR: the parent
+// exists and is writable, but the first creation step still cannot produce a
+// staging directory. set -e must then end the subshell nonzero before the
+// download, so the full displayed command runs here verbatim against a PATH
+// stub; the curl spy proves the failure stays ahead of the network.
+for (const platform of ["macOS", "Linux"]) {
+  test(`${platform} command exits nonzero when mktemp itself fails`, (t) => {
+    render(<QuickStart />);
+    let displayed = "";
+    try {
+      const selector = screen.getByRole("group", { name: "Choose an operating system" });
+      fireEvent.click(within(selector).getByRole("button", { name: platform }));
+      const card = screen.getByRole("heading", { level: 3, name: platform }).closest("article");
+      assert.ok(card);
+      const copy = within(card).getByRole("button", { name: /^Copy command:/ });
+      displayed = Array.from(copy.firstElementChild!.childNodes)
+        .filter((node) => node.nodeType === Node.TEXT_NODE)
+        .map((node) => node.textContent)
+        .join("");
+    } finally {
+      cleanup();
+    }
+
+    const tempRoot = mkdtempSync(path.join(tmpdir(), "phantom-mktemp-failure-"));
+    t.after(() => rmSync(tempRoot, { recursive: true, force: true }));
+    const bin = path.join(tempRoot, "bin");
+    mkdirSync(bin);
+    const curlMarker = path.join(tempRoot, "curl-invoked");
+    writeFileSync(
+      path.join(bin, "mktemp"),
+      "#!/bin/sh\nprintf 'stub mktemp: forced failure\\n' >&2\nexit 1\n",
+      { mode: 0o755 },
+    );
+    writeFileSync(
+      path.join(bin, "curl"),
+      `#!/bin/sh\ntouch "${curlMarker}"\nexit 0\n`,
+      { mode: 0o755 },
+    );
+
+    const result = spawnSync("bash", ["-c", displayed], {
+      env: { ...process.env, PATH: `${bin}:/usr/bin:/bin`, HOME: tempRoot, TMPDIR: tempRoot },
+      encoding: "utf8",
+      timeout: 30000,
+    });
+    assert.notEqual(result.status, 0, `${platform}: a failed mktemp must fail the command`);
+    assert.match(result.stderr, /stub mktemp: forced failure/, `${platform}: mktemp is the failing step`);
+    assert.equal(existsSync(curlMarker), false, `${platform}: the download never runs after staging fails`);
   });
 }

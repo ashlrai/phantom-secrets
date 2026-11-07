@@ -2,13 +2,13 @@
 
 This is the canonical map for Phantom's repository documentation. Start with the shortest guide that matches your task, then use the security and architecture material when evaluating trust boundaries.
 
-Release-state snapshot verified on 2026-09-29: the immutable GitHub release
-`v0.7.9` resolves to source commit
-`7a51ce512ec4aee12cc29ff859036af63fbe93db`. Its exact 19-asset set, all six
+Release-state snapshot verified on 2026-11-06: the immutable GitHub release
+`v0.8.7` resolves to source commit
+`a6a0413991c0bd7f3d6601f467c0b5770d0dce0c`. Its exact 19-asset set, all six
 native release rows, checksums, archive-specific SPDX SBOMs, and GitHub
-provenance and SPDX attestations are bound to that immutable release by
-[workflow 34153902556](https://github.com/ashlrai/phantom-secrets/actions/runs/34153902556).
-See [distribution status](distribution-status.md) for dated npm, Homebrew, crates.io, and MCP Registry evidence. Prefer the checksum-verified `v0.7.9` GitHub assets for an exact install. The GitHub receipt alone does not establish hosted-service commissioning, provider activation, certification, or customer acceptance.
+archive provenance attestations are bound to that immutable release by
+[workflow 42262099223](https://github.com/ashlrai/phantom-secrets/actions/runs/42262099223).
+See [distribution status](distribution-status.md) for dated npm, Homebrew, crates.io, and MCP Registry evidence. Prefer the checksum-verified `v0.8.7` GitHub assets for an exact install. The GitHub receipt alone does not establish hosted-service commissioning, provider activation, certification, or customer acceptance.
 
 ## Start here
 
@@ -64,7 +64,7 @@ See [distribution status](distribution-status.md) for dated npm, Homebrew, crate
 | Diagnose an install, vault, proxy, or cloud problem | [Troubleshooting](troubleshooting.md) |
 | Run LiteLLM as an optional gateway that never holds a real key (experimental) | [LiteLLM gateway](litellm.md) |
 | Use Phantom with AI agents: exec, the proxy, LiteLLM, Temporal and post-quantum TLS, each claim tied to a test | [Phantom with agents](phantom-with-agents.md) |
-| Understand the provider-grant design and 0.7.9 universal hard denial | [Provider grants](grants-spec.md) |
+| Understand the provider-grant design and 0.8.7 universal hard denial | [Provider grants](grants-spec.md) |
 | Understand components, trust boundaries, and activation status | [Architecture](architecture.md) |
 | Review the Rama-derived network engineering standard and adoption gates | [Rama design standard](rama-design-standard.md) |
 | Understand supported operating systems, architectures, and current validation | [Platform support](platform-support.md) |
@@ -94,7 +94,7 @@ These guides cover installation, MCP setup, the value-blind tool model, and dail
 
 The small conversation facade and the advanced MCP compatibility catalog are separate contracts. `phantom_do` is proposal-only and does not execute an action. `phantom_setup_workspace` can propose, create a bearerless request, or report status; applying that request requires a separate attached trusted terminal. Effectful advanced tools are disabled by default; `PHANTOM_MCP_EFFECTS=trusted-terminal` may enable their confirmation and one-use approval gates only when configured outside agent authority. Approval requires attached stdin/stderr, an informed value-blind summary, and a fresh typed challenge. A same-user shell or agent-controlled PTY can defeat the ceremony, so the approval command and storage must also be outside agent authority.
 
-Provider issuance is not active in 0.7.9: every live enrollment exchange,
+Provider issuance is not active in 0.8.7: every live enrollment exchange,
 issuance, refresh, renewal, rotation, and revocation path is hard-denied before
 provider credential or network access. A **provider grant** is design-era
 lifecycle metadata; an **authority grant** is the inactive execution-kernel
@@ -118,6 +118,7 @@ and retains historical design-status language.
 - [Device code display example](device-code-display-example.md)
 - [Device code display reference](device-code-display-reference.md)
 - [Device authorization input hint](device-code-input-hint.md)
+- [Device authorization page UI](device-code-ui.md)
 - [Vercel and Railway sync](sync.md)
 - [CI/CD integration](ci-cd.md)
 - [Shell prompt integration](shell-prompt.md)
@@ -161,7 +162,7 @@ or production acceptance.
   response targets, and known limitations
 - [Roadmap](../ROADMAP.md) — staged, gated, and exploratory milestones without
   delivery-date or activation claims
-- [Citation metadata](../CITATION.cff) — cite the reviewed `v0.7.9` release, or
+- [Citation metadata](../CITATION.cff) — cite the reviewed `v0.8.7` release, or
   include the exact commit SHA when discussing later unreleased source
 
 No donation or sponsorship program is represented by repository metadata at

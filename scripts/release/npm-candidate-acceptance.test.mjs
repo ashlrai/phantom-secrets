@@ -8,6 +8,7 @@ import test from "node:test";
 import {
   NPM_ACCEPTANCE_TARGETS,
   buildCandidateChildEnv,
+  expectedPackFiles,
   localTarballSpec,
   validateAcceptanceConfig,
   validateCandidateTagState,
@@ -269,6 +270,23 @@ test("local package receipts enforce the exact five-file wrapper closure", () =>
       ),
     /closed package contract/,
   );
+});
+
+test("0.8.4 adds exactly the package-local metadata helper while historical closures stay unchanged", () => {
+  const historical = ["LICENSE", "README.md", "bin/cli.js", "install.js", "package.json"];
+  const current = [...historical, "bin/package-version.js"].sort();
+  for (const version of ["0.7.8", "0.8.2", "0.8.3"]) assert.deepEqual(expectedPackFiles(version), historical);
+  for (const version of ["0.8.4", "0.8.5", "0.9.0", "1.0.0", "999999999999999999999.0.0"]) assert.deepEqual(expectedPackFiles(version), current);
+  for (const version of ["00.8.4", "0.8.4\n", "0.8.4-rc.1", "../0.8.4", null, 84]) assert.throws(() => expectedPackFiles(version));
+  for (const name of ["phantom-secrets", "phantom-secrets-mcp"]) {
+    const pack = { name, version: "0.8.4", filename: `${name}-0.8.4.tgz`, entryCount: 6,
+      integrity: primaryIntegrity, shasum: "b".repeat(40), files: current.map(path => ({ path })) };
+    assert.equal(validatePackReceipt([pack], name, "0.8.4"), pack);
+    for (const files of [historical, [...current, "unexpected.js"], [...historical, "bin/different.js"], [...current, "bin/package-version.js"]]) {
+      assert.throws(() => validatePackReceipt([{ ...pack, entryCount: files.length, files: files.map(path => ({ path })) }], name, "0.8.4"), /closed package contract/);
+    }
+    assert.throws(() => validatePackReceipt([{ ...pack, version: "0.8.3", filename: `${name}-0.8.3.tgz` }], name, "0.8.3"), /closed package contract/);
+  }
 });
 
 test("receipts bind mode, tag source, release assets, tag snapshots, package bytes, and cache bytes", () => {

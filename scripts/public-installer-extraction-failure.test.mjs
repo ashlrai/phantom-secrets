@@ -36,9 +36,11 @@ test('public installer leaves an existing executable untouched when extraction f
     const realTar = execFileSync('/bin/sh', ['-c', 'command -v tar'], { encoding: 'utf8' }).trim();
     writeFileSync(join(stubs, 'tar'), [
       '#!/bin/sh',
-      'case "$1" in',
-      '  -x*) echo "stub tar: extraction failed" >&2; exit 2 ;;',
-      'esac',
+      'for arg; do',
+      '  case "$arg" in',
+      '    -xzf) echo "stub tar: extraction failed" >&2; exit 2 ;;',
+      '  esac',
+      'done',
       `exec "${realTar}" "$@"`,
       '',
     ].join('\n'));
