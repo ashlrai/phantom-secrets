@@ -17,6 +17,40 @@ See [distribution status](distribution-status.md) for dated npm, Homebrew, crate
 | Run GitHub PR operations through Phantom with curl | [GitHub box runners](github-box-runners.md) |
 | Protect a project for the first time | [Getting started](getting-started.md) |
 | Understand the landing-page install commands | [Quickstart reading guide](quickstart-reading-guide.md) |
+| Locate and compare the landing-page command controls | [Quickstart command presentation](quickstart-command-presentation.md) |
+| Read and copy multiline commands for each platform | [Quickstart command rendering](quickstart-command-rendering.md) |
+| Review quickstart platform rendering and line breaks | [Quickstart rendering review](quickstart-rendering-review.md) |
+| Follow the order of quickstart staging and cleanup | [Quickstart command sequence](quickstart-command-sequence.md) |
+| Copy the landing-page install command safely | [Quickstart copy checklist](quickstart-copy-checklist.md) |
+| Review platform labels, readability, and cleanup | [Quickstart reader checklist](quickstart-reader-checklist.md) |
+| Review the clarity of landing-page installation copy | [Quickstart copy review](quickstart-copy-review.md) |
+| Maintain landing-page quickstart content after a change | [Quickstart content maintenance](quickstart-content-maintenance.md) |
+| Review platform-specific landing-page copy | [Quickstart platform copy review](quickstart-platform-copy-review.md) |
+| Review landing-page quickstart accessibility | [Quickstart accessibility review](quickstart-accessibility-review.md) |
+| Compare the landing-page install commands by platform | [Quickstart platform comparison](quickstart-platform-comparison.md) |
+| Find each landing-page platform section and command block | [Quickstart platform sections](quickstart-platform-sections.md) |
+| Map displayed quickstart steps to their platform and source | [Quickstart platform step map](quickstart-platform-step-map.md) |
+| Understand when quickstart commands use temporary directories | [Quickstart temporary directory usage](quickstart-temp-directory-usage.md) |
+| Review temporary installer cleanup by platform | [Quickstart cleanup review](quickstart-temp-cleanup-review.md) |
+| Find the displayed installer staging and cleanup steps | [Quickstart staging and cleanup](quickstart-stage-cleanup.md) |
+| Identify the quickstart temporary directory template and cleanup trap | [Quickstart temporary directory note](quickstart-temp-directory-note.md) |
+| Trace each displayed command's staging lifecycle | [Quickstart staging lifecycle](quickstart-staging-lifecycle.md) |
+| Locate and compare temporary directory snippets | [Quickstart staging snippet count](quickstart-stage-snippet-count.md) |
+| Compare shared and platform-specific staging lines | [Quickstart staging comparison](quickstart-staging-comparison.md) |
+| Keep both displayed staging commands consistent | [Quickstart staging copy check](quickstart-staging-copy-check.md) |
+| Understand the Unix quickstart temporary directory fallback | [Quickstart temporary directory fallback](quickstart-temp-fallback.md) |
+| Compare quickstart temporary prefixes and fallbacks | [Quickstart temporary prefix reference](quickstart-temp-prefix-reference.md) |
+| Locate temporary installer files and their environment inputs | [Installer temporary locations](installer-temp-environment.md) |
+| Find staging and PATH-update temporary paths in both Unix installers | [Installer temporary paths](installer-temporary-paths.md) |
+| Identify PATH update temporary files and their cleanup | [Installer PATH update reference](installer-path-update-reference.md) |
+| Review both Unix installer copies after edits | [Installer copy maintenance](installer-copy-maintenance.md) |
+| Review failure-reporting questions for Unix PATH setup | [Installer PATH update questions](installer-path-update-questions.md) |
+| Find the Unix installer's staging parent and directory name | [Installer stage parent](installer-stage-parent.md) |
+| Reference the repository installer's staging directory | [Installer staging directory reference](installer-staging-directory-reference.md) |
+| Interpret the Unix installer staging prefix | [Installer staging prefix](installer-staging-prefix.md) |
+| Identify the staging prefix and parent in each Unix installer copy | [Installer staging prefixes](installer-staging-prefixes.md) |
+| Follow the public Unix installer staging and cleanup flow | [Public installer staging flow](public-installer-staging-flow.md) |
+| Review cleanup questions for the public Unix installer | [Public installer staging questions](public-installer-staging-questions.md) |
 | See a measured Linux install and the agent-CLI audit | [First run](FIRST-RUN.md) |
 | Compare install, exec, and memory with dotenvx and SOPS | [Benchmarks](BENCHMARKS.md) |
 | Delegate one bounded task to an AI coding client | [Safe delegation quickstart](delegation-quickstart.md) |
@@ -79,7 +113,11 @@ and retains historical design-status language.
 - [Security evaluation](security-evaluation.md)
 - [Cloud login](login.md)
 - [Device authorization code format](device-code-format.md)
-- [Device authorization page UI](device-code-ui.md)
+- [Readable device authorization code format](device-code-readable-format.md)
+- [Device code readability](device-code-readability.md)
+- [Device code display example](device-code-display-example.md)
+- [Device code display reference](device-code-display-reference.md)
+- [Device authorization input hint](device-code-input-hint.md)
 - [Vercel and Railway sync](sync.md)
 - [CI/CD integration](ci-cd.md)
 - [Shell prompt integration](shell-prompt.md)

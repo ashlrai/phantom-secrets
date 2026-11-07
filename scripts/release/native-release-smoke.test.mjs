@@ -77,12 +77,29 @@ const expected = Object.freeze({
 });
 
 function job(source, name, next) {
-  const start = source.indexOf(`\n  ${name}:\n`);
-  assert.notEqual(start, -1, `missing ${name} job`);
-  if (!next) return source.slice(start);
-  const end = source.indexOf(`\n  ${next}:\n`, start + 1);
-  assert.notEqual(end, -1, `missing ${next} job after ${name}`);
-  return source.slice(start, end);
+  const headers = [...source.matchAll(/^  ([A-Za-z_][A-Za-z0-9_-]*):\r?$/gm)];
+  const matches = headers.filter((header) => header[1] === name);
+  assert.equal(matches.length, 1, `one ${name} job`);
+  const index = headers.indexOf(matches[0]);
+  if (next) assert.ok(headers.slice(index + 1).some((header) => header[1] === next),
+    `missing ${next} job after ${name}`);
+  return source.slice(matches[0].index, headers[index + 1]?.index ?? source.length);
+}
+
+function assertDependencies(block, expected) {
+  const rows = block.split(/\r?\n/).filter((line) => /^    needs\s*:/.test(line));
+  assert.equal(rows.length, 1, "one direct dependency declaration");
+  const match = /^    needs: \[([a-z][a-z0-9-]*(?:,\s*[a-z][a-z0-9-]*)*)\]$/.exec(rows[0]);
+  assert.ok(match, "direct dependencies must be an explicit closed inline list");
+  const dependencies = match[1].split(/,\s*/);
+  assert.deepEqual(dependencies.toSorted(), expected.toSorted(), "exact prerequisite set");
+}
+
+function assertAttestationPrerequisites(source) {
+  assertDependencies(job(source, "attest"), ["qualify", "build-and-verify"]);
+  const reusable = job(source, "build-and-verify");
+  assert.deepEqual(reusable.split(/\r?\n/).filter((line) => /^    uses\s*:/.test(line)),
+    ["    uses: ./.github/workflows/release-build.yml"], "exact reusable build contract");
 }
 
 function matrixRows(jobText) {
@@ -389,18 +406,39 @@ test("every native release runner exercises both npm wrappers without publicatio
 test("attestation cannot begin before every build and native acceptance succeeds", () => {
   const verificationJob = job(workflow, "verify-artifacts");
   const attestJob = job(releaseWorkflow, "attest", "release");
-  assert.match(verificationJob, /\n    needs: \[build, native-acceptance\]\n/);
-  assert.match(attestJob, /\n    needs: build-and-verify\n/);
-  assert.match(
-    releaseWorkflow,
-    /build-and-verify:\n(?:.|\n)*?uses: \.\/\.github\/workflows\/release-build\.yml/m,
-  );
+  assertDependencies(verificationJob, ["build", "native-acceptance"]);
+  assertAttestationPrerequisites(releaseWorkflow);
   assert.doesNotMatch(verificationJob, /continue-on-error:/);
   assert.doesNotMatch(attestJob, /continue-on-error:/);
+  assert.doesNotMatch(job(releaseWorkflow, "verify-attestations"), /continue-on-error:/);
   assert.doesNotMatch(
     job(workflow, "native-acceptance", "verify-artifacts"),
     /continue-on-error:/,
   );
+});
+
+test("attestation prerequisites cannot be satisfied by comments, duplicate rows or another job", () => {
+  const actual = job(releaseWorkflow, "attest");
+  const row = "    needs: [qualify, build-and-verify]";
+  assert.ok(actual.includes(row));
+  for (const replacement of ["", "    needs: build-and-verify", "    needs: qualify",
+    "    needs: [qualify]", "    needs: [build-and-verify]", "    needs: [qualify, wrong-job]",
+    "    needs: [qualify, build-and-verify, qualify]", "    needs: [qualify, build-and-verify, extra]",
+    `${row}\n${row}`, `    # needs: [qualify, build-and-verify]`]) {
+    const mutant = releaseWorkflow.replace(actual, actual.replace(row, replacement));
+    assert.throws(() => assertAttestationPrerequisites(mutant));
+  }
+  assertAttestationPrerequisites(releaseWorkflow.replace(actual,
+    actual.replace(row, "    needs: [build-and-verify, qualify]")));
+  const wrongJob = releaseWorkflow.replace(actual, actual.replace(row, "    needs: [qualify]")) +
+    "\n  unrelated:\n    needs: [qualify, build-and-verify]\n";
+  assert.throws(() => assertAttestationPrerequisites(wrongJob));
+  assert.throws(() => assertAttestationPrerequisites(releaseWorkflow + actual));
+  const reusable = job(releaseWorkflow, "build-and-verify");
+  const wrongReusable = releaseWorkflow.replace(reusable,
+    reusable.replace("uses: ./.github/workflows/release-build.yml", "uses: ./.github/workflows/other.yml")) +
+    "\n  unrelated:\n    uses: ./.github/workflows/release-build.yml\n";
+  assert.throws(() => assertAttestationPrerequisites(wrongReusable));
 });
 
 test("platform documentation binds the immutable release receipt to every native row", () => {

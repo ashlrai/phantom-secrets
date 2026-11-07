@@ -130,7 +130,7 @@ export function checkReadmeSurface(text, file = 'README.md') {
 
 export function checkVersion(text) {
   const version = readFileSync(resolve(root, 'Cargo.toml'), 'utf8').match(/\[workspace.package\]\s*version = "([^"]+)"/)[1];
-  return text.includes(`GitHub v${version} assets`) &&
+  return text.includes(`candidate identity for this tree is v${version}`) &&
     text.includes('latest: 0.7.9') && text.includes('release-candidate: 0.7.4')
     ? [] : ['distribution status: missing release version or verified npm tags'];
 }

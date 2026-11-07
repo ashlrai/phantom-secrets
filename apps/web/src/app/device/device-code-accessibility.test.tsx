@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
-import type { ComponentProps, ComponentType } from "react";
+import { createElement, type ComponentProps, type ComponentType } from "react";
 import test, { after, afterEach } from "node:test";
 import { compileFunction } from "node:vm";
 import ts from "typescript";
@@ -48,10 +48,9 @@ function compile(filename: string, localRequire: NodeRequire) {
 
 function renderDevice(getSession: () => Promise<unknown>) {
   const dirname = path.dirname(__filename);
-  const React = runtimeRequire("react") as typeof import("react");
   const dependencies: Record<string, unknown> = {
     "next/image": { __esModule: true, default: () => null },
-    "next/link": { __esModule: true, default: ({ children, ...props }: ComponentProps<"a">) => React.createElement("a", props, children) },
+    "next/link": { __esModule: true, default: ({ children, ...props }: ComponentProps<"a">) => createElement("a", props, children) },
     "@/lib/device-code": compile(path.resolve(dirname, "../../lib/device-code.ts"), runtimeRequire),
     "@/lib/posthog": { capturePostHog: async () => {} },
     "@supabase/supabase-js": { createClient: () => ({ auth: { getSession } }) },
@@ -118,4 +117,26 @@ test("an approval error is announced and clears when a corrected code is submitt
   assert.equal(sessions, 2);
   resolveRetry({ data: { session: null }, error: { message: "Synthetic retry failure" } });
   assert.ok(await screen.findByRole("alert"));
+});
+
+test("the accessible name comes from the visible label, not the placeholder or an override", () => {
+  renderDevice(async () => { throw new Error("Unexpected sign-in"); });
+  const input = screen.getByRole("textbox", { name: "Device code" });
+  const label = document.querySelector(`label[for="${input.id}"]`);
+  assert.ok(label, "a <label> must target the device-code input");
+  assert.equal(label.textContent?.trim(), "Device code");
+  assert.equal(input.getAttribute("aria-label"), null);
+  assert.equal(input.getAttribute("aria-labelledby"), null);
+  assert.equal(input.getAttribute("placeholder"), "XXXX-XXXX");
+  assert.equal(screen.getAllByRole("textbox").length, 1);
+});
+
+test("the input keeps its accessible name while sign-in is in progress", async () => {
+  renderDevice(() => new Promise(() => {}));
+  const user = userEvent.setup();
+  await user.type(screen.getByRole("textbox", { name: "Device code" }), "ABCD1234");
+  await user.click(screen.getByRole("button", { name: "Authorize Device" }));
+  const busyInput = await screen.findByRole("textbox", { name: "Device code" });
+  assert.equal((busyInput as HTMLInputElement).disabled, true);
+  assert.equal((busyInput as HTMLInputElement).value, "ABCD-1234");
 });

@@ -44,45 +44,73 @@ pub fn init_project(dir: &TempDir, passphrase: &str) {
 /// Build a CLI command scoped to a temporary project and test vault.
 #[allow(dead_code)] // Common is compiled once per integration-test binary.
 pub fn phantom(dir: &TempDir, passphrase: &str) -> assert_cmd::Command {
+    phantom_with_home(dir, dir, passphrase)
+}
+
+/// Build a CLI command whose machine profile lives in `home`, a directory
+/// separate from the project directory in `dir`.
+///
+/// Tests that assert a rejected invocation leaves the project tree untouched
+/// need this: the Windows Known-Folder resolver requires both AppData
+/// folders to exist, so `phantom` creates them under the profile — which
+/// must not be the project directory for those assertions to hold.
+#[allow(dead_code)] // Common is compiled once per integration-test binary.
+pub fn phantom_with_home(dir: &TempDir, home: &TempDir, passphrase: &str) -> assert_cmd::Command {
+    // Known Folders expands USERPROFILE and verifies both AppData folders.
+    // Use an ordinary Win32 path: canonical temp roots may carry `\\?\`.
+    let profile = profile_path(home.path());
+    #[cfg(windows)]
+    for folder in ["Roaming", "Local"] {
+        std::fs::create_dir_all(profile.join("AppData").join(folder)).unwrap();
+    }
     let mut command = assert_cmd::Command::cargo_bin("phantom").expect("binary not found");
     command
         .current_dir(dir.path())
         .env("PHANTOM_VAULT_PASSPHRASE", passphrase)
-        .env("HOME", dir.path())
-        .env("USERPROFILE", dir.path())
-        .env("APPDATA", dir.path().join("appdata"))
-        .env("LOCALAPPDATA", dir.path().join("localappdata"))
-        .env("XDG_DATA_HOME", dir.path().join("data"));
+        .env("HOME", home.path())
+        .env("USERPROFILE", &profile)
+        .env("APPDATA", profile.join("AppData/Roaming"))
+        .env("LOCALAPPDATA", profile.join("AppData/Local"))
+        .env("XDG_DATA_HOME", home.path().join("data"));
     command
 }
 
-/// Locate only this fixture project's vault, including an empty vault's lock.
-/// Windows Known Folders ignore the child's directory overrides; use the same
-/// platform resolver as the backend rather than searching the temporary HOME.
+/// Windows profile APIs expect ordinary drive/UNC paths, unlike filesystem APIs
+/// which also accept canonical verbatim paths. Preserve UNC's leading slashes.
+#[allow(dead_code)]
+pub fn profile_path(path: &std::path::Path) -> std::path::PathBuf {
+    #[cfg(windows)]
+    {
+        use std::path::{Component, Prefix};
+        let mut components = path.components();
+        if let Some(Component::Prefix(prefix)) = components.next() {
+            let ordinary = match prefix.kind() {
+                Prefix::VerbatimDisk(drive) => format!("{}:", char::from(drive)),
+                Prefix::VerbatimUNC(server, share) => {
+                    let mut root = std::path::PathBuf::from(r"\\");
+                    root.push(server);
+                    root.push(share);
+                    return root.join(components.as_path());
+                }
+                _ => return path.to_path_buf(),
+            };
+            return std::path::PathBuf::from(ordinary).join(components.as_path());
+        }
+    }
+    path.to_path_buf()
+}
+
+/// Exact data directory selected by the environment in `phantom()`.
+/// Never search the operator's vault or accept an unrelated fallback file.
 #[allow(dead_code)]
 pub fn encrypted_file(dir: &TempDir, project_id: &str) -> std::path::PathBuf {
     #[cfg(windows)]
-    {
-        let _ = dir;
-        phantom_vault::encrypted_file_vault_path(project_id).unwrap()
-    }
-    #[cfg(not(windows))]
-    {
-        fn find(root: &std::path::Path, project_id: &str) -> Option<std::path::PathBuf> {
-            let path = root.join("vaults").join(format!("{project_id}.vault"));
-            if path.is_file() || path.with_extension("lock").is_file() {
-                return Some(path);
-            }
-            for entry in std::fs::read_dir(root).unwrap() {
-                let entry = entry.unwrap();
-                if entry.file_type().unwrap().is_dir() {
-                    if let Some(path) = find(&entry.path(), project_id) {
-                        return Some(path);
-                    }
-                }
-            }
-            None
-        }
-        find(dir.path(), project_id).expect("init provisioned this project's encrypted-file vault")
-    }
+    let base = profile_path(dir.path()).join("AppData/Roaming/phantom/phantom-secrets/data");
+    #[cfg(target_os = "macos")]
+    let base = dir
+        .path()
+        .join("Library/Application Support/ai.phantom.phantom-secrets");
+    #[cfg(not(any(windows, target_os = "macos")))]
+    let base = dir.path().join("data/phantom-secrets");
+    base.join("vaults").join(format!("{project_id}.vault"))
 }

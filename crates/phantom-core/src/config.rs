@@ -758,6 +758,30 @@ const TRUSTED_PROXY_SERVICES: &[TrustedProxyDefinition] = &[
         header: "Authorization",
         header_format: "Bearer {secret}",
     },
+    // Fleet exec routes (FLEET-EXEC-ROUTES-DRAFT-20261101): one vault name, one
+    // upstream, one fixed auth header each. Telegram needs path injection and is
+    // intentionally not here yet.
+    TrustedProxyDefinition {
+        name: "fleet_devin",
+        secret_key: "DEVIN_API_KEY",
+        pattern: "api.devin.ai",
+        header: "Authorization",
+        header_format: "Bearer {secret}",
+    },
+    TrustedProxyDefinition {
+        name: "fleet_cursor_cloud",
+        secret_key: "CURSOR_API_KEY",
+        pattern: "api.cursor.com",
+        header: "Authorization",
+        header_format: "Bearer {secret}",
+    },
+    TrustedProxyDefinition {
+        name: "fleet_email",
+        secret_key: "FLEET_EMAIL_API_KEY",
+        pattern: "api.resend.com",
+        header: "Authorization",
+        header_format: "Bearer {secret}",
+    },
     TrustedProxyDefinition {
         name: "xai",
         secret_key: "XAI_API_KEY",

@@ -4,6 +4,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
 const ts = require("typescript");
+const { pathToFileURL } = require("node:url");
 
 const webDir = path.resolve(__dirname, "..");
 const repoDir = path.resolve(webDir, "../..");
@@ -259,8 +260,14 @@ const publicReleaseEvidencePaths = [
 
 const verifiedReleaseUrl =
   "https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.9";
-const candidateReleaseUrl =
-  "https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.9";
+let candidateReleaseUrl;
+let candidateVersionPattern;
+test.before(async () => {
+  const { loadSources } = await import(pathToFileURL(path.join(repoDir, "scripts/freshness/sources.mjs")).href);
+  const source = loadSources(repoDir);
+  candidateReleaseUrl = `https://github.com/ashlrai/phantom-secrets/releases/tag/${source.tag}`;
+  candidateVersionPattern = source.version.replaceAll(".", "\\.");
+});
 
 function structuredMetadataBlock(source, type) {
   const marker = `"@type": "${type}"`;
@@ -734,7 +741,7 @@ test("published package READMEs use verified local binaries and bounded claims",
       assert.ok(source.includes(candidateReleaseUrl), file);
       assert.match(
         source,
-        /version `0\.7\.9`[\s\S]{0,180}(?:do not prove|does not prove)[\s\S]{0,80}(?:npm|published)/i,
+        new RegExp("version `" + candidateVersionPattern + "`[\\s\\S]{0,180}(?:do not prove|does not prove)[\\s\\S]{0,80}(?:npm|published)", "i"),
         file,
       );
       assert.match(
@@ -744,7 +751,7 @@ test("published package READMEs use verified local binaries and bounded claims",
       );
       assert.match(
         source,
-        /Version `0\.7\.9`[\s\S]{0,250}no network package-runner fallback[\s\S]{0,80}fails closed/i,
+        new RegExp("Version `" + candidateVersionPattern + "`[\\s\\S]{0,250}no network package-runner fallback[\\s\\S]{0,80}fails closed", "i"),
         file,
       );
       assert.doesNotMatch(source, /releases\/tag\/v0\.7\.3/i, file);
@@ -1303,8 +1310,10 @@ test("community health metadata preserves release and support boundaries", () =>
   assert.match(citation, /^cff-version: 1\.2\.0$/m);
   assert.match(citation, /^version: 0\.7\.9$/m);
   assert.match(citation, /immutable v0\.7\.9 GitHub\s+release/i);
+  assert.doesNotMatch(citation, /immutable v0\.8\.[0-9]+ GitHub\s+release/i);
+  assert.match(citation, new RegExp("Source candidate " + candidateVersionPattern));
   assert.match(citation, /repository URL and full commit SHA/i);
-  assert.match(citation, /^date-released: 2026-09-07$/m);
+  assert.match(citation, /^date-released: 2026-09-06$/m);
 });
 
 test("cloud-signed audit remains an explicit network-free protocol foundation", () => {
