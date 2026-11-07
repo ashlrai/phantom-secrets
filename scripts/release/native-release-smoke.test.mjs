@@ -456,13 +456,13 @@ test("platform documentation binds the immutable release receipt to every native
 
   assert.match(
     platformSupport,
-    /immutable `v0\.7\.9` GitHub[\s\S]*7a51ce512ec4aee12cc29ff859036af63fbe93db[\s\S]*2026-09-29/i,
+    /immutable `v0\.8\.7` GitHub[\s\S]*2026-11-06[\s\S]*a6a0413991c0bd7f3d6601f467c0b5770d0dce0c/i,
   );
-  assert.match(platformSupport, /19 assets[\s\S]*workflow 34153902556/i);
+  assert.match(platformSupport, /19 assets[\s\S]*workflow 42262099223/i);
   assert.equal(
-    platformSupport.match(/`v0\.7\.9` release-native acceptance passed/g)?.length,
+    platformSupport.match(/`v0\.8\.7` exact-archive native acceptance passed/g)?.length,
     6,
-    "every native row must name the exact v0.7.9 release receipt",
+    "every native row must name the exact v0.8.7 release receipt",
   );
   assert.match(platformSupport, /no exact npm `0\.7\.9` acceptance receipt is claimed/i);
   assert.match(

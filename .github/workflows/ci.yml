@@ -315,6 +315,7 @@ jobs:
           scripts/installer-path-final-newline.test.mjs
           scripts/installer-path-function-bytes.test.mjs
           scripts/installer-path-idempotence.test.mjs
+          scripts/installer-path-indented-lines.test.mjs
           scripts/installer-path-lang-export.test.mjs
           scripts/installer-path-lc-all-export.test.mjs
           scripts/installer-path-lc-ctype-export.test.mjs
@@ -325,6 +326,7 @@ jobs:
           scripts/installer-path-post-move-recovery.test.mjs
           scripts/installer-path-repeat-untouched.test.mjs
           scripts/installer-path-repeated-update.test.mjs
+          scripts/installer-path-shell-export.test.mjs
           scripts/installer-path-snapshot-cleanup.test.mjs
           scripts/installer-path-snapshot-distinct.test.mjs
           scripts/installer-path-snapshot-failure.test.mjs
