@@ -60,7 +60,7 @@ with the installer's other private paths in both scripts:
 - `.<install_name>.backup.<stage-suffix>` — the rollback target for a
   replaced live directory, where the suffix is the stage's generated
   `mktemp` tail ([repository](../scripts/install.sh#L507),
-  [web](../apps/web/public/install.sh#L506)).
+  [web](../apps/web/public/install.sh#L507)).
 
 The stage and its `download` and `candidate` children are mode 700, and the
 exit trap attempts to remove the stage; uncatchable termination or

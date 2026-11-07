@@ -12,19 +12,19 @@ them and this comparison when either copy changes.
 | Lock acquisition and stale-lock handling | [lines 206–303](../scripts/install.sh#L206-L303) | [lines 206–303](../apps/web/public/install.sh#L206-L303) |
 | Destination validation and lock acquisition | [lines 450–460](../scripts/install.sh#L450-L460) | [lines 450–460](../apps/web/public/install.sh#L450-L460) |
 | Create private stage, download and candidate directories | [lines 462–468](../scripts/install.sh#L462-L468) | [lines 462–468](../apps/web/public/install.sh#L462-L468) |
-| Download, verify, extract, and prepare candidate | [lines 470–524](../scripts/install.sh#L470-L524) | [lines 470–523](../apps/web/public/install.sh#L470-L523) |
-| Backup, promote, and validate live installation | [lines 526–552](../scripts/install.sh#L526-L552) | [lines 525–551](../apps/web/public/install.sh#L525-L551) |
+| Download, verify, extract, and prepare candidate | [lines 470–524](../scripts/install.sh#L470-L524) | [lines 470–524](../apps/web/public/install.sh#L470-L524) |
+| Backup, promote, and validate live installation | [lines 526–552](../scripts/install.sh#L526-L552) | [lines 526–552](../apps/web/public/install.sh#L526-L552) |
 | PATH startup-file update function | [lines 305–428](../scripts/install.sh#L305-L428) | [lines 305–428](../apps/web/public/install.sh#L305-L428) |
-| PATH check and update call | [lines 554–556](../scripts/install.sh#L554-L556) | [lines 553–555](../apps/web/public/install.sh#L553-L555) |
+| PATH check and update call | [lines 554–556](../scripts/install.sh#L554-L556) | [lines 554–556](../apps/web/public/install.sh#L554-L556) |
 
-The complete files differ in two places. The repository copy pins
-`CANDIDATE_TAG="v0.8.7"` for the next release candidate while the web copy
-stays bound to the evidenced `v0.7.9` release. During extraction, the
-repository copy uses `tar --no-same-owner` and explains why; the web copy
-omits both the option and comment. When run as root, that option can change
-the extracted files' ownership. Stage creation, the PATH function, and its
-call site are byte-identical across copies; the web copy's line numbers after
-the extraction point shift by one because it omits the comment line.
+The complete files differ in one place. The repository copy pins
+`CANDIDATE_TAG="v0.8.7"` for the already published and qualified release while the web copy
+stays bound to the evidenced `v0.7.9` release. Both copies extract the
+release archive with `tar --no-same-owner` and carry the same explanatory
+comment, so a root-run install never keeps the release runner's uid on the
+installed binaries. Stage creation, extraction, the PATH function, and its
+call site are byte-identical across copies, and every line number below is
+identical in both files.
 
 Both installers stage beside the resolved installation directory, check lock
 ownership around promotion, and attempt rollback and cleanup on ordinary

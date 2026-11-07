@@ -30,11 +30,11 @@ See the [repository installer setup](../scripts/install.sh#L18-L55) and
 3. The installer validates the one-line SHA-256 sidecar and archive digest,
    requires exactly two regular archive members (`phantom` and `phantom-mcp`),
    and extracts into `candidate`. It makes the binaries executable, checks each
-   exact `--version` output, and writes a mode-600 source receipt. The
-   repository script extracts with `tar --no-same-owner`; the web copy uses
-   `tar` without that option, so ownership behavior when run as root can differ.
+   exact `--version` output, and writes a mode-600 source receipt. Both
+   copies extract with `tar --no-same-owner`, so a root-run install does
+   not keep the release runner's uid on the installed binaries.
    See [repository validation](../scripts/install.sh#L465-L505) and
-   [web validation](../apps/web/public/install.sh#L465-L504).
+   [web validation](../apps/web/public/install.sh#L465-L505).
 4. Under the lock, an existing install directory is moved to the sibling
    `.<install-name>.backup.<stage-suffix>`, then the candidate is moved into
    place. Both binaries and the receipt are checked again at the final path.
@@ -42,7 +42,7 @@ See the [repository installer setup](../scripts/install.sh#L18-L55) and
    `previous-live` for cleanup. Promotion uses separate moves, so readers can
    observe a brief interval without the live directory. See
    [repository promotion](../scripts/install.sh#L507-L533) and
-   [web promotion](../apps/web/public/install.sh#L506-L532).
+   [web promotion](../apps/web/public/install.sh#L507-L533).
 
 ## Cleanup and recovery limits
 
@@ -75,4 +75,4 @@ roles, comparison checks, and cleanup limits in the repository installer.
 See [repository PATH handling](../scripts/install.sh#L305-L409) and
 [final call](../scripts/install.sh#L535-L537), and
 [web PATH handling](../apps/web/public/install.sh#L305-L409) and
-[final call](../apps/web/public/install.sh#L534-L536).
+[final call](../apps/web/public/install.sh#L535-L537).

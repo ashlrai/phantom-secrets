@@ -17,16 +17,6 @@ export const approvedDifferences = [
     minus: ['CANDIDATE_TAG="v0.8.7"'],
     plus: ['CANDIDATE_TAG="v0.7.9"'],
   },
-  {
-    name: "the repository copy extracts the release archive with tar --no-same-owner",
-    minus: [
-      "# --no-same-owner: as root, tar would otherwise keep the release runner's uid on the installed binaries.",
-      'tar --no-same-owner -xzf "$archive_path" -C "$candidate_dir" || die "could not extract release archive"',
-    ],
-    plus: [
-      'tar -xzf "$archive_path" -C "$candidate_dir" || die "could not extract release archive"',
-    ],
-  },
 ];
 
 // Latin-1 is a reversible byte mapping here, not a text encoding assumption:

@@ -28,13 +28,13 @@ The archive and SHA-256 sidecar are placed in `download`. After checking the
 sidecar and digest, the installer requires exactly the two regular archive
 members `phantom` and `phantom-mcp`, extracts them into `candidate`, verifies
 their versions, and writes a source receipt there. This keeps incomplete or
-unverified downloads out of the live install. See [validation](../apps/web/public/install.sh#L465-L504).
+unverified downloads out of the live install. See [validation](../apps/web/public/install.sh#L465-L505).
 
 With lock ownership checked, an existing live directory is moved to the sibling
 `.<install-name>.backup.<stage-suffix>` and `candidate` is moved into place.
 After final-path validation, the old installation is moved into the stage as
 `previous-live`, to be removed during cleanup. The moves are separate, so the
-live path can briefly be absent. See [promotion](../apps/web/public/install.sh#L506-L532).
+live path can briefly be absent. See [promotion](../apps/web/public/install.sh#L507-L533).
 
 ## Cleanup and its limits
 

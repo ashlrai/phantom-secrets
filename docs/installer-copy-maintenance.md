@@ -17,8 +17,8 @@ merely to make the files match.
 
    Exit 0 means the files match, 1 means they differ, and a higher status
    means comparison failed. Review the whole diff, including changes outside
-   the templates below. The current reviewed differences cover the candidate
-   release tag and `tar --no-same-owner` in the repository copy;
+   the templates below. The current reviewed difference covers the candidate
+   release tag only;
    see the [copy comparison](installer-copy-comparison.md). Do not assume all
    differences are mistakes or silently approve new ones.
 2. Compare staging in both files: destination selection and physical parent

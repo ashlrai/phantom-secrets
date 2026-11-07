@@ -23,14 +23,14 @@ resolution. The installer sets the stage and its `download` and `candidate`
 children to mode 700. The archive and checksum are downloaded there, and the
 verified binaries and receipt are assembled in `candidate`. See
 [destination and staging](../apps/web/public/install.sh#L431-L449) and
-[validation](../apps/web/public/install.sh#L465-L504).
+[validation](../apps/web/public/install.sh#L465-L505).
 
 ## Current cleanup and questions for review
 
 The [exit trap](../apps/web/public/install.sh#L119-L139) attempts rollback on
 failure only while the lock is still owned, removes the stage, then releases
 the lock. HUP, INT, and TERM exit through that trap. During
-[promotion](../apps/web/public/install.sh#L506-L532), a prior live install is
+[promotion](../apps/web/public/install.sh#L507-L533), a prior live install is
 first moved to a sibling backup and, after validation, into the stage as
 `previous-live`. The rollback moves are best effort, and a cleanup filesystem
 error can interrupt subsequent cleanup. These observations raise questions:
