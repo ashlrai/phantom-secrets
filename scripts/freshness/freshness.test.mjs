@@ -32,9 +32,9 @@ test("version-badge blocks pin the release tag and changelog anchor", () => {
   assert.equal(type, "version-badge");
   assert.match(
     output,
-    new RegExp(`verified_GitHub_release-${ctx.tag}-`),
+    new RegExp(`verified_GitHub_release-${ctx.publicRelease.tag}-`),
   );
-  assert.match(output, new RegExp(`releases/tag/${ctx.tag}`));
+  assert.match(output, new RegExp(`releases/tag/${ctx.publicRelease.tag}`));
   assert.match(output, new RegExp(`CHANGELOG.md#${ctx.release.anchor}`));
 });
 
@@ -63,7 +63,7 @@ test("version-table blocks regenerate the release asset matrix", () => {
   assert.equal(type, "version-table");
   const rows = output.split("\n").filter((line) => line.startsWith("| "));
   assert.equal(rows.length, 7);
-  assert.match(output, new RegExp(`\\| Platform \\| \`${ctx.tag}\` archive`));
+  assert.match(output, new RegExp(`\\| Platform \\| \`${ctx.publicRelease.tag}\` archive`));
   for (const artifact of [
     "phantom-aarch64-apple-darwin.tar.gz",
     "phantom-x86_64-apple-darwin.tar.gz",
@@ -74,7 +74,7 @@ test("version-table blocks regenerate the release asset matrix", () => {
   ]) {
     assert.match(
       output,
-      new RegExp(`releases/download/${ctx.tag}/${artifact}`),
+      new RegExp(`releases/download/${ctx.publicRelease.tag}/${artifact}`),
     );
     assert.match(output, new RegExp(`${artifact}\\.sha256`));
   }
@@ -93,14 +93,62 @@ test("version-pin blocks pin the release tag in prose and link refs", () => {
   assert.match(wrapper.output, new RegExp(`version \`${ctx.version}\``));
 
   const verify = render("docs-verify-version-output");
-  assert.match(verify.output, new RegExp(`# phantom ${ctx.version}\n`));
-  assert.match(verify.output, new RegExp(`# phantom-mcp ${ctx.version}`));
+  assert.match(verify.output, new RegExp(`# phantom ${ctx.publicRelease.version}\n`));
+  assert.match(verify.output, new RegExp(`# phantom-mcp ${ctx.publicRelease.version}`));
 });
 
 test("the changelog anchor matches the GitHub heading slug", () => {
   assert.equal(githubAnchor("[0.7.9] - 2026-09-06"), "079---2026-09-06");
   assert.equal(githubAnchor("[1.20.3] - 2030-11-04"), "1203---2030-11-04");
   assert.equal(ctx.release.anchor, githubAnchor(`[${ctx.version}] - ${ctx.release.date}`));
+});
+
+test("a source bump cannot advance published claims or download links", (t) => {
+  const fixture = mkdtempSync(join(tmpdir(), "freshness-release-"));
+  t.after(() => rmSync(fixture, { recursive: true, force: true }));
+  mkdirSync(join(fixture, "apps/web/src/lib"), { recursive: true });
+  const publicSource = join(fixture, "apps/web/src/lib/public-release.ts");
+  writeFileSync(publicSource,
+    'export const PUBLIC_RELEASE_VERSION = "0.7.9";\n' +
+    'export const PUBLIC_RELEASE_EVIDENCE_STATE = "bound";\n');
+  const writeSourceVersion = (version) => {
+    writeFileSync(join(fixture, "Cargo.toml"), `[workspace.package]\nversion = "${version}"\n`);
+    writeFileSync(join(fixture, "CHANGELOG.md"), `## [${version}] - 2026-11-05\n`);
+    for (const [directory, name] of [["npm", "phantom-secrets"], ["npm-mcp", "phantom-secrets-mcp"]]) {
+      mkdirSync(join(fixture, directory), { recursive: true });
+      writeFileSync(join(fixture, directory, "package.json"), JSON.stringify({ name, version }));
+    }
+    return loadSources(fixture);
+  };
+  const before = writeSourceVersion("0.8.1");
+  const after = writeSourceVersion("0.8.2");
+  const badge = GENERATORS.get("readme-release-badges").render(after);
+  assert.match(badge, /verified_GitHub_release-v0\.7\.9-/);
+  assert.match(badge, /source_version-v0\.8\.2-/);
+  assert.match(badge, /CHANGELOG\.md#082---2026-11-05/);
+  for (const name of ["readme-release-asset-table", "docs-release-asset-table", "docs-verify-version-output", "examples-gate-verified-release"]) {
+    const generator = GENERATORS.get(name);
+    const output = generator.render(after);
+    assert.equal(output, generator.render(before), `${name} advanced without a public receipt`);
+    assert.match(output, /0\.7\.9/);
+    assert.doesNotMatch(output, /0\.8\.[12]/);
+  }
+  writeFileSync(publicSource,
+    'export const PUBLIC_RELEASE_VERSION = "0.8.2";\n' +
+    'export const PUBLIC_RELEASE_EVIDENCE_STATE = "pending";\n');
+  assert.throws(() => loadSources(fixture), /no bound public release version/);
+  writeFileSync(publicSource, 'export const PUBLIC_RELEASE_EVIDENCE_STATE = "bound";\n');
+  assert.throws(() => loadSources(fixture), /no bound public release version/);
+});
+
+test("recipe freshness keeps execution evidence on its historical release", () => {
+  const output = GENERATORS.get("examples-gate-verified-release").render({
+    publicRelease: { tag: "v9.8.7", version: "9.8.7" },
+  });
+  assert.match(output, /recipe targets the v9\.8\.7 release/);
+  assert.match(output, /previously run[\s\S]*v0\.7\.9/);
+  assert.match(output, /does not establish acceptance of a later release/);
+  assert.doesNotMatch(output, /passes against|phantom 9\.8\.7/);
 });
 
 test("structural marker errors fail closed", () => {
@@ -164,6 +212,12 @@ test("check exits nonzero on a seeded drift fixture and zero after sync", (t) =>
     join(fixture, "npm-mcp/package.json"),
     JSON.stringify({ name: "phantom-secrets-mcp", version: "9.8.7" }),
   );
+  mkdirSync(join(fixture, "apps/web/src/lib"), { recursive: true });
+  writeFileSync(
+    join(fixture, "apps/web/src/lib/public-release.ts"),
+    'export const PUBLIC_RELEASE_VERSION = "1.2.3";\n' +
+      'export const PUBLIC_RELEASE_EVIDENCE_STATE = "bound";\n',
+  );
   mkdirSync(join(fixture, "docs"), { recursive: true });
   const docPath = join(fixture, "docs", "guide.md");
   writeFileSync(
@@ -192,7 +246,7 @@ test("check exits nonzero on a seeded drift fixture and zero after sync", (t) =>
   const synced = run(syncScript, ["--root", fixture]);
   assert.equal(synced.status, 0, synced.stderr);
   const rewritten = readFileSync(docPath, "utf8");
-  assert.match(rewritten, /# phantom 9\.8\.7\n# phantom-mcp 9\.8\.7/);
+  assert.match(rewritten, /# phantom 1\.2\.3\n# phantom-mcp 1\.2\.3/);
   assert.match(rewritten, /Sentinel line outside the block\./);
 
   const fresh = run(checkScript, ["--root", fixture]);

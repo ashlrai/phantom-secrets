@@ -190,7 +190,13 @@ test("Unix install commands clean their staging directory on success and failure
   const installedBin = path.join(home, ".phantom-secrets", "bin");
   fs.mkdirSync(installedBin, { recursive: true });
   const executable = (file, contents) => fs.writeFileSync(file, `#!/bin/bash\n${contents}\n`, { mode: 0o755 });
-  for (const name of ["phantom", "phantom-mcp"]) executable(path.join(installedBin, name), "exit 0");
+  // The version-check paths must exist verbatim, but the stubs behind them
+  // are reached through relative symlinks: some hardened macOS policies
+  // refuse to exec a temp file literally named phantom*.
+  for (const name of ["phantom", "phantom-mcp"]) {
+    executable(path.join(installedBin, `.${name}-stub`), "exit 0");
+    fs.symlinkSync(`.${name}-stub`, path.join(installedBin, name));
+  }
   executable(path.join(bin, "curl"), `
     while [[ $# -gt 0 && "$1" != "--output" ]]; do shift; done
     [[ $# -ge 2 ]] || exit 2

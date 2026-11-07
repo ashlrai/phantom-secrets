@@ -73,6 +73,35 @@ const shells = {
 
 const marker = '# phantom-secrets PATH';
 
+for (const [file, installer] of Object.entries(copies)) {
+  test(`${file} preserves an effective bash setting while adding PATH`, (t) => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-path-setting-')));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const home = join(root, 'home');
+    const bin = join(root, 'bin');
+    mkdirSync(home, { recursive: true });
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(join(home, '.bashrc'), 'set -o noclobber\n', { mode: 0o600 });
+
+    // Check the actual shell option, not just the text in the startup file.
+    // The shell exits unsuccessfully if either assertion fails and prints no environment.
+    const check = (expectedPath) => {
+      const result = spawnSync('/bin/bash', ['--noprofile', '--norc', '-c',
+        '. "$HOME/.bashrc"; [[ -o noclobber ]] && [[ "$PATH" == "$1" ]]', 'path-test', expectedPath], {
+        encoding: 'utf8', timeout: 30000,
+        env: { HOME: home, PATH: '/usr/bin:/bin' },
+      });
+      assert.ifError(result.error);
+      assert.equal(result.status, 0, result.stderr);
+    };
+    check('/usr/bin:/bin');
+    const result = runPathUpdate(pathUpdateHarness(readFileSync(installer, 'utf8'), file),
+      shells.bash, home, bin);
+    assert.match(result.stdout, /added .* to PATH/);
+    check(`${bin}:/usr/bin:/bin`);
+  });
+}
+
 // One invocation of the extracted update — the same unit the installer runs
 // at the end of every successful install.
 function runPathUpdate(harness, config, home, bin) {
@@ -89,6 +118,28 @@ function runPathUpdate(harness, config, home, bin) {
 for (const [file, installer] of Object.entries(copies)) {
   const harness = pathUpdateHarness(readFileSync(installer, 'utf8'), file);
   for (const [shellName, config] of Object.entries(shells)) {
+    for (const finalNewline of [true, false]) {
+      test(`${file} preserves unrelated ${shellName} settings in order (${finalNewline ? 'with' : 'without'} final newline)`, (t) => {
+        const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-path-settings-')));
+        t.after(() => rmSync(root, { recursive: true, force: true }));
+        const home = join(root, 'home');
+        const bin = join(root, 'bin');
+        const rc = config.rc(home);
+        mkdirSync(dirname(rc), { recursive: true });
+        mkdirSync(bin, { recursive: true });
+        const settings = shellName === 'fish'
+          ? ['# personal settings', 'set -gx EDITOR vim', '', 'alias ll "ls -la"', 'set -g fish_greeting "hello world"']
+          : ['# personal settings', 'export EDITOR=vim', '', 'alias ll="ls -la"', 'export GREETING="hello world"'];
+        const original = settings.join('\n') + (finalNewline ? '\n' : '');
+        writeFileSync(rc, original, { mode: 0o600 });
+
+        const result = runPathUpdate(harness, config, home, bin);
+        assert.match(result.stdout, /added .* to PATH/);
+        assert.equal(readFileSync(rc, 'utf8'),
+          `${original}\n${marker}\n${config.pathLine(bin)}\n`,
+          'all original bytes remain in order before the appended PATH block');
+      });
+    }
     for (const scenario of ['pre-existing', 'absent']) {
       test(`${file} keeps one PATH entry across repeated ${shellName} updates (${scenario} startup file)`, (t) => {
         const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-path-idempotence-')));
@@ -140,5 +191,34 @@ for (const [file, installer] of Object.entries(copies)) {
         }
       });
     }
+  }
+}
+
+// An update that targets a different bin directory (for example a changed
+// PHANTOM_INSTALL_DIR) must still leave a single installer entry: the marker
+// owns the block, so the second run is a no-op rather than a second PATH line.
+for (const [file, installer] of Object.entries(copies)) {
+  const harness = pathUpdateHarness(readFileSync(installer, 'utf8'), file);
+  for (const [shellName, config] of Object.entries(shells)) {
+    test(`${file} keeps one ${shellName} PATH entry when a repeat update uses a different bin dir`, (t) => {
+      const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-path-rebin-')));
+      t.after(() => rmSync(root, { recursive: true, force: true }));
+      const home = join(root, 'home');
+      const binA = join(root, 'a', 'bin');
+      const binB = join(root, 'b', 'bin');
+      mkdirSync(home, { recursive: true });
+      mkdirSync(binA, { recursive: true });
+      mkdirSync(binB, { recursive: true });
+      const rc = config.rc(home);
+
+      runPathUpdate(harness, config, home, binA);
+      const wired = readFileSync(rc, 'utf8');
+      const again = runPathUpdate(harness, config, home, binB);
+      assert.match(again.stdout, /already wired into/);
+      assert.equal(readFileSync(rc, 'utf8'), wired, 'repeat update left the startup file unchanged');
+      const lines = wired.split('\n');
+      assert.equal(lines.filter((line) => line === marker).length, 1);
+      assert.equal(lines.filter((line) => line.includes('PATH "') || line.startsWith('export PATH=')).length, 1);
+    });
   }
 }

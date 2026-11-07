@@ -7,10 +7,10 @@ release, use the same staging and promotion sequence, and default to
 `~/.phantom-secrets/bin`. An absolute, restricted-character
 `PHANTOM_INSTALL_DIR` can change that destination. The parent is created and
 canonicalized; the destination cannot be the filesystem root or a symlink.
-See the [repository installer setup](../scripts/install.sh#L18-L54) and
-[destination checks](../scripts/install.sh#L405-L435), and the corresponding
-[web setup](../apps/web/public/install.sh#L18-L54) and
-[web destination checks](../apps/web/public/install.sh#L403-L435).
+See the [repository installer setup](../scripts/install.sh#L18-L55) and
+[destination checks](../scripts/install.sh#L411-L441), and the corresponding
+[web setup](../apps/web/public/install.sh#L18-L55) and
+[web destination checks](../apps/web/public/install.sh#L411-L441).
 
 ## Staging and promotion
 
@@ -23,26 +23,26 @@ See the [repository installer setup](../scripts/install.sh#L18-L54) and
 2. `mktemp` creates `.<install-name>.install.XXXXXX` in the canonical install
    parent, with mode 700; its `download` and `candidate` subdirectories also
    have mode 700. The archive and its checksum sidecar go into `download`, not
-   the live install. Both copies report explicit errors for staging
-   creation and permission failures on top of Bash error exit. See
-   [repository staging](../scripts/install.sh#L437-L457) and
-   [web staging](../apps/web/public/install.sh#L437-L457).
+   the live install. Both scripts report explicit errors for staging creation
+   and permission failures through the same `|| die` guards. See
+   [repository staging](../scripts/install.sh#L443-L449) and
+   [web staging](../apps/web/public/install.sh#L443-L449).
 3. The installer validates the one-line SHA-256 sidecar and archive digest,
    requires exactly two regular archive members (`phantom` and `phantom-mcp`),
    and extracts into `candidate`. It makes the binaries executable, checks each
-   exact `--version` output, and writes a mode-600 source receipt. The
-   repository script extracts with `tar --no-same-owner`; the web copy uses
-   `tar` without that option, so ownership behavior when run as root can differ.
-   See [repository validation](../scripts/install.sh#L459-L499) and
-   [web validation](../apps/web/public/install.sh#L457-L496).
+   exact `--version` output, and writes a mode-600 source receipt. Both
+   copies extract with `tar --no-same-owner`, so a root-run install does
+   not keep the release runner's uid on the installed binaries.
+   See [repository validation](../scripts/install.sh#L465-L505) and
+   [web validation](../apps/web/public/install.sh#L465-L505).
 4. Under the lock, an existing install directory is moved to the sibling
    `.<install-name>.backup.<stage-suffix>`, then the candidate is moved into
    place. Both binaries and the receipt are checked again at the final path.
    On success, the previous install is moved into the staging tree as
    `previous-live` for cleanup. Promotion uses separate moves, so readers can
    observe a brief interval without the live directory. See
-   [repository promotion](../scripts/install.sh#L501-L525) and
-   [web promotion](../apps/web/public/install.sh#L498-L522).
+   [repository promotion](../scripts/install.sh#L507-L533) and
+   [web promotion](../apps/web/public/install.sh#L507-L533).
 
 ## Cleanup and recovery limits
 
@@ -72,7 +72,7 @@ Handled failures remove the temporary files and produce a warning; PATH failure
 does not roll back the installation. An interruption can leave temporary files.
 See the [PATH update flow](installer-path-update-flow.md) for the two files'
 roles, comparison checks, and cleanup limits in the repository installer.
-See [repository PATH handling](../scripts/install.sh#L305-L399) and
-[final call](../scripts/install.sh#L527-L533), and
-[web PATH handling](../apps/web/public/install.sh#L305-L399) and
-[final call](../apps/web/public/install.sh#L524-L530).
+See [repository PATH handling](../scripts/install.sh#L305-L409) and
+[final call](../scripts/install.sh#L535-L537), and
+[web PATH handling](../apps/web/public/install.sh#L305-L409) and
+[final call](../apps/web/public/install.sh#L535-L537).

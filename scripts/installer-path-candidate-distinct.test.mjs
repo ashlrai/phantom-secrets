@@ -13,6 +13,7 @@ import {
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import test from 'node:test';
+import { pathUpdateHarness } from './lib/installer-path-harness.mjs';
 
 // Each PATH update builds its startup-file replacement through two mktemp
 // siblings — a `.phantom-path.before.XXXXXX` snapshot and the
@@ -33,33 +34,11 @@ const copies = {
 // add_to_user_path runs under `set -euo pipefail` in the installer and calls
 // these helpers; extract the exact same text so the exercised code is the
 // shipped code. Single-line helpers like say() end on their opening line.
-// Same extraction as installer-path-candidate-spaces.test.mjs.
-function extractFunction(source, name, file) {
-  const start = source.indexOf(`${name}()`);
-  assert.ok(start >= 0, `${file}: locate ${name}`);
-  const lineEnd = source.indexOf('\n', start);
-  assert.ok(lineEnd > start, `${file}: locate end of ${name}`);
-  if (source.slice(start, lineEnd).trimEnd().endsWith('}')) {
-    return source.slice(start, lineEnd + 1);
-  }
-  const end = source.indexOf('\n}\n', start);
-  assert.ok(end > start, `${file}: locate end of ${name}`);
-  return source.slice(start, end + '\n}\n'.length);
-}
-
-function pathUpdateHarness(source, file) {
-  return ['set -euo pipefail', 'umask 077',
-    ...['say', 'file_identity', 'file_link_count', 'add_to_user_path']
-      .map((name) => extractFunction(source, name, file)),
-    'add_to_user_path "$1"',
-  ].join('\n');
-}
-
 const harnesses = Object.fromEntries(
   Object.entries(copies).map(([file, path]) => [file, pathUpdateHarness(readFileSync(path, 'utf8'), file)]),
 );
 
-const realMktemp = execFileSync('which', ['mktemp'], { encoding: 'utf8' }).trim();
+const realMktemp = execFileSync('/usr/bin/which', ['mktemp'], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin' } }).trim();
 
 // Delegates to the real mktemp and records every .phantom-path.* path it
 // creates, so each logged path is a file the installer really made there.

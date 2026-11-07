@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
@@ -31,57 +33,75 @@ function lineOf(buffer, offset) {
   return line;
 }
 
-function byteComparison() {
-  const result = spawnSync('cmp', [repositoryCopy, webCopy], { cwd: root, encoding: 'utf8' });
+function byteComparison(cwd = root) {
+  const result = spawnSync('cmp', [repositoryCopy, webCopy], { cwd, encoding: 'utf8' });
   assert.ifError(result.error);
   assert.ok(result.status === 0 || result.status === 1, `cmp failed (exit ${result.status}): ${result.stderr}`);
   return result;
 }
 
-test('byte-for-byte comparison reports the reviewed mismatch', (t) => {
-  // The web copy is byte-bound to separately reviewed release bytes, so the
-  // reviewed state is a mismatch; docs/installer-copy-comparison.md pins the
-  // SHA-256 of each copy. A byte-for-byte comparison must report that
-  // mismatch: byte-identical copies mean the review record is stale.
-  assert.ok(
-    !repository.equals(web),
-    `${repositoryCopy} and ${webCopy} are byte-identical; ` +
-      'refresh the copy review in docs/installer-copy-comparison.md',
-  );
+// GNU cmp calls this a byte; BSD cmp calls the same 1-based offset a char.
+function parseComparisonReport(report) {
+  const match = /^scripts\/install\.sh apps\/web\/public\/install\.sh differ: (?:byte|char) ([1-9]\d*), line ([1-9]\d*)$/.exec(report);
+  return match ? { byte: Number(match[1]), line: Number(match[2]) } : null;
+}
 
+test('cmp report parser accepts only the two complete mismatch formats', () => {
+  for (const unit of ['byte', 'char']) {
+    assert.deepEqual(parseComparisonReport(`scripts/install.sh apps/web/public/install.sh differ: ${unit} 730, line 19`), { byte: 730, line: 19 });
+  }
+  for (const report of [
+    'other/install.sh apps/web/public/install.sh differ: byte 730, line 19',
+    'scripts/install.sh apps/web/public/install.sh differ: bytes 730, line 19',
+    'scripts/install.sh apps/web/public/install.sh differ: byte 0, line 19',
+    'scripts/install.sh apps/web/public/install.sh differ: char 730, line 19 extra',
+    'scripts/install.sh apps/web/public/install.sh are identical',
+  ]) assert.equal(parseComparisonReport(report), null);
+});
+
+test('byte-for-byte comparison confirms current copies match', () => {
+  assert.ok(repository.equals(web), 'refresh the copy review when current bytes differ');
   const result = byteComparison();
-  assert.equal(result.status, 1, `cmp should report a mismatch: ${result.stderr.trim()}`);
-  const report = result.stdout.trim();
-  assert.match(
-    report,
-    new RegExp(`^${repositoryCopy} ${webCopy} differ: char \\d+, line \\d+$`),
-    'cmp must report the mismatch location',
-  );
-  t.diagnostic(`byte-for-byte comparison reports a mismatch: ${report}`);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, '');
+  assert.equal(firstMismatch(repository, web), -1);
 });
 
-test('an in-process byte scan reports the same mismatch location', (t) => {
-  const offset = firstMismatch(repository, web);
-  assert.notEqual(offset, -1, 'the byte scan must report a mismatch');
-  const [char, line] = [offset + 1, lineOf(repository, offset)];
-  t.diagnostic(`first differing byte: char ${char}, line ${line}`);
+test('synthetic tag mismatch location agrees with cmp and detects earlier drift', (t) => {
+  const directory = mkdtempSync(join(tmpdir(), 'phantom-cmp-pair-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  mkdirSync(join(directory, 'scripts'), { recursive: true });
+  mkdirSync(join(directory, 'apps/web/public'), { recursive: true });
+  const source = repository.toString('latin1');
+  const currentTag = 'CANDIDATE_TAG="v0.8.7"';
+  assert.equal(source.split(currentTag).length, 2, 'candidate tag must occur exactly once');
+  const varied = Buffer.from(source.replace(currentTag, 'CANDIDATE_TAG="v0.7.9"'), 'latin1');
+  writeFileSync(join(directory, repositoryCopy), repository);
+  writeFileSync(join(directory, webCopy), varied);
 
-  // The scan must agree with cmp's own mismatch report.
-  const reported = byteComparison().stdout.match(/differ: char (\d+), line (\d+)/);
-  assert.ok(reported, 'cmp must report the mismatch location');
-  assert.equal(Number(reported[1]), char);
-  assert.equal(Number(reported[2]), line);
-
-  // The first divergence is the reviewed candidate-tag difference at line 19
-  // (docs/installer-copy-source-map.md); an earlier byte means unreviewed
-  // drift that the approved-difference list cannot explain.
-  assert.equal(line, 19, `first mismatch moved to line ${line}; re-review the installer copies`);
-});
-
-test('the byte scan reports no mismatch for equal inputs', () => {
-  assert.equal(firstMismatch(repository, repository), -1);
-  const offset = firstMismatch(repository, web);
+  const offset = firstMismatch(repository, varied);
   assert.ok(offset > 0);
-  assert.equal(firstMismatch(repository.subarray(0, offset), web.subarray(0, offset)), -1);
-  assert.equal(firstMismatch(repository.subarray(0, offset + 1), web.subarray(0, offset + 1)), offset);
+  const report = byteComparison(directory);
+  assert.equal(report.status, 1);
+  const reported = parseComparisonReport(report.stdout.trim());
+  assert.ok(reported, 'cmp must report the mismatch location');
+  assert.equal(reported.byte, offset + 1);
+  assert.equal(reported.line, lineOf(repository, offset));
+  assert.equal(reported.line, 19, 'synthetic tag mismatch should be at the candidate line');
+  assert.equal(firstMismatch(repository.subarray(0, offset), varied.subarray(0, offset)), -1);
+  assert.equal(firstMismatch(repository.subarray(0, offset + 1), varied.subarray(0, offset + 1)), offset);
+
+  const drift = Buffer.from(varied);
+  drift[0] ^= 1;
+  writeFileSync(join(directory, webCopy), drift);
+  const earlier = byteComparison(directory);
+  assert.equal(earlier.status, 1);
+  assert.deepEqual(parseComparisonReport(earlier.stdout.trim()), { byte: 1, line: 1 });
+  assert.equal(firstMismatch(repository, drift), 0);
+});
+
+test('byte scan detects truncation and padding as well as equality', () => {
+  assert.equal(firstMismatch(repository, repository), -1);
+  assert.equal(firstMismatch(repository, repository.subarray(0, -1)), repository.length - 1);
+  assert.equal(firstMismatch(repository, Buffer.concat([repository, Buffer.from([0])])), repository.length);
 });
