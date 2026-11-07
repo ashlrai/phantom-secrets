@@ -30,6 +30,7 @@ pub fn run_verify(with_context: bool, json: bool) -> Result<()> {
                     "clean": true,
                     "verified": 0,
                     "note": "No audit log found. Set PHANTOM_AUDIT=1 to start logging.",
+                    "next_step": null,
                 }))?
             );
         } else {
@@ -176,14 +177,46 @@ pub fn run_verify(with_context: bool, json: bool) -> Result<()> {
     }
 
     if !report.is_clean() {
+        print_verify_failure_steps(&report);
         std::process::exit(1);
     }
 
     Ok(())
 }
 
-/// The `phantom audit verify --json` object. Counts and line numbers only:
-/// it never carries event names, values, or HMACs.
+/// Guidance for a failed chain verification, shared by the human report and
+/// `verify --json`'s `next_step`. Fixed vocabulary only: public commands and
+/// the troubleshooting guide — never paths, event contents, or values.
+fn verify_failure_steps(report: &phantom_core::audit::VerifyReport) -> Vec<&'static str> {
+    if report.is_clean() {
+        return Vec::new();
+    }
+    let mut steps = Vec::new();
+    if report.tampered > 0 || report.malformed > 0 || report.sequence_errors > 0 {
+        steps.push(
+            "Treat the audit log as unreliable for the flagged period and compare it with a backup copy before relying on it.",
+        );
+    }
+    if report.head_missing || report.head_mismatch {
+        steps.push(
+            "The signed head checkpoint is missing or does not match the log tail, so truncation cannot be ruled out; restore the log and checkpoint from a trusted backup if one exists.",
+        );
+    }
+    steps.push(
+        "If tampering is suspected, treat it as a security incident: check `phantom audit incidents` and `phantom leaks plan`, then revoke and replace affected credentials at their providers (see the audit log section of the troubleshooting guide).",
+    );
+    steps
+}
+
+fn print_verify_failure_steps(report: &phantom_core::audit::VerifyReport) {
+    for step in verify_failure_steps(report) {
+        println!("  {} {}", "->".blue().bold(), step);
+    }
+}
+
+/// The `phantom audit verify --json` object. Counts, line numbers, and a
+/// `next_step` sentence when verification failed: it never carries event
+/// names, values, or HMACs.
 fn verify_report_json(report: &phantom_core::audit::VerifyReport, log_present: bool) -> Value {
     let head = if report.head_missing {
         "missing"
@@ -192,6 +225,7 @@ fn verify_report_json(report: &phantom_core::audit::VerifyReport, log_present: b
     } else {
         "ok"
     };
+    let steps = verify_failure_steps(report);
     serde_json::json!({
         "log_present": log_present,
         "clean": report.is_clean(),
@@ -204,6 +238,7 @@ fn verify_report_json(report: &phantom_core::audit::VerifyReport, log_present: b
         "tampered_lines": report.tampered_lines,
         "malformed_lines": report.malformed_lines,
         "sequence_error_lines": report.sequence_error_lines,
+        "next_step": (!steps.is_empty()).then(|| steps.join(" ")),
     })
 }
 
@@ -288,6 +323,7 @@ fn run_verify_with_context() -> Result<()> {
     }
 
     if !report.is_clean() {
+        print_verify_failure_steps(&report);
         std::process::exit(1);
     }
 
@@ -297,6 +333,28 @@ fn run_verify_with_context() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use phantom_core::audit::VerifyReport;
+
+    fn report(
+        tampered: usize,
+        malformed: usize,
+        sequence_errors: usize,
+        head_missing: bool,
+        head_mismatch: bool,
+    ) -> VerifyReport {
+        VerifyReport {
+            verified: 3,
+            tampered,
+            legacy: 0,
+            malformed,
+            sequence_errors,
+            head_missing,
+            head_mismatch,
+            tampered_lines: vec![],
+            malformed_lines: vec![],
+            sequence_error_lines: vec![],
+        }
+    }
 
     #[test]
     fn audit_log_read_error_says_what_failed_and_what_to_do() {
@@ -310,5 +368,64 @@ mod tests {
             message.contains("`phantom audit verify` again"),
             "{message}"
         );
+    }
+
+    #[test]
+    fn clean_report_has_no_failure_steps() {
+        let clean = report(0, 0, 0, false, false);
+        assert!(verify_failure_steps(&clean).is_empty());
+    }
+
+    #[test]
+    fn content_failures_point_at_the_flagged_period() {
+        for failed in [
+            report(1, 0, 0, false, false),
+            report(0, 1, 0, false, false),
+            report(0, 0, 1, false, false),
+        ] {
+            let steps = verify_failure_steps(&failed);
+            assert_eq!(steps.len(), 2, "{steps:?}");
+            assert!(steps[0].contains("unreliable for the flagged period"));
+            assert!(steps[1].contains("security incident"));
+        }
+    }
+
+    #[test]
+    fn head_failures_point_at_truncation() {
+        for failed in [report(0, 0, 0, true, false), report(0, 0, 0, false, true)] {
+            let steps = verify_failure_steps(&failed);
+            assert_eq!(steps.len(), 2, "{steps:?}");
+            assert!(steps[0].contains("truncation cannot be ruled out"));
+            assert!(steps[1].contains("security incident"));
+        }
+    }
+
+    #[test]
+    fn every_failure_ends_with_the_incident_step() {
+        let steps = verify_failure_steps(&report(1, 1, 1, true, true));
+        assert_eq!(steps.len(), 3, "{steps:?}");
+        assert!(steps[2].contains("`phantom audit incidents`"));
+        assert!(steps[2].contains("`phantom leaks plan`"));
+    }
+
+    #[test]
+    fn failure_steps_stay_value_free() {
+        let steps = verify_failure_steps(&report(2, 1, 1, true, true));
+        for step in steps {
+            assert!(!step.contains('/'), "{step}");
+            assert!(!step.contains(".phantom"), "{step}");
+        }
+    }
+
+    #[test]
+    fn json_next_step_is_null_when_clean_and_text_when_not() {
+        let clean = verify_report_json(&report(0, 0, 0, false, false), true);
+        assert!(clean["next_step"].is_null());
+
+        let failed = verify_report_json(&report(1, 0, 0, false, false), true);
+        let step = failed["next_step"].as_str().unwrap();
+        assert!(step.contains("unreliable for the flagged period"), "{step}");
+        assert!(step.contains("`phantom audit incidents`"), "{step}");
+        assert!(failed["clean"].as_bool() == Some(false));
     }
 }
