@@ -60,4 +60,5 @@ test('the staging contract rejects lost guards, errexit, and cleanup', () => {
   assert.throws(() => assertStagingContract(web.replace('acquire_install_lock\n\n', 'acquire_install_lock\nset +e\n\n'), true));
   assert.throws(() => assertStagingContract(web.replace('trap cleanup EXIT', 'trap : EXIT'), true));
   assert.throws(() => assertStagingContract(web.replace('chmod 700 "$stage_root"', 'chmod 700 "$stage_root" || true'), true));
+  assert.throws(() => assertStagingContract(web.replace(' || die "could not secure the staging directory"', ''), true));
 });

@@ -5,17 +5,15 @@ import {
   chmodSync,
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readdirSync,
   readFileSync,
   realpathSync,
-  rmSync,
   writeFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { createStagingFixture, installHashRecorders } from './lib/installer-staging-fixture.mjs';
 
 const installers = {
   repository: fileURLToPath(new URL('install.sh', import.meta.url)),
@@ -32,23 +30,7 @@ const LOG_FILES = ['mktemp.log', 'created.log', 'hashed-paths'];
 // archive-listing failure — so nothing here needs a host able to run stub
 // binaries named `phantom`.
 function setup(t) {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-staging-spaced-home-')));
-  t.after(() => rmSync(root, { recursive: true, force: true }));
-  const fixture = join(root, 'fixture');
-  const payload = join(root, 'payload');
-  const shims = join(root, 'shims');
-  for (const dir of [fixture, payload, shims]) mkdirSync(dir);
-  for (const name of ['phantom', 'phantom-mcp']) {
-    writeFileSync(join(payload, name), `#!/bin/sh\necho "${name} 1.2.3"\n`);
-    chmodSync(join(payload, name), 0o755);
-  }
-  const os = { darwin: 'apple-darwin', linux: 'unknown-linux-gnu' }[process.platform];
-  const arch = { x64: 'x86_64', arm64: 'aarch64' }[process.arch];
-  assert.ok(os && arch, 'test requires a supported Unix installer target');
-  const archive = `phantom-${arch}-${os}.tar.gz`;
-  execFileSync('tar', ['-czf', join(fixture, archive), '-C', payload, 'phantom', 'phantom-mcp']);
-  const digest = createHash('sha256').update(readFileSync(join(fixture, archive))).digest('hex');
-  writeFileSync(join(fixture, `${archive}.sha256`), `${digest}  ${archive}\n`);
+  const { root, fixture, shims, archive } = createStagingFixture(t, 'phantom-staging-spaced-home-');
   const mktempLog = join(root, 'mktemp.log');
   const createdLog = join(root, 'created.log');
   const realMktemp = execFileSync('which', ['mktemp'], { encoding: 'utf8' }).trim();
@@ -65,18 +47,7 @@ fi
 printf '%s\\n' "$created"
 `);
   chmodSync(join(shims, 'mktemp'), 0o755);
-  const hashLog = join(root, 'hashed-paths');
-  for (const tool of ['sha256sum', 'shasum']) {
-    writeFileSync(join(shims, tool), `#!/usr/bin/env node
-const { createHash } = require('node:crypto');
-const { appendFileSync, readFileSync } = require('node:fs');
-const target = process.argv.at(-1);
-appendFileSync(${JSON.stringify(hashLog)}, target + '\\n');
-const digest = createHash('sha256').update(readFileSync(target)).digest('hex');
-process.stdout.write(digest + '  ' + target + '\\n');
-`);
-    chmodSync(join(shims, tool), 0o755);
-  }
+  const hashLog = installHashRecorders(root, shims);
   return { root, fixture, shims, mktempLog, createdLog, hashLog, archive };
 }
 
