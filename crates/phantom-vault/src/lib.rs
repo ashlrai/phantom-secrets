@@ -202,6 +202,22 @@ fn file_vault_dir() -> std::path::PathBuf {
         .unwrap_or_else(dirs_fallback)
 }
 
+/// The directory [`file_vault_dir`] falls back to when the platform project
+/// dirs cannot be resolved — `<home>/.phantom` (or `<temp>/.phantom` when no
+/// home exists), exactly as `dirs_fallback` computes it.
+///
+/// `ProjectDirs` resolves against this process's environment, and on Windows
+/// the Known-Folder lookup expands `%USERPROFILE%` and verifies the folder
+/// exists. A child spawned with a redirected profile (for example a test
+/// `USERPROFILE` pointing at an empty directory) can therefore land in the
+/// fallback while this process resolves the platform data dir, or the
+/// reverse. Callers that must find a vault produced by a differently
+/// configured process — diagnostics and test scaffolding — should check
+/// both [`encrypted_file_vault_path`] and this directory.
+pub fn file_vault_fallback_dir() -> std::path::PathBuf {
+    dirs_fallback()
+}
+
 /// Move a passphrase out of its scrubbing wrapper into the `String` that
 /// [`file::FileVault::new`] takes. The heap buffer is moved, not copied, so
 /// no unscrubbed duplicate is left behind; the wrapper keeps an empty string.
@@ -333,6 +349,20 @@ mod tests {
         assert!(encrypted_file_vault_path("").is_err());
         assert!(encrypted_file_vault_path("../abc").is_err());
         assert!(encrypted_file_vault_path("abc/def").is_err());
+    }
+
+    #[test]
+    fn file_vault_fallback_dir_is_the_home_scoped_phantom_directory() {
+        let fallback = file_vault_fallback_dir();
+        assert_eq!(fallback, dirs_fallback());
+        assert!(fallback.is_absolute());
+        assert_eq!(fallback.file_name().unwrap(), ".phantom");
+        // `encrypted_file_vault_path` layers `vaults/<id>.vault` onto either
+        // this fallback or the platform project-data dir.
+        let expected = fallback.join("vaults").join("abc123.vault");
+        if file_vault_dir() == fallback {
+            assert_eq!(encrypted_file_vault_path("abc123").unwrap(), expected);
+        }
     }
 
     #[test]

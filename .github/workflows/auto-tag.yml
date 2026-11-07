@@ -145,6 +145,15 @@ jobs:
           if git ls-remote --exit-code --tags "https://github.com/$REPO.git" "refs/tags/v$VERSION" >/dev/null; then
             echo "Tag v$VERSION appeared meanwhile; nothing to do."; exit 0
           fi
-          gh api -X POST "repos/$REPO/git/refs" -f ref="refs/tags/v$VERSION" -f sha="$SHA" >/dev/null
-          echo "Created v$VERSION at $SHA" >> "$GITHUB_STEP_SUMMARY"
+          # The release contract rejects a lightweight tag. Create an annotated
+          # tag object, then point refs/tags/v$VERSION at that object. The
+          # peeled commit stays $SHA.
+          tag_object=$(gh api -X POST "repos/$REPO/git/tags" \
+            -f tag="v$VERSION" \
+            -f message="v$VERSION" \
+            -f object="$SHA" \
+            -f type="commit" \
+            --jq .sha)
+          gh api -X POST "repos/$REPO/git/refs" -f ref="refs/tags/v$VERSION" -f sha="$tag_object" >/dev/null
+          echo "Created annotated v$VERSION at $SHA" >> "$GITHUB_STEP_SUMMARY"
 

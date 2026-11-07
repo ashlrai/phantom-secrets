@@ -40,6 +40,262 @@ after(() => {
   }
 });
 
+async function withAuthorizedDeviceFixture(run) {
+  const React = await import("react");
+  const { cleanup, render, screen } = await import("@testing-library/react");
+  const { default: userEvent } = await import("@testing-library/user-event");
+  const originalFetch = globalThis.fetch;
+  const fixture = { clientCalls: 0, requests: [] };
+  try {
+    globalThis.fetch = async (endpoint, request) => {
+      fixture.requests.push({ endpoint, request });
+      return { ok: true };
+    };
+    const dependencies = {
+      "next/image": { __esModule: true, default: () => null },
+      "next/link": { __esModule: true, default: ({ children, ...props }) => React.createElement("a", props, children) },
+      "@/lib/device-code": compile(path.resolve(dirname, "../../lib/device-code.ts"), runtimeRequire),
+      "@/lib/posthog": { capturePostHog: async () => {} },
+      "@supabase/supabase-js": { createClient() {
+        fixture.clientCalls++;
+        return { auth: { getSession: async () => ({ data: { session: { access_token: "synthetic-session" } }, error: null }) } };
+      } },
+    };
+    const Component = compile(path.join(dirname, "device-authorization-client.tsx"),
+      (name) => dependencies[name] ?? runtimeRequire(name)).default;
+    const user = userEvent.setup();
+    render(React.createElement(Component));
+    await run({ fixture, screen, user });
+  } finally {
+    cleanup();
+    globalThis.fetch = originalFetch;
+  }
+}
+
+test("initial render presents the code input and submission control without a validation error", async () => {
+  const React = await import("react");
+  const { cleanup, render, screen } = await import("@testing-library/react");
+  try {
+    const dependencies = {
+      "next/image": { __esModule: true, default: () => null },
+      "next/link": { __esModule: true, default: ({ children, ...props }) => React.createElement("a", props, children) },
+      "@/lib/device-code": compile(path.resolve(dirname, "../../lib/device-code.ts"), runtimeRequire),
+      "@/lib/posthog": { capturePostHog: async () => {} },
+      "@supabase/supabase-js": { createClient() { throw new Error("Unexpected client"); } },
+    };
+    const Component = compile(path.join(dirname, "device-authorization-client.tsx"),
+      (name) => dependencies[name] ?? runtimeRequire(name)).default;
+    render(React.createElement(Component));
+
+    const input = screen.getByRole("textbox", { name: "Device code" });
+    const submit = screen.getByRole("button", { name: "Authorize Device" });
+    assert.equal(screen.getByLabelText("Device code"), input);
+    assert.equal(input.value, "");
+    assert.equal(input.disabled, false);
+    assert.equal(input.getAttribute("aria-invalid"), "false");
+    assert.equal(submit.type, "submit");
+    assert.equal(submit.disabled, false);
+    assert.equal(screen.queryByRole("alert"), null);
+  } finally {
+    cleanup();
+  }
+});
+
+test("device code input presents its label and format hint", async () => {
+  const React = await import("react");
+  const { cleanup, isInaccessible, render, screen } = await import("@testing-library/react");
+  try {
+    const dependencies = {
+      "next/image": { __esModule: true, default: () => null },
+      "next/link": { __esModule: true, default: ({ children, ...props }) => React.createElement("a", props, children) },
+      "@/lib/device-code": compile(path.resolve(dirname, "../../lib/device-code.ts"), runtimeRequire),
+      "@/lib/posthog": { capturePostHog: async () => {} },
+      "@supabase/supabase-js": { createClient() { throw new Error("Unexpected client"); } },
+    };
+    const Component = compile(path.join(dirname, "device-authorization-client.tsx"),
+      (name) => dependencies[name] ?? runtimeRequire(name)).default;
+    render(React.createElement(Component));
+
+    const hintText = "Enter 8 letters or numbers in the format XXXX-XXXX.";
+    const input = screen.getByRole("textbox", { name: "Device code", description: (value) => value.includes(hintText) });
+    const label = screen.getByText("Device code", { selector: "label" });
+    const hint = screen.getByText(hintText);
+    assert.equal(screen.getByLabelText("Device code"), input);
+    assert.equal(screen.getByPlaceholderText("XXXX-XXXX"), input);
+    assert.equal(input.value, "");
+    assert.equal(label.control, input);
+    assert.equal(isInaccessible(label), false);
+    assert.equal(isInaccessible(hint), false);
+  } finally {
+    cleanup();
+  }
+});
+
+test("the XXXX-XXXX placeholder is present on and associated with the device-code field", async () => {
+  const React = await import("react");
+  const { cleanup, render, screen } = await import("@testing-library/react");
+  try {
+    const dependencies = {
+      "next/image": { __esModule: true, default: () => null },
+      "next/link": { __esModule: true, default: ({ children, ...props }) => React.createElement("a", props, children) },
+      "@/lib/device-code": compile(path.resolve(dirname, "../../lib/device-code.ts"), runtimeRequire),
+      "@/lib/posthog": { capturePostHog: async () => {} },
+      "@supabase/supabase-js": { createClient() { throw new Error("Unexpected client"); } },
+    };
+    const deviceCode = dependencies["@/lib/device-code"];
+    const Component = compile(path.join(dirname, "device-authorization-client.tsx"),
+      (name) => dependencies[name] ?? runtimeRequire(name)).default;
+    render(React.createElement(Component));
+
+    // The placeholder resolves to the page's single textbox: the device-code
+    // field, reached identically through its id, name, and visible label.
+    const input = screen.getByPlaceholderText("XXXX-XXXX");
+    assert.equal(input.id, "device-code");
+    assert.equal(input.name, "device-code");
+    assert.equal(screen.getAllByRole("textbox").length, 1);
+    assert.equal(screen.getByRole("textbox", { name: "Device code" }), input);
+    assert.equal(screen.getByLabelText("Device code"), input);
+    assert.equal(screen.getByText("Device code", { selector: "label" }).control, input);
+
+    // The placeholder previews the field's own format: filling each X with a
+    // code character is exactly what the formatter displays and validates.
+    const preview = "XXXX-XXXX".replace(/X/g, "A");
+    assert.equal(deviceCode.formatDeviceUserCode(preview.toLowerCase()), preview);
+    assert.equal(deviceCode.isValidDeviceUserCode(preview), true);
+
+    // The visible hint repeats the format, and the field points at it.
+    const hint = screen.getByText("Enter 8 letters or numbers in the format XXXX-XXXX.");
+    assert.ok(input.getAttribute("aria-describedby").split(/\s+/).includes(hint.id));
+
+    // The placeholder never names the field: the visible label does.
+    assert.equal(input.hasAttribute("aria-label"), false);
+    assert.equal(input.hasAttribute("aria-labelledby"), false);
+  } finally {
+    cleanup();
+  }
+});
+
+test("device code input is associated with its visible label", async () => {
+  const React = await import("react");
+  const { cleanup, isInaccessible, render, screen } = await import("@testing-library/react");
+  const { default: userEvent } = await import("@testing-library/user-event");
+  const { computeAccessibleName } = runtimeRequire("dom-accessibility-api");
+  try {
+    const dependencies = {
+      "next/image": { __esModule: true, default: () => null },
+      "next/link": { __esModule: true, default: ({ children, ...props }) => React.createElement("a", props, children) },
+      "@/lib/device-code": compile(path.resolve(dirname, "../../lib/device-code.ts"), runtimeRequire),
+      "@/lib/posthog": { capturePostHog: async () => {} },
+      "@supabase/supabase-js": { createClient() { throw new Error("Unexpected client"); } },
+    };
+    const Component = compile(path.join(dirname, "device-authorization-client.tsx"),
+      (name) => dependencies[name] ?? runtimeRequire(name)).default;
+    const user = userEvent.setup();
+    render(React.createElement(Component));
+
+    const label = screen.getByText("Device code", { selector: "label" });
+    const input = screen.getByRole("textbox");
+
+    // The rendered label is visible and is the field's only name source: no
+    // aria-label or aria-labelledby surrogate substitutes for it.
+    assert.equal(isInaccessible(label), false);
+    assert.equal(input.hasAttribute("aria-label"), false);
+    assert.equal(input.hasAttribute("aria-labelledby"), false);
+    assert.equal(computeAccessibleName(input), "Device code");
+
+    // The pairing is explicit: the label's htmlFor names the input's id, and
+    // the association resolves through every DOM path.
+    assert.equal(label.htmlFor, "device-code");
+    assert.equal(input.id, "device-code");
+    assert.equal(document.getElementById(label.htmlFor), input);
+    assert.equal(label.control, input);
+    assert.deepEqual([...input.labels], [label]);
+    assert.equal(screen.getByLabelText("Device code"), input);
+    assert.equal(screen.getByRole("textbox", { name: "Device code" }), input);
+
+    // Activating the visible label focuses the field it names.
+    await user.click(label);
+    assert.equal(document.activeElement, input);
+  } finally {
+    cleanup();
+  }
+});
+
+test("device code label and format hint remain available while editing and after validation", async () => {
+  const React = await import("react");
+  const { cleanup, isInaccessible, render, screen } = await import("@testing-library/react");
+  const { default: userEvent } = await import("@testing-library/user-event");
+  try {
+    const dependencies = {
+      "next/image": { __esModule: true, default: () => null },
+      "next/link": { __esModule: true, default: ({ children, ...props }) => React.createElement("a", props, children) },
+      "@/lib/device-code": compile(path.resolve(dirname, "../../lib/device-code.ts"), runtimeRequire),
+      "@/lib/posthog": { capturePostHog: async () => {} },
+      "@supabase/supabase-js": { createClient() { throw new Error("Unexpected client"); } },
+    };
+    const Component = compile(path.join(dirname, "device-authorization-client.tsx"),
+      (name) => dependencies[name] ?? runtimeRequire(name)).default;
+    const user = userEvent.setup();
+    render(React.createElement(Component));
+
+    const hintText = "Enter 8 letters or numbers in the format XXXX-XXXX.";
+    const hint = screen.getByText(hintText);
+    const input = screen.getByRole("textbox", { name: "Device code", description: (value) => value.includes(hintText) });
+    await user.type(input, "ab12");
+    assert.equal(input.value, "AB12");
+    assert.equal(isInaccessible(hint), false);
+    assert.equal(screen.getByRole("textbox", { name: "Device code", description: (value) => value.includes(hintText) }), input);
+
+    await user.click(screen.getByRole("button", { name: "Authorize Device" }));
+    const error = screen.getByRole("alert");
+    assert.equal(input.getAttribute("aria-invalid"), "true");
+    assert.equal(isInaccessible(hint), false);
+    assert.equal(screen.getByRole("textbox", {
+      name: "Device code",
+      description: (value) => value.includes(hintText) && value.includes(error.textContent),
+    }), input);
+  } finally {
+    cleanup();
+  }
+});
+
+test("lowercase device code characters are displayed uppercase as they are entered", async () => {
+  const React = await import("react");
+  const { cleanup, render, screen } = await import("@testing-library/react");
+  const { default: userEvent } = await import("@testing-library/user-event");
+  try {
+    const dependencies = {
+      "next/image": { __esModule: true, default: () => null },
+      "next/link": { __esModule: true, default: ({ children, ...props }) => React.createElement("a", props, children) },
+      "@/lib/device-code": compile(path.resolve(dirname, "../../lib/device-code.ts"), runtimeRequire),
+      "@/lib/posthog": { capturePostHog: async () => {} },
+      "@supabase/supabase-js": { createClient() { throw new Error("Unexpected client"); } },
+    };
+    const Component = compile(path.join(dirname, "device-authorization-client.tsx"),
+      (name) => dependencies[name] ?? runtimeRequire(name)).default;
+    const user = userEvent.setup();
+    render(React.createElement(Component));
+    const input = screen.getByRole("textbox", { name: "Device code" });
+
+    for (const [character, displayed] of [
+      ["a", "A"], ["b", "AB"], ["c", "ABC"], ["d", "ABCD"],
+      ["e", "ABCD-E"], ["f", "ABCD-EF"], ["g", "ABCD-EFG"], ["h", "ABCD-EFGH"],
+    ]) {
+      await user.type(input, character);
+      assert.equal(input.value, displayed);
+    }
+    assert.equal(screen.queryByRole("alert"), null);
+
+    await user.clear(input);
+    await user.click(input);
+    await user.paste("aBcD-eFgH");
+    assert.equal(input.value, "ABCD-EFGH");
+    assert.equal(screen.queryByRole("alert"), null);
+  } finally {
+    cleanup();
+  }
+});
+
 test("blank device code shows validation without starting authorization", async () => {
   const originalFetch = globalThis.fetch;
   let clientCalls = 0;
@@ -79,34 +335,61 @@ test("blank device code shows validation without starting authorization", async 
   }
 });
 
-test("corrected device code resubmits past the prior validation error", async () => {
+test("surrounding whitespace is removed before displaying and validating a device code", async () => {
   const originalFetch = globalThis.fetch;
   let clientCalls = 0;
-  const requests = [];
-  globalThis.fetch = async (endpoint, request) => {
-    requests.push({ endpoint, request });
-    return { ok: true };
-  };
+  let requests = 0;
+  globalThis.fetch = async () => { requests++; throw new Error("Unexpected request"); };
 
   const React = await import("react");
   const { cleanup, render, screen } = await import("@testing-library/react");
   const { default: userEvent } = await import("@testing-library/user-event");
-  const validationError = "Enter 8 letters or numbers. The code is displayed as XXXX-XXXX.";
   try {
     const dependencies = {
       "next/image": { __esModule: true, default: () => null },
       "next/link": { __esModule: true, default: ({ children, ...props }) => React.createElement("a", props, children) },
       "@/lib/device-code": compile(path.resolve(dirname, "../../lib/device-code.ts"), runtimeRequire),
-      "@/lib/posthog": { capturePostHog: async () => { /* Analytics is intentionally inert in this test. */ } },
+      "@/lib/posthog": { capturePostHog: async () => {} },
       "@supabase/supabase-js": { createClient() {
         clientCalls++;
-        return { auth: { getSession: async () => ({ data: { session: { access_token: "synthetic-session" } }, error: null }) } };
+        return { auth: { getSession: async () => ({ data: { session: null }, error: new Error("Synthetic session error") }) } };
       } },
     };
     const Component = compile(path.join(dirname, "device-authorization-client.tsx"),
       (name) => dependencies[name] ?? runtimeRequire(name)).default;
     const user = userEvent.setup();
     render(React.createElement(Component));
+    const input = screen.getByRole("textbox", { name: "Device code" });
+
+    for (const [pasted, displayed] of [[" \t \n ", ""], ["  abcd234  ", "ABCD-234"]]) {
+      await user.clear(input);
+      await user.click(input);
+      await user.paste(pasted);
+      assert.equal(input.value, displayed);
+      await user.click(screen.getByRole("button", { name: "Authorize Device" }));
+      assert.equal(input.value, displayed);
+      assert.equal(screen.getByRole("alert").textContent, "Enter 8 letters or numbers. The code is displayed as XXXX-XXXX.");
+      assert.equal(input.getAttribute("aria-invalid"), "true");
+      assert.equal(clientCalls, 0);
+    }
+
+    await user.clear(input);
+    await user.paste(" \tabcd-2345\n ");
+    assert.equal(input.value, "ABCD-2345");
+    await user.click(screen.getByRole("button", { name: "Authorize Device" }));
+    assert.equal((await screen.findByRole("alert")).textContent, "Unable to read your sign-in session. Please try again.");
+    assert.equal(input.value, "ABCD-2345");
+    assert.equal(clientCalls, 1);
+    assert.equal(requests, 0);
+  } finally {
+    cleanup();
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("corrected device code resubmits past the prior validation error", async () => {
+  const validationError = "Enter 8 letters or numbers. The code is displayed as XXXX-XXXX.";
+  await withAuthorizedDeviceFixture(async ({ fixture, screen, user }) => {
     const input = screen.getByRole("textbox", { name: "Device code" });
     const button = screen.getByRole("button", { name: "Authorize Device" });
 
@@ -115,8 +398,8 @@ test("corrected device code resubmits past the prior validation error", async ()
     await user.click(button);
     assert.equal(screen.getByRole("alert").textContent, validationError);
     assert.equal(input.getAttribute("aria-invalid"), "true");
-    assert.equal(clientCalls, 0);
-    assert.equal(requests.length, 0);
+    assert.equal(fixture.clientCalls, 0);
+    assert.equal(fixture.requests.length, 0);
 
     // Correcting the entry leaves the prior error rendered; resubmitting must
     // clear it instead of letting it block the now-valid submission.
@@ -128,14 +411,108 @@ test("corrected device code resubmits past the prior validation error", async ()
 
     assert.ok(await screen.findByRole("heading", { name: "Device Authorized" }));
     assert.equal(screen.queryByRole("alert"), null);
-    assert.equal(clientCalls, 1);
-    assert.equal(requests.length, 1);
-    assert.equal(requests[0].endpoint, "/api/v1/auth/device/approve");
-    assert.equal(requests[0].request.headers.Authorization, "Bearer synthetic-session");
-    assert.deepEqual(JSON.parse(requests[0].request.body), { user_code: "WXYZ6789" });
+    assert.equal(fixture.clientCalls, 1);
+    assert.equal(fixture.requests.length, 1);
+    assert.equal(fixture.requests[0].endpoint, "/api/v1/auth/device/approve");
+    assert.equal(fixture.requests[0].request.headers.Authorization, "Bearer synthetic-session");
+    assert.deepEqual(JSON.parse(fixture.requests[0].request.body), { user_code: "WXYZ6789" });
     assert.equal(dom.window.sessionStorage.length, 0);
+  });
+});
+
+test("validation remains visible during correction and clears on valid submission", async () => {
+  const React = await import("react");
+  const { cleanup, render, screen } = await import("@testing-library/react");
+  const { default: userEvent } = await import("@testing-library/user-event");
+  let resolveSession;
+  let sessionCalls = 0;
+  const originalFetch = globalThis.fetch;
+  let requests = 0;
+  globalThis.fetch = async () => { requests++; throw new Error("Unexpected request"); };
+
+  try {
+    const dependencies = {
+      "next/image": { __esModule: true, default: () => null },
+      "next/link": { __esModule: true, default: ({ children, ...props }) => React.createElement("a", props, children) },
+      "@/lib/device-code": compile(path.resolve(dirname, "../../lib/device-code.ts"), runtimeRequire),
+      "@/lib/posthog": { capturePostHog: async () => {} },
+      "@supabase/supabase-js": { createClient: () => ({ auth: { getSession: () => {
+        sessionCalls++;
+        return new Promise((resolve) => { resolveSession = resolve; });
+      } } }) },
+    };
+    const Component = compile(path.join(dirname, "device-authorization-client.tsx"),
+      (name) => dependencies[name] ?? runtimeRequire(name)).default;
+    const user = userEvent.setup();
+    render(React.createElement(Component));
+    const input = screen.getByRole("textbox", { name: "Device code" });
+    const button = screen.getByRole("button", { name: "Authorize Device" });
+
+    await user.type(input, "abc");
+    await user.click(button);
+    const message = "Enter 8 letters or numbers. The code is displayed as XXXX-XXXX.";
+    const assertValidation = (value) => {
+      const alert = screen.getByRole("alert");
+      assert.equal(alert.textContent, message);
+      assert.equal(input.value, value);
+      assert.equal(input.getAttribute("aria-invalid"), "true");
+      assert.ok(input.getAttribute("aria-describedby").split(/\s+/).includes(alert.id));
+      assert.equal(input.disabled, false);
+      assert.equal(button.disabled, false);
+      assert.equal(sessionCalls, 0);
+      assert.equal(requests, 0);
+    };
+    assertValidation("ABC");
+    await user.type(input, "d23");
+    assertValidation("ABCD-23");
+    await user.type(input, "45");
+    assertValidation("ABCD-2345");
+
+    await user.click(button);
+    assert.equal(sessionCalls, 1);
+    assert.equal(requests, 0);
+    assert.equal(screen.queryByRole("alert"), null);
+    assert.equal(input.getAttribute("aria-invalid"), "false");
+    assert.ok(!input.getAttribute("aria-describedby").split(/\s+/).includes("device-error"));
+    assert.equal(input.disabled, true);
+    assert.equal(screen.getByRole("button", { name: "Signing in with GitHub..." }).disabled, true);
+
+    resolveSession({ data: { session: null }, error: new Error("Synthetic session error") });
+    assert.equal((await screen.findByRole("alert")).textContent, "Unable to read your sign-in session. Please try again.");
+    assert.equal(input.value, "ABCD-2345");
+    assert.equal(input.disabled, false);
   } finally {
     cleanup();
     globalThis.fetch = originalFetch;
   }
+});
+
+
+test("pasted hyphenated codes are formatted and validated before authorization", async () => {
+  await withAuthorizedDeviceFixture(async ({ fixture, screen, user }) => {
+    const input = screen.getByRole("textbox", { name: "Device code" });
+    const button = screen.getByRole("button", { name: "Authorize Device" });
+
+    await user.click(input);
+    await user.paste("ab-cd-234");
+    assert.equal(input.value, "ABCD-234");
+    await user.click(button);
+    const alert = screen.getByRole("alert");
+    assert.equal(alert.textContent, "Enter 8 letters or numbers. The code is displayed as XXXX-XXXX.");
+    assert.equal(input.getAttribute("aria-invalid"), "true");
+    assert.ok(input.getAttribute("aria-describedby").split(/\s+/).includes(alert.id));
+    assert.equal(fixture.clientCalls, 0);
+    assert.equal(fixture.requests.length, 0);
+
+    await user.clear(input);
+    await user.paste("ab-cd-2345");
+    assert.equal(input.value, "ABCD-2345");
+    await user.click(button);
+    assert.ok(await screen.findByRole("heading", { name: "Device Authorized" }));
+    assert.equal(screen.queryByRole("alert"), null);
+    assert.equal(fixture.clientCalls, 1);
+    assert.equal(fixture.requests.length, 1);
+    assert.equal(fixture.requests[0].endpoint, "/api/v1/auth/device/approve");
+    assert.deepEqual(JSON.parse(fixture.requests[0].request.body), { user_code: "ABCD2345" });
+  });
 });

@@ -43,7 +43,7 @@ function compile(file, dependencies = {}, fetch = () => { throw new Error("Unexp
   return module.exports;
 }
 
-function renderDevice({ approvalError } = {}) {
+function renderDevice({ approvalError, sessionBarrier, approvalBarrier } = {}) {
   let sessionReads = 0;
   const requests = [];
   const dependencies = {
@@ -54,12 +54,14 @@ function renderDevice({ approvalError } = {}) {
     "@supabase/supabase-js": { createClient: () => ({ auth: {
       getSession: async () => {
         sessionReads++;
+        if (sessionBarrier) await sessionBarrier;
         return { data: { session: { access_token: "synthetic-recut-session" } }, error: null };
       },
     } }) },
   };
   const Component = compile("app/device/device-authorization-client.tsx", dependencies, async (endpoint, request) => {
     requests.push({ endpoint, request });
+    if (approvalBarrier) await approvalBarrier;
     return approvalError
       ? Response.json({ error: approvalError }, { status: 400 })
       : Response.json({ status: "approved" });
@@ -129,4 +131,39 @@ test("a server rejection replaces validation feedback in the editable field's de
   assert.equal(h.page.getByRole("button", { name: "Authorize Device" }).disabled, false);
   assert.equal(h.page.queryByRole("heading", { name: "Device Authorized" }), null);
   assert.equal(h.requests.length, 1);
+});
+
+
+test("form states guide matches visible pending and success states", async () => {
+  const guide = fs.readFileSync(path.resolve(__dirname, "../../../docs/device-code-form-states.md"), "utf8");
+  let releaseSession;
+  let releaseApproval;
+  const h = renderDevice({
+    sessionBarrier: new Promise((resolve) => { releaseSession = resolve; }),
+    approvalBarrier: new Promise((resolve) => { releaseApproval = resolve; }),
+  });
+  const input = h.page.getByRole("textbox", { name: "Device code" });
+  const section = input.closest("section");
+  assert.equal(input.placeholder, "XXXX-XXXX");
+  assert.equal(section.getAttribute("aria-busy"), "false");
+  await h.user.type(input, "abcd2345");
+  await h.user.click(h.page.getByRole("button", { name: "Authorize Device" }));
+
+  for (const [buttonLabel, announcement, release] of [
+    ["Signing in with GitHub...", "Signing in with GitHub.", releaseSession],
+    ["Approving...", "Approving your device.", releaseApproval],
+  ]) {
+    const button = await h.page.findByRole("button", { name: buttonLabel });
+    assert.ok(input.disabled && button.disabled);
+    assert.equal(section.getAttribute("aria-busy"), "true");
+    assert.equal(h.page.getByRole("status").textContent, announcement);
+    assert.ok(guide.includes(buttonLabel) && guide.includes(announcement));
+    release();
+  }
+
+  assert.ok(await h.page.findByRole("heading", { name: "Device Authorized" }));
+  assert.equal(section.getAttribute("aria-busy"), "false");
+  assert.equal(h.page.queryByRole("textbox"), null);
+  assert.equal(h.page.getByRole("link", { name: "Open your dashboard" }).getAttribute("href"), "/dashboard");
+  assert.ok(guide.includes("Device Authorized") && guide.includes("Open your dashboard"));
 });

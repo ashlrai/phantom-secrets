@@ -45,6 +45,51 @@ test("the internal note's display and canonical example matches the formatter", 
   assert.equal(normalizeDeviceUserCode(displayed), canonical);
 });
 
+test("display contract example matches formatting, normalization, and migration", () => {
+  const docsDir = path.resolve(__dirname, "../../../docs");
+  const contract = fs.readFileSync(path.join(docsDir, "device-code-display-contract.md"), "utf8");
+  const example = contract.match(/display `([A-Z0-9]{4}-[A-Z0-9]{4})` represents\s+the canonical value `([A-Z0-9]{8})`/);
+  assert.ok(example, "the contract should pair a displayed code with its canonical value");
+  const [, displayed, canonical] = example;
+  assert.equal(displayed.length, DEVICE_USER_CODE_LENGTH + 1);
+  assert.equal(formatDeviceUserCode(canonical), displayed);
+  assert.equal(normalizeDeviceUserCode(displayed.toLowerCase()), canonical);
+  assert.equal(isValidDeviceUserCode(displayed), true);
+  assert.equal(isValidDeviceUserCode(`${displayed}6`), false);
+
+  const migrationPath = path.resolve(docsDir, "../apps/web/supabase/migrations/20260523000016_canonical_device_user_codes.sql");
+  const migration = fs.readFileSync(migrationPath, "utf8");
+  assert.equal(displayed.toLowerCase().replaceAll("-", "").toUpperCase(), canonical);
+  assert.match(migration, /set user_code = upper\(replace\(user_code, '-', ''\)\)/i);
+  assert.match(migration, /create unique index[\s\S]*?on public\.device_tokens\(user_code\)\s+where status = 'pending'/i);
+  for (const target of ["device-code-format.md", "internal/notes.md", "../apps/web/src/lib/device-code.ts", "../apps/web/src/app/device/device-authorization-client.tsx", "../apps/web/supabase/migrations/20260523000016_canonical_device_user_codes.sql"]) {
+    assert.ok(contract.includes(`](${target}`), `missing contract reference: ${target}`);
+    assert.ok(fs.statSync(path.resolve(docsDir, target)).isFile());
+  }
+});
+
+test("device code guide examples match the current formatter and validator", () => {
+  const guidePath = path.join(__dirname, "../../../docs/device-code-format.md");
+  const guide = fs.readFileSync(guidePath, "utf8");
+  const rows = [...guide.matchAll(/^\| `([^`]+)` \| `([^`]+)` \| (Yes|No) \|$/gm)];
+  assert.equal(rows.length, 5, "the guide should retain its input examples");
+  for (const [, input, displayed, valid] of rows) {
+    assert.equal(formatDeviceUserCode(input), displayed, input);
+    assert.equal(isValidDeviceUserCode(input), valid === "Yes", input);
+  }
+  for (const target of ["../apps/web/src/app/device/device-authorization-client.tsx", "../apps/web/src/lib/device-code.ts", "internal/notes.md"]) {
+    assert.ok(guide.includes(`](${target}`), `missing guide reference: ${target}`);
+    assert.ok(fs.statSync(path.resolve(path.dirname(guidePath), target)).isFile());
+  }
+});
+
+test("normalization removes non-ASCII characters and validation accepts the full ASCII alphabet", () => {
+  assert.equal(formatDeviceUserCode("abé-cd2345"), "ABCD-2345");
+  assert.equal(normalizeDeviceUserCode("ab01-il23"), "AB01IL23");
+  assert.equal(isValidDeviceUserCode("ab01-il23"), true);
+  assert.equal(isValidDeviceUserCode("---"), false);
+});
+
 test("initiation returns the formatted user code while storing its canonical form", async () => {
   const filename = path.join(__dirname, "../src/app/api/v1/auth/device/initiate/route.ts");
   const route = ts.transpileModule(fs.readFileSync(filename, "utf8"), {

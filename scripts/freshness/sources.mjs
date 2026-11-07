@@ -2,7 +2,7 @@
 
 // Source-of-truth readers for the freshness generator. Every marked
 // `fresh:` block is rendered from these values only. When the sources
-// disagree the repository's own release metadata is inconsistent, so
+// disagree the repository's own source metadata is inconsistent, so
 // loading fails closed instead of picking a winner.
 
 import { readFileSync } from "node:fs";
@@ -24,6 +24,22 @@ function readPackage(root, rel) {
     throw new Error(`${rel} version is missing or not semver`);
   }
   return { name: parsed.name, version: parsed.version };
+}
+
+function readPublicRelease(root) {
+  const release = read(root, "apps/web/src/lib/public-release.ts");
+  const version = release.match(
+    /^export const PUBLIC_RELEASE_VERSION = "([^"]+)";$/m,
+  )?.[1];
+  const state = release.match(
+    /^export const PUBLIC_RELEASE_EVIDENCE_STATE = "([^"]+)";$/m,
+  )?.[1];
+  // Source-version parity cannot establish publication. Use the separately
+  // reconciled public receipt and refuse to generate claims without it.
+  if (!version || !SEMVER.test(version) || state !== "bound") {
+    throw new Error("public-release.ts has no bound public release version");
+  }
+  return { version, tag: `v${version}` };
 }
 
 // GitHub renders `## [0.7.9] - 2026-09-06` under the `#079---2026-09-06`
@@ -78,6 +94,7 @@ export function loadSources(root) {
   return {
     version,
     tag: `v${version}`,
+    publicRelease: readPublicRelease(root),
     npmCli,
     npmMcp,
     release: {
