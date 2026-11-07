@@ -209,12 +209,20 @@ pub fn run(root: PathBuf, dry_run: bool, jobs: usize) -> Result<()> {
     );
 
     if e > 0 {
-        anyhow::bail!("{e} repo(s) failed to init — see output above");
+        return Err(failed_repos_error(e));
     }
     Ok(())
 }
 
 /// Return a short display string for `repo` relative to `root`.
+/// Some repos failed to initialize. Their per-repo errors are printed above;
+/// the summary says how many failed and that re-running retries them.
+fn failed_repos_error(failed: usize) -> anyhow::Error {
+    anyhow::anyhow!(
+        "{failed} repo(s) failed to initialize. Fix the errors printed above, then run this command again."
+    )
+}
+
 fn repo_display(repo: &Path, root: &Path) -> String {
     let rel = repo.strip_prefix(root).unwrap_or(repo);
     if rel.as_os_str().is_empty() {
@@ -344,6 +352,14 @@ mod tests {
     use super::*;
     use std::sync::atomic::Ordering;
     use std::sync::Arc;
+
+    #[test]
+    fn failed_repos_error_counts_failures_and_names_the_next_step() {
+        assert_eq!(
+            failed_repos_error(2).to_string(),
+            "2 repo(s) failed to initialize. Fix the errors printed above, then run this command again."
+        );
+    }
     use tempfile::tempdir;
 
     fn touch(path: &Path) {

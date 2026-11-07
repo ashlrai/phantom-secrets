@@ -3,53 +3,10 @@ import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { approvedDifferences, normalizeInstallerCopy, repositoryCopy, webCopy } from './lib/installer-copy-differences.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
-const repositoryCopy = 'scripts/install.sh';
-const webCopy = 'apps/web/public/install.sh';
-
-// Reviewed differences between the repository installer and the web-served
-// copy; docs/installer-copy-comparison.md carries the prose record. Each entry
-// pins one changed region exactly: `minus` lines exist only in the repository
-// copy and `plus` lines replace them in the web copy. Any drift beyond this
-// list — an added, removed, or reworded line — fails the consistency check.
-const approvedDifferences = [
-  {
-    name: 'the repository copy targets the next candidate tag while the web copy stays bound to the evidenced release',
-    minus: ['CANDIDATE_TAG="v0.8.0"'],
-    plus: ['CANDIDATE_TAG="v0.7.9"'],
-  },
-  {
-    name: 'staging directory creation and permission changes keep die() guards only in the repository copy',
-    minus: [
-      'stage_root="$(mktemp -d "$install_parent/.${install_name}.install.XXXXXX")" \\',
-      '  || die "could not create a private staging directory in $install_parent"',
-      'chmod 700 "$stage_root" || die "could not secure the staging directory"',
-    ],
-    plus: [
-      'stage_root="$(mktemp -d "$install_parent/.${install_name}.install.XXXXXX")"',
-      'chmod 700 "$stage_root"',
-    ],
-  },
-  {
-    name: 'staging subdirectory creation keeps a die() guard only in the repository copy',
-    minus: [
-      'mkdir -m 700 "$download_dir" "$candidate_dir" \\',
-      '  || die "could not create staging directories"',
-    ],
-    plus: ['mkdir -m 700 "$download_dir" "$candidate_dir"'],
-  },
-  {
-    name: 'the repository copy extracts the release archive with tar --no-same-owner',
-    minus: [
-      "# --no-same-owner: as root, tar would otherwise keep the release runner's uid on the installed binaries.",
-      'tar --no-same-owner -xzf "$archive_path" -C "$candidate_dir" || die "could not extract release archive"',
-    ],
-    plus: [
-      'tar -xzf "$archive_path" -C "$candidate_dir" || die "could not extract release archive"',
-    ],
-  },
-];
+// Keep the diff-group checks as well as the byte-preserving platform gate.
 
 function installerDiff(contextLines) {
   const result = spawnSync('diff', [`-U${contextLines}`, repositoryCopy, webCopy], { cwd: root, encoding: 'utf8' });
@@ -96,6 +53,10 @@ test('installer copies differ only by the reviewed changes', () => {
 test('approved differences remain anchored in both installer copies', () => {
   const repository = readFileSync(new URL(`../${repositoryCopy}`, import.meta.url), 'utf8');
   const web = readFileSync(new URL(`../${webCopy}`, import.meta.url), 'utf8');
+  // Identical current copies have no byte differences, but their actual
+  // default source-owned tag bindings must remain anchored and validated.
+  assert.doesNotThrow(() => normalizeInstallerCopy(Buffer.from(repository), 'minus'));
+  assert.doesNotThrow(() => normalizeInstallerCopy(Buffer.from(web), 'plus'));
   for (const entry of approvedDifferences) {
     assert.ok(
       repository.includes(entry.minus.join('\n')),

@@ -1,3 +1,5 @@
+// Fixtures follow the independent package carrier, not the wrapper implementation.
+const candidateVersion = require("../package.json").version;
 const assert = require("assert");
 const crypto = require("crypto");
 const { mkdtempSync, readFileSync, rmSync } = require("fs");
@@ -16,7 +18,7 @@ const { ensureBinary, pathSet, writePrivateFile } = require("../bin/cli.js");
     const sha256 = crypto.createHash("sha256").update(contents).digest("hex");
     writePrivateFile(
       paths.manifestPath,
-      `${JSON.stringify({ version: "0.8.0", sha256 })}\n`,
+      `${JSON.stringify({ version: candidateVersion, sha256 })}\n`,
       0o600
     );
     let executions = 0;
@@ -26,7 +28,7 @@ const { ensureBinary, pathSet, writePrivateFile } = require("../bin/cli.js");
         executions += 1;
         assert.strictEqual(observedPath, paths.binaryPath);
         assert.deepStrictEqual(args, ["--version"]);
-        return Buffer.from("phantom-mcp 0.8.0\n");
+        return Buffer.from(("phantom-mcp " + candidateVersion + "\n"));
       },
       downloadImpl: async () => {
         throw new Error("valid cache must not download");

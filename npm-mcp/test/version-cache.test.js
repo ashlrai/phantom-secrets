@@ -1,3 +1,5 @@
+// Fixtures follow the independent package carrier, not the wrapper implementation.
+const candidateVersion = require("../package.json").version;
 const assert = require("assert");
 const crypto = require("crypto");
 const {
@@ -27,11 +29,11 @@ const {
 function writePair(binaryPath, manifestPath, contents) {
   writePrivateFile(binaryPath, contents, 0o700);
   const sha256 = crypto.createHash("sha256").update(contents).digest("hex");
-  writePrivateFile(manifestPath, `${JSON.stringify({ version: "0.8.0", sha256 })}\n`, 0o600);
+  writePrivateFile(manifestPath, `${JSON.stringify({ version: candidateVersion, sha256 })}\n`, 0o600);
 }
 
-assert.strictEqual(parseBinaryVersion("phantom-mcp 0.8.0\n"), "0.8.0");
-assert.strictEqual(parseBinaryVersion("phantom-mcp 0.8.0\r\n"), "0.8.0");
+assert.strictEqual(parseBinaryVersion(("phantom-mcp " + candidateVersion + "\n")), candidateVersion);
+assert.strictEqual(parseBinaryVersion(("phantom-mcp " + candidateVersion + "\r\n")), candidateVersion);
 assert.strictEqual(
   parseBinaryVersion(Buffer.from("phantom-mcp 1.2.3-rc.1+build.7\n")),
   "1.2.3-rc.1+build.7"
@@ -39,12 +41,12 @@ assert.strictEqual(
 for (const malformed of [
   "",
   "phantom-mcp\n",
-  "phantom-mcp v0.8.0\n",
+  ("phantom-mcp v" + candidateVersion + "\n"),
   "phantom-mcp 0.7.01\n",
   "phantom-mcp 1.2.3-01\n",
-  "phantom-mcp 0.8.0-untrusted\nextra\n",
-  "prefix phantom-mcp 0.8.0\n",
-  "phantom 0.8.0\n",
+  ("phantom-mcp " + candidateVersion + "-untrusted\nextra\n"),
+  ("prefix phantom-mcp " + candidateVersion + "\n"),
+  ("phantom " + candidateVersion + "\n"),
 ]) assert.strictEqual(parseBinaryVersion(malformed), null, malformed);
 
 const fixtureDir = mkdtempSync(join(tmpdir(), "phantom-mcp-cache-test-"));
@@ -56,7 +58,7 @@ try {
   assert.strictEqual(validateCachedBinary(paths.binaryPath, paths.manifestPath, {
     execFileSyncImpl: () => {
       executions += 1;
-      return Buffer.from("phantom-mcp 0.8.0\n");
+      return Buffer.from(("phantom-mcp " + candidateVersion + "\n"));
     },
   }), false);
   assert.strictEqual(executions, 0, "binary without manifest must never execute");
@@ -65,7 +67,7 @@ try {
   writePair(paths.binaryPath, paths.manifestPath, "old-binary");
   assert.ok(readVerifiedManifest(paths.binaryPath, paths.manifestPath));
   assert.strictEqual(isCachedBinaryStale(paths.binaryPath, {
-    execFileSyncImpl: () => Buffer.from("phantom-mcp 0.8.0\n"),
+    execFileSyncImpl: () => Buffer.from(("phantom-mcp " + candidateVersion + "\n")),
   }), false);
 
   let observedTimeout;

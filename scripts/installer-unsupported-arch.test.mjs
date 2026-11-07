@@ -57,6 +57,7 @@ function run(installer, root, sysname, machine) {
 const cases = [
   { sysname: 'Linux', machine: 'i686', what: 'arch', value: 'i686' },
   { sysname: 'Darwin', machine: 'ppc64', what: 'arch', value: 'ppc64' },
+  { sysname: 'Darwin', machine: 'i386', what: 'arch', value: 'i386' },
   { sysname: 'Linux', machine: 'riscv64', what: 'arch', value: 'riscv64' },
   { sysname: 'Linux', machine: 'armv7l', what: 'arch', value: 'armv7l' },
   { sysname: 'FreeBSD', machine: 'x86_64', what: 'OS', value: 'FreeBSD' },
@@ -70,6 +71,7 @@ for (const [name, installer] of Object.entries(installers)) {
       const { result, install, log } = run(installer, root, sysname, machine);
 
       assert.ifError(result.error);
+      assert.notEqual(result.status, 0);
       assert.equal(result.status, 1);
       assert.match(result.stderr, new RegExp(`phantom: unsupported ${what}: ${value}`));
       assert.match(result.stderr, /releases/, 'error points at the releases page');

@@ -4,6 +4,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
 const ts = require("typescript");
+const { pathToFileURL } = require("node:url");
 
 const webDir = path.resolve(__dirname, "..");
 const repoDir = path.resolve(webDir, "../..");
@@ -258,9 +259,15 @@ const publicReleaseEvidencePaths = [
 ];
 
 const verifiedReleaseUrl =
-  "https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.9";
-const candidateReleaseUrl =
-  "https://github.com/ashlrai/phantom-secrets/releases/tag/v0.8.0";
+  "https://github.com/ashlrai/phantom-secrets/releases/tag/v0.8.7";
+let candidateReleaseUrl;
+let candidateVersionPattern;
+test.before(async () => {
+  const { loadSources } = await import(pathToFileURL(path.join(repoDir, "scripts/freshness/sources.mjs")).href);
+  const source = loadSources(repoDir);
+  candidateReleaseUrl = `https://github.com/ashlrai/phantom-secrets/releases/tag/${source.tag}`;
+  candidateVersionPattern = source.version.replaceAll(".", "\\.");
+});
 
 function structuredMetadataBlock(source, type) {
   const marker = `"@type": "${type}"`;
@@ -727,14 +734,14 @@ test("published package READMEs use verified local binaries and bounded claims",
       assert.ok(source.includes(verifiedReleaseUrl), file);
       assert.match(
         source,
-        /Released `v0\.7\.9`[\s\S]{0,300}no network package-runner fallback[\s\S]{0,120}fails closed/i,
+        /Released `v0\.8\.7`[\s\S]{0,300}no network package-runner fallback[\s\S]{0,120}fails closed/i,
         file,
       );
     } else {
       assert.ok(source.includes(candidateReleaseUrl), file);
       assert.match(
         source,
-        /version `0\.8\.0`[\s\S]{0,180}(?:do not prove|does not prove)[\s\S]{0,80}(?:npm|published)/i,
+        new RegExp("version `" + candidateVersionPattern + "`[\\s\\S]{0,180}(?:do not prove|does not prove)[\\s\\S]{0,80}(?:npm|published)", "i"),
         file,
       );
       assert.match(
@@ -744,7 +751,7 @@ test("published package READMEs use verified local binaries and bounded claims",
       );
       assert.match(
         source,
-        /Version `0\.8\.0`[\s\S]{0,250}no network package-runner fallback[\s\S]{0,80}fails closed/i,
+        new RegExp("Version `" + candidateVersionPattern + "`[\\s\\S]{0,250}no network package-runner fallback[\\s\\S]{0,80}fails closed", "i"),
         file,
       );
       assert.doesNotMatch(source, /releases\/tag\/v0\.7\.3/i, file);
@@ -788,7 +795,7 @@ test("registry README catalog exactly matches the staged 54-tool schema", () => 
   assert.match(registryReadme, /do not publish this manifest until/i);
 });
 
-test("released setup guidance uses the verified v0.7.9 fail-closed local runtime", () => {
+test("released setup guidance uses the verified v0.8.7 fail-closed local runtime", () => {
   const setupBoundaryGuides = {
     "README.md": repositoryGuidanceClaims["README.md"],
     "docs/getting-started.md": repositoryGuidanceClaims["docs/getting-started.md"],
@@ -804,8 +811,8 @@ test("released setup guidance uses the verified v0.7.9 fail-closed local runtime
   };
 
   for (const [file, source] of Object.entries(setupBoundaryGuides)) {
-    assert.match(source, /Install both[^\n]*`v0\.7\.9`|both verified `v0\.7\.9`(?: GitHub release)? binaries/i, file);
-    assert.match(source, /(?:Version|Released) `?v?0\.7\.9/i, file);
+    assert.match(source, /Install both[^\n]*`v0\.8\.7`|both verified `v0\.8\.7`(?: GitHub release)? binaries/i, file);
+    assert.match(source, /(?:Version|Released) `?v?0\.8\.7/i, file);
     assert.match(
       source,
       /no network\s+package-runner fallback[\s\S]{0,80}fails closed|fails closed instead of generating a registry-backed command/i,
@@ -822,9 +829,9 @@ test("HowTo and delegation guidance avoid timing and unpinned quickstart claims"
 
   assert.doesNotMatch(installHowTo, /totalTime|PT1M/i);
   assert.match(installHowTo, /review the generated local MCP entry/i);
-  assert.match(publicRelease, /PUBLIC_RELEASE_VERSION\s*=\s*"0\.7\.9"/);
+  assert.match(publicRelease, /PUBLIC_RELEASE_VERSION\s*=\s*"0\.8\.7"/);
   assert.match(installHowTo, /no network package-runner fallback/i);
-  assert.match(delegation, /both `phantom` and `phantom-mcp` from the reviewed `v0\.7\.9`[^\n]*GitHub release/i);
+  assert.match(delegation, /both `phantom` and `phantom-mcp` from the reviewed `v0\.8\.7`[^\n]*GitHub release/i);
   assert.match(delegation, /phantom agent setup --dry-run/i);
   assert.doesNotMatch(delegation, /npx(?:\s+-y)?\s+phantom-secrets\s+agent setup/i);
 });
@@ -880,7 +887,7 @@ test("current SoftwareApplication and HowTo metadata point at the verified relea
   assert.doesNotMatch(layout, /"@type": "SoftwareApplication"|"@type": "SoftwareSourceCode"/);
   const installHowTo = claims["src/components/landing/LandingStructuredData.tsx"];
 
-  assert.match(publicRelease, /PUBLIC_RELEASE_VERSION\s*=\s*"0\.7\.9"/);
+  assert.match(publicRelease, /PUBLIC_RELEASE_VERSION\s*=\s*"0\.8\.7"/);
   assert.match(publicRelease, /PUBLIC_RELEASE_TAG\s*=\s*`v\$\{PUBLIC_RELEASE_VERSION\}`/);
   assert.match(publicRelease, /releases\/tag\/\$\{PUBLIC_RELEASE_TAG\}/);
   assert.match(softwareApplication, /softwareVersion:\s*PUBLIC_RELEASE_VERSION/);
@@ -903,7 +910,7 @@ test("current SoftwareApplication and HowTo metadata point at the verified relea
   assert.doesNotMatch(`${quickStart}\n${install}`, /(?:Install|reviewed) v0\.7\.3/i);
 });
 
-test("public release references bind v0.7.9 to its immutable publication receipt", () => {
+test("public release references bind v0.8.7 to its immutable publication receipt", () => {
   const publicRelease = claims["src/lib/public-release.ts"];
   const evidenceState = exportedString(
     publicRelease,
@@ -915,7 +922,7 @@ test("public release references bind v0.7.9 to its immutable publication receipt
   assert.equal(
     evidenceState,
     "bound",
-    "replace every v0.7.9 evidence sentinel before merge or deployment",
+    "replace every v0.8.7 evidence sentinel before merge or deployment",
   );
   assert.match(workflowUrl, /\/actions\/runs\/\d+$/);
   assert.match(sourceCommit, /^[a-f0-9]{40}$/);
@@ -931,7 +938,7 @@ test("public release references bind v0.7.9 to its immutable publication receipt
   ];
 
   for (const { source, site } of releaseGuides) {
-    assert.match(source, site ? /2026-10-06/ : /2026-09-29/);
+    assert.match(source, /2026-11-06/);
     assert.ok(source.includes(sourceCommit));
     assert.match(source, /19[-\s]assets/i);
     assert.match(source, /all six native|six-row native/i);
@@ -947,9 +954,9 @@ test("public release references bind v0.7.9 to its immutable publication receipt
   ];
   for (const source of fullReferences) {
     assert.equal(
-      source.match(/releases\/download\/v0\.7\.9\/phantom-(?:aarch64|x86_64)-(?:apple-darwin|unknown-linux-gnu|pc-windows-msvc)\.(?:tar\.gz|zip)/g)?.length,
+      source.match(/releases\/download\/v0\.8\.7\/phantom-(?:aarch64|x86_64)-(?:apple-darwin|unknown-linux-gnu|pc-windows-msvc)\.(?:tar\.gz|zip)/g)?.length,
       6,
-      "full reference must link all six exact v0.7.9 archives",
+      "full reference must link all six exact v0.8.7 archives",
     );
   }
 });
@@ -994,13 +1001,13 @@ test("public installer digests bind to the exact release-source bytes", () => {
   // QuickStart downloads scripts from the immutable source commit. Current
   // public installers evolve independently; these fixtures are that commit
   // unmodified scripts/install.sh and scripts/install.ps1 blobs.
-  assert.equal(unixDigest, sha256File("apps/web/tests/fixtures/release-v0.7.9/install.sh"));
-  assert.equal(windowsDigest, sha256File("apps/web/tests/fixtures/release-v0.7.9/install.ps1"));
-  // These blob OIDs were resolved from the annotated v0.7.9 tag. Together
+  assert.equal(unixDigest, sha256File("apps/web/tests/fixtures/release-v0.8.7/install.sh"));
+  assert.equal(windowsDigest, sha256File("apps/web/tests/fixtures/release-v0.8.7/install.ps1"));
+  // These blob OIDs were resolved from the annotated v0.8.7 tag. Together
   // with the SHA-256 assertions above, they bind the public checksums to the
   // exact repository bytes served by the immutable source-commit URLs.
-  assert.equal(unixBlobOid, gitBlobOid("apps/web/tests/fixtures/release-v0.7.9/install.sh"));
-  assert.equal(windowsBlobOid, gitBlobOid("apps/web/tests/fixtures/release-v0.7.9/install.ps1"));
+  assert.equal(unixBlobOid, gitBlobOid("apps/web/tests/fixtures/release-v0.8.7/install.sh"));
+  assert.equal(windowsBlobOid, gitBlobOid("apps/web/tests/fixtures/release-v0.8.7/install.ps1"));
   assert.match(
     exportedString(publicRelease, "PUBLIC_RELEASE_WORKFLOW_URL"),
     /\/actions\/runs\/\d+$/,
@@ -1274,11 +1281,11 @@ test("community health metadata preserves release and support boundaries", () =>
   );
 
   const readme = readRepo("README.md");
-  assert.match(readme, /release-state snapshot[^\n]*2026-09-29/i);
+  assert.match(readme, /release-state snapshot[^\n]*2026-11-06/i);
   assert.match(readme, /v0\.7\.9/i);
   assert.match(
     readme,
-    /release-state snapshot[^\n]*verified[^\n]*2026-09-29/i,
+    /release-state snapshot[^\n]*verified[^\n]*2026-11-06/i,
   );
   assert.match(readme, /(?:7a51ce512ec4aee12cc29ff859036af63fbe93db|[a-f0-9]{40})/);
   assert.match(
@@ -1301,10 +1308,11 @@ test("community health metadata preserves release and support boundaries", () =>
 
   const citation = readRepo("CITATION.cff");
   assert.match(citation, /^cff-version: 1\.2\.0$/m);
-  assert.match(citation, /^version: 0\.8\.0$/m);
-  assert.match(citation, /immutable v0\.7\.9 GitHub\s+release/i);
+  assert.match(citation, /^version: 0\.8\.7$/m);
+  assert.match(citation, /immutable v0\.8\.7 GitHub\s+release/i);
+  assert.doesNotMatch(citation, /immutable v99\.98\.97 GitHub\s+release/i);
   assert.match(citation, /repository URL and full commit SHA/i);
-  assert.match(citation, /^date-released: 2026-11-02$/m);
+  assert.match(citation, /^date-released: 2026-11-06$/m);
 });
 
 test("cloud-signed audit remains an explicit network-free protocol foundation", () => {

@@ -42,7 +42,7 @@ arguments, tool results, logs, or any file the agent can read.
 
 `phantom grant add github-app` (manifest flow in
 `crates/phantom-core/src/issuance/github_app.rs`) is a related but separate
-surface: live provider issuance/rotation stays hard-denied in 0.7.9 and is out
+surface: live provider issuance/rotation stays hard-denied in 0.8.7 and is out
 of scope here.
 
 ## 3. Child jobs

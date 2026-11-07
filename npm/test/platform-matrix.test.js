@@ -1,3 +1,5 @@
+// Fixtures follow the independent package carrier, not the wrapper implementation.
+const candidateVersion = require("../package.json").version;
 const assert = require("assert");
 const crypto = require("crypto");
 const { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } = require("fs");
@@ -73,7 +75,7 @@ assert.deepStrictEqual(documentedUnsupported, unsupported);
 for (const runtime of unsupported) {
   assert.throws(() => getPlatformTarget(runtime), (error) => {
     assert.match(error.message, new RegExp(`Unsupported platform: ${runtime.platform}-${runtime.arch}`));
-    assert.match(error.message, /releases\/tag\/v0\.8\.0/);
+    assert.match(error.message, new RegExp("releases\\/tag\\/v" + candidateVersion.replaceAll(".", "\\.") + "",""));
     assert.match(error.message, /checksum-verifiable/);
     assert.doesNotMatch(error.message, /cargo install|npm install|npx |curl[^\n]*\|/i);
     return true;
@@ -111,7 +113,7 @@ assert.doesNotMatch(wrapperSource, /Install from source|cargo install phantom-se
     const binary = "cached binary fixture";
     const binaryPath = join(populatedCache, "phantom");
     const manifest = JSON.stringify({
-      version: "0.8.0",
+      version: candidateVersion,
       sha256: crypto.createHash("sha256").update(binary).digest("hex"),
     }) + "\n";
     writeFileSync(binaryPath, binary, { mode: 0o700 });
@@ -123,7 +125,7 @@ assert.doesNotMatch(wrapperSource, /Install from source|cargo install phantom-se
       ensureBinary({
         cacheDir: populatedCache,
         runtime: { platform: "openbsd", arch: "x64" },
-        execFileSyncImpl: () => { executions += 1; return Buffer.from("phantom 0.8.0\n"); },
+        execFileSyncImpl: () => { executions += 1; return Buffer.from(("phantom " + candidateVersion + "\n")); },
         downloadImpl: async () => { downloads += 1; throw new Error("unexpected download"); },
         extractImpl: () => { extractions += 1; },
       }),

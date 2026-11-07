@@ -13,8 +13,7 @@ Exit status 0 means the files match, 1 means they differ, and a status greater
 than 1 means the comparison failed. The output is a unified diff, with the
 repository copy on the minus side and the web copy on the plus side.
 
-The copies currently have reviewed differences in staging error handling and
-archive extraction. See the dated [comparison and hashes](installer-copy-comparison.md)
+The copies currently have a reviewed difference in release pinning only. See the dated [comparison and hashes](installer-copy-comparison.md)
 and [source map](installer-copy-source-map.md) for the exact review. The web
 copy is bound to separately reviewed release evidence: do not overwrite it
 just to make the comparison pass. A local comparison does not verify the
@@ -28,5 +27,5 @@ when their reviewed state changes. Run the relevant installer behavior tests
 and the copy checks, including:
 
 ```sh
-node --test scripts/installer-copy-comparison.test.mjs scripts/installer-copy-consistency.test.mjs scripts/installer-copy-byte-consistency.test.mjs scripts/installer-copy-source-map.test.mjs scripts/installer-copy-sync.test.mjs
+node --test scripts/installer-copy-comparison.test.mjs scripts/installer-copy-consistency.test.mjs scripts/installer-copy-parity.test.mjs scripts/installer-copy-byte-consistency.test.mjs scripts/installer-copy-source-map.test.mjs scripts/installer-copy-sync.test.mjs
 ```

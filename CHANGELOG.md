@@ -4,7 +4,278 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
-Changes after 0.8.0 land in this section.
+Changes after 0.8.7 land in this section.
+
+## [0.8.7] - 2026-11-06
+
+This candidate carries the unpublished 0.8.6 source and the changes since the
+last published `0.7.9`. Tags v0.8.0 through v0.8.6 remain
+immutable; none establishes a qualified public release.
+
+### Fixed
+
+- Release smoke validation requires both the exact full-CI qualifier and the native build dependency on the actual attestation job. Its complete supplemental publication/receipt suite now runs in the existing CI contract step before tagging. This repairs the source-only smoke assertion that rejected the immutable 0.8.6 candidate after its successful full 20-role producer; no native artifacts, attestations or public/npm writes occurred for that candidate.
+
+- Source-version installer and web guidance checks follow cross-checked Cargo/npm/changelog metadata while retaining strict unique assignments and independent published-release claims. This repairs the stale 0.8.4 assertions that failed the immutable 0.8.5 candidate; older tags and failed qualification remain unchanged.
+- Shell PATH setup requires an exact standalone Phantom marker, handles
+  unterminated shell-config lines and trailing backslashes, and restores the
+  previous config if verification after replacement fails.
+- Citation metadata and generated public installation guidance retain the
+  verified published release instead of promoting an unqualified source version.
+- npm wrappers derive their strict release identity from their own packaged
+  metadata before cache access or binary execution. The reviewed six-file
+  inventory is closed against missing, extra, duplicate, or substituted files.
+- Installer regressions retain independent GNU/BSD diagnostics, real zsh
+  startup coverage, literal-dollar and shell-fallback paths, leading whitespace,
+  trailing comments, exact operation/path checks, and foreign-byte sentinels.
+- Release qualification reuses or dispatches one exact manual tag producer,
+  requires all 20 roles and critical steps, and revokes stale run/attempt or
+  source-policy evidence before native work and every public/npm write.
+- A closed native Windows diagnostic mode preserves the original installer
+  bounds and reports safe timeout facts; partial diagnostics cannot qualify a
+  release or trigger publication.
+
+### Breaking changes and migration
+
+Upgrading from the last published `0.7.9` includes the output changes recorded
+in the 0.8.4 source tranche. JSON consumers must accept `mode: log` and
+findings with `kind: log`, plus additive schema identifiers and `status.kind`.
+Do not combine `log_path` with `runtime=true`. `validate schedule --json` returns an object; strict agent
+readiness failures use exit 2. Broader credential scanning can require removing
+or protecting exposed values. Review the 0.7.10, 0.8.0 and 0.8.4 source entries
+for details. Vault format and route-owned proxy authentication stay unchanged;
+this candidate grants no new reveal, hosted-service or provider authority.
+Existing `v0.8.0` and `v0.8.1` tags stay immutable, as do reserved v0.8.2,
+v0.8.3, v0.8.4, v0.8.5 and v0.8.6. Keep using checksum-verified v0.7.9 assets until a new
+release receipt exists.
+
+## [0.8.6] - 2026-11-06
+
+Qualification note: the exact full 20-role CI producer passed, but the later
+release-owned source smoke suite failed before native builds or any publication
+writer. The immutable tag is unqualified for distribution and is not retried.
+
+This candidate carries the unpublished 0.8.5 source and the changes since the
+last published `0.7.9`. Tags v0.8.0 through v0.8.5 remain
+immutable; none establishes a qualified public release.
+
+### Fixed
+
+- Source-version installer and web guidance checks follow cross-checked Cargo/npm/changelog metadata while retaining strict unique assignments and independent published-release claims. This repairs the stale 0.8.4 assertions that failed the immutable 0.8.5 candidate; older tags and failed qualification remain unchanged.
+- Shell PATH setup requires an exact standalone Phantom marker, handles
+  unterminated shell-config lines and trailing backslashes, and restores the
+  previous config if verification after replacement fails.
+- Citation metadata and generated public installation guidance retain the
+  verified published release instead of promoting an unqualified source version.
+- npm wrappers derive their strict release identity from their own packaged
+  metadata before cache access or binary execution. The reviewed six-file
+  inventory is closed against missing, extra, duplicate, or substituted files.
+- Installer regressions retain independent GNU/BSD diagnostics, real zsh
+  startup coverage, literal-dollar and shell-fallback paths, leading whitespace,
+  trailing comments, exact operation/path checks, and foreign-byte sentinels.
+- Release qualification reuses or dispatches one exact manual tag producer,
+  requires all 20 roles and critical steps, and revokes stale run/attempt or
+  source-policy evidence before native work and every public/npm write.
+- A closed native Windows diagnostic mode preserves the original installer
+  bounds and reports safe timeout facts; partial diagnostics cannot qualify a
+  release or trigger publication.
+
+### Breaking changes and migration
+
+Upgrading from the last published `0.7.9` includes the output changes recorded
+in the 0.8.4 source tranche. JSON consumers must accept `mode: log` and
+findings with `kind: log`, plus additive schema identifiers and `status.kind`.
+Do not combine `log_path` with `runtime=true`. `validate schedule --json` returns an object; strict agent
+readiness failures use exit 2. Broader credential scanning can require removing
+or protecting exposed values. Review the 0.7.10, 0.8.0 and 0.8.4 source entries
+for details. Vault format and route-owned proxy authentication stay unchanged;
+this candidate grants no new reveal, hosted-service or provider authority.
+Existing `v0.8.0` and `v0.8.1` tags stay immutable, as do reserved v0.8.2,
+v0.8.3, v0.8.4 and v0.8.5. Keep using checksum-verified v0.7.9 assets until a new
+release receipt exists.
+
+## [0.8.5] - 2026-11-06
+
+This candidate carries the unpublished 0.8.4 source and the changes since the
+last published `0.7.9`. Tags v0.8.0 through v0.8.4 remain
+immutable; none establishes a qualified public release.
+
+### Fixed
+
+- Shell PATH setup requires an exact standalone Phantom marker, handles
+  unterminated shell-config lines and trailing backslashes, and restores the
+  previous config if verification after replacement fails.
+- Citation metadata and generated public installation guidance retain the
+  verified published release instead of promoting an unqualified source version.
+- npm wrappers derive their strict release identity from their own packaged
+  metadata before cache access or binary execution. The reviewed six-file
+  inventory is closed against missing, extra, duplicate, or substituted files.
+- Installer regressions retain independent GNU/BSD diagnostics, real zsh
+  startup coverage, literal-dollar and shell-fallback paths, leading whitespace,
+  trailing comments, exact operation/path checks, and foreign-byte sentinels.
+- Release qualification reuses or dispatches one exact manual tag producer,
+  requires all 20 roles and critical steps, and revokes stale run/attempt or
+  source-policy evidence before native work and every public/npm write.
+- A closed native Windows diagnostic mode preserves the original installer
+  bounds and reports safe timeout facts; partial diagnostics cannot qualify a
+  release or trigger publication.
+
+### Breaking changes and migration
+
+Upgrading from the last published `0.7.9` includes the output changes recorded
+in the 0.8.4 source tranche. JSON consumers must accept `mode: log` and
+findings with `kind: log`, plus additive schema identifiers and `status.kind`.
+Do not combine `log_path` with `runtime=true`. `validate schedule --json` returns an object; strict agent
+readiness failures use exit 2. Broader credential scanning can require removing
+or protecting exposed values. Review the 0.7.10, 0.8.0 and 0.8.4 source entries
+for details. Vault format and route-owned proxy authentication stay unchanged;
+this candidate grants no new reveal, hosted-service or provider authority.
+Existing `v0.8.0` and `v0.8.1` tags stay immutable, as do reserved v0.8.2,
+v0.8.3 and v0.8.4. Keep using checksum-verified v0.7.9 assets until a new
+release receipt exists.
+
+## [0.8.4] - 2026-11-06
+
+This source candidate carries the unpublished 0.8.3 source tranche and earlier
+changes since the last verified public release, v0.7.9. The v0.8.3 tag is
+reserved and remains immutable. Source metadata does not establish publication.
+
+### Included since the last published release
+
+- Value-blind agent-log scanning through `phantom check --log PATH` and MCP
+  `phantom_check` `log_path`, with bounded input and symlink refusal.
+- Broader dotenv and config scanning, schema-tagged JSON reports, safer env
+  examples, wrap/sync fixes, bounded audit reads, and vault memory hygiene.
+- Fixed route-owned fleet proxy authentication for Devin, Cursor Cloud, and
+  Resend; client headers and bodies still never resolve mappings.
+- The `async-executor` security update and installer failure-path coverage
+  prepared in `0.8.1`. These source changes were not separate public releases.
+
+### Fixed
+
+- Shell PATH setup requires an exact standalone Phantom marker, handles
+  unterminated shell-config lines and trailing backslashes, and restores the
+  previous config if verification after replacement fails.
+- CLI proxy bind, audit read/cursor, multi-project init, login, and cloud
+  failures include actionable recovery guidance without printing secret values.
+- Hosted device approval and polling return generic, non-cacheable errors
+  when their backing operations fail.
+- Citation metadata and generated public installation guidance retain the
+  verified published release rather than promoting the source candidate.
+- Supabase migration verification names duplicate migration files and explains
+  a missing migration directory.
+
+### Breaking changes and migration
+
+When upgrading from the last published `0.7.9`, JSON consumers of
+`phantom check --json` and MCP `phantom_check` must accept `mode: log` and
+findings with `kind: log`. `log_path` cannot be combined with `runtime=true`.
+Existing worktree, staged, and runtime reports retain their fields. Consumers
+must tolerate additive schema identifiers and `status.kind`; `validate schedule
+--json` now returns the schedule object rather than a JSON-encoded string.
+Credential comments and additional supported config files can now make
+`phantom check` fail: remove or protect the credentials rather than relaxing
+the check. Under `agent doctor --strict --json`, non-ready results use exit 2;
+non-strict defaults remain unchanged. Review the `0.7.10` and `0.8.0`
+source-tranche entries below for detailed output fixes.
+The vault format and route-owned proxy authentication boundaries are unchanged.
+This candidate does not commission hosted services or enable live provider
+issuance. Existing `v0.8.0` and `v0.8.1` tags stay immutable. Install the
+checksum-verified `v0.7.9` assets until a new release receipt exists.
+
+
+## [0.8.3] - 2026-11-06
+
+This source candidate includes the 0.8.2 source tranche and subsequent installer fixes. The `v0.8.2` tag is reserved; the latest verified published release remains `v0.7.9` until publication is established.
+
+### Installer
+
+- Preserve installer PATH handling and staging security checks across supported environments.
+
+## [0.8.2] - 2026-11-05
+
+This source candidate includes the unpublished `0.7.10`, `0.8.0`, and `0.8.1`
+source tranches plus installer recovery, CLI diagnostics, and hosted device-auth
+error handling merged since the reserved `v0.8.1` tag.
+The latest published immutable GitHub release remains `v0.7.9`; neither the
+`v0.8.0` nor `v0.8.1` tag proves publication. This candidate must complete the
+sanctioned release workflow before its artifacts or packages are available.
+
+### Included since the last published release
+
+- Value-blind agent-log scanning through `phantom check --log PATH` and MCP
+  `phantom_check` `log_path`, with bounded input and symlink refusal.
+- Broader dotenv and config scanning, schema-tagged JSON reports, safer env
+  examples, wrap/sync fixes, bounded audit reads, and vault memory hygiene.
+- Fixed route-owned fleet proxy authentication for Devin, Cursor Cloud, and
+  Resend; client headers and bodies still never resolve mappings.
+- The `async-executor` security update and installer failure-path coverage
+  prepared in `0.8.1`. These source changes were not separate public releases.
+
+### Fixed
+
+- Shell PATH setup requires an exact standalone Phantom marker, handles
+  unterminated shell-config lines and trailing backslashes, and restores the
+  previous config if verification after replacement fails.
+- CLI proxy bind, audit read/cursor, multi-project init, login, and cloud
+  failures include actionable recovery guidance without printing secret values.
+- Hosted device approval and polling return generic, non-cacheable errors
+  when their backing operations fail.
+- Citation metadata and generated public installation guidance retain the
+  verified published release rather than promoting the source candidate.
+- Supabase migration verification names duplicate migration files and explains
+  a missing migration directory.
+
+### Breaking changes and migration
+
+When upgrading from the last published `0.7.9`, JSON consumers of
+`phantom check --json` and MCP `phantom_check` must accept `mode: log` and
+findings with `kind: log`. `log_path` cannot be combined with `runtime=true`.
+Existing worktree, staged, and runtime reports retain their fields. Consumers
+must tolerate additive schema identifiers and `status.kind`; `validate schedule
+--json` now returns the schedule object rather than a JSON-encoded string.
+Credential comments and additional supported config files can now make
+`phantom check` fail: remove or protect the credentials rather than relaxing
+the check. Under `agent doctor --strict --json`, non-ready results use exit 2;
+non-strict defaults remain unchanged. Review the `0.7.10` and `0.8.0`
+source-tranche entries below for detailed output fixes.
+The vault format and route-owned proxy authentication boundaries are unchanged.
+This candidate does not commission hosted services or enable live provider
+issuance. Existing `v0.8.0` and `v0.8.1` tags stay immutable. Install the
+checksum-verified `v0.7.9` assets until a new release receipt exists.
+
+
+## [0.8.1] - 2026-11-03
+
+This patch release rolls up the installer, CLI-contract, and dependency
+work merged since `0.8.0`. It does not change the vault format, the proxy,
+or the MCP tool catalog. The `v0.8.0` tag is not moved or replaced.
+GitHub and npm publication of `0.8.1` follow the existing tag workflow.
+
+### Fixed
+
+- `Cargo.lock` moves `async-executor` from 1.14.0 to 1.14.1, which
+  removes a use-after-free advisory from the dependency tree.
+- The PowerShell installer candidate pin is derived from source metadata
+  by the release check instead of a separately maintained copy.
+- `scripts/install.sh` passes a shell syntax check, and its candidate
+  copy stays byte-consistent with the documented quickstart.
+
+### Added
+
+- CLI tests pin the exit status for `--help`, an unknown command, and an
+  unknown flag.
+- Installer tests cover download failure, a missing tool or executable,
+  an unsupported platform or architecture, a staging directory with
+  spaces, staging uniqueness, and extraction failure.
+- Documentation covers the installer PATH update steps, device-code
+  readability, and the quickstart staging copy check.
+
+### Breaking changes and migration
+
+None. This release does not change the vault format, the proxy, the MCP
+tool catalog, or any CLI output field. Existing `v0.8.0` artifacts stay
+immutable.
 
 ## [0.8.0] - 2026-11-02
 
@@ -3146,8 +3417,14 @@ remain separate evidence gates.
 For older release notes and downloadable artifacts, see [GitHub Releases](https://github.com/ashlrai/phantom-secrets/releases).
 
 <!-- fresh:begin changelog-unreleased-compare -->
-[Unreleased]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.7...HEAD
 <!-- fresh:end -->
+[0.8.6]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.5...v0.8.6
+[0.8.5]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.4...v0.8.5
+[0.8.4]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.3...v0.8.4
+[0.8.3]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.2...v0.8.3
+[0.8.2]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.1...v0.8.2
+[0.8.1]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.10...v0.8.0
 [0.7.10]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.9...v0.7.10
 [0.7.9]: https://github.com/ashlrai/phantom-secrets/compare/v0.7.8...v0.7.9

@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
+import { loadSources } from './freshness/sources.mjs';
 
+const { version: sourceVersion } = loadSources(fileURLToPath(new URL('..', import.meta.url)));
 const doc = readFileSync(new URL('../docs/installer-copy-source-map.md', import.meta.url), 'utf8');
 const paths = ['scripts/install.sh', 'apps/web/public/install.sh'];
 const sources = paths.map((path) => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8').split('\n'));
@@ -10,7 +13,7 @@ const rows = [
   ['Lock release, rollback, stage cleanup, and traps', 'release_install_lock() {', "trap 'exit 143' TERM"],
   ['Lock acquisition and stale-lock handling', 'acquire_install_lock() {', '}'],
   ['Destination validation and lock acquisition', 'install_parent=', 'acquire_install_lock'],
-  ['Create private stage, download and candidate directories', 'stage_root=', ['could not create staging directories', 'candidate_dir']],
+  ['Create private stage, download and candidate directories', 'stage_root=', 'could not create staging directories'],
   ['Download, verify, extract, and prepare candidate', 'tag=', 'say "archive identity verified"'],
   ['Backup, promote, and validate live installation', 'backup_path=', 'say "installed to $INSTALL_DIR"'],
   ['PATH startup-file update function', 'add_to_user_path() {', '}'],
@@ -43,16 +46,9 @@ test('the mapped PATH function and call site are identical', () => {
   for (const row of rows.slice(-2)) assert.equal(section(row, 0), section(row, 1));
 });
 
-test('staging differences remain the ones described in the map', () => {
+test('complete copies match as described in the map', () => {
   const [repository, web] = sources.map((lines) => lines.join('\n'));
-  // Removing only the documented differences must make the complete copies equal.
-  const normalized = repository
-    .replace('CANDIDATE_TAG="v0.8.0"', 'CANDIDATE_TAG="v0.7.9"')
-    .replace(' \\\n  || die "could not create a private staging directory in $install_parent"', '')
-    .replace(' || die "could not secure the staging directory"', '')
-    .replace(' \\\n  || die "could not create staging directories"', '')
-    .replace('# --no-same-owner: as root, tar would otherwise keep the release runner\'s uid on the installed binaries.\n', '')
-    .replace('tar --no-same-owner -xzf', 'tar -xzf');
-  assert.notEqual(repository, web);
-  assert.equal(normalized, web, 'Review and update the source map for installer drift');
+  // The complete copies currently match, including their candidate tags.
+  assert.ok(repository.includes(`CANDIDATE_TAG="v${sourceVersion}"`));
+  assert.equal(repository, web, 'Review and update the source map for installer drift');
 });
