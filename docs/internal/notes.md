@@ -75,7 +75,9 @@ in `finally`; the Unix `TMPDIR` override does not apply to that command.
 - Docs/action drift: GitHub Action docs reference unsupported flags (`login --ci`, `cloud pull --env`, `list --count`), source install package names are inconsistent, and proxy-auth docs need updating after header-only defaults.
 
 ### Device Auth Wave
-- The user code contains eight uppercase letters or digits. For human-readable display, the initiation API and browser format it as two groups of four separated by a hyphen, for example `ABCD-2345` (nine displayed characters including the separator).
+- The user code contains eight uppercase letters or digits. For human-readable display, the initiation API and browser format it as `XXXX-XXXX`: two groups of four code characters separated by a hyphen. The hyphen is a readability separator, so `ABCD-2345` has eight code characters and nine displayed characters including the separator.
+- The [CLI login flow](../../crates/phantom-cli/src/commands/login.rs) prints this user code for entry in the browser. It is distinct from the `device_code` returned by the initiation API, which the CLI uses for polling.
+- The [device authorization form](../../apps/web/src/app/device/device-authorization-client.tsx) displays and formats the code in the browser.
 - The hyphen is display formatting, not part of the canonical `device_tokens.user_code` value: `ABCD-2345` corresponds to `ABCD2345` in storage. The browser strips non-alphanumeric characters and uppercases input before formatting it; approval submits and looks up the canonical form. Incomplete or overlong normalized codes are invalid; extra characters are not silently truncated.
 - Browser device page and approve route now use shared normalization/validation helpers.
 - Initiate rate limit now matches its comment: reject once 10 device codes have been created in the last minute.
@@ -141,3 +143,8 @@ in `finally`; the Unix `TMPDIR` override does not apply to that command.
 - Added `log_result()` so future high-risk command paths can propagate audit failures while legacy `log()` remains best-effort.
 - Added an `audit.lock` file with exclusive writer locking and shared verify locking to serialize HMAC-chain/head checkpoint transactions.
 - Added concurrency and required-mode unit tests in `crates/phantom-core/src/audit.rs`.
+
+### Device Code Display Convention Wave
+- The [device authorization form](../../apps/web/src/app/device/device-authorization-client.tsx) presents and validates the same user code with two different counts. The readable `XXXX-XXXX` presentation is the display shape shared by the input placeholder, the formatted value, and the copy's format mask: two groups of four code characters joined by a hyphen — eight code characters and nine displayed characters for a complete code, with the hyphen a readability separator rather than a ninth code character.
+- The eight-character validation message — "Enter 8 letters or numbers. The code is displayed as XXXX-XXXX." — counts eight normalized ASCII letters or digits, not displayed glyphs. `isValidDeviceUserCode` runs `normalizeDeviceUserCode` first, so the display hyphen is not counted and typed punctuation is removed before the `DEVICE_USER_CODE_LENGTH = 8` check; `ABCD-234` and `ABCD234` fail with the identical message.
+- The static field hint — "Enter 8 letters or numbers in the format XXXX-XXXX." — is separate copy rendered below the input that shares the same convention: `8` counts code characters while `XXXX-XXXX` shows how they render. Length validation fails closed on submit before any sign-in or approval request, and overlong input stays visible rather than being silently truncated to eight.

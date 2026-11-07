@@ -5,11 +5,24 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { main } from "../examples/_shared/sandbox.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const suffix = process.platform === "win32" ? ".exe" : "";
 const built = join(root, "target", "debug", `phantom${suffix}`);
 const recipes = ["claude-code", "cursor", "github-actions"];
+
+test("an empty recipe fails with a diagnostic and cleans up", async (t) => {
+  const messages = [];
+  let cleaned = false;
+  t.mock.method(console, "log", (message) => messages.push(message));
+
+  const status = await main("Empty recipe", { cleanup: () => { cleaned = true; } }, []);
+
+  assert.equal(status, 1);
+  assert.deepEqual(messages, ["FAIL recipe has no checks"]);
+  assert.equal(cleaned, true);
+});
 
 function recipe(name, phantom) {
   return spawnSync(process.execPath, [join(root, "examples", name, "run.mjs"), "--phantom", phantom], {
@@ -53,4 +66,19 @@ test("recipes reject relative binary paths", () => {
   const result = spawnSync(process.execPath, [join(root, "examples", "cursor", "run.mjs"), "--phantom", "phantom"], { encoding: "utf8" });
   assert.equal(result.status, 1);
   assert.match(result.stderr, /Usage:/);
+});
+
+test("a missing example path is reported by name and exits nonzero", () => {
+  const dir = mkdtempSync(join(tmpdir(), "phantom-recipe-missing-"));
+  try {
+    // The fixture examples directory exists but holds no recipe.
+    const missing = join(dir, "examples", "no-such-recipe", "run.mjs");
+    const result = spawnSync(process.execPath, [missing, "--phantom", join(dir, `phantom${suffix}`)], { encoding: "utf8", timeout: 30_000 });
+    assert.notEqual(result.status, 0, result.stdout + result.stderr);
+    assert.notEqual(result.status, null, "the checker was killed instead of exiting");
+    assert.ok(result.stderr.includes(missing), `stderr should name the missing path: ${result.stderr}`);
+    assert.doesNotMatch(result.stdout, /^(COMPLETE|PASS): /m);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

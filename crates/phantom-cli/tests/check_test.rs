@@ -583,3 +583,51 @@ fn check_runtime_stale_session_variables_excuse_nothing() {
         "{report}"
     );
 }
+
+#[test]
+fn check_log_reports_the_line_and_shape_without_the_value() {
+    let dir = common::canonical_tempdir();
+    let tail = "QW".repeat(16);
+    let token = format!("sk-{tail}");
+    let log_path = dir.path().join("agent.jsonl");
+    fs::write(
+        &log_path,
+        format!("user: hello\nassistant: called with {token}\n"),
+    )
+    .unwrap();
+
+    let output = phantom(&dir)
+        .args(["check", "--log", log_path.to_str().unwrap(), "--json"])
+        .assert()
+        .failure();
+    let stdout = String::from_utf8_lossy(&output.get_output().stdout);
+    assert!(!stdout.contains(&tail), "{stdout}");
+    assert!(!stdout.contains(&token), "{stdout}");
+    let report: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(report["schema"], "phantom.check.v1");
+    assert_eq!(report["mode"], "log");
+    assert_eq!(report["clean"], false);
+    assert_eq!(report["findings"][0]["kind"], "log");
+    assert_eq!(report["findings"][0]["name"], "line 2");
+    assert_eq!(report["findings"][0]["label"], "OpenAI API key");
+    assert_eq!(report["findings"][0]["pattern"], "sk-");
+}
+
+#[cfg(unix)]
+#[test]
+fn check_log_refuses_a_symlink() {
+    let dir = common::canonical_tempdir();
+    let real = dir.path().join("real.log");
+    fs::write(&real, "clean\n").unwrap();
+    let link = dir.path().join("link.log");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    let output = phantom(&dir)
+        .args(["check", "--log", link.to_str().unwrap(), "--json"])
+        .assert()
+        .failure();
+    let stderr = String::from_utf8_lossy(&output.get_output().stderr);
+    assert!(
+        stderr.contains("regular file"),
+        "symlink should be refused, got: {stderr}"
+    );
+}

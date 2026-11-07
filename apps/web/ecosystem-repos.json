@@ -1,0 +1,17 @@
+{
+  "$comment": "Single list of public GitHub repositories counted on phm.dev. To extend the total, add one repo name under repos (owner stays ashlrai). Private, missing, or renamed repositories are not added into the total: the site keeps the last complete count. Refresh the bundled daily history with: node apps/web/scripts/record-star-snapshot.mjs --out apps/web/src/lib/star-history.json",
+  "owner": "ashlrai",
+  "repos": [
+    "phantom",
+    "phantom-secrets",
+    "ashlr-md",
+    "ashlr-plugin",
+    "locus",
+    "lexicon",
+    "ashlr-stack",
+    "ashlr-core-efficiency",
+    "binshield",
+    "homebrew-phantom",
+    "homebrew-tap"
+  ]
+}

@@ -1,9 +1,9 @@
 # Roadmap
 
-<!-- phantom-release-version: 0.7.9 -->
+<!-- phantom-release-version: 0.8.7 -->
 
 This roadmap describes ordered engineering gates, not delivery dates or shipped
-capabilities. This status snapshot was verified on 2026-09-29. The immutable
+capabilities. This opening historical snapshot was verified on 2026-09-29. The immutable
 `v0.7.9` GitHub release binds 19 assets to source commit
 `7a51ce512ec4aee12cc29ff859036af63fbe93db`; all six native rows and GitHub
 provenance and SPDX attestations passed in workflow 34153902556. Homebrew
@@ -12,7 +12,8 @@ Both npm `0.7.4` wrappers remain public only under the
 failed `release-candidate` track, while npm `latest` remains `0.6.0`.
 No `0.7.9` npm, crates.io, or MCP Registry publication, hosted-service
 commissioning, provider activation, certification, or customer acceptance is
-represented by the GitHub release receipt.
+represented by the GitHub release receipt. For later package-channel receipts,
+see [distribution status](docs/distribution-status.md).
 
 ## Status vocabulary
 
@@ -25,6 +26,37 @@ represented by the GitHub release receipt.
 
 ## Current milestones
 
+### 0.8.2 publication-truth fix-forward: source candidate
+
+- Keep verified public release links and version output bound to `v0.7.9`.
+- Qualify the integrated source, including the earlier installer, CLI,
+  dependency, and log-scan changes, under a fresh release identity.
+- Preserve every existing tag. A source candidate and a reserved tag are
+  not published artifacts.
+
+The immutable GitHub release remains `v0.7.9`. Publication of `0.8.2`
+requires its own successful sanctioned release workflow and artifact receipt.
+
+### 0.8.1 installer hardening and test coverage patch: source candidate
+
+- Harden the installer and release-rehearsal checks: the PowerShell
+  candidate pin is derived from source metadata, and `install.sh` has a
+  shell syntax check.
+- Add CLI exit-code tests for help, unknown commands, and unknown flags,
+  and installer failure-path tests.
+- Update the dependency set to drop the vulnerable `async-executor`.
+
+This earlier source milestone is included in the `0.8.2` candidate. It is
+not a publication receipt. The immutable GitHub release remains `v0.7.9`.
+
+### 0.8.0 agent log scan and the post-0.7.9 source tranche: staged
+
+- Scan one agent log or transcript with `phantom check --log` and MCP
+  `phantom_check` `log_path`. The report names the file, the line, and the
+  credential shape. It does not print the value.
+- Stage the log scan with the post-`v0.7.9` source rollup described in
+  the `0.7.10` changelog section. Reserved tags do not prove publication.
+
 ### 0.7.9 agent onboarding and Hub status compatibility — released
 
 - Register Claude project MCP configuration in `.mcp.json` while preserving
@@ -35,8 +67,9 @@ represented by the GitHub release receipt.
   matrix before publishing a new immutable release identity.
 
 Released as the immutable `v0.7.9` GitHub release (tag-bound workflow
-34153902556). No npm, crates.io, MCP Registry, or deployment receipt exists for
-`0.7.9`, and the Homebrew formula has not yet been bumped from `v0.7.8`.
+34153902556). That September 29 verification did not establish npm, crates.io,
+MCP Registry, or deployment acceptance; its Homebrew snapshot was `v0.7.8`.
+Later npm and Homebrew observations are recorded in the distribution status.
 
 ### 1. Close the 0.7.8 fix-forward source candidate — released
 

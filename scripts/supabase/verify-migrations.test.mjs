@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 
 import { verifyMigrationManifest } from "./verify-migrations.mjs";
@@ -9,20 +11,21 @@ import { verifyMigrationManifest } from "./verify-migrations.mjs";
 const repositoryRoot = resolve(import.meta.dirname, "../..");
 const projectSupabaseDirectory = join(repositoryRoot, "apps/web/supabase");
 
-async function fixture({ migrations, entries }) {
+async function fixture({ migrations, entries, directory }) {
   const root = await mkdtemp(join(tmpdir(), "phantom-supabase-contract-"));
-  const migrationDirectory = join(root, "migrations");
-  await mkdir(migrationDirectory);
+  const base = directory ? join(root, directory) : root;
+  const migrationDirectory = join(base, "migrations");
+  await mkdir(migrationDirectory, { recursive: true });
   await Promise.all(
     Object.entries(migrations).map(([file, contents]) =>
       writeFile(join(migrationDirectory, file), contents),
     ),
   );
   await writeFile(
-    join(root, "migration-manifest.json"),
+    join(base, "migration-manifest.json"),
     JSON.stringify({ version: 1, algorithm: "sha256", migrations: entries }),
   );
-  return root;
+  return base;
 }
 
 test("the committed migration set matches its ordered digest manifest", async () => {
@@ -105,7 +108,53 @@ test("fails closed on duplicate migration versions", async () => {
   });
   await assert.rejects(
     verifyMigrationManifest({ supabaseDirectory: root }),
-    /duplicate migration version/,
+    /duplicate migration version: 001 \(001_first\.sql, 001_second\.sql\)/,
+  );
+});
+
+test("names the conflicting version when the duplicate is not the first migration", async () => {
+  const sha256 = "0".repeat(64);
+  const root = await fixture({
+    migrations: {
+      "001_initial.sql": "select 1;\n",
+      "20260902000000_alpha.sql": "select 2;\n",
+      "20260902000000_beta.sql": "select 3;\n",
+      "20260903000000_gamma.sql": "select 4;\n",
+    },
+    entries: [
+      { file: "001_initial.sql", sha256 },
+      { file: "20260902000000_alpha.sql", sha256 },
+      { file: "20260902000000_beta.sql", sha256 },
+      { file: "20260903000000_gamma.sql", sha256 },
+    ],
+  });
+  await assert.rejects(
+    verifyMigrationManifest({ supabaseDirectory: root }),
+    (error) => {
+      assert.match(
+        error.message,
+        /duplicate migration version: 20260902000000 \(20260902000000_alpha\.sql, 20260902000000_beta\.sql\)/,
+      );
+      assert.doesNotMatch(error.message, /version: 001/);
+      return true;
+    },
+  );
+});
+
+test("rejects a duplicate version even when every digest is correct", async () => {
+  const first = "select 1;\n";
+  const second = "select 2;\n";
+  const digest = (text) => createHash("sha256").update(text).digest("hex");
+  const root = await fixture({
+    migrations: { "007_a.sql": first, "007_b.sql": second },
+    entries: [
+      { file: "007_a.sql", sha256: digest(first) },
+      { file: "007_b.sql", sha256: digest(second) },
+    ],
+  });
+  await assert.rejects(
+    verifyMigrationManifest({ supabaseDirectory: root }),
+    /duplicate migration version: 007 /,
   );
 });
 
@@ -118,6 +167,156 @@ test("fails closed when a SQL migration is a symlink", async () => {
   await assert.rejects(
     verifyMigrationManifest({ supabaseDirectory: root }),
     /migration must be a regular file/,
+  );
+});
+
+test("fails closed on an empty migration directory with an empty manifest", async () => {
+  const root = await fixture({ migrations: {}, entries: [] });
+  await assert.rejects(
+    verifyMigrationManifest({ supabaseDirectory: root }),
+    /migration manifest must contain at least one migration/,
+  );
+});
+
+test("fails closed when the manifest lists migrations but the directory is empty", async () => {
+  const root = await fixture({
+    migrations: {},
+    entries: [{ file: "001_initial.sql", sha256: "0".repeat(64) }],
+  });
+  await assert.rejects(
+    verifyMigrationManifest({ supabaseDirectory: root }),
+    /does not match the SQL migration set\nmanifest: 001_initial\.sql\nfiles: $/,
+  );
+});
+
+test("ignores non-SQL files so a directory holding only notes counts as empty", async () => {
+  const root = await fixture({
+    migrations: { "README.md": "notes\n" },
+    entries: [],
+  });
+  await assert.rejects(
+    verifyMigrationManifest({ supabaseDirectory: root }),
+    /migration manifest must contain at least one migration/,
+  );
+});
+
+test("ignores unrelated files alongside valid migrations", async () => {
+  const sql = "select 1;\n";
+  const sha256 = createHash("sha256").update(sql).digest("hex");
+  const root = await fixture({
+    migrations: {
+      "001_initial.sql": sql,
+      "README.md": "# scratch notes\n",
+      ".DS_Store": "",
+      "001_initial.sql.bak": sql,
+      "DRAFT.SQL": "select 2;\n",
+    },
+    entries: [{ file: "001_initial.sql", sha256 }],
+  });
+  const result = await verifyMigrationManifest({ supabaseDirectory: root });
+  assert.equal(result.count, 1);
+  assert.deepEqual(result.files, ["001_initial.sql"]);
+});
+
+test("ignores non-regular entries that are not SQL migrations", async () => {
+  const sql = "select 1;\n";
+  const sha256 = createHash("sha256").update(sql).digest("hex");
+  const root = await fixture({
+    migrations: { "001_initial.sql": sql },
+    entries: [{ file: "001_initial.sql", sha256 }],
+  });
+  await symlink("missing-target", join(root, "migrations/notes.txt"));
+  await mkdir(join(root, "migrations/attic"));
+  const result = await verifyMigrationManifest({ supabaseDirectory: root });
+  assert.equal(result.count, 1);
+  assert.deepEqual(result.files, ["001_initial.sql"]);
+});
+
+test("reads the spaced fixture directory instead of an unspaced sibling", async () => {
+  const sql = "select 1;\n";
+  const sha256 = createHash("sha256").update(sql).digest("hex");
+  const supabaseDirectory = await fixture({
+    directory: "supabase with spaces",
+    migrations: { "001_initial.sql": sql },
+    entries: [{ file: "001_initial.sql", sha256 }],
+  });
+  assert.ok(supabaseDirectory.includes(" "));
+
+  // A sibling decoy proves the spaced directory, not the temp root, is read.
+  const decoySql = "select 9;\n";
+  const decoyRoot = dirname(supabaseDirectory);
+  await mkdir(join(decoyRoot, "migrations"));
+  await writeFile(join(decoyRoot, "migrations/999_decoy.sql"), decoySql);
+  await writeFile(
+    join(decoyRoot, "migration-manifest.json"),
+    JSON.stringify({
+      version: 1,
+      algorithm: "sha256",
+      migrations: [
+        {
+          file: "999_decoy.sql",
+          sha256: createHash("sha256").update(decoySql).digest("hex"),
+        },
+      ],
+    }),
+  );
+
+  const result = await verifyMigrationManifest({ supabaseDirectory });
+  assert.equal(result.count, 1);
+  assert.deepEqual(result.files, ["001_initial.sql"]);
+});
+
+test("the CLI verifies a supabase directory whose path contains spaces", async () => {
+  const sql = "select 1;\n";
+  const sha256 = createHash("sha256").update(sql).digest("hex");
+  const supabaseDirectory = await fixture({
+    directory: "supabase with spaces",
+    migrations: { "001_initial.sql": sql },
+    entries: [{ file: "001_initial.sql", sha256 }],
+  });
+  const result = spawnSync(
+    process.execPath,
+    [join(import.meta.dirname, "verify-migrations.mjs"), supabaseDirectory],
+    { encoding: "utf8" },
+  );
+  assert.ifError(result.error);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Verified 1 ordered Supabase migration digests\./);
+});
+
+test("fails closed and names the directory when the migrations directory is missing", async () => {
+  const root = await mkdtemp(join(tmpdir(), "phantom-supabase-contract-"));
+  await writeFile(
+    join(root, "migration-manifest.json"),
+    JSON.stringify({
+      version: 1,
+      algorithm: "sha256",
+      migrations: [{ file: "001_initial.sql", sha256: "0".repeat(64) }],
+    }),
+  );
+  const missing = join(root, "migrations");
+  await assert.rejects(
+    verifyMigrationManifest({ supabaseDirectory: root }),
+    (error) => {
+      assert.equal(error.message, `migration directory not found: ${missing}`);
+      return true;
+    },
+  );
+});
+
+test("the CLI exits nonzero and names the missing migrations directory", async () => {
+  const root = await mkdtemp(join(tmpdir(), "phantom-supabase-contract-"));
+  const result = spawnSync(
+    process.execPath,
+    [join(import.meta.dirname, "verify-migrations.mjs"), root],
+    { encoding: "utf8" },
+  );
+  assert.ifError(result.error);
+  assert.notEqual(result.status, 0);
+  assert.equal(result.stdout, "");
+  assert.ok(
+    result.stderr.includes(`migration directory not found: ${join(root, "migrations")}`),
+    result.stderr,
   );
 });
 

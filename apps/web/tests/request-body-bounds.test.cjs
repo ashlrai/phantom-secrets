@@ -7,25 +7,25 @@ const ts = require("typescript");
 const repoDir = path.resolve(__dirname, "..");
 const helperPath = path.join(repoDir, "src/lib/http-body.ts");
 
-function loadBodyHelper() {
-  const source = fs.readFileSync(helperPath, "utf8");
+function loadModule(filePath, localRequire = require) {
+  const source = fs.readFileSync(filePath, "utf8");
   const output = ts.transpileModule(source, {
     compilerOptions: {
       module: ts.ModuleKind.CommonJS,
       target: ts.ScriptTarget.ES2022,
     },
-    fileName: helperPath,
+    fileName: filePath,
   }).outputText;
   const module = { exports: {} };
   new Function("exports", "require", "module", output)(
     module.exports,
-    require,
+    localRequire,
     module,
   );
   return module.exports;
 }
 
-const body = loadBodyHelper();
+const body = loadModule(helperPath);
 
 test("bounded JSON accepts an object at the exact byte limit", async () => {
   const payload = JSON.stringify({ key: "value" });
@@ -37,6 +37,62 @@ test("bounded JSON accepts an object at the exact byte limit", async () => {
     await body.readBoundedJsonObject(request, Buffer.byteLength(payload)),
     { key: "value" },
   );
+});
+
+test("device poll returns a client error for an empty request body", async () => {
+  let databaseCalls = 0;
+  const route = loadModule(
+    path.join(repoDir, "src/app/api/v1/auth/device/poll/route.ts"),
+    (specifier) => {
+      if (specifier === "@/lib/http-body") return body;
+      if (specifier === "@/lib/commissioning") return { requireHostedService: () => null };
+      if (specifier === "@/lib/supabase-server") return { createServiceClient: () => { databaseCalls++; } };
+      if (specifier === "@/lib/plan") return {};
+      return require(specifier);
+    },
+  );
+
+  for (const requestBody of [undefined, ""]) {
+    const response = await route.POST(new Request("https://phm.dev/api/v1/auth/device/poll", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: requestBody,
+    }));
+    assert.equal(response.status, 400);
+    assert.deepEqual(await response.json(), { error: "invalid_body" });
+  }
+  assert.equal(databaseCalls, 0);
+});
+
+test("device poll accepts a JSON body at its 4096-byte limit", async () => {
+  let databaseCalls = 0;
+  const route = loadModule(
+    path.join(repoDir, "src/app/api/v1/auth/device/poll/route.ts"),
+    (specifier) => {
+      if (specifier === "@/lib/http-body") return body;
+      if (specifier === "@/lib/commissioning") return { requireHostedService: () => null };
+      if (specifier === "@/lib/supabase-server") return { createServiceClient: () => { databaseCalls++; } };
+      if (specifier === "@/lib/plan") return {};
+      return require(specifier);
+    },
+  );
+
+  // JSON whitespace keeps the object valid while testing the actual byte limit.
+  for (const [size, status, error] of [
+    [4096, 400, "device_code required"],
+    [4097, 413, "body_too_large"],
+  ]) {
+    const payload = "{}" + " ".repeat(size - 2);
+    assert.equal(Buffer.byteLength(payload), size);
+    const response = await route.POST(new Request("https://phm.dev/api/v1/auth/device/poll", {
+      method: "POST",
+      headers: { "content-length": String(size) },
+      body: payload,
+    }));
+    assert.equal(response.status, status);
+    assert.deepEqual(await response.json(), { error });
+  }
+  assert.equal(databaseCalls, 0);
 });
 
 test("declared and streamed oversized bodies fail with 413", async () => {
@@ -165,4 +221,40 @@ test("Stripe webhook delegates the entire lifecycle to one guarded RPC", () => {
     /REVOKE ALL ON FUNCTION public\.process_stripe_billing_event[\s\S]*FROM PUBLIC, anon, authenticated/,
   );
   assert.match(migration, /GRANT EXECUTE.*TO service_role/s);
+});
+
+
+test("a streamed JSON body at the 4096-byte route limit is accepted, but one byte over is rejected", async () => {
+  const limit = 4_096; // Used by the device auth and team routes.
+  const base = JSON.stringify({ key: "é" });
+  const value = "a".repeat(limit - Buffer.byteLength(base)) + "é";
+
+  for (const extra of ["", "a"]) {
+    const expected = { key: value + extra };
+    const bytes = Buffer.from(JSON.stringify(expected));
+    assert.equal(bytes.byteLength, limit + extra.length);
+    const split = bytes.indexOf(Buffer.from("é")) + 1;
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(bytes.subarray(0, split));
+        controller.enqueue(bytes.subarray(split));
+        controller.close();
+      },
+    });
+    const request = new Request("https://phm.dev/test", {
+      method: "POST",
+      headers: { "content-length": String(limit) },
+      body: stream,
+      duplex: "half",
+    });
+
+    if (extra) {
+      await assert.rejects(
+        body.readBoundedJsonObject(request, limit),
+        (error) => error.status === 413 && error.code === "body_too_large",
+      );
+    } else {
+      assert.deepEqual(await body.readBoundedJsonObject(request, limit), expected);
+    }
+  }
 });

@@ -64,6 +64,12 @@ pub fn run(
     if dry_run {
         return dry_run_add(&project_dir, &config_path, &config, name);
     }
+    if !generate {
+        // Refuse an unusable value source before opening the vault: opening
+        // it takes project locks and creates app-data directories, so an
+        // argument-level rejection must not leave profile files behind.
+        ensure_readable_value_source(from_stdin)?;
+    }
     let vault = crate::util::open_vault(config.local_project_id())?;
     ensure_secret_absent(vault.as_ref(), config.local_project_id(), name)?;
 
@@ -172,7 +178,10 @@ fn ensure_secret_absent(vault: &dyn VaultBackend, project_id: &str, name: &str) 
 /// `/dev/zero` from growing memory without limit.
 const MAX_STDIN_VALUE_BYTES: usize = 64 * 1024;
 
-fn read_secret_value(name: &str, from_stdin: bool, lines: StdinLines) -> Result<Zeroizing<String>> {
+/// Refuse an add whose value source cannot work, before any vault or file
+/// state is touched: `--stdin` requires a pipe (a terminal would echo typed
+/// input), and without it the hidden prompt requires a terminal.
+fn ensure_readable_value_source(from_stdin: bool) -> Result<()> {
     if from_stdin {
         if stdin_is_tty() {
             anyhow::bail!(
@@ -180,13 +189,21 @@ fn read_secret_value(name: &str, from_stdin: bool, lines: StdinLines) -> Result<
                 "--stdin".cyan().bold()
             );
         }
-        return read_stdin_value(std::io::stdin().lock(), lines);
-    }
-    if !stdin_is_tty() {
+    } else if !stdin_is_tty() {
         anyhow::bail!(
             "stdin is not a terminal. Omit the value for a hidden prompt, or use {} to read it from a pipe.",
             "--stdin".cyan().bold()
         );
+    }
+    Ok(())
+}
+
+fn read_secret_value(name: &str, from_stdin: bool, lines: StdinLines) -> Result<Zeroizing<String>> {
+    // Re-checked here so the contract holds for every caller, not only the
+    // preflight `run` performs before the vault is opened.
+    ensure_readable_value_source(from_stdin)?;
+    if from_stdin {
+        return read_stdin_value(std::io::stdin().lock(), lines);
     }
     let secret = rpassword::prompt_password(format!("Value for {name}: "))
         .context("Failed to read secret interactively")?;
@@ -716,6 +733,13 @@ mod tests {
         assert!(
             dry < vault,
             "dry-run must return before the vault is opened"
+        );
+        let source_preflight = source
+            .find("ensure_readable_value_source(from_stdin)?")
+            .unwrap();
+        assert!(
+            dry < source_preflight && source_preflight < vault,
+            "the unusable-value-source refusal must run after dry-run and before the vault is opened"
         );
         let dry_fn = source
             .split("fn dry_run_add(")
