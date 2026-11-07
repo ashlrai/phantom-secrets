@@ -50,9 +50,7 @@ test('staging differences remain the ones described in the map', () => {
   const [repository, web] = sources.map((lines) => lines.join('\n'));
   // Removing only the documented differences must make the complete copies equal.
   const normalized = repository
-    .replace(`CANDIDATE_TAG="v${sourceVersion}"`, 'CANDIDATE_TAG="v0.7.9"')
-    .replace('# --no-same-owner: as root, tar would otherwise keep the release runner\'s uid on the installed binaries.\n', '')
-    .replace('tar --no-same-owner -xzf', 'tar -xzf');
+    .replace(`CANDIDATE_TAG="v${sourceVersion}"`, 'CANDIDATE_TAG="v0.7.9"');
   assert.notEqual(repository, web);
   assert.equal(normalized, web, 'Review and update the source map for installer drift');
 });
