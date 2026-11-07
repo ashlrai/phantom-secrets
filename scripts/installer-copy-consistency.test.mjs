@@ -3,15 +3,10 @@ import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { approvedDifferences, repositoryCopy, webCopy } from './lib/installer-copy-differences.mjs';
+import { approvedDifferences, normalizeInstallerCopy, repositoryCopy, webCopy } from './lib/installer-copy-differences.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
-
-// Reviewed differences between the repository installer and the web-served
-// copy live in lib/installer-copy-differences.mjs;
-// docs/installer-copy-comparison.md carries the prose record. Any drift
-// beyond that list — an added, removed, or reworded line — fails the
-// consistency check.
+// Keep the diff-group checks as well as the byte-preserving platform gate.
 
 function installerDiff(contextLines) {
   const result = spawnSync('diff', [`-U${contextLines}`, repositoryCopy, webCopy], { cwd: root, encoding: 'utf8' });
@@ -58,6 +53,10 @@ test('installer copies differ only by the reviewed changes', () => {
 test('approved differences remain anchored in both installer copies', () => {
   const repository = readFileSync(new URL(`../${repositoryCopy}`, import.meta.url), 'utf8');
   const web = readFileSync(new URL(`../${webCopy}`, import.meta.url), 'utf8');
+  // Identical current copies have no byte differences, but their actual
+  // default source-owned tag bindings must remain anchored and validated.
+  assert.doesNotThrow(() => normalizeInstallerCopy(Buffer.from(repository), 'minus'));
+  assert.doesNotThrow(() => normalizeInstallerCopy(Buffer.from(web), 'plus'));
   for (const entry of approvedDifferences) {
     assert.ok(
       repository.includes(entry.minus.join('\n')),

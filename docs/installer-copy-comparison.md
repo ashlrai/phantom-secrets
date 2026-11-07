@@ -24,19 +24,19 @@ To inspect differences, run `diff -u scripts/install.sh apps/web/public/install.
 
 ## Review snapshot
 
-Reviewed **2026-11-03**: the files **differ**. SHA-256 hashes identify the
+Reviewed **2026-11-06**: the files **match**. SHA-256 hashes identify the
 exact bytes reviewed:
 
-- `scripts/install.sh`: `64787ada872c82a586b19e0285dc4d42e348ea1277284ba3f4dea6ea1b6d0dc1`
-- `apps/web/public/install.sh`: `3d6326bff1c12065c58f02dd93220f6ab6ce2def11b03e2194f11ce9a8c1cdc8`
+- `scripts/install.sh`: `44ab25b1a5b99d7a1a3bb484ea17b323f89a47e43092ca4de4903a9ede6ba72e`
+- `apps/web/public/install.sh`: `44ab25b1a5b99d7a1a3bb484ea17b323f89a47e43092ca4de4903a9ede6ba72e`
 
-The repository copy targets the next candidate with `CANDIDATE_TAG="v0.8.1"`;
-the web copy stays bound to the evidenced `v0.7.9` release. The repository
-copy extracts with `tar --no-same-owner`; the web copy omits that option,
-which can affect ownership when run as root. Both copies share the same
-guarded staging block, so staging creation and permission failures are
-reported identically. See [installer staging](installer-staging.md) for the
-surrounding behavior. Re-run the comparison and update this snapshot and its
-hashes whenever either file changes;
-`node --test scripts/installer-copy-comparison.test.mjs` checks that the
-snapshot still describes the checked-in bytes.
+Both copies pin the evidenced `v0.8.7` release with `CANDIDATE_TAG="v0.8.7"`. Both copies
+extract the release archive with `tar --no-same-owner` and carry the same
+explanatory comment, so a root-run install does not keep the release
+runner's uid on the installed binaries. Both copies share the same guarded
+staging block, so staging creation and permission failures are reported
+identically.
+See [installer staging](installer-staging.md) for the surrounding behavior.
+Re-run the comparison and update this snapshot and its hashes whenever either
+file changes; `node --test scripts/installer-copy-comparison.test.mjs` checks
+that the snapshot still describes the checked-in bytes.

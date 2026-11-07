@@ -87,10 +87,10 @@ function strayTemps(dir) {
   return found;
 }
 
-function runPathUpdate(t, { body, shellEnv, rcRel, rcContent, extraEnv = {} }) {
+function runPathUpdate(t, { body, shellEnv, rcRel, rcContent, extraEnv = {}, homeName = 'home' }) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-path-placement-')));
   t.after(() => rmSync(root, { recursive: true, force: true }));
-  const home = join(root, 'home');
+  const home = join(root, homeName);
   const shims = join(root, 'shims');
   const elsewhere = join(root, 'elsewhere');
   for (const dir of [home, shims, elsewhere]) mkdirSync(dir, { recursive: true });
@@ -191,6 +191,66 @@ for (const [file, body] of Object.entries(harnesses)) {
       assert.equal(readFileSync(run.rc, 'utf8'),
         `${original}\n# phantom-secrets PATH\n${config.pathLine(run.bin)}\n`);
       assert.equal(statSync(run.rc).mode & 0o777, 0o600, 'startup file mode is preserved');
+    });
+  }
+
+  // A non-ASCII home directory (accented, CJK, emoji) must not move the
+  // candidate: it is still created beside the startup file, under that parent.
+  for (const config of shells) {
+    test(`${file} creates both PATH temporary files under a Unicode ${config.name} startup parent`, (t) => {
+      const original = '# user shell configuration\n';
+      const run = runPathUpdate(t, {
+        body,
+        shellEnv: config.env,
+        rcRel: config.rcRel,
+        rcContent: original,
+        homeName: 'höme-用户-🔐',
+      });
+      assert.equal(run.result.status, 0, run.result.stderr);
+      assert.match(run.result.stdout, /added .* to PATH/);
+      assert.ok(run.rcParent.includes('höme-用户-🔐'), 'the startup parent is the Unicode home');
+
+      const created = verifyCreatedUnderParent(run);
+      const listing = readFileSync(run.premoveList, 'utf8').trim().split('\n');
+      for (const path of created) {
+        assert.equal(dirname(path).startsWith(run.home), true,
+          `${path} must be created inside the Unicode home`);
+        assert.ok(listing.includes(basename(path)),
+          `${basename(path)} must sit beside the startup file at promotion`);
+      }
+      verifyRemoved(run);
+      assert.equal(readFileSync(run.rc, 'utf8'),
+        `${original}\n# phantom-secrets PATH\n${config.pathLine(run.bin)}\n`);
+    });
+  }
+
+  // A home directory containing spaces must not split the mktemp templates:
+  // both temporary files still land beside the startup file, inside that parent.
+  for (const config of shells) {
+    test(`${file} creates both PATH temporary files under a space-containing ${config.name} startup parent`, (t) => {
+      const original = '# user shell configuration\n';
+      const run = runPathUpdate(t, {
+        body,
+        shellEnv: config.env,
+        rcRel: config.rcRel,
+        rcContent: original,
+        homeName: 'home dir with spaces',
+      });
+      assert.equal(run.result.status, 0, run.result.stderr);
+      assert.match(run.result.stdout, /added .* to PATH/);
+      assert.ok(run.rcParent.includes('home dir with spaces'), 'the startup parent contains spaces');
+
+      const created = verifyCreatedUnderParent(run);
+      const listing = readFileSync(run.premoveList, 'utf8').trim().split('\n');
+      for (const path of created) {
+        assert.equal(dirname(path).startsWith(run.home), true,
+          `${path} must be created inside the spaced home`);
+        assert.ok(listing.includes(basename(path)),
+          `${basename(path)} must sit beside the startup file at promotion`);
+      }
+      verifyRemoved(run);
+      assert.equal(readFileSync(run.rc, 'utf8'),
+        `${original}\n# phantom-secrets PATH\n${config.pathLine(run.bin)}\n`);
     });
   }
 

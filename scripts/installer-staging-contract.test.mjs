@@ -7,9 +7,9 @@ const installers = [
   ['apps/web/public/install.sh', true],
 ];
 
-// Both copies guard stage creation and permission changes with explicit die
-// calls. Pin the guarded form at top level between the lock and the release
-// setup, so a failed creation cannot fall through to a download.
+// Both copies use explicit die guards on top of errexit. Pin the guarded form
+// at top level between the lock and the release setup, so a failed creation
+// cannot fall through to a download.
 function assertStagingContract(source, guarded) {
   const lines = source.split('\n');
   assert.deepEqual(lines.filter((line) => /^\s*set\s/.test(line)), ['set -euo pipefail']);
