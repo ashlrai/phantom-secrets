@@ -376,6 +376,11 @@ pub(crate) fn run() -> anyhow::Result<()> {
                 max_quiet_days,
                 json,
             ),
+            AuditAction::Hotspots {
+                name,
+                include_acked,
+                json,
+            } => commands::audit::run_hotspots(name.as_deref(), include_acked, json),
             AuditAction::Incidents {
                 min_confidence,
                 json,

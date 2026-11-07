@@ -1947,6 +1947,23 @@ pub struct HotspotAlert {
     pub peak_5m_count: u64,
 }
 
+impl HotspotAlert {
+    /// The value-free record shared by `phantom audit hotspots --json` and the
+    /// MCP `phantom_audit_hotspot_alerts` list: names and counts only.
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "secret_name": self.secret_name,
+            "current_velocity": self.current_velocity,
+            "baseline_velocity": self.baseline_velocity,
+            "alert_level": self.alert_level,
+            "first_spike_ts": crate::analytics::unix_to_iso8601(self.first_spike_ts),
+            "ack_status": self.ack_status.as_str(),
+            "peak_5m_count": self.peak_5m_count,
+            "trigger": self.trigger,
+        })
+    }
+}
+
 /// Persistent store for hotspot alert acknowledgements.
 ///
 /// Stored at `~/.phantom/hotspot-alerts.jsonl` — one record per line.
@@ -2000,6 +2017,28 @@ pub fn detect_hotspot_alerts() -> std::io::Result<Vec<HotspotAlert>> {
 
 /// Testable version of `detect_hotspot_alerts` with an injected `now` timestamp.
 pub fn detect_hotspot_alerts_at(now: u64) -> std::io::Result<Vec<HotspotAlert>> {
+    let alerts = read_hotspot_alerts_at(now)?;
+    // Emit an audit event for each unacked alert (best-effort).
+    for alert in alerts
+        .iter()
+        .filter(|a| a.ack_status == HotspotAckStatus::Unacked)
+    {
+        if enabled() {
+            log("vault.hotspot_alert", Some(&alert.secret_name));
+        }
+    }
+    Ok(alerts)
+}
+
+/// Read-only hotspot listing: the same alerts as [`detect_hotspot_alerts`]
+/// without appending `vault.hotspot_alert` events, so inspecting the log
+/// (`phantom audit hotspots`) never grows it.
+pub fn read_hotspot_alerts() -> std::io::Result<Vec<HotspotAlert>> {
+    read_hotspot_alerts_at(now_unix())
+}
+
+/// Testable read-only variant of [`read_hotspot_alerts`].
+pub fn read_hotspot_alerts_at(now: u64) -> std::io::Result<Vec<HotspotAlert>> {
     let path = log_path()?;
     if !path_present(&path)? {
         return Ok(vec![]);
@@ -2129,16 +2168,6 @@ pub fn detect_hotspot_alerts_at(now: u64) -> std::io::Result<Vec<HotspotAlert>> 
             .cmp(&a_unacked)
             .then(b.current_velocity.cmp(&a.current_velocity))
     });
-
-    // Emit an audit event for each unacked alert (best-effort).
-    for alert in alerts
-        .iter()
-        .filter(|a| a.ack_status == HotspotAckStatus::Unacked)
-    {
-        if enabled() {
-            log("vault.hotspot_alert", Some(&alert.secret_name));
-        }
-    }
 
     Ok(alerts)
 }
@@ -3415,6 +3444,75 @@ mod tests {
                 assert_eq!(a.ack_status, HotspotAckStatus::Unacked);
             }
         });
+    }
+
+    #[test]
+    fn read_hotspot_alerts_does_not_append_audit_events() {
+        with_audit_env(|tmp| {
+            let log_p = tmp.join(".phantom").join("audit.log");
+            let now: u64 = 1_706_000_000;
+            let mut entries: Vec<(u64, &str, &str)> = Vec::new();
+            for day in 1u64..=7 {
+                entries.push((now - day * 86400, "vault.retrieve", "READ_ONLY_KEY"));
+            }
+            for i in 0u64..30 {
+                entries.push((now - 3600 + i * 100, "vault.retrieve", "READ_ONLY_KEY"));
+            }
+            write_hotspot_log(&log_p, &entries);
+            let before = std::fs::read(&log_p).unwrap();
+
+            let alerts = read_hotspot_alerts_at(now).unwrap();
+            assert!(alerts
+                .iter()
+                .any(|a| a.secret_name == "READ_ONLY_KEY"
+                    && a.ack_status == HotspotAckStatus::Unacked));
+            assert_eq!(
+                std::fs::read(&log_p).unwrap(),
+                before,
+                "a read-only hotspot listing must not change the audit log"
+            );
+
+            // The emitting detector still records the unacked alert.
+            detect_hotspot_alerts_at(now).unwrap();
+            let after = std::fs::read_to_string(&log_p).unwrap();
+            assert!(after.contains("vault.hotspot_alert"), "{after}");
+        });
+    }
+
+    #[test]
+    fn hotspot_alert_json_is_value_free_and_has_the_listing_keys() {
+        let alert = HotspotAlert {
+            secret_name: "JSON_KEY".to_string(),
+            current_velocity: 30,
+            baseline_velocity: 1.0,
+            alert_level: "high".to_string(),
+            first_spike_ts: 1_700_000_000,
+            generated_at: 1_700_000_000,
+            ack_status: HotspotAckStatus::Snoozed,
+            trigger: "burst: 100 accesses in a 5-minute window".to_string(),
+            peak_5m_count: 100,
+        };
+        let v = alert.to_json();
+        let mut keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "ack_status",
+                "alert_level",
+                "baseline_velocity",
+                "current_velocity",
+                "first_spike_ts",
+                "peak_5m_count",
+                "secret_name",
+                "trigger",
+            ]
+        );
+        assert_eq!(v["ack_status"], "snoozed");
+        assert_eq!(
+            v["first_spike_ts"],
+            crate::analytics::unix_to_iso8601(1_700_000_000)
+        );
     }
 
     #[test]

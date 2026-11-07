@@ -67,6 +67,7 @@ fn global_json_is_routed_or_rejected_for_every_command() {
         "audit export",
         "audit export-range",
         "audit feed",
+        "audit hotspots",
         "audit incidents",
         "audit report",
         "audit show",
