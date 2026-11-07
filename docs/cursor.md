@@ -97,7 +97,9 @@ Key tools for Cursor users:
 - `phantom_cloud_push` / `phantom_cloud_pull` — dual-gated cloud effects. With
   `force=false`, a partial pull blocks push until full reconciliation.
 
-Effectful MCP calls require `confirm: true` plus a one-use `approval_token`
+Effectful MCP calls are disabled by default. They require
+`PHANTOM_MCP_EFFECTS=trusted-terminal` set outside agent authority,
+`confirm: true`, and a one-use `approval_token`
 created through an attached-terminal `phantom mcp-approve` ceremony outside
 Cursor's shell and PTY authority. The same gates apply to authenticated
 provider reads such as cloud status and team list/members.

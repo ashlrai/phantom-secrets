@@ -6,11 +6,17 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 Changes after 0.8.7 land in this section.
 
+### Changed
+
+- Bound public installer guidance and release evidence to the qualified v0.8.7
+  GitHub release, including six native acceptance rows and 19 verified assets.
+  Package defaults and hosted service availability remain separate claims.
+
 ## [0.8.7] - 2026-11-06
 
-This candidate carries the unpublished 0.8.6 source and the changes since the
-last published `0.7.9`. Tags v0.8.0 through v0.8.6 remain
-immutable; none establishes a qualified public release.
+The qualified GitHub release carries the unpublished 0.8.6 source and changes
+since the previous published release, `0.7.9`. Tags v0.8.0 through v0.8.6
+remain immutable; none establishes a qualified public release.
 
 ### Fixed
 
@@ -44,10 +50,11 @@ Do not combine `log_path` with `runtime=true`. `validate schedule --json` return
 readiness failures use exit 2. Broader credential scanning can require removing
 or protecting exposed values. Review the 0.7.10, 0.8.0 and 0.8.4 source entries
 for details. Vault format and route-owned proxy authentication stay unchanged;
-this candidate grants no new reveal, hosted-service or provider authority.
+this release grants no new reveal, hosted-service or provider authority.
 Existing `v0.8.0` and `v0.8.1` tags stay immutable, as do reserved v0.8.2,
-v0.8.3, v0.8.4, v0.8.5 and v0.8.6. Keep using checksum-verified v0.7.9 assets until a new
-release receipt exists.
+v0.8.3, v0.8.4, v0.8.5 and v0.8.6. The qualified v0.8.7 GitHub assets and
+their checksums are available; see
+[distribution status](docs/distribution-status.md) for channel evidence.
 
 ## [0.8.6] - 2026-11-06
 
