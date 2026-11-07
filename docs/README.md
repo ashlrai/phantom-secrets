@@ -118,6 +118,7 @@ and retains historical design-status language.
 - [Device code display example](device-code-display-example.md)
 - [Device code display reference](device-code-display-reference.md)
 - [Device authorization input hint](device-code-input-hint.md)
+- [Device authorization page UI](device-code-ui.md)
 - [Vercel and Railway sync](sync.md)
 - [CI/CD integration](ci-cd.md)
 - [Shell prompt integration](shell-prompt.md)
