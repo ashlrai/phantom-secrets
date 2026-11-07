@@ -515,7 +515,7 @@ jobs:
           persist-credentials: false
       # Exercise the same real permission failures before expensive Rust work.
       - name: Check installer shell syntax
-        run: node --test scripts/installer-syntax.test.mjs scripts/installer-unwritable-tempdir.test.mjs
+        run: node --test scripts/installer-syntax.test.mjs scripts/installer-unwritable-tempdir.test.mjs scripts/installer-path-success-cleanup.test.mjs
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (2026-04-24)
         with:
           toolchain: 1.95.0
