@@ -19,26 +19,18 @@ function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-function permissionDiagnostic(stderr, paths) {
-  const names = paths.map(escapeRegExp).join('|');
-  return new RegExp(
-    `^mkdir: (?:(?:cannot create directory [‘'](?:${names})[’'])|(?:${names})): Permission denied$`,
-    'm',
-  ).test(stderr);
+function preservesDiagnostic(stderr, diagnostic) {
+  return stderr.split('\n').includes(diagnostic.trim());
 }
 
 test('permission diagnostics bind the denied operation to the exact parent or ancestor', () => {
-  const sealed = '/fixture/Sealed', parent = sealed + '/install';
-  for (const name of [sealed, parent]) for (const report of [
-    `mkdir: ${name}: Permission denied`,
-    `mkdir: cannot create directory ‘${name}’: Permission denied`,
-    `mkdir: cannot create directory '${name}': Permission denied`,
-  ]) assert.equal(permissionDiagnostic(report, [sealed, parent]), true);
+  const diagnostic = "mkdir: cannot create directory '/fixture/sealed/missing': Permission denied";
+  assert.equal(preservesDiagnostic(`other error\n${diagnostic}\n`, diagnostic), true);
   for (const report of [
-    'mkdir: /fixture/sealed: Permission denied', 'mkdir: /other: Permission denied',
-    `mkdir: ${parent}: File exists`, `mkdir: ${parent}: Permission denied extra`,
-    `mkdir: /other: Permission denied\n${parent}`,
-  ]) assert.equal(permissionDiagnostic(report, [sealed, parent]), false);
+    "mkdir: cannot create directory '/other': Permission denied",
+    `${diagnostic} extra`,
+    `other error\n/fixture/sealed/missing`,
+  ]) assert.equal(preservesDiagnostic(report, diagnostic), false);
 });
 
 // Shared contract for every unwritable-temporary-directory failure: the run is
@@ -206,11 +198,17 @@ exec ${JSON.stringify(realMktemp)} "$@"
     assert.ifError(result.error);
     assert.notEqual(result.status, 0, result.stderr);
     assert.match(result.stderr, /Permission denied/i);
-    // BSD mkdir names the requested parent; GNU mkdir -p can name the
-    // existing sealed ancestor it tried to traverse. Bind the path to the
-    // same Permission denied diagnostic, rather than accepting any error.
-    assert.ok(permissionDiagnostic(result.stderr, [sealed, parent]),
-      'the permission diagnostic must name the exact requested parent or its sealed ancestor');
+    // Compare with the platform's own diagnostic for the exact same operation.
+    // GNU and BSD mkdir differ in both the path and quoting they report.
+    const mkdir = spawnSync('mkdir', ['-p', parent], {
+      encoding: 'utf8',
+      env: { PATH: process.env.PATH },
+    });
+    assert.ifError(mkdir.error);
+    assert.notEqual(mkdir.status, 0);
+    assert.match(mkdir.stderr, /Permission denied/i);
+    assert.ok(preservesDiagnostic(result.stderr, mkdir.stderr),
+      `installer must preserve the mkdir diagnostic for the requested parent: ${result.stderr}`);
     assert.doesNotMatch(result.stdout, /downloading|checksum|installed to/);
     assert.equal(existsSync(curlLog), false, 'an uncreatable parent must fail before the network');
     assert.equal(existsSync(install), false, 'the destination must not appear');
