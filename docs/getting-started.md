@@ -509,11 +509,16 @@ phantom audit tail
 # Print the absolute path to the log file
 phantom audit path
 
-# Verify HMAC-SHA256 chain integrity — exits 1 if tampering detected
+# Verify HMAC-SHA256 chain integrity; exits 1 on verification failure
 phantom audit verify
+
+# List access-spike alerts without writing to the audit log
+phantom audit hotspots --json
 ```
 
-Each log entry is chained with HMAC-SHA256 and a signed head checkpoint. `phantom audit verify` detects malformed lines, modified or inserted entries, sequence gaps, prefix deletion, and log tail/head mismatches. It cannot prove the whole log and checkpoint were both deleted without an external backup or checkpoint.
+Each log entry is chained with HMAC-SHA256 and a signed head checkpoint. `phantom audit verify` detects malformed lines, modified or inserted entries, sequence gaps, prefix deletion, and log tail/head mismatches. It cannot prove the whole log and checkpoint were both deleted without an external backup or checkpoint. On failure, follow the printed next steps; `phantom audit verify --json` provides them in `next_step`. `--with-context` displays decrypted context and cannot be combined with JSON.
+
+`phantom audit hotspots` lists per-secret access spikes. Use `--name NAME` to filter and `--include-acked` to include acknowledged or snoozed alerts. Listing is read-only; acknowledgement and snoozing use the approval-gated MCP tool `phantom_audit_hotspot_alerts`.
 
 ---
 

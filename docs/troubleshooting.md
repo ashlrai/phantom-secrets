@@ -456,7 +456,7 @@ Each line is JSON with `ts`, `op`, `name` (the secret name — **never the value
 
 ### `phantom audit verify` reports tampered entries
 
-The audit log uses an HMAC-SHA256 chain: each entry signs the hash of the previous entry. If `phantom audit verify` exits 1 and reports tampered line numbers, it means those entries were modified, deleted, or inserted after being written.
+The audit log uses an HMAC-SHA256 chain: each entry signs the hash of the previous entry. A verification failure can indicate modified or inserted entries, malformed records, sequence gaps, or a missing or mismatched checkpoint. It does not by itself establish the cause.
 
 Possible causes:
 - A log-rotation tool or editor truncated or rewrote the file
@@ -466,7 +466,7 @@ Possible causes:
 What to do:
 1. Note the tampered line numbers from the output: `phantom audit verify` prints them to stderr.
 2. Compare against a backup copy if available.
-3. Treat the log as unreliable for the period covered by tampered entries.
+3. Treat the log as unreliable for the affected period. Review `phantom audit incidents` and `phantom leaks plan` for additional context.
 4. If you suspect a security incident, revoke affected credentials in each
    upstream provider, then store replacements through Phantom's trusted-terminal
    workflow. `phantom rotate` only invalidates local `phm_` mappings and does not

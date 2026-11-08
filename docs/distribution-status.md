@@ -1,7 +1,8 @@
 # Distribution status
 
 Package publication and native acceptance are separate evidence. The source
-candidate identity for this tree is v0.8.7. On November 6, 2026, the exact
+candidate identity for this tree is v0.8.8; it is not a publication claim. On
+November 6, 2026, the exact
 [v0.8.7 release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.8.7)
 was published at 18:17:06 UTC and qualified from source
 `a6a0413991c0bd7f3d6601f467c0b5770d0dce0c`; annotated tag object

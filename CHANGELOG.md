@@ -4,6 +4,40 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Added (`phantom audit hotspots`)
+
+- `phantom audit hotspots` lists the per-secret access-spike alerts that the MCP
+  `phantom_audit_hotspot_alerts` tool already reported. It has `--name`,
+  `--include-acked`, and `--json`; the JSON keys match the MCP tool.
+- Listing is read-only: it never appends `vault.hotspot_alert` events to the
+  audit log. Acknowledging or snoozing remains the approval-gated MCP action.
+
+### Added (Unix installer PATH-update tests)
+
+- New `installer-path-shell-export` coverage pins an unrelated `export
+  SHELL` line surviving the installer PATH update byte-for-byte; plain,
+  quoted, odd-spaced, dollar- and command-referencing, PATH-mentioning, and
+  marker-lookalike values; every supported final-line ending; a sole-line
+  startup file; beside commented-out, `SHELL_SESSION_HISTORY`, and
+  bare-assignment lookalike lines; before and after an already-wired block ;
+  across the bash, zsh, and fish startup files of both installer copies and
+  the full offline install, proves a SHELL claim inside a file cannot
+  redirect the update away from the env-selected startup file, and proves
+  the preserved line still evaluates when the updated `.bashrc` is sourced.
+  A node-free `installer-path-shell.test.sh` leg checks the same
+  preservation in `apps/web/public/install.sh` with the shipped
+  `add_to_user_path` alone.
+
+### Fixed (`phantom audit verify` failure guidance)
+
+- `phantom audit verify` now prints actionable next steps when chain
+  verification fails; treating the log as unreliable for the flagged
+  period, checking `phantom audit incidents` and `phantom leaks plan`, and
+  revoking and replacing affected credentials at their providers when
+  tampering is suspected; in both the default and `--with-context` output.
+- `phantom audit verify --json` reports the same guidance in a `next_step`
+  field (`null` when the chain verifies clean).
+
 ## [0.8.8] - 2026-11-07
 
 ### Added (Unix installer PATH-update tests)
