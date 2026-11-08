@@ -84,7 +84,7 @@ Hold: none of this is wired. Section 7 lists what must be true before it could b
 1. Names, outcomes, timestamps and incident ids only. No values, no challenge ids, no old or new credentials, no lease secrets.
 2. One event per state transition: plan viewed (open question 5), approval granted or refused, lease minted, provider issue attempted, store written, verify result, retire result, lease consumed or expired.
 3. The existing rotation clearing rule (a `vault.store` after the incident clears it) is the success signal. It clears on any store of that name, including a store of the same leaked value. The verify step should therefore compare identity without reading values (for example a vault entry version or fingerprint change), which needs a design of its own and is not proposed here.
-4. The audit chain key and the lease MAC key are separate secrets with separate failure modes. #270 notes the audit HMAC key loader accepts a key file of any length; that should be fixed before audit events are relied on to gate a flow.
+4. The audit chain key and the lease MAC key are separate secrets with separate failure modes. The audit HMAC key loader now requires exactly 32 bytes; audit events alone are not authorization for a flow.
 
 ## 8. Failure modes
 
@@ -105,7 +105,7 @@ Hold: none of this is wired. Section 7 lists what must be true before it could b
 
 1. Phase 0 (this note): review and decisions.
 2. Phase 1, safe pieces, each a small tested value-free PR: static provider facts in the plan (dashboard location, programmatic or manual, live disabled), then the read-only inventory, then the dry-run command list. Tests: no value in output, no vault unlock, no network, `live_revoke_available` stays false, JSON fields additive only.
-3. Phase 2, prerequisites that are not about leases: the provider challenge contract with a value-free resource handle and verified compensating abort; #270 audit key length.
+3. Phase 2, prerequisites that are not about leases: the provider challenge contract with a value-free resource handle and verified compensating abort.
 4. Phase 3, after #230 is decided and implemented: key provisioning, `list_leases`, rollback anchor decision.
 5. Phase 4, one provider with a verified live path, behind Gates A to E, behind a build flag, with fault-injection tests for every row in section 8. Stripe and Supabase stay manual regardless, since they have no API.
 
