@@ -3,7 +3,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-export const guides = ['README.md', 'AGENTS.md', 'mcp-registry/README.md',
+export const guides = ['README.md', 'AGENTS.md', 'llms.txt', 'mcp-registry/README.md',
   'docs/README.md', 'docs/getting-started.md',
   'docs/troubleshooting.md', 'docs/public-fact-sheet.md', 'docs/llms.txt',
   'docs/llms-full.txt', 'docs/delegation-quickstart.md', 'docs/ci-cd.md',
