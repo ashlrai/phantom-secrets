@@ -1,9 +1,6 @@
 #![allow(dead_code)]
-/// `phantom env` subcommands for environment scoping.
-///
-/// This module handles `use`, `list`, `new`, and `copy` — the environment
-/// selector commands. The legacy `phantom env` (generate .env.example) is
-/// still available as `phantom env example` (see `commands/env.rs`).
+/// Environment selector support used by proxy sessions, plus currently
+/// unrouted environment-management commands.
 use anyhow::{Context, Result};
 use colored::Colorize;
 use phantom_core::config::PhantomConfig;
@@ -740,24 +737,6 @@ fn prepare_environment_copy(
         mutations,
         copied_names,
     })
-}
-
-/// `phantom env` with no subcommand — show help hint.
-pub fn run_default(current: &str) -> Result<()> {
-    println!(
-        "{} Active environment: {}",
-        "->".blue().bold(),
-        current.cyan().bold()
-    );
-    println!(
-        "{}",
-        "Use a subcommand: use <name> | list | new <name> | copy --from <src> --to <dst>".dimmed()
-    );
-    println!(
-        "  {} — generate .env.example for team onboarding",
-        "phantom env example".cyan()
-    );
-    Ok(())
 }
 
 /// Resolve the environment a proxy session serves: the flag when given,
