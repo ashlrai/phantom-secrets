@@ -432,8 +432,8 @@ jobs:
           [void][scriptblock]::Create((Get-Content -LiteralPath scripts/install.ps1 -Raw))
           [void][scriptblock]::Create((Get-Content -LiteralPath apps/web/public/install.ps1 -Raw))
           node scripts/release/check-powershell-candidate.mjs
-          if (-not (Select-String -LiteralPath apps/web/public/install.ps1 -Pattern '\$CandidateTag = ''v0.7.9''' -Quiet)) {
-            throw 'public-reference PowerShell installer is not pinned to evidenced v0.7.9'
+          if (-not (Select-String -LiteralPath apps/web/public/install.ps1 -Pattern '\$CandidateTag = ''v0.8.7''' -Quiet)) {
+            throw 'public-reference PowerShell installer is not pinned to evidenced v0.8.7'
           }
       - name: Exercise the Windows installer with the existing debug binaries
         if: runner.os == 'Windows'

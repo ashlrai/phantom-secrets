@@ -976,7 +976,10 @@ test("PowerShell candidate pin follows source metadata while public reference st
   assert.ok(block.includes("[void][scriptblock]::Create((Get-Content -LiteralPath scripts/install.ps1 -Raw))"));
   assert.ok(block.includes("[void][scriptblock]::Create((Get-Content -LiteralPath apps/web/public/install.ps1 -Raw))"));
   assert.ok(block.includes("$PSNativeCommandUseErrorActionPreference = $true"));
-  assert.ok(block.includes("Select-String -LiteralPath apps/web/public/install.ps1 -Pattern '\\$CandidateTag = ''v0.7.9''' -Quiet"));
+  const publicVersion = "0.8.7";
+  const publicInstaller = readFileSync(join(repoRoot, "apps/web/public/install.ps1"), "utf8");
+  assertPowershellCandidate(publicInstaller, publicVersion, publicVersion);
+  assert.ok(block.includes(`Select-String -LiteralPath apps/web/public/install.ps1 -Pattern '\\$CandidateTag = ''v${publicVersion}''' -Quiet`));
   assert.doesNotMatch(block, /v0\.7\.10/);
   execFileSync(process.execPath, [join(repoRoot, "scripts/release/check-powershell-candidate.mjs")], { cwd: repoRoot });
 });
