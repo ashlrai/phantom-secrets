@@ -24,6 +24,29 @@ const expected = Object.freeze({
 
 assert.deepStrictEqual(SUPPORTED_TARGETS, expected);
 
+// Release binaries link against glibc, so every Linux target must end in `linux-gnu`
+// (a musl or other suffix would download a binary the release does not ship).
+function assertLinuxTargetsAreGnu(targets, label) {
+  const linuxKeys = Object.keys(targets).filter((key) => key.startsWith("linux-"));
+  assert.ok(linuxKeys.length > 0, `${label} must contain at least one Linux target`);
+  for (const key of linuxKeys) {
+    assert.ok(
+      targets[key].endsWith("linux-gnu"),
+      `${label}: Linux target ${key} must end in linux-gnu, got ${targets[key]}`
+    );
+  }
+}
+assertLinuxTargetsAreGnu(SUPPORTED_TARGETS, "SUPPORTED_TARGETS");
+assertLinuxTargetsAreGnu(expected, "expected fixture");
+// The check itself must reject any other Linux suffix.
+for (const suffix of ["linux-musl", "linux-gnueabihf", "linux-android", "linux"]) {
+  assert.throws(
+    () => assertLinuxTargetsAreGnu({ "linux-x64": `x86_64-unknown-${suffix}` }, "mutant"),
+    /must end in linux-gnu/,
+    `suffix ${suffix} must be rejected`
+  );
+}
+
 // Keep the published platform table in sync with the executable's exact map.
 const readme = readFileSync(join(__dirname, "..", "README.md"), "utf8");
 const platformTable = readme.match(
@@ -42,6 +65,7 @@ for (const row of platformTable[1].trim().split(/\r?\n/)) {
   documentedTargets[key] = target;
 }
 assert.deepStrictEqual(documentedTargets, SUPPORTED_TARGETS);
+assertLinuxTargetsAreGnu(documentedTargets, "README platform table");
 
 for (const [platformKey, target] of Object.entries(expected)) {
   const [platform, arch] = platformKey.split("-");
