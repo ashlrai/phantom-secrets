@@ -256,3 +256,37 @@ for (const platform of ["macOS", "Linux"]) {
     assert.equal(existsSync(curlMarker), false, `${platform}: the download never runs after staging fails`);
   });
 }
+
+// mktemp only makes a unique directory when the template ends in at least six
+// X characters. Check the invariant on every displayed install variant, so a
+// reworded prefix cannot quietly drop it. Windows has no mktemp; its unique
+// name comes from a GUID instead.
+test("every displayed install variant ends its staging template in six or more X", () => {
+  render(<QuickStart />);
+  try {
+    const selector = screen.getByRole("group", { name: "Choose an operating system" });
+    for (const platform of ["macOS", "Linux", "Windows"]) {
+      fireEvent.click(within(selector).getByRole("button", { name: platform }));
+      const card = screen.getByRole("heading", { level: 3, name: platform }).closest("article");
+      assert.ok(card);
+      const copy = within(card).getByRole("button", { name: /^Copy command:/ });
+      const displayed = Array.from(copy.firstElementChild!.childNodes)
+        .filter((node) => node.nodeType === Node.TEXT_NODE)
+        .map((node) => node.textContent)
+        .join("");
+
+      if (platform === "Windows") {
+        assert.doesNotMatch(displayed, /\bmktemp\b/, "Windows does not use mktemp");
+        assert.match(displayed, /\[Guid\]::NewGuid\(\)/, "Windows names its file with a GUID");
+        continue;
+      }
+      const lines = displayed.split("\n").filter((line) => /\bmktemp\b/.test(line));
+      assert.equal(lines.length, 1, `${platform}: exactly one mktemp call`);
+      const template = lines[0].match(/mktemp -d "([^"]*)"/)?.[1];
+      assert.ok(template, `${platform}: mktemp -d takes one quoted template`);
+      assert.match(template, /X{6,}$/, `${platform}: template ends in six or more X`);
+    }
+  } finally {
+    cleanup();
+  }
+});
