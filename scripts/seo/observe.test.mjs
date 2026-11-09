@@ -121,6 +121,12 @@ test("decimal HTML entities are decoded exactly once", () => {
   assert.equal(decodeEntities("&#0;&#1114112;&#55296;"), "&#0;&#1114112;&#55296;");
 });
 
+test("adjacent named and decimal HTML entities decode independently", () => {
+  assert.equal(decodeEntities("&lt;&#65;&amp;&#233;&quot;&#128512;&gt;"), '<A&é"😀>');
+  assert.equal(decodeEntities("&#38;&amp;lt;&#65;&gt;"), "&&lt;A>");
+  assert.equal(decodeEntities("&lt;&#0;&amp;&#55296;&gt;"), "<&#0;&&#55296;>");
+});
+
 test("JSON-LD extraction accepts HTML-compatible script endings", () => {
   const result = structuredData(
     '<script type="application/ld+json">{"@type":"SoftwareApplication"}</ScRiPt >',
