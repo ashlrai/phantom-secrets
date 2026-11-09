@@ -485,6 +485,20 @@ test("a complete public fixture produces a deterministic, sanitized passing repo
   });
 });
 
+test("a multi-page sitemap produces exactly one observation per route", async () => {
+  await withFixtureServer(async ({ options }) => {
+    const report = await observeProduction(options);
+    const pages = report.technical.public_routes;
+
+    assert.deepEqual(pages.map((page) => page.route).sort(), [...publicPaths].sort());
+    for (const route of ["/", "/docs", "/docs/guide", "/security", "/secrets"]) {
+      const page = pages.find((entry) => entry.route === route);
+      assert.equal(page.status, 200);
+      assert.equal(page.title, `${route} — Phantom`);
+    }
+  });
+});
+
 test("a non-success public page response reports its status as a failure", async () => {
   await withFixtureServer(
     async ({ options }) => {
