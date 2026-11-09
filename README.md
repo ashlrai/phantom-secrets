@@ -665,6 +665,8 @@ standard](docs/rama-design-standard.md) for explicit network stacks, modular
 crates, runnable examples, and tiered platform CI. Rama is a benchmark, not a
 dependency, and the comparison is not a feature or platform-parity claim.
 
+**Generated docs**: [`.devin/wiki.json`](.devin/wiki.json) steers [DeepWiki](https://deepwiki.com/ashlrai/phantom-secrets) page structure and diagrams; see [DeepWiki configuration](docs/deepwiki.md). It is generated orientation, not authoritative; [docs/architecture.md](docs/architecture.md) and the source are.
+
 **`apps/web`** contains the Next.js site and backend routes for cloud vault sync, GitHub device authentication, and Stripe billing. The repository source and local tests are separate evidence from the currently deployed state at [phm.dev](https://phm.dev).
 
 **Registry tracks**: See [distribution status](docs/distribution-status.md) for dated npm, Homebrew, crates.io, and MCP Registry evidence. Prefer the checksum-verified `v0.8.7` GitHub assets for an exact install.

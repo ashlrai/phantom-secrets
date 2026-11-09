@@ -1,0 +1,22 @@
+{
+  "repo_notes": [
+    {
+      "content": "Phantom Secrets is a Rust workspace (crates/) that keeps real API keys out of AI agents' reach. The `phantom` CLI replaces .env secrets with `phm_` tokens, stores real values in an OS keychain or encrypted-file vault, and runs a localhost reverse proxy (127.0.0.1 only, never a forward/CONNECT proxy) that injects the route-owned vault value into an exact route's auth header. Crates: phantom-core (config, .env, tokens), phantom-vault (VaultBackend), phantom-proxy, phantom-cli, phantom-mcp (MCP server), plus fail-closed governed-execution foundations (phantom-workspace, -authority, -locus-contract, -broker, -runtime, -session, -evidence). Prefer diagrams for the exec/proxy request flow and crate dependencies. Link claims to source files; docs/architecture.md is the authoritative trust-boundary description."
+    },
+    {
+      "content": "Never document secret values, tokens or real home-directory paths; secrets are referenced by name only. Distinguish shipped behaviour from inactive fail-closed foundations (live provider issuance/rotation is hard-denied; production execution is not enabled)."
+    }
+  ],
+  "pages": [
+    { "title": "Overview", "purpose": "What Phantom Secrets is, the threat it addresses, and the main moving parts with an architecture diagram" },
+    { "title": "Phantom tokens and .env handling", "purpose": "phantom-core: .env parsing/rewriting, secret detection heuristics, phm_ token generation, .phantom.toml config", "parent": "Overview" },
+    { "title": "Vault backends", "purpose": "phantom-vault: VaultBackend trait, OS keychain versus encrypted-file fallback, Argon2id parameters, locked-vault inventory guards", "parent": "Overview" },
+    { "title": "Reverse proxy and injection", "purpose": "phantom-proxy: route matching, auth-header injection, body size cap, response scrubbing and SSE streaming; sequence diagram of phantom exec", "parent": "Overview" },
+    { "title": "CLI", "purpose": "phantom-cli command groups (init, exec, doctor, sync, teams, audit, validation) and their error conventions", "parent": "Overview" },
+    { "title": "MCP server", "purpose": "phantom-mcp tool catalog, stdio transport, registry parity with mcp-registry/server.json, value-blind diagnostics", "parent": "Overview" },
+    { "title": "Audit log", "purpose": "Opt-in HMAC-chained JSONL audit log recording secret names only, and phantom audit verify", "parent": "Overview" },
+    { "title": "Governed-execution foundations", "purpose": "Workspace setup transaction and the fail-closed authority, broker, runtime, session and evidence crates", "parent": "Overview" },
+    { "title": "Security model", "purpose": "THREAT_MODEL.md and SECURITY.md: trust boundaries, what the proxy and vault do and do not protect", "parent": "Overview" },
+    { "title": "Testing and release", "purpose": "cargo test/clippy/fmt gates, proxy test_server integration tests, MCP stdio smoke and registry checks", "parent": "Overview" }
+  ]
+}
