@@ -46,6 +46,8 @@ for (const malformed of [
   ("phantom v" + candidateVersion + "\n"),
   "phantom 0.7.01\n",
   "phantom 1.2.3-01\n",
+  (" phantom " + candidateVersion + "\n"),
+  ("\tphantom " + candidateVersion + "\n"),
   ("phantom " + candidateVersion + "-untrusted\nextra\n"),
   ("prefix phantom " + candidateVersion + "\n"),
   ("phantom-mcp " + candidateVersion + "\n"),
