@@ -244,6 +244,33 @@ const machineReadableGuides = Object.entries(machineReadableClaims).filter(
   ([file]) => /llms(?:-full)?\.txt$/.test(file) && !file.startsWith("apps/web/public/workbench/"),
 );
 
+// An empty or whitespace-only source would pass every doesNotMatch check
+// vacuously, so each collection of public claims must hold real text.
+function assertNoEmptyClaims(label, collection) {
+  const entries = Object.entries(collection);
+  assert.ok(entries.length > 0, `${label}: no claims collected`);
+  for (const [file, source] of entries) {
+    assert.equal(typeof source, "string", `${label}: ${file} is not text`);
+    assert.notEqual(source.trim(), "", `${label}: empty public claim in ${file}`);
+  }
+}
+
+test("public claims contain no empty or whitespace-only entries", () => {
+  assertNoEmptyClaims("claims", claims);
+  assertNoEmptyClaims("repositoryGuidanceClaims", repositoryGuidanceClaims);
+  assertNoEmptyClaims("machineReadableClaims", machineReadableClaims);
+  assertNoEmptyClaims("staticDocumentationClaims", staticDocumentationClaims);
+  assertNoEmptyClaims("publishedPackageDocumentationClaims", publishedPackageDocumentationClaims);
+
+  for (const empty of ["", " ", "\n\t \r\n", " ﻿"]) {
+    assert.throws(
+      () => assertNoEmptyClaims("fixture", { "ok.md": "text", "bad.md": empty }),
+      /fixture: empty public claim in bad\.md/,
+    );
+  }
+  assert.throws(() => assertNoEmptyClaims("fixture", {}), /no claims collected/);
+});
+
 const publicReleaseEvidencePaths = [
   ".github/ISSUE_TEMPLATE/bug_report.yml",
   "AGENTS.md",
