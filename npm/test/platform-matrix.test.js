@@ -82,7 +82,34 @@ for (const runtime of unsupported) {
   });
 }
 
-const wrapperSource = readFileSync(join(__dirname, "..", "bin", "cli.js"), "utf8");
+// Every supported mapping has a nonempty target, and no two pairs share one.
+for (const [key, target] of Object.entries(SUPPORTED_TARGETS)) {
+  assert.strictEqual(typeof target, "string", `${key} target is a string`);
+  assert.notStrictEqual(target.trim(), "", `${key} target is nonempty`);
+}
+assert.strictEqual(
+  new Set(Object.values(SUPPORTED_TARGETS)).size,
+  Object.keys(SUPPORTED_TARGETS).length,
+  "supported platform pairs must map to distinct targets"
+);
+
+// Lookups are pure: repeated calls agree and neither input nor mapping changes.
+const mappingBefore = JSON.stringify(SUPPORTED_TARGETS);
+for (const [platformKey, target] of Object.entries(expected)) {
+  const [platform, arch] = platformKey.split("-");
+  const runtime = Object.freeze({ platform, arch });
+  assert.strictEqual(getPlatformTarget(runtime), target);
+  assert.strictEqual(getPlatformTarget(runtime), target, `repeat lookup of ${platformKey}`);
+  assert.deepStrictEqual(runtime, { platform, arch }, "lookup must not change its input");
+}
+for (const runtime of unsupported) {
+  const copy = { ...runtime };
+  assert.throws(() => getPlatformTarget(runtime), new RegExp(`${runtime.platform}-${runtime.arch}`));
+  assert.deepStrictEqual(runtime, copy, "failed lookup must not change its input");
+}
+assert.strictEqual(JSON.stringify(SUPPORTED_TARGETS), mappingBefore, "lookups must not change the mapping");
+
+const wrapperSource =readFileSync(join(__dirname, "..", "bin", "cli.js"), "utf8");
 assert.doesNotMatch(wrapperSource, /Install from source|cargo install phantom-secrets/);
 
 (async () => {
