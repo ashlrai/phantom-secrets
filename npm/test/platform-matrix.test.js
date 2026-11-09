@@ -55,6 +55,7 @@ for (const [platformKey, target] of Object.entries(expected)) {
 const unsupported = [
   { platform: "darwin", arch: "ia32" },
   { platform: "linux", arch: "arm" },
+  { platform: "linux", arch: "riscv64" },
   { platform: "freebsd", arch: "x64" },
   { platform: "openbsd", arch: "x64" },
   { platform: "win32", arch: "ia32" },
@@ -81,6 +82,13 @@ for (const runtime of unsupported) {
     return true;
   });
 }
+
+// An unsupported Linux architecture is named exactly, never mapped to a Linux target.
+assert.throws(() => getPlatformTarget({ platform: "linux", arch: "riscv64" }), (error) => {
+  assert.ok(error.message.includes("Unsupported platform: linux-riscv64"), error.message);
+  assert.doesNotMatch(error.message, /x86_64|aarch64/);
+  return true;
+});
 
 const wrapperSource = readFileSync(join(__dirname, "..", "bin", "cli.js"), "utf8");
 assert.doesNotMatch(wrapperSource, /Install from source|cargo install phantom-secrets/);

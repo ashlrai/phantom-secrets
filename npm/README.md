@@ -59,6 +59,7 @@ downloading a binary:
 |---|---|
 | `darwin` | `ia32` |
 | `linux` | `arm` |
+| `linux` | `riscv64` |
 | `freebsd` | `x64` |
 | `openbsd` | `x64` |
 | `win32` | `ia32` |
