@@ -55,6 +55,15 @@ const fixtureDir = mkdtempSync(join(tmpdir(), "phantom-cache-test-"));
 try {
   ensurePrivateCacheDir(fixtureDir);
   const paths = pathSet(fixtureDir);
+  let emptyCacheExecutions = 0;
+  const emptyCacheOptions = {
+    execFileSyncImpl: () => { emptyCacheExecutions += 1; throw new Error("missing binary executed"); },
+  };
+  assert.strictEqual(readVerifiedManifest(paths.binaryPath, paths.manifestPath), null);
+  assert.strictEqual(validateCachedBinary(paths.binaryPath, paths.manifestPath, emptyCacheOptions), false);
+  assert.strictEqual(isCachedBinaryStale(paths.binaryPath, emptyCacheOptions), true);
+  assert.strictEqual(emptyCacheExecutions, 0, "empty cache must never execute a binary");
+
   writePrivateFile(paths.binaryPath, "unverified", 0o700);
   let executions = 0;
   assert.strictEqual(validateCachedBinary(paths.binaryPath, paths.manifestPath, {
