@@ -1228,7 +1228,9 @@ async function readJson(file, label) {
   try {
     source = await readFile(file);
   } catch (error) {
-    throw new Error(`${label} could not be read: ${error.code ?? "read_failed"}`);
+    throw new Error(`${label} could not be read: ${error.code ?? "read_failed"} (${file}); check the path or omit the flag`, {
+      cause: { inputError: true },
+    });
   }
   invariant(source.byteLength <= MAX_RESPONSE_BYTES, `${label} exceeds the byte limit`);
   try {
@@ -1255,7 +1257,8 @@ async function main() {
       aggregateInputs[kind] = await readJson(file, `${kind} aggregate input`);
     }
     report = await observeProduction({ experiments, aggregateInputs });
-  } catch {
+  } catch (error) {
+    if (error?.cause?.inputError) process.stderr.write(`${error.message}\n`);
     report = {
       schema_version: REPORT_SCHEMA_VERSION,
       captured_at: new Date().toISOString(),
