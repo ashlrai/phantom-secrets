@@ -29,6 +29,11 @@ test("legacy docs redirects are closed, unique, and do not shadow rendered guide
       true,
       `${route.source} points to missing docs/${route.file}`,
     );
+    assert.equal(
+      fs.statSync(guidePath).isFile(),
+      true,
+      `${route.source} points to a non-file docs/${route.file}`,
+    );
   }
 
   for (const required of [
