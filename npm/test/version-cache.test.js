@@ -44,6 +44,7 @@ for (const malformed of [
   "",
   "phantom\n",
   ("phantom v" + candidateVersion + "\n"),
+  "phantom 01.2.3\n",
   "phantom 0.7.01\n",
   "phantom 1.2.3-01\n",
   ("phantom " + candidateVersion + "-untrusted\nextra\n"),
