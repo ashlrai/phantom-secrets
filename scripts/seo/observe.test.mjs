@@ -106,6 +106,31 @@ test("the documented local command writes its report and fails closed on an unre
   }
 });
 
+test("the CLI reports missing aggregate inputs without an uncaught exception", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "phantom-seo-missing-input-"));
+  try {
+    for (const kind of ["gsc", "ga4", "ahrefs"]) {
+      const output = path.join(directory, `${kind}-report.json`);
+      const result = spawnSync(process.execPath, [
+        path.join(scriptDirectory, "observe.mjs"),
+        "--experiments", path.join(repositoryDirectory, "seo/experiments.json"),
+        `--${kind}-file`, path.join(directory, `missing-${kind}.json`),
+        "--out", output,
+      ], { cwd: repositoryDirectory, encoding: "utf8", timeout: 5_000 });
+      assert.ifError(result.error);
+      assert.equal(result.status, 1);
+      assert.equal(result.signal, null);
+      assert.equal(result.stderr, "");
+      assert.match(result.stdout, /FAIL/);
+      const report = JSON.parse(await readFile(output, "utf8"));
+      assert.equal(report.verdict, "FAIL");
+      assert.equal(report.findings[0].code, "observer_execution_failed");
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("HTML entities are decoded exactly once", () => {
   assert.equal(decodeEntities("&amp;&quot;&#39;&lt;&gt;"), "&\"'<>");
   assert.equal(decodeEntities("&amp;lt;script&amp;gt;"), "&lt;script&gt;");
