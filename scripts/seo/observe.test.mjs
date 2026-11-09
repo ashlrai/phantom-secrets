@@ -533,6 +533,35 @@ test("empty aggregate observation inputs remain empty", () => {
   }
 });
 
+test("an observation with no experiments or aggregate inputs reports none and invents nothing", async () => {
+  const emptyLedger = {
+    schema_version: "phantom-seo-experiments-v1",
+    default_observation_days: 28,
+    experiments: [],
+  };
+  assert.deepEqual(
+    validateExperiments(emptyLedger, publicPaths, new Date("2026-09-05T12:00:00Z")),
+    emptyLedger,
+  );
+
+  await withFixtureServer(async ({ options }) => {
+    // No experiments and no aggregateInputs options: every default must be empty.
+    const report = await observeProduction(options);
+    assert.deepEqual(report.experiments, emptyLedger);
+    assert.deepEqual(report.aggregate_inputs, {
+      gsc: { state: "not_supplied" },
+      ga4: { state: "not_supplied" },
+      ahrefs: { state: "not_supplied" },
+    });
+    assert.equal(report.verdict, "PASS");
+    assert.deepEqual(report.findings, []);
+    const summary = renderSummary(report);
+    assert.match(summary, /No checked-in experiments are active\./);
+    assert.match(summary, /No failures or warnings\./);
+    assert.match(summary, /- GSC: not_supplied/);
+  });
+});
+
 test("a non-success public page response reports its status as a failure", async () => {
   await withFixtureServer(
     async ({ options }) => {
