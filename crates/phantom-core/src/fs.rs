@@ -921,6 +921,20 @@ mod tests {
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
     }
 
+    #[test]
+    fn test_atomic_write_fails_when_missing_parent_cannot_be_created() {
+        let dir = TempDir::new().unwrap();
+        let blocker = dir.path().join("blocker");
+        std::fs::write(&blocker, b"existing file").unwrap();
+        let parent = blocker.join("missing");
+        let target = parent.join("target");
+
+        assert!(atomic_write(&target, b"new content").is_err());
+        assert!(!target.exists());
+        assert_eq!(std::fs::read(&blocker).unwrap(), b"existing file");
+        assert_eq!(list_dir(dir.path()), vec!["blocker"]);
+    }
+
     #[cfg(unix)]
     #[test]
     fn test_atomic_write_creates_file_with_0600_mode() {
