@@ -391,3 +391,7 @@ Update this document when a component crosses a status boundary, when a public
 constructor or transport becomes reachable, when a secret/authority field
 changes, or when a platform begins or stops enforcing a filesystem or process
 guarantee.
+
+Auto-generated architecture pages (DeepWiki) are steered by
+[`.devin/wiki.json`](../.devin/wiki.json); see [deepwiki.md](deepwiki.md). They
+are orientation only and never override this document.
