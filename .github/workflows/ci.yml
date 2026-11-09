@@ -424,6 +424,9 @@ jobs:
       - name: Run isolated staging-failure shell test
         if: runner.os == 'Linux'
         run: bash scripts/installer-staging-failure.test.sh
+      - name: Run installer copy parity shell test
+        if: runner.os == 'Linux'
+        run: bash scripts/install-parity.test.sh
       - name: Parse candidate and public-reference PowerShell installers
         if: runner.os == 'Windows'
         shell: pwsh
