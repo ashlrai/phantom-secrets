@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -101,6 +101,29 @@ test("the documented local command writes its report and fails closed on an unre
     assert.equal(report.verdict, "FAIL");
     assert.equal(report.findings[0].code, "observer_execution_failed");
     assert.match(result.stdout, /FAIL/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("the CLI reports failure when the output directory cannot be created", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "phantom-seo-output-"));
+  try {
+    const obstruction = path.join(directory, "not-a-directory");
+    await writeFile(obstruction, "unchanged");
+    const result = spawnSync(process.execPath, [
+      path.join(scriptDirectory, "observe.mjs"),
+      "--experiments", path.join(directory, "missing-ledger.json"),
+      "--out", path.join(obstruction, "reports", "observation.json"),
+      "--summary", path.join(directory, "summary.md"),
+    ], { cwd: repositoryDirectory, encoding: "utf8", timeout: 5_000 });
+
+    assert.ifError(result.error);
+    assert.equal(result.status, 1);
+    assert.equal(result.stdout, "");
+    assert.match(result.stderr, /SEO observation could not write its sanitized report:/);
+    assert.equal(await readFile(obstruction, "utf8"), "unchanged");
+    await assert.rejects(stat(path.join(directory, "summary.md")), { code: "ENOENT" });
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
