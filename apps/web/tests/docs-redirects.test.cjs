@@ -61,3 +61,33 @@ test("Next config derives temporary redirects from the reviewed manifest", () =>
   assert.doesNotMatch(config, /source: "\/install\.(?:sh|ps1)"/);
   assert.doesNotMatch(config, /destination:\s*["']https?:\/\/(?!github\.com\/ashlrai\/phantom-secrets\/blob\/main\/docs\/)/);
 });
+
+test("redirect destinations are clean single-slash paths on the pinned origin", () => {
+  const config = fs.readFileSync(path.join(webRoot, "next.config.ts"), "utf8");
+  const template = config.match(/destination:\s*`([^`]+)`/);
+  assert.ok(template, "expected one destination template in next.config.ts");
+
+  // Local sources: single leading slash, never protocol-relative.
+  for (const route of routes) {
+    assert.match(route.source, /^\/(?!\/)/, `${route.source} must be a local path`);
+  }
+
+  for (const route of routes) {
+    const destination = template[1].replace("${file}", route.file);
+    assert.equal(destination.includes("${"), false, "unresolved template variable");
+
+    // The destination is parsed, not pattern-matched, so userinfo tricks like
+    // https://github.com@evil.test/ or backslash/protocol-relative forms fail.
+    const url = new URL(destination);
+    assert.equal(url.protocol, "https:");
+    assert.equal(url.host, "github.com", `${route.source} leaves the pinned origin`);
+    assert.equal(url.username + url.password, "");
+    assert.match(url.pathname, /^\/(?!\/)/, `${route.source} path must start with a single slash`);
+    assert.equal(url.pathname.includes("\\"), false);
+    assert.equal(url.pathname.split("/").includes(".."), false);
+    assert.equal(
+      url.pathname,
+      `/ashlrai/phantom-secrets/blob/main/docs/${route.file}`,
+    );
+  }
+});
