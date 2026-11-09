@@ -1292,6 +1292,27 @@ test("release drift compares the Phantom Secrets SoftwareApplication, not the um
 });
 
 
+test("observed titles preserve punctuation exactly", async () => {
+  const title = `Phantom: API keys, secrets & privacy — what's next?! (v0.8.9) [guide]`;
+  await withFixtureServer(
+    async ({ options }) => {
+      const report = await observeProduction(options);
+      const page = report.technical.public_routes.find((entry) => entry.route === "/docs");
+      assert.ok(page, "the docs route must be observed");
+      assert.equal(page.title, title);
+    },
+    {
+      "/docs": (response, origin) => {
+        response.setHeader("content-type", "text/html; charset=utf-8");
+        response.end(html(origin, "/docs").replace(
+          "<title>/docs — Phantom</title>",
+          `<title>${title}</title>`,
+        ));
+      },
+    },
+  );
+});
+
 test("observed titles decode supported HTML entities exactly once", async () => {
   await withFixtureServer(
     async ({ options }) => {
