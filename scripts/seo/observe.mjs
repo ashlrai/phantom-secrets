@@ -1223,7 +1223,7 @@ function parseArguments(argv) {
   return result;
 }
 
-async function readJson(file, label) {
+export async function readJson(file, label) {
   let source;
   try {
     source = await readFile(file);
