@@ -12,6 +12,30 @@ const renderedDocs = JSON.parse(
   fs.readFileSync(path.join(webRoot, "docs-catalog.json"), "utf8"),
 );
 
+function assertUniqueSourcesIgnoringCase(entries) {
+  const sources = new Map();
+  for (const { source } of entries) {
+    const normalized = source.toLowerCase();
+    assert.equal(
+      sources.has(normalized),
+      false,
+      `duplicate redirect sources ignoring case: ${sources.get(normalized)} and ${source}`,
+    );
+    sources.set(normalized, source);
+  }
+}
+
+test("redirect sources are unique ignoring case", () => {
+  assertUniqueSourcesIgnoringCase(routes);
+  assert.throws(
+    () => assertUniqueSourcesIgnoringCase([
+      { source: "/docs/guide" },
+      { source: "/DOCS/Guide" },
+    ]),
+    /duplicate redirect sources ignoring case/,
+  );
+});
+
 test("legacy docs redirects are closed, unique, and do not shadow rendered guides", () => {
   assert.ok(routes.length >= 8, "expected the remaining source-only guide set");
 
