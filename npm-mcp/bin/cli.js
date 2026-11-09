@@ -308,7 +308,7 @@ function sha256File(path) {
 function parseBinaryVersion(output) {
   const text = Buffer.isBuffer(output) ? output.toString("utf8") : String(output);
   const match = text.match(new RegExp(`^${BINARY_NAME} (${SEMVER_SOURCE})\\r?\\n?$`));
-  return match ? match[1] : null;
+  return match && match[0] === text ? match[1] : null;
 }
 
 function parseSha256File(buf, expectedFilename) {
