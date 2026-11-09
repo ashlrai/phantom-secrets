@@ -82,6 +82,12 @@ for (const runtime of unsupported) {
   });
 }
 
+// An empty platform is not a request to select the host's package.
+assert.throws(
+  () => getPlatformTarget({ platform: "", arch: "x64" }),
+  /Unsupported platform: -x64/
+);
+
 const wrapperSource = readFileSync(join(__dirname, "..", "bin", "cli.js"), "utf8");
 assert.doesNotMatch(wrapperSource, /Install from source|cargo install phantom-secrets/);
 
@@ -103,6 +109,17 @@ assert.doesNotMatch(wrapperSource, /Install from source|cargo install phantom-se
     );
     assert.strictEqual(downloads, 0, "unsupported platforms must not attempt a download");
     assert.strictEqual(existsSync(cacheDir), false, "unsupported platforms must not create a cache");
+
+    await assert.rejects(
+      ensureBinary({
+        cacheDir,
+        runtime: { platform: "", arch: "x64" },
+        downloadImpl: async () => { downloads += 1; throw new Error("unexpected download"); },
+      }),
+      /Unsupported platform: -x64/
+    );
+    assert.strictEqual(downloads, 0, "an empty platform must not download a package");
+    assert.strictEqual(existsSync(cacheDir), false, "an empty platform must not create a cache");
   } finally {
     rmSync(testDir, { recursive: true, force: true });
   }
