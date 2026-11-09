@@ -1292,6 +1292,28 @@ test("release drift compares the Phantom Secrets SoftwareApplication, not the um
 });
 
 
+test("observed titles preserve Unicode exactly", async () => {
+  const title = "Café — 東京 🔐 e\u0301";
+  await withFixtureServer(
+    async ({ options }) => {
+      const report = await observeProduction(options);
+      const page = report.technical.public_routes.find((entry) => entry.route === "/docs");
+      assert.ok(page, "the docs route must be observed");
+      assert.equal(page.title, title);
+      assert.equal(report.verdict, "PASS");
+    },
+    {
+      "/docs": (response, origin) => {
+        response.setHeader("content-type", "text/html; charset=utf-8");
+        response.end(html(origin, "/docs").replace(
+          "<title>/docs — Phantom</title>",
+          `<title>${title}</title>`,
+        ));
+      },
+    },
+  );
+});
+
 test("observed titles decode supported HTML entities exactly once", async () => {
   await withFixtureServer(
     async ({ options }) => {
