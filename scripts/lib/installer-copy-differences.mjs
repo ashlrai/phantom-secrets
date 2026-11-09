@@ -15,7 +15,7 @@ export const installerCopies = [repositoryCopy, webCopy];
 // bound to the independently verified release.
 export const approvedDifferences = [{
   name: "candidate and verified public release tags",
-  minus: ['CANDIDATE_TAG="v0.8.8"'],
+  minus: ['CANDIDATE_TAG="v0.8.9"'],
   plus: ['CANDIDATE_TAG="v0.8.7"'],
 }];
 // Latin-1 is a reversible byte mapping here, not a text encoding assumption:
