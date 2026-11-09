@@ -1056,6 +1056,26 @@ test("Search Console input accepts finalized page aggregates and rejects raw que
   );
 });
 
+test("duplicate aggregate records are retained, with GA4 suppression applied per row", () => {
+  const period = { start: "2026-07-01", end: "2026-07-28", data_state: "final" };
+  const now = new Date("2026-09-05T12:00:00Z");
+  const cases = [
+    ["gsc", { page_path: "/docs", brand_class: "nonbrand", clicks: 2, impressions: 10, ctr: 0.2, position: 4 }],
+    ["ga4", { page_path: "/docs", referral_class: "other", sessions: 10, engaged_sessions: 5, engagement_rate: 0.5, key_events: 1 }],
+    ["ahrefs", { page_path: "/docs", estimated_organic_traffic: 12, referring_domains: 3 }],
+  ];
+  for (const [kind, row] of cases) {
+    const small = kind === "ga4" ? { ...row, sessions: 9 } : null;
+    const result = validateAggregateInput(kind, {
+      schema_version: `phantom-seo-${kind}-v1`,
+      period,
+      rows: [row, { ...row }, ...(small ? [small, { ...small }] : [])],
+    }, publicPaths, now);
+    assert.deepEqual(result.rows, [row, row], `${kind} retains both duplicate records`);
+    if (kind === "ga4") assert.equal(result.suppressed_rows, 2);
+  }
+});
+
 test("aggregate periods reject impossible dates and days that are not yet complete", () => {
   const base = {
     schema_version: "phantom-seo-gsc-v1",
