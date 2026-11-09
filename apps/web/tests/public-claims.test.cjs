@@ -285,6 +285,57 @@ const publicReleaseEvidencePaths = [
   ...repoFilesUnder("apps/web/src", [".ts", ".tsx"]),
 ];
 
+// A claim is identified by its normalized text, so case, spacing, path
+// separators, and trailing punctuation cannot hide a repeated entry.
+function normalizeClaim(claim) {
+  return String(claim)
+    .normalize("NFKC")
+    .replaceAll("\\", "/")
+    .replace(/\s+/g, " ")
+    .replace(/[\s.,;:!]+$/u, "")
+    .trim()
+    .toLowerCase();
+}
+
+function findDuplicateClaims(items) {
+  const firstSeen = new Map();
+  const duplicates = [];
+  for (const item of items) {
+    const key = normalizeClaim(item);
+    if (firstSeen.has(key)) duplicates.push({ claim: item, first: firstSeen.get(key) });
+    else firstSeen.set(key, item);
+  }
+  return duplicates;
+}
+
+function assertNoDuplicateClaims(items, label) {
+  const duplicates = findDuplicateClaims(items);
+  assert.deepEqual(
+    duplicates,
+    [],
+    `${label} repeats claims: ${duplicates.map((d) => JSON.stringify(d.claim)).join(", ")}`,
+  );
+}
+
+test("duplicate-claim check flags normalized repeats and accepts distinct claims", () => {
+  assert.deepEqual(findDuplicateClaims(["Local vault.", "Proxy injects keys", "Audit log"]), []);
+  assert.deepEqual(findDuplicateClaims([]), []);
+  assert.deepEqual(
+    findDuplicateClaims(["Local  vault.", "proxy", "  local vault ", "src\\a.ts", "SRC/a.ts"]),
+    [
+      { claim: "  local vault ", first: "Local  vault." },
+      { claim: "SRC/a.ts", first: "src\\a.ts" },
+    ],
+  );
+  assert.throws(() => assertNoDuplicateClaims(["a", "A "], "sample"), /sample repeats claims/);
+});
+
+test("each public claim source is listed exactly once", () => {
+  assertNoDuplicateClaims(claimPaths, "claimPaths");
+  assertNoDuplicateClaims(machineReadablePaths, "machineReadablePaths");
+  assertNoDuplicateClaims(publicReleaseEvidencePaths, "publicReleaseEvidencePaths");
+});
+
 const verifiedReleaseUrl =
   "https://github.com/ashlrai/phantom-secrets/releases/tag/v0.8.7";
 let candidateReleaseUrl;
