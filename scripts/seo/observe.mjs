@@ -1255,7 +1255,8 @@ async function main() {
       aggregateInputs[kind] = await readJson(file, `${kind} aggregate input`);
     }
     report = await observeProduction({ experiments, aggregateInputs });
-  } catch {
+  } catch (error) {
+    process.stderr.write(`Observer failed closed: ${error.message}\n`);
     report = {
       schema_version: REPORT_SCHEMA_VERSION,
       captured_at: new Date().toISOString(),

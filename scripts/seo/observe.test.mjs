@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -101,6 +101,38 @@ test("the documented local command writes its report and fails closed on an unre
     assert.equal(report.verdict, "FAIL");
     assert.equal(report.findings[0].code, "observer_execution_failed");
     assert.match(result.stdout, /FAIL/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("malformed observation input fails closed with a reason and no passing report", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "phantom-seo-malformed-"));
+  try {
+    const good = path.join(directory, "ledger.json");
+    const bad = path.join(directory, "bad.json");
+    await writeFile(good, "{}");
+    await writeFile(bad, "{not json");
+    const cases = [
+      [["--experiments", bad], /experiment ledger is not valid JSON/],
+      [["--experiments", good, "--gsc-file", bad], /gsc aggregate input is not valid JSON/],
+      [["--experiments", path.join(directory, "missing.json")], /experiment ledger could not be read: ENOENT/],
+    ];
+    for (const [index, [extra, diagnostic]] of cases.entries()) {
+      const out = path.join(directory, `report-${index}.json`);
+      const result = spawnSync(
+        process.execPath,
+        [path.join(scriptDirectory, "observe.mjs"), "--out", out, ...extra],
+        { cwd: repositoryDirectory, encoding: "utf8", timeout: 5_000 },
+      );
+      assert.ifError(result.error);
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, diagnostic);
+      const report = JSON.parse(await readFile(out, "utf8"));
+      assert.equal(report.verdict, "FAIL");
+      assert.deepEqual(report.findings.map((finding) => finding.code), ["observer_execution_failed"]);
+      assert.deepEqual(report.technical.public_routes, []);
+    }
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
