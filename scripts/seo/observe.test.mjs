@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -14,6 +14,7 @@ import {
   decodeEntities,
   JOB_SUMMARY_MAX_BYTES,
   observeProduction,
+  readJson,
   requestWithinBoundary,
   renderSummary,
   structuredData,
@@ -101,6 +102,46 @@ test("the documented local command writes its report and fails closed on an unre
     assert.equal(report.verdict, "FAIL");
     assert.equal(report.findings[0].code, "observer_execution_failed");
     assert.match(result.stdout, /FAIL/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("an aggregate input path containing spaces is read and its observation is reported", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "phantom seo spaced "));
+  try {
+    const folder = path.join(directory, "search console", "july 2026");
+    await mkdir(folder, { recursive: true });
+    const file = path.join(folder, "gsc final.json");
+    const fixture = {
+      schema_version: "phantom-seo-gsc-v1",
+      period: { start: "2026-07-01", end: "2026-07-28", data_state: "final" },
+      rows: [
+        { page_path: "/docs", brand_class: "nonbrand", clicks: 12, impressions: 240, ctr: 0.05, position: 8.4 },
+      ],
+    };
+    await writeFile(file, JSON.stringify(fixture));
+    assert.match(file, / /);
+
+    // readJson is the CLI's reader, so this is the same path --gsc-file takes.
+    const aggregate = await readJson(file, "gsc aggregate input");
+    assert.deepEqual(aggregate, fixture);
+    await assert.rejects(
+      readJson(path.join(folder, "missing file.json"), "gsc aggregate input"),
+      /gsc aggregate input could not be read: ENOENT/,
+    );
+
+    await withFixtureServer(async ({ options }) => {
+      const report = await observeProduction({
+        ...options,
+        experiments: { schema_version: "phantom-seo-experiments-v1", default_observation_days: 28, experiments: [] },
+        aggregateInputs: { gsc: aggregate },
+      });
+      assert.equal(report.verdict, "PASS");
+      assert.notEqual(report.aggregate_inputs.gsc.state, "not_supplied");
+      assert.equal(report.aggregate_inputs.ga4.state, "not_supplied");
+      assert.match(renderSummary(report), /GSC: (?!not_supplied)/);
+    });
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
