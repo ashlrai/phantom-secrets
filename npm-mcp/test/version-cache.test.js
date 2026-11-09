@@ -16,6 +16,7 @@ const { join } = require("path");
 
 const {
   ensurePrivateCacheDir,
+  ensureBinary,
   isCachedBinaryStale,
   parseBinaryVersion,
   pathSet,
@@ -129,4 +130,36 @@ try {
   rmSync(fixtureDir, { recursive: true, force: true });
 }
 
-console.log("npm MCP wrapper manifest, version, replacement, and recovery tests passed");
+async function testMalformedCacheFallback() {
+  for (const manifest of ["{broken json", "null", JSON.stringify({ version: candidateVersion, sha256: "bad" })]) {
+    const cacheDir = mkdtempSync(join(tmpdir(), "phantom-mcp-malformed-cache-"));
+    try {
+      const paths = pathSet(cacheDir);
+      writePrivateFile(paths.binaryPath, "untrusted binary", 0o700);
+      writePrivateFile(paths.manifestPath, manifest, 0o600);
+      let executions = 0;
+      let downloads = 0;
+      const downloadFailure = new Error("simulated download failure");
+      await assert.rejects(ensureBinary({
+        cacheDir,
+        execFileSyncImpl: () => { executions += 1; },
+        downloadImpl: async (url) => {
+          downloads += 1;
+          assert.ok(url.endsWith(".sha256"), "fallback must fetch the release checksum first");
+          throw downloadFailure;
+        },
+      }), (error) => error === downloadFailure);
+      assert.strictEqual(executions, 0, "malformed cache must never execute");
+      assert.strictEqual(downloads, 1, "malformed cache must trigger the download fallback");
+    } finally {
+      rmSync(cacheDir, { recursive: true, force: true });
+    }
+  }
+}
+
+testMalformedCacheFallback().then(() => {
+  console.log("npm MCP wrapper manifest, version, replacement, and recovery tests passed");
+}).catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});
