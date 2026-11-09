@@ -22,6 +22,12 @@ const expected = Object.freeze({
   "win32-x64": "x86_64-pc-windows-msvc",
 });
 
+for (const [platformKey, target] of Object.entries(SUPPORTED_TARGETS)) {
+  if (platformKey.startsWith("win32-")) {
+    assert.match(target, /windows-msvc$/, `${platformKey} must target windows-msvc`);
+  }
+}
+
 assert.deepStrictEqual(SUPPORTED_TARGETS, expected);
 
 // Keep the published platform table in sync with the executable's exact map.
