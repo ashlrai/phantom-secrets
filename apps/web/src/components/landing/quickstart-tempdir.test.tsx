@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -254,5 +254,57 @@ for (const platform of ["macOS", "Linux"]) {
     assert.notEqual(result.status, 0, `${platform}: a failed mktemp must fail the command`);
     assert.match(result.stderr, /stub mktemp: forced failure/, `${platform}: mktemp is the failing step`);
     assert.equal(existsSync(curlMarker), false, `${platform}: the download never runs after staging fails`);
+  });
+}
+
+// The curl spy above only covers the download. Every later staging step must
+// also stay unreached: checksum, installer execution, cleanup (rm/rmdir, which
+// would act on an empty $phantom_stage), and the version checks. Each is a
+// logging PATH shim; the log must stay empty and nothing may appear on stdout.
+for (const platform of ["macOS", "Linux"]) {
+  test(`${platform} stubbed mktemp failure stops every later staging step`, (t) => {
+    render(<QuickStart />);
+    let displayed = "";
+    try {
+      const selector = screen.getByRole("group", { name: "Choose an operating system" });
+      fireEvent.click(within(selector).getByRole("button", { name: platform }));
+      const card = screen.getByRole("heading", { level: 3, name: platform }).closest("article");
+      assert.ok(card);
+      const copy = within(card).getByRole("button", { name: /^Copy command:/ });
+      displayed = Array.from(copy.firstElementChild!.childNodes)
+        .filter((node) => node.nodeType === Node.TEXT_NODE)
+        .map((node) => node.textContent)
+        .join("");
+    } finally {
+      cleanup();
+    }
+
+    const tempRoot = mkdtempSync(path.join(tmpdir(), "phantom-mktemp-stops-"));
+    t.after(() => rmSync(tempRoot, { recursive: true, force: true }));
+    const bin = path.join(tempRoot, "bin");
+    mkdirSync(bin);
+    const log = path.join(tempRoot, "later-steps.log");
+    writeFileSync(
+      path.join(bin, "mktemp"),
+      "#!/bin/sh\nprintf 'stub mktemp: forced failure\\n' >&2\nexit 1\n",
+      { mode: 0o755 },
+    );
+    // Shims for each step after staging; a call appends its name to the log.
+    for (const step of ["curl", "shasum", "sha256sum", "bash", "rm", "rmdir", "phantom", "phantom-mcp"]) {
+      writeFileSync(path.join(bin, step), `#!/bin/sh\nprintf '%s\\n' ${step} >> "${log}"\nexit 0\n`, { mode: 0o755 });
+    }
+    // Bash itself is the interpreter under test, so run it by absolute path;
+    // the bin shim above only intercepts the displayed `bash "$phantom_installer"`.
+    const realBash = spawnSync("sh", ["-c", "command -v bash"], { encoding: "utf8" }).stdout.trim();
+    assert.ok(realBash, "a real bash is available");
+    const result = spawnSync(realBash, ["-c", displayed], {
+      env: { ...process.env, PATH: `${bin}:/usr/bin:/bin`, HOME: bin, TMPDIR: tempRoot },
+      encoding: "utf8",
+      timeout: 30000,
+    });
+    assert.notEqual(result.status, 0, `${platform}: a failed mktemp must fail the command`);
+    assert.match(result.stderr, /stub mktemp: forced failure/, `${platform}: mktemp is the failing step`);
+    assert.equal(result.stdout, "", `${platform}: no version or checksum output after failure`);
+    assert.equal(existsSync(log) ? readFileSync(log, "utf8") : "", "", `${platform}: no later staging step ran`);
   });
 }
