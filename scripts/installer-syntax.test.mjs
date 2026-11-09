@@ -24,6 +24,16 @@ for (const rel of installers) {
   });
 }
 
+// The shebang is bash, but `sh -n` is the portable parse check a reader would
+// run first, so keep both copies passing it too.
+for (const rel of installers) {
+  test(`${rel} parses under sh -n`, () => {
+    const result = spawnSync('/bin/sh', ['-n', join(repo, rel)], { encoding: 'utf8' });
+    assert.ifError(result.error);
+    assert.equal(result.status, 0, result.stderr);
+  });
+}
+
 // A syntax check is only worth keeping if it fails on broken input, so
 // corrupt the real installer in a scratch copy and require bash -n to reject
 // each corruption with a file:line diagnostic.
