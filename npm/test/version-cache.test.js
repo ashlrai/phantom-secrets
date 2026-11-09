@@ -5,6 +5,7 @@ const crypto = require("crypto");
 const {
   chmodSync,
   linkSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   renameSync,
@@ -16,7 +17,9 @@ const { join } = require("path");
 
 const {
   attestationPath,
+  ensureBinary,
   ensurePrivateCacheDir,
+  getCacheDir,
   setAttestationClockForTest,
   isCachedBinaryStale,
   parseBinaryVersion,
@@ -152,4 +155,43 @@ try {
   rmSync(fixtureDir, { recursive: true, force: true });
 }
 
+// A home directory containing spaces must resolve to one cache path, and a
+// valid cached binary there must be reused without any network access.
+async function spacedCachePathTest() {
+  const root = mkdtempSync(join(tmpdir(), "phantom cache test "));
+  try {
+    const home = join(root, "Home Dir With Spaces");
+    mkdirSync(home, { recursive: true });
+    const cacheDir = getCacheDir({ env: { HOME: home }, homedirImpl: () => home });
+    assert.strictEqual(cacheDir, join(home, ".phantom-secrets", "bin"));
+    assert.ok(cacheDir.includes(" "), "fixture cache path must contain spaces");
+
+    ensurePrivateCacheDir(cacheDir);
+    const spaced = pathSet(cacheDir);
+    writePair(spaced.binaryPath, spaced.manifestPath, "cached-binary");
+
+    const spawned = [];
+    const noNetwork = () => { throw new Error("cached binary must not trigger a download"); };
+    const resolved = await ensureBinary({
+      cacheDir,
+      downloadImpl: noNetwork,
+      extractImpl: noNetwork,
+      execFileSyncImpl: (path, args) => {
+        spawned.push([path, args]);
+        return Buffer.from("phantom " + candidateVersion + "\n");
+      },
+    });
+    assert.strictEqual(resolved, spaced.binaryPath, "cache must be read from the intended spaced path");
+    assert.deepStrictEqual(spawned, [[spaced.binaryPath, ["--version"]]]);
+
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+spacedCachePathTest().then(() => {
 console.log("npm CLI wrapper manifest, version, replacement, and recovery tests passed");
+}, (error) => {
+  console.error(error);
+  process.exit(1);
+});
