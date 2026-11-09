@@ -53,6 +53,12 @@ for (const malformed of [
   ("phantom " + candidateVersion + "-untrusted\nextra\n"),
   ("prefix phantom " + candidateVersion + "\n"),
   ("phantom-mcp " + candidateVersion + "\n"),
+  // Unrelated executable names followed by an otherwise valid version.
+  ("node " + candidateVersion + "\n"),
+  ("curl " + candidateVersion + "\r\n"),
+  ("Phantom " + candidateVersion + "\n"),
+  ("/usr/bin/phantom " + candidateVersion + "\n"),
+  ("phantomx " + candidateVersion + "\n"),
 ]) assert.strictEqual(parseBinaryVersion(malformed), null, malformed);
 
 const fixtureDir = mkdtempSync(join(tmpdir(), "phantom-cache-test-"));
