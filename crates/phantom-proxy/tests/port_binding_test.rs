@@ -26,6 +26,17 @@ async fn port_zero_gives_distinct_free_ports() {
 }
 
 #[tokio::test]
+async fn ephemeral_port_accepts_local_connection() {
+    let proxy = start(0).await.unwrap();
+    let port = proxy.port();
+    assert_ne!(port, 0);
+
+    tokio::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port))
+        .await
+        .expect("proxy must accept a connection on its assigned port");
+}
+
+#[tokio::test]
 async fn explicit_taken_port_returns_error() {
     let a = start(0).await.unwrap();
     let err = start(a.port()).await.err().expect("second bind must fail");
