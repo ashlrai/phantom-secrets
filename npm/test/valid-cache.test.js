@@ -6,7 +6,7 @@ const { existsSync, lstatSync, mkdtempSync, readFileSync, readdirSync, rmSync } 
 const { tmpdir } = require("os");
 const { basename, dirname, join } = require("path");
 
-const { ensureBinary, getPlatformTarget, pathSet, writePrivateFile } = require("../bin/cli.js");
+const { ensureBinary, getPlatformTarget, pathSet, readVerifiedManifest, validateCachedBinary, writePrivateFile } = require("../bin/cli.js");
 
 (async () => {
   const cacheDir = mkdtempSync(join(tmpdir(), "phantom-cli-valid-cache-"));
@@ -102,6 +102,27 @@ const { ensureBinary, getPlatformTarget, pathSet, writePrivateFile } = require("
   } finally {
     rmSync(fixtureDir, { recursive: true, force: true });
   }
+  // A whitespace-only manifest is invalid cache state: rejected, never thrown.
+  for (const whitespace of [" ", "\n", " \t\r\n  \n"]) {
+    const wsDir = mkdtempSync(join(tmpdir(), "phantom-cli-whitespace-cache-"));
+    try {
+      const paths = pathSet(wsDir);
+      writePrivateFile(paths.binaryPath, "cached-binary", 0o700);
+      writePrivateFile(paths.manifestPath, whitespace, 0o600);
+      assert.strictEqual(readVerifiedManifest(paths.binaryPath, paths.manifestPath), null);
+      assert.strictEqual(
+        validateCachedBinary(paths.binaryPath, paths.manifestPath, {
+          execFileSyncImpl: () => {
+            throw new Error("whitespace manifest must not execute the cached binary");
+          },
+        }),
+        false
+      );
+    } finally {
+      rmSync(wsDir, { recursive: true, force: true });
+    }
+  }
+
   console.log("npm CLI wrapper validates manifest before executing cached binary");
 })().catch((error) => {
   console.error(error);
