@@ -116,6 +116,34 @@ try {
     assert.ok(Date.now() - started < 2000, "hung version child must be killed by timeout");
   }
 
+  // Empty cache fixtures: a zero-byte file is never a valid cached version.
+  // Each case must fail closed without ever executing the binary (offline).
+  const neverExec = {
+    execFileSyncImpl: () => { throw new Error("empty cache entry must never execute"); },
+  };
+  const emptyBinary = join(fixtureDir, "empty-binary");
+  const emptyManifest = `${emptyBinary}.manifest.json`;
+  // 1. Empty binary with a manifest whose digest matches the empty content.
+  writePair(emptyBinary, emptyManifest, "");
+  assert.strictEqual(readVerifiedManifest(emptyBinary, emptyManifest), null);
+  assert.strictEqual(validateCachedBinary(emptyBinary, emptyManifest, neverExec), false);
+  assert.strictEqual(isCachedBinaryStale(emptyBinary, neverExec), true);
+  rmSync(emptyBinary);
+  rmSync(emptyManifest);
+  // 2. Real binary with an empty manifest file.
+  writePrivateFile(emptyBinary, "real-binary", 0o700);
+  writePrivateFile(emptyManifest, "", 0o600);
+  assert.strictEqual(readVerifiedManifest(emptyBinary, emptyManifest), null);
+  assert.strictEqual(validateCachedBinary(emptyBinary, emptyManifest, neverExec), false);
+  rmSync(emptyBinary);
+  rmSync(emptyManifest);
+  // 3. Both empty.
+  writePrivateFile(emptyBinary, "", 0o700);
+  writePrivateFile(emptyManifest, "", 0o600);
+  assert.strictEqual(validateCachedBinary(emptyBinary, emptyManifest, neverExec), false);
+  rmSync(emptyBinary);
+  rmSync(emptyManifest);
+
   const candidatePath = join(fixtureDir, "candidate");
   const candidateManifestPath = `${candidatePath}.manifest.json`;
   writePair(candidatePath, candidateManifestPath, "new-binary");
