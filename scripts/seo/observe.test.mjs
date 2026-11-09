@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -101,6 +101,48 @@ test("the documented local command writes its report and fails closed on an unre
     assert.equal(report.verdict, "FAIL");
     assert.equal(report.findings[0].code, "observer_execution_failed");
     assert.match(result.stdout, /FAIL/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("a missing input file exits unsuccessfully and names the file to fix", async () => {
+  const observer = path.join(scriptDirectory, "observe.mjs");
+  const directory = await mkdtemp(path.join(tmpdir(), "phantom-seo-missing-input-"));
+  try {
+    const ledger = path.join(directory, "missing-ledger.json");
+    const gsc = path.join(directory, "missing-gsc.json");
+    for (const [flags, missing, label] of [
+      [["--experiments", ledger], ledger, "experiment ledger"],
+      [["--experiments", ledger, "--gsc-file", gsc], ledger, "experiment ledger"],
+    ]) {
+      const out = path.join(directory, "reports", `${label.replace(/\s/g, "-")}-${flags.length}.json`);
+      const result = spawnSync(process.execPath, [observer, ...flags, "--out", out], {
+        cwd: repositoryDirectory,
+        encoding: "utf8",
+        timeout: 5_000,
+      });
+      assert.ifError(result.error);
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, new RegExp(`${label} could not be read: ENOENT`));
+      assert.ok(result.stderr.includes(missing), "error names the missing file");
+      assert.match(result.stderr, /check the path or omit the flag/);
+      const report = JSON.parse(await readFile(out, "utf8"));
+      assert.equal(report.findings[0].code, "observer_execution_failed");
+    }
+
+    // A present ledger with a missing aggregate input reports that input.
+    const present = path.join(directory, "ledger.json");
+    await writeFile(present, JSON.stringify({ schema_version: "phantom-seo-experiments-v1", experiments: [] }));
+    const result = spawnSync(process.execPath, [observer, "--experiments", present, "--gsc-file", gsc, "--out", path.join(directory, "gsc.json")], {
+      cwd: repositoryDirectory,
+      encoding: "utf8",
+      timeout: 5_000,
+    });
+    assert.ifError(result.error);
+    assert.equal(result.status, 1);
+    assert.ok(result.stderr.includes(gsc), "error names the missing aggregate file");
+    assert.match(result.stderr, /gsc aggregate input could not be read: ENOENT/);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
