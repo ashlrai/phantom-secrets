@@ -2,6 +2,8 @@
 const candidateVersion = require("../package.json").version;
 const assert = require("assert");
 const crypto = require("crypto");
+const http = require("http");
+const https = require("https");
 const { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } = require("fs");
 const { tmpdir } = require("os");
 const { join } = require("path");
@@ -50,6 +52,25 @@ for (const [platformKey, target] of Object.entries(expected)) {
     target,
     `phantom-secrets maps ${platformKey}`
   );
+}
+
+// Repeated selection is local and stable for every supported package target.
+const networkMethods = [[http, "get"], [http, "request"], [https, "get"], [https, "request"], [globalThis, "fetch"]];
+const originalMethods = networkMethods.map(([object, name]) => object[name]);
+try {
+  for (const [object, name] of networkMethods) {
+    object[name] = () => { throw new Error("platform lookup must not access the network"); };
+  }
+  for (const [platformKey, target] of Object.entries(expected)) {
+    const [platform, arch] = platformKey.split("-");
+    const runtime = { platform, arch };
+    const first = getPlatformTarget(runtime);
+    const second = getPlatformTarget(runtime);
+    assert.strictEqual(first, target, `first lookup maps ${platformKey}`);
+    assert.strictEqual(second, first, `repeated lookup maps ${platformKey} identically`);
+  }
+} finally {
+  networkMethods.forEach(([object, name], index) => { object[name] = originalMethods[index]; });
 }
 
 const unsupported = [
