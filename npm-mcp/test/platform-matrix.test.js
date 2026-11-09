@@ -107,6 +107,7 @@ function assertWrapperMatchesReleaseMatrix(name, wrapper) {
   for (const runtime of [
     { platform: "darwin", arch: "ia32" },
     { platform: "linux", arch: "arm" },
+    { platform: "linux", arch: "riscv64" },
     { platform: "freebsd", arch: "x64" },
     { platform: "win32", arch: "ia32" },
   ]) {
