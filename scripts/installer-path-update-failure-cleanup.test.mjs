@@ -101,6 +101,14 @@ function makeShims(root) {
   mkdirSync(shims);
   const scripts = {
     mktemp: `#!/bin/sh
+case "$1" in
+  *.phantom-path.before.*)
+    if [ "$PHANTOM_TEST_SEAM" = 'before-mktemp' ]; then
+      printf 'before\n' > "$PHANTOM_TEST_MKTEMP_CREATED"
+      exit 1
+    fi
+    ;;
+esac
 created="$(${q(real.mktemp)} "$@")" || exit
 printf '%s\\n' "$created" >> "$PHANTOM_TEST_MKTEMP_CREATED"
 printf '%s\\n' "$created"
@@ -457,6 +465,7 @@ function runInstaller(t, installer, { seam, rcState }) {
   const rc = join(home, '.bashrc');
   mkdirSync(home, { recursive: true });
   if (rcState === 'file') writeFileSync(rc, original, { mode: 0o600 });
+  const beforeStat = rcState === 'file' ? lstatSync(rc) : undefined;
   const env = { ...process.env };
   for (const name of [
     'PHANTOM_REPO', 'PHANTOM_TAG', 'PHANTOM_INSTALL_DIR',
@@ -489,10 +498,10 @@ function runInstaller(t, installer, { seam, rcState }) {
     ? readFileSync(join(root, 'mktemp-created'), 'utf8').trim().split('\n')
       .filter((path) => path.includes('.phantom-path.'))
     : [];
-  return { bin: install, home, install, rc, result, root, temps };
+  return { bin: install, beforeStat, home, install, rc, result, root, temps };
 }
 
-function assertReportedInstallerFailure({ install, result, root, temps }) {
+function assertReportedInstallerFailure({ install, result, root, temps }, expectedTemps = 2) {
   // add_to_user_path failure is a warning, not a fatal error: the install
   // itself still completes and the failure is reported on stderr.
   assert.equal(result.status, 0, `the install must still complete\nstdout: ${result.stdout}\nstderr: ${result.stderr}`);
@@ -503,8 +512,7 @@ function assertReportedInstallerFailure({ install, result, root, temps }) {
   for (const name of ['phantom', 'phantom-mcp']) {
     assert.ok(existsSync(join(install, name)), `${name} is still installed`);
   }
-  assert.equal(temps.length, 2,
-    'the PATH-update temporary files must have been created before the failure');
+  assert.equal(temps.length, expectedTemps, 'expected number of PATH-update temporary files created');
   for (const path of temps) {
     assert.equal(existsSync(path), false,
       `temporary sibling must be removed after failure: ${basename(path)}`);
@@ -517,6 +525,18 @@ function assertReportedInstallerFailure({ install, result, root, temps }) {
 }
 
 for (const [file, installer] of Object.entries(copies)) {
+  test(`${file} warns when the first PATH temporary file cannot be created`, (t) => {
+    const run = runInstaller(t, installer, { seam: 'before-mktemp', rcState: 'file' });
+    assertReportedInstallerFailure(run, 0);
+    assert.equal(readFileSync(join(run.root, 'mktemp-created'), 'utf8').trim().split('\n').at(-1), 'before',
+      'the first PATH temporary-file creation was attempted');
+    assert.equal(readFileSync(run.rc, 'utf8'), original, 'startup file bytes unchanged');
+    const after = lstatSync(run.rc);
+    assert.equal(after.ino, run.beforeStat.ino, 'startup file not replaced');
+    assert.equal(after.mode, run.beforeStat.mode, 'startup file mode unchanged');
+    assert.deepEqual(readdirSync(run.home), ['.bashrc'], 'HOME holds only the startup file');
+  });
+
   test(`${file} warns and removes the PATH-update temporary files when the candidate move fails`, (t) => {
     const run = runInstaller(t, installer, { seam: 'move', rcState: 'file' });
     assertReportedInstallerFailure(run);
