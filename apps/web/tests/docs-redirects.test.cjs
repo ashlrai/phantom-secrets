@@ -18,6 +18,8 @@ test("legacy docs redirects are closed, unique, and do not shadow rendered guide
   const sources = new Set();
   for (const route of routes) {
     assert.deepEqual(Object.keys(route).sort(), ["file", "source"]);
+    assert.ok(route.source.startsWith("/docs/"), `${route.source} must start with /docs/`);
+    assert.ok(!route.source.endsWith("/"), `${route.source} must not end with a slash`);
     assert.match(route.source, /^\/docs(?:\/[a-z0-9-]+)?$/);
     assert.match(route.file, /^[a-z0-9-]+\.md$/);
     assert.equal(sources.has(route.source), false, `duplicate ${route.source}`);
