@@ -24,6 +24,27 @@ const expected = Object.freeze({
 
 assert.deepStrictEqual(SUPPORTED_TARGETS, expected);
 
+// Every supported mapping must name a real target: a non-empty, non-blank string.
+// Checked on the exported map itself so an empty or non-string entry fails here.
+function assertTargetsAreNonEmptyStrings(targets) {
+  const entries = Object.entries(targets);
+  assert.ok(entries.length > 0, "supported platform map must not be empty");
+  for (const [platformKey, target] of entries) {
+    assert.strictEqual(typeof target, "string", `target for ${platformKey} must be a string`);
+    assert.ok(target.trim().length > 0, `target for ${platformKey} must not be empty`);
+  }
+}
+assertTargetsAreNonEmptyStrings(SUPPORTED_TARGETS);
+
+// Prove the check rejects bad targets.
+for (const bad of ["", "   ", null, undefined, 42, {}, []]) {
+  assert.throws(
+    () => assertTargetsAreNonEmptyStrings({ ...SUPPORTED_TARGETS, "linux-x64": bad }),
+    assert.AssertionError,
+    `bad target ${JSON.stringify(bad)} must fail`
+  );
+}
+
 // Keep the published platform table in sync with the executable's exact map.
 const readme = readFileSync(join(__dirname, "..", "README.md"), "utf8");
 const platformTable = readme.match(
