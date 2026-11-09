@@ -350,3 +350,33 @@ for (const platform of ["macOS", "Linux"]) {
     assert.equal(existsSync(log) ? readFileSync(log, "utf8") : "", "", `${platform}: no later staging step ran`);
   });
 }
+
+// Every displayed snippet names its temporary files with the same
+// `phantom-install` prefix, so users and agents recognize leftovers the same
+// way on every platform, and no other temporary name appears.
+test("every displayed snippet uses the phantom-install temporary prefix", () => {
+  render(<QuickStart />);
+  try {
+    const selector = screen.getByRole("group", { name: "Choose an operating system" });
+    for (const platform of ["macOS", "Windows", "Linux"]) {
+      fireEvent.click(within(selector).getByRole("button", { name: platform }));
+      const card = screen.getByRole("heading", { level: 3, name: platform }).closest("article");
+      assert.ok(card);
+      const copy = within(card).getByRole("button", { name: /^Copy command:/ });
+      const displayed = Array.from(copy.firstElementChild!.childNodes)
+        .filter((node) => node.nodeType === Node.TEXT_NODE)
+        .map((node) => node.textContent)
+        .join("");
+
+      const tempLines = displayed.split("\n").filter((line) => /\bmktemp\b|\$env:TEMP/.test(line));
+      assert.equal(tempLines.length, 1, `${platform}: exactly one temporary name`);
+      const prefix =
+        platform === "Windows"
+          ? /Join-Path \$env:TEMP \('phantom-install-/
+          : /mktemp -d "\$\{TMPDIR:-\/tmp\}\/phantom-install\.XXXXXX"/;
+      assert.match(tempLines[0], prefix, `${platform}: temporary name starts with phantom-install`);
+    }
+  } finally {
+    cleanup();
+  }
+});
