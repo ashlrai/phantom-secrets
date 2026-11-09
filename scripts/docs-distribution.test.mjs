@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { checkDocs, checkGuide, checkReadmeSurface, checkVersion, pageAnchors } from './check-docs-distribution.mjs';
+import { checkAgentQuickstart, checkDocs, checkGuide, checkReadmeSurface, checkVersion, pageAnchors, quickstartCommands, quickstartSurfaces } from './check-docs-distribution.mjs';
 
 test('reader guides agree on dated distribution evidence and local links exist', () => {
   assert.deepEqual(checkDocs(), []);
@@ -72,4 +72,18 @@ test('README surface requires every Ashlr sibling link', () => {
 test('missing status and release version drift fail', () => {
   assert.match(checkGuide('hello', 'README.md').join(), /missing distribution/);
   assert.equal(checkVersion('GitHub v0.0.0 assets latest: 0.7.9 release-candidate: 0.7.4').length, 1);
+});
+test('agent quickstart copies must match the site console', () => {
+  const block = cmds => `<!-- agent-quickstart:start -->\n\`\`\`bash\n${cmds}\n\`\`\`\n<!-- agent-quickstart:end -->`;
+  const source = 'const COMMANDS = `phantom init\nphantom status --json`;';
+  const files = Object.fromEntries(quickstartSurfaces.map(f => [f, block('phantom init\nphantom status --json')]));
+  const read = f => f.endsWith('.tsx') ? source : files[f];
+  assert.deepEqual(checkAgentQuickstart(read), []);
+  files['AGENTS.md'] = block('phantom init');
+  files['docs/llms.txt'] = 'no markers';
+  const errors = checkAgentQuickstart(read).join('\n');
+  assert.match(errors, /AGENTS\.md: agent-quickstart commands differ/);
+  assert.match(errors, /docs\/llms\.txt: missing agent-quickstart command block/);
+  assert.match(checkAgentQuickstart(() => 'no source').join(), /missing COMMANDS block/);
+  assert.equal(quickstartCommands(block('phantom check')), 'phantom check');
 });
