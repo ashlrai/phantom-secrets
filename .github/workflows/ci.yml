@@ -367,6 +367,7 @@ jobs:
           scripts/installer-staging-explicit-parent.test.mjs
           scripts/installer-staging-expression-match.test.mjs
           scripts/installer-staging-failure.test.mjs
+          scripts/installer-staging-mktemp-failure.test.mjs
           scripts/installer-staging-prefix.test.mjs
           scripts/installer-staging-prefixes.test.mjs
           scripts/installer-staging-setup-failure.test.mjs
