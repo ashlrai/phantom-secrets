@@ -81,6 +81,24 @@ it looks for a local `phantom-mcp`. Setup has no network package-runner fallback
 and fails closed when neither local runtime is executable. Keep both verified
 binaries installed and inspect the generated entry.
 
+## Agent commands
+
+Run these from the project after install. They never print secret values. Walkthrough with MCP file shapes: https://github.com/ashlrai/phantom-secrets/blob/main/docs/agent-quickstart.md
+
+<!-- agent-quickstart:start -->
+```bash
+phantom init
+phantom status --json
+phantom list --json
+phantom agent doctor --json
+phantom setup --client claude
+phantom setup --client cursor
+phantom setup --client codex
+phantom check
+phantom why OPENAI_API_KEY --json
+```
+<!-- agent-quickstart:end -->
+
 ## What an AI agent should do
 
 - Treat persistent `phm_…` mappings in `.env` as sensitive metadata, not broken keys. Don't try to "fix" them, disclose them, or publish them. `phantom exec` uses a separate ephemeral proxy bearer.
