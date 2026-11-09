@@ -233,14 +233,14 @@ trait PassphraseStore {
 }
 
 struct KeyringPassphraseStore {
-    entry: keyring::Entry,
+    entry: keyring_core::Entry,
 }
 
 impl PassphraseStore for KeyringPassphraseStore {
     fn get(&self) -> std::result::Result<Option<Zeroizing<String>>, String> {
         match self.entry.get_password() {
             Ok(passphrase) => Ok(Some(Zeroizing::new(passphrase))),
-            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(keyring_core::Error::NoEntry) => Ok(None),
             Err(error) => Err(error.to_string()),
         }
     }
