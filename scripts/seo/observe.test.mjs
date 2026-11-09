@@ -586,6 +586,27 @@ test("a page without description metadata produces a missing-description failure
   );
 });
 
+test("the job summary handles an empty results list", () => {
+  const summary = renderSummary({
+    verdict: "PASS",
+    captured_at: "2026-09-05T12:00:00.000Z",
+    counts: { fail: 0, warn: 0 },
+    technical: { sitemap: { route_count: 0 }, public_routes: [] },
+    aggregate_inputs: {
+      gsc: { state: "not_supplied" },
+      ga4: { state: "not_supplied" },
+      ahrefs: { state: "not_supplied" },
+    },
+    experiments: { experiments: [] },
+    findings: [],
+  });
+
+  assert.match(summary, /Observed 0 canonical public routes/);
+  assert.match(summary, /Findings: 0 failures and 0 warnings\./);
+  assert.match(summary, /No failures or warnings\./);
+  assert.doesNotMatch(summary, /TRUNCATED/);
+});
+
 test("the GitHub job summary is deterministically capped with an omitted count", () => {
   const findingCount = 500;
   const report = {
