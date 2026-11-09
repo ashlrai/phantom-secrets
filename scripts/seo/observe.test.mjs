@@ -485,6 +485,43 @@ test("a complete public fixture produces a deterministic, sanitized passing repo
   });
 });
 
+test("an empty observation input is deterministic and fabricates no observations", async () => {
+  const now = new Date("2026-09-05T00:00:00Z");
+  const emptyLedger = {
+    schema_version: "phantom-seo-experiments-v1",
+    default_observation_days: 28,
+    experiments: [],
+  };
+  assert.deepEqual(validateExperiments(emptyLedger, publicPaths, now), validateExperiments(emptyLedger, publicPaths, now));
+  assert.deepEqual(validateExperiments(emptyLedger, publicPaths, now).experiments, []);
+
+  // A supplied-but-empty aggregate stays empty: no rows are invented, and it
+  // is distinguishable from an input that was never supplied.
+  const period = { start: "2026-07-01", end: "2026-07-28", data_state: "final" };
+  for (const [kind, schema_version] of [
+    ["gsc", "phantom-seo-gsc-v1"],
+    ["ga4", "phantom-seo-ga4-v1"],
+    ["ahrefs", "phantom-seo-ahrefs-v1"],
+  ]) {
+    const empty = { schema_version, period, rows: [] };
+    const first = validateAggregateInput(kind, empty, publicPaths, now);
+    assert.deepEqual(first, validateAggregateInput(kind, empty, publicPaths, now));
+    assert.equal(first.state, "supplied");
+    assert.deepEqual(first.rows, []);
+  }
+
+  await withFixtureServer(async ({ options }) => {
+    const report = await observeProduction({ ...options, now });
+    assert.deepEqual(report, await observeProduction({ ...options, now }));
+    assert.deepEqual(report.experiments.experiments, []);
+    assert.deepEqual(report.aggregate_inputs, {
+      gsc: { state: "not_supplied" },
+      ga4: { state: "not_supplied" },
+      ahrefs: { state: "not_supplied" },
+    });
+  });
+});
+
 test("a non-success public page response reports its status as a failure", async () => {
   await withFixtureServer(
     async ({ options }) => {
