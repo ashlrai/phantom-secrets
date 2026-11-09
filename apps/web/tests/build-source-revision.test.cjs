@@ -135,6 +135,26 @@ test("empty revision output produces unidentified build metadata", () => {
   });
 });
 
+test("revision value with surrounding whitespace is trimmed", () => {
+  withRepository(({ directory, revision }) => {
+    for (const [before, after] of [[" ", ""], ["", "\n"], ["\t  ", " \r\n"]]) {
+      const module = { exports: {} };
+      function localRequire(name) {
+        if (name !== "node:child_process") return require(name);
+        return { execFileSync(command, args, options) {
+          const result = execFileSync(command, args, options);
+          return args.includes("HEAD^{commit}") ? `${before}${result}${after}` : result;
+        } };
+      }
+      new Function("require", "exports", "module", compiled)(localRequire, module.exports, module);
+      const observed = module.exports.readBuildSourceRevision(directory);
+      assert.equal(observed, revision);
+      assert.equal(observed, observed.trim());
+      assert.equal(buildMetadata(directory, module.exports), revision);
+    }
+  });
+});
+
 test("missing revision metadata produces unidentified build metadata", () => {
   withRepository(({ directory, git, revision }) => {
     const head = git("symbolic-ref", "HEAD");
