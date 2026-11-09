@@ -292,6 +292,35 @@ async fn test_normal_traffic_not_blocked() {
     mock.shutdown().await;
 }
 
+#[tokio::test]
+async fn test_requests_at_configured_limits_succeed_then_are_limited() {
+    // Exercise each threshold independently: per-secret is 1 * 10 = 10
+    // requests per window, while the global burst threshold is 3.
+    for (per_secret_rps, burst_total_10s, limit) in [(1, 100, 10), (100, 3, 3)] {
+        let (proxy, mock) = test_proxy_with_limits(per_secret_rps, burst_total_10s).await;
+        let client = make_client();
+        let url = format!("http://127.0.0.1:{}/testapi/v1/models", proxy.port());
+
+        for request in 1..=limit {
+            let response = client.get(&url).send().await.unwrap();
+            assert_eq!(
+                response.status().as_u16(),
+                200,
+                "request {request} of {limit} should succeed"
+            );
+        }
+        let response = client.get(&url).send().await.unwrap();
+        assert_eq!(
+            response.status().as_u16(),
+            429,
+            "request after limit {limit}"
+        );
+
+        proxy.shutdown().await;
+        mock.shutdown().await;
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Test 5: RateLimiter unit — sliding window expiry
 // ─────────────────────────────────────────────────────────────────────────────
