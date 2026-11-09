@@ -398,6 +398,4 @@ export const KEY_ENTRIES: LogoEntry[] = [
   { Logo: FigmaLogo,      name: "Figma",       color: "#f24e1e", category: "dev",    env: "FIGMA_TOKEN",         token: "phm_82bd5a14" },
 ];
 
-export const LOGOS = KEY_ENTRIES.map(({ Logo, name }) => ({ Logo, name }));
-
 export const EXACT_ROUTE_ENTRIES = KEY_ENTRIES.filter((entry) => entry.exactRoute);

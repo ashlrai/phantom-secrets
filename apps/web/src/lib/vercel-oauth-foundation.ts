@@ -136,27 +136,6 @@ function stateHash(state: string): Buffer {
   return createHash("sha256").update(decoded).digest();
 }
 
-/**
- * Load the one active key used by the dormant source foundation.
- *
- * This is deliberately not a key-rotation mechanism: replacing the configured
- * key makes rows encrypted under an earlier version unavailable. A reviewed
- * multi-version key provider and re-encryption procedure remain commissioning
- * prerequisites before these helpers may be connected to HTTP routes.
- */
-export function platformTokenKeyFromEnv(
-  env: NodeJS.ProcessEnv = process.env,
-): PlatformTokenKey {
-  const encoded = env.PHANTOM_PLATFORM_TOKEN_ENCRYPTION_KEY;
-  const version = Number(env.PHANTOM_PLATFORM_TOKEN_ENCRYPTION_KEY_VERSION);
-  if (!encoded || !/^[A-Za-z0-9_-]{43}$/.test(encoded)) {
-    throw new Error("platform token encryption key is not configured");
-  }
-  const key = { key: Buffer.from(encoded, "base64url"), version };
-  validateKey(key);
-  return key;
-}
-
 export function encryptVercelAccessToken(
   accessToken: string,
   context: PlatformTokenContext,
