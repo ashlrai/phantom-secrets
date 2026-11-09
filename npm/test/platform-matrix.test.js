@@ -52,6 +52,32 @@ for (const [platformKey, target] of Object.entries(expected)) {
   );
 }
 
+// Two runtime pairs sharing one target triple would download the wrong binary.
+function assertDistinctTargets(resolve, pairs, label) {
+  const owners = new Map();
+  for (const key of pairs) {
+    const [platform, arch] = key.split("-");
+    const target = resolve({ platform, arch }, key);
+    assert.ok(target, `${label}: ${key} has no target triple`);
+    assert.ok(
+      !owners.has(target),
+      `${label}: duplicate target triple ${target} for ${owners.get(target)} and ${key}`
+    );
+    owners.set(target, key);
+  }
+}
+
+const supportedPairs = Object.keys(SUPPORTED_TARGETS);
+assertDistinctTargets((runtime) => getPlatformTarget(runtime), supportedPairs, "getPlatformTarget");
+assertDistinctTargets((_, key) => SUPPORTED_TARGETS[key], supportedPairs, "SUPPORTED_TARGETS");
+assertDistinctTargets((_, key) => documentedTargets[key], Object.keys(documentedTargets), "README");
+
+// The check must actually fail on a duplicate.
+assert.throws(
+  () => assertDistinctTargets(() => "x86_64-unknown-linux-gnu", ["linux-x64", "linux-arm64"], "fixture"),
+  /duplicate target triple x86_64-unknown-linux-gnu for linux-x64 and linux-arm64/
+);
+
 const unsupported = [
   { platform: "darwin", arch: "ia32" },
   { platform: "linux", arch: "arm" },
