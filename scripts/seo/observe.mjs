@@ -1224,6 +1224,8 @@ function parseArguments(argv) {
   return result;
 }
 
+class InvalidJsonInput extends Error {}
+
 async function readJson(file, label) {
   let source;
   try {
@@ -1235,7 +1237,7 @@ async function readJson(file, label) {
   try {
     return JSON.parse(source.toString("utf8"));
   } catch {
-    throw new Error(`${label} is not valid JSON`);
+    throw new InvalidJsonInput(`${label} is not valid JSON`);
   }
 }
 
@@ -1256,7 +1258,12 @@ async function main() {
       aggregateInputs[kind] = await readJson(file, `${kind} aggregate input`);
     }
     report = await observeProduction({ experiments, aggregateInputs });
-  } catch {
+  } catch (error) {
+    if (error instanceof InvalidJsonInput) {
+      process.stderr.write(`${error.message}\n`);
+      process.exitCode = 1;
+      return;
+    }
     report = {
       schema_version: REPORT_SCHEMA_VERSION,
       captured_at: new Date().toISOString(),
