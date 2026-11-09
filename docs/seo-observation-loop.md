@@ -47,7 +47,8 @@ cleanup.
 
 It checks:
 
-- sitemap closure, public-route status, same-host self-canonicals, titles,
+- sitemap closure (HTML pages only; `/llms.txt` and `/llms-full.txt` are fetched
+  directly), public-route status, same-host self-canonicals, titles,
   descriptions, one primary heading, and parseable structured data;
 - required homepage software, source-code, organization, installation, and FAQ
   schema plus article and breadcrumb schema on rendered guides;
