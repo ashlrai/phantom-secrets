@@ -6,7 +6,7 @@ const { existsSync, lstatSync, mkdtempSync, readFileSync, readdirSync, rmSync } 
 const { tmpdir } = require("os");
 const { basename, dirname, join } = require("path");
 
-const { ensureBinary, getPlatformTarget, pathSet, writePrivateFile } = require("../bin/cli.js");
+const { ensureBinary, getPlatformTarget, isCachedBinaryStale, pathSet, writePrivateFile } = require("../bin/cli.js");
 
 (async () => {
   const cacheDir = mkdtempSync(join(tmpdir(), "phantom-cli-valid-cache-"));
@@ -40,6 +40,17 @@ const { ensureBinary, getPlatformTarget, pathSet, writePrivateFile } = require("
     assert.strictEqual(readFileSync(paths.sourceMarkerPath, "utf8"), "npm\n");
   } finally {
     rmSync(cacheDir, { recursive: true, force: true });
+  }
+
+  const emptyCacheDir = mkdtempSync(join(tmpdir(), "phantom-cli-empty-cache-"));
+  try {
+    const paths = pathSet(emptyCacheDir);
+    writePrivateFile(paths.binaryPath, "", 0o700);
+    const sha256 = crypto.createHash("sha256").update("").digest("hex");
+    writePrivateFile(paths.manifestPath, `${JSON.stringify({ version: candidateVersion, sha256 })}\n`, 0o600);
+    assert.strictEqual(isCachedBinaryStale(paths.binaryPath), true, "an empty binary is not a valid cache");
+  } finally {
+    rmSync(emptyCacheDir, { recursive: true, force: true });
   }
 
   const fixtureDir = mkdtempSync(join(tmpdir(), "phantom-cli-missing-cache-"));
