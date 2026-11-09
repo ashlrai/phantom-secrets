@@ -515,6 +515,24 @@ test("a complete public fixture produces a deterministic, sanitized passing repo
   });
 });
 
+test("empty aggregate observation inputs remain empty", () => {
+  const period = { start: "2026-07-01", end: "2026-07-28", data_state: "final" };
+  const aggregateInputs = Object.fromEntries(
+    ["gsc", "ga4", "ahrefs"].map((kind) => [kind, {
+      schema_version: `phantom-seo-${kind}-v1`,
+      period,
+      rows: [],
+    }]),
+  );
+  for (const [kind, input] of Object.entries(aggregateInputs)) {
+    assert.deepEqual(validateAggregateInput(kind, input, publicPaths, new Date("2026-09-05T12:00:00Z")), {
+      state: "supplied",
+      ...input,
+      ...(kind === "ga4" ? { suppressed_rows: 0 } : {}),
+    });
+  }
+});
+
 test("a non-success public page response reports its status as a failure", async () => {
   await withFixtureServer(
     async ({ options }) => {
