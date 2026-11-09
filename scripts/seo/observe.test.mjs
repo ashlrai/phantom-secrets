@@ -150,6 +150,10 @@ test("decimal HTML entities are decoded exactly once", () => {
   assert.equal(decodeEntities("&#0;&#1114112;&#55296;"), "&#0;&#1114112;&#55296;");
 });
 
+test("empty HTML produces no structured data or errors offline", () => {
+  assert.deepEqual(structuredData(""), { values: [], errors: [] });
+});
+
 test("JSON-LD extraction accepts HTML-compatible script endings", () => {
   const result = structuredData(
     '<script type="application/ld+json">{"@type":"SoftwareApplication"}</ScRiPt >',
