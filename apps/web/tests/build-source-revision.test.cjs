@@ -169,6 +169,27 @@ test("missing revision metadata produces unidentified build metadata", () => {
   });
 });
 
+test("missing revision value falls back to unidentified without throwing", () => {
+  withRepository(({ directory }) => {
+    for (const output of [undefined, null]) {
+      const module = { exports: {} };
+      function localRequire(name) {
+        if (name !== "node:child_process") return require(name);
+        return { execFileSync(command, args, options) {
+          if (args.includes("HEAD^{commit}")) return output;
+          return execFileSync(command, args, options);
+        } };
+      }
+      new Function("require", "exports", "module", compiled)(localRequire, module.exports, module);
+      assert.doesNotThrow(() => module.exports.readBuildSourceRevision(directory));
+      assert.equal(module.exports.readBuildSourceRevision(directory), null);
+      assert.equal(buildMetadata(directory, module.exports), "unidentified");
+    }
+    // A helper that yields no value at all still gets the existing fallback.
+    assert.equal(buildMetadata(directory, { readBuildSourceRevision: () => undefined }), "unidentified");
+  });
+});
+
 test("caller source and Git environment overrides cannot bind a different checkout", () => {
   withRepository(({ directory, revision }) => {
     withRepository(({ directory: other, git: otherGit }) => {
