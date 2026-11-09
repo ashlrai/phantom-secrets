@@ -160,6 +160,13 @@ test("exact URL matching rejects a longer URL with the same prefix", () => {
   assert.equal(containsExactUrl(`See ${expected}-backup`, expected), false);
 });
 
+test("exact URL matching ignores a URL embedded in a longer URL", () => {
+  const expected = "https://phm.dev/llms.txt";
+  const embedded = `https://example.com/archive/${expected}`;
+  assert.equal(containsExactUrl(`See ${embedded}`, expected), false);
+  assert.equal(containsExactUrl(`See ${embedded} and ${expected}`, expected), true);
+});
+
 function html(origin, route, options = {}) {
   const guide = options.guideSchema ?? route === "/";
   const schema = route === "/"
