@@ -16,7 +16,9 @@ const { join } = require("path");
 
 const {
   attestationPath,
+  ensureBinary,
   ensurePrivateCacheDir,
+  getPlatformTarget,
   setAttestationClockForTest,
   isCachedBinaryStale,
   parseBinaryVersion,
@@ -152,4 +154,48 @@ try {
   rmSync(fixtureDir, { recursive: true, force: true });
 }
 
-console.log("npm CLI wrapper manifest, version, replacement, and recovery tests passed");
+async function testMalformedCacheFallback() {
+  const cacheDir = mkdtempSync(join(tmpdir(), "phantom-malformed-cache-"));
+  try {
+    const paths = pathSet(cacheDir);
+    writePrivateFile(paths.binaryPath, "malformed-cache-binary", 0o700);
+    writePrivateFile(paths.manifestPath, '{"version":', 0o600);
+    const archive = Buffer.from("archive fixture");
+    const replacement = Buffer.from("replacement binary");
+    const archiveName = `phantom-${getPlatformTarget(process)}.${process.platform === "win32" ? "zip" : "tar.gz"}`;
+    const digest = crypto.createHash("sha256").update(archive).digest("hex");
+    const downloads = [];
+    let executions = 0;
+    const result = await ensureBinary({
+      cacheDir,
+      downloadImpl: async (url) => {
+        downloads.push(url);
+        return url.endsWith(".sha256") ? Buffer.from(`${digest}  ${archiveName}\n`) : archive;
+      },
+      extractImpl: (_archivePath, candidatePath) => writePrivateFile(candidatePath, replacement, 0o700),
+      execFileSyncImpl: (binaryPath, args) => {
+        executions += 1;
+        assert.notStrictEqual(binaryPath, paths.binaryPath, "malformed cache must not execute");
+        assert.deepStrictEqual(args, ["--version"]);
+        assert.deepStrictEqual(readFileSync(binaryPath), replacement);
+        return Buffer.from(`phantom ${candidateVersion}\n`);
+      },
+    });
+    assert.strictEqual(result, paths.binaryPath);
+    assert.strictEqual(downloads.length, 2, "fallback must request checksum and archive through the stub");
+    assert.ok(downloads[0].endsWith(`${archiveName}.sha256`));
+    assert.ok(downloads[1].endsWith(archiveName));
+    assert.strictEqual(executions, 1);
+    assert.deepStrictEqual(readFileSync(paths.binaryPath), replacement);
+    assert.ok(readVerifiedManifest(paths.binaryPath, paths.manifestPath));
+  } finally {
+    rmSync(cacheDir, { recursive: true, force: true });
+  }
+}
+
+testMalformedCacheFallback().then(() => {
+  console.log("npm CLI wrapper manifest, version, replacement, and recovery tests passed");
+}).catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});
