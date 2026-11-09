@@ -485,6 +485,38 @@ test("a complete public fixture produces a deterministic, sanitized passing repo
   });
 });
 
+test("observing identical input twice renders equivalent summaries", async () => {
+  const ledger = {
+    schema_version: "phantom-seo-experiments-v1",
+    default_observation_days: 28,
+    experiments: [],
+  };
+  const observeTwice = async ({ options }) => {
+    const first = renderSummary(await observeProduction({ ...options, experiments: ledger }));
+    const second = renderSummary(await observeProduction({ ...options, experiments: ledger }));
+    return { first, second };
+  };
+  await withFixtureServer(async (context) => {
+    const { first, second } = await observeTwice(context);
+    assert.ok(first.length > 0);
+    assert.equal(first, second);
+  });
+  // Findings must also render in a stable order, not just a clean pass.
+  await withFixtureServer(
+    async (context) => {
+      const { first, second } = await observeTwice(context);
+      assert.match(first, /\*\*FAIL title_missing\*\* \(\/docs\)/);
+      assert.equal(first, second);
+    },
+    {
+      "/docs": (response, origin) => {
+        response.setHeader("content-type", "text/html");
+        response.end(html(origin, "/docs").replace("<title>/docs — Phantom</title>", ""));
+      },
+    },
+  );
+});
+
 test("a non-success public page response reports its status as a failure", async () => {
   await withFixtureServer(
     async ({ options }) => {
