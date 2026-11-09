@@ -256,3 +256,46 @@ for (const platform of ["macOS", "Linux"]) {
     assert.equal(existsSync(curlMarker), false, `${platform}: the download never runs after staging fails`);
   });
 }
+
+// After a failed mktemp the checksum step and the installer must not run
+// either: with an empty staging path they would read and execute "/install.sh".
+// Every later command is a PATH spy, and the outer bash is resolved first so
+// the displayed `bash "$phantom_installer"` step also hits a spy.
+for (const platform of ["macOS", "Linux"]) {
+  test(`${platform} failed mktemp never reaches the checksum or installer steps`, (t) => {
+    render(<QuickStart />);
+    let displayed = "";
+    try {
+      const selector = screen.getByRole("group", { name: "Choose an operating system" });
+      fireEvent.click(within(selector).getByRole("button", { name: platform }));
+      const card = screen.getByRole("heading", { level: 3, name: platform }).closest("article");
+      assert.ok(card);
+      const copy = within(card).getByRole("button", { name: /^Copy command:/ });
+      displayed = Array.from(copy.firstElementChild!.childNodes)
+        .filter((node) => node.nodeType === Node.TEXT_NODE)
+        .map((node) => node.textContent)
+        .join("");
+    } finally {
+      cleanup();
+    }
+
+    const tempRoot = mkdtempSync(path.join(tmpdir(), "phantom-mktemp-spies-"));
+    t.after(() => rmSync(tempRoot, { recursive: true, force: true }));
+    const bin = path.join(tempRoot, "bin");
+    mkdirSync(bin);
+    const spyMarker = path.join(tempRoot, "spy-invoked");
+    writeFileSync(path.join(bin, "mktemp"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+    for (const name of ["curl", "shasum", "sha256sum", "bash"]) {
+      writeFileSync(path.join(bin, name), `#!/bin/sh\ntouch "${spyMarker}"\nexit 0\n`, { mode: 0o755 });
+    }
+
+    const outerBash = spawnSync("sh", ["-c", "command -v bash"], { encoding: "utf8" }).stdout.trim();
+    const result = spawnSync(outerBash, ["-c", displayed], {
+      env: { ...process.env, PATH: `${bin}:/usr/bin:/bin`, HOME: tempRoot, TMPDIR: tempRoot },
+      encoding: "utf8",
+      timeout: 30000,
+    });
+    assert.notEqual(result.status, 0, `${platform}: a failed mktemp must fail the command`);
+    assert.equal(existsSync(spyMarker), false, `${platform}: no download, checksum, or installer step runs`);
+  });
+}
