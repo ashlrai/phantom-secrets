@@ -82,6 +82,12 @@ for (const runtime of unsupported) {
   });
 }
 
+// A known architecture must not cause an unsupported OS to select another binary.
+assert.throws(
+  () => getPlatformTarget({ platform: "sunos", arch: "x64" }),
+  /Unsupported platform: sunos-x64/
+);
+
 const wrapperSource = readFileSync(join(__dirname, "..", "bin", "cli.js"), "utf8");
 assert.doesNotMatch(wrapperSource, /Install from source|cargo install phantom-secrets/);
 
