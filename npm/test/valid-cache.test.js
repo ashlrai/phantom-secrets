@@ -6,7 +6,7 @@ const { existsSync, lstatSync, mkdtempSync, readFileSync, readdirSync, rmSync } 
 const { tmpdir } = require("os");
 const { basename, dirname, join } = require("path");
 
-const { ensureBinary, getPlatformTarget, pathSet, writePrivateFile } = require("../bin/cli.js");
+const { ensureBinary, getPlatformTarget, pathSet, validateCachedBinary, writePrivateFile } = require("../bin/cli.js");
 
 (async () => {
   const cacheDir = mkdtempSync(join(tmpdir(), "phantom-cli-valid-cache-"));
@@ -40,6 +40,19 @@ const { ensureBinary, getPlatformTarget, pathSet, writePrivateFile } = require("
     assert.strictEqual(readFileSync(paths.sourceMarkerPath, "utf8"), "npm\n");
   } finally {
     rmSync(cacheDir, { recursive: true, force: true });
+  }
+
+  const directoryPath = mkdtempSync(join(tmpdir(), "phantom-cli-directory-cache-"));
+  try {
+    const manifestPath = join(directoryPath, "manifest.json");
+    writePrivateFile(manifestPath, JSON.stringify({ version: candidateVersion, sha256: "0".repeat(64) }), 0o600);
+    let executions = 0;
+    assert.strictEqual(validateCachedBinary(directoryPath, manifestPath, {
+      execFileSyncImpl: () => { executions += 1; },
+    }), false, "a directory is not a valid cached binary");
+    assert.strictEqual(executions, 0, "a directory must never be executed");
+  } finally {
+    rmSync(directoryPath, { recursive: true, force: true });
   }
 
   const fixtureDir = mkdtempSync(join(tmpdir(), "phantom-cli-missing-cache-"));
