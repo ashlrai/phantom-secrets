@@ -7,19 +7,25 @@ import test from "node:test";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { QuickStart } from "./QuickStart";
 
+// Select the platform and return the command text exactly as displayed.
+// QuickStart must already be rendered.
+function displayedCommand(platform: string): string {
+  const selector = screen.getByRole("group", { name: "Choose an operating system" });
+  fireEvent.click(within(selector).getByRole("button", { name: platform }));
+  const card = screen.getByRole("heading", { level: 3, name: platform }).closest("article");
+  assert.ok(card);
+  const copy = within(card).getByRole("button", { name: /^Copy command:/ });
+  return Array.from(copy.firstElementChild!.childNodes)
+    .filter((node) => node.nodeType === Node.TEXT_NODE)
+    .map((node) => node.textContent)
+    .join("");
+}
+
 for (const platform of ["macOS", "Linux"]) {
   test(`${platform} displays a unique TMPDIR staging template`, () => {
     render(<QuickStart />);
     try {
-      const selector = screen.getByRole("group", { name: "Choose an operating system" });
-      fireEvent.click(within(selector).getByRole("button", { name: platform }));
-      const card = screen.getByRole("heading", { level: 3, name: platform }).closest("article");
-      assert.ok(card);
-      const copy = within(card).getByRole("button", { name: /^Copy command:/ });
-      const displayed = Array.from(copy.firstElementChild!.childNodes)
-        .filter((node) => node.nodeType === Node.TEXT_NODE)
-        .map((node) => node.textContent)
-        .join("");
+      const displayed = displayedCommand(platform);
 
       // Each invocation gets its own directory; quotes preserve TMPDIR containing spaces.
       const stagingLines = displayed.split("\n").filter((line) => /\bmktemp\b/.test(line));
@@ -126,15 +132,7 @@ for (const platform of ["macOS", "Linux"]) {
     render(<QuickStart />);
     let displayed = "";
     try {
-      const selector = screen.getByRole("group", { name: "Choose an operating system" });
-      fireEvent.click(within(selector).getByRole("button", { name: platform }));
-      const card = screen.getByRole("heading", { level: 3, name: platform }).closest("article");
-      assert.ok(card);
-      const copy = within(card).getByRole("button", { name: /^Copy command:/ });
-      displayed = Array.from(copy.firstElementChild!.childNodes)
-        .filter((node) => node.nodeType === Node.TEXT_NODE)
-        .map((node) => node.textContent)
-        .join("");
+      displayed = displayedCommand(platform);
     } finally {
       cleanup();
     }
@@ -169,15 +167,7 @@ for (const platform of ["macOS", "Linux"]) {
     render(<QuickStart />);
     let displayed = "";
     try {
-      const selector = screen.getByRole("group", { name: "Choose an operating system" });
-      fireEvent.click(within(selector).getByRole("button", { name: platform }));
-      const card = screen.getByRole("heading", { level: 3, name: platform }).closest("article");
-      assert.ok(card);
-      const copy = within(card).getByRole("button", { name: /^Copy command:/ });
-      displayed = Array.from(copy.firstElementChild!.childNodes)
-        .filter((node) => node.nodeType === Node.TEXT_NODE)
-        .map((node) => node.textContent)
-        .join("");
+      displayed = displayedCommand(platform);
     } finally {
       cleanup();
     }
@@ -212,15 +202,7 @@ for (const platform of ["macOS", "Linux"]) {
     render(<QuickStart />);
     let displayed = "";
     try {
-      const selector = screen.getByRole("group", { name: "Choose an operating system" });
-      fireEvent.click(within(selector).getByRole("button", { name: platform }));
-      const card = screen.getByRole("heading", { level: 3, name: platform }).closest("article");
-      assert.ok(card);
-      const copy = within(card).getByRole("button", { name: /^Copy command:/ });
-      displayed = Array.from(copy.firstElementChild!.childNodes)
-        .filter((node) => node.nodeType === Node.TEXT_NODE)
-        .map((node) => node.textContent)
-        .join("");
+      displayed = displayedCommand(platform);
     } finally {
       cleanup();
     }
@@ -259,15 +241,7 @@ for (const platform of ["macOS", "Linux"]) {
     render(<QuickStart />);
     let displayed = "";
     try {
-      const selector = screen.getByRole("group", { name: "Choose an operating system" });
-      fireEvent.click(within(selector).getByRole("button", { name: platform }));
-      const card = screen.getByRole("heading", { level: 3, name: platform }).closest("article");
-      assert.ok(card);
-      const copy = within(card).getByRole("button", { name: /^Copy command:/ });
-      displayed = Array.from(copy.firstElementChild!.childNodes)
-        .filter((node) => node.nodeType === Node.TEXT_NODE)
-        .map((node) => node.textContent)
-        .join("");
+      displayed = displayedCommand(platform);
     } finally {
       cleanup();
     }
@@ -308,15 +282,7 @@ for (const platform of ["macOS", "Linux"]) {
     render(<QuickStart />);
     let displayed = "";
     try {
-      const selector = screen.getByRole("group", { name: "Choose an operating system" });
-      fireEvent.click(within(selector).getByRole("button", { name: platform }));
-      const card = screen.getByRole("heading", { level: 3, name: platform }).closest("article");
-      assert.ok(card);
-      const copy = within(card).getByRole("button", { name: /^Copy command:/ });
-      displayed = Array.from(copy.firstElementChild!.childNodes)
-        .filter((node) => node.nodeType === Node.TEXT_NODE)
-        .map((node) => node.textContent)
-        .join("");
+      displayed = displayedCommand(platform);
     } finally {
       cleanup();
     }
