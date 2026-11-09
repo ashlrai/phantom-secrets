@@ -611,10 +611,43 @@ test("the GitHub job summary is deterministically capped with an omitted count",
   const second = renderSummary(report);
   assert.equal(first, second);
   assert.ok(Buffer.byteLength(first, "utf8") <= JOB_SUMMARY_MAX_BYTES);
+  assert.ok(Buffer.byteLength(first, "utf8") > JOB_SUMMARY_MAX_BYTES - 4_096);
+  assert.equal(Buffer.from(first, "utf8").toString("utf8"), first);
+  assert.doesNotMatch(first, /\uFFFD/);
   const omitted = first.match(/\*\*TRUNCATED:\*\* (\d+) additional findings omitted/);
   assert.ok(omitted, "summary must state how many findings were omitted");
   assert.ok(Number(omitted[1]) > 0 && Number(omitted[1]) < findingCount);
   assert.match(first, /complete sanitized report remains in the artifact/);
+});
+
+test("summary truncation preserves Unicode characters at finding byte boundaries", () => {
+  const characters = ["é", "界", "🔐"];
+  const report = {
+    verdict: "WARN",
+    captured_at: "2026-09-05T12:00:00.000Z",
+    counts: { fail: 0, warn: characters.length },
+    technical: { sitemap: { route_count: 1 } },
+    aggregate_inputs: Object.fromEntries(
+      ["gsc", "ga4", "ahrefs"].map((kind) => [kind, { state: "not_supplied" }]),
+    ),
+    experiments: { experiments: [] },
+    findings: characters.map((character, index) => ({
+      severity: "warn",
+      code: `unicode_${index}`,
+      message: character.repeat(4_096),
+    })),
+  };
+
+  const summary = renderSummary(report);
+  assert.ok(Buffer.byteLength(summary, "utf8") <= JOB_SUMMARY_MAX_BYTES);
+  assert.equal(Buffer.from(summary, "utf8").toString("utf8"), summary);
+  assert.doesNotMatch(summary, /\uFFFD/);
+  for (const [index, character] of characters.entries()) {
+    const line = summary.split("\n").find((item) => item.includes(`unicode_${index}`));
+    assert.ok(line, `finding ${index} must be present`);
+    assert.ok(Buffer.byteLength(line, "utf8") <= 4_096);
+    assert.ok(line.endsWith(`${character}…`));
+  }
 });
 
 test(
