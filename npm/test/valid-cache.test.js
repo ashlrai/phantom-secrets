@@ -6,7 +6,7 @@ const { existsSync, lstatSync, mkdtempSync, readFileSync, readdirSync, rmSync } 
 const { tmpdir } = require("os");
 const { basename, dirname, join } = require("path");
 
-const { ensureBinary, getPlatformTarget, pathSet, writePrivateFile } = require("../bin/cli.js");
+const { ensureBinary, getPlatformTarget, pathSet, validateCachedBinary, writePrivateFile } = require("../bin/cli.js");
 
 (async () => {
   const cacheDir = mkdtempSync(join(tmpdir(), "phantom-cli-valid-cache-"));
@@ -57,6 +57,14 @@ const { ensureBinary, getPlatformTarget, pathSet, writePrivateFile } = require("
     let extractions = 0;
     let executions = 0;
 
+    assert.strictEqual(existsSync(missingCacheDir), false);
+    let missingCacheExecutions = 0;
+    assert.strictEqual(validateCachedBinary(paths.binaryPath, paths.manifestPath, {
+      execFileSyncImpl: () => {
+        missingCacheExecutions += 1;
+      },
+    }), false);
+    assert.strictEqual(missingCacheExecutions, 0);
     assert.strictEqual(existsSync(missingCacheDir), false);
     const options = {
       cacheDir: missingCacheDir,
