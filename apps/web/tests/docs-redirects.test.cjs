@@ -12,6 +12,13 @@ const renderedDocs = JSON.parse(
   fs.readFileSync(path.join(webRoot, "docs-catalog.json"), "utf8"),
 );
 
+function findShadowedGuides(redirectSources, docs) {
+  const normalizedSources = new Set(redirectSources.map((source) => source.toLowerCase()));
+  return docs
+    .map(({ slug }) => `/docs/${slug}`)
+    .filter((route) => normalizedSources.has(route.toLowerCase()));
+}
+
 test("legacy docs redirects are closed, unique, and do not shadow rendered guides", () => {
   assert.ok(routes.length >= 8, "expected the remaining source-only guide set");
 
@@ -39,14 +46,23 @@ test("legacy docs redirects are closed, unique, and do not shadow rendered guide
     assert.equal(sources.has(required), true, `missing ${required}`);
   }
 
-  for (const doc of renderedDocs) {
-    assert.equal(
-      sources.has(`/docs/${doc.slug}`),
-      false,
-      `/docs/${doc.slug} must resolve to the first-party renderer`,
-    );
-  }
+  assert.deepEqual(
+    findShadowedGuides([...sources], renderedDocs),
+    [],
+    "rendered guides must resolve to the first-party renderer regardless of case",
+  );
   assert.equal(sources.has("/docs"), false, "the on-site docs hub must not redirect");
+});
+
+test("guide shadow detection compares both routes case-insensitively", () => {
+  assert.deepEqual(
+    findShadowedGuides(["/DOCS/Getting-Started"], [
+      { slug: "getting-started" },
+      { slug: "GETTING-STARTED" },
+      { slug: "other-guide" },
+    ]),
+    ["/docs/getting-started", "/docs/GETTING-STARTED"],
+  );
 });
 
 test("Next config derives temporary redirects from the reviewed manifest", () => {
