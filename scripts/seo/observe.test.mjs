@@ -485,6 +485,23 @@ test("a complete public fixture produces a deterministic, sanitized passing repo
   });
 });
 
+test("repeated identical observations produce identical report and summary output", async () => {
+  await withFixtureServer(
+    async ({ options }) => {
+      const outputs = [];
+      for (let run = 0; run < 3; run += 1) {
+        const report = await observeProduction(options);
+        assert.equal(report.verdict, "FAIL");
+        assert.ok(report.findings.length > 0);
+        outputs.push({ report: JSON.stringify(report), summary: renderSummary(report) });
+      }
+      assert.deepEqual(outputs[1], outputs[0]);
+      assert.deepEqual(outputs[2], outputs[0]);
+    },
+    { "/docs": (response) => { response.statusCode = 404; response.end("not found"); } },
+  );
+});
+
 test("a non-success public page response reports its status as a failure", async () => {
   await withFixtureServer(
     async ({ options }) => {
