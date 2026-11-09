@@ -304,6 +304,7 @@ jobs:
           scripts/installer-path-candidate-unicode-parent.test.mjs
           scripts/installer-path-cd-command.test.mjs
           scripts/installer-path-columns-export.test.mjs
+          scripts/installer-path-candidate-create-failure.test.mjs
           scripts/installer-path-comment-punctuation.test.mjs
           scripts/installer-path-comment-with-spaces.test.mjs
           scripts/installer-path-comments-integration.test.mjs
