@@ -82,6 +82,11 @@ for (const runtime of unsupported) {
   });
 }
 
+assert.throws(
+  () => getPlatformTarget({ platform: "linux", arch: "" }),
+  /Unsupported platform: linux-/
+);
+
 const wrapperSource = readFileSync(join(__dirname, "..", "bin", "cli.js"), "utf8");
 assert.doesNotMatch(wrapperSource, /Install from source|cargo install phantom-secrets/);
 
@@ -90,17 +95,22 @@ assert.doesNotMatch(wrapperSource, /Install from source|cargo install phantom-se
   const cacheDir = join(testDir, "cache");
   let downloads = 0;
   try {
-    await assert.rejects(
-      ensureBinary({
-        cacheDir,
-        runtime: { platform: "freebsd", arch: "x64" },
-        downloadImpl: async () => {
-          downloads += 1;
-          throw new Error("unsupported platforms must not download");
-        },
-      }),
-      /Unsupported platform: freebsd-x64/
-    );
+    for (const runtime of [
+      { platform: "freebsd", arch: "x64" },
+      { platform: "linux", arch: "" },
+    ]) {
+      await assert.rejects(
+        ensureBinary({
+          cacheDir,
+          runtime,
+          downloadImpl: async () => {
+            downloads += 1;
+            throw new Error("unsupported platforms must not download");
+          },
+        }),
+        (error) => error.message.startsWith(`Unsupported platform: ${runtime.platform}-${runtime.arch}.`)
+      );
+    }
     assert.strictEqual(downloads, 0, "unsupported platforms must not attempt a download");
     assert.strictEqual(existsSync(cacheDir), false, "unsupported platforms must not create a cache");
   } finally {
