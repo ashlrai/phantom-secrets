@@ -327,6 +327,7 @@ jobs:
           scripts/installer-path-repeat-untouched.test.mjs
           scripts/installer-path-repeated-update.test.mjs
           scripts/installer-path-shell-export.test.mjs
+          scripts/installer-path-shell-export-endings.test.mjs
           scripts/installer-path-snapshot-cleanup.test.mjs
           scripts/installer-path-snapshot-distinct.test.mjs
           scripts/installer-path-snapshot-failure.test.mjs
