@@ -52,6 +52,23 @@ for (const [platformKey, target] of Object.entries(expected)) {
   );
 }
 
+// Platform selection must work offline, independently of release downloads.
+{
+  const http = require("http");
+  const https = require("https");
+  const originals = [http.request, http.get, https.request, https.get, globalThis.fetch];
+  const denyNetwork = () => { throw new Error("platform selection attempted network access"); };
+  try {
+    http.request = http.get = https.request = https.get = globalThis.fetch = denyNetwork;
+    assert.strictEqual(
+      getPlatformTarget({ platform: "linux", arch: "arm64" }),
+      "aarch64-unknown-linux-gnu"
+    );
+  } finally {
+    [http.request, http.get, https.request, https.get, globalThis.fetch] = originals;
+  }
+}
+
 const unsupported = [
   { platform: "darwin", arch: "ia32" },
   { platform: "linux", arch: "arm" },
