@@ -77,6 +77,7 @@ const unsupported = [
   { platform: "darwin", arch: "ia32" },
   { platform: "linux", arch: "arm" },
   { platform: "freebsd", arch: "x64" },
+  { platform: "freebsd", arch: "arm64" },
   { platform: "openbsd", arch: "x64" },
   { platform: "win32", arch: "ia32" },
 ];
