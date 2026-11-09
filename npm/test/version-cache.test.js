@@ -142,4 +142,42 @@ try {
   rmSync(fixtureDir, { recursive: true, force: true });
 }
 
+// A cache root containing spaces must be read as one path: the verified pair is
+// found there, the version spawn receives that exact path, and a decoy pair in
+// the space-free prefix of the same name is never consulted.
+const spacedRoot = mkdtempSync(join(tmpdir(), "phantom cache test "));
+try {
+  const spacedDir = join(spacedRoot, "my cache dir");
+  const decoyDir = join(spacedRoot, "my");
+  ensurePrivateCacheDir(decoyDir);
+  ensurePrivateCacheDir(spacedDir);
+  const spaced = pathSet(spacedDir);
+  const decoy = pathSet(decoyDir);
+  assert.ok(spaced.binaryPath.startsWith(spacedDir), "binary path stays under the spaced cache dir");
+  assert.ok(spaced.manifestPath.startsWith(spacedDir), "manifest path stays under the spaced cache dir");
+  writePair(spaced.binaryPath, spaced.manifestPath, "spaced-binary");
+  writePair(decoy.binaryPath, decoy.manifestPath, "decoy-binary");
+
+  assert.ok(readVerifiedManifest(spaced.binaryPath, spaced.manifestPath));
+  let spawnedPath;
+  assert.strictEqual(validateCachedBinary(spaced.binaryPath, spaced.manifestPath, {
+    execFileSyncImpl: (path) => {
+      spawnedPath = path;
+      return Buffer.from("phantom " + candidateVersion + "\n");
+    },
+  }), true);
+  assert.strictEqual(spawnedPath, spaced.binaryPath, "version check runs the binary in the spaced cache dir");
+  assert.strictEqual(readFileSync(spaced.binaryPath, "utf8"), "spaced-binary");
+
+  // Replacement and recovery also operate on the spaced path set.
+  const nextBinary = join(spacedRoot, "next candidate");
+  const nextManifest = `${nextBinary}.manifest.json`;
+  writePair(nextBinary, nextManifest, "spaced-new");
+  replaceCachedBinary(nextBinary, nextManifest, spaced);
+  assert.strictEqual(readFileSync(spaced.binaryPath, "utf8"), "spaced-new");
+  assert.strictEqual(readFileSync(decoy.binaryPath, "utf8"), "decoy-binary");
+} finally {
+  rmSync(spacedRoot, { recursive: true, force: true });
+}
+
 console.log("npm CLI wrapper manifest, version, replacement, and recovery tests passed");
