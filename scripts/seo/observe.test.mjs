@@ -534,6 +534,35 @@ test("a page without a title produces a missing-title failure", async () => {
   );
 });
 
+test("a page with an empty title is observed as empty and fails as a missing title", async () => {
+  for (const emptyTitle of ["<title></title>", "<title>   \n\t </title>", "<title/>"]) {
+    await withFixtureServer(
+      async ({ options }) => {
+        const report = await observeProduction(options);
+        const page = report.technical.public_routes.find((entry) => entry.route === "/docs");
+        assert.equal(page.status, 200);
+        assert.ok(page.title === "" || page.title === null, "title is reported as empty, not text");
+        assert.ok(!page.title, "title is falsy");
+        assert.equal(report.verdict, "FAIL");
+        assert.deepEqual(report.counts, { fail: 1, warn: 0 });
+        assert.deepEqual(report.findings, [{
+          severity: "fail",
+          code: "title_missing",
+          message: "Page title is missing",
+          route: "/docs",
+        }]);
+        assert.match(renderSummary(report), /\*\*FAIL title_missing\*\* \(\/docs\): Page title is missing/);
+      },
+      {
+        "/docs": (response, origin) => {
+          response.setHeader("content-type", "text/html");
+          response.end(html(origin, "/docs").replace("<title>/docs — Phantom</title>", emptyTitle));
+        },
+      },
+    );
+  }
+});
+
 test("a page without description metadata produces a missing-description failure", async () => {
   await withFixtureServer(
     async ({ options }) => {
