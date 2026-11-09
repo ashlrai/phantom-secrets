@@ -485,6 +485,57 @@ test("a complete public fixture produces a deterministic, sanitized passing repo
   });
 });
 
+test("empty input yields the documented defaults: empty ledger, not-supplied aggregates, empty rows", async () => {
+  // docs/seo-observation-loop.md: with no ledger or aggregate files the report
+  // carries an empty ledger and `{ state: "not_supplied" }` for gsc, ga4, ahrefs.
+  await withFixtureServer(async ({ options }) => {
+    const report = await observeProduction(options);
+    assert.deepEqual(report.experiments, {
+      schema_version: "phantom-seo-experiments-v1",
+      default_observation_days: 28,
+      experiments: [],
+    });
+    assert.deepEqual(report.aggregate_inputs, {
+      gsc: { state: "not_supplied" },
+      ga4: { state: "not_supplied" },
+      ahrefs: { state: "not_supplied" },
+    });
+    // Empty-but-present aggregate files are supplied, not "not_supplied".
+    const emptyAggregates = await observeProduction({
+      ...options,
+      aggregateInputs: {
+        gsc: {
+          schema_version: "phantom-seo-gsc-v1",
+          period: { start: "2026-07-01", end: "2026-07-28", data_state: "final" },
+          rows: [],
+        },
+      },
+    });
+    assert.equal(emptyAggregates.aggregate_inputs.gsc.state, "supplied");
+    assert.deepEqual(emptyAggregates.aggregate_inputs.gsc.rows, []);
+    assert.deepEqual(emptyAggregates.aggregate_inputs.ga4, { state: "not_supplied" });
+  });
+  const ledger = validateExperiments(
+    {
+      schema_version: "phantom-seo-experiments-v1",
+      default_observation_days: 28,
+      experiments: [],
+    },
+    publicPaths,
+  );
+  assert.deepEqual(ledger.experiments, []);
+  const ga4 = validateAggregateInput(
+    "ga4",
+    {
+      schema_version: "phantom-seo-ga4-v1",
+      period: { start: "2026-07-01", end: "2026-07-28", data_state: "final" },
+      rows: [],
+    },
+    publicPaths,
+  );
+  assert.deepEqual(ga4.rows, []);
+  assert.equal(ga4.suppressed_rows, 0);
+});
 test("a non-success public page response reports its status as a failure", async () => {
   await withFixtureServer(
     async ({ options }) => {
