@@ -65,8 +65,18 @@ try {
   assert.strictEqual(executions, 0, "binary without manifest must never execute");
   rmSync(paths.binaryPath);
 
+  // A matching manifest alone cannot turn an empty file into a usable binary.
+  writePair(paths.binaryPath, paths.manifestPath, "");
+  assert.strictEqual(validateCachedBinary(paths.binaryPath, paths.manifestPath), false);
+  assert.strictEqual(isCachedBinaryStale(paths.binaryPath), true);
+  rmSync(paths.binaryPath);
+  rmSync(paths.manifestPath);
+
   writePair(paths.binaryPath, paths.manifestPath, "old-binary");
   assert.ok(readVerifiedManifest(paths.binaryPath, paths.manifestPath));
+  assert.strictEqual(isCachedBinaryStale(paths.binaryPath, {
+    execFileSyncImpl: () => Buffer.alloc(0),
+  }), true, "empty version output must not validate a cached binary");
   assert.strictEqual(isCachedBinaryStale(paths.binaryPath, {
     execFileSyncImpl: () => Buffer.from(("phantom-mcp " + candidateVersion + "\n")),
   }), false);
