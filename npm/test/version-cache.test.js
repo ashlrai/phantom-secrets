@@ -4,7 +4,9 @@ const assert = require("assert");
 const crypto = require("crypto");
 const {
   chmodSync,
+  existsSync,
   linkSync,
+  lstatSync,
   mkdtempSync,
   readFileSync,
   renameSync,
@@ -104,6 +106,39 @@ try {
       execTimeoutMs: 50,
     }), false);
     assert.ok(Date.now() - started < 2000, "hung version child must be killed by timeout");
+  }
+
+  if (process.platform !== "win32") {
+    // Freshness boundary: a cached binary is trusted from its attestation only
+    // once its newest timestamp is at least 2 s old (>=). One nanosecond younger
+    // is "fresh" and must be re-verified (spawned) on every call.
+    const settleNs = 2_000_000_000n;
+    const boundaryBinary = join(fixtureDir, "boundary-binary");
+    const boundaryManifest = `${boundaryBinary}.manifest.json`;
+    const okVersion = () => Buffer.from(("phantom " + candidateVersion + "\n"));
+    const pinAge = (ageNs) => {
+      const { mtimeNs, ctimeNs } = lstatSync(boundaryBinary, { bigint: true });
+      const newest = mtimeNs > ctimeNs ? mtimeNs : ctimeNs;
+      setAttestationClockForTest(() => newest + ageNs);
+    };
+    try {
+      for (const [ageNs, trusted] of [[settleNs - 1n, false], [settleNs, true], [settleNs + 1n, true]]) {
+        rmSync(boundaryBinary, { force: true });
+        rmSync(boundaryManifest, { force: true });
+        rmSync(attestationPath(boundaryBinary), { force: true });
+        writePair(boundaryBinary, boundaryManifest, "boundary-binary");
+        pinAge(ageNs);
+        let spawns = 0;
+        const counting = () => { spawns += 1; return okVersion(); };
+        assert.strictEqual(validateCachedBinary(boundaryBinary, boundaryManifest, { execFileSyncImpl: counting }), true);
+        assert.strictEqual(spawns, 1, `age ${ageNs}ns: first call verifies in full`);
+        assert.strictEqual(existsSync(attestationPath(boundaryBinary)), trusted, `age ${ageNs}ns: attested=${trusted}`);
+        assert.strictEqual(validateCachedBinary(boundaryBinary, boundaryManifest, { execFileSyncImpl: counting }), true);
+        assert.strictEqual(spawns, trusted ? 1 : 2, `age ${ageNs}ns: repeat call ${trusted ? "uses the attestation" : "re-verifies"}`);
+      }
+    } finally {
+      setAttestationClockForTest(null);
+    }
   }
 
   const candidatePath = join(fixtureDir, "candidate");
