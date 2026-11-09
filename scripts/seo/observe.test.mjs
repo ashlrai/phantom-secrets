@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -73,6 +73,35 @@ test("the CLI rejects a missing required output or output value", () => {
     assert.equal(result.stdout, "");
     assert.match(result.stderr, diagnostic);
     assert.match(result.stderr, /Usage: node scripts\/seo\/observe\.mjs --out <report\.json>/);
+  }
+});
+
+test("the CLI rejects malformed JSON inputs without creating a report or summary", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "phantom-seo-malformed-"));
+  try {
+    const malformed = path.join(directory, "malformed.json");
+    await writeFile(malformed, '{"unfinished":');
+    for (const [flag, diagnostic] of [
+      ["--experiments", /experiment ledger is not valid JSON/],
+      ["--gsc-file", /gsc aggregate input is not valid JSON/],
+      ["--ga4-file", /ga4 aggregate input is not valid JSON/],
+      ["--ahrefs-file", /ahrefs aggregate input is not valid JSON/],
+    ]) {
+      const report = path.join(directory, "report.json");
+      const summary = path.join(directory, "summary.md");
+      const result = spawnSync(process.execPath, [
+        path.join(scriptDirectory, "observe.mjs"), flag, malformed,
+        "--out", report, "--summary", summary,
+      ], { cwd: repositoryDirectory, encoding: "utf8", timeout: 5_000 });
+      assert.ifError(result.error);
+      assert.equal(result.status, 1);
+      assert.equal(result.stdout, "");
+      assert.match(result.stderr, diagnostic);
+      await assert.rejects(stat(report), { code: "ENOENT" });
+      await assert.rejects(stat(summary), { code: "ENOENT" });
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
   }
 });
 
