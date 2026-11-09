@@ -2,6 +2,7 @@
 const candidateVersion = require("../package.json").version;
 const assert = require("assert");
 const crypto = require("crypto");
+const { execFileSync } = require("child_process");
 const {
   chmodSync,
   linkSync,
@@ -16,6 +17,7 @@ const { join } = require("path");
 
 const {
   ensurePrivateCacheDir,
+  ensureBinary,
   isCachedBinaryStale,
   parseBinaryVersion,
   pathSet,
@@ -129,4 +131,33 @@ try {
   rmSync(fixtureDir, { recursive: true, force: true });
 }
 
-console.log("npm MCP wrapper manifest, version, replacement, and recovery tests passed");
+async function testCachePathWithSpaces() {
+  const cacheDir = mkdtempSync(join(tmpdir(), "phantom mcp cache with spaces "));
+  try {
+    const paths = pathSet(cacheDir);
+    writePair(paths.binaryPath, paths.manifestPath,
+      `process.stdout.write(${JSON.stringify(`phantom-mcp ${candidateVersion}\n`)});\n`);
+    let executions = 0;
+    const resolved = await ensureBinary({
+      cacheDir,
+      execFileSyncImpl: (binaryPath, args, options) => {
+        executions += 1;
+        assert.strictEqual(binaryPath, paths.binaryPath);
+        assert.deepStrictEqual(args, ["--version"]);
+        return execFileSync(process.execPath, [binaryPath, ...args], options);
+      },
+      downloadImpl: async () => { throw new Error("valid cache must not access the network"); },
+    });
+    assert.strictEqual(resolved, paths.binaryPath);
+    assert.strictEqual(executions, 1);
+  } finally {
+    rmSync(cacheDir, { recursive: true, force: true });
+  }
+}
+
+testCachePathWithSpaces().then(() => {
+  console.log("npm MCP wrapper manifest, version, replacement, and recovery tests passed");
+}).catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});
