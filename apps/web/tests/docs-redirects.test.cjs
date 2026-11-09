@@ -11,6 +11,29 @@ const routes = JSON.parse(
 const renderedDocs = JSON.parse(
   fs.readFileSync(path.join(webRoot, "docs-catalog.json"), "utf8"),
 );
+const markdownBasename = /^[a-z0-9-]+\.md(?![\s\S])/;
+
+test("redirect filenames are relative Markdown basenames", () => {
+  for (const { source, file } of routes) {
+    assert.match(file, markdownBasename, `${source} has an invalid filename`);
+    assert.equal(path.posix.basename(file), file, `${source} contains a POSIX path`);
+    assert.equal(path.win32.basename(file), file, `${source} contains a Windows path`);
+  }
+
+  for (const invalid of [
+    "../guide.md",
+    "docs/guide.md",
+    "docs\\guide.md",
+    "/guide.md",
+    "C:\\guide.md",
+    "guide.md/",
+    ".md",
+    "guide.txt",
+    "guide.md\n",
+  ]) {
+    assert.doesNotMatch(invalid, markdownBasename, `${invalid} must be rejected`);
+  }
+});
 
 test("legacy docs redirects are closed, unique, and do not shadow rendered guides", () => {
   assert.ok(routes.length >= 8, "expected the remaining source-only guide set");
@@ -19,7 +42,7 @@ test("legacy docs redirects are closed, unique, and do not shadow rendered guide
   for (const route of routes) {
     assert.deepEqual(Object.keys(route).sort(), ["file", "source"]);
     assert.match(route.source, /^\/docs(?:\/[a-z0-9-]+)?$/);
-    assert.match(route.file, /^[a-z0-9-]+\.md$/);
+    assert.match(route.file, markdownBasename);
     assert.equal(sources.has(route.source), false, `duplicate ${route.source}`);
     sources.add(route.source);
 
