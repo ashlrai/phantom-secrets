@@ -196,6 +196,7 @@ async function withFixtureServer(action, overrides = {}) {
       response.setHeader("content-type", "application/xml");
       response.end(
         `<?xml version="1.0"?><urlset>${[...publicPaths]
+          .filter((route) => !route.endsWith(".txt"))
           .map((route) => `<url><loc>${origin}${route}</loc></url>`)
           .join("")}</urlset>`,
       );
