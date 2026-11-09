@@ -61,3 +61,17 @@ test("Next config derives temporary redirects from the reviewed manifest", () =>
   assert.doesNotMatch(config, /source: "\/install\.(?:sh|ps1)"/);
   assert.doesNotMatch(config, /destination:\s*["']https?:\/\/(?!github\.com\/ashlrai\/phantom-secrets\/blob\/main\/docs\/)/);
 });
+
+test("a documented redirect with a trailing slash reaches the canonical destination", async () => {
+  const loadConfig = require("next/dist/server/config").default;
+  const { getPathMatch } = require("next/dist/shared/lib/router/utils/path-match");
+  const config = await loadConfig("phase-development-server", webRoot);
+  const redirects = await config.redirects();
+  const route = redirects.find(({ source }) => source === "/docs/ci-cd");
+  assert.ok(route, "the documented redirect must exist");
+
+  const match = getPathMatch(route.source);
+  assert.notEqual(match("/docs/ci-cd"), false);
+  assert.notEqual(match("/docs/ci-cd/"), false);
+  assert.equal(route.destination, "https://github.com/ashlrai/phantom-secrets/blob/main/docs/ci-cd.md");
+});
