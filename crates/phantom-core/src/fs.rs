@@ -916,6 +916,26 @@ mod tests {
     }
 
     #[test]
+    fn test_atomic_write_preserves_unicode_bytes_and_leaves_no_temp_file() {
+        let dir = TempDir::new().unwrap();
+        let target = dir.path().join("ünïcödé-键.env");
+        // Multi-byte: accents, CJK, emoji (4-byte), combining mark, RTL, NUL-free.
+        let fixture = "NAME=Zoë café 日本語 🔐🚀 e\u{301} שלום مرحبا\nQUOTE=“smart”\n";
+        // Overwrite an existing target so the rename path is exercised too.
+        std::fs::write(&target, b"OLD").unwrap();
+        atomic_write(&target, fixture.as_bytes()).unwrap();
+
+        let written = std::fs::read(&target).unwrap();
+        assert_eq!(written, fixture.as_bytes(), "bytes must round-trip exactly");
+        assert_eq!(std::str::from_utf8(&written).unwrap(), fixture);
+        assert_eq!(
+            list_dir(dir.path()),
+            vec!["ünïcödé-键.env"],
+            "no temporary file may remain"
+        );
+    }
+
+    #[test]
     fn test_atomic_write_rejects_path_without_parent() {
         let err = atomic_write(Path::new("/"), b"x").unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
