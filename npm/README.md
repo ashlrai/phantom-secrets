@@ -59,8 +59,11 @@ downloading a binary:
 |---|---|
 | `darwin` | `ia32` |
 | `linux` | `arm` |
+| `linux` | `riscv64` |
 | `freebsd` | `x64` |
+| `freebsd` | `arm64` |
 | `openbsd` | `x64` |
+| `sunos` | `arm` |
 | `win32` | `ia32` |
 
 Linux archives target glibc; the wrapper does not provide a musl build or

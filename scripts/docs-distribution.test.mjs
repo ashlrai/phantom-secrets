@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -86,4 +86,11 @@ test('agent quickstart copies must match the site console', () => {
   assert.match(errors, /docs\/llms\.txt: missing agent-quickstart command block/);
   assert.match(checkAgentQuickstart(() => 'no source').join(), /missing COMMANDS block/);
   assert.equal(quickstartCommands(block('phantom check')), 'phantom check');
+});
+
+test('agent quickstart install matches its JSON doctor command', () => {
+  const guide = readFileSync(new URL('../docs/agent-quickstart.md', import.meta.url), 'utf8');
+  assert.match(guide, /v0\.8\.7.*archive/);
+  assert.match(guide, /v0\.7\.9.*does not accept `--json`/);
+  assert.doesNotMatch(guide, /brew install/);
 });
