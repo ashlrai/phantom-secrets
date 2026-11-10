@@ -472,3 +472,107 @@ fn test_anomaly_class_score_values() {
     assert_eq!(AnomalyClass::Caution.score(), 1);
     assert_eq!(AnomalyClass::Alert.score(), 2);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Boundary cases: exactly at the configured limit
+//
+// Documented behavior: a limit of N allows N requests per 10s window; the
+// (N+1)th is rejected (Alert → 429). Alert fires on `count > limit`, never
+// on `count == limit`.
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_rate_limiter_unit_per_secret_boundary_allows_exactly_limit() {
+    let rl = RateLimiter::new(RateLimitConfig {
+        per_secret_rps: 1, // limit = 10/10s
+        burst_total_10s: 1000,
+    });
+    for i in 1..=10u64 {
+        let d = rl.record("EDGE_KEY");
+        assert_ne!(
+            d.class,
+            AnomalyClass::Alert,
+            "request {i} is within the limit of 10 and must not alert"
+        );
+        assert_eq!(d.per_secret_10s, i);
+    }
+    let over = rl.record("EDGE_KEY");
+    assert_eq!(over.class, AnomalyClass::Alert, "11th request must alert");
+    assert_eq!(over.per_secret_10s, 11);
+}
+
+#[test]
+fn test_rate_limiter_unit_global_burst_boundary_allows_exactly_limit() {
+    let rl = RateLimiter::new(RateLimitConfig {
+        per_secret_rps: 100,
+        burst_total_10s: 3,
+    });
+    for key in ["K1", "K2", "K3"] {
+        let d = rl.record(key);
+        assert_ne!(d.class, AnomalyClass::Alert, "{key} is within burst of 3");
+    }
+    assert_eq!(rl.record("K4").class, AnomalyClass::Alert);
+}
+
+#[test]
+fn test_rate_limiter_unit_boundary_is_per_secret_not_shared() {
+    let rl = RateLimiter::new(RateLimitConfig {
+        per_secret_rps: 1,
+        burst_total_10s: 1000,
+    });
+    for _ in 0..11 {
+        rl.record("A");
+    }
+    // A is over its limit; a different secret still starts fresh.
+    let d = rl.record("B");
+    assert_eq!(d.class, AnomalyClass::Normal);
+    assert_eq!(d.per_secret_10s, 1);
+}
+
+#[tokio::test]
+async fn test_http_boundary_exactly_at_limit_allowed_then_429() {
+    // per_secret_rps=1 → limit=10. Requests 1..=10 pass (200); 11th → 429.
+    let (proxy, mock) = test_proxy_with_limits(1, 1000).await;
+    let client = make_client();
+    let url = format!("http://127.0.0.1:{}/testapi/v1/models", proxy.port());
+
+    for i in 1..=10 {
+        let status = client.get(&url).send().await.unwrap().status().as_u16();
+        assert_eq!(status, 200, "request {i} is at/below the limit of 10");
+    }
+
+    let resp = client.get(&url).send().await.unwrap();
+    assert_eq!(resp.status().as_u16(), 429, "request 11 must be rejected");
+    assert_eq!(
+        resp.headers()
+            .get("x-phantom-anomaly-class")
+            .and_then(|v| v.to_str().ok()),
+        Some("alert")
+    );
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["per_secret_10s"], 11);
+
+    proxy.shutdown().await;
+    mock.shutdown().await;
+}
+
+#[tokio::test]
+async fn test_http_boundary_global_burst_exactly_at_limit() {
+    // burst_total_10s=4: four requests pass, the fifth is rejected even though
+    // the per-secret limit (100/10s) is nowhere near reached.
+    let (proxy, mock) = test_proxy_with_limits(10, 4).await;
+    let client = make_client();
+    let url = format!("http://127.0.0.1:{}/testapi/v1/models", proxy.port());
+
+    for i in 1..=4 {
+        let status = client.get(&url).send().await.unwrap().status().as_u16();
+        assert_eq!(status, 200, "request {i} is at/below the burst of 4");
+    }
+    let resp = client.get(&url).send().await.unwrap();
+    assert_eq!(resp.status().as_u16(), 429);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["total_10s"], 5);
+
+    proxy.shutdown().await;
+    mock.shutdown().await;
+}
