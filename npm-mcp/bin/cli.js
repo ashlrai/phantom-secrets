@@ -837,6 +837,10 @@ async function ensureBinary({
   if (!Number.isFinite(execTimeoutMs) || execTimeoutMs < 1 || execTimeoutMs >= staleMs) {
     throw new Error("child execution timeout must be positive and shorter than lock stale timeout");
   }
+  // Resolve the release target before any cache, lock, marker, or network
+  // work, so an unsupported platform exits with release guidance and leaves
+  // nothing behind (matches the phantom-secrets wrapper).
+  const target = getPlatformTarget(runtime);
   ensurePrivateCacheDir(cacheDir, runtime.platform);
   const paths = pathSet(cacheDir, runtime.platform);
   const releaseLock = await acquireInstallLock(paths.lockPath, { ...lockOptions, platform: runtime.platform });
@@ -852,7 +856,6 @@ async function ensureBinary({
       heartbeat,
     })) return paths.binaryPath;
 
-    const target = getPlatformTarget(runtime);
     const archiveExt = runtime.platform === "win32" ? "zip" : "tar.gz";
     const archiveName = `phantom-${target}.${archiveExt}`;
     const url = `https://github.com/${REPO}/releases/download/v${VERSION}/${archiveName}`;
