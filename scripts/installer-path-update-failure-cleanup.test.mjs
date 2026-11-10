@@ -517,6 +517,14 @@ function assertReportedInstallerFailure({ install, result, root, temps }) {
 }
 
 for (const [file, installer] of Object.entries(copies)) {
+  test(`${file} warns and preserves the startup file when its backup copy fails`, (t) => {
+    const run = runInstaller(t, installer, { seam: 'snapshot-copy', rcState: 'file' });
+    assertReportedInstallerFailure(run);
+    assert.equal(readFileSync(run.rc, 'utf8'), original, 'startup file bytes unchanged');
+    assert.equal(lstatSync(run.rc).mode & 0o777, 0o600, 'startup file mode unchanged');
+    assert.deepEqual(readdirSync(run.home), ['.bashrc'], 'HOME holds only the startup file');
+  });
+
   test(`${file} warns and removes the PATH-update temporary files when the candidate move fails`, (t) => {
     const run = runInstaller(t, installer, { seam: 'move', rcState: 'file' });
     assertReportedInstallerFailure(run);
