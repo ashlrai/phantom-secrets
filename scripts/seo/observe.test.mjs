@@ -172,6 +172,28 @@ test("JSON-LD extraction accepts HTML-compatible script endings", () => {
   });
 });
 
+test("JSON-LD extraction preserves each valid block independently", () => {
+  const first = {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    headline: "A & B < C",
+    author: { name: "Zoë", sameAs: ["https://example.com/author?a=1&b=2"] },
+  };
+  const second = [
+    { "@type": "SoftwareApplication", name: "Phantom", version: "0.8.7" },
+    { "@type": "Thing", description: "Literal &amp; entity" },
+  ];
+  const third = { "@type": "FAQPage", accepted: true, count: 0, extra: null };
+  const html = [
+    `<script type="application/ld+json">${JSON.stringify(first)}</script>`,
+    '<script type="application/json">{"ignored":true}</script>',
+    `<script TYPE="APPLICATION/LD+JSON">${JSON.stringify(second)}</ScRiPt >`,
+    `<script type='application/ld+json'>${JSON.stringify(third)}</script>`,
+  ].join("\n");
+
+  assert.deepEqual(structuredData(html), { values: [first, second, third], errors: [] });
+});
+
 test("machine-readable links require exact canonical URLs", () => {
   const expected = "https://github.com/ashlrai/phantom-secrets";
   assert.equal(containsExactUrl(`Repository: ${expected}.`, expected), true);
