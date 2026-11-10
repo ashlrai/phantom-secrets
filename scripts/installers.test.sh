@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Offline check: when add_to_user_path cannot create the candidate PATH-edit
+# Offline checks: replace an existing installation from a local release, and
+# verify that when add_to_user_path cannot create the candidate PATH-edit
 # file, it fails, leaves the user's shell configuration untouched (bytes,
 # inode, mode), and removes the first temporary file (.phantom-path.before.*).
 # Runs the shipped function from each installer copy in a throwaway HOME; no
@@ -71,10 +72,45 @@ SHIM
   echo "ok $label"
 }
 
+run_replacement_case() { # label installer
+  local label="$1" installer="$2" case_dir="$root/$1"
+  local home="$case_dir/home" bin="$case_dir/home/.phantom-secrets/bin"
+  local fixture="$case_dir/fixture" payload="$case_dir/payload" target archive digest product
+  mkdir -p "$home" "$bin" "$fixture" "$payload"
+  printf '#!/bin/sh\nprintf "old executable\\n"\n' > "$bin/phantom"
+  chmod 755 "$bin/phantom"
+  for product in phantom phantom-mcp; do
+    printf '#!/bin/sh\n[ "$1" = --version ] || exit 2\nprintf "%s 1.2.3\\n"\n' "$product" > "$payload/$product"
+    chmod 755 "$payload/$product"
+  done
+  case "$(uname -s)" in Darwin) target=apple-darwin ;; Linux) target=unknown-linux-gnu ;; *) echo "FAIL $label: unsupported OS"; fail=1; return ;; esac
+  case "$(uname -m)" in x86_64|amd64) target="x86_64-$target" ;; arm64|aarch64) target="aarch64-$target" ;; *) echo "FAIL $label: unsupported architecture"; fail=1; return ;; esac
+  archive="phantom-$target.tar.gz"
+  tar -czf "$fixture/$archive" -C "$payload" phantom phantom-mcp
+  if command -v sha256sum >/dev/null 2>&1; then
+    digest="$(sha256sum "$fixture/$archive" | awk '{print $1}')"
+  else
+    digest="$(shasum -a 256 "$fixture/$archive" | awk '{print $1}')"
+  fi
+  printf '%s  %s\n' "$digest" "$archive" > "$fixture/$archive.sha256"
+  if ! env -i HOME="$home" PATH="$bin:/usr/bin:/bin" SHELL=/bin/bash \
+    PHANTOM_TEST_ALLOW_INSTALLER_OVERRIDES=1 PHANTOM_TAG=v1.2.3 \
+    PHANTOM_TEST_LOCAL_RELEASE_DIR="$fixture" /bin/bash "$installer" > "$case_dir/install.log" 2>&1; then
+    echo "FAIL $label: installer failed"; fail=1; return
+  fi
+  for product in phantom phantom-mcp; do
+    if [ ! -x "$bin/$product" ] || [ "$("$bin/$product" --version)" != "$product 1.2.3" ]; then
+      echo "FAIL $label: installed $product is not the expected executable"; fail=1; return
+    fi
+  done
+  echo "ok $label"
+}
+
 n=0
 for installer in "${installers[@]}"; do
   [ -f "$installer" ] || { echo "FAIL missing installer: $installer"; exit 1; }
   n=$((n + 1))
   run_case "candidate-create-failure-$n" "$installer"
+  run_replacement_case "replace-existing-executable-$n" "$installer"
 done
 exit "$fail"
