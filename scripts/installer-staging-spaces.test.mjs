@@ -17,7 +17,10 @@ import { basename, dirname, join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-const installer = fileURLToPath(new URL('install.sh', import.meta.url));
+const installers = {
+  repository: fileURLToPath(new URL('install.sh', import.meta.url)),
+  public: fileURLToPath(new URL('../apps/web/public/install.sh', import.meta.url)),
+};
 
 function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -71,7 +74,7 @@ function callsLog(file) {
 // A successful offline install through a staging parent containing spaces:
 // the private staging template must reach mktemp as exactly one argv item,
 // and the exit trap must leave only the promoted install behind.
-test('repository installer stages through a spaced parent as one argument and cleans up', (t) => {
+for (const [name, installer] of Object.entries(installers)) test(`${name} installer stages through a spaced parent as one argument and cleans up`, (t) => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-staging-spaces-')));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const fixture = join(root, 'fixture');
