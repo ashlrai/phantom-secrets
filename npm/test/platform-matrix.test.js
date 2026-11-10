@@ -172,6 +172,25 @@ assert.doesNotMatch(wrapperSource, /Install from source|cargo install phantom-se
     rmSync(testDir, { recursive: true, force: true });
   }
 
+  // A supported OS with an unsupported architecture must not select an archive.
+  const unsupportedArchDir = mkdtempSync(join(tmpdir(), "phantom-cli-unsupported-arch-"));
+  try {
+    const cacheDir = join(unsupportedArchDir, "cache");
+    let downloads = 0;
+    await assert.rejects(
+      ensureBinary({
+        cacheDir,
+        runtime: { platform: "linux", arch: "arm" },
+        downloadImpl: async () => { downloads += 1; throw new Error("unexpected download"); },
+      }),
+      /Unsupported platform: linux-arm/
+    );
+    assert.strictEqual(downloads, 0, "unsupported architecture must not select a package to download");
+    assert.strictEqual(existsSync(cacheDir), false, "unsupported architecture must not create a cache");
+  } finally {
+    rmSync(unsupportedArchDir, { recursive: true, force: true });
+  }
+
   // Even a matching, integrity-valid cache must not bypass OS selection.
   const populatedCache = mkdtempSync(join(tmpdir(), "phantom-cli-unsupported-cache-"));
   try {
