@@ -71,10 +71,48 @@ SHIM
   echo "ok $label"
 }
 
+run_space_case() {
+  local label="$1" installer="$2" case_dir="$root/$1"
+  local home="$root/$1/home" fixture="$root/$1/release" shims="$root/$1/shims"
+  local dest="$root/$1/install directory/bin with spaces" target archive product
+  mkdir -p "$home" "$fixture/files" "$shims"
+  case "$(uname -s)" in Darwin) target=apple-darwin ;; Linux) target=unknown-linux-gnu ;; *) echo "FAIL $label: unsupported OS"; fail=1; return ;; esac
+  case "$(uname -m)" in x86_64|amd64) target="x86_64-$target" ;; arm64|aarch64) target="aarch64-$target" ;; *) echo "FAIL $label: unsupported architecture"; fail=1; return ;; esac
+  archive="phantom-$target.tar.gz"
+  for product in phantom phantom-mcp; do
+    printf '#!/bin/sh\nprintf "%%s\\n" "%s 1.2.3"\n' "$product" > "$fixture/files/$product"
+    chmod +x "$fixture/files/$product"
+  done
+  tar -czf "$fixture/$archive" -C "$fixture/files" phantom phantom-mcp
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$fixture/$archive" | awk -v name="$archive" '{print $1 "  " name}' > "$fixture/$archive.sha256"
+  else
+    shasum -a 256 "$fixture/$archive" | awk -v name="$archive" '{print $1 "  " name}' > "$fixture/$archive.sha256"
+  fi
+  printf '#!/bin/sh\ntouch "%s"\nexit 1\n' "$case_dir/network-called" > "$shims/curl"
+  chmod +x "$shims/curl"
+  if ! env -i HOME="$home" SHELL=/bin/bash PATH="$shims:/usr/bin:/bin" \
+    PHANTOM_INSTALL_DIR="$dest" PHANTOM_TEST_ALLOW_INSTALLER_OVERRIDES=1 \
+    PHANTOM_TEST_LOCAL_RELEASE_DIR="$fixture" PHANTOM_TAG=v1.2.3 \
+    /bin/bash "$installer" > "$case_dir/output" 2>&1; then
+    echo "FAIL $label: installer failed"; fail=1; return
+  fi
+  for product in phantom phantom-mcp; do
+    if [ ! -x "$dest/$product" ] || [ "$("$dest/$product" --version)" != "$product 1.2.3" ]; then
+      echo "FAIL $label: $product missing or incorrect"; fail=1; return
+    fi
+  done
+  if [ -e "$case_dir/network-called" ]; then
+    echo "FAIL $label: network command invoked"; fail=1; return
+  fi
+  echo "ok $label"
+}
+
 n=0
 for installer in "${installers[@]}"; do
   [ -f "$installer" ] || { echo "FAIL missing installer: $installer"; exit 1; }
   n=$((n + 1))
   run_case "candidate-create-failure-$n" "$installer"
+  run_space_case "install-spaces-$n" "$installer"
 done
 exit "$fail"
