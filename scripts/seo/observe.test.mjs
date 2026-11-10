@@ -440,6 +440,26 @@ test("local redirects are followed within the boundary and limited to two hops",
   );
 });
 
+test("a local redirect outside the boundary is rejected without fetching its destination", async () => {
+  await withFixtureServer(async ({ origin: destination, requests: destinationRequests }) => {
+    await withFixtureServer(
+      async ({ origin, options, requests }) => {
+        await assert.rejects(
+          requestWithinBoundary(`${origin}/start`, {
+            fetchImpl: fetch,
+            networkPolicy: options.networkPolicy,
+            retries: 0,
+          }),
+          /network destination is not allowlisted/,
+        );
+        assert.deepEqual(requests, ["/start"]);
+        assert.deepEqual(destinationRequests, []);
+      },
+      { "/start": (response) => { response.writeHead(302, { location: `${destination}/outside` }).end(); } },
+    );
+  });
+});
+
 test("one monotonic request deadline covers retries and redirects", async (t) => {
   const temporary = new Response("temporary", { status: 503 });
   const redirect = new Response("", {
