@@ -235,6 +235,9 @@ pub enum ProviderReply {
 /// must not log.
 pub trait CredentialSource {
     fn read(&self, name: &str) -> Result<Zeroizing<String>, OpError>;
+
+    /// Whether a value is stored under `name`. Must not read the value.
+    fn exists(&self, name: &str) -> Result<bool, OpError>;
 }
 
 /// Stores a newly issued value under a vault name. This is the only place an
@@ -251,6 +254,11 @@ pub trait AccountProvider {
 
     /// Whether this adapter implements `op`.
     fn supports(&self, op: AccountOp) -> bool;
+
+    /// Whether `secret_name` is in this adapter's own vault namespace (for
+    /// example a fixed prefix). The engine stores issued values, and reads
+    /// values to revoke, only under names this returns true for.
+    fn owns_name(&self, secret_name: &str) -> bool;
 
     /// Validate the request and describe the call without network I/O.
     fn plan(&self, req: &OpRequest) -> Result<BTreeMap<String, String>, OpError>;
@@ -276,21 +284,43 @@ pub fn default_kill_path() -> std::io::Result<PathBuf> {
 /// Fail-closed KILL check. Any entry at `path` (file, directory or symlink,
 /// even a dangling one) stops the operation, and so does any error other than
 /// "not found".
+///
+/// "Not found" is only trusted when the nearest existing ancestor is a
+/// directory. A regular file in the parent chain makes the state
+/// undeterminable on every OS: Unix reports `ENOTDIR`, but Windows reports
+/// that path as plain "not found", so the ancestor walk keeps both fail-closed.
 pub fn check_kill(path: &Path) -> Result<(), OpError> {
+    let undetermined =
+        || OpError::new("KILL state could not be determined; refusing before any provider call");
     match std::fs::symlink_metadata(path) {
         Ok(_) => Err(OpError::new(
             "KILL is set; refusing before any provider call",
         )),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(_) => Err(OpError::new(
-            "KILL state could not be determined; refusing before any provider call",
-        )),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            for ancestor in path.ancestors().skip(1) {
+                if ancestor.as_os_str().is_empty() {
+                    // A relative path's implicit parent is the current directory.
+                    return match std::fs::metadata(".") {
+                        Ok(m) if m.is_dir() => Ok(()),
+                        _ => Err(undetermined()),
+                    };
+                }
+                match std::fs::metadata(ancestor) {
+                    Ok(m) if m.is_dir() => return Ok(()),
+                    Ok(_) => return Err(undetermined()),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                    Err(_) => return Err(undetermined()),
+                }
+            }
+            Err(undetermined())
+        }
+        Err(_) => Err(undetermined()),
     }
 }
 
 // ── Append-only ledger ──────────────────────────────────────────────────────
 
-/// One ledger line. Value-free: names, labels, handle and hashes only.
+/// One ledger line. Value-free: names, labels, handle, scope and hashes only.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LedgerEntry {
     pub seq: u64,
@@ -306,6 +336,8 @@ pub struct LedgerEntry {
     pub mode: ExecMode,
     pub result: String,
     pub reason: Option<String>,
+    /// Requested scope as planned by the adapter (value-free), if any.
+    pub scope: Option<String>,
     pub prev_sha256: String,
     pub sha256: String,
 }
@@ -319,7 +351,11 @@ pub fn default_ledger_path() -> std::io::Result<PathBuf> {
 
 /// Append-only, SHA-256 chained JSONL ledger. Each line's `sha256` covers the
 /// line with `sha256` empty, including `prev_sha256`, so edits, deletions and
-/// reorders are detectable by [`OpsLedger::verify`].
+/// reorders are detectable by [`OpsLedger::verify`]. A head anchor
+/// (`<ledger>.head`, `"<seq> <sha256>"`, 0600) records the last entry outside
+/// the file, so truncating trailing lines is detectable too. Replacing both
+/// files consistently is not detectable by a same-user check; the anchor is a
+/// tamper signal, not a signature.
 #[derive(Debug, Clone)]
 pub struct OpsLedger {
     path: PathBuf,
@@ -334,18 +370,66 @@ impl OpsLedger {
         &self.path
     }
 
-    fn open_append(&self) -> std::io::Result<std::fs::File> {
-        if let Some(parent) = self.path.parent() {
-            std::fs::create_dir_all(parent)?;
+    fn head_path(&self) -> PathBuf {
+        let mut name = self
+            .path
+            .file_name()
+            .map(|n| n.to_os_string())
+            .unwrap_or_default();
+        name.push(".head");
+        self.path.with_file_name(name)
+    }
+
+    fn ensure_parent(&self) -> std::io::Result<()> {
+        let Some(parent) = self.path.parent() else {
+            return Ok(());
+        };
+        if parent.as_os_str().is_empty() || parent.exists() {
+            return Ok(());
         }
+        let mut builder = std::fs::DirBuilder::new();
+        builder.recursive(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        builder.create(parent)
+    }
+
+    /// Open a private ledger-family file without following symlinks, and
+    /// require a regular file owned by the caller with no group or other bits.
+    fn open_private(path: &Path, append: bool) -> std::io::Result<std::fs::File> {
         let mut opts = OpenOptions::new();
-        opts.create(true).read(true).append(true);
+        opts.create(true).read(true);
+        if append {
+            opts.append(true);
+        } else {
+            opts.write(true);
+        }
         #[cfg(unix)]
         {
             use std::os::unix::fs::OpenOptionsExt;
-            opts.mode(0o600);
+            opts.mode(0o600).custom_flags(libc::O_NOFOLLOW);
         }
-        opts.open(&self.path)
+        let file = opts.open(path)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{MetadataExt, PermissionsExt};
+            let meta = file.metadata()?;
+            // SAFETY: geteuid has no preconditions and cannot fail.
+            let euid = unsafe { libc::geteuid() };
+            if !meta.file_type().is_file()
+                || meta.uid() != euid
+                || meta.permissions().mode() & 0o077 != 0
+            {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "ledger file must be a regular 0600 file owned by the caller",
+                ));
+            }
+        }
+        Ok(file)
     }
 
     fn entry_hash(entry: &LedgerEntry) -> String {
@@ -370,13 +454,69 @@ impl OpsLedger {
             .collect()
     }
 
-    /// Append one entry under an exclusive lock, chaining it to the last line.
+    fn read_head(&self) -> std::io::Result<Option<(u64, String)>> {
+        match std::fs::symlink_metadata(self.head_path()) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e),
+            Ok(_) => {}
+        }
+        let mut f = Self::open_private(&self.head_path(), false)?;
+        let mut text = String::new();
+        f.read_to_string(&mut text)?;
+        let mut parts = text.split_whitespace();
+        match (
+            parts.next().and_then(|s| s.parse::<u64>().ok()),
+            parts.next(),
+        ) {
+            (Some(seq), Some(sha)) => Ok(Some((seq, sha.to_string()))),
+            _ => Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "malformed ledger head",
+            )),
+        }
+    }
+
+    fn write_head(&self, seq: u64, sha: &str) -> std::io::Result<()> {
+        let mut f = Self::open_private(&self.head_path(), false)?;
+        f.set_len(0)?;
+        f.write_all(format!("{seq} {sha}\n").as_bytes())?;
+        f.sync_data()
+    }
+
+    /// Check the chain and the head anchor for already-read entries.
+    fn check(&self, entries: &[LedgerEntry]) -> Result<(), String> {
+        let mut prev = "GENESIS".to_string();
+        for (i, e) in entries.iter().enumerate() {
+            if e.seq != i as u64 + 1 || e.prev_sha256 != prev || Self::entry_hash(e) != e.sha256 {
+                return Err(format!("ledger chain broken at seq {}", i + 1));
+            }
+            prev = e.sha256.clone();
+        }
+        let head = self
+            .read_head()
+            .map_err(|_| "ledger head anchor is unreadable".to_string())?;
+        match (entries.last(), head) {
+            (None, None) => Ok(()),
+            (Some(last), Some((seq, sha))) if last.seq == seq && last.sha256 == sha => Ok(()),
+            (None, Some(_)) => Err("ledger is empty but its head anchor is not".to_string()),
+            (Some(_), None) => Err("ledger head anchor is missing".to_string()),
+            (Some(_), Some(_)) => {
+                Err("ledger does not end at its head anchor (truncated or replaced)".to_string())
+            }
+        }
+    }
+
+    /// Append one entry under an exclusive lock. The chain and head anchor are
+    /// verified first; a broken ledger refuses the append.
     fn append(&self, mut entry: LedgerEntry) -> std::io::Result<LedgerEntry> {
         use fs2::FileExt;
-        let mut file = self.open_append()?;
+        self.ensure_parent()?;
+        let mut file = Self::open_private(&self.path, true)?;
         file.lock_exclusive()?;
         let result = (|| {
             let existing = Self::read_entries(&mut file)?;
+            self.check(&existing)
+                .map_err(|r| std::io::Error::new(std::io::ErrorKind::InvalidData, r))?;
             let (seq, prev) = match existing.last() {
                 Some(last) => (last.seq + 1, last.sha256.clone()),
                 None => (1, "GENESIS".to_string()),
@@ -389,32 +529,52 @@ impl OpsLedger {
             line.push(b'\n');
             file.write_all(&line)?;
             file.sync_data()?;
+            self.write_head(entry.seq, &entry.sha256)?;
             Ok(entry)
         })();
         let _ = FileExt::unlock(&file);
         result
     }
 
-    /// Verify the hash chain. Returns the number of entries.
-    pub fn verify(&self) -> Result<usize, OpError> {
-        let mut file = match std::fs::File::open(&self.path) {
-            Ok(f) => f,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+    fn load_verified(&self) -> Result<Vec<LedgerEntry>, OpError> {
+        match std::fs::symlink_metadata(&self.path) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                self.check(&[]).map_err(OpError::new)?;
+                return Ok(Vec::new());
+            }
             Err(_) => return Err(OpError::new("ledger could not be opened")),
-        };
+            Ok(_) => {}
+        }
+        let mut file = Self::open_private(&self.path, true)
+            .map_err(|_| OpError::new("ledger could not be opened"))?;
         let entries =
             Self::read_entries(&mut file).map_err(|_| OpError::new("ledger is malformed"))?;
-        let mut prev = "GENESIS".to_string();
-        for (i, e) in entries.iter().enumerate() {
-            if e.seq != i as u64 + 1 || e.prev_sha256 != prev || Self::entry_hash(e) != e.sha256 {
-                return Err(OpError::new(format!(
-                    "ledger chain broken at seq {}",
-                    i + 1
-                )));
-            }
-            prev = e.sha256.clone();
-        }
-        Ok(entries.len())
+        self.check(&entries).map_err(OpError::new)?;
+        Ok(entries)
+    }
+
+    /// Verify the hash chain and head anchor. Returns the number of entries.
+    pub fn verify(&self) -> Result<usize, OpError> {
+        Ok(self.load_verified()?.len())
+    }
+
+    /// True when the verified ledger shows a succeeded create or rotate by
+    /// `provider` for this exact `target` and `secret_name`.
+    pub fn has_issued(
+        &self,
+        provider: &str,
+        target: &str,
+        secret_name: &str,
+    ) -> Result<bool, OpError> {
+        Ok(self.load_verified()?.iter().any(|e| {
+            e.phase == "result"
+                && e.result == "succeeded"
+                && e.mode == ExecMode::Execute
+                && e.op.issues_value()
+                && e.provider == provider
+                && e.target == target
+                && e.secret_name == secret_name
+        }))
     }
 }
 
@@ -437,18 +597,55 @@ fn scrub_reason(reason: String, value: &Zeroizing<String>) -> String {
     }
 }
 
-/// Keep provider metadata short and structural (timestamps, labels, ids).
-/// Anything else is replaced, so a provider cannot echo a value into output.
+/// Keep provider metadata short and structural (timestamps, labels, ids,
+/// call descriptions, scope lists). Anything else is replaced. This is a shape
+/// limit, applied by the engine to every adapter's metadata; the engine also
+/// withholds any metadata that contains the value it just issued.
 pub(crate) fn meta_value(raw: &str) -> String {
-    let ok = raw.len() <= 64
+    let ok = !raw.is_empty()
+        && raw.len() <= 512
         && raw
             .chars()
-            .all(|c| c.is_ascii_alphanumeric() || "-_:.+=,TZ".contains(c));
+            .all(|c| c.is_ascii_alphanumeric() || "-_:.+=,/ ".contains(c));
     if ok {
         raw.to_string()
     } else {
         "[withheld]".to_string()
     }
+}
+
+/// Metadata keys are short snake_case identifiers; anything else is withheld.
+fn meta_key(raw: &str) -> String {
+    let ok = !raw.is_empty()
+        && raw.len() <= 64
+        && raw
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
+    if ok {
+        raw.to_string()
+    } else {
+        "withheld".to_string()
+    }
+}
+
+/// Apply [`meta_key`] and [`meta_value`] to every entry, and withhold any entry that
+/// contains `issued`.
+fn filter_metadata(
+    raw: BTreeMap<String, String>,
+    issued: Option<&Zeroizing<String>>,
+) -> BTreeMap<String, String> {
+    raw.into_iter()
+        .map(|(k, v)| {
+            let echoes = issued.is_some_and(|x| {
+                !x.is_empty() && (k.contains(x.as_str()) || v.contains(x.as_str()))
+            });
+            if echoes {
+                ("withheld".to_string(), "[withheld]".to_string())
+            } else {
+                (meta_key(&k), meta_value(&v))
+            }
+        })
+        .collect()
 }
 
 fn valid_field(s: &str, extra: &[char]) -> bool {
@@ -483,6 +680,17 @@ pub fn validate_request(req: &OpRequest) -> Result<(), OpError> {
 }
 
 /// Runs account operations against registered adapters.
+///
+/// Name binding: create, rotate and revoke act only on names the adapter
+/// owns ([`AccountProvider::owns_name`]). Create refuses a name that already
+/// exists in the vault. Rotate and revoke additionally require a verified
+/// ledger record of a succeeded create or rotate by the same provider for the
+/// same target and name.
+///
+/// Rotate does not revoke the predecessor; for GitHub installation tokens the
+/// predecessor stays valid until GitHub expires it (one hour after it was
+/// minted). The compensating revoke after a failed store runs without a third
+/// KILL check, because it only invalidates a token this same call just minted.
 pub struct AccountOps {
     kill_path: PathBuf,
     ledger: OpsLedger,
@@ -523,6 +731,7 @@ impl AccountOps {
         handle: &OpHandle,
         mode: ExecMode,
         result: &OpResult,
+        scope: Option<&String>,
     ) -> bool {
         let reason = match result {
             OpResult::Refused { reason }
@@ -549,20 +758,26 @@ impl AccountOps {
             mode,
             result: label.to_string(),
             reason: if phase == "intent" { None } else { reason },
+            scope: scope.map(|s| meta_value(s)),
             prev_sha256: String::new(),
             sha256: String::new(),
         };
-        let ok = self.ledger.append(entry).is_ok();
-        if ok && phase == "result" {
-            // Mirror into the existing opt-in audit log (names only).
-            crate::audit::log(
+        if self.ledger.append(entry).is_err() {
+            return false;
+        }
+        if phase == "result" {
+            // Mirror into the existing opt-in audit log (names only). Under
+            // PHANTOM_AUDIT=required a mirror failure marks the run unaudited.
+            return crate::audit::log_result(
                 &format!("account_ops.{}.{}", req.op.label(), label),
                 Some(&req.secret_name),
-            );
+            )
+            .is_ok();
         }
-        ok
+        true
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn finish(
         &self,
         req: &OpRequest,
@@ -570,8 +785,11 @@ impl AccountOps {
         mode: ExecMode,
         result: OpResult,
         metadata: BTreeMap<String, String>,
+        issued: Option<&Zeroizing<String>>,
+        scope: Option<&String>,
     ) -> OpOutcome {
-        let audited = self.record("result", req, &handle, mode, &result);
+        let metadata = filter_metadata(metadata, issued);
+        let audited = self.record("result", req, &handle, mode, &result, scope);
         OpOutcome {
             handle,
             op: req.op,
@@ -585,6 +803,42 @@ impl AccountOps {
         }
     }
 
+    /// Name-binding checks that run before planning. Fail closed.
+    fn check_binding(
+        &self,
+        provider: &dyn AccountProvider,
+        req: &OpRequest,
+        creds: &dyn CredentialSource,
+    ) -> Result<(), String> {
+        if req.op == AccountOp::Status {
+            return Ok(());
+        }
+        if !provider.owns_name(&req.secret_name) {
+            return Err("secret_name is outside this provider's vault namespace".into());
+        }
+        match req.op {
+            AccountOp::Create => match creds.exists(&req.secret_name) {
+                Ok(false) => Ok(()),
+                Ok(true) => Err("secret_name already exists; use rotate".into()),
+                Err(_) => Err("vault existence check failed; refusing".into()),
+            },
+            AccountOp::Rotate | AccountOp::Revoke => {
+                match self
+                    .ledger
+                    .has_issued(&req.provider, &req.target, &req.secret_name)
+                {
+                    Ok(true) => Ok(()),
+                    Ok(false) => Err(
+                        "no succeeded create or rotate for this target and name in the ledger"
+                            .into(),
+                    ),
+                    Err(e) => Err(format!("ledger check failed: {}", e.reason)),
+                }
+            }
+            AccountOp::Status => Ok(()),
+        }
+    }
+
     /// Run one operation. Never returns or logs a secret value.
     pub fn run(
         &self,
@@ -595,6 +849,7 @@ impl AccountOps {
     ) -> OpOutcome {
         let handle = OpHandle::mint();
         let refuse = |reason: String| OpResult::Refused { reason };
+        let none = BTreeMap::new;
 
         if let Err(e) = validate_request(req) {
             // Fields failed validation, so do not write them to the ledger.
@@ -606,37 +861,32 @@ impl AccountOps {
                 secret_name: "[invalid]".to_string(),
                 mode,
                 result: refuse(e.reason),
-                metadata: BTreeMap::new(),
+                metadata: none(),
                 audited: false,
             };
         }
         if let Err(e) = check_kill(&self.kill_path) {
-            return self.finish(req, handle, mode, refuse(e.reason), BTreeMap::new());
+            return self.finish(req, handle, mode, refuse(e.reason), none(), None, None);
         }
         let Some(provider) = self.providers.iter().find(|p| p.name() == req.provider) else {
-            return self.finish(
-                req,
-                handle,
-                mode,
-                refuse("provider is not registered".to_string()),
-                BTreeMap::new(),
-            );
+            let r = refuse("provider is not registered".to_string());
+            return self.finish(req, handle, mode, r, none(), None, None);
         };
         if !provider.supports(req.op) {
-            return self.finish(
-                req,
-                handle,
-                mode,
-                refuse(format!("provider does not support {}", req.op.label())),
-                BTreeMap::new(),
-            );
+            let r = refuse(format!("provider does not support {}", req.op.label()));
+            return self.finish(req, handle, mode, r, none(), None, None);
+        }
+        if let Err(reason) = self.check_binding(provider.as_ref(), req, creds) {
+            return self.finish(req, handle, mode, refuse(reason), none(), None, None);
         }
         let plan = match provider.plan(req) {
             Ok(p) => p,
-            Err(e) => return self.finish(req, handle, mode, refuse(e.reason), BTreeMap::new()),
+            Err(e) => return self.finish(req, handle, mode, refuse(e.reason), none(), None, None),
         };
+        let scope = plan.get("scope").cloned();
+        let scope = scope.as_ref();
         // Durable, value-free intent before any provider call.
-        if !self.record("intent", req, &handle, mode, &OpResult::DryRun) {
+        if !self.record("intent", req, &handle, mode, &OpResult::DryRun, scope) {
             return OpOutcome {
                 handle,
                 op: req.op,
@@ -645,38 +895,30 @@ impl AccountOps {
                 secret_name: req.secret_name.clone(),
                 mode,
                 result: refuse("audit ledger unavailable; refusing before provider call".into()),
-                metadata: plan,
+                metadata: filter_metadata(plan, None),
                 audited: false,
             };
         }
         if mode == ExecMode::DryRun {
-            return self.finish(req, handle, mode, OpResult::DryRun, plan);
+            return self.finish(req, handle, mode, OpResult::DryRun, plan, None, scope);
         }
         // Re-check right before the call to narrow the race with a new KILL.
         if let Err(e) = check_kill(&self.kill_path) {
-            return self.finish(req, handle, mode, refuse(e.reason), plan);
+            return self.finish(req, handle, mode, refuse(e.reason), plan, None, scope);
         }
         match provider.execute(req, creds) {
-            Err(e) => self.finish(
-                req,
-                handle,
-                mode,
-                OpResult::Failed { reason: e.reason },
-                plan,
-            ),
+            Err(e) => {
+                let r = OpResult::Failed { reason: e.reason };
+                self.finish(req, handle, mode, r, plan, None, scope)
+            }
             Ok(ProviderReply::Done(meta)) => {
                 if req.op.issues_value() {
-                    return self.finish(
-                        req,
-                        handle,
-                        mode,
-                        OpResult::Failed {
-                            reason: "provider returned no value for an issuing operation".into(),
-                        },
-                        meta,
-                    );
+                    let r = OpResult::Failed {
+                        reason: "provider returned no value for an issuing operation".into(),
+                    };
+                    return self.finish(req, handle, mode, r, meta, None, scope);
                 }
-                self.finish(req, handle, mode, OpResult::Succeeded, meta)
+                self.finish(req, handle, mode, OpResult::Succeeded, meta, None, scope)
             }
             Ok(ProviderReply::Issued(issued)) => {
                 let Issued { value, metadata } = issued;
@@ -692,18 +934,16 @@ impl AccountOps {
                             ),
                         },
                     };
-                    return self.finish(req, handle, mode, result, metadata);
+                    return self.finish(req, handle, mode, result, metadata, Some(&value), scope);
                 }
-                // Keep a zeroizing copy only for the compensating revoke.
+                // Keep a zeroizing copy only for the compensating revoke and
+                // the metadata echo check.
                 let backup = Zeroizing::new(value.as_str().to_string());
-                match sink.store(&req.secret_name, value) {
-                    Ok(()) => {
-                        drop(backup);
-                        self.finish(req, handle, mode, OpResult::Succeeded, metadata)
-                    }
+                let result = match sink.store(&req.secret_name, value) {
+                    Ok(()) => OpResult::Succeeded,
                     Err(store_err) => {
                         let store_reason = scrub_reason(store_err.reason, &backup);
-                        let result = match provider.compensate(req, &backup) {
+                        match provider.compensate(req, &backup) {
                             Ok(()) => OpResult::Compensated {
                                 reason: format!("vault store failed: {store_reason}"),
                             },
@@ -713,11 +953,10 @@ impl AccountOps {
                                     scrub_reason(e.reason, &backup)
                                 ),
                             },
-                        };
-                        drop(backup);
-                        self.finish(req, handle, mode, result, metadata)
+                        }
                     }
-                }
+                };
+                self.finish(req, handle, mode, result, metadata, Some(&backup), scope)
             }
         }
     }
