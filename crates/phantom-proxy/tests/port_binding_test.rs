@@ -32,3 +32,21 @@ async fn explicit_taken_port_returns_error() {
     let io = err.downcast_ref::<std::io::Error>().expect("io error");
     assert_eq!(io.kind(), std::io::ErrorKind::AddrInUse);
 }
+
+#[tokio::test]
+async fn occupied_port_fails_and_existing_listener_stays_usable() {
+    // A foreign listener (not a proxy) holds the port on loopback.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+
+    let err = start(port).await.err().expect("bind must fail");
+    let io = err.downcast_ref::<std::io::Error>().expect("io error");
+    assert_eq!(io.kind(), std::io::ErrorKind::AddrInUse);
+
+    // The failed attempt must not have disturbed the original listener.
+    let accept = tokio::spawn(async move { listener.accept().await.map(|_| ()) });
+    tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .expect("existing listener still accepts connections");
+    accept.await.unwrap().expect("accept succeeds");
+}
