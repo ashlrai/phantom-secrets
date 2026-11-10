@@ -71,10 +71,44 @@ SHIM
   echo "ok $label"
 }
 
+# Exercise the complete installer with a synthetic architecture, offline.
+run_unsupported_arch_case() {
+  local label="$1" installer="$2" case_dir="$root/$1"
+  local home="$case_dir/home" shims="$case_dir/shims" dest="$case_dir/dest"
+  mkdir -p "$home" "$shims"
+  cat > "$shims/uname" <<'SHIM'
+#!/bin/sh
+case "$1" in
+  -s) printf '%s\n' Linux ;;
+  -m) printf '%s\n' unsupported-test-processor ;;
+  *) exit 1 ;;
+esac
+SHIM
+  cat > "$shims/curl" <<'SHIM'
+#!/bin/sh
+printf '%s\n' 'unexpected network attempt' >&2
+exit 99
+SHIM
+  chmod 755 "$shims/uname" "$shims/curl"
+  local status=0 out
+  out="$(env -i HOME="$home" PATH="$shims:/usr/bin:/bin" \
+    PHANTOM_INSTALL_DIR="$dest" /bin/bash "$installer" </dev/null 2>&1)" || status=$?
+  [ "$status" -ne 0 ] \
+    || { echo "FAIL $label: installer succeeded"; fail=1; return; }
+  [[ "$out" == *"unsupported arch: unsupported-test-processor"* ]] \
+    || { echo "FAIL $label: missing clear architecture error"; fail=1; return; }
+  [[ "$out" != *"unexpected network attempt"* ]] \
+    || { echo "FAIL $label: attempted network access"; fail=1; return; }
+  [ ! -e "$dest/phantom" ] && [ ! -e "$dest/phantom-mcp" ] \
+    || { echo "FAIL $label: created a destination executable"; fail=1; return; }
+  echo "ok $label"
+}
+
 n=0
 for installer in "${installers[@]}"; do
   [ -f "$installer" ] || { echo "FAIL missing installer: $installer"; exit 1; }
   n=$((n + 1))
   run_case "candidate-create-failure-$n" "$installer"
+  run_unsupported_arch_case "unsupported-arch-$n" "$installer"
 done
 exit "$fail"
