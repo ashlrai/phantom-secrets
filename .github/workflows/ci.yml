@@ -283,6 +283,7 @@ jobs:
           scripts/installer-copy-parity.test.mjs
           scripts/installer-copy-source-map.test.mjs
           scripts/installer-copy-sync.test.mjs
+          scripts/installer-custom-tmpdir.test.mjs
           scripts/installer-default-staging-root.test.mjs
           scripts/installer-download-failure.test.mjs
           scripts/installer-download-interrupt.test.mjs
@@ -304,6 +305,7 @@ jobs:
           scripts/installer-path-candidate-unicode-parent.test.mjs
           scripts/installer-path-cd-command.test.mjs
           scripts/installer-path-columns-export.test.mjs
+          scripts/installer-path-candidate-create-failure.test.mjs
           scripts/installer-path-comment-punctuation.test.mjs
           scripts/installer-path-comment-with-spaces.test.mjs
           scripts/installer-path-comments-integration.test.mjs
@@ -363,10 +365,12 @@ jobs:
           scripts/installer-staging-apostrophe-parent.test.mjs
           scripts/installer-staging-cleanup.test.mjs
           scripts/installer-staging-contract.test.mjs
+          scripts/installer-staging-creation-failure.test.mjs
           scripts/installer-staging-directory-reference.test.mjs
           scripts/installer-staging-explicit-parent.test.mjs
           scripts/installer-staging-expression-match.test.mjs
           scripts/installer-staging-failure.test.mjs
+          scripts/installer-staging-mktemp-failure.test.mjs
           scripts/installer-staging-prefix.test.mjs
           scripts/installer-staging-prefixes.test.mjs
           scripts/installer-staging-setup-failure.test.mjs
@@ -724,6 +728,8 @@ jobs:
           psql --version
           psql --host 127.0.0.1 --port 54322 --username postgres --dbname postgres \
             --file ../../scripts/supabase/assert-local-authority.sql
+      - name: Test Data API grants and row isolation
+        run: supabase test db --local supabase/tests/database
       - name: Lint local schema
         run: supabase db lint --local --level warning --fail-on warning
       - name: Run local security and performance advisors
