@@ -890,6 +890,28 @@ mod tests {
         assert_eq!(std::fs::read(&target).unwrap(), b"NEW");
     }
 
+    /// Replacing an ordinary file leaves exactly the replacement bytes and no
+    /// staging file, for both the plain and the exact-before-image writers.
+    #[test]
+    fn test_atomic_write_replaces_existing_file_and_leaves_no_temp_file() {
+        let dir = TempDir::new().unwrap();
+        let target = dir.path().join("replace.env");
+        std::fs::write(&target, b"OLD_KEY=old-fixture\n").unwrap();
+
+        atomic_write(&target, b"NEW_KEY=replacement-fixture\n").unwrap();
+        assert_eq!(
+            std::fs::read(&target).unwrap(),
+            b"NEW_KEY=replacement-fixture\n"
+        );
+        assert_eq!(list_dir(dir.path()), vec!["replace.env"]);
+
+        let before = read_regular_file(&target).unwrap().unwrap();
+        atomic_write_if_unchanged(&target, Some(&before), b"THIRD=exact-fixture\n").unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"THIRD=exact-fixture\n");
+        let files = list_dir(dir.path());
+        assert_eq!(files, vec!["replace.env"], "unexpected files: {files:?}");
+    }
+
     #[test]
     fn test_atomic_write_supports_relative_target_in_current_directory() {
         let unique = std::time::SystemTime::now()
