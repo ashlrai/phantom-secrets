@@ -97,11 +97,35 @@ add_to_user_path \"\$1\""
   echo "ok $label"
 }
 
+run_unsupported_os() { # label installer
+  local label="$1" installer="$2" case_dir="$root/$1"
+  local home="$case_dir/home" shims="$case_dir/shims" destination="$case_dir/bin/phantom"
+  mkdir -p "$home" "$shims"
+  cat > "$shims/uname" <<'SHIM'
+#!/bin/sh
+case "$1" in -s) echo FreeBSD ;; -m) echo x86_64 ;; *) exit 1 ;; esac
+SHIM
+  cat > "$shims/curl" <<SHIM
+#!/bin/sh
+touch "$case_dir/network-attempt"
+exit 1
+SHIM
+  chmod 755 "$shims/uname" "$shims/curl"
+  local status=0 out
+  out="$(env -i HOME="$home" PATH="$shims:/usr/bin:/bin" \
+    PHANTOM_INSTALL_DIR="$case_dir/bin" /bin/bash "$installer" </dev/null 2>&1)" || status=$?
+  [ "$status" -ne 0 ] && [[ "$out" == *"unsupported OS: FreeBSD"* ]] \
+    && [ ! -e "$destination" ] && [ ! -e "$case_dir/network-attempt" ] \
+    || { echo "FAIL $label: unsupported OS was not rejected before installation or download"; fail=1; return; }
+  echo "ok $label"
+}
+
 n=0
 for installer in "${installers[@]}"; do
   [ -f "$installer" ] || { echo "FAIL missing installer: $installer"; exit 1; }
   n=$((n + 1))
   run_case "candidate-create-failure-$n" "$installer"
   run_spaces_case "rc-parent-spaces-$n" "$installer"
+  run_unsupported_os "unsupported-os-$n" "$installer"
 done
 exit "$fail"
