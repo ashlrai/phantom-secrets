@@ -71,11 +71,11 @@ test("the committed migration set matches its ordered digest manifest", async ()
   const result = await verifyMigrationManifest({
     supabaseDirectory: projectSupabaseDirectory,
   });
-  assert.equal(result.count, 12);
+  assert.equal(result.count, 14);
   assert.equal(result.files[0], "001_initial.sql");
   assert.equal(
     result.files.at(-1),
-    "20260903180004_vercel_oauth_security_foundation.sql",
+    "20261009231437_clamp_browser_table_authority.sql",
   );
 });
 
