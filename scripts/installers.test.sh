@@ -3,7 +3,7 @@
 # file, it fails, leaves the user's shell configuration untouched (bytes,
 # inode, mode), and removes the first temporary file (.phantom-path.before.*).
 # Runs the shipped function from each installer copy in a throwaway HOME; no
-# network, node, or real dotfiles.
+# network, node, or real dotfiles. Also exercises cleanup after extraction fails.
 # Usage: bash scripts/installers.test.sh [installer ...]
 set -euo pipefail
 
@@ -71,10 +71,56 @@ SHIM
   echo "ok $label"
 }
 
+run_extraction_failure() { # label installer
+  local label="$1" installer="$2" case_dir="$root/$1"
+  local home="$case_dir/home" shims="$case_dir/shims" fixture="$case_dir/fixture"
+  local parent="$case_dir/live" payload="$case_dir/payload" archive digest status=0 out
+  local os arch real_tar
+  case "$(uname -s)" in Darwin) os=apple-darwin ;; Linux) os=unknown-linux-gnu ;; *) echo "FAIL $label: unsupported OS"; fail=1; return ;; esac
+  case "$(uname -m)" in x86_64|amd64) arch=x86_64 ;; arm64|aarch64) arch=aarch64 ;; *) echo "FAIL $label: unsupported architecture"; fail=1; return ;; esac
+  mkdir -p "$home" "$shims" "$fixture" "$parent/bin" "$payload"
+  printf 'preserve me\n' > "$parent/bin/old-install"
+  printf 'fixture\n' > "$payload/phantom"
+  printf 'fixture\n' > "$payload/phantom-mcp"
+  archive="phantom-$arch-$os.tar.gz"
+  real_tar="$(command -v tar)"
+  "$real_tar" -czf "$fixture/$archive" -C "$payload" phantom phantom-mcp
+  if command -v sha256sum >/dev/null 2>&1; then
+    digest="$(sha256sum "$fixture/$archive" | awk '{print $1}')"
+  else
+    digest="$(shasum -a 256 "$fixture/$archive" | awk '{print $1}')"
+  fi
+  printf '%s  %s\n' "$digest" "$archive" > "$fixture/$archive.sha256"
+  cat > "$shims/tar" <<SHIM
+#!/bin/sh
+if [ "\$1" = --no-same-owner ]; then
+  "$real_tar" "\$@" || exit 1
+  printf '%s\n' "\$5" > "$case_dir/extracted-to"
+  exit 42
+fi
+exec "$real_tar" "\$@"
+SHIM
+  chmod 755 "$shims/tar"
+  out="$(env -i HOME="$home" PATH="$shims:/usr/bin:/bin" \
+    PHANTOM_INSTALL_DIR="$parent/bin" PHANTOM_TEST_ALLOW_INSTALLER_OVERRIDES=1 \
+    PHANTOM_TEST_LOCAL_RELEASE_DIR="$fixture" PHANTOM_TAG=v1.2.3 \
+    /bin/bash "$installer" </dev/null 2>&1)" || status=$?
+  [ "$status" -ne 0 ] && [[ "$out" == *'could not extract release archive'* ]] \
+    || { echo "FAIL $label: expected extraction failure"; fail=1; return; }
+  [ -s "$case_dir/extracted-to" ] \
+    || { echo "FAIL $label: extraction was not reached"; fail=1; return; }
+  [ ! -e "$(cat "$case_dir/extracted-to")" ] \
+    && [ "$(ls -A "$parent")" = bin ] \
+    && [ "$(cat "$parent/bin/old-install")" = 'preserve me' ] \
+    || { echo "FAIL $label: staging or lock remains, or existing install changed"; fail=1; return; }
+  echo "ok $label"
+}
+
 n=0
 for installer in "${installers[@]}"; do
   [ -f "$installer" ] || { echo "FAIL missing installer: $installer"; exit 1; }
   n=$((n + 1))
   run_case "candidate-create-failure-$n" "$installer"
+  run_extraction_failure "extraction-failure-$n" "$installer"
 done
 exit "$fail"
