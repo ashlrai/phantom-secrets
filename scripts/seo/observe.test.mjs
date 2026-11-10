@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -76,6 +76,35 @@ test("the CLI rejects a missing required output or output value", () => {
   }
 });
 
+test("the CLI rejects malformed JSON inputs without creating a report or summary", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "phantom-seo-malformed-"));
+  try {
+    const malformed = path.join(directory, "malformed.json");
+    await writeFile(malformed, '{"unfinished":');
+    for (const [flag, diagnostic] of [
+      ["--experiments", /experiment ledger is not valid JSON/],
+      ["--gsc-file", /gsc aggregate input is not valid JSON/],
+      ["--ga4-file", /ga4 aggregate input is not valid JSON/],
+      ["--ahrefs-file", /ahrefs aggregate input is not valid JSON/],
+    ]) {
+      const report = path.join(directory, "report.json");
+      const summary = path.join(directory, "summary.md");
+      const result = spawnSync(process.execPath, [
+        path.join(scriptDirectory, "observe.mjs"), flag, malformed,
+        "--out", report, "--summary", summary,
+      ], { cwd: repositoryDirectory, encoding: "utf8", timeout: 5_000 });
+      assert.ifError(result.error);
+      assert.equal(result.status, 1);
+      assert.equal(result.stdout, "");
+      assert.match(result.stderr, diagnostic);
+      await assert.rejects(stat(report), { code: "ENOENT" });
+      await assert.rejects(stat(summary), { code: "ENOENT" });
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("the documented local command writes its report and fails closed on an unreadable ledger", async () => {
   const readme = await readFile(path.join(repositoryDirectory, "apps/web/README.md"), "utf8");
   const command = readme.match(/```sh\n(node scripts\/seo\/observe\.mjs [^\n]+)\n```/);
@@ -106,6 +135,29 @@ test("the documented local command writes its report and fails closed on an unre
   }
 });
 
+test("the CLI reports failure when the output directory cannot be created", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "phantom-seo-output-"));
+  try {
+    const obstruction = path.join(directory, "not-a-directory");
+    await writeFile(obstruction, "unchanged");
+    const result = spawnSync(process.execPath, [
+      path.join(scriptDirectory, "observe.mjs"),
+      "--experiments", path.join(directory, "missing-ledger.json"),
+      "--out", path.join(obstruction, "reports", "observation.json"),
+      "--summary", path.join(directory, "summary.md"),
+    ], { cwd: repositoryDirectory, encoding: "utf8", timeout: 5_000 });
+
+    assert.ifError(result.error);
+    assert.equal(result.status, 1);
+    assert.equal(result.stdout, "");
+    assert.match(result.stderr, /SEO observation could not write its sanitized report:/);
+    assert.equal(await readFile(obstruction, "utf8"), "unchanged");
+    await assert.rejects(stat(path.join(directory, "summary.md")), { code: "ENOENT" });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("HTML entities are decoded exactly once", () => {
   assert.equal(decodeEntities("&amp;&quot;&#39;&lt;&gt;"), "&\"'<>");
   assert.equal(decodeEntities("&amp;lt;script&amp;gt;"), "&lt;script&gt;");
@@ -119,6 +171,10 @@ test("decimal HTML entities are decoded exactly once", () => {
   assert.equal(decodeEntities("&#38;amp;"), "&amp;");
   // Out-of-range or surrogate references stay literal.
   assert.equal(decodeEntities("&#0;&#1114112;&#55296;"), "&#0;&#1114112;&#55296;");
+});
+
+test("empty HTML produces no structured data or errors offline", () => {
+  assert.deepEqual(structuredData(""), { values: [], errors: [] });
 });
 
 test("JSON-LD extraction accepts HTML-compatible script endings", () => {
@@ -137,6 +193,28 @@ test("JSON-LD extraction accepts HTML-compatible script endings", () => {
     values: [],
     errors: ["invalid_json_ld"],
   });
+});
+
+test("JSON-LD extraction preserves each valid block independently", () => {
+  const first = {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    headline: "A & B < C",
+    author: { name: "Zoë", sameAs: ["https://example.com/author?a=1&b=2"] },
+  };
+  const second = [
+    { "@type": "SoftwareApplication", name: "Phantom", version: "0.8.7" },
+    { "@type": "Thing", description: "Literal &amp; entity" },
+  ];
+  const third = { "@type": "FAQPage", accepted: true, count: 0, extra: null };
+  const html = [
+    `<script type="application/ld+json">${JSON.stringify(first)}</script>`,
+    '<script type="application/json">{"ignored":true}</script>',
+    `<script TYPE="APPLICATION/LD+JSON">${JSON.stringify(second)}</ScRiPt >`,
+    `<script type='application/ld+json'>${JSON.stringify(third)}</script>`,
+  ].join("\n");
+
+  assert.deepEqual(structuredData(html), { values: [first, second, third], errors: [] });
 });
 
 test("machine-readable links require exact canonical URLs", () => {
@@ -196,6 +274,7 @@ async function withFixtureServer(action, overrides = {}) {
       response.setHeader("content-type", "application/xml");
       response.end(
         `<?xml version="1.0"?><urlset>${[...publicPaths]
+          .filter((route) => !route.endsWith(".txt"))
           .map((route) => `<url><loc>${origin}${route}</loc></url>`)
           .join("")}</urlset>`,
       );
@@ -384,6 +463,26 @@ test("local redirects are followed within the boundary and limited to two hops",
   );
 });
 
+test("a local redirect outside the boundary is rejected without fetching its destination", async () => {
+  await withFixtureServer(async ({ origin: destination, requests: destinationRequests }) => {
+    await withFixtureServer(
+      async ({ origin, options, requests }) => {
+        await assert.rejects(
+          requestWithinBoundary(`${origin}/start`, {
+            fetchImpl: fetch,
+            networkPolicy: options.networkPolicy,
+            retries: 0,
+          }),
+          /network destination is not allowlisted/,
+        );
+        assert.deepEqual(requests, ["/start"]);
+        assert.deepEqual(destinationRequests, []);
+      },
+      { "/start": (response) => { response.writeHead(302, { location: `${destination}/outside` }).end(); } },
+    );
+  });
+});
+
 test("one monotonic request deadline covers retries and redirects", async (t) => {
   const temporary = new Response("temporary", { status: 503 });
   const redirect = new Response("", {
@@ -482,6 +581,53 @@ test("a complete public fixture produces a deterministic, sanitized passing repo
     assert.equal(JSON.stringify(first).includes("github/repos"), false);
     assert.ok(requests.length >= publicPaths.size + 6);
     assert.match(renderSummary(first), /does not edit content, publish, deploy, contact people/);
+  });
+});
+
+test("empty aggregate observation inputs remain empty", () => {
+  const period = { start: "2026-07-01", end: "2026-07-28", data_state: "final" };
+  const aggregateInputs = Object.fromEntries(
+    ["gsc", "ga4", "ahrefs"].map((kind) => [kind, {
+      schema_version: `phantom-seo-${kind}-v1`,
+      period,
+      rows: [],
+    }]),
+  );
+  for (const [kind, input] of Object.entries(aggregateInputs)) {
+    assert.deepEqual(validateAggregateInput(kind, input, publicPaths, new Date("2026-09-05T12:00:00Z")), {
+      state: "supplied",
+      ...input,
+      ...(kind === "ga4" ? { suppressed_rows: 0 } : {}),
+    });
+  }
+});
+
+test("an observation with no experiments or aggregate inputs reports none and invents nothing", async () => {
+  const emptyLedger = {
+    schema_version: "phantom-seo-experiments-v1",
+    default_observation_days: 28,
+    experiments: [],
+  };
+  assert.deepEqual(
+    validateExperiments(emptyLedger, publicPaths, new Date("2026-09-05T12:00:00Z")),
+    emptyLedger,
+  );
+
+  await withFixtureServer(async ({ options }) => {
+    // No experiments and no aggregateInputs options: every default must be empty.
+    const report = await observeProduction(options);
+    assert.deepEqual(report.experiments, emptyLedger);
+    assert.deepEqual(report.aggregate_inputs, {
+      gsc: { state: "not_supplied" },
+      ga4: { state: "not_supplied" },
+      ahrefs: { state: "not_supplied" },
+    });
+    assert.equal(report.verdict, "PASS");
+    assert.deepEqual(report.findings, []);
+    const summary = renderSummary(report);
+    assert.match(summary, /No checked-in experiments are active\./);
+    assert.match(summary, /No failures or warnings\./);
+    assert.match(summary, /- GSC: not_supplied/);
   });
 });
 
@@ -948,6 +1094,21 @@ test("product guide schema may move from the umbrella homepage to /secrets", asy
   );
 });
 
+test("aggregate inputs reject empty input with an actionable error", () => {
+  for (const kind of ["gsc", "ga4", "ahrefs"]) {
+    assert.throws(
+      () => validateAggregateInput(kind, {}, publicPaths),
+      { message: new RegExp(`^${kind} input is missing schema_version$`) },
+    );
+    for (const value of [null, undefined]) {
+      assert.throws(
+        () => validateAggregateInput(kind, value, publicPaths),
+        { message: new RegExp(`^${kind} input must be an object$`) },
+      );
+    }
+  }
+});
+
 test("Search Console input accepts finalized page aggregates and rejects raw queries", () => {
   const value = {
     schema_version: "phantom-seo-gsc-v1",
@@ -977,6 +1138,26 @@ test("Search Console input accepts finalized page aggregates and rejects raw que
       ),
     /must not contain query or hash data/,
   );
+});
+
+test("duplicate aggregate records are retained, with GA4 suppression applied per row", () => {
+  const period = { start: "2026-07-01", end: "2026-07-28", data_state: "final" };
+  const now = new Date("2026-09-05T12:00:00Z");
+  const cases = [
+    ["gsc", { page_path: "/docs", brand_class: "nonbrand", clicks: 2, impressions: 10, ctr: 0.2, position: 4 }],
+    ["ga4", { page_path: "/docs", referral_class: "other", sessions: 10, engaged_sessions: 5, engagement_rate: 0.5, key_events: 1 }],
+    ["ahrefs", { page_path: "/docs", estimated_organic_traffic: 12, referring_domains: 3 }],
+  ];
+  for (const [kind, row] of cases) {
+    const small = kind === "ga4" ? { ...row, sessions: 9 } : null;
+    const result = validateAggregateInput(kind, {
+      schema_version: `phantom-seo-${kind}-v1`,
+      period,
+      rows: [row, { ...row }, ...(small ? [small, { ...small }] : [])],
+    }, publicPaths, now);
+    assert.deepEqual(result.rows, [row, row], `${kind} retains both duplicate records`);
+    if (kind === "ga4") assert.equal(result.suppressed_rows, 2);
+  }
 });
 
 test("aggregate periods reject impossible dates and days that are not yet complete", () => {

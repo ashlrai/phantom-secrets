@@ -33,6 +33,89 @@ pub const GITHUB_API_ORIGIN: &str = "https://api.github.com";
 pub const GITHUB_API_VERSION: &str = "2022-11-28";
 /// Installation tokens expire one hour after creation.
 pub const INSTALLATION_TOKEN_TTL_SECS: u64 = 3_600;
+/// Vault namespace this adapter issues into and revokes from.
+pub const INSTALL_TOKEN_NAME_PREFIX: &str = "GITHUB_APP_INSTALL_";
+/// Prefix GitHub uses for installation access tokens.
+const INSTALL_TOKEN_PREFIX: &str = "ghs_";
+
+/// True when `value` has the installation-token shape: the `ghs_` prefix,
+/// then only token characters (the stateless format adds `_` and `.`).
+pub(crate) fn is_installation_token(value: &str) -> bool {
+    value.len() > INSTALL_TOKEN_PREFIX.len() + 8
+        && value.len() <= 4096
+        && value.starts_with(INSTALL_TOKEN_PREFIX)
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-')
+}
+
+/// The narrow scope every minted token is restricted to. Both parts are
+/// required and must be non-empty; there is no "whole installation" default.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GithubTokenScope {
+    /// Repository names (without owner) the token may access.
+    pub repositories: Vec<String>,
+    /// Permission name to level, e.g. `contents` -> `write`.
+    pub permissions: BTreeMap<String, String>,
+}
+
+impl GithubTokenScope {
+    /// Refuse an empty or malformed scope.
+    pub fn validate(&self) -> Result<(), OpError> {
+        if self.repositories.is_empty() || self.repositories.len() > 500 {
+            return Err(OpError::new(
+                "token scope needs 1 to 500 repositories; refusing an unscoped token",
+            ));
+        }
+        for r in &self.repositories {
+            let ok = !r.is_empty()
+                && r.len() <= 100
+                && r.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+                && r != "."
+                && r != "..";
+            if !ok {
+                return Err(OpError::new("token scope has a malformed repository name"));
+            }
+        }
+        if self.permissions.is_empty() {
+            return Err(OpError::new(
+                "token scope needs at least one permission; refusing an unscoped token",
+            ));
+        }
+        for (k, v) in &self.permissions {
+            let name_ok = !k.is_empty()
+                && k.len() <= 64
+                && k.chars().all(|c| c.is_ascii_lowercase() || c == '_');
+            if !name_ok || !matches!(v.as_str(), "read" | "write" | "admin") {
+                return Err(OpError::new("token scope has a malformed permission"));
+            }
+        }
+        Ok(())
+    }
+
+    /// Value-free label for the plan and the ledger.
+    pub fn label(&self) -> String {
+        let perms: Vec<String> = self
+            .permissions
+            .iter()
+            .map(|(k, v)| format!("{k}:{v}"))
+            .collect();
+        format!(
+            "repositories={} permissions={}",
+            self.repositories.join(","),
+            perms.join(",")
+        )
+    }
+
+    fn body(&self) -> String {
+        serde_json::json!({
+            "repositories": self.repositories,
+            "permissions": self.permissions,
+        })
+        .to_string()
+    }
+}
 
 /// HTTP method subset this adapter uses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -122,20 +205,24 @@ impl HttpTransport for GithubHttps {
 pub struct GithubAppInstallationProvider {
     client_id: String,
     pem_name: String,
+    scope: GithubTokenScope,
     transport: Box<dyn HttpTransport>,
 }
 
 impl GithubAppInstallationProvider {
     /// `client_id` is the App's client id (JWT `iss`, not secret). `pem_name`
-    /// is the vault name of the App private key.
+    /// is the vault name of the App private key. `scope` is required; an
+    /// empty scope is refused at plan time, before any provider call.
     pub fn new(
         client_id: impl Into<String>,
         pem_name: impl Into<String>,
+        scope: GithubTokenScope,
         transport: Box<dyn HttpTransport>,
     ) -> Self {
         Self {
             client_id: client_id.into(),
             pem_name: pem_name.into(),
+            scope,
             transport,
         }
     }
@@ -194,6 +281,12 @@ impl AccountProvider for GithubAppInstallationProvider {
         true
     }
 
+    fn owns_name(&self, secret_name: &str) -> bool {
+        secret_name.len() > INSTALL_TOKEN_NAME_PREFIX.len()
+            && secret_name.starts_with(INSTALL_TOKEN_NAME_PREFIX)
+            && secret_name != self.pem_name
+    }
+
     fn plan(&self, req: &OpRequest) -> Result<BTreeMap<String, String>, OpError> {
         let id = Self::installation_id(&req.target)?;
         let mut m = BTreeMap::new();
@@ -208,7 +301,9 @@ impl AccountProvider for GithubAppInstallationProvider {
         m.insert("call".into(), call);
         m.insert("auth".into(), auth.into());
         if req.op.issues_value() {
+            self.scope.validate()?;
             m.insert("ttl_secs".into(), INSTALLATION_TOKEN_TTL_SECS.to_string());
+            m.insert("scope".into(), self.scope.label());
         }
         Ok(m)
     }
@@ -221,9 +316,13 @@ impl AccountProvider for GithubAppInstallationProvider {
         let id = Self::installation_id(&req.target)?;
         match req.op {
             AccountOp::Create | AccountOp::Rotate => {
+                self.scope.validate()?;
                 let jwt = self.app_jwt(creds)?;
                 let path = format!("/app/installations/{id}/access_tokens");
-                let reply = self.transport.send(Method::Post, &path, &jwt, Some("{}"))?;
+                let body = self.scope.body();
+                let reply = self
+                    .transport
+                    .send(Method::Post, &path, &jwt, Some(&body))?;
                 if reply.status != 201 {
                     return Err(Self::http_error(reply.status, &reply.body));
                 }
@@ -250,6 +349,11 @@ impl AccountProvider for GithubAppInstallationProvider {
             }
             AccountOp::Revoke => {
                 let token = creds.read(&req.secret_name)?;
+                if !is_installation_token(&token) {
+                    return Err(OpError::new(
+                        "stored value does not have the installation-token shape; not sending it",
+                    ));
+                }
                 let reply =
                     self.transport
                         .send(Method::Delete, "/installation/token", &token, None)?;
@@ -291,6 +395,11 @@ impl AccountProvider for GithubAppInstallationProvider {
     }
 
     fn compensate(&self, _req: &OpRequest, issued: &Zeroizing<String>) -> Result<(), OpError> {
+        if !is_installation_token(issued) {
+            return Err(OpError::new(
+                "issued value does not have the installation-token shape; not sending it",
+            ));
+        }
         let reply = self
             .transport
             .send(Method::Delete, "/installation/token", issued, None)?;
