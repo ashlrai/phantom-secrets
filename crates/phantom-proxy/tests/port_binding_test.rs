@@ -32,3 +32,16 @@ async fn explicit_taken_port_returns_error() {
     let io = err.downcast_ref::<std::io::Error>().expect("io error");
     assert_eq!(io.kind(), std::io::ErrorKind::AddrInUse);
 }
+
+#[tokio::test]
+async fn released_listener_address_can_be_rebound() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    drop(listener);
+
+    let proxy = start(addr.port())
+        .await
+        .expect("released port must be reusable");
+    assert_eq!(proxy.port(), addr.port());
+    proxy.shutdown().await;
+}
