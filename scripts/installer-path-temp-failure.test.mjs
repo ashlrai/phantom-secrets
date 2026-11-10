@@ -21,8 +21,12 @@ function pathUpdateFunction(source, file) {
 
 const pathUpdate = pathUpdateFunction(installer, 'scripts/install.sh');
 
-for (const failedTemp of ['before', 'candidate']) {
-  test(`PATH update fails safely when ${failedTemp} temporary-file creation fails`, (t) => {
+for (const [file, source] of [
+  ['scripts/install.sh', installer],
+  ['apps/web/public/install.sh', publicInstaller],
+]) for (const failedTemp of ['before', 'candidate']) {
+  test(`${file}: PATH update fails safely when ${failedTemp} temporary-file creation fails`, (t) => {
+    const pathUpdate = pathUpdateFunction(source, file);
     const root = mkdtempSync(join(tmpdir(), 'phantom-path-temp-failure-'));
     t.after(() => rmSync(root, { recursive: true, force: true }));
     const home = join(root, 'home');
