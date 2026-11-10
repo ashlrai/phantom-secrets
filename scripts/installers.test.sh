@@ -2,6 +2,7 @@
 # Offline check: when add_to_user_path cannot create the candidate PATH-edit
 # file, it fails, leaves the user's shell configuration untouched (bytes,
 # inode, mode), and removes the first temporary file (.phantom-path.before.*).
+# Also checks successful PATH updates under a directory containing spaces.
 # Runs the shipped function from each installer copy in a throwaway HOME; no
 # network, node, or real dotfiles.
 # Usage: bash scripts/installers.test.sh [installer ...]
@@ -71,10 +72,36 @@ SHIM
   echo "ok $label"
 }
 
+run_spaces_case() { # label installer
+  local label="$1" installer="$2" case_dir="$root/$1"
+  local home="$case_dir/home with spaces" bin="$case_dir/bin with spaces"
+  local rc="$home/.bashrc" harness status=0
+  mkdir -p "$home" "$bin"
+  printf '# existing configuration\n' > "$rc"
+  harness="set -euo pipefail; umask 077
+$(fn "$installer" say)
+$(fn "$installer" file_identity)
+$(fn "$installer" file_link_count)
+$(fn "$installer" add_to_user_path)
+add_to_user_path \"\$1\""
+
+  env -i HOME="$home" SHELL=/bin/bash PATH=/usr/bin:/bin \
+    /bin/bash -c "$harness" t "$bin" </dev/null >/dev/null 2>&1 || status=$?
+  [ "$status" -eq 0 ] \
+    || { echo "FAIL $label: PATH update failed"; fail=1; return; }
+  printf '# existing configuration\n\n# phantom-secrets PATH\nexport PATH="%s:$PATH"\n' "$bin" > "$case_dir/expected"
+  cmp -s "$rc" "$case_dir/expected" \
+    || { echo "FAIL $label: intended rc file has unexpected contents"; fail=1; return; }
+  [ "$(ls -A "$home")" = ".bashrc" ] \
+    || { echo "FAIL $label: temporary files remain in rc directory"; fail=1; return; }
+  echo "ok $label"
+}
+
 n=0
 for installer in "${installers[@]}"; do
   [ -f "$installer" ] || { echo "FAIL missing installer: $installer"; exit 1; }
   n=$((n + 1))
   run_case "candidate-create-failure-$n" "$installer"
+  run_spaces_case "rc-parent-spaces-$n" "$installer"
 done
 exit "$fail"
