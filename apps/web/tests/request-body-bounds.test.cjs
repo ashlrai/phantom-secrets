@@ -258,3 +258,44 @@ test("a streamed JSON body at the 4096-byte route limit is accepted, but one byt
     }
   }
 });
+
+test("an empty request body reads as an empty string without throwing", async () => {
+  const noBody = new Request("https://phm.dev/test", { method: "POST" });
+  assert.equal(noBody.body, null);
+  assert.equal(await body.readBoundedText(noBody, 10), "");
+
+  const emptyString = new Request("https://phm.dev/test", {
+    method: "POST",
+    body: "",
+  });
+  assert.equal(await body.readBoundedText(emptyString, 10), "");
+
+  const zeroLength = new Request("https://phm.dev/test", {
+    method: "POST",
+    headers: { "content-length": "0" },
+    body: "",
+  });
+  assert.equal(await body.readBoundedText(zeroLength, 10), "");
+
+  const emptyStream = new Request("https://phm.dev/test", {
+    method: "POST",
+    body: new ReadableStream({ start: (controller) => controller.close() }),
+    duplex: "half",
+  });
+  assert.equal(await body.readBoundedText(emptyStream, 10), "");
+});
+
+test("an empty request body is not a JSON object and maps to a 400 response", async () => {
+  for (const init of [{ method: "POST" }, { method: "POST", body: "" }]) {
+    await assert.rejects(
+      body.readBoundedJsonObject(new Request("https://phm.dev/test", init), 10),
+      (error) => error.status === 400 && error.code === "invalid_body",
+    );
+  }
+
+  const response = body.requestBodyErrorResponse(
+    new body.RequestBodyError("invalid_body", 400),
+  );
+  assert.equal(response.status, 400);
+  assert.deepEqual(await response.json(), { error: "invalid_body" });
+});
