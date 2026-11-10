@@ -92,6 +92,17 @@ test("without IntersectionObserver visibility and reduced motion still control t
   f.hidden(true); assert.equal(f.paused, true); f.hidden(false); assert.equal(f.paused, false);
   f.reduced(true); assert.equal(f.paused, true); controller.dispose();
 });
+test("reduced motion at startup holds the carousel through every other signal until the preference clears", () => {
+  const f = carouselFixture({ reduced: true }); const controller = f.start(); assert.equal(f.paused, true);
+  f.intersect(true); assert.equal(f.paused, true, "visible carousel stays paused under reduced motion");
+  f.hidden(true); f.hidden(false); f.window.emit("pagehide"); f.window.emit("pageshow"); assert.equal(f.paused, true);
+  controller.setPaused(false); assert.equal(f.paused, true, "resume cannot override reduced motion");
+  f.reduced(false); assert.equal(f.paused, false, "clearing the preference resumes a visible, unpaused carousel"); controller.dispose();
+});
+test("reduced motion holds the carousel even without IntersectionObserver", () => {
+  const f = carouselFixture({ reduced: true, intersection: false }); const controller = f.start(); assert.equal(f.paused, true);
+  f.reduced(false); assert.equal(f.paused, false); f.reduced(true); assert.equal(f.paused, true); controller.dispose();
+});
 function navigationFixture(pathname, menuOpen = false, release = null) {
   const window = new Surface(); window.scrollY = 0; window.location = { hash: "", replace() { assert.fail("not a legacy bookmark"); } };
   const effects = []; const stateUpdates = []; const trigger = { focusCount: 0, focus() { this.focusCount++; } }; let stateIndex = 0;
