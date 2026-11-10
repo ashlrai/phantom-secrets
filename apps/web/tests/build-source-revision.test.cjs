@@ -255,3 +255,15 @@ test("source drift between actual Git observations is refused", () => {
     assert.equal(changed, true);
   });
 });
+
+test("a source directory that does not exist falls back to unidentified without throwing", () => {
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), "phantom-absent-source-"));
+  try {
+    const absent = path.join(parent, "never-created");
+    assert.doesNotThrow(() => readBuildSourceRevision(absent));
+    assert.equal(readBuildSourceRevision(absent), null);
+    assert.equal(buildMetadata(absent), "unidentified");
+  } finally {
+    fs.rmSync(parent, { recursive: true, force: true });
+  }
+});
