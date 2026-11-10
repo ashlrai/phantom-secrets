@@ -172,6 +172,32 @@ assert.doesNotMatch(wrapperSource, /Install from source|cargo install phantom-se
     rmSync(testDir, { recursive: true, force: true });
   }
 
+  // Unknown operating systems are rejected even on a supported architecture:
+  // the OS, not the CPU, is what fails, and nothing is selected or touched.
+  for (const platform of ["aix", "android", "haiku", "netbsd", "sunos"]) {
+    for (const arch of ["x64", "arm64"]) {
+      const osCache = join(mkdtempSync(join(tmpdir(), "phantom-cli-unsupported-os-")), "cache");
+      const calls = [];
+      try {
+        assert.throws(() => getPlatformTarget({ platform, arch }), new RegExp(`Unsupported platform: ${platform}-${arch}`));
+        await assert.rejects(
+          ensureBinary({
+            cacheDir: osCache,
+            runtime: { platform, arch },
+            execFileSyncImpl: () => { calls.push("exec"); return Buffer.alloc(0); },
+            downloadImpl: async () => { calls.push("download"); throw new Error("unexpected download"); },
+            extractImpl: () => { calls.push("extract"); },
+          }),
+          new RegExp(`Unsupported platform: ${platform}-${arch}`)
+        );
+        assert.deepStrictEqual(calls, [], `${platform}-${arch} must not select or run a package`);
+        assert.strictEqual(existsSync(osCache), false, `${platform}-${arch} must not create a cache`);
+      } finally {
+        rmSync(join(osCache, ".."), { recursive: true, force: true });
+      }
+    }
+  }
+
   // Even a matching, integrity-valid cache must not bypass OS selection.
   const populatedCache = mkdtempSync(join(tmpdir(), "phantom-cli-unsupported-cache-"));
   try {
