@@ -131,3 +131,17 @@ test("Next config derives temporary redirects from the reviewed manifest", () =>
   assert.doesNotMatch(config, /source: "\/install\.(?:sh|ps1)"/);
   assert.doesNotMatch(config, /destination:\s*["']https?:\/\/(?!github\.com\/ashlrai\/phantom-secrets\/blob\/main\/docs\/)/);
 });
+
+test("a trailing slash reaches the same documented destination", () => {
+  const { buildCustomRoute } = require("next/dist/lib/build-custom-route");
+  const { source, file } = routes.find((route) => route.source === "/docs/ci-cd");
+  const route = buildCustomRoute("redirect", {
+    source,
+    destination: `https://github.com/ashlrai/phantom-secrets/blob/main/docs/${file}`,
+    permanent: false,
+  });
+  const matches = new RegExp(route.regex);
+  assert.equal(matches.test("/docs/ci-cd"), true);
+  assert.equal(matches.test("/docs/ci-cd/"), true);
+  assert.equal(route.destination, "https://github.com/ashlrai/phantom-secrets/blob/main/docs/ci-cd.md");
+});
