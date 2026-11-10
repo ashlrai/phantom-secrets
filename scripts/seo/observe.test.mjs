@@ -135,6 +135,35 @@ test("the documented local command writes its report and fails closed on an unre
   }
 });
 
+test("malformed JSON inputs produce a sanitized failure report without an unhandled exception", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "phantom-seo-invalid-json-"));
+  try {
+    const invalidFile = path.join(directory, "invalid.json");
+    const invalidContent = '{"private_marker":';
+    await writeFile(invalidFile, invalidContent);
+
+    for (const flag of ["--experiments", "--gsc-file", "--ga4-file", "--ahrefs-file"]) {
+      const reportFile = path.join(directory, `${flag.slice(2)}-report.json`);
+      const result = spawnSync(process.execPath, [
+        path.join(scriptDirectory, "observe.mjs"), flag, invalidFile, "--out", reportFile,
+      ], { cwd: repositoryDirectory, encoding: "utf8", timeout: 5_000 });
+
+      assert.ifError(result.error);
+      assert.equal(result.status, 1, flag);
+      assert.equal(result.stderr, "", flag);
+      assert.match(result.stdout, /FAIL/, flag);
+      const reportText = await readFile(reportFile, "utf8");
+      const report = JSON.parse(reportText);
+      assert.equal(report.verdict, "FAIL", flag);
+      assert.deepEqual(report.counts, { fail: 1, warn: 0 }, flag);
+      assert.equal(report.findings[0].code, "observer_execution_failed", flag);
+      assert.doesNotMatch(`${result.stdout}${result.stderr}${reportText}`, /private_marker/, flag);
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("HTML entities are decoded exactly once", () => {
   assert.equal(decodeEntities("&amp;&quot;&#39;&lt;&gt;"), "&\"'<>");
   assert.equal(decodeEntities("&amp;lt;script&amp;gt;"), "&lt;script&gt;");
