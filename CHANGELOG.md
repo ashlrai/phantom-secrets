@@ -4,10 +4,6 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
-### Added
-
-- Added an agent quickstart with setup commands, MCP config examples, and a check that the command copies stay in sync.
-
 ### Fixed
 
 - The agent quickstart now directs macOS users to the verified v0.8.7 archive. The documented v0.7.9 Homebrew formula does not support `phantom agent doctor --json`.
@@ -3617,8 +3613,8 @@ For older release notes and downloadable artifacts, see [GitHub Releases](https:
 
 <!-- fresh:begin changelog-unreleased-compare -->
 [Unreleased]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.9...HEAD
-[0.8.9]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.8...v0.8.9
 <!-- fresh:end -->
+[0.8.9]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.8...v0.8.9
 [0.8.8]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.7...v0.8.8
 [0.8.7]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.6...v0.8.7
 [0.8.6]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.5...v0.8.6

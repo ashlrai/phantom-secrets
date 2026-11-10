@@ -294,6 +294,7 @@ jobs:
           scripts/installer-missing-executable.test.mjs
           scripts/installer-missing-parent.test.mjs
           scripts/installer-missing-tool.test.mjs
+          scripts/installer-mktemp-failure.test.mjs
           scripts/installer-offline-suite.test.mjs
           scripts/installer-path-alias-bytes.test.mjs
           scripts/installer-path-alias-fallback.test.mjs
@@ -359,6 +360,7 @@ jobs:
           scripts/installer-path-update-steps.test.mjs
           scripts/installer-path-visual-export.test.mjs
           scripts/installer-path-working-directory.test.mjs
+          scripts/installer-success-cleanup.test.mjs
           scripts/public-installer-path-idempotence.test.mjs
           scripts/installer-promotion-failure-cleanup.test.mjs
           scripts/installer-stage-parent.test.mjs
@@ -393,8 +395,10 @@ jobs:
           scripts/installers.test.js
           scripts/public-installer-extraction-failure.test.mjs
           scripts/public-installer-failure-cleanup.test.mjs
+          scripts/public-installer-staging-creation-failure.test.mjs
           scripts/public-installer-staging-unicode-parent.test.mjs
           scripts/public-installer-staging.test.mjs
+          scripts/public-installer-tmpdir-spaces.test.mjs
           scripts/release/native-installer-acceptance.test.mjs
           scripts/installer-path-leading-indent.test.mjs
           scripts/installer-path-shell-fallback.test.mjs
@@ -823,6 +827,12 @@ jobs:
       - name: Test fail-closed publication and release receipts
         run: |
           node scripts/release/check-version-parity.mjs
+          # Release-cut CHANGELOG edits drifted the fresh compare block
+          # unnoticed; check the generated blocks, the CHANGELOG shape and the
+          # pending changelog.d fragments on every main push.
+          node scripts/freshness/check.mjs
+          node scripts/release/lint-changelog.mjs
+          node scripts/changelog-fold.mjs --check
           node --test scripts/examples-first-five-minutes.test.mjs scripts/publish-crates.test.js scripts/release/check-glibc-baseline.test.mjs scripts/release/extract-release-notes.test.mjs scripts/release/pre-tag-preflight.test.mjs scripts/release/readme-mcp-catalog.test.mjs scripts/release/release-receipts.test.mjs scripts/release/release-rehearsal-contract.test.mjs scripts/release/compare-release-artifacts.test.mjs scripts/release/native-installer-acceptance.test.mjs scripts/release/native-release-smoke.test.mjs scripts/release/verify-github-tag-binding.test.mjs
       - name: Install checksum-verified MCP Registry publisher
         run: bash scripts/release/install-mcp-publisher.sh
