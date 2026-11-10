@@ -141,41 +141,45 @@ try {
 }
 
 (async () => {
-  const cacheDir = mkdtempSync(join(tmpdir(), "phantom-mcp-malformed-cache-"));
-  try {
-    const paths = pathSet(cacheDir);
-    writePrivateFile(paths.binaryPath, "untrusted-cache", 0o700);
-    writePrivateFile(paths.manifestPath, '{"version":', 0o600);
-    const archive = Buffer.from("offline archive fixture");
-    const checksum = crypto.createHash("sha256").update(archive).digest("hex");
-    let downloads = 0;
-    let executions = 0;
-    const resolved = await ensureBinary({
-      cacheDir,
-      downloadImpl: async (url) => {
-        downloads += 1;
-        if (url.endsWith(".sha256")) {
-          const archiveName = url.split("/").pop().slice(0, -7);
-          return Buffer.from(`${checksum}  ${archiveName}\n`);
-        }
-        return archive;
-      },
-      extractImpl: (_archivePath, candidatePath) => {
-        writePrivateFile(candidatePath, "replacement-binary", 0o700);
-      },
-      execFileSyncImpl: (binaryPath) => {
-        executions += 1;
-        assert.notStrictEqual(binaryPath, paths.binaryPath, "malformed cache must not execute");
-        return Buffer.from(`phantom-mcp ${candidateVersion}\n`);
-      },
-    });
-    assert.strictEqual(resolved, paths.binaryPath);
-    assert.strictEqual(downloads, 2, "fallback fetches checksum and archive through the stub");
-    assert.strictEqual(executions, 1, "only the replacement binary is checked");
-    assert.strictEqual(readFileSync(paths.binaryPath, "utf8"), "replacement-binary");
-    assert.ok(readVerifiedManifest(paths.binaryPath, paths.manifestPath));
-  } finally {
-    rmSync(cacheDir, { recursive: true, force: true });
+  for (const [description, manifest] of [["malformed", '{"version":'], ["empty", ""]]) {
+    const cacheDir = mkdtempSync(join(tmpdir(), "phantom-mcp-invalid-cache-"));
+    try {
+      const paths = pathSet(cacheDir);
+      writePrivateFile(paths.binaryPath, "untrusted-cache", 0o700);
+      writePrivateFile(paths.manifestPath, manifest, 0o600);
+      assert.strictEqual(readVerifiedManifest(paths.binaryPath, paths.manifestPath), null,
+        `${description} manifest must be unusable`);
+      const archive = Buffer.from("offline archive fixture");
+      const checksum = crypto.createHash("sha256").update(archive).digest("hex");
+      let downloads = 0;
+      let executions = 0;
+      const resolved = await ensureBinary({
+        cacheDir,
+        downloadImpl: async (url) => {
+          downloads += 1;
+          if (url.endsWith(".sha256")) {
+            const archiveName = url.split("/").pop().slice(0, -7);
+            return Buffer.from(`${checksum}  ${archiveName}\n`);
+          }
+          return archive;
+        },
+        extractImpl: (_archivePath, candidatePath) => {
+          writePrivateFile(candidatePath, "replacement-binary", 0o700);
+        },
+        execFileSyncImpl: (binaryPath) => {
+          executions += 1;
+          assert.notStrictEqual(binaryPath, paths.binaryPath, `${description} cache must not execute`);
+          return Buffer.from(`phantom-mcp ${candidateVersion}\n`);
+        },
+      });
+      assert.strictEqual(resolved, paths.binaryPath);
+      assert.strictEqual(downloads, 2, "fallback fetches checksum and archive through the stub");
+      assert.strictEqual(executions, 1, "only the replacement binary is checked");
+      assert.strictEqual(readFileSync(paths.binaryPath, "utf8"), "replacement-binary");
+      assert.ok(readVerifiedManifest(paths.binaryPath, paths.manifestPath));
+    } finally {
+      rmSync(cacheDir, { recursive: true, force: true });
+    }
   }
   console.log("npm MCP wrapper manifest, version, replacement, and recovery tests passed");
 })().catch((error) => {
