@@ -1564,3 +1564,57 @@ test("observed titles decode supported HTML entities exactly once", async () => 
     },
   );
 });
+
+const unicodeTitles = new Map([
+  ["/docs", "Phantom — ドキュメント 🔐 Ünïcödé"],
+  ["/security", "Sécurité ‑ مرحبا بالعالم 安全"],
+]);
+
+test("Unicode page titles are observed intact and the summary keeps them", async () => {
+  await withFixtureServer(
+    async ({ options }) => {
+      const report = await observeProduction(options);
+      for (const [route, title] of unicodeTitles) {
+        assert.equal(report.technical.public_routes.find((page) => page.route === route).title, title);
+      }
+      assert.deepEqual(report.findings, []);
+
+      // The summary prints titles only inside finding messages, so carry the
+      // observed titles through one and check they survive byte-for-byte.
+      const message = [...unicodeTitles.values()].join(" | ");
+      const summary = renderSummary({
+        ...report,
+        verdict: "WARN",
+        counts: { fail: 0, warn: 1 },
+        findings: [{ severity: "warn", code: "title_check", message, route: "/docs" }],
+      });
+      assert.ok(summary.includes(`**WARN title_check** (/docs): ${message}`));
+      assert.ok(!summary.includes("�"), "the summary must not contain replacement characters");
+    },
+    Object.fromEntries(
+      [...unicodeTitles].map(([route, title]) => [
+        route,
+        (response, origin) => {
+          response.setHeader("content-type", "text/html; charset=utf-8");
+          response.end(html(origin, route).replace(`<title>${route} — Phantom</title>`, `<title>${title}</title>`));
+        },
+      ]),
+    ),
+  );
+});
+
+test("the summary truncates long Unicode findings on a character boundary", () => {
+  const title = "安全🔐".repeat(2_000);
+  const summary = renderSummary({
+    verdict: "FAIL",
+    captured_at: "2026-01-01T00:00:00.000Z",
+    counts: { fail: 1, warn: 0 },
+    technical: { sitemap: { route_count: 1 } },
+    aggregate_inputs: { gsc: { state: "absent" }, ga4: { state: "absent" }, ahrefs: { state: "absent" } },
+    experiments: { experiments: [] },
+    findings: [{ severity: "fail", code: "title_long", message: title, route: "/docs" }],
+  });
+  assert.ok(!summary.includes("�"));
+  assert.ok(Buffer.byteLength(summary, "utf8") <= JOB_SUMMARY_MAX_BYTES);
+  assert.match(summary, /\*\*FAIL title_long\*\* \(\/docs\): (安全🔐)+…/u);
+});
