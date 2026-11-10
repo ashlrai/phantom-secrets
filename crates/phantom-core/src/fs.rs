@@ -913,6 +913,18 @@ mod tests {
     }
 
     #[test]
+    fn test_atomic_write_empty_contents_cleans_up_temp_file() {
+        let dir = TempDir::new().unwrap();
+        let target = dir.path().join("fixture.txt");
+        std::fs::write(&target, b"non-sensitive fixture").unwrap();
+
+        atomic_write(&target, b"").unwrap();
+
+        assert_eq!(std::fs::read(&target).unwrap(), b"");
+        assert_eq!(list_dir(dir.path()), vec!["fixture.txt"]);
+    }
+
+    #[test]
     fn test_atomic_write_supports_relative_target_in_current_directory() {
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
