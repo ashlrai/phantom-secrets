@@ -1,4 +1,10 @@
 const assert = require("assert");
+const registry = require("../../mcp-registry/server.json");
+
+function assertUniqueToolNames(tools) {
+  const names = tools.map((tool) => tool.name);
+  assert.strictEqual(new Set(names).size, names.length, "MCP tool names must be unique");
+}
 
 function nullableRef(name) {
   return { anyOf: [{ $ref: `#/$defs/${name}` }, { type: "null" }] };
@@ -72,6 +78,11 @@ function clone(value) {
 (async () => {
   const { validatePhantomDoSchema } = await import(
     "../../scripts/release/mcp-schema-contract.mjs"
+  );
+  assertUniqueToolNames(registry.tools);
+  assert.throws(
+    () => assertUniqueToolNames([...registry.tools, registry.tools[0]]),
+    /MCP tool names must be unique/
   );
   assert.deepStrictEqual(validatePhantomDoSchema(validSchema()), { actions: 4 });
 

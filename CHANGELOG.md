@@ -4,6 +4,14 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Added
+
+- Added an agent quickstart with setup commands, MCP config examples, and a check that the command copies stay in sync.
+
+### Fixed
+
+- The agent quickstart now directs macOS users to the verified v0.8.7 archive. The documented v0.7.9 Homebrew formula does not support `phantom agent doctor --json`.
+
 ## [0.8.9] - 2026-11-09
 
 ### Breaking changes and migration
