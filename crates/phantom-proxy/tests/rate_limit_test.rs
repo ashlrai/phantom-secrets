@@ -297,6 +297,24 @@ async fn test_normal_traffic_not_blocked() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[test]
+fn test_fresh_limiter_allows_first_request_at_positive_limit() {
+    let rl = RateLimiter::new(RateLimitConfig {
+        per_secret_rps: 1,
+        burst_total_10s: 1,
+    });
+
+    let first = rl.record("KEY");
+    assert_ne!(first.class, AnomalyClass::Alert);
+    assert_eq!(first.per_secret_10s, 1);
+    assert_eq!(first.per_secret_60s, 1);
+    assert_eq!(first.total_10s, 1);
+
+    // The positive global limit permits the request at the boundary, but not
+    // the next request in the same window.
+    assert_eq!(rl.record("KEY").class, AnomalyClass::Alert);
+}
+
+#[test]
 fn test_rate_limiter_unit_normal_class() {
     let rl = RateLimiter::new(RateLimitConfig {
         per_secret_rps: 5,
