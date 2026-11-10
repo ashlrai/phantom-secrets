@@ -283,6 +283,7 @@ jobs:
           scripts/installer-copy-parity.test.mjs
           scripts/installer-copy-source-map.test.mjs
           scripts/installer-copy-sync.test.mjs
+          scripts/installer-custom-tmpdir.test.mjs
           scripts/installer-default-staging-root.test.mjs
           scripts/installer-download-failure.test.mjs
           scripts/installer-download-interrupt.test.mjs
@@ -364,10 +365,12 @@ jobs:
           scripts/installer-staging-apostrophe-parent.test.mjs
           scripts/installer-staging-cleanup.test.mjs
           scripts/installer-staging-contract.test.mjs
+          scripts/installer-staging-creation-failure.test.mjs
           scripts/installer-staging-directory-reference.test.mjs
           scripts/installer-staging-explicit-parent.test.mjs
           scripts/installer-staging-expression-match.test.mjs
           scripts/installer-staging-failure.test.mjs
+          scripts/installer-staging-mktemp-failure.test.mjs
           scripts/installer-staging-prefix.test.mjs
           scripts/installer-staging-prefixes.test.mjs
           scripts/installer-staging-setup-failure.test.mjs
