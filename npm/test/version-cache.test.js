@@ -78,6 +78,18 @@ try {
   assert.strictEqual(executions, 0, "binary without manifest must never execute");
   rmSync(paths.binaryPath);
 
+  writePrivateFile(paths.binaryPath, "unverified", 0o700);
+  for (const malformed of ['{"version":', "not JSON", "null", "[]"]) {
+    writePrivateFile(paths.manifestPath, malformed, 0o600);
+    assert.strictEqual(readVerifiedManifest(paths.binaryPath, paths.manifestPath), null);
+    assert.strictEqual(validateCachedBinary(paths.binaryPath, paths.manifestPath, {
+      execFileSyncImpl: () => { executions += 1; },
+    }), false, "malformed manifest must reject the cached binary");
+    rmSync(paths.manifestPath);
+  }
+  assert.strictEqual(executions, 0, "binary with malformed manifest must never execute");
+  rmSync(paths.binaryPath);
+
   writePair(paths.binaryPath, paths.manifestPath, "old-binary");
   // Treat the fixture as settled (10 s old) so the attestation path is used.
   setAttestationClockForTest(() => BigInt(Date.now() + 10_000) * 1_000_000n);
