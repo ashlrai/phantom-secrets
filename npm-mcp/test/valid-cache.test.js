@@ -11,6 +11,14 @@ const { ensureBinary, pathSet, validateCachedBinary, writePrivateFile } = requir
 (async () => {
   const cacheDir = mkdtempSync(join(tmpdir(), "phantom-mcp-valid-cache-"));
   try {
+    const missingPaths = pathSet(join(cacheDir, "missing"));
+    let missingCacheExecutions = 0;
+    assert.strictEqual(validateCachedBinary(missingPaths.binaryPath, missingPaths.manifestPath, {
+      execFileSyncImpl: () => { missingCacheExecutions += 1; },
+    }), false, "a missing cache directory is a cache miss");
+    assert.strictEqual(missingCacheExecutions, 0, "a missing cache must not execute a binary");
+    assert.deepStrictEqual(readdirSync(cacheDir), [], "checking a missing cache must not create it");
+
     const paths = pathSet(cacheDir);
     assert.strictEqual(paths.lockPath, join(dirname(cacheDir), `.${basename(cacheDir)}.install.lock`));
     let emptyCacheExecutions = 0;
