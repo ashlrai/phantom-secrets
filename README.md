@@ -59,7 +59,7 @@ phantom why OPENAI_API_KEY --json
 
 `phantom check --log` reads one agent transcript or log and reports the file, the line, and the credential shape. It does not print the secret. The same scan is the MCP tool `phantom_check` with `log_path`.
 
-`phantom status --json`, `phantom list --json`, and `phantom why OPENAI_API_KEY --json` are value-free. `phantom setup` writes that client's MCP config. Install both verified `v0.8.7` binaries first. Version `0.8.7` has no network package-runner fallback and fails closed when neither local runtime is executable.
+`phantom status --json`, `phantom list --json`, and `phantom why OPENAI_API_KEY --json` are value-free. `phantom setup` writes that client's MCP config. Install both verified `v0.8.7` binaries first. The documented Homebrew formula is `v0.7.9`, which does not support `phantom agent doctor --json`. Version `0.8.7` has no network package-runner fallback and fails closed when neither local runtime is executable.
 
 Machine-readable docs for agents:
 
