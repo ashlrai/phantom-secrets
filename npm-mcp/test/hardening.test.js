@@ -235,6 +235,24 @@ async function assertDownloadStopsAfterSettlement() {
 
 (async () => {
   await assertDownloadStopsAfterSettlement();
+  const unsupportedCache = mkdtempSync(join(tmpdir(), "phantom-mcp-unsupported-"));
+  try {
+    let downloads = 0;
+    await assert.rejects(
+      ensureBinary({
+        cacheDir: unsupportedCache,
+        runtime: { platform: "linux", arch: "riscv64" },
+        downloadImpl: async () => { downloads += 1; },
+        extractImpl: () => assert.fail("unsupported architecture must not extract"),
+        execFileSyncImpl: () => assert.fail("unsupported architecture must not execute"),
+      }),
+      /Unsupported platform: linux-riscv64/
+    );
+    assert.strictEqual(downloads, 0, "unsupported architecture must not download");
+    assert.strictEqual(existsSync(pathSet(unsupportedCache).lockPath), false, "lock is released");
+  } finally {
+    rmSync(unsupportedCache, { recursive: true, force: true });
+  }
   assert.throws(
     () => getCacheDir({ env: {}, homedirImpl: () => "relative-home" }),
     /absolute private home/
