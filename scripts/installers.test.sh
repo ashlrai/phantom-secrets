@@ -3,7 +3,8 @@
 # file, it fails, leaves the user's shell configuration untouched (bytes,
 # inode, mode), and removes the first temporary file (.phantom-path.before.*).
 # Runs the shipped function from each installer copy in a throwaway HOME; no
-# network, node, or real dotfiles.
+# network, node, or real dotfiles. Also runs the offline staging-failure
+# checks against each complete installer.
 # Usage: bash scripts/installers.test.sh [installer ...]
 set -euo pipefail
 
@@ -76,5 +77,9 @@ for installer in "${installers[@]}"; do
   [ -f "$installer" ] || { echo "FAIL missing installer: $installer"; exit 1; }
   n=$((n + 1))
   run_case "candidate-create-failure-$n" "$installer"
+  if ! bash "$here/installer-staging-failure.test.sh" "$installer"; then
+    echo "FAIL staging-failure-$n"
+    fail=1
+  fi
 done
 exit "$fail"
