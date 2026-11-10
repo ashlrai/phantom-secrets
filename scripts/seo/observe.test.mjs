@@ -1051,6 +1051,21 @@ test("product guide schema may move from the umbrella homepage to /secrets", asy
   );
 });
 
+test("aggregate inputs reject empty input with an actionable error", () => {
+  for (const kind of ["gsc", "ga4", "ahrefs"]) {
+    assert.throws(
+      () => validateAggregateInput(kind, {}, publicPaths),
+      { message: new RegExp(`^${kind} input is missing schema_version$`) },
+    );
+    for (const value of [null, undefined]) {
+      assert.throws(
+        () => validateAggregateInput(kind, value, publicPaths),
+        { message: new RegExp(`^${kind} input must be an object$`) },
+      );
+    }
+  }
+});
+
 test("Search Console input accepts finalized page aggregates and rejects raw queries", () => {
   const value = {
     schema_version: "phantom-seo-gsc-v1",
