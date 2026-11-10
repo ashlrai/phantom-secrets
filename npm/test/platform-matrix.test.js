@@ -22,7 +22,34 @@ const expected = Object.freeze({
   "win32-x64": "x86_64-pc-windows-msvc",
 });
 
+for (const [platformKey, target] of Object.entries(SUPPORTED_TARGETS)) {
+  if (platformKey.startsWith("win32-")) {
+    assert.match(target, /windows-msvc$/, `${platformKey} must target windows-msvc`);
+  }
+}
+
 assert.deepStrictEqual(SUPPORTED_TARGETS, expected);
+
+// Every supported mapping must name a real target: a non-empty, non-blank string.
+// Checked on the exported map itself so an empty or non-string entry fails here.
+function assertTargetsAreNonEmptyStrings(targets) {
+  const entries = Object.entries(targets);
+  assert.ok(entries.length > 0, "supported platform map must not be empty");
+  for (const [platformKey, target] of entries) {
+    assert.strictEqual(typeof target, "string", `target for ${platformKey} must be a string`);
+    assert.ok(target.trim().length > 0, `target for ${platformKey} must not be empty`);
+  }
+}
+assertTargetsAreNonEmptyStrings(SUPPORTED_TARGETS);
+
+// Prove the check rejects bad targets.
+for (const bad of ["", "   ", null, undefined, 42, {}, []]) {
+  assert.throws(
+    () => assertTargetsAreNonEmptyStrings({ ...SUPPORTED_TARGETS, "linux-x64": bad }),
+    assert.AssertionError,
+    `bad target ${JSON.stringify(bad)} must fail`
+  );
+}
 
 // Keep the published platform table in sync with the executable's exact map.
 const readme = readFileSync(join(__dirname, "..", "README.md"), "utf8");
@@ -52,11 +79,40 @@ for (const [platformKey, target] of Object.entries(expected)) {
   );
 }
 
+// Two runtime pairs sharing one target triple would download the wrong binary.
+function assertDistinctTargets(resolve, pairs, label) {
+  const owners = new Map();
+  for (const key of pairs) {
+    const [platform, arch] = key.split("-");
+    const target = resolve({ platform, arch }, key);
+    assert.ok(target, `${label}: ${key} has no target triple`);
+    assert.ok(
+      !owners.has(target),
+      `${label}: duplicate target triple ${target} for ${owners.get(target)} and ${key}`
+    );
+    owners.set(target, key);
+  }
+}
+
+const supportedPairs = Object.keys(SUPPORTED_TARGETS);
+assertDistinctTargets((runtime) => getPlatformTarget(runtime), supportedPairs, "getPlatformTarget");
+assertDistinctTargets((_, key) => SUPPORTED_TARGETS[key], supportedPairs, "SUPPORTED_TARGETS");
+assertDistinctTargets((_, key) => documentedTargets[key], Object.keys(documentedTargets), "README");
+
+// The check must actually fail on a duplicate.
+assert.throws(
+  () => assertDistinctTargets(() => "x86_64-unknown-linux-gnu", ["linux-x64", "linux-arm64"], "fixture"),
+  /duplicate target triple x86_64-unknown-linux-gnu for linux-x64 and linux-arm64/
+);
+
 const unsupported = [
   { platform: "darwin", arch: "ia32" },
   { platform: "linux", arch: "arm" },
+  { platform: "linux", arch: "riscv64" },
   { platform: "freebsd", arch: "x64" },
+  { platform: "freebsd", arch: "arm64" },
   { platform: "openbsd", arch: "x64" },
+  { platform: "sunos", arch: "arm" },
   { platform: "win32", arch: "ia32" },
 ];
 
@@ -82,6 +138,13 @@ for (const runtime of unsupported) {
   });
 }
 
+// An unsupported Linux architecture is named exactly, never mapped to a Linux target.
+assert.throws(() => getPlatformTarget({ platform: "linux", arch: "riscv64" }), (error) => {
+  assert.ok(error.message.includes("Unsupported platform: linux-riscv64"), error.message);
+  assert.doesNotMatch(error.message, /x86_64|aarch64/);
+  return true;
+});
+
 const wrapperSource = readFileSync(join(__dirname, "..", "bin", "cli.js"), "utf8");
 assert.doesNotMatch(wrapperSource, /Install from source|cargo install phantom-secrets/);
 
@@ -90,17 +153,19 @@ assert.doesNotMatch(wrapperSource, /Install from source|cargo install phantom-se
   const cacheDir = join(testDir, "cache");
   let downloads = 0;
   try {
-    await assert.rejects(
-      ensureBinary({
-        cacheDir,
-        runtime: { platform: "freebsd", arch: "x64" },
-        downloadImpl: async () => {
-          downloads += 1;
-          throw new Error("unsupported platforms must not download");
-        },
-      }),
-      /Unsupported platform: freebsd-x64/
-    );
+    for (const runtime of [{ platform: "freebsd", arch: "x64" }, { platform: "sunos", arch: "arm" }]) {
+      await assert.rejects(
+        ensureBinary({
+          cacheDir,
+          runtime,
+          downloadImpl: async () => {
+            downloads += 1;
+            throw new Error("unsupported platforms must not download");
+          },
+        }),
+        (error) => error.message.includes(`Unsupported platform: ${runtime.platform}-${runtime.arch}`)
+      );
+    }
     assert.strictEqual(downloads, 0, "unsupported platforms must not attempt a download");
     assert.strictEqual(existsSync(cacheDir), false, "unsupported platforms must not create a cache");
   } finally {
