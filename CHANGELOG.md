@@ -4,13 +4,81 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
-### Added
+## [0.8.10] - 2026-11-10
 
-- Added an agent quickstart with setup commands, MCP config examples, and a check that the command copies stay in sync.
+### Breaking changes and migration
 
-### Fixed
+No breaking changes since v0.8.9. Existing installations require no migration.
+Vault entries keep the same service and account names after the keyring store
+change below, so existing OS credential-store entries stay readable.
 
-- The agent quickstart now directs macOS users to the verified v0.8.7 archive. The documented v0.7.9 Homebrew formula does not support `phantom agent doctor --json`.
+### Added (agent quickstart)
+
+- Agents get one copy-paste setup path in `docs/agent-quickstart.md`, mirrored in `AGENTS.md`, `llms.txt` and `llms-full.txt`, with value-free JSON commands and the MCP file shapes `phantom setup` writes for Claude Code, Cursor and Codex. A docs check fails if any copy of the command block drifts.
+- The agent quickstart directs macOS users to the verified v0.8.7 archive. The documented v0.7.9 Homebrew formula does not support `phantom agent doctor --json`.
+
+### Changed (OS credential stores)
+
+- The vault links `keyring-core` with per-platform store crates instead of
+  keyring 3: macOS Keychain, Linux keyutils and Secret Service, and Windows
+  Credential Manager. Linux Secret Service now uses the blocking `dbus`
+  implementation, so the unmaintained `zvariant`, `zbus_names` and
+  `zvariant_derive` crates are gone from the dependency graph and
+  `cargo deny` no longer ignores RUSTSEC-2026-0370, 0371 or 0372 (#242).
+
+### Changed (MCP server)
+
+- `phantom-mcp` builds on `rmcp` 3.9. The tool catalog and schemas are
+  unchanged.
+
+### Changed (repository docs tooling)
+
+- A `.devin/wiki.json` steering file describes the workspace crates for
+  generated repository wikis.
+
+### Security (npm wrappers)
+
+- The `phantom-secrets` wrapper treats a zero-byte cached binary or manifest
+  as absent and downloads again, even if its recorded digest matches.
+- The `phantom-secrets-mcp` wrapper accepts a binary's `--version` output only
+  when the whole output is exactly `phantom-mcp <version>`.
+- Both wrappers have added tests for missing or invalid version components,
+  cache validation, and unsupported platform pairs. The CLI wrapper README
+  lists `linux`/`riscv64`, `freebsd`/`arm64` and `sunos`/`arm` as unsupported.
+
+### Security (account-ops foundation)
+
+- The fail-closed account-ops engine binds each secret name to its adapter's
+  namespace, refuses a create over an existing vault entry, and requires a
+  verified create or rotate ledger record before rotate or revoke. The GitHub
+  App adapter requires explicit repositories and permissions and only revokes
+  `ghs_`-shaped tokens. The ledger gains a head anchor that detects
+  truncation, and both files are opened without following symlinks. Live
+  provider issuance stays hard-denied in the CLI.
+
+### Security (Personal Cloud quota)
+
+- New Supabase migrations cap Personal Cloud at one new encrypted backup per
+  account and clamp browser-role table authority. Existing backups stay
+  readable and updatable. Each migration ships with a rollback script.
+
+### Removed (unrouted `phantom env` help hint)
+
+- The unused `run_default` helper in `env_scope.rs` is gone; `phantom env`
+  still generates `.env.example` as documented.
+
+### CI (release and installer checks)
+
+- The release workflow pins npm 11.19.0 for trusted publishing.
+- CI caches the checksum-verified cargo-deny archive and retries its
+  download, runs the temporary-directory installer test and the
+  PATH-candidate create-failure test, and checks the agent quickstart copies.
+- The Windows CI job and the release rehearsal contract test now expect the
+  public-reference `apps/web/public/install.ps1` to be pinned to the evidenced
+  `v0.8.7` release instead of `v0.7.9`; the contract test reads the pin from
+  the installer itself.
+- Added proxy rate-limit and port-binding tests, workspace setup tests,
+  atomic-write tests, and web manifest and landing quickstart tests.
 
 ## [0.8.9] - 2026-11-09
 
@@ -3616,7 +3684,8 @@ remain separate evidence gates.
 For older release notes and downloadable artifacts, see [GitHub Releases](https://github.com/ashlrai/phantom-secrets/releases).
 
 <!-- fresh:begin changelog-unreleased-compare -->
-[Unreleased]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.9...HEAD
+[Unreleased]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.10...HEAD
+[0.8.10]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.9...v0.8.10
 [0.8.9]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.8...v0.8.9
 <!-- fresh:end -->
 [0.8.8]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.7...v0.8.8
