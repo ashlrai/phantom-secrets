@@ -71,10 +71,45 @@ SHIM
   echo "ok $label"
 }
 
+run_spaced_install() {
+  local label="$1" installer="$2" dir="$root/$1" os arch archive digest
+  local home="$root/$1/home" install="$root/$1/install parent/phantom bin"
+  mkdir -p "$home" "$dir/release" "$dir/payload"
+  case "$(uname -s)" in Darwin) os=apple-darwin ;; Linux) os=unknown-linux-gnu ;; *) echo "FAIL $label: unsupported OS"; fail=1; return ;; esac
+  case "$(uname -m)" in x86_64|amd64) arch=x86_64 ;; arm64|aarch64) arch=aarch64 ;; *) echo "FAIL $label: unsupported architecture"; fail=1; return ;; esac
+  archive="phantom-$arch-$os.tar.gz"
+  printf '%s\n' '#!/bin/sh' 'printf "%s 1.2.3\n" "$(basename "$0")"' > "$dir/payload/phantom"
+  cp "$dir/payload/phantom" "$dir/payload/phantom-mcp"
+  chmod 755 "$dir/payload/phantom" "$dir/payload/phantom-mcp"
+  COPYFILE_DISABLE=1 tar -czf "$dir/release/$archive" -C "$dir/payload" phantom phantom-mcp
+  if command -v sha256sum >/dev/null 2>&1; then
+    digest="$(sha256sum "$dir/release/$archive" | awk '{print $1}')"
+  else
+    digest="$(shasum -a 256 "$dir/release/$archive" | awk '{print $1}')"
+  fi
+  printf '%s  %s\n' "$digest" "$archive" > "$dir/release/$archive.sha256"
+  if ! env -i HOME="$home" SHELL=/bin/bash PATH=/usr/bin:/bin \
+    PHANTOM_INSTALL_DIR="$install" PHANTOM_TEST_ALLOW_INSTALLER_OVERRIDES=1 \
+    PHANTOM_TEST_LOCAL_RELEASE_DIR="$dir/release" PHANTOM_TAG=v1.2.3 \
+    /bin/bash "$installer" > "$dir/output" 2>&1; then
+    echo "FAIL $label: installer failed"; cat "$dir/output"; fail=1; return
+  fi
+  if ! cmp -s "$dir/payload/phantom" "$install/phantom" || \
+     ! cmp -s "$dir/payload/phantom-mcp" "$install/phantom-mcp" || \
+     [ ! -f "$install/.phantom-install-source.json" ]; then
+    echo "FAIL $label: installed files missing or incorrect"; fail=1; return
+  fi
+  if [ -n "$(find "$dir/install parent" -maxdepth 1 -name '.phantom bin.install.*' -print)" ]; then
+    echo "FAIL $label: staging directory remains"; fail=1; return
+  fi
+  echo "ok $label"
+}
+
 n=0
 for installer in "${installers[@]}"; do
   [ -f "$installer" ] || { echo "FAIL missing installer: $installer"; exit 1; }
   n=$((n + 1))
   run_case "candidate-create-failure-$n" "$installer"
+  run_spaced_install "spaced-install-$n" "$installer"
 done
 exit "$fail"
