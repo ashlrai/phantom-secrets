@@ -931,10 +931,16 @@ mod tests {
     fn test_atomic_write_leaves_no_temp_files_on_success() {
         let dir = TempDir::new().unwrap();
         let target = dir.path().join("clean.env");
-        atomic_write(&target, b"X").unwrap();
-        let files = list_dir(dir.path());
-        // Only the target should exist; no leftover .tmp / tmpXXX files.
-        assert_eq!(files, vec!["clean.env"], "unexpected files: {files:?}");
+        let neighbor = dir.path().join("neighbor.txt");
+        std::fs::write(&target, b"previous longer content").unwrap();
+        std::fs::write(&neighbor, b"keep me").unwrap();
+        let fixture = b"non-sensitive fixture\n";
+        atomic_write(&target, fixture).unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), fixture);
+        assert_eq!(std::fs::read(&neighbor).unwrap(), b"keep me");
+        let mut files = list_dir(dir.path());
+        files.sort();
+        assert_eq!(files, vec!["clean.env", "neighbor.txt"]);
     }
 
     #[test]
