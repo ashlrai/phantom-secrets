@@ -153,6 +153,23 @@
         "ashlrai/lexicon": 2,
         "ashlrai/homebrew-tap": 0
       }
+    },
+    {
+      "date": "2026-11-10",
+      "total": 47,
+      "repos": {
+        "ashlrai/phantom-secrets": 20,
+        "ashlrai/phantom": 5,
+        "ashlrai/ashlr-md": 4,
+        "ashlrai/binshield": 4,
+        "ashlrai/ashlr-plugin": 3,
+        "ashlrai/locus": 3,
+        "ashlrai/ashlr-core-efficiency": 2,
+        "ashlrai/ashlr-stack": 2,
+        "ashlrai/homebrew-phantom": 2,
+        "ashlrai/lexicon": 2,
+        "ashlrai/homebrew-tap": 0
+      }
     }
   ]
 }
