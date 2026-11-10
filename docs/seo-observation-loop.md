@@ -47,7 +47,8 @@ cleanup.
 
 It checks:
 
-- sitemap closure, public-route status, same-host self-canonicals, titles,
+- sitemap closure (HTML pages only; `/llms.txt` and `/llms-full.txt` are fetched
+  directly), public-route status, same-host self-canonicals, titles,
   descriptions, one primary heading, and parseable structured data;
 - required homepage software, source-code, organization, installation, and FAQ
   schema plus article and breadcrumb schema on rendered guides;
@@ -127,6 +128,8 @@ reported unchanged. The derived status never rewrites the ledger.
 `{ "state": "not_supplied" }` or as `supplied` with the validated
 `schema_version`, `period`, and sorted `rows`; supplied GA4 input also reports
 `suppressed_rows`, the count of cohorts under ten sessions that were dropped.
+Duplicate aggregate records are retained as separate rows; GA4 suppression is
+applied to each record independently. The observer does not combine or deduplicate them.
 
 If the observer fails before completing the public-surface report, it still
 writes a fail-closed report: `verdict` `FAIL` with a single

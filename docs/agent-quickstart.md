@@ -4,13 +4,7 @@ One path for an agent: install, run the commands below from the project director
 
 ## Install
 
-macOS:
-
-```bash
-brew tap ashlrai/phantom && brew trust --formula ashlrai/phantom/phantom && brew install ashlrai/phantom/phantom
-```
-
-Linux and Windows: follow the checksum-verified archive steps in the [README](../README.md#installation). Each package channel and the version it serves is in [distribution status](distribution-status.md).
+On macOS, Linux, and Windows, install both binaries from the checksum-verified `v0.8.7` archive using the [README instructions](../README.md#exact-v087-github-assets). The documented Homebrew formula is `v0.7.9`, whose `agent doctor` does not accept `--json`; use the release archive for the commands below. Each package channel and its dated evidence are in [distribution status](distribution-status.md).
 
 ## Commands
 
