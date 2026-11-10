@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -76,6 +76,35 @@ test("the CLI rejects a missing required output or output value", () => {
   }
 });
 
+test("the CLI rejects malformed JSON inputs without creating a report or summary", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "phantom-seo-malformed-"));
+  try {
+    const malformed = path.join(directory, "malformed.json");
+    await writeFile(malformed, '{"unfinished":');
+    for (const [flag, diagnostic] of [
+      ["--experiments", /experiment ledger is not valid JSON/],
+      ["--gsc-file", /gsc aggregate input is not valid JSON/],
+      ["--ga4-file", /ga4 aggregate input is not valid JSON/],
+      ["--ahrefs-file", /ahrefs aggregate input is not valid JSON/],
+    ]) {
+      const report = path.join(directory, "report.json");
+      const summary = path.join(directory, "summary.md");
+      const result = spawnSync(process.execPath, [
+        path.join(scriptDirectory, "observe.mjs"), flag, malformed,
+        "--out", report, "--summary", summary,
+      ], { cwd: repositoryDirectory, encoding: "utf8", timeout: 5_000 });
+      assert.ifError(result.error);
+      assert.equal(result.status, 1);
+      assert.equal(result.stdout, "");
+      assert.match(result.stderr, diagnostic);
+      await assert.rejects(stat(report), { code: "ENOENT" });
+      await assert.rejects(stat(summary), { code: "ENOENT" });
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("the documented local command writes its report and fails closed on an unreadable ledger", async () => {
   const readme = await readFile(path.join(repositoryDirectory, "apps/web/README.md"), "utf8");
   const command = readme.match(/```sh\n(node scripts\/seo\/observe\.mjs [^\n]+)\n```/);
@@ -119,6 +148,10 @@ test("decimal HTML entities are decoded exactly once", () => {
   assert.equal(decodeEntities("&#38;amp;"), "&amp;");
   // Out-of-range or surrogate references stay literal.
   assert.equal(decodeEntities("&#0;&#1114112;&#55296;"), "&#0;&#1114112;&#55296;");
+});
+
+test("empty HTML produces no structured data or errors offline", () => {
+  assert.deepEqual(structuredData(""), { values: [], errors: [] });
 });
 
 test("JSON-LD extraction accepts HTML-compatible script endings", () => {
@@ -196,6 +229,7 @@ async function withFixtureServer(action, overrides = {}) {
       response.setHeader("content-type", "application/xml");
       response.end(
         `<?xml version="1.0"?><urlset>${[...publicPaths]
+          .filter((route) => !route.endsWith(".txt"))
           .map((route) => `<url><loc>${origin}${route}</loc></url>`)
           .join("")}</urlset>`,
       );
@@ -482,6 +516,53 @@ test("a complete public fixture produces a deterministic, sanitized passing repo
     assert.equal(JSON.stringify(first).includes("github/repos"), false);
     assert.ok(requests.length >= publicPaths.size + 6);
     assert.match(renderSummary(first), /does not edit content, publish, deploy, contact people/);
+  });
+});
+
+test("empty aggregate observation inputs remain empty", () => {
+  const period = { start: "2026-07-01", end: "2026-07-28", data_state: "final" };
+  const aggregateInputs = Object.fromEntries(
+    ["gsc", "ga4", "ahrefs"].map((kind) => [kind, {
+      schema_version: `phantom-seo-${kind}-v1`,
+      period,
+      rows: [],
+    }]),
+  );
+  for (const [kind, input] of Object.entries(aggregateInputs)) {
+    assert.deepEqual(validateAggregateInput(kind, input, publicPaths, new Date("2026-09-05T12:00:00Z")), {
+      state: "supplied",
+      ...input,
+      ...(kind === "ga4" ? { suppressed_rows: 0 } : {}),
+    });
+  }
+});
+
+test("an observation with no experiments or aggregate inputs reports none and invents nothing", async () => {
+  const emptyLedger = {
+    schema_version: "phantom-seo-experiments-v1",
+    default_observation_days: 28,
+    experiments: [],
+  };
+  assert.deepEqual(
+    validateExperiments(emptyLedger, publicPaths, new Date("2026-09-05T12:00:00Z")),
+    emptyLedger,
+  );
+
+  await withFixtureServer(async ({ options }) => {
+    // No experiments and no aggregateInputs options: every default must be empty.
+    const report = await observeProduction(options);
+    assert.deepEqual(report.experiments, emptyLedger);
+    assert.deepEqual(report.aggregate_inputs, {
+      gsc: { state: "not_supplied" },
+      ga4: { state: "not_supplied" },
+      ahrefs: { state: "not_supplied" },
+    });
+    assert.equal(report.verdict, "PASS");
+    assert.deepEqual(report.findings, []);
+    const summary = renderSummary(report);
+    assert.match(summary, /No checked-in experiments are active\./);
+    assert.match(summary, /No failures or warnings\./);
+    assert.match(summary, /- GSC: not_supplied/);
   });
 });
 
@@ -992,6 +1073,26 @@ test("Search Console input accepts finalized page aggregates and rejects raw que
       ),
     /must not contain query or hash data/,
   );
+});
+
+test("duplicate aggregate records are retained, with GA4 suppression applied per row", () => {
+  const period = { start: "2026-07-01", end: "2026-07-28", data_state: "final" };
+  const now = new Date("2026-09-05T12:00:00Z");
+  const cases = [
+    ["gsc", { page_path: "/docs", brand_class: "nonbrand", clicks: 2, impressions: 10, ctr: 0.2, position: 4 }],
+    ["ga4", { page_path: "/docs", referral_class: "other", sessions: 10, engaged_sessions: 5, engagement_rate: 0.5, key_events: 1 }],
+    ["ahrefs", { page_path: "/docs", estimated_organic_traffic: 12, referring_domains: 3 }],
+  ];
+  for (const [kind, row] of cases) {
+    const small = kind === "ga4" ? { ...row, sessions: 9 } : null;
+    const result = validateAggregateInput(kind, {
+      schema_version: `phantom-seo-${kind}-v1`,
+      period,
+      rows: [row, { ...row }, ...(small ? [small, { ...small }] : [])],
+    }, publicPaths, now);
+    assert.deepEqual(result.rows, [row, row], `${kind} retains both duplicate records`);
+    if (kind === "ga4") assert.equal(result.suppressed_rows, 2);
+  }
 });
 
 test("aggregate periods reject impossible dates and days that are not yet complete", () => {
