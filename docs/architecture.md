@@ -29,6 +29,7 @@ provider-enabled, or accepted in a real customer workflow.
 |---|---|---|
 | Product | `phantom-cli`, `phantom-core` | Project configuration, dotenv classification and rewriting, tokens, authentication, cloud clients, audit, sync, validation, and operator workflows. |
 | Provider foundations | `phantom-core/src/issuance`, CLI `grant` commands | Protocol/design source plus value-free lifecycle metadata. All live issuance/enrollment/renewal/revocation is hard-denied before credential or network access in 0.8.7. This is not execution authority. |
+| Account operations (library only) | `phantom-core/src/account_ops`, [design](design/account-ops.md) | Value-free create, rotate, revoke, and status engine with a GitHub App installation-token adapter. It checks the `~/.ashlr/KILL` switch, binds names to the adapter namespace, defaults to dry run, and writes a hash-chained ledger at `~/.phantom/account-ops.jsonl`. No CLI or MCP command calls it, so live issuance stays hard-denied. |
 | Secret storage | `phantom-vault` | Native credential-store and encrypted-file backends behind `VaultBackend`. Real values remain behind this interface. |
 | Local effect layer | `phantom-core::fs`, `phantom-vault` transactions | Retained directory capabilities, exact before-images, no-follow target resolution, effect receipts, and explicit durable versus committed-but-uncertain outcomes for governed project and client-config mutation. |
 | Network edge | `phantom-proxy` | Authenticated loopback HTTP proxy, fixed route-owned auth-header injection, inert client headers/bodies, response scrubbing, streaming, size/time/concurrency limits, and upstream dispatch. |
@@ -367,6 +368,8 @@ Use code and executable contracts before prose:
 - provider denial and design foundations: [`issuance`](../crates/phantom-core/src/issuance/), CLI
   [`grant`](../crates/phantom-cli/src/commands/grant/), and the current
   [provider-grant specification](grants-spec.md);
+- account operations engine: [`account_ops`](../crates/phantom-core/src/account_ops/) and
+  its [design note](design/account-ops.md);
 - proxy boundary: [`phantom-proxy`](../crates/phantom-proxy/);
 - workspace transaction: [`phantom-workspace`](../crates/phantom-workspace/),
   [`workspace_request.rs`](../crates/phantom-core/src/workspace_request.rs), and
