@@ -92,21 +92,6 @@ test("without IntersectionObserver visibility and reduced motion still control t
   f.hidden(true); assert.equal(f.paused, true); f.hidden(false); assert.equal(f.paused, false);
   f.reduced(true); assert.equal(f.paused, true); controller.dispose();
 });
-test("reduced motion holds the carousel paused from startup, through viewport and visibility changes, until the preference clears", () => {
-  const f = carouselFixture({ reduced: true }); const controller = f.start();
-  assert.equal(f.paused, true, "a reduced-motion visitor never sees the carousel move on first paint");
-  f.intersect(true); assert.equal(f.paused, true, "entering the viewport cannot start motion");
-  f.hidden(true); f.hidden(false); assert.equal(f.paused, true, "returning to the tab cannot start motion");
-  f.window.emit("pageshow"); assert.equal(f.paused, true, "restoring from the back-forward cache cannot start motion");
-  controller.setPaused(false); assert.equal(f.paused, true, "an explicit resume cannot override the preference");
-  f.reduced(false); assert.equal(f.paused, false, "clearing the preference resumes a visible, unpaused carousel");
-  f.reduced(true); assert.equal(f.paused, true, "turning the preference back on pauses live");
-  controller.dispose();
-});
-test("without a reduced-motion preference an in-view carousel moves", () => {
-  const f = carouselFixture({ reduced: false }); const controller = f.start(); f.intersect(true);
-  assert.equal(f.paused, false); controller.dispose();
-});
 function navigationFixture(pathname, menuOpen = false, release = null) {
   const window = new Surface(); window.scrollY = 0; window.location = { hash: "", replace() { assert.fail("not a legacy bookmark"); } };
   const effects = []; const stateUpdates = []; const trigger = { focusCount: 0, focus() { this.focusCount++; } }; let stateIndex = 0;

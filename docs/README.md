@@ -14,7 +14,6 @@ See [distribution status](distribution-status.md) for dated npm, Homebrew, crate
 
 | Goal | Guide |
 |------|-------|
-| Give an agent one copy-paste setup path | [Agent quickstart](agent-quickstart.md) |
 | Run GitHub PR operations through Phantom with curl | [GitHub box runners](github-box-runners.md) |
 | Protect a project for the first time | [Getting started](getting-started.md) |
 | Understand the landing-page install commands | [Quickstart reading guide](quickstart-reading-guide.md) |

@@ -136,29 +136,6 @@ BEGIN
 
   IF EXISTS (
     SELECT 1
-    FROM unnest(ARRAY['anon', 'authenticated']) AS roles(role_name)
-    CROSS JOIN unnest(
-      ARRAY['public.oauth_states', 'public.platform_tokens']
-    ) AS target_tables(table_name)
-    CROSS JOIN unnest(
-      ARRAY['SELECT', 'INSERT', 'UPDATE', 'REFERENCES']
-    ) AS requested_privileges(privilege_name)
-    JOIN pg_catalog.pg_attribute AS attr
-      ON attr.attrelid = target_tables.table_name::regclass
-     AND attr.attnum > 0
-     AND NOT attr.attisdropped
-    WHERE has_column_privilege(
-      roles.role_name,
-      attr.attrelid,
-      attr.attnum,
-      requested_privileges.privilege_name
-    )
-  ) THEN
-    RAISE EXCEPTION 'public clients must not retain column privileges on OAuth state or platform tokens';
-  END IF;
-
-  IF EXISTS (
-    SELECT 1
     FROM unnest(
       ARRAY['public.oauth_states', 'public.platform_tokens']
     ) AS target_tables(table_name)

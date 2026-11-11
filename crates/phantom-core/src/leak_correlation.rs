@@ -1007,35 +1007,6 @@ pub enum AlertBackendConfig {
     },
 }
 
-/// Render value-blind destination origins for human approval. URL paths,
-/// queries, userinfo, and PagerDuty routing keys are deliberately excluded.
-pub fn alert_destination_origins(backends: &[AlertBackendConfig]) -> std::io::Result<Vec<String>> {
-    let mut origins = Vec::with_capacity(backends.len());
-    for backend in backends {
-        let origin = match backend {
-            AlertBackendConfig::Webhook { url } | AlertBackendConfig::Slack { url } => {
-                let parsed = reqwest::Url::parse(url)
-                    .map_err(|_| std::io::Error::other("alert destination URL is invalid"))?;
-                if parsed.scheme() != "https"
-                    || !parsed.username().is_empty()
-                    || parsed.password().is_some()
-                    || parsed.host_str().is_none()
-                {
-                    return Err(std::io::Error::other(
-                        "alert destinations must be credential-free absolute HTTPS URLs",
-                    ));
-                }
-                parsed.origin().ascii_serialization()
-            }
-            AlertBackendConfig::PagerDuty { .. } => "https://events.pagerduty.com".to_string(),
-        };
-        origins.push(origin);
-    }
-    origins.sort();
-    origins.dedup();
-    Ok(origins)
-}
-
 /// `[alerting]` section of `.phantom.toml`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]

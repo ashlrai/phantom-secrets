@@ -64,7 +64,7 @@ test('byte comparison identifies the reviewed tag divergence', () => {
   const result = byteComparison();
   assert.equal(result.status, 1);
   assert.deepEqual(parseComparisonReport(result.stdout.trim()), { byte: offset + 1, line: 19 });
-  assert.equal(repository.toString().replace('CANDIDATE_TAG="v0.8.9"', 'CANDIDATE_TAG="v0.8.7"'), web.toString());
+  assert.equal(repository.toString().replace('CANDIDATE_TAG="v0.8.8"', 'CANDIDATE_TAG="v0.8.7"'), web.toString());
 });
 
 test('synthetic tag mismatch location agrees with cmp and detects earlier drift', (t) => {
@@ -73,7 +73,7 @@ test('synthetic tag mismatch location agrees with cmp and detects earlier drift'
   mkdirSync(join(directory, 'scripts'), { recursive: true });
   mkdirSync(join(directory, 'apps/web/public'), { recursive: true });
   const source = repository.toString('latin1');
-  const currentTag = 'CANDIDATE_TAG="v0.8.9"';
+  const currentTag = 'CANDIDATE_TAG="v0.8.8"';
   assert.equal(source.split(currentTag).length, 2, 'candidate tag must occur exactly once');
   const varied = Buffer.from(source.replace(currentTag, 'CANDIDATE_TAG="v0.7.9"'), 'latin1');
   writeFileSync(join(directory, repositoryCopy), repository);

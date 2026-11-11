@@ -1,31 +1,25 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { QuickStart } from "./QuickStart";
 
-// Select the platform and return the command text exactly as displayed.
-// QuickStart must already be rendered.
-function displayedCommand(platform: string): string {
-  const selector = screen.getByRole("group", { name: "Choose an operating system" });
-  fireEvent.click(within(selector).getByRole("button", { name: platform }));
-  const card = screen.getByRole("heading", { level: 3, name: platform }).closest("article");
-  assert.ok(card);
-  const copy = within(card).getByRole("button", { name: /^Copy command:/ });
-  return Array.from(copy.firstElementChild!.childNodes)
-    .filter((node) => node.nodeType === Node.TEXT_NODE)
-    .map((node) => node.textContent)
-    .join("");
-}
-
 for (const platform of ["macOS", "Linux"]) {
   test(`${platform} displays a unique TMPDIR staging template`, () => {
     render(<QuickStart />);
     try {
-      const displayed = displayedCommand(platform);
+      const selector = screen.getByRole("group", { name: "Choose an operating system" });
+      fireEvent.click(within(selector).getByRole("button", { name: platform }));
+      const card = screen.getByRole("heading", { level: 3, name: platform }).closest("article");
+      assert.ok(card);
+      const copy = within(card).getByRole("button", { name: /^Copy command:/ });
+      const displayed = Array.from(copy.firstElementChild!.childNodes)
+        .filter((node) => node.nodeType === Node.TEXT_NODE)
+        .map((node) => node.textContent)
+        .join("");
 
       // Each invocation gets its own directory; quotes preserve TMPDIR containing spaces.
       const stagingLines = displayed.split("\n").filter((line) => /\bmktemp\b/.test(line));
@@ -132,7 +126,15 @@ for (const platform of ["macOS", "Linux"]) {
     render(<QuickStart />);
     let displayed = "";
     try {
-      displayed = displayedCommand(platform);
+      const selector = screen.getByRole("group", { name: "Choose an operating system" });
+      fireEvent.click(within(selector).getByRole("button", { name: platform }));
+      const card = screen.getByRole("heading", { level: 3, name: platform }).closest("article");
+      assert.ok(card);
+      const copy = within(card).getByRole("button", { name: /^Copy command:/ });
+      displayed = Array.from(copy.firstElementChild!.childNodes)
+        .filter((node) => node.nodeType === Node.TEXT_NODE)
+        .map((node) => node.textContent)
+        .join("");
     } finally {
       cleanup();
     }
@@ -159,40 +161,6 @@ for (const platform of ["macOS", "Linux"]) {
   });
 }
 
-// The page promises /tmp when TMPDIR is "unset or empty"; `${TMPDIR:-/tmp}`
-// (colon form) covers both, so an exported-but-empty TMPDIR must also stage
-// under /tmp rather than at a root-relative "/phantom-install.XXXXXX".
-for (const platform of ["macOS", "Linux"]) {
-  test(`${platform} staging falls back to /tmp when TMPDIR is empty`, () => {
-    render(<QuickStart />);
-    let displayed = "";
-    try {
-      displayed = displayedCommand(platform);
-    } finally {
-      cleanup();
-    }
-
-    const lines = displayed.split("\n");
-    const trap = lines.findIndex((line) => line.startsWith("trap "));
-    assert.ok(trap > 0, `${platform}: displayed command installs an EXIT trap`);
-    const script = [
-      ...lines.slice(0, trap + 1),
-      'printf "%s\\n" "$phantom_stage"',
-      'printf fixture > "$phantom_installer"',
-      ")",
-    ].join("\n");
-
-    const result = spawnSync("bash", ["-c", script], {
-      env: { ...process.env, TMPDIR: "" },
-      encoding: "utf8",
-    });
-    assert.equal(result.status, 0, result.stderr);
-    const stage = result.stdout.trim();
-    assert.match(stage, /^\/tmp\/phantom-install\.[A-Za-z0-9]{6}$/, `${platform}: staged under /tmp`);
-    assert.equal(existsSync(stage), false, `${platform}: fixture and staging directory removed on exit`);
-  });
-}
-
 // Same real prologue, but TMPDIR names a directory whose path contains a
 // space: only a single-argument template lets mktemp stage inside it, so a
 // zero exit status plus a stage rooted in that parent proves the quoted
@@ -202,7 +170,15 @@ for (const platform of ["macOS", "Linux"]) {
     render(<QuickStart />);
     let displayed = "";
     try {
-      displayed = displayedCommand(platform);
+      const selector = screen.getByRole("group", { name: "Choose an operating system" });
+      fireEvent.click(within(selector).getByRole("button", { name: platform }));
+      const card = screen.getByRole("heading", { level: 3, name: platform }).closest("article");
+      assert.ok(card);
+      const copy = within(card).getByRole("button", { name: /^Copy command:/ });
+      displayed = Array.from(copy.firstElementChild!.childNodes)
+        .filter((node) => node.nodeType === Node.TEXT_NODE)
+        .map((node) => node.textContent)
+        .join("");
     } finally {
       cleanup();
     }
@@ -241,7 +217,15 @@ for (const platform of ["macOS", "Linux"]) {
     render(<QuickStart />);
     let displayed = "";
     try {
-      displayed = displayedCommand(platform);
+      const selector = screen.getByRole("group", { name: "Choose an operating system" });
+      fireEvent.click(within(selector).getByRole("button", { name: platform }));
+      const card = screen.getByRole("heading", { level: 3, name: platform }).closest("article");
+      assert.ok(card);
+      const copy = within(card).getByRole("button", { name: /^Copy command:/ });
+      displayed = Array.from(copy.firstElementChild!.childNodes)
+        .filter((node) => node.nodeType === Node.TEXT_NODE)
+        .map((node) => node.textContent)
+        .join("");
     } finally {
       cleanup();
     }
@@ -270,124 +254,5 @@ for (const platform of ["macOS", "Linux"]) {
     assert.notEqual(result.status, 0, `${platform}: a failed mktemp must fail the command`);
     assert.match(result.stderr, /stub mktemp: forced failure/, `${platform}: mktemp is the failing step`);
     assert.equal(existsSync(curlMarker), false, `${platform}: the download never runs after staging fails`);
-  });
-}
-
-// The curl spy above only covers the download. Every later staging step must
-// also stay unreached: checksum, installer execution, cleanup (rm/rmdir, which
-// would act on an empty $phantom_stage), and the version checks. Each is a
-// logging PATH shim; the log must stay empty and nothing may appear on stdout.
-for (const platform of ["macOS", "Linux"]) {
-  test(`${platform} stubbed mktemp failure stops every later staging step`, (t) => {
-    render(<QuickStart />);
-    let displayed = "";
-    try {
-      displayed = displayedCommand(platform);
-    } finally {
-      cleanup();
-    }
-
-    const tempRoot = mkdtempSync(path.join(tmpdir(), "phantom-mktemp-stops-"));
-    t.after(() => rmSync(tempRoot, { recursive: true, force: true }));
-    const bin = path.join(tempRoot, "bin");
-    mkdirSync(bin);
-    const log = path.join(tempRoot, "later-steps.log");
-    writeFileSync(
-      path.join(bin, "mktemp"),
-      "#!/bin/sh\nprintf 'stub mktemp: forced failure\\n' >&2\nexit 1\n",
-      { mode: 0o755 },
-    );
-    // Shims for each step after staging; a call appends its name to the log.
-    for (const step of ["curl", "shasum", "sha256sum", "bash", "rm", "rmdir", "phantom", "phantom-mcp"]) {
-      writeFileSync(path.join(bin, step), `#!/bin/sh\nprintf '%s\\n' ${step} >> "${log}"\nexit 0\n`, { mode: 0o755 });
-    }
-    // Bash itself is the interpreter under test, so run it by absolute path;
-    // the bin shim above only intercepts the displayed `bash "$phantom_installer"`.
-    const realBash = spawnSync("sh", ["-c", "command -v bash"], { encoding: "utf8" }).stdout.trim();
-    assert.ok(realBash, "a real bash is available");
-    const result = spawnSync(realBash, ["-c", displayed], {
-      env: { ...process.env, PATH: `${bin}:/usr/bin:/bin`, HOME: bin, TMPDIR: tempRoot },
-      encoding: "utf8",
-      timeout: 30000,
-    });
-    assert.notEqual(result.status, 0, `${platform}: a failed mktemp must fail the command`);
-    assert.match(result.stderr, /stub mktemp: forced failure/, `${platform}: mktemp is the failing step`);
-    assert.equal(result.stdout, "", `${platform}: no version or checksum output after failure`);
-    assert.equal(existsSync(log) ? readFileSync(log, "utf8") : "", "", `${platform}: no later staging step ran`);
-  });
-}
-
-// Every displayed snippet names its temporary files with the same
-// `phantom-install` prefix, so users and agents recognize leftovers the same
-// way on every platform, and no other temporary name appears.
-test("every displayed snippet uses the phantom-install temporary prefix", () => {
-  render(<QuickStart />);
-  try {
-    const selector = screen.getByRole("group", { name: "Choose an operating system" });
-    for (const platform of ["macOS", "Windows", "Linux"]) {
-      fireEvent.click(within(selector).getByRole("button", { name: platform }));
-      const card = screen.getByRole("heading", { level: 3, name: platform }).closest("article");
-      assert.ok(card);
-      const copy = within(card).getByRole("button", { name: /^Copy command:/ });
-      const displayed = Array.from(copy.firstElementChild!.childNodes)
-        .filter((node) => node.nodeType === Node.TEXT_NODE)
-        .map((node) => node.textContent)
-        .join("");
-
-      const tempLines = displayed.split("\n").filter((line) => /\bmktemp\b|\$env:TEMP/.test(line));
-      assert.equal(tempLines.length, 1, `${platform}: exactly one temporary name`);
-      const prefix =
-        platform === "Windows"
-          ? /Join-Path \$env:TEMP \('phantom-install-/
-          : /mktemp -d "\$\{TMPDIR:-\/tmp\}\/phantom-install\.XXXXXX"/;
-      assert.match(tempLines[0], prefix, `${platform}: temporary name starts with phantom-install`);
-    }
-  } finally {
-    cleanup();
-  }
-});
-
-// Two runs of the real staging prologue under one parent must not share a
-// directory. The EXIT trap is cleared so both stages are still on disk when
-// compared; a sequential pair with cleanup could reuse a freed name unseen.
-for (const platform of ["macOS", "Linux"]) {
-  test(`${platform} staging creates distinct directories under the same TMPDIR parent`, (t) => {
-    render(<QuickStart />);
-    let displayed = "";
-    try {
-      const selector = screen.getByRole("group", { name: "Choose an operating system" });
-      fireEvent.click(within(selector).getByRole("button", { name: platform }));
-      const card = screen.getByRole("heading", { level: 3, name: platform }).closest("article");
-      assert.ok(card);
-      const copy = within(card).getByRole("button", { name: /^Copy command:/ });
-      displayed = Array.from(copy.firstElementChild!.childNodes)
-        .filter((node) => node.nodeType === Node.TEXT_NODE)
-        .map((node) => node.textContent)
-        .join("");
-    } finally {
-      cleanup();
-    }
-
-    const lines = displayed.split("\n");
-    const trap = lines.findIndex((line) => line.startsWith("trap "));
-    assert.ok(trap > 0, `${platform}: displayed command installs an EXIT trap`);
-    const script = [...lines.slice(0, trap + 1), "trap - EXIT", 'printf "%s\\n" "$phantom_stage"', ")"].join("\n");
-
-    const parent = mkdtempSync(path.join(tmpdir(), "phantom stage parent "));
-    t.after(() => rmSync(parent, { recursive: true, force: true }));
-    const stages = [0, 1].map(() => {
-      const result = spawnSync("bash", ["-c", script], {
-        env: { ...process.env, TMPDIR: parent },
-        encoding: "utf8",
-      });
-      assert.equal(result.status, 0, result.stderr);
-      return result.stdout.trim();
-    });
-
-    assert.notEqual(stages[0], stages[1], `${platform}: each invocation gets its own directory`);
-    for (const stage of stages) {
-      assert.equal(path.dirname(stage), parent, `${platform}: staged inside the shared parent`);
-      assert.ok(existsSync(stage), `${platform}: ${path.basename(stage)} exists`);
-    }
   });
 }

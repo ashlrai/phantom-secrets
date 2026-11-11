@@ -34,7 +34,7 @@ function validSupabaseUrl(value: string | undefined): boolean {
   }
 }
 
-export function publicAuthConfigurationReady(env: NodeJS.ProcessEnv): boolean {
+function publicAuthConfigurationReady(env: NodeJS.ProcessEnv): boolean {
   return (
     validSupabaseUrl(env.NEXT_PUBLIC_SUPABASE_URL) &&
     validOpaqueConfiguration(env.NEXT_PUBLIC_SUPABASE_ANON_KEY)

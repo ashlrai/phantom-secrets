@@ -125,9 +125,8 @@ remaining operating-system integrations below.
 | Created-parent rollback | Identity-bound receipts remove only exact, empty transaction-created directories after descendant handles are dropped | Unknown creation state without a receipt remains explicitly unresolved |
 
 Native credential-store and ACL source are likewise not acceptance. In
-particular, the linked `keyring-core` store crates select macOS Keychain,
-Linux keyutils or Secret Service (via `dbus-secret-service-keyring-store`),
-and Windows Credential Manager. Linux
+particular, the configured `keyring` crate features select macOS Keychain,
+Linux keyutils or Secret Service, and Windows Credential Manager. Linux
 keyutils entries are in-memory and do not survive a reboot. On a headed Linux
 desktop, `phantom vault migrate-linux` can copy and read-after-write verify the
 current project's entries in Secret Service before atomically selecting it.

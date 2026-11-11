@@ -1,6 +1,8 @@
 #![allow(dead_code)]
-/// Environment selector support used by proxy sessions, plus currently
-/// unrouted environment-management commands.
+/// Environment selector support used by proxy sessions.
+/// `phantom env list` and `phantom env new` stay callable from the
+/// non-regular-config refusal tests. `phantom env use` and `phantom env copy`
+/// are not CLI commands; their checked helpers remain for those tests.
 use anyhow::{Context, Result};
 use colored::Colorize;
 use phantom_core::config::PhantomConfig;
@@ -15,7 +17,7 @@ use phantom_vault::{
     VaultBackend,
 };
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::{BufRead, IsTerminal, Read, Write};
+use std::io::{BufRead, Read, Write};
 use std::path::{Path, PathBuf};
 use zeroize::Zeroizing;
 
@@ -67,29 +69,6 @@ fn read_project_regular(
     target
         .read_regular()
         .with_context(|| format!("Failed to safely snapshot {label}"))
-}
-
-/// `phantom env use <name>` — set the active environment.
-pub fn run_use(name: &str) -> Result<()> {
-    let plan = prepare_environment_use(&std::env::current_dir()?, name)?;
-    let attached = std::io::stdin().is_terminal()
-        && std::io::stdout().is_terminal()
-        && std::io::stderr().is_terminal();
-    let mut input = std::io::BufReader::new(std::io::stdin().lock());
-    let mut output = std::io::stderr().lock();
-    apply_environment_use(&plan, attached, &mut input, &mut output)?;
-
-    println!(
-        "{} Active environment set to {}",
-        "ok".green().bold(),
-        name.cyan().bold()
-    );
-    println!(
-        "{} New secrets will be stored under the {} namespace.",
-        "->".blue().bold(),
-        name.cyan()
-    );
-    Ok(())
 }
 
 fn prepare_environment_use(
@@ -419,70 +398,6 @@ pub fn run_new(name: &str) -> Result<()> {
         "{} Switch to it with: {}",
         "->".blue().bold(),
         format!("phantom env use {name}").cyan()
-    );
-
-    Ok(())
-}
-
-/// `phantom env copy --from <src> --to <dst>` — copy all secrets from one env to another.
-pub fn run_copy(from: &str, to: &str) -> Result<()> {
-    let review = prepare_environment_copy_review(&std::env::current_dir()?, from, to)?;
-    let attached = std::io::stdin().is_terminal()
-        && std::io::stdout().is_terminal()
-        && std::io::stderr().is_terminal();
-    let mut input = std::io::BufReader::new(std::io::stdin().lock());
-    let mut output = std::io::stderr().lock();
-    confirm_environment_copy(&review, attached, &mut input, &mut output)?;
-
-    // Vault creation, listing, and especially value retrieval are deliberately
-    // after the fresh trusted-terminal ceremony and exact local-state recheck.
-    let (vault, all_keys) = environment_copy_inventory(&review.vault_id)?;
-    let config = PhantomConfig::load_from_bytes(&review.config_path, review.config_before.bytes())
-        .context("Failed to load the reviewed .phantom.toml snapshot")?;
-    let plan = prepare_environment_copy(
-        &config,
-        vault.as_ref(),
-        &all_keys,
-        review.from.as_str(),
-        review.to.as_str(),
-        super::rotation_gate::now_secs(),
-    )?;
-    validate_environment_copy_review(&review).context(
-        "Environment copy authority changed after source values were prepared; no destination was written",
-    )?;
-    let copied = plan.copied_names.len();
-    let file_guards = environment_copy_file_guards(&review);
-    phantom_vault::commit_init_if_project_identity(
-        &review.project_dir,
-        review.project_anchor.identity(),
-        vault.as_ref(),
-        plan.mutations,
-        file_guards,
-    )
-    .context(
-        "Environment copy transaction failed; exact transaction-owned writes were rolled back where verifiable. Inspect both environments before retrying.",
-    )?;
-
-    for name in &plan.copied_names {
-        println!(
-            "   {} {} -> {}/{}",
-            "+".green().bold(),
-            name.bold(),
-            review.to.as_str().cyan(),
-            name
-        );
-    }
-
-    println!(
-        "\n{} Copied {} secret(s) to environment '{}'.",
-        "ok".green().bold(),
-        copied,
-        review.to.as_str().cyan().bold()
-    );
-    println!(
-        "{} Switch to it with: {}",
-        "->".blue().bold(),
-        format!("phantom env use {}", review.to).cyan()
     );
 
     Ok(())
@@ -851,7 +766,7 @@ mod tests {
             confirm_environment_copy(&review, true, &mut input, &mut Vec::new()).unwrap_err();
 
         assert!(error.to_string().contains("did not match exactly"));
-        assert!(input.position() <= (review.challenge.len() + 2) as u64);
+        assert_eq!(input.position(), (review.challenge.len() + 2) as u64);
     }
 
     #[test]
@@ -1042,7 +957,7 @@ mod tests {
         let error = apply_environment_use(&plan, true, &mut input, &mut Vec::new()).unwrap_err();
 
         assert!(error.to_string().contains("did not match exactly"));
-        assert!(input.position() <= (plan.challenge.len() + 2) as u64);
+        assert_eq!(input.position(), (plan.challenge.len() + 2) as u64);
         assert!(!dir.path().join(".phantom/env").exists());
     }
 

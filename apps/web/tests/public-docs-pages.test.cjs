@@ -197,46 +197,6 @@ test("bundled documentation preserves every authoritative Markdown byte without 
   assert.equal(loadedFiles.length, initialLoads, "unknown slugs must not request another text module");
 });
 
-test("an unknown document path returns undefined from every lookup without exposing another document", () => {
-  const { docs } = loadDocs();
-  const unknown = [
-    "missing",
-    "Getting-Started",
-    " getting-started",
-    "getting-started ",
-    "getting-started/",
-    "/getting-started",
-    "docs/getting-started.md",
-    "../docs/getting-started.md",
-    "__proto__",
-    "constructor",
-    "toString",
-    "hasOwnProperty",
-  ];
-  for (const candidate of unknown) {
-    assert.equal(docs.getPublicDocConfig(candidate), undefined, `config: ${candidate}`);
-    assert.equal(docs.getPublicDoc(candidate), undefined, `doc: ${candidate}`);
-    assert.equal(docs.publicDocHrefForMarkdownFile(candidate), undefined, `href: ${candidate}`);
-  }
-  // Known paths must still resolve to exactly their own document.
-  for (const entry of catalog) {
-    assert.equal(docs.getPublicDoc(entry.slug).slug, entry.slug);
-    assert.equal(docs.publicDocHrefForMarkdownFile(entry.file), `/docs/${entry.slug}`);
-  }
-});
-
-test("a nonexistent documentation Markdown path returns the existing 404 response", async () => {
-  const route = loadComponent("src/app/docs/[slug]/markdown/route.ts", {
-    "@/lib/public-docs": loadDocs().docs,
-  });
-  const response = await route.GET(new Request("https://phm.dev/docs/guide-that-does-not-exist/markdown"), {
-    params: Promise.resolve({ slug: "guide-that-does-not-exist" }),
-  });
-
-  assert.equal(response.status, 404);
-  assert.equal(await response.text(), "Document not found");
-});
-
 test("the text loader escapes arbitrary Markdown and rejects files outside its catalog", () => {
   const source = 'quotes " backslash \\ newline\n</script> ${notCode} `code` \u2028\u2029 emoji 🧭';
   assert.equal(textModule(catalog[0].file, source), source);

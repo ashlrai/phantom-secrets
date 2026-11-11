@@ -27,9 +27,8 @@ test("current workspace version release notes include the complete candidate tra
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, new RegExp(`^## \\[${version.replaceAll(".", "\\.")}\\]`, "m"));
   assert.match(result.stdout, /^### Breaking changes and migration$/m);
-  assert.match(result.stdout, /No breaking changes since v0\.8\.8/);
-  assert.match(result.stdout, /phantom audit hotspots/);
-  assert.match(result.stdout, /llms\.txt/);
+  assert.match(result.stdout, /No breaking changes since v0\.8\.7/);
+  assert.match(result.stdout, /installer regression coverage/);
   assert.doesNotMatch(result.stdout, /^## \\[Unreleased\\]$/m);
   assert.doesNotMatch(result.stdout, /^## \\[0\.7\.9\\]/m);
 });
