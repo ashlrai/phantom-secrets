@@ -634,6 +634,38 @@ test("a page without description metadata produces a missing-description failure
   );
 });
 
+test("a page without any h1 produces a single h1-count failure", async () => {
+  await withFixtureServer(
+    async ({ options }) => {
+      const report = await observeProduction(options);
+      assert.equal(report.verdict, "FAIL");
+      assert.equal(report.findings.length, 1);
+      assert.deepEqual(report.counts, { fail: 1, warn: 0 });
+      assert.equal(
+        report.technical.public_routes.find((page) => page.route === "/docs").h1_count,
+        0,
+      );
+      assert.deepEqual(report.findings, [
+        {
+          severity: "fail",
+          code: "h1_count",
+          message: "Expected one h1; observed 0",
+          route: "/docs",
+        },
+      ]);
+      const summary = renderSummary(report);
+      assert.match(summary, /Findings: 1 failures and 0 warnings\./);
+      assert.match(summary, /\*\*FAIL h1_count\*\* \(\/docs\): Expected one h1; observed 0/);
+    },
+    {
+      "/docs": (response, origin) => {
+        response.setHeader("content-type", "text/html");
+        response.end(html(origin, "/docs").replace("<h1>Page /docs</h1>", ""));
+      },
+    },
+  );
+});
+
 test("the GitHub job summary is deterministically capped with an omitted count", () => {
   const findingCount = 500;
   const report = {
