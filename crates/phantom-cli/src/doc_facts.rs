@@ -494,3 +494,28 @@ fn completion_shell_list_matches_the_cli() {
         &truth,
     );
 }
+
+/// Every visible top-level command must appear in the changelog (released
+/// sections plus unfolded `changelog.d` fragments), so a shipped command never
+/// goes unrecorded.
+#[test]
+fn changelog_records_every_visible_cli_command() {
+    let mut history = read_doc("CHANGELOG.md");
+    let fragments = repo_root().join("changelog.d");
+    for entry in std::fs::read_dir(&fragments).expect("read changelog.d") {
+        let path = entry.expect("fragment entry").path();
+        if path.extension().is_some_and(|ext| ext == "md") {
+            history.push_str(&std::fs::read_to_string(&path).expect("read fragment"));
+        }
+    }
+    let missing: Vec<String> = Cli::command()
+        .get_subcommands()
+        .filter(|sub| !sub.is_hide_set())
+        .map(|sub| sub.get_name().to_string())
+        .filter(|name| !history.contains(&format!("phantom {name}")))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "CHANGELOG.md or changelog.d/ never mention these commands as `phantom <name>`: {missing:?}; add a fragment"
+    );
+}
