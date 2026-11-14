@@ -88,6 +88,11 @@ These guides cover installation, MCP setup, the value-blind tool model, and dail
 - [Codex](codex.md)
 - [Cursor](cursor.md)
 - [Windsurf](windsurf.md)
+- [MCP secrets manager overview](mcp-secrets-manager.md) for the value-blind tool model in one page
+- [`phantom agent doctor --json` preflight contract](agent-preflight-contract.md) for agent setup checks
+- [`phantom exec` CLI coverage](exec.md) for child environment, proxy routes, and curl examples
+- [GitHub credential helper](git-credential.md) for `phantom git-credential` and the plaintext handoff boundary
+- [Hybrid local quickstart](hybrid-local-quickstart.md) for Ollama behind LiteLLM plus a frontier model
 - [Temporal workers with no secrets on disk](temporal.md) (optional guidance, untested design)
 - [PostHog fleet capture](posthog.md) (header-only v1 event ingestion)
 - [Copyable agent policy, task brief, and pilot templates](../examples/agent-delegation/README.md)
@@ -122,6 +127,9 @@ and retains historical design-status language.
 - [Device authorization page UI](device-code-ui.md)
 - [Vercel and Railway sync](sync.md)
 - [CI/CD integration](ci-cd.md)
+- [`phantom fleet-status --json` schema](fleet-status.md)
+- [Workbench audit feed](audit-feed.md) for `phantom audit feed`
+- [Public fact sheet](public-fact-sheet.md)
 - [Shell prompt integration](shell-prompt.md)
 - [npm publication](npm-publication.md)
 - [MCP Registry publication](mcp-registry-publication.md)
