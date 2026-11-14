@@ -333,18 +333,6 @@ impl RotationSchedule {
     }
 }
 
-/// How many seconds ago was `last_rotated` relative to `now_secs`?
-/// Returns `None` if `last_rotated` is `None` (never rotated).
-pub fn seconds_overdue(schedule: &RotationSchedule, now_secs: u64) -> Option<i64> {
-    let boundary = schedule.last_boundary_before(now_secs)?;
-    let last = schedule.last_rotated?;
-    if boundary > last {
-        Some((now_secs as i64) - (boundary as i64))
-    } else {
-        None
-    }
-}
-
 // ── Rotation enforcement gate ─────────────────────────────────────────────────
 
 /// Period in seconds for each `RotationStrategy` variant.
@@ -677,74 +665,6 @@ fn ordinal_suffix(day: u8) -> &'static str {
     }
 }
 
-/// Severity level returned by the doctor grace-period check.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum GracePeriodSeverity {
-    /// Secret is healthy — more than `grace_period_secs` remain.
-    Ok,
-    /// Secret expires within the grace period — promote to warning in `phantom doctor`.
-    Warning { days_remaining: u64 },
-    /// Secret has already expired.
-    Expired { secs_overdue: u64 },
-    /// No expiry set; grace-period check is not applicable.
-    NoExpiry,
-}
-
-impl GracePeriodSeverity {
-    /// Returns `true` when `phantom doctor` should display a warning.
-    pub fn is_doctor_warning(&self) -> bool {
-        matches!(
-            self,
-            GracePeriodSeverity::Warning { .. } | GracePeriodSeverity::Expired { .. }
-        )
-    }
-}
-
-/// Check whether a secret falls within its expiry grace period.
-///
-/// * `expires_at`         — Unix timestamp of the secret's expiry (from vault metadata).
-/// * `grace_period_secs`  — From `SecretOverride::expiry_grace_period_secs` (default 604800).
-/// * `now_secs`           — Current Unix timestamp (injectable for tests).
-pub fn check_grace_period(
-    expires_at: Option<u64>,
-    grace_period_secs: u64,
-    now_secs: u64,
-) -> GracePeriodSeverity {
-    let Some(exp) = expires_at else {
-        return GracePeriodSeverity::NoExpiry;
-    };
-
-    if now_secs >= exp {
-        return GracePeriodSeverity::Expired {
-            secs_overdue: now_secs - exp,
-        };
-    }
-
-    let secs_remaining = exp - now_secs;
-    if secs_remaining <= grace_period_secs {
-        let days_remaining = secs_remaining / 86_400;
-        GracePeriodSeverity::Warning { days_remaining }
-    } else {
-        GracePeriodSeverity::Ok
-    }
-}
-
-/// Returns a human-readable "N days past schedule" string, or `None` if not overdue.
-pub fn overdue_description(schedule: &RotationSchedule, now_secs: u64) -> Option<String> {
-    let secs = seconds_overdue(schedule, now_secs)?;
-    if secs <= 0 {
-        return None;
-    }
-    let days = secs / 86_400;
-    if days == 0 {
-        Some("less than 1 day past schedule".to_string())
-    } else if days == 1 {
-        Some("1 day past schedule".to_string())
-    } else {
-        Some(format!("{days} days past schedule"))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1001,45 +921,6 @@ mod tests {
         assert_eq!(n.describe(), "never");
     }
 
-    #[test]
-    fn overdue_description_returns_none_when_not_overdue() {
-        let now = base_now();
-        let sched_unrotated = RotationSchedule {
-            strategy: RotationStrategy::Daily,
-            hour: 2,
-            minute: 0,
-            weekday: Weekday::Monday,
-            day_of_month: 1,
-            last_rotated: None,
-        };
-        let b = sched_unrotated.last_boundary_before(now).unwrap();
-        let sched = RotationSchedule {
-            last_rotated: Some(b + 1),
-            ..sched_unrotated
-        };
-        assert!(overdue_description(&sched, now).is_none());
-    }
-
-    #[test]
-    fn overdue_description_returns_days_when_overdue() {
-        let now = base_now();
-        let sched = RotationSchedule {
-            strategy: RotationStrategy::Daily,
-            hour: 2,
-            minute: 0,
-            weekday: Weekday::Monday,
-            day_of_month: 1,
-            last_rotated: Some(now - 6 * 86_400), // 6 days ago
-        };
-        let desc = overdue_description(&sched, now);
-        assert!(desc.is_some());
-        let s = desc.unwrap();
-        assert!(
-            s.contains("past schedule"),
-            "expected 'past schedule' in: {s}"
-        );
-    }
-
     fn interval(days: u64, last_rotated: Option<u64>) -> RotationSchedule {
         RotationSchedule {
             last_rotated,
@@ -1056,17 +937,12 @@ mod tests {
         let sched = interval(90, Some(now - 89 * DAY_SECS));
         assert!(!sched.should_rotate_now(now));
         assert_eq!(next_rotation_after(&sched, now), Some(now + DAY_SECS));
-        assert!(overdue_description(&sched, now).is_none());
         // A monthly schedule would have been due after 30 days; this one is not.
         assert!(!interval(90, Some(now - 31 * DAY_SECS)).should_rotate_now(now));
         // Rotated 92 days ago: two days past schedule.
         let late = interval(90, Some(now - 92 * DAY_SECS));
         assert!(late.should_rotate_now(now));
         assert_eq!(next_rotation_after(&late, now), Some(now));
-        assert_eq!(
-            overdue_description(&late, now).as_deref(),
-            Some("2 days past schedule")
-        );
     }
 
     #[test]

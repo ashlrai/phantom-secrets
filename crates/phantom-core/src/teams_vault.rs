@@ -117,12 +117,6 @@ fn partial_push_error(
     ))
 }
 
-/// Result of a pull.
-pub struct PullOutcome {
-    pub version: u64,
-    pub written: usize,
-}
-
 /// Encrypt `secrets` with a fresh symmetric key, wrap that key for every
 /// team member with a registered public key, and push to the team's
 /// shared vault.
