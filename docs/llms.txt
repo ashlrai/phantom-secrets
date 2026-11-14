@@ -2,24 +2,6 @@
 
 > Open-source CLI that helps keep provider credential values out of the managed dotenv and MCP path for supported AI workflows. It replaces managed dotenv values with non-provider `phm_` tokens and proxies exact supported API routes through an authenticated local service. Unmanaged files, same-user processes, proxy-bearer theft, and provider content remain outside that boundary.
 
-## Agents
-
-Run these from the project after install. They never print secret values. Walkthrough with MCP file shapes: [agent-quickstart.md](agent-quickstart.md).
-
-<!-- agent-quickstart:start -->
-```bash
-phantom init
-phantom status --json
-phantom list --json
-phantom agent doctor --json
-phantom setup --client claude
-phantom setup --client cursor
-phantom setup --client codex
-phantom check
-phantom why OPENAI_API_KEY --json
-```
-<!-- agent-quickstart:end -->
-
 ## Install
 
 Release evidence verified on 2026-11-06. The immutable GitHub `v0.8.7` release at

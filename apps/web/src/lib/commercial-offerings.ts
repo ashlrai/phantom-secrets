@@ -64,11 +64,6 @@ export const COMMERCIAL_OFFERINGS = [
   },
 ] as const satisfies readonly CommercialOffering[];
 
-/** Returns the offering with exactly this id, or `undefined` when none matches. */
-export function findCommercialOffering(id: string): CommercialOffering | undefined {
-  return COMMERCIAL_OFFERINGS.find((offering) => offering.id === id);
-}
-
 export const COMMERCIAL_NON_CLAIMS = [
   "No generally available Phantom Cloud service or hosted control plane",
   "No shipped SSO, SAML, or SCIM integration",

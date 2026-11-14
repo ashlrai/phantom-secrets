@@ -10,10 +10,10 @@ Phantom replaces managed secrets in `.env` with `phm_` placeholders. Agents and 
 [![CI](https://img.shields.io/github/actions/workflow/status/ashlrai/phantom-secrets/ci.yml?style=for-the-badge&label=CI&logo=github&labelColor=0b0b14)](https://github.com/ashlrai/phantom-secrets/actions/workflows/ci.yml)
 <!-- fresh:begin readme-release-badges -->
 [![Verified GitHub release](https://img.shields.io/badge/verified_GitHub_release-v0.8.7-2f81f7?style=for-the-badge&labelColor=0b0b14)](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.8.7)
-[![Source version](https://img.shields.io/badge/source_version-v0.8.9-f5a623?style=for-the-badge&labelColor=0b0b14)](CHANGELOG.md#089---2026-11-09)
+[![Source version](https://img.shields.io/badge/source_version-v0.8.8-f5a623?style=for-the-badge&labelColor=0b0b14)](CHANGELOG.md#088---2026-11-07)
 <!-- fresh:end -->
 
-Source candidate `0.8.9` is not yet a qualified public release; the independently verified GitHub release remains `v0.8.7`.
+Source candidate `0.8.8` is not yet a qualified public release; the independently verified GitHub release remains `v0.8.7`.
 
 [![Pinned toolchain: Rust 1.95](https://img.shields.io/badge/pinned_toolchain-Rust_1.95-CE412B?style=for-the-badge&logo=rust&labelColor=0b0b14)](rust-toolchain.toml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg?style=for-the-badge&labelColor=0b0b14)](LICENSE)
@@ -59,7 +59,7 @@ phantom why OPENAI_API_KEY --json
 
 `phantom check --log` reads one agent transcript or log and reports the file, the line, and the credential shape. It does not print the secret. The same scan is the MCP tool `phantom_check` with `log_path`.
 
-`phantom status --json`, `phantom list --json`, and `phantom why OPENAI_API_KEY --json` are value-free. `phantom setup` writes that client's MCP config. Install both verified `v0.8.7` binaries first. The documented Homebrew formula is `v0.7.9`, which does not support `phantom agent doctor --json`. Version `0.8.7` has no network package-runner fallback and fails closed when neither local runtime is executable.
+`phantom status --json`, `phantom list --json`, and `phantom why OPENAI_API_KEY --json` are value-free. `phantom setup` writes that client's MCP config. Install both verified `v0.8.7` binaries first. Version `0.8.7` has no network package-runner fallback and fails closed when neither local runtime is executable.
 
 Machine-readable docs for agents:
 
@@ -664,8 +664,6 @@ Phantom also tracks a pinned [Rama-derived engineering
 standard](docs/rama-design-standard.md) for explicit network stacks, modular
 crates, runnable examples, and tiered platform CI. Rama is a benchmark, not a
 dependency, and the comparison is not a feature or platform-parity claim.
-
-**Generated docs**: [`.devin/wiki.json`](.devin/wiki.json) steers [DeepWiki](https://deepwiki.com/ashlrai/phantom-secrets) page structure and diagrams; see [DeepWiki configuration](docs/deepwiki.md). It is generated orientation, not authoritative; [docs/architecture.md](docs/architecture.md) and the source are.
 
 **`apps/web`** contains the Next.js site and backend routes for cloud vault sync, GitHub device authentication, and Stripe billing. The repository source and local tests are separate evidence from the currently deployed state at [phm.dev](https://phm.dev).
 

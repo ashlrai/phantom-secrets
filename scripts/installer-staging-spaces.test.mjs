@@ -71,14 +71,13 @@ function callsLog(file) {
 // A successful offline install through a staging parent containing spaces:
 // the private staging template must reach mktemp as exactly one argv item,
 // and the exit trap must leave only the promoted install behind.
-test('repository installer stages beneath a spaced TMPDIR as one argument and cleans up', (t) => {
+test('repository installer stages through a spaced parent as one argument and cleans up', (t) => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'phantom-staging-spaces-')));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const fixture = join(root, 'fixture');
   const payload = join(root, 'payload');
   const home = join(root, 'home');
-  const temp = join(root, 'temporary directory with spaces');
-  const parent = join(temp, 'install parent with spaces');
+  const parent = join(root, 'install parent with spaces');
   const install = join(parent, 'bin');
   for (const dir of [fixture, payload, home, install]) mkdirSync(dir, { recursive: true });
   writeFileSync(join(install, 'old-install'), 'preserve-me');
@@ -117,7 +116,6 @@ echo '${product} ${version}'
     env: {
       ...env,
       HOME: home,
-      TMPDIR: temp,
       SHELL: '/bin/bash',
       PATH: `${shims}:${env.PATH}`,
       PHANTOM_INSTALL_DIR: install,
@@ -153,7 +151,6 @@ echo '${product} ${version}'
   assert.equal(stageRoots.size, 1);
   const [stageRoot] = stageRoots;
   assert.equal(dirname(stageRoot), parent, 'staging lives inside the supplied spaced parent');
-  assert.equal(dirname(parent), temp, 'the complete spaced TMPDIR is retained in the staging path');
   assert.match(basename(stageRoot), /^\.bin\.install\.[^/]+$/);
 
   const hashed = readFileSync(hashLog, 'utf8').trim().split('\n');

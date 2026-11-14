@@ -1,11 +1,5 @@
 # Phantom web
 
-## Tests
-
-Run `npm ci` and `npm test` from this directory. The install-command syntax
-tests require Bash and PowerShell (`pwsh`) on PATH; they parse commands without
-running them.
-
 ## Local SEO observation
 
 From the repository root, run the credential-free observer with Node.js 22 and
