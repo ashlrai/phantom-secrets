@@ -519,3 +519,91 @@ fn changelog_records_every_visible_cli_command() {
         "CHANGELOG.md or changelog.d/ never mention these commands as `phantom <name>`: {missing:?}; add a fragment"
     );
 }
+
+/// Every `--flag` written after a `phantom <command> [subcommand]` invocation
+/// in a code span or fenced block of the reader docs must be a real flag of
+/// that command (or a global one), so a renamed or removed flag cannot stay
+/// documented.
+#[test]
+fn documented_cli_flags_exist() {
+    let root = Cli::command();
+    let mut docs = vec!["README.md".to_string(), "llms.txt".to_string()];
+    for entry in std::fs::read_dir(repo_root().join("docs")).expect("read docs") {
+        let path = entry.expect("docs entry").path();
+        if path.extension().is_some_and(|ext| ext == "md") {
+            docs.push(format!(
+                "docs/{}",
+                path.file_name().unwrap().to_string_lossy()
+            ));
+        }
+    }
+    let mut problems = Vec::new();
+    for rel in docs {
+        let doc = read_doc(&rel);
+        let mut fenced = false;
+        for (index, line) in doc.lines().enumerate() {
+            if line.trim_start().starts_with("```") {
+                fenced = !fenced;
+                continue;
+            }
+            // Inside a fence the whole line is code; outside, only backtick spans.
+            let spans: Vec<&str> = if fenced {
+                vec![line]
+            } else {
+                line.split('`').skip(1).step_by(2).collect()
+            };
+            for span in spans {
+                for segment in span.split("phantom ").skip(1) {
+                    if !span.contains(&format!("phantom {segment}")) {
+                        continue;
+                    }
+                    let mut cmd = &root;
+                    let mut words = segment.split_whitespace().peekable();
+                    while let Some(word) = words.peek() {
+                        match cmd.find_subcommand(word) {
+                            Some(sub) => {
+                                cmd = sub;
+                                words.next();
+                            }
+                            None => break,
+                        }
+                    }
+                    if std::ptr::eq(cmd, &root) {
+                        continue;
+                    }
+                    // Everything after a bare `--` belongs to the wrapped command.
+                    for word in words.take_while(|w| *w != "--") {
+                        let Some(long) = word.strip_prefix("--") else {
+                            continue;
+                        };
+                        let long = long
+                            .split(['=', ',', ')', ';', '|', '>', '"', '\'', '.'])
+                            .next()
+                            .unwrap_or("");
+                        if long.is_empty()
+                            || !long.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+                        {
+                            continue;
+                        }
+                        let known = cmd.get_arguments().chain(root.get_arguments()).any(|arg| {
+                            arg.get_long() == Some(long)
+                                || arg.get_all_aliases().is_some_and(|a| a.contains(&long))
+                        });
+                        if !known && long != "help" && long != "version" {
+                            problems.push(format!(
+                                "{rel}:{} `phantom {} --{long}`: unknown flag",
+                                index + 1,
+                                cmd.get_name()
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        problems.is_empty(),
+        "stale documented flags:\n{}",
+        problems.join("\n")
+    );
+}
