@@ -73,11 +73,15 @@ jobs:
       - id: classify
         env:
           EVENT: ${{ github.event_name }}
-          BASE: ${{ github.event.pull_request.base.sha }}
-          HEAD: ${{ github.event.pull_request.head.sha }}
+          BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          HEAD: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
         run: |
           set -euo pipefail
-          if [ "$EVENT" != "pull_request" ]; then
+          # schedule, workflow_dispatch, workflow_call and any other non-diff
+          # event run every suite. pull_request and merge_group classify from
+          # the same three-dot name list. Rust scope is scripts/ci/rust-scope.sh
+          # so Lint applies that rule too (CI-PS-LINT-UNCHAIN).
+          if [ "$EVENT" != "pull_request" ] && [ "$EVENT" != "merge_group" ]; then
             echo "rust=true" >> "$GITHUB_OUTPUT"; echo "web=true" >> "$GITHUB_OUTPUT"
             echo "temporal_example=true" >> "$GITHUB_OUTPUT"
             # The full Test job already runs the docs command check here.
@@ -89,9 +93,8 @@ jobs:
           web='^(apps/web/|scripts/supabase/|scripts/seo/|\.github/workflows/)'
           # Rust/CLI suites: anything that is neither docs nor web-only nor the video sandbox.
           # scripts/supabase and scripts/seo are exercised only by the web job.
-          rust=false; webc=false
-          if printf '%s\n' "$files" | grep -Ev "$docs" | grep -Ev '^(apps/web/|scripts/supabase/|scripts/seo/|video/)' | grep -q .; then rust=true; fi
-          if printf '%s\n' "$files" | grep -Eq '^\.github/workflows/'; then rust=true; fi
+          rust="$(bash scripts/ci/rust-scope.sh | sed -n 's/^rust=//p')"
+          webc=false
           if printf '%s\n' "$files" | grep -Eq "$web"; then webc=true; fi
           # The Temporal codec example (Python) has its own job.
           temporal=false
@@ -522,25 +525,37 @@ jobs:
 
   lint:
     name: Lint
-    needs: changes
-    if: ${{ inputs.validation_scope != 'windows-native-diagnostics' && (needs.changes.outputs.rust == 'true') }}
+    if: inputs.validation_scope != 'windows-native-diagnostics'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
+      - name: Select Rust scope
+        id: scope
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          HEAD: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+        run: bash scripts/ci/rust-scope.sh | tee -a "$GITHUB_OUTPUT"
       # Exercise the same real permission failures before expensive Rust work.
       - name: Check installer shell syntax
+        if: steps.scope.outputs.rust == 'true'
         run: node --test scripts/installer-syntax.test.mjs scripts/installer-unwritable-tempdir.test.mjs scripts/installer-path-success-cleanup.test.mjs
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (2026-04-24)
+        if: steps.scope.outputs.rust == 'true'
         with:
           toolchain: 1.95.0
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        if: steps.scope.outputs.rust == 'true'
       - name: Check formatting
+        if: steps.scope.outputs.rust == 'true'
         run: cargo fmt --all -- --check
       - name: Clippy
+        if: steps.scope.outputs.rust == 'true'
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
   dependency-policy:
@@ -966,11 +981,14 @@ jobs:
           const rust = ch.outputs.rust === 'true', web = ch.outputs.web === 'true';
           const temporalExample = ch.outputs.temporal_example === 'true';
           const docsCommands = ch.outputs.docs_commands === 'true';
-          const always = ['dependency-policy', 'secret-scan', 'secret-shape'];
+          // Lint has no needs and applies the Rust scope inside the job, so a
+          // docs-only pull request still reports success after skipping its
+          // Rust steps.
+          const always = ['dependency-policy', 'secret-scan', 'secret-shape', 'lint'];
           // PR and merge queue: daily-only jobs must be skipped.
           const full = process.env.EVENT !== 'pull_request' && process.env.EVENT !== 'merge_group';
           const platform = ch.outputs.platform === 'true';
-          const rustJobs = ['lint', 'npm-wrappers'];
+          const rustJobs = ['npm-wrappers'];
           const dailyRustJobs = ['test', 'crate-publication-contract'];
           const expect = {
             ...Object.fromEntries(always.map((j) => [j, true])),
