@@ -61,3 +61,16 @@ async fn occupied_port_fails_and_existing_listener_stays_usable() {
         .expect("existing listener still accepts connections");
     accept.await.unwrap().expect("accept succeeds");
 }
+
+#[tokio::test]
+async fn released_listener_address_can_be_rebound() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    drop(listener);
+
+    let proxy = start(addr.port())
+        .await
+        .expect("released port must be reusable");
+    assert_eq!(proxy.port(), addr.port());
+    proxy.shutdown().await;
+}
