@@ -840,7 +840,9 @@ test("npm and MCP distribution metadata and runbooks remain publication-safe", (
   );
   assert.match(mcpPublication, /\?include_deleted=true/);
   assert.match(mcpPublication, /--output "\$\{MCP_BODY\}" --write-out '%\{http_code\}'/);
-  assert.match(mcpPublication, /does not\s+currently contain or prove that MCP publication workflow/);
+  assert.match(mcpPublication, /publish-mcp-registry\.yml/);
+  assert.match(mcpPublication, /io\.github\.ashlrai\/phantom-secrets-mcp/);
+  assert.match(mcpPublication, /does not\s+currently prove\s+environment-reviewer governance/);
   assert.match(mcpPublication, /verify-github-tag-binding\.mjs/);
   assert.match(mcpPublication, /origin is not canonical/);
   assert.match(mcpPublication, /mcp-publisher" publish mcp-registry\/server\.json/);
