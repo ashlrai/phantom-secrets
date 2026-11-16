@@ -1,0 +1,70 @@
+name: Publish phantom-secrets MCP Registry metadata
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Published npm version; must match mcp-registry/server.json at source_sha
+        required: true
+        default: '0.7.9'
+      source_sha:
+        description: Immutable phantom-secrets commit that owns mcp-registry/server.json
+        required: true
+        default: '97b2e69be5973c72e3bd484971cdb541196856fc'
+      source_manifest_sha256:
+        description: SHA-256 of source mcp-registry/server.json
+        required: true
+        default: '0b247dde25443517bbd6c5e92c0a065d5ab7a6c70f87c8acec46ca15a8ccc527'
+      payload_sha256:
+        description: SHA-256 of reviewed supported-field Registry JSON
+        required: true
+        default: '821b2c8651de47b4638e3b6bb5760b5b38a3997f81117eece373cbd4711d50ee'
+      npm_integrity:
+        description: Exact accepted npm SHA-512 integrity for phantom-secrets-mcp
+        required: true
+        default: 'sha512-RQN1e5+NsBdUUTWf+3PENxsIg3BbPl2Yr+ibOK7bM0PFdXnyEkn3hbjat1CcXkY8Pw5LAuLYHzd02EzRNLpAwQ=='
+
+# Metadata path: mcp-registry/server.json
+# Package: io.github.ashlrai/phantom-secrets-mcp (npm phantom-secrets-mcp)
+# Version source: the version field in that manifest, kept in parity with npm-mcp/package.json.
+# OIDC only. This workflow does not read repository secret values.
+permissions:
+  contents: read
+
+concurrency:
+  group: phantom-secrets-mcp-registry-publication
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    # Registry OIDC trusts the ashlrai owner, not the branch or repository.
+    # These checks must precede token access. Admitted contexts are a release
+    # tag push, the release event on a release tag, and workflow_dispatch only
+    # on the default branch.
+    if: "github.repository == 'ashlrai/phantom-secrets' && ((github.event_name == 'release' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)))"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout trusted phantom-secrets source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Set up Node.js 22
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+      - name: Check publication refusals offline
+        run: node --test .github/tests/mcp-registry-publication.test.mjs
+      - name: Publish verified existing npm release metadata
+        # Untrusted input strings enter environment, never shell source or URLs.
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_SOURCE_SHA: ${{ inputs.source_sha }}
+          INPUT_SOURCE_MANIFEST_SHA256: ${{ inputs.source_manifest_sha256 }}
+          INPUT_PAYLOAD_SHA256: ${{ inputs.payload_sha256 }}
+          INPUT_NPM_INTEGRITY: ${{ inputs.npm_integrity }}
+        run: node .github/scripts/publish-mcp-registry.mjs
