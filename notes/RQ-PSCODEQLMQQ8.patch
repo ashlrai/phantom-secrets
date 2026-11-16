@@ -1,0 +1,21 @@
+diff --git a/.github/workflows/codeql.yml b/.github/workflows/codeql.yml
+index bd2209e..fdd1642 100644
+--- a/.github/workflows/codeql.yml
++++ b/.github/workflows/codeql.yml
+@@ -8,7 +8,6 @@ on:
+     branches: [main]
+   pull_request:
+     types: [opened, synchronize, reopened, ready_for_review]
+-  merge_group:
+   schedule:
+     # Nightly default-suite scan.
+     - cron: "53 6 * * *"
+@@ -56,7 +55,7 @@ jobs:
+           code_paths="$(printf '%s\n' "$files" | grep -Ev "$docs" || [ $? -eq 1 ])"
+           if [ -n "$code_paths" ]; then code=true; fi
+           # Scan only the languages whose files changed (RQ-CI-FANOUT). A change
+-          # to this workflow scans every language. Push, merge_group, schedule
++          # to this workflow scans every language. Push, schedule
+           # and dispatch always scan all five.
+           langs=()
+           has() { printf '%s\n' "$files" | grep -Eiq "$1"; }

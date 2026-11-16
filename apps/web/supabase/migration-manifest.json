@@ -49,18 +49,6 @@
     {
       "file": "20260903180004_vercel_oauth_security_foundation.sql",
       "sha256": "904dd4676130bc96e649404b0b2a20c8649f6adcacbc2b2fdc30e11758029db5"
-    },
-    {
-      "file": "20261009225441_enforce_personal_vault_quota.sql",
-      "sha256": "bd1ab6cda019fbcdd29d6b7464bbebcb2dafaa3ceefbc8925b45096c7399e104"
-    },
-    {
-      "file": "20261009231437_clamp_browser_table_authority.sql",
-      "sha256": "846437d59837ee6dfbf8fc1a46361e0542621fba6fb5d17a81b002d6d88cbf55"
-    },
-    {
-      "file": "20261110053000_revoke_platform_token_oauth_state_columns.sql",
-      "sha256": "cd24bfc80c1a6ae62d5e2c773eb14672af72f75b7a3123a8637ec027094fe2c0"
     }
   ]
 }

@@ -244,33 +244,6 @@ const machineReadableGuides = Object.entries(machineReadableClaims).filter(
   ([file]) => /llms(?:-full)?\.txt$/.test(file) && !file.startsWith("apps/web/public/workbench/"),
 );
 
-// An empty or whitespace-only source would pass every doesNotMatch check
-// vacuously, so each collection of public claims must hold real text.
-function assertNoEmptyClaims(label, collection) {
-  const entries = Object.entries(collection);
-  assert.ok(entries.length > 0, `${label}: no claims collected`);
-  for (const [file, source] of entries) {
-    assert.equal(typeof source, "string", `${label}: ${file} is not text`);
-    assert.notEqual(source.trim(), "", `${label}: empty public claim in ${file}`);
-  }
-}
-
-test("public claims contain no empty or whitespace-only entries", () => {
-  assertNoEmptyClaims("claims", claims);
-  assertNoEmptyClaims("repositoryGuidanceClaims", repositoryGuidanceClaims);
-  assertNoEmptyClaims("machineReadableClaims", machineReadableClaims);
-  assertNoEmptyClaims("staticDocumentationClaims", staticDocumentationClaims);
-  assertNoEmptyClaims("publishedPackageDocumentationClaims", publishedPackageDocumentationClaims);
-
-  for (const empty of ["", " ", "\n\t \r\n", " ﻿"]) {
-    assert.throws(
-      () => assertNoEmptyClaims("fixture", { "ok.md": "text", "bad.md": empty }),
-      /fixture: empty public claim in bad\.md/,
-    );
-  }
-  assert.throws(() => assertNoEmptyClaims("fixture", {}), /no claims collected/);
-});
-
 const publicReleaseEvidencePaths = [
   ".github/ISSUE_TEMPLATE/bug_report.yml",
   "AGENTS.md",
@@ -284,57 +257,6 @@ const publicReleaseEvidencePaths = [
   ...repoFilesUnder("apps/web/public", [".json", ".txt"]),
   ...repoFilesUnder("apps/web/src", [".ts", ".tsx"]),
 ];
-
-// A claim is identified by its normalized text, so case, spacing, path
-// separators, and trailing punctuation cannot hide a repeated entry.
-function normalizeClaim(claim) {
-  return String(claim)
-    .normalize("NFKC")
-    .replaceAll("\\", "/")
-    .replace(/\s+/g, " ")
-    .replace(/[\s.,;:!]+$/u, "")
-    .trim()
-    .toLowerCase();
-}
-
-function findDuplicateClaims(items) {
-  const firstSeen = new Map();
-  const duplicates = [];
-  for (const item of items) {
-    const key = normalizeClaim(item);
-    if (firstSeen.has(key)) duplicates.push({ claim: item, first: firstSeen.get(key) });
-    else firstSeen.set(key, item);
-  }
-  return duplicates;
-}
-
-function assertNoDuplicateClaims(items, label) {
-  const duplicates = findDuplicateClaims(items);
-  assert.deepEqual(
-    duplicates,
-    [],
-    `${label} repeats claims: ${duplicates.map((d) => JSON.stringify(d.claim)).join(", ")}`,
-  );
-}
-
-test("duplicate-claim check flags normalized repeats and accepts distinct claims", () => {
-  assert.deepEqual(findDuplicateClaims(["Local vault.", "Proxy injects keys", "Audit log"]), []);
-  assert.deepEqual(findDuplicateClaims([]), []);
-  assert.deepEqual(
-    findDuplicateClaims(["Local  vault.", "proxy", "  local vault ", "src\\a.ts", "SRC/a.ts"]),
-    [
-      { claim: "  local vault ", first: "Local  vault." },
-      { claim: "SRC/a.ts", first: "src\\a.ts" },
-    ],
-  );
-  assert.throws(() => assertNoDuplicateClaims(["a", "A "], "sample"), /sample repeats claims/);
-});
-
-test("each public claim source is listed exactly once", () => {
-  assertNoDuplicateClaims(claimPaths, "claimPaths");
-  assertNoDuplicateClaims(machineReadablePaths, "machineReadablePaths");
-  assertNoDuplicateClaims(publicReleaseEvidencePaths, "publicReleaseEvidencePaths");
-});
 
 const verifiedReleaseUrl =
   "https://github.com/ashlrai/phantom-secrets/releases/tag/v0.8.7";

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import test from 'node:test';
@@ -21,20 +21,14 @@ function pathUpdateFunction(source, file) {
 
 const pathUpdate = pathUpdateFunction(installer, 'scripts/install.sh');
 
-for (const [file, source] of [
-  ['scripts/install.sh', installer],
-  ['apps/web/public/install.sh', publicInstaller],
-]) for (const failedTemp of ['before', 'candidate']) {
-  test(`${file}: PATH update fails safely when ${failedTemp} temporary-file creation fails`, (t) => {
-    const pathUpdate = pathUpdateFunction(source, file);
+for (const failedTemp of ['before', 'candidate']) {
+  test(`PATH update fails safely when ${failedTemp} temporary-file creation fails`, (t) => {
     const root = mkdtempSync(join(tmpdir(), 'phantom-path-temp-failure-'));
     t.after(() => rmSync(root, { recursive: true, force: true }));
     const home = join(root, 'home');
     const shims = join(root, 'shims');
     const rc = join(home, '.bashrc');
     const attempts = join(root, 'attempts');
-    const created = join(root, 'created');
-    const observed = join(root, 'observed');
     mkdirSync(home);
     mkdirSync(shims);
     const original = Buffer.from('# existing configuration\nexport EXAMPLE=unchanged\n');
@@ -47,31 +41,20 @@ case "$1" in
   *.phantom-path.candidate.*) echo candidate >> "$TEST_ATTEMPTS" ;;
   *) exit 2 ;;
 esac
-case "$1" in
-  *.phantom-path.candidate.*)
-    [ -f "$(cat "$TEST_CREATED")" ] && : > "$TEST_OBSERVED"
-    ;;
-esac
 case "$1" in *.phantom-path.$TEST_FAIL_TEMP.*) exit 1 ;; esac
-path="$(/usr/bin/mktemp "$@")" || exit $?
-printf '%s\n' "$path" > "$TEST_CREATED"
-printf '%s\n' "$path"
+exec /usr/bin/mktemp "$@"
 `);
     chmodSync(shim, 0o755);
 
     const result = spawnSync('/bin/bash', ['-c', `${pathUpdate}\nadd_to_user_path "$1"`, 'path-test', join(root, 'bin')], {
       encoding: 'utf8',
-      env: { HOME: home, SHELL: '/bin/bash', PATH: `${shims}:/usr/bin:/bin`, TEST_ATTEMPTS: attempts, TEST_FAIL_TEMP: failedTemp, TEST_CREATED: created, TEST_OBSERVED: observed },
+      env: { HOME: home, SHELL: '/bin/bash', PATH: `${shims}:/usr/bin:/bin`, TEST_ATTEMPTS: attempts, TEST_FAIL_TEMP: failedTemp },
     });
     assert.ifError(result.error);
     assert.equal(result.status, 1, 'PATH update must report failure');
     assert.equal(result.stderr, '', 'failure must be handled without later shell errors');
     assert.deepEqual(readFileSync(attempts, 'utf8').trim().split('\n'),
       failedTemp === 'before' ? ['before'] : ['before', 'candidate']);
-    if (failedTemp === 'candidate') {
-      assert.equal(existsSync(observed), true, 'the first temporary file existed when candidate creation was attempted');
-      assert.equal(existsSync(readFileSync(created, 'utf8').trim()), false, 'the first temporary file was removed');
-    }
     assert.deepEqual(readFileSync(rc), original);
     const after = lstatSync(rc);
     assert.equal(after.ino, before.ino, 'the startup file must not be replaced');

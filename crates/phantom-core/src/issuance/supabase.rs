@@ -75,13 +75,6 @@ pub const SUPABASE_REFRESH_TOKEN_NAME: &str = "SUPABASE_REFRESH_TOKEN";
 /// distinct from the manual-only `"supabase"` PAT provider.
 pub const SUPABASE_MANAGEMENT_PROVIDER: &str = "supabase-management";
 
-/// Env var holding the Supabase OAuth app **client id** used for Basic client
-/// auth on the refresh grant (public value, but read from env for symmetry).
-pub const ENV_SUPABASE_CLIENT_ID: &str = "SUPABASE_OAUTH_CLIENT_ID";
-/// Env var holding the Supabase OAuth app **client secret** for Basic client
-/// auth. Never read from disk; resolved from the process env only.
-pub const ENV_SUPABASE_CLIENT_SECRET: &str = "SUPABASE_OAUTH_CLIENT_SECRET";
-
 /// Bootstrap values with this prefix take the hermetic mock fast-path (guarded
 /// by [`mock_rotation_allowed`]); real bootstraps never start with it.
 const MOCK_BOOTSTRAP_PREFIX: &str = "sbmock_";

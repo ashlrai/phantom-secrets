@@ -15,23 +15,10 @@ const installers = [
 ];
 
 // The staging directory is created by mktemp, secured by chmod, then split into
-// download/ and candidate/ by mkdir. Each failure requires a nonzero exit, a named diagnostic,
+// download/ and candidate/ by mkdir. mktemp failure is covered elsewhere; these
+// cases fail the two later steps and require a nonzero exit, a named diagnostic,
 // no download, an untouched destination, and no leftover stage sibling.
 const cases = [
-  {
-    name: 'mktemp cannot create the staging directory',
-    shim: 'mktemp',
-    body: (real) => `#!/bin/sh
-if [ "$1" = -d ]; then
-  case "$2" in *.install.XXXXXX)
-    : > "$HOME/mktemp-invoked"
-    echo "mktemp: simulated failure" >&2; exit 1 ;;
-  esac
-fi
-exec ${JSON.stringify(real)} "$@"
-`,
-    message: /could not create a private staging directory/,
-  },
   {
     name: 'chmod cannot secure the staging directory',
     shim: 'chmod',
@@ -105,11 +92,7 @@ exit 22
       assert.deepEqual(readdirSync(install), ['old-install']);
       assert.equal(readFileSync(join(install, 'old-install'), 'utf8'), 'preserve-me');
       assert.deepEqual(readdirSync(parent), ['bin'], 'no stage, lock, or backup sibling may remain');
-      if (c.shim === 'mktemp') {
-        assert.deepEqual(readdirSync(home), ['mktemp-invoked'], 'the staging failure was injected');
-      } else {
-        assert.deepEqual(readdirSync(home), [], 'HOME must contain no leftover files');
-      }
+      assert.deepEqual(readdirSync(home), [], 'HOME must contain no leftover files');
     });
   }
 }

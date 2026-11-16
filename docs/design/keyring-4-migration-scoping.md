@@ -1,9 +1,6 @@
 # keyring 4 migration scoping (issue #242)
 
-Status: landed. The workspace links `keyring-core` plus per-backend store
-crates; Linux Secret Service uses `dbus-secret-service-keyring-store` (option
-C), which removed all three ignores from `deny.toml`. This note remains as the
-record of the evaluated options and the compat checks still owed on Linux.
+Status: scoping note. Docs only. Nothing here changes code, dependencies or `deny.toml`.
 
 Facts were checked on 2026-10-18 against `main` at `6895ecb`, the crates.io API, and a trial dependency resolution in a scratch worktree (no code was built or run against the new crates). Anything not checked is marked UNVERIFIED.
 
@@ -68,9 +65,9 @@ By source reading (not by running anything):
 
 ## 7. Recommendation
 
-Recorded recommendation at scoping time: do D (wait) and re-check upstream when `secret-service` or `zbus-secret-service-keyring-store` publishes a zbus 6 release.
+Do D now (wait, keep the ignores, which are already commented as "revisit with the keyring 4 migration"), and re-check upstream when `secret-service` or `zbus-secret-service-keyring-store` publishes a zbus 6 release. Do not start the code migration before one of these is true: a zbus 6 store exists, or the reviewer accepts the libdbus requirement of option C. When it starts, do it in this order, one PR each: (1) introduce a thin Phantom store trait around today's calls with no behavior change, (2) swap the store crates, (3) delete the ignores and the skips that become unmatched.
 
-Resolution on 2026-11-09: no zbus 6 store had shipped (`zbus-secret-service-keyring-store` 1.0.1 still pinned `zbus ^5`; `secret-service` 6 was only `-rc.1`), so option C landed instead. The workspace links `keyring-core` plus `apple-native-keyring-store`, `linux-keyutils-keyring-store`, `windows-native-keyring-store`, and `dbus-secret-service-keyring-store` with `crypto-rust` and `vendored`, so Linux CI needs no system libdbus and no openssl. All three ignores and the two unmatched `nix`/`security-framework` bans skips were deleted from `deny.toml`. Still owed from section 8: live old-build-writes/new-build-reads compat on Linux Secret Service and Windows Credential Manager.
+Option C is a legitimate alternative only if removing the ignores is worth the new system dependency; that is a maintainer decision.
 
 ## 8. Test plan (when work starts)
 

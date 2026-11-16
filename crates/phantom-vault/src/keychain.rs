@@ -33,46 +33,25 @@ fn credential_entry(
     store: CredentialStore,
     service: &str,
     account: &str,
-) -> keyring_core::Result<keyring_core::Entry> {
+) -> keyring::Result<keyring::Entry> {
     #[cfg(target_os = "linux")]
     {
-        use keyring_core::api::CredentialStoreApi;
-        match store {
-            CredentialStore::LinuxKeyutils => {
-                linux_keyutils_keyring_store::Store::new()?.build(service, account, None)
-            }
-            CredentialStore::LinuxSecretService => {
-                dbus_secret_service_keyring_store::Store::new()?.build(service, account, None)
-            }
-        }
+        let credential: Box<keyring::Credential> = match store {
+            CredentialStore::LinuxKeyutils => Box::new(
+                keyring::keyutils::KeyutilsCredential::new_with_target(None, service, account)?,
+            ),
+            CredentialStore::LinuxSecretService => Box::new(
+                keyring::secret_service::SsCredential::new_with_target(None, service, account)?,
+            ),
+        };
+        Ok(keyring::Entry::new_with_credential(credential))
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(not(target_os = "linux"))]
     {
-        use keyring_core::api::CredentialStoreApi;
         match store {
-            CredentialStore::OsKeychain => {
-                apple_native_keyring_store::keychain::Store::new()?.build(service, account, None)
-            }
+            CredentialStore::OsKeychain => keyring::Entry::new(service, account),
         }
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        use keyring_core::api::CredentialStoreApi;
-        match store {
-            CredentialStore::OsKeychain => {
-                windows_native_keyring_store::Store::new()?.build(service, account, None)
-            }
-        }
-    }
-
-    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-    {
-        let _ = store;
-        // No platform store crate is linked here; `Entry::new` reports
-        // `NoDefaultStore` at runtime, as keyring 3 did on these targets.
-        keyring_core::Entry::new(service, account)
     }
 }
 
@@ -81,20 +60,14 @@ fn credential_entry(
 /// migration (#242) changes one call site. Not available on Linux, where the
 /// lease key fails closed.
 #[cfg(any(target_os = "macos", target_os = "windows"))]
-pub(crate) fn os_keychain_entry(
-    service: &str,
-    account: &str,
-) -> keyring_core::Result<keyring_core::Entry> {
+pub(crate) fn os_keychain_entry(service: &str, account: &str) -> keyring::Result<keyring::Entry> {
     credential_entry(CredentialStore::OsKeychain, service, account)
 }
 
 /// Construct the platform store used before any explicit per-project Linux
 /// migration. This also prevents Cargo feature unification from redirecting
 /// fallback-passphrase entries when Secret Service support is compiled in.
-pub(crate) fn unmigrated_os_entry(
-    service: &str,
-    account: &str,
-) -> keyring_core::Result<keyring_core::Entry> {
+pub(crate) fn unmigrated_os_entry(service: &str, account: &str) -> keyring::Result<keyring::Entry> {
     #[cfg(target_os = "linux")]
     let store = CredentialStore::LinuxKeyutils;
     #[cfg(not(target_os = "linux"))]
@@ -369,7 +342,7 @@ fn linux_backend_decision(state: LinuxMigrationState) -> Result<bool> {
 fn linux_migration_sentinel_entry(
     project_id: &str,
     store: CredentialStore,
-) -> Result<keyring_core::Entry> {
+) -> Result<keyring::Entry> {
     credential_entry(
         store,
         &format!("{SERVICE_PREFIX}:{project_id}"),
@@ -746,19 +719,19 @@ fn require_durable_sidecar_effect<T>(outcome: AnchoredEffect<T>, operation: &str
 // validation state (last_check_ts, is_valid, failure_reason). No secret
 // values are ever written here.
 
-fn read_credential(entry: &keyring_core::Entry, label: &str) -> Result<Option<Zeroizing<String>>> {
+fn read_credential(entry: &keyring::Entry, label: &str) -> Result<Option<Zeroizing<String>>> {
     match entry.get_password() {
         Ok(value) => Ok(Some(Zeroizing::new(value))),
-        Err(keyring_core::Error::NoEntry) => Ok(None),
+        Err(keyring::Error::NoEntry) => Ok(None),
         Err(error) => Err(PhantomError::VaultError(format!(
             "Failed to read {label}: {error}"
         ))),
     }
 }
 
-fn remove_credential(entry: &keyring_core::Entry, label: &str) -> Result<()> {
+fn remove_credential(entry: &keyring::Entry, label: &str) -> Result<()> {
     match entry.delete_credential() {
-        Ok(()) | Err(keyring_core::Error::NoEntry) => Ok(()),
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
         Err(error) => Err(PhantomError::VaultError(format!(
             "Failed to delete {label}: {error}"
         ))),
@@ -766,7 +739,7 @@ fn remove_credential(entry: &keyring_core::Entry, label: &str) -> Result<()> {
 }
 
 fn restore_credential(
-    entry: &keyring_core::Entry,
+    entry: &keyring::Entry,
     value: Option<&Zeroizing<String>>,
     label: &str,
 ) -> Result<()> {
@@ -816,8 +789,8 @@ trait LegacyMigrationBackend {
 
 struct KeychainLegacyMigration<'a> {
     vault: &'a KeychainVault,
-    hashed: &'a keyring_core::Entry,
-    legacy: &'a keyring_core::Entry,
+    hashed: &'a keyring::Entry,
+    legacy: &'a keyring::Entry,
 }
 
 impl LegacyMigrationBackend for KeychainLegacyMigration<'_> {
@@ -993,7 +966,7 @@ impl KeychainVault {
 
         // Try to access it (will fail with NotFound, which is fine)
         match test_entry.get_password() {
-            Ok(_) | Err(keyring_core::Error::NoEntry) => {}
+            Ok(_) | Err(keyring::Error::NoEntry) => {}
             Err(e) => {
                 return Err(classify_keychain_probe_error(
                     store,
@@ -1061,8 +1034,8 @@ impl KeychainVault {
         format!("{SERVICE_PREFIX}:{}:{}", self.project_id, name)
     }
 
-    fn entry_for(&self, name: &str) -> Result<keyring_core::Entry> {
-        // Use the hashed name for the account field too — `keyring_core::Entry`
+    fn entry_for(&self, name: &str) -> Result<keyring::Entry> {
+        // Use the hashed name for the account field too — `keyring::Entry`
         // uses (service, account) as the lookup key on most backends, and we
         // want neither to leak the plaintext name.
         let account = self.hash_name(name);
@@ -1070,7 +1043,7 @@ impl KeychainVault {
             .map_err(|e| PhantomError::VaultError(format!("Keychain error: {e}")))
     }
 
-    fn legacy_entry_for(&self, name: &str) -> Option<keyring_core::Entry> {
+    fn legacy_entry_for(&self, name: &str) -> Option<keyring::Entry> {
         credential_entry(self.store, &self.legacy_entry_key(name), name).ok()
     }
 
@@ -1099,7 +1072,7 @@ impl KeychainVault {
                     "Corrupt keychain index (try `phantom init` to rebuild): {e}"
                 ))
             }),
-            Err(keyring_core::Error::NoEntry) => Ok(Vec::new()),
+            Err(keyring::Error::NoEntry) => Ok(Vec::new()),
             Err(e) => Err(PhantomError::VaultError(format!(
                 "Failed to read index: {e}"
             ))),
@@ -1371,7 +1344,7 @@ fn reconcile_destination(
 
 #[cfg(target_os = "linux")]
 fn reconcile_destination_entry(
-    destination: &keyring_core::Entry,
+    destination: &keyring::Entry,
     source: &str,
     label: &str,
 ) -> Result<()> {
@@ -1592,7 +1565,7 @@ impl VaultBackend for KeychainVault {
                 phantom_core::audit::log("vault.retrieve", Some(name));
                 Ok(zeroize::Zeroizing::new(value))
             }
-            Err(keyring_core::Error::NoEntry) => {
+            Err(keyring::Error::NoEntry) => {
                 // F13 migration: older phantom versions stored entries under
                 // the plaintext name. The migration spans the hashed entry,
                 // index, and legacy deletion as one compensated transaction.

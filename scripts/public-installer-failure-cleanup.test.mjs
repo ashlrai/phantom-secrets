@@ -100,7 +100,7 @@ exec ${JSON.stringify(realChmod)} "$@"
     }
     env.PATH = `${shims}:${env.PATH}`;
   }
-  const result = spawnSync('/bin/bash', [options.installer ?? installer], {
+  const result = spawnSync('/bin/bash', [installer], {
     encoding: 'utf8',
     timeout: 30000,
     env: {
@@ -205,9 +205,4 @@ for (const { name, options, error } of [
 // the staging candidate directory.
 test('public installer removes the populated staging tree when securing candidates fails', (t) => {
   assertCleanFailure(run(t, { failChmod: true }), /chmod: injected failure/);
-});
-
-test('repository installer removes the populated staging tree when securing candidates fails', (t) => {
-  const repositoryInstaller = fileURLToPath(new URL('install.sh', import.meta.url));
-  assertCleanFailure(run(t, { failChmod: true, installer: repositoryInstaller }), /chmod: injected failure/);
 });

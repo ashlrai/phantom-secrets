@@ -15,24 +15,6 @@ Synced from the Ashlr Fleet Constitution v3.0 (Nov 1, 2026). This overrides any 
 - Mason only for passwords, 2FA, device approvals and payments (no new spending without him). Nothing private made public.
 - Hold list (Mason's own holds): phantom #197 #878 #743 #725 #738 #744 #693 #1228; phantom-secrets #140 #197 #375 #168 #418 #136; ashlr-plugin #152 #157.
 
-## Agent quickstart
-
-Run these from the project after installing Phantom. They never print secret values. The walkthrough with MCP file shapes is [docs/agent-quickstart.md](docs/agent-quickstart.md).
-
-<!-- agent-quickstart:start -->
-```bash
-phantom init
-phantom status --json
-phantom list --json
-phantom agent doctor --json
-phantom setup --client claude
-phantom setup --client cursor
-phantom setup --client codex
-phantom check
-phantom why OPENAI_API_KEY --json
-```
-<!-- agent-quickstart:end -->
-
 ## MCP Server: Let AI manage secrets directly
 
 Phantom includes an MCP server with core secret-management tools plus advanced

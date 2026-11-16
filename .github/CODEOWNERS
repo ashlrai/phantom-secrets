@@ -22,5 +22,3 @@
 /crates/phantom-workspace/ @masonwyatt23
 /apps/web/src/app/device/device-authorization-client.tsx @masonwyatt23
 /.github/tests/secret-shape/ @masonwyatt23
-
-/crates/phantom-core/src/account_ops/ @masonwyatt23

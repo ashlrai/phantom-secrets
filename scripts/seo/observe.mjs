@@ -18,9 +18,9 @@ const REQUIRED_PUBLIC_PATHS = [
   "/",
   "/docs",
   "/security",
+  "/llms.txt",
+  "/llms-full.txt",
 ];
-// Served and observed directly; the sitemap lists HTML pages only.
-const MACHINE_PUBLIC_PATHS = ["/llms.txt", "/llms-full.txt"];
 const REQUIRED_SECURITY_HEADERS = [
   "content-security-policy",
   "permissions-policy",
@@ -783,8 +783,7 @@ export async function observeProduction(options = {}) {
   invariant(sitemapResponse.status === 200, `sitemap returned HTTP ${sitemapResponse.status}`);
   invariant(robotsResponse.status === 200, `robots.txt returned HTTP ${robotsResponse.status}`);
   const sitemapPaths = parseSitemap(sitemapResponse.body, siteOrigin);
-  const observedPaths = [...sitemapPaths, ...MACHINE_PUBLIC_PATHS.filter((path) => !sitemapPaths.includes(path))];
-  const allowedPaths = new Set(observedPaths);
+  const allowedPaths = new Set(sitemapPaths);
   for (const required of REQUIRED_PUBLIC_PATHS) {
     if (!allowedPaths.has(required)) {
       addFinding(findings, "fail", "sitemap_required_path_missing", `Sitemap is missing ${required}`, required);
@@ -805,7 +804,7 @@ export async function observeProduction(options = {}) {
   }
 
   const productGuideTypes = new Set();
-  const routeResults = await mapWithConcurrency(observedPaths, 5, async (route) => {
+  const routeResults = await mapWithConcurrency(sitemapPaths, 5, async (route) => {
     try {
       const response = await requestWithinBoundary(new URL(route, siteOrigin), requestOptions);
       const contentType = response.headers.get("content-type") ?? "";
@@ -1085,7 +1084,7 @@ export async function observeProduction(options = {}) {
     verdict: counts.fail > 0 ? "FAIL" : counts.warn > 0 ? "WARN" : "PASS",
     counts,
     technical: {
-      sitemap: { status: sitemapResponse.status, route_count: observedPaths.length },
+      sitemap: { status: sitemapResponse.status, route_count: sitemapPaths.length },
       robots: { status: robotsResponse.status },
       public_routes: publicRoutes,
       operational,
@@ -1224,8 +1223,6 @@ function parseArguments(argv) {
   return result;
 }
 
-class InvalidJsonInput extends Error {}
-
 async function readJson(file, label) {
   let source;
   try {
@@ -1237,7 +1234,7 @@ async function readJson(file, label) {
   try {
     return JSON.parse(source.toString("utf8"));
   } catch {
-    throw new InvalidJsonInput(`${label} is not valid JSON`);
+    throw new Error(`${label} is not valid JSON`);
   }
 }
 
@@ -1258,12 +1255,7 @@ async function main() {
       aggregateInputs[kind] = await readJson(file, `${kind} aggregate input`);
     }
     report = await observeProduction({ experiments, aggregateInputs });
-  } catch (error) {
-    if (error instanceof InvalidJsonInput) {
-      process.stderr.write(`${error.message}\n`);
-      process.exitCode = 1;
-      return;
-    }
+  } catch {
     report = {
       schema_version: REPORT_SCHEMA_VERSION,
       captured_at: new Date().toISOString(),

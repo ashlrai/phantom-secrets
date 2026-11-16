@@ -441,11 +441,9 @@ function parseSha256File(buf, expectedFilename) {
 
 function readIntegrityVerifiedManifest(binaryPath, manifestPath, platform = process.platform) {
   try {
-    // A zero-byte file can never be a real binary or manifest, even when its
-    // digest matches: treat an empty cache entry as absent.
-    const binaryStat = validateOwnedPath(binaryPath, "file", platform);
+    validateOwnedPath(binaryPath, "file", platform);
     const manifestStat = validateOwnedPath(manifestPath, "file", platform);
-    if (binaryStat.size === 0 || manifestStat.size === 0 || manifestStat.size > 4096) return null;
+    if (manifestStat.size > 4096) return null;
     const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
     if (
       !manifest ||

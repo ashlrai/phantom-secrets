@@ -2,20 +2,18 @@
 
 ## Keyring migration tracking
 
-[Issue #242](https://github.com/ashlrai/phantom-secrets/issues/242) tracked
-the keyring migration and three `deny.toml` advisory ignores:
+[Issue #242](https://github.com/ashlrai/phantom-secrets/issues/242) tracks
+the keyring migration and the three existing `deny.toml` advisory ignores:
 
 - `RUSTSEC-2026-0370` — `zvariant`
 - `RUSTSEC-2026-0371` — `zbus_names`
 - `RUSTSEC-2026-0372` — `zvariant_derive`
 
-The migration landed: eliminating the affected dependencies, not merely
-upgrading keyring, removed all three ignores. The workspace links
-`keyring-core` plus per-backend store crates; Linux Secret Service uses
-`dbus-secret-service-keyring-store` (blocking `dbus`), so no zbus remains in
-the resolved graph. See the
-[migration scoping note](../design/keyring-4-migration-scoping.md) for the
-evaluated options.
+The migration remains outstanding; these unmaintained-crate advisories come
+through keyring 3's Linux Secret Service dependency chain. Removing the ignores
+depends on eliminating the affected dependencies, not merely upgrading keyring.
+See the [migration scoping note](../design/keyring-4-migration-scoping.md) for
+the evaluated options and remaining compatibility checks.
 
 ## Landing-page installer temporary directory
 

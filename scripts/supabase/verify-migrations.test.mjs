@@ -67,35 +67,15 @@ test("verifies valid migrations created in reverse filename order", async () => 
   assert.match(resultWithReverseEnumeration.stdout, /Verified 3 ordered Supabase migration digests\./);
 });
 
-test("the column-revoke follow-up covers platform_tokens and oauth_states", async () => {
-  const migration = await readFile(
-    join(
-      projectSupabaseDirectory,
-      "migrations/20261110053000_revoke_platform_token_oauth_state_columns.sql",
-    ),
-    "utf8",
-  );
-  assert.match(migration, /REVOKE ALL PRIVILEGES ON TABLE public\.oauth_states/);
-  assert.match(migration, /ARRAY\['platform_tokens', 'oauth_states'\]/);
-  assert.match(
-    migration,
-    /REVOKE %s \(%s\) ON TABLE %s FROM PUBLIC, anon, authenticated, service_role/,
-  );
-  assert.match(
-    migration,
-    /REVOKE ALL PRIVILEGES ON TABLE public\.oauth_states\s+FROM PUBLIC, anon, authenticated;/,
-  );
-});
-
 test("the committed migration set matches its ordered digest manifest", async () => {
   const result = await verifyMigrationManifest({
     supabaseDirectory: projectSupabaseDirectory,
   });
-  assert.equal(result.count, 15);
+  assert.equal(result.count, 12);
   assert.equal(result.files[0], "001_initial.sql");
   assert.equal(
     result.files.at(-1),
-    "20261110053000_revoke_platform_token_oauth_state_columns.sql",
+    "20260903180004_vercel_oauth_security_foundation.sql",
   );
 });
 
@@ -453,10 +433,6 @@ test("runtime authority assertions preserve the hardened user boundary", async (
   assert.match(assertions, /consume_vercel_oauth_state\(bytea, uuid\)/);
   assert.match(assertions, /issue_vercel_oauth_state\(bytea, uuid\)/);
   assert.match(assertions, /public clients must not execute OAuth state consumption/);
-  assert.match(
-    assertions,
-    /public clients must not retain column privileges on OAuth state or platform tokens/,
-  );
 });
 
 test("local configuration pins Postgres and disables mutable seed inputs", async () => {

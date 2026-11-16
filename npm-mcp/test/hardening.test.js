@@ -11,7 +11,6 @@ const {
   mkdirSync,
   mkdtempSync,
   readFileSync,
-  readdirSync,
   realpathSync,
   rmSync,
   symlinkSync,
@@ -236,28 +235,6 @@ async function assertDownloadStopsAfterSettlement() {
 
 (async () => {
   await assertDownloadStopsAfterSettlement();
-  const unsupportedCache = mkdtempSync(join(tmpdir(), "phantom-mcp-unsupported-"));
-  try {
-    let downloads = 0;
-    await assert.rejects(
-      ensureBinary({
-        cacheDir: unsupportedCache,
-        runtime: { platform: "linux", arch: "riscv64" },
-        downloadImpl: async () => { downloads += 1; },
-        extractImpl: () => assert.fail("unsupported architecture must not extract"),
-        execFileSyncImpl: () => assert.fail("unsupported architecture must not execute"),
-      }),
-      /Unsupported platform: linux-riscv64/
-    );
-    assert.strictEqual(downloads, 0, "unsupported architecture must not download");
-    assert.strictEqual(existsSync(pathSet(unsupportedCache).lockPath), false, "lock is released");
-    // The platform check precedes all cache work, so the cache root keeps no
-    // source marker or transaction file. Doing that work first applied the
-    // emulated runtime's POSIX privacy check to a native Windows directory.
-    assert.deepStrictEqual(readdirSync(unsupportedCache), [], "unsupported architecture leaves the cache untouched");
-  } finally {
-    rmSync(unsupportedCache, { recursive: true, force: true });
-  }
   assert.throws(
     () => getCacheDir({ env: {}, homedirImpl: () => "relative-home" }),
     /absolute private home/

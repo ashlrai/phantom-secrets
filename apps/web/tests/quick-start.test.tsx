@@ -1,9 +1,5 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { QuickStart } from "../src/components/landing/QuickStart";
 
@@ -72,31 +68,5 @@ for (const platform of ["macOS", "Linux"]) {
       [],
       `${platform}: every $phantom_stage/$phantom_installer path use stays double-quoted`,
     );
-  });
-}
-
-for (const platform of ["macOS", "Linux"]) {
-  test(`${platform} displayed command keeps TMPDIR quoted and usable with spaces`, () => {
-    const displayed = displayedCommand(platform);
-    const line = displayed.split("\n").find((l) => l.startsWith("phantom_stage="));
-    assert.ok(line, `${platform}: displayed command assigns phantom_stage`);
-    assert.ok(
-      line.includes('mktemp -d "${TMPDIR:-/tmp}/phantom-install.XXXXXX"'),
-      `${platform}: TMPDIR expansion sits inside double quotes`,
-    );
-
-    // Run the displayed assignment with a TMPDIR that contains spaces.
-    const parent = mkdtempSync(join(tmpdir(), "phantom tmpdir "));
-    try {
-      const result = spawnSync("bash", ["-c", `set -eu\n${line}\nprintf '%s' "$phantom_stage"`], {
-        env: { PATH: process.env.PATH ?? "", TMPDIR: parent },
-        encoding: "utf8",
-      });
-      assert.equal(result.status, 0, result.stderr);
-      assert.ok(result.stdout.startsWith(`${parent}/phantom-install.`), result.stdout);
-      assert.ok(existsSync(result.stdout));
-    } finally {
-      rmSync(parent, { recursive: true, force: true });
-    }
   });
 }

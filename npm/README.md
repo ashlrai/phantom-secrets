@@ -17,25 +17,25 @@ unsupported traffic.
 ## Install an exact published version
 
 <!-- fresh:begin npm-cli-wrapper-version -->
-This wrapper is version `0.8.9`. Its manifest and this README do not prove that
+This wrapper is version `0.8.8`. Its manifest and this README do not prove that
 the npm package or matching GitHub release has been published. Verify the exact
 npm version before installing it:
 <!-- fresh:end -->
 
 <!-- fresh:begin npm-cli-install -->
 ```bash
-npm view phantom-secrets@0.8.9 version dist.integrity dist.tarball --registry=https://registry.npmjs.org/
-npm install --global phantom-secrets@0.8.9 --registry=https://registry.npmjs.org/
+npm view phantom-secrets@0.8.8 version dist.integrity dist.tarball --registry=https://registry.npmjs.org/
+npm install --global phantom-secrets@0.8.8 --registry=https://registry.npmjs.org/
 phantom --version
 ```
 <!-- fresh:end -->
 
 The first invocation downloads the matching native binary from the exact
-[`v0.8.9` GitHub release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.8.9),
+[`v0.8.8` GitHub release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.8.8),
 verifies the archive against its `.sha256` sidecar, extracts only the expected
 binary from the closed two-binary archive, and records a private local cache
 manifest. The wrapper does not itself verify GitHub attestations or publisher
-identity. If the npm query, release, checksum, or expected `phantom 0.8.9`
+identity. If the npm query, release, checksum, or expected `phantom 0.8.8`
 version is unavailable, stop instead of substituting an unpinned package or
 release.
 
@@ -59,11 +59,8 @@ downloading a binary:
 |---|---|
 | `darwin` | `ia32` |
 | `linux` | `arm` |
-| `linux` | `riscv64` |
 | `freebsd` | `x64` |
-| `freebsd` | `arm64` |
 | `openbsd` | `x64` |
-| `sunos` | `arm` |
 | `win32` | `ia32` |
 
 Linux archives target glibc; the wrapper does not provide a musl build or
@@ -99,7 +96,7 @@ phantom setup --client windsurf
 phantom setup --client codex
 ```
 
-Version `0.8.9` records the installed local `phantom mcp serve` command when it
+Version `0.8.8` records the installed local `phantom mcp serve` command when it
 can resolve that executable, otherwise it looks for a local `phantom-mcp`.
 Setup has no network package-runner fallback and fails closed when neither
 local runtime is available. Inspect the generated command before trusting it.
@@ -190,7 +187,7 @@ for the full workflow.
 
 This directory is source for a thin npm wrapper. Its local `package.json`
 version does not prove npm publication, matching native-archive publication,
-signing, or platform acceptance. Verify `phantom-secrets@0.8.9` with the exact
+signing, or platform acceptance. Verify `phantom-secrets@0.8.8` with the exact
 `npm view` command above and verify the matching immutable GitHub release before
 installation. Maintainers should follow the guarded
 [npm publication runbook](https://github.com/ashlrai/phantom-secrets/blob/main/docs/npm-publication.md).

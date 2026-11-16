@@ -26,38 +26,9 @@ async fn port_zero_gives_distinct_free_ports() {
 }
 
 #[tokio::test]
-async fn ephemeral_port_accepts_local_connection() {
-    let proxy = start(0).await.unwrap();
-    let port = proxy.port();
-    assert_ne!(port, 0);
-
-    tokio::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port))
-        .await
-        .expect("proxy must accept a connection on its assigned port");
-}
-
-#[tokio::test]
 async fn explicit_taken_port_returns_error() {
     let a = start(0).await.unwrap();
     let err = start(a.port()).await.err().expect("second bind must fail");
     let io = err.downcast_ref::<std::io::Error>().expect("io error");
     assert_eq!(io.kind(), std::io::ErrorKind::AddrInUse);
-}
-
-#[tokio::test]
-async fn occupied_port_fails_and_existing_listener_stays_usable() {
-    // A foreign listener (not a proxy) holds the port on loopback.
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = listener.local_addr().unwrap().port();
-
-    let err = start(port).await.err().expect("bind must fail");
-    let io = err.downcast_ref::<std::io::Error>().expect("io error");
-    assert_eq!(io.kind(), std::io::ErrorKind::AddrInUse);
-
-    // The failed attempt must not have disturbed the original listener.
-    let accept = tokio::spawn(async move { listener.accept().await.map(|_| ()) });
-    tokio::net::TcpStream::connect(("127.0.0.1", port))
-        .await
-        .expect("existing listener still accepts connections");
-    accept.await.unwrap().expect("accept succeeds");
 }

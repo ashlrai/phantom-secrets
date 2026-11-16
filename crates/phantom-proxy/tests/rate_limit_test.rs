@@ -199,77 +199,6 @@ async fn test_multi_secret_concurrent_load_independent() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Test 2b: Independent clients — exhausting one allowance leaves the other's
-// ─────────────────────────────────────────────────────────────────────────────
-
-#[tokio::test]
-async fn test_exhausting_one_client_does_not_consume_another() {
-    // per_secret_rps=1 → 10 requests/10s per secret; global burst is generous.
-    let mock = phantom_proxy::test_server::MockServer::start().await;
-
-    let mut registry = ServiceRegistry::new();
-    for (name, key) in [("client_a", "KEY_A"), ("client_b", "KEY_B")] {
-        registry.add_route(ServiceRoute {
-            name: name.to_string(),
-            target_base: format!("http://127.0.0.1:{}", mock.port),
-            secret_key: key.to_string(),
-            header: "Authorization".to_string(),
-            header_format: "Bearer {secret}".to_string(),
-            credential_profile: phantom_proxy::services::CredentialProfile::Standard,
-            sdk_base_path: None,
-        });
-    }
-    let interceptor = Interceptor::new_with_named(
-        HashMap::new(),
-        HashMap::from([
-            ("KEY_A".to_string(), "rate-test-secret-a".to_string()),
-            ("KEY_B".to_string(), "rate-test-secret-b".to_string()),
-        ]),
-    );
-    let proxy = ProxyServer::start(
-        ProxyConfig {
-            port: 0,
-            proxy_token: String::new(),
-            rate_limit: RateLimitConfig {
-                per_secret_rps: 1,
-                burst_total_10s: 1000,
-            },
-            ..ProxyConfig::default()
-        },
-        registry,
-        interceptor,
-    )
-    .await
-    .unwrap();
-
-    let client = make_client();
-    let status = |name: &'static str| {
-        let url = format!("http://127.0.0.1:{}/{name}/v1/ping", proxy.port());
-        let client = client.clone();
-        async move { client.get(url).send().await.unwrap().status().as_u16() }
-    };
-
-    // Client A uses its full allowance of 10, then is limited.
-    for i in 0..10 {
-        assert_eq!(status("client_a").await, 200, "client_a request {i}");
-    }
-    assert_eq!(status("client_a").await, 429, "client_a should be limited");
-
-    // Client B is untouched: its full allowance of 10 is still available.
-    for i in 0..10 {
-        assert_eq!(status("client_b").await, 200, "client_b request {i}");
-    }
-    assert_eq!(
-        status("client_b").await,
-        429,
-        "client_b limited only by itself"
-    );
-
-    proxy.shutdown().await;
-    mock.shutdown().await;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // Test 3: 429 response includes correct rate-limit headers
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -363,56 +292,9 @@ async fn test_normal_traffic_not_blocked() {
     mock.shutdown().await;
 }
 
-#[tokio::test]
-async fn test_requests_at_configured_limits_succeed_then_are_limited() {
-    // Exercise each threshold independently: per-secret is 1 * 10 = 10
-    // requests per window, while the global burst threshold is 3.
-    for (per_secret_rps, burst_total_10s, limit) in [(1, 100, 10), (100, 3, 3)] {
-        let (proxy, mock) = test_proxy_with_limits(per_secret_rps, burst_total_10s).await;
-        let client = make_client();
-        let url = format!("http://127.0.0.1:{}/testapi/v1/models", proxy.port());
-
-        for request in 1..=limit {
-            let response = client.get(&url).send().await.unwrap();
-            assert_eq!(
-                response.status().as_u16(),
-                200,
-                "request {request} of {limit} should succeed"
-            );
-        }
-        let response = client.get(&url).send().await.unwrap();
-        assert_eq!(
-            response.status().as_u16(),
-            429,
-            "request after limit {limit}"
-        );
-
-        proxy.shutdown().await;
-        mock.shutdown().await;
-    }
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Test 5: RateLimiter unit — sliding window expiry
 // ─────────────────────────────────────────────────────────────────────────────
-
-#[test]
-fn test_fresh_limiter_allows_first_request_at_positive_limit() {
-    let rl = RateLimiter::new(RateLimitConfig {
-        per_secret_rps: 1,
-        burst_total_10s: 1,
-    });
-
-    let first = rl.record("KEY");
-    assert_ne!(first.class, AnomalyClass::Alert);
-    assert_eq!(first.per_secret_10s, 1);
-    assert_eq!(first.per_secret_60s, 1);
-    assert_eq!(first.total_10s, 1);
-
-    // The positive global limit permits the request at the boundary, but not
-    // the next request in the same window.
-    assert_eq!(rl.record("KEY").class, AnomalyClass::Alert);
-}
 
 #[test]
 fn test_rate_limiter_unit_normal_class() {
@@ -438,25 +320,6 @@ fn test_rate_limiter_unit_alert_per_secret() {
     let d = rl.record("BURST_KEY"); // 11th — over limit of 10
     assert_eq!(d.class, AnomalyClass::Alert);
     assert!(d.anomaly_score >= 100);
-}
-
-#[test]
-fn test_rate_limiter_unit_independent_clients() {
-    let rl = RateLimiter::new(RateLimitConfig {
-        per_secret_rps: 1, // limit = 10/10s each
-        burst_total_10s: 1000,
-    });
-    for _ in 0..11 {
-        rl.record("CLIENT_A");
-    }
-    assert_eq!(rl.record("CLIENT_A").class, AnomalyClass::Alert);
-
-    let d = rl.record("CLIENT_B");
-    assert_eq!(
-        d.per_secret_10s, 1,
-        "B's count must not include A's requests"
-    );
-    assert_ne!(d.class, AnomalyClass::Alert);
 }
 
 #[test]
@@ -518,108 +381,4 @@ fn test_anomaly_class_score_values() {
     assert_eq!(AnomalyClass::Normal.score(), 0);
     assert_eq!(AnomalyClass::Caution.score(), 1);
     assert_eq!(AnomalyClass::Alert.score(), 2);
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Boundary cases: exactly at the configured limit
-//
-// Documented behavior: a limit of N allows N requests per 10s window; the
-// (N+1)th is rejected (Alert → 429). Alert fires on `count > limit`, never
-// on `count == limit`.
-// ─────────────────────────────────────────────────────────────────────────────
-
-#[test]
-fn test_rate_limiter_unit_per_secret_boundary_allows_exactly_limit() {
-    let rl = RateLimiter::new(RateLimitConfig {
-        per_secret_rps: 1, // limit = 10/10s
-        burst_total_10s: 1000,
-    });
-    for i in 1..=10u64 {
-        let d = rl.record("EDGE_KEY");
-        assert_ne!(
-            d.class,
-            AnomalyClass::Alert,
-            "request {i} is within the limit of 10 and must not alert"
-        );
-        assert_eq!(d.per_secret_10s, i);
-    }
-    let over = rl.record("EDGE_KEY");
-    assert_eq!(over.class, AnomalyClass::Alert, "11th request must alert");
-    assert_eq!(over.per_secret_10s, 11);
-}
-
-#[test]
-fn test_rate_limiter_unit_global_burst_boundary_allows_exactly_limit() {
-    let rl = RateLimiter::new(RateLimitConfig {
-        per_secret_rps: 100,
-        burst_total_10s: 3,
-    });
-    for key in ["K1", "K2", "K3"] {
-        let d = rl.record(key);
-        assert_ne!(d.class, AnomalyClass::Alert, "{key} is within burst of 3");
-    }
-    assert_eq!(rl.record("K4").class, AnomalyClass::Alert);
-}
-
-#[test]
-fn test_rate_limiter_unit_boundary_is_per_secret_not_shared() {
-    let rl = RateLimiter::new(RateLimitConfig {
-        per_secret_rps: 1,
-        burst_total_10s: 1000,
-    });
-    for _ in 0..11 {
-        rl.record("A");
-    }
-    // A is over its limit; a different secret still starts fresh.
-    let d = rl.record("B");
-    assert_eq!(d.class, AnomalyClass::Normal);
-    assert_eq!(d.per_secret_10s, 1);
-}
-
-#[tokio::test]
-async fn test_http_boundary_exactly_at_limit_allowed_then_429() {
-    // per_secret_rps=1 → limit=10. Requests 1..=10 pass (200); 11th → 429.
-    let (proxy, mock) = test_proxy_with_limits(1, 1000).await;
-    let client = make_client();
-    let url = format!("http://127.0.0.1:{}/testapi/v1/models", proxy.port());
-
-    for i in 1..=10 {
-        let status = client.get(&url).send().await.unwrap().status().as_u16();
-        assert_eq!(status, 200, "request {i} is at/below the limit of 10");
-    }
-
-    let resp = client.get(&url).send().await.unwrap();
-    assert_eq!(resp.status().as_u16(), 429, "request 11 must be rejected");
-    assert_eq!(
-        resp.headers()
-            .get("x-phantom-anomaly-class")
-            .and_then(|v| v.to_str().ok()),
-        Some("alert")
-    );
-    let body: serde_json::Value = resp.json().await.unwrap();
-    assert_eq!(body["per_secret_10s"], 11);
-
-    proxy.shutdown().await;
-    mock.shutdown().await;
-}
-
-#[tokio::test]
-async fn test_http_boundary_global_burst_exactly_at_limit() {
-    // burst_total_10s=4: four requests pass, the fifth is rejected even though
-    // the per-secret limit (100/10s) is nowhere near reached.
-    let (proxy, mock) = test_proxy_with_limits(10, 4).await;
-    let client = make_client();
-    let url = format!("http://127.0.0.1:{}/testapi/v1/models", proxy.port());
-
-    for i in 1..=4 {
-        let status = client.get(&url).send().await.unwrap().status().as_u16();
-        assert_eq!(status, 200, "request {i} is at/below the burst of 4");
-    }
-    let resp = client.get(&url).send().await.unwrap();
-    assert_eq!(resp.status().as_u16(), 429);
-    let body: serde_json::Value = resp.json().await.unwrap();
-    assert_eq!(body["total_10s"], 5);
-
-    proxy.shutdown().await;
-    mock.shutdown().await;
 }

@@ -51,26 +51,10 @@ export function Github(props: SVGProps<SVGSVGElement>) {
   );
 }
 
-export function Sparkle(props: SVGProps<SVGSVGElement>) {
-  return (
-    <svg {...baseProps} {...props}>
-      <path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M5.6 18.4l2.1-2.1M16.3 7.7l2.1-2.1" />
-    </svg>
-  );
-}
-
 export function Shield(props: SVGProps<SVGSVGElement>) {
   return (
     <svg {...baseProps} {...props}>
       <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z" />
-    </svg>
-  );
-}
-
-export function Cloud(props: SVGProps<SVGSVGElement>) {
-  return (
-    <svg {...baseProps} {...props}>
-      <path d="M17.5 19a4.5 4.5 0 0 0 0-9h-1.4A6 6 0 1 0 5 16h12.5Z" />
     </svg>
   );
 }
@@ -83,26 +67,10 @@ export function Terminal(props: SVGProps<SVGSVGElement>) {
   );
 }
 
-export function Zap(props: SVGProps<SVGSVGElement>) {
-  return (
-    <svg {...baseProps} {...props}>
-      <path d="M13 2L3 14h7l-1 8 10-12h-7l1-8z" />
-    </svg>
-  );
-}
-
 export function Code(props: SVGProps<SVGSVGElement>) {
   return (
     <svg {...baseProps} {...props}>
       <path d="m16 18 6-6-6-6M8 6l-6 6 6 6" />
-    </svg>
-  );
-}
-
-export function Plug(props: SVGProps<SVGSVGElement>) {
-  return (
-    <svg {...baseProps} {...props}>
-      <path d="M9 2v6M15 2v6M6 8h12v3a6 6 0 1 1-12 0V8ZM12 17v5" />
     </svg>
   );
 }

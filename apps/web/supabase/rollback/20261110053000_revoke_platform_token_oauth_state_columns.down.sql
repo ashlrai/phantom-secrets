@@ -1,5 +1,0 @@
--- Mason-only rollback; do not execute without Mason.
--- Rollback for 20261110053000_revoke_platform_token_oauth_state_columns.sql.
--- This follow-up only added revokes. Prior column ACLs were not captured, so
--- this file does not re-grant privileges. If a restore is required, capture
--- the target database ACLs first and restore from that dump.

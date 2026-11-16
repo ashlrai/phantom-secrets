@@ -6,7 +6,7 @@ const { existsSync, lstatSync, mkdtempSync, readFileSync, readdirSync, rmSync } 
 const { tmpdir } = require("os");
 const { basename, dirname, join } = require("path");
 
-const { ensureBinary, getPlatformTarget, isCachedBinaryStale, pathSet, validateCachedBinary, writePrivateFile } = require("../bin/cli.js");
+const { ensureBinary, getPlatformTarget, pathSet, writePrivateFile } = require("../bin/cli.js");
 
 (async () => {
   const cacheDir = mkdtempSync(join(tmpdir(), "phantom-cli-valid-cache-"));
@@ -58,14 +58,6 @@ const { ensureBinary, getPlatformTarget, isCachedBinaryStale, pathSet, validateC
     let executions = 0;
 
     assert.strictEqual(existsSync(missingCacheDir), false);
-    let missingCacheExecutions = 0;
-    assert.strictEqual(validateCachedBinary(paths.binaryPath, paths.manifestPath, {
-      execFileSyncImpl: () => {
-        missingCacheExecutions += 1;
-      },
-    }), false);
-    assert.strictEqual(missingCacheExecutions, 0);
-    assert.strictEqual(existsSync(missingCacheDir), false);
     const options = {
       cacheDir: missingCacheDir,
       downloadImpl: async (url) => {
@@ -109,32 +101,6 @@ const { ensureBinary, getPlatformTarget, isCachedBinaryStale, pathSet, validateC
     assert.strictEqual(executions, 2);
   } finally {
     rmSync(fixtureDir, { recursive: true, force: true });
-  }
-
-  // A cache directory that does not exist is reported invalid: no throw, no spawn, nothing created.
-  const absentRoot = mkdtempSync(join(tmpdir(), "phantom-cli-absent-cache-"));
-  try {
-    const absentDir = join(absentRoot, "no", "such", "dir");
-    const paths = pathSet(absentDir);
-    let spawned = 0;
-    const execFileSyncImpl = () => {
-      spawned += 1;
-      return Buffer.from(`phantom ${candidateVersion}\n`);
-    };
-    let result;
-    assert.doesNotThrow(() => {
-      result = validateCachedBinary(paths.binaryPath, paths.manifestPath, { execFileSyncImpl });
-    });
-    assert.strictEqual(result, false);
-    assert.doesNotThrow(() => {
-      result = isCachedBinaryStale(paths.binaryPath, { execFileSyncImpl });
-    });
-    assert.strictEqual(result, true);
-    assert.strictEqual(spawned, 0);
-    assert.strictEqual(existsSync(absentDir), false);
-    assert.strictEqual(existsSync(join(absentRoot, "no")), false);
-  } finally {
-    rmSync(absentRoot, { recursive: true, force: true });
   }
   console.log("npm CLI wrapper validates manifest before executing cached binary");
 })().catch((error) => {

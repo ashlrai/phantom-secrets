@@ -31,7 +31,7 @@ function pageProperties() {
   };
 }
 
-export function initPostHog() {
+function initPostHog() {
   if (typeof window === "undefined") return Promise.resolve(null);
 
   const key = process.env.NEXT_PUBLIC_POSTHOG_KEY;

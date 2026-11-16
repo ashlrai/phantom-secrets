@@ -21,7 +21,6 @@ Linux and Windows installs, and the limits of each package channel, are in [docs
 
 ## Agents
 
-- Walkthrough with MCP file shapes: [docs/agent-quickstart.md](docs/agent-quickstart.md)
 - Full guide: [docs/llms.txt](docs/llms.txt)
 - Longer guide: [docs/llms-full.txt](docs/llms-full.txt)
 - Repository instructions: [AGENTS.md](AGENTS.md)

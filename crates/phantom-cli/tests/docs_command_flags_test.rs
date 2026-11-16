@@ -1,8 +1,7 @@
 //! Docs drift guard for every place that shows phantom-secrets CLI commands.
 //!
-//! - README.md, AGENTS.md, CLAUDE.md, mcp-registry/README.md, the agent-facing
-//!   llms.txt, docs/llms.txt and docs/llms-full.txt, and top-level docs/*.md:
-//!   `phantom ...` lines inside fenced code blocks.
+//! - README.md, AGENTS.md, CLAUDE.md, mcp-registry/README.md and top-level docs/*.md: `phantom ...` lines inside fenced
+//!   code blocks.
 //! - Web app sources (apps/web/src/**/*.ts, *.tsx) and the published
 //!   apps/web/public/llms*.txt: every inline `phantom <command> ...` command,
 //!   cut at the first quote, backtick, `<`, `{`, `|`, `;` or `)`.
@@ -29,9 +28,6 @@ fn md_files() -> Vec<PathBuf> {
         "AGENTS.md",
         "CLAUDE.md",
         "mcp-registry/README.md",
-        "llms.txt",
-        "docs/llms.txt",
-        "docs/llms-full.txt",
     ]
     .iter()
     .map(|name| root.join(name))

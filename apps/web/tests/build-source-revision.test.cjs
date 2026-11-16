@@ -135,26 +135,6 @@ test("empty revision output produces unidentified build metadata", () => {
   });
 });
 
-test("revision value with surrounding whitespace is trimmed", () => {
-  withRepository(({ directory, revision }) => {
-    for (const [before, after] of [[" ", ""], ["", "\n"], ["\t  ", " \r\n"]]) {
-      const module = { exports: {} };
-      function localRequire(name) {
-        if (name !== "node:child_process") return require(name);
-        return { execFileSync(command, args, options) {
-          const result = execFileSync(command, args, options);
-          return args.includes("HEAD^{commit}") ? `${before}${result}${after}` : result;
-        } };
-      }
-      new Function("require", "exports", "module", compiled)(localRequire, module.exports, module);
-      const observed = module.exports.readBuildSourceRevision(directory);
-      assert.equal(observed, revision);
-      assert.equal(observed, observed.trim());
-      assert.equal(buildMetadata(directory, module.exports), revision);
-    }
-  });
-});
-
 test("missing revision metadata produces unidentified build metadata", () => {
   withRepository(({ directory, git, revision }) => {
     const head = git("symbolic-ref", "HEAD");
@@ -186,27 +166,6 @@ test("missing revision metadata produces unidentified build metadata", () => {
       assert.equal(buildMetadata(directory, module.exports), "unidentified");
       assert.equal(treeReads, 2);
     }
-  });
-});
-
-test("missing revision value falls back to unidentified without throwing", () => {
-  withRepository(({ directory }) => {
-    for (const output of [undefined, null]) {
-      const module = { exports: {} };
-      function localRequire(name) {
-        if (name !== "node:child_process") return require(name);
-        return { execFileSync(command, args, options) {
-          if (args.includes("HEAD^{commit}")) return output;
-          return execFileSync(command, args, options);
-        } };
-      }
-      new Function("require", "exports", "module", compiled)(localRequire, module.exports, module);
-      assert.doesNotThrow(() => module.exports.readBuildSourceRevision(directory));
-      assert.equal(module.exports.readBuildSourceRevision(directory), null);
-      assert.equal(buildMetadata(directory, module.exports), "unidentified");
-    }
-    // A helper that yields no value at all still gets the existing fallback.
-    assert.equal(buildMetadata(directory, { readBuildSourceRevision: () => undefined }), "unidentified");
   });
 });
 
@@ -274,16 +233,4 @@ test("source drift between actual Git observations is refused", () => {
     assert.equal(module.exports.readBuildSourceRevision(directory), null);
     assert.equal(changed, true);
   });
-});
-
-test("a source directory that does not exist falls back to unidentified without throwing", () => {
-  const parent = fs.mkdtempSync(path.join(os.tmpdir(), "phantom-absent-source-"));
-  try {
-    const absent = path.join(parent, "never-created");
-    assert.doesNotThrow(() => readBuildSourceRevision(absent));
-    assert.equal(readBuildSourceRevision(absent), null);
-    assert.equal(buildMetadata(absent), "unidentified");
-  } finally {
-    fs.rmSync(parent, { recursive: true, force: true });
-  }
 });

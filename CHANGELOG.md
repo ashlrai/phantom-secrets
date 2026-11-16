@@ -4,27 +4,6 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
-### Fixed
-
-- The agent quickstart now directs macOS users to the verified v0.8.7 archive. The documented v0.7.9 Homebrew formula does not support `phantom agent doctor --json`.
-
-## [0.8.9] - 2026-11-09
-
-### Breaking changes and migration
-
-No breaking changes since v0.8.8. Existing installations require no migration.
-
-### Changed (distribution docs checks)
-
-- The root `llms.txt` agent entry point is now a checked distribution
-  guide, so its local links, anchors, and release claims are verified with
-  the rest of the reader docs.
-
-### Fixed (Unix installer test scripts)
-
-- `scripts/installer-path-shell.test.sh` carries the executable bit like
-  every sibling `.test.sh` script.
-
 ### Added (`phantom audit hotspots`)
 
 - `phantom audit hotspots` lists the per-secret access-spike alerts that the MCP
@@ -3612,9 +3591,8 @@ remain separate evidence gates.
 For older release notes and downloadable artifacts, see [GitHub Releases](https://github.com/ashlrai/phantom-secrets/releases).
 
 <!-- fresh:begin changelog-unreleased-compare -->
-[Unreleased]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.9...HEAD
+[Unreleased]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.8...HEAD
 <!-- fresh:end -->
-[0.8.9]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.8...v0.8.9
 [0.8.8]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.7...v0.8.8
 [0.8.7]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.6...v0.8.7
 [0.8.6]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.5...v0.8.6

@@ -144,7 +144,7 @@ impl LeaseKeyBackend for OsLeaseKeyBackend {
         let entry = os_entry(account, "read")?;
         match entry.get_password() {
             Ok(value) => Ok(Some(Zeroizing::new(value))),
-            Err(keyring_core::Error::NoEntry) => Ok(None),
+            Err(keyring::Error::NoEntry) => Ok(None),
             Err(error) => Err(credential_error("read", &error)),
         }
     }
@@ -158,30 +158,30 @@ impl LeaseKeyBackend for OsLeaseKeyBackend {
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
-fn os_entry(account: &str, operation: &'static str) -> Result<keyring_core::Entry, LeaseKeyError> {
+fn os_entry(account: &str, operation: &'static str) -> Result<keyring::Entry, LeaseKeyError> {
     crate::keychain::os_keychain_entry(LEASE_KEY_SERVICE, account)
         .map_err(|error| credential_error(operation, &error))
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-fn os_entry(account: &str, operation: &'static str) -> Result<keyring_core::Entry, LeaseKeyError> {
+fn os_entry(account: &str, operation: &'static str) -> Result<keyring::Entry, LeaseKeyError> {
     let _ = (account, operation);
     Err(LeaseKeyError::NoDurableStore(
-        "no durable store is wired here; on Linux, keyutils is not reboot-durable and Secret Service is not wired for lease keys",
+        "no durable store is wired here; on Linux, keyutils is not reboot-durable and Secret Service waits on keyring 4",
     ))
 }
 
 /// Map a keyring error to a fixed, value-free category. The inner error is
 /// never formatted because some variants carry raw credential bytes.
-fn credential_error(operation: &'static str, error: &keyring_core::Error) -> LeaseKeyError {
+fn credential_error(operation: &'static str, error: &keyring::Error) -> LeaseKeyError {
     let kind = match error {
-        keyring_core::Error::PlatformFailure(_) => "platform failure",
-        keyring_core::Error::NoStorageAccess(_) => "credential store is locked or unavailable",
-        keyring_core::Error::NoEntry => "no entry",
-        keyring_core::Error::BadEncoding(_) => "bad encoding",
-        keyring_core::Error::TooLong(_, _) => "attribute too long",
-        keyring_core::Error::Invalid(_, _) => "invalid attribute",
-        keyring_core::Error::Ambiguous(_) => "ambiguous entry",
+        keyring::Error::PlatformFailure(_) => "platform failure",
+        keyring::Error::NoStorageAccess(_) => "credential store is locked or unavailable",
+        keyring::Error::NoEntry => "no entry",
+        keyring::Error::BadEncoding(_) => "bad encoding",
+        keyring::Error::TooLong(_, _) => "attribute too long",
+        keyring::Error::Invalid(_, _) => "invalid attribute",
+        keyring::Error::Ambiguous(_) => "ambiguous entry",
         _ => "unknown credential store error",
     };
     LeaseKeyError::CredentialStore { operation, kind }
@@ -559,7 +559,7 @@ mod tests {
             LeaseKeyError::ReadBackMismatch,
             credential_error(
                 "read",
-                &keyring_core::Error::BadEncoding(hex_key.clone().into_bytes()),
+                &keyring::Error::BadEncoding(hex_key.clone().into_bytes()),
             ),
             LeaseKeyError::Descriptor("x"),
         ];
