@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -14,6 +14,7 @@ import {
   decodeEntities,
   JOB_SUMMARY_MAX_BYTES,
   observeProduction,
+  readJson,
   requestWithinBoundary,
   renderSummary,
   structuredData,
@@ -135,6 +136,123 @@ test("the documented local command writes its report and fails closed on an unre
   }
 });
 
+test("the CLI reports missing aggregate inputs without an uncaught exception", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "phantom-seo-missing-input-"));
+  try {
+    for (const kind of ["gsc", "ga4", "ahrefs"]) {
+      const output = path.join(directory, `${kind}-report.json`);
+      const missing = path.join(directory, `missing-${kind}.json`);
+      const result = spawnSync(process.execPath, [
+        path.join(scriptDirectory, "observe.mjs"),
+        "--experiments", path.join(repositoryDirectory, "seo/experiments.json"),
+        `--${kind}-file`, missing,
+        "--out", output,
+      ], { cwd: repositoryDirectory, encoding: "utf8", timeout: 5_000 });
+      assert.ifError(result.error);
+      assert.equal(result.status, 1);
+      assert.equal(result.signal, null);
+      assert.match(result.stderr, new RegExp(`${kind} aggregate input could not be read: ENOENT`));
+      assert.ok(result.stderr.includes(missing), "error names the missing file");
+      assert.match(result.stderr, /check the path or omit the flag/);
+      assert.match(result.stdout, /FAIL/);
+      const report = JSON.parse(await readFile(output, "utf8"));
+      assert.equal(report.verdict, "FAIL");
+      assert.equal(report.findings[0].code, "observer_execution_failed");
+      assert.equal(
+        report.findings[0].message,
+        "Observer failed closed before the public-surface report completed",
+      );
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("an aggregate input path containing spaces is read and its observation is reported", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "phantom seo spaced "));
+  try {
+    const folder = path.join(directory, "search console", "july 2026");
+    await mkdir(folder, { recursive: true });
+    const file = path.join(folder, "gsc final.json");
+    const fixture = {
+      schema_version: "phantom-seo-gsc-v1",
+      period: { start: "2026-07-01", end: "2026-07-28", data_state: "final" },
+      rows: [
+        { page_path: "/docs", brand_class: "nonbrand", clicks: 12, impressions: 240, ctr: 0.05, position: 8.4 },
+      ],
+    };
+    await writeFile(file, JSON.stringify(fixture));
+    assert.match(file, / /);
+
+    // readJson is the CLI's reader, so this is the same path --gsc-file takes.
+    const aggregate = await readJson(file, "gsc aggregate input");
+    assert.deepEqual(aggregate, fixture);
+    await assert.rejects(
+      readJson(path.join(folder, "missing file.json"), "gsc aggregate input"),
+      /gsc aggregate input could not be read: ENOENT/,
+    );
+
+    await withFixtureServer(async ({ options }) => {
+      const report = await observeProduction({
+        ...options,
+        experiments: { schema_version: "phantom-seo-experiments-v1", default_observation_days: 28, experiments: [] },
+        aggregateInputs: { gsc: aggregate },
+      });
+      assert.equal(report.verdict, "PASS");
+      assert.notEqual(report.aggregate_inputs.gsc.state, "not_supplied");
+      assert.equal(report.aggregate_inputs.ga4.state, "not_supplied");
+      assert.match(renderSummary(report), /GSC: (?!not_supplied)/);
+    });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("a missing input file exits unsuccessfully and names the file to fix", async () => {
+  const observer = path.join(scriptDirectory, "observe.mjs");
+  const directory = await mkdtemp(path.join(tmpdir(), "phantom-seo-missing-input-"));
+  try {
+    const ledger = path.join(directory, "missing-ledger.json");
+    const gsc = path.join(directory, "missing-gsc.json");
+    for (const [flags, missing, label] of [
+      [["--experiments", ledger], ledger, "experiment ledger"],
+      [["--experiments", ledger, "--gsc-file", gsc], ledger, "experiment ledger"],
+    ]) {
+      const out = path.join(directory, "reports", `${label.replace(/\s/g, "-")}-${flags.length}.json`);
+      const result = spawnSync(process.execPath, [observer, ...flags, "--out", out], {
+        cwd: repositoryDirectory,
+        encoding: "utf8",
+        timeout: 5_000,
+      });
+      assert.ifError(result.error);
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, new RegExp(`${label} could not be read: ENOENT`));
+      assert.ok(result.stderr.includes(missing), "error names the missing file");
+      assert.match(result.stderr, /check the path or omit the flag/);
+      const report = JSON.parse(await readFile(out, "utf8"));
+      assert.equal(report.findings[0].code, "observer_execution_failed");
+      assert.deepEqual(report.technical.public_routes, []);
+    }
+
+    // A present ledger with a missing aggregate input reports that input.
+    const present = path.join(directory, "ledger.json");
+    await writeFile(present, JSON.stringify({ schema_version: "phantom-seo-experiments-v1", experiments: [] }));
+    const result = spawnSync(process.execPath, [observer, "--experiments", present, "--gsc-file", gsc, "--out", path.join(directory, "gsc.json")], {
+      cwd: repositoryDirectory,
+      encoding: "utf8",
+      timeout: 5_000,
+    });
+    assert.ifError(result.error);
+    assert.equal(result.status, 1);
+    assert.ok(result.stderr.includes(gsc), "error names the missing aggregate file");
+    assert.match(result.stderr, /gsc aggregate input could not be read: ENOENT/);
+    const report = JSON.parse(await readFile(path.join(directory, "gsc.json"), "utf8"));
+    assert.equal(report.findings[0].code, "observer_execution_failed");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("the CLI reports failure when the output directory cannot be created", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "phantom-seo-output-"));
   try {
@@ -171,6 +289,12 @@ test("decimal HTML entities are decoded exactly once", () => {
   assert.equal(decodeEntities("&#38;amp;"), "&amp;");
   // Out-of-range or surrogate references stay literal.
   assert.equal(decodeEntities("&#0;&#1114112;&#55296;"), "&#0;&#1114112;&#55296;");
+});
+
+test("adjacent named and decimal HTML entities decode independently", () => {
+  assert.equal(decodeEntities("&lt;&#65;&amp;&#233;&quot;&#128512;&gt;"), '<A&é"😀>');
+  assert.equal(decodeEntities("&#38;&amp;lt;&#65;&gt;"), "&&lt;A>");
+  assert.equal(decodeEntities("&lt;&#0;&amp;&#55296;&gt;"), "<&#0;&&#55296;>");
 });
 
 test("empty HTML produces no structured data or errors offline", () => {
@@ -584,6 +708,54 @@ test("a complete public fixture produces a deterministic, sanitized passing repo
   });
 });
 
+test("observing identical input twice renders equivalent summaries", async () => {
+  const ledger = {
+    schema_version: "phantom-seo-experiments-v1",
+    default_observation_days: 28,
+    experiments: [],
+  };
+  const observeTwice = async ({ options }) => {
+    const first = renderSummary(await observeProduction({ ...options, experiments: ledger }));
+    const second = renderSummary(await observeProduction({ ...options, experiments: ledger }));
+    return { first, second };
+  };
+  await withFixtureServer(async (context) => {
+    const { first, second } = await observeTwice(context);
+    assert.ok(first.length > 0);
+    assert.equal(first, second);
+  });
+  // Findings must also render in a stable order, not just a clean pass.
+  await withFixtureServer(
+    async (context) => {
+      const { first, second } = await observeTwice(context);
+      assert.match(first, /\*\*FAIL title_missing\*\* \(\/docs\)/);
+      assert.equal(first, second);
+    },
+    {
+      "/docs": (response, origin) => {
+        response.setHeader("content-type", "text/html");
+        response.end(html(origin, "/docs").replace(/<title>[^<]*<\/title>/, ""));
+      },
+    },
+  );
+});
+
+test("a multi-page sitemap produces exactly one observation per route", async () => {
+  await withFixtureServer(async ({ options }) => {
+    const report = await observeProduction(options);
+    const pages = report.technical.public_routes;
+    assert.deepEqual(pages.map((page) => page.route).sort(), [...publicPaths].sort());
+    const routes = pages.map((page) => page.route);
+    assert.equal(new Set(routes).size, routes.length);
+    for (const route of ["/", "/docs", "/docs/guide", "/security", "/secrets"]) {
+      const page = pages.find((entry) => entry.route === route);
+      const expectedTitle = html(options.siteOrigin, route).match(/<title>([^<]*)<\/title>/)[1];
+      assert.equal(page.status, 200);
+      assert.equal(page.title, expectedTitle);
+    }
+  });
+});
+
 test("empty aggregate observation inputs remain empty", () => {
   const period = { start: "2026-07-01", end: "2026-07-28", data_state: "final" };
   const aggregateInputs = Object.fromEntries(
@@ -631,6 +803,59 @@ test("an observation with no experiments or aggregate inputs reports none and in
   });
 });
 
+test("empty input yields the documented defaults: empty ledger, not-supplied aggregates, empty rows", async () => {
+  // With no ledger or aggregate files the report carries an empty ledger and
+  // not_supplied for gsc, ga4, and ahrefs.
+  await withFixtureServer(async ({ options }) => {
+    const report = await observeProduction(options);
+    assert.deepEqual(report.experiments, {
+      schema_version: "phantom-seo-experiments-v1",
+      default_observation_days: 28,
+      experiments: [],
+    });
+    assert.deepEqual(report.aggregate_inputs, {
+      gsc: { state: "not_supplied" },
+      ga4: { state: "not_supplied" },
+      ahrefs: { state: "not_supplied" },
+    });
+    // Empty-but-present aggregate files are supplied, not "not_supplied".
+    const emptyAggregates = await observeProduction({
+      ...options,
+      aggregateInputs: {
+        gsc: {
+          schema_version: "phantom-seo-gsc-v1",
+          period: { start: "2026-07-01", end: "2026-07-28", data_state: "final" },
+          rows: [],
+        },
+      },
+    });
+    assert.equal(emptyAggregates.aggregate_inputs.gsc.state, "supplied");
+    assert.deepEqual(emptyAggregates.aggregate_inputs.gsc.rows, []);
+    assert.deepEqual(emptyAggregates.aggregate_inputs.ga4, { state: "not_supplied" });
+    assert.deepEqual(emptyAggregates.aggregate_inputs.ahrefs, { state: "not_supplied" });
+  });
+  const ledger = validateExperiments(
+    {
+      schema_version: "phantom-seo-experiments-v1",
+      default_observation_days: 28,
+      experiments: [],
+    },
+    publicPaths,
+  );
+  assert.deepEqual(ledger.experiments, []);
+  const ga4 = validateAggregateInput(
+    "ga4",
+    {
+      schema_version: "phantom-seo-ga4-v1",
+      period: { start: "2026-07-01", end: "2026-07-28", data_state: "final" },
+      rows: [],
+    },
+    publicPaths,
+  );
+  assert.deepEqual(ga4.rows, []);
+  assert.equal(ga4.suppressed_rows, 0);
+});
+
 test("a non-success public page response reports its status as a failure", async () => {
   await withFixtureServer(
     async ({ options }) => {
@@ -653,6 +878,23 @@ test("a non-success public page response reports its status as a failure", async
         response.end(html(origin, "/docs"));
       },
     },
+  );
+});
+
+test("repeated identical observations produce identical report and summary output", async () => {
+  await withFixtureServer(
+    async ({ options }) => {
+      const outputs = [];
+      for (let run = 0; run < 3; run += 1) {
+        const report = await observeProduction(options);
+        assert.equal(report.verdict, "FAIL");
+        assert.ok(report.findings.length > 0);
+        outputs.push({ report: JSON.stringify(report), summary: renderSummary(report) });
+      }
+      assert.deepEqual(outputs[1], outputs[0]);
+      assert.deepEqual(outputs[2], outputs[0]);
+    },
+    { "/docs": (response) => { response.statusCode = 404; response.end("not found"); } },
   );
 });
 
@@ -756,6 +998,38 @@ test("a page without description metadata produces a missing-description failure
         response.end(
           html(origin, "/security").replace('content="Description for /security"', 'content=""'),
         );
+      },
+    },
+  );
+});
+
+test("a page without any h1 produces a single h1-count failure", async () => {
+  await withFixtureServer(
+    async ({ options }) => {
+      const report = await observeProduction(options);
+      assert.equal(report.verdict, "FAIL");
+      assert.equal(report.findings.length, 1);
+      assert.deepEqual(report.counts, { fail: 1, warn: 0 });
+      assert.equal(
+        report.technical.public_routes.find((page) => page.route === "/docs").h1_count,
+        0,
+      );
+      assert.deepEqual(report.findings, [
+        {
+          severity: "fail",
+          code: "h1_count",
+          message: "Expected one h1; observed 0",
+          route: "/docs",
+        },
+      ]);
+      const summary = renderSummary(report);
+      assert.match(summary, /Findings: 1 failures and 0 warnings\./);
+      assert.match(summary, /\*\*FAIL h1_count\*\* \(\/docs\): Expected one h1; observed 0/);
+    },
+    {
+      "/docs": (response, origin) => {
+        response.setHeader("content-type", "text/html");
+        response.end(html(origin, "/docs").replace("<h1>Page /docs</h1>", ""));
       },
     },
   );
@@ -1538,6 +1812,28 @@ test("observed titles preserve Unicode exactly", async () => {
         response.setHeader("content-type", "text/html; charset=utf-8");
         response.end(html(origin, "/docs").replace(
           "<title>/docs — Phantom</title>",
+          `<title>${title}</title>`,
+        ));
+      },
+    },
+  );
+});
+
+test("observed titles preserve punctuation exactly", async () => {
+  const title = "Phantom: API keys, secrets & privacy - what's next?! (v0.8.9) [guide]";
+  await withFixtureServer(
+    async ({ options }) => {
+      const report = await observeProduction(options);
+      const page = report.technical.public_routes.find((entry) => entry.route === "/docs");
+      assert.ok(page, "the docs route must be observed");
+      assert.equal(page.title, title);
+      assert.equal(report.verdict, "PASS");
+    },
+    {
+      "/docs": (response, origin) => {
+        response.setHeader("content-type", "text/html; charset=utf-8");
+        response.end(html(origin, "/docs").replace(
+          /<title>[^<]*<\/title>/,
           `<title>${title}</title>`,
         ));
       },
