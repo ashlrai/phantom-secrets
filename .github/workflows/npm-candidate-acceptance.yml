@@ -16,7 +16,7 @@ on:
       version:
         description: Exact stable version without the v prefix
         required: true
-        default: 0.8.10
+        default: 0.8.11
         type: string
       release_source_sha:
         description: Exact 40-character commit SHA referenced by the annotated v<version> tag
