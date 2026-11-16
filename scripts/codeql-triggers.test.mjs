@@ -10,5 +10,7 @@ test("CodeQL scans PRs and main without merge queue runs", () => {
     assert.deepEqual(events, ["push", "pull_request", "schedule", "workflow_dispatch"]);
     assert.match(triggers, /^    branches: \[main\]$/m);
     assert.match(triggers, /^    types: \[opened, synchronize, reopened, ready_for_review\]$/m);
-    assert.equal([...triggers.matchAll(/^    - cron:/gm)].length, 2);
+    assert.equal([...triggers.matchAll(/^    - cron:/gm)].length, 1);
+    assert.match(triggers, /^    - cron: "29 5 \* \* 0"$/m);
+    assert.doesNotMatch(triggers, /53 6 \* \* \*/);
 });

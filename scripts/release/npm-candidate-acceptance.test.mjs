@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
 
+import "./validate-npm-acceptance-dispatch.test.mjs";
 import {
   NPM_ACCEPTANCE_TARGETS,
   buildCandidateChildEnv,
@@ -47,10 +48,10 @@ test("workflow dispatch exposes both read-only six-host acceptance modes", () =>
   assert.match(workflow, /^permissions:\n  contents: read$/m);
   assert.doesNotMatch(workflow, /(?:contents|id-token|attestations|packages): write/);
   assert.doesNotMatch(workflow, /npm (?:publish|stage|dist-tag)|gh release create/);
-  assert.match(workflow, /ref: v\$\{\{ inputs\.version \}\}/);
+  assert.match(workflow, /ref: v\$\{\{ needs\.validate-inputs\.outputs\.version \}\}/);
   assert.match(workflow, /fetch-depth: 0/);
-  assert.match(workflow, /PHANTOM_PREVIOUS_NPM_CANDIDATE: \$\{\{ inputs\.previous_candidate \}\}/);
-  assert.match(workflow, /PHANTOM_RELEASE_SOURCE_SHA: \$\{\{ inputs\.release_source_sha \}\}/);
+  assert.match(workflow, /PHANTOM_PREVIOUS_NPM_CANDIDATE: \$\{\{ needs\.validate-inputs\.outputs\.previous_candidate \}\}/);
+  assert.match(workflow, /PHANTOM_RELEASE_SOURCE_SHA: \$\{\{ needs\.validate-inputs\.outputs\.release_source_sha \}\}/);
   assert.match(workflow, /npm@11\.15\.0/);
   assert.match(workflow, /node-version: 22\.14\.0/);
   assert.match(workflow, /run: node scripts\/release\/npm-candidate-smoke\.mjs/);
@@ -68,6 +69,48 @@ test("workflow dispatch exposes both read-only six-host acceptance modes", () =>
   ]) {
     assert.match(workflow, new RegExp(`os: ${runner.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
   }
+});
+
+function jobBlock(source, name) {
+  const start = source.indexOf(`\n  ${name}:\n`);
+  assert.notEqual(start, -1, `missing ${name} job`);
+  const next = source.slice(start + 1).search(/\n  [a-z0-9-]+:\n/);
+  return next === -1 ? source.slice(start) : source.slice(start, start + 1 + next);
+}
+
+test("acceptance matrix consumes validated outputs after rehearsal on a protected ref", () => {
+  assert.doesNotMatch(workflow, /workflow_run:/);
+  assert.ok(workflow.indexOf("\n  validate-inputs:\n") < workflow.indexOf("\n  rehearsal:\n"));
+  assert.ok(workflow.indexOf("\n  rehearsal:\n") < workflow.indexOf("\n  exact-version:\n"));
+  const validate = jobBlock(workflow, "validate-inputs");
+  const rehearsalJob = jobBlock(workflow, "rehearsal");
+  const exact = jobBlock(workflow, "exact-version");
+  for (const name of [
+    "mode",
+    "version",
+    "release_source_sha",
+    "primary_integrity",
+    "mcp_integrity",
+    "previous_latest",
+    "previous_candidate",
+  ]) {
+    assert.match(validate, new RegExp(`RAW_${name.toUpperCase()}: \\$\\{\\{ inputs\\.${name} \\}\\}`));
+    assert.match(exact, new RegExp(`needs\\.validate-inputs\\.outputs\\.${name}`));
+  }
+  assert.match(validate, /run: node scripts\/release\/validate-npm-acceptance-dispatch\.mjs/);
+  assert.match(validate, /^    permissions:\n      contents: read$/m);
+  assert.match(rehearsalJob, /needs: validate-inputs/);
+  assert.match(rehearsalJob, /uses: \.\/\.github\/workflows\/release-rehearsal\.yml/);
+  assert.match(rehearsalJob, /release_tag: \$\{\{ needs\.validate-inputs\.outputs\.release_tag \}\}/);
+  assert.doesNotMatch(rehearsalJob, /\$\{\{\s*inputs\./);
+  assert.match(rehearsalJob, /^    permissions:\n      contents: read$/m);
+  assert.match(exact, /needs: \[validate-inputs, rehearsal\]/);
+  assert.match(exact, /needs\.rehearsal\.result == 'success'/);
+  assert.match(exact, /github\.ref == format\('refs\/heads\/\{0\}', github\.event\.repository\.default_branch\)/);
+  assert.match(exact, /startsWith\(github\.ref, 'refs\/tags\/v'\)/);
+  assert.doesNotMatch(exact, /\$\{\{\s*inputs\./);
+  assert.match(exact, /^    permissions:\n      contents: read$/m);
+  assert.doesNotMatch(workflow, /(?:actions|security-events|checks|pull-requests): write/);
 });
 
 test("workflow identity is bound to the tagged release definition and source SHA", () => {

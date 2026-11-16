@@ -8,6 +8,12 @@ on:
         required: true
         default: v0.8.10
         type: string
+  workflow_call:
+    inputs:
+      release_tag:
+        description: Exact v-prefixed SemVer already present across the candidate source
+        required: true
+        type: string
 
 # The caller cannot grant publication, attestation, or repository mutation.
 # The reusable graph contains no write-authority or publishing jobs.
