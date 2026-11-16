@@ -72,6 +72,10 @@ test("legacy docs redirects are closed, unique, and do not shadow rendered guide
   const sources = new Set();
   for (const route of routes) {
     assert.deepEqual(Object.keys(route).sort(), ["file", "source"]);
+    for (const field of ["source", "file"]) {
+      assert.equal(typeof route[field], "string", `${field} must be a string`);
+      assert.ok(route[field].length > 0, `${field} must not be empty`);
+    }
     assert.ok(route.source.startsWith("/docs/"), `${route.source} must start with /docs/`);
     assert.ok(!route.source.endsWith("/"), `${route.source} must not end with a slash`);
     assert.match(route.source, /^\/docs(?:\/[a-z0-9-]+)?$/);
@@ -158,4 +162,34 @@ test("a documented redirect with a trailing slash reaches the canonical destinat
   assert.notEqual(match("/docs/ci-cd"), false);
   assert.notEqual(match("/docs/ci-cd/"), false);
   assert.equal(route.destination, "https://github.com/ashlrai/phantom-secrets/blob/main/docs/ci-cd.md");
+});
+
+test("redirect destinations are clean single-slash paths on the pinned origin", () => {
+  const config = fs.readFileSync(path.join(webRoot, "next.config.ts"), "utf8");
+  const template = config.match(/destination:\s*`([^`]+)`/);
+  assert.ok(template, "expected one destination template in next.config.ts");
+
+  // Local sources: single leading slash, never protocol-relative.
+  for (const route of routes) {
+    assert.match(route.source, /^\/(?!\/)/, `${route.source} must be a local path`);
+  }
+
+  for (const route of routes) {
+    const destination = template[1].replace("${file}", route.file);
+    assert.equal(destination.includes("${"), false, "unresolved template variable");
+
+    // The destination is parsed, not pattern-matched, so userinfo tricks like
+    // https://github.com@evil.test/ or backslash/protocol-relative forms fail.
+    const url = new URL(destination);
+    assert.equal(url.protocol, "https:");
+    assert.equal(url.host, "github.com", `${route.source} leaves the pinned origin`);
+    assert.equal(url.username + url.password, "");
+    assert.match(url.pathname, /^\/(?!\/)/, `${route.source} path must start with a single slash`);
+    assert.equal(url.pathname.includes("\\"), false);
+    assert.equal(url.pathname.split("/").includes(".."), false);
+    assert.equal(
+      url.pathname,
+      `/ashlrai/phantom-secrets/blob/main/docs/${route.file}`,
+    );
+  }
 });
