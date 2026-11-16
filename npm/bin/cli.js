@@ -288,23 +288,26 @@ function removeFileIfExists(path) {
   }
 }
 
-function hasNpmSourceMarker(path, platform = process.platform) {
+function hasCliSourceMarker(markerPath, platform = process.platform) {
   try {
-    validateOwnedPath(path, "file", platform);
-    const contents = readFileSync(path, "utf8");
-    if (contents !== "npm\n") throw new Error("invalid npm install-source marker");
+    validateOwnedPath(markerPath, "file", platform);
+    const recorded = readFileSync(markerPath, "utf8");
+    if (recorded !== "npm\n") throw new Error("invalid npm-cli install-source marker");
     return true;
-  } catch (error) {
-    if (error.code !== "ENOENT") throw error;
+  } catch (cliMarkerError) {
+    if (cliMarkerError.code !== "ENOENT") throw cliMarkerError;
     return false;
   }
 }
 
-function ensureNpmSourceMarker(path, platform = process.platform) {
-  if (hasNpmSourceMarker(path, platform)) return;
-  writePrivateFile(path, "npm\n", 0o600, platform);
-  fsyncDirectory(dirname(path), platform);
+function commitCliSourceMarker(markerPath, platform = process.platform) {
+  if (hasCliSourceMarker(markerPath, platform)) return undefined;
+  writePrivateFile(markerPath, "npm\n", 0o600, platform);
+  fsyncDirectory(dirname(markerPath), platform);
+  return "npm-cli";
 }
+
+const CLI_INSTALL_SOURCE = ".phantom-install-source.npm-cli";
 
 function sha256File(path) {
   return crypto.createHash("sha256").update(readFileSync(path)).digest("hex");
@@ -981,10 +984,13 @@ async function ensureBinary({
   const releaseLock = await acquireInstallLock(paths.lockPath, { ...lockOptions, platform: runtime.platform });
   const heartbeat = releaseLock.heartbeat;
   try {
-    // Reject an unsafe existing marker, but do not create
-    // .phantom-install-source.npm-cli until a cached or downloaded binary
-    // validates. A failed attempt must not claim npm ownership.
-    hasNpmSourceMarker(paths.sourceMarkerPath, runtime.platform);
+    // Inspect .phantom-install-source.npm-cli first. Commit it only after the
+    // cached binary validates, so a failed attempt does not claim npm ownership.
+    const cliSourceMarker = paths.sourceMarkerPath;
+    if (basename(cliSourceMarker) !== CLI_INSTALL_SOURCE) {
+      throw new Error("npm-cli install source marker path drifted");
+    }
+    hasCliSourceMarker(cliSourceMarker, runtime.platform);
     heartbeat();
     recoverInterruptedInstall(paths, runtime.platform);
     if (validateCachedBinary(paths.binaryPath, paths.manifestPath, {
@@ -993,8 +999,9 @@ async function ensureBinary({
       execTimeoutMs,
       heartbeat,
     })) {
-      ensureNpmSourceMarker(paths.sourceMarkerPath, runtime.platform);
-      return paths.binaryPath;
+      commitCliSourceMarker(cliSourceMarker, runtime.platform);
+      const validatedCliBinary = paths.binaryPath;
+      return validatedCliBinary;
     }
 
     const archiveExt = runtime.platform === "win32" ? "zip" : "tar.gz";
@@ -1045,7 +1052,7 @@ async function ensureBinary({
       const manifest = { version: VERSION, sha256: sha256File(candidatePath) };
       writePrivateFile(candidateManifestPath, JSON.stringify(manifest) + "\n", 0o600, runtime.platform);
       replaceCachedBinary(candidatePath, candidateManifestPath, paths, runtime.platform);
-      ensureNpmSourceMarker(paths.sourceMarkerPath, runtime.platform);
+      commitCliSourceMarker(cliSourceMarker, runtime.platform);
       heartbeat();
       console.error(`Installed phantom to ${paths.binaryPath}`);
       return paths.binaryPath;
