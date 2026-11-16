@@ -6,7 +6,7 @@ const { existsSync, lstatSync, mkdtempSync, readFileSync, readdirSync, rmSync } 
 const { tmpdir } = require("os");
 const { basename, dirname, join } = require("path");
 
-const { ensureBinary, getPlatformTarget, isCachedBinaryStale, pathSet, validateCachedBinary, writePrivateFile } = require("../bin/cli.js");
+const { ensureBinary, getPlatformTarget, isCachedBinaryStale, pathSet, readVerifiedManifest, validateCachedBinary, writePrivateFile } = require("../bin/cli.js");
 
 (async () => {
   const cacheDir = mkdtempSync(join(tmpdir(), "phantom-cli-valid-cache-"));
@@ -40,6 +40,30 @@ const { ensureBinary, getPlatformTarget, isCachedBinaryStale, pathSet, validateC
     assert.strictEqual(readFileSync(paths.sourceMarkerPath, "utf8"), "npm\n");
   } finally {
     rmSync(cacheDir, { recursive: true, force: true });
+  }
+
+  const emptyCacheDir = mkdtempSync(join(tmpdir(), "phantom-cli-empty-cache-"));
+  try {
+    const paths = pathSet(emptyCacheDir);
+    writePrivateFile(paths.binaryPath, "", 0o700);
+    const sha256 = crypto.createHash("sha256").update("").digest("hex");
+    writePrivateFile(paths.manifestPath, `${JSON.stringify({ version: candidateVersion, sha256 })}\n`, 0o600);
+    assert.strictEqual(isCachedBinaryStale(paths.binaryPath), true, "an empty binary is not a valid cache");
+  } finally {
+    rmSync(emptyCacheDir, { recursive: true, force: true });
+  }
+
+  const directoryPath = mkdtempSync(join(tmpdir(), "phantom-cli-directory-cache-"));
+  try {
+    const manifestPath = join(directoryPath, "manifest.json");
+    writePrivateFile(manifestPath, JSON.stringify({ version: candidateVersion, sha256: "0".repeat(64) }), 0o600);
+    let executions = 0;
+    assert.strictEqual(validateCachedBinary(directoryPath, manifestPath, {
+      execFileSyncImpl: () => { executions += 1; },
+    }), false, "a directory is not a valid cached binary");
+    assert.strictEqual(executions, 0, "a directory must never be executed");
+  } finally {
+    rmSync(directoryPath, { recursive: true, force: true });
   }
 
   const fixtureDir = mkdtempSync(join(tmpdir(), "phantom-cli-missing-cache-"));
@@ -136,6 +160,27 @@ const { ensureBinary, getPlatformTarget, isCachedBinaryStale, pathSet, validateC
   } finally {
     rmSync(absentRoot, { recursive: true, force: true });
   }
+
+  for (const whitespace of [" ", "\n", " \t\r\n  \n"]) {
+    const wsDir = mkdtempSync(join(tmpdir(), "phantom-cli-whitespace-cache-"));
+    try {
+      const paths = pathSet(wsDir);
+      writePrivateFile(paths.binaryPath, "cached-binary", 0o700);
+      writePrivateFile(paths.manifestPath, whitespace, 0o600);
+      assert.strictEqual(readVerifiedManifest(paths.binaryPath, paths.manifestPath), null);
+      assert.strictEqual(
+        validateCachedBinary(paths.binaryPath, paths.manifestPath, {
+          execFileSyncImpl: () => {
+            throw new Error("whitespace manifest must not execute the cached binary");
+          },
+        }),
+        false
+      );
+    } finally {
+      rmSync(wsDir, { recursive: true, force: true });
+    }
+  }
+
   console.log("npm CLI wrapper validates manifest before executing cached binary");
 })().catch((error) => {
   console.error(error);
