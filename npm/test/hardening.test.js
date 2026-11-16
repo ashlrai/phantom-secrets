@@ -119,6 +119,8 @@ async function assertPreviousVersionCachePreserved(stage) {
 
     assert.deepStrictEqual(readFileSync(paths.binaryPath), previousBinary, `${stage} binary bytes`);
     assert.deepStrictEqual(readFileSync(paths.manifestPath), previousManifest, `${stage} manifest bytes`);
+    assert.strictEqual(basename(paths.sourceMarkerPath), ".phantom-install-source.npm-cli");
+    assert.strictEqual(existsSync(paths.sourceMarkerPath), false, `${stage} must not claim npm ownership`);
     assert.strictEqual(existsSync(paths.backupBinaryPath), false, `${stage} backup binary cleanup`);
     assert.strictEqual(existsSync(paths.backupManifestPath), false, `${stage} backup manifest cleanup`);
     assert.strictEqual(existsSync(paths.transactionPath), false, `${stage} transaction cleanup`);
@@ -235,8 +237,73 @@ async function assertDownloadStopsAfterSettlement() {
   assert.doesNotThrow(() => responses[0].emit("error", new Error("late redirect stream error")));
 }
 
+async function assertInstallSourceMarkerDeferred() {
+  const cacheDir = mkdtempSync(join(tmpdir(), "phantom-cli-source-marker-"));
+  try {
+    ensurePrivateCacheDir(cacheDir);
+    const paths = pathSet(cacheDir);
+    assert.strictEqual(basename(paths.sourceMarkerPath), ".phantom-install-source.npm-cli");
+    const binary = Buffer.from("known-valid-cache");
+    const sha256 = crypto.createHash("sha256").update(binary).digest("hex");
+    writePrivateFile(paths.binaryPath, binary, 0o700);
+    writePrivateFile(
+      paths.manifestPath,
+      `${JSON.stringify({ version: candidateVersion, sha256 })}\n`,
+      0o600
+    );
+
+    let markerDuringCheck = null;
+    const adopted = await ensureBinary({
+      cacheDir,
+      execFileSyncImpl: () => {
+        markerDuringCheck = existsSync(paths.sourceMarkerPath);
+        return Buffer.from(`phantom ${candidateVersion}\n`);
+      },
+      downloadImpl: async () => {
+        throw new Error("valid cache must not download");
+      },
+    });
+    assert.strictEqual(adopted, paths.binaryPath);
+    assert.strictEqual(markerDuringCheck, false, "ownership marker waits until validation succeeds");
+    assert.strictEqual(readFileSync(paths.sourceMarkerPath, "utf8"), "npm\n", "successful validation commits npm ownership");
+
+    rmSync(paths.sourceMarkerPath);
+    const retryFailure = new Error("synthetic retry download failure");
+    await assert.rejects(ensureBinary({
+      cacheDir,
+      execFileSyncImpl: () => Buffer.from("phantom 0.5.0\n"),
+      downloadImpl: async () => { throw retryFailure; },
+    }), (error) => error === retryFailure);
+    assert.strictEqual(existsSync(paths.sourceMarkerPath), false, "failed validation must not claim npm ownership");
+    assert.deepStrictEqual(readFileSync(paths.binaryPath), binary);
+
+    for (const markerKind of process.platform === "win32" ? ["invalid"] : ["invalid", "symlink"]) {
+      const unsafeCache = join(cacheDir, `unsafe-marker-${markerKind}`);
+      ensurePrivateCacheDir(unsafeCache);
+      const unsafePaths = pathSet(unsafeCache);
+      const sentinel = join(unsafeCache, "sentinel");
+      writePrivateFile(sentinel, "npm\n", 0o600);
+      if (markerKind === "symlink") symlinkSync(sentinel, unsafePaths.sourceMarkerPath);
+      else writePrivateFile(unsafePaths.sourceMarkerPath, "invalid\n", 0o600);
+      let operations = 0;
+      await assert.rejects(ensureBinary({
+        cacheDir: unsafeCache,
+        execFileSyncImpl: () => { operations += 1; },
+        downloadImpl: async () => { operations += 1; },
+      }), markerKind === "symlink" ? /symbolic link/ : /invalid npm install-source marker/);
+      assert.strictEqual(operations, 0, "unsafe marker must fail before execution or download");
+      assert.strictEqual(readFileSync(sentinel, "utf8"), "npm\n");
+      assert.strictEqual(existsSync(unsafePaths.binaryPath), false);
+      assert.strictEqual(existsSync(unsafePaths.lockPath), false);
+    }
+  } finally {
+    rmSync(cacheDir, { recursive: true, force: true });
+  }
+}
+
 (async () => {
   await assertDownloadStopsAfterSettlement();
+  await assertInstallSourceMarkerDeferred();
   assert.throws(
     () => getCacheDir({ env: {}, homedirImpl: () => "relative-home" }),
     /absolute private home/

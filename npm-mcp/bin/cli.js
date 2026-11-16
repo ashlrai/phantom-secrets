@@ -288,15 +288,20 @@ function removeFileIfExists(path) {
   }
 }
 
-function ensureNpmSourceMarker(path, platform = process.platform) {
+function hasNpmSourceMarker(path, platform = process.platform) {
   try {
-    const contents = readFileSync(path, "utf8");
     validateOwnedPath(path, "file", platform);
+    const contents = readFileSync(path, "utf8");
     if (contents !== "npm\n") throw new Error("invalid npm install-source marker");
-    return;
+    return true;
   } catch (error) {
     if (error.code !== "ENOENT") throw error;
+    return false;
   }
+}
+
+function ensureNpmSourceMarker(path, platform = process.platform) {
+  if (hasNpmSourceMarker(path, platform)) return;
   writePrivateFile(path, "npm\n", 0o600, platform);
   fsyncDirectory(dirname(path), platform);
 }
@@ -846,7 +851,10 @@ async function ensureBinary({
   const releaseLock = await acquireInstallLock(paths.lockPath, { ...lockOptions, platform: runtime.platform });
   const heartbeat = releaseLock.heartbeat;
   try {
-    ensureNpmSourceMarker(paths.sourceMarkerPath, runtime.platform);
+    // Reject an unsafe existing marker, but do not create
+    // .phantom-install-source.npm-mcp until a cached or downloaded binary
+    // validates. A failed attempt must not claim npm ownership.
+    hasNpmSourceMarker(paths.sourceMarkerPath, runtime.platform);
     heartbeat();
     recoverInterruptedInstall(paths, runtime.platform);
     if (validateCachedBinary(paths.binaryPath, paths.manifestPath, {
@@ -854,7 +862,10 @@ async function ensureBinary({
       platform: runtime.platform,
       execTimeoutMs,
       heartbeat,
-    })) return paths.binaryPath;
+    })) {
+      ensureNpmSourceMarker(paths.sourceMarkerPath, runtime.platform);
+      return paths.binaryPath;
+    }
 
     const archiveExt = runtime.platform === "win32" ? "zip" : "tar.gz";
     const archiveName = `phantom-${target}.${archiveExt}`;
@@ -904,6 +915,7 @@ async function ensureBinary({
       const manifest = { version: VERSION, sha256: sha256File(candidatePath) };
       writePrivateFile(candidateManifestPath, JSON.stringify(manifest) + "\n", 0o600, runtime.platform);
       replaceCachedBinary(candidatePath, candidateManifestPath, paths, runtime.platform);
+      ensureNpmSourceMarker(paths.sourceMarkerPath, runtime.platform);
       heartbeat();
       console.error(`Installed phantom-mcp to ${paths.binaryPath}`);
       return paths.binaryPath;
