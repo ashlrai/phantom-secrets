@@ -4,6 +4,237 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+## [0.8.10] - 2026-11-16
+
+### Breaking changes and migration
+
+No breaking changes since v0.8.9. Existing installations require no migration.
+
+### Added (workbench integration notes)
+
+- `INTEGRATION.md` describes how this repo plugs into the Phantom workbench
+  (formerly Ashlr Hub): opt-in delegation, the local proxy, trust boundaries,
+  and opt-out. `DESIGN-onboarding-wizard.md` and `DESIGN-connector-packs.md`
+  remain proposals and are not implemented.
+
+### Fixed (npm install-source marker)
+
+- The `phantom-secrets` and `phantom-secrets-mcp` wrappers write
+  `.phantom-install-source.npm-cli` and `.phantom-install-source.npm-mcp` only
+  after binary validation succeeds. A failed validation leaves no ownership
+  marker.
+
+### Added (agent quickstart)
+
+- Agents get one copy-paste setup path in `docs/agent-quickstart.md`, mirrored in `AGENTS.md`, `llms.txt` and `llms-full.txt`, with value-free JSON commands and the MCP file shapes `phantom setup` writes for Claude Code, Cursor and Codex. A docs check fails if any copy of the command block drifts.
+
+### CI (PowerShell installer pin)
+
+- The Windows CI job and the release rehearsal contract test now expect the
+  public-reference `apps/web/public/install.ps1` to be pinned to the evidenced
+  `v0.8.7` release instead of `v0.7.9`; the contract test reads the pin from
+  the installer itself.
+
+### Changed (repository docs tooling)
+
+- A `.devin/wiki.json` steering file describes the workspace crates for
+  generated repository wikis.
+
+### Removed (unrouted `phantom env` help hint)
+
+- The unused `run_default` helper in `env_scope.rs` is gone; `phantom env`
+  still generates `.env.example` as documented.
+
+### Changed (OS credential store crates)
+
+- The vault, the cloud passphrase, and the cloud key pair now reach the OS
+  credential store through `keyring-core` 1 and one store crate per platform,
+  replacing `keyring` 3: `apple-native-keyring-store` (macOS Keychain),
+  `windows-native-keyring-store` (Windows Credential Manager), and on Linux
+  `linux-keyutils-keyring-store` plus `dbus-secret-service-keyring-store`.
+  The Linux Secret Service store uses blocking D-Bus with bundled libdbus and
+  RustCrypto key exchange, so Linux builds need neither a system libdbus nor
+  openssl. Service and account names are unchanged. Reading entries that a
+  keyring 3 build wrote has not yet been live-tested on Linux Secret Service or
+  Windows Credential Manager; see
+  `docs/design/keyring-4-migration-scoping.md`.
+
+### Security (dependency advisories)
+
+- `deny.toml` no longer ignores RUSTSEC-2026-0370 (`zvariant`),
+  RUSTSEC-2026-0371 (`zbus_names`), or RUSTSEC-2026-0372 (`zvariant_derive`).
+  No zbus version remains in the resolved graph, and `cargo deny check` passes
+  without those ignores.
+
+### Changed (MCP SDK)
+
+- `phantom-mcp` builds on `rmcp` 3.9 (was 3.5). The tool catalog and
+  `mcp-registry/server.json` are unchanged.
+
+### Added (account-ops engine, library only)
+
+- `phantom_core::account_ops` is a value-free create, rotate, revoke, and
+  status engine. It ships with a GitHub App installation-token adapter. Each
+  operation checks the `~/.ashlr/KILL` switch, binds the secret name to the
+  adapter's namespace, and defaults to a dry run. Operations are recorded in
+  a hash-chained ledger at `~/.phantom/account-ops.jsonl`, with a head anchor
+  that detects truncation. Issued values go only to the vault writer. If
+  storing a value fails, the engine revokes it. No CLI or MCP command calls
+  the engine, and live provider issuance stays hard-denied.
+  `.github/CODEOWNERS` now assigns an owner to the module.
+
+### Fixed (Personal Cloud push)
+
+- The Supabase migration `20261009225441_enforce_personal_vault_quota` adds
+  `push_personal_vault`, the function that the `/api/v1/vault/push` route
+  calls. It serializes pushes per user and checks the expected version, and
+  it admits one new encrypted backup per account. Existing backups, including
+  legacy over-quota rows, can still be read and updated. Only the service
+  role can call it.
+
+### Security (Personal Cloud table grants)
+
+- The Supabase migration `20261009231437_clamp_browser_table_authority`
+  limits browser sessions to `SELECT` on `users`, `vault_blobs`, `teams`, and
+  `team_members`, under the existing ownership RLS policies. It also revokes
+  every `PUBLIC` and `anon` table privilege, removes column-level grants, and
+  drops service-role access to tables the server does not use. Rollback
+  scripts are in `apps/web/supabase/rollback/`, and CI now runs the
+  `supabase test db` grant and row-isolation suite.
+
+### Fixed (npm wrappers)
+
+- The `phantom-secrets` npm wrapper treats a zero-byte cached binary or
+  manifest as missing and downloads it again, even if its digest matches.
+- The `phantom-secrets-mcp` wrapper requires the version line to be the
+  whole `phantom-mcp --version` output. Tests reject extra blank lines,
+  Unicode line separators, and NUL suffixes.
+- `npm/README.md` adds `freebsd`/`arm64`, `linux`/`riscv64`, and
+  `sunos`/`arm` to the platforms that fail closed before any download.
+
+### Changed (SEO observer)
+
+- `scripts/seo/observe.mjs` now fetches `/llms.txt` and `/llms-full.txt`
+  directly instead of requiring them in the sitemap, which lists only HTML
+  pages. An `--experiments`, `--gsc-file`, or `--ahrefs-file` input that is
+  not valid JSON now exits 1 with the error on stderr instead of writing a failure report.
+
+### CI (release and tool downloads)
+
+- The release workflow pins npm `11.19.0` for trusted publishing (was
+  `11.6.2`).
+- CI caches the `cargo-deny` and `gitleaks` archives under a key built from
+  each tool's version and SHA-256. It retries downloads and still verifies
+  the checksum before use. `scripts/ci/verified-download.test.mjs` covers
+  that path.
+
+### CI (test coverage)
+
+- New regression tests cover `atomic_write`: empty contents, Unicode bytes,
+  replacing an existing file, a parent that cannot be created, and no
+  leftover temporary files. They also cover proxy rate limiting and port
+  binding, Unix installer staging and PATH-update failure cleanup, npm
+  wrapper version and cache validation, and web manifest, quickstart,
+  redirect, and request-body handling. `apps/web/README.md` documents how to
+  run the web tests.
+
+### CI (docs and installer suite wiring)
+
+- On every push to `main`, CI now runs `scripts/freshness/check.mjs`,
+  `scripts/release/lint-changelog.mjs`, and `scripts/changelog-fold.mjs
+  --check`. The `[Unreleased]` compare-link fresh block in `CHANGELOG.md` had
+  picked up the `[0.8.9]` link at the release cut, and nothing caught it. The
+  link now sits outside the block.
+- The Linux offline installer step now runs
+  `installer-mktemp-failure`, `installer-success-cleanup`,
+  `public-installer-staging-creation-failure`, and
+  `public-installer-tmpdir-spaces`. They had merged without being added to the
+  step, which made the `installer-offline-suite` guard fail.
+
+### Changed (developer guide)
+
+- `CLAUDE.md` names `rmcp` 3.9 as the MCP SDK. The duplicate
+  `[Unreleased]` agent-quickstart bullet in `CHANGELOG.md` was removed, because
+  the `changelog.d/agent-quickstart.md` fragment already records that change.
+
+### Changed (architecture docs)
+
+- `docs/architecture.md` now lists the library-only `phantom_core::account_ops`
+  engine in the current-state map and the sources-of-truth list, with a link
+  to its design note. It states that no CLI or MCP command calls the engine.
+
+### Added (`phantom git-credential`)
+
+- `phantom git-credential get`, `store` and `erase` implement the Git
+  credential-helper protocol for HTTPS github.com. The helper hands the
+  selected project vault credential only to a pipe; terminals and files are
+  refused. Setup and the plaintext handoff boundary are in
+  `docs/git-credential.md`.
+
+### Added (`phantom redact --stream`)
+
+- `phantom redact --stream` scrubs known credential shapes from stdin to
+  stdout, flushing each line, with no vault access. Lines over 1 MiB are
+  rejected. Shape detection cannot cover arbitrary or encoded secrets.
+
+### Added (`phantom fleet-status`)
+
+- `phantom fleet-status` is a read-only, value-free fleet posture report: each
+  secret's name, expiry state, last stored validation result and
+  rotation-schedule state, plus the names with overdue rotations. `--json`
+  emits the schema in `docs/fleet-status.md`; `--strict` exits 2 when anything
+  needs attention or the inventory is partial.
+
+### Added (`phantom open`, `phantom logout`, `phantom completion`)
+
+- `phantom open [page]` opens only the reviewed aliases `dashboard`,
+  `billing`, `team`, `docs`, `pricing`, `github`, `issues` and `site`, from an
+  attached trusted terminal. Arbitrary URLs and unknown aliases are rejected
+  before any browser access.
+- `phantom logout` deletes persistent cloud authorization from the OS keychain
+  after approval in an attached trusted terminal.
+- `phantom completion <shell>` prints a completion script for bash, zsh, fish,
+  powershell or elvish.
+
+### CI (changelog coverage)
+
+- A docs-drift test fails when a visible CLI command is never mentioned in
+  `CHANGELOG.md` or an unfolded `changelog.d/` fragment, so a shipped command
+  cannot go unrecorded.
+
+### Changed (documentation index)
+
+- `docs/README.md` now links the `phantom exec`, `phantom git-credential`,
+  `phantom fleet-status`, `phantom audit feed` and `phantom agent doctor --json`
+  references, the MCP secrets manager overview, the hybrid local quickstart and
+  the public fact sheet, which were reachable only by file name.
+
+### CI (documented flag drift)
+
+- A docs-drift test fails when `README.md`, `llms.txt` or a `docs/*.md` file
+  shows a `phantom <command> --flag` invocation whose flag the command does not
+  define. Arguments after a bare `--` belong to the wrapped command and are
+  not checked.
+
+### Security (Personal Cloud token and OAuth-state grants)
+
+- The Supabase migration `20261110053000_revoke_platform_token_oauth_state_columns`
+  follows `20261009231437_clamp_browser_table_authority`, whose column revoke
+  omitted `platform_tokens` and `oauth_states` and whose table-level revoke
+  omitted `oauth_states`. Column grants survive a table-level `REVOKE`, so it
+  revokes every `PUBLIC`, `anon` and `authenticated` privilege on `oauth_states`
+  and the column privileges on both tables. `service_role` table privileges are
+  kept. The migration fails if either table is missing. A rollback script and
+  the local grant assertions in `scripts/supabase/assert-local-authority.sql`
+  cover it.
+
+### Fixed (`phantom-secrets-mcp` unsupported platform)
+
+- The `phantom-secrets-mcp` npm wrapper resolves the release target before it
+  touches the cache, lock, or network. An unsupported platform now exits with
+  release guidance and leaves nothing behind, matching the `phantom-secrets`
+  wrapper.
+
 ### Fixed
 
 - The agent quickstart now directs macOS users to the verified v0.8.7 archive. The documented v0.7.9 Homebrew formula does not support `phantom agent doctor --json`.
@@ -3612,8 +3843,9 @@ remain separate evidence gates.
 For older release notes and downloadable artifacts, see [GitHub Releases](https://github.com/ashlrai/phantom-secrets/releases).
 
 <!-- fresh:begin changelog-unreleased-compare -->
-[Unreleased]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.9...HEAD
+[Unreleased]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.10...HEAD
 <!-- fresh:end -->
+[0.8.10]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.9...v0.8.10
 [0.8.9]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.8...v0.8.9
 [0.8.8]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.7...v0.8.8
 [0.8.7]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.6...v0.8.7
