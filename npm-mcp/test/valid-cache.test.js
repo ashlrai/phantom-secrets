@@ -2,6 +2,8 @@
 const candidateVersion = require("../package.json").version;
 const assert = require("assert");
 const crypto = require("crypto");
+const http = require("http");
+const https = require("https");
 const { mkdtempSync, readFileSync, readdirSync, rmSync } = require("fs");
 const { tmpdir } = require("os");
 const { basename, dirname, join } = require("path");
@@ -12,21 +14,30 @@ const { ensureBinary, pathSet, validateCachedBinary, writePrivateFile } = requir
   const cacheDir = mkdtempSync(join(tmpdir(), "phantom-mcp-valid-cache-"));
   try {
     const missingPaths = pathSet(join(cacheDir, "missing"));
-    let missingCacheExecutions = 0;
-    assert.strictEqual(validateCachedBinary(missingPaths.binaryPath, missingPaths.manifestPath, {
-      execFileSyncImpl: () => { missingCacheExecutions += 1; },
-    }), false, "a missing cache directory is a cache miss");
-    assert.strictEqual(missingCacheExecutions, 0, "a missing cache must not execute a binary");
-    assert.deepStrictEqual(readdirSync(cacheDir), [], "checking a missing cache must not create it");
-
     const paths = pathSet(cacheDir);
     assert.strictEqual(paths.lockPath, join(dirname(cacheDir), `.${basename(cacheDir)}.install.lock`));
-    let emptyCacheExecutions = 0;
-    assert.strictEqual(validateCachedBinary(paths.binaryPath, paths.manifestPath, {
-      execFileSyncImpl: () => { emptyCacheExecutions += 1; },
-    }), false, "an empty cache directory is a cache miss");
-    assert.strictEqual(emptyCacheExecutions, 0, "a cache miss must not execute a binary");
-    assert.deepStrictEqual(readdirSync(cacheDir), [], "checking the cache must not create artifacts");
+    const originals = [http.request, http.get, https.request, https.get];
+    let networkRequests = 0;
+    const rejectNetwork = () => { networkRequests += 1; throw new Error("unexpected network request"); };
+    http.request = http.get = https.request = https.get = rejectNetwork;
+    try {
+      let missingCacheExecutions = 0;
+      assert.strictEqual(validateCachedBinary(missingPaths.binaryPath, missingPaths.manifestPath, {
+        execFileSyncImpl: () => { missingCacheExecutions += 1; },
+      }), false, "a missing cache directory is a cache miss");
+      assert.strictEqual(missingCacheExecutions, 0, "a missing cache must not execute a binary");
+      assert.deepStrictEqual(readdirSync(cacheDir), [], "checking a missing cache must not create it");
+
+      let emptyCacheExecutions = 0;
+      assert.strictEqual(validateCachedBinary(paths.binaryPath, paths.manifestPath, {
+        execFileSyncImpl: () => { emptyCacheExecutions += 1; },
+      }), false, "an empty cache directory is a cache miss");
+      assert.strictEqual(emptyCacheExecutions, 0, "a cache miss must not execute a binary");
+      assert.deepStrictEqual(readdirSync(cacheDir), [], "checking the cache must not create artifacts");
+      assert.strictEqual(networkRequests, 0, "cache validation must not use the network");
+    } finally {
+      [http.request, http.get, https.request, https.get] = originals;
+    }
     const contents = "known-valid-cache";
     writePrivateFile(paths.binaryPath, contents, 0o700);
     const sha256 = crypto.createHash("sha256").update(contents).digest("hex");
