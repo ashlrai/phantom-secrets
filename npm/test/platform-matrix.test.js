@@ -2,6 +2,8 @@
 const candidateVersion = require("../package.json").version;
 const assert = require("assert");
 const crypto = require("crypto");
+const http = require("http");
+const https = require("https");
 const { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } = require("fs");
 const { tmpdir } = require("os");
 const { join } = require("path");
@@ -51,6 +53,28 @@ for (const bad of ["", "   ", null, undefined, 42, {}, []]) {
   );
 }
 
+// Release binaries link against glibc, so every Linux target must end in `linux-gnu`
+// (a musl or other suffix would download a binary the release does not ship).
+function assertLinuxTargetsAreGnu(targets, label) {
+  const linuxKeys = Object.keys(targets).filter((key) => key.startsWith("linux-"));
+  assert.ok(linuxKeys.length > 0, `${label} must contain at least one Linux target`);
+  for (const key of linuxKeys) {
+    assert.ok(
+      targets[key].endsWith("linux-gnu"),
+      `${label}: Linux target ${key} must end in linux-gnu, got ${targets[key]}`
+    );
+  }
+}
+assertLinuxTargetsAreGnu(SUPPORTED_TARGETS, "SUPPORTED_TARGETS");
+assertLinuxTargetsAreGnu(expected, "expected fixture");
+for (const suffix of ["linux-musl", "linux-gnueabihf", "linux-android", "linux"]) {
+  assert.throws(
+    () => assertLinuxTargetsAreGnu({ "linux-x64": `x86_64-unknown-${suffix}` }, "mutant"),
+    /must end in linux-gnu/,
+    `suffix ${suffix} must be rejected`
+  );
+}
+
 // Keep the published platform table in sync with the executable's exact map.
 const readme = readFileSync(join(__dirname, "..", "README.md"), "utf8");
 const platformTable = readme.match(
@@ -69,6 +93,7 @@ for (const row of platformTable[1].trim().split(/\r?\n/)) {
   documentedTargets[key] = target;
 }
 assert.deepStrictEqual(documentedTargets, SUPPORTED_TARGETS);
+assertLinuxTargetsAreGnu(documentedTargets, "README platform table");
 
 for (const [platformKey, target] of Object.entries(expected)) {
   const [platform, arch] = platformKey.split("-");
@@ -104,6 +129,25 @@ assert.throws(
   () => assertDistinctTargets(() => "x86_64-unknown-linux-gnu", ["linux-x64", "linux-arm64"], "fixture"),
   /duplicate target triple x86_64-unknown-linux-gnu for linux-x64 and linux-arm64/
 );
+
+// Repeated selection is local and stable for every supported package target.
+const networkMethods = [[http, "get"], [http, "request"], [https, "get"], [https, "request"], [globalThis, "fetch"]];
+const originalMethods = networkMethods.map(([object, name]) => object[name]);
+try {
+  for (const [object, name] of networkMethods) {
+    object[name] = () => { throw new Error("platform lookup must not access the network"); };
+  }
+  for (const [platformKey, target] of Object.entries(expected)) {
+    const [platform, arch] = platformKey.split("-");
+    const runtime = { platform, arch };
+    const first = getPlatformTarget(runtime);
+    const second = getPlatformTarget(runtime);
+    assert.strictEqual(first, target, `first lookup maps ${platformKey}`);
+    assert.strictEqual(second, first, `repeated lookup maps ${platformKey} identically`);
+  }
+} finally {
+  networkMethods.forEach(([object, name], index) => { object[name] = originalMethods[index]; });
+}
 
 const unsupported = [
   { platform: "darwin", arch: "ia32" },
@@ -145,6 +189,43 @@ assert.throws(() => getPlatformTarget({ platform: "linux", arch: "riscv64" }), (
   return true;
 });
 
+function assertUnsupported(runtime) {
+  assert.throws(() => getPlatformTarget(runtime), (error) => {
+    assert.match(error.message, new RegExp(`Unsupported platform: ${runtime.platform}-${runtime.arch}`));
+    assert.match(error.message, new RegExp("releases\\/tag\\/v" + candidateVersion.replaceAll(".", "\\.") + "",""));
+    assert.match(error.message, /checksum-verifiable/);
+    assert.doesNotMatch(error.message, /cargo install|npm install|npx |curl[^\n]*\|/i);
+    return true;
+  });
+}
+
+// Lookups are pure: repeated calls agree and neither input nor mapping changes.
+const mappingBefore = JSON.stringify(SUPPORTED_TARGETS);
+for (const [platformKey, target] of Object.entries(expected)) {
+  const [platform, arch] = platformKey.split("-");
+  const runtime = Object.freeze({ platform, arch });
+  assert.strictEqual(getPlatformTarget(runtime), target);
+  assert.strictEqual(getPlatformTarget(runtime), target, `repeat lookup of ${platformKey}`);
+  assert.deepStrictEqual(runtime, { platform, arch }, "lookup must not change its input");
+}
+for (const runtime of unsupported) {
+  const copy = { ...runtime };
+  assertUnsupported(runtime);
+  assert.deepStrictEqual(runtime, copy, "failed lookup must not change its input");
+}
+assert.strictEqual(JSON.stringify(SUPPORTED_TARGETS), mappingBefore, "lookups must not change the mapping");
+
+// Empty platform or architecture must not select a host package.
+assertUnsupported({ platform: "linux", arch: "" });
+assertUnsupported({ platform: "", arch: "x64" });
+// A known architecture must not cause an unsupported OS to select another binary.
+assertUnsupported({ platform: "sunos", arch: "x64" });
+for (const platform of ["aix", "android", "haiku", "netbsd", "sunos"]) {
+  for (const arch of ["x64", "arm64"]) {
+    assertUnsupported({ platform, arch });
+  }
+}
+
 const wrapperSource = readFileSync(join(__dirname, "..", "bin", "cli.js"), "utf8");
 assert.doesNotMatch(wrapperSource, /Install from source|cargo install phantom-secrets/);
 
@@ -170,6 +251,37 @@ assert.doesNotMatch(wrapperSource, /Install from source|cargo install phantom-se
     assert.strictEqual(existsSync(cacheDir), false, "unsupported platforms must not create a cache");
   } finally {
     rmSync(testDir, { recursive: true, force: true });
+  }
+
+  // Unsupported runtimes are rejected before any package is selected or cached.
+  const rejectedRuntimes = [
+    { platform: "linux", arch: "arm" },
+    { platform: "linux", arch: "" },
+    { platform: "", arch: "x64" },
+  ];
+  for (const platform of ["aix", "android", "haiku", "netbsd", "sunos"]) {
+    for (const arch of ["x64", "arm64"]) rejectedRuntimes.push({ platform, arch });
+  }
+  for (const runtime of rejectedRuntimes) {
+    const root = mkdtempSync(join(tmpdir(), "phantom-cli-unsupported-extra-"));
+    const rejectedCache = join(root, "cache");
+    const calls = [];
+    try {
+      await assert.rejects(
+        ensureBinary({
+          cacheDir: rejectedCache,
+          runtime,
+          execFileSyncImpl: () => { calls.push("exec"); return Buffer.alloc(0); },
+          downloadImpl: async () => { calls.push("download"); throw new Error("unexpected download"); },
+          extractImpl: () => { calls.push("extract"); },
+        }),
+        (error) => error.message.startsWith(`Unsupported platform: ${runtime.platform}-${runtime.arch}.`)
+      );
+      assert.deepStrictEqual(calls, [], `${runtime.platform}-${runtime.arch} must not select or run a package`);
+      assert.strictEqual(existsSync(rejectedCache), false, `${runtime.platform}-${runtime.arch} must not create a cache`);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   }
 
   // Even a matching, integrity-valid cache must not bypass platform selection.
