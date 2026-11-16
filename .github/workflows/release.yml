@@ -361,10 +361,10 @@ jobs:
         with:
           node-version: '24'
 
-      - name: Use an npm with trusted publishing support (>= 11.5.1)
+      - name: Use a pinned npm with trusted publishing support (11.19.0, >= 11.15)
         run: |
           set -euo pipefail
-          npm install --global npm@11.6.2
+          npm install --global npm@11.19.0
           npm --version
 
       - name: Verify package name and version match the tag

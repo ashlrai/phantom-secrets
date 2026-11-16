@@ -1,0 +1,1190 @@
+{
+  "schema_version": 1,
+  "observed_at_utc": "2026-11-09T22:56:43.949318+00:00",
+  "inventory_scope": "eight supplied originals only; open-state and all-open owner inventory not independently verified",
+  "records": [
+    {
+      "number": 1178,
+      "head": "07946fdaadbd849dc56651ea1e1b711849dab8aa",
+      "current_main": "19ef3dd02100bf0898fd5a25b4d59b8edf5b4271",
+      "merge_base": "3a90f922709d20b16d21959d99baec20e7aaf0e4",
+      "changed_paths": [
+        {
+          "path": ".gitattributes",
+          "base_blob": "b109d7cb9333c770a99c266c8ec7f786b0e9cb03",
+          "head_blob": "9edcec24ee018e6516e83d41f993600d662526c0",
+          "main_blob": "9edcec24ee018e6516e83d41f993600d662526c0"
+        },
+        {
+          "path": ".github/workflows/ci.yml",
+          "base_blob": "67c25f9e58250e483d73526c02af4f449f2efb26",
+          "head_blob": "356c2356f60846b90a10310c2467ccb7b438cf75",
+          "main_blob": "3801725f2b9c3a75ab1c3d715aa48c8c28548a1b"
+        },
+        {
+          "path": ".github/workflows/npm-candidate-acceptance.yml",
+          "base_blob": "ffff7ddde6b7b0eabafdcd3dc30160a9c4cb1584",
+          "head_blob": "96d27614dbed5c201ba47157a6ad45dc58687803",
+          "main_blob": "3d292d8c4b9db1c10a9d93aa99194f12746aaef5"
+        },
+        {
+          "path": ".github/workflows/release-rehearsal.yml",
+          "base_blob": "eada92941de56e27058b07c3e598675fb92d0a1d",
+          "head_blob": "542feefaed04f97c39412830cb542c85948f2ebe",
+          "main_blob": "5e0e500744404f5cbd79765038db63593be71b27"
+        },
+        {
+          "path": "CHANGELOG.md",
+          "base_blob": "b9ffa6d8d3cdd39069c95969e6ca5beb2932ea3e",
+          "head_blob": "4fc4721d6fffba6785543579d29e0d1f645b93b0",
+          "main_blob": "0f52aee2146a7233001eed9185fe890526253654"
+        },
+        {
+          "path": "CITATION.cff",
+          "base_blob": "55b94335e05af16ec7e3d41d76334ae1b5b1d45e",
+          "head_blob": "43836ba3dfe6cdc7e4cc51014dfb34f174367b6d",
+          "main_blob": "5b0ffe0c9c251fa84e01fab98ad710d6811f629d"
+        },
+        {
+          "path": "Cargo.lock",
+          "base_blob": "c769b70381b5be14cc4eb44cd198702c441d4c8c",
+          "head_blob": "766af1b9aefa88ec065f3d399f5447ae81f3758f",
+          "main_blob": "3e868c5a19313caba9e486996217c828629f0bf6"
+        },
+        {
+          "path": "Cargo.toml",
+          "base_blob": "9b8e018315e5de4a30c714e7d98b828aa23cb394",
+          "head_blob": "e103e99177ca1ff0f32ccc4f7538d604a6a9a102",
+          "main_blob": "a544fb0d0863c54d76f5ce703d9d66ff6344d0d4"
+        },
+        {
+          "path": "README.md",
+          "base_blob": "4cdbd1510f17868d554847d919c94f54d786cd6f",
+          "head_blob": "9bcb461fceb0e231f6e58a8395911d2dc1555c86",
+          "main_blob": "54c9e161931b497ccb47ce5700822d9e8e491100"
+        },
+        {
+          "path": "ROADMAP.md",
+          "base_blob": "4790c8229ac1afd751c18a552c15fe295c7ef9b8",
+          "head_blob": "bea6281412e8421a7f367c1cf6d2a97927dd8f78",
+          "main_blob": "5d226ef8aa031750895546678da3aee65e7de2e9"
+        },
+        {
+          "path": "apps/web/package-lock.json",
+          "base_blob": "27c7ed65406e71936dc6742b6f339794c3a95a1a",
+          "head_blob": "6728001d4e8f9ab7179d0c0c2b7b3eccf73517e2",
+          "main_blob": "6ca69c078131bf13aa2e5167b0c98b9defd418f2"
+        },
+        {
+          "path": "apps/web/package.json",
+          "base_blob": "8288b305fd7348350611b4b1e59c92c929166315",
+          "head_blob": "7668d640810979f75150405f556e59a4aa32c2a8",
+          "main_blob": "5f557d09d2eb2c2fa930ea18561ef24f4e2e9ee2"
+        },
+        {
+          "path": "apps/web/tests/public-claims.test.cjs",
+          "base_blob": "af6c4ec3e7618a3a18f55702671639d5b8b6db9e",
+          "head_blob": "27ea22fc5df4408ac56c4f61759369dcb140d8ba",
+          "main_blob": "718837309e6019e2bd6b14611326e2afced94f66"
+        },
+        {
+          "path": "apps/web/tests/release-publication-boundary.test.cjs",
+          "base_blob": "a39d032c130659730c138682e4943c73e65767cf",
+          "head_blob": "bcd8f6160594911ab71bdea8e61653eee4ae281c",
+          "main_blob": "d7947e8878f2f156e00dc4240b0aa634bba465b0"
+        },
+        {
+          "path": "docs/distribution-status.md",
+          "base_blob": "da9f6299ea38a8fba288a73e746ae834ab20963e",
+          "head_blob": "d553b89ae777371c5b63beb04f6b5ec17d1d7af7",
+          "main_blob": "14e82135f589ac6f8f8cfcf8ff20128729cf46b9"
+        },
+        {
+          "path": "docs/installer-copy-comparison.md",
+          "base_blob": "a5d99eb84fc3d487bde3feccf2c1e94e17e42456",
+          "head_blob": "a65b6190a92019b113a1ab61fff9f3224b81b238",
+          "main_blob": "3a2e4a4b32f82087dab1730cd0949f768c577ba0"
+        },
+        {
+          "path": "docs/installer-copy-maintenance.md",
+          "base_blob": "7f50cc8710ea010aa4271718035cfcbbab76c041",
+          "head_blob": "c04196d47b8ff78e6ad34dd995e3892020a68567",
+          "main_blob": "20a4ab3f6b467365a75c3e3d999cb5aba0ba2c62"
+        },
+        {
+          "path": "docs/installer-copy-source-map.md",
+          "base_blob": "99f9c973f2360108b1b83daf9a3efddbe32face4",
+          "head_blob": "12b84e5da339f0a49bbd91d0c8bf00b7a0ace944",
+          "main_blob": "e4c70413428042525b38efe16657edc640ccfa43"
+        },
+        {
+          "path": "docs/installer-copy-sync.md",
+          "base_blob": "5e61d5d9799a0cfea9dff118750c40debc6b2311",
+          "head_blob": "e073bcacb6877faa30a2f337b319db3a9fac4cbe",
+          "main_blob": "b8f9d1a9c2bfb52d2617848cf315cae78ebbac8a"
+        },
+        {
+          "path": "docs/installer-staging-prefixes.md",
+          "base_blob": "90dd29d441b775c374ad00888d9f9a5b0e54cbc0",
+          "head_blob": "5b043f49ec6c82f9bcaeaa0295f7b3941dda1880",
+          "main_blob": "84f659e061b51c3e92d0e5ef23554bbff4329c90"
+        },
+        {
+          "path": "docs/installer-staging.md",
+          "base_blob": "4e6ecc15d0ae3d8e16740b360d998e585bacf9ab",
+          "head_blob": "6c4945986df326c066d9e5415f67f24cdc321178",
+          "main_blob": "17963f92978f1ad1331f9f4b64c3488d496bc95f"
+        },
+        {
+          "path": "docs/public-installer-staging-flow.md",
+          "base_blob": "7f040e9b9ce052ef105d5a327f353f2ce537faff",
+          "head_blob": "8806e62a8ca44383fb280eca779aba01f4c62b9c",
+          "main_blob": "6b330155404ff9c43ae5fc7f03ccd78787173562"
+        },
+        {
+          "path": "docs/public-installer-staging-questions.md",
+          "base_blob": "e2289b769460d3a411601bd12aa23343f05182cf",
+          "head_blob": "6df02f9de5921399f8c16d9518dba73d17c948f2",
+          "main_blob": "478e87cc29faa9d7cca601e5ee07cd3348c7a937"
+        },
+        {
+          "path": "docs/release-readiness.md",
+          "base_blob": "d637ad2b4b34d5d197e8c678fb0d0bf7778a5abf",
+          "head_blob": "dea393e46898721710151dc0cee2059b0fee59a6",
+          "main_blob": "65d5fc6bb842290be70ad78a07a7c1e52454aee8"
+        },
+        {
+          "path": "mcp-registry/server.json",
+          "base_blob": "49982a3d0fb2dbba415594325d8568cc0cc970c6",
+          "head_blob": "e1c1651c5005f4c373085705d9501544ea3c8c65",
+          "main_blob": "b64825e77af26269a1efa3cbf111e130f3512dfa"
+        },
+        {
+          "path": "npm-mcp/README.md",
+          "base_blob": "e44dc1a562cdd77704ec0a5e392cc65efd7fcc82",
+          "head_blob": "e9aae26b17918af50a13db66f8e6d724a4750082",
+          "main_blob": "814f7e55295e1b856f9fc5f264a7a82b942366c7"
+        },
+        {
+          "path": "npm-mcp/bin/cli.js",
+          "base_blob": "93e314c648d68dcce574df582b173adbb53c973a",
+          "head_blob": "07ebe65342b8a83aadbe588cc5d02ffa5dc440a1",
+          "main_blob": "51c0d65b0e216700b4a65404a4f9276a3e467610"
+        },
+        {
+          "path": "npm-mcp/package.json",
+          "base_blob": "b330df9dd9ef274bf9341794136211e6279fffc3",
+          "head_blob": "f4f217032ae4da1771fca7d0321c6b89696b29b8",
+          "main_blob": "e33ba780f33bc6756b14ddbe1410b911663a2cb5"
+        },
+        {
+          "path": "npm-mcp/test/hardening.test.js",
+          "base_blob": "9cae8c149d3d798919889ac86c81958fdf4e47b5",
+          "head_blob": "7b2b04fb111ebbcfeddbf0840c764e2fdac584cc",
+          "main_blob": "7b2b04fb111ebbcfeddbf0840c764e2fdac584cc"
+        },
+        {
+          "path": "npm-mcp/test/platform-matrix.test.js",
+          "base_blob": "deced1f512957ee5d63467735ff7d8535469c6ef",
+          "head_blob": "9d9c4660f71a3cd410ce77381b14ecc8d3b08020",
+          "main_blob": "3c75112804ec05b2ea640f28f3660c3e4c3ca2a2"
+        },
+        {
+          "path": "npm-mcp/test/valid-cache.test.js",
+          "base_blob": "1af30a161cbefea63d4dce84b24f6d15aba0f30b",
+          "head_blob": "38c1e9f30b98b66e4358110e8161dde8631bad16",
+          "main_blob": "9e3f09c1ad91d8d1cfcfd1f41c6fba2e7302b7f2"
+        },
+        {
+          "path": "npm-mcp/test/version-cache.test.js",
+          "base_blob": "9bf1bce3e1f34810b65ab312976be95ead58c1dc",
+          "head_blob": "7d2dc5bec9e1a840b95317f1199325c333462b9e",
+          "main_blob": "7d2dc5bec9e1a840b95317f1199325c333462b9e"
+        },
+        {
+          "path": "npm/README.md",
+          "base_blob": "133b97c4fd6cd232686548caa1fafcc7f22694ae",
+          "head_blob": "d55abb3d5ef7c6645746cb65a815c08ddc103b3f",
+          "main_blob": "2c9e903273c350acd3ce3cb146b627083a904aa3"
+        },
+        {
+          "path": "npm/bin/cli.js",
+          "base_blob": "98ea702d188988a39dbae70b50d9c364f407b260",
+          "head_blob": "5144a2180640c390ac6ff814afcacf5d144763e0",
+          "main_blob": "760b4aa576343fa48efcc82506c927d3be36aeff"
+        },
+        {
+          "path": "npm/package.json",
+          "base_blob": "e92802b5a7f073a60027a82e8b1aa2968ec9dd1e",
+          "head_blob": "9dbcbcc6d6fc419a84ec5b910a4e2a55cbcb9ef1",
+          "main_blob": "4c25872973dfdcd993ced27942145c385c21305c"
+        },
+        {
+          "path": "npm/test/attestation-cache.test.js",
+          "base_blob": "40fe21c778f127cd30ee00fb0633e7ff6bc86bba",
+          "head_blob": "6df1aab2b8b3502a79dc064dfaf2c7d39093ea71",
+          "main_blob": "6df1aab2b8b3502a79dc064dfaf2c7d39093ea71"
+        },
+        {
+          "path": "npm/test/hardening.test.js",
+          "base_blob": "bf00da1bb107cc6a0d664f74b8fc9a90cc1c0177",
+          "head_blob": "1858f5b8d4c0f6ae72db62c713717b11e326801d",
+          "main_blob": "1858f5b8d4c0f6ae72db62c713717b11e326801d"
+        },
+        {
+          "path": "npm/test/platform-matrix.test.js",
+          "base_blob": "4009a4156d23e8c9038aa7329b75ca38769621d9",
+          "head_blob": "c487c3294fdbfea7fa33ef9a8581e6e26fa8a153",
+          "main_blob": "b4d96519b6982d93ac5e217c4a050a175e98dab7"
+        },
+        {
+          "path": "npm/test/valid-cache.test.js",
+          "base_blob": "48f8bb64b8c83704a28bf828b80ebb4f7c09b20d",
+          "head_blob": "f2f5410aae24cc6e9f7e1d0f1406c6a18ab97a21",
+          "main_blob": "1549dd245f554c4cb707212e553a5923601f1f73"
+        },
+        {
+          "path": "npm/test/version-cache.test.js",
+          "base_blob": "2fdea53f5eadfded2866feaca7d82e9cf40a7f0a",
+          "head_blob": "8ae0b9be9d29b505e976b5e4b44b4183f546d1a4",
+          "main_blob": "e15c6ac5174b6a4eaa5171a8c53f62caf2621c9c"
+        },
+        {
+          "path": "scripts/check-docs-distribution.mjs",
+          "base_blob": "8cd4025acb4cde85f0eb8bb6cfb202264ac3d9a7",
+          "head_blob": "40c48b83af426e6bde645fb8d564ed2365c860ae",
+          "main_blob": "9b90ad9be79d08189a97738d603f1c932cf749a0"
+        },
+        {
+          "path": "scripts/check-platform-installers.mjs",
+          "base_blob": "45f4c1d80816025509a609fb78192157411c95e9",
+          "head_blob": "a449ac883a31600f080b99e56b2e04f11df6b987",
+          "main_blob": "bf9b55cce65bf814273585c97ac4f5b36ac5b1cc"
+        },
+        {
+          "path": "scripts/install.ps1",
+          "base_blob": "86b2b40360a4206e4a0206c83034f58ff12d7724",
+          "head_blob": "3da4feb1aeca418b662de4357fa9e7932b80ab62",
+          "main_blob": "56a86c656561f9e6b13fea758b60c067540f2f65"
+        },
+        {
+          "path": "scripts/install.sh",
+          "base_blob": "9bcb71f5e4503c04d4181bfaa27e6028dee19e36",
+          "head_blob": "8a9da8ba6d39639b73a3ee562deb914c2efebea4",
+          "main_blob": "16b103019d69212e5aa29311b9117a458b97feb3"
+        },
+        {
+          "path": "scripts/installer-copy-checker.test.mjs",
+          "base_blob": null,
+          "head_blob": "67a2da745121036fb8b8e3ec4f59c79ea533364c",
+          "main_blob": "84dbc6ee3e2c0d6769d7066708b2344b5b38d279"
+        },
+        {
+          "path": "scripts/installer-copy-consistency.test.mjs",
+          "base_blob": "a1a8b95fa3d248a962b2f2b2c84e5571707d357e",
+          "head_blob": "10abc2a24b406a4141df38c45844cc10802b4451",
+          "main_blob": "a0087cfa1cb0352b8ccccaa99d3ca825f8627b43"
+        },
+        {
+          "path": "scripts/installer-copy-parity.test.mjs",
+          "base_blob": null,
+          "head_blob": "222869a6d9fd19e8f6874df003d51b908d933d39",
+          "main_blob": "222869a6d9fd19e8f6874df003d51b908d933d39"
+        },
+        {
+          "path": "scripts/installer-copy-source-map.test.mjs",
+          "base_blob": "fd7575dd7c2ace5048d18fe5b7f1d96ce96bbdd8",
+          "head_blob": "3078464a5fd518d7cab16a604df6a32646d8d170",
+          "main_blob": "e73730052b3d6d2e686d2bd570045ab1609d1b7f"
+        },
+        {
+          "path": "scripts/installer-offline-suite.test.mjs",
+          "base_blob": null,
+          "head_blob": "641f2e59f1e81eb7f9abdfa7cf53f6a66ec30b0a",
+          "main_blob": "641f2e59f1e81eb7f9abdfa7cf53f6a66ec30b0a"
+        },
+        {
+          "path": "scripts/installer-path-candidate-distinct.test.mjs",
+          "base_blob": null,
+          "head_blob": "d349d3386aa8890072c96a1a9bcd1f86ad5a265d",
+          "main_blob": "d349d3386aa8890072c96a1a9bcd1f86ad5a265d"
+        },
+        {
+          "path": "scripts/installer-path-post-move-recovery.test.mjs",
+          "base_blob": "acaa3d0ef06f345c1a8e17647394a61ae5bfdfaf",
+          "head_blob": "019caf8647a870e2f0276f5751de7f04975b0e62",
+          "main_blob": "019caf8647a870e2f0276f5751de7f04975b0e62"
+        },
+        {
+          "path": "scripts/installer-path-unicode-comments.test.mjs",
+          "base_blob": null,
+          "head_blob": "173a3124d15f2251cf23f4fba5069ac66c9becd5",
+          "main_blob": "173a3124d15f2251cf23f4fba5069ac66c9becd5"
+        },
+        {
+          "path": "scripts/installer-path-unrelated-final-line.test.mjs",
+          "base_blob": null,
+          "head_blob": "cfa7ef57284647fb9beb7589cae656cd02a72fb2",
+          "main_blob": "cfa7ef57284647fb9beb7589cae656cd02a72fb2"
+        },
+        {
+          "path": "scripts/installer-staging-apostrophe-parent.test.mjs",
+          "base_blob": "02896eecfe11c76cd56dfd8b7e6f0bcfd2e5e855",
+          "head_blob": "93b0c94b7b8465de22f76f2aedb12a22ba99f2d6",
+          "main_blob": "73a4a468e7641e4050c8011470bc5e71b0c4270d"
+        },
+        {
+          "path": "scripts/installer-staging-contract.test.mjs",
+          "base_blob": "2267414728b04c365b71a8bd43745ffbaa9fa78d",
+          "head_blob": "fbde892442fbccc00ff12a1510317744471f478b",
+          "main_blob": "fbde892442fbccc00ff12a1510317744471f478b"
+        },
+        {
+          "path": "scripts/installer-staging-spaced-home.test.mjs",
+          "base_blob": "fbd5fa26d57766cbfe16cdc916bf6d812b7ed1a2",
+          "head_blob": "656d6225bf8453f7486b9840f7eb2389609dbfe5",
+          "main_blob": "656d6225bf8453f7486b9840f7eb2389609dbfe5"
+        },
+        {
+          "path": "scripts/installer-unsupported-arch.test.mjs",
+          "base_blob": "d9d19f076ff77d774f9a512fe3075aa171fd34ee",
+          "head_blob": "d8012a3487b9721d09321cbe6a0dfe0a98804a6a",
+          "main_blob": "d8012a3487b9721d09321cbe6a0dfe0a98804a6a"
+        },
+        {
+          "path": "scripts/installers.test.js",
+          "base_blob": "852157b7408f0dd6692400a48e93cb68b8cce76d",
+          "head_blob": "47d43d3f70b9bda20c1b3723514632ba23bfd4c1",
+          "main_blob": "1e543fc26570d561ac2a7fec0b6de05ed976cc68"
+        },
+        {
+          "path": "scripts/lib/installer-copy-differences.mjs",
+          "base_blob": null,
+          "head_blob": "6b57e0ce4a2c80dd9c7e84dd3358303a6d920ccc",
+          "main_blob": "da5a52a643195a479f5f3791ee8be5be479c2ded"
+        },
+        {
+          "path": "scripts/lib/installer-path-harness.mjs",
+          "base_blob": null,
+          "head_blob": "78b6a8b860aa5cbd22fd4ca0b16da35af7e0d11d",
+          "main_blob": "27b130897a36b703a4ddf58dc5d1fee38e359985"
+        },
+        {
+          "path": "scripts/lib/installer-path-harness.test.mjs",
+          "base_blob": null,
+          "head_blob": "24e7e0d535664337260a4e6b4fd312ab03b0dfce",
+          "main_blob": "24e7e0d535664337260a4e6b4fd312ab03b0dfce"
+        },
+        {
+          "path": "scripts/lib/installer-staging-fixture.mjs",
+          "base_blob": null,
+          "head_blob": "a1964e3cb05c18381a0e6a144229425232f8d7ef",
+          "main_blob": "0ba62f875d4c43263dec295896e763bbec521ac6"
+        },
+        {
+          "path": "scripts/public-installer-staging-unicode-parent.test.mjs",
+          "base_blob": "9e1ca9a15bba6bf606e1ba75dabee273a5a3a9f9",
+          "head_blob": "b1fbe533b2b1dd0b68f42e8a2282818337f459a7",
+          "main_blob": "b1fbe533b2b1dd0b68f42e8a2282818337f459a7"
+        },
+        {
+          "path": "scripts/public-installer-staging.test.mjs",
+          "base_blob": "a3c515883d2834db4e3b62b95474572519324a85",
+          "head_blob": "68da0cd15e2b2fe559d62f35b93d80c376b83e58",
+          "main_blob": "68da0cd15e2b2fe559d62f35b93d80c376b83e58"
+        },
+        {
+          "path": "scripts/release/check-version-parity.mjs",
+          "base_blob": "59e8c32ba07c0c497f17994daebbae317eb83caf",
+          "head_blob": "ba9b0d75328f3927acb8aee466c166fc43556848",
+          "main_blob": "7383f75bf32956f5a87c2ba2bf62fd7bc645f11c"
+        },
+        {
+          "path": "scripts/release/release-rehearsal-contract.test.mjs",
+          "base_blob": "d4cb5394d70c5369c744861dfea7f2c4b2ee9ee5",
+          "head_blob": "afbbafa28e0226bd5c892f1616df80a051e09ac8",
+          "main_blob": "7fb4ea7664904a022fdfb0cd87af7648bbebba7a"
+        }
+      ],
+      "status": "unreviewed_owner_hold",
+      "evidence": "Large 66-path delta at refreshed head; full semantic review and attribution to original commits remain outstanding. Includes workflow, installer tests and release metadata; do not restore stale versions or weaken CI."
+    },
+    {
+      "number": 1169,
+      "head": "aab796cfb0f60eca807467ecf2b28bf5321963fc",
+      "current_main": "19ef3dd02100bf0898fd5a25b4d59b8edf5b4271",
+      "merge_base": "dbd6eb3e6ee89e2cfcb26c59b5ac9246bf9e01b3",
+      "changed_paths": [
+        {
+          "path": ".github/workflows/ci.yml",
+          "base_blob": "7baa8fd7472cdd8b0f8b989b7fd40ae455352f33",
+          "head_blob": "f273800375ef538b1c0e76b808e8e47a63d120a5",
+          "main_blob": "3801725f2b9c3a75ab1c3d715aa48c8c28548a1b"
+        },
+        {
+          "path": "docs/installer-copy-comparison.md",
+          "base_blob": "f4d49edc94f24e55dec01fb3f0316da20a91c7fe",
+          "head_blob": "43a8a1289cfacb7e8b14427b3a8aa1529659b4db",
+          "main_blob": "3a2e4a4b32f82087dab1730cd0949f768c577ba0"
+        },
+        {
+          "path": "scripts/installer-path-indented-lines.test.mjs",
+          "base_blob": null,
+          "head_blob": "bff4a1a9e4f93c54742153f6a2e8db109922e562",
+          "main_blob": "bff4a1a9e4f93c54742153f6a2e8db109922e562"
+        }
+      ],
+      "status": "semantic_reviewed_contribution",
+      "evidence": "Original test file is byte-identical on main: all 18 cases cover both installers, bash/zsh/fish, final newline/no newline/already wired, exact original bytes, indented marker, append, idempotence and temp cleanup. CI still invokes it. Original documentation snapshot was replaced by later 2026-11-09 hashes and v0.8.9/v0.8.7 facts; do not restore stale hashes.",
+      "validation": {
+        "command": "HOME=<temporary directory> node --test scripts/supabase/verify-migrations.test.mjs scripts/installer-path-indented-lines.test.mjs scripts/installer-path-term-integration.test.mjs",
+        "node": "v22.22.3",
+        "input_commit": "19ef3dd02100bf0898fd5a25b4d59b8edf5b4271",
+        "result": "42 passed, 0 failed, 0 skipped; macOS; focused tests only"
+      }
+    },
+    {
+      "number": 1166,
+      "head": "5bd6367e35b74572834550e2eb1f60eb1c65b878",
+      "current_main": "19ef3dd02100bf0898fd5a25b4d59b8edf5b4271",
+      "merge_base": "d0ca883666688166236b326aaf83ea178dd5d2a8",
+      "changed_paths": [],
+      "status": "partial_review_owner_hold",
+      "evidence": "Current head is a merge with main as second parent and has the exact main tree. Reviewed original commit 91b1b3bd against its parent c4b2d699: TERM integration test is byte-identical on main and CI still invokes it. Both installer cases verify local release installation, CRLF and unterminated config preservation, exact appended block, sourced PATH and idempotence. Other changes between old branch and modern main require separate semantic review; tree equality alone is not proof of all original ancestry.",
+      "original_contribution": {
+        "commit": "91b1b3bd2b2c0abd69680d72e60ebe452b808075",
+        "parent": "c4b2d699f2956912546d16719169c6eab028d97e",
+        "changed_paths": [
+          {
+            "path": ".github/workflows/ci.yml",
+            "parent_blob": "e5f5d91a3d159d0d9c6f3a543078cdea33677973",
+            "original_blob": "784053cf6b4aca52ce4cfcf38a2de8db8096d919",
+            "main_blob": "3801725f2b9c3a75ab1c3d715aa48c8c28548a1b"
+          },
+          {
+            "path": "scripts/installer-path-term-integration.test.mjs",
+            "parent_blob": null,
+            "original_blob": "55f1ae6a257fc6fd6f2e505c08ce0b07f1e6e49f",
+            "main_blob": "55f1ae6a257fc6fd6f2e505c08ce0b07f1e6e49f"
+          }
+        ]
+      },
+      "validation": {
+        "command": "HOME=<temporary directory> node --test scripts/supabase/verify-migrations.test.mjs scripts/installer-path-indented-lines.test.mjs scripts/installer-path-term-integration.test.mjs",
+        "node": "v22.22.3",
+        "input_commit": "19ef3dd02100bf0898fd5a25b4d59b8edf5b4271",
+        "result": "42 passed, 0 failed, 0 skipped; macOS; focused tests only"
+      }
+    },
+    {
+      "number": 1151,
+      "head": "873d12a966dedff3a96dc0c1467ce287803c58a6",
+      "current_main": "19ef3dd02100bf0898fd5a25b4d59b8edf5b4271",
+      "merge_base": "b9a6ee5b233244d4795ad18cdb239d5274b9f191",
+      "changed_paths": [
+        {
+          "path": "scripts/supabase/verify-migrations.mjs",
+          "base_blob": "d0f0ad06e631985f4937cb65df57cc9339443752",
+          "head_blob": "e39414d0a78bb4a3ae0afb1ec2f35925796e8a82",
+          "main_blob": "c8828e901725e130a3917cb2dd85d16b196d0c98"
+        },
+        {
+          "path": "scripts/supabase/verify-migrations.test.mjs",
+          "base_blob": "31041053b70f3f63b886e1d3cbd30e4341a031c9",
+          "head_blob": "0923a7f86c32ad5903581de86a6db4adfca26d8e",
+          "main_blob": "407a64056a822326f47427d96f9c18a6a7a05425"
+        }
+      ],
+      "status": "semantic_reviewed_contribution",
+      "evidence": "Full original two-path diff reviewed. Sorted Dirents before nonregular selection is retained; filename mapping and sequential fixture creation retained. Both added tests are unchanged: reverse creation plus forced reverse readdir CLI success and first filename-ordered symlink error. Main adds missing-directory error handling and tests without changing these assertions.",
+      "validation": {
+        "command": "HOME=<temporary directory> node --test scripts/supabase/verify-migrations.test.mjs scripts/installer-path-indented-lines.test.mjs scripts/installer-path-term-integration.test.mjs",
+        "node": "v22.22.3",
+        "input_commit": "19ef3dd02100bf0898fd5a25b4d59b8edf5b4271",
+        "result": "42 passed, 0 failed, 0 skipped; macOS; focused tests only"
+      }
+    },
+    {
+      "number": 418,
+      "head": "72f21891722266abe6edbcb6819dbe4274fc23e2",
+      "current_main": "19ef3dd02100bf0898fd5a25b4d59b8edf5b4271",
+      "merge_base": "209038cfa8a0a5e5d0dee4d27363aba58d6e94f3",
+      "changed_paths": [
+        {
+          "path": ".github/workflows/ci.yml",
+          "base_blob": "ec35e2d6629a8545585ef2d6a59327287f4211ea",
+          "head_blob": "c4831666b645d346e1b36a874d1578cd4cd53d49",
+          "main_blob": "3801725f2b9c3a75ab1c3d715aa48c8c28548a1b"
+        },
+        {
+          "path": ".github/workflows/npm-candidate-acceptance.yml",
+          "base_blob": "e15d3e5966e4871101c46799b0ff0f358d9eb6ae",
+          "head_blob": "91128318a5d074d854bdb22ae94ac78d7519d1fe",
+          "main_blob": "3d292d8c4b9db1c10a9d93aa99194f12746aaef5"
+        },
+        {
+          "path": ".github/workflows/release-rehearsal.yml",
+          "base_blob": "124f34bc0d28fda4bd6ec55be6ab66761f51e410",
+          "head_blob": "bf1f514597b3eafddf2345a0a3639cf361a86de1",
+          "main_blob": "5e0e500744404f5cbd79765038db63593be71b27"
+        },
+        {
+          "path": "CHANGELOG.md",
+          "base_blob": "f70166552766571ed62c0652393fea00ecc4674e",
+          "head_blob": "7a48bef3c3d59a26b1a96d289d20b3fb1234dbcd",
+          "main_blob": "0f52aee2146a7233001eed9185fe890526253654"
+        },
+        {
+          "path": "CITATION.cff",
+          "base_blob": "e3c8caa34fb3816aefc174f1cd4be8fb8725d7ef",
+          "head_blob": "4ce297345628c88abd04d85feaa99e241e94d042",
+          "main_blob": "5b0ffe0c9c251fa84e01fab98ad710d6811f629d"
+        },
+        {
+          "path": "Cargo.lock",
+          "base_blob": "2eef65c4ce30db391e1f83a03559a249086b6d6d",
+          "head_blob": "79de1cd6e011dcc0017147be93b79570d608e27c",
+          "main_blob": "3e868c5a19313caba9e486996217c828629f0bf6"
+        },
+        {
+          "path": "Cargo.toml",
+          "base_blob": "b782bb6882dd8142e2db9486dc15ccae381ad2e2",
+          "head_blob": "0dc48e9ccac7c672c69f6ce251ef1322f2b67dd0",
+          "main_blob": "a544fb0d0863c54d76f5ce703d9d66ff6344d0d4"
+        },
+        {
+          "path": "README.md",
+          "base_blob": "08038c067ad95e9a126d2bf5cd2a2d0d0cc7c714",
+          "head_blob": "d2e764c0b91acd23ad116ca60b93dd01e8fdcff8",
+          "main_blob": "54c9e161931b497ccb47ce5700822d9e8e491100"
+        },
+        {
+          "path": "ROADMAP.md",
+          "base_blob": "e456b479df4639e54e494f8a28f825af316c9e25",
+          "head_blob": "535ee59b71ff31809234979d957744409996ea47",
+          "main_blob": "5d226ef8aa031750895546678da3aee65e7de2e9"
+        },
+        {
+          "path": "apps/web/package-lock.json",
+          "base_blob": "023c3f3cfff7a3e59b94821b8c1a809987078851",
+          "head_blob": "6aeac5f2a228cfa28ace75fdc6d769f75d20d407",
+          "main_blob": "6ca69c078131bf13aa2e5167b0c98b9defd418f2"
+        },
+        {
+          "path": "apps/web/package.json",
+          "base_blob": "312294273d02c14c36f958aae4df585427ce5fa4",
+          "head_blob": "93c3a12223f003652c9f5ccf4a03c9940dbe060e",
+          "main_blob": "5f557d09d2eb2c2fa930ea18561ef24f4e2e9ee2"
+        },
+        {
+          "path": "apps/web/tests/public-claims.test.cjs",
+          "base_blob": "33e2e498a823ee0ec86c7db6b738f28a5c4fe33e",
+          "head_blob": "330fd518d92f18241195a3c7a21113bfad5a7c9c",
+          "main_blob": "718837309e6019e2bd6b14611326e2afced94f66"
+        },
+        {
+          "path": "changelog.d/491.md",
+          "base_blob": "626e4bd5fce1dd0d496f82a753f19d818e80d0bd",
+          "head_blob": null,
+          "main_blob": null
+        },
+        {
+          "path": "changelog.d/498.md",
+          "base_blob": "8a5c942813dedc201419ae0b58f6a280015ca3e0",
+          "head_blob": null,
+          "main_blob": null
+        },
+        {
+          "path": "changelog.d/499.md",
+          "base_blob": "884613a285bfcc67eb8b352de8a8beded4dcc5b3",
+          "head_blob": null,
+          "main_blob": null
+        },
+        {
+          "path": "changelog.d/509.md",
+          "base_blob": "6c5d01ce94aabb86815b0a31c0f74992f3c02c65",
+          "head_blob": null,
+          "main_blob": null
+        },
+        {
+          "path": "changelog.d/510.md",
+          "base_blob": "bcbc717174f3d3033049d8a9eea117969d788be3",
+          "head_blob": null,
+          "main_blob": null
+        },
+        {
+          "path": "changelog.d/511.md",
+          "base_blob": "32097f75cf925ad2b3d2888681bbd08d3dd3ad99",
+          "head_blob": null,
+          "main_blob": null
+        },
+        {
+          "path": "changelog.d/520.md",
+          "base_blob": "6bad861539dcb2d24d7cb7b10041fe040222dbe3",
+          "head_blob": null,
+          "main_blob": null
+        },
+        {
+          "path": "changelog.d/add-generate.md",
+          "base_blob": "bca5d3b5ec44cd23a0f05298c309d5aa1db4d898",
+          "head_blob": null,
+          "main_blob": null
+        },
+        {
+          "path": "changelog.d/ci-daily-matrix.md",
+          "base_blob": "14a1c697290effcd1f0af55078bdf5d0beeec5b0",
+          "head_blob": null,
+          "main_blob": null
+        },
+        {
+          "path": "changelog.d/ci-pr-classify.md",
+          "base_blob": "5f63e4ca064e190643b80fb1e7ae28342598a1eb",
+          "head_blob": null,
+          "main_blob": null
+        },
+        {
+          "path": "changelog.d/doctor-dotenv-label.md",
+          "base_blob": "3747f1958dcafa977165fdf8c674ef3020e21e26",
+          "head_blob": null,
+          "main_blob": null
+        },
+        {
+          "path": "changelog.d/init-add-remove-dry-run.md",
+          "base_blob": "fadb7f77f5b58854dedf129991004d54b8d3efbd",
+          "head_blob": null,
+          "main_blob": null
+        },
+        {
+          "path": "changelog.d/staged-quoted-hash-line-scan.md",
+          "base_blob": "cefbb2c82fd013d17e92877a5e4df97591ff60b6",
+          "head_blob": null,
+          "main_blob": null
+        },
+        {
+          "path": "changelog.d/vault-zeroize.md",
+          "base_blob": "1baa3dc62c97d8dcf0cbd3f2034a0bb5a35db3df",
+          "head_blob": null,
+          "main_blob": null
+        },
+        {
+          "path": "docs/release-readiness.md",
+          "base_blob": "e19ae9f725b4c0bf46f315c32e191e4c0f1f2c2f",
+          "head_blob": "008f21459e4d12853c0d6a86243b8d335ce6af1b",
+          "main_blob": "65d5fc6bb842290be70ad78a07a7c1e52454aee8"
+        },
+        {
+          "path": "mcp-registry/README.md",
+          "base_blob": "0338fd8f4f0154b084bbbb67f4875bee1dad7b19",
+          "head_blob": "48e7183789d141e3aee8b78bbbfc37bb31f6cc22",
+          "main_blob": "2eeb189d6cc1ac044e8ae904dca696b843736d0c"
+        },
+        {
+          "path": "mcp-registry/server.json",
+          "base_blob": "e3a040bd0847d459970b0f720286bc89fc355501",
+          "head_blob": "be3debd0e57e61f8259277923353a90d87a8f3cc",
+          "main_blob": "b64825e77af26269a1efa3cbf111e130f3512dfa"
+        },
+        {
+          "path": "npm-mcp/README.md",
+          "base_blob": "17602d11ea71e541cad00a532b78f60faca2160e",
+          "head_blob": "e92d4124636b088943ab1bddcba493ba0ad42424",
+          "main_blob": "814f7e55295e1b856f9fc5f264a7a82b942366c7"
+        },
+        {
+          "path": "npm-mcp/bin/cli.js",
+          "base_blob": "a8cf78633e45770ca66c86b364da84da52e0de49",
+          "head_blob": "063b9e1583394f917611177c3888fe5529500bab",
+          "main_blob": "51c0d65b0e216700b4a65404a4f9276a3e467610"
+        },
+        {
+          "path": "npm-mcp/package.json",
+          "base_blob": "5f4b6d2422072b0245c2270278ee271b68535166",
+          "head_blob": "b56cf6820f6c4ff7bf57554dc36359463dcd5b99",
+          "main_blob": "e33ba780f33bc6756b14ddbe1410b911663a2cb5"
+        },
+        {
+          "path": "npm-mcp/test/hardening.test.js",
+          "base_blob": "f28f7a845e00ec064ea77ad69b4fee988b7fa210",
+          "head_blob": "8f3b1c16816e4db6f7840479d2edb7cdf941f797",
+          "main_blob": "7b2b04fb111ebbcfeddbf0840c764e2fdac584cc"
+        },
+        {
+          "path": "npm-mcp/test/platform-matrix.test.js",
+          "base_blob": "a613a0140d9eaf45f7910f7aa64244ae470c78ae",
+          "head_blob": "8e6fcb9e9ccc18be3cddaba73f26ec10b9a75970",
+          "main_blob": "3c75112804ec05b2ea640f28f3660c3e4c3ca2a2"
+        },
+        {
+          "path": "npm-mcp/test/valid-cache.test.js",
+          "base_blob": "8fcbd9ee0478bf6d1ce84b2705830f99d73fa341",
+          "head_blob": "64c2564b13ba66b01c1ccbe5d77d60eb88d26d48",
+          "main_blob": "9e3f09c1ad91d8d1cfcfd1f41c6fba2e7302b7f2"
+        },
+        {
+          "path": "npm-mcp/test/version-cache.test.js",
+          "base_blob": "954f62ecb4121433c645f15764b28b5d05aec570",
+          "head_blob": "dfc3f244b8ba087a955877e118e6bd906e038566",
+          "main_blob": "7d2dc5bec9e1a840b95317f1199325c333462b9e"
+        },
+        {
+          "path": "npm/README.md",
+          "base_blob": "01217ff1d9cd478532c95fa28212611ad73346f0",
+          "head_blob": "eac88efa96a401a475dadbdedd21675d643f849c",
+          "main_blob": "2c9e903273c350acd3ce3cb146b627083a904aa3"
+        },
+        {
+          "path": "npm/bin/cli.js",
+          "base_blob": "c611351ea4eb12b7d8765ca74f76660e9da70e3b",
+          "head_blob": "1da514b49bddaca441ac3facb8045801f33f4024",
+          "main_blob": "760b4aa576343fa48efcc82506c927d3be36aeff"
+        },
+        {
+          "path": "npm/package.json",
+          "base_blob": "95dd2ff25cf8fa3bdaa83a287854f82144d8b64d",
+          "head_blob": "63f696d434332d2c047bce55aba294ee509a2a7e",
+          "main_blob": "4c25872973dfdcd993ced27942145c385c21305c"
+        },
+        {
+          "path": "npm/test/attestation-cache.test.js",
+          "base_blob": "bd64d8f9682f8f711bdfec53797129f84713da8b",
+          "head_blob": "6da0b9803c31a2d405a8fd63f2282930a451e154",
+          "main_blob": "6df1aab2b8b3502a79dc064dfaf2c7d39093ea71"
+        },
+        {
+          "path": "npm/test/hardening.test.js",
+          "base_blob": "d956ff1b14903a9524c7c66a856356f93a4ecc49",
+          "head_blob": "0da5994adb9a1d82c05b425fc8701edee4cf0fdf",
+          "main_blob": "1858f5b8d4c0f6ae72db62c713717b11e326801d"
+        },
+        {
+          "path": "npm/test/platform-matrix.test.js",
+          "base_blob": "3e79e4bdcf9ad56b4c647d1d01e4e31ce9d658d2",
+          "head_blob": "2354cfc80e6e050d4c02019121f30fa7374f8995",
+          "main_blob": "b4d96519b6982d93ac5e217c4a050a175e98dab7"
+        },
+        {
+          "path": "npm/test/valid-cache.test.js",
+          "base_blob": "af9a359c75da4dcca4ab15facef71c9d61236867",
+          "head_blob": "e891460f3ac7ac2058c9cd1b8d1d282c21a9a611",
+          "main_blob": "1549dd245f554c4cb707212e553a5923601f1f73"
+        },
+        {
+          "path": "npm/test/version-cache.test.js",
+          "base_blob": "75e13b9b65ea769c634dc6a6dc438a06c7aa9c27",
+          "head_blob": "b83c32f5eafb7d53669414b54e5e45ebbd2806ff",
+          "main_blob": "e15c6ac5174b6a4eaa5171a8c53f62caf2621c9c"
+        },
+        {
+          "path": "scripts/check-docs-distribution.mjs",
+          "base_blob": "8cd4025acb4cde85f0eb8bb6cfb202264ac3d9a7",
+          "head_blob": "5463b2d44efffb36947b3a1dc3712aac873abbab",
+          "main_blob": "9b90ad9be79d08189a97738d603f1c932cf749a0"
+        },
+        {
+          "path": "scripts/check-platform-installers.mjs",
+          "base_blob": "dbbf7292ba54f15419f963fa5f9e05107b7cb8fe",
+          "head_blob": "3266c980447e0c4acfe40d9730ad16c97fb0d00a",
+          "main_blob": "bf9b55cce65bf814273585c97ac4f5b36ac5b1cc"
+        },
+        {
+          "path": "scripts/docs-distribution.test.mjs",
+          "base_blob": "28bbf90d1a36afdc4cc42cf5de11c6ee54af4716",
+          "head_blob": "4d17a05fffa5c8162476df6f3d2d8a1c1d62370d",
+          "main_blob": "8cfc5870a4936934864ada82e3d19de3b0e4186d"
+        },
+        {
+          "path": "scripts/freshness/README.md",
+          "base_blob": "50d02a7750602bdb2f82216dff50e5c2981d3ee0",
+          "head_blob": "896d4eb38e5affd45ea78eb9000a4fffd8475d94",
+          "main_blob": "03de61791c3931235291eda6378a1c152a7f078d"
+        },
+        {
+          "path": "scripts/freshness/blocks.mjs",
+          "base_blob": "58ecdac4200b908c4677a1de33c8ac92fefd0f53",
+          "head_blob": "47c6a64e10bbfe5ee00358f3ff1fe758e1ce35d4",
+          "main_blob": "b44601492c151672d25e3d28dd52e1b23ea9532f"
+        },
+        {
+          "path": "scripts/freshness/freshness.test.mjs",
+          "base_blob": "1e6b8f1d73c5f138602a51761f1595e0d675fc96",
+          "head_blob": "504efb73e83ce7379015f6bfc2cb707e70d5b143",
+          "main_blob": "e1fc433d22303bdd85a0522e85922a6b9d0b0956"
+        },
+        {
+          "path": "scripts/freshness/published-release.json",
+          "base_blob": null,
+          "head_blob": "40234b3cb3f596abf3594cbd828a867fa5f8c981",
+          "main_blob": null
+        },
+        {
+          "path": "scripts/freshness/sources.mjs",
+          "base_blob": "b2bf8118d519d3d99247f6bd596bc8eb5ef31da1",
+          "head_blob": "7648e0ecb9c5fc95dcf824b6fd6ed8945186c011",
+          "main_blob": "cb18904e3f5077cf06143d779446d47c0028f2d3"
+        },
+        {
+          "path": "scripts/install.ps1",
+          "base_blob": "f7cb7bf5186c2339196d55041d4f99279700b0d8",
+          "head_blob": "d54bee35c90481a2023f06f6c8186cc65e70f7d1",
+          "main_blob": "56a86c656561f9e6b13fea758b60c067540f2f65"
+        },
+        {
+          "path": "scripts/install.sh",
+          "base_blob": "c877a7c67aa3707bf07d76664aa7f802119c0fbe",
+          "head_blob": "1648798e0a6446cf74c94fcca4f29020e8fabb12",
+          "main_blob": "16b103019d69212e5aa29311b9117a458b97feb3"
+        },
+        {
+          "path": "scripts/installers.test.js",
+          "base_blob": "45826450da283e44bc805344f7a74f31c78759b8",
+          "head_blob": "4d99d87be6e4ea52ae863c31432d60ecc0b95e27",
+          "main_blob": "1e543fc26570d561ac2a7fec0b6de05ed976cc68"
+        },
+        {
+          "path": "scripts/release/extract-release-notes.test.mjs",
+          "base_blob": "80d6e57c3392bf03dda81e0a8bca58262140d673",
+          "head_blob": "13676c8990681d1766d5e5a75a9189a47496f396",
+          "main_blob": "324e91321682ccb72e898f3c136cccb2194a51ea"
+        },
+        {
+          "path": "scripts/release/release-rehearsal-contract.test.mjs",
+          "base_blob": "27e18abc782c35d1d821d0080c818c4314cb15ca",
+          "head_blob": "031c90e47306133f9bd2ccbd469df9b46ccf2f7e",
+          "main_blob": "7fb4ea7664904a022fdfb0cd87af7648bbebba7a"
+        }
+      ],
+      "status": "unreviewed_owner_hold",
+      "evidence": "Held release owner: 57-path historical source candidate includes release versions, changelog and freshness code. Full hunk and assertion review outstanding; current released state differs. Do not apply stale release artifacts."
+    },
+    {
+      "number": 375,
+      "head": "5e7b7ae440091669c54cd7347c9ed9625f55980f",
+      "current_main": "19ef3dd02100bf0898fd5a25b4d59b8edf5b4271",
+      "merge_base": "eca64ad22055e87af5208b9bac985df5ed86cf88",
+      "changed_paths": [
+        {
+          "path": "apps/web/supabase/migration-manifest.json",
+          "base_blob": "7e64199a0f0789dcd29a13193baa3845f4c3201a",
+          "head_blob": "4898f5fddbe72976db2421c11aef81036171db93",
+          "main_blob": "c2e1ccbae8bbb6d50c004225582b2b8bda0a830f"
+        },
+        {
+          "path": "apps/web/supabase/migrations/20261009225441_enforce_personal_vault_quota.sql",
+          "base_blob": null,
+          "head_blob": "e02a6c768b961deca591caaadf50b0343468dd89",
+          "main_blob": null
+        },
+        {
+          "path": "apps/web/supabase/migrations/20261009231437_clamp_browser_table_authority.sql",
+          "base_blob": null,
+          "head_blob": "5cbfe3a114cdd8af1a0ac19379adde95821cdf0e",
+          "main_blob": null
+        },
+        {
+          "path": "apps/web/supabase/rollback/20261009225441_enforce_personal_vault_quota.down.sql",
+          "base_blob": null,
+          "head_blob": "44b3de28b8a44a581c5f0943bb12ce5d7acfaf86",
+          "main_blob": null
+        },
+        {
+          "path": "apps/web/supabase/rollback/20261009231437_clamp_browser_table_authority.down.sql",
+          "base_blob": null,
+          "head_blob": "9d9050fb8f0f8a384b2fa7d77902cf2c153773d0",
+          "main_blob": null
+        },
+        {
+          "path": "apps/web/supabase/rollback/README.md",
+          "base_blob": null,
+          "head_blob": "874606ba2436e1881433dac61ead0a0a51307ee0",
+          "main_blob": null
+        },
+        {
+          "path": "apps/web/supabase/rollback/gen_restore_grants.sql",
+          "base_blob": null,
+          "head_blob": "950809e9395089dd6efd91af3ef22ac011d34b7d",
+          "main_blob": null
+        },
+        {
+          "path": "scripts/supabase/assert-personal-vault-authority.mjs",
+          "base_blob": null,
+          "head_blob": "1912c096579ff8f6afe5affaeeaba0921b618260",
+          "main_blob": null
+        },
+        {
+          "path": "scripts/supabase/verify-migrations.test.mjs",
+          "base_blob": "3157dfbe65cad9459b8430321e7f49c5bfc76db2",
+          "head_blob": "08018bf42bfbe0d7306318b1fba7fc9b554c563a",
+          "main_blob": "407a64056a822326f47427d96f9c18a6a7a05425"
+        }
+      ],
+      "status": "unreviewed_owner_hold",
+      "evidence": "Held schema owner: quota and browser authority migrations plus rollback and assertion harness. Full review and live schema provenance outstanding; do not apply grants or rollback without owner reconciliation."
+    },
+    {
+      "number": 168,
+      "head": "ee92782bb00377197b922d03daa4f3e88c67a46a",
+      "current_main": "19ef3dd02100bf0898fd5a25b4d59b8edf5b4271",
+      "merge_base": "dab7f32cc13a12d0d23f8dd4dfbcf367f0141ad3",
+      "changed_paths": [
+        {
+          "path": ".github/workflows/npm-candidate-acceptance.yml",
+          "base_blob": "e15d3e5966e4871101c46799b0ff0f358d9eb6ae",
+          "head_blob": "91128318a5d074d854bdb22ae94ac78d7519d1fe",
+          "main_blob": "3d292d8c4b9db1c10a9d93aa99194f12746aaef5"
+        },
+        {
+          "path": ".github/workflows/release-rehearsal.yml",
+          "base_blob": "124f34bc0d28fda4bd6ec55be6ab66761f51e410",
+          "head_blob": "bf1f514597b3eafddf2345a0a3639cf361a86de1",
+          "main_blob": "5e0e500744404f5cbd79765038db63593be71b27"
+        },
+        {
+          "path": "CHANGELOG.md",
+          "base_blob": "61cb40b962a3a9fadc382800f5973d1d3a90a2b1",
+          "head_blob": "95c2fdf22cdcd9cc32bfca6958a0a874cd8b5ff1",
+          "main_blob": "0f52aee2146a7233001eed9185fe890526253654"
+        },
+        {
+          "path": "CITATION.cff",
+          "base_blob": "e3c8caa34fb3816aefc174f1cd4be8fb8725d7ef",
+          "head_blob": "4ce297345628c88abd04d85feaa99e241e94d042",
+          "main_blob": "5b0ffe0c9c251fa84e01fab98ad710d6811f629d"
+        },
+        {
+          "path": "Cargo.lock",
+          "base_blob": "4d30d3c87e40c7f9b8a5b9b72813cc0edd1fea68",
+          "head_blob": "14467433d7c3d47239f6c22ec9ffd9126e4fcc7a",
+          "main_blob": "3e868c5a19313caba9e486996217c828629f0bf6"
+        },
+        {
+          "path": "Cargo.toml",
+          "base_blob": "36f0fce4e28a655c26ddb0013744f0188a4463e5",
+          "head_blob": "aa2c10d47d6158142767029fd65f733b6e87f165",
+          "main_blob": "a544fb0d0863c54d76f5ce703d9d66ff6344d0d4"
+        },
+        {
+          "path": "README.md",
+          "base_blob": "7d010f08d5bd38cdb1e2cb760f4f123a2d69e590",
+          "head_blob": "7fa494888511e1fb3921469906d18617ab610de5",
+          "main_blob": "54c9e161931b497ccb47ce5700822d9e8e491100"
+        },
+        {
+          "path": "ROADMAP.md",
+          "base_blob": "bd99c5589fdaef914e46e45d6c98a278a9af2cec",
+          "head_blob": "79ac8af0914b06e0c0caa51d32a6a76a33030ba3",
+          "main_blob": "5d226ef8aa031750895546678da3aee65e7de2e9"
+        },
+        {
+          "path": "apps/web/package-lock.json",
+          "base_blob": "30786a938558ff2e918b2b9581ac8b5099c8ed86",
+          "head_blob": "01e31f895559629a214d3ae18cd17733737db934",
+          "main_blob": "6ca69c078131bf13aa2e5167b0c98b9defd418f2"
+        },
+        {
+          "path": "apps/web/package.json",
+          "base_blob": "1cfd53bd952f477f872bfb93e7efaaf04c9a977b",
+          "head_blob": "325ef6c8ddbafe1e42a90690691e6c52711fc382",
+          "main_blob": "5f557d09d2eb2c2fa930ea18561ef24f4e2e9ee2"
+        },
+        {
+          "path": "apps/web/tests/public-claims.test.cjs",
+          "base_blob": "1ce3ee31d5ca7eeaf4852fcd3e599984ff4b0958",
+          "head_blob": "4490e27089a8e5c2a7158c5b5b79e357c6cd6127",
+          "main_blob": "718837309e6019e2bd6b14611326e2afced94f66"
+        },
+        {
+          "path": "docs/release-readiness.md",
+          "base_blob": "e19ae9f725b4c0bf46f315c32e191e4c0f1f2c2f",
+          "head_blob": "008f21459e4d12853c0d6a86243b8d335ce6af1b",
+          "main_blob": "65d5fc6bb842290be70ad78a07a7c1e52454aee8"
+        },
+        {
+          "path": "mcp-registry/README.md",
+          "base_blob": "bb6430b35e55cb30e6e5a01865c65057c0fc27b8",
+          "head_blob": "8c81aeadcbec3d1760536100632583bae9fb6107",
+          "main_blob": "2eeb189d6cc1ac044e8ae904dca696b843736d0c"
+        },
+        {
+          "path": "mcp-registry/server.json",
+          "base_blob": "51cd33746657433c1007a1fefb38caf1ec1e9ff7",
+          "head_blob": "922221cfed51c4d04d5eb74c03f2cb086d88fbcd",
+          "main_blob": "b64825e77af26269a1efa3cbf111e130f3512dfa"
+        },
+        {
+          "path": "npm-mcp/README.md",
+          "base_blob": "73d8742a7115fba2f7669d5497ac8b1a8739980b",
+          "head_blob": "ceaf5f9ae02a856511ab467782ca7170bd7cdd93",
+          "main_blob": "814f7e55295e1b856f9fc5f264a7a82b942366c7"
+        },
+        {
+          "path": "npm-mcp/bin/cli.js",
+          "base_blob": "b72fcaf8a6cb7ff5e6683853fe5b9fb98dd55cef",
+          "head_blob": "9b12f6d0d33024204fc5852237db927c92b81f00",
+          "main_blob": "51c0d65b0e216700b4a65404a4f9276a3e467610"
+        },
+        {
+          "path": "npm-mcp/package.json",
+          "base_blob": "5f4b6d2422072b0245c2270278ee271b68535166",
+          "head_blob": "b56cf6820f6c4ff7bf57554dc36359463dcd5b99",
+          "main_blob": "e33ba780f33bc6756b14ddbe1410b911663a2cb5"
+        },
+        {
+          "path": "npm-mcp/test/hardening.test.js",
+          "base_blob": "081f531c48ce221461ce96beba01ec98dd852ae3",
+          "head_blob": "016c5a3237348f71f666ea814f263e598514589a",
+          "main_blob": "7b2b04fb111ebbcfeddbf0840c764e2fdac584cc"
+        },
+        {
+          "path": "npm-mcp/test/platform-matrix.test.js",
+          "base_blob": "a613a0140d9eaf45f7910f7aa64244ae470c78ae",
+          "head_blob": "8e6fcb9e9ccc18be3cddaba73f26ec10b9a75970",
+          "main_blob": "3c75112804ec05b2ea640f28f3660c3e4c3ca2a2"
+        },
+        {
+          "path": "npm-mcp/test/valid-cache.test.js",
+          "base_blob": "8fcbd9ee0478bf6d1ce84b2705830f99d73fa341",
+          "head_blob": "64c2564b13ba66b01c1ccbe5d77d60eb88d26d48",
+          "main_blob": "9e3f09c1ad91d8d1cfcfd1f41c6fba2e7302b7f2"
+        },
+        {
+          "path": "npm-mcp/test/version-cache.test.js",
+          "base_blob": "954f62ecb4121433c645f15764b28b5d05aec570",
+          "head_blob": "dfc3f244b8ba087a955877e118e6bd906e038566",
+          "main_blob": "7d2dc5bec9e1a840b95317f1199325c333462b9e"
+        },
+        {
+          "path": "npm/README.md",
+          "base_blob": "9028d5ec4600f369c9306d623547261e0747efc9",
+          "head_blob": "605e39b9ff9c1855df113ad685fdd39c23d17e89",
+          "main_blob": "2c9e903273c350acd3ce3cb146b627083a904aa3"
+        },
+        {
+          "path": "npm/bin/cli.js",
+          "base_blob": "6575b18ca5f60d6ec783c2c4b153583d6a11ad50",
+          "head_blob": "ac4a5d4b9ea08119a6afcb940ad90b0b405717bc",
+          "main_blob": "760b4aa576343fa48efcc82506c927d3be36aeff"
+        },
+        {
+          "path": "npm/package.json",
+          "base_blob": "17e02aab1dcd23d64e9f11decaae447ecb1c7d14",
+          "head_blob": "67673e3f03d22ec67bde128cd1d120f287f2afe5",
+          "main_blob": "4c25872973dfdcd993ced27942145c385c21305c"
+        },
+        {
+          "path": "npm/test/hardening.test.js",
+          "base_blob": "2a55c230ea170dee7d59d16700822217290f412d",
+          "head_blob": "6815995c6858ee95701edc0fe51df8ed8df0c53f",
+          "main_blob": "1858f5b8d4c0f6ae72db62c713717b11e326801d"
+        },
+        {
+          "path": "npm/test/platform-matrix.test.js",
+          "base_blob": "28372a65b77ab66bc2ce94bc8343e0318ca4f252",
+          "head_blob": "eb9a9f86182f94e7f85012082e257f335e8b1fbd",
+          "main_blob": "b4d96519b6982d93ac5e217c4a050a175e98dab7"
+        },
+        {
+          "path": "npm/test/valid-cache.test.js",
+          "base_blob": "4771eac8579a4022587c11ae6e7ec9411d355a5f",
+          "head_blob": "529d61a79f2b879a784ca1376059038cf7e23929",
+          "main_blob": "1549dd245f554c4cb707212e553a5923601f1f73"
+        },
+        {
+          "path": "npm/test/version-cache.test.js",
+          "base_blob": "c2de8f5fb5973a87f17e3c81a471532a3479331b",
+          "head_blob": "1f07f2629059b763cf155bf61ebf274cf3263361",
+          "main_blob": "e15c6ac5174b6a4eaa5171a8c53f62caf2621c9c"
+        },
+        {
+          "path": "scripts/check-platform-installers.mjs",
+          "base_blob": "dbbf7292ba54f15419f963fa5f9e05107b7cb8fe",
+          "head_blob": "3266c980447e0c4acfe40d9730ad16c97fb0d00a",
+          "main_blob": "bf9b55cce65bf814273585c97ac4f5b36ac5b1cc"
+        },
+        {
+          "path": "scripts/install.ps1",
+          "base_blob": "f7cb7bf5186c2339196d55041d4f99279700b0d8",
+          "head_blob": "d54bee35c90481a2023f06f6c8186cc65e70f7d1",
+          "main_blob": "56a86c656561f9e6b13fea758b60c067540f2f65"
+        },
+        {
+          "path": "scripts/install.sh",
+          "base_blob": "5d8cdce8f402327099bfb57661d6b5427f0e0c20",
+          "head_blob": "ae72cf815e9f5a23930eba0ae1d5db168fe31085",
+          "main_blob": "16b103019d69212e5aa29311b9117a458b97feb3"
+        },
+        {
+          "path": "scripts/installers.test.js",
+          "base_blob": "08a30c71631e3f2fd908ef61ac50263840b8b042",
+          "head_blob": "7901a9383aa54ebe312200145e29d42da441f4ff",
+          "main_blob": "1e543fc26570d561ac2a7fec0b6de05ed976cc68"
+        },
+        {
+          "path": "scripts/release/extract-release-notes.test.mjs",
+          "base_blob": "80d6e57c3392bf03dda81e0a8bca58262140d673",
+          "head_blob": "13676c8990681d1766d5e5a75a9189a47496f396",
+          "main_blob": "324e91321682ccb72e898f3c136cccb2194a51ea"
+        },
+        {
+          "path": "scripts/release/release-rehearsal-contract.test.mjs",
+          "base_blob": "025838d05c58e3625f6eb0322a09e637674e5c0e",
+          "head_blob": "db3342cf79675e270a9372465ecdca8eefaee019",
+          "main_blob": "7fb4ea7664904a022fdfb0cd87af7648bbebba7a"
+        }
+      ],
+      "status": "unreviewed_owner_hold",
+      "evidence": "Held release owner: 34-path historical 0.8.0 candidate; current immutable release is newer. Full hunk review outstanding; do not revert release state."
+    },
+    {
+      "number": 105,
+      "head": "95980a592b9bf802f1ab6a0467e713ae9884f877",
+      "current_main": "19ef3dd02100bf0898fd5a25b4d59b8edf5b4271",
+      "merge_base": "3d062e9e386b4dfb9ed39d3fa464e0213b890c59",
+      "changed_paths": [
+        {
+          "path": ".github/workflows/ci.yml",
+          "base_blob": "2b8c366bf28f4300ce7913df7a15f930a64a27f4",
+          "head_blob": "45c882d4c49af1f09737e292c8667e8cae9c508b",
+          "main_blob": "3801725f2b9c3a75ab1c3d715aa48c8c28548a1b"
+        },
+        {
+          "path": "apps/web/supabase/migration-manifest.json",
+          "base_blob": "7e64199a0f0789dcd29a13193baa3845f4c3201a",
+          "head_blob": "04cde334fd3794d9b93a66037a5c316a998e474d",
+          "main_blob": "c2e1ccbae8bbb6d50c004225582b2b8bda0a830f"
+        },
+        {
+          "path": "apps/web/supabase/migrations/20260903180035_browser_and_service_role_grants.sql",
+          "base_blob": null,
+          "head_blob": "246c4f297df4eb74f4aabce3e6423ca3b5c19865",
+          "main_blob": null
+        },
+        {
+          "path": "apps/web/supabase/tests/database/hosted_data_api_rls.test.sql",
+          "base_blob": null,
+          "head_blob": "0a50b1e911eb0634f5b9024d592a3cde389d2440",
+          "main_blob": null
+        },
+        {
+          "path": "scripts/supabase/assert-hosted-grants-preflight.sql",
+          "base_blob": null,
+          "head_blob": "e5d2ae8968b8f3c604c1cf0713cbb3c8e28e8900",
+          "main_blob": null
+        },
+        {
+          "path": "scripts/supabase/receipt-hosted-grants.sql",
+          "base_blob": null,
+          "head_blob": "e42e1f78556a8b43054cdff0c5deb694d28b478b",
+          "main_blob": null
+        },
+        {
+          "path": "scripts/supabase/verify-migrations.test.mjs",
+          "base_blob": "3157dfbe65cad9459b8430321e7f49c5bfc76db2",
+          "head_blob": "edeaf04ad431c8070673ad038decf33cd9b74638",
+          "main_blob": "407a64056a822326f47427d96f9c18a6a7a05425"
+        }
+      ],
+      "status": "unreviewed_owner_hold",
+      "evidence": "Hosted schema/grants owner: migration, RLS SQL tests, preflight and receipt scripts plus workflow. Full hunk review, deployment provenance and current caller/grant reconciliation outstanding; no hosted calls made."
+    }
+  ]
+}

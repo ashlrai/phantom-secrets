@@ -11,6 +11,7 @@ const {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   realpathSync,
   rmSync,
   symlinkSync,
@@ -406,6 +407,73 @@ async function assertDownloadStopsAfterSettlement() {
 
   for (const stage of ["download", "extract", "flush", "version"]) {
     await assertPreviousVersionCachePreserved(stage);
+  }
+
+  // Unsupported platforms must fail before cache, lock, or network work so the
+  // wrapper exits cleanly with release guidance instead of half-installing.
+  for (const runtime of [
+    { platform: "freebsd", arch: "x64" },
+    { platform: "linux", arch: "arm" },
+    { platform: "win32", arch: "ia32" },
+  ]) {
+    const unsupportedCache = mkdtempSync(join(tmpdir(), "phantom-cli-unsupported-"));
+    try {
+      let downloadCalls = 0;
+      let extractCalls = 0;
+      let execCalls = 0;
+      let failure;
+      try {
+        await ensureBinary({
+          cacheDir: unsupportedCache,
+          runtime,
+          downloadImpl: async () => {
+            downloadCalls += 1;
+            throw new Error("unsupported platforms must not download");
+          },
+          extractImpl: () => {
+            extractCalls += 1;
+          },
+          execFileSyncImpl: () => {
+            execCalls += 1;
+            return Buffer.from("phantom " + candidateVersion + "\n");
+          },
+        });
+      } catch (error) {
+        failure = error;
+      }
+      const label = `${runtime.platform}-${runtime.arch}`;
+      assert.ok(failure instanceof Error, `${label} must reject with an Error`);
+      assert.ok(
+        failure.message.includes(`Unsupported platform: ${label}`),
+        `${label} message names the platform: ${failure.message}`
+      );
+      assert.ok(
+        failure.message.includes(`releases/tag/v${candidateVersion}`),
+        `${label} message carries the reviewed release URL: ${failure.message}`
+      );
+      assert.match(failure.message, /checksum-verifiable/);
+      assert.strictEqual(downloadCalls, 0, `${label} must not download`);
+      assert.strictEqual(extractCalls, 0, `${label} must not extract`);
+      assert.strictEqual(execCalls, 0, `${label} must not execute`);
+      assert.deepStrictEqual(
+        readdirSync(unsupportedCache),
+        [],
+        `${label} must not create cache entries or install dirs`
+      );
+
+      // The wrapper maps this failure to a clean exit code without signaling.
+      const exitRuntime = {
+        exitCode: undefined,
+        platform: "linux",
+        kill: () => {
+          throw new Error("unsupported platform failure must not signal the wrapper");
+        },
+      };
+      propagateChildFailure(failure, exitRuntime);
+      assert.strictEqual(exitRuntime.exitCode, 1, `${label} exits with status 1`);
+    } finally {
+      rmSync(unsupportedCache, { recursive: true, force: true });
+    }
   }
 
   const fixtureDir = mkdtempSync(join(tmpdir(), "phantom-cli-hardening-"));

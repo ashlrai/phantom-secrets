@@ -232,16 +232,26 @@ test("root metadata supplies a title template without forcing every route canoni
   ]);
 });
 
-function homeMetadata() {
+function loadMetadata(source) {
   const ts = require("typescript");
-  const compiled = ts.transpileModule(publicPages["/"], {
+  const compiled = ts.transpileModule(source, {
     compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX },
     fileName: "page.tsx",
   }).outputText;
   const exports = {};
-  const localRequire = (name) => name.startsWith("@/") ? {} : require(name);
+  // Stub app-local and stylesheet imports; only the metadata export is under test.
+  const localRequire = (name) => name.startsWith("@/") || name.startsWith("./") ? {} : require(name);
   new Function("exports", "require", compiled)(exports, localRequire);
   return exports.metadata;
+}
+
+function homeMetadata() {
+  return loadMetadata(publicPages["/"]);
+}
+
+function assertNonemptyDescription(metadata, label) {
+  assert.equal(typeof metadata?.description, "string", `${label}: description must be a string`);
+  assert.match(metadata.description, /\S/, `${label}: description must not be empty`);
 }
 
 test("home page exports a nonempty metadata title", () => {
@@ -252,26 +262,30 @@ test("home page exports a nonempty metadata title", () => {
 });
 
 test("home page exports a nonempty metadata description", () => {
-  const metadata = homeMetadata();
-  assert.equal(typeof metadata?.description, "string");
-  assert.match(metadata.description, /\S/, "home page description must not be empty");
+  assertNonemptyDescription(homeMetadata(), "/");
 });
 
 test("other public pages export nonempty metadata descriptions", () => {
-  const ts = require("typescript");
   for (const [route, source] of Object.entries(publicPages)) {
     if (route === "/") continue; // The home page has its own regression above.
-    const compiled = ts.transpileModule(source, {
-      compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX },
-      fileName: "page.tsx",
-    }).outputText;
-    const exports = {};
-    const localRequire = (name) => name.startsWith("@/") ? {} : require(name);
-    new Function("exports", "require", compiled)(exports, localRequire);
-
-    assert.equal(typeof exports.metadata?.description, "string", `${route}: description must be a string`);
-    assert.match(exports.metadata.description, /\S/, `${route}: description must not be empty`);
+    assertNonemptyDescription(loadMetadata(source), route);
   }
+});
+
+test("root layout exports a nonempty default metadata description", () => {
+  assertNonemptyDescription(loadMetadata(layout), "layout");
+});
+
+test("description check rejects missing, blank and whitespace-only descriptions", () => {
+  for (const source of [
+    "export const metadata = { title: 'x' };",
+    "export const metadata = { description: '' };",
+    "export const metadata = { description: ' \\n\\t ' };",
+    "export const metadata = { description: 42 };",
+  ]) {
+    assert.throws(() => assertNonemptyDescription(loadMetadata(source), "fixture"), source);
+  }
+  assertNonemptyDescription(loadMetadata("export const metadata = { description: 'ok' };"), "fixture");
 });
 
 test("both installable manifests and machine references identify the workbench and dedicated Secrets page", () => {

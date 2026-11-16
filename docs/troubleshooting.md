@@ -143,9 +143,9 @@ export PHANTOM_VAULT_PASSPHRASE="your-secure-passphrase"
 ### Windows Credential Manager unavailable or denied
 
 Phantom's Windows backend is mapped to Windows Credential Manager through the
-Rust `keyring` integration. That source mapping is not proof that an exact
-Phantom archive has passed native credential-store acceptance under your user
-and device policy.
+Rust `windows-native-keyring-store` integration. That source mapping is not
+proof that an exact Phantom archive has passed native credential-store
+acceptance under your user and device policy.
 
 Run `phantom doctor` from the same interactive Windows user session that will
 run Phantom, and preserve the exact backend error for diagnosis. Confirm that

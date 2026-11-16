@@ -7,19 +7,30 @@ const CLOUD_VAULT_KEY_PREFIX: &str = "phantom-cloud:vault_key";
 const TEAM_PUBKEY: &str = "phantom-cloud:team_pubkey";
 const TEAM_SECKEY: &str = "phantom-cloud:team_seckey";
 
-fn os_keychain_entry(service: &str, account: &str) -> keyring::Result<keyring::Entry> {
+fn os_keychain_entry(service: &str, account: &str) -> keyring_core::Result<keyring_core::Entry> {
     #[cfg(target_os = "linux")]
     {
+        use keyring_core::api::CredentialStoreApi;
         // The vault crate also compiles Secret Service support for an explicit,
-        // per-project migration. Cargo feature unification must never change
-        // pre-existing cloud credentials from keyutils to a different store.
-        let credential =
-            keyring::keyutils::KeyutilsCredential::new_with_target(None, service, account)?;
-        Ok(keyring::Entry::new_with_credential(Box::new(credential)))
+        // per-project migration. Ambient cloud credentials must stay on
+        // keyutils until that migration runs, so they are pinned to that store.
+        linux_keyutils_keyring_store::Store::new()?.build(service, account, None)
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
     {
-        keyring::Entry::new(service, account)
+        use keyring_core::api::CredentialStoreApi;
+        apple_native_keyring_store::keychain::Store::new()?.build(service, account, None)
+    }
+    #[cfg(target_os = "windows")]
+    {
+        use keyring_core::api::CredentialStoreApi;
+        windows_native_keyring_store::Store::new()?.build(service, account, None)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    {
+        // No platform store crate is linked here; `Entry::new` reports
+        // `NoDefaultStore` at runtime, as keyring 3 did on these targets.
+        keyring_core::Entry::new(service, account)
     }
 }
 
@@ -173,10 +184,10 @@ pub fn get_or_create_cloud_passphrase() -> Result<String> {
     get_or_create_cloud_passphrase_in(&entry)
 }
 
-fn get_or_create_cloud_passphrase_in(entry: &keyring::Entry) -> Result<String> {
+fn get_or_create_cloud_passphrase_in(entry: &keyring_core::Entry) -> Result<String> {
     match entry.get_password() {
         Ok(passphrase) => return Ok(passphrase),
-        Err(keyring::Error::NoEntry) => {}
+        Err(keyring_core::Error::NoEntry) => {}
         Err(e) => {
             return Err(PhantomError::AuthError(format!(
                 "Could not read the cloud vault key from the OS keychain; no new key was \
@@ -216,10 +227,10 @@ pub fn get_or_create_team_keypair() -> Result<crate::team_crypto::MemberKeypair>
 }
 
 fn get_or_create_team_keypair_in(
-    pub_entry: &keyring::Entry,
-    sec_entry: &keyring::Entry,
+    pub_entry: &keyring_core::Entry,
+    sec_entry: &keyring_core::Entry,
 ) -> Result<crate::team_crypto::MemberKeypair> {
-    let unreadable = |what: &str, e: keyring::Error| {
+    let unreadable = |what: &str, e: keyring_core::Error| {
         PhantomError::AuthError(format!(
             "Could not read the team {what} from the OS keychain; no new keypair was \
              created, because replacing it would make team vault keys already shared \
@@ -228,12 +239,12 @@ fn get_or_create_team_keypair_in(
     };
     let public = match pub_entry.get_password() {
         Ok(value) => Some(value),
-        Err(keyring::Error::NoEntry) => None,
+        Err(keyring_core::Error::NoEntry) => None,
         Err(e) => return Err(unreadable("public key", e)),
     };
     let private = match sec_entry.get_password() {
         Ok(value) => Some(value),
-        Err(keyring::Error::NoEntry) => None,
+        Err(keyring_core::Error::NoEntry) => None,
         Err(e) => return Err(unreadable("private key", e)),
     };
     if let (Some(pub_b64), Some(sec_b64)) = (public, private) {
@@ -282,6 +293,7 @@ pub fn api_base_url() -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use keyring_core::api::CredentialStoreApi;
 
     #[test]
     fn uses_the_canonical_phantom_cloud_origin() {
@@ -310,16 +322,21 @@ mod tests {
         assert!(message.contains("`phantom login` again"), "{message}");
     }
 
-    fn mock_entry() -> keyring::Entry {
-        keyring::Entry::new_with_credential(Box::<keyring::mock::MockCredential>::default())
+    fn mock_entry() -> keyring_core::Entry {
+        keyring_core::mock::Store::new()
+            .unwrap()
+            .build("svc", "usr", None)
+            .unwrap()
     }
 
-    fn fail_next_read(entry: &keyring::Entry) {
+    fn fail_next_read(entry: &keyring_core::Entry) {
         entry
-            .get_credential()
-            .downcast_ref::<keyring::mock::MockCredential>()
+            .as_any()
+            .downcast_ref::<keyring_core::mock::Cred>()
             .unwrap()
-            .set_error(keyring::Error::NoStorageAccess("keychain locked".into()));
+            .set_error(keyring_core::Error::NoStorageAccess(
+                "keychain locked".into(),
+            ));
     }
 
     #[test]

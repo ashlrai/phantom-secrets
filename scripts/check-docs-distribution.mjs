@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 
 export const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export const guides = ['README.md', 'AGENTS.md', 'llms.txt', 'mcp-registry/README.md',
-  'docs/README.md', 'docs/getting-started.md',
+  'docs/README.md', 'docs/getting-started.md', 'docs/agent-quickstart.md',
   'docs/troubleshooting.md', 'docs/public-fact-sheet.md', 'docs/llms.txt',
   'docs/llms-full.txt', 'docs/delegation-quickstart.md', 'docs/ci-cd.md',
   'docs/platform-support.md', 'docs/index.html'];
@@ -135,11 +135,36 @@ export function checkVersion(text) {
     ? [] : ['distribution status: missing release version or verified npm tags'];
 }
 
+// Every copy of the agent command block, between the agent-quickstart
+// markers, must match the site's agent console (COMMANDS in
+// AgentQuickstart.tsx) line for line, so agents get one path everywhere.
+export const quickstartSurfaces = ['docs/agent-quickstart.md', 'AGENTS.md',
+  'docs/llms.txt', 'docs/llms-full.txt', 'apps/web/public/llms.txt'];
+const QUICKSTART_SOURCE = 'apps/web/src/components/landing/AgentQuickstart.tsx';
+
+export function quickstartCommands(text) {
+  const m = text.match(/<!-- agent-quickstart:start -->\s*```bash\n([\s\S]*?)\n```\s*<!-- agent-quickstart:end -->/);
+  return m ? m[1].trim() : null;
+}
+
+export function checkAgentQuickstart(read = file => readFileSync(resolve(root, file), 'utf8')) {
+  const expected = read(QUICKSTART_SOURCE).match(/const COMMANDS = `([^`]*)`/)?.[1].trim();
+  if (!expected) return [`${QUICKSTART_SOURCE}: missing COMMANDS block`];
+  const errors = [];
+  for (const file of quickstartSurfaces) {
+    const found = quickstartCommands(read(file));
+    if (found === null) errors.push(`${file}: missing agent-quickstart command block`);
+    else if (found !== expected) errors.push(`${file}: agent-quickstart commands differ from ${QUICKSTART_SOURCE}`);
+  }
+  return errors;
+}
+
 export function checkDocs() {
   const errors = guides.flatMap(file => checkGuide(readFileSync(resolve(root, file), 'utf8'), file));
   const status = readFileSync(resolve(root, 'docs/distribution-status.md'), 'utf8');
   errors.push(...checkGuide(status, 'docs/distribution-status.md'), ...checkVersion(status));
   errors.push(...checkReadmeSurface(readFileSync(resolve(root, 'README.md'), 'utf8')));
+  errors.push(...checkAgentQuickstart());
   return errors;
 }
 
@@ -147,5 +172,5 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   const errors = checkDocs();
   for (const error of errors) console.error(error);
   if (errors.length) process.exitCode = 1;
-  else console.log(`PASS: ${guides.length + 1} distribution docs, local links, anchors and release version`);
+  else console.log(`PASS: ${guides.length + 1} distribution docs, local links, anchors, release version and agent quickstart`);
 }

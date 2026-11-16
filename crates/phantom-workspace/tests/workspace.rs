@@ -976,3 +976,41 @@ fn apply_rejects_a_validly_identified_plan_with_a_non_canonical_root() {
     );
     assert!(!workspace.path().join(".phantom.toml").exists());
 }
+
+#[test]
+fn empty_directory_inspects_as_a_bare_uninitialized_workspace() {
+    let workspace = TempDir::new().unwrap();
+
+    let inspection = inspect_workspace(workspace.path()).unwrap();
+    assert_eq!(
+        inspection.workspace_root,
+        workspace.path().canonicalize().unwrap().to_string_lossy()
+    );
+    assert!(!inspection.phantom_initialized);
+    assert!(!inspection.env_example_exists);
+    assert!(inspection.env_files.is_empty());
+    assert!(inspection.git.is_none());
+    assert!(inspection.place_hints.is_empty());
+    assert!(inspection.warnings.is_empty());
+
+    // The plan only offers to initialize and asks for a human place binding;
+    // nothing touches dotenv, gitignore, example, or hook files.
+    let plan = build_setup_plan(&inspection).unwrap();
+    let kinds = plan.actions.iter().map(|a| a.kind).collect::<Vec<_>>();
+    assert_eq!(
+        kinds,
+        vec![
+            SetupActionKind::InitializeWorkspace,
+            SetupActionKind::ReviewPlaceBinding
+        ]
+    );
+    assert_eq!(plan.actions[0].target, ".phantom.toml");
+    assert_eq!(plan.actions[1].target, "unresolved");
+    assert_eq!(
+        plan.blockers,
+        vec!["No place binding could be inferred from repository metadata."]
+    );
+
+    // Inspecting never writes into the directory.
+    assert_eq!(std::fs::read_dir(workspace.path()).unwrap().count(), 0);
+}

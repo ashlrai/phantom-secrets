@@ -32,7 +32,11 @@ reqwest = { version = "0.12", features = ["blocking", "rustls-tls", "json"], def
 base64 = { workspace = true }
 cap-std = { workspace = true }
 cap-fs-ext = { workspace = true }
-keyring = { version = "3", features = ["apple-native", "linux-native", "windows-native"] }
+# keyring 4 split credential stores into per-backend crates on keyring-core.
+# The Linux Secret Service store uses the blocking D-Bus implementation so the
+# unmaintained zvariant/zbus_names/zvariant_derive chain (zbus 4/5) stays out
+# of the tree; no keyring backend crate ships zbus 6 yet. See #242.
+keyring-core = "1"
 tokio = { workspace = true }
 tempfile = "3"
 
@@ -60,7 +64,14 @@ jsonwebtoken = { version = "10.3.0", features = ["aws_lc_rs"] }
 # Off by default. The crate has never been independently audited.
 x-wing = { version = "0.1.1", default-features = false, features = ["getrandom", "zeroize"], optional = true }
 
-[target.'cfg(windows)'.dependencies]
+[target.'cfg(target_os = "macos")'.dependencies]
+apple-native-keyring-store = { version = "1", features = ["keychain"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+linux-keyutils-keyring-store = "1"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-native-keyring-store = "1"
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Security",

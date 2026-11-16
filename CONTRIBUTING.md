@@ -108,15 +108,17 @@ fails if any selected job did not succeed. Pushes to `main` run everything.
 
 ### Keyring advisory exceptions
 
-[`deny.toml`](deny.toml) ignores RUSTSEC-2026-0370 (`zvariant`),
+The unmaintained-crate advisories RUSTSEC-2026-0370 (`zvariant`),
 RUSTSEC-2026-0371 (`zbus_names`), and RUSTSEC-2026-0372
-(`zvariant_derive`). These are unmaintained-crate advisories, not vulnerability
-advisories: keyring 3 pulls the crates through zbus 4 for Linux Secret Service,
-and keyring 3 has no release using zbus 6, where they were folded into zbus.
-Removal depends on the [keyring migration tracked in #242](https://github.com/ashlrai/phantom-secrets/issues/242)
-eliminating these dependencies from the resolved graph; keyring 4 alone does
-not necessarily do so. See the [migration scoping note](docs/design/keyring-4-migration-scoping.md)
-for backend tradeoffs and verification needed before removing the exceptions.
+(`zvariant_derive`) reached the graph through keyring 3's zbus-based Linux
+Secret Service backend. [Issue #242](https://github.com/ashlrai/phantom-secrets/issues/242)
+eliminated the dependencies rather than upgraded them: the workspace now links
+`keyring-core` plus per-backend store crates, and Linux Secret Service runs on
+`dbus-secret-service-keyring-store` (the blocking `dbus` implementation) so no
+zbus version remains in the resolved graph. `cargo deny check` must pass with
+no ignores for these advisories. See the
+[migration scoping note](docs/design/keyring-4-migration-scoping.md) for the
+evaluated options.
 Run `node --test scripts/keyring-advisory-docs.test.mjs` when changing this note
 or the related policy.
 

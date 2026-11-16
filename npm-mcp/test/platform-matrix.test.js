@@ -107,6 +107,7 @@ function assertWrapperMatchesReleaseMatrix(name, wrapper) {
   for (const runtime of [
     { platform: "darwin", arch: "ia32" },
     { platform: "linux", arch: "arm" },
+    { platform: "linux", arch: "riscv64" },
     { platform: "freebsd", arch: "x64" },
     { platform: "win32", arch: "ia32" },
   ]) {
@@ -131,4 +132,55 @@ for (const wrapperPath of [
   assert.doesNotMatch(source, /Install from source|cargo install phantom-secrets/);
 }
 
-console.log("npm wrapper platform matrix tests passed");
+// An unsupported architecture must fail before any network or extraction work,
+// through the real ensureBinary path (not only getPlatformTarget), and leave
+// the cache clean.
+async function assertUnsupportedArchFailsOffline(name, wrapper) {
+  const https = require("https");
+  const { mkdtempSync, readdirSync, rmSync } = require("fs");
+  const { tmpdir } = require("os");
+  const cacheDir = mkdtempSync(join(tmpdir(), "phantom-matrix-"));
+  const calls = [];
+  const forbid = (label) => (...args) => {
+    calls.push(label);
+    throw new Error(`${label} must not run for an unsupported architecture`);
+  };
+  const realHttpsGet = https.get;
+  https.get = forbid("https.get");
+  try {
+    for (const arch of ["ia32", "riscv64", "s390x"]) {
+      await assert.rejects(
+        wrapper.ensureBinary({
+          cacheDir,
+          runtime: { platform: "linux", arch },
+          downloadImpl: forbid("download"),
+          extractImpl: forbid("extract"),
+          execFileSyncImpl: forbid("exec"),
+        }),
+        (error) => {
+          assert.match(error.message, new RegExp(`Unsupported platform: linux-${arch}`));
+          assert.match(error.message, /checksum-verifiable/);
+          return true;
+        },
+        `${name} rejects linux-${arch}`
+      );
+    }
+    assert.deepStrictEqual(calls, [], `${name} made no download, extract, or exec call`);
+    const leftovers = readdirSync(cacheDir).filter(
+      (entry) => entry.startsWith(".install-") || entry.endsWith(".tar.gz") || entry.endsWith(".zip")
+    );
+    assert.deepStrictEqual(leftovers, [], `${name} left no install artifacts`);
+  } finally {
+    https.get = realHttpsGet;
+    rmSync(cacheDir, { recursive: true, force: true });
+  }
+}
+
+(async () => {
+  await assertUnsupportedArchFailsOffline("phantom-secrets", phantomCli);
+  await assertUnsupportedArchFailsOffline("phantom-secrets-mcp", phantomMcp);
+  console.log("npm wrapper platform matrix tests passed");
+})().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});

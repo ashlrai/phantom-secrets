@@ -27,8 +27,9 @@ test("sitemap routes and structured data types use code-unit order", async () =>
     fetchImpl,
   });
 
-  assert.deepEqual(report.technical.public_routes.map(({ route }) => route), ["/A", "/Z", "/a", "/z"]);
-  for (const route of report.technical.public_routes) {
+  assert.deepEqual(report.technical.public_routes.map(({ route }) => route), ["/A", "/Z", "/a", "/z", "/llms.txt", "/llms-full.txt"]);
+  // Machine-readable routes are observed after the sorted sitemap routes and carry no JSON-LD.
+  for (const route of report.technical.public_routes.filter(({ route }) => paths.includes(route))) {
     assert.deepEqual(route.structured_data_types, ["Apple", "Zebra", "apple", "zebra"]);
   }
 });

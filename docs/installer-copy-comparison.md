@@ -24,13 +24,13 @@ To inspect differences, run `diff -u scripts/install.sh apps/web/public/install.
 
 ## Review snapshot
 
-Reviewed **2026-11-07**: the files **differ** only in the candidate tag. SHA-256 hashes identify the
+Reviewed **2026-11-09**: the files **differ** only in the candidate tag. SHA-256 hashes identify the
 exact bytes reviewed:
 
-- `scripts/install.sh`: `3004402b22dccd802eaf730214e62c07f6b7839253fe9f295b024dd353129cc1`
+- `scripts/install.sh`: `f30e7cfc8991842b3566adec24984732804eca87d862a006757ce929888f327b`
 - `apps/web/public/install.sh`: `44ab25b1a5b99d7a1a3bb484ea17b323f89a47e43092ca4de4903a9ede6ba72e`
 
-The source installer pins candidate `v0.8.8`; the public copy pins the evidenced `v0.8.7` release. Both copies
+The source installer pins candidate `v0.8.9`; the public copy pins the evidenced `v0.8.7` release. Both copies
 extract the release archive with `tar --no-same-owner` and carry the same
 explanatory comment, so a root-run install does not keep the release
 runner's uid on the installed binaries. Both copies share the same guarded

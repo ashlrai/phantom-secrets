@@ -56,7 +56,7 @@ assert.equal(workspaceSections.length, 2, "one Cargo workspace.package section")
 const workspacePackage = workspaceSections[1].split(/^\[/m)[0];
 const versionRows = [...workspacePackage.matchAll(/^version\s*=\s*"([^"]+)"\s*$/gm)];
 assert.equal(versionRows.length, 1, "one Cargo source version");
-const { version: sourceVersion } = loadSources(repoRoot);
+const { version: sourceVersion, publicRelease } = loadSources(repoRoot);
 assert.equal(versionRows[0][1], sourceVersion, "unique workspace row matches canonical source metadata");
 
 function candidateCommands(version) {
@@ -976,10 +976,19 @@ test("PowerShell candidate pin follows source metadata while public reference st
   assert.ok(block.includes("[void][scriptblock]::Create((Get-Content -LiteralPath scripts/install.ps1 -Raw))"));
   assert.ok(block.includes("[void][scriptblock]::Create((Get-Content -LiteralPath apps/web/public/install.ps1 -Raw))"));
   assert.ok(block.includes("$PSNativeCommandUseErrorActionPreference = $true"));
-  const publicVersion = "0.8.7";
+  // The evidenced release lives in apps/web/src/lib/public-release.ts; reading
+  // it through loadSources keeps this assertion from going stale at the next
+  // release bump (nightly run 42492932624 failed on exactly that drift).
+  const publicVersion = publicRelease.version;
   const publicInstaller = readFileSync(join(repoRoot, "apps/web/public/install.ps1"), "utf8");
   assertPowershellCandidate(publicInstaller, publicVersion, publicVersion);
-  assert.ok(block.includes(`Select-String -LiteralPath apps/web/public/install.ps1 -Pattern '\\$CandidateTag = ''v${publicVersion}''' -Quiet`));
+  // check-powershell-candidate.mjs (asserted in this block above) enforces the
+  // public pin from repo code. An inline Select-String is optional redundancy;
+  // when present it must pin the evidenced release, never a stale literal.
+  const inlinePins = block.matchAll(/CandidateTag = ''v(\d+\.\d+\.\d+)''/g);
+  for (const pin of inlinePins) {
+    assert.equal(pin[1], publicVersion, "inline public-pin check must track the evidenced release");
+  }
   assert.doesNotMatch(block, /v0\.7\.10/);
   execFileSync(process.execPath, [join(repoRoot, "scripts/release/check-powershell-candidate.mjs")], { cwd: repoRoot });
 });

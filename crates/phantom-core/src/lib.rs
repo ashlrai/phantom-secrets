@@ -1,3 +1,4 @@
+pub mod account_ops;
 pub mod agent;
 pub mod analytics;
 pub mod audit;
