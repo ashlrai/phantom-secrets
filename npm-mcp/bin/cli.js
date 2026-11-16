@@ -288,23 +288,28 @@ function removeFileIfExists(path) {
   }
 }
 
-function hasNpmSourceMarker(path, platform = process.platform) {
+function hasMcpSourceMarker(markerPath, platform = process.platform) {
+  let recorded = "";
   try {
-    validateOwnedPath(path, "file", platform);
-    const contents = readFileSync(path, "utf8");
-    if (contents !== "npm\n") throw new Error("invalid npm install-source marker");
-    return true;
-  } catch (error) {
-    if (error.code !== "ENOENT") throw error;
-    return false;
+    validateOwnedPath(markerPath, "file", platform);
+    recorded = readFileSync(markerPath, "utf8");
+  } catch (mcpMarkerError) {
+    if (mcpMarkerError.code === "ENOENT") return false;
+    throw mcpMarkerError;
   }
+  if (recorded === "npm\n") return true;
+  throw new Error("invalid npm-mcp install-source marker");
 }
 
-function ensureNpmSourceMarker(path, platform = process.platform) {
-  if (hasNpmSourceMarker(path, platform)) return;
-  writePrivateFile(path, "npm\n", 0o600, platform);
-  fsyncDirectory(dirname(path), platform);
+function commitMcpSourceMarker(markerPath, platform = process.platform) {
+  const present = hasMcpSourceMarker(markerPath, platform);
+  if (present) return present;
+  writePrivateFile(markerPath, "npm\n", 0o600, platform);
+  fsyncDirectory(dirname(markerPath), platform);
+  return true;
 }
+
+const MCP_INSTALL_SOURCE = ".phantom-install-source.npm-mcp";
 
 function sha256File(path) {
   return crypto.createHash("sha256").update(readFileSync(path)).digest("hex");
@@ -851,19 +856,26 @@ async function ensureBinary({
   const releaseLock = await acquireInstallLock(paths.lockPath, { ...lockOptions, platform: runtime.platform });
   const heartbeat = releaseLock.heartbeat;
   try {
-    // Reject an unsafe existing marker, but do not create
-    // .phantom-install-source.npm-mcp until a cached or downloaded binary
-    // validates. A failed attempt must not claim npm ownership.
-    hasNpmSourceMarker(paths.sourceMarkerPath, runtime.platform);
+    // Inspect .phantom-install-source.npm-mcp before any cache adoption.
+    // The marker is created only after validation, not before a failed attempt.
+    const mcpSourceMarker = paths.sourceMarkerPath;
+    if (basename(mcpSourceMarker) !== MCP_INSTALL_SOURCE) {
+      throw new Error("npm-mcp install source marker path drifted");
+    }
+    const mcpMarkerPresent = hasMcpSourceMarker(mcpSourceMarker, runtime.platform);
+    if (typeof mcpMarkerPresent !== "boolean") {
+      throw new Error("npm-mcp install source marker check was inconclusive");
+    }
     heartbeat();
     recoverInterruptedInstall(paths, runtime.platform);
-    if (validateCachedBinary(paths.binaryPath, paths.manifestPath, {
+    const mcpCacheValid = validateCachedBinary(paths.binaryPath, paths.manifestPath, {
       execFileSyncImpl,
       platform: runtime.platform,
       execTimeoutMs,
       heartbeat,
-    })) {
-      ensureNpmSourceMarker(paths.sourceMarkerPath, runtime.platform);
+    });
+    if (mcpCacheValid) {
+      commitMcpSourceMarker(mcpSourceMarker, runtime.platform);
       return paths.binaryPath;
     }
 
@@ -915,7 +927,7 @@ async function ensureBinary({
       const manifest = { version: VERSION, sha256: sha256File(candidatePath) };
       writePrivateFile(candidateManifestPath, JSON.stringify(manifest) + "\n", 0o600, runtime.platform);
       replaceCachedBinary(candidatePath, candidateManifestPath, paths, runtime.platform);
-      ensureNpmSourceMarker(paths.sourceMarkerPath, runtime.platform);
+      commitMcpSourceMarker(mcpSourceMarker, runtime.platform);
       heartbeat();
       console.error(`Installed phantom-mcp to ${paths.binaryPath}`);
       return paths.binaryPath;
