@@ -4,6 +4,25 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+## [0.8.11] - 2026-11-16
+
+### Breaking changes and migration
+
+No breaking changes since v0.8.10. Existing installations require no migration.
+
+### Security (npm acceptance follows rehearsal)
+
+- npm candidate acceptance checks the format of its seven inputs in a prior
+  job and runs the host matrix from those outputs. The matrix starts only
+  after the release rehearsal workflow succeeds on the default branch or a
+  release tag. Rehearsal remains a single read-only job and is invoked with
+  `workflow_call`.
+
+### CI (CodeQL weekly schedule)
+
+- CodeQL runs on default-branch pushes, pull requests, and one Sunday
+  schedule. The CodeQL workflow name and analyze job name stay the same.
+
 ## [0.8.10] - 2026-11-16
 
 ### Breaking changes and migration
@@ -3843,8 +3862,9 @@ remain separate evidence gates.
 For older release notes and downloadable artifacts, see [GitHub Releases](https://github.com/ashlrai/phantom-secrets/releases).
 
 <!-- fresh:begin changelog-unreleased-compare -->
-[Unreleased]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.10...HEAD
+[Unreleased]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.11...HEAD
 <!-- fresh:end -->
+[0.8.11]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.10...v0.8.11
 [0.8.10]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.9...v0.8.10
 [0.8.9]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.8...v0.8.9
 [0.8.8]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.7...v0.8.8
