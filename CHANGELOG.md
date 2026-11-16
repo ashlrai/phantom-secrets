@@ -10,6 +10,20 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 No breaking changes since v0.8.9. Existing installations require no migration.
 
+### Added (workbench integration notes)
+
+- `INTEGRATION.md` describes how this repo plugs into the Phantom workbench
+  (formerly Ashlr Hub): opt-in delegation, the local proxy, trust boundaries,
+  and opt-out. `DESIGN-onboarding-wizard.md` and `DESIGN-connector-packs.md`
+  remain proposals and are not implemented.
+
+### Fixed (npm install-source marker)
+
+- The `phantom-secrets` and `phantom-secrets-mcp` wrappers write
+  `.phantom-install-source.npm-cli` and `.phantom-install-source.npm-mcp` only
+  after binary validation succeeds. A failed validation leaves no ownership
+  marker.
+
 ### Added (agent quickstart)
 
 - Agents get one copy-paste setup path in `docs/agent-quickstart.md`, mirrored in `AGENTS.md`, `llms.txt` and `llms-full.txt`, with value-free JSON commands and the MCP file shapes `phantom setup` writes for Claude Code, Cursor and Codex. A docs check fails if any copy of the command block drifts.
