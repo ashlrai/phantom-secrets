@@ -431,7 +431,7 @@ jobs:
         run: bash scripts/installer-staging-spaced-parent.test.sh
       - name: Run isolated staging-failure shell test
         if: runner.os == 'Linux'
-        run: bash scripts/installer-staging-failure.test.sh
+        run: bash scripts/installer-staging-failure.test.sh && bash scripts/installers.test.sh
       - name: Run isolated unwritable staging-parent shell test
         if: runner.os == 'Linux'
         run: bash scripts/install-temp.test.sh
