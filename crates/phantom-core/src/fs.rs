@@ -916,6 +916,18 @@ mod tests {
     }
 
     #[test]
+    fn test_atomic_write_filename_with_spaces() {
+        let dir = TempDir::new().unwrap();
+        let target = dir.path().join("file with spaces.txt");
+        let fixture = b"ordinary fixture contents\n";
+
+        atomic_write(&target, fixture).unwrap();
+
+        assert_eq!(std::fs::read(&target).unwrap(), fixture);
+        assert_eq!(list_dir(dir.path()), vec!["file with spaces.txt"]);
+    }
+
+    #[test]
     fn test_atomic_write_rejects_path_without_parent() {
         let err = atomic_write(Path::new("/"), b"x").unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
