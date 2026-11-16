@@ -2,14 +2,18 @@
 const candidateVersion = require("../package.json").version;
 const assert = require("assert");
 const crypto = require("crypto");
+const { spawnSync } = require("child_process");
 const {
   chmodSync,
+  copyFileSync,
   linkSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   renameSync,
   rmSync,
   symlinkSync,
+  writeFileSync,
 } = require("fs");
 const { tmpdir } = require("os");
 const { join } = require("path");
@@ -35,6 +39,7 @@ function writePair(binaryPath, manifestPath, contents) {
 
 assert.strictEqual(parseBinaryVersion(("phantom-mcp " + candidateVersion + "\n")), candidateVersion);
 assert.strictEqual(parseBinaryVersion(("phantom-mcp " + candidateVersion + "\r\n")), candidateVersion);
+assert.strictEqual(parseBinaryVersion("phantom-mcp " + candidateVersion), candidateVersion);
 assert.strictEqual(
   parseBinaryVersion(Buffer.from("phantom-mcp 1.2.3-rc.1+build.7\n")),
   "1.2.3-rc.1+build.7"
@@ -48,10 +53,34 @@ for (const malformed of [
   ("phantom-mcp " + candidateVersion + "-untrusted\nextra\n"),
   ("prefix phantom-mcp " + candidateVersion + "\n"),
   ("phantom " + candidateVersion + "\n"),
+  ("phantom-mcp " + candidateVersion + "\n\n"),
+  ("phantom-mcp " + candidateVersion + "\r\n\n"),
+  ("phantom-mcp " + candidateVersion + "\u2028"),
+  ("phantom-mcp " + candidateVersion + "\u2029"),
+  ("phantom-mcp " + candidateVersion + "\0"),
 ]) assert.strictEqual(parseBinaryVersion(malformed), null, malformed);
 
 const fixtureDir = mkdtempSync(join(tmpdir(), "phantom-mcp-cache-test-"));
 try {
+  const packageDir = join(fixtureDir, "package");
+  const binDir = join(packageDir, "bin");
+  mkdirSync(binDir, { recursive: true });
+  copyFileSync(join(__dirname, "../bin/package-version.js"), join(binDir, "package-version.js"));
+  for (const version of [candidateVersion, ""]) {
+    writeFileSync(join(packageDir, "package.json"), JSON.stringify({ version }));
+    const result = spawnSync(process.execPath, [join(binDir, "package-version.js")], {
+      encoding: "utf8",
+    });
+    assert.ifError(result.error);
+    if (version === "") {
+      assert.strictEqual(typeof result.status, "number", "version check must exit normally");
+      assert.notStrictEqual(result.status, 0, "empty packaged version must be rejected");
+      assert.match(result.stderr, /invalid packaged Phantom version/);
+    } else {
+      assert.strictEqual(result.status, 0, result.stderr);
+    }
+  }
+
   ensurePrivateCacheDir(fixtureDir);
   const paths = pathSet(fixtureDir);
   writePrivateFile(paths.binaryPath, "unverified", 0o700);

@@ -88,6 +88,14 @@ These guides cover installation, MCP setup, the value-blind tool model, and dail
 - [Codex](codex.md)
 - [Cursor](cursor.md)
 - [Windsurf](windsurf.md)
+- [MCP secrets manager overview](mcp-secrets-manager.md) for the value-blind tool model in one page
+- [`phantom agent doctor --json` preflight contract](agent-preflight-contract.md) for agent setup checks
+- [`phantom exec` CLI coverage](exec.md) for child environment, proxy routes, and curl examples
+- [GitHub credential helper](git-credential.md) for `phantom git-credential` and the plaintext handoff boundary
+- [Consuming metadata-only status](status-consumer-q8.md) for reading `phantom status --json` without secret values
+- [Ashlr companion handshake](ashlr-handshake.md) for `phantom --ashlr-handshake`
+- [How to protect API keys from AI coding agents](protect-api-keys-from-ai-coding-agents.md)
+- [Hybrid local quickstart](hybrid-local-quickstart.md) for Ollama behind LiteLLM plus a frontier model
 - [Temporal workers with no secrets on disk](temporal.md) (optional guidance, untested design)
 - [PostHog fleet capture](posthog.md) (header-only v1 event ingestion)
 - [Copyable agent policy, task brief, and pilot templates](../examples/agent-delegation/README.md)
@@ -122,6 +130,9 @@ and retains historical design-status language.
 - [Device authorization page UI](device-code-ui.md)
 - [Vercel and Railway sync](sync.md)
 - [CI/CD integration](ci-cd.md)
+- [`phantom fleet-status --json` schema](fleet-status.md)
+- [Workbench audit feed](audit-feed.md) for `phantom audit feed`
+- [Public fact sheet](public-fact-sheet.md)
 - [Shell prompt integration](shell-prompt.md)
 - [npm publication](npm-publication.md)
 - [MCP Registry publication](mcp-registry-publication.md)
@@ -135,6 +146,12 @@ and retains historical design-status language.
 - [Security and audit index](audit-index.md)
 - [Platform support and native acceptance matrix](platform-support.md)
 - [Design-era provider-grant lifecycle specification](grants-spec.md)
+- [Design note: agent claims](design-agent-claims.md) (proposal only, not implemented)
+- [Design note: large MCP output as a file path plus summary](design-mcp-large-output-to-file.md) (proposal only, not implemented)
+- [Third-party evidence plan](third-party-evidence-plan.md)
+- [SEO and agent-discovery observation loop](seo-observation-loop.md)
+- [Keeping the Unix installer copies in sync](installer-copy-sync.md)
+- [Unix installer PATH temporary-file failures](installer-temp-failure-reference.md)
 - [Original provider-issuance design contract](../ISSUANCE_CONTRACT.md)
 - [Contributing guide](../CONTRIBUTING.md)
 - [Roadmap and milestone gates](../ROADMAP.md)

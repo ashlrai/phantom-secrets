@@ -11,6 +11,7 @@ const {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   realpathSync,
   rmSync,
   symlinkSync,
@@ -250,6 +251,10 @@ async function assertDownloadStopsAfterSettlement() {
     );
     assert.strictEqual(downloads, 0, "unsupported architecture must not download");
     assert.strictEqual(existsSync(pathSet(unsupportedCache).lockPath), false, "lock is released");
+    // The platform check precedes all cache work, so the cache root keeps no
+    // source marker or transaction file. Doing that work first applied the
+    // emulated runtime's POSIX privacy check to a native Windows directory.
+    assert.deepStrictEqual(readdirSync(unsupportedCache), [], "unsupported architecture leaves the cache untouched");
   } finally {
     rmSync(unsupportedCache, { recursive: true, force: true });
   }

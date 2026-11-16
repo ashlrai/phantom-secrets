@@ -346,3 +346,48 @@ test("every displayed snippet uses the phantom-install temporary prefix", () => 
     cleanup();
   }
 });
+
+// Two runs of the real staging prologue under one parent must not share a
+// directory. The EXIT trap is cleared so both stages are still on disk when
+// compared; a sequential pair with cleanup could reuse a freed name unseen.
+for (const platform of ["macOS", "Linux"]) {
+  test(`${platform} staging creates distinct directories under the same TMPDIR parent`, (t) => {
+    render(<QuickStart />);
+    let displayed = "";
+    try {
+      const selector = screen.getByRole("group", { name: "Choose an operating system" });
+      fireEvent.click(within(selector).getByRole("button", { name: platform }));
+      const card = screen.getByRole("heading", { level: 3, name: platform }).closest("article");
+      assert.ok(card);
+      const copy = within(card).getByRole("button", { name: /^Copy command:/ });
+      displayed = Array.from(copy.firstElementChild!.childNodes)
+        .filter((node) => node.nodeType === Node.TEXT_NODE)
+        .map((node) => node.textContent)
+        .join("");
+    } finally {
+      cleanup();
+    }
+
+    const lines = displayed.split("\n");
+    const trap = lines.findIndex((line) => line.startsWith("trap "));
+    assert.ok(trap > 0, `${platform}: displayed command installs an EXIT trap`);
+    const script = [...lines.slice(0, trap + 1), "trap - EXIT", 'printf "%s\\n" "$phantom_stage"', ")"].join("\n");
+
+    const parent = mkdtempSync(path.join(tmpdir(), "phantom stage parent "));
+    t.after(() => rmSync(parent, { recursive: true, force: true }));
+    const stages = [0, 1].map(() => {
+      const result = spawnSync("bash", ["-c", script], {
+        env: { ...process.env, TMPDIR: parent },
+        encoding: "utf8",
+      });
+      assert.equal(result.status, 0, result.stderr);
+      return result.stdout.trim();
+    });
+
+    assert.notEqual(stages[0], stages[1], `${platform}: each invocation gets its own directory`);
+    for (const stage of stages) {
+      assert.equal(path.dirname(stage), parent, `${platform}: staged inside the shared parent`);
+      assert.ok(existsSync(stage), `${platform}: ${path.basename(stage)} exists`);
+    }
+  });
+}

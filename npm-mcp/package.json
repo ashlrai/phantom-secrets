@@ -8,7 +8,7 @@
   },
   "scripts": {
     "postinstall": "node install.js",
-    "test": "node test/platform-matrix.test.js && node test/version-cache.test.js && node test/valid-cache.test.js && node test/hardening.test.js && node test/schema-contract.test.js && node test/release-artifacts.test.js"
+    "test": "node test/platform-matrix.test.js && node test/version-cache.test.js && node test/version-missing-component.test.js && node test/valid-cache.test.js && node test/hardening.test.js && node test/schema-contract.test.js && node test/release-artifacts.test.js"
   },
   "repository": {
     "type": "git",

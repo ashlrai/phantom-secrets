@@ -135,6 +135,26 @@ test("empty revision output produces unidentified build metadata", () => {
   });
 });
 
+test("revision value with surrounding whitespace is trimmed", () => {
+  withRepository(({ directory, revision }) => {
+    for (const [before, after] of [[" ", ""], ["", "\n"], ["\t  ", " \r\n"]]) {
+      const module = { exports: {} };
+      function localRequire(name) {
+        if (name !== "node:child_process") return require(name);
+        return { execFileSync(command, args, options) {
+          const result = execFileSync(command, args, options);
+          return args.includes("HEAD^{commit}") ? `${before}${result}${after}` : result;
+        } };
+      }
+      new Function("require", "exports", "module", compiled)(localRequire, module.exports, module);
+      const observed = module.exports.readBuildSourceRevision(directory);
+      assert.equal(observed, revision);
+      assert.equal(observed, observed.trim());
+      assert.equal(buildMetadata(directory, module.exports), revision);
+    }
+  });
+});
+
 test("missing revision metadata produces unidentified build metadata", () => {
   withRepository(({ directory, git, revision }) => {
     const head = git("symbolic-ref", "HEAD");
@@ -254,4 +274,16 @@ test("source drift between actual Git observations is refused", () => {
     assert.equal(module.exports.readBuildSourceRevision(directory), null);
     assert.equal(changed, true);
   });
+});
+
+test("a source directory that does not exist falls back to unidentified without throwing", () => {
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), "phantom-absent-source-"));
+  try {
+    const absent = path.join(parent, "never-created");
+    assert.doesNotThrow(() => readBuildSourceRevision(absent));
+    assert.equal(readBuildSourceRevision(absent), null);
+    assert.equal(buildMetadata(absent), "unidentified");
+  } finally {
+    fs.rmSync(parent, { recursive: true, force: true });
+  }
 });

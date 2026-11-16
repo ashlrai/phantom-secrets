@@ -172,7 +172,7 @@ assert.doesNotMatch(wrapperSource, /Install from source|cargo install phantom-se
     rmSync(testDir, { recursive: true, force: true });
   }
 
-  // Even a matching, integrity-valid cache must not bypass OS selection.
+  // Even a matching, integrity-valid cache must not bypass platform selection.
   const populatedCache = mkdtempSync(join(tmpdir(), "phantom-cli-unsupported-cache-"));
   try {
     const binary = "cached binary fixture";
@@ -186,20 +186,25 @@ assert.doesNotMatch(wrapperSource, /Install from source|cargo install phantom-se
     let executions = 0;
     let downloads = 0;
     let extractions = 0;
-    await assert.rejects(
-      ensureBinary({
-        cacheDir: populatedCache,
-        runtime: { platform: "openbsd", arch: "x64" },
-        execFileSyncImpl: () => { executions += 1; return Buffer.from(("phantom " + candidateVersion + "\n")); },
-        downloadImpl: async () => { downloads += 1; throw new Error("unexpected download"); },
-        extractImpl: () => { extractions += 1; },
-      }),
-      /Unsupported platform: openbsd-x64/
-    );
+    for (const runtime of [
+      { platform: "openbsd", arch: "x64" },
+      { platform: "linux", arch: "arm" },
+    ]) {
+      await assert.rejects(
+        ensureBinary({
+          cacheDir: populatedCache,
+          runtime,
+          execFileSyncImpl: () => { executions += 1; return Buffer.from(("phantom " + candidateVersion + "\n")); },
+          downloadImpl: async () => { downloads += 1; throw new Error("unexpected download"); },
+          extractImpl: () => { extractions += 1; },
+        }),
+        new RegExp(`Unsupported platform: ${runtime.platform}-${runtime.arch}`)
+      );
+      assert.strictEqual(existsSync(pathSet(populatedCache, runtime.platform).lockPath), false);
+    }
     assert.strictEqual(executions, 0, "unsupported platforms must not execute a cached binary");
     assert.strictEqual(downloads, 0, "unsupported platforms must not attempt a download");
     assert.strictEqual(extractions, 0, "unsupported platforms must not extract a binary");
-    assert.strictEqual(existsSync(pathSet(populatedCache, "openbsd").lockPath), false);
     assert.deepStrictEqual(readdirSync(populatedCache).sort(), ["phantom", "phantom.manifest.json"]);
     assert.strictEqual(readFileSync(binaryPath, "utf8"), binary);
     assert.strictEqual(readFileSync(`${binaryPath}.manifest.json`, "utf8"), manifest);

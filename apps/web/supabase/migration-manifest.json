@@ -57,6 +57,10 @@
     {
       "file": "20261009231437_clamp_browser_table_authority.sql",
       "sha256": "846437d59837ee6dfbf8fc1a46361e0542621fba6fb5d17a81b002d6d88cbf55"
+    },
+    {
+      "file": "20261110053000_revoke_platform_token_oauth_state_columns.sql",
+      "sha256": "cd24bfc80c1a6ae62d5e2c773eb14672af72f75b7a3123a8637ec027094fe2c0"
     }
   ]
 }
