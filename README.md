@@ -397,6 +397,7 @@ dashboard is designed to show team memberships and member lists.
 | `phantom doctor` | Check configuration and vault health (`--fix` to auto-repair). Reports install source, vault backend, audit-log status, Argon2 params, and MCP wiring per client |
 | `phantom agent report` | Emit a read-only AI-agent readiness report (`--json` for automation). Reports `unsafe`, `protected`, `verified`, `team-ready`, or `compliance-ready` |
 | `phantom agent doctor` | Human-readable agent readiness view backed by the same policy engine; `--json` emits the value-free [preflight contract](docs/agent-preflight-contract.md) (`--vault` to probe the vault, `--strict` for verdict exit codes) |
+| `phantom agent status` | Read-only, value-free view of MCP approval state (`--json`) |
 | `phantom agent setup` | Preview or apply safe defaults for agent use (`--dry-run` first, `--apply` to write changes) |
 | `phantom workspace plan [--json]` | Build an exact sealed setup plan and create a value-free pending request; does not change the workspace or vault |
 | `phantom workspace apply --request <ID>` | Recompute and claim the exact request in an attached trusted terminal, require typed confirmation, then apply transactionally with rollback on failure |
@@ -417,6 +418,15 @@ dashboard is designed to show team memberships and member lists.
 | `phantom audit path` | Print the absolute path to the audit log file |
 | `phantom audit verify` | Verify HMAC-SHA256 chain integrity; exits 1 on verification failure. `--json` includes failure guidance; `--with-context` displays decrypted context and cannot be combined with JSON. |
 | `phantom audit hotspots` | Read-only access-spike alerts (`--name NAME`, `--include-acked`, `--json`); acknowledgement and snoozing use the gated MCP tool. |
+| `phantom audit incidents` | Read-only leak incidents correlated from `proxy.response_leak` events (`--min-confidence`, `--json`). Confidence of 0.95 or more means rotate at the provider and store the replacement from a trusted terminal. |
+| `phantom audit alerts` | Show persisted leak-incident alert records (`--last N`, `--json`; `--backfill` re-runs correlation first) |
+| `phantom audit stats` | Per-secret access counts and timing (`--json`, `--top N`, `--analytics`, `--min-anomaly-score`) |
+| `phantom audit anomalies` | Anomaly alerts from the audit log (`--realtime` to follow, `--threshold`, `--name`, `--max-accesses-per-hour`, `--max-quiet-days`, `--json`) |
+| `phantom audit analytics` | Export audit analytics for external dashboards (`--window DAYS`, `--format json\|csv`, `--export FILE` creates a new file, `--auto-alert-on-anomaly` exits nonzero as a CI gate) |
+| `phantom audit export` | Export timestamped access records for compliance (`--format csv\|json`, `--period 7d\|30d\|all`) |
+| `phantom audit export-range` | Export raw audit rows by date range, secret, operation or PID (`--from`, `--to`, `--name`, `--op`, `--pid`, `--format`) |
+| `phantom audit report` | Build a compliance report (`--from`, `--to`, `--compact`; `--save` also writes it to `~/.phantom/reports/`) |
+| `phantom audit feed` | Project audit NDJSON from stdin into value-free workbench events; `--follow PATH` tails a file. See [audit feed](docs/audit-feed.md). |
 | `phantom leaks plan` | Read-only dry run of what leak response would do for active incidents (`--min-confidence`, `--json`). Writes nothing, makes no network calls, prints names only. Reads the optional `[leak_response]` policy (`on_leak = "off" | "plan" | "revoke"`, default `plan`; `revoke` needs `allow_revoke = true` and still only plans because live revoke is disabled in shipped builds) |
 | `phantom login` | From an attached trusted terminal, approve an exact network plan, then separately approve browser opening/polling and keychain persistence |
 | `phantom logout` | From an attached trusted terminal, approve deletion of persistent cloud authorization from the OS keychain |
@@ -432,6 +442,7 @@ dashboard is designed to show team memberships and member lists.
 | `phantom team create`, `phantom team invite`, `phantom team key-publish`, `phantom team vault-push`, `phantom team vault-pull`, `phantom team rotate-vault` | Run CLI team effects only from an attached trusted terminal and complete the exact challenge before credential, keypair, vault-value, or network access. Invites assign only `member` or `admin`. |
 | `phantom validate` / `--watch` | Send selected credentials to configured validators only after exact trusted-terminal consent; watch authorization ends when config or the vault name set changes |
 | `phantom validate schedule` | Read status without mutation; setting or disabling persistent scheduler policy requires attached terminals and an exact typed challenge |
+| `phantom validate history` | Show past validation runs (`--last N`, default 20) |
 | `phantom expiry set` | Persist lifecycle policy only after attached-terminal confirmation; `phantom expiry enforce` is read-only, while `phantom expiry rotate` is only a deprecated local token remap |
 | `phantom secrets-expiring-soon` | List expired or expiring secrets (`--days N`, default 7; `--json`). `--auto-rotate` is a deprecated local `phm_` token remap only; provider credentials and expiry metadata stay unchanged, and `--sync` is rejected |
 | `phantom fleet-status` | Read-only, value-free fleet posture: every secret's name, expiry state, last stored validation result, and rotation-schedule state, plus the names with overdue rotations. `--json` emits the documented [fleet-status schema](docs/fleet-status.md); `--strict` exits 2 when anything needs attention or the inventory is partial |
@@ -499,7 +510,7 @@ fails closed before vendor execution. No single-provider exception exists.
 - **MCP server** -- value-blind vault, diagnostics, cloud, team, audit, rotation, validation, expiry, and compliance responses for Claude Code, Cursor, Windsurf, and Codex; effectful compatibility tools remain separately gated and disabled by default
 - **Cloud backup** -- client-encrypted same-keychain-machine backup and restore; key transfer and recovery are not shipped, and deployed-service and account configuration remain separate operational gates
 - **Export/import** -- Encrypted export requires an attached terminal, exact challenge, and hidden passphrase; export passphrase files, plaintext, and argv passphrases are disabled. Import uses its own exact terminal ceremony; only non-Windows encrypted-backup import may read a bounded private passphrase file. Competitor imports support Doppler, Infisical, dotenvx, 1Password, and plain `.env`.
-- **Tamper-evident audit log** -- `PHANTOM_AUDIT=1` writes vault events as JSONL to `~/.phantom/audit.log`. Each entry is chained with HMAC-SHA256; `phantom audit verify` detects tampering. `phantom audit show`, `phantom audit tail`, `phantom audit path`, and `phantom audit hotspots` provide log and alert access.
+- **Tamper-evident audit log** -- `PHANTOM_AUDIT=1` writes vault events as JSONL to `~/.phantom/audit.log`. Each entry is chained with HMAC-SHA256; `phantom audit verify` detects tampering. `phantom audit show`, `tail`, `path`, `hotspots`, `incidents`, `alerts`, `stats`, `anomalies`, `analytics`, `export`, `export-range`, `report` and `feed` provide log, alert and export access (see the [Command Reference](#command-reference)).
 - **Response scrubbing** -- Scrubs configured secret values from supported API response paths before returning data to the caller
 - **Script wrapping** -- `phantom wrap` wraps selected runtime/build scripts (`dev`, `start`, `serve`, `build`, `deploy`; anything else, such as `preview`, only with `--only`) and deliberately leaves test, lint, type, and format scripts alone, with the same selection in the CLI and the MCP `phantom_wrap` tool; a script that is a shell command line (`VAR=value cmd`, `a && b`, pipes) is left unchanged and reported, because `phantom exec` runs one program without a shell
 - **Watch mode** -- `phantom watch` reports new unprotected secrets; legacy `--auto` hard-denies before mutation, so protection stays a reviewed transactional `phantom init`
