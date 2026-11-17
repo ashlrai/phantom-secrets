@@ -27,11 +27,26 @@ test("current workspace version release notes include the complete candidate tra
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, new RegExp(`^## \\[${version.replaceAll(".", "\\.")}\\]`, "m"));
   assert.match(result.stdout, /^### Breaking changes and migration$/m);
-  assert.match(result.stdout, /No breaking changes since v0\.8\.10/);
-  assert.match(result.stdout, /npm acceptance follows rehearsal/);
+  assert.match(result.stdout, /No breaking changes since v0\.8\.11/);
+  assert.match(result.stdout, /documentation and test changes only/);
+  // Complete merged-PR set for v0.8.11..6fff4e56; exclude open proposals.
+  const prs = [...result.stdout.matchAll(/\[#(\d+)\]\(https:\/\/github\.com\/ashlrai\/phantom-secrets\/pull\/\1\)/g)];
+  assert.deepEqual(prs.map((match) => Number(match[1])).sort(), [1464, 1465, 1466]);
   assert.doesNotMatch(result.stdout, /^## \[Unreleased\]$/m);
+  assert.doesNotMatch(result.stdout, /^## \[0\.8\.11\]/m);
   assert.doesNotMatch(result.stdout, /^## \[0\.8\.10\]/m);
   assert.doesNotMatch(result.stdout, /^## \[0\.7\.9\]/m);
+});
+
+test("v0.8.11 retains its rehearsal and CodeQL release notes", () => {
+  const result = spawnSync(process.execPath, [extractor, "v0.8.11"], {
+    cwd: repoRoot, encoding: "utf8",
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /No breaking changes since v0\.8\.10/);
+  assert.match(result.stdout, /npm acceptance follows rehearsal/);
+  assert.match(result.stdout, /CodeQL weekly schedule/);
+  assert.doesNotMatch(result.stdout, /^## \[0\.8\.1[02]\]/m);
 });
 
 test("v0.8.7 release notes retain the complete historical tranche", () => {
