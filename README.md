@@ -32,17 +32,17 @@ Source candidate `0.8.11` is not yet a qualified public release; the independent
 
 ## Quick start
 
-About 30 seconds. Paste the blocks below. They are the same commands an agent should run. None of them print a secret value.
+Five steps. Phantom itself never prints a secret value in these steps; step 5 runs your own app, so what it logs is up to that app.
 
-### Install on macOS
+### Get started
 
-```bash
-brew tap ashlrai/phantom && brew trust --formula ashlrai/phantom/phantom && brew install ashlrai/phantom/phantom
-```
+1. **Install.** Download the archive for your OS from the [v0.8.7 release assets](#exact-v087-github-assets), check its `.sha256`, and put `phantom` and `phantom-mcp` on your `PATH`. Check it with `phantom --help`, which lists the commands. Homebrew still serves v0.7.9, which lacks `phantom agent doctor --json`. Other channels and their limits are in [distribution status](docs/distribution-status.md).
+2. **Protect your `.env`.** In your project folder, run `phantom init`. You should see `Found N secret(s) to protect:` followed by one line per key name. Each value moves into the local vault, and `.env` keeps a `phm_` placeholder in its place. No `.env` yet? Run `phantom init --empty`.
+3. **Check the result.** Run `phantom list`, which prints secret names only. Then run `phantom agent doctor`, which rates the repo from `unsafe` to `compliance-ready`.
+4. **Connect your AI client.** Run `phantom setup --client claude`. Use `cursor`, `windsurf`, `codex`, or `gemini` for other clients. Restart the client, then ask it to call `phantom_status` and `phantom_list_secrets`. Do not ask it to reveal values.
+5. **Run your app through the proxy.** Run `phantom exec -- npm start`, or any other command. Phantom starts a proxy on `127.0.0.1` and adds a vault value only to the auth header of a matched route.
 
-Linux and Windows: paste the checksum-checked script in [Installation](#installation). Package channels and their limits are in [distribution status](docs/distribution-status.md).
-
-### Commands
+### Everyday commands
 
 ```bash
 phantom init
