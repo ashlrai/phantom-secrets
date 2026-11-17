@@ -340,3 +340,72 @@ fn inline_extraction_skips_paths_and_cargo_targets() {
             .contains("--env")
     );
 }
+
+/// True when `text` contains `phantom <path>` followed by a non-word character.
+fn mentions_command(text: &str, path: &str) -> bool {
+    let needle = format!("phantom {path}");
+    text.match_indices(&needle).any(|(i, _)| {
+        text[i + needle.len()..]
+            .chars()
+            .next()
+            .is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '-' || c == '_'))
+    })
+}
+
+/// The other direction: a command the CLI ships must be documented. Every
+/// top-level command must appear as `phantom <command>` in README.md, and every
+/// subcommand as `phantom <command> <sub>` in the README or a doc page.
+#[test]
+fn every_cli_command_is_documented() {
+    let mut helper = Helper {
+        home: tempfile::tempdir().expect("tempdir"),
+        cache: HashMap::new(),
+    };
+    let readme = std::fs::read_to_string(repo_root().join("README.md")).expect("read README");
+    let all_docs: String = md_files()
+        .iter()
+        .map(|p| std::fs::read_to_string(p).expect("read doc"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut top: Vec<String> = subcommands(&helper.help(&[]).expect("phantom --help"))
+        .into_iter()
+        .filter(|c| c != "help")
+        .collect();
+    top.sort();
+    assert!(
+        top.len() >= 30,
+        "top-level command list not parsed: {top:?}"
+    );
+    let mut missing = Vec::new();
+    for command in &top {
+        if !mentions_command(&readme, command) {
+            missing.push(format!("README.md has no `phantom {command}`"));
+        }
+        let help = helper
+            .help(std::slice::from_ref(command))
+            .unwrap_or_default();
+        let mut subs: Vec<String> = subcommands(&help)
+            .into_iter()
+            .filter(|s| s != "help")
+            .collect();
+        subs.sort();
+        for sub in subs {
+            if !mentions_command(&all_docs, &format!("{command} {sub}")) {
+                missing.push(format!("no doc mentions `phantom {command} {sub}`"));
+            }
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "CLI commands with no documentation (add a short entry and example):\n{}",
+        missing.join("\n")
+    );
+}
+
+#[test]
+fn command_mention_needs_a_whole_word() {
+    assert!(mentions_command("run `phantom list --json`", "list"));
+    assert!(mentions_command("phantom list", "list"));
+    assert!(!mentions_command("phantom listing", "list"));
+    assert!(!mentions_command("phantom list-all", "list"));
+}
