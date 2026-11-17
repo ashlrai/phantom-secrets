@@ -4,6 +4,33 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+## [0.8.12] - 2026-11-17
+
+### Breaking changes and migration
+
+No breaking changes since v0.8.11. Existing installations require no migration.
+This candidate includes documentation and test changes only.
+
+### Changed (README command reference matches the CLI)
+
+- The README command table now lists every public audit subcommand
+  (`incidents`, `alerts`, `stats`, `anomalies`, `analytics`, `export`,
+  `export-range`, `report`, `feed`), plus `phantom agent status` and
+  `phantom validate history`, with the flags each one accepts in source. ([#1465](https://github.com/ashlrai/phantom-secrets/pull/1465))
+
+### CI (CLI output and error checks)
+
+- Added tests that keep child stdout and stderr separate, confirm quiet
+  execution stays silent for a silent child, and check that unknown commands
+  exit promptly with an error. Output checks cover execution with and without
+  `--scrub-output`. ([#1466](https://github.com/ashlrai/phantom-secrets/pull/1466))
+
+### Changed (maintainer review notes)
+
+- Recorded conflicts blocking an older cleanup proposal and the review
+  needed to preserve current tests and release safeguards. No cleanup or
+  conflict resolution was applied. ([#1464](https://github.com/ashlrai/phantom-secrets/pull/1464))
+
 ## [0.8.11] - 2026-11-16
 
 ### Breaking changes and migration
@@ -3862,8 +3889,9 @@ remain separate evidence gates.
 For older release notes and downloadable artifacts, see [GitHub Releases](https://github.com/ashlrai/phantom-secrets/releases).
 
 <!-- fresh:begin changelog-unreleased-compare -->
-[Unreleased]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.11...HEAD
+[Unreleased]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.12...HEAD
 <!-- fresh:end -->
+[0.8.12]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.11...v0.8.12
 [0.8.11]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.10...v0.8.11
 [0.8.10]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.9...v0.8.10
 [0.8.9]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.8...v0.8.9
