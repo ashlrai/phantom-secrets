@@ -32,7 +32,15 @@ Source candidate `0.8.11` is not yet a qualified public release; the independent
 
 ## Quick start
 
-About 30 seconds. Paste the blocks below. They are the same commands an agent should run. None of them print a secret value.
+```bash
+brew tap ashlrai/phantom && brew trust --formula ashlrai/phantom/phantom && brew install ashlrai/phantom/phantom  # Linux/Windows: see Installation
+cd your-project   # its .env has a line like OPENAI_API_KEY=your-key-here
+phantom init      # moves the value into the local vault; .env now holds a phm_ placeholder
+phantom setup --client claude   # connect your agent (or cursor, windsurf, codex, gemini)
+phantom exec -- claude          # run it behind the local proxy; `phantom list` shows names only
+```
+
+None of these print a secret value. The blocks below are the same path in more detail, and the commands an agent should run.
 
 ### Install on macOS
 
