@@ -168,6 +168,24 @@ publication runbooks.
 - [Getting started](https://github.com/ashlrai/phantom-secrets/blob/main/docs/getting-started.md)
 - [Platform evidence](https://github.com/ashlrai/phantom-secrets/blob/main/docs/platform-support.md)
 
+## Part of the Ashlr ecosystem
+
+Phantom Secrets is one of the open-source tools from [Ashlr](https://ashlr.ai).
+Together they aim to be an autonomous, code-first, agent-native software
+factory: agents write, test, review, and ship the code, and the human acts as a
+passive board member. The long-term goal is open-source recursive
+self-improvement (RSI), where agents improve the tools they build with.
+
+This package installs `phantom-mcp`, the MCP server that ships with the
+`phantom` CLI. Phantom Secrets keeps real API-key values out of agent context,
+so agents can call APIs without holding the keys. The other tools (Phantom,
+Locus, Lexicon, Ashlr MD, Ashlr Stack, and ashlr-plugin) each install and run
+on their own; see the
+[ecosystem list](https://github.com/ashlrai/phantom-secrets#part-of-the-ashlr-ecosystem).
+Coding agents make most changes to this repository through normal pull requests
+and CI; see
+[how agents work on this repo](https://github.com/ashlrai/phantom-secrets#how-agents-work-on-this-repo).
+
 ## License
 
 MIT
