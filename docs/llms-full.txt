@@ -28,6 +28,20 @@ phantom why OPENAI_API_KEY --json
 ```
 <!-- agent-quickstart:end -->
 
+## Ashlr ecosystem
+
+Phantom Secrets is one of the open-source tools from Ashlr (https://ashlr.ai). Together they aim to be an autonomous, code-first, agent-native software factory: agents write, test, review, and ship the code, and the human acts as a passive board member. The long-term goal is open-source recursive self-improvement (RSI), where agents improve the tools they build with. Each tool installs and runs on its own:
+
+- Phantom (`phm`, https://phm.dev): the agent workbench. Source: https://github.com/ashlrai/phantom
+- Phantom Secrets (`phantom`, this repo): keeps real API-key values out of agent context.
+- Locus (`locus`, https://github.com/ashlrai/locus): pins each agent session to one account. This repo ships only an inactive compatibility contract for it (`crates/phantom-locus-contract`).
+- Lexicon (`lexicon`, https://lexicon.ashlr.ai): fixes the words dictation gets wrong.
+- Ashlr MD (https://md.ashlr.ai): a Markdown app with an MCP server.
+- Ashlr Stack (`stack`, https://stack.ashlr.ai): provisions services and stores their keys in Phantom Secrets.
+- ashlr-plugin (https://plugin.ashlr.ai/): token-efficiency tools for Claude Code and Codex.
+
+Coding agents make most changes to this repo through normal pull requests and CI. They follow [AGENTS.md](../AGENTS.md), use only the value-free commands above, and never need a vault value.
+
 ## The Problem
 
 AI coding tools with dotenv filesystem access can put API keys into the LLM context window. They can leak via:

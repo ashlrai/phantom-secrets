@@ -35,6 +35,20 @@ Phantom Secrets is the open-source CLI that helps keep provider credential value
 - Architecture diagram: https://phm.dev/architecture-diagram.png
 - License: MIT
 
+## Ashlr ecosystem
+
+Phantom and Phantom Secrets are two of the open-source tools from Ashlr (https://ashlr.ai). Together they aim to be an autonomous, code-first, agent-native software factory: agents write, test, review, and ship the code, and the human acts as a passive board member. The long-term goal is open-source recursive self-improvement (RSI), where agents improve the tools they build with. Each tool installs and runs on its own:
+
+- Phantom (`phm`, https://phm.dev): the agent workbench. Source: https://github.com/ashlrai/phantom
+- Phantom Secrets (`phantom`, https://phm.dev/secrets): keeps real API-key values out of agent context. Source: https://github.com/ashlrai/phantom-secrets
+- Locus (`locus`, https://github.com/ashlrai/locus): pins each agent session to one account. Phantom Secrets ships only an inactive compatibility contract for it today.
+- Lexicon (`lexicon`, https://lexicon.ashlr.ai): fixes the words dictation gets wrong.
+- Ashlr MD (https://md.ashlr.ai): a Markdown app with an MCP server.
+- Ashlr Stack (`stack`, https://stack.ashlr.ai): provisions services and stores their keys in Phantom Secrets.
+- ashlr-plugin (https://plugin.ashlr.ai/): token-efficiency tools for Claude Code and Codex.
+
+Coding agents make most changes to these repos through normal pull requests and CI. In Phantom Secrets they follow https://github.com/ashlrai/phantom-secrets/blob/main/AGENTS.md and use only value-free commands, so they never need a vault value.
+
 ## Install
 
 Release evidence verified on 2026-11-06. The immutable GitHub `v0.8.7` release at
