@@ -456,6 +456,16 @@ Omitting `--scope` lists all environments. `--scope default` includes both
 legacy bare names and `default/` names. An unknown valid scope returns an empty
 list; the active `.phantom/env` selector is never changed.
 
+## Machine output
+
+Use `--json` for scripts: `phantom env --json`, `phantom audit path --json`,
+and `phantom add NAME --generate --json` print one JSON object on stdout.
+Their `schema` fields are `env.v1`, `audit.path.v1`, and `add.v1`.
+They report names and metadata, never secret values or persistent mappings.
+Command failures print `{"schema":"error.v1","code":"command_failed","message":"..."}`
+on stderr and exit nonzero. Without `--json`, output stays the same.
+Other commands keep their existing JSON support and formats.
+
 ## Scrubbing run logs
 
 Pipe both output streams through the redactor before saving or forwarding logs:
