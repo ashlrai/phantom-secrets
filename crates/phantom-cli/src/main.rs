@@ -6,6 +6,7 @@ mod commands;
 mod dispatch;
 #[cfg(test)]
 mod doc_facts;
+mod exit_codes;
 mod fleet_status;
 mod handshake;
 mod report_file;
@@ -49,6 +50,7 @@ use commands::audit::AuditAction;
                     Daily use     exec · start · stop · status · check · redact · list · add · remove · reveal · copy · env · why · git-credential\n  \
                     Sync & teams  login · logout · cloud · team · sync · pull · export · import · wrap · unwrap\n  \
                     Maintenance   upgrade · watch · rotate · grant · validate · expiry · secrets-expiring-soon · fleet-status · open · audit · leaks · crypto",
+    after_help = exit_codes::HELP_SECTION,
     version
 )]
 struct Cli {
@@ -785,9 +787,17 @@ fn main() -> std::process::ExitCode {
         }
         Ok(Err(error)) if error.downcast_ref::<UsageError>().is_some() => {
             report_error(&error);
-            std::process::ExitCode::from(2)
+            std::process::ExitCode::from(exit_codes::USAGE as u8)
         }
-        Ok(Err(error)) => report_error(&error),
+        Ok(Err(error)) => {
+            report_error(&error);
+            // The documented table in `exit_codes`: a coded failure names its
+            // own status from anywhere in the chain; everything else keeps
+            // the generic command-failure status.
+            std::process::ExitCode::from(
+                exit_codes::code_of(&error).unwrap_or(exit_codes::FAILURE) as u8,
+            )
+        }
         // Propagate a panic on the worker thread as if it happened here so
         // the process still dies with the standard panic exit status.
         Err(panic) => std::panic::resume_unwind(panic),
