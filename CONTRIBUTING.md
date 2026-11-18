@@ -4,6 +4,29 @@ Thanks for helping make safe agentic development practical. Phantom accepts focu
 
 Please read the [Code of Conduct](CODE_OF_CONDUCT.md), [security policy](SECURITY.md), and [threat model](THREAT_MODEL.md) before changing a trust boundary. Report vulnerabilities privately; do not open a public issue for them.
 
+## Agents and the Ashlr ecosystem
+
+Phantom Secrets is one of the open-source tools from [Ashlr](https://ashlr.ai).
+Together they aim to be an autonomous, code-first, agent-native software
+factory: coding agents write, test, review, and ship the code, and the human
+acts as a passive board member. The long-term goal is open-source recursive
+self-improvement (RSI), where agents improve the tools they build with. The
+[README](README.md#part-of-the-ashlr-ecosystem) lists the other tools and how
+each one fits.
+
+Most changes here come from coding agents. They use the same branches, pull
+requests, and CI as human contributors, and this guide applies to both:
+
+- Agents read [AGENTS.md](AGENTS.md) first. It holds their operating rules, the
+  security floor, and how to use Phantom without seeing vault values.
+  [CLAUDE.md](CLAUDE.md) lists the build, test, lint, and format commands.
+- An agent never needs a real secret value to work on this repository. Use the
+  value-free commands such as `phantom status --json` and
+  `phantom why OPENAI_API_KEY --json`, and use fake values in tests.
+- Agent-authored pull requests must pass the same [verification](#verification)
+  gates and follow the same [security guidelines](#coding-and-security-guidelines)
+  as any other change.
+
 Current release state changes with every release, so this file does not pin
 it. See the [latest GitHub release](https://github.com/ashlrai/phantom-secrets/releases/latest),
 the [changelog](CHANGELOG.md), and the [roadmap](ROADMAP.md) for the evidence
