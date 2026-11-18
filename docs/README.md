@@ -10,6 +10,14 @@ archive provenance attestations are bound to that immutable release by
 [workflow 42262099223](https://github.com/ashlrai/phantom-secrets/actions/runs/42262099223).
 See [distribution status](distribution-status.md) for dated npm, Homebrew, crates.io, and MCP Registry evidence. Prefer the checksum-verified `v0.8.7` GitHub assets for an exact install. The GitHub receipt alone does not establish hosted-service commissioning, provider activation, certification, or customer acceptance.
 
+## Where Phantom Secrets fits
+
+Phantom Secrets (the `phantom` CLI and `phantom-mcp` server) is one of the open-source tools from [Ashlr](https://ashlr.ai). Together they aim to be an autonomous, code-first, agent-native software factory: agents write, test, review, and ship the code, and the human acts as a passive board member. The long-term goal is open-source recursive self-improvement (RSI), where agents improve the tools they build with.
+
+This repo's part is keeping real API-key values out of agent context, so agents can call APIs without holding the keys. The other tools (Phantom, Locus, Lexicon, Ashlr MD, Ashlr Stack, and ashlr-plugin) are listed with links in the README's [ecosystem section](../README.md#part-of-the-ashlr-ecosystem). Each one installs and runs on its own. Locus support here is only an inactive compatibility contract today.
+
+Agents make most changes to this repo through normal pull requests and CI. They follow [AGENTS.md](../AGENTS.md), run the build and check commands in [CLAUDE.md](../CLAUDE.md), and use only value-free commands such as `phantom status --json`. See [How agents work on this repo](../README.md#how-agents-work-on-this-repo).
+
 ## Start here
 
 | Goal | Guide |
