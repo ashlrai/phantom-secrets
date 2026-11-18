@@ -741,14 +741,26 @@ written scope.
 
 ## Part of the Ashlr ecosystem
 
-Phantom Secrets is one of the open-source tools from [Ashlr](https://ashlr.ai), a forward-deployed engineering company. Each one installs and runs on its own:
+Phantom Secrets is one of the open-source tools from [Ashlr](https://ashlr.ai), a forward-deployed engineering company. Together they aim to be an autonomous, code-first, agent-native software factory: agents write, test, review, and ship the code, and the human acts as a passive board member. The long-term goal is open-source recursive self-improvement (RSI), where agents improve the tools they build with.
+
+Each tool installs and runs on its own:
 
 - **[Phantom](https://phm.dev)** (`phm`): the agent workbench. Source: [ashlrai/phantom](https://github.com/ashlrai/phantom).
-- **[Locus](https://github.com/ashlrai/locus)** (`locus`): pins each agent session to one account.
+- **Phantom Secrets** (`phantom`, this repo): keeps real API-key values out of agent context, so agents can call APIs without holding the keys.
+- **[Locus](https://github.com/ashlrai/locus)** (`locus`): pins each agent session to one account. This repo ships only an inactive [compatibility contract](crates/phantom-locus-contract) for it today.
 - **[Lexicon](https://lexicon.ashlr.ai)** (`lexicon`): fixes the words dictation gets wrong.
 - **[Ashlr MD](https://md.ashlr.ai)**: a Markdown app with an MCP server.
 - **[Ashlr Stack](https://stack.ashlr.ai)** (`stack`): provisions services and stores their keys in Phantom Secrets.
 - **[ashlr-plugin](https://plugin.ashlr.ai/)** (`ashlr-plugin`): token-efficiency tools for Claude Code and Codex.
+
+### How agents work on this repo
+
+Coding agents make most changes here, through the same pull requests and CI as any contributor.
+
+- [AGENTS.md](AGENTS.md) holds the rules agents follow: autonomy, the security floor, and how to use Phantom itself. [CLAUDE.md](CLAUDE.md) lists the build, test, lint, and format commands.
+- Changes must pass `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, and the workspace tests. CI also runs the docs drift checks listed under [Contributing](#contributing).
+- Agents working here never need a vault value. They use the value-free commands (`phantom status --json`, `phantom why OPENAI_API_KEY --json`). MCP tools that write state are off by default and need approval from a trusted terminal outside the agent.
+- Maintainer roles and decision authority are in [GOVERNANCE.md](GOVERNANCE.md).
 
 ## Contributing
 
