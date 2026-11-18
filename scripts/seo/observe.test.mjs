@@ -756,7 +756,7 @@ test("a multi-page sitemap produces exactly one observation per route", async ()
   });
 });
 
-test("empty aggregate observation inputs remain empty", () => {
+test("empty aggregate observation inputs remain empty", async () => {
   const period = { start: "2026-07-01", end: "2026-07-28", data_state: "final" };
   const aggregateInputs = Object.fromEntries(
     ["gsc", "ga4", "ahrefs"].map((kind) => [kind, {
@@ -772,6 +772,23 @@ test("empty aggregate observation inputs remain empty", () => {
       ...(kind === "ga4" ? { suppressed_rows: 0 } : {}),
     });
   }
+
+  await withFixtureServer(async ({ options }) => {
+    const report = await observeProduction({ ...options, aggregateInputs });
+    assert.equal(report.verdict, "PASS");
+    assert.deepEqual(report.counts, { fail: 0, warn: 0 });
+    assert.deepEqual(report.findings, []);
+    const summary = renderSummary(report);
+    for (const kind of ["gsc", "ga4", "ahrefs"]) {
+      const observations = report.aggregate_inputs[kind];
+      assert.equal(observations.state, "supplied");
+      assert.deepEqual(observations.rows, []);
+      assert.equal(observations.rows.length, 0);
+      assert.match(summary, new RegExp(`- ${kind.toUpperCase()}: supplied`));
+    }
+    assert.equal(report.aggregate_inputs.ga4.suppressed_rows, 0);
+    assert.match(summary, /Findings: 0 failures and 0 warnings\./);
+  });
 });
 
 test("an observation with no experiments or aggregate inputs reports none and invents nothing", async () => {
