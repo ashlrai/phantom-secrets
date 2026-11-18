@@ -173,9 +173,9 @@ fn json_on_a_command_without_json_output_is_a_usage_error() {
     init_project(&dir);
 
     for args in [
-        // `why` and `audit verify` gained JSON output on main; these did not.
-        vec!["audit", "path", "--json"],
-        vec!["--json", "audit", "path"],
+        // These commands still have no JSON output.
+        vec!["audit", "tail", "--json"],
+        vec!["--json", "audit", "tail"],
         vec!["logout", "--json"],
     ] {
         let output = phantom(&dir).args(&args).assert().code(2);
