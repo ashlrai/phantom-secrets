@@ -4,6 +4,33 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Changed (README quick start)
+
+- The README quick start is now five numbered steps: install, `phantom init`
+  (or `phantom init --empty` with no `.env`), `phantom list` and
+  `phantom agent doctor`, `phantom setup --client <client>`, then
+  `phantom exec -- <command>`. It states that Phantom prints no secret value
+  in those steps and that step 5 runs your own app, so that app decides what
+  it logs. The install step points at the verified `v0.8.7` release assets
+  and notes that Homebrew still serves `v0.7.9`.
+
+### CI (nightly full matrix)
+
+- `nightly-full.yml` runs the full CI matrix, macOS and Windows included, on
+  the default branch daily at 08:07 UTC, and on `workflow_dispatch`. Pull
+  requests and the merge queue run only the fast checks. A nightly failure
+  fails that run and shows in the Actions tab. Its permissions are unchanged
+  (`contents: read`, with `id-token: write` only for the coverage upload).
+
+### Tests (documentation drift)
+
+- New doc-facts tests derive the MCP tool count, tool names and parameters,
+  the README command table and `phantom setup --client` values, import
+  sources, completion shells, and documented CLI flags from the clap command
+  tree, the importer dispatcher, and `mcp-registry/server.json`. They fail
+  with the doc line to fix when a doc drifts from the code. They read local
+  files only.
+
 ## [0.8.11] - 2026-11-16
 
 ### Breaking changes and migration
