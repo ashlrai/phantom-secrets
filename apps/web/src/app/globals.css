@@ -2194,6 +2194,47 @@ code, pre, .mono {
   font-size: 0.78rem;
 }
 
+.ashlr-ecosystem {
+  border-block: 1px solid var(--rule);
+  padding: clamp(4rem, 8vw, 6.5rem) 0;
+}
+
+.ashlr-ecosystem__mission,
+.ashlr-ecosystem__agents {
+  max-width: 46rem;
+  margin-top: 1.2rem;
+  color: var(--ink-soft);
+  font-size: 0.94rem;
+  line-height: 1.7;
+}
+
+.ashlr-ecosystem a {
+  color: var(--verified-dark);
+  font-weight: 700;
+}
+
+.ashlr-ecosystem__list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
+  gap: 1.2rem 1.6rem;
+  margin: clamp(2rem, 4vw, 3rem) 0 0;
+  border-top: 1px solid var(--rule-strong);
+  padding: 1.4rem 0 0;
+  list-style: none;
+}
+
+.ashlr-ecosystem__list code {
+  margin-left: 0.5rem;
+  font-size: 0.75rem;
+}
+
+.ashlr-ecosystem__list p {
+  margin-top: 0.45rem;
+  color: var(--ink-soft);
+  font-size: 0.82rem;
+  line-height: 1.6;
+}
+
 .docs-page {
   --paper: #f3f7f8;
   --ink: #071c26;
