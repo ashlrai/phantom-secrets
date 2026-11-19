@@ -44,6 +44,17 @@ to merged pull request. In short:
   ~/.cargo/bin/cargo test -p phantom-secrets --test docs_command_flags_test
   ```
 
+- Before you push, run the two pre-push checks. Neither needs a build, and
+  pull request CI does not validate fragments:
+
+  ```bash
+  node scripts/changelog-fold.mjs --check   # changelog.d/ fragment format
+  git diff main...HEAD | perl .github/tests/secret-shape/scrub.pl --check --allow-fixtures
+  ```
+
+  The second is the local form of the `Secret-shape scan` that `CI Gate`
+  requires; diff against `upstream/main` if your local `main` is stale.
+
 - Add a fragment to [`changelog.d/`](changelog.d/README.md) instead of editing
   `CHANGELOG.md`, and follow the
   [hot-file rule](AGENTS.md#hot-file-rule-avoid-merge-conflicts): a new doc does
