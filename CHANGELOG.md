@@ -4,6 +4,15 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Docs (upkeep audit)
+
+- Audited the README, docs and this changelog against the code on the default
+  branch. The doc-facts tests pass (CLI commands, flags, `setup --client`
+  values, import sources, completion shells, MCP tool count and parameters),
+  so no command or flag text needed changing. The README still pins the
+  verified `v0.8.7` release on purpose: source `0.8.11` is not yet a
+  qualified public release.
+
 ### Changed (README quick start)
 
 - The README quick start is now five numbered steps: install, `phantom init`
@@ -999,8 +1008,8 @@ The `v0.7.9` tag and GitHub Release are not moved or replaced.
   `# DATABASE_URL=postgres://<db-host>/<db>`) committed and scanned
   unreported everywhere, though `phantom doctor` already warned on it.
   All four surfaces now report each commented-out secret assignment by
-  name and each other credential-holding comment — a prose note or a
-  trailing comment — by line, in both `.env` files and `.envrc`, while
+  name and each other credential-holding comment (a prose note or a
+  trailing comment) by line, in both `.env` files and `.envrc`, while
   the staged code scan skips exactly the lines already reported so a
   value is never reported twice.
 
