@@ -21,6 +21,36 @@
 
 If `cargo` is not on your PATH (a fresh rustup install puts it in `~/.cargo/bin`), run `export PATH="$HOME/.cargo/bin:$PATH"` first.
 
+## Contributing as an agent
+
+Most changes here come from coding agents. Read [AGENTS.md](AGENTS.md) for the
+operating rules, then follow
+[Contribute with an agent](CONTRIBUTING.md#contribute-with-an-agent) from fork
+to merged pull request. In short:
+
+- While iterating, `scripts/fast-check.sh main` runs format, Clippy, and tests
+  for only the crates your branch touches plus their dependents.
+- Before opening the pull request, run the full test, format, and Clippy gate
+  above with `--workspace --locked`. Pull request CI does not run the Rust test
+  suite or the docs drift checks, so your local run is the evidence reviewers
+  see; record the exact commands in the
+  [pull request template](.github/PULL_REQUEST_TEMPLATE.md).
+- After editing docs, run the drift checks:
+
+  ```bash
+  node --test scripts/release/readme-mcp-catalog.test.mjs
+  node --test scripts/docs-distribution.test.mjs
+  node --test scripts/hot-file-rule.test.mjs
+  ~/.cargo/bin/cargo test -p phantom-secrets --test docs_command_flags_test
+  ```
+
+- Add a fragment to [`changelog.d/`](changelog.d/README.md) instead of editing
+  `CHANGELOG.md`, and follow the
+  [hot-file rule](AGENTS.md#hot-file-rule-avoid-merge-conflicts): a new doc does
+  not also edit `docs/README.md`.
+- `CI Gate` is the only required check; a passing pull request merges through
+  the merge queue, which reruns it on the queued merge commit.
+
 ## Architecture
 
 Modular Rust workspace with a shipped secret-protection product and separate
