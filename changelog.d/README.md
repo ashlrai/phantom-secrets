@@ -28,7 +28,10 @@ This README is never folded.
 name, at the top of the `## [Unreleased]` section of `CHANGELOG.md`, then
 deletes the fragment files. It refuses to run (and changes nothing) if a
 fragment is malformed or `## [Unreleased]` is missing. Use `--check` to
-validate fragments without writing anything.
+validate fragments without writing anything; run it before you push.
+Pull request and merge-queue CI do not validate fragments. The daily full run
+does (`Crate publication contract` in `ci.yml`), so a malformed fragment
+otherwise merges and fails that run.
 
 The release workflow will run the fold at release time; until that wiring
 lands, a maintainer runs it when cutting a release.
