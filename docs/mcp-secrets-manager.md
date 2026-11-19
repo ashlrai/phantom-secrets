@@ -14,19 +14,15 @@ This guide describes the reviewed public `v0.8.7` release. The runtime
 
 ## Install both reviewed binaries
 
-On macOS:
-
-```bash
-brew tap ashlrai/phantom
-brew trust --formula ashlrai/phantom/phantom
-brew install ashlrai/phantom/phantom
-```
-
-On macOS, Linux, or Windows, you can instead use the exact `v0.8.7` archive for
-your platform from [GitHub Releases](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.8.7).
+On macOS, Linux, or Windows, download the exact `v0.8.7` archive for your
+platform from [GitHub Releases](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.8.7).
 Verify the adjacent SHA-256 checksum and place both `phantom` and `phantom-mcp`
-on `PATH`. Unpinned npm, npx, and Cargo installs are not the reviewed `v0.8.7`
-release path.
+on `PATH`. The [getting-started guide](./getting-started.md#exact-github-assets-macos-linux-and-windows)
+lists all six archives and the verification commands.
+
+The Homebrew formula was last observed at `v0.7.9`, not `v0.8.7`, and unpinned
+npm, npx, and Cargo installs are not the reviewed `v0.8.7` release path. See
+[distribution status](distribution-status.md) for dated channel evidence.
 
 ## Connect an MCP client
 

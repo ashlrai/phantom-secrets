@@ -2,16 +2,18 @@
 
 ## TL;DR
 
+1. Download the [`v0.8.7` archive for your platform](#exact-github-assets-macos-linux-and-windows),
+   check its `.sha256`, and put `phantom` and `phantom-mcp` on `PATH`.
+2. In your project:
+
 ```bash
-brew tap ashlrai/phantom
-brew trust --formula ashlrai/phantom/phantom
-brew install ashlrai/phantom/phantom
 phantom init               # protects your .env
 phantom agent doctor       # verify the repo is safe for AI agents
 phantom exec -- claude     # run Claude Code through the local proxy
 ```
 
-The Homebrew block is the macOS path. See [distribution status](distribution-status.md) for dated npm, Homebrew, crates.io, and MCP Registry evidence. Prefer the checksum-verified `v0.8.7` GitHub assets for an exact install. Select the matching platform asset below on Linux or Windows, or to verify an exact archive directly. A timed Linux walk-through is in [First run](FIRST-RUN.md).
+The archives cover macOS, Linux, and Windows. The Homebrew formula was last
+observed at `v0.7.9`, whose `agent doctor` does not accept `--json`. See [distribution status](distribution-status.md) for dated npm, Homebrew, crates.io, and MCP Registry evidence. A timed Linux walk-through is in [First run](FIRST-RUN.md).
 
 That's the local setup. Keep agent dotenv reads denied and launch supported API
 work through `phantom exec`; Phantom reduces credential exposure, but it does
@@ -36,22 +38,6 @@ For a detailed breakdown of assets protected, threat actors, mitigations, and kn
 ---
 
 ## Install
-
-### Homebrew (macOS; last observed formula v0.7.9)
-
-```bash
-brew tap ashlrai/phantom
-brew trust --formula ashlrai/phantom/phantom
-brew install ashlrai/phantom/phantom
-```
-
-The formula was last observed installing both `phantom` and `phantom-mcp` from the
-immutable [`v0.7.9` release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.9).
-Installs from the former `v0.7.8` formula registered Claude Code MCP in the
-legacy location; after `brew upgrade`, rerun `phantom setup --client claude`
-to migrate, or see the [Claude Code guide](./claude-code.md) for the manual
-step. Homebrew publication is independently tested and maintained from GitHub
-Releases; use a direct asset below when you want explicit archive verification.
 
 ### Exact GitHub assets (macOS, Linux, and Windows)
 
@@ -104,6 +90,23 @@ phantom-mcp --version
 
 Use the ARM64 archive name from the table on ARM64 Linux. The same steps on
 the measurement VM are recorded in [First run](FIRST-RUN.md).
+
+### Homebrew (macOS; last observed formula v0.7.9)
+
+```bash
+brew tap ashlrai/phantom
+brew trust --formula ashlrai/phantom/phantom
+brew install ashlrai/phantom/phantom
+```
+
+The formula was last observed installing both `phantom` and `phantom-mcp` from the
+immutable [`v0.7.9` release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.9),
+not `v0.8.7`. That version's `phantom agent doctor` does not accept `--json`;
+use the archives above for the current release.
+Installs from the former `v0.7.8` formula registered Claude Code MCP in the
+legacy location; after `brew upgrade`, rerun `phantom setup --client claude`
+to migrate, or see the [Claude Code guide](./claude-code.md) for the manual
+step.
 
 ### Build the exact release source
 
