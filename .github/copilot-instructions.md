@@ -39,3 +39,6 @@ If a user pastes a real API key (starts with `sk-`, `ghp_`, `xoxb-`, etc.):
 Agents changing Phantom itself follow [AGENTS.md](../AGENTS.md) for operating
 rules, [CLAUDE.md](../CLAUDE.md) for build, test, lint, and format commands, and
 the "Contribute with an agent" path in [CONTRIBUTING.md](../CONTRIBUTING.md).
+Before pushing, run `node scripts/changelog-fold.mjs --check` and
+`git diff main...HEAD | perl .github/tests/secret-shape/scrub.pl --check --allow-fixtures`;
+the second is the local form of the `Secret-shape scan` that `CI Gate` requires.
