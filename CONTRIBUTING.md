@@ -27,6 +27,37 @@ requests, and CI as human contributors, and this guide applies to both:
   gates and follow the same [security guidelines](#coding-and-security-guidelines)
   as any other change.
 
+### Contribute with an agent
+
+The shortest path from a fork to a merged pull request, for a person or a
+coding agent. Each step links to the detail further down.
+
+1. **Fork and clone.** Fork `ashlrai/phantom-secrets` on GitHub, clone your
+   fork, and branch from `main`. Point your agent at [AGENTS.md](AGENTS.md)
+   and [CLAUDE.md](CLAUDE.md) before it edits anything.
+2. **Set up.** Install the toolchain under
+   [Development setup](#development-setup). The workspace is Rust and has no
+   root `package.json`; Node.js is needed only for the `scripts/*.mjs`
+   checks, the npm wrappers, and `apps/web`.
+3. **Check what you changed.** `scripts/fast-check.sh main` runs format,
+   Clippy, and tests for only the crates your branch touches plus their
+   dependents (it needs Cargo, Node.js, and Python 3; see
+   [Testing affected Rust packages](#testing-affected-rust-packages)). For a
+   docs change, run the drift checks listed in
+   [README.md](README.md#contributing) and any `scripts/*.test.mjs` that
+   reads the file you edited.
+4. **Run the full gate once** before you open the pull request: the three
+   commands under [Verification](#verification). Pull request CI does not run
+   the Rust test suite, so this local run is the test evidence reviewers see.
+5. **Add a changelog fragment** in [`changelog.d/`](changelog.d/README.md),
+   push to your fork, and open the pull request with the template filled in,
+   including the exact commands you ran.
+6. **Merge.** `CI Gate` is the only required check. A pull request that passes
+   it is merged through the merge queue, which reruns `CI Gate` on the queued
+   merge commit. Someone with merge rights merges it or enables GitHub
+   auto-merge. Fork contributors never need write access or repository
+   secrets.
+
 Current release state changes with every release, so this file does not pin
 it. See the [latest GitHub release](https://github.com/ashlrai/phantom-secrets/releases/latest),
 the [changelog](CHANGELOG.md), and the [roadmap](ROADMAP.md) for the evidence
@@ -123,11 +154,17 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
 
-On pull requests, CI classifies the changed paths and skips suites a change
-cannot affect: docs-only changes skip the Rust and web suites, and Rust tests
-run through `cargo nextest` on the touched crates and their dependents. Secret
-scanning and the Rust dependency policy always run. The single `CI Gate` job
-fails if any selected job did not succeed. Pushes to `main` run everything.
+Pull requests and the merge queue run only the fast checks, so run the tests
+above yourself. CI classifies the changed paths first. Every pull request runs
+`Lint` (format and strict Clippy; its Rust steps skip when only docs or web
+paths change), `Rust dependency policy`, `Source secret scan`, and
+`Secret-shape scan`; a change outside docs and web paths also runs the npm
+wrapper tests. The single required `CI Gate` job fails if any selected job did
+not succeed or a deselected job ran. Pushes to `main` trigger no CI. The full
+matrix (tests on macOS, Linux, and Windows, the web app, crate publication,
+and the docs command check) runs daily on `main` through
+[`nightly-full.yml`](.github/workflows/nightly-full.yml) and on manual
+dispatch; a red daily run is fixed forward.
 
 ### Keyring advisory exceptions
 
