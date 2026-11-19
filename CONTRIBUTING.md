@@ -50,9 +50,12 @@ coding agent. Each step links to the detail further down.
    commands under [Verification](#verification). Pull request CI does not run
    the Rust test suite, so this local run is the test evidence reviewers see.
 5. **Add a changelog fragment** in [`changelog.d/`](changelog.d/README.md)
-   instead of editing `CHANGELOG.md`, keep shared index files out of the diff
-   per the [hot-file rule](AGENTS.md#hot-file-rule-avoid-merge-conflicts),
-   push to your fork, and open the pull request with the
+   instead of editing `CHANGELOG.md`, and keep shared index files out of the
+   diff per the [hot-file rule](AGENTS.md#hot-file-rule-avoid-merge-conflicts).
+   Before you push, run the two pre-push checks under
+   [Pull requests](#pull-requests): the fragment check and the secret-shape
+   scan that `CI Gate` requires. Then push to your fork and open the pull
+   request with the
    [template](.github/PULL_REQUEST_TEMPLATE.md) filled in, including the exact
    commands you ran. The template has one command block for code changes and
    one for documentation-only changes; keep the one that applies.
@@ -184,8 +187,9 @@ Neither replaces the full workspace gate above before you open a pull request.
 `scripts/affected-crates.sh`, then runs `cargo fmt --all -- --check`, plus
 `cargo check`, strict Clippy, and `cargo test` for the affected packages. It
 also runs the selector's Python fixture tests, the `scripts/ci/*.test.mjs`
-suites, and the `copy_security_test` integration test. An empty selection
-falls back to the whole workspace. It needs Cargo, Node.js, and Python 3.
+and `scripts/test-sleep-budget.test.mjs` suites, and the `copy_security_test`
+integration test. An empty selection falls back to the whole workspace. It
+needs Cargo, Node.js, and Python 3.
 
 `scripts/affected-tests BASE [HEAD]` prints Cargo package names, one per line,
 for changed workspace crates and their transitive dependents. It uses Cargo's
@@ -315,10 +319,30 @@ pull requests do not. A successful cross-compile or CI matrix does not prove nat
 
 Do not edit `CHANGELOG.md` directly. Add one fragment file to
 [`changelog.d/`](changelog.d/README.md) named `<pr-number-or-slug>.md` with a
-`### Added|Changed|Fixed|Security (topic)` heading and bullets. Fragments are
-folded into the Unreleased section at release time with
-`node scripts/changelog-fold.mjs`, so queued pull requests no longer conflict
-on the changelog.
+level-3 heading that starts with `Added`, `Changed`, `Fixed`, `Security`,
+`Removed`, `Deprecated`, or `CI`, an optional `(topic)`, and bullets. Fragments are folded into the Unreleased section at
+release time with `node scripts/changelog-fold.mjs`, so queued pull requests
+no longer conflict on the changelog.
+
+Run these two checks before you push. Neither needs a build:
+
+```bash
+# Validate changelog fragments without writing anything
+node scripts/changelog-fold.mjs --check
+
+# Secret-shape scan: the same scanner and flags as CI's required job
+git diff main...HEAD | perl .github/tests/secret-shape/scrub.pl --check --allow-fixtures
+```
+
+Pull request and merge-queue CI do not validate fragments; only the daily full
+run does, so a malformed fragment merges and then turns that run red. The
+`Secret-shape scan` job runs on every pull request and `CI Gate` requires it.
+It scans the lines your branch adds, fails on any token-shaped string, and
+prints only a count, never the match. In test paths (`tests/`, `fixtures/`,
+`benches/`, `examples/`, `*_test.*`, `*.test.*`, `*.spec.*`) it allows a
+token that contains `FAKE`, `EXAMPLE`, `DUMMY`, `TEST`, or `XXXX`, so build
+fake values that way. Diff against the branch you forked from; use
+`upstream/main` if your local `main` is stale.
 
 When a rebase or merge still stops on `CHANGELOG.md`, `CLAUDE.md`, `README.md`,
 or a lockfile, `scripts/resolve-merge-conflicts.sh` resolves those paths
