@@ -33,3 +33,9 @@ If a user pastes a real API key (starts with `sk-`, `ghp_`, `xoxb-`, etc.):
 2. Suggest `phantom add <KEY_NAME>` so the replacement value is entered only in the hidden trusted-terminal prompt
 3. Reference the key by name or its phantom token (`phm_...`) in code, not the real value
 4. Never write the real key value into any file
+
+## Working on this repository
+
+Agents changing Phantom itself follow [AGENTS.md](../AGENTS.md) for operating
+rules, [CLAUDE.md](../CLAUDE.md) for build, test, lint, and format commands, and
+the "Contribute with an agent" path in [CONTRIBUTING.md](../CONTRIBUTING.md).

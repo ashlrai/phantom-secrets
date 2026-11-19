@@ -5,43 +5,50 @@ This project uses Phantom Secrets to protect API keys from AI leaks.
 ## Rules
 
 - `.env` contains phantom tokens (`phm_...`), NOT real secrets. This is intentional.
-- Real secrets are in an encrypted vault. Never attempt to read them directly.
+- Real secrets are in an encrypted vault (OS keychain or encrypted file). Never attempt to read them directly.
 - NEVER hardcode API keys in source code.
-- NEVER ask the user to paste real API key values into code files.
+- NEVER ask the user to paste real API key values into chat or code files.
+- NEVER put a secret value in a command line; argv is observable.
 - NEVER log, display, or write real secret values to any file.
 
 ## Available Commands
 
 - `phantom list` — See available secrets (never shows values)
-- `phantom add <name> <value>` — Add a new secret
-- `phantom remove <name>` — Remove a secret
-- `phantom exec -- <command>` — Run code with real credentials injected via proxy
-- `phantom init` — Protect .env secrets
-- `phantom rotate` — Regenerate all phantom tokens
-- `phantom status` — Show vault status and secret count
+- `phantom add <name>` — Add a new secret through the hidden trusted-terminal prompt; run `phantom init --empty` first in a new project
+- `phantom remove <name>` — Remove a secret from the vault
+- `phantom exec -- <command>` — Run code with real credentials injected via the local proxy
+- `phantom init` — Protect .env secrets (stores real values in the vault, rewrites .env with `phm_` tokens)
+- `phantom rotate` — Regenerate all phantom tokens after an attached-terminal challenge; real secrets are unchanged
+- `phantom status` — Show project status
+- `phantom why <KEY>` — Explain whether a variable is protected, without reading the vault
 - `phantom doctor` — Health check
 
 ## MCP Server
 
-Phantom has an MCP server with 9 tools. Add it in Cursor Settings > Features > MCP Servers:
-- Name: `phantom`
-- Command: `npx phantom-secrets-mcp`
+Wire the MCP server into Cursor with `phantom setup --client cursor`
+(writes `~/.cursor/mcp.json`). Setup uses the server bundled in the installed
+`phantom` executable and never downloads a registry package. Check wiring with
+`phantom setup --status`.
 
-### MCP Tools
-
-- `phantom_init` — Protect .env secrets
-- `phantom_list_secrets` — List secret names (never values)
-- `phantom_status` — Show vault and config status
-- `phantom_add_secret` — Add a secret (params: name, value)
-- `phantom_remove_secret` — Remove a secret (params: name)
-- `phantom_rotate` — Regenerate phantom tokens
-- `phantom_cloud_push` — Push encrypted vault to cloud
-- `phantom_cloud_pull` — Pull vault from cloud
-- `phantom_cloud_status` — Check cloud sync status
+The runtime `tools/list` response and `mcp-registry/server.json` are the
+canonical tool catalog. Start with `phantom_capability`. Value-free tools
+include `phantom_status`, `phantom_why`, and `phantom_list_secrets`. MCP never
+accepts or returns secret values: `phantom_add_secret_interactive` returns the
+`phantom add NAME` command for the user to run in a trusted terminal. Mutating
+tools such as `phantom_rotate` and `phantom_remove_secret` require
+`confirm: true` plus a one-use out-of-band `approval_token`, and stay disabled
+unless the operator sets `PHANTOM_MCP_EFFECTS=trusted-terminal`.
 
 ## When You See API Keys
 
 If a user shares a real API key (`sk-*`, `ghp_*`, `xoxb-*`, etc.):
-1. Store it with `phantom add <KEY_NAME> <value>` (or `phantom_add_secret` via MCP)
-2. Reference the phantom token in code, never the real value
-3. Never write the real key into any file
+1. Treat the shared value as exposed and recommend rotating it at the provider
+2. Suggest `phantom add <KEY_NAME>` so the replacement value is entered only in the hidden trusted-terminal prompt
+3. Reference the key by name or its phantom token in code, never the real value
+4. Never write the real key into any file
+
+## Working on this repository
+
+Agents changing Phantom itself follow [AGENTS.md](AGENTS.md) for operating
+rules, [CLAUDE.md](CLAUDE.md) for build, test, lint, and format commands, and
+the "Contribute with an agent" path in [CONTRIBUTING.md](CONTRIBUTING.md).
