@@ -288,7 +288,7 @@ Parallel PRs repeatedly collide on a few shared files (`apps/web/tests/quick-sta
 
 If `cargo` is not on your PATH (a fresh rustup install puts it in `~/.cargo/bin`), run `export PATH="$HOME/.cargo/bin:$PATH"` first.
 
-Documentation drift checks (run them after editing docs):
+Documentation drift checks (run them after editing docs; pull request CI does not run them):
 
 ```bash
 node --test scripts/release/readme-mcp-catalog.test.mjs   # MCP names vs Rust registrations
