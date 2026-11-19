@@ -15,6 +15,41 @@ Synced from the Ashlr Fleet Constitution v3.0 (Nov 1, 2026). This overrides any 
 - Mason only for passwords, 2FA, device approvals and payments (no new spending without him). Nothing private made public.
 - Hold list (Mason's own holds): phantom #197 #878 #743 #725 #738 #744 #693 #1228; phantom-secrets #140 #197 #375 #168 #418 #136; ashlr-plugin #152 #157.
 
+## Where this repo fits
+
+Phantom Secrets (the `phantom` CLI and `phantom-mcp` server) is one of the open-source tools from [Ashlr](https://ashlr.ai). Together they aim to be an autonomous, code-first, agent-native software factory: agents write, test, review, and ship the code, and the human acts as a passive board member. The long-term goal is open-source recursive self-improvement (RSI), where agents improve the tools they build with.
+
+This repo's part is keeping real API-key values out of agent context, so agents can call APIs without holding the keys. The other tools install and run on their own:
+
+- **[Phantom](https://phm.dev)** (`phm`): the agent workbench. Source: [ashlrai/phantom](https://github.com/ashlrai/phantom).
+- **[Locus](https://github.com/ashlrai/locus)** (`locus`): pins each agent session to one account. This repo ships only an inactive [compatibility contract](crates/phantom-locus-contract) for it today.
+- **[Lexicon](https://lexicon.ashlr.ai)** (`lexicon`): fixes the words dictation gets wrong.
+- **[Ashlr MD](https://md.ashlr.ai)**: a Markdown app with an MCP server.
+- **[Ashlr Stack](https://stack.ashlr.ai)** (`stack`): provisions services and stores their keys in Phantom Secrets.
+- **[ashlr-plugin](https://plugin.ashlr.ai/)** (`ashlr-plugin`): token-efficiency tools for Claude Code and Codex.
+
+The README's [ecosystem section](README.md#part-of-the-ashlr-ecosystem) is the canonical list.
+
+## Agent documentation map
+
+Read these instead of guessing. When prose and code disagree, code, closed schemas, tests, and release automation win.
+
+| Need | Source |
+|------|--------|
+| Build, test, lint, format, and repo conventions | [CLAUDE.md](CLAUDE.md), [CONTRIBUTING.md](CONTRIBUTING.md) |
+| Every CLI command | `phantom --help` and `phantom <command> --help`; summarized in [docs/llms-full.txt](docs/llms-full.txt) |
+| Every MCP tool and its exact parameters | Runtime `tools/list`, mirrored in [mcp-registry/server.json](mcp-registry/server.json); names listed in [docs/llms.txt](docs/llms.txt) |
+| Short and full machine-readable guides | [llms.txt](llms.txt), [docs/llms.txt](docs/llms.txt), [docs/llms-full.txt](docs/llms-full.txt) |
+| All human docs by task | [docs/README.md](docs/README.md) |
+| Copy-paste agent setup | [docs/agent-quickstart.md](docs/agent-quickstart.md) |
+| `phantom agent doctor --json` fields | [docs/agent-preflight-contract.md](docs/agent-preflight-contract.md) |
+| Reading `phantom status --json` | [docs/status-consumer-q8.md](docs/status-consumer-q8.md) |
+| `phantom exec` child environment and proxy routes | [docs/exec.md](docs/exec.md) |
+| Per-client setup | [Claude Code](docs/claude-code.md), [Codex](docs/codex.md), [Cursor](docs/cursor.md), [Windsurf](docs/windsurf.md) |
+| Delegating one bounded task | [docs/delegation-quickstart.md](docs/delegation-quickstart.md) |
+| Components and activation status | [docs/architecture.md](docs/architecture.md), [THREAT_MODEL.md](THREAT_MODEL.md) |
+| Install, vault, proxy, or cloud failures | [docs/troubleshooting.md](docs/troubleshooting.md) |
+
 ## Agent quickstart
 
 Run these from the project after installing Phantom. They never print secret values. The walkthrough with MCP file shapes is [docs/agent-quickstart.md](docs/agent-quickstart.md).
@@ -253,6 +288,15 @@ Parallel PRs repeatedly collide on a few shared files (`apps/web/tests/quick-sta
 
 If `cargo` is not on your PATH (a fresh rustup install puts it in `~/.cargo/bin`), run `export PATH="$HOME/.cargo/bin:$PATH"` first.
 
+Documentation drift checks (run them after editing docs):
+
+```bash
+node --test scripts/release/readme-mcp-catalog.test.mjs   # MCP names vs Rust registrations
+node --test scripts/docs-distribution.test.mjs            # release, channel, and quickstart claims
+node --test scripts/hot-file-rule.test.mjs                # hot-file rule stays in this file
+~/.cargo/bin/cargo test -p phantom-secrets --test docs_command_flags_test   # CLI examples vs --help
+```
+
 ## Project structure
 
 - `crates/phantom-cli/`: CLI binary for local protection, proxy, audit, import/export, sync, teams, provider-grant metadata/design foundations, and trusted-terminal workspace setup; live provider issuance/rotation is hard-denied in 0.8.7; use `phantom --help` for the current command inventory
@@ -261,7 +305,7 @@ If `cargo` is not on your PATH (a fresh rustup install puts it in `~/.cargo/bin`
 - `crates/phantom-proxy/`: HTTP reverse proxy that buffers each request body within its size bound, never resolves client headers/bodies, injects only fixed route-owned auth headers, and supports streaming responses including SSE
 - `crates/phantom-mcp/`: MCP server for Claude Code, Cursor, Windsurf, Codex, and other MCP clients
 - `crates/phantom-workspace/`: value-blind, recoverable trusted-terminal workspace setup
-- `crates/phantom-authority/`, `phantom-broker/`, `phantom-runtime/`, `phantom-session/`, `phantom-evidence/`: fail-closed governed-execution foundations; production activation remains unavailable
+- `crates/phantom-authority/`, `phantom-locus-contract/`, `phantom-broker/`, `phantom-runtime/`, `phantom-session/`, `phantom-evidence/`: fail-closed governed-execution foundations; production activation remains unavailable
 - `apps/web/`: Next.js backend + landing page at phm.dev (Supabase + Stripe)
 
 ## Key files
