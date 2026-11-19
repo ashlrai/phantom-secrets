@@ -307,7 +307,9 @@ node scripts/changelog-fold.mjs --check   # changelog.d/ fragment format
 git diff main...HEAD | perl .github/tests/secret-shape/scrub.pl --check --allow-fixtures
 ```
 
-The full path from a fork to a merged pull request is
+On a fork, use `upstream/main` wherever these commands say `main` (for
+example `scripts/fast-check.sh upstream/main`). The full path from a fork to a
+merged pull request is
 [Contribute with an agent](CONTRIBUTING.md#contribute-with-an-agent).
 
 Documentation drift checks (run them after editing docs; pull request CI does not run them):

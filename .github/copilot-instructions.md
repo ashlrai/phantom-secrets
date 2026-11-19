@@ -42,3 +42,4 @@ the "Contribute with an agent" path in [CONTRIBUTING.md](../CONTRIBUTING.md).
 Before pushing, run `node scripts/changelog-fold.mjs --check` and
 `git diff main...HEAD | perl .github/tests/secret-shape/scrub.pl --check --allow-fixtures`;
 the second is the local form of the `Secret-shape scan` that `CI Gate` requires.
+On a fork, diff against `upstream/main` instead of `main`.

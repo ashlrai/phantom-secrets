@@ -47,7 +47,8 @@ cargo test -p phantom-secrets --test docs_command_flags_test
 ```
 
 Pre-push checks, for every change (no build needed; `CI Gate` requires the
-`Secret-shape scan`, and pull request CI does not validate fragments):
+`Secret-shape scan`, and pull request CI does not validate fragments; on a
+fork, diff against `upstream/main`):
 
 ```
 node scripts/changelog-fold.mjs --check

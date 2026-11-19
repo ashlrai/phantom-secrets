@@ -798,6 +798,8 @@ node scripts/changelog-fold.mjs --check   # changelog.d/ fragment format
 git diff main...HEAD | perl .github/tests/secret-shape/scrub.pl --check --allow-fixtures
 ```
 
+On a fork, diff against `upstream/main` instead of `main`.
+
 ## Star history
 
 <a href="https://star-history.com/#ashlrai/phantom-secrets&Date">
