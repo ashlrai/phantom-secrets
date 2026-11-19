@@ -169,8 +169,13 @@ paths change), `Rust dependency policy`, `Source secret scan`, and
 `Secret-shape scan`; a change outside docs and web paths also runs the npm
 wrapper tests. The single required `CI Gate` job fails if any selected job did
 not succeed or a deselected job ran. Two other workflows also run on pull
-request code: [CodeQL](.github/workflows/codeql.yml) scans every pull request
-and each push to `main`, and in the merge queue
+request code; neither is a required check.
+[CodeQL](.github/workflows/codeql.yml) classifies each pull request and
+analyzes only the languages whose files changed: a docs-only pull request
+skips analysis, and Rust is analyzed on a pull request only when a workflow
+file changes. Each push to `main`, a weekly security-extended run, and a
+manual dispatch scan all five languages (Actions, JavaScript/TypeScript,
+Python, Ruby, and Rust). In the merge queue,
 [`pair-secrets`](.github/workflows/pair-secrets.yml) runs an integration test
 when `phantom exec`, MCP, or posture code changes. Pushes to `main` run no `CI`
 workflow jobs. The full matrix (tests on macOS, Linux, and Windows, the web app, crate publication,
