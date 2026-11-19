@@ -97,6 +97,7 @@ phantom setup --client claude
 phantom setup --client cursor
 phantom setup --client windsurf
 phantom setup --client codex
+phantom setup --client gemini
 ```
 
 Version `0.8.11` records the installed local `phantom mcp serve` command when it
@@ -179,7 +180,7 @@ and publish a new vault to the intended fixed membership when offboarding.
   initialization, but explicit reveal/export paths and unrelated copies remain
   the operator's responsibility.
 - Live provider issuance/rotation is hard-denied before credential or network
-  access in 0.7.9. Deployment sync, live validation, cloud operations, and team
+  access in this release. Deployment sync, live validation, cloud operations, and team
   workflows are separate network/persistent effects with their own gates.
 
 Read [SECURITY.md](https://github.com/ashlrai/phantom-secrets/blob/main/SECURITY.md)
