@@ -49,6 +49,7 @@ phantom setup --client claude
 phantom setup --client cursor
 phantom setup --client windsurf
 phantom setup --client codex
+phantom setup --client gemini
 ```
 
 Version `0.8.11` records the installed local `phantom mcp serve` command when it
@@ -102,8 +103,8 @@ Important boundaries:
 - `phantom_setup_workspace` can propose and request trusted-terminal setup; MCP
   does not claim or apply the request.
 - Provider enrollment and live issuance/refresh/renewal/rotation/revocation are
-  hard-denied before credential and network access in 0.7.9, including from
-  MCP. Protocol source and test mocks confer no Locus, broker, provider,
+  hard-denied before credential and network access in this release, including
+  from MCP. Protocol source and test mocks confer no Locus, broker, provider,
   production, or deployment authority.
 - Validation, deployment sync, cloud, and team tools may
   perform network or persistent effects when their required gates are met.
