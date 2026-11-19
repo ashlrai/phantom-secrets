@@ -99,7 +99,7 @@ On a machine where `cargo` is not on `PATH`, invoke the same commands through yo
 |------|---------|
 | `crates/phantom-cli` | Operator CLI and command integration tests. |
 | `crates/phantom-core` | Configuration, dotenv handling, cloud/auth clients, audit, validation, shared policy, and test-only provider protocol scaffolding. Production issuance is disabled. |
-| `crates/phantom-cli/src/commands/grant` | Value-free grant metadata plus compatibility commands that hard-deny enrollment and remote revocation in 0.7.5. |
+| `crates/phantom-cli/src/commands/grant` | Value-free grant metadata plus compatibility commands that hard-deny enrollment and remote revocation. |
 | `crates/phantom-vault` | OS-keychain and encrypted-file vault backends. |
 | `crates/phantom-proxy` | Authenticated loopback proxy, exact route-owned auth-header injection, inert client headers/bodies, response scrubbing, and streaming. |
 | `crates/phantom-mcp` | MCP server, closed parameter schemas, the governed conversation facade, and separately gated compatibility tools. |
@@ -121,8 +121,9 @@ foundations must stay fail closed until the activation boundaries in
 
 The word **grant** has two distinct meanings. Historical provider-grant source
 models credential and renewal metadata, while an authority grant is an inactive
-value-free execution-kernel type. Released 0.7.5 creates no live provider grant:
-enrollment and remote revocation hard-deny before credentials or network. A
+value-free execution-kernel type. Current releases create no live provider
+grant: enrollment and remote revocation hard-deny before credentials or network
+(see `crates/phantom-cli/src/commands/grant/`). A
 provider-grant record must never be accepted as a Locus credential, broker
 lease, or execution permit. Current behavior is specified in
 [`docs/grants-spec.md`](docs/grants-spec.md); the root
@@ -165,6 +166,30 @@ matrix (tests on macOS, Linux, and Windows, the web app, crate publication,
 and the docs command check) runs daily on `main` through
 [`nightly-full.yml`](.github/workflows/nightly-full.yml) and on manual
 dispatch; a red daily run is fixed forward.
+
+### Testing affected Rust packages
+
+Two local iteration aids narrow the Rust checks to what your branch touched.
+Neither replaces the full workspace gate above before you open a pull request.
+
+`scripts/fast-check.sh [BASE [HEAD]]` selects packages with
+`scripts/affected-crates.sh`, then runs `cargo fmt --all -- --check`, plus
+`cargo check`, strict Clippy, and `cargo test` for the affected packages. It
+also runs the selector's Python fixture tests, the `scripts/ci/*.test.mjs`
+suites, and the `copy_security_test` integration test. An empty selection
+falls back to the whole workspace. It needs Cargo, Node.js, and Python 3.
+
+`scripts/affected-tests BASE [HEAD]` prints Cargo package names, one per line,
+for changed workspace crates and their transitive dependents. It uses Cargo's
+resolved graph, including build, development, renamed and optional dependencies.
+An empty list means no Rust packages are affected. Workspace configuration
+changes, unknown crate paths, and unavailable metadata select `ALL`.
+
+Run `make test-affected BASE=main` to test that selection, or `make test-affected`
+to inspect tracked staged and unstaged changes against HEAD. Untracked files are
+excluded; add new files to Git before using this shortcut. Cargo and Python 3
+must be on PATH. Run the selector's fixture tests with
+`python3 scripts/affected-tests.test.py`.
 
 ### Keyring advisory exceptions
 
@@ -308,18 +333,3 @@ is a separate maintainer and legal-policy decision, not an implied requirement.
 ## Questions
 
 Use [GitHub Discussions](https://github.com/ashlrai/phantom-secrets/discussions) for design and usage questions, [GitHub Issues](https://github.com/ashlrai/phantom-secrets/issues) for reproducible defects and accepted work, and [SUPPORT.md](SUPPORT.md) to choose the right public or private route.
-
-### Testing affected Rust packages
-
-`scripts/affected-tests BASE [HEAD]` prints Cargo package names, one per line,
-for changed workspace crates and their transitive dependents. It uses Cargo's
-resolved graph, including build, development, renamed and optional dependencies.
-An empty list means no Rust packages are affected. Workspace configuration
-changes, unknown crate paths, and unavailable metadata select `ALL`.
-
-Run `make test-affected BASE=main` to test that selection, or `make test-affected`
-to inspect tracked staged and unstaged changes against HEAD. Untracked files are
-excluded; add new files to Git before using this shortcut. This is a local
-iteration aid; the full workspace checks above remain required before merging.
-Cargo and Python 3 must be on PATH. Run the selector's fixture tests with
-`python3 scripts/affected-tests.test.py`.
