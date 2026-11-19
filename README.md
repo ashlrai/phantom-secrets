@@ -789,6 +789,15 @@ cargo test -p phantom-secrets --test docs_command_flags_test   # CLI examples vs
 `docs_command_flags_test` checks CLI examples in README.md, AGENTS.md,
 CLAUDE.md, mcp-registry/README.md, and the public docs against CLI help.
 
+Before you push any change, run the two pre-push checks. Neither needs a
+build. `CI Gate` requires the `Secret-shape scan`, and pull request CI does
+not validate [`changelog.d/`](changelog.d/README.md) fragments:
+
+```bash
+node scripts/changelog-fold.mjs --check   # changelog.d/ fragment format
+git diff main...HEAD | perl .github/tests/secret-shape/scrub.pl --check --allow-fixtures
+```
+
 ## Star history
 
 <a href="https://star-history.com/#ashlrai/phantom-secrets&Date">
