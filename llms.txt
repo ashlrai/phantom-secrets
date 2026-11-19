@@ -6,8 +6,18 @@ Phantom replaces managed secrets in `.env` with `phm_` placeholders. A proxy on 
 
 ## 30-second start
 
+Install both binaries from the checksum-verified `v0.8.7` release archive. This is Linux x86_64; take the archive name for macOS, Linux ARM64, or Windows from the [README asset table](README.md#exact-v087-github-assets).
+
 ```bash
-brew tap ashlrai/phantom && brew trust --formula ashlrai/phantom/phantom && brew install ashlrai/phantom/phantom
+archive=phantom-x86_64-unknown-linux-gnu.tar.gz
+base=https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.7
+curl -fsSL -o "$archive" "$base/$archive"
+curl -fsSL -o "$archive.sha256" "$base/$archive.sha256"
+sha256sum -c "$archive.sha256"
+tar -xzf "$archive"
+mkdir -p "$HOME/.local/bin"
+install -m 0755 phantom phantom-mcp "$HOME/.local/bin/"
+export PATH="$HOME/.local/bin:$PATH"
 phantom init
 phantom setup --client claude
 phantom status --json
@@ -15,7 +25,7 @@ phantom list --json
 phantom check --log agent-transcript.jsonl --json
 ```
 
-Linux and Windows installs, and the limits of each package channel, are in [docs/distribution-status.md](docs/distribution-status.md).
+On macOS, check the archive with `shasum -a 256 -c "$archive.sha256"`. The Homebrew formula still serves `v0.7.9`, whose `phantom check` has no `--log` or `--json` and which lacks `phantom agent doctor --json` and `--client gemini`. The limits of each package channel are in [docs/distribution-status.md](docs/distribution-status.md).
 
 `phantom status --json`, `phantom list --json`, and `phantom check --log` are value-free. The log scan reports the file, the line, and the credential shape. The same scan is MCP `phantom_check` with `log_path`.
 
