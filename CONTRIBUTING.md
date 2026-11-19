@@ -52,8 +52,10 @@ coding agent. Each step links to the detail further down.
 5. **Add a changelog fragment** in [`changelog.d/`](changelog.d/README.md)
    instead of editing `CHANGELOG.md`, keep shared index files out of the diff
    per the [hot-file rule](AGENTS.md#hot-file-rule-avoid-merge-conflicts),
-   push to your fork, and open the pull request with the template filled in,
-   including the exact commands you ran.
+   push to your fork, and open the pull request with the
+   [template](.github/PULL_REQUEST_TEMPLATE.md) filled in, including the exact
+   commands you ran. The template has one command block for code changes and
+   one for documentation-only changes; keep the one that applies.
 6. **Merge.** `CI Gate` is the only required check. A pull request that passes
    it is merged through the merge queue, which reruns `CI Gate` on the queued
    merge commit. Someone with merge rights merges it or enables GitHub

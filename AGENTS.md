@@ -37,6 +37,7 @@ Read these instead of guessing. When prose and code disagree, code, closed schem
 | Need | Source |
 |------|--------|
 | Build, test, lint, format, and repo conventions | [CLAUDE.md](CLAUDE.md), [CONTRIBUTING.md](CONTRIBUTING.md) |
+| Fork to merged pull request, and the evidence the PR template asks for | [Contribute with an agent](CONTRIBUTING.md#contribute-with-an-agent), [PR template](.github/PULL_REQUEST_TEMPLATE.md) |
 | Every CLI command | `phantom --help` and `phantom <command> --help`; summarized in [docs/llms-full.txt](docs/llms-full.txt) |
 | Every MCP tool and its exact parameters | Runtime `tools/list`, mirrored in [mcp-registry/server.json](mcp-registry/server.json); names listed in [docs/llms.txt](docs/llms.txt) |
 | Short and full machine-readable guides | [llms.txt](llms.txt), [docs/llms.txt](docs/llms.txt), [docs/llms-full.txt](docs/llms-full.txt) |
