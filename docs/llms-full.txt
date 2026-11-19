@@ -98,7 +98,7 @@ Connection strings such as DATABASE_URL can be detected, vaulted, and replaced i
 - `phantom pull --from vercel --project <id>` — Pull secrets from platforms into vault.
 - `phantom env` — Generate .env.example with secret values masked.
 - `phantom setup` — Configure Claude Code MCP server and permissions automatically.
-- `phantom watch` — Watch managed dotenv files and report newly added unprotected secrets. The compatibility `--auto` flag hard-denies before mutation in 0.7.9; review the file and run transactional `phantom init` from a trusted terminal.
+- `phantom watch` — Watch managed dotenv files and report newly added unprotected secrets. The compatibility `--auto` flag hard-denies before mutation in 0.8.7; review the file and run transactional `phantom init` from a trusted terminal.
 - `phantom why <KEY>` — Explain whether a key is classified as Secret, PublicKey, or NotSecret, and which heuristic matched.
 - `phantom why <KEY> --strict` exits 2 when the key is not protected. A JSON report for a missing key also exits 2. The human view of a missing key is still a command error (exit 1). Without `--strict`, a present key still exits 0.
 - `phantom copy <KEY> --to <DIR> [--rename NEW]` — After exact trusted-terminal confirmation, copy a secret from this initialized project to an initialized target without printing the value. Optional rename in the target project. It refuses an existing target vault entry, config ownership, or managed-dotenv key rather than overwriting it.
@@ -111,6 +111,18 @@ Connection strings such as DATABASE_URL can be detected, vaulted, and replaced i
 - `phantom open [target]` — From an attached trusted terminal, open only the closed aliases `dashboard`, `billing`, `team`, `docs`, `pricing`, `github`, `issues`, or `site`; unknown words, paths, and arbitrary URLs are rejected before browser access.
 - `phantom upgrade [--check-only]` — Managed installs route to their owner and ambiguous installs fail closed. An eligible standalone replacement requires attached terminals and two exact challenges; `--force` is rejected.
 - `phantom completion <bash|zsh|fish|powershell|elvish>` — Print a shell-completion script to stdout.
+- `phantom mcp serve` — Run the MCP stdio server in-process; this is the entry `phantom setup` records for MCP clients.
+- `phantom mcp-approve <NONCE>` — From a trusted terminal, approve a pending MCP nonce printed on the server's stderr; see the approval flow under MCP Tools.
+- `phantom workspace plan [--json]` / `apply --request <ID>` / `status --request <ID> [--json]` — Create a value-free exact setup plan and pending request, claim and apply that request from a trusted terminal, and read its authenticated, value-free status. MCP `phantom_setup_workspace` can propose but never apply.
+- `phantom vault migrate-linux` — From a trusted terminal, copy this Linux project's volatile keyutils vault into Secret Service.
+- `phantom git-credential get [--secret NAME]` — Supply an existing project vault entry (default `GITHUB_TOKEN`) to Git's credential protocol. stdout must be a pipe to Git; `store` and `erase` are effect-free. See [git-credential.md](git-credential.md).
+- `phantom redact --stream` — Scrub known credential shapes from stdin to stdout, flushing each line and rejecting lines over 1 MiB. No vault access; it does not detect arbitrary or encoded secrets.
+- `phantom grant list` / `status` — Read configured grant metadata (provider, state, next renewal) without values. `grant add` returns before any project, vault, browser, or network access, and `grant revoke` fails closed before local mutation; obtain credentials at the provider and store them with `phantom add`. See [grants-spec.md](grants-spec.md).
+- `phantom leaks plan [--min-confidence N] [--json]` — Read-only preview of what automated leak response would do: no writes, no network, no secret values.
+- `phantom crypto inventory [--format text|json]` — List every algorithm and format tag Phantom names, with role, status, and quantum class. Reads no vault, key, or config.
+- `phantom expiry set <KEY> <DAYS>` / `enforce [--fail-closed]` — Record TTL metadata in `.phantom.toml` from a trusted terminal, or exit 1 when any secret has expired (with `--fail-closed`, also when any secret has no expiry policy). `phantom expiry rotate` is a deprecated local `phm_` remap that changes no provider credential.
+- `phantom secrets-expiring-soon [--days N] [--json]` — List expired and expiring secrets (default window 7 days). `--auto-rotate` only remaps local placeholders, and `--sync` is rejected.
+- `phantom fleet-status [--expiring-within DAYS] [--strict] [--json]` — Value-free posture: names, expiry, last validation result, and overdue rotations. `--strict` exits 2 when any secret needs attention or the inventory is partial. See [fleet-status.md](fleet-status.md).
 
 ## Installation
 
@@ -196,7 +208,7 @@ extrapolating this selected catalog.
 
 `phantom_rotate_with_candidate` and `phantom_rotate_promote` are deprecated
 hard denials retained for schema compatibility. They create or promote nothing;
-`phantom_rotate_provider` is also a hard denial in 0.7.9; no MCP approval can
+`phantom_rotate_provider` is also a hard denial in 0.8.7; no MCP approval can
 activate live provider issuance.
 
 `phantom_apply_expiry_policy` demotes expired entries to `VaultMode::ReadOnly`.
