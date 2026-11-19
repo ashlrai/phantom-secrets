@@ -282,12 +282,33 @@ Parallel PRs repeatedly collide on a few shared files (`apps/web/tests/quick-sta
 
 ```bash
 ~/.cargo/bin/cargo build        # Build all crates
-~/.cargo/bin/cargo test --workspace --all-targets --locked --no-fail-fast
-~/.cargo/bin/cargo clippy --all-targets -- -D warnings  # Lint
-~/.cargo/bin/cargo fmt --all    # Format
+~/.cargo/bin/cargo fmt --all    # Format in place
+scripts/fast-check.sh main      # While iterating: fmt check, Clippy, tests for affected crates only
 ```
 
 If `cargo` is not on your PATH (a fresh rustup install puts it in `~/.cargo/bin`), run `export PATH="$HOME/.cargo/bin:$PATH"` first.
+
+Before you open a pull request, run the full gate once. Pull request CI does
+not run the Rust test suite, so this local run is the test evidence reviewers
+see; record the commands in the [PR template](.github/PULL_REQUEST_TEMPLATE.md):
+
+```bash
+~/.cargo/bin/cargo test --workspace --all-targets --locked --no-fail-fast
+~/.cargo/bin/cargo fmt --all -- --check
+~/.cargo/bin/cargo clippy --workspace --all-targets --locked -- -D warnings
+```
+
+Then run the two pre-push checks. Neither needs a build. `CI Gate`, the only
+required check, includes the `Secret-shape scan`; fragments are validated only
+by the daily full run, so check yours locally:
+
+```bash
+node scripts/changelog-fold.mjs --check   # changelog.d/ fragment format
+git diff main...HEAD | perl .github/tests/secret-shape/scrub.pl --check --allow-fixtures
+```
+
+The full path from a fork to a merged pull request is
+[Contribute with an agent](CONTRIBUTING.md#contribute-with-an-agent).
 
 Documentation drift checks (run them after editing docs; pull request CI does not run them):
 
