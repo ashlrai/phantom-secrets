@@ -23,12 +23,27 @@ Authority, values, rollback, and failure-mode notes:
 
 ## How to verify
 
-<!-- Record exact commands, results, platform, and any skipped/blocked gate. -->
+<!-- Record exact commands, results, platform, and any skipped/blocked gate.
+Pull request CI does not run the Rust test suite or the docs drift checks, so
+the commands you list here are the test evidence reviewers see. Keep the block
+that matches your change and delete the other. See "Contribute with an agent"
+in CONTRIBUTING.md. -->
+
+Rust or other code change:
 
 ```
 cargo fmt --all -- --check
 cargo test --workspace --all-targets --locked --no-fail-fast
 cargo clippy --workspace --all-targets --locked -- -D warnings
+```
+
+Documentation-only change (plus any `scripts/*.test.mjs` that reads the file you edited):
+
+```
+node --test scripts/release/readme-mcp-catalog.test.mjs
+node --test scripts/docs-distribution.test.mjs
+node --test scripts/hot-file-rule.test.mjs
+cargo test -p phantom-secrets --test docs_command_flags_test
 ```
 
 | Evidence layer | Exact evidence or explicit limitation |
@@ -45,6 +60,7 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 - [ ] Locked formatting and strict Clippy gates pass for changed Rust code
 - [ ] Relevant npm/web/package checks pass for changed JavaScript or TypeScript
 - [ ] Public docs, help, schemas, and generated mirrors agree with behavior
+- [ ] A `changelog.d/` fragment replaces any direct `CHANGELOG.md` edit, and a new doc does not also edit `docs/README.md` (hot-file rule in AGENTS.md)
 - [ ] No credentials, cookies, device codes, vault values, or persistent `phm_` mappings appear in the diff, fixtures, logs, or screenshots
 - [ ] Secret-bearing buffers follow existing zeroization patterns on success and error paths
 - [ ] Platform coverage, skipped checks, external gates, and remaining limitations are stated
