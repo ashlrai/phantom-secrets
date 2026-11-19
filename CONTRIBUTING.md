@@ -33,8 +33,21 @@ The shortest path from a fork to a merged pull request, for a person or a
 coding agent. Each step links to the detail further down.
 
 1. **Fork and clone.** Fork `ashlrai/phantom-secrets` on GitHub, clone your
-   fork, and branch from `main`. Point your agent at [AGENTS.md](AGENTS.md)
-   and [CLAUDE.md](CLAUDE.md) before it edits anything.
+   fork, add this repository as `upstream`, and branch from its current
+   `main`. Point your agent at [AGENTS.md](AGENTS.md) and
+   [CLAUDE.md](CLAUDE.md) before it edits anything.
+
+   ```bash
+   git clone https://github.com/<your-user>/phantom-secrets.git
+   cd phantom-secrets
+   git remote add upstream https://github.com/ashlrai/phantom-secrets.git
+   git fetch upstream
+   git switch -c my-change upstream/main
+   ```
+
+   The later checks diff against `main`. On a fork, pass `upstream/main`
+   instead (for example `scripts/fast-check.sh upstream/main`) or keep your
+   local `main` in sync with it.
 2. **Set up.** Install the toolchain under
    [Development setup](#development-setup). The workspace is Rust and has no
    root `package.json`; Node.js is needed only for the `scripts/*.mjs`
@@ -87,6 +100,10 @@ Prerequisites:
 - Rust `1.95.0` with `rustfmt` and `clippy` (pinned by `rust-toolchain.toml`)
 - Node.js 22 and npm when changing npm wrappers or `apps/web`
 - A platform keychain only for explicitly ignored/manual keychain tests
+
+Clone your fork as shown in
+[Contribute with an agent](#contribute-with-an-agent), or clone this
+repository directly if you only want to build and test:
 
 ```bash
 git clone https://github.com/ashlrai/phantom-secrets.git
