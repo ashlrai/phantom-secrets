@@ -46,6 +46,14 @@ node --test scripts/hot-file-rule.test.mjs
 cargo test -p phantom-secrets --test docs_command_flags_test
 ```
 
+Pre-push checks, for every change (no build needed; `CI Gate` requires the
+`Secret-shape scan`, and pull request CI does not validate fragments):
+
+```
+node scripts/changelog-fold.mjs --check
+git diff main...HEAD | perl .github/tests/secret-shape/scrub.pl --check --allow-fixtures
+```
+
 | Evidence layer | Exact evidence or explicit limitation |
 |---|---|
 | Source and focused tests | |
