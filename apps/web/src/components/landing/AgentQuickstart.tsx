@@ -2,7 +2,17 @@
 
 import { useState } from "react";
 
-const INSTALL = "brew tap ashlrai/phantom && brew trust --formula ashlrai/phantom/phantom && brew install ashlrai/phantom/phantom";
+// The Homebrew formula still serves v0.7.9, which rejects `agent doctor --json`
+// from COMMANDS below, so this panel installs the v0.8.7 release archive instead.
+const INSTALL = `archive=phantom-aarch64-apple-darwin.tar.gz
+base=https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.7
+curl -fsSL -o "$archive" "$base/$archive"
+curl -fsSL -o "$archive.sha256" "$base/$archive.sha256"
+shasum -a 256 -c "$archive.sha256"
+tar -xzf "$archive"
+mkdir -p "$HOME/.local/bin"
+install -m 0755 phantom phantom-mcp "$HOME/.local/bin/"
+export PATH="$HOME/.local/bin:$PATH"`;
 
 const COMMANDS = `phantom init
 phantom status --json
@@ -41,9 +51,9 @@ function panelCopy(id: PanelId): { file: string; body: string; note: string } {
   switch (id) {
     case "install":
       return {
-        file: "macOS",
+        file: "macOS Apple Silicon (v0.8.7)",
         body: INSTALL,
-        note: "Linux and Windows use the checksum-checked archive in the install guide. This line is the macOS paste.",
+        note: "Other platforms swap in their archive name from the install guide. Homebrew still serves v0.7.9, which lacks agent doctor --json.",
       };
     case "commands":
       return {
