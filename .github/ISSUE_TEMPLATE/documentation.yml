@@ -31,11 +31,12 @@ body:
     id: layer
     attributes:
       label: Which layer does the documentation describe?
+      description: Name the exact release version or commit SHA in your evidence above. The options stay version-free so this form does not go stale.
       options:
-        - Released v0.7.5 GitHub behavior
-        - Released v0.7.5 Homebrew behavior
-        - Failed npm 0.7.4 release candidate
-        - Current 0.7.7 source
+        - A published GitHub release (name the exact version)
+        - A Homebrew tap release (name the exact version)
+        - An npm package release (name the exact version and dist-tag)
+        - Current main source (name the commit SHA)
         - Native artifact or package publication
         - Deployed cloud or provider configuration
         - Roadmap or exploratory design
