@@ -49,7 +49,9 @@ coding agent. Each step links to the detail further down.
 4. **Run the full gate once** before you open the pull request: the three
    commands under [Verification](#verification). Pull request CI does not run
    the Rust test suite, so this local run is the test evidence reviewers see.
-5. **Add a changelog fragment** in [`changelog.d/`](changelog.d/README.md),
+5. **Add a changelog fragment** in [`changelog.d/`](changelog.d/README.md)
+   instead of editing `CHANGELOG.md`, keep shared index files out of the diff
+   per the [hot-file rule](AGENTS.md#hot-file-rule-avoid-merge-conflicts),
    push to your fork, and open the pull request with the template filled in,
    including the exact commands you ran.
 6. **Merge.** `CI Gate` is the only required check. A pull request that passes
@@ -161,8 +163,12 @@ above yourself. CI classifies the changed paths first. Every pull request runs
 paths change), `Rust dependency policy`, `Source secret scan`, and
 `Secret-shape scan`; a change outside docs and web paths also runs the npm
 wrapper tests. The single required `CI Gate` job fails if any selected job did
-not succeed or a deselected job ran. Pushes to `main` trigger no CI. The full
-matrix (tests on macOS, Linux, and Windows, the web app, crate publication,
+not succeed or a deselected job ran. Two other workflows also run on pull
+request code: [CodeQL](.github/workflows/codeql.yml) scans every pull request
+and each push to `main`, and in the merge queue
+[`pair-secrets`](.github/workflows/pair-secrets.yml) runs an integration test
+when `phantom exec`, MCP, or posture code changes. Pushes to `main` run no `CI`
+workflow jobs. The full matrix (tests on macOS, Linux, and Windows, the web app, crate publication,
 and the docs command check) runs daily on `main` through
 [`nightly-full.yml`](.github/workflows/nightly-full.yml) and on manual
 dispatch; a red daily run is fixed forward.
@@ -255,7 +261,8 @@ closed parameter schemas, generated/mirrored registry surfaces, and packaged
 stdio smoke together. After reviewing the runtime effects, regenerate the
 registry file with
 `node scripts/release/mcp-stdio-smoke.mjs target/debug/phantom-mcp 54 mcp-registry/server.json --write-registry`;
-the Linux CI test job runs the same smoke without `--write-registry`. Do not hard-code a catalog count in prose unless release
+the Linux leg of the daily full test run runs the same smoke without
+`--write-registry`. Do not hard-code a catalog count in prose unless release
 automation enforces it.
 
 Ignored keychain tests touch the host OS keychain. Run them only on a disposable test identity after reviewing the test:
@@ -264,7 +271,8 @@ Ignored keychain tests touch the host OS keychain. Run them only on a disposable
 cargo test --workspace -- --ignored
 ```
 
-CI runs the normal Rust suite on macOS, Linux, and Windows. A successful cross-compile or CI matrix does not prove native installer trust, keychain UX, code signing/notarization, shell integration, or end-to-end acceptance on every device; describe exactly what you tested.
+The daily full run tests the normal Rust suite on macOS, Linux, and Windows;
+pull requests do not. A successful cross-compile or CI matrix does not prove native installer trust, keychain UX, code signing/notarization, shell integration, or end-to-end acceptance on every device; describe exactly what you tested.
 
 ## Coding and security guidelines
 
@@ -295,7 +303,11 @@ CI runs the normal Rust suite on macOS, Linux, and Windows. A successful cross-c
 - Avoid volatile counts or version claims unless a test or release script enforces them.
 - Include macOS, Linux, and Windows differences when they affect commands, storage, permissions, shells, packaging, or support.
 - Keep links relative inside the repository so they work in forks and release source archives.
-- Update the [documentation map](docs/README.md) when adding, moving, or retiring a guide.
+- Follow the [hot-file rule](AGENTS.md#hot-file-rule-avoid-merge-conflicts):
+  a pull request that adds a guide does not also edit the
+  [documentation map](docs/README.md), and a new web test goes in a new file
+  under `apps/web/tests/`. Update the map in a separate, dedicated pull request
+  when guides are added, moved, or retired.
 
 ## Pull requests
 
