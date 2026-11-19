@@ -758,7 +758,7 @@ Each tool installs and runs on its own:
 Coding agents make most changes here, through the same pull requests and CI as any contributor.
 
 - [AGENTS.md](AGENTS.md) holds the rules agents follow: autonomy, the security floor, and how to use Phantom itself. [CLAUDE.md](CLAUDE.md) lists the build, test, lint, and format commands.
-- Changes must pass `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, and the workspace tests. CI also runs the docs drift checks listed under [Contributing](#contributing).
+- Changes must pass `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, and the workspace tests. Pull request CI (the required `CI Gate`) runs format, Clippy, dependency policy, and secret scans only. Run the Rust tests and the docs drift checks listed under [Contributing](#contributing) locally before you open a pull request.
 - Agents working here never need a vault value. They use the value-free commands (`phantom status --json`, `phantom why OPENAI_API_KEY --json`). MCP tools that write state are off by default and need approval from a trusted terminal outside the agent.
 - Maintainer roles and decision authority are in [GOVERNANCE.md](GOVERNANCE.md).
 
@@ -772,9 +772,22 @@ project does not assume that a `good first issue` label is populated. Follow
 [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md), and use
 [`SECURITY.md`](SECURITY.md) rather than a public issue for vulnerabilities.
 
-Documentation drift checks: `node --test scripts/release/readme-mcp-catalog.test.mjs`
-compares MCP names to Rust registrations; `cargo test -p phantom-secrets --test docs_command_flags_test`
-checks CLI examples in README.md, AGENTS.md, CLAUDE.md, mcp-registry/README.md, and the public docs against CLI help.
+The shortest path from a fork to a merged pull request, for a person or a
+coding agent, is
+[Contribute with an agent](CONTRIBUTING.md#contribute-with-an-agent).
+
+Documentation drift checks. Pull request CI does not run them, so run them
+locally after editing docs:
+
+```bash
+node --test scripts/release/readme-mcp-catalog.test.mjs   # MCP names vs Rust registrations
+node --test scripts/docs-distribution.test.mjs            # release, channel, and quickstart claims
+node --test scripts/hot-file-rule.test.mjs                # AGENTS.md hot-file rule stays in place
+cargo test -p phantom-secrets --test docs_command_flags_test   # CLI examples vs --help
+```
+
+`docs_command_flags_test` checks CLI examples in README.md, AGENTS.md,
+CLAUDE.md, mcp-registry/README.md, and the public docs against CLI help.
 
 ## Star history
 
