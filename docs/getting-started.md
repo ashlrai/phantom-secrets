@@ -716,4 +716,22 @@ paths, and unknown aliases are rejected before browser access.
 - [Troubleshooting](./troubleshooting.md) — extended issue reference
 - [Threat model](../THREAT_MODEL.md) — assets, actors, mitigations, known gaps, cryptography summary
 - [GitHub repository](https://github.com/ashlrai/phantom-secrets) — source, issues, releases
-- [phm.dev](https://phm.dev) — pricing, cloud sync, team features
+- [Agent quickstart](./agent-quickstart.md) — the value-free command path for an AI agent
+- [phm.dev](https://phm.dev) — hosted site; cloud sync and team features are not yet commissioned for authenticated use (see [Dashboard](#dashboard))
+
+## Where Phantom fits
+
+Phantom Secrets is one of the open-source tools from [Ashlr](https://ashlr.ai).
+Together they aim to be an autonomous, code-first, agent-native software
+factory: agents write, test, review, and ship the code, and the human acts as a
+passive board member. The long-term goal is open-source recursive
+self-improvement (RSI), where agents improve the tools they build with.
+
+This repo's part is keeping real API-key values out of agent context. The other
+tools (Phantom, Locus, Lexicon, Ashlr MD, Ashlr Stack, and ashlr-plugin) each
+install and run on their own; the README's
+[ecosystem section](../README.md#part-of-the-ashlr-ecosystem) links them.
+
+Coding agents make most changes to this repo through normal pull requests and
+CI. See [How agents work on this repo](../README.md#how-agents-work-on-this-repo)
+and [AGENTS.md](../AGENTS.md).
