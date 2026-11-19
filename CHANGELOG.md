@@ -4,6 +4,138 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Changed (README command reference matches the CLI)
+
+- The README command table now lists every public audit subcommand
+  (`incidents`, `alerts`, `stats`, `anomalies`, `analytics`, `export`,
+  `export-range`, `report`, `feed`), plus `phantom agent status` and
+  `phantom validate history`, with the flags each one accepts in source.
+
+### Changed (CLAUDE.md points agents at the contributor path)
+
+- `CLAUDE.md` gains a "Contributing as an agent" section: it links AGENTS.md and
+  the "Contribute with an agent" path in CONTRIBUTING.md, and summarizes
+  `scripts/fast-check.sh`, the full local gate, the docs drift checks, the
+  `changelog.d/` fragment and hot-file rules, and the `CI Gate` merge-queue
+  requirement.
+
+### Fixed (contributor guide matches the current release and local check scripts)
+
+- `CONTRIBUTING.md` no longer pins the provider-grant hard-denial to 0.7.5;
+  the repository map and grant note now describe current releases and point to
+  the `grant` command source, matching the guide's own rule against volatile
+  version claims.
+- The "Testing affected Rust packages" section moved from under "Questions"
+  into "Verification", where the agent path links to it, and now documents
+  `scripts/fast-check.sh [BASE [HEAD]]` and exactly what it runs alongside
+  `scripts/affected-tests` and `make test-affected`.
+
+### Changed (CONTRIBUTING has an agent contributor path and accurate CI)
+
+- `CONTRIBUTING.md` gains a "Contribute with an agent" path: fork, set up,
+  `scripts/fast-check.sh`, the full local gate, a changelog fragment, and how
+  `CI Gate`, the merge queue, and auto-merge finish the pull request.
+- The Verification section now matches `ci.yml`: pull requests and the merge
+  queue run only fast checks, and the full test matrix runs daily through
+  `nightly-full.yml` rather than on pushes to `main`.
+
+### Changed (CONTRIBUTING.md explains the Ashlr ecosystem and agent contributors)
+
+- `CONTRIBUTING.md` now has an "Agents and the Ashlr ecosystem" section: the
+  shared mission, a link to the README's ecosystem list, and how coding agents
+  contribute (AGENTS.md first, value-free commands only, same verification and
+  security gates as any other change).
+
+### Fixed (CONTRIBUTING matches the CI workflows and the hot-file rule)
+
+- `CONTRIBUTING.md` no longer says pull request CI runs the Rust suite on
+  macOS, Linux, and Windows or that "the Linux CI test job" runs the MCP
+  registry smoke; both run in the daily full matrix (`nightly-full.yml`), not
+  on pull requests.
+- "Pushes to `main` trigger no CI" now says no `CI` workflow jobs run, and the
+  Verification section names the other workflows that touch contributions:
+  CodeQL on every pull request and `main` push, and `pair-secrets` in the
+  merge queue when exec, MCP, or posture code changes.
+- The documentation guidelines no longer tell contributors to edit
+  `docs/README.md` alongside a new guide, which contradicted the AGENTS.md
+  hot-file rule; the "Contribute with an agent" path now links that rule.
+
+### Changed (contributors validate changelog fragments before pushing)
+
+- `changelog.d/README.md` now asks contributors to run
+  `node scripts/changelog-fold.mjs --check` before pushing. Pull request and
+  merge-queue CI do not validate fragments; only the daily full run does, so a
+  malformed fragment could merge and turn that run red.
+
+### Fixed (agent rule files match the current CLI and MCP catalog)
+
+- `.cursorrules` no longer tells agents to pass a secret value on the command
+  line (`phantom add <name> <value>` is rejected), no longer claims a fixed
+  9-tool MCP catalog or a `value` parameter on `phantom_add_secret`, and no
+  longer recommends `npx phantom-secrets-mcp`. It now points to
+  `phantom setup --client cursor`, the canonical `tools/list` catalog, and the
+  `confirm` plus out-of-band `approval_token` gates.
+- `.cursorrules` and `.github/copilot-instructions.md` link agents working on
+  Phantom itself to `AGENTS.md`, `CLAUDE.md`, and the agent path in
+  `CONTRIBUTING.md`.
+
+### Fixed (governance matches the agent-authored workflow)
+
+- `GOVERNANCE.md` no longer claims the repository has no `CODEOWNERS` mapping:
+  it describes the active `.github/CODEOWNERS` and notes that the root
+  `CODEOWNERS` is not the one GitHub uses.
+- `GOVERNANCE.md` now names coding agents as a role, states that agents under
+  `AGENTS.md` may merge pull requests that pass `CI Gate` through the merge
+  queue, adds the Ashlr ecosystem and RSI framing, and links the
+  "Contribute with an agent" path.
+
+### Changed (root `llms.txt` explains the Ashlr ecosystem)
+
+- The root `llms.txt` now has an "Ashlr ecosystem" section matching the
+  README: the shared mission, each tool's role, the inactive Locus contract,
+  and how agents work on this repo.
+
+### Changed (documentation map explains where Phantom Secrets fits)
+
+- `docs/README.md` now opens with a "Where Phantom Secrets fits" section: the
+  shared Ashlr mission, this repo's role, a link to the README's ecosystem
+  list, the inactive Locus contract, and how agents work on this repo.
+
+### Changed (the npm package READMEs explain the Ashlr ecosystem)
+
+- The `phantom-secrets` and `phantom-secrets-mcp` npm package READMEs now have
+  a "Part of the Ashlr ecosystem" section: the shared mission, what each
+  package installs, and links to the repository README's ecosystem list and
+  its notes on how coding agents work on this repo.
+
+### Fixed (README describes what pull request CI actually runs)
+
+- The README's "How agents work on this repo" no longer says CI runs the docs
+  drift checks on a change. Pull request and merge-queue CI (`CI Gate`) runs
+  format, Clippy, dependency policy, and secret scans; `ci.yml` skips the
+  Rust tests and the docs command check for `pull_request` and `merge_group`,
+  so contributors run them and the other drift checks locally.
+- The README "Contributing" section now links the "Contribute with an agent"
+  path in `CONTRIBUTING.md` and lists the same four documentation drift checks
+  as `AGENTS.md`, which also notes that pull request CI does not run them.
+
+### Changed (README explains the Ashlr ecosystem and how agents work here)
+
+- The README's "Part of the Ashlr ecosystem" section now states the shared
+  mission (an agent-native software factory aiming at open-source recursive
+  self-improvement), lists Phantom Secrets' own role, and notes that Locus
+  integration is an inactive contract today.
+- A new "How agents work on this repo" subsection points to `AGENTS.md`,
+  `CLAUDE.md`, the required checks, and `GOVERNANCE.md`.
+
+### Changed (the /secrets page explains the Ashlr ecosystem)
+
+- The Phantom Secrets page on the website now has a "Part of the Ashlr
+  ecosystem" section: the shared mission, the seven tools with their commands
+  and links, and how coding agents work on this repo. It mirrors the README
+  section, and `apps/web/tests/ashlr-ecosystem.test.cjs` checks that the two
+  stay in sync.
+
 ### Docs (upkeep audit)
 
 - Audited the README, docs and this changelog against the code on the default
