@@ -73,6 +73,7 @@ const COLLECTIONS = [
       ["Versioned public fact sheet", "/docs/public-fact-sheet"],
       ["Government evaluation", "https://github.com/ashlrai/phantom-secrets/blob/main/docs/government-evaluation.md"],
       ["Contributing", "https://github.com/ashlrai/phantom-secrets/blob/main/CONTRIBUTING.md"],
+      ["Contribute with an agent", "https://github.com/ashlrai/phantom-secrets/blob/main/CONTRIBUTING.md#contribute-with-an-agent"],
       ["Project roadmap", "https://github.com/ashlrai/phantom-secrets/blob/main/ROADMAP.md"],
     ],
   },
