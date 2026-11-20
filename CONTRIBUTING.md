@@ -68,6 +68,8 @@ coding agent. Each step links to the detail further down.
 4. **Run the full gate once** before you open the pull request: the three
    commands under [Verification](#verification). Pull request CI does not run
    the Rust test suite, so this local run is the test evidence reviewers see.
+   To predict `CI Gate` before you push, see
+   [Reproduce the pull request jobs locally](#reproduce-the-pull-request-jobs-locally).
 5. **Add a changelog fragment** in [`changelog.d/`](changelog.d/README.md)
    instead of editing `CHANGELOG.md`, and keep shared index files out of the
    diff per the [hot-file rule](AGENTS.md#hot-file-rule-avoid-merge-conflicts).
@@ -207,6 +209,30 @@ workflow jobs. The full matrix (tests on macOS, Linux, and Windows, the web app,
 and the docs command check) runs daily on `main` through
 [`nightly-full.yml`](.github/workflows/nightly-full.yml) and on manual
 dispatch; a red daily run is fixed forward.
+
+### Reproduce the pull request jobs locally
+
+Each job that `CI Gate` requires on a pull request maps to commands you can
+run before you push. The job definitions in
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) are the source of
+truth, including the pinned `cargo-deny` and `gitleaks` versions; install
+those two tools yourself to run their commands locally.
+
+| Job | When it runs its checks | Local commands |
+|-----|-------------------------|----------------|
+| `Lint` | Any change outside docs and web paths | `node --test scripts/installer-syntax.test.mjs scripts/installer-unwritable-tempdir.test.mjs scripts/installer-path-success-cleanup.test.mjs`, then `cargo fmt --all -- --check` and `cargo clippy --workspace --all-targets --locked -- -D warnings` |
+| `npm wrapper tests and package inspection` | Same scope as the Rust steps of `Lint` | `(cd npm && npm test && npm pack --dry-run)` and `(cd npm-mcp && npm test && npm pack --dry-run)`; CI runs the tests on Node 22 and 24 |
+| `Secret-shape scan` | Every pull request | `git diff main...HEAD \| perl .github/tests/secret-shape/scrub.pl --check --allow-fixtures` |
+| `Rust dependency policy` | Every pull request | `node --test scripts/ci/mcp-registry-publisher.test.mjs .github/tests/mcp-registry-publication.test.mjs`, `git ls-files -z \| node scripts/release/check-dependency-index.mjs`, and `cargo deny --all-features --locked check --deny warnings advisories licenses bans sources` |
+| `Source secret scan` | Every pull request | `node --test scripts/ci/verified-download.test.mjs`, `gitleaks dir . --config .gitleaks.toml --redact --no-banner`, and `node scripts/release/validate-gitleaks-ignore.mjs .gitleaksignore HEAD` |
+
+"Docs and web paths" are the ones `scripts/ci/rust-scope.sh` excludes:
+`docs/`, any root `*.md` or nested `README.md`, `LICENSE`, the issue and pull
+request templates, `apps/web/`, `scripts/supabase/`, `scripts/seo/`, and
+`video/`. Any change under `.github/workflows/` turns the Rust steps back on.
+The dependency-policy job matters most when you add or upgrade a crate: a new
+advisory, a disallowed license or source, or a banned duplicate fails
+`cargo deny` under the policy in [`deny.toml`](deny.toml).
 
 ### Testing affected Rust packages
 
