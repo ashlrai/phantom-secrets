@@ -58,12 +58,19 @@ also replays the Supabase migrations. Run these steps from this directory
 before you open a pull request, and record them in the pull request template:
 
 ```sh
-npm ci
+node --test ../../scripts/supabase/verify-migrations.test.mjs
+npm ci --no-audit
 npm audit --omit=dev --audit-level=moderate
 npm run lint
 npm test
+node --test ../../scripts/seo/observe.test.mjs ../../scripts/seo/observe-sort.test.mjs
 npm run build
 ```
+
+These are the credential-free steps of the daily web job in
+[`.github/workflows/ci.yml`](../../.github/workflows/ci.yml), in the same
+order. That job also replays the Supabase migrations with a pinned Supabase
+CLI; run that replay only when you change `supabase/`.
 
 Keep page copy in line with the CLI. From the repo root,
 `cargo test --locked -p phantom-secrets --test docs_command_flags_test` checks
