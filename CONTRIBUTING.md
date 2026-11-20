@@ -58,7 +58,9 @@ coding agent. Each step links to the detail further down.
    [Testing affected Rust packages](#testing-affected-rust-packages)). For a
    docs change, run the drift checks listed in
    [README.md](README.md#contributing) and any `scripts/*.test.mjs` that
-   reads the file you edited.
+   reads the file you edited. For an `apps/web` change, run the web
+   application commands under [Verification](#verification): pull request CI
+   skips the web job, which runs only in the daily full run.
 4. **Run the full gate once** before you open the pull request: the three
    commands under [Verification](#verification). Pull request CI does not run
    the Rust test suite, so this local run is the test evidence reviewers see.
@@ -281,7 +283,7 @@ for test in npm-mcp/test/*.test.js; do node "$test"; done
 (cd npm-mcp && npm pack --dry-run)
 
 # Web application
-(cd apps/web && npm ci && npm audit --omit=dev --audit-level=moderate && npm test && npm run build)
+(cd apps/web && npm ci && npm audit --omit=dev --audit-level=moderate && npm run lint && npm test && npm run build)
 ```
 
 When an MCP catalog intentionally changes, update the server declarations,

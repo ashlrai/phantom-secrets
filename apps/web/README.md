@@ -52,10 +52,14 @@ dashboard, login, billing, and analytics code reads the variables named in
 
 Coding agents make most changes here through pull requests, like any
 contributor. Follow the root [AGENTS.md](../../AGENTS.md) and
-[CONTRIBUTING.md](../../CONTRIBUTING.md). CI runs these steps from this
-directory, so run them before you open a pull request:
+[CONTRIBUTING.md](../../CONTRIBUTING.md). Pull request and merge-queue CI do
+not run the web job; it runs only in the daily full run on `main`, where it
+also replays the Supabase migrations. Run these steps from this directory
+before you open a pull request, and record them in the pull request template:
 
 ```sh
+npm ci
+npm audit --omit=dev --audit-level=moderate
 npm run lint
 npm test
 npm run build
