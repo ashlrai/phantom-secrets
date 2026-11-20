@@ -54,9 +54,13 @@ coding agent. Each step links to the detail further down.
    checks, the npm wrappers, and `apps/web`.
 3. **Check what you changed.** `scripts/fast-check.sh main` runs format,
    Clippy, and tests for only the crates your branch touches plus their
-   dependents (it needs Cargo, Node.js, and Python 3; see
+   dependents, and it includes uncommitted and untracked files, so you can
+   run it before you commit. The narrowing applies only when every changed
+   file is Rust source under a crate's `src/`; any other changed path, such
+   as a doc, a script, a `Cargo.toml`, or a file under `tests/`, checks the
+   whole workspace (it needs Cargo, Node.js, and Python 3; see
    [Testing affected Rust packages](#testing-affected-rust-packages)). For a
-   docs change, run the drift checks listed in
+   docs-only change, skip it and run the drift checks listed in
    [README.md](README.md#contributing) and any `scripts/*.test.mjs` that
    reads the file you edited. For an `apps/web` change, run the web
    application commands under [Verification](#verification): pull request CI
@@ -212,8 +216,19 @@ Neither replaces the full workspace gate above before you open a pull request.
 `cargo check`, strict Clippy, and `cargo test` for the affected packages. It
 also runs the selector's Python fixture tests, the `scripts/ci/*.test.mjs`
 and `scripts/test-sleep-budget.test.mjs` suites, and the `copy_security_test`
-integration test. An empty selection falls back to the whole workspace. It
-needs Cargo, Node.js, and Python 3.
+integration test. It needs Cargo, Node.js, and Python 3.
+
+With one `BASE` argument, the selection covers the working tree against
+`BASE`, including staged, unstaged, and untracked files; with `BASE HEAD`, it
+covers only committed changes in `BASE...HEAD`; with no argument, it covers
+uncommitted changes against `HEAD`. The selector is deliberately
+conservative: it narrows to packages only when every changed file is a `.rs`
+file under a crate's `src/` directory. Any other path selects the whole
+workspace, including docs, scripts, a `Cargo.toml` or `Cargo.lock`, a
+`build.rs`, and any path with a segment such as `tests` or `fixtures` or a
+name that contains `test`, `helper`, or `config`. An empty selection also
+checks the whole workspace. The selector's cases are in
+`scripts/affected-crates.test.py`.
 
 `scripts/affected-tests BASE [HEAD]` prints Cargo package names, one per line,
 for changed workspace crates and their transitive dependents. It uses Cargo's

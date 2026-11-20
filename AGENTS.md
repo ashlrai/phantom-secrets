@@ -283,7 +283,7 @@ Parallel PRs repeatedly collide on a few shared files (`apps/web/tests/quick-sta
 ```bash
 ~/.cargo/bin/cargo build        # Build all crates
 ~/.cargo/bin/cargo fmt --all    # Format in place
-scripts/fast-check.sh main      # While iterating: fmt check, Clippy, tests for affected crates only
+scripts/fast-check.sh main      # While iterating: fmt check, Clippy, tests for affected crates (whole workspace unless only crate src/*.rs changed)
 ```
 
 If `cargo` is not on your PATH (a fresh rustup install puts it in `~/.cargo/bin`), run `export PATH="$HOME/.cargo/bin:$PATH"` first.

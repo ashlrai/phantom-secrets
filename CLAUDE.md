@@ -29,7 +29,9 @@ operating rules, then follow
 to merged pull request. In short:
 
 - While iterating, `scripts/fast-check.sh main` runs format, Clippy, and tests
-  for only the crates your branch touches plus their dependents.
+  for only the crates your branch touches plus their dependents. It narrows
+  only when every changed file is Rust source under a crate's `src/`; a doc,
+  script, manifest, or `tests/` change checks the whole workspace.
 - Before opening the pull request, run the full test, format, and Clippy gate
   above with `--workspace --locked`. Pull request CI does not run the Rust test
   suite or the docs drift checks, so your local run is the evidence reviewers
