@@ -16,7 +16,7 @@ Phantom Secrets (the `phantom` CLI and `phantom-mcp` server) is one of the open-
 
 This repo's part is keeping real API-key values out of agent context, so agents can call APIs without holding the keys. The other tools (Phantom, Locus, Lexicon, Ashlr MD, Ashlr Stack, and ashlr-plugin) are listed with links in the README's [ecosystem section](../README.md#part-of-the-ashlr-ecosystem). Each one installs and runs on its own. Locus support here is only an inactive compatibility contract today.
 
-Agents make most changes to this repo through normal pull requests and CI. They follow [AGENTS.md](../AGENTS.md), run the build and check commands in [CLAUDE.md](../CLAUDE.md), and use only value-free commands such as `phantom status --json`. See [How agents work on this repo](../README.md#how-agents-work-on-this-repo).
+Agents make most changes to this repo through normal pull requests and CI. They follow [AGENTS.md](../AGENTS.md), run the build and check commands in [CLAUDE.md](../CLAUDE.md), and use only value-free commands such as `phantom status --json`. See [How agents work on this repo](../README.md#how-agents-work-on-this-repo). A person or agent who wants to change the repo follows [Contribute with an agent](../CONTRIBUTING.md#contribute-with-an-agent), the path from a fork to a merged pull request.
 
 ## Start here
 
@@ -82,6 +82,7 @@ Agents make most changes to this repo through normal pull requests and CI. They 
 | Assemble a security or third-party review | [Security and audit index](audit-index.md) |
 | Report a vulnerability | [Security policy](../SECURITY.md) |
 | Evaluate Phantom's security assumptions and known gaps | [Threat model](../THREAT_MODEL.md) |
+| Contribute a change from a fork, as a person or a coding agent | [Contribute with an agent](../CONTRIBUTING.md#contribute-with-an-agent) |
 | Find contribution, support, or project-decision routes | [Community and project health](#community-and-project-health) |
 
 ## Agent and editor integrations
@@ -179,6 +180,11 @@ or production acceptance.
 
 - [Contributing](../CONTRIBUTING.md) — setup, repository map, security rules,
   test tiers, and pull-request expectations
+- [Contribute with an agent](../CONTRIBUTING.md#contribute-with-an-agent) —
+  fork, local checks, changelog fragment, pre-push checks, and the `CI Gate`
+  merge-queue path, for a person or a coding agent
+- [Agent operating rules](../AGENTS.md) — what a coding agent reads before it
+  edits this repository
 - [Support](../SUPPORT.md) — discussions, public issues, private security
   reports, and commercial-evaluation routing
 - [Governance](../GOVERNANCE.md) — maintainer-led decisions, roles, release
