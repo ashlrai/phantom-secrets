@@ -224,12 +224,21 @@ those two tools yourself to run their commands locally.
 | `npm wrapper tests and package inspection` | Same scope as the Rust steps of `Lint` | `(cd npm && npm test && npm pack --dry-run)` and `(cd npm-mcp && npm test && npm pack --dry-run)`; CI runs the tests on Node 22 and 24 |
 | `Secret-shape scan` | Every pull request | `git diff main...HEAD \| perl .github/tests/secret-shape/scrub.pl --check --allow-fixtures` |
 | `Rust dependency policy` | Every pull request | `node --test scripts/ci/mcp-registry-publisher.test.mjs .github/tests/mcp-registry-publication.test.mjs`, `git ls-files -z \| node scripts/release/check-dependency-index.mjs`, and `cargo deny --all-features --locked check --deny warnings advisories licenses bans sources` |
-| `Source secret scan` | Every pull request | `node --test scripts/ci/verified-download.test.mjs`, `gitleaks dir . --config .gitleaks.toml --redact --no-banner`, and `node scripts/release/validate-gitleaks-ignore.mjs .gitleaksignore HEAD` |
+| `Source secret scan` | Every pull request | `node --test scripts/ci/verified-download.test.mjs`, `gitleaks dir . --config .gitleaks.toml --redact --no-banner --max-target-megabytes 5 --timeout 60`, `node --test scripts/release/validate-gitleaks-ignore.test.mjs`, `node scripts/release/validate-gitleaks-ignore.mjs .gitleaksignore HEAD`, and the history scan `gitleaks git . --log-opts='HEAD' --config .gitleaks.toml --gitleaks-ignore-path .gitleaksignore --redact --no-banner --max-target-megabytes 5 --timeout 120` |
 
 "Docs and web paths" are the ones `scripts/ci/rust-scope.sh` excludes:
 `docs/`, any root `*.md` or nested `README.md`, `LICENSE`, the issue and pull
 request templates, `apps/web/`, `scripts/supabase/`, `scripts/seo/`, and
 `video/`. Any change under `.github/workflows/` turns the Rust steps back on.
+`Source secret scan` checks every commit, not only the final tree. CI checks
+out full history and scans `HEAD` plus every branch head of this repository,
+so a token you committed and then deleted on your branch still fails the job.
+Remove it from the branch history (for example with an interactive rebase),
+then force-push your branch. Run the history scan from a full clone: in a
+shallow clone (`git rev-parse --is-shallow-repository` prints `true`) the
+oldest fetched commit appears to add every file, so the scan reports the
+repository's test fixtures as findings. Run `git fetch --unshallow` first.
+
 The dependency-policy job matters most when you add or upgrade a crate: a new
 advisory, a disallowed license or source, or a banned duplicate fails
 `cargo deny` under the policy in [`deny.toml`](deny.toml).
