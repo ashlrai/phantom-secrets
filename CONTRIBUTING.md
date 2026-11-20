@@ -329,14 +329,19 @@ cargo test --locked -p phantom-secrets --test grant_supabase_test
 cargo test --locked -p phantom-secrets --test grant_stripe_test
 cargo test --locked -p phantom-secrets --test grant_revoke_test
 
-# npm wrappers
-npm --prefix npm test
-for test in npm-mcp/test/*.test.js; do node "$test"; done
-(cd npm-mcp && npm pack --dry-run)
+# npm wrappers: the same steps as CI's npm wrapper job
+(cd npm && npm test && npm pack --dry-run)
+(cd npm-mcp && npm test && npm pack --dry-run)
 
-# Web application
-(cd apps/web && npm ci && npm audit --omit=dev --audit-level=moderate && npm run lint && npm test && npm run build)
+# Web application: the credential-free steps of the daily web job
+(cd apps/web && node --test ../../scripts/supabase/verify-migrations.test.mjs && npm ci --no-audit && npm audit --omit=dev --audit-level=moderate && npm run lint && npm test && node --test ../../scripts/seo/observe.test.mjs ../../scripts/seo/observe-sort.test.mjs && npm run build)
 ```
+
+The daily web job also pins its npm audit CLI version and then replays every
+Supabase migration against a local database with a pinned Supabase CLI. Both
+pins are in [`.github/workflows/ci.yml`](.github/workflows/ci.yml); that replay
+needs the Supabase CLI and a container runtime, so run it only when you change
+`apps/web/supabase/`.
 
 When an MCP catalog intentionally changes, update the server declarations,
 closed parameter schemas, generated/mirrored registry surfaces, and packaged
