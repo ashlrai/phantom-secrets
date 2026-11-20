@@ -64,7 +64,10 @@ coding agent. Each step links to the detail further down.
    [README.md](README.md#contributing) and any `scripts/*.test.mjs` that
    reads the file you edited. For an `apps/web` change, run the web
    application commands under [Verification](#verification): pull request CI
-   skips the web job, which runs only in the daily full run.
+   skips the web job, which runs only in the daily full run. When the change
+   shows a `phantom` command in `apps/web/src` or `apps/web/public/llms*.txt`,
+   also run `cargo test --locked -p phantom-secrets --test docs_command_flags_test`,
+   which checks those commands against the CLI help.
 4. **Run the full gate once** before you open the pull request: the three
    commands under [Verification](#verification). Pull request CI does not run
    the Rust test suite, so this local run is the test evidence reviewers see.
