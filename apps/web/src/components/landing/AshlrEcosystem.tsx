@@ -80,6 +80,13 @@ export function AshlrEcosystem() {
           run the checks in{" "}
           <a href="https://github.com/ashlrai/phantom-secrets/blob/main/CLAUDE.md">CLAUDE.md</a>,
           and use only value-free commands such as <code>phantom status --json</code>.
+          A person or agent can follow{" "}
+          <a href="https://github.com/ashlrai/phantom-secrets/blob/main/CONTRIBUTING.md#contribute-with-an-agent">
+            Contribute with an agent
+          </a>{" "}
+          from a fork to a merged pull request: <code>CI Gate</code> is the only
+          required check, and fork contributors need no write access or repository
+          secrets.
         </p>
       </div>
     </section>
