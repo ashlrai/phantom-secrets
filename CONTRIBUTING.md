@@ -258,7 +258,13 @@ integration test. It needs Cargo, Node.js, and Python 3.
 With one `BASE` argument, the selection covers the working tree against
 `BASE`, including staged, unstaged, and untracked files; with `BASE HEAD`, it
 covers only committed changes in `BASE...HEAD`; with no argument, it covers
-uncommitted changes against `HEAD`. The selector is deliberately
+uncommitted changes against `HEAD`. The one-argument form compares with the
+tip of `BASE`, not the merge base, so after `git fetch upstream` moves
+`upstream/main`, files changed upstream since you branched count as yours and
+the selection widens, often to the whole workspace. Rebase onto the new base
+first (`git rebase upstream/main`), or run
+`scripts/fast-check.sh upstream/main HEAD` to check only your committed
+changes since the merge base. The selector is deliberately
 conservative: it narrows to packages only when every changed file is a `.rs`
 file under a crate's `src/` directory. Any other path selects the whole
 workspace, including docs, scripts, a `Cargo.toml` or `Cargo.lock`, a
