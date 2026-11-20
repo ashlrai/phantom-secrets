@@ -191,8 +191,10 @@ above yourself. CI classifies the changed paths first. Every pull request runs
 paths change), `Rust dependency policy`, `Source secret scan`, and
 `Secret-shape scan`; a change outside docs and web paths also runs the npm
 wrapper tests. The single required `CI Gate` job fails if any selected job did
-not succeed or a deselected job ran. Two other workflows also run on pull
-request code; neither is a required check.
+not succeed or a deselected job ran. Three other workflows also run on pull
+request code; none is a required check.
+[First-run scorecard](.github/workflows/first-run.yml) runs on a pull request
+only when that workflow or `scripts/bench/first-run.sh` changes.
 [CodeQL](.github/workflows/codeql.yml) classifies each pull request and
 analyzes only the languages whose files changed: a docs-only pull request
 skips analysis, and Rust is analyzed on a pull request only when a workflow

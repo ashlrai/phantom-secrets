@@ -375,7 +375,9 @@ pinned benchmark for explicit network stacks, modular crates, runnable
 examples, and tiered platform CI. Rama is not a dependency, and no feature or
 platform parity is claimed.
 
-MIT licensed. CI runs the Rust test suite and clippy across the workspace before release.
+MIT licensed. The daily full CI run and the tag release workflow run the
+workspace Rust test suite and strict Clippy; pull request CI runs Clippy for Rust
+changes but not the Rust test suite, so contributors run the tests locally.
 
 ## Common Use Cases
 

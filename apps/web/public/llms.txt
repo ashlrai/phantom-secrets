@@ -49,6 +49,8 @@ Phantom and Phantom Secrets are two of the open-source tools from Ashlr (https:/
 
 Coding agents make most changes to these repos through normal pull requests and CI. In Phantom Secrets they follow https://github.com/ashlrai/phantom-secrets/blob/main/AGENTS.md and use only value-free commands, so they never need a vault value.
 
+To change Phantom Secrets, a person or agent follows Contribute with an agent (https://github.com/ashlrai/phantom-secrets/blob/main/CONTRIBUTING.md#contribute-with-an-agent): fork, add the repository as `upstream`, and branch from `upstream/main`; iterate with `scripts/fast-check.sh upstream/main`, which checks only the affected crates when every changed file is Rust source under a crate's `src/` and the whole workspace otherwise; run the full `cargo test`, `cargo fmt --check`, and strict Clippy gate once before opening the pull request, because pull request CI does not run the Rust test suite; add a `changelog.d/` fragment instead of editing `CHANGELOG.md`; before pushing, run `node scripts/changelog-fold.mjs --check` and `git diff upstream/main...HEAD | perl .github/tests/secret-shape/scrub.pl --check --allow-fixtures`, the local form of the `Secret-shape scan` that `CI Gate` requires; and fill in the pull request template with the exact commands run. `CI Gate` is the only required check, and a passing pull request merges through the merge queue. Fork contributors need no write access or repository secrets.
+
 ## Install
 
 Release evidence verified on 2026-11-06. The immutable GitHub `v0.8.7` release at
