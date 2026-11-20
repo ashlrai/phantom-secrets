@@ -33,7 +33,7 @@ LiteLLM can sit on either side of Phantom; [litellm.md](litellm.md) has both set
 
 `examples/temporal-codec-python` is a sketch of a Temporal payload codec, not a supported product.
 
-- Round trip, key rotation by key id, tamper and unknown-key rejection, and key length are unit tested with fake keys. Tests: `test_codec.py` (`test_round_trip`, `test_old_key_still_decodes_after_rotation`, `test_tamper_and_unknown_key_rejected`, `test_key_length_enforced`). CI runs them (#307).
+- Round trip, key rotation by key id, tamper and unknown-key rejection, and key length are unit tested with fake keys. Tests: `test_codec.py` (`test_round_trip`, `test_old_key_still_decodes_after_rotation`, `test_tamper_and_unknown_key_rejected`, `test_key_length_enforced`). The daily full CI run and manual CI runs execute them (#307); pull requests do not.
 - The codec key can reach the worker through an inherited file descriptor, not argv or the environment. Test: `test_key_reaches_child_without_argv_or_environ` (`test_key_delivery.py`, Linux only).
 - Limit: the codec does not get its key from the Phantom proxy, and it has not had a cryptographer's review. See the example's README.
 

@@ -692,7 +692,7 @@ dependency, and the comparison is not a feature or platform-parity claim.
 
 **Registry tracks**: See [distribution status](docs/distribution-status.md) for dated npm, Homebrew, crates.io, and MCP Registry evidence. Prefer the checksum-verified `v0.8.7` GitHub assets for an exact install.
 
-CI runs locked, all-target workspace builds and tests on macOS, Linux, and Windows runner environments, plus formatting, Clippy, and npm release-mapping checks. Release builds and native end-to-end acceptance are separate evidence layers; see [Platform support](docs/platform-support.md).
+The daily full CI run on `main` builds and tests the locked workspace, all targets, on macOS, Linux, and Windows runner environments and checks the npm and installer platform mappings. Pull requests and the merge queue run only the fast checks (formatting, Clippy, dependency policy, secret scans, and, for code changes, the npm wrapper tests). Release builds and native end-to-end acceptance are separate evidence layers; see [Platform support](docs/platform-support.md).
 
 ## Security
 
@@ -786,8 +786,11 @@ node --test scripts/hot-file-rule.test.mjs                # AGENTS.md hot-file r
 cargo test -p phantom-secrets --test docs_command_flags_test   # CLI examples vs --help
 ```
 
-`docs_command_flags_test` checks CLI examples in README.md, AGENTS.md,
-CLAUDE.md, mcp-registry/README.md, and the public docs against CLI help.
+`docs_command_flags_test` checks every documented `phantom` command and flag
+against CLI help: fenced examples in README.md, AGENTS.md, CLAUDE.md,
+mcp-registry/README.md, llms.txt, docs/llms.txt, docs/llms-full.txt, and every
+top-level docs/*.md, plus inline commands in the web sources under
+apps/web/src and apps/web/public/llms*.txt. Run it after changing any of them.
 
 Before you push any change, run the two pre-push checks. Neither needs a
 build. `CI Gate` requires the `Secret-shape scan`, and pull request CI does
