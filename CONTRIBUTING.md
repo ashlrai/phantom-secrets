@@ -165,6 +165,14 @@ On a machine where `cargo` is not on `PATH`, invoke the same commands through yo
 | `npm`, `npm-mcp` | Native-binary download and launch wrappers. |
 | `apps/web` | Next.js application and Phantom Cloud API. |
 | `docs` | User guides, integration guides, static site assets, and the [documentation map](docs/README.md). |
+| `mcp-registry` | MCP Registry manifest (`server.json`), which must match the runtime `tools/list`, and the registry listing README. |
+| `examples` | Value-free examples and recipes; the [examples index](examples/README.md) states each one's status. |
+| `integrations` | GitHub Actions, Homebrew, Railway, and Vercel integration notes. Each README states what works today; the GitHub Action is disabled in this release. |
+| `eval/leak-rate` | Reproducible leak-rate harness and its results table. |
+| `scripts` | Installers (`install.sh`, `install.ps1`), local check helpers (`fast-check.sh`, the affected-package selectors, `changelog-fold.mjs`), and the `*.test.mjs` docs and installer suites. `scripts/ci` holds CI change classification, `scripts/release` release and publication checks, and `scripts/freshness` the generator for versioned doc blocks. |
+| `.github` | Workflows (`ci.yml` defines `CI Gate`), the pull request and issue templates, `CODEOWNERS`, and the secret-shape scanner in `.github/tests/secret-shape`. |
+| `changelog.d` | One changelog fragment per pull request; see [Pull requests](#pull-requests). |
+| `seo`, `video` | Search-observation experiment config read by `scripts/seo`, and the Remotion demo-video project. Neither is part of the shipped CLI. |
 
 Do not infer production activation from a crate's presence. The execution-kernel
 foundations must stay fail closed until the activation boundaries in
@@ -477,7 +485,7 @@ Pull request and merge-queue CI do not validate fragments; only the daily full
 run does, so a malformed fragment merges and then turns that run red. The
 `Secret-shape scan` job runs on every pull request and `CI Gate` requires it.
 It scans the lines your branch adds, fails on any token-shaped string, and
-prints only a count, never the match. In test paths (`tests/`, `fixtures/`,
+prints only a count, never the match. In test paths (`test/`, `tests/`, `fixtures/`,
 `benches/`, `examples/`, `*_test.*`, `*.test.*`, `*.spec.*`) it allows a
 token that contains `FAKE`, `EXAMPLE`, `DUMMY`, `TEST`, or `XXXX`, so build
 fake values that way. Diff against the branch you forked from; use
