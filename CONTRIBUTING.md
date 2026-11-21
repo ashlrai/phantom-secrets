@@ -61,9 +61,14 @@ coding agent. Each step links to the detail further down.
    as a doc, a script, a `Cargo.toml`, or a file under `tests/`, checks the
    whole workspace (it needs Cargo, Node.js, and Python 3; see
    [Testing affected Rust packages](#testing-affected-rust-packages)). For a
-   docs-only change, skip it and run the drift checks listed in
-   [README.md](README.md#contributing) and any `scripts/*.test.mjs` that
-   reads the file you edited. For an `apps/web` change, run the web
+   docs-only change, skip it and run the docs drift checks, which pull
+   request CI also skips:
+   `node --test scripts/release/readme-mcp-catalog.test.mjs`,
+   `node --test scripts/docs-distribution.test.mjs`,
+   `node --test scripts/hot-file-rule.test.mjs`, and
+   `cargo test --locked -p phantom-secrets --test docs_command_flags_test`
+   (see [README.md](README.md#contributing) for what each one checks), plus
+   any `scripts/*.test.mjs` that reads the file you edited. For an `apps/web` change, run the web
    application commands under [Verification](#verification): pull request CI
    skips the web job, which runs only in the daily full run. When the change
    shows a `phantom` command in `apps/web/src` or `apps/web/public/llms*.txt`,
