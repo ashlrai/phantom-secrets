@@ -246,7 +246,10 @@ file changes. Each push to `main`, a weekly security-extended run, and a
 manual dispatch scan all five languages (Actions, JavaScript/TypeScript,
 Python, Ruby, and Rust). In the merge queue,
 [`pair-secrets`](.github/workflows/pair-secrets.yml) runs an integration test
-when `phantom exec`, MCP, or posture code changes. Pushes to `main` run no `CI`
+when `phantom exec`, MCP, or posture code changes. That test fails closed
+until the `ashlrai/phantom` side of it is wired in (the TODO is in
+[`scripts/integration/pair-secrets.sh`](scripts/integration/pair-secrets.sh)),
+so expect it to be red when it runs. Pushes to `main` run no `CI`
 workflow jobs. The full matrix (tests on macOS, Linux, and Windows, the
 Windows ARM64 source check, the web app, crate publication, the Temporal codec
 example tests, and the docs command check) runs daily on `main` through
@@ -313,6 +316,12 @@ its check name and local commands.
 3. If the error says `changes: failure`, the `Classify changes` job itself
    failed; read its log instead. `gate inventory drift` means a change to
    `ci.yml` added or removed a job without updating the gate's job list.
+
+Only `CI Gate` blocks a merge. A red check from another workflow on the pull
+request or in the merge queue, such as CodeQL, the first-run scorecard, or
+`pair-secrets` (which fails closed today, as described under
+[Verification](#verification)), does not hold the pull request. Read it for
+real findings, but it does not need to be green for the merge.
 
 The merge queue reruns the same jobs on the queued merge commit. If `CI Gate`
 fails there, GitHub removes the pull request from the queue. This usually
