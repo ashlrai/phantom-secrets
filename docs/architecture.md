@@ -127,7 +127,7 @@ leases, or proof that the inactive execution kernel is active.
 ### Provider-grant foundations
 
 Provider protocol source and value-free metadata remain design foundations.
-In 0.7.9, CLI single-provider rotation, batch rotation, MCP rotation, enrollment
+In current releases, CLI single-provider rotation, batch rotation, MCP rotation, enrollment
 exchange, additive issuance, rolling refresh, and remote revocation all fail
 before provider credential access and before network I/O. Exact `cfg(test)`
 mocks prove local transaction scaffolding only, not provider activation,
