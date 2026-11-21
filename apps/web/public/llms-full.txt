@@ -212,7 +212,7 @@ Show project ID, vault backend, secret count, service mappings, proxy state.
 
 ### phantom doctor
 Health check: config validity, vault access, .env protection, .gitignore, .env.example, pre-commit hook.
-Options: --fix (auto-fix safe issues), --strict (exit 2 when any issue is present, including warnings; without it a finished report still exits 0)
+Options: --fix (auto-fix safe issues), --expiry (also warn about expired or soon-to-expire secrets), --json (one JSON report on stdout), --strict (exit 2 when any issue is present, including warnings; without it a finished report still exits 0), --output PATH (write the full report to a new file, never overwritten, and print a one-line summary), --pq (read-only post-quantum readiness report instead of the health checks), --all (one read-only report combining the health checks, the post-quantum report, agent readiness, MCP approval status, and the gateway base-URL environment; fixes nothing). --strict and --output do not apply to --pq or --all.
 Example: phantom doctor --strict
 
 ### phantom check
