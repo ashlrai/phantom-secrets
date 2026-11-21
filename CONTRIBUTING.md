@@ -68,7 +68,15 @@ coding agent. Each step links to the detail further down.
    `node --test scripts/hot-file-rule.test.mjs`, and
    `cargo test --locked -p phantom-secrets --test docs_command_flags_test`
    (see [README.md](README.md#contributing) for what each one checks), plus
-   any `scripts/*.test.mjs` that reads the file you edited. For an `apps/web` change, run the web
+   every suite that reads the file you edited. Not all of them are under
+   `scripts/`: suites in `apps/web/tests/` also check root files such as
+   `CONTRIBUTING.md`, `README.md`, and the PR template, and only the daily
+   web job runs them. List them by the edited file's name, for example
+   `git grep -l -F CONTRIBUTING.md -- '*.test.*'`, and run each with
+   `node --test <file>`. A web suite that loads a package, such as
+   `apps/web/tests/public-claims.test.cjs` (which needs `typescript`), fails
+   with `Cannot find module` until you run `(cd apps/web && npm ci --no-audit)`.
+   For an `apps/web` change, run the web
    application commands under [Verification](#verification): pull request CI
    skips the web job, which runs only in the daily full run. When the change
    shows a `phantom` command in `apps/web/src` or `apps/web/public/llms*.txt`,
