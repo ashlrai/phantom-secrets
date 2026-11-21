@@ -1,0 +1,56 @@
+// Every file a coding agent may start from must point at the contributor path
+// and name the two pre-push checks, so an agent that begins in Cursor, Copilot,
+// Devin, Claude Code, or an llms.txt reader does not push a malformed changelog
+// fragment or a token-shaped string. Pull request CI validates neither the
+// fragment format nor these docs, so this test is the guard.
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import test from "node:test";
+
+const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+
+const ENTRY_POINTS = [
+  "AGENTS.md",
+  "CLAUDE.md",
+  "CONTRIBUTING.md",
+  "README.md",
+  "llms.txt",
+  "docs/llms.txt",
+  "docs/llms-full.txt",
+  ".cursorrules",
+  ".github/copilot-instructions.md",
+  ".github/PULL_REQUEST_TEMPLATE.md",
+  ".devin/wiki.json",
+];
+
+const FRAGMENT_CHECK = "node scripts/changelog-fold.mjs --check";
+const SECRET_SHAPE_SCAN =
+  "git diff main...HEAD | perl .github/tests/secret-shape/scrub.pl --check --allow-fixtures";
+
+for (const file of ENTRY_POINTS) {
+  const text = readFileSync(resolve(root, file), "utf8");
+
+  test(`${file} names the changelog fragment check`, () => {
+    assert.ok(text.includes(FRAGMENT_CHECK), `${file} is missing \`${FRAGMENT_CHECK}\``);
+  });
+
+  test(`${file} names the local Secret-shape scan`, () => {
+    assert.ok(text.includes(SECRET_SHAPE_SCAN), `${file} is missing the Secret-shape scan command`);
+  });
+
+  test(`${file} tells fork contributors to diff against upstream/main`, () => {
+    assert.ok(text.includes("upstream/main"), `${file} does not mention upstream/main`);
+  });
+
+  test(`${file} points at the contributor path`, () => {
+    assert.match(text, /Contribute with an agent|contribute-with-an-agent/i);
+  });
+}
+
+test("the commands these entry points name still exist", () => {
+  for (const f of ["scripts/changelog-fold.mjs", ".github/tests/secret-shape/scrub.pl"]) {
+    assert.doesNotThrow(() => readFileSync(resolve(root, f)), `${f} is missing`);
+  }
+});
