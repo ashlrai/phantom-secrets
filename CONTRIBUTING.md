@@ -50,8 +50,9 @@ coding agent. Each step links to the detail further down.
    local `main` in sync with it.
 2. **Set up.** Install the toolchain under
    [Development setup](#development-setup). The workspace is Rust and has no
-   root `package.json`; Node.js is needed only for the `scripts/*.mjs`
-   checks, the npm wrappers, and `apps/web`.
+   root `package.json`, but every change also needs Node.js and Perl for the
+   two pre-push checks, and `scripts/fast-check.sh` needs Bash and Python 3.
+   npm is needed only for the npm wrappers and `apps/web`.
 3. **Check what you changed.** `scripts/fast-check.sh main` runs format,
    Clippy, and tests for only the crates your branch touches plus their
    dependents, and it includes uncommitted and untracked files, so you can
@@ -109,7 +110,13 @@ Prerequisites:
 
 - Git
 - Rust `1.95.0` with `rustfmt` and `clippy` (pinned by `rust-toolchain.toml`)
-- Node.js 22 and npm when changing npm wrappers or `apps/web`
+- Node.js 22 (the version CI uses) for every change: the pre-push changelog
+  fragment check, the docs drift checks, and the `scripts/*.mjs` suites need
+  it; npm is needed only when changing npm wrappers or `apps/web`
+- Perl 5 for the local `Secret-shape scan` (core modules only; macOS and most
+  Linux distributions ship it, and Git for Windows includes it)
+- Bash and Python 3 for `scripts/fast-check.sh` and the affected-package
+  selectors
 - A platform keychain only for explicitly ignored/manual keychain tests
 
 Clone your fork as shown in
