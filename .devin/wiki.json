@@ -7,7 +7,7 @@
       "content": "Never document secret values, tokens or real home-directory paths; secrets are referenced by name only. Distinguish shipped behaviour from inactive fail-closed foundations (live provider issuance/rotation is hard-denied; production execution is not enabled)."
     },
     {
-      "content": "For contributors, link to the 'Contribute with an agent' section of CONTRIBUTING.md (fork to merged pull request) rather than restating it. Agents follow AGENTS.md, CLAUDE.md lists the build, test, lint and format commands, and before pushing contributors run `node scripts/changelog-fold.mjs --check` and the local Secret-shape scan (`git diff main...HEAD | perl .github/tests/secret-shape/scrub.pl --check --allow-fixtures`, diffing against upstream/main on a fork). CI Gate is the only required check."
+      "content": "For contributors, link to the 'Contribute with an agent' section of CONTRIBUTING.md (fork to merged pull request) rather than restating it. Agents follow AGENTS.md, CLAUDE.md lists the build, test, lint and format commands. Pull request CI does not run the Rust test suite, so contributors run `cargo test --workspace --all-targets --locked --no-fail-fast`, `cargo fmt --all -- --check` and `cargo clippy --workspace --all-targets --locked -- -D warnings` once before opening a pull request, and before pushing contributors run `node scripts/changelog-fold.mjs --check` and the local Secret-shape scan (`git diff main...HEAD | perl .github/tests/secret-shape/scrub.pl --check --allow-fixtures`, diffing against upstream/main on a fork). CI Gate is the only required check."
     }
   ],
   "pages": [

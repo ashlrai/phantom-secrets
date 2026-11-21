@@ -1,5 +1,6 @@
-// Every file a coding agent may start from must point at the contributor path
-// and name the two pre-push checks, so an agent that begins in Cursor, Copilot,
+// Every file a coding agent may start from must point at the contributor path,
+// say that pull request CI does not run the Rust test suite, and name the two
+// pre-push checks, so an agent that begins in Cursor, Copilot,
 // Devin, Claude Code, or an llms.txt reader does not push a malformed changelog
 // fragment or a token-shaped string. Pull request CI validates neither the
 // fragment format nor these docs, so this test is the guard.
@@ -42,6 +43,17 @@ for (const file of ENTRY_POINTS) {
 
   test(`${file} tells fork contributors to diff against upstream/main`, () => {
     assert.ok(text.includes("upstream/main"), `${file} does not mention upstream/main`);
+  });
+
+  // Pull request CI skips the Rust tests, so an agent that does not learn this
+  // opens a pull request with no test evidence. Whitespace is normalized
+  // because each file wraps the sentence differently.
+  test(`${file} says pull request CI does not run the Rust test suite`, () => {
+    assert.match(
+      text.replace(/\s+/g, " "),
+      /does not run the Rust test suite/i,
+      `${file} does not say pull request CI skips the Rust test suite`,
+    );
   });
 
   test(`${file} points at the contributor path`, () => {
