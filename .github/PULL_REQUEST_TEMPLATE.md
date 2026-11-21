@@ -37,7 +37,9 @@ cargo test --workspace --all-targets --locked --no-fail-fast
 cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
 
-Documentation-only change (plus any `scripts/*.test.mjs` that reads the file you edited):
+Documentation-only change (plus every suite that reads the file you edited,
+including those in `apps/web/tests/`; list them with
+`git grep -l -F <file-name> -- '*.test.*'`):
 
 ```
 node --test scripts/release/readme-mcp-catalog.test.mjs
