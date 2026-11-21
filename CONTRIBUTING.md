@@ -242,8 +242,9 @@ manual dispatch scan all five languages (Actions, JavaScript/TypeScript,
 Python, Ruby, and Rust). In the merge queue,
 [`pair-secrets`](.github/workflows/pair-secrets.yml) runs an integration test
 when `phantom exec`, MCP, or posture code changes. Pushes to `main` run no `CI`
-workflow jobs. The full matrix (tests on macOS, Linux, and Windows, the web app, crate publication,
-and the docs command check) runs daily on `main` through
+workflow jobs. The full matrix (tests on macOS, Linux, and Windows, the
+Windows ARM64 source check, the web app, crate publication, the Temporal codec
+example tests, and the docs command check) runs daily on `main` through
 [`nightly-full.yml`](.github/workflows/nightly-full.yml) and on manual
 dispatch; a red daily run is fixed forward.
 
@@ -413,7 +414,17 @@ cargo test --locked -p phantom-secrets --test rotate_provider_test
 
 # Web application: the credential-free steps of the daily web job
 (cd apps/web && node --test ../../scripts/supabase/verify-migrations.test.mjs && npm ci --no-audit && npm audit --omit=dev --audit-level=moderate && npm run lint && npm test && node --test ../../scripts/seo/observe.test.mjs ../../scripts/seo/observe-sort.test.mjs && npm run build)
+
+# Temporal codec example (Python 3): the tests of the daily example job
+(cd examples/temporal-codec-python && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt && .venv/bin/python -m unittest -v)
 ```
+
+Pull request and merge-queue CI never run the Temporal codec example job,
+so run its tests yourself when you change `examples/temporal-codec-python/`.
+The daily job installs the hash-pinned `requirements-ci.txt` instead and fails
+if any test is skipped, so check the `unittest` output for skips. The
+repository does not ignore that directory's `.venv/` or `__pycache__/`; leave
+them out of your commit.
 
 The daily web job also pins its npm audit CLI version and then replays every
 Supabase migration against a local database with a pinned Supabase CLI. Both
