@@ -4,10 +4,10 @@ This guide is for coding agents helping a user adopt Phantom. First discover the
 
 ## Fetch the public contract
 
-- [Documentation manifest](/docs/manifest.json): catalog, canonical URLs, raw Markdown links and published workbench record.
-- [Compact workbench context](/workbench/llms.txt).
-- [Full workbench context](/workbench/llms-full.txt).
-- [Install guide as Markdown](/docs/workbench-setup/markdown).
+- [Documentation manifest](https://phm.dev/docs/manifest.json): catalog, canonical URLs, raw Markdown links and published workbench record.
+- [Compact workbench context](https://phm.dev/workbench/llms.txt).
+- [Full workbench context](https://phm.dev/workbench/llms-full.txt).
+- [Install guide as Markdown](https://phm.dev/docs/workbench-setup/markdown).
 
 Public documentation contains no user credentials or local state. Do not infer a user's runtime readiness from this site's publication record.
 
