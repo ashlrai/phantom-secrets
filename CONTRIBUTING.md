@@ -194,6 +194,28 @@ lease, or execution permit. Current behavior is specified in
 [`docs/grants-spec.md`](docs/grants-spec.md); the root
 [`ISSUANCE_CONTRACT.md`](ISSUANCE_CONTRACT.md) is the original design contract.
 
+### Root files
+
+The repository root also holds files that tools other than Cargo read. Most
+changes touch none of them.
+
+| File | Purpose |
+|------|---------|
+| `README.md`, `AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md`, `llms.txt` | Entry points for people and agents. `scripts/agent-entry-points-pre-push.test.mjs` checks that each one names the contributor path and the pre-push checks. |
+| `SECURITY.md`, `THREAT_MODEL.md`, `GOVERNANCE.md`, `SUPPORT.md`, `CODE_OF_CONDUCT.md`, `LICENSE` | Project policy. A documentation pull request does not change what a policy means. |
+| `CHANGELOG.md`, `ROADMAP.md`, `CITATION.cff` | Release history (add a `changelog.d/` fragment instead of editing it), the roadmap and its evidence gates, and citation metadata. |
+| `INTEGRATION.md` | How this repository connects to the Phantom workbench through the CLI, the MCP server, and versioned JSON contracts. |
+| `ISSUANCE_CONTRACT.md`, `DESIGN-connector-packs.md`, `DESIGN-onboarding-wizard.md` | A historical design contract and two proposals. None of them describes shipped behavior. |
+| `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `deny.toml`, `Makefile` | The workspace, the pinned toolchain, the `cargo deny` policy, and the `make test-affected` shortcut. |
+| `.cursorrules`, `.devin/wiki.json` | The Cursor agent entry point and the DeepWiki outline; the same test checks both, along with `.github/copilot-instructions.md`. |
+| `.pre-commit-hooks.yaml` | The `phantom-check` hook that other repositories install with pre-commit. It is not a hook for developing this repository. |
+| `.gitattributes`, `.gitleaks.toml`, `.gitleaksignore` | The union merge for `CHANGELOG.md` and line-ending pins, and the `Source secret scan` configuration. |
+| `.coderabbit.yaml`, `.sonarcloud.properties`, `codecov.yml`, `renovate.json`, `socket.yml` | Configuration for external review, analysis, coverage, dependency-update, and supply-chain services. None of them is a required check. |
+| `glama.json`, `smithery.yaml` | MCP directory listing metadata. |
+| `ashlr.verify.json` | A verification command list for the Ashlr fleet's own tooling. No workflow in this repository reads it; `CI Gate` and [Verification](#verification) are the contract. |
+| `CODEOWNERS` | Inactive. GitHub reads [`.github/CODEOWNERS`](.github/CODEOWNERS) first; see [GOVERNANCE.md](GOVERNANCE.md#roles). |
+| `.bridge-evidence/`, `.security/` | Dated triage notes from fleet agents and point-in-time security audit snapshots. They are records, not instructions or release attestations. |
+
 ## Making a change
 
 These steps apply inside the
