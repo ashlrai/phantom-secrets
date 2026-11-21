@@ -1,7 +1,7 @@
 # MCP secrets manager for AI coding agents
 
 Phantom exposes a value-blind Model Context Protocol interface for Claude Code,
-Cursor, Windsurf, Codex, and other MCP-compatible clients. The interface lets
+Cursor, Windsurf, Codex, Gemini CLI, and other MCP-compatible clients. The interface lets
 an agent inspect protected secret names, readiness, and audit metadata without
 returning plaintext credential values through MCP.
 

@@ -21,7 +21,7 @@ Source candidate `0.8.11` is not yet a qualified public release; the independent
 [**Quick start**](#quick-start) ·
 [**Why Phantom?**](#why-phantom) ·
 [**How it works**](#how-it-works) ·
-[**MCP setup**](#mcp-integration-claude-code-cursor-windsurf-codex) ·
+[**MCP setup**](#mcp-integration-claude-code-cursor-windsurf-codex-gemini-cli) ·
 [**llms.txt**](docs/llms.txt) ·
 [**Docs**](docs/README.md) ·
 [**Star on GitHub**](https://github.com/ashlrai/phantom-secrets)
@@ -181,7 +181,7 @@ the [design-era grant lifecycle specification](docs/grants-spec.md); the
 [issuance contract](ISSUANCE_CONTRACT.md) is the original design contract and
 retains design-era status language.
 
-## MCP Integration (Claude Code, Cursor, Windsurf, Codex)
+## MCP Integration (Claude Code, Cursor, Windsurf, Codex, Gemini CLI)
 
 Phantom ships an MCP server so AI coding tools can inspect value-blind metadata
 and request gated lifecycle operations. MCP responses do not return real secret
@@ -517,7 +517,7 @@ fails closed before vendor execution. No single-provider exception exists.
 - **Smart detection** -- Heuristic engine distinguishes secrets (`*_KEY`, `*_TOKEN`, `sk-*`, `ghp_*`) from config (`NODE_ENV`, `PORT`)
 - **Platform sync** -- Push/pull secrets to Vercel and Railway
 - **Pre-commit hook** -- Runs `phantom check --staged` when Git invokes the hook; it checks staged dotenv content plus a bounded set of hardcoded-key prefixes. Hooks can be bypassed or skipped, so CI and a broader secret scanner remain necessary.
-- **MCP server** -- value-blind vault, diagnostics, cloud, team, audit, rotation, validation, expiry, and compliance responses for Claude Code, Cursor, Windsurf, and Codex; effectful compatibility tools remain separately gated and disabled by default
+- **MCP server** -- value-blind vault, diagnostics, cloud, team, audit, rotation, validation, expiry, and compliance responses for Claude Code, Cursor, Windsurf, Codex, and Gemini CLI; effectful compatibility tools remain separately gated and disabled by default
 - **Cloud backup** -- client-encrypted same-keychain-machine backup and restore; key transfer and recovery are not shipped, and deployed-service and account configuration remain separate operational gates
 - **Export/import** -- Encrypted export requires an attached terminal, exact challenge, and hidden passphrase; export passphrase files, plaintext, and argv passphrases are disabled. Import uses its own exact terminal ceremony; only non-Windows encrypted-backup import may read a bounded private passphrase file. Competitor imports support Doppler, Infisical, dotenvx, 1Password, and plain `.env`.
 - **Tamper-evident audit log** -- `PHANTOM_AUDIT=1` writes vault events as JSONL to `~/.phantom/audit.log`. Each entry is chained with HMAC-SHA256; `phantom audit verify` detects tampering. `phantom audit show`, `tail`, `path`, `hotspots`, `incidents`, `alerts`, `stats`, `anomalies`, `analytics`, `export`, `export-range`, `report` and `feed` provide log, alert and export access (see the [Command Reference](#command-reference)).

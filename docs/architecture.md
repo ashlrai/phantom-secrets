@@ -209,7 +209,7 @@ Authorities remain intentionally separate:
 | Project-local or linked-worktree Git hook | The effective Git hook parent resolved from the retained project/Git context |
 | Explicit external `core.hooksPath` | A separately retained hook root plus an exact attached trusted-terminal authorization; project authority is not widened, and MCP refuses the external write |
 | Claude project settings | The retained project root |
-| Cursor, Windsurf, and Codex user config | A retained home/config ancestor traversed component by component; setup coordination is under retained `~/.phantom` app state |
+| Cursor, Windsurf, Codex, and Gemini CLI user config | A retained home/config ancestor traversed component by component; setup coordination is under retained `~/.phantom` app state |
 
 These are path-integrity and transaction controls, not same-user isolation.
 Locks serialize cooperating Phantom writers. A process with equivalent user
