@@ -261,15 +261,20 @@ those two tools yourself to run their commands locally.
 | `npm wrapper tests and package inspection` (`npm-wrappers`) | Same scope as the Rust steps of `Lint` | `(cd npm && npm test && npm pack --dry-run)` and `(cd npm-mcp && npm test && npm pack --dry-run)`; CI runs the tests on Node 22 and 24 |
 | `Secret-shape scan` (`secret-shape`) | Every pull request | `git diff main...HEAD \| perl .github/tests/secret-shape/scrub.pl --check --allow-fixtures` |
 | `Rust dependency policy` (`dependency-policy`) | Every pull request | `node --test scripts/ci/mcp-registry-publisher.test.mjs .github/tests/mcp-registry-publication.test.mjs`, `git ls-files -z \| node scripts/release/check-dependency-index.mjs`, and `cargo deny --all-features --locked check --deny warnings advisories licenses bans sources` |
-| `Source secret scan` (`secret-scan`) | Every pull request | `node --test scripts/ci/verified-download.test.mjs`, `gitleaks dir . --config .gitleaks.toml --redact --no-banner --max-target-megabytes 5 --timeout 60`, `node --test scripts/release/validate-gitleaks-ignore.test.mjs`, `node scripts/release/validate-gitleaks-ignore.mjs .gitleaksignore HEAD`, and the history scan `gitleaks git . --log-opts='HEAD' --config .gitleaks.toml --gitleaks-ignore-path .gitleaksignore --redact --no-banner --max-target-megabytes 5 --timeout 120` |
+| `Source secret scan` (`secret-scan`) | Every pull request | `node --test scripts/ci/verified-download.test.mjs`, `gitleaks dir . --config .gitleaks.toml --redact --no-banner --max-target-megabytes 5 --timeout 60`, `git fetch --no-tags --prune origin '+refs/heads/*:refs/remotes/origin/*'`, `node --test scripts/release/validate-gitleaks-ignore.test.mjs`, `node scripts/release/validate-gitleaks-ignore.mjs .gitleaksignore HEAD`, and the history scan `gitleaks git . --log-opts='HEAD --remotes=origin' --config .gitleaks.toml --gitleaks-ignore-path .gitleaksignore --redact --no-banner --max-target-megabytes 5 --timeout 120` |
 
 "Docs and web paths" are the ones `scripts/ci/rust-scope.sh` excludes:
 `docs/`, any root `*.md` or nested `README.md`, `LICENSE`, the issue and pull
 request templates, `apps/web/`, `scripts/supabase/`, `scripts/seo/`, and
 `video/`. Any change under `.github/workflows/` turns the Rust steps back on.
 `Source secret scan` checks every commit, not only the final tree. CI checks
-out full history and scans `HEAD` plus every branch head of this repository,
-so a token you committed and then deleted on your branch still fails the job.
+out full history, fetches every branch head of this repository into
+`refs/remotes/origin/`, and scans `HEAD` plus those heads, so a token you
+committed and then deleted on your branch still fails the job. The
+`.gitleaksignore` validator reads the same `origin` heads and fails when none
+are fetched. In a fork, `origin` is your fork, so the local run checks your
+fork's branches rather than this repository's; keep your fork's `main` in sync
+with `upstream/main` for a close match.
 Remove it from the branch history (for example with an interactive rebase),
 then force-push your branch. Run the history scan from a full clone: in a
 shallow clone (`git rev-parse --is-shallow-repository` prints `true`) the
