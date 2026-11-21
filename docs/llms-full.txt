@@ -382,7 +382,7 @@ changes but not the Rust test suite, so contributors run the tests locally.
 ## Common Use Cases
 
 1. **Solo developer with Claude Code**: `phantom init` then `phantom exec -- claude` — code safely
-2. **Delegate the bounded setup**: Add the MCP server, ask Claude to propose protection, then review mutations and complete secret entry in the trusted terminal; provider issuance remains hard-denied in 0.7.9
+2. **Delegate the bounded setup**: Add the MCP server, ask Claude to propose protection, then review mutations and complete secret entry in the trusted terminal; provider issuance remains hard-denied
 3. **Commissioned same-keychain-machine backup**: after separately verifying hosted deployment and entitlement, `phantom login`, `phantom cloud push`, then `phantom cloud pull` where the original cloud encryption key remains available
 4. **Deploy to Vercel**: `phantom sync --platform vercel --project prj_xxx`
 5. **Provider-backed machine setup**: `phantom pull --from vercel --project prj_xxx` (requires Vercel credentials)
