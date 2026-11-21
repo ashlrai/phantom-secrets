@@ -43,7 +43,14 @@ While iterating, run `scripts/fast-check.sh main`. Before opening a pull
 request, run the full gate once, because pull request CI does not run the Rust
 test suite: `cargo test --workspace --all-targets --locked --no-fail-fast`,
 `cargo fmt --all -- --check`, and
-`cargo clippy --workspace --all-targets --locked -- -D warnings`. Add a
+`cargo clippy --workspace --all-targets --locked -- -D warnings`. For a
+documentation-only change, skip `scripts/fast-check.sh` (a non-Rust path
+checks the whole workspace) and run the docs drift checks instead, which pull
+request CI also skips:
+`node --test scripts/release/readme-mcp-catalog.test.mjs`,
+`node --test scripts/docs-distribution.test.mjs`,
+`node --test scripts/hot-file-rule.test.mjs`, and
+`cargo test --locked -p phantom-secrets --test docs_command_flags_test`. Add a
 `changelog.d/` fragment instead of editing `CHANGELOG.md`.
 Before pushing, run `node scripts/changelog-fold.mjs --check` and
 `git diff main...HEAD | perl .github/tests/secret-shape/scrub.pl --check --allow-fixtures`;

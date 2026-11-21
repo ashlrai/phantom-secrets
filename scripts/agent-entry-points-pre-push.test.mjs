@@ -30,6 +30,13 @@ const FRAGMENT_CHECK = "node scripts/changelog-fold.mjs --check";
 const SECRET_SHAPE_SCAN =
   "git diff main...HEAD | perl .github/tests/secret-shape/scrub.pl --check --allow-fixtures";
 
+const DOCS_DRIFT_CHECKS = [
+  "node --test scripts/release/readme-mcp-catalog.test.mjs",
+  "node --test scripts/docs-distribution.test.mjs",
+  "node --test scripts/hot-file-rule.test.mjs",
+  "cargo test --locked -p phantom-secrets --test docs_command_flags_test",
+];
+
 for (const file of ENTRY_POINTS) {
   const text = readFileSync(resolve(root, file), "utf8");
 
@@ -56,13 +63,28 @@ for (const file of ENTRY_POINTS) {
     );
   });
 
+  // Pull request CI skips the docs drift checks too, so an agent making a
+  // docs-only change must learn them from whichever file it started in.
+  test(`${file} names every docs drift check`, () => {
+    for (const check of DOCS_DRIFT_CHECKS) {
+      assert.ok(text.includes(check), `${file} is missing \`${check}\``);
+    }
+  });
+
   test(`${file} points at the contributor path`, () => {
     assert.match(text, /Contribute with an agent|contribute-with-an-agent/i);
   });
 }
 
 test("the commands these entry points name still exist", () => {
-  for (const f of ["scripts/changelog-fold.mjs", ".github/tests/secret-shape/scrub.pl"]) {
+  for (const f of [
+    "scripts/changelog-fold.mjs",
+    ".github/tests/secret-shape/scrub.pl",
+    "scripts/release/readme-mcp-catalog.test.mjs",
+    "scripts/docs-distribution.test.mjs",
+    "scripts/hot-file-rule.test.mjs",
+    "crates/phantom-cli/tests/docs_command_flags_test.rs",
+  ]) {
     assert.doesNotThrow(() => readFileSync(resolve(root, f)), `${f} is missing`);
   }
 });
