@@ -7,7 +7,8 @@ This project uses **Phantom Secrets** to protect API keys from AI leaks.
 - The `.env` file contains **phantom tokens** (`phm_...`), NOT real secrets
 - Real secrets are stored in an encrypted vault (OS keychain or encrypted file)
 - **NEVER** hardcode API keys in source code
-- **NEVER** ask the user to paste real API key values into code files
+- **NEVER** ask the user to paste real API key values into chat or code files
+- **NEVER** put a secret value in a command line; argv is observable
 - **NEVER** attempt to read, log, or display real secret values
 
 ## Commands
@@ -18,7 +19,24 @@ This project uses **Phantom Secrets** to protect API keys from AI leaks.
 - `phantom exec -- <command>` — Run code with real credentials injected via proxy
 - `phantom init` — Protect .env secrets (stores real values in vault, rewrites .env with phm_ tokens)
 - `phantom status` — Show project status, vault backend, secret count
+- `phantom why <KEY>` — Explain whether a variable is protected, without reading the vault
 - `phantom doctor` — Health check for config, vault, and .env
+
+## MCP Server
+
+`phantom setup` has no Copilot client. Print a snippet with
+`phantom setup --client claude --print` and adapt it for your VS Code MCP
+settings. The snippet runs the server bundled in the installed `phantom`
+executable and never downloads a registry package.
+
+The runtime `tools/list` response and `mcp-registry/server.json` are the
+canonical tool catalog. Start with `phantom_capability`. Value-free tools
+include `phantom_status`, `phantom_why`, and `phantom_list_secrets`. MCP never
+accepts or returns secret values: `phantom_add_secret_interactive` returns the
+`phantom add NAME` command for the user to run in a trusted terminal. Mutating
+tools such as `phantom_rotate` and `phantom_remove_secret` require
+`confirm: true` plus a one-use out-of-band `approval_token`, and stay disabled
+unless the operator sets `PHANTOM_MCP_EFFECTS=trusted-terminal`.
 
 ## How It Works
 
