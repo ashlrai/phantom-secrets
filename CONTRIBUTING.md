@@ -88,7 +88,12 @@ coding agent. Each step links to the detail further down.
    it is merged through the merge queue, which reruns `CI Gate` on the queued
    merge commit. Someone with merge rights merges it or enables GitHub
    auto-merge. Fork contributors never need write access or repository
-   secrets.
+   secrets. If the gate fails, see [When `CI Gate` fails](#when-ci-gate-fails).
+   A change to a path in [`.github/CODEOWNERS`](.github/CODEOWNERS), such as a
+   workflow, a security-sensitive crate, or the web API and auth code, also
+   requests a review from its code owner;
+   [GOVERNANCE.md](GOVERNANCE.md#roles) explains that whether that review is
+   required is repository state.
 
 Current release state changes with every release, so this file does not pin
 it. See the [latest GitHub release](https://github.com/ashlrai/phantom-secrets/releases/latest),
@@ -228,13 +233,13 @@ run before you push. The job definitions in
 truth, including the pinned `cargo-deny` and `gitleaks` versions; install
 those two tools yourself to run their commands locally.
 
-| Job | When it runs its checks | Local commands |
-|-----|-------------------------|----------------|
-| `Lint` | Any change outside docs and web paths | `node --test scripts/installer-syntax.test.mjs scripts/installer-unwritable-tempdir.test.mjs scripts/installer-path-success-cleanup.test.mjs`, then `cargo fmt --all -- --check` and `cargo clippy --workspace --all-targets --locked -- -D warnings` |
-| `npm wrapper tests and package inspection` | Same scope as the Rust steps of `Lint` | `(cd npm && npm test && npm pack --dry-run)` and `(cd npm-mcp && npm test && npm pack --dry-run)`; CI runs the tests on Node 22 and 24 |
-| `Secret-shape scan` | Every pull request | `git diff main...HEAD \| perl .github/tests/secret-shape/scrub.pl --check --allow-fixtures` |
-| `Rust dependency policy` | Every pull request | `node --test scripts/ci/mcp-registry-publisher.test.mjs .github/tests/mcp-registry-publication.test.mjs`, `git ls-files -z \| node scripts/release/check-dependency-index.mjs`, and `cargo deny --all-features --locked check --deny warnings advisories licenses bans sources` |
-| `Source secret scan` | Every pull request | `node --test scripts/ci/verified-download.test.mjs`, `gitleaks dir . --config .gitleaks.toml --redact --no-banner --max-target-megabytes 5 --timeout 60`, `node --test scripts/release/validate-gitleaks-ignore.test.mjs`, `node scripts/release/validate-gitleaks-ignore.mjs .gitleaksignore HEAD`, and the history scan `gitleaks git . --log-opts='HEAD' --config .gitleaks.toml --gitleaks-ignore-path .gitleaksignore --redact --no-banner --max-target-megabytes 5 --timeout 120` |
+| Job (ID in the `CI Gate` log) | When it runs its checks | Local commands |
+|-------------------------------|-------------------------|----------------|
+| `Lint` (`lint`) | Any change outside docs and web paths | `node --test scripts/installer-syntax.test.mjs scripts/installer-unwritable-tempdir.test.mjs scripts/installer-path-success-cleanup.test.mjs`, then `cargo fmt --all -- --check` and `cargo clippy --workspace --all-targets --locked -- -D warnings` |
+| `npm wrapper tests and package inspection` (`npm-wrappers`) | Same scope as the Rust steps of `Lint` | `(cd npm && npm test && npm pack --dry-run)` and `(cd npm-mcp && npm test && npm pack --dry-run)`; CI runs the tests on Node 22 and 24 |
+| `Secret-shape scan` (`secret-shape`) | Every pull request | `git diff main...HEAD \| perl .github/tests/secret-shape/scrub.pl --check --allow-fixtures` |
+| `Rust dependency policy` (`dependency-policy`) | Every pull request | `node --test scripts/ci/mcp-registry-publisher.test.mjs .github/tests/mcp-registry-publication.test.mjs`, `git ls-files -z \| node scripts/release/check-dependency-index.mjs`, and `cargo deny --all-features --locked check --deny warnings advisories licenses bans sources` |
+| `Source secret scan` (`secret-scan`) | Every pull request | `node --test scripts/ci/verified-download.test.mjs`, `gitleaks dir . --config .gitleaks.toml --redact --no-banner --max-target-megabytes 5 --timeout 60`, `node --test scripts/release/validate-gitleaks-ignore.test.mjs`, `node scripts/release/validate-gitleaks-ignore.mjs .gitleaksignore HEAD`, and the history scan `gitleaks git . --log-opts='HEAD' --config .gitleaks.toml --gitleaks-ignore-path .gitleaksignore --redact --no-banner --max-target-megabytes 5 --timeout 120` |
 
 "Docs and web paths" are the ones `scripts/ci/rust-scope.sh` excludes:
 `docs/`, any root `*.md` or nested `README.md`, `LICENSE`, the issue and pull
@@ -252,6 +257,29 @@ repository's test fixtures as findings. Run `git fetch --unshallow` first.
 The dependency-policy job matters most when you add or upgrade a crate: a new
 advisory, a disallowed license or source, or a banned duplicate fails
 `cargo deny` under the policy in [`deny.toml`](deny.toml).
+
+### When `CI Gate` fails
+
+`CI Gate` runs no checks of its own. It reads the result of every other job in
+[`ci.yml`](.github/workflows/ci.yml) and fails when a job that
+`Classify changes` selected for your diff did not succeed, or when a job it
+deselected ran anyway. Its error lists each mismatch as
+`<job-id>=<result> (selected=<true|false>)`, for example
+`secret-shape=failure (selected=true)`. The table above maps each job ID to
+its check name and local commands.
+
+1. Open the named job on the pull request's checks page and read its first
+   failed step.
+2. Run that job's local commands, fix the cause, and push again. A new push
+   cancels the pull request's superseded run, so you do not need to cancel it.
+3. If the error says `changes: failure`, the `Classify changes` job itself
+   failed; read its log instead. `gate inventory drift` means a change to
+   `ci.yml` added or removed a job without updating the gate's job list.
+
+The merge queue reruns the same jobs on the queued merge commit. If `CI Gate`
+fails there, GitHub removes the pull request from the queue. This usually
+means your change breaks when combined with one queued or merged ahead of it:
+rebase onto `upstream/main`, rerun the checks, and push.
 
 ### Testing affected Rust packages
 
