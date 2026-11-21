@@ -10,10 +10,11 @@
 ~/.cargo/bin/cargo test --workspace --all-targets --locked --no-fail-fast
 
 # Lint (must pass with zero warnings)
-~/.cargo/bin/cargo clippy --all-targets -- -D warnings
+~/.cargo/bin/cargo clippy --workspace --all-targets --locked -- -D warnings
 
-# Format
+# Format in place, then check it the way CI does
 ~/.cargo/bin/cargo fmt --all
+~/.cargo/bin/cargo fmt --all -- --check
 
 # Run CLI
 ~/.cargo/bin/cargo run -p phantom-secrets --bin phantom -- <command>
@@ -32,8 +33,8 @@ to merged pull request. In short:
   for only the crates your branch touches plus their dependents. It narrows
   only when every changed file is Rust source under a crate's `src/`; a doc,
   script, manifest, or `tests/` change checks the whole workspace.
-- Before opening the pull request, run the full test, format, and Clippy gate
-  above with `--workspace --locked`. Pull request CI does not run the Rust test
+- Before opening the pull request, run the full test, format check, and Clippy
+  gate above. Pull request CI does not run the Rust test
   suite or the docs drift checks, so your local run is the evidence reviewers
   see; record the exact commands in the
   [pull request template](.github/PULL_REQUEST_TEMPLATE.md).
@@ -43,7 +44,7 @@ to merged pull request. In short:
   node --test scripts/release/readme-mcp-catalog.test.mjs
   node --test scripts/docs-distribution.test.mjs
   node --test scripts/hot-file-rule.test.mjs
-  ~/.cargo/bin/cargo test -p phantom-secrets --test docs_command_flags_test
+  ~/.cargo/bin/cargo test --locked -p phantom-secrets --test docs_command_flags_test
   ```
 
 - Before you push, run the two pre-push checks. Neither needs a build, and
@@ -97,7 +98,7 @@ The proxy is a **reverse proxy with URL rewriting**, NOT a forward/CONNECT proxy
 
 ## Conventions
 
-- All code must pass `cargo clippy -- -D warnings` and `cargo fmt --check`
+- All code must pass `cargo clippy --workspace --all-targets --locked -- -D warnings` and `cargo fmt --all -- --check`
 - Unit tests go in `#[cfg(test)] mod tests` within source files; CLI integration tests live in `crates/phantom-cli/tests/`
 - Integration tests for proxy use `test_server.rs` (mock HTTP server that records requests)
 - Error handling: `thiserror` for library crates, `anyhow` for CLI

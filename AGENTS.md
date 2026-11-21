@@ -318,7 +318,7 @@ Documentation drift checks (run them after editing docs; pull request CI does no
 node --test scripts/release/readme-mcp-catalog.test.mjs   # MCP names vs Rust registrations
 node --test scripts/docs-distribution.test.mjs            # release, channel, and quickstart claims
 node --test scripts/hot-file-rule.test.mjs                # hot-file rule stays in this file
-~/.cargo/bin/cargo test -p phantom-secrets --test docs_command_flags_test   # CLI examples vs --help
+~/.cargo/bin/cargo test --locked -p phantom-secrets --test docs_command_flags_test   # CLI examples vs --help
 ```
 
 ## Project structure
