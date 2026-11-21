@@ -174,7 +174,7 @@ rotation commands expecting a vendor-side change. Test-only mocks demonstrate
 local transaction behavior only; they are not live-provider acceptance.
 
 In these docs, **provider grant** means design-era credential lifecycle metadata;
-no live grant flow runs in 0.8.7. **Authority grant** means the inactive, value-free execution
+no live grant flow runs in current releases. **Authority grant** means the inactive, value-free execution
 authority type in `phantom-authority`. A provider grant cannot be reinterpreted
 as an authority grant, Locus credential, broker lease, or execution permit. See
 the [design-era grant lifecycle specification](docs/grants-spec.md); the
@@ -216,7 +216,7 @@ or accepted.
 compatibility names for approved local `phm_` token remaps. They do not rotate
 a provider credential, renew TTL/`rotated_at` metadata, clear leak incidents,
 or sync credentials. `phantom_rotate_provider` is also hard-denied before
-credential or network access in 0.8.7. Team invites may assign only `member` or `admin`; ownership transfer
+credential or network access in current releases. Team invites may assign only `member` or `admin`; ownership transfer
 is not an invite role.
 
 Tools that write state, retrieve or use credentials, or make provider/network
@@ -240,7 +240,7 @@ reject any drift.
 54-tool compatibility catalog as deprecated hard denials. They never create,
 validate, or promote a candidate and never change vault or shadow metadata;
 `phantom_rotate_provider` is also hard-denied before credential or network
-access in 0.8.7. `phantom add` creates new names only and refuses existing-name
+access in current releases. `phantom add` creates new names only and refuses existing-name
 replacement before reading a value. Replacing a credential therefore requires
 a separately reviewed provider rotation plus an explicit trusted-terminal
 remove-and-add sequence; those are distinct, non-atomic operations.
@@ -390,8 +390,8 @@ dashboard is designed to show team memberships and member lists.
 | `phantom reveal <KEY>` | From an attached trusted terminal, review and type the exact challenge before printing one value or copying it for an auto-cleared 30-second clipboard window |
 | `phantom git-credential get`, `phantom git-credential store`, `phantom git-credential erase` | Supply the selected project vault credential only to a pipe for HTTPS github.com; terminals and files are refused. See [GitHub credential helper](docs/git-credential.md) for setup and the plaintext handoff boundary. |
 | `phantom status` | Show vault/mapping state and whether the machine-local lifecycle lock is held; a held lock does not authenticate or identify a listener. `--json` emits the value-free [status contract](docs/hub-status-contract.md) |
-| `phantom rotate` | After an exact attached-terminal challenge bound to the project, config, managed dotenv, and sorted protected-name digest, regenerate every local phantom token (old mappings become invalid). Headless use fails before vault access or mutation. Provider-backed `--name`/`--provider` execution is hard-denied before credential or network access in 0.8.7. |
-| `phantom grant add <provider>` | Reserved provider-enrollment surface; hard-denied before credential or network access in 0.8.7. See [Provider grants](#provider-grants). |
+| `phantom rotate` | After an exact attached-terminal challenge bound to the project, config, managed dotenv, and sorted protected-name digest, regenerate every local phantom token (old mappings become invalid). Headless use fails before vault access or mutation. Provider-backed `--name`/`--provider` execution is hard-denied before credential or network access in current releases. |
+| `phantom grant add <provider>` | Reserved provider-enrollment surface; hard-denied before credential or network access in current releases. See [Provider grants](#provider-grants). |
 | `phantom grant list` / `phantom grant status` | Read provider-grant names, providers, lifecycle state, and expiry metadata without returning credential values. |
 | `phantom grant revoke <provider>` | Reserved remote-revocation surface; currently fails closed before local mutation because provider revocation is not wired. |
 | `phantom doctor` | Check configuration and vault health (`--fix` to auto-repair). Reports install source, vault backend, audit-log status, Argon2 params, and MCP wiring per client |
@@ -435,7 +435,7 @@ dashboard is designed to show team memberships and member lists.
 | `phantom cloud status` | Authenticated provider read; requires attached trusted terminals and an exact challenge before stored-bearer or network access |
 | `phantom wrap` | Wrap package.json scripts with `phantom exec` automatically |
 | `phantom unwrap` | Restore original package.json scripts |
-| `phantom watch` | Watch managed dotenv files and report new unprotected secrets. `--auto` hard-denies before mutation in 0.8.7; use transactional `phantom init`. |
+| `phantom watch` | Watch managed dotenv files and report new unprotected secrets. `--auto` hard-denies before mutation in current releases; use transactional `phantom init`. |
 | `phantom why <KEY>` | Explain why a key is or is not protected and how `phantom exec` delivers it (`no_route` means no built-in proxy route injects it). Works before init; `--json` prints the same shape as MCP `phantom_why` |
 | `phantom copy <KEY>` | Copy a secret to an initialized target after exact trusted-terminal confirmation; refuses existing target vault, config, or managed-dotenv ownership rather than overwriting. If both projects set `owner` in `.phantom.toml` (`personal`, `company[:name]`, `client:name`) and they differ, the copy is refused unless `--allow-cross-owner` is passed |
 | `phantom team list` / `phantom team members` | Authenticated, value-blind provider reads. CLI requires attached trusted terminals and an exact challenge before bearer/network access; MCP requires `confirm` plus out-of-band approval. |
@@ -484,7 +484,7 @@ encoded credentials, or multiline private keys. It does not rotate leaked keys.
 
 ## Rotating real provider credentials
 
-Phantom 0.8.7 does **not** execute live provider issuance or rotation. Every
+Current Phantom releases do **not** execute live provider issuance or rotation. Every
 provider path, single-provider CLI, batch CLI, MCP, grant enrollment, additive
 issuance, and destructive/rolling refresh, is hard-denied before provider
 credential access and before network I/O. Operators must rotate at the vendor,
@@ -496,7 +496,7 @@ commissioning, or acceptance.
 
 | Provider | Support | Notes |
 |----------|---------|-------|
-| `vercel` | Hard denied | Additive issuance can orphan a live successor after a local failure; no provider call in 0.8.7 |
+| `vercel` | Hard denied | Additive issuance can orphan a live successor after a local failure; no provider call in current releases |
 | `google` | Hard denied | Secret Manager version creation remains disabled pending durable successor recovery and verified abort |
 | `github` | Hard denied | GitHub App installation-token issuance remains disabled pending the same recovery contract |
 | `stripe` | Hard denied | Raw keys are manual; rolling OAuth refresh can invalidate the predecessor before successor recovery |
@@ -642,7 +642,7 @@ The Rust workspace is organized as product crates plus fail-closed execution-ker
 | Product | `phantom-proxy` | Authenticated loopback reverse proxy with fixed route-owned auth-header injection, inert client tokens, response scrubbing, and streaming support. |
 | Product | `phantom-cli` | Operator CLI for initialization, proxy lifecycle, readiness, audit, import/export, sync, team, and workspace workflows. |
 | Product | `phantom-mcp` | Stdio MCP server. The governed conversation facade is narrow; the advanced compatibility catalog uses separate legacy gates. |
-| Product | `phantom-core/src/issuance`, CLI `grant` | Provider protocol/design foundations and value-free grant metadata. All live provider issuance/enrollment execution is hard-denied before credential or network access in 0.8.7. |
+| Product | `phantom-core/src/issuance`, CLI `grant` | Provider protocol/design foundations and value-free grant metadata. All live provider issuance/enrollment execution is hard-denied before credential or network access in current releases. |
 | Local effect layer | `phantom-core::fs`, `phantom-vault` transactions | Retained project/config directory capabilities, exact identity/content/permission before-images, no-follow targets, single-link checks, and typed durable, committed-verified-with-durability-warning, or `CommittedButUncertain` (**Partial**) effects. |
 | Setup kernel | `phantom-workspace` | Value-blind discovery, sealed planning, and recoverable trusted-terminal setup transactions. Non-Unix durable mutation fails closed. |
 | Inactive foundation | `phantom-authority` | Closed authority contracts and deny-all production verification boundary. No live Locus verifier. |

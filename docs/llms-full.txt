@@ -100,7 +100,7 @@ Connection strings such as DATABASE_URL can be detected, vaulted, and replaced i
 - `phantom pull --from vercel --project <id>` — Pull secrets from platforms into vault.
 - `phantom env` — Generate .env.example with secret values masked.
 - `phantom setup` — Configure Claude Code MCP server and permissions automatically.
-- `phantom watch` — Watch managed dotenv files and report newly added unprotected secrets. The compatibility `--auto` flag hard-denies before mutation in 0.8.7; review the file and run transactional `phantom init` from a trusted terminal.
+- `phantom watch` — Watch managed dotenv files and report newly added unprotected secrets. The compatibility `--auto` flag hard-denies before mutation in current releases; review the file and run transactional `phantom init` from a trusted terminal.
 - `phantom why <KEY>` — Explain whether a key is classified as Secret, PublicKey, or NotSecret, and which heuristic matched.
 - `phantom why <KEY> --strict` exits 2 when the key is not protected. A JSON report for a missing key also exits 2. The human view of a missing key is still a command error (exit 1). Without `--strict`, a present key still exits 0.
 - `phantom copy <KEY> --to <DIR> [--rename NEW]` — After exact trusted-terminal confirmation, copy a secret from this initialized project to an initialized target without printing the value. Optional rename in the target project. It refuses an existing target vault entry, config ownership, or managed-dotenv key rather than overwriting it.
@@ -210,7 +210,7 @@ extrapolating this selected catalog.
 
 `phantom_rotate_with_candidate` and `phantom_rotate_promote` are deprecated
 hard denials retained for schema compatibility. They create or promote nothing;
-`phantom_rotate_provider` is also a hard denial in 0.8.7; no MCP approval can
+`phantom_rotate_provider` is also a hard denial in current releases; no MCP approval can
 activate live provider issuance.
 
 `phantom_apply_expiry_policy` demotes expired entries to `VaultMode::ReadOnly`.

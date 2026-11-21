@@ -99,7 +99,7 @@ Validation: phantom_validate_secret, phantom_validate_all, phantom_validation_hi
 
 Expiry: phantom_apply_expiry_policy, phantom_expiry_enforce, phantom_secrets_expiry_check
 
-Rotation: phantom_rotate_provider (hard denial in 0.8.7), phantom_rotate_with_candidate and phantom_rotate_promote (deprecated hard denials), phantom_rotate_with_expiry, phantom_rotation_schedule_next, phantom_secret_rotation_due, phantom_secrets_auto_rotate
+Rotation: phantom_rotate_provider (hard denial in current releases), phantom_rotate_with_candidate and phantom_rotate_promote (deprecated hard denials), phantom_rotate_with_expiry, phantom_rotation_schedule_next, phantom_secret_rotation_due, phantom_secrets_auto_rotate
 
 Audit and compliance: phantom_audit_recent, phantom_audit_stats, phantom_audit_analytics, phantom_audit_anomalies, phantom_audit_anomalies_realtime, phantom_audit_alerts, phantom_audit_hotspot_alerts, phantom_audit_incidents, phantom_audit_export_report, phantom_compliance_status, phantom_leak_incidents_realtime
 
