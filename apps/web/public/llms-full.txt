@@ -53,7 +53,13 @@ iterate with `scripts/fast-check.sh upstream/main`, which checks only the
 affected crates when every changed file is Rust source under a crate's `src/`
 and the whole workspace otherwise; run the full `cargo test`,
 `cargo fmt --check`, and strict Clippy gate once before opening the pull
-request, because pull request CI does not run the Rust test suite; add a
+request, because pull request CI does not run the Rust test suite; for a
+documentation-only change, skip `scripts/fast-check.sh` (a non-Rust path
+checks the whole workspace) and run the docs drift checks instead, which pull
+request CI also skips: `node --test scripts/release/readme-mcp-catalog.test.mjs`,
+`node --test scripts/docs-distribution.test.mjs`,
+`node --test scripts/hot-file-rule.test.mjs`, and
+`cargo test --locked -p phantom-secrets --test docs_command_flags_test`; add a
 `changelog.d/` fragment instead of editing `CHANGELOG.md`; before pushing, run
 `node scripts/changelog-fold.mjs --check` and
 `git diff upstream/main...HEAD | perl .github/tests/secret-shape/scrub.pl --check --allow-fixtures`,
