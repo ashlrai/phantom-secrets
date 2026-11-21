@@ -183,7 +183,7 @@ parameter names match the runtime JSON schema exactly.
 | `phantom_team_vault_pull` | Pull and locally decrypt the current project's team vault | team_id, confirm, approval_token |
 | `phantom_rotate_with_candidate` | **Deprecated hard denial**: never creates or stores a candidate; legacy candidates were local placeholders, not provider credentials | name, auto_promote_ttl_secs (ignored), confirm (ignored), approval_token (ignored) |
 | `phantom_rotate_promote` | **Deprecated hard denial**: never validates, promotes, or changes a vault value | name, confirm (ignored), approval_token (ignored) |
-| `phantom_rotate_provider` | Reserved compatibility surface; 0.8.7 hard-denies every live provider path before credential or network access | name, provider (optional), confirm, approval_token |
+| `phantom_rotate_provider` | Reserved compatibility surface; current releases hard-deny every live provider path before credential or network access | name, provider (optional), confirm, approval_token |
 | `phantom_rotate_with_expiry` | **Deprecated name**: remap all local `phm_` placeholders; `days_ttl` is compatibility-only and lifecycle metadata remains unchanged | days_ttl, confirm, approval_token |
 | `phantom_validate_all` | Retrieve credentials, call live provider validators, and persist value-free result metadata | jobs, confirm, approval_token |
 | `phantom_validation_schedule` | Read schedule state, or persist a new interval when supplied | interval (optional), confirm (conditional), approval_token (conditional) |
@@ -339,7 +339,7 @@ node --test scripts/hot-file-rule.test.mjs                # hot-file rule stays 
 
 ## Project structure
 
-- `crates/phantom-cli/`: CLI binary for local protection, proxy, audit, import/export, sync, teams, provider-grant metadata/design foundations, and trusted-terminal workspace setup; live provider issuance/rotation is hard-denied in 0.8.7; use `phantom --help` for the current command inventory
+- `crates/phantom-cli/`: CLI binary for local protection, proxy, audit, import/export, sync, teams, provider-grant metadata/design foundations, and trusted-terminal workspace setup; live provider issuance/rotation is hard-denied in current releases; use `phantom --help` for the current command inventory
 - `crates/phantom-core/`: Config, .env parsing, token generation, sync, auth, cloud API client, importers (doppler/infisical/dotenvx/1password/env)
 - `crates/phantom-vault/`: Encrypted vault (OS keychain + file backends) + shared crypto module
 - `crates/phantom-proxy/`: HTTP reverse proxy that buffers each request body within its size bound, never resolves client headers/bodies, injects only fixed route-owned auth headers, and supports streaming responses including SSE
