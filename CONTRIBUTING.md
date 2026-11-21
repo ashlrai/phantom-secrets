@@ -361,31 +361,19 @@ excluded; add new files to Git before using this shortcut. Cargo and Python 3
 must be on PATH. Run the selector's fixture tests with
 `python3 scripts/affected-tests.test.py`.
 
-### Keyring advisory exceptions
+`scripts/ci/daily-matrix.mjs` is a proposed refinement of the daily run, not
+part of it yet. It computes an affected-only OS matrix for
+`Test (${{ matrix.os }})` from a diff (per-leg `cfg` routing, failing closed
+to all three legs) and the additive off-peak cron in
+`scripts/ci/offpeak-schedule.json`, emitting only the existing
+`macos-latest`/`ubuntu-latest`/`windows-latest` labels so check names would
+not change. No workflow calls it today: `nightly-full.yml` has the single
+daily schedule and always runs the full matrix. The workflow patch that would
+wire it in is in [scripts/ci/daily-matrix.md](scripts/ci/daily-matrix.md).
+`scripts/fast-check.sh` runs its suite with the other `scripts/ci/*.test.mjs`
+files; run it alone with `node --test scripts/ci/daily-matrix.test.mjs`.
 
-The unmaintained-crate advisories RUSTSEC-2026-0370 (`zvariant`),
-RUSTSEC-2026-0371 (`zbus_names`), and RUSTSEC-2026-0372
-(`zvariant_derive`) reached the graph through keyring 3's zbus-based Linux
-Secret Service backend. [Issue #242](https://github.com/ashlrai/phantom-secrets/issues/242)
-eliminated the dependencies rather than upgraded them: the workspace now links
-`keyring-core` plus per-backend store crates, and Linux Secret Service runs on
-`dbus-secret-service-keyring-store` (the blocking `dbus` implementation) so no
-zbus version remains in the resolved graph. `cargo deny check` must pass with
-no ignores for these advisories. See the
-[migration scoping note](docs/design/keyring-4-migration-scoping.md) for the
-evaluated options.
-Run `node --test scripts/keyring-advisory-docs.test.mjs` when changing this note
-or the related policy.
-
-The daily full-suite run keeps its complete cross-OS coverage but also gets an
-off-peak slot: `scripts/ci/daily-matrix.mjs` computes the affected-only OS
-matrix for `Test (${{ matrix.os }})` from a diff (per-leg `cfg` routing, failing
-closed to all three legs) and emits the additive off-peak cron from
-`scripts/ci/offpeak-schedule.json`. Check names are unchanged — the tool only
-ever emits the same `macos-latest`/`ubuntu-latest`/`windows-latest` labels. See
-[scripts/ci/daily-matrix.md](scripts/ci/daily-matrix.md) for rules and the
-workflow wiring, and run its suite with
-`node --test scripts/ci/daily-matrix.test.mjs`.
+### Additional checks by surface
 
 Run additional checks for the surface you changed:
 
@@ -454,6 +442,22 @@ cargo test --workspace -- --ignored
 
 The daily full run tests the normal Rust suite on macOS, Linux, and Windows;
 pull requests do not. A successful cross-compile or CI matrix does not prove native installer trust, keychain UX, code signing/notarization, shell integration, or end-to-end acceptance on every device; describe exactly what you tested.
+
+### Keyring advisory exceptions
+
+The unmaintained-crate advisories RUSTSEC-2026-0370 (`zvariant`),
+RUSTSEC-2026-0371 (`zbus_names`), and RUSTSEC-2026-0372
+(`zvariant_derive`) reached the graph through keyring 3's zbus-based Linux
+Secret Service backend. [Issue #242](https://github.com/ashlrai/phantom-secrets/issues/242)
+eliminated the dependencies rather than upgraded them: the workspace now links
+`keyring-core` plus per-backend store crates, and Linux Secret Service runs on
+`dbus-secret-service-keyring-store` (the blocking `dbus` implementation) so no
+zbus version remains in the resolved graph. `cargo deny check` must pass with
+no ignores for these advisories. See the
+[migration scoping note](docs/design/keyring-4-migration-scoping.md) for the
+evaluated options.
+Run `node --test scripts/keyring-advisory-docs.test.mjs` when changing this note
+or the related policy.
 
 ## Coding and security guidelines
 
