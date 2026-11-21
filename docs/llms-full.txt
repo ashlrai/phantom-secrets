@@ -394,4 +394,4 @@ changes but not the Rust test suite, so contributors run the tests locally.
 9. **Pre-commit safety**: Add `phantom check --staged` to hooks while remembering hooks can be skipped or bypassed
 10. **Provider rotation and sync**: rotate through the provider's trusted interface, then use a separately reviewed trusted-terminal remove-and-add sequence if the protected name already exists. Those operations are non-atomic, and deployment sync requires its own review. Local token remaps never authorize sync.
 11. **Monorepo**: Run `phantom init` in each subdirectory — each gets its own vault and config
-12. **Multi-IDE team**: Same MCP server works across Claude Code, Cursor, Windsurf, and Codex
+12. **Multi-IDE team**: Same MCP server works across Claude Code, Cursor, Windsurf, Codex, and Gemini CLI
