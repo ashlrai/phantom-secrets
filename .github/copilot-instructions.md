@@ -39,6 +39,12 @@ If a user pastes a real API key (starts with `sk-`, `ghp_`, `xoxb-`, etc.):
 Agents changing Phantom itself follow [AGENTS.md](../AGENTS.md) for operating
 rules, [CLAUDE.md](../CLAUDE.md) for build, test, lint, and format commands, and
 the "Contribute with an agent" path in [CONTRIBUTING.md](../CONTRIBUTING.md).
+While iterating, run `scripts/fast-check.sh main`. Before opening a pull
+request, run the full gate once, because pull request CI does not run the Rust
+test suite: `cargo test --workspace --all-targets --locked --no-fail-fast`,
+`cargo fmt --all -- --check`, and
+`cargo clippy --workspace --all-targets --locked -- -D warnings`. Add a
+`changelog.d/` fragment instead of editing `CHANGELOG.md`.
 Before pushing, run `node scripts/changelog-fold.mjs --check` and
 `git diff main...HEAD | perl .github/tests/secret-shape/scrub.pl --check --allow-fixtures`;
 the second is the local form of the `Secret-shape scan` that `CI Gate` requires.

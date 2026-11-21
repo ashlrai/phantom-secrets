@@ -178,11 +178,20 @@ lease, or execution permit. Current behavior is specified in
 
 ## Making a change
 
-1. Create a branch from the current `main`.
+These steps apply inside the
+[Contribute with an agent](#contribute-with-an-agent) path; they describe the
+change itself rather than the fork and merge mechanics.
+
+1. Create a branch from the current `main` of this repository (`upstream/main`
+   in a fork).
 2. Find and reuse the existing parsing, filesystem, confirmation, error, and test patterns for the affected surface.
 3. Add tests that demonstrate both the intended behavior and important failure modes.
 4. Update user, agent, registry, and security documentation when a public contract changes.
-5. Run the proportional checks below and record exact commands and results in the pull request.
+5. Run the proportional checks under [Verification](#verification).
+6. Add a [`changelog.d/`](changelog.d/README.md) fragment and run the two
+   pre-push checks under [Pull requests](#pull-requests).
+7. Record the exact commands and results in the
+   [pull request template](.github/PULL_REQUEST_TEMPLATE.md).
 
 The project generally uses focused conventional commit subjects such as
 `fix:`, `docs:`, `test:`, and `chore:`. Git history is the current convention;
