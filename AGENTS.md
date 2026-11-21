@@ -62,7 +62,7 @@ Read these instead of guessing. When prose and code disagree, code, closed schem
 | `phantom agent doctor --json` fields | [docs/agent-preflight-contract.md](docs/agent-preflight-contract.md) |
 | Reading `phantom status --json` | [docs/status-consumer-q8.md](docs/status-consumer-q8.md) |
 | `phantom exec` child environment and proxy routes | [docs/exec.md](docs/exec.md) |
-| Per-client setup | [Claude Code](docs/claude-code.md), [Codex](docs/codex.md), [Cursor](docs/cursor.md), [Windsurf](docs/windsurf.md) |
+| Per-client setup | [Claude Code](docs/claude-code.md), [Codex](docs/codex.md), [Cursor](docs/cursor.md), [Gemini CLI](docs/gemini-cli.md), [Windsurf](docs/windsurf.md) |
 | Delegating one bounded task | [docs/delegation-quickstart.md](docs/delegation-quickstart.md) |
 | Components and activation status | [docs/architecture.md](docs/architecture.md), [THREAT_MODEL.md](THREAT_MODEL.md) |
 | Install, vault, proxy, or cloud failures | [docs/troubleshooting.md](docs/troubleshooting.md) |
