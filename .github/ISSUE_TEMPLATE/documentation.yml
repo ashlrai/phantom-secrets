@@ -2,6 +2,15 @@ name: 📚 Documentation report
 description: Report inaccurate, missing, or confusing project documentation.
 labels: ["documentation"]
 body:
+  - type: markdown
+    attributes:
+      value: |
+        A small, evidence-backed docs fix can go straight to a pull request
+        instead of an issue. Follow
+        [Contribute with an agent](https://github.com/ashlrai/phantom-secrets/blob/main/CONTRIBUTING.md#contribute-with-an-agent)
+        and run the docs drift checks listed there; pull request CI does not
+        run them.
+
   - type: input
     id: location
     attributes:

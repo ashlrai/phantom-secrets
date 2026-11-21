@@ -32,6 +32,20 @@ test("issue form dropdown options do not pin a release version", () => {
   }
 });
 
+// The issue chooser and the documentation form both point a first-time
+// contributor at the fork-to-merge path in CONTRIBUTING.md, and that anchor
+// must still exist.
+const contributorPath = "CONTRIBUTING.md#contribute-with-an-agent";
+
+test("issue chooser and documentation form link the contributor path", () => {
+  for (const f of ["config.yml", "documentation.yml"]) {
+    const text = readFileSync(join(dir, f), "utf8");
+    assert.ok(text.includes(contributorPath), `${f} does not link ${contributorPath}`);
+  }
+  const contributing = readFileSync(resolve(dir, "../../CONTRIBUTING.md"), "utf8");
+  assert.match(contributing, /^### Contribute with an agent$/m);
+});
+
 test("documentation form asks for the exact version or commit SHA", () => {
   const doc = readFileSync(join(dir, "documentation.yml"), "utf8");
   assert.match(doc, /exact release version or commit SHA/);
