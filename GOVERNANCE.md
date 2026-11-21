@@ -61,10 +61,18 @@ after sustained, security-conscious participation.
 ## Releases and commercial boundaries
 
 The reusable release gates are documented in
-[docs/release-readiness.md](docs/release-readiness.md). A release requires a
-separate maintainer decision on an exact clean SHA and tag; package publication,
-Homebrew updates, deployment, provider commissioning, and customer acceptance
-remain separate decisions.
+[docs/release-readiness.md](docs/release-readiness.md). A release starts with
+a pull request that changes `[workspace.package].version` in `Cargo.toml`,
+reviewed and merged like any other change. When that commit is on `main` and
+every required check on it is green,
+[`auto-tag.yml`](.github/workflows/auto-tag.yml) creates the `v<version>` tag,
+and the tag runs [`release.yml`](.github/workflows/release.yml). That
+workflow builds and verifies the release, then waits at the `release`
+environment before it creates the GitHub release. The workflow expects that
+environment to require a human reviewer; whether it does is repository state,
+like the code-owner review above. Package publication, Homebrew updates,
+deployment, provider commissioning, and customer acceptance remain separate
+decisions.
 
 Local open-source governance does not set hosted plan availability, pricing,
 support, or enterprise terms. Those require deployed-service evidence and, when
