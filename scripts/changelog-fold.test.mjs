@@ -61,6 +61,8 @@ test("each documented rule fails the check with the file name", () => {
     "h2.md": "### Fixed\n\n## Release\n\n- entry\n",
     "unknown.md": "### Fixed\n\n- entry\n\n### Notes\n\n- entry\n",
     "512.md": "### Fixed\n\nprose only\n",
+    "-leading-dash.md": "### Fixed\n\n- entry\n",
+    "no-space.md": "### Fixed\n\n-entry\n",
   };
   for (const [name, body] of Object.entries(cases)) {
     const r = run({ [name]: body });
@@ -69,6 +71,17 @@ test("each documented rule fails the check with the file name", () => {
   }
   assert.match(run({ "512.md": cases["512.md"] }).out, /changelog-fold: 512\.md: needs at least one bullet/);
   assert.match(readme, /`changelog-fold: 512\.md: needs at least one bullet`/);
+});
+
+test("files not ending in lowercase .md are skipped, as the README warns", () => {
+  assert.match(readme, /`512\.txt` or `512\.MD` is skipped without an error/);
+  const checked = run({ "512.txt": "not a fragment\n", "513.MD": "### Fixed\n\n- entry\n" });
+  assert.equal(checked.status, 0, checked.out);
+  assert.match(checked.out, /changelog-fold: 0 fragment\(s\) valid \(check only\)/);
+  const folded = run({ "512.txt": "### Fixed\n\n- skipped entry\n" }, []);
+  assert.equal(folded.status, 0, folded.out);
+  assert.ok(!folded.changelog.includes("skipped entry"));
+  assert.deepEqual(folded.left, ["512.txt", "README.md"]);
 });
 
 test("a missing Unreleased heading fails and changes nothing", () => {

@@ -8,15 +8,18 @@ the merge queue; separate files do not.
 
 - One file per pull request, named `<pr-number-or-slug>.md`, for example
   `512.md` or `proxy-partial-echo.md`. Lowercase letters, digits, `.`, `_`
-  and `-` only.
+  and `-` only, starting with a letter or digit.
+- Only files ending in lowercase `.md` are read. A fragment saved as
+  `512.txt` or `512.MD` is skipped without an error: the check still passes
+  and the fold never adds it to `CHANGELOG.md`.
 - The file holds one or more sections. Each section is a level-3 heading
   that starts with `Added`, `Changed`, `Fixed`, `Security`, `Removed`,
   `Deprecated` or `CI`, optionally followed by a short topic in parentheses,
   then bullets. This matches the existing `CHANGELOG.md` style.
 - The first line must be one of those headings. Any other `###` heading, and
   any `#` or `##` heading, fails the check.
-- The fragment needs at least one bullet line starting with `-` or `*`. An
-  empty fragment fails.
+- The fragment needs at least one bullet line: `-` or `*` followed by a
+  space. An empty fragment fails.
 
 ```markdown
 ### Fixed (`phantom wrap` keeps package.json formatting)
