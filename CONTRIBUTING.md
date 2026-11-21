@@ -79,11 +79,16 @@ coding agent. Each step links to the detail further down.
    diff per the [hot-file rule](AGENTS.md#hot-file-rule-avoid-merge-conflicts).
    Before you push, run the two pre-push checks under
    [Pull requests](#pull-requests): the fragment check and the secret-shape
-   scan that `CI Gate` requires. Then push to your fork and open the pull
-   request with the
+   scan that `CI Gate` requires. Then push to your fork with
+   `git push -u origin my-change` and open the pull request against `main`
+   with the
    [template](.github/PULL_REQUEST_TEMPLATE.md) filled in, including the exact
    commands you ran. The template has one command block for code changes and
-   one for documentation-only changes; keep the one that applies.
+   one for documentation-only changes; keep the one that applies. The
+   `publish.sh` push wrapper that [AGENTS.md](AGENTS.md) mentions belongs to
+   the Ashlr fleet's own agents and is not in this repository; from a fork,
+   plain `git push` is the whole step (see
+   [Agents working for an outside contributor](AGENTS.md#agents-working-for-an-outside-contributor)).
 6. **Merge.** `CI Gate` is the only required check. A pull request that passes
    it is merged through the merge queue, which reruns `CI Gate` on the queued
    merge commit. Someone with merge rights merges it or enables GitHub

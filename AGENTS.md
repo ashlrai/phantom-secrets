@@ -15,6 +15,22 @@ Synced from the Ashlr Fleet Constitution v3.0 (Nov 1, 2026). This overrides any 
 - Mason only for passwords, 2FA, device approvals and payments (no new spending without him). Nothing private made public.
 - Hold list (Mason's own holds): phantom #197 #878 #743 #725 #738 #744 #693 #1228; phantom-secrets #140 #197 #375 #168 #418 #136; ashlr-plugin #152 #157.
 
+### Agents working for an outside contributor
+
+Article 1 is written for the Ashlr fleet's own agents, which run with
+maintainer access and fleet tooling. `publish.sh` is the fleet's push wrapper;
+it is not in this repository and you do not need it. An agent working from a
+fork has no merge or release rights and follows
+[Contribute with an agent](CONTRIBUTING.md#contribute-with-an-agent) instead:
+
+- Push the branch to the contributor's fork with plain `git push -u origin <branch>`
+  and open a pull request against `main`.
+- `CI Gate` is the only required check. A maintainer or a fleet agent merges a
+  passing pull request through the merge queue, which reruns `CI Gate`. Fork
+  pull requests need no write access or repository secrets.
+- The security floor still applies: no secret values in code, tests, logs, or
+  the pull request, and no force-push to `main`.
+
 ## Where this repo fits
 
 Phantom Secrets (the `phantom` CLI and `phantom-mcp` server) is one of the open-source tools from [Ashlr](https://ashlr.ai). Together they aim to be an autonomous, code-first, agent-native software factory: agents write, test, review, and ship the code, and the human acts as a passive board member. The long-term goal is open-source recursive self-improvement (RSI), where agents improve the tools they build with.
