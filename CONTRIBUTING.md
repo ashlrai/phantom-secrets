@@ -267,19 +267,24 @@ those two tools yourself to run their commands locally.
 `docs/`, any root `*.md` or nested `README.md`, `LICENSE`, the issue and pull
 request templates, `apps/web/`, `scripts/supabase/`, `scripts/seo/`, and
 `video/`. Any change under `.github/workflows/` turns the Rust steps back on.
+
 `Source secret scan` checks every commit, not only the final tree. CI checks
 out full history, fetches every branch head of this repository into
 `refs/remotes/origin/`, and scans `HEAD` plus those heads, so a token you
-committed and then deleted on your branch still fails the job. The
-`.gitleaksignore` validator reads the same `origin` heads and fails when none
-are fetched. In a fork, `origin` is your fork, so the local run checks your
-fork's branches rather than this repository's; keep your fork's `main` in sync
-with `upstream/main` for a close match.
-Remove it from the branch history (for example with an interactive rebase),
-then force-push your branch. Run the history scan from a full clone: in a
-shallow clone (`git rev-parse --is-shallow-repository` prints `true`) the
-oldest fetched commit appears to add every file, so the scan reports the
-repository's test fixtures as findings. Run `git fetch --unshallow` first.
+committed and then deleted on your branch still fails the job. Remove it from
+your branch history (for example, drop or edit the commit that added it with
+an interactive rebase), then force-push your branch; never force-push `main`.
+Treat a real credential that reached a pushed commit as exposed and rotate it
+at the provider.
+
+The `.gitleaksignore` validator reads the same `origin` heads and fails when
+none are fetched. In a fork, `origin` is your fork, so the local run checks
+your fork's branches rather than this repository's; keep your fork's `main`
+in sync with `upstream/main` for a close match. Run the history scan from a
+full clone: in a shallow clone (`git rev-parse --is-shallow-repository`
+prints `true`) the oldest fetched commit appears to add every file, so the
+scan reports the repository's test fixtures as findings. Run
+`git fetch --unshallow` first.
 
 The dependency-policy job matters most when you add or upgrade a crate: a new
 advisory, a disallowed license or source, or a banned duplicate fails
