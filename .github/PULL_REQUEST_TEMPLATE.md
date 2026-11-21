@@ -43,7 +43,7 @@ Documentation-only change (plus any `scripts/*.test.mjs` that reads the file you
 node --test scripts/release/readme-mcp-catalog.test.mjs
 node --test scripts/docs-distribution.test.mjs
 node --test scripts/hot-file-rule.test.mjs
-cargo test -p phantom-secrets --test docs_command_flags_test
+cargo test --locked -p phantom-secrets --test docs_command_flags_test
 ```
 
 Pre-push checks, for every change (no build needed; `CI Gate` requires the
