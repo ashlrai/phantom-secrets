@@ -225,6 +225,35 @@ its own child-owned proxy.
 If a hardcoded port from an older setup is still referenced and requests fail
 with connection refused, replace it with `PHANTOM_PROXY_PORT`.
 
+### `phantom start` prints exports for the wrong shell
+
+`phantom start` does not change your shell. It prints lines for you to run in
+the shell where your app will start:
+
+- a base-URL export for each built-in route whose key this session loaded
+- an unset line for each other route's base-URL variable, so a value left over
+  from an earlier session does not point an SDK at a dead proxy
+- `PHANTOM_PROXY_PORT`, `PHANTOM_PROXY_TOKEN`, and `PHANTOM_SESSION_KEYS` (the
+  variable names `phantom check --runtime` excuses for this session)
+
+The lines use one syntax: bash/zsh (`export`), fish (`set -gx`), PowerShell
+(`$env:`), or cmd.exe (`set`). `phantom setup --audit-mode local` picks the
+syntax of its shell-profile line the same way. Phantom checks, in order:
+
+1. `PHANTOM_SHELL`, when it names a shell Phantom recognizes
+2. `SHELL`, which usually names your login shell, not the shell you are in
+3. `PSModulePath`, which only PowerShell sets
+4. otherwise cmd.exe on Windows and bash/zsh everywhere else
+
+A recognized name (case-insensitive) contains `fish`, `powershell`, `pwsh`,
+`bash`, or `zsh`, ends in `/sh`, or is `cmd` or ends in `cmd.exe`. Any other
+value is ignored. If you run fish inside a zsh login shell, for example, set
+the override:
+
+```bash
+PHANTOM_SHELL=fish phantom start
+```
+
 ### `phantom start --daemon` or `phantom stop` is refused
 
 This is intentional. Phantom does not persist a live proxy bearer, PID, or port
