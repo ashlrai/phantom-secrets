@@ -14,6 +14,10 @@ phantom sync --platform vercel --project prj_your_project_id
 
 `--dry-run --json` previews the target, selected secret names, filters, and
 missing token state without decrypting vault values or calling the Vercel API.
+The live sync needs attached terminals: it prints the plan and asks you to type
+an exact `SYNC <plan-digest> <nonce>` challenge before it reads any vault
+value, so it cannot run headlessly in CI. See [docs/sync.md](../../docs/sync.md)
+for `[[sync]]` configuration and `--only` filters.
 
 ## Planned Integration
 

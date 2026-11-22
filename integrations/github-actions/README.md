@@ -6,7 +6,7 @@ Earlier drafts documented a CI device-token flow (`phantom login --ci`) and acti
 
 ## Current CI Options
 
-- Use `phantom sync --platform vercel --project <id>` or `phantom sync --platform railway --project <id>` before deployment.
+- Before deployment, run `phantom sync --platform vercel --project <id>` or `phantom sync --platform railway --project <id>` from your own terminal. A live sync needs attached terminals and an exact typed challenge, so it cannot run as a workflow step; only `phantom sync --dry-run --json` runs headlessly. See `docs/sync.md`.
 - Use the platform's own secret store during CI/CD after syncing from Phantom.
 - Run `phantom check` in CI to prevent unprotected `.env` secrets from landing in the repository.
 
