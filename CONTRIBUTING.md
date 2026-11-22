@@ -555,12 +555,27 @@ git diff main...HEAD | perl .github/tests/secret-shape/scrub.pl --check --allow-
 Pull request and merge-queue CI do not validate fragments; only the daily full
 run does, so a malformed fragment merges and then turns that run red. The
 `Secret-shape scan` job runs on every pull request and `CI Gate` requires it.
-It scans the lines your branch adds, fails on any token-shaped string, and
-prints only a count, never the match. In test paths (`test/`, `tests/`, `fixtures/`,
-`benches/`, `examples/`, `*_test.*`, `*.test.*`, `*.spec.*`) it allows a
-token that contains `FAKE`, `EXAMPLE`, `DUMMY`, `TEST`, or `XXXX`, so build
-fake values that way. Diff against the branch you forked from; use
-`upstream/main` if your local `main` is stale.
+It scans your branch's diff (added lines plus the unchanged context lines
+around them; removed lines are skipped) and fails on three kinds of match:
+a provider token shape (for example Slack, GitHub, GitLab, Anthropic, OpenAI,
+Stripe, AWS, Google, or npm keys, and JWTs), a PEM private-key block, and a
+password inside a URL (a `user:password@host` part right after `://`).
+With `--check --allow-fixtures` it prints `<blocked> allowed=<n>`, never the
+match, and exits 1 when `<blocked>` is not 0. The patterns are at the top of
+[`scrub.pl`](.github/tests/secret-shape/scrub.pl).
+
+In test paths (`test/`, `tests/`, `fixtures/`, `benches/`, `examples/`,
+`*_test.*`, `*.test.*`, `*.spec.*`) it allows a match that contains `FAKE`,
+`EXAMPLE`, `DUMMY`, `TEST`, or `XXXX`, so build fake values that way. A PEM
+block is never allowed, and nothing is allowed outside a test path. That
+includes docs: write an example connection string without the password
+(`postgres://localhost:5432/app`), and shorten an example key to its prefix
+(`sk-...`). To find a match without printing it, run the scanner without
+`--check`; it copies the diff with each match replaced by
+`[REDACTED:<kind>]`:
+`git diff main...HEAD | perl .github/tests/secret-shape/scrub.pl | grep -n REDACTED`.
+That mode also redacts allowed fixtures. Diff against the branch you forked
+from; use `upstream/main` if your local `main` is stale.
 
 When a rebase or merge still stops on `CHANGELOG.md`, `CLAUDE.md`, `README.md`,
 or a lockfile, `scripts/resolve-merge-conflicts.sh` resolves those paths
