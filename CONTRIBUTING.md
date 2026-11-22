@@ -53,35 +53,43 @@ coding agent. Each step links to the detail further down.
    root `package.json`, but every change also needs Node.js and Perl for the
    two pre-push checks, and `scripts/fast-check.sh` needs Bash and Python 3.
    npm is needed only for the npm wrappers and `apps/web`.
-3. **Check what you changed.** `scripts/fast-check.sh main` runs format,
-   Clippy, and tests for only the crates your branch touches plus their
-   dependents, and it includes uncommitted and untracked files, so you can
-   run it before you commit. The narrowing applies only when every changed
-   file is Rust source under a crate's `src/`; any other changed path, such
-   as a doc, a script, a `Cargo.toml`, or a file under `tests/`, checks the
-   whole workspace (it needs Cargo, Node.js, and Python 3; see
-   [Testing affected Rust packages](#testing-affected-rust-packages)). For a
-   docs-only change, skip it and run the docs drift checks, which pull
-   request CI also skips:
-   `node --test scripts/release/readme-mcp-catalog.test.mjs`,
-   `node --test scripts/docs-distribution.test.mjs`,
-   `node --test scripts/hot-file-rule.test.mjs`, and
-   `cargo test --locked -p phantom-secrets --test docs_command_flags_test`
-   (see [README.md](README.md#contributing) for what each one checks), plus
-   every suite that reads the file you edited. Not all of them are under
-   `scripts/`: suites in `apps/web/tests/` also check root files such as
-   `CONTRIBUTING.md`, `README.md`, and the PR template, and only the daily
-   web job runs them. List them by the edited file's name, for example
-   `git grep -l -F CONTRIBUTING.md -- '*.test.*'`, and run each with
-   `node --test <file>`. A web suite that loads a package, such as
+3. **Check what you changed.** Pull request CI skips most of these checks,
+   so run the row for each kind of path your branch changes:
+
+   | You changed | Run |
+   |---|---|
+   | Only Rust source under a crate's `src/` | `scripts/fast-check.sh main`: format, Clippy, and tests for the crates you touched plus their dependents |
+   | Any other non-doc path, such as a script, a `Cargo.toml`, or a file under `tests/` | `scripts/fast-check.sh main`, which then checks the whole workspace |
+   | Documentation only | The four docs drift checks below, plus every suite that reads the file you edited. Skip `scripts/fast-check.sh`: a doc path makes it check the whole workspace. |
+   | `apps/web` | The web application commands under [Additional checks by surface](#additional-checks-by-surface). Pull request CI skips the web job, which runs only in the daily full run. When the change shows a `phantom` command in `apps/web/src` or `apps/web/public/llms*.txt`, also run the `docs_command_flags_test` drift check, which checks those commands against the CLI help. |
+
+   `scripts/fast-check.sh` needs Bash, Cargo, Node.js, and Python 3. It
+   includes uncommitted and untracked files, so you can run it before you
+   commit (see [Testing affected Rust packages](#testing-affected-rust-packages)).
+
+   The docs drift checks, which pull request CI also skips (see
+   [README.md](README.md#contributing) for what each one checks):
+
+   ```bash
+   node --test scripts/release/readme-mcp-catalog.test.mjs
+   node --test scripts/docs-distribution.test.mjs
+   node --test scripts/hot-file-rule.test.mjs
+   cargo test --locked -p phantom-secrets --test docs_command_flags_test
+   ```
+
+   Not every suite that reads a doc is under `scripts/`: suites in
+   `apps/web/tests/` also check root files such as `CONTRIBUTING.md`,
+   `README.md`, and the PR template, and only the daily web job runs them.
+   List them by the edited file's name, then run each with
+   `node --test <file>`:
+
+   ```bash
+   git grep -l -F CONTRIBUTING.md -- '*.test.*'
+   ```
+
+   A web suite that loads a package, such as
    `apps/web/tests/public-claims.test.cjs` (which needs `typescript`), fails
    with `Cannot find module` until you run `(cd apps/web && npm ci --no-audit)`.
-   For an `apps/web` change, run the web
-   application commands under [Verification](#verification): pull request CI
-   skips the web job, which runs only in the daily full run. When the change
-   shows a `phantom` command in `apps/web/src` or `apps/web/public/llms*.txt`,
-   also run `cargo test --locked -p phantom-secrets --test docs_command_flags_test`,
-   which checks those commands against the CLI help.
 4. **Run the full gate once** before you open the pull request: the three
    commands under [Verification](#verification). Pull request CI does not run
    the Rust test suite, so this local run is the test evidence reviewers see.
