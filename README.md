@@ -792,6 +792,11 @@ mcp-registry/README.md, llms.txt, docs/llms.txt, docs/llms-full.txt, and every
 top-level docs/*.md, plus inline commands in the web sources under
 apps/web/src and apps/web/public/llms*.txt. Run it after changing any of them.
 
+Also run every suite that reads the file you edited, including those in
+`apps/web/tests/`: list them with `git grep -l -F <file-name> -- '*.test.*'`
+and run each with `node --test <file>`. A web suite that loads a package
+needs `(cd apps/web && npm ci --no-audit)` first.
+
 Before you push any change, run the two pre-push checks. Neither needs a
 build. `CI Gate` requires the `Secret-shape scan`, and pull request CI does
 not validate [`changelog.d/`](changelog.d/README.md) fragments:

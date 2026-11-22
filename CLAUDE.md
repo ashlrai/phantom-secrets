@@ -47,6 +47,11 @@ to merged pull request. In short:
   ~/.cargo/bin/cargo test --locked -p phantom-secrets --test docs_command_flags_test
   ```
 
+  Also run every suite that reads the file you edited, including those in
+  `apps/web/tests/`: list them with `git grep -l -F <file-name> -- '*.test.*'`
+  and run each with `node --test <file>`. A web suite that loads a package
+  needs `(cd apps/web && npm ci --no-audit)` first.
+
 - Before you push, run the two pre-push checks. Neither needs a build, and
   pull request CI does not validate fragments:
 

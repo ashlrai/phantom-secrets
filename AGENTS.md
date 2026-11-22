@@ -337,6 +337,11 @@ node --test scripts/hot-file-rule.test.mjs                # hot-file rule stays 
 ~/.cargo/bin/cargo test --locked -p phantom-secrets --test docs_command_flags_test   # CLI examples vs --help
 ```
 
+Also run every suite that reads the file you edited, including those in
+`apps/web/tests/`: list them with `git grep -l -F <file-name> -- '*.test.*'`
+and run each with `node --test <file>`. A web suite that loads a package
+needs `(cd apps/web && npm ci --no-audit)` first.
+
 ## Project structure
 
 - `crates/phantom-cli/`: CLI binary for local protection, proxy, audit, import/export, sync, teams, provider-grant metadata/design foundations, and trusted-terminal workspace setup; live provider issuance/rotation is hard-denied in current releases; use `phantom --help` for the current command inventory
