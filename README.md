@@ -433,7 +433,7 @@ dashboard is designed to show team memberships and member lists.
 | `phantom cloud push` | After exact trusted-terminal confirmation, push a client-encrypted vault. Refused before the prompt when a secret is overdue under enforced rotation, demoted to read-only, or has unreadable lifecycle metadata. A remote success followed by local reconciliation failure is partial success and must not be retried automatically. |
 | `phantom cloud pull` | After exact trusted-terminal confirmation, pull and decrypt a vault. With `force=false`, skipped existing entries preserve the prior merge base and block later push until a fully reconciled approved pull. |
 | `phantom cloud status` | Authenticated provider read; requires attached trusted terminals and an exact challenge before stored-bearer or network access |
-| `phantom wrap` | Wrap package.json scripts with `phantom exec` automatically |
+| `phantom wrap` | Wrap selected package.json scripts with `phantom exec`; `--only A,B` selects names and `--skip X,Y` excludes them. Scripts still need a supported API route, and shell command lines are left unchanged. See [script wrapping](docs/exec.md#packagejson-scripts). |
 | `phantom unwrap` | Restore original package.json scripts |
 | `phantom watch` | Watch managed dotenv files and report new unprotected secrets. `--auto` hard-denies before mutation in current releases; use transactional `phantom init`. |
 | `phantom why <KEY>` | Explain why a key is or is not protected and how `phantom exec` delivers it (`no_route` means no built-in proxy route injects it). Works before init; `--json` prints the same shape as MCP `phantom_why` |

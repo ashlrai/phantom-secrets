@@ -269,28 +269,30 @@ See [distribution status](distribution-status.md) for dated npm, Homebrew, crate
 
 ### GitHub Actions
 
-```yaml
-- name: Set up Phantom
-  run: |
-    cargo install --locked --git https://github.com/ashlrai/phantom-secrets.git --rev a6a0413991c0bd7f3d6601f467c0b5770d0dce0c phantom-secrets
-    echo "PHANTOM_VAULT_PASSPHRASE=${{ secrets.PHANTOM_VAULT_PASSPHRASE }}" >> $GITHUB_ENV
-    phantom pull --from vercel --project ${{ vars.VERCEL_PROJECT_ID }}
-  env:
-    VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
-```
+`phantom pull` requires an initialized project, attached trusted terminals,
+and exact typed consent before provider credentials or network access. It
+cannot bootstrap a vault in an unattended Actions step; `--force` does not
+bypass consent. Do not simulate approval with an agent-controlled PTY.
+
+An unattended `phantom exec` run needs an already initialized project, its
+managed dotenv/config, and a readable vault provisioned through a separately
+reviewed process. A runner does not inherit a workstation's OS keychain.
+For an encrypted-file vault, supply its existing passphrase through the
+runner's protected runtime environment. A passphrase alone does not create or
+restore the vault. Keep vault files and credentials out of repository content,
+build logs, and public artifacts. The application must use a
+[supported proxy route](exec.md); arbitrary provider CLIs remain unsupported.
 
 ### Docker
 
-```dockerfile
-# Install phantom
-RUN cargo install --locked --git https://github.com/ashlrai/phantom-secrets.git --rev a6a0413991c0bd7f3d6601f467c0b5770d0dce0c phantom-secrets
-
-# Set passphrase for encrypted vault (pass at runtime, not build time)
-ENV PHANTOM_VAULT_PASSPHRASE=""
-
-# Use phantom exec to run your app with secrets injected
-CMD ["phantom", "exec", "--", "node", "server.js"]
-```
+Install the verified binaries using [Getting started](getting-started.md#install).
+Running Phantom inside a container also requires the initialized project and
+readable vault there; installing the binary alone does not provision either.
+Use a reviewed runtime mount and protected environment for an encrypted vault,
+not image layers, Dockerfile `ARG`/`ENV`, or copied plaintext dotenv files.
+Run `phantom exec` inside the same container as the supported application so
+both use the same loopback interface. This is a deployment prerequisite, not
+a verified container-installation receipt.
 
 ## FAQ
 
@@ -309,12 +311,19 @@ phantom reveal OPENAI_API_KEY --clipboard  # copies to clipboard (auto-clears 30
 
 ### Does Phantom work with Docker Compose?
 
-Yes. Use `phantom exec` to wrap your compose command:
-```bash
-phantom exec -- docker compose up
-```
+Wrapping Compose on the host does not automatically wire the applications
+inside its containers. Compose requires explicit `environment` or `env_file`
+configuration to set container variables, and `127.0.0.1` in a bridge-networked
+container refers to that container, not the host's Phantom proxy. Forwarding a
+host-generated base URL alone therefore does not establish a working route.
+See Docker's [environment configuration](https://docs.docker.com/compose/how-tos/environment-variables/set-environment-variables/)
+and [networking guide](https://docs.docker.com/compose/how-tos/networking/).
 
-The proxy runs on the host, and `*_BASE_URL` env vars are passed to containers.
+Run Phantom and the supported application inside the same container after
+provisioning the project and vault as described above. Keep Phantom bound to
+loopback; exposing its credential-bearing listener on a bridge or public
+interface is not a supported workaround. This guide does not claim end-to-end
+Docker Compose acceptance.
 
 ### Can I use Phantom in production?
 
