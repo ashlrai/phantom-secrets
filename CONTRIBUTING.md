@@ -90,6 +90,22 @@ coding agent. Each step links to the detail further down.
    A web suite that loads a package, such as
    `apps/web/tests/public-claims.test.cjs` (which needs `typescript`), fails
    with `Cannot find module` until you run `(cd apps/web && npm ci --no-audit)`.
+
+   Two doc checks are not named `*.test.*`, so that search misses them, and
+   pull request CI runs neither:
+
+   - After editing [docs/agents.md](docs/agents.md), run
+     `bash scripts/test-docs-agents.sh`. It runs every `sh` block in the
+     guide against a scratch project with the workspace debug `phantom`
+     binary, which it builds with Cargo when missing.
+   - After editing a file that contains a `<!-- fresh:begin` marker (such as
+     `README.md`, `docs/getting-started.md`, `npm/README.md`,
+     `npm-mcp/README.md`, or `CHANGELOG.md`), run
+     `node scripts/freshness/check.mjs`. It fails when a generated version
+     block differs from what the generators produce; only the daily full run
+     checks it. `node scripts/freshness/sync.mjs` rewrites stale
+     blocks, and [scripts/freshness/README.md](scripts/freshness/README.md)
+     lists the blocks.
 4. **Run the full gate once** before you open the pull request: the three
    commands under [Verification](#verification). Pull request CI does not run
    the Rust test suite, so this local run is the test evidence reviewers see.
