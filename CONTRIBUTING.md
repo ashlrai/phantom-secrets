@@ -116,8 +116,9 @@ coding agent. Each step links to the detail further down.
    auto-merge. Fork contributors never need write access or repository
    secrets. If the gate fails, see [When `CI Gate` fails](#when-ci-gate-fails).
    A change to a path in [`.github/CODEOWNERS`](.github/CODEOWNERS), such as a
-   workflow, a security-sensitive crate, or the web API and auth code, also
-   requests a review from its code owner;
+   workflow, the secret-shape scanner, a security-sensitive crate, the web API
+   and auth code, or a Supabase migration, also requests a review from its
+   code owner;
    [GOVERNANCE.md](GOVERNANCE.md#roles) explains that whether that review is
    required is repository state.
 

@@ -37,10 +37,12 @@ layers.
 The current repository steward is Ashlr AI. Mason Wyatt is the public project
 contact identified in [CITATION.cff](CITATION.cff) and the support routes.
 
-[`.github/CODEOWNERS`](.github/CODEOWNERS) names the owner of CI workflows, the
-vault, proxy, broker, authority, session, evidence, and workspace crates, the
-MCP server registration file, the web API and auth code, and the core files
-that make keyed or network requests. GitHub uses only the first `CODEOWNERS`
+[`.github/CODEOWNERS`](.github/CODEOWNERS) names the owner of CI workflows,
+the `CODEOWNERS` file itself, the secret-shape scanner in
+`.github/tests/secret-shape/`, the vault, proxy, broker, authority, session,
+evidence, and workspace crates, the MCP server registration file, the web API,
+auth, and device-authorization code, the Supabase migrations, and the core
+files that make keyed or network requests. GitHub uses only the first `CODEOWNERS`
 file it finds and checks `.github/` first, so the root
 [`CODEOWNERS`](CODEOWNERS) (release and publish paths) is not the active
 mapping. Whether a
