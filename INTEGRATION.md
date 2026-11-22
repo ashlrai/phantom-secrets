@@ -21,7 +21,7 @@ commissioning, or provider activation.
   route's vault value into the fixed auth header only. Client headers and
   bodies never resolve placeholders. Only supported, configured provider
   routes are eligible; this is not an arbitrary authenticated forwarding proxy.
-- **Value-blind MCP tools** (bundled `phantom mcp`, with a verified local
+- **Value-blind MCP tools** (bundled `phantom mcp serve`, with a verified local
   standalone `phantom-mcp` fallback): inventory, status, diagnostics, audit,
   rotation, and governed requests over secret *names*, never values. The
   release schema smoke is the catalog count.
@@ -43,7 +43,7 @@ commissioning, or provider activation.
    installs a pre-commit check. It creates no plaintext project-local backup.
    Recovery is from the provider console or password manager.
 2. **Human**: `phantom setup --client <claude|cursor|windsurf|codex|gemini>`
-   writes the MCP client config pointing at the bundled `phantom mcp`
+   writes the MCP client config pointing at the bundled `phantom mcp serve`
    entrypoint. A verified local standalone fallback is supported; setup never
    bootstraps a registry package or downloads a runtime.
    `phantom agent setup --dry-run` previews setup actions. Its readiness

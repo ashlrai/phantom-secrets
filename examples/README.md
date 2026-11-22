@@ -17,16 +17,21 @@ live provider identifiers, cloud tokens, device codes, cookies, or persistent
 | [LiteLLM gateway](litellm/README.md) | Experimental. Manual smoke test with a real LiteLLM, not in CI; a hermetic proxy test runs in the daily full CI run | LiteLLM holds only a `phm_` placeholder and sends it to the Phantom proxy; verified against a mock upstream. |
 | [Next.js](nextjs/README.md) | Executable recipe, disposable workspace, needs network for `npm install` | A Next.js 16 server under `phantom exec` sees a `phm_` placeholder and a healthy local proxy, never the value. |
 | [GitHub Actions secret gate](github-actions/README.md) | Copyable workflow plus an executable local replay | A pull-request check that fails on raw dotenv values and hardcoded provider keys, with no vault or secrets in CI. |
+| [PostHog capture](posthog-capture.py) | Script plus offline tests (`test_posthog_capture.py`, not in CI) | Send one event under `phantom exec` through the `posthog_fleet` route without reading the key; see [docs/posthog.md](../docs/posthog.md). |
+| [Temporal payload codec](temporal-codec-python/README.md) | Sketch, not reviewed by a cryptographer; unit tests run in the daily full CI run | Encrypt Temporal payloads with AES-256-GCM and decode them through a localhost-only codec server; see [docs/temporal.md](../docs/temporal.md). |
 
 The repository does not currently claim a stable Rust library API or ship a
 live provider-enrollment example. Provider protocol engines and test-only mocks
 are internal scaffolding; they are not runnable acceptance examples.
 
-The client and CI recipes use a fake, non-provider key and an explicit
-encrypted-file vault inside a temporary HOME. Each prints `PASS` lines and
-exits `0` (all passed), `1` (a check failed) or `2` (binary missing, so
-incomplete). The daily full CI run executes them against the workspace build with
-`node --test scripts/examples-client-recipes.test.mjs`.
+The Claude Code, Cursor, GitHub Actions, and Next.js recipes use a fake,
+non-provider key and an explicit encrypted-file vault inside a temporary HOME.
+Each prints `PASS` lines and exits `0` (all passed), `1` (a check failed) or
+`2` (binary missing, so incomplete). The daily full CI run executes the Claude
+Code, Cursor, and GitHub Actions recipes against the workspace build with
+`node --test scripts/examples-client-recipes.test.mjs`. No CI job runs the
+Next.js recipe, which needs network access for `npm install`; run it locally
+with `node examples/nextjs/run.mjs`.
 
 ## Using an example
 
