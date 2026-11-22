@@ -28,8 +28,22 @@ exact request in a trusted terminal. Approval for a request without generation
 does not authorize generation. MCP returns the same value-free JSON receipt.
 No tool accepts a plaintext value; `generate` defaults to false for compatibility.
 
-These are local application secrets, suitable for purposes such as session
-signing. They do not create credentials at an external provider. Use
+Generation stores random material locally; it does not create credentials at
+an external provider or add a proxy route. Use
 `phantom_add_secret_interactive` to store a provider-issued credential outside
-agent context. Run supported consumers through `phantom exec -- <command>`;
-generation does not add a new proxy route or expose a raw-value delivery path.
+agent context.
+
+For the `SESSION_SECRET` example, inspect delivery without reading the value:
+
+```sh
+phantom why SESSION_SECRET --json
+```
+
+`exec.delivery: no_route` means the child receives only a fresh placeholder.
+A session-signing library that reads `SESSION_SECRET` directly would sign with
+that placeholder, not the stored random value; a later exec session receives
+a different placeholder. Generation alone therefore does not establish a
+working session-signing setup. There is no general raw-value delivery path in
+`phantom exec`. Consumers need a supported proxy route or a separately reviewed
+trusted workflow outside the value-blind agent boundary. See
+[exec coverage](exec.md).

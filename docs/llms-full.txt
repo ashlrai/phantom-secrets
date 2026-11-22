@@ -105,7 +105,7 @@ Connection strings such as DATABASE_URL can be detected, vaulted, and replaced i
 - `phantom why <KEY>` — Explain whether a key is classified as Secret, PublicKey, or NotSecret, and which heuristic matched.
 - `phantom why <KEY> --strict` exits 2 when the key is not protected. A JSON report for a missing key also exits 2. The human view of a missing key is still a command error (exit 1). Without `--strict`, a present key still exits 0.
 - `phantom copy <KEY> --to <DIR> [--rename NEW]` — After exact trusted-terminal confirmation, copy a secret from this initialized project to an initialized target without printing the value. Optional rename in the target project. It refuses an existing target vault entry, config ownership, or managed-dotenv key rather than overwriting it.
-- `phantom wrap [--only A,B] [--skip X,Y]` — Wrap `package.json` scripts with `phantom exec` so npm scripts get real credentials at runtime. Originals are preserved as `script:raw` variants.
+- `phantom wrap [--only A,B] [--skip X,Y]` - Wrap selected `package.json` scripts with `phantom exec`; children receive placeholders and must use a supported proxy route. Originals are preserved as `script:raw` variants. See [script wrapping](exec.md#packagejson-scripts).
 - `phantom unwrap` — Reverse `phantom wrap`, restoring originals from `:raw` variants.
 - `phantom cloud status` / `phantom team list` / `phantom team members` — Authenticated CLI provider reads that require attached terminals and an exact typed challenge before stored-bearer or network access. MCP equivalents require `confirm` plus out-of-band approval.
 - Team mutations require an attached trusted terminal and an exact typed challenge before credential, keypair, vault-value, or network access.
@@ -247,7 +247,7 @@ The protocol source requires a separately commissioned hosted deployment and ent
 - `phantom_copy_secret` — Exact-before target transaction that refuses existing vault/config/dotenv ownership and creates the vault entry plus managed-dotenv mapping without returning the value. Params: name, target_dir, rename (optional), confirm, approval_token.
 
 **Package.json wrapping:**
-- `phantom_wrap` — Wrap `package.json` scripts with the installed local `phantom exec --` runtime so secrets are injected via the proxy. Originals are saved as `script:raw` variants. Heuristically picks dev/start/build/serve/deploy scripts and skips lint/test/format scripts. Params: only, skip, confirm, approval_token.
+- `phantom_wrap` - Wrap selected `package.json` scripts with the installed local `phantom exec --` runtime. Originals are saved as `script:raw` variants. Heuristically picks dev/start/build/serve/deploy scripts and skips lint/test/type/format scripts. Shell command lines are left unchanged, even with explicit selection. Wrapping does not add adapters or deliver vault values to the child environment. Params: only, skip, confirm, approval_token.
 - `phantom_unwrap` — Reverse `phantom_wrap`: restore original scripts from `:raw` variants and remove the `:raw` entries. Params: confirm, approval_token.
 
 **Teams (source-backed fixed-membership pilot; hosted Pro commissioning required):**
