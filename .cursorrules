@@ -63,8 +63,10 @@ request CI also skips:
 `node --test scripts/release/readme-mcp-catalog.test.mjs`,
 `node --test scripts/docs-distribution.test.mjs`,
 `node --test scripts/hot-file-rule.test.mjs`, and
-`cargo test --locked -p phantom-secrets --test docs_command_flags_test`. Add a
-`changelog.d/` fragment instead of editing `CHANGELOG.md`.
+`cargo test --locked -p phantom-secrets --test docs_command_flags_test`,
+plus every suite that reads the file you edited, including those in
+`apps/web/tests/` (list them with `git grep -l -F <file-name> -- '*.test.*'`).
+Add a `changelog.d/` fragment instead of editing `CHANGELOG.md`.
 Before pushing, run `node scripts/changelog-fold.mjs --check` and
 `git diff main...HEAD | perl .github/tests/secret-shape/scrub.pl --check --allow-fixtures`;
 the second is the local form of the `Secret-shape scan` that `CI Gate` requires.

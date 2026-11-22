@@ -37,6 +37,15 @@ const DOCS_DRIFT_CHECKS = [
   "cargo test --locked -p phantom-secrets --test docs_command_flags_test",
 ];
 
+const EDITED_FILE_SUITES = /every suite that reads the file (you|they) edited/i;
+const SUITE_LOOKUP = /git grep -l -F \S+ -- '\*\.test\.\*'/;
+
+function assertNamesEditedFileSuites(file, text) {
+  const flat = text.replace(/\s+/g, " ");
+  assert.match(flat, EDITED_FILE_SUITES, `${file} does not say to run every suite that reads the edited file`);
+  assert.match(flat, SUITE_LOOKUP, `${file} does not show how to list those suites with git grep`);
+}
+
 for (const file of ENTRY_POINTS) {
   const text = readFileSync(resolve(root, file), "utf8");
 
@@ -71,6 +80,13 @@ for (const file of ENTRY_POINTS) {
     }
   });
 
+  // The four drift checks do not cover every suite that reads a doc: some
+  // live in apps/web/tests/, which only the daily web job runs. An agent must
+  // learn to find and run them from whichever file it started in.
+  test(`${file} says to run every suite that reads the edited file`, () => {
+    assertNamesEditedFileSuites(file, text);
+  });
+
   test(`${file} points at the contributor path`, () => {
     assert.match(text, /Contribute with an agent|contribute-with-an-agent/i);
   });
@@ -88,3 +104,12 @@ test("the commands these entry points name still exist", () => {
     assert.doesNotThrow(() => readFileSync(resolve(root, f)), `${f} is missing`);
   }
 });
+
+// The site serves these at the web root, so an agent may start from them too.
+// apps/web/tests/llms-contributor-path.test.cjs guards their other facts.
+for (const file of ["apps/web/public/llms.txt", "apps/web/public/llms-full.txt"]) {
+  const text = readFileSync(resolve(root, file), "utf8");
+  test(`${file} says to run every suite that reads the edited file`, () => {
+    assertNamesEditedFileSuites(file, text);
+  });
+}
