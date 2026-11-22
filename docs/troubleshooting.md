@@ -340,6 +340,8 @@ If using file vault: you need the `PHANTOM_VAULT_PASSPHRASE` to decrypt. If lost
 ```bash
 phantom pull --from vercel --project prj_xxx --force
 ```
+Run it from an attached terminal: a live pull asks you to type a one-time
+`PULL <plan-digest> <nonce>` challenge and refuses to run headlessly.
 
 ### Is Phantom safe to use with Claude Code / Cursor?
 
@@ -407,6 +409,7 @@ If you lose access to your vault (e.g., you reset your machine or the vault file
    ```bash
    phantom pull --from vercel --project prj_abc123def456 --force
    ```
+   The pull asks you to type a one-time challenge at an attached terminal.
 
 2. **Re-enter secrets manually.** If you have the real values saved elsewhere (password manager, team wiki), create a fresh `.env` with the real values and re-run `phantom init`.
 

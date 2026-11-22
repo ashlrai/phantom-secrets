@@ -406,8 +406,8 @@ dashboard is designed to show team memberships and member lists.
 | `phantom vault migrate-linux` | From an attached trusted terminal on a headed Linux desktop, copy and exactly verify this project's keyutils credentials in Secret Service, retain the source entries, and publish the private backend marker last |
 | `phantom check` | Scan for unprotected secrets (pre-commit hook, `--staged`, `--runtime`, `--log PATH`) |
 | `phantom redact --stream` | Scrub known credential shapes from stdin to stdout, flushing each line; no vault access. Rejects lines over 1 MiB; shape detection cannot cover arbitrary or encoded secrets. |
-| `phantom sync` | Push secrets to Vercel / Railway (`--dry-run --json` previews safely; `--only PATTERN` filters by glob, repeatable) |
-| `phantom pull` | Pull secrets from Vercel / Railway into vault |
+| `phantom sync` | Push secrets to Vercel / Railway (`--dry-run --json` previews safely; `--only PATTERN` filters by glob, repeatable). A live sync needs an attached terminal and a typed one-time challenge. |
+| `phantom pull` | Pull secrets from Vercel / Railway into vault. Like a live sync, it needs an attached terminal and a typed one-time challenge. |
 | `phantom setup` | Wire Phantom into an AI client. `--client claude` (default), `cursor`, `windsurf`, `codex`, or `gemini`. `--print` emits a snippet; `--status` reports client wiring without writes (`--json` for automation). `--dry-run` previews Cursor, Windsurf, Codex, or Gemini changes. `--replace` replaces a differing entry with a backup and manifest; `--undo` previews restoration, and `--undo --apply` applies it. |
 | `phantom mcp serve` | Run the MCP stdio server in-process; this is the entry `phantom setup` writes into AI-client configs |
 | `phantom mcp-approve <NONCE>` | From an attached trusted terminal, review the bounded value-blind effect and exact parameters for a pending MCP nonce, type its fresh challenge, and receive the one-use `approval_token` |

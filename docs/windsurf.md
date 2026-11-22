@@ -108,7 +108,8 @@ phantom add SENDGRID_API_KEY
 # Check that everything is configured correctly
 phantom doctor
 
-# Sync secrets to your deployment platform
+# Sync secrets to your deployment platform (from your own terminal: a live
+# sync asks you to type a one-time challenge and refuses to run headlessly)
 phantom sync --platform vercel --project prj_abc123
 ```
 
