@@ -355,11 +355,23 @@ needs `(cd apps/web && npm ci --no-audit)` first.
 
 ## Key files
 
-- `crates/phantom-cli/src/main.rs`: CLI entry point and command routing
-- `crates/phantom-core/src/dotenv.rs`: .env parsing and secret detection
+Start here before searching. Each entry names the file a change of that kind usually touches.
+
+- `crates/phantom-cli/src/main.rs`: CLI argument definitions (`clap`) and the process entry point
+- `crates/phantom-cli/src/dispatch.rs`: runtime routing from a parsed command to its handler in `crates/phantom-cli/src/commands/`
+- `crates/phantom-cli/src/util.rs`: shared CLI helpers, including `inventory_guard`, `require_complete_inventory`, and the `VAULT_LOCKED` refusal prefix
+- `crates/phantom-cli/tests/`: CLI integration tests
+- `crates/phantom-core/src/dotenv.rs`: .env parsing and secret detection (`looks_like_secret`)
+- `crates/phantom-core/src/managed_dotenv.rs`: `parse_regular_dotenv`, the symlink-safe reader that non-test code uses for dotenv files
+- `crates/phantom-core/src/importers/mod.rs`: `import_from`, the dispatcher for the doppler, infisical, dotenvx, 1password, and env importers
+- `crates/phantom-core/src/audit.rs`: opt-in HMAC-chained audit log; new hook points call `audit::log`
 - `crates/phantom-core/src/auth.rs`: Device auth flow, keychain token storage
 - `crates/phantom-core/src/cloud.rs`: Cloud push/pull HTTP client
 - `crates/phantom-proxy/src/server.rs`: Proxy server with bounded full-request buffering and streaming-response support
+- `crates/phantom-proxy/src/services.rs`: built-in and configured service routes
+- `crates/phantom-proxy/src/response_scrubber.rs`: redacts vault values and known secret formats from upstream responses
+- `crates/phantom-proxy/src/test_server.rs`: mock HTTP server that records requests for proxy integration tests
 - `crates/phantom-vault/src/crypto.rs`: Shared ChaCha20-Poly1305 encryption
-- `crates/phantom-mcp/src/server.rs`: MCP server declarations and handlers
-- `apps/web/src/app/api/v1/`: Backend API routes (auth, vault, billing)
+- `crates/phantom-mcp/src/server.rs`: MCP server declarations and handlers; `mcp-registry/server.json` must match its runtime `tools/list`
+- `crates/phantom-mcp/src/tools/params.rs` and `crates/phantom-mcp/src/tools/helpers.rs`: MCP parameter schemas, and error helpers such as `state_err` for user-fixable states
+- `apps/web/src/app/api/v1/`: Backend API routes (auth, vault, billing, teams, integrations, the signed-in account under `me`, and the `health` and `ready` checks)
