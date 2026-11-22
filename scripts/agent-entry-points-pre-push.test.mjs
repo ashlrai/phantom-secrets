@@ -122,10 +122,18 @@ test("the commands these entry points name still exist", () => {
 });
 
 // The site serves these at the web root, so an agent may start from them too.
-// apps/web/tests/llms-contributor-path.test.cjs guards their other facts.
+// apps/web/tests/llms-contributor-path.test.cjs guards their other facts; only
+// the daily web job runs it, so the checks every entry point must name are
+// also asserted here.
 for (const file of ["apps/web/public/llms.txt", "apps/web/public/llms-full.txt"]) {
   const text = readFileSync(resolve(root, file), "utf8");
   test(`${file} says to run every suite that reads the edited file`, () => {
     assertNamesEditedFileSuites(file, text);
+  });
+
+  test(`${file} names the doc checks the suite search misses`, () => {
+    for (const check of NON_SUITE_DOC_CHECKS) {
+      assert.ok(text.includes(check), `${file} is missing \`${check}\``);
+    }
   });
 }
