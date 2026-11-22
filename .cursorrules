@@ -66,6 +66,9 @@ request CI also skips:
 `cargo test --locked -p phantom-secrets --test docs_command_flags_test`,
 plus every suite that reads the file you edited, including those in
 `apps/web/tests/` (list them with `git grep -l -F <file-name> -- '*.test.*'`).
+That search misses two checks: after editing `docs/agents.md`, run
+`bash scripts/test-docs-agents.sh`; after editing a file with a
+`<!-- fresh:begin` marker, run `node scripts/freshness/check.mjs`.
 Add a `changelog.d/` fragment instead of editing `CHANGELOG.md`.
 Before pushing, run `node scripts/changelog-fold.mjs --check` and
 `git diff main...HEAD | perl .github/tests/secret-shape/scrub.pl --check --allow-fixtures`;

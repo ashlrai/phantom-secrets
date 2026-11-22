@@ -37,6 +37,11 @@ const DOCS_DRIFT_CHECKS = [
   "cargo test --locked -p phantom-secrets --test docs_command_flags_test",
 ];
 
+const NON_SUITE_DOC_CHECKS = [
+  "bash scripts/test-docs-agents.sh",
+  "node scripts/freshness/check.mjs",
+];
+
 const EDITED_FILE_SUITES = /every suite that reads the file (you|they) edited/i;
 const SUITE_LOOKUP = /git grep -l -F \S+ -- '\*\.test\.\*'/;
 
@@ -87,6 +92,15 @@ for (const file of ENTRY_POINTS) {
     assertNamesEditedFileSuites(file, text);
   });
 
+  // Two doc checks are not named *.test.*, so the git grep lookup above
+  // misses them and pull request CI runs neither. Every entry point names
+  // both so an agent editing docs/agents.md or a freshness block runs them.
+  test(`${file} names the doc checks the suite search misses`, () => {
+    for (const check of NON_SUITE_DOC_CHECKS) {
+      assert.ok(text.includes(check), `${file} is missing \`${check}\``);
+    }
+  });
+
   test(`${file} points at the contributor path`, () => {
     assert.match(text, /Contribute with an agent|contribute-with-an-agent/i);
   });
@@ -100,6 +114,8 @@ test("the commands these entry points name still exist", () => {
     "scripts/docs-distribution.test.mjs",
     "scripts/hot-file-rule.test.mjs",
     "crates/phantom-cli/tests/docs_command_flags_test.rs",
+    "scripts/test-docs-agents.sh",
+    "scripts/freshness/check.mjs",
   ]) {
     assert.doesNotThrow(() => readFileSync(resolve(root, f)), `${f} is missing`);
   }

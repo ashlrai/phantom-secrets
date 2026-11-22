@@ -39,7 +39,10 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 
 Documentation-only change (plus every suite that reads the file you edited,
 including those in `apps/web/tests/`; list them with
-`git grep -l -F <file-name> -- '*.test.*'`):
+`git grep -l -F <file-name> -- '*.test.*'`; also
+`bash scripts/test-docs-agents.sh` after editing `docs/agents.md`, and
+`node scripts/freshness/check.mjs` after editing a file with a
+`<!-- fresh:begin` marker):
 
 ```
 node --test scripts/release/readme-mcp-catalog.test.mjs
