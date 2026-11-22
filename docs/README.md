@@ -100,6 +100,7 @@ These guides cover installation, MCP setup, the value-blind tool model, and dail
 - [Claude Code](claude-code.md)
 - [Codex](codex.md)
 - [Cursor](cursor.md)
+- [Gemini CLI](gemini-cli.md)
 - [Windsurf](windsurf.md)
 - [MCP secrets manager overview](mcp-secrets-manager.md) for the value-blind tool model in one page
 - [`phantom agent doctor --json` preflight contract](agent-preflight-contract.md) for agent setup checks

@@ -193,7 +193,8 @@ Use this read-only path before exploring the full tool catalog:
 
 1. Install both binaries from the reviewed [`v0.8.7` GitHub release](#installation).
 2. From the project you want to inspect, run `phantom setup --client codex`,
-   replacing `codex` with `claude`, `cursor`, or `windsurf` when appropriate.
+   replacing `codex` with `claude`, `cursor`, `windsurf`, or `gemini` when
+   appropriate.
 3. Restart the AI client so it loads the generated MCP configuration.
 4. Ask the client: “Call `phantom_capability`, then `phantom_status`. Report the
    value-blind authority, hard denials, project ID, dotenv protection counts, and

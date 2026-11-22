@@ -33,6 +33,7 @@ phantom setup --client claude
 phantom setup --client cursor
 phantom setup --client windsurf
 phantom setup --client codex
+phantom setup --client gemini
 ```
 
 Choose one command for the client you use. To inspect a generic MCP snippet
