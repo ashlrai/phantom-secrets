@@ -84,7 +84,7 @@ License: MIT
 Language: Rust
 Release evidence was verified on 2026-11-06. The immutable GitHub `v0.8.7` release at https://github.com/ashlrai/phantom-secrets/releases/tag/v0.8.7 resolves to `a6a0413991c0bd7f3d6601f467c0b5770d0dce0c`. Its 19 assets were verified after all six native acceptance rows and release attestations passed in https://github.com/ashlrai/phantom-secrets/actions/runs/42262099223.
 Install: use the exact checksum-verified `v0.8.7` GitHub assets below on macOS, Linux, and Windows. The separately managed Homebrew formula was observed at `v0.7.9` on 2026-10-06.
-MCP: after installing both release binaries, run `phantom setup --client claude|cursor|windsurf|codex`
+MCP: after installing both release binaries, run `phantom setup --client claude|cursor|windsurf|codex|gemini`
 
 
 ## The Problem
@@ -250,7 +250,8 @@ Options: --output <filename>
 ### phantom setup
 Configure an MCP client automatically. For Claude Code, writes the phantom MCP server to the project .mcp.json
 and removes legacy Phantom grants from .claude/settings.local.json. Cursor: ~/.cursor/mcp.json;
-Windsurf: ~/.codeium/windsurf/mcp_config.json; Codex: ~/.codex/config.toml.
+Windsurf: ~/.codeium/windsurf/mcp_config.json; Codex: ~/.codex/config.toml;
+Gemini CLI: merges `mcpServers` into ~/.gemini/settings.json.
 
 ### phantom login
 After a hosted deployment and account entitlement are independently
@@ -376,7 +377,7 @@ Setup: install both reviewed `v0.8.7` GitHub release binaries, then run `phantom
 
 Released `v0.8.7` records the running `phantom` executable with `mcp serve` when it can resolve that runtime, otherwise it looks for a local `phantom-mcp`. Setup has no network package-runner fallback and fails closed when neither local runtime is executable. Keep both verified `v0.8.7` binaries installed and inspect the generated entry.
 
-The MCP server uses stdio transport via the rmcp 3.5 SDK. It works with Claude Code, Cursor, Windsurf, and OpenAI Codex. The runtime `tools/list` response is the canonical parameter schema.
+The MCP server uses stdio transport via the rmcp 3.9 SDK. It works with Claude Code, Cursor, Windsurf, OpenAI Codex, and Gemini CLI. The runtime `tools/list` response is the canonical parameter schema.
 
 Commissioning boundary: cloud and team tools below are client implementations
 for a separately deployed and entitled hosted service. As of the 2026-09-05
@@ -560,6 +561,9 @@ Windsurf:
 
 OpenAI Codex:
   phantom setup --client codex
+
+Gemini CLI:
+  phantom setup --client gemini
 
 
 ## Architecture
@@ -856,7 +860,7 @@ Do not commit:
 9. Pre-commit safety: `phantom check --staged` checks staged dotenv content with Phantom's heuristics and added lines in other staged files for a bounded credential-prefix set
 10. Rotate mappings from an attached trusted terminal: phantom rotate requires an exact snapshot-bound challenge before remapping every local placeholder; headless calls are denied. Provider-side credential rotation remains hard-denied; rotate at the provider and add the replacement credential from a trusted terminal.
 11. Monorepo: phantom init in each subdirectory — each gets its own vault and config
-12. Multi-IDE team: same MCP server works across Claude Code, Cursor, Windsurf, and Codex
+12. Multi-IDE team: same MCP server works across Claude Code, Cursor, Windsurf, Codex, and Gemini CLI
 13. Migrate from Doppler/Infisical/dotenvx/1Password: phantom import --from <source> --file <path>
 14. Local audit support: PHANTOM_AUDIT=1 + phantom audit show/tail/verify can aid troubleshooting and forensics. It is not compliance evidence by itself.
 
