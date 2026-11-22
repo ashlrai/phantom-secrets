@@ -482,7 +482,7 @@ is the canonical catalog.
 
 Restart the AI tool after running `phantom setup` so it picks up the new config.
 
-Run `phantom agent doctor` after setup to confirm the repo is ready before handing work to Claude Code, Codex, Cursor, Windsurf, or another agent.
+Run `phantom agent doctor` after setup to confirm the repo is ready before handing work to Claude Code, Codex, Cursor, Windsurf, Gemini CLI, or another agent.
 
 ---
 
