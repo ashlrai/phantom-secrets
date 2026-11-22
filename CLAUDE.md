@@ -50,7 +50,10 @@ to merged pull request. In short:
   Also run every suite that reads the file you edited, including those in
   `apps/web/tests/`: list them with `git grep -l -F <file-name> -- '*.test.*'`
   and run each with `node --test <file>`. A web suite that loads a package
-  needs `(cd apps/web && npm ci --no-audit)` first.
+  needs `(cd apps/web && npm ci --no-audit)` first. That search misses two
+  checks not named `*.test.*`: after editing `docs/agents.md`, run
+  `bash scripts/test-docs-agents.sh`; after editing a file with a
+  `<!-- fresh:begin` marker, run `node scripts/freshness/check.mjs`.
 
 - Before you push, run the two pre-push checks. Neither needs a build, and
   pull request CI does not validate fragments:
