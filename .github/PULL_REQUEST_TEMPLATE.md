@@ -79,3 +79,10 @@ git diff main...HEAD | perl .github/tests/secret-shape/scrub.pl --check --allow-
 - [ ] Secret-bearing buffers follow existing zeroization patterns on success and error paths
 - [ ] Platform coverage, skipped checks, external gates, and remaining limitations are stated
 - [ ] Security-sensitive changes include explicit authority, rollback, and recovery analysis
+
+## Agent used (optional)
+
+<!-- Helps us learn which coding tools contribute. Leave blank for a fully human PR.
+     Examples: Codex, Claude Code, Cursor, GitHub Copilot, Gemini CLI, Grok, Devin, Aider, Windsurf, local model (name it). -->
+
+Agent used:
