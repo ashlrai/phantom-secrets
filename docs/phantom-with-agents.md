@@ -12,7 +12,7 @@ phantom exec -- <your agent command>
 - A protected key that no route delivers is named in a warning, even with `--quiet`, instead of being counted as proxied. Test: `exec_warns_about_protected_keys_without_a_route` (same file).
 - The per-session proxy token is hidden in the printed `*_BASE_URL` lines. Test: `printed_base_url_hides_session_token` (`crates/phantom-cli/src/commands/exec.rs`).
 - The agent's stdout is passed through byte for byte, and its exit code is propagated. Tests: `exec_keeps_child_stdout_byte_for_byte`, `exec_quiet_still_propagates_child_exit_code` (`exec_output_streams_test.rs`).
-- `phantom exec` refuses custom routes from `.phantom.toml`; `phantom start` builds them. Test: `custom_litellm_route_is_refused_by_exec_but_built_for_start` (`exec.rs`). See [litellm.md](litellm.md) for why.
+- `phantom exec` and `phantom start` both refuse custom routes from `.phantom.toml` through one launch check; the proxy's route registry can still build one. Test: `custom_litellm_route_is_refused_by_exec_but_built_for_start` (`exec.rs`). See [litellm.md](litellm.md) for why.
 
 ## 2. What the proxy does with the key
 
@@ -25,7 +25,7 @@ phantom exec -- <your agent command>
 
 LiteLLM can sit on either side of Phantom; [litellm.md](litellm.md) has both setups.
 
-- LiteLLM as the upstream of a Phantom route (`phantom start` with a custom route): the proxy swaps the placeholder into each of the 7 key headers LiteLLM documents and scrubs echoes of them, buffered and streamed. Tests: `crates/phantom-proxy/tests/litellm_upstream_headers_test.rs` (streamed cases added in #317).
+- LiteLLM as the upstream of a Phantom route (a custom route, which no CLI command serves today): the proxy swaps the placeholder into each of the 7 key headers LiteLLM documents and scrubs echoes of them, buffered and streamed. Tests: `crates/phantom-proxy/tests/litellm_upstream_headers_test.rs` (streamed cases added in #317).
 - LiteLLM run under `phantom exec`, end to end from agent to LiteLLM to the proxy to the provider: the real key exists only on the proxy-to-provider hop. It is not in the agent's environment or output, not in anything LiteLLM receives or gets back, and appears exactly once at the provider. A provider that echoes the key is scrubbed before LiteLLM sees the reply. Test: `real_key_exists_only_on_the_proxy_to_provider_hop` (`crates/phantom-proxy/tests/exec_agent_litellm_chain_test.rs`). Limit: that test drives the proxy library the way exec builds it, because the `phantom` binary cannot target a plain-HTTP mock upstream.
 - `phantom doctor` warns when a LiteLLM config that routes through Phantom pins a version below 1.83.0, sets `allow_client_side_credentials: true`, or binds beyond loopback. It is report-only. Tests: `doctor_json_reports_risky_litellm_through_phantom_and_changes_nothing`, `doctor_ignores_litellm_config_not_routed_through_phantom` (`crates/phantom-cli/tests/doctor_test.rs`).
 
