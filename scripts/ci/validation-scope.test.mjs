@@ -52,7 +52,7 @@ function runGate(needs, event = 'workflow_dispatch') {
   return spawnSync(process.execPath, ['-e', script], { encoding: 'utf8', env: { NEEDS: JSON.stringify(needs), EVENT: event }, timeout: 5000 });
 }
 function diagnosticNeeds() {
-  const skipped = ['test-ignored', 'lint', 'dependency-policy', 'windows-arm-source-check', 'npm-wrappers', 'web',
+  const skipped = ['affected-tests', 'test-ignored', 'lint', 'dependency-policy', 'windows-arm-source-check', 'npm-wrappers', 'web',
     'secret-scan', 'secret-shape', 'crate-publication-contract', 'temporal-codec-example', 'docs-commands'];
   return { changes: { result: 'success', outputs: { scope: DIAGNOSTIC_SCOPE } }, test: { result: 'success' },
     ...Object.fromEntries(skipped.map(name => [name, { result: 'skipped' }])) };
@@ -71,9 +71,9 @@ test('the actual diagnostic gate requires its selected Windows job and refuses o
 test('the actual unchanged full gate still requires every full role and rejects diagnostic omissions', () => {
   const needs = diagnosticNeeds();
   needs.changes.outputs = { scope: 'full', rust: 'true', web: 'true', temporal_example: 'true', docs_commands: 'false', platform: 'true' };
-  for (const [name, value] of Object.entries(needs)) if (name !== 'changes' && name !== 'docs-commands') value.result = 'success';
+  for (const [name, value] of Object.entries(needs)) if (!['changes', 'docs-commands', 'affected-tests'].includes(name)) value.result = 'success';
   assert.equal(runGate(needs).status, 0);
-  for (const name of Object.keys(needs).filter(name => !['changes', 'docs-commands'].includes(name))) {
+  for (const name of Object.keys(needs).filter(name => !['changes', 'docs-commands', 'affected-tests'].includes(name))) {
     const changed = structuredClone(needs); changed[name].result = 'skipped'; assert.notEqual(runGate(changed).status, 0);
   }
 });
@@ -110,9 +110,9 @@ test('actual PR and merge-queue gate selections retain the fast roles and reject
   for (const event of ['pull_request', 'merge_group']) {
     const needs = diagnosticNeeds();
     needs.changes.outputs = { scope: 'full', rust: 'true', web: 'true', temporal_example: 'true', docs_commands: 'true', platform: 'true' };
-    for (const name of ['lint', 'npm-wrappers', 'dependency-policy', 'secret-scan', 'secret-shape']) needs[name].result = 'success';
+    for (const name of ['lint', 'npm-wrappers', 'dependency-policy', 'secret-scan', 'secret-shape', 'affected-tests']) needs[name].result = 'success';
     needs.test.result = 'skipped';
-    assert.equal(runGate(needs, event).status, 0);
+    assert.equal(runGate(needs, event).status, 0, runGate(needs, event).stderr);
     needs.test.result = 'success'; assert.notEqual(runGate(needs, event).status, 0);
   }
 });

@@ -304,12 +304,15 @@ scripts/fast-check.sh main      # While iterating: fmt check, Clippy, tests for 
 
 If `cargo` is not on your PATH (a fresh rustup install puts it in `~/.cargo/bin`), run `export PATH="$HOME/.cargo/bin:$PATH"` first.
 
-Before you open a pull request, run the full gate once. Pull request CI does
-not run the Rust test suite, so this local run is the test evidence reviewers
-see; record the commands in the [PR template](.github/PULL_REQUEST_TEMPLATE.md):
+Before you open a pull request, hosted CI runs affected Rust tests on
+GitHub-hosted runners: Ubuntu for every Rust change, and macOS and Windows
+when platform paths change. Pull request CI does not run the Rust test suite
+for the whole workspace. The daily run still does. A full local
+`cargo test --workspace --all-targets --locked --no-fail-fast` is optional:
+run the affected crates, or skip the tests and rely on CI. Format and Clippy
+stay local; record them in the [PR template](.github/PULL_REQUEST_TEMPLATE.md):
 
 ```bash
-~/.cargo/bin/cargo test --workspace --all-targets --locked --no-fail-fast
 ~/.cargo/bin/cargo fmt --all -- --check
 ~/.cargo/bin/cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
