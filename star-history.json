@@ -377,11 +377,11 @@
     },
     {
       "date": "2026-11-24",
-      "total": 50,
+      "total": 51,
       "repos": {
         "ashlrai/phantom-secrets": 20,
+        "ashlrai/phantom": 7,
         "ashlrai/ashlr-md": 6,
-        "ashlrai/phantom": 6,
         "ashlrai/binshield": 4,
         "ashlrai/ashlr-plugin": 3,
         "ashlrai/locus": 3,
