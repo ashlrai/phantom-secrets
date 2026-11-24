@@ -17,6 +17,7 @@ Source candidate `0.8.11` is not yet a qualified public release; the independent
 
 [![Pinned toolchain: Rust 1.95](https://img.shields.io/badge/pinned_toolchain-Rust_1.95-CE412B?style=for-the-badge&logo=rust&labelColor=0b0b14)](rust-toolchain.toml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg?style=for-the-badge&labelColor=0b0b14)](LICENSE)
+[![npm downloads](https://img.shields.io/npm/dm/phantom-secrets?style=for-the-badge&labelColor=0b0b14&logo=npm&label=npm%20downloads)](https://www.npmjs.com/package/phantom-secrets)
 
 [**Quick start**](#quick-start) ·
 [**Why Phantom?**](#why-phantom) ·
@@ -762,6 +763,21 @@ Coding agents make most changes here, through the same pull requests and CI as a
 - Changes must pass `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, and `cargo test --workspace --all-targets --locked --no-fail-fast`. Pull request CI (the required `CI Gate`) runs format, Clippy, dependency policy, and secret scans, plus the npm wrapper tests when a change touches paths outside docs and the web app; it does not run the Rust test suite. Run the Rust tests and the docs drift checks listed under [Contributing](#contributing) locally before you open a pull request; [Contribute with an agent](CONTRIBUTING.md#contribute-with-an-agent) is the full path from a fork to a merged pull request.
 - Agents working here never need a vault value. They use the value-free commands (`phantom status --json`, `phantom why OPENAI_API_KEY --json`). MCP tools that write state are off by default and need approval from a trusted terminal outside the agent.
 - Maintainer roles and decision authority are in [GOVERNANCE.md](GOVERNANCE.md).
+
+## Join the mission
+
+AshlrAI is an engineering firm. We build tools like Phantom Secrets to make our own work faster and more AI-native, then open-source them so every engineer can do the same. If you build with coding agents, build this with us.
+
+- **Start here:** read [CONTRIBUTING.md](CONTRIBUTING.md). Your coding agent can follow [AGENTS.md](AGENTS.md) and [llms.txt](llms.txt).
+- **Pick an issue:** [`good first issue`](https://github.com/ashlrai/phantom-secrets/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) or [`help wanted`](https://github.com/ashlrai/phantom-secrets/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22).
+- **See the whole lineup:** [ashlr.ai/open-source](https://ashlr.ai/open-source).
+<!-- TODO(discord): add the AshlrAI Discord invite here, and a Discord badge in the header, once the public invite link is confirmed. -->
+
+### Contributors
+
+<a href="https://github.com/ashlrai/phantom-secrets/graphs/contributors">
+  <img alt="Phantom Secrets contributors" src="https://contrib.rocks/image?repo=ashlrai/phantom-secrets" />
+</a>
 
 ## Contributing
 
