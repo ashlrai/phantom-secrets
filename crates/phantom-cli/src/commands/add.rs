@@ -1,3 +1,4 @@
+use crate::commands::report_json::with_schema_pretty;
 use anyhow::{Context, Result};
 use colored::Colorize;
 use phantom_core::config::PhantomConfig;
@@ -38,6 +39,7 @@ pub fn run(
     lines: StdinLines,
     dry_run: bool,
     generate: bool,
+    json: bool,
 ) -> Result<()> {
     if let Some(mut value) = value_arg {
         value.zeroize();
@@ -76,7 +78,14 @@ pub fn run(
     if generate {
         let receipt =
             phantom_mcp::generate_secret(&project_dir, vault.as_ref(), &config_before, name)?;
-        println!("{}", serde_json::to_string(&receipt)?);
+        if json {
+            println!(
+                "{}",
+                with_schema_pretty(serde_json::to_string_pretty(&receipt)?, "add.v1")?
+            );
+        } else {
+            println!("{}", serde_json::to_string(&receipt)?);
+        }
         return Ok(());
     }
 
@@ -782,6 +791,7 @@ mod tests {
             false,
             StdinLines::SingleOnly,
             true,
+            false,
             false,
         )
         .unwrap();

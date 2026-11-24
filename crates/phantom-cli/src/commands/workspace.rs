@@ -1354,8 +1354,9 @@ mod tests {
         );
     }
 
-    /// Upper bound for the contender in
-    /// `participant_resolves_vault_authority_before_project_transaction_lock`.
+    /// Generous upper bound for lock contender threads in the tests that wait
+    /// on one (e.g. `participant_resolves_vault_authority_before_project_transaction_lock`);
+    /// it only bounds a hang, so loaded runners cannot flake on it.
     const VAULT_AUTHORITY_CONTENDER_BOUND: Duration = Duration::from_secs(120);
 
     #[test]
@@ -1670,13 +1671,17 @@ mod tests {
             let _lock = phantom_vault::acquire_project_transaction_lock(&canonical).unwrap();
             acquired_tx.send(()).unwrap();
         });
-        started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        started_rx
+            .recv_timeout(VAULT_AUTHORITY_CONTENDER_BOUND)
+            .unwrap();
         assert!(acquired_rx
             .recv_timeout(Duration::from_millis(100))
             .is_err());
 
         participant.rollback().unwrap();
-        acquired_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        acquired_rx
+            .recv_timeout(VAULT_AUTHORITY_CONTENDER_BOUND)
+            .unwrap();
         contender.join().unwrap();
     }
 

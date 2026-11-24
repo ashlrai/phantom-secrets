@@ -97,6 +97,7 @@ phantom setup --client claude
 phantom setup --client cursor
 phantom setup --client windsurf
 phantom setup --client codex
+phantom setup --client gemini
 ```
 
 Version `0.8.11` records the installed local `phantom mcp serve` command when it
@@ -179,7 +180,7 @@ and publish a new vault to the intended fixed membership when offboarding.
   initialization, but explicit reveal/export paths and unrelated copies remain
   the operator's responsibility.
 - Live provider issuance/rotation is hard-denied before credential or network
-  access in 0.7.9. Deployment sync, live validation, cloud operations, and team
+  access in this release. Deployment sync, live validation, cloud operations, and team
   workflows are separate network/persistent effects with their own gates.
 
 Read [SECURITY.md](https://github.com/ashlrai/phantom-secrets/blob/main/SECURITY.md)
@@ -194,6 +195,23 @@ signing, or platform acceptance. Verify `phantom-secrets@0.8.11` with the exact
 `npm view` command above and verify the matching immutable GitHub release before
 installation. Maintainers should follow the guarded
 [npm publication runbook](https://github.com/ashlrai/phantom-secrets/blob/main/docs/npm-publication.md).
+
+## Part of the Ashlr ecosystem
+
+Phantom Secrets is one of the open-source tools from [Ashlr](https://ashlr.ai).
+Together they aim to be an autonomous, code-first, agent-native software
+factory: agents write, test, review, and ship the code, and the human acts as a
+passive board member. The long-term goal is open-source recursive
+self-improvement (RSI), where agents improve the tools they build with.
+
+This package installs the `phantom` CLI, which keeps real API-key values out of
+agent context so agents can call APIs without holding the keys. The other tools
+(Phantom, Locus, Lexicon, Ashlr MD, Ashlr Stack, and ashlr-plugin) each install
+and run on their own; see the
+[ecosystem list](https://github.com/ashlrai/phantom-secrets#part-of-the-ashlr-ecosystem).
+Coding agents make most changes to this repository through normal pull requests
+and CI; see
+[how agents work on this repo](https://github.com/ashlrai/phantom-secrets#how-agents-work-on-this-repo).
 
 ## License
 

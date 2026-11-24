@@ -2,6 +2,8 @@
 
 Phantom's current CI support is strongest when secrets are synced into a deployment platform before the build runs. Direct Phantom Cloud pull from headless CI is not supported yet because the CLI does not currently expose a non-interactive cloud login flow.
 
+A live `phantom sync` is not a CI step either. It needs attached terminals and an exact typed challenge, and it refuses to run headlessly before reading any vault value (see [sync](sync.md)). Run it from your own terminal before the deploy; in CI, only `phantom sync --dry-run --json` runs.
+
 ## GitHub Actions
 
 Use GitHub Actions for checks, builds, and deploy commands, but do not rely on the disabled Phantom GitHub Action for cloud vault pulls.
@@ -46,7 +48,7 @@ Select the matching asset for ARM64 or a non-Linux runner.
 ## Vercel
 
 ```bash
-# One-time or release-time: sync secrets to Vercel
+# From your terminal, before a release: sync secrets to Vercel
 phantom sync --platform vercel --project prj_xxxxx
 
 # Or add to .phantom.toml:
@@ -101,7 +103,7 @@ into a provider-activation or customer-acceptance claim.
 ## Railway
 
 ```bash
-# Sync secrets to Railway
+# From your terminal: sync secrets to Railway
 phantom sync --platform railway --project your-project-id
 ```
 
@@ -164,7 +166,7 @@ or network sandbox.
 For CI/CD today:
 
 1. Protect local secrets with `phantom init`.
-2. Sync deploy-time secrets to a supported platform with `phantom sync --platform vercel` or `phantom sync --platform railway`.
+2. From your own terminal, sync deploy-time secrets to a supported platform with `phantom sync --platform vercel` or `phantom sync --platform railway`.
 3. Run CI checks such as `phantom check`.
 4. Let the deployment platform inject secrets into builds and runtime.
 

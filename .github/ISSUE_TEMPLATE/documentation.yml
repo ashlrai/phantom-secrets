@@ -2,6 +2,15 @@ name: 📚 Documentation report
 description: Report inaccurate, missing, or confusing project documentation.
 labels: ["documentation"]
 body:
+  - type: markdown
+    attributes:
+      value: |
+        A small, evidence-backed docs fix can go straight to a pull request
+        instead of an issue. Follow
+        [Contribute with an agent](https://github.com/ashlrai/phantom-secrets/blob/main/CONTRIBUTING.md#contribute-with-an-agent)
+        and run the docs drift checks listed there; pull request CI does not
+        run them.
+
   - type: input
     id: location
     attributes:
@@ -31,11 +40,12 @@ body:
     id: layer
     attributes:
       label: Which layer does the documentation describe?
+      description: Name the exact release version or commit SHA in your evidence above. The options stay version-free so this form does not go stale.
       options:
-        - Released v0.7.5 GitHub behavior
-        - Released v0.7.5 Homebrew behavior
-        - Failed npm 0.7.4 release candidate
-        - Current 0.7.7 source
+        - A published GitHub release (name the exact version)
+        - A Homebrew tap release (name the exact version)
+        - An npm package release (name the exact version and dist-tag)
+        - Current main source (name the commit SHA)
         - Native artifact or package publication
         - Deployed cloud or provider configuration
         - Roadmap or exploratory design

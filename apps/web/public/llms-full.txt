@@ -24,6 +24,55 @@ Workbench release facts and Secrets release facts are separate. Refer to the
 workbench landing page's verified release record for its current published
 version; the `v0.8.7` evidence below describes Phantom Secrets only.
 
+## Ashlr ecosystem
+
+Phantom and Phantom Secrets are two of the open-source tools from Ashlr
+(https://ashlr.ai). Together they aim to be an autonomous, code-first,
+agent-native software factory: agents write, test, review, and ship the code,
+and the human acts as a passive board member. The long-term goal is open-source
+recursive self-improvement (RSI), where agents improve the tools they build
+with. Each tool installs and runs on its own:
+
+- Phantom (`phm`, https://phm.dev): the agent workbench. Source: https://github.com/ashlrai/phantom
+- Phantom Secrets (`phantom`, https://phm.dev/secrets): keeps real API-key values out of agent context. Source: https://github.com/ashlrai/phantom-secrets
+- Locus (`locus`, https://github.com/ashlrai/locus): pins each agent session to one account. Phantom Secrets ships only an inactive compatibility contract for it today.
+- Lexicon (`lexicon`, https://lexicon.ashlr.ai): fixes the words dictation gets wrong.
+- Ashlr MD (https://md.ashlr.ai): a Markdown app with an MCP server.
+- Ashlr Stack (`stack`, https://stack.ashlr.ai): provisions services and stores their keys in Phantom Secrets.
+- ashlr-plugin (https://plugin.ashlr.ai/): token-efficiency tools for Claude Code and Codex.
+
+Coding agents make most changes to these repos through normal pull requests and
+CI. In Phantom Secrets they follow
+https://github.com/ashlrai/phantom-secrets/blob/main/AGENTS.md and use only
+value-free commands, so they never need a vault value.
+
+To change Phantom Secrets, a person or agent follows Contribute with an agent
+(https://github.com/ashlrai/phantom-secrets/blob/main/CONTRIBUTING.md#contribute-with-an-agent):
+fork, add the repository as `upstream`, and branch from `upstream/main`;
+iterate with `scripts/fast-check.sh upstream/main`, which checks only the
+affected crates when every changed file is Rust source under a crate's `src/`
+and the whole workspace otherwise; run the full `cargo test`,
+`cargo fmt --check`, and strict Clippy gate once before opening the pull
+request, because pull request CI does not run the Rust test suite; for a
+documentation-only change, skip `scripts/fast-check.sh` (a non-Rust path
+checks the whole workspace) and run the docs drift checks instead, which pull
+request CI also skips: `node --test scripts/release/readme-mcp-catalog.test.mjs`,
+`node --test scripts/docs-distribution.test.mjs`,
+`node --test scripts/hot-file-rule.test.mjs`, and
+`cargo test --locked -p phantom-secrets --test docs_command_flags_test`,
+plus every suite that reads the file you edited, including those in
+`apps/web/tests/` (list them with `git grep -l -F <file-name> -- '*.test.*'`),
+and two checks that search misses: `bash scripts/test-docs-agents.sh` after
+editing `docs/agents.md`, and `node scripts/freshness/check.mjs` after editing
+a file with a `<!-- fresh:begin` marker; add a
+`changelog.d/` fragment instead of editing `CHANGELOG.md`; before pushing, run
+`node scripts/changelog-fold.mjs --check` and
+`git diff upstream/main...HEAD | perl .github/tests/secret-shape/scrub.pl --check --allow-fixtures`,
+the local form of the `Secret-shape scan` that `CI Gate` requires; and fill in
+the pull request template with the exact commands run. `CI Gate` is the only
+required check, and a passing pull request merges through the merge queue.
+Fork contributors need no write access or repository secrets.
+
 ## Phantom Secrets — Credential Reference
 
 The remaining reference describes Phantom Secrets and its `phantom` executable,
@@ -37,7 +86,7 @@ License: MIT
 Language: Rust
 Release evidence was verified on 2026-11-06. The immutable GitHub `v0.8.7` release at https://github.com/ashlrai/phantom-secrets/releases/tag/v0.8.7 resolves to `a6a0413991c0bd7f3d6601f467c0b5770d0dce0c`. Its 19 assets were verified after all six native acceptance rows and release attestations passed in https://github.com/ashlrai/phantom-secrets/actions/runs/42262099223.
 Install: use the exact checksum-verified `v0.8.7` GitHub assets below on macOS, Linux, and Windows. The separately managed Homebrew formula was observed at `v0.7.9` on 2026-10-06.
-MCP: after installing both release binaries, run `phantom setup --client claude|cursor|windsurf|codex`
+MCP: after installing both release binaries, run `phantom setup --client claude|cursor|windsurf|codex|gemini`
 
 
 ## The Problem
@@ -174,7 +223,7 @@ Show project ID, vault backend, secret count, service mappings, proxy state.
 
 ### phantom doctor
 Health check: config validity, vault access, .env protection, .gitignore, .env.example, pre-commit hook.
-Options: --fix (auto-fix safe issues), --strict (exit 2 when any issue is present, including warnings; without it a finished report still exits 0)
+Options: --fix (auto-fix safe issues), --expiry (also warn about expired or soon-to-expire secrets), --json (one JSON report on stdout), --strict (exit 2 when any issue is present, including warnings; without it a finished report still exits 0), --output PATH (write the full report to a new file, never overwritten, and print a one-line summary), --pq (read-only post-quantum readiness report instead of the health checks), --all (one read-only report combining the health checks, the post-quantum report, agent readiness, MCP approval status, and the gateway base-URL environment; fixes nothing). --strict and --output do not apply to --pq or --all.
 Example: phantom doctor --strict
 
 ### phantom check
@@ -203,7 +252,8 @@ Options: --output <filename>
 ### phantom setup
 Configure an MCP client automatically. For Claude Code, writes the phantom MCP server to the project .mcp.json
 and removes legacy Phantom grants from .claude/settings.local.json. Cursor: ~/.cursor/mcp.json;
-Windsurf: ~/.codeium/windsurf/mcp_config.json; Codex: ~/.codex/config.toml.
+Windsurf: ~/.codeium/windsurf/mcp_config.json; Codex: ~/.codex/config.toml;
+Gemini CLI: merges `mcpServers` into ~/.gemini/settings.json.
 
 ### phantom login
 After a hosted deployment and account entitlement are independently
@@ -329,7 +379,7 @@ Setup: install both reviewed `v0.8.7` GitHub release binaries, then run `phantom
 
 Released `v0.8.7` records the running `phantom` executable with `mcp serve` when it can resolve that runtime, otherwise it looks for a local `phantom-mcp`. Setup has no network package-runner fallback and fails closed when neither local runtime is executable. Keep both verified `v0.8.7` binaries installed and inspect the generated entry.
 
-The MCP server uses stdio transport via the rmcp 3.5 SDK. It works with Claude Code, Cursor, Windsurf, and OpenAI Codex. The runtime `tools/list` response is the canonical parameter schema.
+The MCP server uses stdio transport via the rmcp 3.9 SDK. It works with Claude Code, Cursor, Windsurf, OpenAI Codex, and Gemini CLI. The runtime `tools/list` response is the canonical parameter schema.
 
 Commissioning boundary: cloud and team tools below are client implementations
 for a separately deployed and entitled hosted service. As of the 2026-09-05
@@ -513,6 +563,9 @@ Windsurf:
 
 OpenAI Codex:
   phantom setup --client codex
+
+Gemini CLI:
+  phantom setup --client gemini
 
 
 ## Architecture
@@ -809,7 +862,7 @@ Do not commit:
 9. Pre-commit safety: `phantom check --staged` checks staged dotenv content with Phantom's heuristics and added lines in other staged files for a bounded credential-prefix set
 10. Rotate mappings from an attached trusted terminal: phantom rotate requires an exact snapshot-bound challenge before remapping every local placeholder; headless calls are denied. Provider-side credential rotation remains hard-denied; rotate at the provider and add the replacement credential from a trusted terminal.
 11. Monorepo: phantom init in each subdirectory — each gets its own vault and config
-12. Multi-IDE team: same MCP server works across Claude Code, Cursor, Windsurf, and Codex
+12. Multi-IDE team: same MCP server works across Claude Code, Cursor, Windsurf, Codex, and Gemini CLI
 13. Migrate from Doppler/Infisical/dotenvx/1Password: phantom import --from <source> --file <path>
 14. Local audit support: PHANTOM_AUDIT=1 + phantom audit show/tail/verify can aid troubleshooting and forensics. It is not compliance evidence by itself.
 

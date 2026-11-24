@@ -1,18 +1,25 @@
+use crate::commands::report_json::with_schema_pretty;
 use anyhow::{Context, Result};
 use colored::Colorize;
 use phantom_core::config::PhantomConfig;
 use phantom_core::dotenv::DotenvFile;
 use phantom_core::token::PhantomToken;
+use serde_json::{json, to_string_pretty};
 
 /// Generate a .env.example file from the current .env.
 /// Secret values are replaced with descriptive placeholders.
 /// Non-secret values and public keys are preserved as-is.
-pub fn run(output: &str) -> Result<()> {
+pub fn run(output: &str, json: bool) -> Result<()> {
     let project_dir = std::env::current_dir()?;
-    run_in(&project_dir, output, || {})
+    run_in(&project_dir, output, json, || {})
 }
 
-fn run_in(project_dir: &std::path::Path, output: &str, after_lock: impl FnOnce()) -> Result<()> {
+fn run_in(
+    project_dir: &std::path::Path,
+    output: &str,
+    json: bool,
+    after_lock: impl FnOnce(),
+) -> Result<()> {
     let output_path = validated_output_path(project_dir, output)?;
     let transaction_lock = phantom_vault::acquire_project_transaction_lock(project_dir)
         .context("Failed to acquire the project transaction lock")?;
@@ -64,7 +71,14 @@ fn run_in(project_dir: &std::path::Path, output: &str, after_lock: impl FnOnce()
     let entries = dotenv.entries();
 
     if entries.is_empty() {
-        println!("{} .env is empty.", "!".yellow().bold());
+        if json {
+            println!(
+                "{}",
+                with_schema_pretty(to_string_pretty(&json!({ "written": false }))?, "env.v1")?
+            );
+        } else {
+            println!("{} .env is empty.", "!".yellow().bold());
+        }
         return Ok(());
     }
 
@@ -90,6 +104,20 @@ fn run_in(project_dir: &std::path::Path, output: &str, after_lock: impl FnOnce()
     let secret_count =
         dotenv.real_secret_entries().len() + entries.iter().filter(|e| e.is_phantom).count();
     let config_count = entries.len() - secret_count;
+
+    if json {
+        println!(
+            "{}",
+            with_schema_pretty(
+                to_string_pretty(&json!({
+                    "written": true, "output": output,
+                    "secrets_masked": secret_count, "config_preserved": config_count,
+                }))?,
+                "env.v1"
+            )?
+        );
+        return Ok(());
+    }
 
     println!(
         "{} Generated {} ({} secrets masked, {} config values preserved)",
@@ -217,6 +245,7 @@ mod tests {
         run_in(
             &crate::test_support::canonical_tempdir_path(&project),
             ".env.example",
+            false,
             || {},
         )
         .unwrap();
@@ -276,7 +305,7 @@ mod tests {
         let source = "API_KEY=plaintext-must-not-escape\nBROKEN_RECORD\n";
         std::fs::write(project.path().join(".env"), source).unwrap();
 
-        let error = run_in(project.path(), ".env.example", || {}).unwrap_err();
+        let error = run_in(project.path(), ".env.example", false, || {}).unwrap_err();
 
         assert!(error.to_string().contains("malformed"));
         assert!(!project.path().join(".env.example").exists());
@@ -295,7 +324,7 @@ mod tests {
         std::fs::write(project.path().join(".env"), "APP_NAME=demo\n").unwrap();
         std::fs::write(project.path().join(".phantom.toml"), "[phantom\nversion = ").unwrap();
 
-        let error = run_in(project.path(), ".env.example", || {}).unwrap_err();
+        let error = run_in(project.path(), ".env.example", false, || {}).unwrap_err();
 
         assert!(format!("{error:#}").contains("Failed to load .phantom.toml"));
         assert!(!project.path().join(".env.example").exists());
@@ -306,7 +335,7 @@ mod tests {
         let project = tempfile::tempdir().unwrap();
         std::fs::write(project.path().join(".env"), "BROKEN_RECORD\n").unwrap();
 
-        let error = run_in(project.path(), ".env.example", || {}).unwrap_err();
+        let error = run_in(project.path(), ".env.example", false, || {}).unwrap_err();
 
         assert!(error.to_string().contains("malformed"));
         assert!(!project.path().join(".env.example").exists());
@@ -321,7 +350,7 @@ mod tests {
         std::fs::create_dir(&project).unwrap();
         std::fs::write(project.join(".env"), "API_KEY=sk_test_value\n").unwrap();
 
-        run_in(&project, ".env.example", || {
+        run_in(&project, ".env.example", false, || {
             std::fs::rename(&project, &moved).unwrap();
             std::fs::create_dir(&project).unwrap();
             std::fs::write(project.join(".env"), "API_KEY=decoy\n").unwrap();

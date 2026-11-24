@@ -813,7 +813,11 @@ fn main() -> std::process::ExitCode {
 /// `phantom add` refusal under dozens of frames. Keep the same
 /// `Error:`/`Caused by:` layout without the backtrace.
 fn report_error(error: &anyhow::Error) -> std::process::ExitCode {
-    eprintln!("{}", format_error(error));
+    if let Some(json_error) = error.downcast_ref::<cli_json::JsonCommandError>() {
+        eprintln!("{json_error}");
+    } else {
+        eprintln!("{}", format_error(error));
+    }
     std::process::ExitCode::FAILURE
 }
 

@@ -28,6 +28,22 @@ phantom why OPENAI_API_KEY --json
 ```
 <!-- agent-quickstart:end -->
 
+## Ashlr ecosystem
+
+Phantom Secrets is one of the open-source tools from Ashlr (https://ashlr.ai). Together they aim to be an autonomous, code-first, agent-native software factory: agents write, test, review, and ship the code, and the human acts as a passive board member. The long-term goal is open-source recursive self-improvement (RSI), where agents improve the tools they build with. Each tool installs and runs on its own:
+
+- Phantom (`phm`, https://phm.dev): the agent workbench. Source: https://github.com/ashlrai/phantom
+- Phantom Secrets (`phantom`, this repo): keeps real API-key values out of agent context.
+- Locus (`locus`, https://github.com/ashlrai/locus): pins each agent session to one account. This repo ships only an inactive compatibility contract for it (`crates/phantom-locus-contract`).
+- Lexicon (`lexicon`, https://lexicon.ashlr.ai): fixes the words dictation gets wrong.
+- Ashlr MD (https://md.ashlr.ai): a Markdown app with an MCP server.
+- Ashlr Stack (`stack`, https://stack.ashlr.ai): provisions services and stores their keys in Phantom Secrets.
+- ashlr-plugin (https://plugin.ashlr.ai/): token-efficiency tools for Claude Code and Codex.
+
+Coding agents make most changes to this repo through normal pull requests and CI. They follow [AGENTS.md](../AGENTS.md), use only the value-free commands above, and never need a vault value.
+
+To change this repo, a person or agent follows [Contribute with an agent](../CONTRIBUTING.md#contribute-with-an-agent): fork, add this repository as `upstream`, and branch from `upstream/main` (on a fork, use `upstream/main` wherever the commands below say `main`); iterate with `scripts/fast-check.sh main`, which checks only the crates the branch touches when every changed file is Rust source under a crate's `src/` and the whole workspace otherwise; run the full `cargo test`, `cargo fmt --check`, and strict Clippy gate once before opening the pull request, because pull request CI does not run the Rust test suite; for a documentation-only change, skip `scripts/fast-check.sh` (a non-Rust path checks the whole workspace) and run the docs drift checks instead, which pull request CI also skips: `node --test scripts/release/readme-mcp-catalog.test.mjs`, `node --test scripts/docs-distribution.test.mjs`, `node --test scripts/hot-file-rule.test.mjs`, and `cargo test --locked -p phantom-secrets --test docs_command_flags_test`, plus every suite that reads the file you edited, including those in `apps/web/tests/` (list them with `git grep -l -F <file-name> -- '*.test.*'`), and two checks that search misses: `bash scripts/test-docs-agents.sh` after editing `docs/agents.md`, and `node scripts/freshness/check.mjs` after editing a file with a `<!-- fresh:begin` marker; add a [`changelog.d/`](../changelog.d/README.md) fragment instead of editing `CHANGELOG.md`; before pushing, run the two pre-push checks, `node scripts/changelog-fold.mjs --check` for the fragment format and `git diff main...HEAD | perl .github/tests/secret-shape/scrub.pl --check --allow-fixtures`, the local form of the `Secret-shape scan` that `CI Gate` requires (neither needs a build); and fill in the [pull request template](../.github/PULL_REQUEST_TEMPLATE.md) with the exact commands run. `CI Gate` is the only required check, and a passing pull request merges through the merge queue. Fork contributors need no write access or repository secrets.
+
 ## The Problem
 
 AI coding tools with dotenv filesystem access can put API keys into the LLM context window. They can leak via:
@@ -70,7 +86,7 @@ Connection strings such as DATABASE_URL can be detected, vaulted, and replaced i
 - `phantom audit tail` — Follow the audit log live.
 - `phantom audit path` — Print the absolute path to the audit log file.
 - `phantom audit verify` — Verify HMAC-SHA256 chain integrity; exits 1 if tampering detected.
-- `phantom start` — Run a foreground proxy only when stdin/stdout/stderr are terminals; keep the trusted owning terminal open and press Ctrl-C there to stop. `--daemon` and current external control fail closed; `phantom stop` authenticates legacy v0.7.3 state only to report manual migration guidance and never kills or deletes.
+- `phantom start` — Run a foreground proxy only when stdin/stdout/stderr are terminals; keep the trusted owning terminal open and press Ctrl-C there to stop. It prints the base-URL, `PHANTOM_PROXY_PORT`, `PHANTOM_PROXY_TOKEN` and `PHANTOM_SESSION_KEYS` lines for you to run, in bash/zsh, fish, PowerShell or cmd.exe syntax; set `PHANTOM_SHELL` when the detected shell is wrong. `--daemon` and current external control fail closed; `phantom stop` authenticates legacy v0.7.3 state only to report manual migration guidance and never kills or deletes.
 - `phantom list` — Show secret names stored in vault (never shows values). Add `--json` to emit a machine-readable array of `{name, detected_service}` for scripting; values are still excluded.
 - `phantom add <KEY>` — Transactionally create a new secret name in an initialized project through a hidden terminal prompt. It does not auto-create config, gitignore, or vault state; run `phantom init --empty` first in a new project. Positional values are rejected; for a trusted piped producer, pass `--stdin` (read up to EOF, trailing newlines dropped, 64 KiB cap; refused when stdin is a terminal). Input with more than one line is refused before any write unless you add `--multiline` (store every line, e.g. a PEM key) or `--first-line` (store only line 1, e.g. `pass show` output). Existing names are denied before prompt/stdin read and are never replaced. `--dry-run` prints the key and files the transaction would write without opening the vault or reading a value.
 - `phantom remove <KEY>` — After exact trusted-terminal consent, transactionally remove the vault value, lifecycle config, and exact managed-dotenv mapping. `--dry-run` prints the key and files the removal would write without opening the vault, applying the same dotenv mapping rules, and skips the trusted-terminal challenge.
@@ -79,16 +95,17 @@ Connection strings such as DATABASE_URL can be detected, vaulted, and replaced i
 - `phantom status` — Show project ID, vault backend, secret count, service mappings.
 - `phantom doctor` — Health check: config, vault, .env, .gitignore, Claude Code MCP, cloud auth.
 - `phantom doctor --strict` exits 2 when the report has any issue, including warnings. Without `--strict` that exit status stays unchanged, and exit 1 stays a command error.
+- `phantom doctor` flags: `--fix` auto-fixes safe issues; `--expiry` also warns about expired or soon-to-expire secrets; `--json` emits one JSON report on stdout instead of the human checklist; `--output PATH` writes the full report (text, or JSON with `--json`) to a new file that is never overwritten and prints a one-line summary. `--pq` prints a read-only, value-free post-quantum readiness report instead of the health checks. `--all` prints one read-only, value-free report combining the health checks, the post-quantum report, agent readiness, MCP approval status, and the gateway base-URL environment; it fixes nothing and cannot be combined with `--fix`, `--pq`, or `--expiry`. `--strict` and `--output` do not apply to `--pq` or `--all`.
 - `phantom check` — Heuristically scans supported `.env` files for unprotected real secrets. Exit code 1 if found. `--staged` reads dotenv content from the index and checks a bounded set of hardcoded-key prefixes on added lines. `--runtime` detects phantom tokens in every environment variable, excusing only the variables a live proxy session (one whose health endpoint answers) lists as its own in `PHANTOM_SESSION_KEYS`. It is not a complete repository secret scanner.
 - `phantom sync --platform vercel --project <id>` — Push secrets to Vercel or Railway. Use `--dry-run --json` to preview targets, selected key names, skipped key names, token-env presence, warnings, and the live lifecycle gate's refusal (`live_gate_refusal`) without decrypting values or calling platform APIs; a dry run exits non-zero when the live run would refuse. Use `--only PATTERN` (glob, repeatable, OR-ed) to limit which keys get pushed; the same filter is also honoured via `only = ["PATTERN", ...]` on each `[[sync]]` block in `.phantom.toml`.
 - `phantom pull --from vercel --project <id>` — Pull secrets from platforms into vault.
 - `phantom env` — Generate .env.example with secret values masked.
 - `phantom setup` — Configure Claude Code MCP server and permissions automatically.
-- `phantom watch` — Watch managed dotenv files and report newly added unprotected secrets. The compatibility `--auto` flag hard-denies before mutation in 0.7.9; review the file and run transactional `phantom init` from a trusted terminal.
+- `phantom watch` — Watch managed dotenv files and report newly added unprotected secrets. The compatibility `--auto` flag hard-denies before mutation in current releases; review the file and run transactional `phantom init` from a trusted terminal.
 - `phantom why <KEY>` — Explain whether a key is classified as Secret, PublicKey, or NotSecret, and which heuristic matched.
 - `phantom why <KEY> --strict` exits 2 when the key is not protected. A JSON report for a missing key also exits 2. The human view of a missing key is still a command error (exit 1). Without `--strict`, a present key still exits 0.
 - `phantom copy <KEY> --to <DIR> [--rename NEW]` — After exact trusted-terminal confirmation, copy a secret from this initialized project to an initialized target without printing the value. Optional rename in the target project. It refuses an existing target vault entry, config ownership, or managed-dotenv key rather than overwriting it.
-- `phantom wrap [--only A,B] [--skip X,Y]` — Wrap `package.json` scripts with `phantom exec` so npm scripts get real credentials at runtime. Originals are preserved as `script:raw` variants.
+- `phantom wrap [--only A,B] [--skip X,Y]` - Wrap selected `package.json` scripts with `phantom exec`; children receive placeholders and must use a supported proxy route. Originals are preserved as `script:raw` variants. See [script wrapping](exec.md#packagejson-scripts).
 - `phantom unwrap` — Reverse `phantom wrap`, restoring originals from `:raw` variants.
 - `phantom cloud status` / `phantom team list` / `phantom team members` — Authenticated CLI provider reads that require attached terminals and an exact typed challenge before stored-bearer or network access. MCP equivalents require `confirm` plus out-of-band approval.
 - Team mutations require an attached trusted terminal and an exact typed challenge before credential, keypair, vault-value, or network access.
@@ -97,6 +114,18 @@ Connection strings such as DATABASE_URL can be detected, vaulted, and replaced i
 - `phantom open [target]` — From an attached trusted terminal, open only the closed aliases `dashboard`, `billing`, `team`, `docs`, `pricing`, `github`, `issues`, or `site`; unknown words, paths, and arbitrary URLs are rejected before browser access.
 - `phantom upgrade [--check-only]` — Managed installs route to their owner and ambiguous installs fail closed. An eligible standalone replacement requires attached terminals and two exact challenges; `--force` is rejected.
 - `phantom completion <bash|zsh|fish|powershell|elvish>` — Print a shell-completion script to stdout.
+- `phantom mcp serve` — Run the MCP stdio server in-process; this is the entry `phantom setup` records for MCP clients.
+- `phantom mcp-approve <NONCE>` — From a trusted terminal, approve a pending MCP nonce printed on the server's stderr; see the approval flow under MCP Tools.
+- `phantom workspace plan [--json]` / `apply --request <ID>` / `status --request <ID> [--json]` — Create a value-free exact setup plan and pending request, claim and apply that request from a trusted terminal, and read its authenticated, value-free status. MCP `phantom_setup_workspace` can propose but never apply.
+- `phantom vault migrate-linux` — From a trusted terminal, copy this Linux project's volatile keyutils vault into Secret Service.
+- `phantom git-credential get [--secret NAME]` — Supply an existing project vault entry (default `GITHUB_TOKEN`) to Git's credential protocol. stdout must be a pipe to Git; `store` and `erase` are effect-free. See [git-credential.md](git-credential.md).
+- `phantom redact --stream` — Scrub known credential shapes from stdin to stdout, flushing each line and rejecting lines over 1 MiB. No vault access; it does not detect arbitrary or encoded secrets.
+- `phantom grant list` / `status` — Read configured grant metadata (provider, state, next renewal) without values. `grant add` returns before any project, vault, browser, or network access, and `grant revoke` fails closed before local mutation; obtain credentials at the provider and store them with `phantom add`. See [grants-spec.md](grants-spec.md).
+- `phantom leaks plan [--min-confidence N] [--json]` — Read-only preview of what automated leak response would do: no writes, no network, no secret values.
+- `phantom crypto inventory [--format text|json]` — List every algorithm and format tag Phantom names, with role, status, and quantum class. Reads no vault, key, or config.
+- `phantom expiry set <KEY> <DAYS>` / `enforce [--fail-closed]` — Record TTL metadata in `.phantom.toml` from a trusted terminal, or exit 1 when any secret has expired (with `--fail-closed`, also when any secret has no expiry policy). `phantom expiry rotate` is a deprecated local `phm_` remap that changes no provider credential.
+- `phantom secrets-expiring-soon [--days N] [--json]` — List expired and expiring secrets (default window 7 days). `--auto-rotate` only remaps local placeholders, and `--sync` is rejected.
+- `phantom fleet-status [--expiring-within DAYS] [--strict] [--json]` — Value-free posture: names, expiry, last validation result, and overdue rotations. `--strict` exits 2 when any secret needs attention or the inventory is partial. See [fleet-status.md](fleet-status.md).
 
 ## Installation
 
@@ -182,7 +211,7 @@ extrapolating this selected catalog.
 
 `phantom_rotate_with_candidate` and `phantom_rotate_promote` are deprecated
 hard denials retained for schema compatibility. They create or promote nothing;
-`phantom_rotate_provider` is also a hard denial in 0.7.9; no MCP approval can
+`phantom_rotate_provider` is also a hard denial in current releases; no MCP approval can
 activate live provider issuance.
 
 `phantom_apply_expiry_policy` demotes expired entries to `VaultMode::ReadOnly`.
@@ -218,7 +247,7 @@ The protocol source requires a separately commissioned hosted deployment and ent
 - `phantom_copy_secret` — Exact-before target transaction that refuses existing vault/config/dotenv ownership and creates the vault entry plus managed-dotenv mapping without returning the value. Params: name, target_dir, rename (optional), confirm, approval_token.
 
 **Package.json wrapping:**
-- `phantom_wrap` — Wrap `package.json` scripts with the installed local `phantom exec --` runtime so secrets are injected via the proxy. Originals are saved as `script:raw` variants. Heuristically picks dev/start/build/serve/deploy scripts and skips lint/test/format scripts. Params: only, skip, confirm, approval_token.
+- `phantom_wrap` - Wrap selected `package.json` scripts with the installed local `phantom exec --` runtime. Originals are saved as `script:raw` variants. Heuristically picks dev/start/build/serve/deploy scripts and skips lint/test/type/format scripts. Shell command lines are left unchanged, even with explicit selection. Wrapping does not add adapters or deliver vault values to the child environment. Params: only, skip, confirm, approval_token.
 - `phantom_unwrap` — Reverse `phantom_wrap`: restore original scripts from `:raw` variants and remove the `:raw` entries. Params: confirm, approval_token.
 
 **Teams (source-backed fixed-membership pilot; hosted Pro commissioning required):**
@@ -347,12 +376,14 @@ pinned benchmark for explicit network stacks, modular crates, runnable
 examples, and tiered platform CI. Rama is not a dependency, and no feature or
 platform parity is claimed.
 
-MIT licensed. CI runs the Rust test suite and clippy across the workspace before release.
+MIT licensed. The daily full CI run and the tag release workflow run the
+workspace Rust test suite and strict Clippy; pull request CI runs Clippy for Rust
+changes but not the Rust test suite, so contributors run the tests locally.
 
 ## Common Use Cases
 
 1. **Solo developer with Claude Code**: `phantom init` then `phantom exec -- claude` — code safely
-2. **Delegate the bounded setup**: Add the MCP server, ask Claude to propose protection, then review mutations and complete secret entry in the trusted terminal; provider issuance remains hard-denied in 0.7.9
+2. **Delegate the bounded setup**: Add the MCP server, ask Claude to propose protection, then review mutations and complete secret entry in the trusted terminal; provider issuance remains hard-denied
 3. **Commissioned same-keychain-machine backup**: after separately verifying hosted deployment and entitlement, `phantom login`, `phantom cloud push`, then `phantom cloud pull` where the original cloud encryption key remains available
 4. **Deploy to Vercel**: `phantom sync --platform vercel --project prj_xxx`
 5. **Provider-backed machine setup**: `phantom pull --from vercel --project prj_xxx` (requires Vercel credentials)
@@ -364,4 +395,4 @@ MIT licensed. CI runs the Rust test suite and clippy across the workspace before
 9. **Pre-commit safety**: Add `phantom check --staged` to hooks while remembering hooks can be skipped or bypassed
 10. **Provider rotation and sync**: rotate through the provider's trusted interface, then use a separately reviewed trusted-terminal remove-and-add sequence if the protected name already exists. Those operations are non-atomic, and deployment sync requires its own review. Local token remaps never authorize sync.
 11. **Monorepo**: Run `phantom init` in each subdirectory — each gets its own vault and config
-12. **Multi-IDE team**: Same MCP server works across Claude Code, Cursor, Windsurf, and Codex
+12. **Multi-IDE team**: Same MCP server works across Claude Code, Cursor, Windsurf, Codex, and Gemini CLI

@@ -971,6 +971,7 @@ mod config_gate_tests {
                     add::StdinLines::SingleOnly,
                     false,
                     false,
+                    false,
                 )
             }),
             ("expiry", || expiry::run(30, false, false, false)),
