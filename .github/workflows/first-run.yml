@@ -1,8 +1,10 @@
 name: First-run scorecard
 
 # Install-to-first-wrapped-exec scorecard. Target: p95 <= 5 s on
-# ubuntu-latest and macos-latest. Nightly and on demand; on pull requests it
-# runs only when this workflow or its script changes, so other PRs pay nothing.
+# ubuntu-latest and macos-latest. windows-latest installs the verified
+# v0.8.11 zip and sidecar on the same schedule and path-gated triggers.
+# Nightly and on demand; on pull requests it runs only when this workflow
+# or its script changes, so other PRs pay nothing.
 on:
   schedule:
     - cron: "17 7 * * *"
@@ -30,7 +32,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     steps:
@@ -38,7 +40,50 @@ jobs:
         with:
           persist-credentials: false
       - name: Measure install to first wrapped exec
+        if: runner.os != 'Windows'
         env:
-          PHANTOM_VERSION: v0.7.9
+          PHANTOM_VERSION: v0.8.11
           RUNS: ${{ github.event.inputs.runs || '10' }}
         run: bash scripts/bench/first-run.sh "$RUNS"
+      - name: Install the immutable v0.8.11 Windows release
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          PHANTOM_VERSION: v0.8.11
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = $env:PHANTOM_VERSION
+          if ($tag -ne 'v0.8.11') { throw "Windows first-run is pinned to v0.8.11, got $tag" }
+          $arch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
+          if ($arch -ne 'X64') { throw "windows-latest first-run expects X64, got $arch" }
+          # sha256 from the v0.8.11 SHA256SUMS for phantom-x86_64-pc-windows-msvc.zip
+          $pinned = '7ce47b231a18f513aa4a6174f530e7f16a9bfd71fbddd83f0dba34216c84f9f0'
+          $asset = 'phantom-x86_64-pc-windows-msvc.zip'
+          $base = "https://github.com/ashlrai/phantom-secrets/releases/download/$tag"
+          $work = Join-Path ([System.IO.Path]::GetTempPath()) ('phantom-first-run-' + [guid]::NewGuid().ToString('N'))
+          New-Item -ItemType Directory -Path $work | Out-Null
+          Set-Location $work
+          & curl.exe -fsSL -o $asset "$base/$asset"
+          if ($LASTEXITCODE -ne 0) { throw "download failed for $asset" }
+          & curl.exe -fsSL -o "$asset.sha256" "$base/$asset.sha256"
+          if ($LASTEXITCODE -ne 0) { throw "download failed for $asset.sha256" }
+          $sidecar = ((Get-Content -LiteralPath "$asset.sha256" -Raw).Trim() -split '\s+')[0].ToLowerInvariant()
+          $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $asset).Hash.ToLowerInvariant()
+          if ($sidecar -ne $pinned -or $actual -ne $pinned) {
+            throw "SHA-256 mismatch for $asset (sidecar=$sidecar actual=$actual expected=$pinned)"
+          }
+          Expand-Archive -LiteralPath $asset -DestinationPath $work -Force
+          $phantom = Join-Path $work 'phantom.exe'
+          $mcp = Join-Path $work 'phantom-mcp.exe'
+          if (-not (Test-Path -LiteralPath $phantom) -or -not (Test-Path -LiteralPath $mcp)) {
+            throw "archive did not contain phantom.exe and phantom-mcp.exe"
+          }
+          $pv = & $phantom --version
+          if ($LASTEXITCODE -ne 0) { throw "phantom --version failed" }
+          $mv = & $mcp --version
+          if ($LASTEXITCODE -ne 0) { throw "phantom-mcp --version failed" }
+          if ($pv -ne 'phantom 0.8.11' -or $mv -ne 'phantom-mcp 0.8.11') {
+            throw "unexpected version: $pv / $mv"
+          }
+          Write-Host $pv
+          Write-Host $mv
