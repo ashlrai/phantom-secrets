@@ -32,6 +32,7 @@ fn env_json_reports_counts_without_values_and_keeps_human_output() {
         json!({
             "schema": "env.v1", "written": true, "output": ".env.example",
             "secrets_masked": 1, "config_preserved": 1,
+            "durability_verified": true, "warnings": [],
         })
     );
     let human = run(&dir, &["env", "--output", "example"]);
@@ -42,7 +43,10 @@ fn env_json_reports_counts_without_values_and_keeps_human_output() {
     std::fs::write(dir.path().join(".env"), "").unwrap();
     assert_eq!(
         report(&run(&dir, &["--json", "env", "--output", "empty"])),
-        json!({ "schema": "env.v1", "written": false })
+        json!({
+            "schema": "env.v1", "written": false,
+            "durability_verified": true, "warnings": [],
+        })
     );
     assert!(!dir.path().join("empty").exists());
 }
@@ -74,7 +78,10 @@ fn generated_add_json_has_only_a_name_and_fingerprint() {
         .as_str()
         .unwrap()
         .starts_with("sha256:"));
-    assert_eq!(receipt.as_object().unwrap().len(), 3);
+    assert_eq!(receipt["durability_verified"], true);
+    assert!(receipt["warnings"].as_array().unwrap().is_empty());
+    assert_eq!(receipt.as_object().unwrap().len(), 5);
+    assert!(receipt.get("durability_verified").is_some());
 }
 
 #[test]

@@ -6,11 +6,30 @@ use sha2::{Digest, Sha256};
 use std::path::Path;
 use zeroize::{Zeroize, Zeroizing};
 
-/// The only public output of secret generation. Never includes a value or mapping.
+/// Public output of secret generation. Never includes a value or mapping.
+///
+/// `durability_verified` and `warnings` are skipped by the default serializer
+/// so the non-JSON CLI line and the MCP text receipt stay `name` and
+/// `fingerprint`. `phantom add --generate --json` copies them into `add.v1`.
 #[derive(serde::Serialize)]
 pub struct GenerationReceipt {
     pub name: String,
     pub fingerprint: String,
+    #[serde(skip)]
+    pub durability_verified: bool,
+    #[serde(skip)]
+    pub warnings: Vec<String>,
+}
+
+/// `add.v1` body before the schema stamp. Carries the commit's durability
+/// signal that stderr no longer repeats in JSON mode.
+pub fn add_v1_body(receipt: &GenerationReceipt) -> serde_json::Value {
+    serde_json::json!({
+        "name": receipt.name,
+        "fingerprint": receipt.fingerprint,
+        "durability_verified": receipt.durability_verified,
+        "warnings": receipt.warnings,
+    })
 }
 
 /// Create only, using exact-before config, dotenv and vault CAS in one transaction.
@@ -72,7 +91,7 @@ pub fn generate_secret(
         .map_err(|_| anyhow::anyhow!("OS random source unavailable; nothing stored"))?;
     let value = Zeroizing::new(hex::encode(entropy.as_ref()));
     let fingerprint = format!("sha256:{}", hex::encode(Sha256::digest(value.as_bytes())));
-    phantom_vault::commit_init(
+    let committed = phantom_vault::commit_init(
         project,
         vault,
         vec![InitSecret::replace_if_unchanged(
@@ -90,10 +109,20 @@ pub fn generate_secret(
                 .commit_last(),
         ],
     )?;
-    Ok(GenerationReceipt {
+    Ok(receipt_from_commit(name, fingerprint, &committed))
+}
+
+pub(crate) fn receipt_from_commit(
+    name: &str,
+    fingerprint: String,
+    committed: &phantom_vault::InitReceipt,
+) -> GenerationReceipt {
+    GenerationReceipt {
         name: name.to_owned(),
         fingerprint,
-    })
+        durability_verified: committed.namespace_durability_verified,
+        warnings: committed.durability_warnings(),
+    }
 }
 
 #[cfg(test)]
@@ -135,6 +164,43 @@ mod tests {
         assert!(vault.retrieve("GENERATED_KEY").unwrap().as_str() == value.as_str());
         let second = generate_secret(&project, &vault, &after, "SECOND_KEY").unwrap();
         assert_ne!(first.fingerprint, second.fingerprint);
+        assert!(first.durability_verified);
+        assert!(first.warnings.is_empty());
+    }
+
+    #[test]
+    fn json_add_keeps_uncertain_and_verified_durability() {
+        let warning = phantom_vault::NAMESPACE_DURABILITY_WARNING.to_string();
+        let uncertain = receipt_from_commit(
+            "PEAR",
+            "sha256:ab".to_string(),
+            &phantom_vault::InitReceipt {
+                secret_names: vec!["PEAR".to_string()],
+                file_paths: Vec::new(),
+                namespace_durability_verified: false,
+            },
+        );
+        assert!(!uncertain.durability_verified);
+        assert_eq!(uncertain.warnings, vec![warning]);
+        let body = add_v1_body(&uncertain);
+        assert_eq!(body["durability_verified"], false);
+        assert!(!body["warnings"].as_array().unwrap().is_empty());
+        assert!(!body.to_string().contains("phm_"));
+
+        let verified = receipt_from_commit(
+            "PEAR",
+            "sha256:ab".to_string(),
+            &phantom_vault::InitReceipt {
+                secret_names: vec!["PEAR".to_string()],
+                file_paths: Vec::new(),
+                namespace_durability_verified: true,
+            },
+        );
+        assert!(verified.durability_verified);
+        assert!(verified.warnings.is_empty());
+        let body = add_v1_body(&verified);
+        assert_eq!(body["durability_verified"], true);
+        assert!(body["warnings"].as_array().unwrap().is_empty());
     }
 
     #[test]

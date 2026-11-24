@@ -76,15 +76,28 @@ pub fn run(
     ensure_secret_absent(vault.as_ref(), config.local_project_id(), name)?;
 
     if generate {
-        let receipt =
-            phantom_mcp::generate_secret(&project_dir, vault.as_ref(), &config_before, name)?;
+        // Quiet stderr only while the JSON receipt is the durability record.
+        // Human `phantom add --generate` still prints the warning.
+        let receipt = {
+            let _quiet = json.then(phantom_core::interactive_warn::SuppressGuard::arm);
+            phantom_mcp::generate_secret(&project_dir, vault.as_ref(), &config_before, name)?
+        };
         if json {
             println!(
                 "{}",
-                with_schema_pretty(serde_json::to_string_pretty(&receipt)?, "add.v1")?
+                with_schema_pretty(
+                    serde_json::to_string_pretty(&phantom_mcp::add_v1_body(&receipt))?,
+                    "add.v1",
+                )?
             );
         } else {
-            println!("{}", serde_json::to_string(&receipt)?);
+            println!(
+                "{}",
+                serde_json::to_string(&serde_json::json!({
+                    "name": receipt.name,
+                    "fingerprint": receipt.fingerprint,
+                }))?
+            );
         }
         return Ok(());
     }
