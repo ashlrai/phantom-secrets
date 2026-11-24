@@ -90,17 +90,18 @@ fn run_in(
     let content = dotenv
         .generate_example_content(config.as_ref())
         .context("Managed dotenv is malformed; no example was written")?;
-    let durability_warning = example_durability_warning(&output_path);
     let (durability_verified, warnings) = match output_target
         .replace_if_exact(None, content.as_bytes())?
     {
         phantom_core::fs::AnchoredEffect::Durable(_) => durability_signal(false, String::new()),
         phantom_core::fs::AnchoredEffect::CommittedVerifiedButDurabilityUncertain { .. } => {
             // JSON carries the warning. Human output still prints it.
+            // The filename stays in the JSON `output` field and the human
+            // success line, not in this sentence.
             if !json {
-                phantom_core::interactive_warn::emit(&durability_warning);
+                phantom_core::interactive_warn::emit(EXAMPLE_DURABILITY_WARNING);
             }
-            durability_signal(true, durability_warning)
+            durability_signal(true, EXAMPLE_DURABILITY_WARNING.to_string())
         }
         phantom_core::fs::AnchoredEffect::CommittedButUncertain { error, .. } => anyhow::bail!(
             "{} was created, but durability could not be verified: {error}",
@@ -145,12 +146,11 @@ fn run_in(
     Ok(())
 }
 
-fn example_durability_warning(path: &std::path::Path) -> String {
-    format!(
-        "warning: {} was created and verified, but directory crash durability is not provable on this platform",
-        path.display()
-    )
-}
+/// Stderr and `env.v1` `warnings` text when an example file committed and
+/// verified, but directory crash durability is not provable. The filename
+/// stays in the `output` field. This sentence never includes a path.
+pub(crate) const EXAMPLE_DURABILITY_WARNING: &str =
+    "warning: example file was created and verified, but directory crash durability is not provable on this platform";
 
 /// `uncertain` is the `CommittedVerifiedButDurabilityUncertain` effect.
 /// The warning string is kept for the JSON `warnings` array and is empty
@@ -417,15 +417,29 @@ mod tests {
 
     #[test]
     fn json_env_reports_uncertain_and_verified_durability() {
-        let warning = super::example_durability_warning(std::path::Path::new(".env.example"));
+        let warning = super::EXAMPLE_DURABILITY_WARNING.to_string();
         let (verified, warnings) = super::durability_signal(true, warning.clone());
         assert!(!verified);
         assert_eq!(warnings, vec![warning.clone()]);
-        let body = super::env_json_body(true, Some(".env.example"), 1, 1, verified, &warnings);
+        let body = super::env_json_body(
+            true,
+            Some("/tmp/project/.env.example"),
+            1,
+            1,
+            verified,
+            &warnings,
+        );
         assert_eq!(body["durability_verified"], false);
+        assert_eq!(body["output"], "/tmp/project/.env.example");
         assert_eq!(body["warnings"].as_array().unwrap().len(), 1);
-        assert!(body["warnings"][0].as_str().unwrap().contains("durability"));
-        assert!(!body["warnings"][0].as_str().unwrap().contains("sk-"));
+        let warning_text = body["warnings"][0].as_str().unwrap();
+        assert_eq!(warning_text, super::EXAMPLE_DURABILITY_WARNING);
+        assert!(warning_text.contains("durability"));
+        assert!(!warning_text.contains("sk-"));
+        assert!(!warning_text.contains('/'));
+        assert!(!warning_text.contains('\\'));
+        assert!(!warning_text.contains(".env"));
+        assert!(!warning_text.contains("tmp"));
 
         let (verified, warnings) = super::durability_signal(false, warning);
         assert!(verified);
