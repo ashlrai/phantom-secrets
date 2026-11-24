@@ -18,7 +18,10 @@ pub(crate) fn apply_global_json(command: &mut Commands) -> Result<(), &'static s
     use commands::audit::AuditAction as A;
     match command {
         // Commands that read the global flag themselves.
-        Commands::Status { .. }
+        Commands::Env { .. }
+        | Commands::Add { generate: true, .. }
+        | Commands::Audit { action: A::Path }
+        | Commands::Status { .. }
         | Commands::Sync { .. }
         | Commands::Doctor { .. }
         | Commands::Check { .. }
@@ -107,7 +110,6 @@ pub(crate) fn apply_global_json(command: &mut Commands) -> Result<(), &'static s
         Commands::Audit {
             action: A::Tail { .. },
         } => Err("phantom audit tail"),
-        Commands::Audit { action: A::Path } => Err("phantom audit path"),
         Commands::Agent {
             action: AgentAction::Setup { .. },
         } => Err("phantom agent setup"),
@@ -135,7 +137,6 @@ pub(crate) fn apply_global_json(command: &mut Commands) -> Result<(), &'static s
         Commands::Reveal { .. } => Err("phantom reveal"),
         Commands::GitCredential { .. } => Err("phantom git-credential"),
         Commands::Copy { .. } => Err("phantom copy"),
-        Commands::Env { .. } => Err("phantom env"),
         Commands::Login => Err("phantom login"),
         Commands::Logout => Err("phantom logout"),
         // Read the global flag themselves (still behind the trusted-terminal
@@ -183,3 +184,15 @@ fn json_format(format: &str, otherwise: &'static str) -> Result<(), &'static str
         Err(otherwise)
     }
 }
+
+/// A fixed error envelope: parser and provider errors can contain input values.
+#[derive(Debug)]
+pub(crate) struct JsonCommandError;
+
+impl std::fmt::Display for JsonCommandError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(r#"{"schema":"error.v1","code":"command_failed","message":"Command failed; run without --json for details."}"#)
+    }
+}
+
+impl std::error::Error for JsonCommandError {}

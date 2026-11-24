@@ -4,6 +4,424 @@ Notable user-facing changes are recorded here. Phantom follows [Semantic Version
 
 ## [Unreleased]
 
+### Changed (README command reference matches the CLI)
+
+- The README command table now lists every public audit subcommand
+  (`incidents`, `alerts`, `stats`, `anomalies`, `analytics`, `export`,
+  `export-range`, `report`, `feed`), plus `phantom agent status` and
+  `phantom validate history`, with the flags each one accepts in source.
+
+### Changed (CLAUDE.md points agents at the contributor path)
+
+- `CLAUDE.md` gains a "Contributing as an agent" section: it links AGENTS.md and
+  the "Contribute with an agent" path in CONTRIBUTING.md, and summarizes
+  `scripts/fast-check.sh`, the full local gate, the docs drift checks, the
+  `changelog.d/` fragment and hot-file rules, and the `CI Gate` merge-queue
+  requirement.
+
+### Fixed (contributor guide matches the current release and local check scripts)
+
+- `CONTRIBUTING.md` no longer pins the provider-grant hard-denial to 0.7.5;
+  the repository map and grant note now describe current releases and point to
+  the `grant` command source, matching the guide's own rule against volatile
+  version claims.
+- The "Testing affected Rust packages" section moved from under "Questions"
+  into "Verification", where the agent path links to it, and now documents
+  `scripts/fast-check.sh [BASE [HEAD]]` and exactly what it runs alongside
+  `scripts/affected-tests` and `make test-affected`.
+
+### Changed (CONTRIBUTING has an agent contributor path and accurate CI)
+
+- `CONTRIBUTING.md` gains a "Contribute with an agent" path: fork, set up,
+  `scripts/fast-check.sh`, the full local gate, a changelog fragment, and how
+  `CI Gate`, the merge queue, and auto-merge finish the pull request.
+- The Verification section now matches `ci.yml`: pull requests and the merge
+  queue run only fast checks, and the full test matrix runs daily through
+  `nightly-full.yml` rather than on pushes to `main`.
+
+### Changed (CONTRIBUTING.md explains the Ashlr ecosystem and agent contributors)
+
+- `CONTRIBUTING.md` now has an "Agents and the Ashlr ecosystem" section: the
+  shared mission, a link to the README's ecosystem list, and how coding agents
+  contribute (AGENTS.md first, value-free commands only, same verification and
+  security gates as any other change).
+
+### Fixed (CONTRIBUTING matches the CI workflows and the hot-file rule)
+
+- `CONTRIBUTING.md` no longer says pull request CI runs the Rust suite on
+  macOS, Linux, and Windows or that "the Linux CI test job" runs the MCP
+  registry smoke; both run in the daily full matrix (`nightly-full.yml`), not
+  on pull requests.
+- "Pushes to `main` trigger no CI" now says no `CI` workflow jobs run, and the
+  Verification section names the other workflows that touch contributions:
+  CodeQL on every pull request and `main` push, and `pair-secrets` in the
+  merge queue when exec, MCP, or posture code changes.
+- The documentation guidelines no longer tell contributors to edit
+  `docs/README.md` alongside a new guide, which contradicted the AGENTS.md
+  hot-file rule; the "Contribute with an agent" path now links that rule.
+
+### Changed (contributors validate changelog fragments before pushing)
+
+- `changelog.d/README.md` now asks contributors to run
+  `node scripts/changelog-fold.mjs --check` before pushing. Pull request and
+  merge-queue CI do not validate fragments; only the daily full run does, so a
+  malformed fragment could merge and turn that run red.
+
+### Fixed (agent rule files match the current CLI and MCP catalog)
+
+- `.cursorrules` no longer tells agents to pass a secret value on the command
+  line (`phantom add <name> <value>` is rejected), no longer claims a fixed
+  9-tool MCP catalog or a `value` parameter on `phantom_add_secret`, and no
+  longer recommends `npx phantom-secrets-mcp`. It now points to
+  `phantom setup --client cursor`, the canonical `tools/list` catalog, and the
+  `confirm` plus out-of-band `approval_token` gates.
+- `.cursorrules` and `.github/copilot-instructions.md` link agents working on
+  Phantom itself to `AGENTS.md`, `CLAUDE.md`, and the agent path in
+  `CONTRIBUTING.md`.
+
+### Fixed (governance matches the agent-authored workflow)
+
+- `GOVERNANCE.md` no longer claims the repository has no `CODEOWNERS` mapping:
+  it describes the active `.github/CODEOWNERS` and notes that the root
+  `CODEOWNERS` is not the one GitHub uses.
+- `GOVERNANCE.md` now names coding agents as a role, states that agents under
+  `AGENTS.md` may merge pull requests that pass `CI Gate` through the merge
+  queue, adds the Ashlr ecosystem and RSI framing, and links the
+  "Contribute with an agent" path.
+
+### Changed (root `llms.txt` explains the Ashlr ecosystem)
+
+- The root `llms.txt` now has an "Ashlr ecosystem" section matching the
+  README: the shared mission, each tool's role, the inactive Locus contract,
+  and how agents work on this repo.
+
+### Changed (documentation map explains where Phantom Secrets fits)
+
+- `docs/README.md` now opens with a "Where Phantom Secrets fits" section: the
+  shared Ashlr mission, this repo's role, a link to the README's ecosystem
+  list, the inactive Locus contract, and how agents work on this repo.
+
+### Changed (the npm package READMEs explain the Ashlr ecosystem)
+
+- The `phantom-secrets` and `phantom-secrets-mcp` npm package READMEs now have
+  a "Part of the Ashlr ecosystem" section: the shared mission, what each
+  package installs, and links to the repository README's ecosystem list and
+  its notes on how coding agents work on this repo.
+
+### Fixed (README describes what pull request CI actually runs)
+
+- The README's "How agents work on this repo" no longer says CI runs the docs
+  drift checks on a change. Pull request and merge-queue CI (`CI Gate`) runs
+  format, Clippy, dependency policy, and secret scans; `ci.yml` skips the
+  Rust tests and the docs command check for `pull_request` and `merge_group`,
+  so contributors run them and the other drift checks locally.
+- The README "Contributing" section now links the "Contribute with an agent"
+  path in `CONTRIBUTING.md` and lists the same four documentation drift checks
+  as `AGENTS.md`, which also notes that pull request CI does not run them.
+
+### Changed (README explains the Ashlr ecosystem and how agents work here)
+
+- The README's "Part of the Ashlr ecosystem" section now states the shared
+  mission (an agent-native software factory aiming at open-source recursive
+  self-improvement), lists Phantom Secrets' own role, and notes that Locus
+  integration is an inactive contract today.
+- A new "How agents work on this repo" subsection points to `AGENTS.md`,
+  `CLAUDE.md`, the required checks, and `GOVERNANCE.md`.
+
+### Changed (the /secrets page explains the Ashlr ecosystem)
+
+- The Phantom Secrets page on the website now has a "Part of the Ashlr
+  ecosystem" section: the shared mission, the seven tools with their commands
+  and links, and how coding agents work on this repo. It mirrors the README
+  section, and `apps/web/tests/ashlr-ecosystem.test.cjs` checks that the two
+  stay in sync.
+
+### Docs (upkeep audit)
+
+- Audited the README, docs and this changelog against the code on the default
+  branch. The doc-facts tests pass (CLI commands, flags, `setup --client`
+  values, import sources, completion shells, MCP tool count and parameters),
+  so no command or flag text needed changing. The README still pins the
+  verified `v0.8.7` release on purpose: source `0.8.11` is not yet a
+  qualified public release.
+
+### Changed (README quick start)
+
+- The README quick start is now five numbered steps: install, `phantom init`
+  (or `phantom init --empty` with no `.env`), `phantom list` and
+  `phantom agent doctor`, `phantom setup --client <client>`, then
+  `phantom exec -- <command>`. It states that Phantom prints no secret value
+  in those steps and that step 5 runs your own app, so that app decides what
+  it logs. The install step points at the verified `v0.8.7` release assets
+  and notes that Homebrew still serves `v0.7.9`.
+
+### CI (nightly full matrix)
+
+- `nightly-full.yml` runs the full CI matrix, macOS and Windows included, on
+  the default branch daily at 08:07 UTC, and on `workflow_dispatch`. Pull
+  requests and the merge queue run only the fast checks. A nightly failure
+  fails that run and shows in the Actions tab. Its permissions are unchanged
+  (`contents: read`, with `id-token: write` only for the coverage upload).
+
+### Tests (documentation drift)
+
+- New doc-facts tests derive the MCP tool count, tool names and parameters,
+  the README command table and `phantom setup --client` values, import
+  sources, completion shells, and documented CLI flags from the clap command
+  tree, the importer dispatcher, and `mcp-registry/server.json`. They fail
+  with the doc line to fix when a doc drifts from the code. They read local
+  files only.
+
+## [0.8.11] - 2026-11-16
+
+### Breaking changes and migration
+
+No breaking changes since v0.8.10. Existing installations require no migration.
+
+### Security (npm acceptance follows rehearsal)
+
+- npm candidate acceptance checks the format of its seven inputs in a prior
+  job and runs the host matrix from those outputs. The matrix starts only
+  after the release rehearsal workflow succeeds on the default branch or a
+  release tag. Rehearsal remains a single read-only job and is invoked with
+  `workflow_call`.
+
+### CI (CodeQL weekly schedule)
+
+- CodeQL runs on default-branch pushes, pull requests, and one Sunday
+  schedule. The CodeQL workflow name and analyze job name stay the same.
+
+## [0.8.10] - 2026-11-16
+
+### Breaking changes and migration
+
+No breaking changes since v0.8.9. Existing installations require no migration.
+
+### Added (workbench integration notes)
+
+- `INTEGRATION.md` describes how this repo plugs into the Phantom workbench
+  (formerly Ashlr Hub): opt-in delegation, the local proxy, trust boundaries,
+  and opt-out. `DESIGN-onboarding-wizard.md` and `DESIGN-connector-packs.md`
+  remain proposals and are not implemented.
+
+### Fixed (npm install-source marker)
+
+- The `phantom-secrets` and `phantom-secrets-mcp` wrappers write
+  `.phantom-install-source.npm-cli` and `.phantom-install-source.npm-mcp` only
+  after binary validation succeeds. A failed validation leaves no ownership
+  marker.
+
+### Added (agent quickstart)
+
+- Agents get one copy-paste setup path in `docs/agent-quickstart.md`, mirrored in `AGENTS.md`, `llms.txt` and `llms-full.txt`, with value-free JSON commands and the MCP file shapes `phantom setup` writes for Claude Code, Cursor and Codex. A docs check fails if any copy of the command block drifts.
+
+### CI (PowerShell installer pin)
+
+- The Windows CI job and the release rehearsal contract test now expect the
+  public-reference `apps/web/public/install.ps1` to be pinned to the evidenced
+  `v0.8.7` release instead of `v0.7.9`; the contract test reads the pin from
+  the installer itself.
+
+### Changed (repository docs tooling)
+
+- A `.devin/wiki.json` steering file describes the workspace crates for
+  generated repository wikis.
+
+### Removed (unrouted `phantom env` help hint)
+
+- The unused `run_default` helper in `env_scope.rs` is gone; `phantom env`
+  still generates `.env.example` as documented.
+
+### Changed (OS credential store crates)
+
+- The vault, the cloud passphrase, and the cloud key pair now reach the OS
+  credential store through `keyring-core` 1 and one store crate per platform,
+  replacing `keyring` 3: `apple-native-keyring-store` (macOS Keychain),
+  `windows-native-keyring-store` (Windows Credential Manager), and on Linux
+  `linux-keyutils-keyring-store` plus `dbus-secret-service-keyring-store`.
+  The Linux Secret Service store uses blocking D-Bus with bundled libdbus and
+  RustCrypto key exchange, so Linux builds need neither a system libdbus nor
+  openssl. Service and account names are unchanged. Reading entries that a
+  keyring 3 build wrote has not yet been live-tested on Linux Secret Service or
+  Windows Credential Manager; see
+  `docs/design/keyring-4-migration-scoping.md`.
+
+### Security (dependency advisories)
+
+- `deny.toml` no longer ignores RUSTSEC-2026-0370 (`zvariant`),
+  RUSTSEC-2026-0371 (`zbus_names`), or RUSTSEC-2026-0372 (`zvariant_derive`).
+  No zbus version remains in the resolved graph, and `cargo deny check` passes
+  without those ignores.
+
+### Changed (MCP SDK)
+
+- `phantom-mcp` builds on `rmcp` 3.9 (was 3.5). The tool catalog and
+  `mcp-registry/server.json` are unchanged.
+
+### Added (account-ops engine, library only)
+
+- `phantom_core::account_ops` is a value-free create, rotate, revoke, and
+  status engine. It ships with a GitHub App installation-token adapter. Each
+  operation checks the `~/.ashlr/KILL` switch, binds the secret name to the
+  adapter's namespace, and defaults to a dry run. Operations are recorded in
+  a hash-chained ledger at `~/.phantom/account-ops.jsonl`, with a head anchor
+  that detects truncation. Issued values go only to the vault writer. If
+  storing a value fails, the engine revokes it. No CLI or MCP command calls
+  the engine, and live provider issuance stays hard-denied.
+  `.github/CODEOWNERS` now assigns an owner to the module.
+
+### Fixed (Personal Cloud push)
+
+- The Supabase migration `20261009225441_enforce_personal_vault_quota` adds
+  `push_personal_vault`, the function that the `/api/v1/vault/push` route
+  calls. It serializes pushes per user and checks the expected version, and
+  it admits one new encrypted backup per account. Existing backups, including
+  legacy over-quota rows, can still be read and updated. Only the service
+  role can call it.
+
+### Security (Personal Cloud table grants)
+
+- The Supabase migration `20261009231437_clamp_browser_table_authority`
+  limits browser sessions to `SELECT` on `users`, `vault_blobs`, `teams`, and
+  `team_members`, under the existing ownership RLS policies. It also revokes
+  every `PUBLIC` and `anon` table privilege, removes column-level grants, and
+  drops service-role access to tables the server does not use. Rollback
+  scripts are in `apps/web/supabase/rollback/`, and CI now runs the
+  `supabase test db` grant and row-isolation suite.
+
+### Fixed (npm wrappers)
+
+- The `phantom-secrets` npm wrapper treats a zero-byte cached binary or
+  manifest as missing and downloads it again, even if its digest matches.
+- The `phantom-secrets-mcp` wrapper requires the version line to be the
+  whole `phantom-mcp --version` output. Tests reject extra blank lines,
+  Unicode line separators, and NUL suffixes.
+- `npm/README.md` adds `freebsd`/`arm64`, `linux`/`riscv64`, and
+  `sunos`/`arm` to the platforms that fail closed before any download.
+
+### Changed (SEO observer)
+
+- `scripts/seo/observe.mjs` now fetches `/llms.txt` and `/llms-full.txt`
+  directly instead of requiring them in the sitemap, which lists only HTML
+  pages. An `--experiments`, `--gsc-file`, or `--ahrefs-file` input that is
+  not valid JSON now exits 1 with the error on stderr instead of writing a failure report.
+
+### CI (release and tool downloads)
+
+- The release workflow pins npm `11.19.0` for trusted publishing (was
+  `11.6.2`).
+- CI caches the `cargo-deny` and `gitleaks` archives under a key built from
+  each tool's version and SHA-256. It retries downloads and still verifies
+  the checksum before use. `scripts/ci/verified-download.test.mjs` covers
+  that path.
+
+### CI (test coverage)
+
+- New regression tests cover `atomic_write`: empty contents, Unicode bytes,
+  replacing an existing file, a parent that cannot be created, and no
+  leftover temporary files. They also cover proxy rate limiting and port
+  binding, Unix installer staging and PATH-update failure cleanup, npm
+  wrapper version and cache validation, and web manifest, quickstart,
+  redirect, and request-body handling. `apps/web/README.md` documents how to
+  run the web tests.
+
+### CI (docs and installer suite wiring)
+
+- On every push to `main`, CI now runs `scripts/freshness/check.mjs`,
+  `scripts/release/lint-changelog.mjs`, and `scripts/changelog-fold.mjs
+  --check`. The `[Unreleased]` compare-link fresh block in `CHANGELOG.md` had
+  picked up the `[0.8.9]` link at the release cut, and nothing caught it. The
+  link now sits outside the block.
+- The Linux offline installer step now runs
+  `installer-mktemp-failure`, `installer-success-cleanup`,
+  `public-installer-staging-creation-failure`, and
+  `public-installer-tmpdir-spaces`. They had merged without being added to the
+  step, which made the `installer-offline-suite` guard fail.
+
+### Changed (developer guide)
+
+- `CLAUDE.md` names `rmcp` 3.9 as the MCP SDK. The duplicate
+  `[Unreleased]` agent-quickstart bullet in `CHANGELOG.md` was removed, because
+  the `changelog.d/agent-quickstart.md` fragment already records that change.
+
+### Changed (architecture docs)
+
+- `docs/architecture.md` now lists the library-only `phantom_core::account_ops`
+  engine in the current-state map and the sources-of-truth list, with a link
+  to its design note. It states that no CLI or MCP command calls the engine.
+
+### Added (`phantom git-credential`)
+
+- `phantom git-credential get`, `store` and `erase` implement the Git
+  credential-helper protocol for HTTPS github.com. The helper hands the
+  selected project vault credential only to a pipe; terminals and files are
+  refused. Setup and the plaintext handoff boundary are in
+  `docs/git-credential.md`.
+
+### Added (`phantom redact --stream`)
+
+- `phantom redact --stream` scrubs known credential shapes from stdin to
+  stdout, flushing each line, with no vault access. Lines over 1 MiB are
+  rejected. Shape detection cannot cover arbitrary or encoded secrets.
+
+### Added (`phantom fleet-status`)
+
+- `phantom fleet-status` is a read-only, value-free fleet posture report: each
+  secret's name, expiry state, last stored validation result and
+  rotation-schedule state, plus the names with overdue rotations. `--json`
+  emits the schema in `docs/fleet-status.md`; `--strict` exits 2 when anything
+  needs attention or the inventory is partial.
+
+### Added (`phantom open`, `phantom logout`, `phantom completion`)
+
+- `phantom open [page]` opens only the reviewed aliases `dashboard`,
+  `billing`, `team`, `docs`, `pricing`, `github`, `issues` and `site`, from an
+  attached trusted terminal. Arbitrary URLs and unknown aliases are rejected
+  before any browser access.
+- `phantom logout` deletes persistent cloud authorization from the OS keychain
+  after approval in an attached trusted terminal.
+- `phantom completion <shell>` prints a completion script for bash, zsh, fish,
+  powershell or elvish.
+
+### CI (changelog coverage)
+
+- A docs-drift test fails when a visible CLI command is never mentioned in
+  `CHANGELOG.md` or an unfolded `changelog.d/` fragment, so a shipped command
+  cannot go unrecorded.
+
+### Changed (documentation index)
+
+- `docs/README.md` now links the `phantom exec`, `phantom git-credential`,
+  `phantom fleet-status`, `phantom audit feed` and `phantom agent doctor --json`
+  references, the MCP secrets manager overview, the hybrid local quickstart and
+  the public fact sheet, which were reachable only by file name.
+
+### CI (documented flag drift)
+
+- A docs-drift test fails when `README.md`, `llms.txt` or a `docs/*.md` file
+  shows a `phantom <command> --flag` invocation whose flag the command does not
+  define. Arguments after a bare `--` belong to the wrapped command and are
+  not checked.
+
+### Security (Personal Cloud token and OAuth-state grants)
+
+- The Supabase migration `20261110053000_revoke_platform_token_oauth_state_columns`
+  follows `20261009231437_clamp_browser_table_authority`, whose column revoke
+  omitted `platform_tokens` and `oauth_states` and whose table-level revoke
+  omitted `oauth_states`. Column grants survive a table-level `REVOKE`, so it
+  revokes every `PUBLIC`, `anon` and `authenticated` privilege on `oauth_states`
+  and the column privileges on both tables. `service_role` table privileges are
+  kept. The migration fails if either table is missing. A rollback script and
+  the local grant assertions in `scripts/supabase/assert-local-authority.sql`
+  cover it.
+
+### Fixed (`phantom-secrets-mcp` unsupported platform)
+
+- The `phantom-secrets-mcp` npm wrapper resolves the release target before it
+  touches the cache, lock, or network. An unsupported platform now exits with
+  release guidance and leaves nothing behind, matching the `phantom-secrets`
+  wrapper.
+
 ### Fixed
 
 - The agent quickstart now directs macOS users to the verified v0.8.7 archive. The documented v0.7.9 Homebrew formula does not support `phantom agent doctor --json`.
@@ -722,8 +1140,8 @@ The `v0.7.9` tag and GitHub Release are not moved or replaced.
   `# DATABASE_URL=postgres://<db-host>/<db>`) committed and scanned
   unreported everywhere, though `phantom doctor` already warned on it.
   All four surfaces now report each commented-out secret assignment by
-  name and each other credential-holding comment — a prose note or a
-  trailing comment — by line, in both `.env` files and `.envrc`, while
+  name and each other credential-holding comment (a prose note or a
+  trailing comment) by line, in both `.env` files and `.envrc`, while
   the staged code scan skips exactly the lines already reported so a
   value is never reported twice.
 
@@ -3612,8 +4030,10 @@ remain separate evidence gates.
 For older release notes and downloadable artifacts, see [GitHub Releases](https://github.com/ashlrai/phantom-secrets/releases).
 
 <!-- fresh:begin changelog-unreleased-compare -->
-[Unreleased]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.9...HEAD
+[Unreleased]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.11...HEAD
 <!-- fresh:end -->
+[0.8.11]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.10...v0.8.11
+[0.8.10]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.9...v0.8.10
 [0.8.9]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.8...v0.8.9
 [0.8.8]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.7...v0.8.8
 [0.8.7]: https://github.com/ashlrai/phantom-secrets/compare/v0.8.6...v0.8.7

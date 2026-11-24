@@ -65,7 +65,7 @@ by default. Trusted-terminal effects require explicit operator configuration,
 confirmation, and a one-use approval token after a typed challenge. A same-user
 shell or agent-controlled PTY can defeat that ceremony: leave effects disabled
 unless the approval command and approval storage are outside the agent's
-authority. Live provider rotation is hard-denied in v0.7.9. Cloud and team tools
+authority. Live provider rotation is hard-denied in current releases. Cloud and team tools
 require a separately commissioned service; tool availability does not prove one
 is reachable or authorized.
 

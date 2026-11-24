@@ -57,12 +57,12 @@ value-blind inventory for the project they are opened in, and nothing else.
 
 When an engagement ends, remove that client's secrets project by project from a
 trusted terminal (`phantom remove NAME` asks for an exact challenge), then
-rotate the credentials at the vendor. Phantom `v0.7.9` does not call provider
-rotation APIs; see [Rotating real provider credentials](../README.md#rotating-real-provider-credentials).
+rotate the credentials at the vendor. Phantom does not call provider rotation
+APIs; see [Rotating real provider credentials](../README.md#rotating-real-provider-credentials).
 
 ## Not yet available
 
 - Named environment scopes (`dev`/`staging`/`prod`) inside one project exist in
-  `phantom-core` but are not exposed as CLI commands in `v0.7.9`.
+  `phantom-core` but are not exposed as CLI commands in current releases.
 - There is no owner/tenant label on a project; separation relies on directory
   layout. See [ROADMAP.md](../ROADMAP.md) for planned work.

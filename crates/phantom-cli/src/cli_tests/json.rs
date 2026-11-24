@@ -69,6 +69,7 @@ fn global_json_is_routed_or_rejected_for_every_command() {
         "audit feed",
         "audit hotspots",
         "audit incidents",
+        "audit path",
         "audit report",
         "audit show",
         "audit stats",
@@ -77,6 +78,7 @@ fn global_json_is_routed_or_rejected_for_every_command() {
         "cloud status",
         "crypto inventory",
         "doctor",
+        "env",
         "expiry enforce",
         "fleet-status",
         // Not JSON output: its hidden legacy `--json` fails closed with

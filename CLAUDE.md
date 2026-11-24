@@ -10,16 +10,68 @@
 ~/.cargo/bin/cargo test --workspace --all-targets --locked --no-fail-fast
 
 # Lint (must pass with zero warnings)
-~/.cargo/bin/cargo clippy --all-targets -- -D warnings
+~/.cargo/bin/cargo clippy --workspace --all-targets --locked -- -D warnings
 
-# Format
+# Format in place, then check it the way CI does
 ~/.cargo/bin/cargo fmt --all
+~/.cargo/bin/cargo fmt --all -- --check
 
 # Run CLI
 ~/.cargo/bin/cargo run -p phantom-secrets --bin phantom -- <command>
 ```
 
 If `cargo` is not on your PATH (a fresh rustup install puts it in `~/.cargo/bin`), run `export PATH="$HOME/.cargo/bin:$PATH"` first.
+
+## Contributing as an agent
+
+Most changes here come from coding agents. Read [AGENTS.md](AGENTS.md) for the
+operating rules, then follow
+[Contribute with an agent](CONTRIBUTING.md#contribute-with-an-agent) from fork
+to merged pull request. In short:
+
+- While iterating, `scripts/fast-check.sh main` runs format, Clippy, and tests
+  for only the crates your branch touches plus their dependents. It narrows
+  only when every changed file is Rust source under a crate's `src/`; a doc,
+  script, manifest, or `tests/` change checks the whole workspace.
+- Before opening the pull request, run the full test, format check, and Clippy
+  gate above. Pull request CI does not run the Rust test
+  suite or the docs drift checks, so your local run is the evidence reviewers
+  see; record the exact commands in the
+  [pull request template](.github/PULL_REQUEST_TEMPLATE.md).
+- After editing docs, run the drift checks:
+
+  ```bash
+  node --test scripts/release/readme-mcp-catalog.test.mjs
+  node --test scripts/docs-distribution.test.mjs
+  node --test scripts/hot-file-rule.test.mjs
+  ~/.cargo/bin/cargo test --locked -p phantom-secrets --test docs_command_flags_test
+  ```
+
+  Also run every suite that reads the file you edited, including those in
+  `apps/web/tests/`: list them with `git grep -l -F <file-name> -- '*.test.*'`
+  and run each with `node --test <file>`. A web suite that loads a package
+  needs `(cd apps/web && npm ci --no-audit)` first. That search misses two
+  checks not named `*.test.*`: after editing `docs/agents.md`, run
+  `bash scripts/test-docs-agents.sh`; after editing a file with a
+  `<!-- fresh:begin` marker, run `node scripts/freshness/check.mjs`.
+
+- Before you push, run the two pre-push checks. Neither needs a build, and
+  pull request CI does not validate fragments:
+
+  ```bash
+  node scripts/changelog-fold.mjs --check   # changelog.d/ fragment format
+  git diff main...HEAD | perl .github/tests/secret-shape/scrub.pl --check --allow-fixtures
+  ```
+
+  The second is the local form of the `Secret-shape scan` that `CI Gate`
+  requires; diff against `upstream/main` if your local `main` is stale.
+
+- Add a fragment to [`changelog.d/`](changelog.d/README.md) instead of editing
+  `CHANGELOG.md`, and follow the
+  [hot-file rule](AGENTS.md#hot-file-rule-avoid-merge-conflicts): a new doc does
+  not also edit `docs/README.md`.
+- `CI Gate` is the only required check; a passing pull request merges through
+  the merge queue, which reruns it on the queued merge commit.
 
 ## Architecture
 
@@ -29,7 +81,7 @@ fail-closed governed-execution foundations:
 - **phantom-core**: Config (.phantom.toml), .env parsing/rewriting, phantom token generation (256-bit CSPRNG, `phm_` prefix), error types
 - **phantom-vault**: `VaultBackend` trait with OS keychain (macOS Keychain, Linux Secret Service, Windows Credential Manager) and encrypted file fallback. Argon2id parameters hardened to OWASP balanced (m=64 MiB, t=3, p=1) with legacy-default fallback for older vaults
 - **phantom-proxy**: HTTP reverse proxy on 127.0.0.1. It authenticates and matches exact routes, discards client control of the route auth header, injects only the route-owned vault value there, and forwards client bodies byte-for-byte under a hard size cap. Client headers/bodies never resolve `phm_` tokens. Uses `hyper` for server and `reqwest` for outbound HTTPS; response streaming/SSE is preserved through scrubbing.
-- **phantom-cli**: `clap`-based CLI for init, proxy execution, diagnostics, sync, teams, audit, validation, provider design foundations, and trusted-terminal workspace setup. Live provider issuance/rotation is hard-denied before credential/network access in 0.8.7. Use `phantom --help` as the canonical command inventory. Plaintext JSON export is disabled; reveal requires an attached terminal and exact typed confirmation.
+- **phantom-cli**: `clap`-based CLI for init, proxy execution, diagnostics, sync, teams, audit, validation, provider design foundations, and trusted-terminal workspace setup. Live provider issuance/rotation is hard-denied before credential/network access in current releases. Use `phantom --help` as the canonical command inventory. Plaintext JSON export is disabled; reveal requires an attached terminal and exact typed confirmation.
 - **phantom-mcp**: MCP server for Claude Code, Cursor, Windsurf, Codex, and Gemini CLI. Uses `rmcp` 3.9 SDK and stdio transport. Exposes core vault/diagnostic/cloud/team tools plus advanced audit, validation, rotation, expiry, leak-incident, and compliance workflows. The exact catalog is declared in `crates/phantom-mcp/src/server.rs`; `mcp-registry/server.json` must match the runtime `tools/list` exactly (CI runs `node scripts/release/mcp-stdio-smoke.mjs target/debug/phantom-mcp 54`; after a reviewed schema change, regenerate with `node scripts/release/mcp-stdio-smoke.mjs target/debug/phantom-mcp 54 mcp-registry/server.json --write-registry`). User-fixable states (not initialized, locked vault, wrong passphrase, bad config) return `-32600` with a next step (`tools/helpers.rs::state_err`); `-32603` is for server faults.
 - **governed-execution foundations**: `phantom-workspace` provides the active value-blind Unix setup transaction. `phantom-authority`, `phantom-locus-contract`, `phantom-broker`, `phantom-runtime`, `phantom-session`, and `phantom-evidence` remain fail closed for production execution.
 
@@ -54,7 +106,7 @@ The proxy is a **reverse proxy with URL rewriting**, NOT a forward/CONNECT proxy
 
 ## Conventions
 
-- All code must pass `cargo clippy -- -D warnings` and `cargo fmt --check`
+- All code must pass `cargo clippy --workspace --all-targets --locked -- -D warnings` and `cargo fmt --all -- --check`
 - Unit tests go in `#[cfg(test)] mod tests` within source files; CLI integration tests live in `crates/phantom-cli/tests/`
 - Integration tests for proxy use `test_server.rs` (mock HTTP server that records requests)
 - Error handling: `thiserror` for library crates, `anyhow` for CLI

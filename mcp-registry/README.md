@@ -67,6 +67,7 @@ phantom setup --client claude
 phantom setup --client cursor
 phantom setup --client windsurf
 phantom setup --client codex
+phantom setup --client gemini
 ```
 
 Released `v0.8.7` records its bundled local `phantom mcp serve` command when it
@@ -218,6 +219,23 @@ publisher:
 
 These prerequisites do not indicate that npm or MCP Registry publication has
 occurred.
+
+## Part of the Ashlr ecosystem
+
+Phantom Secrets is one of the open-source tools from [Ashlr](https://ashlr.ai).
+Together they aim to be an autonomous, code-first, agent-native software
+factory: agents write, test, review, and ship the code, and the human acts as a
+passive board member. The long-term goal is open-source recursive
+self-improvement (RSI), where agents improve the tools they build with.
+
+This server is the MCP side of the `phantom` CLI. Phantom Secrets keeps real
+API-key values out of agent context, so agents can call APIs without holding
+the keys. The other tools (Phantom, Locus, Lexicon, Ashlr MD, Ashlr Stack, and
+ashlr-plugin) each install and run on their own; see the
+[ecosystem list](https://github.com/ashlrai/phantom-secrets#part-of-the-ashlr-ecosystem).
+Coding agents make most changes to this repository through normal pull requests
+and CI; see
+[how agents work on this repo](https://github.com/ashlrai/phantom-secrets#how-agents-work-on-this-repo).
 
 ## License
 

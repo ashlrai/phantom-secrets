@@ -4,7 +4,10 @@ const assert = require("assert");
 const crypto = require("crypto");
 const {
   chmodSync,
+  existsSync,
   linkSync,
+  lstatSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   renameSync,
@@ -18,6 +21,7 @@ const {
   attestationPath,
   ensureBinary,
   ensurePrivateCacheDir,
+  getCacheDir,
   getPlatformTarget,
   setAttestationClockForTest,
   isCachedBinaryStale,
@@ -50,6 +54,8 @@ for (const malformed of [
   "phantom 01.2.3\n",
   "phantom 0.7.01\n",
   "phantom 1.2.3-01\n",
+  ("phantom " + candidateVersion + " trailing-text\n"),
+  ("phantom " + candidateVersion + "\ntrailing-text"),
   (" phantom " + candidateVersion + "\n"),
   ("\tphantom " + candidateVersion + "\n"),
   ("phantom " + candidateVersion + "-untrusted\nextra\n"),
@@ -139,6 +145,39 @@ try {
     assert.ok(Date.now() - started < 2000, "hung version child must be killed by timeout");
   }
 
+  if (process.platform !== "win32") {
+    // Freshness boundary: a cached binary is trusted from its attestation only
+    // once its newest timestamp is at least 2 s old (>=). One nanosecond younger
+    // is fresh and must be re-verified (spawned) on every call.
+    const settleNs = 2_000_000_000n;
+    const boundaryBinary = join(fixtureDir, "boundary-binary");
+    const boundaryManifest = `${boundaryBinary}.manifest.json`;
+    const okVersion = () => Buffer.from(("phantom " + candidateVersion + "\n"));
+    const pinAge = (ageNs) => {
+      const { mtimeNs, ctimeNs } = lstatSync(boundaryBinary, { bigint: true });
+      const newest = mtimeNs > ctimeNs ? mtimeNs : ctimeNs;
+      setAttestationClockForTest(() => newest + ageNs);
+    };
+    try {
+      for (const [ageNs, trusted] of [[settleNs - 1n, false], [settleNs, true], [settleNs + 1n, true]]) {
+        rmSync(boundaryBinary, { force: true });
+        rmSync(boundaryManifest, { force: true });
+        rmSync(attestationPath(boundaryBinary), { force: true });
+        writePair(boundaryBinary, boundaryManifest, "boundary-binary");
+        pinAge(ageNs);
+        let spawns = 0;
+        const counting = () => { spawns += 1; return okVersion(); };
+        assert.strictEqual(validateCachedBinary(boundaryBinary, boundaryManifest, { execFileSyncImpl: counting }), true);
+        assert.strictEqual(spawns, 1, `age ${ageNs}ns: first call verifies in full`);
+        assert.strictEqual(existsSync(attestationPath(boundaryBinary)), trusted, `age ${ageNs}ns: attested=${trusted}`);
+        assert.strictEqual(validateCachedBinary(boundaryBinary, boundaryManifest, { execFileSyncImpl: counting }), true);
+        assert.strictEqual(spawns, trusted ? 1 : 2, `age ${ageNs}ns: repeat call ${trusted ? "uses the attestation" : "re-verifies"}`);
+      }
+    } finally {
+      setAttestationClockForTest(null);
+    }
+  }
+
   // Empty cache fixtures: a zero-byte file is never a valid cached version.
   // Each case must fail closed without ever executing the binary (offline).
   const neverExec = {
@@ -203,6 +242,43 @@ try {
   rmSync(fixtureDir, { recursive: true, force: true });
 }
 
+// A cache root containing spaces must be read as one path: the verified pair is
+// found there, the version spawn receives that exact path, and a decoy pair in
+// the space-free prefix of the same name is never consulted.
+const spacedRoot = mkdtempSync(join(tmpdir(), "phantom cache test "));
+try {
+  const spacedDir = join(spacedRoot, "my cache dir");
+  const decoyDir = join(spacedRoot, "my");
+  ensurePrivateCacheDir(decoyDir);
+  ensurePrivateCacheDir(spacedDir);
+  const spaced = pathSet(spacedDir);
+  const decoy = pathSet(decoyDir);
+  assert.ok(spaced.binaryPath.startsWith(spacedDir), "binary path stays under the spaced cache dir");
+  assert.ok(spaced.manifestPath.startsWith(spacedDir), "manifest path stays under the spaced cache dir");
+  writePair(spaced.binaryPath, spaced.manifestPath, "spaced-binary");
+  writePair(decoy.binaryPath, decoy.manifestPath, "decoy-binary");
+
+  assert.ok(readVerifiedManifest(spaced.binaryPath, spaced.manifestPath));
+  let spawnedPath;
+  assert.strictEqual(validateCachedBinary(spaced.binaryPath, spaced.manifestPath, {
+    execFileSyncImpl: (path) => {
+      spawnedPath = path;
+      return Buffer.from("phantom " + candidateVersion + "\n");
+    },
+  }), true);
+  assert.strictEqual(spawnedPath, spaced.binaryPath, "version check runs the binary in the spaced cache dir");
+  assert.strictEqual(readFileSync(spaced.binaryPath, "utf8"), "spaced-binary");
+
+  const nextBinary = join(spacedRoot, "next candidate");
+  const nextManifest = `${nextBinary}.manifest.json`;
+  writePair(nextBinary, nextManifest, "spaced-new");
+  replaceCachedBinary(nextBinary, nextManifest, spaced);
+  assert.strictEqual(readFileSync(spaced.binaryPath, "utf8"), "spaced-new");
+  assert.strictEqual(readFileSync(decoy.binaryPath, "utf8"), "decoy-binary");
+} finally {
+  rmSync(spacedRoot, { recursive: true, force: true });
+}
+
 async function testMalformedCacheFallback() {
   const cacheDir = mkdtempSync(join(tmpdir(), "phantom-malformed-cache-"));
   try {
@@ -242,9 +318,42 @@ async function testMalformedCacheFallback() {
   }
 }
 
-testMalformedCacheFallback().then(() => {
-  console.log("npm CLI wrapper manifest, version, replacement, and recovery tests passed");
-}).catch((error) => {
-  console.error(error);
-  process.exitCode = 1;
-});
+async function spacedHomeCacheTest() {
+  const root = mkdtempSync(join(tmpdir(), "phantom cache test "));
+  try {
+    const home = join(root, "Home Dir With Spaces");
+    mkdirSync(home, { recursive: true });
+    const cacheDir = getCacheDir({ env: { HOME: home }, homedirImpl: () => home });
+    assert.strictEqual(cacheDir, join(home, ".phantom-secrets", "bin"));
+    assert.ok(cacheDir.includes(" "), "fixture cache path must contain spaces");
+
+    ensurePrivateCacheDir(cacheDir);
+    const spaced = pathSet(cacheDir);
+    writePair(spaced.binaryPath, spaced.manifestPath, "cached-binary");
+
+    const spawned = [];
+    const noNetwork = () => { throw new Error("cached binary must not trigger a download"); };
+    const resolved = await ensureBinary({
+      cacheDir,
+      downloadImpl: noNetwork,
+      extractImpl: noNetwork,
+      execFileSyncImpl: (path, args) => {
+        spawned.push([path, args]);
+        return Buffer.from("phantom " + candidateVersion + "\n");
+      },
+    });
+    assert.strictEqual(resolved, spaced.binaryPath, "cache must be read from the intended spaced path");
+    assert.deepStrictEqual(spawned, [[spaced.binaryPath, ["--version"]]]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+testMalformedCacheFallback()
+  .then(() => spacedHomeCacheTest())
+  .then(() => {
+    console.log("npm CLI wrapper manifest, version, replacement, and recovery tests passed");
+  }).catch((error) => {
+    console.error(error);
+    process.exitCode = 1;
+  });

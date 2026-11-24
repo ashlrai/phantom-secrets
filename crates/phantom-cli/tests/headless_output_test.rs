@@ -9,6 +9,7 @@ mod common;
 use assert_cmd::Command;
 use serde_json::Value;
 use std::fs;
+use std::time::Duration;
 use tempfile::TempDir;
 
 const VAULT_PASS: &str = "placeholder-headless-output-passphrase";
@@ -29,6 +30,28 @@ fn init_project(dir: &TempDir) {
     )
     .expect("write seed .env");
     common::init_project(dir, VAULT_PASS);
+}
+
+#[test]
+fn unknown_command_exits_without_interactive_prompts() {
+    let dir = common::canonical_tempdir();
+
+    let output = phantom(&dir)
+        .timeout(Duration::from_secs(10))
+        .arg("definitely-not-a-command")
+        .output()
+        .expect("run unknown command");
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        concat!(
+            "error: unrecognized subcommand 'definitely-not-a-command'\n",
+            "\n  tip: a similar subcommand exists: 'init'\n",
+            "\nUsage: phantom [OPTIONS] <COMMAND>\n",
+            "\nFor more information, try '--help'.\n",
+        )
+    );
 }
 
 #[test]
@@ -150,9 +173,9 @@ fn json_on_a_command_without_json_output_is_a_usage_error() {
     init_project(&dir);
 
     for args in [
-        // `why` and `audit verify` gained JSON output on main; these did not.
-        vec!["audit", "path", "--json"],
-        vec!["--json", "audit", "path"],
+        // These commands still have no JSON output.
+        vec!["audit", "tail", "--json"],
+        vec!["--json", "audit", "tail"],
         vec!["logout", "--json"],
     ] {
         let output = phantom(&dir).args(&args).assert().code(2);

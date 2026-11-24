@@ -200,12 +200,16 @@ function inspectPack(packageDirectory) {
 
 test("manual rehearsal delegates to the shared graph with read-only authority", () => {
   assert.match(rehearsal, /^on:\n  workflow_dispatch:/m);
+  assert.match(rehearsal, /^  workflow_call:\n    inputs:\n      release_tag:/m);
+  assert.doesNotMatch(rehearsal, /workflow_run:/);
   assert.match(rehearsal, /^permissions:\n  contents: read$/m);
   assert.match(rehearsal, /uses: \.\/\.github\/workflows\/release-build\.yml/);
   assert.match(rehearsal, /release_tag: \$\{\{ inputs\.release_tag \}\}/);
-  assert.doesNotMatch(rehearsal, /(?:contents|attestations|id-token): write/);
+  assert.doesNotMatch(rehearsal, /(?:contents|attestations|id-token|actions|security-events): write/);
   assert.doesNotMatch(rehearsal, /environment:/);
   assert.doesNotMatch(rehearsal, /(?:npm|cargo|mcp-publisher) publish|gh release/);
+  const jobs = rehearsal.slice(rehearsal.indexOf("\njobs:\n"));
+  assert.deepEqual([...jobs.matchAll(/^  ([a-z0-9-]+):$/gm)].map((match) => match[1]), ["rehearse"]);
 });
 
 test("release defaults and lockfiles are part of the exact version parity contract", () => {
@@ -840,7 +844,9 @@ test("npm and MCP distribution metadata and runbooks remain publication-safe", (
   );
   assert.match(mcpPublication, /\?include_deleted=true/);
   assert.match(mcpPublication, /--output "\$\{MCP_BODY\}" --write-out '%\{http_code\}'/);
-  assert.match(mcpPublication, /does not\s+currently contain or prove that MCP publication workflow/);
+  assert.match(mcpPublication, /publish-mcp-registry\.yml/);
+  assert.match(mcpPublication, /io\.github\.ashlrai\/phantom-secrets-mcp/);
+  assert.match(mcpPublication, /does not\s+currently prove\s+environment-reviewer governance/);
   assert.match(mcpPublication, /verify-github-tag-binding\.mjs/);
   assert.match(mcpPublication, /origin is not canonical/);
   assert.match(mcpPublication, /mcp-publisher" publish mcp-registry\/server\.json/);

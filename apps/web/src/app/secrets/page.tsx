@@ -7,6 +7,7 @@ import { EvidenceLedger } from "@/components/landing/EvidenceLedger";
 import { FAQ } from "@/components/landing/FAQ";
 import { Features } from "@/components/landing/Features";
 import { AgentQuickstart } from "@/components/landing/AgentQuickstart";
+import { AshlrEcosystem } from "@/components/landing/AshlrEcosystem";
 import { Hero } from "@/components/landing/Hero";
 import { Install } from "@/components/landing/Install";
 import { LandingStructuredData } from "@/components/landing/LandingStructuredData";
@@ -55,6 +56,7 @@ export default function SecretsPage() {
         <EvidenceLedger />
         <Pricing />
         <FAQ />
+        <AshlrEcosystem />
         <CTA />
       </main>
       <SiteFooter />

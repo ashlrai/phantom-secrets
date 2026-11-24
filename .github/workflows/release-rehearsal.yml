@@ -6,7 +6,13 @@ on:
       release_tag:
         description: Exact v-prefixed SemVer already present across the candidate source
         required: true
-        default: v0.8.9
+        default: v0.8.11
+        type: string
+  workflow_call:
+    inputs:
+      release_tag:
+        description: Exact v-prefixed SemVer already present across the candidate source
+        required: true
         type: string
 
 # The caller cannot grant publication, attestation, or repository mutation.

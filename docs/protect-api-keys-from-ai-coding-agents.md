@@ -15,19 +15,14 @@ that release; verify the release-state notice before choosing an install path.
 
 ## The short workflow
 
-On macOS, install the reviewed Homebrew formula:
-
-```bash
-brew tap ashlrai/phantom
-brew trust --formula ashlrai/phantom/phantom
-brew install ashlrai/phantom/phantom
-```
-
-For Linux, Windows, or direct verification, download the matching `v0.8.7`
-archive and adjacent checksum from the
-[`v0.8.7` release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.8.7).
-The [getting-started guide](./getting-started.md#install) lists all six native
-targets and verification commands.
+On macOS, Linux, or Windows, download the matching `v0.8.7` archive and
+adjacent checksum from the
+[`v0.8.7` release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.8.7),
+verify it, and put both `phantom` and `phantom-mcp` on `PATH`. The
+[getting-started guide](./getting-started.md#exact-github-assets-macos-linux-and-windows)
+lists all six native targets and verification commands. The Homebrew formula
+was last observed at `v0.7.9`, not this release; see
+[distribution status](distribution-status.md).
 
 From a trusted terminal in one project:
 

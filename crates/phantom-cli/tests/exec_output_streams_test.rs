@@ -6,6 +6,7 @@ mod common;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::time::Duration;
 
 const VAULT_PASS: &str = "exec-output-streams-integration-passphrase";
 
@@ -38,7 +39,7 @@ fn initialized_project() -> (tempfile::TempDir, tempfile::TempDir) {
     let home = common::canonical_tempdir();
     fs::write(
         project.path().join(".env"),
-        format!("OPENAI_API_KEY=sk-FAKE{}\n", "output".repeat(5)),
+        "OPENAI_API_KEY=placeholder-value-for-output-tests\n",
     )
     .unwrap();
     let output = phantom_command(project.path(), home.path())
@@ -108,6 +109,81 @@ fn exec_quiet_suppresses_progress_but_keeps_child_output() {
                 "{quiet_args:?} still printed {chatter:?}:\n{stderr}"
             );
         }
+    }
+}
+
+#[test]
+fn exec_keeps_distinct_child_stdout_and_stderr_separate() {
+    let (project, home) = initialized_project();
+    let child_args: &[&str] = if cfg!(windows) {
+        &[
+            "cmd",
+            "/D",
+            "/C",
+            "echo fake stdout text& echo fake stderr text>&2",
+        ]
+    } else {
+        &[
+            "sh",
+            "-c",
+            "printf 'fake stdout text\\n'; printf 'fake stderr text\\n' >&2",
+        ]
+    };
+    let newline = if cfg!(windows) { "\r\n" } else { "\n" };
+
+    // Exercise inherited streams and the optional piped output relay.
+    for scrub in [false, true] {
+        let mut command =
+            assert_cmd::Command::from_std(phantom_command(project.path(), home.path()));
+        command
+            .timeout(Duration::from_secs(20))
+            .args(["--quiet", "exec"]);
+        if scrub {
+            command.arg("--scrub-output");
+        }
+        let output = command
+            .arg("--")
+            .args(child_args)
+            .output()
+            .expect("run child with distinct streams");
+        assert_success(&output, "phantom exec with distinct streams");
+        assert_eq!(
+            output.stdout,
+            format!("fake stdout text{newline}").as_bytes()
+        );
+        assert_eq!(
+            output.stderr,
+            format!("fake stderr text{newline}").as_bytes()
+        );
+    }
+}
+
+#[test]
+fn exec_quiet_silent_child_exits_with_empty_streams() {
+    let (project, home) = initialized_project();
+    let child_args: &[&str] = if cfg!(windows) {
+        &["cmd", "/D", "/C", "exit /B 0"]
+    } else {
+        &["sh", "-c", ":"]
+    };
+
+    for scrub in [false, true] {
+        let mut command =
+            assert_cmd::Command::from_std(phantom_command(project.path(), home.path()));
+        command
+            .timeout(Duration::from_secs(20))
+            .args(["--quiet", "exec"]);
+        if scrub {
+            command.arg("--scrub-output");
+        }
+        let output = command
+            .arg("--")
+            .args(child_args)
+            .output()
+            .expect("run silent child");
+        assert_success(&output, "phantom exec with silent child");
+        assert!(output.stdout.is_empty());
+        assert!(output.stderr.is_empty());
     }
 }
 

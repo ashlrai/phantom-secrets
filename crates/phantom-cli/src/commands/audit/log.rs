@@ -1,4 +1,6 @@
 use super::*;
+use crate::commands::report_json::with_schema_pretty;
+use serde_json::{json, to_string_pretty};
 
 pub fn run_show(
     last: usize,
@@ -166,8 +168,15 @@ pub fn run_tail(op: Option<&str>, name: Option<&str>) -> Result<()> {
     }
 }
 
-pub fn run_path() -> Result<()> {
+pub fn run_path(json: bool) -> Result<()> {
     let path = resolve_path()?;
-    println!("{}", path.display());
+    if json {
+        println!(
+            "{}",
+            with_schema_pretty(to_string_pretty(&json!({ "path": path }))?, "audit.path.v1")?
+        );
+    } else {
+        println!("{}", path.display());
+    }
     Ok(())
 }
