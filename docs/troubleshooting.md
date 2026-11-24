@@ -37,7 +37,7 @@ If your API calls fail with authentication errors after setting up Phantom:
    `phantom reveal <KEY>` and complete the exact typed confirmation, or use
    `--clipboard` to avoid printing it on screen
 4. **Check BASE_URL is set**: The proxy only works when `OPENAI_BASE_URL` (or equivalent) points to the local proxy. Use `phantom exec -- <cmd>` which sets these automatically.
-5. **Check the key has a proxy route**: `phantom why <KEY>` (or MCP `phantom_why`) reports how `phantom exec` delivers a protected key. `no_route` means no built-in route injects it (for example `GROQ_API_KEY` or `JWT_SECRET`), so the child gets only a session token that no provider accepts. `phantom exec` names these keys at launch with `warn No proxy route for ...`. Custom routes: `phantom start` serves custom routes from `.phantom.toml`; `phantom exec` refuses them and runs only Phantom's exact built-in routes. The reason: `phantom start` is run by a person on project config they have reviewed. `phantom exec` launches an agent, and anything in the repository, `.phantom.toml` included, may have been written by that agent or by an untrusted change, so accepting custom routes there would widen the attack surface.
+5. **Check the key has a proxy route**: `phantom why <KEY>` (or MCP `phantom_why`) reports how `phantom exec` delivers a protected key. `no_route` means no built-in route injects it (for example `GROQ_API_KEY` or `JWT_SECRET`), so the child gets only a session token that no provider accepts. `phantom exec` names these keys at launch with `warn No proxy route for ...`. Custom routes: `phantom exec` and `phantom start` both refuse a custom route in `.phantom.toml` before vault access and run only Phantom's exact built-in routes; `phantom doctor` names the service that blocks launch. The reason: anything in the repository, `.phantom.toml` included, may have been written by an agent or by an untrusted change, and the file has no integrity protection, so a custom route would be a self-issued exfiltration channel. Approving a custom route is not supported yet (see [SECURITY.md](../SECURITY.md)).
 
 ### Proxy hangs or times out
 
@@ -224,6 +224,35 @@ its own child-owned proxy.
 
 If a hardcoded port from an older setup is still referenced and requests fail
 with connection refused, replace it with `PHANTOM_PROXY_PORT`.
+
+### `phantom start` prints exports for the wrong shell
+
+`phantom start` does not change your shell. It prints lines for you to run in
+the shell where your app will start:
+
+- a base-URL export for each built-in route whose key this session loaded
+- an unset line for each other route's base-URL variable, so a value left over
+  from an earlier session does not point an SDK at a dead proxy
+- `PHANTOM_PROXY_PORT`, `PHANTOM_PROXY_TOKEN`, and `PHANTOM_SESSION_KEYS` (the
+  variable names `phantom check --runtime` excuses for this session)
+
+The lines use one syntax: bash/zsh (`export`), fish (`set -gx`), PowerShell
+(`$env:`), or cmd.exe (`set`). `phantom setup --audit-mode local` picks the
+syntax of its shell-profile line the same way. Phantom checks, in order:
+
+1. `PHANTOM_SHELL`, when it names a shell Phantom recognizes
+2. `SHELL`, which usually names your login shell, not the shell you are in
+3. `PSModulePath`, which only PowerShell sets
+4. otherwise cmd.exe on Windows and bash/zsh everywhere else
+
+A recognized name (case-insensitive) contains `fish`, `powershell`, `pwsh`,
+`bash`, or `zsh`, ends in `/sh`, or is `cmd` or ends in `cmd.exe`. Any other
+value is ignored. If you run fish inside a zsh login shell, for example, set
+the override:
+
+```bash
+PHANTOM_SHELL=fish phantom start
+```
 
 ### `phantom start --daemon` or `phantom stop` is refused
 
