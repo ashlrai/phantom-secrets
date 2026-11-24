@@ -131,7 +131,11 @@ test("pending device authorization can be polled at the advertised five-second i
   const second = await poll();
   assert.equal(second.status, 200);
   assert.deepEqual(await second.json(), { status: "pending" });
-  assert.equal(serviceClient.calls.filter(({ table }) => table === "device_tokens").length, 2);
+  now += 5_500; // A fractional number of seconds is also a valid elapsed interval.
+  const third = await poll();
+  assert.equal(third.status, 200);
+  assert.deepEqual(await third.json(), { status: "pending" });
+  assert.equal(serviceClient.calls.filter(({ table }) => table === "device_tokens").length, 3);
   assert.ok(!serviceClient.calls.some(({ table }) => table === "users"));
 });
 
