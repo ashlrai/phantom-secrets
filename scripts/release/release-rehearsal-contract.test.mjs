@@ -941,17 +941,20 @@ test("npm and MCP distribution metadata and runbooks remain publication-safe", (
   );
 });
 
-test("current npm package contents are exactly the six reviewed files", () => {
-  const expectedFiles = ["LICENSE", "README.md", "bin/cli.js", "bin/package-version.js", "install.js", "package.json"];
+test("current npm packages contain only their exact reviewed source files", () => {
+  const commonFiles = ["LICENSE", "README.md", "bin/cli.js", "bin/package-version.js", "install.js", "package.json"];
 
   for (const [directory, packageName] of [
     ["npm", "phantom-secrets"],
     ["npm-mcp", "phantom-secrets-mcp"],
   ]) {
     const pack = inspectPack(directory);
+    const expectedFiles = directory === "npm"
+      ? [...commonFiles, "bin/usage-ping.js"].sort()
+      : commonFiles;
     assert.equal(pack.name, packageName);
     assert.equal(pack.version, sourceVersion);
-    assert.equal(pack.entryCount, 6);
+    assert.equal(pack.entryCount, expectedFiles.length);
     assert.deepEqual(
       pack.files.map(({ path }) => path).sort(),
       expectedFiles

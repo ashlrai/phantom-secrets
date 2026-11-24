@@ -166,10 +166,10 @@ pub struct RemoveSecretParams {
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct RotateParams {
-    /// Required. Must be true — the calling agent must confirm with the user
-    /// before invoking this tool. Rotating invalidates every live phantom token
-    /// and will break any process that cached the old tokens (e.g. a running
-    /// `phantom exec` or dev server) until it picks up the new .env.
+    /// Required. Must be true; the calling agent must confirm with the user
+    /// before remapping persistent placeholders in the managed dotenv. This
+    /// changes no provider credential or lifecycle metadata and does not revoke
+    /// a running `phantom exec` session, its proxy bearer, or its loaded vault values.
     #[serde(default)]
     pub confirm: bool,
     /// Out-of-band approval token from `phantom mcp-approve <NONCE>`.
@@ -871,10 +871,10 @@ pub struct AutoRotateParams {
     /// remapping does not create a credential that can truthfully be synced.
     #[serde(default)]
     pub sync: bool,
-    /// Required. Must be true — the calling agent must confirm with the user
-    /// before remapping the local Phantom token. This rewrites `.env` and can
-    /// disrupt running services that cached the old placeholder, but it does
-    /// not alter provider credentials or lifecycle metadata.
+    /// Required. Must be true; the calling agent must confirm with the user
+    /// before remapping a persistent placeholder in the managed dotenv. This
+    /// changes no provider credential or lifecycle metadata and does not revoke
+    /// a running `phantom exec` session, its proxy bearer, or its loaded vault values.
     #[serde(default)]
     pub confirm: bool,
     /// Out-of-band approval token from `phantom mcp-approve <NONCE>`.

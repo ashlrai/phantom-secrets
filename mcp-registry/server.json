@@ -959,7 +959,7 @@
     },
     {
       "name": "phantom_rotate",
-      "description": "Regenerate all phantom tokens in .env. Old tokens become invalid — any running `phantom exec` / dev server that cached them will break until it picks up the new .env. Real secrets in the vault are unchanged. DESTRUCTIVE; requires `confirm: true` plus a one-use out-of-band `approval_token` (the operator enables effects with PHANTOM_MCP_EFFECTS=trusted-terminal; a call without the token prints a nonce on the server's stderr for `phantom mcp-approve <NONCE>` in a trusted terminal); the agent must ask the user for explicit consent before calling.",
+      "description": "Regenerate persistent phm_ mappings in the managed dotenv. Provider credentials and expiry metadata are unchanged. This does not revoke an already running `phantom exec` session, its separate proxy bearer, or the vault values loaded by that proxy. DESTRUCTIVE; requires `confirm: true` plus a one-use out-of-band `approval_token` (the operator enables effects with PHANTOM_MCP_EFFECTS=trusted-terminal; a call without the token prints a nonce on the server's stderr for `phantom mcp-approve <NONCE>` in a trusted terminal); the agent must ask the user for explicit consent before calling.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
@@ -973,7 +973,7 @@
           },
           "confirm": {
             "default": false,
-            "description": "Required. Must be true — the calling agent must confirm with the user\nbefore invoking this tool. Rotating invalidates every live phantom token\nand will break any process that cached the old tokens (e.g. a running\n`phantom exec` or dev server) until it picks up the new .env.",
+            "description": "Required. Must be true; the calling agent must confirm with the user\nbefore remapping persistent placeholders in the managed dotenv. This\nchanges no provider credential or lifecycle metadata and does not revoke\na running `phantom exec` session, its proxy bearer, or its loaded vault values.",
             "type": "boolean"
           }
         },
@@ -1170,7 +1170,7 @@
           },
           "confirm": {
             "default": false,
-            "description": "Required. Must be true — the calling agent must confirm with the user\nbefore remapping the local Phantom token. This rewrites `.env` and can\ndisrupt running services that cached the old placeholder, but it does\nnot alter provider credentials or lifecycle metadata.",
+            "description": "Required. Must be true; the calling agent must confirm with the user\nbefore remapping a persistent placeholder in the managed dotenv. This\nchanges no provider credential or lifecycle metadata and does not revoke\na running `phantom exec` session, its proxy bearer, or its loaded vault values.",
             "type": "boolean"
           },
           "name": {
