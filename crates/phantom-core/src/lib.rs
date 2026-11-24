@@ -31,6 +31,7 @@ pub mod report;
 pub mod rotation_provider;
 pub mod rotation_strategy;
 pub mod secret_detector;
+pub mod secret_ref;
 pub mod sync;
 pub mod team_crypto;
 #[cfg(feature = "pq-hybrid")]
