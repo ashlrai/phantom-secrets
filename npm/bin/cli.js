@@ -1075,6 +1075,8 @@ function propagateChildFailure(error, runtime = process) {
 async function main() {
   try {
     const binary = await ensureBinary();
+    // Anonymous install/weekly-active ping (docs: npm/README.md#telemetry); detached, never blocks.
+    try { require("./usage-ping.js").schedule(VERSION); } catch { /* telemetry is best-effort */ }
     execFileSync(binary, process.argv.slice(2), { stdio: "inherit" });
   } catch (error) {
     if (!Number.isInteger(error.status) && !error.signal) {
