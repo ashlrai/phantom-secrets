@@ -47,13 +47,21 @@ executable. Keep both verified binaries installed and inspect the generated
 entry. The config is global and applies to every Windsurf
 workspace.
 
-To preview what would be written without modifying the file:
+Preview before you write anything:
 
 ```bash
-phantom setup --client windsurf --print
+phantom setup --client windsurf --print     # the snippet, on stdout
+phantom setup --client windsurf --dry-run   # the change to mcp_config.json, as a diff
 ```
 
-After running setup, **restart Windsurf** for the MCP server to activate.
+If the file does not parse, or already has a `phantom` entry that differs from
+what setup would write, setup stops, names the problem, and changes nothing.
+Re-run with `--replace` to overwrite a differing entry; setup writes a backup
+and a manifest first, and `phantom setup --undo` shows how to reverse it
+(`--undo --apply` does it).
+
+After running setup, **restart Windsurf** for the MCP server to activate. To
+confirm the wiring without writing anything, run `phantom setup --status`.
 
 ### Step 3: run Windsurf with the proxy active
 
@@ -126,7 +134,7 @@ Verify the config file exists:
 cat ~/.codeium/windsurf/mcp_config.json
 ```
 
-If the file is missing, re-run `phantom setup --client windsurf`. If the file is correct, restart Windsurf — MCP servers are loaded at startup.
+`phantom setup --status` reports the same without printing the file. If the file is missing, re-run `phantom setup --client windsurf`. If the `phantom` entry is stale, setup refuses to overwrite it; check the difference with `--dry-run`, then re-run with `--replace`. If the file is correct, restart Windsurf — MCP servers are loaded at startup.
 
 **The proxy environment is not passed to the Windsurf terminal**
 

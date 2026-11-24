@@ -48,13 +48,21 @@ package-runner fallback and fails closed when neither local runtime is
 executable. Keep both verified binaries installed and inspect the generated
 entry.
 
-To preview the snippet without modifying your config:
+Preview before you write anything:
 
 ```bash
-phantom setup --client codex --print
+phantom setup --client codex --print     # the snippet, on stdout
+phantom setup --client codex --dry-run   # the change to ~/.codex/config.toml, as a diff
 ```
 
-After running setup, **restart Codex** for the MCP server to activate.
+If the file does not parse, or already has an `[mcp_servers.phantom]` entry
+that differs from what setup would write, setup stops, names the problem, and
+changes nothing. Re-run with `--replace` to overwrite a differing entry; setup
+writes a backup and a manifest first, and `phantom setup --undo` shows how to
+reverse it (`--undo --apply` does it).
+
+After running setup, **restart Codex** for the MCP server to activate. To
+confirm the wiring without writing anything, run `phantom setup --status`.
 
 ### Step 3: verify agent readiness
 
@@ -152,8 +160,11 @@ The preview does not inspect your existing Codex configuration. In your local
 editor, locate only `[mcp_servers.phantom]` in `~/.codex/config.toml` and compare
 its `command` and `args` with the preview. Do not paste or print the whole config:
 other server entries can contain credentials or private service configuration.
-If the Phantom entry is absent or stale, re-run `phantom setup --client codex`,
-which merges that entry, then restart Codex. A generated entry alone does not
+`phantom setup --status` reports whether Codex is wired without printing the
+file. If the Phantom entry is absent, re-run `phantom setup --client codex`,
+which adds it and leaves other entries alone. If it is stale, setup refuses to
+overwrite it: check the difference with `--dry-run`, re-run with `--replace`,
+then restart Codex. A generated entry alone does not
 prove that the client connected; confirm Phantom's tools appear in Codex.
 
 To test the installed CLI and both MCP launch paths independently of your
