@@ -6,8 +6,8 @@ Website: https://phm.dev
 GitHub: https://github.com/ashlrai/phantom-secrets
 License: MIT
 Language: Rust
-Release evidence was verified on 2026-11-06. The immutable GitHub `v0.8.7` release at https://github.com/ashlrai/phantom-secrets/releases/tag/v0.8.7 resolves to `a6a0413991c0bd7f3d6601f467c0b5770d0dce0c`. Its 19 assets were verified after all six native acceptance rows and release attestations passed in https://github.com/ashlrai/phantom-secrets/actions/runs/42262099223.
-Install: use the exact checksum-verified `v0.8.7` GitHub assets below on macOS, Linux, and Windows. See [distribution status](distribution-status.md) for dated npm, Homebrew, crates.io, and MCP Registry evidence. Prefer the checksum-verified `v0.8.7` GitHub assets for an exact install.
+Release evidence was verified on 2026-11-16. The immutable GitHub `v0.8.11` release at https://github.com/ashlrai/phantom-secrets/releases/tag/v0.8.11 resolves to `2c93e578d8d1a8097b32c1cd89292e339681b77c`. Its 19 assets were verified after all six native acceptance rows and release attestations passed in https://github.com/ashlrai/phantom-secrets/actions/runs/43947823026.
+Install: use the exact checksum-verified `v0.8.11` GitHub assets below on macOS, Linux, and Windows. See [distribution status](distribution-status.md) for dated npm, Homebrew, crates.io, and MCP Registry evidence. Prefer the checksum-verified `v0.8.11` GitHub assets for an exact install.
 MCP: after installing both release binaries, run `phantom setup --client claude|cursor|windsurf|codex|gemini`.
 
 ## Agents start here
@@ -137,12 +137,12 @@ brew install ashlrai/phantom/phantom
 ```
 
 ### Exact v0.8.7 GitHub assets
-macOS Apple Silicon: https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.7/phantom-aarch64-apple-darwin.tar.gz
-macOS Intel: https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.7/phantom-x86_64-apple-darwin.tar.gz
-Linux x86_64: https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.7/phantom-x86_64-unknown-linux-gnu.tar.gz
-Linux ARM64: https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.7/phantom-aarch64-unknown-linux-gnu.tar.gz
-Windows x64: https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.7/phantom-x86_64-pc-windows-msvc.zip
-Windows ARM64: https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.7/phantom-aarch64-pc-windows-msvc.zip
+macOS Apple Silicon: https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.11/phantom-aarch64-apple-darwin.tar.gz
+macOS Intel: https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.11/phantom-x86_64-apple-darwin.tar.gz
+Linux x86_64: https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.11/phantom-x86_64-unknown-linux-gnu.tar.gz
+Linux ARM64: https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.11/phantom-aarch64-unknown-linux-gnu.tar.gz
+Windows x64: https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.11/phantom-x86_64-pc-windows-msvc.zip
+Windows ARM64: https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.11/phantom-aarch64-pc-windows-msvc.zip
 Download the adjacent `.sha256` sidecar for the selected archive, verify it,
 then extract both release executables and place them on PATH.
 
@@ -150,11 +150,11 @@ then extract both release executables and place them on PATH.
 ```
 git clone https://github.com/ashlrai/phantom-secrets.git
 cd phantom-secrets
-git checkout a6a0413991c0bd7f3d6601f467c0b5770d0dce0c
+git checkout 2c93e578d8d1a8097b32c1cd89292e339681b77c
 cargo build --release --locked --bin phantom --bin phantom-mcp
 ```
 
-See [distribution status](distribution-status.md) for dated npm, Homebrew, crates.io, and MCP Registry evidence. Prefer the checksum-verified `v0.8.7` GitHub assets for an exact install.
+See [distribution status](distribution-status.md) for dated npm, Homebrew, crates.io, and MCP Registry evidence. Prefer the checksum-verified `v0.8.11` GitHub assets for an exact install.
 
 ### MCP setup
 
@@ -163,10 +163,10 @@ Run `phantom setup --client claude|cursor|windsurf|codex|gemini` after installin
 files and confirmation-gated steps. Keep secret entry in the trusted terminal
 and deployment/provider authority separate.
 
-Released `v0.8.7` records the running `phantom` executable with `mcp serve` when
+Released `v0.8.11` records the running `phantom` executable with `mcp serve` when
 it can resolve that runtime, otherwise it looks for a local `phantom-mcp`.
 Setup has no network package-runner fallback and fails closed when neither local
-runtime is executable. Keep both verified `v0.8.7` binaries installed and
+runtime is executable. Keep both verified `v0.8.11` binaries installed and
 inspect the generated entry.
 
 ## MCP Server — Multi-IDE Support
@@ -362,9 +362,9 @@ Phantom automatically identifies secrets vs config values using heuristics:
 - apps/web: Vercel-targeted Next.js source (Supabase + Stripe, device auth,
   vault API, billing); repository presence is not deployment or commissioning
 
-The immutable `v0.8.7` GitHub release proves publication, checksums, the six-row
+The immutable `v0.8.11` GitHub release proves publication, checksums, the six-row
 native release matrix, and release attestations for exact source
-`a6a0413991c0bd7f3d6601f467c0b5770d0dce0c`. It does not prove web deployment,
+`2c93e578d8d1a8097b32c1cd89292e339681b77c`. It does not prove web deployment,
 hosted commissioning, native credential-store acceptance, or customer acceptance. Locus,
 broker, runtime, session, and externally trusted evidence remain inactive and
 fail closed; enterprise packaging remains a separately commissioned plan.

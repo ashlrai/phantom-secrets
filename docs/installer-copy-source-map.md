@@ -1,6 +1,6 @@
 # Unix installer copy source map
 
-Reviewed 2026-11-06 against the checked-in [repository installer](../scripts/install.sh)
+Reviewed 2026-11-24 against the checked-in [repository installer](../scripts/install.sh)
 and [web installer](../apps/web/public/install.sh). This maps source files,
 not a deployed website or a release asset. Line links are a snapshot; update
 them and this comparison when either copy changes.
@@ -17,7 +17,7 @@ them and this comparison when either copy changes.
 | PATH startup-file update function | [lines 305–428](../scripts/install.sh#L305-L428) | [lines 305–428](../apps/web/public/install.sh#L305-L428) |
 | PATH check and update call | [lines 554–556](../scripts/install.sh#L554-L556) | [lines 554–556](../apps/web/public/install.sh#L554-L556) |
 
-The complete files match. Both copies pin `CANDIDATE_TAG="v0.8.7"`
+The complete files match. Both copies pin `CANDIDATE_TAG="v0.8.11"`
 for the evidenced release. Both copies extract the
 release archive with `tar --no-same-owner` and carry the same explanatory
 comment, so a root-run install never keeps the release runner's uid on the

@@ -229,7 +229,7 @@ the [README asset table](README.md#exact-v087-github-assets).
 
 ```bash
 archive=phantom-x86_64-unknown-linux-gnu.tar.gz
-base=https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.7
+base=https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.11
 curl -fsSL -o "$archive" "$base/$archive"
 curl -fsSL -o "$archive.sha256" "$base/$archive.sha256"
 sha256sum -c "$archive.sha256"                # macOS: shasum -a 256 -c

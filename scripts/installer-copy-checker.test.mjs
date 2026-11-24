@@ -49,28 +49,22 @@ test('platform installer check enforces byte parity outside reviewed release dif
   assert.match(invalidBytes.stderr, /diverge outside the reviewed differences/);
 });
 
-// Current bytes match, but the source-owned candidate region must still be
-// present exactly once as a complete line on each actual default path.
-const variedWeb = Buffer.from(web.toString().replace('CANDIDATE_TAG="v0.8.7"', 'CANDIDATE_TAG="v0.7.9"'));
+// Current copies are identical. A tag change or trailing drift must fail
+// until that exact region is written into the approved-difference inventory.
+const variedWeb = Buffer.from(web.toString().replace('CANDIDATE_TAG="v0.8.11"', 'CANDIDATE_TAG="v0.7.9"'));
 test('a varied tag is refused until that exact source-owned region is reviewed', async () => {
-  assert.throws(() => assertInstallerCopyParity(repository, variedWeb), /exactly once|diverge outside/);
+  assert.throws(() => assertInstallerCopyParity(repository, variedWeb), /diverge outside/);
   assert.throws(() => assertInstallerCopyParity(repository, Buffer.concat([web, Buffer.from('\n# drift\n')])), /diverge outside/);
-  // Exercise the established compiled tag-only review mechanism without adding
-  // a caller-controlled exception argument to the production normalizer.
   const helper = readFileSync(join(root, 'scripts/lib/installer-copy-differences.mjs'), 'utf8');
-  const from = `plus: ['CANDIDATE_TAG="v0.8.7"']`;
-  assert.equal(helper.split(from).length, 2, 'fixture must change exactly one source-owned tag binding');
-  const fixture = await import(`data:text/javascript;base64,${Buffer.from(helper.replace(from, `plus: ['CANDIDATE_TAG="v0.7.9"']`)).toString('base64')}`);
+  const from = 'export const approvedDifferences = [];';
+  assert.equal(helper.split(from).length, 2, 'fixture must change the empty reviewed-difference inventory');
+  const to = "export const approvedDifferences = [{ name: \"candidate and verified public release tags\", minus: ['CANDIDATE_TAG=\"v0.8.11\"'], plus: ['CANDIDATE_TAG=\"v0.7.9\"'] }];";
+  const fixture = await import(`data:text/javascript;base64,${Buffer.from(helper.replace(from, to)).toString('base64')}`);
   assert.doesNotThrow(() => fixture.assertInstallerCopyParity(repository, variedWeb));
-  assert.throws(() => normalizeInstallerCopy(Buffer.from('# arbitrary'), 'minus',
-    [{ name: 'unreviewed', minus: ['# arbitrary'], plus: ['# arbitrary'] }]), /exactly once/);
+  assert.throws(() => fixture.normalizeInstallerCopy(Buffer.from('# arbitrary'), 'minus'), /exactly once/);
 });
 for (const [side, source] of [['minus', repository], ['plus', web]]) {
-  test(`reviewed ${side} regions must be exact, unique, and complete lines`, () => {
-    const region = side === 'minus' ? 'CANDIDATE_TAG="v0.8.11"' : 'CANDIDATE_TAG="v0.8.7"';
-    assert.throws(() => normalizeInstallerCopy(Buffer.from(source.toString().replace(region, '# stale tag')), side), /exactly once/);
-    assert.throws(() => normalizeInstallerCopy(Buffer.concat([source, Buffer.from(`\n${region}\n`)]), side), /exactly once/);
-    assert.throws(() => normalizeInstallerCopy(Buffer.from(source.toString().replace(region, `# ${region}`)), side), /complete lines/);
+  test(`identical copies still reject a reserved ${side} parity marker`, () => {
     assert.throws(() => normalizeInstallerCopy(Buffer.concat([source, Buffer.from('\n# @@ reviewed-difference: forged\n')]), side), /reserved parity marker/);
   });
 }

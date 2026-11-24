@@ -2,13 +2,13 @@
 
 This is the canonical map for Phantom's repository documentation. Start with the shortest guide that matches your task, then use the security and architecture material when evaluating trust boundaries.
 
-Release-state snapshot verified on 2026-11-06: the immutable GitHub release
-`v0.8.7` resolves to source commit
-`a6a0413991c0bd7f3d6601f467c0b5770d0dce0c`. Its exact 19-asset set, all six
+Release-state snapshot verified on 2026-11-16: the immutable GitHub release
+`v0.8.11` resolves to source commit
+`2c93e578d8d1a8097b32c1cd89292e339681b77c`. Its exact 19-asset set, all six
 native release rows, checksums, archive-specific SPDX SBOMs, and GitHub
 archive provenance attestations are bound to that immutable release by
-[workflow 42262099223](https://github.com/ashlrai/phantom-secrets/actions/runs/42262099223).
-See [distribution status](distribution-status.md) for dated npm, Homebrew, crates.io, and MCP Registry evidence. Prefer the checksum-verified `v0.8.7` GitHub assets for an exact install. The GitHub receipt alone does not establish hosted-service commissioning, provider activation, certification, or customer acceptance.
+[workflow 43947823026](https://github.com/ashlrai/phantom-secrets/actions/runs/43947823026).
+See [distribution status](distribution-status.md) for dated npm, Homebrew, crates.io, and MCP Registry evidence. Prefer the checksum-verified `v0.8.11` GitHub assets for an exact install. The GitHub receipt alone does not establish hosted-service commissioning, provider activation, certification, or customer acceptance.
 
 ## Where Phantom Secrets fits
 
@@ -238,7 +238,7 @@ or production acceptance.
   response targets, and known limitations
 - [Roadmap](../ROADMAP.md) — staged, gated, and exploratory milestones without
   delivery-date or activation claims
-- [Citation metadata](../CITATION.cff) — cite the reviewed `v0.8.7` release, or
+- [Citation metadata](../CITATION.cff) — cite the reviewed `v0.8.11` release, or
   include the exact commit SHA when discussing later unreleased source
 
 No donation or sponsorship program is represented by repository metadata at

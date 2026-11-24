@@ -59,12 +59,12 @@ test('cmp report parser accepts only the two complete mismatch formats', () => {
   ]) assert.equal(parseComparisonReport(report), null);
 });
 
-test('byte comparison identifies the reviewed tag divergence', () => {
-  const offset = firstMismatch(repository, web);
+test('byte comparison reports the Unix installer copies as identical', () => {
+  assert.equal(firstMismatch(repository, web), -1);
   const result = byteComparison();
-  assert.equal(result.status, 1);
-  assert.deepEqual(parseComparisonReport(result.stdout.trim()), { byte: offset + 1, line: 19 });
-  assert.equal(repository.toString().replace('CANDIDATE_TAG="v0.8.11"', 'CANDIDATE_TAG="v0.8.7"'), web.toString());
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(result.stdout.trim(), '');
+  assert.equal(repository.toString(), web.toString());
 });
 
 test('synthetic tag mismatch location agrees with cmp and detects earlier drift', (t) => {

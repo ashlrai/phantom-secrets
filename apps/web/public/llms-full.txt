@@ -22,7 +22,7 @@ Published release metadata and installation instructions: https://phm.dev
 Your installed tools, account setup and permissions determine what can run.
 Workbench release facts and Secrets release facts are separate. Refer to the
 workbench landing page's verified release record for its current published
-version; the `v0.8.7` evidence below describes Phantom Secrets only.
+version; the `v0.8.11` evidence below describes Phantom Secrets only.
 
 ## Ashlr ecosystem
 
@@ -84,8 +84,8 @@ Website: https://phm.dev/secrets
 GitHub: https://github.com/ashlrai/phantom-secrets
 License: MIT
 Language: Rust
-Release evidence was verified on 2026-11-06. The immutable GitHub `v0.8.7` release at https://github.com/ashlrai/phantom-secrets/releases/tag/v0.8.7 resolves to `a6a0413991c0bd7f3d6601f467c0b5770d0dce0c`. Its 19 assets were verified after all six native acceptance rows and release attestations passed in https://github.com/ashlrai/phantom-secrets/actions/runs/42262099223.
-Install: use the exact checksum-verified `v0.8.7` GitHub assets below on macOS, Linux, and Windows. The separately managed Homebrew formula was observed at `v0.7.9` on 2026-10-06.
+Release evidence was verified on 2026-11-16. The immutable GitHub `v0.8.11` release at https://github.com/ashlrai/phantom-secrets/releases/tag/v0.8.11 resolves to `2c93e578d8d1a8097b32c1cd89292e339681b77c`. Its 19 assets were verified after all six native acceptance rows and release attestations passed in https://github.com/ashlrai/phantom-secrets/actions/runs/43947823026.
+Install: use the exact checksum-verified `v0.8.11` GitHub assets below on macOS, Linux, and Windows. The separately managed Homebrew formula was observed at `v0.7.9` on 2026-10-06.
 MCP: after installing both release binaries, run `phantom setup --client claude|cursor|windsurf|codex|gemini`
 
 
@@ -122,19 +122,19 @@ brew install ashlrai/phantom/phantom
 ```
 
 ### Exact v0.8.7 GitHub assets
-macOS Apple Silicon: https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.7/phantom-aarch64-apple-darwin.tar.gz
-macOS Intel: https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.7/phantom-x86_64-apple-darwin.tar.gz
-Linux x86_64: https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.7/phantom-x86_64-unknown-linux-gnu.tar.gz
-Linux ARM64: https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.7/phantom-aarch64-unknown-linux-gnu.tar.gz
-Windows x64: https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.7/phantom-x86_64-pc-windows-msvc.zip
-Windows ARM64: https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.7/phantom-aarch64-pc-windows-msvc.zip
+macOS Apple Silicon: https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.11/phantom-aarch64-apple-darwin.tar.gz
+macOS Intel: https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.11/phantom-x86_64-apple-darwin.tar.gz
+Linux x86_64: https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.11/phantom-x86_64-unknown-linux-gnu.tar.gz
+Linux ARM64: https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.11/phantom-aarch64-unknown-linux-gnu.tar.gz
+Windows x64: https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.11/phantom-x86_64-pc-windows-msvc.zip
+Windows ARM64: https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.11/phantom-aarch64-pc-windows-msvc.zip
 For each archive, download its adjacent `.sha256` sidecar, verify it, extract both `phantom` and `phantom-mcp` executables, and place them on PATH.
 
 ### Exact source build
 ```
 git clone https://github.com/ashlrai/phantom-secrets.git
 cd phantom-secrets
-git checkout a6a0413991c0bd7f3d6601f467c0b5770d0dce0c
+git checkout 2c93e578d8d1a8097b32c1cd89292e339681b77c
 cargo build --release --locked --bin phantom --bin phantom-mcp
 ```
 
@@ -377,7 +377,7 @@ Print a shell-completion script to stdout. Source from your shell rc; see the RE
 
 Setup: install both reviewed `v0.8.7` GitHub release binaries, then run `phantom setup --client claude`
 
-Released `v0.8.7` records the running `phantom` executable with `mcp serve` when it can resolve that runtime, otherwise it looks for a local `phantom-mcp`. Setup has no network package-runner fallback and fails closed when neither local runtime is executable. Keep both verified `v0.8.7` binaries installed and inspect the generated entry.
+Released `v0.8.11` records the running `phantom` executable with `mcp serve` when it can resolve that runtime, otherwise it looks for a local `phantom-mcp`. Setup has no network package-runner fallback and fails closed when neither local runtime is executable. Keep both verified `v0.8.11` binaries installed and inspect the generated entry.
 
 The MCP server uses stdio transport via the rmcp 3.9 SDK. It works with Claude Code, Cursor, Windsurf, OpenAI Codex, and Gemini CLI. The runtime `tools/list` response is the canonical parameter schema.
 
@@ -632,9 +632,9 @@ Windows source establishes a protected current-user DACL on new private
 files/directories before bytes and preserves the reviewed exact DACL and
 inheritance state on replacement staging files before writing. Reparse, handle,
 ACL, and Credential Manager behavior still await protected native Windows CI
-acceptance. The immutable `v0.8.7` GitHub release proves publication,
+acceptance. The immutable `v0.8.11` GitHub release proves publication,
 checksums, six-row native release acceptance, and release attestations for exact
-source `a6a0413991c0bd7f3d6601f467c0b5770d0dce0c`; it does not prove web deployment,
+source `2c93e578d8d1a8097b32c1cd89292e339681b77c`; it does not prove web deployment,
 enterprise commissioning, native credential-store acceptance, or customer acceptance.
 
 Implementation-security identity:

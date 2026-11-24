@@ -9,14 +9,15 @@ Phantom replaces managed secrets in `.env` with `phm_` placeholders. Agents and 
 [![GitHub stars](https://img.shields.io/github/stars/ashlrai/phantom-secrets?style=for-the-badge&logo=github&color=blue&labelColor=0b0b14)](https://github.com/ashlrai/phantom-secrets)
 [![CI](https://img.shields.io/github/actions/workflow/status/ashlrai/phantom-secrets/ci.yml?style=for-the-badge&label=CI&logo=github&labelColor=0b0b14)](https://github.com/ashlrai/phantom-secrets/actions/workflows/ci.yml)
 <!-- fresh:begin readme-release-badges -->
-[![Verified GitHub release](https://img.shields.io/badge/verified_GitHub_release-v0.8.7-2f81f7?style=for-the-badge&labelColor=0b0b14)](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.8.7)
+[![Verified GitHub release](https://img.shields.io/badge/verified_GitHub_release-v0.8.11-2f81f7?style=for-the-badge&labelColor=0b0b14)](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.8.11)
 [![Source version](https://img.shields.io/badge/source_version-v0.8.11-f5a623?style=for-the-badge&labelColor=0b0b14)](CHANGELOG.md#0811---2026-11-16)
 <!-- fresh:end -->
 
-Source candidate `0.8.11` is not yet a qualified public release; the independently verified GitHub release remains `v0.8.7`.
+The independently verified GitHub release is `v0.8.11`, matching the current source version.
 
 [![Pinned toolchain: Rust 1.95](https://img.shields.io/badge/pinned_toolchain-Rust_1.95-CE412B?style=for-the-badge&logo=rust&labelColor=0b0b14)](rust-toolchain.toml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg?style=for-the-badge&labelColor=0b0b14)](LICENSE)
+[![Discord](https://img.shields.io/badge/Discord-join-5865F2?style=for-the-badge&logo=discord&logoColor=white&labelColor=0b0b14)](https://discord.gg/jBQrSU6XeD)
 [![npm downloads](https://img.shields.io/npm/dm/phantom-secrets?style=for-the-badge&labelColor=0b0b14&logo=npm&label=npm%20downloads)](https://www.npmjs.com/package/phantom-secrets)
 
 [**Quick start**](#quick-start) ·
@@ -37,7 +38,7 @@ Five steps. Phantom itself never prints a secret value in these steps; step 5 ru
 
 ### Get started
 
-1. **Install.** Download the archive for your OS from the [v0.8.7 release assets](#exact-v087-github-assets), check its `.sha256`, and put `phantom` and `phantom-mcp` on your `PATH`. Check it with `phantom --help`, which lists the commands. Homebrew still serves v0.7.9, which lacks `phantom agent doctor --json`. Other channels and their limits are in [distribution status](docs/distribution-status.md).
+1. **Install.** Download the archive for your OS from the [v0.8.11 release assets](#exact-v0811-github-assets), check its `.sha256`, and put `phantom` and `phantom-mcp` on your `PATH`. Check it with `phantom --help`, which lists the commands. As of 2026-11-24, the public Homebrew tap still serves v0.7.9, which lacks `phantom agent doctor --json`. Other channels and their limits are in [distribution status](docs/distribution-status.md).
 2. **Protect your `.env`.** In your project folder, run `phantom init`. You should see `Found N secret(s) to protect:` followed by one line per key name. Each value moves into the local vault, and `.env` keeps a `phm_` placeholder in its place. No `.env` yet? Run `phantom init --empty`.
 3. **Check the result.** Run `phantom list`, which prints secret names only. Then run `phantom agent doctor`, which rates the repo from `unsafe` to `compliance-ready`.
 4. **Connect your AI client.** Run `phantom setup --client claude`. Use `cursor`, `windsurf`, `codex`, or `gemini` for other clients. Restart the client, then ask it to call `phantom_status` and `phantom_list_secrets`. Do not ask it to reveal values.
@@ -60,7 +61,7 @@ phantom why OPENAI_API_KEY --json
 
 `phantom check --log` reads one agent transcript or log and reports the file, the line, and the credential shape. It does not print the secret. The same scan is the MCP tool `phantom_check` with `log_path`.
 
-`phantom status --json`, `phantom list --json`, and `phantom why OPENAI_API_KEY --json` are value-free. `phantom setup` writes that client's MCP config. Install both verified `v0.8.7` binaries first. The documented Homebrew formula is `v0.7.9`, which does not support `phantom agent doctor --json`. Version `0.8.7` has no network package-runner fallback and fails closed when neither local runtime is executable.
+`phantom status --json`, `phantom list --json`, and `phantom why OPENAI_API_KEY --json` are value-free. `phantom setup` writes that client's MCP config. Install both verified `v0.8.11` binaries first. As of 2026-11-24, the public Homebrew tap still serves `v0.7.9`, which does not support `phantom agent doctor --json`. Version `0.8.11` has no network package-runner fallback and fails closed when neither local runtime is executable.
 
 Machine-readable docs for agents:
 
@@ -144,7 +145,7 @@ No. `phantom init` works on this machine. Cloud backup is a separate hosted serv
 
 ### Where do Windows and Linux installs live?
 
-Use the matching [v0.8.7 archive](#exact-v087-github-assets), check its `.sha256` file, and put both `phantom` and `phantom-mcp` on `PATH`. Windows archives are not Authenticode-signed. The pre-commit hook is a `#!/bin/sh` script, so run commits from a terminal that has Git's `sh.exe`, or run `phantom check --staged`.
+Use the matching [v0.8.11 archive](#exact-v0811-github-assets), check its `.sha256` file, and put both `phantom` and `phantom-mcp` on `PATH`. Windows archives are not Authenticode-signed. The pre-commit hook is a `#!/bin/sh` script, so run commits from a terminal that has Git's `sh.exe`, or run `phantom check --staged`.
 
 ## Star Phantom
 
@@ -192,7 +193,7 @@ values.
 
 Use this read-only path before exploring the full tool catalog:
 
-1. Install both binaries from the reviewed [`v0.8.7` GitHub release](#installation).
+1. Install both binaries from the reviewed [`v0.8.11` GitHub release](#installation).
 2. From the project you want to inspect, run `phantom setup --client codex`,
    replacing `codex` with `claude`, `cursor`, `windsurf`, or `gemini` when
    appropriate.
@@ -267,7 +268,7 @@ phantom setup --client gemini     # ~/.gemini/settings.json (Gemini CLI)
 phantom setup --client claude --print   # snippet to stdout for any other client
 ```
 
-Install both `v0.8.7` release binaries before setup. Version `0.8.7` records the
+Install both `v0.8.11` release binaries before setup. Version `0.8.11` records the
 running `phantom` executable with `mcp serve` when it can resolve that executable,
 otherwise it looks for a local standalone `phantom-mcp`. Setup has no network
 package-runner fallback and fails closed when neither local runtime is
@@ -538,7 +539,7 @@ fails closed before vendor execution. No single-provider exception exists.
 
 ## Installation
 
-### Homebrew (macOS; formula at v0.7.9)
+### Homebrew (macOS)
 
 Homebrew 6 requires explicit formula trust for third-party taps:
 
@@ -548,28 +549,33 @@ $ brew trust --formula ashlrai/phantom/phantom
 $ brew install ashlrai/phantom/phantom
 ```
 
-This formula installs both `phantom` and `phantom-mcp` from the immutable
+As of 2026-11-24, the public
+[`ashlrai/homebrew-phantom`](https://github.com/ashlrai/homebrew-phantom) tap
+still installs both `phantom` and `phantom-mcp` from the immutable
 [`v0.7.9` GitHub release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.9).
 The tap was bumped from `v0.7.8` to `v0.7.9` in ashlrai/homebrew-phantom#7. A `v0.7.8` Homebrew install wrote
 Claude Code MCP registration to the legacy location; see the
-[Claude Code guide](docs/claude-code.md) for the manual `.mcp.json` step, or use
-the `v0.8.7` assets below.
+[Claude Code guide](docs/claude-code.md) for the manual `.mcp.json` step.
+This repository's formula mirror now points at the verified `v0.8.11` archives
+below, which you can also install directly.
 
-### Exact v0.8.7 GitHub assets
+<a id="exact-v087-github-assets"></a>
+<a id="exact-v0811-github-assets"></a>
+### Exact v0.8.11 GitHub assets
 
 Use the asset matching your OS and architecture. Download its adjacent
 `.sha256` file from the release, verify it before extraction, and place both
 `phantom` and `phantom-mcp` (`.exe` on Windows) on `PATH`.
 
 <!-- fresh:begin readme-release-asset-table -->
-| Platform | `v0.8.7` archive | Published checksum |
+| Platform | `v0.8.11` archive | Published checksum |
 |---|---|---|
-| macOS Apple Silicon | [`phantom-aarch64-apple-darwin.tar.gz`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.7/phantom-aarch64-apple-darwin.tar.gz) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.7/phantom-aarch64-apple-darwin.tar.gz.sha256) |
-| macOS Intel | [`phantom-x86_64-apple-darwin.tar.gz`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.7/phantom-x86_64-apple-darwin.tar.gz) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.7/phantom-x86_64-apple-darwin.tar.gz.sha256) |
-| Linux x86_64 | [`phantom-x86_64-unknown-linux-gnu.tar.gz`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.7/phantom-x86_64-unknown-linux-gnu.tar.gz) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.7/phantom-x86_64-unknown-linux-gnu.tar.gz.sha256) |
-| Linux ARM64 | [`phantom-aarch64-unknown-linux-gnu.tar.gz`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.7/phantom-aarch64-unknown-linux-gnu.tar.gz) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.7/phantom-aarch64-unknown-linux-gnu.tar.gz.sha256) |
-| Windows x64 | [`phantom-x86_64-pc-windows-msvc.zip`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.7/phantom-x86_64-pc-windows-msvc.zip) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.7/phantom-x86_64-pc-windows-msvc.zip.sha256) |
-| Windows ARM64 | [`phantom-aarch64-pc-windows-msvc.zip`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.7/phantom-aarch64-pc-windows-msvc.zip) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.7/phantom-aarch64-pc-windows-msvc.zip.sha256) |
+| macOS Apple Silicon | [`phantom-aarch64-apple-darwin.tar.gz`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.11/phantom-aarch64-apple-darwin.tar.gz) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.11/phantom-aarch64-apple-darwin.tar.gz.sha256) |
+| macOS Intel | [`phantom-x86_64-apple-darwin.tar.gz`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.11/phantom-x86_64-apple-darwin.tar.gz) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.11/phantom-x86_64-apple-darwin.tar.gz.sha256) |
+| Linux x86_64 | [`phantom-x86_64-unknown-linux-gnu.tar.gz`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.11/phantom-x86_64-unknown-linux-gnu.tar.gz) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.11/phantom-x86_64-unknown-linux-gnu.tar.gz.sha256) |
+| Linux ARM64 | [`phantom-aarch64-unknown-linux-gnu.tar.gz`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.11/phantom-aarch64-unknown-linux-gnu.tar.gz) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.11/phantom-aarch64-unknown-linux-gnu.tar.gz.sha256) |
+| Windows x64 | [`phantom-x86_64-pc-windows-msvc.zip`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.11/phantom-x86_64-pc-windows-msvc.zip) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.11/phantom-x86_64-pc-windows-msvc.zip.sha256) |
+| Windows ARM64 | [`phantom-aarch64-pc-windows-msvc.zip`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.11/phantom-aarch64-pc-windows-msvc.zip) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.11/phantom-aarch64-pc-windows-msvc.zip.sha256) |
 <!-- fresh:end -->
 
 On Linux, verify with `sha256sum -c <archive>.sha256`. On Windows, compare
@@ -579,7 +585,7 @@ Linux x86_64, as one shell script:
 
 ```bash
 archive=phantom-x86_64-unknown-linux-gnu.tar.gz
-base=https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.7
+base=https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.11
 curl -fsSL -o "$archive" "$base/$archive"
 curl -fsSL -o "$archive.sha256" "$base/$archive.sha256"
 sha256sum -c "$archive.sha256"
@@ -597,28 +603,28 @@ timed on a measurement VM are recorded in
 
 ### Build the exact release source
 
-The `v0.8.7` tag resolves to source commit
-`a6a0413991c0bd7f3d6601f467c0b5770d0dce0c`:
+The `v0.8.11` tag resolves to source commit
+`2c93e578d8d1a8097b32c1cd89292e339681b77c`:
 
 ```bash
 $ git clone https://github.com/ashlrai/phantom-secrets.git
 $ cd phantom-secrets
-$ git checkout a6a0413991c0bd7f3d6601f467c0b5770d0dce0c
+$ git checkout 2c93e578d8d1a8097b32c1cd89292e339681b77c
 $ cargo build --release --locked --bin phantom --bin phantom-mcp
 ```
 
-See [distribution status](docs/distribution-status.md) for dated npm, Homebrew, crates.io, and MCP Registry evidence. Prefer the checksum-verified `v0.8.7` GitHub assets for an exact install.
+See [distribution status](docs/distribution-status.md) for dated npm, Homebrew, crates.io, and MCP Registry evidence. Prefer the checksum-verified `v0.8.11` GitHub assets for an exact install.
 
 ### Release-state snapshot
 
 > [!IMPORTANT]
-> **Release-state snapshot (verified 2026-11-06):** the current release is the
-> immutable `v0.8.7` GitHub release at source commit
-> `a6a0413991c0bd7f3d6601f467c0b5770d0dce0c`. Its 19-asset release set,
+> **Release-state snapshot (verified 2026-11-16):** the current release is the
+> immutable `v0.8.11` GitHub release at source commit
+> `2c93e578d8d1a8097b32c1cd89292e339681b77c`. Its 19-asset release set,
 > checksums, archive-specific SPDX SBOMs, GitHub provenance and SBOM
 > attestations, and all six native release rows are bound to that immutable
 > release record by tag-bound workflow
-> [42262099223](https://github.com/ashlrai/phantom-secrets/actions/runs/42262099223).
+> [43947823026](https://github.com/ashlrai/phantom-secrets/actions/runs/43947823026).
 > See [distribution status](docs/distribution-status.md) for the separately dated
 > package-channel snapshot and its verification limits. The GitHub receipt alone
 > does not prove npm, Homebrew, crates.io, MCP Registry, or hosted-service
@@ -692,7 +698,7 @@ dependency, and the comparison is not a feature or platform-parity claim.
 
 **`apps/web`** contains the Next.js site and backend routes for cloud vault sync, GitHub device authentication, and Stripe billing. The repository source and local tests are separate evidence from the currently deployed state at [phm.dev](https://phm.dev).
 
-**Registry tracks**: See [distribution status](docs/distribution-status.md) for dated npm, Homebrew, crates.io, and MCP Registry evidence. Prefer the checksum-verified `v0.8.7` GitHub assets for an exact install.
+**Registry tracks**: See [distribution status](docs/distribution-status.md) for dated npm, Homebrew, crates.io, and MCP Registry evidence. Prefer the checksum-verified `v0.8.11` GitHub assets for an exact install.
 
 The daily full CI run on `main` builds and tests the locked workspace, all targets, on macOS, Linux, and Windows runner environments and checks the npm and installer platform mappings. Pull requests and the merge queue run only the fast checks (formatting, Clippy, dependency policy, secret scans, and, for code changes, the npm wrapper tests). Release builds and native end-to-end acceptance are separate evidence layers; see [Platform support](docs/platform-support.md).
 
@@ -771,7 +777,7 @@ AshlrAI is an engineering firm. We build tools like Phantom Secrets to make our 
 - **Start here:** read [CONTRIBUTING.md](CONTRIBUTING.md). Your coding agent can follow [AGENTS.md](AGENTS.md) and [llms.txt](llms.txt).
 - **Pick an issue:** [`good first issue`](https://github.com/ashlrai/phantom-secrets/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) or [`help wanted`](https://github.com/ashlrai/phantom-secrets/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22).
 - **See the whole lineup:** [ashlr.ai/open-source](https://ashlr.ai/open-source).
-<!-- TODO(discord): add the AshlrAI Discord invite here, and a Discord badge in the header, once the public invite link is confirmed. -->
+- **Talk with us:** join the [AshlrAI Discord](https://discord.gg/jBQrSU6XeD).
 
 ### Contributors
 

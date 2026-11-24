@@ -11,13 +11,9 @@ export const repositoryCopy = "scripts/install.sh";
 export const webCopy = "apps/web/public/install.sh";
 export const installerCopies = [repositoryCopy, webCopy];
 
-// The source installer targets the candidate while the public copy remains
-// bound to the independently verified release.
-export const approvedDifferences = [{
-  name: "candidate and verified public release tags",
-  minus: ['CANDIDATE_TAG="v0.8.11"'],
-  plus: ['CANDIDATE_TAG="v0.8.7"'],
-}];
+// The source installer and the public copy both pin the independently
+// verified GitHub release, which now matches the candidate version.
+export const approvedDifferences = [];
 // Latin-1 is a reversible byte mapping here, not a text encoding assumption:
 // decoding UTF-8 would collapse distinct invalid bytes into the same U+FFFD.
 export function normalizeInstallerCopy(source, side) {

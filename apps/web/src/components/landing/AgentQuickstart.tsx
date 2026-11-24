@@ -5,7 +5,7 @@ import { useState } from "react";
 // The Homebrew formula still serves v0.7.9, which rejects `agent doctor --json`
 // from COMMANDS below, so this panel installs the v0.8.7 release archive instead.
 const INSTALL = `archive=phantom-aarch64-apple-darwin.tar.gz
-base=https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.7
+base=https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.11
 curl -fsSL -o "$archive" "$base/$archive"
 curl -fsSL -o "$archive.sha256" "$base/$archive.sha256"
 shasum -a 256 -c "$archive.sha256"

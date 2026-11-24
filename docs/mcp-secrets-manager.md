@@ -14,8 +14,8 @@ This guide describes the reviewed public `v0.8.7` release. The runtime
 
 ## Install both reviewed binaries
 
-On macOS, Linux, or Windows, download the exact `v0.8.7` archive for your
-platform from [GitHub Releases](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.8.7).
+On macOS, Linux, or Windows, download the exact `v0.8.11` archive for your
+platform from [GitHub Releases](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.8.11).
 Verify the adjacent SHA-256 checksum and place both `phantom` and `phantom-mcp`
 on `PATH`. The [getting-started guide](./getting-started.md#exact-github-assets-macos-linux-and-windows)
 lists all six archives and the verification commands.
