@@ -6,11 +6,11 @@ Phantom replaces managed secrets in `.env` with `phm_` placeholders. A proxy on 
 
 ## 30-second start
 
-Install both binaries from the checksum-verified `v0.8.7` release archive. This is Linux x86_64; take the archive name for macOS, Linux ARM64, or Windows from the [README asset table](README.md#exact-v087-github-assets).
+Install both binaries from the checksum-verified `v0.8.11` release archive. This is Linux x86_64; take the archive name for macOS, Linux ARM64, or Windows from the [README asset table](README.md#exact-v0811-github-assets).
 
 ```bash
 archive=phantom-x86_64-unknown-linux-gnu.tar.gz
-base=https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.7
+base=https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.11
 curl -fsSL -o "$archive" "$base/$archive"
 curl -fsSL -o "$archive.sha256" "$base/$archive.sha256"
 sha256sum -c "$archive.sha256"

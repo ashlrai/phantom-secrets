@@ -23,7 +23,7 @@ both npm wrappers, and its npm package entry points at the matching
 `phantom-secrets-mcp` wrapper. `scripts/release/check-version-parity.mjs`
 enforces that match. The version is this tree's source candidate identity, not a
 publication claim. The newest qualified release is
-[`v0.8.7`](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.8.7),
+[`v0.8.11`](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.8.11),
 published on 2026-11-06: all six native archive targets passed acceptance, and
 both exact npm `0.8.7` packages had verified registry signatures and source
 provenance. This repository records no MCP Registry query after the snapshot
@@ -57,7 +57,7 @@ an unpinned npm or package-runner command to configure the current runtime.
 ## Verified local runtime
 
 Install both current binaries from the
-[`v0.8.7` GitHub release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.8.7).
+[`v0.8.11` GitHub release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.8.11).
 The macOS trusted formula is separately reviewed (observed at `v0.7.9` after the tap bump):
 
 ```bash
@@ -84,10 +84,10 @@ phantom setup --client codex
 phantom setup --client gemini
 ```
 
-Released `v0.8.7` records its bundled local `phantom mcp serve` command when it
+Released `v0.8.11` records its bundled local `phantom mcp serve` command when it
 can resolve that executable, otherwise it looks for local `phantom-mcp`. Setup
 has no network package-runner fallback and fails closed when no local MCP
-runtime is available. Install both verified `v0.8.7` GitHub release binaries and inspect the
+runtime is available. Install both verified `v0.8.11` GitHub release binaries and inspect the
 generated command.
 
 Manual stdio configuration can call the reviewed local executable:

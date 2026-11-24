@@ -288,7 +288,7 @@ support requires an explicit reviewed trust design and is not supported in this 
 
 ### An older registry-based install command fails
 
-See [distribution status](distribution-status.md) for dated npm, Homebrew, crates.io, and MCP Registry evidence. Prefer the checksum-verified `v0.8.7` GitHub assets for an exact install.
+See [distribution status](distribution-status.md) for dated npm, Homebrew, crates.io, and MCP Registry evidence. Prefer the checksum-verified `v0.8.11` GitHub assets for an exact install.
 
 1. Select the matching asset in [getting started](./getting-started.md#install).
 2. Verify its adjacent `.sha256` checksum before executing either binary.

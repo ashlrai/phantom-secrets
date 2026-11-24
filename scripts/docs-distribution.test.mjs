@@ -90,7 +90,7 @@ test('agent quickstart copies must match the site console', () => {
 
 test('agent quickstart install matches its JSON doctor command', () => {
   const guide = readFileSync(new URL('../docs/agent-quickstart.md', import.meta.url), 'utf8');
-  assert.match(guide, /v0\.8\.7.*archive/);
+  assert.match(guide, /v0\.8\.11.*archive/);
   assert.match(guide, /v0\.7\.9.*does not accept `--json`/);
   assert.doesNotMatch(guide, /brew install/);
 });

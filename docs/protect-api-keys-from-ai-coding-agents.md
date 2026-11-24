@@ -17,7 +17,7 @@ that release; verify the release-state notice before choosing an install path.
 
 On macOS, Linux, or Windows, download the matching `v0.8.7` archive and
 adjacent checksum from the
-[`v0.8.7` release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.8.7),
+[`v0.8.11` release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.8.11),
 verify it, and put both `phantom` and `phantom-mcp` on `PATH`. The
 [getting-started guide](./getting-started.md#exact-github-assets-macos-linux-and-windows)
 lists all six native targets and verification commands. The Homebrew formula

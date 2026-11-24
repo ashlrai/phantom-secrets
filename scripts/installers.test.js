@@ -219,9 +219,9 @@ test('web installer mirrors remain bound to the evidenced public release', () =>
   // must not advance until public-release.ts has immutable release evidence.
   const publicShell = readFileSync(join(repo, 'apps/web/public/install.sh'), 'utf8');
   const publicPowerShell = readFileSync(join(repo, 'apps/web/public/install.ps1'), 'utf8');
-  // v0.8.7 has its immutable tag-bound release receipt (workflow 42262099223).
-  assert.match(publicShell, /CANDIDATE_TAG="v0\.8\.7"/);
-  assert.match(publicPowerShell, /\$CandidateTag = 'v0\.8\.7'/);
+  // v0.8.11 has its immutable tag-bound release receipt (workflow 43947823026).
+  assert.match(publicShell, /CANDIDATE_TAG="v0\.8\.11"/);
+  assert.match(publicPowerShell, /\$CandidateTag = 'v0\.8\.11'/);
   assert.doesNotMatch(publicShell, /v0\.7\.8/);
   assert.doesNotMatch(publicPowerShell, /v0\.7\.8/);
 });

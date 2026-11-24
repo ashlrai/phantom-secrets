@@ -148,6 +148,7 @@ hosted entitlement, certification, or customer acceptance.
 ## Before you start
 
 - Search [existing issues](https://github.com/ashlrai/phantom-secrets/issues) and [discussions](https://github.com/ashlrai/phantom-secrets/discussions).
+- Join the [AshlrAI Discord](https://discord.gg/jBQrSU6XeD) for community discussion.
 - Open an issue or discussion before a large architectural change, new network/provider integration, new secret-reveal path, compatibility break, or change to the authority model.
 - Keep pull requests reviewable. Separate mechanical refactors from behavioral or security changes.
 - Never use production credentials in development, tests, fixtures, screenshots, logs, or issue reports. Use obviously fake values and throwaway accounts.

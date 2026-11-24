@@ -22,13 +22,13 @@ phantom why OPENAI_API_KEY --json
 
 ## Install
 
-Release evidence verified on 2026-11-06. The immutable GitHub `v0.8.7` release at
-https://github.com/ashlrai/phantom-secrets/releases/tag/v0.8.7 resolves to
-`a6a0413991c0bd7f3d6601f467c0b5770d0dce0c`. Its 19 assets were published
+Release evidence verified on 2026-11-16. The immutable GitHub `v0.8.11` release at
+https://github.com/ashlrai/phantom-secrets/releases/tag/v0.8.11 resolves to
+`2c93e578d8d1a8097b32c1cd89292e339681b77c`. Its 19 assets were published
 after all six native acceptance rows and release attestations passed in
-https://github.com/ashlrai/phantom-secrets/actions/runs/42262099223.
+https://github.com/ashlrai/phantom-secrets/actions/runs/43947823026.
 
-For macOS, Linux, or Windows, select the exact `v0.8.7` archive for your
+For macOS, Linux, or Windows, select the exact `v0.8.11` archive for your
 architecture from the release, download its adjacent `.sha256` sidecar, verify
 it, and put both release executables (`phantom` and `phantom-mcp`) on PATH. The
 root [llms.txt](../llms.txt) has a copy-paste Linux x86_64 version of these
@@ -56,7 +56,7 @@ Setup (recommended, one command per AI client):
 - Gemini CLI: `phantom setup --client gemini` (merges `mcpServers` into ~/.gemini/settings.json)
 - Generic: `phantom setup --client claude --print` (snippet to stdout)
 
-Install both `v0.8.7` GitHub release binaries first. Version `0.8.7` records the running
+Install both `v0.8.11` GitHub release binaries first. Version `0.8.11` records the running
 `phantom` executable with `mcp serve` when it can resolve that runtime, otherwise
 it looks for a local `phantom-mcp`. Setup has no network package-runner fallback
 and fails closed when neither local runtime is executable. Keep both verified
@@ -175,12 +175,12 @@ does not start checkout or collect payment.
   Windows CI acceptance. The release receipt proves exact-archive execution
   and MCP schema initialization, not native keychain, ACL, shell, or editor
   acceptance.
-- Immutable `v0.8.7` release identity:
-  `a6a0413991c0bd7f3d6601f467c0b5770d0dce0c`. Live GitHub governance observed
+- Immutable `v0.8.11` release identity:
+  `2c93e578d8d1a8097b32c1cd89292e339681b77c`. Live GitHub governance observed
   2026-09-01: the `release` environment required review and accepted only `v*`
   tags; no-bypass immutability ruleset `21903888` was separate from creation
   ruleset `21997435` with Mason-only bypass. The immutable release record is
-  https://github.com/ashlrai/phantom-secrets/releases/tag/v0.8.7.
+  https://github.com/ashlrai/phantom-secrets/releases/tag/v0.8.11.
 - Locus, broker, runtime, session, and externally trusted evidence remain
   inactive and fail closed. Enterprise packaging is planned/commissioned only
   through separate written and acceptance evidence.

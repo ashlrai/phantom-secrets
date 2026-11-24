@@ -8,14 +8,14 @@ Phantom is still pre-1.0, so security support is focused on the reviewed public
 release and active development branch. Repository version metadata can move
 ahead of published artifacts.
 
-The table below is a release-state snapshot verified on 2026-11-06. The
-immutable `v0.8.7` GitHub release binds its 19 assets to source commit
-`a6a0413991c0bd7f3d6601f467c0b5770d0dce0c`; all six native rows and the
+The table below is a release-state snapshot verified on 2026-11-16. The
+immutable `v0.8.11` GitHub release binds its 19 assets to source commit
+`2c93e578d8d1a8097b32c1cd89292e339681b77c`; all six native rows and the
 GitHub provenance and SPDX attestations are bound to that immutable release.
 
 | Version or surface | Security support | Notes |
 |--------------------|------------------|-------|
-| Reviewed GitHub release, `v0.8.7` | Supported | Security fixes are prioritized for the immutable GitHub release and active development. Its native artifacts passed the tag-bound six-row release workflow; this is not a signing, notarization, certification, hosted-service, or customer-acceptance claim. |
+| Reviewed GitHub release, `v0.8.11` | Supported | Security fixes are prioritized for the immutable GitHub release and active development. Its native artifacts passed the tag-bound six-row release workflow; this is not a signing, notarization, certification, hosted-service, or customer-acceptance claim. |
 | Registry distributions | Mixed | The exact 2026-09-29 snapshot has Homebrew still at the previous `v0.7.8` (bump to `v0.7.9` pending), supported after native macOS/Linux checks, while npm `latest` remains `0.6.0` and its `0.7.4` wrappers remain failed release candidates rather than the default install path. crates.io and MCP Registry do not yet publish `0.7.9`. |
 | Releases before `v0.7.4` | Best effort only | Please upgrade first when possible. Backports are not guaranteed. |
 | Forks, unofficial builds, or modified binaries | Not supported | Maintainers cannot verify the provenance or behavior of modified distributions. |

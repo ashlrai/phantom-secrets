@@ -15,11 +15,11 @@ For the Unix installer's exact `uname` mappings and rejection behavior, see
 | Native acceptance | The exact identified archive passed the named checks on the matching OS and architecture, with a retained receipt. |
 
 The filesystem hardening described below is source-contract evidence in this
-documentation tranche. The immutable `v0.8.7` GitHub release, reviewed on
-2026-11-06, resolves to
-`a6a0413991c0bd7f3d6601f467c0b5770d0dce0c`; its 19 assets were verified after all six
+documentation tranche. The immutable `v0.8.11` GitHub release, reviewed on
+2026-11-16, resolves to
+`2c93e578d8d1a8097b32c1cd89292e339681b77c`; its 19 assets were verified after all six
 native-release rows and release attestations passed in
-[workflow 42262099223](https://github.com/ashlrai/phantom-secrets/actions/runs/42262099223). That
+[workflow 43947823026](https://github.com/ashlrai/phantom-secrets/actions/runs/43947823026). That
 does not validate the npm wrapper installation path. In the exact 2026-09-29
 registry snapshot, the `0.7.4` candidate failed on all six targets, npm `latest` was `0.6.0`,
 and no exact npm `0.7.9` acceptance receipt is claimed. See [distribution status](distribution-status.md) for the later package-channel snapshot.
@@ -63,8 +63,8 @@ Windows acceptance suppresses persistent user-PATH mutation on the CI
 account; it does not claim shell-profile acceptance. Attestation cannot begin
 until all six jobs succeed. The exact `v0.8.7` tag workflow passed this release
 native matrix, completed release attestations, and created the immutable
-[19-asset GitHub release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.8.7);
-retain [workflow 42262099223](https://github.com/ashlrai/phantom-secrets/actions/runs/42262099223)
+[19-asset GitHub release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.8.11);
+retain [workflow 43947823026](https://github.com/ashlrai/phantom-secrets/actions/runs/43947823026)
 as the exact execution receipt.
 That receipt does not prove npm-wrapper installation: exact npm `0.7.4`
 acceptance failed independently and no exact npm `0.7.9` receipt is claimed.
@@ -160,13 +160,13 @@ acceptance and never place provider client secrets on the command line.
 ## Install methods
 
 - The reviewed `v0.8.7` source build checks out
-  `a6a0413991c0bd7f3d6601f467c0b5770d0dce0c` and runs
+  `2c93e578d8d1a8097b32c1cd89292e339681b77c` and runs
   `cargo build --release --locked --bin phantom --bin phantom-mcp`. See [distribution status](distribution-status.md) for the dated crates.io snapshot.
-- See [distribution status](distribution-status.md) for dated npm, Homebrew, crates.io, and MCP Registry evidence. Prefer the checksum-verified `v0.8.7` GitHub assets for an exact install.
+- See [distribution status](distribution-status.md) for dated npm, Homebrew, crates.io, and MCP Registry evidence. Prefer the checksum-verified `v0.8.11` GitHub assets for an exact install.
 - `scripts/install.sh` supports macOS and GNU Linux targets. Native Windows uses
   `scripts/install.ps1`; both scripts verify bounded HTTPS downloads, strict
   sidecar checksums, archive shape, and binary identity before promotion.
-- Homebrew is independently published; the repository release workflow does not automatically update a tap. See [distribution status](distribution-status.md) for dated npm, Homebrew, crates.io, and MCP Registry evidence. Prefer the checksum-verified `v0.8.7` GitHub assets for an exact install.
+- Homebrew is independently published; the repository release workflow does not automatically update a tap. See [distribution status](distribution-status.md) for dated npm, Homebrew, crates.io, and MCP Registry evidence. Prefer the checksum-verified `v0.8.11` GitHub assets for an exact install.
 
 ## Configured and additional native acceptance
 
