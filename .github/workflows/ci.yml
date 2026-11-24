@@ -502,6 +502,7 @@ jobs:
         with:
           tool: cargo-nextest
       - name: Affected tests, first failure only
+        shell: bash
         env:
           BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
           HEAD: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
@@ -519,7 +520,7 @@ jobs:
             exit 1
           fi
           set +e
-          "$HOME/.cargo/bin/cargo" nextest run --workspace --all-targets --locked --max-fail 1 -E "$fs" > "$RUNNER_TEMP/nextest.txt" 2>&1
+          cargo nextest run --workspace --all-targets --locked --max-fail 1 -E "$fs" > "$RUNNER_TEMP/nextest.txt" 2>&1
           status=$?
           set -e
           node scripts/ci/nextest-summary.mjs --status "$status" --log "$RUNNER_TEMP/nextest.txt"

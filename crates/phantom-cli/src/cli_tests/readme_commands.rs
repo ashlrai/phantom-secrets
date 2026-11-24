@@ -40,6 +40,39 @@ fn check_example(root: &Command, example: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// A flag in a table description belongs to the row, not only the first command.
+/// `phantom team create` and `phantom expiry set` share rows with the command
+/// that actually accepts `--role` or `--fail-closed`.
+fn flag_accepted_on_row(root: &Command, markdown: &str, example: &str) -> bool {
+    let Some((_, flag)) = example.rsplit_once(' ') else {
+        return false;
+    };
+    if !flag.starts_with('-') {
+        return false;
+    }
+    markdown.lines().any(|line| {
+        if !line.starts_with("| `phantom ") {
+            return false;
+        }
+        let Some((cell, description)) = line[1..].split_once('|') else {
+            return false;
+        };
+        let Some(first) = cell.split('`').nth(1) else {
+            return false;
+        };
+        if format!("{first} {flag}") != example {
+            return false;
+        }
+        spans(cell).chain(spans(description)).any(|owner| {
+            owner.starts_with("phantom ") && check_example(root, &format!("{owner} {flag}")).is_ok()
+        })
+    })
+}
+
+fn spans(text: &str) -> impl Iterator<Item = &str> {
+    text.split('`').skip(1).step_by(2)
+}
+
 fn examples(markdown: &str) -> Vec<String> {
     let mut result = Vec::new();
     let mut fenced = false;
@@ -84,14 +117,17 @@ fn examples(markdown: &str) -> Vec<String> {
 fn readme_commands_and_flags_exist() {
     let mut root = Cli::command();
     root.build(); // Include inherited global flags and generated help/version flags.
-    let examples = examples(include_str!("../../../../README.md"));
+    let readme = include_str!("../../../../README.md");
+    let examples = examples(readme);
     assert!(
         examples.len() > 100,
         "README extraction unexpectedly lost coverage"
     );
     let errors: Vec<_> = examples
         .iter()
-        .filter_map(|example| check_example(&root, example).err())
+        .filter(|example| check_example(&root, example).is_err())
+        .filter(|example| !flag_accepted_on_row(&root, readme, example))
+        .cloned()
         .collect();
     assert!(errors.is_empty(), "{}", errors.join("\n"));
 }
@@ -124,6 +160,29 @@ fn readme_checker_rejects_unknown_commands_and_flags() {
         examples("`phantom typo`\n```sh\n$ phantom team typo # comment\n```"),
         ["phantom typo", "phantom team typo"]
     );
+}
+
+#[test]
+fn table_flag_can_belong_to_any_command_on_the_row() {
+    let mut root = Cli::command();
+    root.build();
+    let row = "| `phantom team create`, `phantom team invite` | Invites use `--role`. |\n";
+    assert!(flag_accepted_on_row(
+        &root,
+        row,
+        "phantom team create --role"
+    ));
+    assert!(!flag_accepted_on_row(
+        &root,
+        row,
+        "phantom team create --nonexistent"
+    ));
+    let expiry = "| `phantom expiry set` | `phantom expiry enforce` takes `--fail-closed`. |\n";
+    assert!(flag_accepted_on_row(
+        &root,
+        expiry,
+        "phantom expiry set --fail-closed"
+    ));
 }
 
 #[test]

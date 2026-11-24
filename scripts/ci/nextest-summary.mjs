@@ -8,10 +8,15 @@ export function firstFailure(text) {
     const rustc = text.match(/--> ([^\s:]+):(\d+):\d+/);
     const named = text.match(/test (\S+) \.\.\. FAILED/) || text.match(/FAIL \[.*?\] \S+ (\S+)/);
     const loc = panic || rustc;
+    const lead = text
+        .split("\n")
+        .map((line) => line.trim())
+        .find((line) => line.length > 0) || "";
     return {
         file: loc ? loc[1].replace(/\\/g, "/") : "",
         line: loc ? loc[2] : "",
         name: named ? named[1] : "affected test failed",
+        lead: lead.slice(0, 180),
     };
 }
 
@@ -19,13 +24,21 @@ export function summarize(text, status) {
     if (status === 0) return { ok: true, markdown: "Affected tests passed.\n" };
     const hit = firstFailure(text);
     const where = hit.file ? `${hit.file}:${hit.line || "1"}` : "unknown location";
+    const hint = !hit.file && hit.lead ? `\n\`${hit.lead}\`\n` : "";
     return {
         ok: false,
         file: hit.file,
-        line: hit.line || "1",
+        line: hit.file ? (hit.line || "1") : "",
         name: hit.name,
-        markdown: `Affected tests failed.\n\nFirst failure: \`${hit.name}\` at \`${where}\`.\n`,
+        markdown: `Affected tests failed.\n\nFirst failure: \`${hit.name}\` at \`${where}\`.\n${hint}`,
     };
+}
+
+export function annotation(summary) {
+    if (summary.ok) return "";
+    const file = summary.file ? ` file=${summary.file}` : "";
+    const line = summary.file && summary.line ? `,line=${summary.line}` : "";
+    return `::error${file}${line}::${summary.name}`;
 }
 
 function publish(summary) {
@@ -35,9 +48,7 @@ function publish(summary) {
         process.stdout.write(summary.markdown);
     }
     if (!summary.ok) {
-        const file = summary.file ? ` file=${summary.file}` : "";
-        const line = summary.line ? `,line=${summary.line}` : "";
-        process.stdout.write(`::error${file}${line}::${summary.name}\n`);
+        process.stdout.write(`${annotation(summary)}\n`);
         process.exit(1);
     }
 }
