@@ -74,7 +74,10 @@ fn run_in(
         if json {
             println!(
                 "{}",
-                with_schema_pretty(to_string_pretty(&json!({ "written": false }))?, "env.v1")?
+                with_schema_pretty(
+                    to_string_pretty(&env_json_body(false, None, 0, 0, true, &[]))?,
+                    "env.v1",
+                )?
             );
         } else {
             println!("{} .env is empty.", "!".yellow().bold());
@@ -87,21 +90,23 @@ fn run_in(
     let content = dotenv
         .generate_example_content(config.as_ref())
         .context("Managed dotenv is malformed; no example was written")?;
-    match output_target.replace_if_exact(None, content.as_bytes())? {
-        phantom_core::fs::AnchoredEffect::Durable(_) => {}
+    let durability_warning = example_durability_warning(&output_path);
+    let (durability_verified, warnings) = match output_target
+        .replace_if_exact(None, content.as_bytes())?
+    {
+        phantom_core::fs::AnchoredEffect::Durable(_) => durability_signal(false, String::new()),
         phantom_core::fs::AnchoredEffect::CommittedVerifiedButDurabilityUncertain { .. } => {
+            // JSON carries the warning. Human output still prints it.
             if !json {
-                phantom_core::interactive_warn::emit(&format!(
-                    "warning: {} was created and verified, but directory crash durability is not provable on this platform",
-                    output_path.display()
-                ));
+                phantom_core::interactive_warn::emit(&durability_warning);
             }
+            durability_signal(true, durability_warning)
         }
         phantom_core::fs::AnchoredEffect::CommittedButUncertain { error, .. } => anyhow::bail!(
             "{} was created, but durability could not be verified: {error}",
             output_path.display()
         ),
-    }
+    };
 
     let secret_count =
         dotenv.real_secret_entries().len() + entries.iter().filter(|e| e.is_phantom).count();
@@ -111,11 +116,15 @@ fn run_in(
         println!(
             "{}",
             with_schema_pretty(
-                to_string_pretty(&json!({
-                    "written": true, "output": output,
-                    "secrets_masked": secret_count, "config_preserved": config_count,
-                }))?,
-                "env.v1"
+                to_string_pretty(&env_json_body(
+                    true,
+                    Some(output),
+                    secret_count,
+                    config_count,
+                    durability_verified,
+                    &warnings,
+                ))?,
+                "env.v1",
             )?
         );
         return Ok(());
@@ -134,6 +143,45 @@ fn run_in(
     );
 
     Ok(())
+}
+
+fn example_durability_warning(path: &std::path::Path) -> String {
+    format!(
+        "warning: {} was created and verified, but directory crash durability is not provable on this platform",
+        path.display()
+    )
+}
+
+/// `uncertain` is the `CommittedVerifiedButDurabilityUncertain` effect.
+/// The warning string is kept for the JSON `warnings` array and is empty
+/// when durability was verified.
+pub(crate) fn durability_signal(uncertain: bool, warning: String) -> (bool, Vec<String>) {
+    if uncertain {
+        (false, vec![warning])
+    } else {
+        (true, Vec::new())
+    }
+}
+
+pub(crate) fn env_json_body(
+    written: bool,
+    output: Option<&str>,
+    secrets_masked: usize,
+    config_preserved: usize,
+    durability_verified: bool,
+    warnings: &[String],
+) -> serde_json::Value {
+    let mut body = json!({
+        "written": written,
+        "durability_verified": durability_verified,
+        "warnings": warnings,
+    });
+    if written {
+        body["output"] = json!(output.unwrap_or_default());
+        body["secrets_masked"] = json!(secrets_masked);
+        body["config_preserved"] = json!(config_preserved);
+    }
+    body
 }
 
 pub(super) fn resolve_dotenv_anchored(
@@ -365,5 +413,25 @@ mod tests {
             std::fs::read_to_string(project.join(".env")).unwrap(),
             "API_KEY=decoy\n"
         );
+    }
+
+    #[test]
+    fn json_env_reports_uncertain_and_verified_durability() {
+        let warning = super::example_durability_warning(std::path::Path::new(".env.example"));
+        let (verified, warnings) = super::durability_signal(true, warning.clone());
+        assert!(!verified);
+        assert_eq!(warnings, vec![warning.clone()]);
+        let body = super::env_json_body(true, Some(".env.example"), 1, 1, verified, &warnings);
+        assert_eq!(body["durability_verified"], false);
+        assert_eq!(body["warnings"].as_array().unwrap().len(), 1);
+        assert!(body["warnings"][0].as_str().unwrap().contains("durability"));
+        assert!(!body["warnings"][0].as_str().unwrap().contains("sk-"));
+
+        let (verified, warnings) = super::durability_signal(false, warning);
+        assert!(verified);
+        assert!(warnings.is_empty());
+        let body = super::env_json_body(true, Some(".env.example"), 1, 1, verified, &warnings);
+        assert_eq!(body["durability_verified"], true);
+        assert!(body["warnings"].as_array().unwrap().is_empty());
     }
 }

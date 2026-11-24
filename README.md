@@ -464,6 +464,12 @@ Use `--json` for scripts: `phantom env --json`, `phantom audit path --json`,
 and `phantom add NAME --generate --json` print one JSON object on stdout.
 Their `schema` fields are `env.v1`, `audit.path.v1`, and `add.v1`.
 They report names and metadata, never secret values or persistent mappings.
+`env.v1` and `add.v1` also include `durability_verified` (bool) and `warnings`
+(array of strings). When a verified write cannot prove directory crash
+durability, `durability_verified` is false and `warnings` holds that warning.
+Those two JSON commands then leave stderr empty, because the receipt carries
+the signal. `audit.path.v1` has no durability field, so its stderr warning
+stays.
 Command failures print `{"schema":"error.v1","code":"command_failed","message":"..."}`
 on stderr and exit nonzero. Without `--json`, output stays the same.
 Other commands keep their existing JSON support and formats.

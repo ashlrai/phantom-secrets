@@ -51,12 +51,9 @@ pub(crate) fn run() -> anyhow::Result<()> {
                 }
                 | Commands::Add { generate: true, .. }
         );
-    // Windows reports a verified write as durability-uncertain and the vault
-    // warns on stderr. These receipts are the JSON contract: success stays
-    // on stdout and stderr stays empty.
-    if versioned_json {
-        phantom_core::interactive_warn::suppress_for_process();
-    }
+    // Durability stderr is suppressed only inside `env` and `add --generate`,
+    // whose JSON receipts carry the warning. `audit path` has no durability
+    // field, so this dispatch does not arm a suppress guard.
     let result = match cli.command {
         Commands::GitCredential { operation, secret } => {
             commands::git_credential::run(operation, &secret)
