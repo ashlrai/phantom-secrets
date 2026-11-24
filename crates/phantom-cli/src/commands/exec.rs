@@ -44,6 +44,7 @@ pub fn run(
     bind_source: Option<&std::path::Path>,
     quiet: bool,
     scrub_output: bool,
+    refs_only: bool,
 ) -> Result<()> {
     if cmd.is_empty() {
         anyhow::bail!("No command specified. Usage: phantom exec -- <command>");
@@ -56,6 +57,7 @@ pub fn run(
         bind_source,
         quiet,
         scrub_output,
+        refs_only,
         |config| ServiceRegistry::from_config(&config.services),
     ))
 }
@@ -89,6 +91,7 @@ async fn run_async(
     bind_source: Option<&std::path::Path>,
     quiet: bool,
     scrub_output: bool,
+    refs_only: bool,
     registry_from_config: impl FnOnce(&PhantomConfig) -> ServiceRegistry,
 ) -> Result<()> {
     let working_dir = std::env::current_dir()?;
@@ -124,6 +127,14 @@ async fn run_async(
     // (docs/design/builtin-vault.md). Parsed from names only, before any
     // vault access, so a malformed reference stops the launch fail-closed.
     let launcher_refs = launcher_secret_refs(std::env::vars_os())?;
+    // --refs-only: the session serves exactly the referenced names. Dotenv
+    // tokens are still withheld from the child, but their values are never
+    // loaded and their routes are not served.
+    if refs_only && launcher_refs.is_empty() {
+        anyhow::bail!(
+            "--refs-only needs at least one NAME=secret://NAME reference in the environment; nothing was launched"
+        );
+    }
 
     let preflight = phantom_core::managed_dotenv::resolve_dotenv(&project_dir, &config, &[])?;
     if let Some(dotenv) = preflight.file.as_ref() {
@@ -203,7 +214,10 @@ async fn run_async(
         vault.as_ref(),
         &vault_names,
         &active_env,
-        protected_env_keys.iter().map(String::as_str),
+        protected_env_keys
+            .iter()
+            .map(String::as_str)
+            .filter(|key| !refs_only || launcher_refs.contains(*key)),
         crate::commands::rotation_gate::now_secs(),
     )?;
 
@@ -226,6 +240,7 @@ async fn run_async(
     let mut session_keys: Vec<&str> = dotenv
         .iter()
         .flat_map(DotenvFile::entries)
+        .filter(|_| !refs_only)
         .filter(|entry| PhantomToken::is_phantom_token(&entry.value))
         .map(|entry| entry.key.as_str())
         .collect();
@@ -277,7 +292,12 @@ async fn run_async(
     // Keep destination construction private and after route validation. Tests
     // can supply a loopback registry without adding a runtime override that
     // could redirect credential-bearing requests in the shipped CLI.
-    let registry = registry_from_config(&config);
+    let mut registry = registry_from_config(&config);
+    if refs_only {
+        // Only routes whose credential this session loaded exist on the
+        // proxy; a request to any other route is refused with no injection.
+        registry.retain_routes(|route| secret_name_to_value.contains_key(&route.secret_key));
+    }
     // Export base-URL overrides only for routes this session can serve. An
     // SDK pointed at a route without a loaded credential would receive a
     // proxy 503 for every call instead of reaching its provider.
@@ -1038,6 +1058,9 @@ impl SignalForwarder {
 #[cfg(all(test, unix))]
 #[path = "exec_github_tests.rs"]
 mod github_tests;
+#[cfg(all(test, unix))]
+#[path = "exec_refs_only_tests.rs"]
+mod refs_only_tests;
 
 #[cfg(test)]
 #[path = "exec_perf.rs"]

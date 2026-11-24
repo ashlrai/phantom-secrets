@@ -218,7 +218,15 @@ pub(crate) fn run() -> anyhow::Result<()> {
             cmd,
             bind_source,
             scrub_output,
-        } => commands::exec::run(&cmd, None, bind_source.as_deref(), cli.quiet, scrub_output),
+            refs_only,
+        } => commands::exec::run(
+            &cmd,
+            None,
+            bind_source.as_deref(),
+            cli.quiet,
+            scrub_output,
+            refs_only,
+        ),
         Commands::Start { daemon } => commands::start::run(daemon),
         Commands::Stop => commands::stop::run(),
         Commands::Check {
