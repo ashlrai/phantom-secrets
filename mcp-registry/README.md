@@ -16,7 +16,21 @@ unchanged credential. Team invites accept only the hosted API's `member` and
 ## Publication status
 
 This directory is MCP Registry publication source, not an MCP Registry
-publication receipt. The exact 2026-09-29 registry snapshot is:
+publication receipt.
+
+Today, `server.json` names the same version as the workspace `Cargo.toml` and
+both npm wrappers, and its npm package entry points at the matching
+`phantom-secrets-mcp` wrapper. `scripts/release/check-version-parity.mjs`
+enforces that match. The version is this tree's source candidate identity, not a
+publication claim. The newest qualified release is
+[`v0.8.7`](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.8.7),
+published on 2026-11-06: all six native archive targets passed acceptance, and
+both exact npm `0.8.7` packages had verified registry signatures and source
+provenance. This repository records no MCP Registry query after the snapshot
+below. [Distribution status](../docs/distribution-status.md) holds the dated
+evidence for every channel.
+
+The exact 2026-09-29 registry snapshot, kept as history, is:
 
 - the immutable GitHub `v0.7.9` release provides verified CLI and MCP binaries
   for six native targets from exact source

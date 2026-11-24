@@ -90,9 +90,23 @@ Repository instructions can live in `.github/copilot-instructions.md`; MCP is
 configured through the supported VS Code surface. Keep build or test processes
 that need local credentials inside a `phantom exec -- <command>` session.
 
-The setup writers change client configuration. Review the preview first and
-retain the previous client file if your organization requires rollback. Phantom
-merges its MCP entry, but it is not a general client-configuration manager.
+The setup writers change client configuration, so review a preview first. For
+Codex, Cursor, Windsurf, and Gemini CLI:
+
+- `phantom setup --client <client> --dry-run` shows the change as a diff
+  without writing anything;
+- setup refuses to overwrite a differing `phantom` entry and names it, and
+  `--replace` overwrites it;
+- before changing an existing config file, setup copies it to a
+  `.phantom-bak-<ms>` file beside it and records the change, without values,
+  in `~/.phantom/setup-manifest.json`; and
+- `phantom setup --undo` shows what that record would restore or remove, and
+  `phantom setup --undo --apply` does it.
+
+The Claude Code writer merges into `.mcp.json` and project-local settings and
+does not take `--dry-run` or `--replace`; preview it with `--print`.
+`phantom setup --status` lists which clients have Phantom wired. Phantom merges
+only its own MCP entry; it is not a general client-configuration manager.
 
 ## 4. Verify the boundary before delegating
 
@@ -195,9 +209,11 @@ plan.
   critical finding before retrying.
 - **The proxy is unavailable:** stop network-dependent tests; do not bypass it
   by exposing a real credential to the agent.
-- **Client configuration is wrong:** restore the reviewed prior client config,
-  use `phantom setup --client <client> --print`, and reconcile the exact MCP
-  entry before restarting.
+- **Client configuration is wrong:** for Codex, Cursor, Windsurf, or Gemini
+  CLI, run `phantom setup --undo` to see what setup's record would restore,
+  then `phantom setup --undo --apply`. Otherwise restore the reviewed prior
+  client config. Use `phantom setup --client <client> --print` to reconcile
+  the exact MCP entry before restarting.
 - **A live mutation was not authorized:** stop, preserve logs without secret
   values, reconcile the affected provider or platform, and use its approved
   rollback path.
