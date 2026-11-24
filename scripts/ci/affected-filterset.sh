@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# Print a cargo-nextest filterset covering only the workspace crates affected by
-# the diff BASE...HEAD (each changed crate plus every crate that depends on it).
-# Prints "all()" when anything workspace-wide changed (manifests, lockfile,
-# toolchain, CI config, build scripts outside a crate) so nothing is missed.
-# Prints "none()" when no Rust-relevant file changed.
+# Local helper: print a cargo-nextest filterset covering only the workspace
+# crates affected by the diff BASE...HEAD (each changed crate plus every crate
+# that depends on it). Prints "all()" when anything workspace-wide changed
+# (manifests, lockfile, toolchain, CI config, build scripts outside a crate)
+# so nothing is missed. Prints "none()" when no Rust-relevant file changed.
+# CI Gate does not call this. The Test job does not run on pull_request or
+# merge_group, and the nightly run executes the full suite.
 set -euo pipefail
 base="${1:?base sha}"; head="${2:?head sha}"
 files="$(git diff --name-only "$base...$head")"
