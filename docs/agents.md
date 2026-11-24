@@ -185,7 +185,7 @@ controls.
 `phantom exec` launches an agent, and anything in the repository —
 `.phantom.toml` included — may have been written by that agent or an
 untrusted change. A custom route in repo config would be a self-issued
-exfiltration channel, so exec serves only Phantom's exact built-in routes:
+exfiltration channel, so exec runs only Phantom's exact built-in routes:
 
 ```sh
 cp .phantom.toml .phantom.toml.bak
@@ -207,10 +207,11 @@ mv .phantom.toml.bak .phantom.toml
 Error: Refusing unapproved repository-controlled proxy routing. …
 ```
 
-Custom routes do have a place — `phantom start` serves them from
-`.phantom.toml` — but `start` is a foreground proxy run by a person in a
-trusted terminal on config they reviewed. See [litellm.md](litellm.md) for
-the LiteLLM case.
+`phantom start` runs the same check before it opens the vault, so no
+command serves a custom route from `.phantom.toml` today: the file has no
+integrity protection, and approving a custom route is not supported yet.
+`phantom doctor` names the service that blocks launch. See
+[litellm.md](litellm.md) for the LiteLLM case.
 
 ### Connection strings are withheld entirely
 
