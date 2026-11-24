@@ -252,7 +252,7 @@ scrubbing, or processes launched outside `phantom exec`.
 
 ### Deploying to Vercel
 
-Claude can call `phantom_sync` (read-only mode) to show which secrets and targets are configured, then guide you to run `phantom sync --platform vercel --project prj_xxx` in the terminal to execute the actual push.
+Claude can call `phantom_sync` (read-only mode) to show which secrets and targets are configured, then guide you to run `phantom sync --platform vercel --project prj_xxx` in the terminal to execute the actual push. The live sync prints the value-blind plan and asks you to type a one-time `SYNC <plan-digest> <nonce>` challenge, so run it from your own terminal, not through Claude's shell.
 
 ### Setting up from a deployment provider
 
@@ -266,7 +266,8 @@ Claude: [calls phantom_status — sees no .phantom.toml]
 
 You: Vercel, project ID is prj_abc123
 
-Claude: Run this to pull secrets from Vercel:
+Claude: Run this in your own terminal to pull secrets from Vercel
+        (it asks you to type a one-time challenge):
         phantom pull --from vercel --project prj_abc123
         Then I'll run phantom_doctor to verify everything looks good.
 ```

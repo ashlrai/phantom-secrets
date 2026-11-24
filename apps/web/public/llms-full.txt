@@ -232,7 +232,7 @@ Options: --staged (read content from the git index instead of the working tree; 
 Example: phantom check --staged
 
 ### phantom sync
-Push real secrets to deployment platforms.
+Push real secrets to deployment platforms. A live sync needs attached stdin/stdout/stderr terminals and an exact typed `SYNC <plan-digest> <nonce>` challenge; headless runs stop before reading any vault value.
 Options: --dry-run (preview without decrypting values or calling platform APIs), --json (with --dry-run), --only PATTERN (glob, repeatable; multiple flags OR-ed; also honoured via `only = [...]` on each `[[sync]]` block in `.phantom.toml`)
 Example: phantom sync --platform vercel --project prj_abc123
 Example: phantom sync --platform railway --project <id>
@@ -240,7 +240,7 @@ Example (safe preview): phantom sync --platform vercel --project prj_abc123 --dr
 Example (filtered): phantom sync --only "STRIPE_*" --only "SENDGRID_*"
 
 ### phantom pull
-Pull secrets from deployment platforms into local vault.
+Pull secrets from deployment platforms into local vault. Needs attached terminals and an exact typed `PULL <plan-digest> <nonce>` challenge; headless runs stop before any provider request.
 Example: phantom pull --from vercel --project prj_abc123
 Example: phantom pull --from railway --project <id> --environment production
 Options: --force (overwrite existing local secrets)
@@ -756,7 +756,7 @@ phantom pull --from railway --project xxx --environment production
 phantom pull --from vercel --project prj_xxx --force   # overwrite existing
 ```
 
-Supported platforms: Vercel, Railway. Requires platform API token in environment.
+Supported platforms: Vercel, Railway. Requires platform API token in environment. A live sync or pull runs only from attached terminals after you type its one-time challenge, so an agent cannot run it from a tool call.
 
 
 ## Personal Cloud Backup Architecture

@@ -329,6 +329,13 @@ phantom sync --platform railway --project <id>
 phantom pull --from railway --project <id> --environment production
 ```
 
+A live sync or pull (any sync without `--dry-run`, and every pull) needs
+attached stdin, stdout, and stderr terminals. It prints the exact value-blind
+plan and asks you to type a one-time challenge (`SYNC <plan-digest> <nonce>` or
+`PULL <plan-digest> <nonce>`). Without a terminal, or on a mismatch, it stops
+before any provider request. Run it yourself, from a terminal the requesting
+agent does not control; see [sync](sync.md).
+
 You can also hard-code filters per `[[sync]]` block in `.phantom.toml` so that `phantom sync` (no flags) always respects them:
 
 ```toml
