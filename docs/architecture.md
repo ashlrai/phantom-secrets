@@ -28,7 +28,7 @@ provider-enabled, or accepted in a real customer workflow.
 | Layer | Components | Current responsibility and boundary |
 |---|---|---|
 | Product | `phantom-cli`, `phantom-core` | Project configuration, dotenv classification and rewriting, tokens, authentication, cloud clients, audit, sync, validation, and operator workflows. |
-| Provider foundations | `phantom-core/src/issuance`, CLI `grant` commands | Protocol/design source plus value-free lifecycle metadata. All live issuance/enrollment/renewal/revocation is hard-denied before credential or network access in 0.8.7. This is not execution authority. |
+| Provider foundations | `phantom-core/src/issuance`, CLI `grant` commands | Protocol/design source plus value-free lifecycle metadata. All live issuance/enrollment/renewal/revocation is hard-denied before credential or network access in current releases. This is not execution authority. |
 | Account operations (library only) | `phantom-core/src/account_ops`, [design](design/account-ops.md) | Value-free create, rotate, revoke, and status engine with a GitHub App installation-token adapter. It checks the `~/.ashlr/KILL` switch, binds names to the adapter namespace, defaults to dry run, and writes a hash-chained ledger at `~/.phantom/account-ops.jsonl`. No CLI or MCP command calls it, so live issuance stays hard-denied. |
 | Secret storage | `phantom-vault` | Native credential-store and encrypted-file backends behind `VaultBackend`. Real values remain behind this interface. |
 | Local effect layer | `phantom-core::fs`, `phantom-vault` transactions | Retained directory capabilities, exact before-images, no-follow target resolution, effect receipts, and explicit durable versus committed-but-uncertain outcomes for governed project and client-config mutation. |
@@ -127,7 +127,7 @@ leases, or proof that the inactive execution kernel is active.
 ### Provider-grant foundations
 
 Provider protocol source and value-free metadata remain design foundations.
-In 0.7.9, CLI single-provider rotation, batch rotation, MCP rotation, enrollment
+In current releases, CLI single-provider rotation, batch rotation, MCP rotation, enrollment
 exchange, additive issuance, rolling refresh, and remote revocation all fail
 before provider credential access and before network I/O. Exact `cfg(test)`
 mocks prove local transaction scaffolding only, not provider activation,
@@ -209,7 +209,7 @@ Authorities remain intentionally separate:
 | Project-local or linked-worktree Git hook | The effective Git hook parent resolved from the retained project/Git context |
 | Explicit external `core.hooksPath` | A separately retained hook root plus an exact attached trusted-terminal authorization; project authority is not widened, and MCP refuses the external write |
 | Claude project settings | The retained project root |
-| Cursor, Windsurf, and Codex user config | A retained home/config ancestor traversed component by component; setup coordination is under retained `~/.phantom` app state |
+| Cursor, Windsurf, Codex, and Gemini CLI user config | A retained home/config ancestor traversed component by component; setup coordination is under retained `~/.phantom` app state |
 
 These are path-integrity and transaction controls, not same-user isolation.
 Locks serialize cooperating Phantom writers. A process with equivalent user

@@ -1121,9 +1121,9 @@ checksum = "00b0228411908ca8685dba7fc2cdd70ec9990a6e753e89b6ac91a84c40fbaf4b"
 
 [[package]]
 name = "form_urlencoded"
-version = "1.2.2"
+version = "1.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cb4cb245038516f5f85277875cdaa4f7d2c9a0fa0468de06ed190163b1581fcf"
+checksum = "afa489199eaffb1211795df1c6236ce1ad0d41a6fa45250add73e3b02420f06e"
 dependencies = [
  "percent-encoding",
 ]
@@ -2478,7 +2478,7 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "phantom-secrets"
-version = "0.8.9"
+version = "0.8.11"
 dependencies = [
  "anyhow",
  "arboard",
@@ -2521,7 +2521,7 @@ dependencies = [
 
 [[package]]
 name = "phantom-secrets-authority"
-version = "0.8.9"
+version = "0.8.11"
 dependencies = [
  "serde",
  "serde_json",
@@ -2530,7 +2530,7 @@ dependencies = [
 
 [[package]]
 name = "phantom-secrets-broker"
-version = "0.8.9"
+version = "0.8.11"
 dependencies = [
  "fs2",
  "hex",
@@ -2548,7 +2548,7 @@ dependencies = [
 
 [[package]]
 name = "phantom-secrets-core"
-version = "0.8.9"
+version = "0.8.11"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -2589,7 +2589,7 @@ dependencies = [
 
 [[package]]
 name = "phantom-secrets-evidence"
-version = "0.8.9"
+version = "0.8.11"
 dependencies = [
  "fs2",
  "hex",
@@ -2608,7 +2608,7 @@ dependencies = [
 
 [[package]]
 name = "phantom-secrets-locus-contract"
-version = "0.8.9"
+version = "0.8.11"
 dependencies = [
  "phantom-secrets-authority",
  "serde",
@@ -2619,7 +2619,7 @@ dependencies = [
 
 [[package]]
 name = "phantom-secrets-mcp"
-version = "0.8.9"
+version = "0.8.11"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -2644,7 +2644,7 @@ dependencies = [
 
 [[package]]
 name = "phantom-secrets-proxy"
-version = "0.8.9"
+version = "0.8.11"
 dependencies = [
  "aws-lc-rs",
  "base64 0.22.1",
@@ -2672,7 +2672,7 @@ dependencies = [
 
 [[package]]
 name = "phantom-secrets-runtime"
-version = "0.8.9"
+version = "0.8.11"
 dependencies = [
  "hex",
  "libc",
@@ -2689,7 +2689,7 @@ dependencies = [
 
 [[package]]
 name = "phantom-secrets-session"
-version = "0.8.9"
+version = "0.8.11"
 dependencies = [
  "fs2",
  "hex",
@@ -2708,7 +2708,7 @@ dependencies = [
 
 [[package]]
 name = "phantom-secrets-vault"
-version = "0.8.9"
+version = "0.8.11"
 dependencies = [
  "apple-native-keyring-store",
  "argon2",
@@ -2735,7 +2735,7 @@ dependencies = [
 
 [[package]]
 name = "phantom-secrets-workspace"
-version = "0.8.9"
+version = "0.8.11"
 dependencies = [
  "chacha20poly1305",
  "fs2",
@@ -4310,9 +4310,9 @@ dependencies = [
 
 [[package]]
 name = "url"
-version = "2.5.8"
+version = "2.5.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ff67a8a4397373c3ef660812acab3268222035010ab8680ec4215f38ba3d0eed"
+checksum = "f00cd2407bb42c0ef17be88d4cf020f5cceffd121665bac9b8b9493a369b3b1a"
 dependencies = [
  "form_urlencoded",
  "idna",

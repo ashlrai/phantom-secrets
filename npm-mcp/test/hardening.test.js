@@ -118,6 +118,8 @@ async function assertPreviousVersionCachePreserved(stage) {
 
     assert.deepStrictEqual(readFileSync(paths.binaryPath), previousBinary, `${stage} binary bytes`);
     assert.deepStrictEqual(readFileSync(paths.manifestPath), previousManifest, `${stage} manifest bytes`);
+    assert.strictEqual(basename(paths.sourceMarkerPath), ".phantom-install-source.npm-mcp");
+    assert.strictEqual(existsSync(paths.sourceMarkerPath), false, `${stage} npm-mcp must not claim ownership`);
     assert.strictEqual(existsSync(paths.backupBinaryPath), false, `${stage} backup binary cleanup`);
     assert.strictEqual(existsSync(paths.backupManifestPath), false, `${stage} backup manifest cleanup`);
     assert.strictEqual(existsSync(paths.transactionPath), false, `${stage} transaction cleanup`);

@@ -8,6 +8,7 @@ unsound = "all"
 unused-ignored-advisory = "deny"
 ignore = [
     { id = "RUSTSEC-2023-0071", reason = "rsa is a dev-only test dependency; Phantom does not perform network-observable RSA private-key operations, and RustSec lists no fixed release" },
+    { id = "RUSTSEC-2026-0543", reason = "chrono is flagged unmaintained (not vulnerable) and is only a transitive dependency of rmcp and schemars; no fixed release exists and Phantom has no direct use. Drop this ignore once rmcp/schemars move off chrono" },
 ]
 
 [licenses]

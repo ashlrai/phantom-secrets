@@ -17,25 +17,25 @@ unsupported traffic.
 ## Install an exact published version
 
 <!-- fresh:begin npm-cli-wrapper-version -->
-This wrapper is version `0.8.9`. Its manifest and this README do not prove that
+This wrapper is version `0.8.11`. Its manifest and this README do not prove that
 the npm package or matching GitHub release has been published. Verify the exact
 npm version before installing it:
 <!-- fresh:end -->
 
 <!-- fresh:begin npm-cli-install -->
 ```bash
-npm view phantom-secrets@0.8.9 version dist.integrity dist.tarball --registry=https://registry.npmjs.org/
-npm install --global phantom-secrets@0.8.9 --registry=https://registry.npmjs.org/
+npm view phantom-secrets@0.8.11 version dist.integrity dist.tarball --registry=https://registry.npmjs.org/
+npm install --global phantom-secrets@0.8.11 --registry=https://registry.npmjs.org/
 phantom --version
 ```
 <!-- fresh:end -->
 
 The first invocation downloads the matching native binary from the exact
-[`v0.8.9` GitHub release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.8.9),
+[`v0.8.11` GitHub release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.8.11),
 verifies the archive against its `.sha256` sidecar, extracts only the expected
 binary from the closed two-binary archive, and records a private local cache
 manifest. The wrapper does not itself verify GitHub attestations or publisher
-identity. If the npm query, release, checksum, or expected `phantom 0.8.9`
+identity. If the npm query, release, checksum, or expected `phantom 0.8.11`
 version is unavailable, stop instead of substituting an unpinned package or
 release.
 
@@ -97,9 +97,10 @@ phantom setup --client claude
 phantom setup --client cursor
 phantom setup --client windsurf
 phantom setup --client codex
+phantom setup --client gemini
 ```
 
-Version `0.8.9` records the installed local `phantom mcp serve` command when it
+Version `0.8.11` records the installed local `phantom mcp serve` command when it
 can resolve that executable, otherwise it looks for a local `phantom-mcp`.
 Setup has no network package-runner fallback and fails closed when neither
 local runtime is available. Inspect the generated command before trusting it.
@@ -179,7 +180,7 @@ and publish a new vault to the intended fixed membership when offboarding.
   initialization, but explicit reveal/export paths and unrelated copies remain
   the operator's responsibility.
 - Live provider issuance/rotation is hard-denied before credential or network
-  access in 0.7.9. Deployment sync, live validation, cloud operations, and team
+  access in this release. Deployment sync, live validation, cloud operations, and team
   workflows are separate network/persistent effects with their own gates.
 
 Read [SECURITY.md](https://github.com/ashlrai/phantom-secrets/blob/main/SECURITY.md)
@@ -190,10 +191,27 @@ for the full workflow.
 
 This directory is source for a thin npm wrapper. Its local `package.json`
 version does not prove npm publication, matching native-archive publication,
-signing, or platform acceptance. Verify `phantom-secrets@0.8.9` with the exact
+signing, or platform acceptance. Verify `phantom-secrets@0.8.11` with the exact
 `npm view` command above and verify the matching immutable GitHub release before
 installation. Maintainers should follow the guarded
 [npm publication runbook](https://github.com/ashlrai/phantom-secrets/blob/main/docs/npm-publication.md).
+
+## Part of the Ashlr ecosystem
+
+Phantom Secrets is one of the open-source tools from [Ashlr](https://ashlr.ai).
+Together they aim to be an autonomous, code-first, agent-native software
+factory: agents write, test, review, and ship the code, and the human acts as a
+passive board member. The long-term goal is open-source recursive
+self-improvement (RSI), where agents improve the tools they build with.
+
+This package installs the `phantom` CLI, which keeps real API-key values out of
+agent context so agents can call APIs without holding the keys. The other tools
+(Phantom, Locus, Lexicon, Ashlr MD, Ashlr Stack, and ashlr-plugin) each install
+and run on their own; see the
+[ecosystem list](https://github.com/ashlrai/phantom-secrets#part-of-the-ashlr-ecosystem).
+Coding agents make most changes to this repository through normal pull requests
+and CI; see
+[how agents work on this repo](https://github.com/ashlrai/phantom-secrets#how-agents-work-on-this-repo).
 
 ## License
 

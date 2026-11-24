@@ -288,18 +288,26 @@ function removeFileIfExists(path) {
   }
 }
 
-function ensureNpmSourceMarker(path, platform = process.platform) {
+function hasCliSourceMarker(markerPath, platform = process.platform) {
   try {
-    const contents = readFileSync(path, "utf8");
-    validateOwnedPath(path, "file", platform);
-    if (contents !== "npm\n") throw new Error("invalid npm install-source marker");
-    return;
-  } catch (error) {
-    if (error.code !== "ENOENT") throw error;
+    validateOwnedPath(markerPath, "file", platform);
+    const recorded = readFileSync(markerPath, "utf8");
+    if (recorded !== "npm\n") throw new Error("invalid npm-cli install-source marker");
+    return true;
+  } catch (cliMarkerError) {
+    if (cliMarkerError.code !== "ENOENT") throw cliMarkerError;
+    return false;
   }
-  writePrivateFile(path, "npm\n", 0o600, platform);
-  fsyncDirectory(dirname(path), platform);
 }
+
+function commitCliSourceMarker(markerPath, platform = process.platform) {
+  if (hasCliSourceMarker(markerPath, platform)) return undefined;
+  writePrivateFile(markerPath, "npm\n", 0o600, platform);
+  fsyncDirectory(dirname(markerPath), platform);
+  return "npm-cli";
+}
+
+const CLI_INSTALL_SOURCE = ".phantom-install-source.npm-cli";
 
 function sha256File(path) {
   return crypto.createHash("sha256").update(readFileSync(path)).digest("hex");
@@ -976,7 +984,13 @@ async function ensureBinary({
   const releaseLock = await acquireInstallLock(paths.lockPath, { ...lockOptions, platform: runtime.platform });
   const heartbeat = releaseLock.heartbeat;
   try {
-    ensureNpmSourceMarker(paths.sourceMarkerPath, runtime.platform);
+    // Inspect .phantom-install-source.npm-cli first. Commit it only after the
+    // cached binary validates, so a failed attempt does not claim npm ownership.
+    const cliSourceMarker = paths.sourceMarkerPath;
+    if (basename(cliSourceMarker) !== CLI_INSTALL_SOURCE) {
+      throw new Error("npm-cli install source marker path drifted");
+    }
+    hasCliSourceMarker(cliSourceMarker, runtime.platform);
     heartbeat();
     recoverInterruptedInstall(paths, runtime.platform);
     if (validateCachedBinary(paths.binaryPath, paths.manifestPath, {
@@ -984,7 +998,11 @@ async function ensureBinary({
       platform: runtime.platform,
       execTimeoutMs,
       heartbeat,
-    })) return paths.binaryPath;
+    })) {
+      commitCliSourceMarker(cliSourceMarker, runtime.platform);
+      const validatedCliBinary = paths.binaryPath;
+      return validatedCliBinary;
+    }
 
     const archiveExt = runtime.platform === "win32" ? "zip" : "tar.gz";
     const archiveName = `phantom-${target}.${archiveExt}`;
@@ -1034,6 +1052,7 @@ async function ensureBinary({
       const manifest = { version: VERSION, sha256: sha256File(candidatePath) };
       writePrivateFile(candidateManifestPath, JSON.stringify(manifest) + "\n", 0o600, runtime.platform);
       replaceCachedBinary(candidatePath, candidateManifestPath, paths, runtime.platform);
+      commitCliSourceMarker(cliSourceMarker, runtime.platform);
       heartbeat();
       console.error(`Installed phantom to ${paths.binaryPath}`);
       return paths.binaryPath;

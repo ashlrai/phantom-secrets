@@ -14,7 +14,7 @@ slice. Locus authority, the native broker, production engineering execution,
 and externally trusted execution receipts must remain inactive.
 
 The shipped `phantom grant` CLI exposes value-free metadata and compatibility
-commands, not live provider issuance. Version 0.7.9 hard-denies enrollment,
+commands, not live provider issuance. Current releases hard-deny enrollment,
 refresh, renewal, rotation, and remote revocation before credential access and
 network I/O. Historical **provider-grant** records are not execution-kernel
 **authority grants** and do not activate Locus, a broker lease, or engineering

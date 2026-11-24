@@ -12,3 +12,6 @@ contact_links:
   - name: 🧭 Choose a support route
     url: https://github.com/ashlrai/phantom-secrets/blob/main/SUPPORT.md
     about: Community, security, and separately commissioned support routes.
+  - name: 🛠️ Fix it yourself, with or without a coding agent
+    url: https://github.com/ashlrai/phantom-secrets/blob/main/CONTRIBUTING.md#contribute-with-an-agent
+    about: The path from a fork to a merged pull request, the local checks to run, and what CI Gate requires.

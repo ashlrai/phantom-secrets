@@ -14,25 +14,25 @@ into an agent conversation.
 ## Install an exact published version
 
 <!-- fresh:begin npm-mcp-wrapper-version -->
-This wrapper is version `0.8.9`. Its manifest and this README do not prove npm,
+This wrapper is version `0.8.11`. Its manifest and this README do not prove npm,
 GitHub, or MCP Registry publication. Verify the exact npm version before
 installing it:
 <!-- fresh:end -->
 
 <!-- fresh:begin npm-mcp-install -->
 ```bash
-npm view phantom-secrets-mcp@0.8.9 version dist.integrity dist.tarball --registry=https://registry.npmjs.org/
-npm install --global phantom-secrets-mcp@0.8.9 --registry=https://registry.npmjs.org/
+npm view phantom-secrets-mcp@0.8.11 version dist.integrity dist.tarball --registry=https://registry.npmjs.org/
+npm install --global phantom-secrets-mcp@0.8.11 --registry=https://registry.npmjs.org/
 phantom-mcp --version
 ```
 <!-- fresh:end -->
 
 The first invocation downloads the matching native binary from the exact
-[`v0.8.9` GitHub release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.8.9),
+[`v0.8.11` GitHub release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.8.11),
 verifies the archive against its `.sha256` sidecar, extracts only the expected
 binary from the closed two-binary archive, and records a private local cache
 manifest. The wrapper does not itself verify GitHub attestations or publisher
-identity. If the npm query, release, checksum, or expected `phantom-mcp 0.8.9`
+identity. If the npm query, release, checksum, or expected `phantom-mcp 0.8.11`
 version is unavailable, stop instead of substituting an unpinned launcher.
 
 The wrapper supports macOS arm64/x64, glibc Linux arm64/x64, and Windows
@@ -49,9 +49,10 @@ phantom setup --client claude
 phantom setup --client cursor
 phantom setup --client windsurf
 phantom setup --client codex
+phantom setup --client gemini
 ```
 
-Version `0.8.9` records the installed local `phantom mcp serve` command when it
+Version `0.8.11` records the installed local `phantom mcp serve` command when it
 can resolve that executable, otherwise it looks for a local `phantom-mcp`.
 Setup has no network package-runner fallback and fails closed when neither
 local runtime is available. Inspect the generated command before trusting it.
@@ -102,8 +103,8 @@ Important boundaries:
 - `phantom_setup_workspace` can propose and request trusted-terminal setup; MCP
   does not claim or apply the request.
 - Provider enrollment and live issuance/refresh/renewal/rotation/revocation are
-  hard-denied before credential and network access in 0.7.9, including from
-  MCP. Protocol source and test mocks confer no Locus, broker, provider,
+  hard-denied before credential and network access in this release, including
+  from MCP. Protocol source and test mocks confer no Locus, broker, provider,
   production, or deployment authority.
 - Validation, deployment sync, cloud, and team tools may
   perform network or persistent effects when their required gates are met.
@@ -154,7 +155,7 @@ a new vault to the intended fixed membership.
 This directory is the source for a thin native-binary wrapper. The local
 `package.json` version is not proof of npm publication, native artifact parity,
 MCP Registry publication, or platform acceptance. Verify
-`phantom-secrets-mcp@0.8.9` with the exact `npm view` command above, then verify
+`phantom-secrets-mcp@0.8.11` with the exact `npm view` command above, then verify
 the matching immutable GitHub release. An npm publication still does not prove
 the separate MCP Registry entry. Maintainers should follow the guarded
 [npm](https://github.com/ashlrai/phantom-secrets/blob/main/docs/npm-publication.md)
@@ -167,6 +168,24 @@ publication runbooks.
 - [Security model](https://github.com/ashlrai/phantom-secrets/blob/main/SECURITY.md)
 - [Getting started](https://github.com/ashlrai/phantom-secrets/blob/main/docs/getting-started.md)
 - [Platform evidence](https://github.com/ashlrai/phantom-secrets/blob/main/docs/platform-support.md)
+
+## Part of the Ashlr ecosystem
+
+Phantom Secrets is one of the open-source tools from [Ashlr](https://ashlr.ai).
+Together they aim to be an autonomous, code-first, agent-native software
+factory: agents write, test, review, and ship the code, and the human acts as a
+passive board member. The long-term goal is open-source recursive
+self-improvement (RSI), where agents improve the tools they build with.
+
+This package installs `phantom-mcp`, the MCP server that ships with the
+`phantom` CLI. Phantom Secrets keeps real API-key values out of agent context,
+so agents can call APIs without holding the keys. The other tools (Phantom,
+Locus, Lexicon, Ashlr MD, Ashlr Stack, and ashlr-plugin) each install and run
+on their own; see the
+[ecosystem list](https://github.com/ashlrai/phantom-secrets#part-of-the-ashlr-ecosystem).
+Coding agents make most changes to this repository through normal pull requests
+and CI; see
+[how agents work on this repo](https://github.com/ashlrai/phantom-secrets#how-agents-work-on-this-repo).
 
 ## License
 

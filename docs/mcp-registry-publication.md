@@ -26,13 +26,18 @@ the operator's home directory. Publishing writes public registry metadata.
 Login and publication are separate effects and require explicit approval for
 the exact registry, namespace, version, manifest, source SHA, and npm receipt.
 
-The preferred future posture is a protected, GitHub-hosted OIDC workflow with
-`id-token: write`, a required environment reviewer, exact-tag source binding,
-and `mcp-publisher login github-oidc --registry=...`. This repository does not
-currently contain or prove that MCP publication workflow or its environment
-governance. Do not claim MCP Registry OIDC is configured. The current documented
-path is an explicitly approved interactive GitHub login in a trusted terminal,
-using an ephemeral private home that is logged out and deleted on exit.
+The preferred future posture adds a required environment reviewer to a
+GitHub-hosted OIDC workflow with `id-token: write`, exact-tag source binding,
+and `mcp-publisher login github-oidc --registry=...`. This repository contains
+`.github/workflows/publish-mcp-registry.yml` for
+`io.github.ashlrai/phantom-secrets-mcp`. That workflow reads
+`mcp-registry/server.json`, requests `id-token: write` only on its publish job,
+and admits this repository on a release tag, on the release event, or on
+`workflow_dispatch` from the default branch. It does not currently prove
+environment-reviewer governance. Do not claim MCP Registry environment review
+is configured. The current documented operator path is an explicitly approved
+interactive GitHub login in a trusted terminal, using an ephemeral private home
+that is logged out and deleted on exit.
 
 Never pass an MCP Registry token, GitHub token, private key, npm credential, or
 one-time password on the command line. Never print, tee, trace, or copy one into

@@ -91,6 +91,21 @@ test('workflow omits all unrelated diagnostics jobs, OIDC coverage and fixup wit
 });
 
 
+test('docs-only pull_request and merge_group still require Lint success and skip npm wrappers', () => {
+  for (const event of ['pull_request', 'merge_group']) {
+    const needs = diagnosticNeeds();
+    needs.changes.outputs = { scope: 'full', rust: 'false', web: 'false', temporal_example: 'false', docs_commands: 'true', platform: 'false' };
+    for (const name of ['lint', 'dependency-policy', 'secret-scan', 'secret-shape']) needs[name].result = 'success';
+    needs.test.result = 'skipped';
+    assert.equal(runGate(needs, event).status, 0, runGate(needs, event).stderr);
+    const wrappersRan = structuredClone(needs);
+    wrappersRan['npm-wrappers'].result = 'success';
+    assert.notEqual(runGate(wrappersRan, event).status, 0);
+    const lintSkipped = structuredClone(needs);
+    lintSkipped.lint.result = 'skipped';
+    assert.notEqual(runGate(lintSkipped, event).status, 0);
+  }
+});
 test('actual PR and merge-queue gate selections retain the fast roles and reject daily-only execution', () => {
   for (const event of ['pull_request', 'merge_group']) {
     const needs = diagnosticNeeds();

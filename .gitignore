@@ -14,3 +14,14 @@
 # sanitized report from its temporary directory.
 seo/private/
 seo/reports/
+
+# Agent run scratch files. Agents write planning notes, handoffs, and run
+# receipts at the repository root while they work; these are not project docs.
+# Root-anchored so docs/internal/notes.md and docs/internal/task_plan.md stay
+# tracked.
+/notes.md
+/task_plan.md
+/handoff/
+/.pr-clear-*/
+/pr-clear-*.tsv
+/.test_write.tmp

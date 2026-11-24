@@ -1,7 +1,7 @@
 # Delegate a coding task without putting real keys in agent context
 
 This guide is for a developer who wants Claude Code, Codex, Cursor, Windsurf,
-or GitHub Copilot to work on a repository that uses API credentials. It creates
+Gemini CLI, or GitHub Copilot to work on a repository that uses API credentials. It creates
 a bounded delegation contract around Phantom's shipped CLI, vault, local proxy,
 and value-blind MCP tools.
 
@@ -83,6 +83,7 @@ Apply one supported setup writer, then restart the client:
 | Codex | `phantom setup --client codex` | `phantom exec -- codex` | [Codex](codex.md) |
 | Cursor | `phantom setup --client cursor` | `phantom exec -- cursor .` | [Cursor](cursor.md) |
 | Windsurf | `phantom setup --client windsurf` | `phantom exec -- windsurf .` | [Windsurf](windsurf.md) |
+| Gemini CLI | `phantom setup --client gemini` | `phantom exec -- gemini` | [Gemini CLI](gemini-cli.md) |
 
 For GitHub Copilot, Phantom does not ship a Copilot-specific setup writer.
 Repository instructions can live in `.github/copilot-instructions.md`; MCP is
