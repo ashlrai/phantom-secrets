@@ -1,0 +1,59 @@
+diff --git a/crates/phantom-cli/src/exit_codes.rs b/crates/phantom-cli/src/exit_codes.rs
+index af219fb0..61570812 100644
+--- a/crates/phantom-cli/src/exit_codes.rs
++++ b/crates/phantom-cli/src/exit_codes.rs
+@@ -67,7 +67,9 @@ impl std::fmt::Display for CodedError {
+ 
+ impl std::error::Error for CodedError {
+     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+-        self.source.as_deref()
++        self.source
++            .as_deref()
++            .map(|source| source as &(dyn std::error::Error + 'static))
+     }
+ }
+ 
+@@ -110,6 +112,7 @@ pub(crate) fn code_of(error: &Error) -> Option<i32> {
+ #[cfg(test)]
+ mod tests {
+     use super::*;
++    use std::error::Error as _;
+ 
+     #[test]
+     fn codes_keep_the_documented_numbers() {
+@@ -124,7 +127,9 @@ mod tests {
+     fn help_section_lists_every_code_in_the_table() {
+         for line in ["0  ", "1  ", "2  ", "3  ", "4  ", "5  ", "141  "] {
+             assert!(
+-                HELP_SECTION.lines().any(|row| row.starts_with(line)),
++                HELP_SECTION
++                    .lines()
++                    .any(|row| row.trim_start().starts_with(line)),
+                 "the help table is missing code {line}"
+             );
+         }
+@@ -152,10 +157,7 @@ mod tests {
+             "Clipboard access failed; refusing to fall back to plaintext stdout"
+         );
+         assert_eq!(
+-            coded
+-                .source()
+-                .map(|cause| cause.to_string())
+-                .as_deref(),
++            coded.source().map(|cause| cause.to_string()).as_deref(),
+             Some("clipboard busy")
+         );
+     }
+diff --git a/crates/phantom-cli/src/main.rs b/crates/phantom-cli/src/main.rs
+index fbda0ed0..99bfa490 100644
+--- a/crates/phantom-cli/src/main.rs
++++ b/crates/phantom-cli/src/main.rs
+@@ -795,7 +795,7 @@ fn main() -> std::process::ExitCode {
+             // own status from anywhere in the chain; everything else keeps
+             // the generic command-failure status.
+             std::process::ExitCode::from(
+-                exit_codes::code_of(&error).unwrap_or(exit_codes::FAILURE) as u8,
++                exit_codes::code_of(&error).unwrap_or(exit_codes::FAILURE) as u8
+             )
+         }
+         // Propagate a panic on the worker thread as if it happened here so
