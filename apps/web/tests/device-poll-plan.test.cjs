@@ -12,7 +12,7 @@ const routePath = path.join(
 );
 const planPath = path.join(webDir, "src/lib/plan.ts");
 
-function transpileModule(filePath, localRequire) {
+function transpileModule(filePath, localRequire, DateClass = Date) {
   const output = ts.transpileModule(fs.readFileSync(filePath, "utf8"), {
     compilerOptions: {
       esModuleInterop: true,
@@ -28,9 +28,10 @@ function transpileModule(filePath, localRequire) {
     "module",
     "__filename",
     "__dirname",
+    "Date",
     output,
   );
-  fn(module.exports, localRequire, module, filePath, path.dirname(filePath));
+  fn(module.exports, localRequire, module, filePath, path.dirname(filePath), DateClass);
   return module.exports;
 }
 
@@ -38,7 +39,7 @@ function loadPlanModule() {
   return transpileModule(planPath, require);
 }
 
-function createServiceClient(user) {
+function createServiceClient(user, tokenOverrides = {}) {
   const calls = [];
   const token = {
     id: "device-token-1",
@@ -47,6 +48,7 @@ function createServiceClient(user) {
     expires_at: "2099-01-01T00:00:00.000Z",
     device_expires_at: "2099-01-01T00:00:00.000Z",
     token_hash: null,
+    ...tokenOverrides,
   };
 
   return {
@@ -84,7 +86,7 @@ function createServiceClient(user) {
   };
 }
 
-function loadRoute(serviceClient) {
+function loadRoute(serviceClient, DateClass = Date) {
   const localRequire = (specifier) => {
     if (specifier === "@/lib/commissioning") {
       return { requireHostedService: () => null };
@@ -103,8 +105,35 @@ function loadRoute(serviceClient) {
     if (specifier === "crypto") return crypto;
     return require(specifier);
   };
-  return transpileModule(routePath, localRequire);
+  return transpileModule(routePath, localRequire, DateClass);
 }
+
+test("pending device authorization can be polled at the advertised five-second interval", async () => {
+  let now = Date.parse("2026-01-01T00:00:00.000Z");
+  class Clock extends Date {
+    constructor(...args) {
+      super(...(args.length ? args : [now]));
+    }
+    static now() { return now; }
+  }
+  const serviceClient = createServiceClient(null, { status: "pending" });
+  const { POST } = loadRoute(serviceClient, Clock);
+  const poll = () => POST(new Request("https://phm.dev/api/v1/auth/device/poll", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ device_code: "device-code-1" }),
+  }));
+
+  const first = await poll();
+  assert.equal(first.status, 200);
+  assert.deepEqual(await first.json(), { status: "pending" });
+  now += 5_000; // The initiation endpoint advertises an interval of five seconds.
+  const second = await poll();
+  assert.equal(second.status, 200);
+  assert.deepEqual(await second.json(), { status: "pending" });
+  assert.equal(serviceClient.calls.filter(({ table }) => table === "device_tokens").length, 2);
+  assert.ok(!serviceClient.calls.some(({ table }) => table === "users"));
+});
 
 test("device poll selects expiry and returns only the normalized plan", async () => {
   const serviceClient = createServiceClient({
