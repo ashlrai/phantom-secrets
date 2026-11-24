@@ -24,6 +24,7 @@ Missing configuration:
 
 ```json
 {
+  "schemaVersion": 1,
   "schema_version": 1,
   "kind": "phantom.status",
   "initialized": false,
@@ -39,6 +40,7 @@ Valid configuration, with no lifecycle lock record:
 
 ```json
 {
+  "schemaVersion": 1,
   "schema_version": 1,
   "kind": "phantom.status",
   "initialized": true,
@@ -50,11 +52,16 @@ Valid configuration, with no lifecycle lock record:
 }
 ```
 
+`schemaVersion` and `schema_version` always carry the same number: the
+camelCase field is shared with `phantom doctor --json`, and the snake_case field
+is kept for existing consumers.
+
 Invalid configuration has `initialized: false`, `lifecycle_lock:
 "not-inspected"`, and `issues: ["config-invalid"]`. An unreadable or symlinked
-configuration similarly reports `config-unreadable`. If lock inspection fails
-with valid configuration, the lock is `unknown` and the issue is
-`proxy-lock-unavailable`. The tests in
+configuration similarly reports `config-unreadable`. With valid configuration,
+an existing lock record that no process holds is `available`, and one that
+another process holds is `held`. If lock inspection fails, the lock is
+`unknown` and the issue is `proxy-lock-unavailable`. The tests in
 [`status_json_test.rs`](../crates/phantom-cli/tests/status_json_test.rs) pin
 these cases and check that canary metadata does not leak.
 
