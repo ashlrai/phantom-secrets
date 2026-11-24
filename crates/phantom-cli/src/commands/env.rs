@@ -90,10 +90,12 @@ fn run_in(
     match output_target.replace_if_exact(None, content.as_bytes())? {
         phantom_core::fs::AnchoredEffect::Durable(_) => {}
         phantom_core::fs::AnchoredEffect::CommittedVerifiedButDurabilityUncertain { .. } => {
-            eprintln!(
-                "warning: {} was created and verified, but directory crash durability is not provable on this platform",
-                output_path.display()
-            );
+            if !json {
+                phantom_core::interactive_warn::emit(&format!(
+                    "warning: {} was created and verified, but directory crash durability is not provable on this platform",
+                    output_path.display()
+                ));
+            }
         }
         phantom_core::fs::AnchoredEffect::CommittedButUncertain { error, .. } => anyhow::bail!(
             "{} was created, but durability could not be verified: {error}",

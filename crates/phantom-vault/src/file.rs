@@ -363,8 +363,8 @@ fn require_durable_effect<T>(outcome: AnchoredEffect<T>, operation: &str) -> Res
     match outcome {
         AnchoredEffect::Durable(value) => Ok(value),
         AnchoredEffect::CommittedVerifiedButDurabilityUncertain { value } => {
-            eprintln!(
-                "warning: {operation} committed and was verified, but directory crash durability is not provable on this platform"
+            phantom_core::interactive_warn::emit(
+                &format!("warning: {operation} committed and was verified, but directory crash durability is not provable on this platform"),
             );
             Ok(value)
         }

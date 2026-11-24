@@ -16,6 +16,7 @@ pub mod fs;
 pub mod gitignore;
 pub mod home;
 pub mod importers;
+pub mod interactive_warn;
 pub mod issuance;
 pub mod leak_correlation;
 pub mod linked_checkout;

@@ -715,8 +715,8 @@ fn commit_init_with_identity(
         namespace_durability_verified,
     };
     if !receipt.namespace_durability_verified {
-        eprintln!(
-            "warning: transaction namespace effects committed and were verified, but directory crash durability is not provable on this platform"
+        phantom_core::interactive_warn::emit(
+            "warning: transaction namespace effects committed and were verified, but directory crash durability is not provable on this platform",
         );
     }
     Ok(receipt)
