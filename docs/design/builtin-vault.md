@@ -83,6 +83,22 @@ Raw value injection into the child environment is deliberately not offered (see 
 
 Per use, names only: `exec.secret_ref` plus the vault's `vault.retrieve_for_injection`. Agent lanes run with `PHANTOM_AUDIT=required` so an unwritable log fails closed. `phantom audit verify` checks the chain.
 
+### 4.6a Serve only the references (`--refs-only`, built)
+
+Without the flag, a session serves every protected dotenv name plus the references. The proxy authorizes a caller by `PHANTOM_PROXY_TOKEN` and injects by route, not by which session token the caller holds, so a child that was meant to use one name could still call the route of any other name the session loaded. It never sees those values, but it can use them.
+
+With `phantom exec --refs-only`:
+
+- Only names passed as `NAME=secret://NAME` are read from the vault. Dotenv phantom tokens are not loaded, and their keys are still removed from the child environment.
+- The proxy registry keeps only routes whose credential was loaded. A request to any other route, including a routed dotenv name, is refused and nothing is injected.
+- The child gets a session token, a base-URL override and a `PHANTOM_SESSION_KEYS` entry only for referenced names.
+- The rotation gate checks only the referenced names.
+- With no reference in the environment the launch is refused before the vault is opened.
+
+Launchers that scope a child to a subset of names (for example `phm vault exec`) must pass `--refs-only`.
+
+Follow-up, not built: bind each route to its session token, so the proxy also requires the caller to present the referenced name's session token and not only `PHANTOM_PROXY_TOKEN`. SDKs place the session token in provider-specific headers, so this needs per-route token extraction and its own tests.
+
 ### 4.7 Scope (proposed, PR 3)
 
 Each lane gets an allowlist of names, set by the launcher from a root-owned or launcher-owned scope file the agent cannot write (for example `PHANTOM_REF_SCOPE=<path>`). A reference outside the scope is `denied` before any value read, audited as `exec.secret_ref_denied`. Cross-person access (Mason, Sco, Evan, Alex) goes through the separately reviewed grant model: a grant adds names to a scope, is revocable, and is never a copy of the value.
@@ -114,12 +130,13 @@ Session tokens die when `phantom exec` exits (`exec.rs:481-483`). Removing a nam
 | Logs and transcripts | `--scrub-output`, `scrub.pl` on lane logs, names-only audit |
 | CI | Fork PRs get no secrets; tests use synthetic values that match no credential shape |
 | Agent forges a reference to an unscoped name | Today any vault name in the project namespace can be referenced; PR 3 scope closes this |
+| Child uses a route of a name it was not given | `--refs-only` (section 4.6a): only referenced routes exist on the proxy |
 
 ## 5. Interface Core builds against (v1)
 
 Stable from this PR:
 
-1. Invocation: `NAME=secret://NAME ... phantom exec --scrub-output -- <cmd> <args>`, run in a managed project directory (or with `--bind-source`).
+1. Invocation: `NAME=secret://NAME ... phantom exec --refs-only --scrub-output -- <cmd> <args>`, run in a managed project directory (or with `--bind-source`).
 2. Variable form: the variable name must equal the referenced name. Aliases are not supported in v1.
 3. Child environment: `NAME=phm_<session token>`, base-URL overrides for routed names, `PHANTOM_PROXY_PORT`, `PHANTOM_PROXY_TOKEN`, `PHANTOM_SESSION_KEYS`. Never the value, never the `secret://` string.
 4. Exit status: the child's status when it ran; 1 with a value-free stderr line when a reference is refused.
