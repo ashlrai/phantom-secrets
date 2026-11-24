@@ -1,7 +1,6 @@
-// Run affected nextest and publish only the first failing test.
-// The step log stays short: the full nextest transcript is not echoed.
-import { spawnSync } from "node:child_process";
-import { appendFileSync, realpathSync } from "node:fs";
+// Publish only the first failing test from a nextest log.
+// The workflow runs cargo. This file does not spawn a process.
+import { appendFileSync, readFileSync, realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
 export function firstFailure(text) {
@@ -29,14 +28,7 @@ export function summarize(text, status) {
     };
 }
 
-function run(filter) {
-    const result = spawnSync(
-        "cargo",
-        ["nextest", "run", "--workspace", "--all-targets", "--locked", "--max-fail", "1", "-E", filter],
-        { encoding: "utf8", maxBuffer: 4 * 1024 * 1024 },
-    );
-    const text = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
-    const summary = summarize(text, result.status ?? 1);
+function publish(summary) {
     if (process.env.GITHUB_STEP_SUMMARY) {
         appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary.markdown);
     } else {
@@ -46,23 +38,24 @@ function run(filter) {
         const file = summary.file ? ` file=${summary.file}` : "";
         const line = summary.line ? `,line=${summary.line}` : "";
         process.stdout.write(`::error${file}${line}::${summary.name}\n`);
-        process.exit(result.status || 1);
+        process.exit(1);
     }
+}
+
+function arg(name) {
+    const index = process.argv.indexOf(name);
+    return index === -1 ? "" : (process.argv[index + 1] ?? "");
 }
 
 const invoked = process.argv[1]
     && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href;
 if (invoked) {
-    const filter = process.argv[2];
-    if (!filter) {
-        process.stderr.write("nextest-summary: missing filterset\n");
+    const statusText = arg("--status");
+    const logPath = arg("--log");
+    if (!/^(0|[1-9][0-9]{0,2})$/.test(statusText) || !logPath) {
+        process.stderr.write("nextest-summary: need --status <exit> --log <file>\n");
         process.exit(2);
     }
-    if (filter === "none()") {
-        const note = "No affected crates.\n";
-        if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, note);
-        else process.stdout.write(note);
-        process.exit(0);
-    }
-    run(filter);
+    const text = readFileSync(logPath, "utf8");
+    publish(summarize(text, Number(statusText)));
 }

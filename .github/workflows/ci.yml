@@ -509,7 +509,20 @@ jobs:
           set -euo pipefail
           fs="$(bash scripts/ci/affected-filterset.sh "$BASE" "$HEAD" || echo 'all()')"
           echo "nextest filterset: $fs"
-          node scripts/ci/nextest-summary.mjs "$fs"
+          if [ "$fs" = "none()" ]; then
+            echo "No affected crates." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          # The filterset is only all() or rdeps(=crate) joined by " | ".
+          if ! printf '%s' "$fs" | grep -Eq '^(all\(\)|rdeps\(=[A-Za-z0-9_-]+\)( \| rdeps\(=[A-Za-z0-9_-]+\))*)$'; then
+            echo "::error::refusing unexpected nextest filterset"
+            exit 1
+          fi
+          set +e
+          "$HOME/.cargo/bin/cargo" nextest run --workspace --all-targets --locked --max-fail 1 -E "$fs" > "$RUNNER_TEMP/nextest.txt" 2>&1
+          status=$?
+          set -e
+          node scripts/ci/nextest-summary.mjs --status "$status" --log "$RUNNER_TEMP/nextest.txt"
 
   # Not part of CI Gate, so a Codecov outage does not become a required check.
   # This is the only job in this workflow with id-token: write. It runs on
