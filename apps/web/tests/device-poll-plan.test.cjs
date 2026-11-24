@@ -135,6 +135,36 @@ test("pending device authorization can be polled at the advertised five-second i
   assert.ok(!serviceClient.calls.some(({ table }) => table === "users"));
 });
 
+test("polling falls back to the legacy expiry when device expiry is missing", async () => {
+  let now = Date.parse("2026-01-01T00:00:00.000Z");
+  class Clock extends Date {
+    constructor(...args) {
+      super(...(args.length ? args : [now]));
+    }
+    static now() { return now; }
+  }
+  const serviceClient = createServiceClient(null, {
+    status: "pending",
+    device_expires_at: null,
+    expires_at: "2026-01-01T00:00:04.000Z",
+  });
+  const { POST } = loadRoute(serviceClient, Clock);
+  const poll = () => POST(new Request("https://phm.dev/api/v1/auth/device/poll", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ device_code: "device-code-1" }),
+  }));
+
+  const first = await poll();
+  assert.equal(first.status, 200);
+  assert.deepEqual(await first.json(), { status: "pending" });
+  now += 5_000;
+  const second = await poll();
+  assert.equal(second.status, 200);
+  assert.deepEqual(await second.json(), { status: "expired" });
+  assert.ok(!serviceClient.calls.some(({ table }) => table === "users"));
+});
+
 test("device poll selects expiry and returns only the normalized plan", async () => {
   const serviceClient = createServiceClient({
     github_login: "octocat",
