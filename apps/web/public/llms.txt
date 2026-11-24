@@ -182,7 +182,9 @@ Team member removal and automatic vault-key rotation are not shipped. Use fixed-
 
 ## CLI surface
 
-Setup: `init · agent · setup · doctor · workspace · vault · completion · mcp · mcp-approve` | Daily use: `exec · start · stop · status · check · list · add · remove · reveal · copy · env · why` | Sync & teams: `login · logout · cloud · team · sync · pull · export · import · wrap · unwrap` | Maintenance: `upgrade · watch · rotate · grant · validate · expiry · secrets-expiring-soon · open · audit`
+Setup: `init · agent · setup · doctor · workspace · vault · completion · mcp · mcp-approve` | Daily use: `exec · start · stop · status · check · redact · list · add · remove · reveal · copy · env · why · git-credential` | Sync & teams: `login · logout · cloud · team · sync · pull · export · import · wrap · unwrap` | Maintenance: `upgrade · watch · rotate · grant · validate · expiry · secrets-expiring-soon · fleet-status · open · audit · leaks · crypto`
+
+These are the groups `phantom --help` prints. Run `phantom <command> --help` for exact flags.
 
 Recently-added flags worth knowing:
 
