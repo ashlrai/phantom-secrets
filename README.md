@@ -838,6 +838,10 @@ On a fork, diff against `upstream/main` instead of `main`.
   </picture>
 </a>
 
+## Telemetry
+
+The npm wrapper (`npx phantom-secrets`, `npm i -g phantom-secrets`) sends an anonymous install ping on first run and at most one active ping a week: tool, version, OS, arch, CI or not, and a random ID. **Never** secrets, placeholders, paths, project names, commands, IPs or personal data. The native binary itself (Homebrew, cargo, release downloads) sends nothing. Opt out with `ASHLR_TELEMETRY=0`, `PHANTOM_TELEMETRY=0` or `DO_NOT_TRACK=1`. Details: [TELEMETRY.md](https://github.com/ashlrai/phantom/blob/master/docs/TELEMETRY.md).
+
 ## License
 
 MIT; see [LICENSE](LICENSE).
