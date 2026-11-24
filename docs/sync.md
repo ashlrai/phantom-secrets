@@ -9,6 +9,8 @@ phantom sync --dry-run --json
 phantom sync --platform vercel --project prj_abc123 --dry-run --json
 ```
 
+A live sync (any run without `--dry-run`) needs attached stdin, stdout, and stderr terminals. It prints the exact value-blind plan (targets and selected key names) and asks you to type a one-time challenge of the form `SYNC <plan-digest> <nonce>`. Without a terminal, or when the typed challenge does not match exactly, it stops before reading any vault value or sending any provider request. A live sync therefore cannot run as a CI step or from an agent's tool call: run it yourself from a terminal the requesting agent does not control, and use `phantom sync --dry-run --json` for headless previews.
+
 Before using sync, complete the basic setup: [getting-started.md](./getting-started.md).
 
 ---
@@ -51,7 +53,7 @@ targets = ["production", "preview"]
 
 `targets` controls which Vercel environments receive the secrets. Valid values are `production`, `preview`, and `development`. Defaults to `["production", "preview"]` if omitted.
 
-Once configured, syncing is one command:
+Once configured, syncing is one command (followed by the terminal challenge):
 
 ```bash
 phantom sync
@@ -79,6 +81,8 @@ phantom sync --platform vercel
 export RAILWAY_TOKEN=your_railway_token
 phantom sync --platform railway --project proj_abc123
 ```
+
+Without a `[[sync]]` block, this targets the `production` environment at the project level. To choose a service or another environment, use the configuration below.
 
 ### Persistent configuration via `.phantom.toml`
 

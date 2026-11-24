@@ -745,6 +745,10 @@
             line-height: 2;
         }
         .oss-code .num { color: var(--cyan); font-weight: 600; }
+        .oss-eco { margin-bottom: 40px; }
+        .oss-eco p { max-width: 640px; }
+        .oss-eco p + p { margin-top: 14px; }
+        .oss-eco a { color: var(--cyan); }
 
         /* ─── CTA ─── */
         .cta {
@@ -1043,7 +1047,7 @@
         <div class="feat sr sr-d2">
             <span class="feat-icon">&#129302;</span>
             <h3>AI-native MCP server</h3>
-            <p>Native integration with Claude Code, Cursor, Windsurf, and Codex. AI manages secrets through MCP tools without seeing real values.</p>
+            <p>Native integration with Claude Code, Cursor, Windsurf, Codex, and Gemini CLI. AI manages secrets through MCP tools without seeing real values.</p>
         </div>
         <div class="feat sr">
             <span class="feat-icon">&#128260;</span>
@@ -1092,7 +1096,7 @@
         </div>
         <div class="install-card">
             <h3>macOS + Linux + Windows v0.8.7</h3>
-            <div class="install-cmd"><a href="https://github.com/ashlrai/phantom-secrets/releases/tag/v0.8.7">Exact archives + .sha256 sidecars</a></div>
+            <div class="install-cmd"><a href="https://github.com/ashlrai/phantom-secrets/releases/tag/v0.8.11">Exact archives + .sha256 sidecars</a></div>
             <div class="install-sub">Verify the selected asset before extraction</div>
         </div>
         <div class="install-card">
@@ -1124,6 +1128,19 @@
         <div><span class="num">phantom-proxy</span> &mdash; HTTP reverse proxy (hyper)</div>
         <div><span class="num">phantom-cli</span> &mdash; clap CLI with agent readiness, proxy, sync, audit, and teams</div>
         <div><span class="num">phantom-mcp</span> &mdash; MCP server, 54 release-checked tools</div>
+        <div><span class="num">phantom-workspace</span> &mdash; value-blind workspace setup transactions</div>
+        <div><span class="num">phantom-authority</span> &mdash; closed authority contracts, deny-all</div>
+        <div><span class="num">phantom-locus-contract</span> &mdash; inactive Locus compatibility contract</div>
+        <div><span class="num">phantom-broker</span> &mdash; inactive broker protocol foundation</div>
+        <div><span class="num">phantom-runtime</span> &mdash; closed actions, deny-all execution</div>
+        <div><span class="num">phantom-session</span> &mdash; inactive session coordination foundation</div>
+        <div><span class="num">phantom-evidence</span> &mdash; inactive value-free receipt foundation</div>
+    </div>
+
+    <div class="sec-header oss-eco sr" id="ecosystem">
+        <p>Phantom Secrets is one of the open-source tools from <a href="https://ashlr.ai">Ashlr</a>. Together they aim to be an autonomous, code-first, agent-native software factory: agents write, test, review, and ship the code, and the human acts as a passive board member. The long-term goal is open-source recursive self-improvement (RSI), where agents improve the tools they build with.</p>
+        <p>Each tool installs and runs on its own: <a href="https://phm.dev">Phantom</a>, the agent workbench; <a href="https://github.com/ashlrai/locus">Locus</a>, which pins each agent session to one account (this repo ships only an inactive compatibility contract for it today); <a href="https://lexicon.ashlr.ai">Lexicon</a>, which fixes the words dictation gets wrong; <a href="https://md.ashlr.ai">Ashlr MD</a>, a Markdown app with an MCP server; <a href="https://stack.ashlr.ai">Ashlr Stack</a>, which provisions services and stores their keys in Phantom Secrets; and <a href="https://plugin.ashlr.ai/">ashlr-plugin</a>, token-efficiency tools for Claude Code and Codex.</p>
+        <p>Coding agents make most changes here, through the same pull requests and CI as any contributor. <a href="https://github.com/ashlrai/phantom-secrets/blob/main/CONTRIBUTING.md#contribute-with-an-agent">Contribute with an agent</a> is the path from a fork to a merged pull request; agents read <a href="https://github.com/ashlrai/phantom-secrets/blob/main/AGENTS.md">AGENTS.md</a> first.</p>
     </div>
 
     <a href="https://github.com/ashlrai/phantom-secrets" class="btn btn-primary" style="margin-bottom: 8px;">

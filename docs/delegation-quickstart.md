@@ -1,7 +1,7 @@
 # Delegate a coding task without putting real keys in agent context
 
 This guide is for a developer who wants Claude Code, Codex, Cursor, Windsurf,
-or GitHub Copilot to work on a repository that uses API credentials. It creates
+Gemini CLI, or GitHub Copilot to work on a repository that uses API credentials. It creates
 a bounded delegation contract around Phantom's shipped CLI, vault, local proxy,
 and value-blind MCP tools.
 
@@ -14,7 +14,7 @@ deployment changes, activate Locus, or prove that a customer workflow works.
 You need:
 
 - a Git repository and a supported local shell;
-- both `phantom` and `phantom-mcp` from the reviewed `v0.8.7` GitHub release,
+- both `phantom` and `phantom-mcp` from the reviewed `v0.8.11` GitHub release,
   or the separately published Homebrew distribution (see [distribution status](distribution-status.md));
 - the AI client you intend to use; and
 - an independent recoverable copy of each real credential, such as the
@@ -52,7 +52,7 @@ placeholders, writes Phantom configuration, generates `.env.example` when the
 project has none (an existing one is left byte-for-byte unchanged), and
 attempts to install the repository pre-commit check.
 
-Install the reviewed `v0.8.7` GitHub release using the platform-specific path in
+Install the reviewed `v0.8.11` GitHub release using the platform-specific path in
 [getting started](./getting-started.md#install), then run `phantom init`.
 
 If auto-detection selects the wrong file, stop and use an explicit path shown by
@@ -83,15 +83,30 @@ Apply one supported setup writer, then restart the client:
 | Codex | `phantom setup --client codex` | `phantom exec -- codex` | [Codex](codex.md) |
 | Cursor | `phantom setup --client cursor` | `phantom exec -- cursor .` | [Cursor](cursor.md) |
 | Windsurf | `phantom setup --client windsurf` | `phantom exec -- windsurf .` | [Windsurf](windsurf.md) |
+| Gemini CLI | `phantom setup --client gemini` | `phantom exec -- gemini` | [Gemini CLI](gemini-cli.md) |
 
 For GitHub Copilot, Phantom does not ship a Copilot-specific setup writer.
 Repository instructions can live in `.github/copilot-instructions.md`; MCP is
 configured through the supported VS Code surface. Keep build or test processes
 that need local credentials inside a `phantom exec -- <command>` session.
 
-The setup writers change client configuration. Review the preview first and
-retain the previous client file if your organization requires rollback. Phantom
-merges its MCP entry, but it is not a general client-configuration manager.
+The setup writers change client configuration, so review a preview first. For
+Codex, Cursor, Windsurf, and Gemini CLI:
+
+- `phantom setup --client <client> --dry-run` shows the change as a diff
+  without writing anything;
+- setup refuses to overwrite a differing `phantom` entry and names it, and
+  `--replace` overwrites it;
+- before changing an existing config file, setup copies it to a
+  `.phantom-bak-<ms>` file beside it and records the change, without values,
+  in `~/.phantom/setup-manifest.json`; and
+- `phantom setup --undo` shows what that record would restore or remove, and
+  `phantom setup --undo --apply` does it.
+
+The Claude Code writer merges into `.mcp.json` and project-local settings and
+does not take `--dry-run` or `--replace`; preview it with `--print`.
+`phantom setup --status` lists which clients have Phantom wired. Phantom merges
+only its own MCP entry; it is not a general client-configuration manager.
 
 ## 4. Verify the boundary before delegating
 
@@ -194,9 +209,11 @@ plan.
   critical finding before retrying.
 - **The proxy is unavailable:** stop network-dependent tests; do not bypass it
   by exposing a real credential to the agent.
-- **Client configuration is wrong:** restore the reviewed prior client config,
-  use `phantom setup --client <client> --print`, and reconcile the exact MCP
-  entry before restarting.
+- **Client configuration is wrong:** for Codex, Cursor, Windsurf, or Gemini
+  CLI, run `phantom setup --undo` to see what setup's record would restore,
+  then `phantom setup --undo --apply`. Otherwise restore the reviewed prior
+  client config. Use `phantom setup --client <client> --print` to reconcile
+  the exact MCP entry before restarting.
 - **A live mutation was not authorized:** stop, preserve logs without secret
   values, reconcile the affected provider or platform, and use its approved
   rollback path.

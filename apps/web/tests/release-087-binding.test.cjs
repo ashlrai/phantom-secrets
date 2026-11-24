@@ -7,13 +7,13 @@ const test = require('node:test');
 // Recorded from the independently verified annotated tag and its source tree.
 // The fixtures are the exact scripts from that tree, not moving web copies.
 const expected = {
-  version: '0.8.7',
-  tagObject: '60f78437316cdfbd5c5aef43f7a1947a9e35b11f',
-  source: 'a6a0413991c0bd7f3d6601f467c0b5770d0dce0c',
-  unixSha256: '44ab25b1a5b99d7a1a3bb484ea17b323f89a47e43092ca4de4903a9ede6ba72e',
-  unixBlob: '018ca537e0b9fe80f109f154c38456d9c71f7f95',
-  windowsSha256: '7b8549e6cd0d213b7e4e12ace3513f964952d460f1717602d16022f6411b4b5e',
-  windowsBlob: '6b52d955f5fa6bc33048d0ec6bdf1fb0a3cc6f59',
+  version: '0.8.11',
+  tagObject: '0d913358f49e0a3edb0d01d7063cc3660223c54c',
+  source: '2c93e578d8d1a8097b32c1cd89292e339681b77c',
+  unixSha256: '094525f7982caaf534c1a19b2581dbee69a4b766687b593d5adda3f0ba9464a4',
+  unixBlob: 'b0a39d87a1d3d84263d64c380a986e6b55434293',
+  windowsSha256: 'db11ec07928802b5d951824af1c4bc9dfed8c7775b466d781f403a449152323c',
+  windowsBlob: '22ac5bea9144241eadf26f585c2ebdb9f72d0904',
 };
 const repo = join(__dirname, '../../..');
 const release = readFileSync(join(repo, 'apps/web/src/lib/public-release.ts'), 'utf8');
@@ -22,7 +22,7 @@ function exported(name) {
   assert.ok(match, `missing ${name}`);
   return match[1];
 }
-const fixture = (name) => readFileSync(join(__dirname, 'fixtures/release-v0.8.7', name));
+const fixture = (name) => readFileSync(join(__dirname, 'fixtures/release-v0.8.11', name));
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const blob = (bytes) => createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex');
 function assertBinding(binding, unix, windows) {
@@ -44,7 +44,7 @@ function actualBinding() {
   };
 }
 
-test('v0.8.7 release source, annotated tag, and installer bytes are bound', () => {
+test('v0.8.11 release source, annotated tag, and installer bytes are bound', () => {
   assertBinding(actualBinding(), fixture('install.sh'), fixture('install.ps1'));
 });
 

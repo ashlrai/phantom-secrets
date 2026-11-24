@@ -16,7 +16,21 @@ unchanged credential. Team invites accept only the hosted API's `member` and
 ## Publication status
 
 This directory is MCP Registry publication source, not an MCP Registry
-publication receipt. The exact 2026-09-29 registry snapshot is:
+publication receipt.
+
+Today, `server.json` names the same version as the workspace `Cargo.toml` and
+both npm wrappers, and its npm package entry points at the matching
+`phantom-secrets-mcp` wrapper. `scripts/release/check-version-parity.mjs`
+enforces that match. The version is this tree's source candidate identity, not a
+publication claim. The newest qualified release is
+[`v0.8.11`](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.8.11),
+published on 2026-11-06: all six native archive targets passed acceptance, and
+both exact npm `0.8.7` packages had verified registry signatures and source
+provenance. This repository records no MCP Registry query after the snapshot
+below. [Distribution status](../docs/distribution-status.md) holds the dated
+evidence for every channel.
+
+The exact 2026-09-29 registry snapshot, kept as history, is:
 
 - the immutable GitHub `v0.7.9` release provides verified CLI and MCP binaries
   for six native targets from exact source
@@ -43,7 +57,7 @@ an unpinned npm or package-runner command to configure the current runtime.
 ## Verified local runtime
 
 Install both current binaries from the
-[`v0.8.7` GitHub release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.8.7).
+[`v0.8.11` GitHub release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.8.11).
 The macOS trusted formula is separately reviewed (observed at `v0.7.9` after the tap bump):
 
 ```bash
@@ -67,12 +81,13 @@ phantom setup --client claude
 phantom setup --client cursor
 phantom setup --client windsurf
 phantom setup --client codex
+phantom setup --client gemini
 ```
 
-Released `v0.8.7` records its bundled local `phantom mcp serve` command when it
+Released `v0.8.11` records its bundled local `phantom mcp serve` command when it
 can resolve that executable, otherwise it looks for local `phantom-mcp`. Setup
 has no network package-runner fallback and fails closed when no local MCP
-runtime is available. Install both verified `v0.8.7` GitHub release binaries and inspect the
+runtime is available. Install both verified `v0.8.11` GitHub release binaries and inspect the
 generated command.
 
 Manual stdio configuration can call the reviewed local executable:
@@ -218,6 +233,23 @@ publisher:
 
 These prerequisites do not indicate that npm or MCP Registry publication has
 occurred.
+
+## Part of the Ashlr ecosystem
+
+Phantom Secrets is one of the open-source tools from [Ashlr](https://ashlr.ai).
+Together they aim to be an autonomous, code-first, agent-native software
+factory: agents write, test, review, and ship the code, and the human acts as a
+passive board member. The long-term goal is open-source recursive
+self-improvement (RSI), where agents improve the tools they build with.
+
+This server is the MCP side of the `phantom` CLI. Phantom Secrets keeps real
+API-key values out of agent context, so agents can call APIs without holding
+the keys. The other tools (Phantom, Locus, Lexicon, Ashlr MD, Ashlr Stack, and
+ashlr-plugin) each install and run on their own; see the
+[ecosystem list](https://github.com/ashlrai/phantom-secrets#part-of-the-ashlr-ecosystem).
+Coding agents make most changes to this repository through normal pull requests
+and CI; see
+[how agents work on this repo](https://github.com/ashlrai/phantom-secrets#how-agents-work-on-this-repo).
 
 ## License
 

@@ -12,7 +12,7 @@ pub mod transaction_lock;
 
 pub use init_transaction::{
     commit_init, commit_init_if_project_identity, commit_init_with_source_vault, InitFile,
-    InitReceipt, InitSecret, InitTransactionError,
+    InitReceipt, InitSecret, InitTransactionError, NAMESPACE_DURABILITY_WARNING,
 };
 pub use managed_remove::ManagedRemovePlan;
 pub use metadata::{RotationPolicy, SecretMetadata};

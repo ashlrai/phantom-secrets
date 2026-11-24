@@ -1,18 +1,25 @@
+use crate::commands::report_json::with_schema_pretty;
 use anyhow::{Context, Result};
 use colored::Colorize;
 use phantom_core::config::PhantomConfig;
 use phantom_core::dotenv::DotenvFile;
 use phantom_core::token::PhantomToken;
+use serde_json::{json, to_string_pretty};
 
 /// Generate a .env.example file from the current .env.
 /// Secret values are replaced with descriptive placeholders.
 /// Non-secret values and public keys are preserved as-is.
-pub fn run(output: &str) -> Result<()> {
+pub fn run(output: &str, json: bool) -> Result<()> {
     let project_dir = std::env::current_dir()?;
-    run_in(&project_dir, output, || {})
+    run_in(&project_dir, output, json, || {})
 }
 
-fn run_in(project_dir: &std::path::Path, output: &str, after_lock: impl FnOnce()) -> Result<()> {
+fn run_in(
+    project_dir: &std::path::Path,
+    output: &str,
+    json: bool,
+    after_lock: impl FnOnce(),
+) -> Result<()> {
     let output_path = validated_output_path(project_dir, output)?;
     let transaction_lock = phantom_vault::acquire_project_transaction_lock(project_dir)
         .context("Failed to acquire the project transaction lock")?;
@@ -64,7 +71,17 @@ fn run_in(project_dir: &std::path::Path, output: &str, after_lock: impl FnOnce()
     let entries = dotenv.entries();
 
     if entries.is_empty() {
-        println!("{} .env is empty.", "!".yellow().bold());
+        if json {
+            println!(
+                "{}",
+                with_schema_pretty(
+                    to_string_pretty(&env_json_body(false, None, 0, 0, true, &[]))?,
+                    "env.v1",
+                )?
+            );
+        } else {
+            println!("{} .env is empty.", "!".yellow().bold());
+        }
         return Ok(());
     }
 
@@ -73,23 +90,46 @@ fn run_in(project_dir: &std::path::Path, output: &str, after_lock: impl FnOnce()
     let content = dotenv
         .generate_example_content(config.as_ref())
         .context("Managed dotenv is malformed; no example was written")?;
-    match output_target.replace_if_exact(None, content.as_bytes())? {
-        phantom_core::fs::AnchoredEffect::Durable(_) => {}
+    let (durability_verified, warnings) = match output_target
+        .replace_if_exact(None, content.as_bytes())?
+    {
+        phantom_core::fs::AnchoredEffect::Durable(_) => durability_signal(false, String::new()),
         phantom_core::fs::AnchoredEffect::CommittedVerifiedButDurabilityUncertain { .. } => {
-            eprintln!(
-                "warning: {} was created and verified, but directory crash durability is not provable on this platform",
-                output_path.display()
-            );
+            // JSON carries the warning. Human output still prints it.
+            // The filename stays in the JSON `output` field and the human
+            // success line, not in this sentence.
+            if !json {
+                phantom_core::interactive_warn::emit(EXAMPLE_DURABILITY_WARNING);
+            }
+            durability_signal(true, EXAMPLE_DURABILITY_WARNING.to_string())
         }
         phantom_core::fs::AnchoredEffect::CommittedButUncertain { error, .. } => anyhow::bail!(
             "{} was created, but durability could not be verified: {error}",
             output_path.display()
         ),
-    }
+    };
 
     let secret_count =
         dotenv.real_secret_entries().len() + entries.iter().filter(|e| e.is_phantom).count();
     let config_count = entries.len() - secret_count;
+
+    if json {
+        println!(
+            "{}",
+            with_schema_pretty(
+                to_string_pretty(&env_json_body(
+                    true,
+                    Some(output),
+                    secret_count,
+                    config_count,
+                    durability_verified,
+                    &warnings,
+                ))?,
+                "env.v1",
+            )?
+        );
+        return Ok(());
+    }
 
     println!(
         "{} Generated {} ({} secrets masked, {} config values preserved)",
@@ -104,6 +144,44 @@ fn run_in(project_dir: &std::path::Path, output: &str, after_lock: impl FnOnce()
     );
 
     Ok(())
+}
+
+/// Stderr and `env.v1` `warnings` text when an example file committed and
+/// verified, but directory crash durability is not provable. The filename
+/// stays in the `output` field. This sentence never includes a path.
+pub(crate) const EXAMPLE_DURABILITY_WARNING: &str =
+    "warning: example file was created and verified, but directory crash durability is not provable on this platform";
+
+/// `uncertain` is the `CommittedVerifiedButDurabilityUncertain` effect.
+/// The warning string is kept for the JSON `warnings` array and is empty
+/// when durability was verified.
+pub(crate) fn durability_signal(uncertain: bool, warning: String) -> (bool, Vec<String>) {
+    if uncertain {
+        (false, vec![warning])
+    } else {
+        (true, Vec::new())
+    }
+}
+
+pub(crate) fn env_json_body(
+    written: bool,
+    output: Option<&str>,
+    secrets_masked: usize,
+    config_preserved: usize,
+    durability_verified: bool,
+    warnings: &[String],
+) -> serde_json::Value {
+    let mut body = json!({
+        "written": written,
+        "durability_verified": durability_verified,
+        "warnings": warnings,
+    });
+    if written {
+        body["output"] = json!(output.unwrap_or_default());
+        body["secrets_masked"] = json!(secrets_masked);
+        body["config_preserved"] = json!(config_preserved);
+    }
+    body
 }
 
 pub(super) fn resolve_dotenv_anchored(
@@ -217,6 +295,7 @@ mod tests {
         run_in(
             &crate::test_support::canonical_tempdir_path(&project),
             ".env.example",
+            false,
             || {},
         )
         .unwrap();
@@ -276,7 +355,7 @@ mod tests {
         let source = "API_KEY=plaintext-must-not-escape\nBROKEN_RECORD\n";
         std::fs::write(project.path().join(".env"), source).unwrap();
 
-        let error = run_in(project.path(), ".env.example", || {}).unwrap_err();
+        let error = run_in(project.path(), ".env.example", false, || {}).unwrap_err();
 
         assert!(error.to_string().contains("malformed"));
         assert!(!project.path().join(".env.example").exists());
@@ -295,7 +374,7 @@ mod tests {
         std::fs::write(project.path().join(".env"), "APP_NAME=demo\n").unwrap();
         std::fs::write(project.path().join(".phantom.toml"), "[phantom\nversion = ").unwrap();
 
-        let error = run_in(project.path(), ".env.example", || {}).unwrap_err();
+        let error = run_in(project.path(), ".env.example", false, || {}).unwrap_err();
 
         assert!(format!("{error:#}").contains("Failed to load .phantom.toml"));
         assert!(!project.path().join(".env.example").exists());
@@ -306,7 +385,7 @@ mod tests {
         let project = tempfile::tempdir().unwrap();
         std::fs::write(project.path().join(".env"), "BROKEN_RECORD\n").unwrap();
 
-        let error = run_in(project.path(), ".env.example", || {}).unwrap_err();
+        let error = run_in(project.path(), ".env.example", false, || {}).unwrap_err();
 
         assert!(error.to_string().contains("malformed"));
         assert!(!project.path().join(".env.example").exists());
@@ -321,7 +400,7 @@ mod tests {
         std::fs::create_dir(&project).unwrap();
         std::fs::write(project.join(".env"), "API_KEY=sk_test_value\n").unwrap();
 
-        run_in(&project, ".env.example", || {
+        run_in(&project, ".env.example", false, || {
             std::fs::rename(&project, &moved).unwrap();
             std::fs::create_dir(&project).unwrap();
             std::fs::write(project.join(".env"), "API_KEY=decoy\n").unwrap();
@@ -334,5 +413,39 @@ mod tests {
             std::fs::read_to_string(project.join(".env")).unwrap(),
             "API_KEY=decoy\n"
         );
+    }
+
+    #[test]
+    fn json_env_reports_uncertain_and_verified_durability() {
+        let warning = super::EXAMPLE_DURABILITY_WARNING.to_string();
+        let (verified, warnings) = super::durability_signal(true, warning.clone());
+        assert!(!verified);
+        assert_eq!(warnings, vec![warning.clone()]);
+        let body = super::env_json_body(
+            true,
+            Some("/tmp/project/.env.example"),
+            1,
+            1,
+            verified,
+            &warnings,
+        );
+        assert_eq!(body["durability_verified"], false);
+        assert_eq!(body["output"], "/tmp/project/.env.example");
+        assert_eq!(body["warnings"].as_array().unwrap().len(), 1);
+        let warning_text = body["warnings"][0].as_str().unwrap();
+        assert_eq!(warning_text, super::EXAMPLE_DURABILITY_WARNING);
+        assert!(warning_text.contains("durability"));
+        assert!(!warning_text.contains("sk-"));
+        assert!(!warning_text.contains('/'));
+        assert!(!warning_text.contains('\\'));
+        assert!(!warning_text.contains(".env"));
+        assert!(!warning_text.contains("tmp"));
+
+        let (verified, warnings) = super::durability_signal(false, warning);
+        assert!(verified);
+        assert!(warnings.is_empty());
+        let body = super::env_json_body(true, Some(".env.example"), 1, 1, verified, &warnings);
+        assert_eq!(body["durability_verified"], true);
+        assert!(body["warnings"].as_array().unwrap().is_empty());
     }
 }

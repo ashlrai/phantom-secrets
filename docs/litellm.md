@@ -17,7 +17,7 @@ LITELLM_MASTER_KEY=sk-<your own random value> \
   phantom exec -- litellm --config examples/litellm/config.yaml --host 127.0.0.1 --port 4000
 ```
 
-- Why `phantom exec` works here: LiteLLM uses Phantom's built-in `openai` route through the exported `OPENAI_BASE_URL`. It does not need a custom route, which `phantom exec` refuses (see "LiteLLM as an upstream" below). Putting LiteLLM upstream of Phantom is the other direction and needs `phantom start`.
+- Why `phantom exec` works here: LiteLLM uses Phantom's built-in `openai` route through the exported `OPENAI_BASE_URL`. It does not need a custom route, which `phantom exec` and `phantom start` both refuse (see "LiteLLM as an upstream" below). Putting LiteLLM upstream of Phantom is the other direction; it needs a custom route, so no command can run it today.
 - Not tested end to end: this exact command with a real LiteLLM and a real provider. What was tested is listed under "What was tested".
 
 ## Pin and verify LiteLLM first
@@ -97,7 +97,7 @@ Manual smoke test with a real LiteLLM, run on 2026-10-18 with `examples/litellm/
 - The real Phantom proxy code, started by a test harness (`crates/phantom-proxy/examples/litellm_loopback_harness.rs`) with an `openai` route whose upstream is a plain-HTTP mock on 127.0.0.1. The harness is needed because routes built from `.phantom.toml` are always `https://`, so a mock upstream cannot be reached through the CLI path. It copies the `phantom exec` proxy settings (session token in the URL path, `/v1` added for the OpenAI route).
 - One non-streaming `POST /v1/chat/completions` through LiteLLM. The mock recorded the request. Checks that passed: the mock received the injected stand-in credential in `Authorization`; it never saw the `phm_` placeholder, the LiteLLM master key, or the Phantom session token; the request path reached the mock as `/v1/chat/completions`; the LiteLLM log at default verbosity and the LiteLLM environment never contained the stand-in real credential.
 
-In CI, on every change: `crates/phantom-proxy/tests/litellm_gateway_hermetic_test.rs` (`cargo test -p phantom-secrets-proxy --test litellm_gateway_hermetic_test`). It needs no LiteLLM and no network beyond 127.0.0.1. The test plays the LiteLLM client with only the `phm_` placeholder and the `phantom exec` base URL, against the real proxy built the way `phantom exec` builds it, with a mock OpenAI-compatible upstream and a second mock that no route names. It checks that:
+In the daily full CI run (pull requests do not run it): `crates/phantom-proxy/tests/litellm_gateway_hermetic_test.rs` (`cargo test -p phantom-secrets-proxy --test litellm_gateway_hermetic_test`). It needs no LiteLLM and no network beyond 127.0.0.1. The test plays the LiteLLM client with only the `phm_` placeholder and the `phantom exec` base URL, against the real proxy built the way `phantom exec` builds it, with a mock OpenAI-compatible upstream and a second mock that no route names. It checks that:
 
 - the placeholder becomes the real key only at the proxy, only in the configured `Authorization` header, and only toward the configured upstream; a placeholder copied into the request body is passed through, never resolved;
 - the second mock receives nothing when the client sets a foreign `Host` header, sends an absolute-form URL, adds `X-Forwarded-Host`, `Forwarded` or `X-Original-URL`, or when the upstream answers with a redirect to it (the proxy returns the 307 and does not follow it);
@@ -134,7 +134,7 @@ LITELLM_MASTER_KEY=sk-<your own random value> \
 
 ## LiteLLM as an upstream: key headers
 
-This section covers the other direction: a Phantom route whose upstream is a LiteLLM proxy reached over HTTPS, with the LiteLLM virtual key in the vault and only its `phm_` placeholder in the client.
+This section covers the other direction: a Phantom route whose upstream is a LiteLLM proxy reached over HTTPS, with the LiteLLM virtual key in the vault and only its `phm_` placeholder in the client. It describes how the proxy treats such a route; no CLI command serves one today (see "Limits").
 
 LiteLLM's docs (checked 2026-10-19) name these headers as places its proxy reads a key from:
 
@@ -157,11 +157,11 @@ For such a route the proxy removes the client's copy of that header, injects the
 
 Limits:
 
-- `phantom exec` refuses this route and runs only Phantom's exact built-in routes; a self-hosted LiteLLM has no fixed host, so it cannot be one. `phantom start` serves it from `.phantom.toml`. Why the difference: `phantom start` is run by a person on project config they have reviewed. `phantom exec` launches an agent, and anything in the repository, `.phantom.toml` included, may have been written by that agent or by an untrusted change, so accepting custom routes there would widen the attack surface. A test pins exec's refusal (`custom_litellm_route_is_refused_by_exec_but_built_for_start` in `crates/phantom-cli/src/commands/exec.rs`).
+- `phantom exec` and `phantom start` both refuse this route before vault access and run only Phantom's exact built-in routes; a self-hosted LiteLLM has no fixed host, so it cannot be one. The reason: anything in the repository, `.phantom.toml` included, may have been written by an agent or by an untrusted change, and the file has no integrity protection. Approving a custom route is not supported yet (see [SECURITY.md](../SECURITY.md)). A test pins the shared launch check's refusal and that the proxy's route registry still builds the route (`custom_litellm_route_is_refused_by_exec_but_built_for_start` in `crates/phantom-cli/src/commands/exec.rs`).
 - The route is always `https://`. A LiteLLM on plain HTTP loopback is not supported (see "Not supported").
 - Only the one configured header is swapped. A `phm_` placeholder the client puts in a different header is forwarded as is. LiteLLM then rejects a placeholder, not a real key.
 
-Tested in CI by `crates/phantom-proxy/tests/litellm_upstream_headers_test.rs` (`cargo test -p phantom-secrets-proxy --test litellm_upstream_headers_test`). For each of the seven headers above it builds the route from a `.phantom.toml`-style service, points it at a plain-HTTP mock on 127.0.0.1, and checks that the mock gets the real key exactly once in that header, never sees the placeholder or the proxy token, and that echoes of the key (whole or its last half, in a response header and a JSON body) do not reach the client. A second test does the same for a streamed (`text/event-stream`, chunked) response that echoes the key split across chunks, then its last half, and checks that the stream still completes with `data: [DONE]`. Not tested: a real LiteLLM and `phantom start` end to end.
+Tested in the daily full CI run by `crates/phantom-proxy/tests/litellm_upstream_headers_test.rs` (`cargo test -p phantom-secrets-proxy --test litellm_upstream_headers_test`); pull requests do not run it. For each of the seven headers above it builds the route from a `.phantom.toml`-style service, points it at a plain-HTTP mock on 127.0.0.1, and checks that the mock gets the real key exactly once in that header, never sees the placeholder or the proxy token, and that echoes of the key (whole or its last half, in a response header and a JSON body) do not reach the client. A second test does the same for a streamed (`text/event-stream`, chunked) response that echoes the key split across chunks, then its last half, and checks that the stream still completes with `data: [DONE]`. Not tested: a real LiteLLM end to end; no CLI command serves this route today.
 
 ## Not supported
 

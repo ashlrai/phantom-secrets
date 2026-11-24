@@ -16,6 +16,7 @@ pub mod fs;
 pub mod gitignore;
 pub mod home;
 pub mod importers;
+pub mod interactive_warn;
 pub mod issuance;
 pub mod leak_correlation;
 pub mod linked_checkout;
@@ -31,6 +32,7 @@ pub mod report;
 pub mod rotation_provider;
 pub mod rotation_strategy;
 pub mod secret_detector;
+pub mod secret_ref;
 pub mod sync;
 pub mod team_crypto;
 #[cfg(feature = "pq-hybrid")]

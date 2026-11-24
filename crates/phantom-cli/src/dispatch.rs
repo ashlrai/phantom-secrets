@@ -42,7 +42,19 @@ pub(crate) fn run() -> anyhow::Result<()> {
         .with_writer(std::io::stderr)
         .init();
 
-    match cli.command {
+    let versioned_json = global_json
+        && matches!(
+            &cli.command,
+            Commands::Env { .. }
+                | Commands::Audit {
+                    action: AuditAction::Path
+                }
+                | Commands::Add { generate: true, .. }
+        );
+    // Durability stderr is suppressed only inside `env` and `add --generate`,
+    // whose JSON receipts carry the warning. `audit path` has no durability
+    // field, so this dispatch does not arm a suppress guard.
+    let result = match cli.command {
         Commands::GitCredential { operation, secret } => {
             commands::git_credential::run(operation, &secret)
         }
@@ -97,7 +109,7 @@ pub(crate) fn run() -> anyhow::Result<()> {
             } else {
                 commands::add::StdinLines::SingleOnly
             };
-            commands::add::run(&name, value, stdin, lines, dry_run, generate)
+            commands::add::run(&name, value, stdin, lines, dry_run, generate, global_json)
         }
         Commands::Remove { name, dry_run } => commands::remove::run(&name, dry_run),
         Commands::Reveal {
@@ -206,7 +218,15 @@ pub(crate) fn run() -> anyhow::Result<()> {
             cmd,
             bind_source,
             scrub_output,
-        } => commands::exec::run(&cmd, None, bind_source.as_deref(), cli.quiet, scrub_output),
+            refs_only,
+        } => commands::exec::run(
+            &cmd,
+            None,
+            bind_source.as_deref(),
+            cli.quiet,
+            scrub_output,
+            refs_only,
+        ),
         Commands::Start { daemon } => commands::start::run(daemon),
         Commands::Stop => commands::stop::run(),
         Commands::Check {
@@ -249,7 +269,7 @@ pub(crate) fn run() -> anyhow::Result<()> {
             dry_run,
             only,
         } => commands::sync::run(platform, project, only, dry_run, cli.json),
-        Commands::Env { output } => commands::env::run(&output),
+        Commands::Env { output } => commands::env::run(&output, global_json),
         Commands::Export {
             output,
             passphrase,
@@ -333,7 +353,7 @@ pub(crate) fn run() -> anyhow::Result<()> {
             AuditAction::Tail { op, name } => {
                 commands::audit::run_tail(op.as_deref(), name.as_deref())
             }
-            AuditAction::Path => commands::audit::run_path(),
+            AuditAction::Path => commands::audit::run_path(global_json),
             AuditAction::Verify { with_context } => {
                 commands::audit::run_verify(with_context, global_json)
             }
@@ -512,5 +532,10 @@ pub(crate) fn run() -> anyhow::Result<()> {
                 commands::grant::revoke::run_revoke(&provider, json || global_json)
             }
         },
+    };
+    if versioned_json {
+        result.map_err(|error| error.context(crate::cli_json::JsonCommandError))
+    } else {
+        result
     }
 }

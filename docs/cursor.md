@@ -24,7 +24,7 @@ contract enforces 54 unique tools; runtime `tools/list` is canonical.
 
 ### Step 1: install Phantom
 
-Install the reviewed `v0.8.7` binary using the platform-specific, checksum-
+Install the reviewed `v0.8.11` binary using the platform-specific, checksum-
 verified path in [getting started](./getting-started.md#install), then run
 `phantom init` in the project.
 
@@ -47,7 +47,7 @@ This writes `~/.cursor/mcp.json` with the `phantom` MCP server entry:
 }
 ```
 
-Install both `v0.8.7` release binaries before setup. Version `0.8.7` records the
+Install both `v0.8.11` release binaries before setup. Version `0.8.11` records the
 running `phantom` executable with `mcp serve` when it can resolve that runtime,
 otherwise it looks for a local `phantom-mcp`. Setup has no network
 package-runner fallback and fails closed when neither local runtime is
@@ -55,13 +55,21 @@ executable. Keep both verified binaries installed and inspect the generated
 entry. The config is global and applies to every Cursor
 workspace.
 
-To see what would be written without modifying your config:
+Preview before you write anything:
 
 ```bash
-phantom setup --client cursor --print
+phantom setup --client cursor --print     # the snippet, on stdout
+phantom setup --client cursor --dry-run   # the change to ~/.cursor/mcp.json, as a diff
 ```
 
-After running setup, **restart Cursor** for the MCP server to activate.
+If the file does not parse, or already has a `phantom` entry that differs from
+what setup would write, setup stops, names the problem, and changes nothing.
+Re-run with `--replace` to overwrite a differing entry; setup writes a backup
+and a manifest first, and `phantom setup --undo` shows how to reverse it
+(`--undo --apply` does it).
+
+After running setup, **restart Cursor** for the MCP server to activate. To
+confirm the wiring without writing anything, run `phantom setup --status`.
 
 ### Step 3: run Cursor terminal sessions with the proxy active
 
@@ -141,6 +149,11 @@ Check that `~/.cursor/mcp.json` exists and contains the `phantom` entry:
 ```bash
 cat ~/.cursor/mcp.json
 ```
+
+Or run `phantom setup --status`, which reports `wired`, `not_wired`,
+`no_config`, or `unreadable` for Cursor without printing the file. If the
+entry is stale, `phantom setup --client cursor` refuses to overwrite it; check
+the difference with `--dry-run`, then re-run with `--replace`.
 
 If it looks correct, restart Cursor. Cursor reads MCP config on startup only. If
 setup reports that the local MCP runtime is missing, reinstall both verified

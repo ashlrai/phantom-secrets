@@ -2,16 +2,18 @@
 
 ## TL;DR
 
+1. Download the [`v0.8.11` archive for your platform](#exact-github-assets-macos-linux-and-windows),
+   check its `.sha256`, and put `phantom` and `phantom-mcp` on `PATH`.
+2. In your project:
+
 ```bash
-brew tap ashlrai/phantom
-brew trust --formula ashlrai/phantom/phantom
-brew install ashlrai/phantom/phantom
 phantom init               # protects your .env
 phantom agent doctor       # verify the repo is safe for AI agents
 phantom exec -- claude     # run Claude Code through the local proxy
 ```
 
-The Homebrew block is the macOS path. See [distribution status](distribution-status.md) for dated npm, Homebrew, crates.io, and MCP Registry evidence. Prefer the checksum-verified `v0.8.7` GitHub assets for an exact install. Select the matching platform asset below on Linux or Windows, or to verify an exact archive directly. A timed Linux walk-through is in [First run](FIRST-RUN.md).
+The archives cover macOS, Linux, and Windows. The Homebrew formula was last
+observed at `v0.7.9`, whose `agent doctor` does not accept `--json`. See [distribution status](distribution-status.md) for dated npm, Homebrew, crates.io, and MCP Registry evidence. A timed Linux walk-through is in [First run](FIRST-RUN.md).
 
 That's the local setup. Keep agent dotenv reads denied and launch supported API
 work through `phantom exec`; Phantom reduces credential exposure, but it does
@@ -37,29 +39,13 @@ For a detailed breakdown of assets protected, threat actors, mitigations, and kn
 
 ## Install
 
-### Homebrew (macOS; last observed formula v0.7.9)
-
-```bash
-brew tap ashlrai/phantom
-brew trust --formula ashlrai/phantom/phantom
-brew install ashlrai/phantom/phantom
-```
-
-The formula was last observed installing both `phantom` and `phantom-mcp` from the
-immutable [`v0.7.9` release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.9).
-Installs from the former `v0.7.8` formula registered Claude Code MCP in the
-legacy location; after `brew upgrade`, rerun `phantom setup --client claude`
-to migrate, or see the [Claude Code guide](./claude-code.md) for the manual
-step. Homebrew publication is independently tested and maintained from GitHub
-Releases; use a direct asset below when you want explicit archive verification.
-
 ### Exact GitHub assets (macOS, Linux, and Windows)
 
-The immutable [`v0.8.7` release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.8.7)
+The immutable [`v0.8.11` release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.8.11)
 contains six native archives, each with a checksum sidecar and SPDX document,
-plus the aggregate [`SHA256SUMS`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.7/SHA256SUMS)
+plus the aggregate [`SHA256SUMS`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.11/SHA256SUMS)
 file. All six release targets passed native acceptance before publication in
-[workflow 42262099223](https://github.com/ashlrai/phantom-secrets/actions/runs/42262099223).
+[workflow 43947823026](https://github.com/ashlrai/phantom-secrets/actions/runs/43947823026).
 
 The macOS and Linux installer commands on the [landing page](https://phm.dev/#install)
 create a temporary `phantom-install.*` staging directory under `TMPDIR`, or
@@ -71,14 +57,14 @@ not guaranteed. These details apply to the landing-page commands, not the
 manual archive steps below.
 
 <!-- fresh:begin docs-release-asset-table -->
-| Platform | `v0.8.7` archive | Published checksum |
+| Platform | `v0.8.11` archive | Published checksum |
 |---|---|---|
-| macOS Apple silicon | [`phantom-aarch64-apple-darwin.tar.gz`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.7/phantom-aarch64-apple-darwin.tar.gz) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.7/phantom-aarch64-apple-darwin.tar.gz.sha256) |
-| macOS Intel | [`phantom-x86_64-apple-darwin.tar.gz`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.7/phantom-x86_64-apple-darwin.tar.gz) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.7/phantom-x86_64-apple-darwin.tar.gz.sha256) |
-| Linux x86_64 | [`phantom-x86_64-unknown-linux-gnu.tar.gz`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.7/phantom-x86_64-unknown-linux-gnu.tar.gz) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.7/phantom-x86_64-unknown-linux-gnu.tar.gz.sha256) |
-| Linux ARM64 | [`phantom-aarch64-unknown-linux-gnu.tar.gz`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.7/phantom-aarch64-unknown-linux-gnu.tar.gz) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.7/phantom-aarch64-unknown-linux-gnu.tar.gz.sha256) |
-| Windows x64 | [`phantom-x86_64-pc-windows-msvc.zip`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.7/phantom-x86_64-pc-windows-msvc.zip) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.7/phantom-x86_64-pc-windows-msvc.zip.sha256) |
-| Windows ARM64 | [`phantom-aarch64-pc-windows-msvc.zip`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.7/phantom-aarch64-pc-windows-msvc.zip) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.7/phantom-aarch64-pc-windows-msvc.zip.sha256) |
+| macOS Apple silicon | [`phantom-aarch64-apple-darwin.tar.gz`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.11/phantom-aarch64-apple-darwin.tar.gz) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.11/phantom-aarch64-apple-darwin.tar.gz.sha256) |
+| macOS Intel | [`phantom-x86_64-apple-darwin.tar.gz`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.11/phantom-x86_64-apple-darwin.tar.gz) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.11/phantom-x86_64-apple-darwin.tar.gz.sha256) |
+| Linux x86_64 | [`phantom-x86_64-unknown-linux-gnu.tar.gz`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.11/phantom-x86_64-unknown-linux-gnu.tar.gz) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.11/phantom-x86_64-unknown-linux-gnu.tar.gz.sha256) |
+| Linux ARM64 | [`phantom-aarch64-unknown-linux-gnu.tar.gz`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.11/phantom-aarch64-unknown-linux-gnu.tar.gz) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.11/phantom-aarch64-unknown-linux-gnu.tar.gz.sha256) |
+| Windows x64 | [`phantom-x86_64-pc-windows-msvc.zip`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.11/phantom-x86_64-pc-windows-msvc.zip) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.11/phantom-x86_64-pc-windows-msvc.zip.sha256) |
+| Windows ARM64 | [`phantom-aarch64-pc-windows-msvc.zip`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.11/phantom-aarch64-pc-windows-msvc.zip) | [`sha256`](https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.11/phantom-aarch64-pc-windows-msvc.zip.sha256) |
 <!-- fresh:end -->
 
 Download the archive and its sidecar, then verify before extraction. On Linux,
@@ -90,7 +76,7 @@ Linux x86_64, as one shell script:
 
 ```bash
 archive=phantom-x86_64-unknown-linux-gnu.tar.gz
-base=https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.7
+base=https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.11
 curl -fsSL -o "$archive" "$base/$archive"
 curl -fsSL -o "$archive.sha256" "$base/$archive.sha256"
 sha256sum -c "$archive.sha256"
@@ -105,16 +91,33 @@ phantom-mcp --version
 Use the ARM64 archive name from the table on ARM64 Linux. The same steps on
 the measurement VM are recorded in [First run](FIRST-RUN.md).
 
+### Homebrew (macOS; last observed formula v0.7.9)
+
+```bash
+brew tap ashlrai/phantom
+brew trust --formula ashlrai/phantom/phantom
+brew install ashlrai/phantom/phantom
+```
+
+The formula was last observed installing both `phantom` and `phantom-mcp` from the
+immutable [`v0.7.9` release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.7.9),
+not `v0.8.11`. That version's `phantom agent doctor` does not accept `--json`;
+use the archives above for the current release.
+Installs from the former `v0.7.8` formula registered Claude Code MCP in the
+legacy location; after `brew upgrade`, rerun `phantom setup --client claude`
+to migrate, or see the [Claude Code guide](./claude-code.md) for the manual
+step.
+
 ### Build the exact release source
 
 ```bash
 git clone https://github.com/ashlrai/phantom-secrets.git
 cd phantom-secrets
-git checkout a6a0413991c0bd7f3d6601f467c0b5770d0dce0c
+git checkout 2c93e578d8d1a8097b32c1cd89292e339681b77c
 cargo build --release --locked --bin phantom --bin phantom-mcp
 ```
 
-The full SHA above is the source commit resolved by `v0.8.7`. See [distribution status](distribution-status.md) for dated npm, Homebrew, crates.io, and MCP Registry evidence. Prefer the checksum-verified `v0.8.7` GitHub assets for an exact install.
+The full SHA above is the source commit resolved by `v0.8.11`. See [distribution status](distribution-status.md) for dated npm, Homebrew, crates.io, and MCP Registry evidence. Prefer the checksum-verified `v0.8.11` GitHub assets for an exact install.
 
 ### Verify
 
@@ -122,8 +125,8 @@ The full SHA above is the source commit resolved by `v0.8.7`. See [distribution 
 ```bash
 phantom --version
 phantom-mcp --version
-# phantom 0.8.7
-# phantom-mcp 0.8.7
+# phantom 0.8.11
+# phantom-mcp 0.8.11
 ```
 <!-- fresh:end -->
 
@@ -466,7 +469,7 @@ phantom setup --status            # read-only client wiring status
 phantom setup --client claude --print   # snippet to stdout for any other client
 ```
 
-Install both `v0.8.7` release binaries before setup. Version `0.8.7` records the
+Install both `v0.8.11` release binaries before setup. Version `0.8.11` records the
 running `phantom` executable with `mcp serve` when it can resolve that
 executable, otherwise it looks for a local standalone `phantom-mcp`. Setup has
 no network package-runner fallback and fails closed when neither local runtime
@@ -479,7 +482,7 @@ is the canonical catalog.
 
 Restart the AI tool after running `phantom setup` so it picks up the new config.
 
-Run `phantom agent doctor` after setup to confirm the repo is ready before handing work to Claude Code, Codex, Cursor, Windsurf, or another agent.
+Run `phantom agent doctor` after setup to confirm the repo is ready before handing work to Claude Code, Codex, Cursor, Windsurf, Gemini CLI, or another agent.
 
 ---
 
@@ -666,18 +669,18 @@ export, so avoid launching agents outside `phantom exec` while it is set.
 
 ### An older registry-based install command fails
 
-The reviewed binaries ship from the immutable `v0.8.7` GitHub Release, not the
+The reviewed binaries ship from the immutable `v0.8.11` GitHub Release, not the
 older registry tracks. Download and verify the platform asset above, or build
 the exact tagged source:
 
 ```bash
 git clone https://github.com/ashlrai/phantom-secrets.git
 cd phantom-secrets
-git checkout a6a0413991c0bd7f3d6601f467c0b5770d0dce0c
+git checkout 2c93e578d8d1a8097b32c1cd89292e339681b77c
 cargo build --release --locked --bin phantom --bin phantom-mcp
 ```
 
-The full SHA above is the source commit resolved by `v0.8.7`.
+The full SHA above is the source commit resolved by `v0.8.11`.
 
 ### Claude Code cannot read `.env` after setup — is this broken?
 
@@ -716,4 +719,22 @@ paths, and unknown aliases are rejected before browser access.
 - [Troubleshooting](./troubleshooting.md) — extended issue reference
 - [Threat model](../THREAT_MODEL.md) — assets, actors, mitigations, known gaps, cryptography summary
 - [GitHub repository](https://github.com/ashlrai/phantom-secrets) — source, issues, releases
-- [phm.dev](https://phm.dev) — pricing, cloud sync, team features
+- [Agent quickstart](./agent-quickstart.md) — the value-free command path for an AI agent
+- [phm.dev](https://phm.dev) — hosted site; cloud sync and team features are not yet commissioned for authenticated use (see [Dashboard](#dashboard))
+
+## Where Phantom fits
+
+Phantom Secrets is one of the open-source tools from [Ashlr](https://ashlr.ai).
+Together they aim to be an autonomous, code-first, agent-native software
+factory: agents write, test, review, and ship the code, and the human acts as a
+passive board member. The long-term goal is open-source recursive
+self-improvement (RSI), where agents improve the tools they build with.
+
+This repo's part is keeping real API-key values out of agent context. The other
+tools (Phantom, Locus, Lexicon, Ashlr MD, Ashlr Stack, and ashlr-plugin) each
+install and run on their own; the README's
+[ecosystem section](../README.md#part-of-the-ashlr-ecosystem) links them.
+
+Coding agents make most changes to this repo through normal pull requests and
+CI. See [How agents work on this repo](../README.md#how-agents-work-on-this-repo)
+and [AGENTS.md](../AGENTS.md).

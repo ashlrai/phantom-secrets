@@ -1,6 +1,6 @@
 cff-version: 1.2.0
 message: >-
-  The immutable v0.8.7 GitHub release is bound to the verified source commit.
+  The immutable v0.8.11 GitHub release is bound to the verified source commit.
   Include the repository URL and full commit SHA when citing a commit.
 title: Phantom
 type: software
@@ -10,8 +10,8 @@ authors:
 repository-code: https://github.com/ashlrai/phantom-secrets
 url: https://phm.dev
 license: MIT
-version: 0.8.7
-date-released: 2026-11-06
+version: 0.8.11
+date-released: 2026-11-16
 keywords:
   - AI agents
   - credential management

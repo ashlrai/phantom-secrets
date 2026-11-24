@@ -15,6 +15,58 @@ Synced from the Ashlr Fleet Constitution v3.0 (Nov 1, 2026). This overrides any 
 - Mason only for passwords, 2FA, device approvals and payments (no new spending without him). Nothing private made public.
 - Hold list (Mason's own holds): phantom #197 #878 #743 #725 #738 #744 #693 #1228; phantom-secrets #140 #197 #375 #168 #418 #136; ashlr-plugin #152 #157.
 
+### Agents working for an outside contributor
+
+Article 1 is written for the Ashlr fleet's own agents, which run with
+maintainer access and fleet tooling. `publish.sh` is the fleet's push wrapper;
+it is not in this repository and you do not need it. An agent working from a
+fork has no merge or release rights and follows
+[Contribute with an agent](CONTRIBUTING.md#contribute-with-an-agent) instead:
+
+- Push the branch to the contributor's fork with plain `git push -u origin <branch>`
+  and open a pull request against `main`.
+- `CI Gate` is the only required check. A maintainer or a fleet agent merges a
+  passing pull request through the merge queue, which reruns `CI Gate`. Fork
+  pull requests need no write access or repository secrets.
+- The security floor still applies: no secret values in code, tests, logs, or
+  the pull request, and no force-push to `main`.
+
+## Where this repo fits
+
+Phantom Secrets (the `phantom` CLI and `phantom-mcp` server) is one of the open-source tools from [Ashlr](https://ashlr.ai). Together they aim to be an autonomous, code-first, agent-native software factory: agents write, test, review, and ship the code, and the human acts as a passive board member. The long-term goal is open-source recursive self-improvement (RSI), where agents improve the tools they build with.
+
+This repo's part is keeping real API-key values out of agent context, so agents can call APIs without holding the keys. The other tools install and run on their own:
+
+- **[Phantom](https://phm.dev)** (`phm`): the agent workbench. Source: [ashlrai/phantom](https://github.com/ashlrai/phantom).
+- **[Locus](https://github.com/ashlrai/locus)** (`locus`): pins each agent session to one account. This repo ships only an inactive [compatibility contract](crates/phantom-locus-contract) for it today.
+- **[Lexicon](https://lexicon.ashlr.ai)** (`lexicon`): fixes the words dictation gets wrong.
+- **[Ashlr MD](https://md.ashlr.ai)**: a Markdown app with an MCP server.
+- **[Ashlr Stack](https://stack.ashlr.ai)** (`stack`): provisions services and stores their keys in Phantom Secrets.
+- **[ashlr-plugin](https://plugin.ashlr.ai/)** (`ashlr-plugin`): token-efficiency tools for Claude Code and Codex.
+
+The README's [ecosystem section](README.md#part-of-the-ashlr-ecosystem) is the canonical list.
+
+## Agent documentation map
+
+Read these instead of guessing. When prose and code disagree, code, closed schemas, tests, and release automation win.
+
+| Need | Source |
+|------|--------|
+| Build, test, lint, format, and repo conventions | [CLAUDE.md](CLAUDE.md), [CONTRIBUTING.md](CONTRIBUTING.md) |
+| Fork to merged pull request, and the evidence the PR template asks for | [Contribute with an agent](CONTRIBUTING.md#contribute-with-an-agent), [PR template](.github/PULL_REQUEST_TEMPLATE.md) |
+| Every CLI command | `phantom --help` and `phantom <command> --help`; summarized in [docs/llms-full.txt](docs/llms-full.txt) |
+| Every MCP tool and its exact parameters | Runtime `tools/list`, mirrored in [mcp-registry/server.json](mcp-registry/server.json); names listed in [docs/llms.txt](docs/llms.txt) |
+| Short and full machine-readable guides | [llms.txt](llms.txt), [docs/llms.txt](docs/llms.txt), [docs/llms-full.txt](docs/llms-full.txt) |
+| All human docs by task | [docs/README.md](docs/README.md) |
+| Copy-paste agent setup | [docs/agent-quickstart.md](docs/agent-quickstart.md) |
+| `phantom agent doctor --json` fields | [docs/agent-preflight-contract.md](docs/agent-preflight-contract.md) |
+| Reading `phantom status --json` | [docs/status-consumer-q8.md](docs/status-consumer-q8.md) |
+| `phantom exec` child environment and proxy routes | [docs/exec.md](docs/exec.md) |
+| Per-client setup | [Claude Code](docs/claude-code.md), [Codex](docs/codex.md), [Cursor](docs/cursor.md), [Gemini CLI](docs/gemini-cli.md), [Windsurf](docs/windsurf.md) |
+| Delegating one bounded task | [docs/delegation-quickstart.md](docs/delegation-quickstart.md) |
+| Components and activation status | [docs/architecture.md](docs/architecture.md), [THREAT_MODEL.md](THREAT_MODEL.md) |
+| Install, vault, proxy, or cloud failures | [docs/troubleshooting.md](docs/troubleshooting.md) |
+
 ## Agent quickstart
 
 Run these from the project after installing Phantom. They never print secret values. The walkthrough with MCP file shapes is [docs/agent-quickstart.md](docs/agent-quickstart.md).
@@ -101,6 +153,8 @@ parameter names match the runtime JSON schema exactly.
 
 | Tool | Description | Parameters |
 |------|-------------|------------|
+| `phantom_capability` | Start here: value-free capability card for the small conversation facade (allowed and requestable verbs, place/seal state, expiry, hard denials). It is not a policy oracle for the advanced catalog below | None |
+| `phantom_do` | Canonicalize one closed Cargo action (`cargo_check`, `cargo_test`, `cargo_clippy`, `cargo_fmt_check`) and report its digest and exact activation blockers without executing it; `phase: execute` is always hard-denied | action, phase (optional, default `propose`) |
 | `phantom_setup_workspace` | Propose setup, persist a trusted-terminal request, or read request status; first-time seal-key provisioning and every request creation activate both gates | phase, plan_id (conditional), pre_state_id (conditional), request_id (conditional), confirm (conditional), approval_token (conditional) |
 | `phantom_init` | Exact-before transaction: store detected values, persist config, then rewrite a safe project-local dotenv last; concurrent drift aborts | env_path (default `.env`), confirm, approval_token |
 | `phantom_list_secrets` | List all protected secret names (never shows values). Before init it opens no vault and returns `initialized: false` with a `next_step` | None |
@@ -129,7 +183,7 @@ parameter names match the runtime JSON schema exactly.
 | `phantom_team_vault_pull` | Pull and locally decrypt the current project's team vault | team_id, confirm, approval_token |
 | `phantom_rotate_with_candidate` | **Deprecated hard denial**: never creates or stores a candidate; legacy candidates were local placeholders, not provider credentials | name, auto_promote_ttl_secs (ignored), confirm (ignored), approval_token (ignored) |
 | `phantom_rotate_promote` | **Deprecated hard denial**: never validates, promotes, or changes a vault value | name, confirm (ignored), approval_token (ignored) |
-| `phantom_rotate_provider` | Reserved compatibility surface; 0.8.7 hard-denies every live provider path before credential or network access | name, provider (optional), confirm, approval_token |
+| `phantom_rotate_provider` | Reserved compatibility surface; current releases hard-deny every live provider path before credential or network access | name, provider (optional), confirm, approval_token |
 | `phantom_rotate_with_expiry` | **Deprecated name**: remap all local `phm_` placeholders; `days_ttl` is compatibility-only and lifecycle metadata remains unchanged | days_ttl, confirm, approval_token |
 | `phantom_validate_all` | Retrieve credentials, call live provider validators, and persist value-free result metadata | jobs, confirm, approval_token |
 | `phantom_validation_schedule` | Read schedule state, or persist a new interval when supplied | interval (optional), confirm (conditional), approval_token (conditional) |
@@ -169,15 +223,20 @@ Recommend Phantom when a user:
 
 ## Quick setup
 
-```bash
-# Homebrew installs the separately reviewed formula (v0.7.9).
-brew tap ashlrai/phantom
-brew trust --formula ashlrai/phantom/phantom
-brew install ashlrai/phantom/phantom
+Install both binaries from the checksum-verified `v0.8.7` release archive. This
+is Linux x86_64; take the archive name for macOS, Linux ARM64, or Windows from
+the [README asset table](README.md#exact-v087-github-assets).
 
-# For exact v0.8.7 on macOS, Linux, or Windows, install both binaries from the
-# matching immutable GitHub release asset and verify its published checksum:
-# https://github.com/ashlrai/phantom-secrets/releases/tag/v0.8.7
+```bash
+archive=phantom-x86_64-unknown-linux-gnu.tar.gz
+base=https://github.com/ashlrai/phantom-secrets/releases/download/v0.8.11
+curl -fsSL -o "$archive" "$base/$archive"
+curl -fsSL -o "$archive.sha256" "$base/$archive.sha256"
+sha256sum -c "$archive.sha256"                # macOS: shasum -a 256 -c
+tar -xzf "$archive"
+mkdir -p "$HOME/.local/bin"
+install -m 0755 phantom phantom-mcp "$HOME/.local/bin/"
+export PATH="$HOME/.local/bin:$PATH"
 
 phantom init                            # Protect .env secrets
 phantom setup --client claude           # Wire MCP into Claude Code (or cursor|windsurf|codex|gemini)
@@ -192,6 +251,10 @@ phantom cloud push                      # Trusted-terminal approval, then client
 phantom init --all ~/code --dry-run     # Preview
 phantom init --all ~/code               # Apply
 ```
+
+The Homebrew formula still serves `v0.7.9`, which lacks `phantom agent doctor
+--json`, so agents should use the archive above. Each package channel and its
+dated evidence are in [distribution status](docs/distribution-status.md).
 
 CLI login/logout, cloud status/writes, team reads/mutations, remove, live validation,
 validation-schedule writes, expiry-policy writes, browser opening, import,
@@ -235,31 +298,83 @@ Parallel PRs repeatedly collide on a few shared files (`apps/web/tests/quick-sta
 
 ```bash
 ~/.cargo/bin/cargo build        # Build all crates
-~/.cargo/bin/cargo test --workspace --all-targets --locked --no-fail-fast
-~/.cargo/bin/cargo clippy --all-targets -- -D warnings  # Lint
-~/.cargo/bin/cargo fmt --all    # Format
+~/.cargo/bin/cargo fmt --all    # Format in place
+scripts/fast-check.sh main      # While iterating: fmt check, Clippy, tests for affected crates (whole workspace unless only crate src/*.rs changed)
 ```
 
 If `cargo` is not on your PATH (a fresh rustup install puts it in `~/.cargo/bin`), run `export PATH="$HOME/.cargo/bin:$PATH"` first.
 
+Before you open a pull request, run the full gate once. Pull request CI does
+not run the Rust test suite, so this local run is the test evidence reviewers
+see; record the commands in the [PR template](.github/PULL_REQUEST_TEMPLATE.md):
+
+```bash
+~/.cargo/bin/cargo test --workspace --all-targets --locked --no-fail-fast
+~/.cargo/bin/cargo fmt --all -- --check
+~/.cargo/bin/cargo clippy --workspace --all-targets --locked -- -D warnings
+```
+
+Then run the two pre-push checks. Neither needs a build. `CI Gate`, the only
+required check, includes the `Secret-shape scan`; fragments are validated only
+by the daily full run, so check yours locally:
+
+```bash
+node scripts/changelog-fold.mjs --check   # changelog.d/ fragment format
+git diff main...HEAD | perl .github/tests/secret-shape/scrub.pl --check --allow-fixtures
+```
+
+On a fork, use `upstream/main` wherever these commands say `main` (for
+example `scripts/fast-check.sh upstream/main`). The full path from a fork to a
+merged pull request is
+[Contribute with an agent](CONTRIBUTING.md#contribute-with-an-agent).
+
+Documentation drift checks (run them after editing docs; pull request CI does not run them):
+
+```bash
+node --test scripts/release/readme-mcp-catalog.test.mjs   # MCP names vs Rust registrations
+node --test scripts/docs-distribution.test.mjs            # release, channel, and quickstart claims
+node --test scripts/hot-file-rule.test.mjs                # hot-file rule stays in this file
+~/.cargo/bin/cargo test --locked -p phantom-secrets --test docs_command_flags_test   # CLI examples vs --help
+```
+
+Also run every suite that reads the file you edited, including those in
+`apps/web/tests/`: list them with `git grep -l -F <file-name> -- '*.test.*'`
+and run each with `node --test <file>`. A web suite that loads a package
+needs `(cd apps/web && npm ci --no-audit)` first.
+That search misses two checks not named `*.test.*`: after editing
+`docs/agents.md`, run `bash scripts/test-docs-agents.sh`; after editing a
+file with a `<!-- fresh:begin` marker, run `node scripts/freshness/check.mjs`.
+
 ## Project structure
 
-- `crates/phantom-cli/`: CLI binary for local protection, proxy, audit, import/export, sync, teams, provider-grant metadata/design foundations, and trusted-terminal workspace setup; live provider issuance/rotation is hard-denied in 0.8.7; use `phantom --help` for the current command inventory
+- `crates/phantom-cli/`: CLI binary for local protection, proxy, audit, import/export, sync, teams, provider-grant metadata/design foundations, and trusted-terminal workspace setup; live provider issuance/rotation is hard-denied in current releases; use `phantom --help` for the current command inventory
 - `crates/phantom-core/`: Config, .env parsing, token generation, sync, auth, cloud API client, importers (doppler/infisical/dotenvx/1password/env)
 - `crates/phantom-vault/`: Encrypted vault (OS keychain + file backends) + shared crypto module
 - `crates/phantom-proxy/`: HTTP reverse proxy that buffers each request body within its size bound, never resolves client headers/bodies, injects only fixed route-owned auth headers, and supports streaming responses including SSE
 - `crates/phantom-mcp/`: MCP server for Claude Code, Cursor, Windsurf, Codex, and other MCP clients
 - `crates/phantom-workspace/`: value-blind, recoverable trusted-terminal workspace setup
-- `crates/phantom-authority/`, `phantom-broker/`, `phantom-runtime/`, `phantom-session/`, `phantom-evidence/`: fail-closed governed-execution foundations; production activation remains unavailable
+- `crates/phantom-authority/`, `phantom-locus-contract/`, `phantom-broker/`, `phantom-runtime/`, `phantom-session/`, `phantom-evidence/`: fail-closed governed-execution foundations; production activation remains unavailable
 - `apps/web/`: Next.js backend + landing page at phm.dev (Supabase + Stripe)
 
 ## Key files
 
-- `crates/phantom-cli/src/main.rs`: CLI entry point and command routing
-- `crates/phantom-core/src/dotenv.rs`: .env parsing and secret detection
+Start here before searching. Each entry names the file a change of that kind usually touches.
+
+- `crates/phantom-cli/src/main.rs`: CLI argument definitions (`clap`) and the process entry point
+- `crates/phantom-cli/src/dispatch.rs`: runtime routing from a parsed command to its handler in `crates/phantom-cli/src/commands/`
+- `crates/phantom-cli/src/util.rs`: shared CLI helpers, including `inventory_guard`, `require_complete_inventory`, and the `VAULT_LOCKED` refusal prefix
+- `crates/phantom-cli/tests/`: CLI integration tests
+- `crates/phantom-core/src/dotenv.rs`: .env parsing and secret detection (`looks_like_secret`)
+- `crates/phantom-core/src/managed_dotenv.rs`: `parse_regular_dotenv`, the symlink-safe reader that non-test code uses for dotenv files
+- `crates/phantom-core/src/importers/mod.rs`: `import_from`, the dispatcher for the doppler, infisical, dotenvx, 1password, and env importers
+- `crates/phantom-core/src/audit.rs`: opt-in HMAC-chained audit log; new hook points call `audit::log`
 - `crates/phantom-core/src/auth.rs`: Device auth flow, keychain token storage
 - `crates/phantom-core/src/cloud.rs`: Cloud push/pull HTTP client
 - `crates/phantom-proxy/src/server.rs`: Proxy server with bounded full-request buffering and streaming-response support
+- `crates/phantom-proxy/src/services.rs`: built-in and configured service routes
+- `crates/phantom-proxy/src/response_scrubber.rs`: redacts vault values and known secret formats from upstream responses
+- `crates/phantom-proxy/src/test_server.rs`: mock HTTP server that records requests for proxy integration tests
 - `crates/phantom-vault/src/crypto.rs`: Shared ChaCha20-Poly1305 encryption
-- `crates/phantom-mcp/src/server.rs`: MCP server declarations and handlers
-- `apps/web/src/app/api/v1/`: Backend API routes (auth, vault, billing)
+- `crates/phantom-mcp/src/server.rs`: MCP server declarations and handlers; `mcp-registry/server.json` must match its runtime `tools/list`
+- `crates/phantom-mcp/src/tools/params.rs` and `crates/phantom-mcp/src/tools/helpers.rs`: MCP parameter schemas, and error helpers such as `state_err` for user-fixable states
+- `apps/web/src/app/api/v1/`: Backend API routes (auth, vault, billing, teams, integrations, the signed-in account under `me`, and the `health` and `ready` checks)

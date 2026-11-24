@@ -1,4 +1,4 @@
-export const PUBLIC_RELEASE_VERSION = "0.8.7";
+export const PUBLIC_RELEASE_VERSION = "0.8.11";
 export const PUBLIC_RELEASE_TAG = `v${PUBLIC_RELEASE_VERSION}`;
 // Bound after reconciling the annotated tag, immutable GitHub release, all 19
 // hosted assets, six native acceptance rows, attestations, and installer blobs.
@@ -6,21 +6,21 @@ export const PUBLIC_RELEASE_EVIDENCE_STATE = "bound";
 export const PUBLIC_RELEASE_URL =
   `https://github.com/ashlrai/phantom-secrets/releases/tag/${PUBLIC_RELEASE_TAG}`;
 export const PUBLIC_RELEASE_WORKFLOW_URL =
-  "https://github.com/ashlrai/phantom-secrets/actions/runs/42262099223";
+  "https://github.com/ashlrai/phantom-secrets/actions/runs/43947823026";
 export const PUBLIC_RELEASE_TAG_OBJECT =
-  "60f78437316cdfbd5c5aef43f7a1947a9e35b11f";
+  "0d913358f49e0a3edb0d01d7063cc3660223c54c";
 export const PUBLIC_RELEASE_SOURCE_COMMIT =
-  "a6a0413991c0bd7f3d6601f467c0b5770d0dce0c";
+  "2c93e578d8d1a8097b32c1cd89292e339681b77c";
 // SHA-256 of the exact raw installer blobs at PUBLIC_RELEASE_SOURCE_COMMIT.
 // public-claims.test.cjs hashes the repository bytes so installer drift fails CI.
 export const PUBLIC_RELEASE_UNIX_INSTALLER_SHA256 =
-  "44ab25b1a5b99d7a1a3bb484ea17b323f89a47e43092ca4de4903a9ede6ba72e";
+  "094525f7982caaf534c1a19b2581dbee69a4b766687b593d5adda3f0ba9464a4";
 export const PUBLIC_RELEASE_WINDOWS_INSTALLER_SHA256 =
-  "7b8549e6cd0d213b7e4e12ace3513f964952d460f1717602d16022f6411b4b5e";
+  "db11ec07928802b5d951824af1c4bc9dfed8c7775b466d781f403a449152323c";
 export const PUBLIC_RELEASE_UNIX_INSTALLER_BLOB_OID =
-  "018ca537e0b9fe80f109f154c38456d9c71f7f95";
+  "b0a39d87a1d3d84263d64c380a986e6b55434293";
 export const PUBLIC_RELEASE_WINDOWS_INSTALLER_BLOB_OID =
-  "6b52d955f5fa6bc33048d0ec6bdf1fb0a3cc6f59";
+  "22ac5bea9144241eadf26f585c2ebdb9f72d0904";
 
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 const SHA1_PATTERN = /^[a-f0-9]{40}$/;

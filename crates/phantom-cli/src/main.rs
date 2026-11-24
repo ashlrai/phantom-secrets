@@ -255,6 +255,10 @@ enum Commands {
         /// Opt-in piping changes terminal detection and may affect child buffering.
         #[arg(long)]
         scrub_output: bool,
+        /// Serve only names passed as NAME=secret://NAME in the environment: other
+        /// dotenv names get no session token, no base-URL override and no proxy route.
+        #[arg(long)]
+        refs_only: bool,
         /// Command and arguments to run
         #[arg(trailing_var_arg = true, required = true)]
         cmd: Vec<String>,
@@ -803,7 +807,11 @@ fn main() -> std::process::ExitCode {
 /// `phantom add` refusal under dozens of frames. Keep the same
 /// `Error:`/`Caused by:` layout without the backtrace.
 fn report_error(error: &anyhow::Error) -> std::process::ExitCode {
-    eprintln!("{}", format_error(error));
+    if let Some(json_error) = error.downcast_ref::<cli_json::JsonCommandError>() {
+        eprintln!("{json_error}");
+    } else {
+        eprintln!("{}", format_error(error));
+    }
     std::process::ExitCode::FAILURE
 }
 

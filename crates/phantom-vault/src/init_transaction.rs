@@ -284,6 +284,22 @@ pub struct InitReceipt {
     pub namespace_durability_verified: bool,
 }
 
+/// Stderr text for an unverified namespace commit. JSON receipts copy this
+/// string into `warnings` instead of printing it again.
+pub const NAMESPACE_DURABILITY_WARNING: &str =
+    "warning: transaction namespace effects committed and were verified, but directory crash durability is not provable on this platform";
+
+impl InitReceipt {
+    /// Warning strings for a JSON receipt. Empty when durability was verified.
+    pub fn durability_warnings(&self) -> Vec<String> {
+        if self.namespace_durability_verified {
+            Vec::new()
+        } else {
+            vec![NAMESPACE_DURABILITY_WARNING.to_string()]
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum InitTransactionError {
     #[error("init preflight failed at {target}: {reason}")]
@@ -715,9 +731,7 @@ fn commit_init_with_identity(
         namespace_durability_verified,
     };
     if !receipt.namespace_durability_verified {
-        eprintln!(
-            "warning: transaction namespace effects committed and were verified, but directory crash durability is not provable on this platform"
-        );
+        phantom_core::interactive_warn::emit(NAMESPACE_DURABILITY_WARNING);
     }
     Ok(receipt)
 }

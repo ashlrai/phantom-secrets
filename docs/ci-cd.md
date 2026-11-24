@@ -2,6 +2,8 @@
 
 Phantom's current CI support is strongest when secrets are synced into a deployment platform before the build runs. Direct Phantom Cloud pull from headless CI is not supported yet because the CLI does not currently expose a non-interactive cloud login flow.
 
+A live `phantom sync` is not a CI step either. It needs attached terminals and an exact typed challenge, and it refuses to run headlessly before reading any vault value (see [sync](sync.md)). Run it from your own terminal before the deploy; in CI, only `phantom sync --dry-run --json` runs.
+
 ## GitHub Actions
 
 Use GitHub Actions for checks, builds, and deploy commands, but do not rely on the disabled Phantom GitHub Action for cloud vault pulls.
@@ -16,11 +18,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install the immutable Phantom v0.8.7 Linux release
+      - name: Install the immutable Phantom v0.8.11 Linux release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release download v0.8.7 --repo ashlrai/phantom-secrets \
+          gh release download v0.8.11 --repo ashlrai/phantom-secrets \
             --pattern phantom-x86_64-unknown-linux-gnu.tar.gz \
             --pattern phantom-x86_64-unknown-linux-gnu.tar.gz.sha256
           sha256sum -c phantom-x86_64-unknown-linux-gnu.tar.gz.sha256
@@ -37,16 +39,16 @@ jobs:
 ```
 
 The repository action at `integrations/github-actions/action.yml` is a fail-fast placeholder until a supported non-interactive Phantom Cloud auth flow exists.
-The example downloads immutable `v0.8.7`, whose tag resolves to source commit
-`a6a0413991c0bd7f3d6601f467c0b5770d0dce0c`, and verifies its published
+The example downloads immutable `v0.8.11`, whose tag resolves to source commit
+`2c93e578d8d1a8097b32c1cd89292e339681b77c`, and verifies its published
 checksum before executing it; do not replace it with an unpinned registry
-command. See [distribution status](distribution-status.md) for dated npm, Homebrew, crates.io, and MCP Registry evidence. Prefer the checksum-verified `v0.8.7` GitHub assets for an exact install.
+command. See [distribution status](distribution-status.md) for dated npm, Homebrew, crates.io, and MCP Registry evidence. Prefer the checksum-verified `v0.8.11` GitHub assets for an exact install.
 Select the matching asset for ARM64 or a non-Linux runner.
 
 ## Vercel
 
 ```bash
-# One-time or release-time: sync secrets to Vercel
+# From your terminal, before a release: sync secrets to Vercel
 phantom sync --platform vercel --project prj_xxxxx
 
 # Or add to .phantom.toml:
@@ -101,7 +103,7 @@ into a provider-activation or customer-acceptance claim.
 ## Railway
 
 ```bash
-# Sync secrets to Railway
+# From your terminal: sync secrets to Railway
 phantom sync --platform railway --project your-project-id
 ```
 
@@ -164,7 +166,7 @@ or network sandbox.
 For CI/CD today:
 
 1. Protect local secrets with `phantom init`.
-2. Sync deploy-time secrets to a supported platform with `phantom sync --platform vercel` or `phantom sync --platform railway`.
+2. From your own terminal, sync deploy-time secrets to a supported platform with `phantom sync --platform vercel` or `phantom sync --platform railway`.
 3. Run CI checks such as `phantom check`.
 4. Let the deployment platform inject secrets into builds and runtime.
 

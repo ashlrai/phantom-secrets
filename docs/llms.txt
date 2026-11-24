@@ -22,24 +22,29 @@ phantom why OPENAI_API_KEY --json
 
 ## Install
 
-Release evidence verified on 2026-11-06. The immutable GitHub `v0.8.7` release at
-https://github.com/ashlrai/phantom-secrets/releases/tag/v0.8.7 resolves to
-`a6a0413991c0bd7f3d6601f467c0b5770d0dce0c`. Its 19 assets were published
+Release evidence verified on 2026-11-16. The immutable GitHub `v0.8.11` release at
+https://github.com/ashlrai/phantom-secrets/releases/tag/v0.8.11 resolves to
+`2c93e578d8d1a8097b32c1cd89292e339681b77c`. Its 19 assets were published
 after all six native acceptance rows and release attestations passed in
-https://github.com/ashlrai/phantom-secrets/actions/runs/42262099223.
-See [distribution status](distribution-status.md) for dated npm, Homebrew, crates.io, and MCP Registry evidence. Prefer the checksum-verified `v0.8.7` GitHub assets for an exact install.
+https://github.com/ashlrai/phantom-secrets/actions/runs/43947823026.
 
-macOS:
+For macOS, Linux, or Windows, select the exact `v0.8.11` archive for your
+architecture from the release, download its adjacent `.sha256` sidecar, verify
+it, and put both release executables (`phantom` and `phantom-mcp`) on PATH. The
+root [llms.txt](../llms.txt) has a copy-paste Linux x86_64 version of these
+steps.
+
+The Homebrew formula still serves `v0.7.9`, whose `phantom check` has no
+`--log` or `--json` and which lacks `phantom agent doctor --json` and
+`--client gemini`:
 ```
 brew tap ashlrai/phantom
 brew trust --formula ashlrai/phantom/phantom
 brew install ashlrai/phantom/phantom
 ```
 
-For the current macOS, Linux, or Windows release, select the exact `v0.8.7`
-archive for your architecture from
-the release, download its adjacent `.sha256` sidecar, verify it, and put both
-release executables on PATH. See [distribution status](distribution-status.md) for dated npm, Homebrew, crates.io, and MCP Registry evidence. Prefer the checksum-verified `v0.8.7` GitHub assets for an exact install.
+See [distribution status](distribution-status.md) for dated npm, Homebrew,
+crates.io, and MCP Registry evidence.
 
 ## MCP Server
 
@@ -48,9 +53,10 @@ Setup (recommended, one command per AI client):
 - Cursor: `phantom setup --client cursor` (writes ~/.cursor/mcp.json)
 - Windsurf: `phantom setup --client windsurf` (writes ~/.codeium/windsurf/mcp_config.json)
 - Codex: `phantom setup --client codex` (writes ~/.codex/config.toml)
+- Gemini CLI: `phantom setup --client gemini` (merges `mcpServers` into ~/.gemini/settings.json)
 - Generic: `phantom setup --client claude --print` (snippet to stdout)
 
-Install both `v0.8.7` GitHub release binaries first. Version `0.8.7` records the running
+Install both `v0.8.11` GitHub release binaries first. Version `0.8.11` records the running
 `phantom` executable with `mcp serve` when it can resolve that runtime, otherwise
 it looks for a local `phantom-mcp`. Setup has no network package-runner fallback
 and fails closed when neither local runtime is executable. Keep both verified
@@ -77,17 +83,39 @@ same scan from the CLI.
 `phantom_rotate_with_candidate` and `phantom_rotate_promote` are deprecated
 hard denials retained only for schema compatibility; they mutate nothing.
 
-Vault: phantom_list_secrets, phantom_status, phantom_init, phantom_add_secret_interactive, phantom_add_secret (deprecated; refuses plaintext), phantom_remove_secret, phantom_rotate, phantom_copy_secret
+Every tool in the runtime catalog (`mcp-registry/server.json` mirrors it), grouped:
+
+Start here: phantom_capability (allowed verbs and hard denials), phantom_do (canonicalizes a closed action without executing it), phantom_setup_workspace (value-blind setup inspection and proposals; never applies)
+
+Vault: phantom_list_secrets, phantom_list_with_expiry, phantom_status, phantom_init, phantom_add_secret_interactive, phantom_add_secret (deprecated; refuses plaintext), phantom_remove_secret, phantom_rotate, phantom_copy_secret
 
 Detection: phantom_doctor, phantom_why, phantom_check, phantom_env
 
-Cloud: phantom_wrap, phantom_unwrap, phantom_sync, phantom_cloud_push, phantom_cloud_pull, phantom_cloud_status
+Scripts, sync, and cloud: phantom_wrap, phantom_unwrap, phantom_sync, phantom_cloud_push, phantom_cloud_pull, phantom_cloud_status
 
 Teams: phantom_team_list, phantom_team_create, phantom_team_members, phantom_team_invite, phantom_team_key_publish, phantom_team_vault_push, phantom_team_vault_pull
 
-## CLI surface (--help is grouped: Setup · Daily use · Sync & teams · Maintenance)
+Validation: phantom_validate_secret, phantom_validate_all, phantom_validation_history, phantom_validation_schedule
 
-init (--from <file>, --empty, --all <DIR>, --dry-run, --jobs/-j N), agent (report --json / doctor / setup --dry-run|--apply), exec, start, stop, list (--json), add (--stdin or --dry-run; new names only; initialized project required; positional values rejected), remove (--dry-run or trusted-terminal exact removal), reveal, rotate, status, doctor (--fix), check (--staged, --runtime, --log PATH), sync (--dry-run --json, --only PATTERN), pull, env, setup (--client claude|cursor|windsurf|codex|gemini, --print), login, logout, cloud (push/pull/status), wrap, unwrap, watch, why, copy (trusted-terminal confirmation, no target overwrite), export (trusted-terminal hidden prompt only; passphrase files and plaintext disabled), import (--from doppler|infisical|dotenvx|1password|env --file <path>; trusted-terminal exact consent), audit (show [--last N] [--op OP] [--name NAME] [--json] / tail / path / verify), team (list/create/members/invite/key-publish/vault-push/vault-pull/rotate-vault), validate (live/watch/schedule/history), expiry (set/enforce/rotate), open (closed alias catalog), upgrade (managed-owner routing; force denied), completion (bash/zsh/fish/powershell/elvish)
+Expiry: phantom_apply_expiry_policy, phantom_expiry_enforce, phantom_secrets_expiry_check
+
+Rotation: phantom_rotate_provider (hard denial in current releases), phantom_rotate_with_candidate and phantom_rotate_promote (deprecated hard denials), phantom_rotate_with_expiry, phantom_rotation_schedule_next, phantom_secret_rotation_due, phantom_secrets_auto_rotate
+
+Audit and compliance: phantom_audit_recent, phantom_audit_stats, phantom_audit_analytics, phantom_audit_anomalies, phantom_audit_anomalies_realtime, phantom_audit_alerts, phantom_audit_hotspot_alerts, phantom_audit_incidents, phantom_audit_export_report, phantom_compliance_status, phantom_leak_incidents_realtime
+
+## CLI surface
+
+Every visible top-level command, in the groups `phantom --help` prints. Run
+`phantom <command> --help` for exact flags; [llms-full.txt](llms-full.txt)
+describes each one.
+
+Setup: init (--from <file>, --empty, --all <DIR>, --dry-run, --jobs/-j N), agent (report --json / doctor [--json [--vault] [--strict]] / status --json / setup --dry-run|--apply), setup (--client claude|cursor|windsurf|codex|gemini, --print, --dry-run, --replace, --status, --undo [--apply [--force-undo]], --audit-mode none|local), doctor (--fix, --strict, --json, --expiry, --pq, --all, --output PATH), workspace (plan / apply --request ID / status --request ID; apply is trusted-terminal only), vault (migrate-linux), completion (bash/zsh/fish/powershell/elvish), mcp (serve), mcp-approve <NONCE> (trusted terminal)
+
+Daily use: exec (--scrub-output, --refs-only, --bind-source <SOURCE_CHECKOUT>), start (foreground only; --daemon denied), stop, status (--oneline), check (--staged, --runtime, --log PATH, --json), redact (--stream; no vault access), list (--json, --scope ENV, --show-expiry, --min-anomaly-score 0-2), add (--stdin [--multiline|--first-line], --generate, or --dry-run; bare `add NAME` prompts silently on a terminal; new names only; initialized project required; positional values rejected), remove (--dry-run or trusted-terminal exact removal), reveal (--clipboard), copy (--to DIR, --rename NAME, --allow-cross-owner; trusted-terminal confirmation, no target overwrite), env (--output FILE), why (--strict), git-credential (get [--secret NAME]; store and erase do nothing)
+
+Sync & teams: login, logout, cloud (push/pull/status), team (list/create/members/invite/key-publish/vault-push/vault-pull/rotate-vault), sync (--platform, --project, --dry-run --json, --only PATTERN; live sync needs a trusted terminal), pull (--from vercel|railway --project ID, --environment, --service, --force; needs a trusted terminal), export (trusted-terminal hidden prompt only; passphrase files and plaintext disabled), import (--from doppler|infisical|dotenvx|1password|env --file <path>; trusted-terminal exact consent), wrap (--only, --skip), unwrap
+
+Maintenance: upgrade (--check-only; managed-owner routing; force denied), watch (detection only; --auto denied), rotate (local phm_ remap after an exact terminal challenge; --batch is metadata-only and --provider is denied), grant (add/list/status/revoke; add and revoke fail closed), validate (--check-all, --jobs/-j N, --watch, schedule, history), expiry (set/enforce [--fail-closed]/rotate), secrets-expiring-soon (--days N, --json), fleet-status (--expiring-within DAYS, --strict, --json), open (closed alias catalog), audit (feed/show/tail/path/verify/stats/export/analytics/anomalies/hotspots/incidents/export-range/alerts/report), leaks (plan [--min-confidence N] [--json]; read-only), crypto (inventory [--format text|json])
 
 ## Dashboard
 
@@ -147,12 +175,12 @@ does not start checkout or collect payment.
   Windows CI acceptance. The release receipt proves exact-archive execution
   and MCP schema initialization, not native keychain, ACL, shell, or editor
   acceptance.
-- Immutable `v0.8.7` release identity:
-  `a6a0413991c0bd7f3d6601f467c0b5770d0dce0c`. Live GitHub governance observed
+- Immutable `v0.8.11` release identity:
+  `2c93e578d8d1a8097b32c1cd89292e339681b77c`. Live GitHub governance observed
   2026-09-01: the `release` environment required review and accepted only `v*`
   tags; no-bypass immutability ruleset `21903888` was separate from creation
   ruleset `21997435` with Mason-only bypass. The immutable release record is
-  https://github.com/ashlrai/phantom-secrets/releases/tag/v0.8.7.
+  https://github.com/ashlrai/phantom-secrets/releases/tag/v0.8.11.
 - Locus, broker, runtime, session, and externally trusted evidence remain
   inactive and fail closed. Enterprise packaging is planned/commissioned only
   through separate written and acceptance evidence.
@@ -165,12 +193,29 @@ does not start checkout or collect payment.
 ## How AI Should Behave
 
 - NEVER show, log, or write real API key values into code files
+- Start with `phantom_capability` to learn the allowed verbs and hard denials; use `phantom_do` to canonicalize an action before acting
 - Managed dotenv values become `phm_...` placeholders rather than provider credentials. Client requests never resolve them, but keep dotenv reads denied and rotate exposed mappings because unmanaged entries remain possible and a process with the live proxy bearer can invoke configured routes.
 - Use `phantom_list_secrets` to see what secrets are available (never shows values)
 - Use `phantom_add_secret_interactive` to add new keys; the user types values only into the trusted terminal prompt
 - Use `phantom_init` to protect an unprotected `.env` file
 - Suggest `phantom exec -- <command>` to run code with real credentials injected
 - Never automate CLI login/logout, cloud reads/writes, team reads/mutations, remove, live validation, schedule/expiry writes, browser open, import/export, or eligible standalone upgrade through an agent-controlled PTY; their exact terminal ceremonies must remain outside agent authority
+
+## Ashlr ecosystem
+
+Phantom Secrets is one of the open-source tools from Ashlr (https://ashlr.ai). Together they aim to be an autonomous, code-first, agent-native software factory: agents write, test, review, and ship the code, and the human acts as a passive board member. The long-term goal is open-source recursive self-improvement (RSI), where agents improve the tools they build with. Each tool installs and runs on its own:
+
+- Phantom (`phm`, https://phm.dev): the agent workbench. Source: https://github.com/ashlrai/phantom
+- Phantom Secrets (`phantom`, this repo): keeps real API-key values out of agent context.
+- Locus (`locus`, https://github.com/ashlrai/locus): pins each agent session to one account. This repo ships only an inactive compatibility contract for it (`crates/phantom-locus-contract`).
+- Lexicon (`lexicon`, https://lexicon.ashlr.ai): fixes the words dictation gets wrong.
+- Ashlr MD (https://md.ashlr.ai): a Markdown app with an MCP server.
+- Ashlr Stack (`stack`, https://stack.ashlr.ai): provisions services and stores their keys in Phantom Secrets.
+- ashlr-plugin (https://plugin.ashlr.ai/): token-efficiency tools for Claude Code and Codex.
+
+Coding agents make most changes to this repo through normal pull requests and CI. They follow [AGENTS.md](../AGENTS.md), use only the value-free commands above, and never need a vault value.
+
+To change this repo, a person or agent follows [Contribute with an agent](../CONTRIBUTING.md#contribute-with-an-agent): fork, add this repository as `upstream`, and branch from `upstream/main` (on a fork, use `upstream/main` wherever the commands below say `main`); iterate with `scripts/fast-check.sh main`, which checks only the crates the branch touches when every changed file is Rust source under a crate's `src/` and the whole workspace otherwise; run the full `cargo test`, `cargo fmt --check`, and strict Clippy gate once before opening the pull request, because pull request CI does not run the Rust test suite; for a documentation-only change, skip `scripts/fast-check.sh` (a non-Rust path checks the whole workspace) and run the docs drift checks instead, which pull request CI also skips: `node --test scripts/release/readme-mcp-catalog.test.mjs`, `node --test scripts/docs-distribution.test.mjs`, `node --test scripts/hot-file-rule.test.mjs`, and `cargo test --locked -p phantom-secrets --test docs_command_flags_test`, plus every suite that reads the file you edited, including those in `apps/web/tests/` (list them with `git grep -l -F <file-name> -- '*.test.*'`), and two checks that search misses: `bash scripts/test-docs-agents.sh` after editing `docs/agents.md`, and `node scripts/freshness/check.mjs` after editing a file with a `<!-- fresh:begin` marker; add a [`changelog.d/`](../changelog.d/README.md) fragment instead of editing `CHANGELOG.md`; before pushing, run the two pre-push checks, `node scripts/changelog-fold.mjs --check` for the fragment format and `git diff main...HEAD | perl .github/tests/secret-shape/scrub.pl --check --allow-fixtures`, the local form of the `Secret-shape scan` that `CI Gate` requires (neither needs a build); and fill in the [pull request template](../.github/PULL_REQUEST_TEMPLATE.md) with the exact commands run. `CI Gate` is the only required check, and a passing pull request merges through the merge queue. Fork contributors need no write access or repository secrets.
 
 ## Links
 

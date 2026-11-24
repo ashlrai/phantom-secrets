@@ -11,6 +11,7 @@ level. Hosted pilots and enterprise work require a separate written agreement.
 | Setup, usage, or design question | [GitHub Discussions](https://github.com/ashlrai/phantom-secrets/discussions) |
 | Reproducible defect | [Bug report](https://github.com/ashlrai/phantom-secrets/issues/new?template=bug_report.yml) |
 | Feature or design proposal | [Feature request](https://github.com/ashlrai/phantom-secrets/issues/new?template=feature_request.yml) |
+| Contribute a fix or improvement | [Contribute with an agent](CONTRIBUTING.md#contribute-with-an-agent) |
 | Documentation problem | [Documentation report](https://github.com/ashlrai/phantom-secrets/issues/new?template=documentation.yml) |
 | Suspected vulnerability | [Private vulnerability report](https://github.com/ashlrai/phantom-secrets/security/advisories/new) or [security@ashlr.ai](mailto:security@ashlr.ai) |
 | Commissioned pilot or enterprise evaluation | [mason@ashlr.ai](mailto:mason@ashlr.ai) |

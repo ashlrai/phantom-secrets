@@ -57,6 +57,39 @@ still apply, including to help/version invocations.
 for a key does not prove that a particular CLI uses it. In particular,
 `GITHUB_TOKEN` can have a valid REST route while direct `gh` remains unsupported.
 
+## package.json scripts
+
+`phantom wrap` edits the current project's `package.json`, prefixing selected
+scripts with `phantom exec --` and saving originals as `<name>:raw`.
+By default, names containing `dev`, `start`, `serve`, `build`, or `deploy`
+are candidates; names containing test, lint, type, format, or other tooling
+keywords are excluded. Default keyword matching is case-insensitive;
+`--only` and `--skip` match exact script names. `preview` requires explicit
+selection:
+
+```sh
+phantom wrap --only dev,preview --skip dev
+phantom unwrap
+```
+
+Here only `preview` is selected; `--skip` wins over `--only`. An existing
+user-owned `<name>:raw` causes refusal without changing any scripts.
+`phantom unwrap` restores saved originals; it does not recover vault values.
+The CLI and MCP `phantom_wrap` share these selection rules. Effectful MCP calls
+still require the operator-enabled effects gate and an exact one-use approval.
+
+Wrapping does not add CLI support or put real credentials in the child
+environment. The script's client must use a supported route as described in
+the coverage inventory above. For example, wrapping a `deploy` script that
+runs `vercel deploy` does not give Vercel CLI an adapter.
+
+`phantom exec` runs one program without a shell. Scripts beginning with
+`VAR=value` or chaining commands with `&&`, `||`, `|`, `;`, or `&` are left
+unchanged and reported, even with `--only`. Move the reviewed command line
+into a script file and wrap that file's interpreter invocation, or prefix
+the individual supported command. Review every reported omission before
+assuming a script runs under Phantom.
+
 ## Explicit GitHub API requests with curl
 
 These examples assume the project already protects `GITHUB_TOKEN` and has the

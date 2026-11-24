@@ -310,6 +310,264 @@ fn readme_command_reference_matches_the_cli() {
     );
 }
 
+/// Every visible command path in the clap tree, nested ones included
+/// (`init`, `audit show`, `vault migrate-linux`). Hidden commands and clap's
+/// built-in `help` are not user-facing and are left out.
+fn cli_command_paths() -> BTreeSet<String> {
+    fn walk(command: &clap::Command, prefix: &str, out: &mut BTreeSet<String>) {
+        for sub in command.get_subcommands() {
+            let name = sub.get_name();
+            if sub.is_hide_set() || name == "help" {
+                continue;
+            }
+            let path = if prefix.is_empty() {
+                name.to_string()
+            } else {
+                format!("{prefix} {name}")
+            };
+            out.insert(path.clone());
+            walk(sub, &path, out);
+        }
+    }
+    let mut out = BTreeSet::new();
+    walk(&Cli::command(), "", &mut out);
+    out
+}
+
+/// Each `phantom ...` invocation the README shows, as (line, text after `phantom `).
+/// Covers fenced code lines (with an optional `$ ` prompt) and inline code spans.
+fn readme_invocations(doc: &str) -> Vec<(usize, String)> {
+    let mut found = Vec::new();
+    let mut in_block = false;
+    for (index, line) in doc.lines().enumerate() {
+        let line_no = index + 1;
+        if line.trim_start().starts_with("```") {
+            in_block = !in_block;
+            continue;
+        }
+        if in_block {
+            let code = line.trim_start().trim_start_matches("$ ");
+            if let Some(rest) = code.strip_prefix("phantom ") {
+                found.push((line_no, rest.to_string()));
+            }
+            continue;
+        }
+        // Odd-indexed pieces of a split on backticks are the code spans.
+        for span in line.split('`').skip(1).step_by(2) {
+            if let Some(rest) = span.strip_prefix("phantom ") {
+                found.push((line_no, rest.to_string()));
+            }
+        }
+    }
+    found
+}
+
+/// The command path an invocation names, e.g. `audit show --last 5` -> `audit show`,
+/// and the clap commands along that path (root first) for checking its flags.
+/// Stops at the first flag, `--`, placeholder or argument that is not a subcommand.
+/// Errors when a lowercase word sits where a subcommand is required but missing.
+fn invocation_path<'a>(
+    rest: &str,
+    root: &'a clap::Command,
+) -> Result<(String, Vec<&'a clap::Command>), String> {
+    let mut chain = vec![root];
+    let mut path: Vec<&str> = Vec::new();
+    for token in rest.split_whitespace() {
+        if !token.starts_with(|c: char| c.is_ascii_lowercase()) {
+            break;
+        }
+        let current = chain[chain.len() - 1];
+        if !current.has_subcommands() {
+            break;
+        }
+        match current.find_subcommand(token) {
+            Some(sub) => {
+                path.push(sub.get_name());
+                chain.push(sub);
+            }
+            None if path.is_empty() => {
+                return Err(format!("`{token}` is not a phantom command"));
+            }
+            None => {
+                return Err(format!(
+                    "`{token}` is not a subcommand of `phantom {}`",
+                    path.join(" ")
+                ));
+            }
+        }
+    }
+    Ok((path.join(" "), chain))
+}
+
+/// Long flags an invocation passes before any standalone `--` or `# comment`.
+fn invocation_flags(rest: &str) -> Vec<String> {
+    rest.split_whitespace()
+        .take_while(|t| *t != "--" && !t.starts_with('#'))
+        .filter_map(|t| t.strip_prefix("--"))
+        .filter(|f| f.starts_with(|c: char| c.is_ascii_lowercase()))
+        .map(|f| {
+            f.split('=')
+                .next()
+                .unwrap_or(f)
+                .trim_end_matches(['.', ',', ';', ':', ')'])
+                .to_string()
+        })
+        .collect()
+}
+
+/// Every command path must be documented in the README, and every documented
+/// `phantom ...` invocation must name a real command. Catches both a new
+/// command the README never mentions and a README line for a removed or
+/// renamed one. Reads only local files and the in-process clap tree.
+#[test]
+fn readme_lists_every_cli_command_and_no_others() {
+    let problems = readme_cli_drift(&read_doc("README.md"));
+    assert!(
+        problems.is_empty(),
+        "README.md and the CLI disagree:\n{}",
+        problems.join("\n")
+    );
+}
+
+/// Drift between a README body and the clap tree: one line per problem.
+/// Empty when every command path is shown and every shown invocation is real.
+fn readme_cli_drift(doc: &str) -> Vec<String> {
+    let command = Cli::command();
+    let cli = cli_command_paths();
+    assert!(
+        cli.len() >= 60,
+        "only {} command paths found in the clap tree; scan is broken",
+        cli.len()
+    );
+
+    let mut documented = BTreeSet::new();
+    let mut problems = Vec::new();
+    for (line_no, rest) in readme_invocations(doc) {
+        let (path, chain) = match invocation_path(&rest, &command) {
+            Ok(found) => found,
+            Err(error) => {
+                problems.push(format!("README.md:{line_no}: {error}: `phantom {rest}`"));
+                continue;
+            }
+        };
+        for flag in invocation_flags(&rest) {
+            // clap adds --help, and --version when a version is set, outside get_arguments().
+            let built_in = flag == "help" || (flag == "version" && command.get_version().is_some());
+            let known = built_in
+                || chain.iter().any(|c| {
+                    c.get_arguments()
+                        .any(|arg| arg.get_long() == Some(flag.as_str()))
+                });
+            if !known {
+                problems.push(format!(
+                    "README.md:{line_no}: `--{flag}` is not a flag of `phantom {path}`: `phantom {rest}`"
+                ));
+            }
+        }
+        if !path.is_empty() {
+            documented.insert(path);
+        }
+    }
+    for path in &cli {
+        let covered = documented
+            .iter()
+            .any(|d| d == path || d.starts_with(&format!("{path} ")));
+        if !covered {
+            problems.push(format!(
+                "`phantom {path}` exists in the CLI but README.md never shows it; add it to the Command Reference"
+            ));
+        }
+    }
+    problems
+}
+
+#[test]
+fn readme_drift_check_fails_both_ways() {
+    // Missing: a README that shows only `init` must flag the other commands.
+    let missing = readme_cli_drift("```bash\nphantom init\n```\n");
+    assert!(
+        missing
+            .iter()
+            .any(|p| p.contains("`phantom status` exists")),
+        "{missing:?}"
+    );
+    assert!(!missing.iter().any(|p| p.contains("`phantom init` exists")));
+
+    // Reverse: a README line for a command that was removed or renamed.
+    let stale =
+        readme_cli_drift("| `phantom frobnicate` | gone |\n| `phantom audit bogus` | gone |\n");
+    assert!(
+        stale
+            .iter()
+            .any(|p| p.contains("`frobnicate` is not a phantom command")),
+        "{stale:?}"
+    );
+    assert!(
+        stale
+            .iter()
+            .any(|p| p.contains("`bogus` is not a subcommand of `phantom audit`")),
+        "{stale:?}"
+    );
+    let root = Cli::command();
+    assert_eq!(
+        invocation_path("audit show --last 5", &root).map(|(path, _)| path),
+        Ok("audit show".to_string())
+    );
+
+    // Flags: a real flag (including one from the root, like the global --json)
+    // passes; a stale one is named.
+    let flags = readme_cli_drift(
+        "```bash\nphantom check --log agent.jsonl --json\nphantom exec --scrub-output -- tool --nope\nphantom check --bogus-flag\n```\n",
+    );
+    assert!(
+        flags
+            .iter()
+            .any(|p| p.contains("`--bogus-flag` is not a flag of `phantom check`")),
+        "{flags:?}"
+    );
+    assert!(
+        !flags.iter().any(|p| p.contains("`--json`")
+            || p.contains("`--scrub-output`")
+            || p.contains("`--nope`")),
+        "{flags:?}"
+    );
+}
+
+/// The README's one get-started path is numbered, has at most five steps, and
+/// comes before the command list. Its commands are checked by the drift test above.
+#[test]
+fn readme_get_started_is_five_steps_or_fewer() {
+    let doc = read_doc("README.md");
+    let (_, after_heading) = doc
+        .split_once("\n### Get started\n")
+        .expect("README has a `### Get started` section under Quick start");
+    let body = after_heading
+        .split("\n### ")
+        .next()
+        .unwrap_or(after_heading);
+    let steps = body
+        .lines()
+        .filter(|line| {
+            line.split_once(". ").is_some_and(|(number, _)| {
+                !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit())
+            })
+        })
+        .count();
+    assert!(
+        (1..=5).contains(&steps),
+        "README `### Get started` has {steps} numbered steps; keep it to five or fewer"
+    );
+    let quick_start = doc.split_once("\n## Quick start\n").expect("Quick start").1;
+    assert!(
+        quick_start
+            .split("\n## ")
+            .next()
+            .unwrap_or(quick_start)
+            .contains("### Everyday commands"),
+        "README Quick start should keep the command list after Get started"
+    );
+}
+
 /// Import sources as the importer dispatcher names them.
 fn import_sources() -> BTreeSet<String> {
     let unknown = phantom_core::importers::import_from(

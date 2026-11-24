@@ -4,7 +4,7 @@ One path for an agent: install, run the commands below from the project director
 
 ## Install
 
-On macOS, Linux, and Windows, install both binaries from the checksum-verified `v0.8.7` archive using the [README instructions](../README.md#exact-v087-github-assets). The documented Homebrew formula is `v0.7.9`, whose `agent doctor` does not accept `--json`; use the release archive for the commands below. Each package channel and its dated evidence are in [distribution status](distribution-status.md).
+On macOS, Linux, and Windows, install both binaries from the checksum-verified `v0.8.11` archive using the [README instructions](../README.md#exact-v087-github-assets). The documented Homebrew formula is `v0.7.9`, whose `agent doctor` does not accept `--json`; use the release archive for the commands below. Each package channel and its dated evidence are in [distribution status](distribution-status.md).
 
 ## Commands
 
@@ -33,7 +33,7 @@ phantom why OPENAI_API_KEY --json
 
 `phantom setup` writes these for you, with the absolute path of the binary it found in `command`. They are shown so you can check the result.
 
-Claude Code (project `.mcp.json`) and Cursor (`~/.cursor/mcp.json`):
+Claude Code (project `.mcp.json`), Cursor (`~/.cursor/mcp.json`), Windsurf (`~/.codeium/windsurf/mcp_config.json`), and Gemini CLI (`~/.gemini/settings.json`, under `mcpServers`):
 
 ```json
 {
@@ -56,9 +56,9 @@ args = ["mcp", "serve"]
 
 Restart the client, then ask it to call `phantom_status` and `phantom_list_secrets`. Do not ask it to reveal values.
 
-Effectful MCP tools stay off unless the operator sets `PHANTOM_MCP_EFFECTS=trusted-terminal` outside the agent and approves each pending call with `phantom mcp-approve`.
+Effectful MCP tools stay off unless the operator sets `PHANTOM_MCP_EFFECTS=trusted-terminal` outside the agent and approves each pending call with `phantom mcp-approve`. `phantom agent status --json` shows the approval state without nonces or values.
 
 ## Read next
 
 - [llms.txt](llms.txt) (compact) and [llms-full.txt](llms-full.txt) (full)
-- [Claude Code](claude-code.md), [Cursor](cursor.md), [Codex](codex.md)
+- [Claude Code](claude-code.md), [Cursor](cursor.md), [Codex](codex.md), [Windsurf](windsurf.md), [Gemini CLI](gemini-cli.md)

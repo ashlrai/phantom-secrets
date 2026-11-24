@@ -1,0 +1,17 @@
+version: 2
+
+# Keeps the SHA pins on third-party actions current (one grouped weekly PR).
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:17"
+      timezone: America/New_York
+    open-pull-requests-limit: 1
+    cooldown:
+      default-days: 5
+    groups:
+      github-actions:
+        patterns: ["*"]

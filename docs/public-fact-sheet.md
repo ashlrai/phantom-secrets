@@ -22,7 +22,7 @@ Release evidence verified: **2026-11-06** (immutable GitHub release and exact np
 ## Verified public release
 
 The verified release is immutable GitHub tag
-[`v0.8.7`](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.8.7),
+[`v0.8.11`](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.8.11),
 resolving to source commit
 `a6a0413991c0bd7f3d6601f467c0b5770d0dce0c`. Its tag-bound release workflow
 published six native archives for macOS, Linux, and Windows, adjacent SHA-256
@@ -30,7 +30,7 @@ checksums, SPDX SBOMs, and an aggregate checksum manifest after the release
 acceptance matrix passed. The exact execution receipt is
 [workflow 42262099223](https://github.com/ashlrai/phantom-secrets/actions/runs/42262099223).
 
-See [distribution status](distribution-status.md) for dated npm, Homebrew, crates.io, and MCP Registry evidence. Prefer the checksum-verified `v0.8.7` GitHub assets for an exact install. An unpinned install command does not identify an immutable release.
+See [distribution status](distribution-status.md) for dated npm, Homebrew, crates.io, and MCP Registry evidence. Prefer the checksum-verified `v0.8.11` GitHub assets for an exact install. An unpinned install command does not identify an immutable release.
 
 ## What Phantom does
 

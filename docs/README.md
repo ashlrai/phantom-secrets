@@ -2,18 +2,27 @@
 
 This is the canonical map for Phantom's repository documentation. Start with the shortest guide that matches your task, then use the security and architecture material when evaluating trust boundaries.
 
-Release-state snapshot verified on 2026-11-06: the immutable GitHub release
-`v0.8.7` resolves to source commit
-`a6a0413991c0bd7f3d6601f467c0b5770d0dce0c`. Its exact 19-asset set, all six
+Release-state snapshot verified on 2026-11-16: the immutable GitHub release
+`v0.8.11` resolves to source commit
+`2c93e578d8d1a8097b32c1cd89292e339681b77c`. Its exact 19-asset set, all six
 native release rows, checksums, archive-specific SPDX SBOMs, and GitHub
 archive provenance attestations are bound to that immutable release by
-[workflow 42262099223](https://github.com/ashlrai/phantom-secrets/actions/runs/42262099223).
-See [distribution status](distribution-status.md) for dated npm, Homebrew, crates.io, and MCP Registry evidence. Prefer the checksum-verified `v0.8.7` GitHub assets for an exact install. The GitHub receipt alone does not establish hosted-service commissioning, provider activation, certification, or customer acceptance.
+[workflow 43947823026](https://github.com/ashlrai/phantom-secrets/actions/runs/43947823026).
+See [distribution status](distribution-status.md) for dated npm, Homebrew, crates.io, and MCP Registry evidence. Prefer the checksum-verified `v0.8.11` GitHub assets for an exact install. The GitHub receipt alone does not establish hosted-service commissioning, provider activation, certification, or customer acceptance.
+
+## Where Phantom Secrets fits
+
+Phantom Secrets (the `phantom` CLI and `phantom-mcp` server) is one of the open-source tools from [Ashlr](https://ashlr.ai). Together they aim to be an autonomous, code-first, agent-native software factory: agents write, test, review, and ship the code, and the human acts as a passive board member. The long-term goal is open-source recursive self-improvement (RSI), where agents improve the tools they build with.
+
+This repo's part is keeping real API-key values out of agent context, so agents can call APIs without holding the keys. The other tools (Phantom, Locus, Lexicon, Ashlr MD, Ashlr Stack, and ashlr-plugin) are listed with links in the README's [ecosystem section](../README.md#part-of-the-ashlr-ecosystem). Each one installs and runs on its own. Locus support here is only an inactive compatibility contract today.
+
+Agents make most changes to this repo through normal pull requests and CI. They follow [AGENTS.md](../AGENTS.md), run the build and check commands in [CLAUDE.md](../CLAUDE.md), and use only value-free commands such as `phantom status --json`. See [How agents work on this repo](../README.md#how-agents-work-on-this-repo). A person or agent who wants to change the repo follows [Contribute with an agent](../CONTRIBUTING.md#contribute-with-an-agent), the path from a fork to a merged pull request.
 
 ## Start here
 
 | Goal | Guide |
 |------|-------|
+| Pick a starting guide by task, with the next reference for each | [Find your way through Phantom](q8-navigation.md) |
 | Give an agent one copy-paste setup path | [Agent quickstart](agent-quickstart.md) |
 | Run GitHub PR operations through Phantom with curl | [GitHub box runners](github-box-runners.md) |
 | Protect a project for the first time | [Getting started](getting-started.md) |
@@ -55,6 +64,7 @@ See [distribution status](distribution-status.md) for dated npm, Homebrew, crate
 | See a measured Linux install and the agent-CLI audit | [First run](FIRST-RUN.md) |
 | Compare install, exec, and memory with dotenvx and SOPS | [Benchmarks](BENCHMARKS.md) |
 | Delegate one bounded task to an AI coding client | [Safe delegation quickstart](delegation-quickstart.md) |
+| Answer common questions before a first delegated task | [First-run delegation FAQ](delegation-faq-q8.md) |
 | Keep personal, company, and client keys separate | [Multi-project key separation](multi-project-keys.md) |
 | Plan a team or enterprise pilot | [Enterprise adoption](enterprise-adoption.md) |
 | Understand open-source rights and paid evaluation paths | [Commercial offerings](commercial-offerings.md) |
@@ -65,6 +75,7 @@ See [distribution status](distribution-status.md) for dated npm, Homebrew, crate
 | Diagnose an install, vault, proxy, or cloud problem | [Troubleshooting](troubleshooting.md) |
 | Run LiteLLM as an optional gateway that never holds a real key (experimental) | [LiteLLM gateway](litellm.md) |
 | Use Phantom with AI agents: exec, the proxy, LiteLLM, Temporal and post-quantum TLS, each claim tied to a test | [Phantom with agents](phantom-with-agents.md) |
+| Use the Phantom workbench (`phm`), a separate product from this CLI | [Phantom workbench guides](#phantom-workbench) |
 | Understand the provider-grant design and 0.8.7 universal hard denial | [Provider grants](grants-spec.md) |
 | Understand components, trust boundaries, and activation status | [Architecture](architecture.md) |
 | Review the Rama-derived network engineering standard and adoption gates | [Rama design standard](rama-design-standard.md) |
@@ -74,6 +85,7 @@ See [distribution status](distribution-status.md) for dated npm, Homebrew, crate
 | Assemble a security or third-party review | [Security and audit index](audit-index.md) |
 | Report a vulnerability | [Security policy](../SECURITY.md) |
 | Evaluate Phantom's security assumptions and known gaps | [Threat model](../THREAT_MODEL.md) |
+| Contribute a change from a fork, as a person or a coding agent | [Contribute with an agent](../CONTRIBUTING.md#contribute-with-an-agent) |
 | Find contribution, support, or project-decision routes | [Community and project health](#community-and-project-health) |
 
 ## Agent and editor integrations
@@ -81,12 +93,14 @@ See [distribution status](distribution-status.md) for dated npm, Homebrew, crate
 These guides cover installation, MCP setup, the value-blind tool model, and daily workflows:
 
 - [Safe delegation quickstart](delegation-quickstart.md) for the common cross-client workflow
+- [Agents and `phantom exec`](agents.md) for how placeholders, proxy routes, and refusals keep values out of model context
 - [Hub status contract](hub-status-contract.md) for value-free local-orchestrator inspection (shipped in v0.7.9)
 - [Generated secrets](generated-secrets.md) for value-free local secret creation via `phantom add --generate` and `phantom_add_secret` `generate: true`
 - [Installed-runtime smoke](../examples/agent-first-five-minutes/README.md) for disposable CLI and MCP checks
 - [Claude Code](claude-code.md)
 - [Codex](codex.md)
 - [Cursor](cursor.md)
+- [Gemini CLI](gemini-cli.md)
 - [Windsurf](windsurf.md)
 - [MCP secrets manager overview](mcp-secrets-manager.md) for the value-blind tool model in one page
 - [`phantom agent doctor --json` preflight contract](agent-preflight-contract.md) for agent setup checks
@@ -103,7 +117,7 @@ These guides cover installation, MCP setup, the value-blind tool model, and dail
 
 The small conversation facade and the advanced MCP compatibility catalog are separate contracts. `phantom_do` is proposal-only and does not execute an action. `phantom_setup_workspace` can propose, create a bearerless request, or report status; applying that request requires a separate attached trusted terminal. Effectful advanced tools are disabled by default; `PHANTOM_MCP_EFFECTS=trusted-terminal` may enable their confirmation and one-use approval gates only when configured outside agent authority. Approval requires attached stdin/stderr, an informed value-blind summary, and a fresh typed challenge. A same-user shell or agent-controlled PTY can defeat the ceremony, so the approval command and storage must also be outside agent authority.
 
-Provider issuance is not active in 0.8.7: every live enrollment exchange,
+Provider issuance is not active in current releases: every live enrollment exchange,
 issuance, refresh, renewal, rotation, and revocation path is hard-denied before
 provider credential or network access. A **provider grant** is design-era
 lifecycle metadata; an **authority grant** is the inactive execution-kernel
@@ -112,6 +126,22 @@ permission. Exact `cfg(test)` mocks are local transaction evidence only. The
 [grant specification](grants-spec.md) records the design-era target. The root
 [issuance contract](../ISSUANCE_CONTRACT.md) is the original design contract
 and retains historical design-status language.
+
+## Phantom workbench
+
+The Phantom workbench is a separate Ashlr product: the `phm` executable from
+the `@ashlr/phantom` package, built in
+[ashlrai/phantom](https://github.com/ashlrai/phantom). Installing Phantom
+Secrets (`phantom`) does not install or activate it. Its guides live here
+because the [phm.dev](https://phm.dev) site serves them from this repository,
+and the published site can be newer than the copies on `main`.
+
+- [Phantom workbench](workbench.md) for the **Work with me** and **Work for me** workspaces and a first task
+- [Install and open Phantom](workbench-setup.md)
+- [Agent setup quickstart](workbench-agents.md) for coding agents that help a user adopt the workbench
+- [Fleet and autonomy](workbench-autonomy.md)
+- [Workbench command reference](workbench-reference.md)
+- [Workbench troubleshooting](workbench-troubleshooting.md)
 
 ## Operations
 
@@ -126,8 +156,16 @@ and retains historical design-status language.
 - [Device code readability](device-code-readability.md)
 - [Device code display example](device-code-display-example.md)
 - [Device code display reference](device-code-display-reference.md)
+- [Device user-code display contract](device-code-display-contract.md)
+- [Device code format reference](device-code-format-reference.md)
 - [Device authorization input hint](device-code-input-hint.md)
 - [Device authorization page UI](device-code-ui.md)
+- [Device authorization form states](device-code-form-states.md)
+- [Device code copy checklist](device-code-copy-checklist.md)
+- [Device code error copy](device-code-error-copy.md)
+- [Device code validation copy](device-code-validation-copy.md)
+- [Device form error review](device-form-error-review.md)
+- [Device code UI review questions](device-code-ui-review-questions.md)
 - [Vercel and Railway sync](sync.md)
 - [CI/CD integration](ci-cd.md)
 - [`phantom fleet-status --json` schema](fleet-status.md)
@@ -148,9 +186,24 @@ and retains historical design-status language.
 - [Design-era provider-grant lifecycle specification](grants-spec.md)
 - [Design note: agent claims](design-agent-claims.md) (proposal only, not implemented)
 - [Design note: large MCP output as a file path plus summary](design-mcp-large-output-to-file.md) (proposal only, not implemented)
+- [Design note: agent onboarding with a dry-run diff](design/agent-onboarding.md) (docs only, no code change)
+- [Design note: leak response and rotation flow on leases](design/leak-response-rotation-flow.md) (proposal for security review, not implemented)
+- [Design note: model-blind agent secrets job graph](design/model-blind-agent-secrets.md) (planning note, checked by `scripts/agent-secrets-plan.test.mjs`)
+- [Account operations layer](design/account-ops.md) (library only; no CLI or MCP command calls it yet)
+- [keyring 4 migration scoping](design/keyring-4-migration-scoping.md) (landed; record of the evaluated options)
 - [Third-party evidence plan](third-party-evidence-plan.md)
 - [SEO and agent-discovery observation loop](seo-observation-loop.md)
+- [DeepWiki configuration](deepwiki.md) for the `.devin/wiki.json` outline
 - [Keeping the Unix installer copies in sync](installer-copy-sync.md)
+- [Unix installer copy comparison](installer-copy-comparison.md)
+- [Unix installer copy source map](installer-copy-source-map.md)
+- [Unix installer platform detection](installer-platforms.md)
+- [Unix installer staging and cleanup](installer-staging.md)
+- [Repository installer staging review](installer-staging-review.md)
+- [Repository Unix installer staging error map](installer-staging-error-map.md)
+- [Unix installer PATH update flow](installer-path-update-flow.md)
+- [Unix installer PATH update steps](installer-path-update-steps.md)
+- [Unix installer PATH temporary files](installer-path-review.md)
 - [Unix installer PATH temporary-file failures](installer-temp-failure-reference.md)
 - [Original provider-issuance design contract](../ISSUANCE_CONTRACT.md)
 - [Contributing guide](../CONTRIBUTING.md)
@@ -171,6 +224,11 @@ or production acceptance.
 
 - [Contributing](../CONTRIBUTING.md) — setup, repository map, security rules,
   test tiers, and pull-request expectations
+- [Contribute with an agent](../CONTRIBUTING.md#contribute-with-an-agent) —
+  fork, local checks, changelog fragment, pre-push checks, and the `CI Gate`
+  merge-queue path, for a person or a coding agent
+- [Agent operating rules](../AGENTS.md) — what a coding agent reads before it
+  edits this repository
 - [Support](../SUPPORT.md) — discussions, public issues, private security
   reports, and commercial-evaluation routing
 - [Governance](../GOVERNANCE.md) — maintainer-led decisions, roles, release
@@ -180,7 +238,7 @@ or production acceptance.
   response targets, and known limitations
 - [Roadmap](../ROADMAP.md) — staged, gated, and exploratory milestones without
   delivery-date or activation claims
-- [Citation metadata](../CITATION.cff) — cite the reviewed `v0.8.7` release, or
+- [Citation metadata](../CITATION.cff) — cite the reviewed `v0.8.11` release, or
   include the exact commit SHA when discussing later unreleased source
 
 No donation or sponsorship program is represented by repository metadata at

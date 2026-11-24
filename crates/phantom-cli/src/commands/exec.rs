@@ -44,6 +44,7 @@ pub fn run(
     bind_source: Option<&std::path::Path>,
     quiet: bool,
     scrub_output: bool,
+    refs_only: bool,
 ) -> Result<()> {
     if cmd.is_empty() {
         anyhow::bail!("No command specified. Usage: phantom exec -- <command>");
@@ -56,6 +57,7 @@ pub fn run(
         bind_source,
         quiet,
         scrub_output,
+        refs_only,
         |config| ServiceRegistry::from_config(&config.services),
     ))
 }
@@ -89,6 +91,7 @@ async fn run_async(
     bind_source: Option<&std::path::Path>,
     quiet: bool,
     scrub_output: bool,
+    refs_only: bool,
     registry_from_config: impl FnOnce(&PhantomConfig) -> ServiceRegistry,
 ) -> Result<()> {
     let working_dir = std::env::current_dir()?;
@@ -120,6 +123,19 @@ async fn run_async(
     };
     validate_routes_for_launch(&config)?;
 
+    // Launcher-supplied `NAME=secret://NAME` references
+    // (docs/design/builtin-vault.md). Parsed from names only, before any
+    // vault access, so a malformed reference stops the launch fail-closed.
+    let launcher_refs = launcher_secret_refs(std::env::vars_os())?;
+    // --refs-only: the session serves exactly the referenced names. Dotenv
+    // tokens are still withheld from the child, but their values are never
+    // loaded and their routes are not served.
+    if refs_only && launcher_refs.is_empty() {
+        anyhow::bail!(
+            "--refs-only needs at least one NAME=secret://NAME reference in the environment; nothing was launched"
+        );
+    }
+
     let preflight = phantom_core::managed_dotenv::resolve_dotenv(&project_dir, &config, &[])?;
     if let Some(dotenv) = preflight.file.as_ref() {
         dotenv
@@ -132,6 +148,7 @@ async fn run_async(
         .flat_map(DotenvFile::entries)
         .filter(|entry| PhantomToken::is_phantom_token(&entry.value))
         .map(|entry| entry.key.clone())
+        .chain(launcher_refs.iter().cloned())
         .collect();
 
     // A route for a provider does not imply that its CLI understands our
@@ -176,6 +193,7 @@ async fn run_async(
         .flat_map(DotenvFile::entries)
         .filter(|entry| PhantomToken::is_phantom_token(&entry.value))
         .map(|entry| entry.key.clone())
+        .chain(launcher_refs.iter().cloned())
         .collect();
 
     coverage::validate_command(cmd, &protected_env_keys)?;
@@ -196,7 +214,10 @@ async fn run_async(
         vault.as_ref(),
         &vault_names,
         &active_env,
-        protected_env_keys.iter().map(String::as_str),
+        protected_env_keys
+            .iter()
+            .map(String::as_str)
+            .filter(|key| !refs_only || launcher_refs.contains(*key)),
         crate::commands::rotation_gate::now_secs(),
     )?;
 
@@ -213,45 +234,70 @@ async fn run_async(
     let mut session_names: Vec<String> = Vec::new();
     let mut secret_count = 0;
 
-    if let Some(dotenv) = dotenv.as_ref() {
-        for entry in dotenv.entries() {
-            if PhantomToken::is_phantom_token(&entry.value) {
-                if !never_reintroduce.contains(&entry.key) {
-                    session_names.push(entry.key.clone());
-                }
-                // Build the vault key for this env: try namespaced first, then bare (legacy).
-                // Backend errors are distinct from a missing key and must abort
-                // before a partially mapped proxy session can start.
-                let namespaced = phantom_core::env_scope::namespaced_key(&active_env, &entry.key);
-                let real_value = retrieve_required_secret(
-                    vault.as_ref(),
-                    config.local_project_id(),
-                    &namespaced,
-                    &entry.key,
-                    &active_env,
-                )?;
+    // Dotenv phantom tokens first, in file order, then launcher references
+    // the dotenv does not already protect. Both resolve the same way: the
+    // child gets a fresh session token and the proxy holds the value.
+    let mut session_keys: Vec<&str> = dotenv
+        .iter()
+        .flat_map(DotenvFile::entries)
+        .filter(|_| !refs_only)
+        .filter(|entry| PhantomToken::is_phantom_token(&entry.value))
+        .map(|entry| entry.key.as_str())
+        .collect();
+    let from_dotenv: HashSet<&str> = session_keys.iter().copied().collect();
+    session_keys.extend(
+        launcher_refs
+            .iter()
+            .map(String::as_str)
+            .filter(|name| !from_dotenv.contains(name)),
+    );
 
-                // Generate a fresh session token for this secret.
-                let session_token = PhantomToken::generate();
-                session_token_to_secret.insert(
-                    session_token.as_str().to_string(),
-                    (entry.key.clone(), String::from(real_value.as_str())),
-                );
-                secret_name_to_value.insert(entry.key.clone(), String::from(real_value.as_str()));
-                if !never_reintroduce.contains(&entry.key) {
-                    env_key_to_session_token
-                        .insert(entry.key.clone(), session_token.as_str().to_string());
-                }
-                secret_count += 1;
-            }
+    for key in session_keys {
+        if !never_reintroduce.contains(key) {
+            session_names.push(key.to_string());
         }
+        if launcher_refs.contains(key) {
+            // Per-use, names-only audit before the value read. With
+            // PHANTOM_AUDIT=required an unwritable log stops the launch.
+            phantom_core::audit::log_result("exec.secret_ref", Some(key)).context(
+                "Failed to write the audit event for a secret:// reference; child launch stopped",
+            )?;
+        }
+        // Build the vault key for this env: try namespaced first, then bare (legacy).
+        // Backend errors are distinct from a missing key and must abort
+        // before a partially mapped proxy session can start.
+        let namespaced = phantom_core::env_scope::namespaced_key(&active_env, key);
+        let real_value = retrieve_required_secret(
+            vault.as_ref(),
+            config.local_project_id(),
+            &namespaced,
+            key,
+            &active_env,
+        )?;
+
+        // Generate a fresh session token for this secret.
+        let session_token = PhantomToken::generate();
+        session_token_to_secret.insert(
+            session_token.as_str().to_string(),
+            (key.to_string(), String::from(real_value.as_str())),
+        );
+        secret_name_to_value.insert(key.to_string(), String::from(real_value.as_str()));
+        if !never_reintroduce.contains(key) {
+            env_key_to_session_token.insert(key.to_string(), session_token.as_str().to_string());
+        }
+        secret_count += 1;
     }
 
     // Build service registry from config
     // Keep destination construction private and after route validation. Tests
     // can supply a loopback registry without adding a runtime override that
     // could redirect credential-bearing requests in the shipped CLI.
-    let registry = registry_from_config(&config);
+    let mut registry = registry_from_config(&config);
+    if refs_only {
+        // Only routes whose credential this session loaded exist on the
+        // proxy; a request to any other route is refused with no injection.
+        registry.retain_routes(|route| secret_name_to_value.contains_key(&route.secret_key));
+    }
     // Export base-URL overrides only for routes this session can serve. An
     // SDK pointed at a route without a loaded credential would receive a
     // proxy 503 for every call instead of reaching its provider.
@@ -509,6 +555,52 @@ fn launch_vault_names(
         .list()
         .context("Failed to list protected vault entries before child launch")?;
     crate::util::inventory_guard(vault, project_id, names.len())?;
+    Ok(names)
+}
+
+/// Inherited `NAME=secret://NAME` assignments, as a sorted, deduplicated
+/// list of names. Value-free: errors name the variable only. A value that
+/// uses the scheme but is malformed, names a different secret, or targets a
+/// reserved `PHANTOM_` variable stops the launch instead of reaching the
+/// child as a literal.
+fn launcher_secret_refs(
+    vars: impl IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+) -> Result<std::collections::BTreeSet<String>> {
+    use phantom_core::secret_ref::{SecretRef, SCHEME};
+    let mut names = std::collections::BTreeSet::new();
+    for (key, value) in vars {
+        if !value.as_encoded_bytes().starts_with(SCHEME.as_bytes()) {
+            continue;
+        }
+        let Some(key) = key.to_str() else {
+            anyhow::bail!(
+                "An environment variable with a non-UTF-8 name holds a secret:// reference; child launch stopped"
+            );
+        };
+        let Some(text) = value.to_str() else {
+            anyhow::bail!(
+                "Environment variable {key} holds a non-UTF-8 secret:// reference; child launch stopped"
+            );
+        };
+        let reference = match SecretRef::parse(text) {
+            Some(Ok(reference)) => reference,
+            Some(Err(error)) => anyhow::bail!(
+                "Environment variable {key} holds a malformed secret:// reference ({error}); child launch stopped"
+            ),
+            None => continue,
+        };
+        if reference.name() != key {
+            anyhow::bail!(
+                "Environment variable {key} references a different secret name; launcher references must have the form NAME=secret://NAME"
+            );
+        }
+        if key.to_ascii_uppercase().starts_with("PHANTOM_") {
+            anyhow::bail!(
+                "Environment variable {key} is reserved for Phantom and cannot hold a secret:// reference"
+            );
+        }
+        names.insert(key.to_string());
+    }
     Ok(names)
 }
 
@@ -966,6 +1058,9 @@ impl SignalForwarder {
 #[cfg(all(test, unix))]
 #[path = "exec_github_tests.rs"]
 mod github_tests;
+#[cfg(all(test, unix))]
+#[path = "exec_refs_only_tests.rs"]
+mod refs_only_tests;
 
 #[cfg(test)]
 #[path = "exec_perf.rs"]
@@ -973,6 +1068,45 @@ mod perf_tests;
 
 #[cfg(test)]
 mod tests {
+    fn vars(pairs: &[(&str, &str)]) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+        pairs
+            .iter()
+            .map(|(k, v)| ((*k).into(), (*v).into()))
+            .collect()
+    }
+
+    #[test]
+    fn launcher_refs_collect_names_and_ignore_ordinary_values() {
+        let names = super::launcher_secret_refs(vars(&[
+            ("B_KEY", "secret://B_KEY"),
+            ("A_KEY", "secret://A_KEY"),
+            ("PLAIN", "value"),
+            ("URL", "https://example.invalid"),
+        ]))
+        .unwrap();
+        assert_eq!(names.into_iter().collect::<Vec<_>>(), ["A_KEY", "B_KEY"]);
+    }
+
+    #[test]
+    fn launcher_refs_fail_closed_without_echoing_values() {
+        for (key, value) in [
+            ("K", "secret://"),
+            ("K", "secret://not valid"),
+            ("K", "secret://OTHER"),
+            ("PHANTOM_PROXY_TOKEN", "secret://PHANTOM_PROXY_TOKEN"),
+            ("phantom_lower", "secret://phantom_lower"),
+        ] {
+            let error = super::launcher_secret_refs(vars(&[(key, value)]))
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(key), "refusal does not name the variable");
+            let tail = value.trim_start_matches("secret://");
+            if !tail.is_empty() && tail != key {
+                assert!(!error.contains(tail), "refusal echoed the reference");
+            }
+        }
+    }
+
     #[tokio::test]
     async fn output_relay_scrubs_bytewise_and_flushes_incomplete_prefix_at_eof() {
         let fake = format!("FAKE-{}-value", "managed".repeat(5));

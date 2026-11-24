@@ -118,19 +118,14 @@ jobs:
           p=true
           if [ "$EVENT" = "pull_request" ]; then p=false; fi
           echo "platform=$p" >> "$GITHUB_OUTPUT"; echo "platform=$p"
+      # The Test job does not run on pull_request or merge_group, and the
+      # nightly/manual runs execute the full suite. Resolving an affected
+      # nextest filterset here only paid for `cargo metadata` (~9s) on every
+      # pull request, including forks, and nothing read the result.
       - id: affected
-        env:
-          EVENT: ${{ github.event_name }}
-          BASE: ${{ github.event.pull_request.base.sha }}
-          HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
-          if [ "$EVENT" = "pull_request" ]; then
-            fs="$(bash scripts/ci/affected-filterset.sh "$BASE" "$HEAD" || echo 'all()')"
-          else
-            fs='all()'
-          fi
-          echo "filterset=$fs" >> "$GITHUB_OUTPUT"
-          echo "nextest filterset: $fs"
+          echo "filterset=all()" >> "$GITHUB_OUTPUT"
+          echo "nextest filterset: all()"
 
   test:
     name: Test (${{ matrix.os }})
@@ -190,16 +185,10 @@ jobs:
       # nextest runs every test in its own process, in parallel across all
       # test binaries. Same targets as `cargo test --all-targets` (which never
       # ran doctests); ignored tests stay ignored.
-      # PRs test only the crates the diff touches plus every crate depending on
-      # them (nextest rdeps filterset); workspace-wide changes (manifests,
-      # lockfile, toolchain, CI) select all(). Pushes to main always run the
-      # complete suite on every OS.
-      # Linux schedule and workflow_dispatch call the same nextest binary with
-      # the same flags; merge_group uses the affected filterset like pull_request.
-      # show-env only exports coverage variables.
+      # pull_request and merge_group skip this job. Events that reach it run
+      # the full suite. Linux schedule and workflow_dispatch use the coverage
+      # invocation below. show-env only exports coverage variables.
       - name: Run tests
-        # PRs test only crates the diff touches plus their reverse deps
-        # (computed in `changes`); main pushes always run all().
         if: needs.changes.outputs.filterset != 'none()' && (runner.os != 'Linux' || (github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'))
         shell: bash
         run: cargo nextest run --workspace --all-targets --locked --no-fail-fast -E "${{ needs.changes.outputs.filterset }}"
@@ -551,6 +540,11 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         if: steps.scope.outputs.rust == 'true'
+        with:
+          # A fork pull request has a read-only token. Saving the cache is an
+          # optimization; a denied write must not fail Lint. merge_group and
+          # the nightly run still save so the next pull request can restore.
+          save-if: ${{ github.event_name != 'pull_request' }}
       - name: Check formatting
         if: steps.scope.outputs.rust == 'true'
         run: cargo fmt --all -- --check
@@ -577,6 +571,8 @@ jobs:
           node-version: 22
       - name: Check MCP registry publisher guards
         run: node --test scripts/ci/mcp-registry-publisher.test.mjs .github/tests/mcp-registry-publication.test.mjs
+      - name: Check fork pull requests cannot fail on a cache write
+        run: node --test scripts/ci/fork-pr-cache.test.mjs
       - name: Reject tracked dependency installations
         shell: bash
         run: |
@@ -609,7 +605,8 @@ jobs:
           tar -xzf "$archive" -C "$install_dir" --strip-components=1 cargo-deny-${CARGO_DENY_VERSION}-x86_64-unknown-linux-musl/cargo-deny
           "$install_dir/cargo-deny" --version
       - name: Save verified cargo-deny archive
-        if: ${{ steps.cargo_deny_cache.outputs.cache-hit != 'true' }}
+        if: ${{ steps.cargo_deny_cache.outputs.cache-hit != 'true' && github.event_name != 'pull_request' }}
+        continue-on-error: true
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: /tmp/phantom-tool-cache/cargo-deny.tar.gz
@@ -805,7 +802,8 @@ jobs:
           tar -xzf "$archive" -C "$install_dir" gitleaks
           "$install_dir/gitleaks" version
       - name: Save verified gitleaks archive
-        if: ${{ steps.gitleaks_cache.outputs.cache-hit != 'true' }}
+        if: ${{ steps.gitleaks_cache.outputs.cache-hit != 'true' && github.event_name != 'pull_request' }}
+        continue-on-error: true
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: /tmp/phantom-tool-cache/gitleaks.tar.gz
@@ -1053,3 +1051,182 @@ jobs:
           path: fixup-queue.txt
           if-no-files-found: error
           retention-days: 7
+
+  # OS gates report on every pull request and merge queue. They are not in
+  # CI Gate's needs, so a Windows or macOS run cannot delay the required check.
+  # timeout-minutes: 20 is the daily Test job bound. Full-suite success
+  # nightlies 43928442613, 43730843960, 43607659003, 43460417530,
+  # 43262274149, 42247122878, 41671100963, and 41522904997 measured
+  # ubuntu p95 668s, macos p95 586s, and windows p95 716s.
+  affected-windows:
+    name: Affected build (windows)
+    needs: changes
+    if: ${{ inputs.validation_scope != 'windows-native-diagnostics' && (github.event_name == 'pull_request' || github.event_name == 'merge_group') && needs.changes.outputs.rust == 'true' && needs.changes.outputs.platform == 'true' }}
+    runs-on: windows-latest
+    timeout-minutes: 20
+    env:
+      CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER: rust-lld
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (2026-04-24)
+        with:
+          toolchain: 1.95.0
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          save-if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2
+        with:
+          tool: cargo-nextest
+      - name: Affected check and tests, first failure only
+        shell: bash
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          HEAD: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+        run: bash scripts/ci/affected-os.sh "$BASE" "$HEAD"
+
+  affected-macos:
+    name: Affected build (macos)
+    needs: changes
+    if: ${{ inputs.validation_scope != 'windows-native-diagnostics' && (github.event_name == 'pull_request' || github.event_name == 'merge_group') && needs.changes.outputs.rust == 'true' && needs.changes.outputs.platform == 'true' }}
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (2026-04-24)
+        with:
+          toolchain: 1.95.0
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          save-if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2
+        with:
+          tool: cargo-nextest
+      - name: Affected check and tests, first failure only
+        shell: bash
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          HEAD: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+        run: bash scripts/ci/affected-os.sh "$BASE" "$HEAD"
+
+  install-smoke-linux:
+    name: install smoke (linux)
+    needs: changes
+    if: ${{ inputs.validation_scope != 'windows-native-diagnostics' && needs.changes.outputs.rust == 'true' && (github.event_name == 'pull_request' || github.event_name == 'merge_group' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (2026-04-24)
+        with:
+          toolchain: 1.95.0
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          save-if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+      - name: This commit
+        shell: bash
+        run: bash scripts/ci/install-smoke.sh source "${RUNNER_TEMP}/phantom-source"
+      - name: Latest published release
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: bash scripts/ci/install-smoke.sh release "${RUNNER_TEMP}/phantom-release"
+
+  install-smoke-windows:
+    name: install smoke (windows)
+    needs: changes
+    if: ${{ inputs.validation_scope != 'windows-native-diagnostics' && needs.changes.outputs.rust == 'true' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || ((github.event_name == 'pull_request' || github.event_name == 'merge_group') && needs.changes.outputs.platform == 'true')) }}
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (2026-04-24)
+        with:
+          toolchain: 1.95.0
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          save-if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+      - name: This commit
+        shell: bash
+        run: bash scripts/ci/install-smoke.sh source "${RUNNER_TEMP}/phantom-source"
+      - name: Latest published release
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: bash scripts/ci/install-smoke.sh release "${RUNNER_TEMP}/phantom-release"
+
+  install-smoke-macos:
+    name: install smoke (macos)
+    needs: changes
+    if: ${{ inputs.validation_scope != 'windows-native-diagnostics' && needs.changes.outputs.rust == 'true' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || ((github.event_name == 'pull_request' || github.event_name == 'merge_group') && needs.changes.outputs.platform == 'true')) }}
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (2026-04-24)
+        with:
+          toolchain: 1.95.0
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          save-if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+      - name: This commit
+        shell: bash
+        run: bash scripts/ci/install-smoke.sh source "${RUNNER_TEMP}/phantom-source"
+      - name: Latest published release
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: bash scripts/ci/install-smoke.sh release "${RUNNER_TEMP}/phantom-release"
+
+  gate-linux:
+    name: Gate (linux)
+    if: ${{ always() && inputs.validation_scope != 'windows-native-diagnostics' && (github.event_name == 'pull_request' || github.event_name == 'merge_group' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
+    needs: [lint, install-smoke-linux]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Pass on success or skip
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: node scripts/ci/os-gate.mjs
+
+  gate-windows:
+    name: Gate (windows)
+    if: ${{ always() && inputs.validation_scope != 'windows-native-diagnostics' && (github.event_name == 'pull_request' || github.event_name == 'merge_group' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
+    needs: [affected-windows, install-smoke-windows, windows-arm-source-check]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Pass on success or skip
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: node scripts/ci/os-gate.mjs
+
+  gate-macos:
+    name: Gate (macos)
+    if: ${{ always() && inputs.validation_scope != 'windows-native-diagnostics' && (github.event_name == 'pull_request' || github.event_name == 'merge_group' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
+    needs: [affected-macos, install-smoke-macos]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Pass on success or skip
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: node scripts/ci/os-gate.mjs
