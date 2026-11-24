@@ -28,21 +28,25 @@ and no exact npm `0.7.9` acceptance receipt is claimed. See [distribution status
 
 | Target | Release build host and mode | GitHub release workflow | Primary npm wrapper | Shell installer | Configured native acceptance / current evidence |
 |---|---:|---:|---:|---:|---:|
-| macOS Apple Silicon (`aarch64-apple-darwin`) | `macos-latest` is currently an arm64 host; native-architecture build | Archive + SBOM published; archive attested | Mapped | Mapped | `macos-15` ARM64; `v0.8.7` exact-archive native acceptance passed; npm installation acceptance is separate |
-| macOS Intel (`x86_64-apple-darwin`) | Cross-target build on the current arm64 `macos-latest` host | Archive + SBOM published; archive attested | Mapped | Mapped | `macos-15-intel` X64; `v0.8.7` exact-archive native acceptance passed; npm installation acceptance is separate |
-| Linux ARM64 GNU (`aarch64-unknown-linux-gnu`) | Cross-compiled with `gcc-aarch64-linux-gnu` on x64 Ubuntu 22.04 | Archive + SBOM published; archive attested; GLIBC symbol ceiling enforced | Mapped | Mapped | `ubuntu-22.04-arm` ARM64; `v0.8.7` exact-archive native acceptance passed; npm installation acceptance is separate |
-| Linux x64 GNU (`x86_64-unknown-linux-gnu`) | Native-architecture build on x64 Ubuntu 22.04 | Archive + SBOM published; archive attested; GLIBC symbol ceiling enforced | Mapped | Mapped | `ubuntu-22.04` X64; `v0.8.7` exact-archive native acceptance passed; npm installation acceptance is separate |
-| Windows x64 MSVC (`x86_64-pc-windows-msvc`) | Native-architecture build on x64 `windows-latest` | ZIP + SBOM published; archive attested | Mapped | Mapped by `install.ps1` | `windows-latest` X64; `v0.8.7` exact-archive native acceptance passed; npm installation acceptance is separate |
-| Windows ARM64 MSVC (`aarch64-pc-windows-msvc`) | Native-architecture build on arm64 `windows-11-vs2026-arm` | ZIP + SBOM published; archive attested | Mapped | Mapped by `install.ps1` | `windows-11-vs2026-arm` ARM64; `v0.8.7` exact-archive native acceptance passed; npm installation acceptance is separate |
+| macOS Apple Silicon (`aarch64-apple-darwin`) | `macos-latest` is currently an arm64 host; native-architecture build | Archive + SBOM published; archive attested | Mapped | Mapped | `macos-15` ARM64; `v0.8.11` exact-archive native acceptance passed; npm installation acceptance is separate |
+| macOS Intel (`x86_64-apple-darwin`) | Cross-target build on the current arm64 `macos-latest` host | Archive + SBOM published; archive attested | Mapped | Mapped | `macos-15-intel` X64; `v0.8.11` exact-archive native acceptance passed; npm installation acceptance is separate |
+| Linux ARM64 GNU (`aarch64-unknown-linux-gnu`) | Cross-compiled with `gcc-aarch64-linux-gnu` on x64 Ubuntu 22.04 | Archive + SBOM published; archive attested; GLIBC symbol ceiling enforced | Mapped | Mapped | `ubuntu-22.04-arm` ARM64; `v0.8.11` exact-archive native acceptance passed; npm installation acceptance is separate |
+| Linux x64 GNU (`x86_64-unknown-linux-gnu`) | Native-architecture build on x64 Ubuntu 22.04 | Archive + SBOM published; archive attested; GLIBC symbol ceiling enforced | Mapped | Mapped | `ubuntu-22.04` X64; `v0.8.11` exact-archive native acceptance passed; npm installation acceptance is separate |
+| Windows x64 MSVC (`x86_64-pc-windows-msvc`) | Native-architecture build on x64 `windows-latest` | ZIP + SBOM published; archive attested | Mapped | Mapped by `install.ps1` | `windows-latest` X64; `v0.8.11` exact-archive native acceptance passed; npm installation acceptance is separate |
+| Windows ARM64 MSVC (`aarch64-pc-windows-msvc`) | Native-architecture build on arm64 `windows-11-vs2026-arm` | ZIP + SBOM published; archive attested | Mapped | Mapped by `install.ps1` | `windows-11-vs2026-arm` ARM64; `v0.8.11` exact-archive native acceptance passed; npm installation acceptance is separate |
 
 The current workflow defines six target archives, each containing `phantom`
 and `phantom-mcp`: four Unix `.tar.gz` files and two Windows `.zip` files. Both
 npm wrappers and the direct installers share that six-target lookup contract.
 The separate `npm-candidate-acceptance.yml` workflow is configured to exercise
 the exact tagged npm tarballs from fresh caches on these same six native host
-classes. The inventory remains five files through `0.8.3`; source candidates from
-`0.8.4` onward add only `bin/package-version.js` for six reviewed files. The gate
-rejects any extra or substituted member. It runs before npm publication, then repeats acceptance against
+classes. The versioned candidate gate expects five files through `0.8.3`
+and adds `bin/package-version.js` from `0.8.4` for six reviewed files. The
+current CLI source also packages `bin/usage-ping.js`, for seven files; the MCP
+wrapper still has six. The source packaging test checks those exact lists,
+but the CLI's seventh member still needs reconciliation with the versioned
+candidate gate before a release. That gate rejects any extra or substituted
+member. It runs before npm publication, then repeats acceptance against
 the integrity-pinned public `release-candidate` packages before either `latest`
 tag changes. A workflow definition is not a receipt; retain all six successful
 jobs for each mode. The exact npm `0.8.7` packages have verified registry signatures and provenance; this alone does not establish six-target npm installation acceptance.
@@ -61,7 +65,7 @@ sibling transaction residue. It then corrupts the checksum sidecar and proves
 that a pre-transaction integrity failure also preserves the accepted tree.
 Windows acceptance suppresses persistent user-PATH mutation on the CI
 account; it does not claim shell-profile acceptance. Attestation cannot begin
-until all six jobs succeed. The exact `v0.8.7` tag workflow passed this release
+until all six jobs succeed. The exact `v0.8.11` tag workflow passed this release
 native matrix, completed release attestations, and created the immutable
 [19-asset GitHub release](https://github.com/ashlrai/phantom-secrets/releases/tag/v0.8.11);
 retain [workflow 43947823026](https://github.com/ashlrai/phantom-secrets/actions/runs/43947823026)
@@ -159,7 +163,7 @@ acceptance and never place provider client secrets on the command line.
 
 ## Install methods
 
-- The reviewed `v0.8.7` source build checks out
+- The reviewed `v0.8.11` source build checks out
   `2c93e578d8d1a8097b32c1cd89292e339681b77c` and runs
   `cargo build --release --locked --bin phantom --bin phantom-mcp`. See [distribution status](distribution-status.md) for the dated crates.io snapshot.
 - See [distribution status](distribution-status.md) for dated npm, Homebrew, crates.io, and MCP Registry evidence. Prefer the checksum-verified `v0.8.11` GitHub assets for an exact install.

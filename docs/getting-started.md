@@ -375,7 +375,11 @@ scan whose result is indeterminate is still an error with no report.
 
 ### `phantom doctor`
 
-Health check for your setup: config validity, vault access, `.env` protection, `.gitignore` coverage, `.env.example`, pre-commit hook.
+Repository-local health check: config validity, `.env` protection, `.gitignore`
+coverage, `.env.example`, and the pre-commit hook. It does not open the vault
+or verify its inventory, including with `--fix`. Use
+`phantom agent doctor --json --vault` from a trusted terminal when you need an
+explicit vault inventory probe; `phantom agent doctor --json` alone skips it.
 
 ```bash
 phantom doctor
@@ -408,8 +412,7 @@ any repair in that state.
 $ phantom doctor
 pass: .phantom.toml found
 pass: Config valid (project: a1b2c3d4)
-pass: Vault backend: macOS Keychain
-pass: 3 secret(s) in vault
+info: Vault backend and inventory not opened in read-only doctor mode
 pass: .env has 5 entries and no unprotected secrets
 pass: .env is in .gitignore
 warn: No .env.example — team onboarding may be difficult
@@ -684,12 +687,13 @@ The full SHA above is the source commit resolved by `v0.8.11`.
 
 ### Claude Code cannot read `.env` after setup — is this broken?
 
-No. A `phm_` value is not a provider credential, but keeping dotenv reads
-denied also protects unmanaged sibling files and backups created by other
-tools. It also reduces exposure of mappings that an authenticated active
-Phantom proxy could resolve. `phantom setup --client claude` wires MCP while
-removing legacy Phantom-managed dotenv read grants; agents use value-blind
-metadata instead.
+No. Persistent `phm_` mappings are sensitive project metadata, so keep them
+out of agent transcripts. Denying dotenv reads also protects unmanaged sibling
+files and backups created by other tools. Client headers and bodies never
+resolve mappings; an authenticated proxy injects only the matched route's
+vault value into its fixed auth header. `phantom setup --client claude` wires
+MCP while removing legacy Phantom-managed dotenv read grants; agents use
+value-blind metadata instead.
 
 ---
 

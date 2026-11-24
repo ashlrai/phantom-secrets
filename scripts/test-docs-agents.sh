@@ -9,9 +9,9 @@
 # refusing fails the block).
 #
 # After the run, the assertions below pin the claims the page makes:
-# placeholders rather than values on disk, a session token (not the real
-# key) in the child's environment, each refusal's message, and — the point
-# of the page — the demo key never appearing in any output an agent sees.
+# placeholders rather than values on disk, a checked session placeholder in
+# the child's environment, and each refusal's message. Demo keys, mappings,
+# and proxy bearers must never appear in the walkthrough's output.
 #
 # Overridable:
 #   PHANTOM_BIN   path to the phantom binary (default: target/debug/phantom,
@@ -110,8 +110,8 @@ for f in "$BLOCKS"/block-*.sh; do
     if run_block "$f" >"$LOGS/$name.log" 2>&1; then
         say "ok   $name"
     else
-        say "FAIL $name — output:"
-        sed 's/^/     | /' "$LOGS/$name.log" >&2
+        # A broken example might print a key or bearer. Keep its output private.
+        say "FAIL $name (output withheld because it may contain credentials)"
         failures=$((failures + 1))
     fi
 done
@@ -121,12 +121,15 @@ done
 
 assert_count=0
 
-# assert_output '<literal command line in the doc>' '<extended regex its log must match>'
+# assert_output '<literal command in the doc>' '<extended regex its log must match>' [exact]
 assert_output() {
     local needle=$1 pattern=$2 block log matches
+    local -a match_flags=(-lF)
+    # Distinguish a bare command from an earlier example with extra flags.
+    [[ ${3:-} != exact ]] || match_flags+=(-x)
     # grep exits 1 on no match (fine); exit 2 is a real error. No pipe to
     # head, so grep can never take SIGPIPE under `set -o pipefail`.
-    matches=$(grep -lF -- "$needle" "$BLOCKS"/block-*.sh || [ $? -eq 1 ]) || {
+    matches=$(grep "${match_flags[@]}" -- "$needle" "$BLOCKS"/block-*.sh || [ $? -eq 1 ]) || {
         say "FAIL assert: grep errored locating the doc block for: $needle" >&2
         assert_count=$((assert_count + 1))
         return 1
@@ -168,21 +171,45 @@ for canary in "${CANARIES[@]}"; do
     assert_count=$((assert_count + 1))
 done
 
+# Project IDs are public hashes with the same shape as a bare proxy bearer.
+# Mask only the status line containing this project's exact ID. The same digest
+# in a placeholder, bearer URL, or any other output must still fail the scan.
+project_id=$(sed -nE 's/^project_id = "([0-9a-f]{64})"$/\1/p' "$WORK/.phantom.toml")
+[[ $project_id =~ ^[0-9a-f]{64}$ ]] || fail "cannot identify the public project ID"
+scan_log="$SANDBOX/transcript-value-check.log"
+sed "s/^  Project ID:  $project_id$/  Project ID:  <project-id>/" "$LOGS"/*.log > "$scan_log" \
+    || fail "could not prepare the private transcript scan"
+
+# Session placeholders and proxy bearers are 64 hex characters. None belong
+# in this walkthrough's transcript, including a bare bearer or a URL segment.
+if grep -E '[0-9a-f]{64}' "$scan_log" >/dev/null 2>&1; then
+    say "FAIL assert: mapping, session placeholder, or proxy bearer printed" >&2
+    ASSERT_FAILS=$((ASSERT_FAILS + 1))
+else
+    scan_status=$?
+    if (( scan_status != 1 )); then
+        say "FAIL assert: could not inspect walkthrough output for mappings or bearers" >&2
+        ASSERT_FAILS=$((ASSERT_FAILS + 1))
+    fi
+fi
+assert_count=$((assert_count + 1))
+
 # Behaviour each block demonstrated.
 assert_output 'phantom init --from .env'                   'secret\(s\) (are )?now protected|Rewrote'        || ASSERT_FAILS=$((ASSERT_FAILS + 1))
+assert_output 'phantom check --json'                       '"clean": true'                                 || ASSERT_FAILS=$((ASSERT_FAILS + 1))
 assert_output 'phantom list'                               'OPENAI_API_KEY'                                 || ASSERT_FAILS=$((ASSERT_FAILS + 1))
 assert_output 'phantom why OPENAI_API_KEY'                 'proxied'                                        || ASSERT_FAILS=$((ASSERT_FAILS + 1))
 assert_output 'phantom why INTERNAL_SIGNING_KEY'           'no route'                                       || ASSERT_FAILS=$((ASSERT_FAILS + 1))
-assert_output 'phantom exec -- printenv OPENAI_API_KEY'    '^phm_[0-9a-f]{64}$'                             || ASSERT_FAILS=$((ASSERT_FAILS + 1))
-assert_output 'phantom exec -- printenv OPENAI_BASE_URL'   'http://127\.0\.0\.1:[0-9]+/openai/'             || ASSERT_FAILS=$((ASSERT_FAILS + 1))
-assert_output 'PHANTOM_VAULT_PASSPHRASE:-<unset>'          'PHANTOM_VAULT_PASSPHRASE=<unset>'               || ASSERT_FAILS=$((ASSERT_FAILS + 1))
+assert_output 'token=${OPENAI_API_KEY#phm_}'               '^OPENAI_API_KEY: session placeholder present$'  || ASSERT_FAILS=$((ASSERT_FAILS + 1))
+assert_output 'port=${route%%/*}'                          '^OPENAI_BASE_URL: authenticated loopback route present$' || ASSERT_FAILS=$((ASSERT_FAILS + 1))
+assert_output '${PHANTOM_VAULT_PASSPHRASE+x}'               '^PHANTOM_VAULT_PASSPHRASE: absent$'             || ASSERT_FAILS=$((ASSERT_FAILS + 1))
 assert_output 'phantom exec -- false'                      'exited with code 1'                             || ASSERT_FAILS=$((ASSERT_FAILS + 1))
 assert_output 'phantom add BACKUP_KEY'                     'Positional secret values are disabled'          || ASSERT_FAILS=$((ASSERT_FAILS + 1))
 assert_output 'phantom add MISTRAL_API_KEY --stdin'        'value never printed|Stored MISTRAL_API_KEY'     || ASSERT_FAILS=$((ASSERT_FAILS + 1))
 assert_output 'phantom reveal OPENAI_API_KEY'              'Refusing to reveal'                             || ASSERT_FAILS=$((ASSERT_FAILS + 1))
 assert_output 'services.my_gateway'                        'not approved for agentic execution|Refusing unapproved repository-controlled proxy routing' || ASSERT_FAILS=$((ASSERT_FAILS + 1))
 assert_output 'DATABASE_URL=postgres'                      'Refusing to expose connection-string'           || ASSERT_FAILS=$((ASSERT_FAILS + 1))
-assert_output 'phantom check'                              'No unprotected secrets'                         || ASSERT_FAILS=$((ASSERT_FAILS + 1))
+assert_output 'phantom check'                              'No unprotected secrets' exact                   || ASSERT_FAILS=$((ASSERT_FAILS + 1))
 assert_output 'phantom doctor'                             'All checks passed'                              || ASSERT_FAILS=$((ASSERT_FAILS + 1))
 
 (( ASSERT_FAILS == 0 )) || fail "$ASSERT_FAILS assertion(s) failed"

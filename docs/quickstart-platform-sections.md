@@ -30,8 +30,8 @@ umask 077
 phantom_stage="$(mktemp -d "${TMPDIR:-/tmp}/phantom-install.XXXXXX")"
 phantom_installer="$phantom_stage/install.sh"
 trap 'rm -f -- "$phantom_installer"; rmdir -- "$phantom_stage" 2>/dev/null || true' EXIT
-curl --fail --location --proto '=https' --proto-redir '=https' --tlsv1.2 --output "$phantom_installer" https://raw.githubusercontent.com/ashlrai/phantom-secrets/a6a0413991c0bd7f3d6601f467c0b5770d0dce0c/scripts/install.sh
-printf '%s  %s\n' 44ab25b1a5b99d7a1a3bb484ea17b323f89a47e43092ca4de4903a9ede6ba72e "$phantom_installer" | shasum -a 256 -c -
+curl --fail --location --proto '=https' --proto-redir '=https' --tlsv1.2 --output "$phantom_installer" https://raw.githubusercontent.com/ashlrai/phantom-secrets/2c93e578d8d1a8097b32c1cd89292e339681b77c/scripts/install.sh
+printf '%s  %s\n' 094525f7982caaf534c1a19b2581dbee69a4b766687b593d5adda3f0ba9464a4 "$phantom_installer" | shasum -a 256 -c -
 bash "$phantom_installer"
 "$HOME/.phantom-secrets/bin/phantom" --version
 "$HOME/.phantom-secrets/bin/phantom-mcp" --version
@@ -49,10 +49,10 @@ attempts to remove the temporary file.
 ```powershell
 & {
 $ErrorActionPreference = 'Stop'
-$Installer = Join-Path $env:TEMP ('phantom-install-v0.8.7-{0}.ps1' -f [Guid]::NewGuid().ToString('N'))
+$Installer = Join-Path $env:TEMP ('phantom-install-v0.8.11-{0}.ps1' -f [Guid]::NewGuid().ToString('N'))
 try {
-  Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/ashlrai/phantom-secrets/a6a0413991c0bd7f3d6601f467c0b5770d0dce0c/scripts/install.ps1' -OutFile $Installer
-  $Expected = '7b8549e6cd0d213b7e4e12ace3513f964952d460f1717602d16022f6411b4b5e'
+  Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/ashlrai/phantom-secrets/2c93e578d8d1a8097b32c1cd89292e339681b77c/scripts/install.ps1' -OutFile $Installer
+  $Expected = 'db11ec07928802b5d951824af1c4bc9dfed8c7775b466d781f403a449152323c'
   $Actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $Installer).Hash.ToLowerInvariant()
   if ($Actual -ne $Expected) { throw 'Phantom installer checksum mismatch' }
   & $Installer
@@ -82,8 +82,8 @@ umask 077
 phantom_stage="$(mktemp -d "${TMPDIR:-/tmp}/phantom-install.XXXXXX")"
 phantom_installer="$phantom_stage/install.sh"
 trap 'rm -f -- "$phantom_installer"; rmdir -- "$phantom_stage" 2>/dev/null || true' EXIT
-curl --fail --location --proto '=https' --proto-redir '=https' --tlsv1.2 --output "$phantom_installer" https://raw.githubusercontent.com/ashlrai/phantom-secrets/a6a0413991c0bd7f3d6601f467c0b5770d0dce0c/scripts/install.sh
-printf '%s  %s\n' 44ab25b1a5b99d7a1a3bb484ea17b323f89a47e43092ca4de4903a9ede6ba72e "$phantom_installer" | sha256sum -c -
+curl --fail --location --proto '=https' --proto-redir '=https' --tlsv1.2 --output "$phantom_installer" https://raw.githubusercontent.com/ashlrai/phantom-secrets/2c93e578d8d1a8097b32c1cd89292e339681b77c/scripts/install.sh
+printf '%s  %s\n' 094525f7982caaf534c1a19b2581dbee69a4b766687b593d5adda3f0ba9464a4 "$phantom_installer" | sha256sum -c -
 bash "$phantom_installer"
 "$HOME/.phantom-secrets/bin/phantom" --version
 "$HOME/.phantom-secrets/bin/phantom-mcp" --version
@@ -101,7 +101,7 @@ inheritance.
 After the selected card and installation note, both steps appear for every
 platform. Their receipts are illustrative, not actual command output.
 
-1. **Verify both v0.8.7 binaries:** check the versions on PATH. This is
+1. **Verify both v0.8.11 binaries:** check the versions on PATH. This is
    separate from the installed-path checks inside the platform command.
 
    ```bash

@@ -31,7 +31,7 @@ Common causes:
 
 If your API calls fail with authentication errors after setting up Phantom:
 
-1. **Check the proxy is running**: `phantom status`
+1. **Check project state**: `phantom status` reports the machine-local lifecycle lock. A held lock does not authenticate or identify a listener and is not a proxy health check. Launch the failing command through `phantom exec -- <cmd>` and inspect its value-free startup diagnostics.
 2. **Verify the secret is in the vault**: `phantom list`
 3. **Verify the real value only in a trusted attached terminal**: run
    `phantom reveal <KEY>` and complete the exact typed confirmation, or use

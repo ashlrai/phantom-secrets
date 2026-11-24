@@ -9,8 +9,9 @@ The key distinction is simple: MCP carries control and value-free status;
 Phantom's local vault and authenticated proxy handle credential use. A secret
 value must never be accepted as a tool argument, result, log, or chat message.
 
-This guide describes the reviewed public `v0.8.7` release. The runtime
-`tools/list` response for the installed binaries is the canonical tool catalog.
+This guide describes the current source behavior. The runtime `tools/list`
+response for the installed binaries is the canonical tool catalog; use
+[distribution status](distribution-status.md) to check the installed channel.
 
 ## Install both reviewed binaries
 
@@ -20,8 +21,8 @@ Verify the adjacent SHA-256 checksum and place both `phantom` and `phantom-mcp`
 on `PATH`. The [getting-started guide](./getting-started.md#exact-github-assets-macos-linux-and-windows)
 lists all six archives and the verification commands.
 
-The Homebrew formula was last observed at `v0.7.9`, not `v0.8.7`, and unpinned
-npm, npx, and Cargo installs are not the reviewed `v0.8.7` release path. See
+The Homebrew formula was last observed at `v0.7.9`, and unpinned npm, npx,
+and Cargo installs are not the checksum-verified archive path above. See
 [distribution status](distribution-status.md) for dated channel evidence.
 
 ## Connect an MCP client
@@ -64,8 +65,9 @@ public identifiers.
 
 ## Add a credential without sending it through MCP
 
-Never paste a provider key into a tool argument. The legacy
-`phantom_add_secret` MCP tool is hard-deprecated and refuses plaintext.
+Never paste a provider key into a tool argument. `phantom_add_secret` accepts
+no plaintext value; its `generate: true` operation creates local random
+material, not a provider-issued credential.
 
 Use `phantom_add_secret_interactive` instead. It is effect-free (no approval
 needed) and returns `phantom add NAME`, which the user runs in a trusted
@@ -73,9 +75,22 @@ terminal so the value is entered outside the MCP and model context. The
 agent may name the required variable and explain why it is needed; it must not
 ask the user to paste the value into chat.
 
+For a new locally generated secret, use `phantom_add_secret` with `name`,
+`generate: true`, `confirm: true`, and a one-use out-of-band `approval_token`.
+Effects stay disabled unless the operator enables
+`PHANTOM_MCP_EFFECTS=trusted-terminal` outside agent authority and approves
+that exact request. The tool returns only `name` and `fingerprint`; it refuses
+existing names. With `generate` omitted or false, it refuses plaintext entry
+and points to the interactive command.
+
+Generation neither creates provider credentials nor adds a proxy route.
+A secret with `exec.delivery: no_route` still reaches the child only as a
+fresh placeholder. See [generated secrets](generated-secrets.md) for the
+transaction, receipt, and delivery limits.
+
 Mutating MCP tools require their documented confirmation and out-of-band
-approval gates. The exact installed schema—not an old directory listing—is the
-source of truth for parameters.
+approval gates. The exact installed schema is the source of truth for
+parameters.
 
 ## Use the credential without revealing it
 

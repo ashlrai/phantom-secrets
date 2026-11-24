@@ -89,7 +89,7 @@ for (const platform of ["macOS", "Linux"]) {
     const parent = mkdtempSync(join(tmpdir(), "phantom tmpdir "));
     try {
       const result = spawnSync("bash", ["-c", `set -eu\n${line}\nprintf '%s' "$phantom_stage"`], {
-        env: { PATH: process.env.PATH ?? "", TMPDIR: parent },
+        env: { PATH: process.env.PATH ?? "", TMPDIR: parent, NODE_ENV: "test" },
         encoding: "utf8",
       });
       assert.equal(result.status, 0, result.stderr);

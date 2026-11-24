@@ -35,22 +35,19 @@ phantom init --from .env
 
 `init` stores each real value in the vault and rewrites `.env` with
 persistent `phm_` mappings. Config values like `NODE_ENV` are left alone.
+Check protection without printing the file or its mappings:
 
 ```sh
-cat .env
-cat .env.example
+phantom check --json
 ```
 
-```text
-OPENAI_API_KEY=phm_…          # 64 hex chars; a mapping, not a key
-INTERNAL_SIGNING_KEY=phm_…
-NODE_ENV=development          # plain config, untouched
-```
+The report's `clean` field is `true` and its `findings` list is empty.
 
-The real values now exist only in the vault. The `.env` — the file the agent
-reads — holds placeholders. `phm_` tokens are still sensitive metadata: each
-one names the vault entry a route may inject. But they are not credentials,
-and no provider accepts one.
+The managed `.env` holds placeholders. Keep dotenv reads denied and use
+Phantom's value-blind commands to inspect protection. Persistent `phm_`
+mappings are sensitive metadata, so do not print or copy them into a
+transcript. No provider accepts a mapping, and the proxy never resolves one
+from a client header or body.
 
 ## 2. Inventory and status never expose a value
 
@@ -85,29 +82,47 @@ A protected key with no built-in route still gets a placeholder, but the
 placeholder resolves nowhere — `phantom exec` prints a warning naming it.
 Sending it to a provider fails; it is inert by construction.
 
-## 4. `phantom exec`: the agent never holds the value
+## 4. `phantom exec`: inspect the environment without printing credentials
 
-Wrap the agent command — `phantom exec -- <your agent command>` — and the
-child's environment contains only fresh, per-session `phm_` tokens. The
-persistent `.env` token is never handed over, and each session token dies
-when the session ends:
+Wrap the agent command with `phantom exec -- <your agent command>`. Managed
+keys in the child's environment contain fresh, per-session `phm_`
+placeholders. This check validates the placeholder's shape and prints only
+the result:
 
 ```sh
-phantom exec -- printenv OPENAI_API_KEY
+phantom exec -- sh -c '
+  token=${OPENAI_API_KEY#phm_}
+  test "$token" != "$OPENAI_API_KEY" && test "${#token}" -eq 64 || exit 1
+  case "$token" in *[!0-9a-f]*) exit 1 ;; esac
+  printf "%s\n" "OPENAI_API_KEY: session placeholder present"
+'
 ```
 
 ```text
-phm_…                       # a session token, different on every run
+OPENAI_API_KEY: session placeholder present
 ```
 
-Each routed service also gets a loopback base URL for the SDK to use:
+Each routed service also gets a loopback base URL for the SDK. By default,
+that URL contains the session's proxy bearer. The child also receives the
+bearer in `PHANTOM_PROXY_TOKEN`; it authorizes requests while the proxy is
+running. Do not print either variable. Check the route and its authentication
+segment in the child, then print only a fixed result:
 
 ```sh
-phantom exec -- printenv OPENAI_BASE_URL
+phantom exec -- sh -c '
+  test -n "$PHANTOM_PROXY_TOKEN" || exit 1
+  route=${OPENAI_BASE_URL#http://127.0.0.1:}
+  test "$route" != "$OPENAI_BASE_URL" || exit 1
+  port=${route%%/*}
+  case "$port" in ""|*[!0-9]*) exit 1 ;; esac
+  test "${#port}" -le 5 && test "$port" -ge 1 && test "$port" -le 65535 || exit 1
+  test "$OPENAI_BASE_URL" = "http://127.0.0.1:$port/openai/_phantom/$PHANTOM_PROXY_TOKEN/" || exit 1
+  printf "%s\n" "OPENAI_BASE_URL: authenticated loopback route present"
+'
 ```
 
 ```text
-http://127.0.0.1:NNNNN/openai/_phantom/…/
+OPENAI_BASE_URL: authenticated loopback route present
 ```
 
 The proxy binds `127.0.0.1` only, authenticates the session, matches
@@ -120,14 +135,17 @@ named in [phantom-with-agents.md](phantom-with-agents.md).
 
 Secrets used to launch the session are withheld too: `phantom exec` removes
 `PHANTOM_VAULT_PASSPHRASE` from the child's environment, so the vault
-passphrase cannot leak through the agent.
+passphrase is not inherited. Verify absence without printing its value:
 
 ```sh
-phantom exec -- sh -c 'echo "PHANTOM_VAULT_PASSPHRASE=${PHANTOM_VAULT_PASSPHRASE:-<unset>}"'
+phantom exec -- sh -c '
+  test "${PHANTOM_VAULT_PASSPHRASE+x}" != x || exit 1
+  printf "%s\n" "PHANTOM_VAULT_PASSPHRASE: absent"
+'
 ```
 
 ```text
-PHANTOM_VAULT_PASSPHRASE=<unset>
+PHANTOM_VAULT_PASSPHRASE: absent
 ```
 
 The agent's own stdout is passed through byte for byte — Phantom's progress
@@ -257,17 +275,17 @@ phantom agent doctor
 
 ## What the model context ends up holding
 
-After all of this, an agent session sees only:
+The walkthrough prints:
 
-- persistent `phm_` mappings in `.env` (sensitive metadata, inert without
-  the vault),
-- fresh session `phm_` tokens and `http://127.0.0.1` base URLs in its
-  environment (invalid the moment the session ends),
+- protection results and fixed confirmations about the child environment,
 - names, routes, and verdicts from `status`, `list`, `why`, `doctor`,
 - refusal messages where a person is required.
 
-It never sees a real key value, the vault passphrase, or the session's
-proxy bearer in printed output. For the proxy-side guarantees — header
-enforcement, body pass-through, echo scrubbing, streaming — see
+These checks do not print managed mappings, the vault passphrase, or the
+session's proxy bearer. The child still holds the bearer and authenticated
+base URLs in its environment, and it can use the active proxy. Phantom is
+not a same-user sandbox; keep those variables and managed dotenv files out
+of transcripts. For proxy-side guarantees covering header enforcement, body
+pass-through, echo scrubbing, and streaming, see
 [phantom-with-agents.md](phantom-with-agents.md); for installation and
 vault backends see [getting-started.md](getting-started.md).

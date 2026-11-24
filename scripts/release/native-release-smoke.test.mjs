@@ -27,6 +27,20 @@ const releaseWorkflow = readFileSync(
   "utf8",
 );
 const platformSupport = readFileSync(resolve(repoRoot, "docs/platform-support.md"), "utf8");
+const publicRelease = readFileSync(resolve(repoRoot, "apps/web/src/lib/public-release.ts"), "utf8");
+function receiptString(name) {
+  const matches = [...publicRelease.matchAll(new RegExp(`^export const ${name} =\\s*"([^"\\r\\n]+)";$`, "gm"))];
+  assert.equal(matches.length, 1, `one bound public receipt field: ${name}`);
+  return matches[0][1];
+}
+assert.equal(receiptString("PUBLIC_RELEASE_EVIDENCE_STATE"), "bound");
+const publicTag = `v${receiptString("PUBLIC_RELEASE_VERSION")}`;
+const publicSource = receiptString("PUBLIC_RELEASE_SOURCE_COMMIT");
+const publicWorkflow = receiptString("PUBLIC_RELEASE_WORKFLOW_URL");
+assert.match(publicTag, /^v\d+\.\d+\.\d+$/);
+assert.match(publicSource, /^[0-9a-f]{40}$/);
+assert.match(publicWorkflow, /^https:\/\/github\.com\/ashlrai\/phantom-secrets\/actions\/runs\/\d+$/);
+const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const fixtureTarget = "x86_64-unknown-linux-gnu";
 const fixtureEnv = Object.freeze({ RUNNER_OS: "Linux", RUNNER_ARCH: "X64" });
 const fixtureRuntime = Object.freeze({ platform: "linux", arch: "x64" });
@@ -441,10 +455,13 @@ test("attestation prerequisites cannot be satisfied by comments, duplicate rows 
   assert.throws(() => assertAttestationPrerequisites(wrongReusable));
 });
 
-test("platform documentation binds the immutable release receipt to every native row", () => {
+function assertPlatformReceipt(document) {
+  const matrixStart = document.indexOf("\n## Current matrix\n");
+  assert.notEqual(matrixStart, -1, "one platform matrix follows the recorded receipt");
+  const receipt = document.slice(0, matrixStart);
   for (const [target, values] of Object.entries(expected)) {
     const [, , runner, , runnerArch] = values;
-    const row = platformSupport
+    const row = document
       .split("\n")
       .find((line) => line.includes(`(\`${target}\`)`));
     assert.ok(row, `missing platform documentation row for ${target}`);
@@ -452,18 +469,24 @@ test("platform documentation binds the immutable release receipt to every native
       row.includes(`\`${runner}\` ${runnerArch}`),
       `platform documentation must bind ${target} to ${runner} ${runnerArch}`,
     );
+    assert.ok(row.includes(`\`${publicTag}\` exact-archive native acceptance passed`),
+      `platform documentation must bind ${target} to the exact public release`);
   }
 
   assert.match(
-    platformSupport,
-    /immutable `v0\.8\.7` GitHub[\s\S]*2026-11-06[\s\S]*a6a0413991c0bd7f3d6601f467c0b5770d0dce0c/i,
+    receipt,
+    new RegExp(`immutable \`${escapeRegex(publicTag)}\` GitHub[\\s\\S]*2026-11-16[\\s\\S]*${publicSource}`),
   );
-  assert.match(platformSupport, /19 assets[\s\S]*workflow 42262099223/i);
+  assert.match(receipt, new RegExp(`19 assets[\\s\\S]*\\[workflow ${publicWorkflow.split("/").at(-1)}\\]\\(${escapeRegex(publicWorkflow)}\\)`));
   assert.equal(
-    platformSupport.match(/`v0\.8\.7` exact-archive native acceptance passed/g)?.length,
+    document.match(new RegExp(`\`${escapeRegex(publicTag)}\` exact-archive native acceptance passed`, "g"))?.length,
     6,
-    "every native row must name the exact v0.8.7 release receipt",
+    "every native row must name the exact bound public release receipt",
   );
+}
+
+test("platform documentation binds the immutable release receipt to every native row", () => {
+  assertPlatformReceipt(platformSupport);
   assert.match(platformSupport, /no exact npm `0\.7\.9` acceptance receipt is claimed/i);
   assert.match(
     platformSupport,
@@ -476,4 +499,13 @@ test("platform documentation binds the immutable release receipt to every native
   );
   assert.doesNotMatch(platformSupport, /workflow packages but does not execute the exact resulting archive/i);
   assert.doesNotMatch(platformSupport, /no archive execution/i);
+});
+
+test("platform receipt rejects stale tags, source commits, workflow links, and individual rows", () => {
+  for (const value of [publicTag, publicSource, publicWorkflow]) {
+    assert.throws(() => assertPlatformReceipt(platformSupport.replace(value, "stale-receipt")));
+  }
+  const rowReceipt = `\`${publicTag}\` exact-archive native acceptance passed`;
+  assert.throws(() => assertPlatformReceipt(platformSupport.replace(rowReceipt,
+    "`v0.0.0` exact-archive native acceptance passed")));
 });

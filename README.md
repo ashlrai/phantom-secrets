@@ -209,7 +209,7 @@ team, deployment, provider, authority-kernel, or customer workflows are active
 or accepted.
 
 - **Conversation facade**: `phantom_capability` reports authority and hard denials for the small facade (not the separately gated advanced compatibility catalog); `phantom_do` canonicalizes one closed Cargo action and reports the exact activation blockers without executing it; `phantom_setup_workspace` proposes an exact value-blind plan, creates a bearerless apply request after revalidation, or reads authenticated request status. Provisioning the machine-local seal key and creating a request both require `confirm` plus an out-of-band approval token; MCP never claims or applies the request.
-- **Vault**: `phantom_list_secrets`, `phantom_status`, `phantom_init`, `phantom_add_secret_interactive`, `phantom_add_secret` (deprecated; refuses plaintext), `phantom_remove_secret`, `phantom_rotate`, `phantom_copy_secret`
+- **Vault**: `phantom_list_secrets`, `phantom_status`, `phantom_init`, `phantom_add_secret_interactive`, `phantom_add_secret` (`generate: true` creates a local random secret; plaintext input is refused), `phantom_remove_secret`, `phantom_rotate`, `phantom_copy_secret`
 - **Detection + diagnostics**: `phantom_doctor`, `phantom_why`, `phantom_check`, `phantom_env`, `phantom_validate_secret`, `phantom_validate_all`
 - **Local-to-cloud**: `phantom_wrap`, `phantom_unwrap`, `phantom_sync`, `phantom_cloud_push`, `phantom_cloud_pull`, `phantom_cloud_status`
 - **Teams**: `phantom_team_list`, `phantom_team_create`, `phantom_team_members`, `phantom_team_invite`, `phantom_team_key_publish`, `phantom_team_vault_push`, `phantom_team_vault_pull`
@@ -233,8 +233,13 @@ defeat that ceremony; leave effects disabled unless the approval command and
 `~/.phantom` approval storage are outside the requesting agent's authority.
 Conditional tools keep
 their inspection mode ungated and activate both gates only for the effectful
-parameters. Real secret values are never accepted as MCP tool arguments; new
-secrets are entered out-of-band in a trusted terminal. The exact 54-tool names,
+parameters. Real secret values are never accepted as MCP tool arguments;
+provider-issued credentials are entered out-of-band in a trusted terminal.
+For a new local random secret, `phantom_add_secret` with `generate: true`
+requires the same approval gates and returns only `name` and `fingerprint`.
+It refuses existing names and does not create a provider credential or a proxy
+route. See [generated secrets](docs/generated-secrets.md) for delivery limits.
+The exact 54-tool names,
 descriptions, and JSON schemas are mirrored from runtime `tools/list` into
 [`mcp-registry/server.json`](mcp-registry/server.json), and release smoke tests
 reject any drift.
@@ -443,11 +448,14 @@ dashboard is designed to show team memberships and member lists.
 | `phantom why <KEY>` | Explain why a key is or is not protected and how `phantom exec` delivers it (`no_route` means no built-in proxy route injects it). Works before init; `--json` prints the same shape as MCP `phantom_why`; `--strict` exits 2 when the key is not protected |
 | `phantom copy <KEY> --to <DIR>` | Copy a secret to the initialized target project `DIR` after exact trusted-terminal confirmation (`--rename NAME` stores it under a new name); refuses existing target vault, config, or managed-dotenv ownership rather than overwriting. If both projects set `owner` in `.phantom.toml` (`personal`, `company[:name]`, `client:name`) and they differ, the copy is refused unless `--allow-cross-owner` is passed |
 | `phantom team list` / `phantom team members` | Authenticated, value-blind provider reads. CLI requires attached trusted terminals and an exact challenge before bearer/network access; MCP requires `confirm` plus out-of-band approval. |
-| `phantom team create`, `phantom team invite`, `phantom team key-publish`, `phantom team vault-push`, `phantom team vault-pull`, `phantom team rotate-vault` | Run CLI team effects only from an attached trusted terminal and complete the exact challenge before credential, keypair, vault-value, or network access. Invites assign only `member` (default) or `admin` through `--role`. |
+| `phantom team create`, `phantom team key-publish`, `phantom team vault-push`, `phantom team vault-pull`, `phantom team rotate-vault` | Run CLI team effects only from an attached trusted terminal and complete the exact challenge before credential, keypair, vault-value, or network access. |
+| `phantom team invite` | Invite only `member` (default) or `admin` through `--role`; requires an attached trusted terminal and the exact challenge before bearer or network access. |
 | `phantom validate` / `--watch` | Send selected credentials (`--check-all` for every secret; `--jobs N` / `-j N` concurrent jobs, default 4) to configured validators only after exact trusted-terminal consent; watch authorization ends when config or the vault name set changes |
 | `phantom validate schedule` | Read status without mutation (`--status`); setting or disabling (`--disable`) persistent scheduler policy requires attached terminals and an exact typed challenge |
 | `phantom validate history` | Show past validation runs (`--last N`, default 20) |
-| `phantom expiry set` | Persist lifecycle policy only after attached-terminal confirmation; `phantom expiry enforce` is read-only (`--fail-closed` also fails a secret with no expiry policy), while `phantom expiry rotate` is only a deprecated local token remap |
+| `phantom expiry set` | Persist lifecycle policy only after attached-terminal confirmation |
+| `phantom expiry enforce` | Read-only expiry check; `--fail-closed` also fails a secret with no expiry policy |
+| `phantom expiry rotate` | Deprecated local token remap; provider credentials and expiry metadata stay unchanged |
 | `phantom secrets-expiring-soon` | List expired or expiring secrets (`--days N`, default 7; `--json`). `--auto-rotate` is a deprecated local `phm_` token remap only; provider credentials and expiry metadata stay unchanged, and `--sync` is rejected |
 | `phantom fleet-status` | Read-only, value-free fleet posture: every secret's name, expiry state, last stored validation result, and rotation-schedule state, plus the names with overdue rotations. `--json` emits the documented [fleet-status schema](docs/fleet-status.md); `--expiring-within DAYS` (default 7) sets the `expiring_soon` window; `--strict` exits 2 when anything needs attention or the inventory is partial |
 | `phantom open [page]` | From an attached trusted terminal, open only the reviewed aliases `dashboard`, `billing`, `team`, `docs`, `pricing`, `github`, `issues`, or `site`; arbitrary URLs, paths, and unknown aliases are rejected |
@@ -853,7 +861,16 @@ On a fork, diff against `upstream/main` instead of `main`.
 
 ## Telemetry
 
-The npm wrapper (`npx phantom-secrets`, `npm i -g phantom-secrets`) sends an anonymous install ping on first run and at most one active ping a week: tool, version, OS, arch, CI or not, and a random ID. **Never** secrets, placeholders, paths, project names, commands, IPs or personal data. The native binary itself (Homebrew, cargo, release downloads) sends nothing. Opt out with `ASHLR_TELEMETRY=0`, `PHANTOM_TELEMETRY=0` or `DO_NOT_TRACK=1`. Details: [TELEMETRY.md](https://github.com/ashlrai/phantom/blob/master/docs/TELEMETRY.md).
+The npm wrapper schedules an install report on first run and an activity
+report seven days after the last successful report. Failed sends may retry
+after one hour. The payload contains schema/event, tool/version, OS/architecture,
+CI/internal classification, and a random installation ID. It excludes secrets,
+placeholders, paths, project names, command arguments, and raw environment
+values. The native binary sends no usage reports.
+
+Opt out with `ASHLR_TELEMETRY=0`, `PHANTOM_TELEMETRY=0`, `DO_NOT_TRACK=1`, or
+`"disabled": true` in `~/.ashlr/usage-telemetry.json`. Details:
+[TELEMETRY.md](https://github.com/ashlrai/phantom/blob/master/docs/TELEMETRY.md).
 
 ## License
 

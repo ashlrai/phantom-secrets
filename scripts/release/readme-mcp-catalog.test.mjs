@@ -46,6 +46,24 @@ test("MCP catalogs match every Rust tool registration exactly", () => {
   assert.deepEqual(documentedNames(listing).sort(), sourceNames);
 });
 
+test("MCP guides distinguish generated secrets from plaintext credential entry", () => {
+  const registry = JSON.parse(read("mcp-registry/server.json"));
+  const add = registry.tools.find((tool) => tool.name === "phantom_add_secret");
+  assert.equal(add.inputSchema.properties.generate.type, "boolean");
+  assert.equal(add.inputSchema.properties.generate.default, false);
+  assert.equal(add.inputSchema.additionalProperties, false);
+  assert.ok(!Object.hasOwn(add.inputSchema.properties, "value"));
+
+  for (const file of ["README.md", "docs/mcp-secrets-manager.md"]) {
+    const guide = read(file).replace(/\s+/g, " ");
+    assert.match(guide, /`phantom_add_secret`[^\n]*`generate: true`/);
+    assert.match(guide, /returns only `name` and `fingerprint`/);
+    assert.match(guide, /`PHANTOM_MCP_EFFECTS=trusted-terminal`/);
+    assert.match(guide, /generated-secrets\.md/);
+    assert.doesNotMatch(guide, /`phantom_add_secret`[^\n]*(?:hard-deprecated|\(deprecated)/);
+  }
+});
+
 for (const file of ["AGENTS.md", "CLAUDE.md"]) {
   test(`${file} references only registered MCP tools`, () => {
     const names = documentedNames(read(file));
