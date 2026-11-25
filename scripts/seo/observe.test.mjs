@@ -2154,7 +2154,7 @@ test("aggregate observations preserve case-distinct paths in locale comparison o
   }
 });
 
-test("duplicate aggregate records are retained, with GA4 suppression applied per row", () => {
+test("duplicate aggregate records retain identical per-page counts in either input order, with GA4 suppression applied per row", () => {
   const period = { start: "2026-07-01", end: "2026-07-28", data_state: "final" };
   const now = new Date("2026-09-05T12:00:00Z");
   const cases = [
@@ -2164,13 +2164,22 @@ test("duplicate aggregate records are retained, with GA4 suppression applied per
   ];
   for (const [kind, row] of cases) {
     const small = kind === "ga4" ? { ...row, sessions: 9 } : null;
-    const result = validateAggregateInput(kind, {
-      schema_version: `phantom-seo-${kind}-v1`,
-      period,
-      rows: [row, { ...row }, ...(small ? [small, { ...small }] : [])],
-    }, publicPaths, now);
-    assert.deepEqual(result.rows, [row, row], `${kind} retains both duplicate records`);
-    if (kind === "ga4") assert.equal(result.suppressed_rows, 2);
+    const otherPage = { ...row, page_path: "/security" };
+    const observations = [row, otherPage, { ...row }, ...(small ? [small, { ...small }] : [])];
+    const results = [observations, [...observations].reverse()].map((rows) =>
+      validateAggregateInput(kind, {
+        schema_version: `phantom-seo-${kind}-v1`,
+        period,
+        rows,
+      }, publicPaths, now),
+    );
+    for (const result of results) {
+      assert.deepEqual(result.rows, [row, row, otherPage], `${kind} retains each page's records and metrics`);
+      assert.equal(result.rows.filter(({ page_path }) => page_path === "/docs").length, 2);
+      assert.equal(result.rows.filter(({ page_path }) => page_path === "/security").length, 1);
+      if (kind === "ga4") assert.equal(result.suppressed_rows, 2);
+    }
+    assert.deepEqual(results[1], results[0], `${kind} is independent of observation order`);
   }
 });
 
