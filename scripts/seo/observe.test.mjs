@@ -1231,6 +1231,107 @@ test("page paths sharing a full prefix retain distinct observations in either in
   }
 });
 
+test("unrelated nested paths retain their own page and aggregate observations in either input order", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "phantom-seo-unrelated-nested-"));
+  const paths = ["/docs/guide", "/security/overview"];
+  const period = { start: "2026-07-01", end: "2026-07-28", data_state: "final" };
+  const metrics = {
+    gsc: [
+      { brand_class: "nonbrand", clicks: 12, impressions: 240, ctr: 0.05, position: 8.4 },
+      { brand_class: "nonbrand", clicks: 24, impressions: 240, ctr: 0.1, position: 4.2 },
+    ],
+    ga4: [
+      { referral_class: "other", sessions: 20, engaged_sessions: 5, engagement_rate: 0.25, key_events: 1 },
+      { referral_class: "other", sessions: 10, engaged_sessions: 5, engagement_rate: 0.5, key_events: 2 },
+    ],
+    ahrefs: [
+      { estimated_organic_traffic: 42, referring_domains: 7 },
+      { estimated_organic_traffic: 12, referring_domains: 3 },
+    ],
+  };
+  try {
+    for (const [index, order] of [paths, [...paths].reverse()].entries()) {
+      const origin = "https://example.test";
+      const requests = [];
+      const others = [...publicPaths].filter((route) => !route.endsWith(".txt") && !paths.includes(route));
+      const fixtures = {
+        "/sitemap.xml": `<urlset>${[...order, ...others].map((route) => `<url><loc>${origin}${route}</loc></url>`).join("")}</urlset>`,
+        "/robots.txt": `User-Agent: *\nAllow: /\nDisallow: /api/\nSitemap: ${origin}/sitemap.xml\n`,
+        "/llms.txt": `Latest release: \`v9.8.7\`. https://phm.dev/llms-full.txt https://github.com/ashlrai/phantom-secrets ${"boundary ".repeat(20)}`,
+        "/llms-full.txt": "bounded evidence ".repeat(20),
+        "/api/v1/health": '{"status":"ok"}',
+        "/api/v1/ready": '{"status":"ok"}',
+        "/github": '{"stargazers_count":16,"forks_count":3}',
+        "/github/releases/latest": '{"tag_name":"v9.8.7","immutable":true,"draft":false,"prerelease":false}',
+        [paths[0]]: html(origin, paths[0]).replace(`<meta name="description" content="Description for ${paths[0]}">`, ""),
+        [paths[1]]: html(origin, paths[1]).replace(`<h1>Page ${paths[1]}</h1>`, ""),
+      };
+      const aggregateInputs = Object.fromEntries(Object.entries(metrics).map(([kind, values]) => [kind, {
+        schema_version: `phantom-seo-${kind}-v1`, period,
+        rows: order.map((page_path) => ({ page_path, ...values[paths.indexOf(page_path)] })),
+      }]));
+      const original = structuredClone(aggregateInputs);
+      const report = await observeProduction({
+        siteOrigin: origin, githubRepositoryApi: `${origin}/github`,
+        now: new Date("2026-09-05T12:00:00Z"),
+        networkPolicy: (url) => url.origin === origin,
+        aggregateInputs,
+        fetchImpl: async (url) => {
+          const route = url.pathname;
+          requests.push(route);
+          assert.ok(Object.hasOwn(fixtures, route) || publicPaths.has(route));
+          return new Response(fixtures[route] ?? html(origin, route), {
+            headers: {
+              "content-type": route.endsWith(".txt") ? "text/plain" : "text/html",
+              "content-security-policy": "default-src 'self'",
+              "permissions-policy": "camera=()",
+              "referrer-policy": "strict-origin-when-cross-origin",
+              "strict-transport-security": "max-age=63072000",
+              "x-content-type-options": "nosniff",
+              "x-frame-options": "DENY",
+            },
+          });
+        },
+      });
+      const output = path.join(directory, `report-${index}.json`);
+      await writePrivateReport(output, report);
+      const saved = JSON.parse(await readFile(output, "utf8"));
+      assert.deepEqual(saved, report);
+      assert.equal(saved.technical.sitemap.route_count, publicPaths.size + 1);
+      assert.deepEqual(
+        saved.technical.public_routes.filter(({ route }) => paths.includes(route)),
+        paths.map((route, position) => ({
+          route, status: 200, content_type: "text/html",
+          title: `${route} — Phantom`, description: position === 0 ? null : `Description for ${route}`,
+          canonical: `${origin}${route}`, h1_count: position === 0 ? 1 : 0,
+          structured_data_types: position === 0 ? ["BreadcrumbList", "TechArticle"] : [],
+        })),
+      );
+      assert.deepEqual(saved.counts, { fail: 2, warn: 0 });
+      assert.deepEqual(saved.findings, [
+        { severity: "fail", code: "description_missing", message: "Meta description is missing", route: paths[0] },
+        { severity: "fail", code: "h1_count", message: "Expected one h1; observed 0", route: paths[1] },
+      ]);
+      const summary = renderSummary(saved);
+      assert.ok(summary.includes(`**FAIL description_missing** (${paths[0]}): Meta description is missing`));
+      assert.ok(summary.includes(`**FAIL h1_count** (${paths[1]}): Expected one h1; observed 0`));
+      for (const route of paths) {
+        assert.equal(requests.filter((request) => request === route).length, 1);
+      }
+      for (const [kind, values] of Object.entries(metrics)) {
+        assert.equal(saved.aggregate_inputs[kind].state, "supplied");
+        assert.deepEqual(saved.aggregate_inputs[kind].rows,
+          paths.map((page_path, position) => ({ page_path, ...values[position] })),
+          `${kind} retains both exact paths and their own metrics`);
+      }
+      assert.equal(saved.aggregate_inputs.ga4.suppressed_rows, 0);
+      assert.deepEqual(aggregateInputs, original, "input observations stay unchanged");
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("sibling nested page observations retain full paths in saved output and summary", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "phantom-seo-sibling-pages-"));
   const siblings = ["/docs/guide", "/docs/setup"];
