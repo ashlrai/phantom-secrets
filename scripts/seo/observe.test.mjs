@@ -740,6 +740,118 @@ test("observing identical input twice renders equivalent summaries", async () =>
   );
 });
 
+test("out-of-order route observations retain deterministic report and finding order", async () => {
+  const origin = "https://example.test";
+  const options = {
+    siteOrigin: origin,
+    githubRepositoryApi: `${origin}/github`,
+    networkPolicy: (url) => url.origin === origin,
+    now: new Date("2026-09-05T12:00:00Z"),
+  };
+  const fixtures = {
+    "/sitemap.xml": [...publicPaths].filter((route) => !route.endsWith(".txt"))
+      .map((route) => `<loc>${origin}${route}</loc>`).join(""),
+    "/robots.txt": `User-Agent: *\nAllow: /\nDisallow: /api/\nSitemap: ${origin}/sitemap.xml\n`,
+    "/llms.txt": `# Phantom\nLatest release: \`v9.8.7\`.\nhttps://phm.dev/llms-full.txt\nhttps://github.com/ashlrai/phantom-secrets\n${"boundary ".repeat(20)}`,
+    "/llms-full.txt": `# Phantom full reference\n${"bounded evidence ".repeat(20)}`,
+    "/api/v1/health": '{"status":"ok"}',
+    "/api/v1/ready": '{"status":"ok"}',
+    "/github": '{"stargazers_count":16,"forks_count":3}',
+    "/github/releases/latest": '{"tag_name":"v9.8.7","published_at":"2026-09-05T00:00:00Z","immutable":true,"draft":false,"prerelease":false}',
+  };
+  const fixtureResponse = (route) => new Response(fixtures[route] ?? html(origin, route), {
+    headers: {
+      "content-type": route.endsWith(".txt") ? "text/plain" : "text/html",
+      "content-security-policy": "default-src 'self'",
+      "permissions-policy": "camera=()",
+      "referrer-policy": "strict-origin-when-cross-origin",
+      "strict-transport-security": "max-age=63072000",
+      "x-content-type-options": "nosniff",
+      "x-frame-options": "DENY",
+    },
+  });
+  const observeInOrder = async (arrivalOrder) => {
+    const arrivals = [];
+    const gates = new Map(arrivalOrder.map((route) => {
+      let release;
+      const promise = new Promise((resolve) => { release = resolve; });
+      return [route, { promise, release }];
+    }));
+    gates.get(arrivalOrder[0]).release();
+    const report = await observeProduction({
+      ...options,
+      fetchImpl: async (url) => {
+        const gate = gates.get(url.pathname);
+        if (!gate) return fixtureResponse(url.pathname);
+        await gate.promise;
+        arrivals.push(url.pathname);
+        const next = arrivalOrder[arrivals.length];
+        if (next) gates.get(next).release();
+        // Supply identical findings in different arrival orders, without timers.
+        const page = html(origin, url.pathname)
+          .replace(/<title>[^<]*<\/title>/, "")
+          .replace(/<meta name="description"[^>]*>/, "");
+        return new Response(page, { headers: { "content-type": "text/html" } });
+      },
+    });
+    assert.deepEqual(arrivals, arrivalOrder);
+    return report;
+  };
+
+  const first = await observeInOrder(["/security", "/docs", "/secrets"]);
+  const second = await observeInOrder(["/secrets", "/security", "/docs"]);
+  assert.deepEqual(first, second);
+  assert.deepEqual(first.technical.public_routes.map(({ route }) => route), [
+    "/", "/docs", "/docs/guide", "/secrets", "/security", "/llms.txt", "/llms-full.txt",
+  ]);
+  // The documented finding order is severity, code, route, then message.
+  assert.deepEqual(first.findings, [
+    ...["/docs", "/secrets", "/security"].map((route) => ({
+      severity: "fail", code: "description_missing", message: "Meta description is missing", route,
+    })),
+    ...["/docs", "/secrets", "/security"].map((route) => ({
+      severity: "fail", code: "title_missing", message: "Page title is missing", route,
+    })),
+  ]);
+  assert.equal(first.verdict, "FAIL");
+  assert.deepEqual(first.counts, { fail: 6, warn: 0 });
+  assert.equal(renderSummary(first), renderSummary(second));
+});
+
+test("experiments supplied out of chronological order retain ledger order", () => {
+  const ledger = {
+    schema_version: "phantom-seo-experiments-v1",
+    default_observation_days: 28,
+    experiments: [
+      ["middle", "2026-08-01T00:00:00Z", "2026-08-29T00:00:00Z"],
+      ["latest", "2026-08-20T00:00:00Z", "2026-09-17T00:00:00Z"],
+      ["earliest", "2026-07-29T00:00:00Z", "2026-08-26T00:00:00Z"],
+    ].map(([id, implemented_at, not_before]) => ({
+      id,
+      hypothesis: "A direct answer improves nonbrand impressions.",
+      primary_metric: "gsc_nonbrand_impressions",
+      target_routes: ["/docs"],
+      control_routes: ["/security"],
+      status: "observing",
+      baseline_start: "2026-07-01",
+      baseline_end: "2026-07-28",
+      implementation_sha: "a".repeat(40),
+      deployment_id: `dpl_${"B".repeat(24)}`,
+      implemented_at,
+      not_before,
+      decision_rule: "Review finalized page evidence against the control cohort.",
+      lesson: null,
+    })),
+  };
+  const before = structuredClone(ledger);
+  const validated = validateExperiments(ledger, publicPaths, new Date("2026-09-05T12:00:00Z"));
+  assert.deepEqual(validated.experiments, before.experiments.map((experiment) => ({
+    ...experiment,
+    observed_status: experiment.id === "latest" ? "observing" : "ready_for_review",
+  })));
+  assert.deepEqual(ledger, before);
+});
+
 test("a multi-page sitemap produces exactly one observation per route", async () => {
   await withFixtureServer(async ({ options }) => {
     const report = await observeProduction(options);
