@@ -1190,6 +1190,25 @@ test("root and nested paths retain separate aggregate observations in saved outp
   }
 });
 
+test("a single aggregate observation with zero metrics remains supplied in report JSON", () => {
+  const observation = {
+    page_path: "/docs",
+    brand_class: "nonbrand",
+    clicks: 0,
+    impressions: 0,
+    ctr: 0,
+    position: 0,
+  };
+  const result = validateAggregateInput("gsc", {
+    schema_version: "phantom-seo-gsc-v1",
+    period: { start: "2026-07-01", end: "2026-07-28", data_state: "final" },
+    rows: [observation],
+  }, publicPaths, new Date("2026-09-05T12:00:00Z"));
+  assert.equal(result.state, "supplied");
+  assert.deepEqual(result.rows, [observation]);
+  assert.deepEqual(JSON.parse(JSON.stringify(result)).rows, [observation]);
+});
+
 test("empty aggregate observation inputs remain empty", async () => {
   const period = { start: "2026-07-01", end: "2026-07-28", data_state: "final" };
   const aggregateInputs = Object.fromEntries(
