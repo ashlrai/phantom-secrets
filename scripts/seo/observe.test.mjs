@@ -1058,6 +1058,107 @@ test("two distinct page observations keep their identities in saved output and s
   }
 });
 
+test("sibling nested page observations retain full paths in saved output and summary", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "phantom-seo-sibling-pages-"));
+  const siblings = ["/docs/guide", "/docs/setup"];
+  try {
+    const origin = "https://example.test";
+    const requests = [];
+    const routes = [...publicPaths].filter((route) => !route.endsWith(".txt"));
+    const fixtures = {
+      "/sitemap.xml": [...routes, siblings[1]].reverse().map((route) => `<loc>${origin}${route}</loc>`).join(""),
+      "/robots.txt": `User-Agent: *\nAllow: /\nDisallow: /api/\nSitemap: ${origin}/sitemap.xml\n`,
+      "/llms.txt": `Latest release: \`v9.8.7\`. https://phm.dev/llms-full.txt https://github.com/ashlrai/phantom-secrets ${"boundary ".repeat(20)}`,
+      "/llms-full.txt": "bounded evidence ".repeat(20),
+      "/api/v1/health": '{"status":"ok"}',
+      "/api/v1/ready": '{"status":"ok"}',
+      "/github": '{"stargazers_count":16,"forks_count":3}',
+      "/github/releases/latest": '{"tag_name":"v9.8.7","immutable":true,"draft":false,"prerelease":false}',
+    };
+    const report = await observeProduction({
+      siteOrigin: origin,
+      githubRepositoryApi: `${origin}/github`,
+      networkPolicy: (url) => url.origin === origin,
+      fetchImpl: async (url) => {
+        const route = url.pathname;
+        requests.push(route);
+        assert.ok(Object.hasOwn(fixtures, route) || publicPaths.has(route) || siblings.includes(route));
+        const page = html(origin, route);
+        return new Response(fixtures[route] ?? (siblings.includes(route)
+          ? page.replace(`<meta name="description" content="Description for ${route}">`, "")
+          : page), {
+          headers: {
+            "content-type": route.endsWith(".txt") ? "text/plain" : "text/html",
+            "content-security-policy": "default-src 'self'",
+            "permissions-policy": "camera=()",
+            "referrer-policy": "strict-origin-when-cross-origin",
+            "strict-transport-security": "max-age=63072000",
+            "x-content-type-options": "nosniff",
+            "x-frame-options": "DENY",
+          },
+        });
+      },
+    });
+    const output = path.join(directory, "report.json");
+    await writePrivateReport(output, report);
+    const saved = JSON.parse(await readFile(output, "utf8"));
+    assert.deepEqual(saved, report);
+    assert.equal(saved.technical.sitemap.route_count, publicPaths.size + 1);
+    assert.deepEqual(
+      saved.technical.public_routes.filter(({ route }) => siblings.includes(route)),
+      siblings.map((route) => ({
+        route, status: 200, content_type: "text/html", title: `${route} — Phantom`,
+        description: null, canonical: `${origin}${route}`, h1_count: 1,
+        structured_data_types: ["BreadcrumbList", "TechArticle"],
+      })),
+    );
+    assert.deepEqual(saved.counts, { fail: 2, warn: 0 });
+    assert.deepEqual(saved.findings, siblings.map((route) => ({
+      severity: "fail", code: "description_missing", message: "Meta description is missing", route,
+    })));
+    const summary = renderSummary(saved);
+    for (const route of siblings) {
+      assert.equal(requests.filter((request) => request === route).length, 1);
+      assert.ok(summary.includes(`**FAIL description_missing** (${route}): Meta description is missing`));
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("sibling nested aggregate observations retain full paths and distinct metrics in saved output", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "phantom-seo-sibling-aggregates-"));
+  try {
+    const period = { start: "2026-07-01", end: "2026-07-28", data_state: "final" };
+    const now = new Date("2026-09-05T12:00:00Z");
+    const allowedPaths = new Set(["/docs/guide", "/docs/setup"]);
+    const cases = [
+      ["gsc", { brand_class: "nonbrand", clicks: 12, impressions: 240, ctr: 0.05, position: 8.4 }, { clicks: 24, ctr: 0.1 }],
+      ["ga4", { referral_class: "other", sessions: 20, engaged_sessions: 5, engagement_rate: 0.25, key_events: 1 }, { sessions: 10, engagement_rate: 0.5 }],
+      ["ahrefs", { estimated_organic_traffic: 42, referring_domains: 7 }, { estimated_organic_traffic: 12, referring_domains: 3 }],
+    ];
+    for (const [kind, metrics, otherMetrics] of cases) {
+      const guide = { page_path: "/docs/guide", ...metrics };
+      const setup = { page_path: "/docs/setup", ...metrics, ...otherMetrics };
+      for (const [index, rows] of [[setup, guide], [guide, setup]].entries()) {
+        const original = structuredClone(rows);
+        const result = validateAggregateInput(kind, {
+          schema_version: `phantom-seo-${kind}-v1`, period, rows,
+        }, allowedPaths, now);
+        assert.equal(result.state, "supplied");
+        assert.deepEqual(result.rows, [guide, setup], `${kind} retains both siblings with their own metrics`);
+        const output = path.join(directory, `${kind}-${index}.json`);
+        await writePrivateReport(output, result);
+        const saved = JSON.parse(await readFile(output, "utf8"));
+        assert.deepEqual(saved.rows, [guide, setup], `${kind} saves both full paths without merging`);
+        assert.deepEqual(rows, original, "input observations stay unchanged");
+      }
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("root and nested paths retain separate aggregate observations in saved output", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "phantom-seo-root-nested-"));
   try {
