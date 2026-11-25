@@ -35,8 +35,8 @@ function transpileModule(filePath, localRequire, DateClass = Date) {
   return module.exports;
 }
 
-function loadPlanModule() {
-  return transpileModule(planPath, require);
+function loadPlanModule(DateClass = Date) {
+  return transpileModule(planPath, require, DateClass);
 }
 
 function createServiceClient(user, tokenOverrides = {}) {
@@ -53,6 +53,7 @@ function createServiceClient(user, tokenOverrides = {}) {
 
   return {
     calls,
+    token,
     from(table) {
       const query = { table, columns: null, update: null };
       const builder = {
@@ -80,6 +81,10 @@ function createServiceClient(user, tokenOverrides = {}) {
             error: null,
           };
         },
+        then(resolve, reject) {
+          calls.push({ ...query });
+          return Promise.resolve({ error: null }).then(resolve, reject);
+        },
       };
       return builder;
     },
@@ -101,7 +106,7 @@ function loadRoute(serviceClient, DateClass = Date) {
           Response.json({ error: "invalid request body" }, { status: 400 }),
       };
     }
-    if (specifier === "@/lib/plan") return loadPlanModule();
+    if (specifier === "@/lib/plan") return loadPlanModule(DateClass);
     if (specifier === "crypto") return crypto;
     return require(specifier);
   };
@@ -232,6 +237,86 @@ test("device poll selects expiry and returns only the normalized plan", async ()
     ),
   );
 });
+
+for (const [elapsedMs, expectedPlan] of [[4_999, "pro"], [5_000, "free"], [5_001, "free"]]) {
+  test(`approval after ${elapsedMs}ms of polling returns the current ${expectedPlan} plan`, async () => {
+    let now = Date.parse("2026-01-01T00:00:00.000Z");
+    class Clock extends Date {
+      constructor(...args) {
+        super(...(args.length ? args : [now]));
+      }
+      static now() { return now; }
+    }
+    const serviceClient = createServiceClient({
+      github_login: "octocat",
+      email: "octo@example.com",
+      plan: "pro",
+      plan_expires_at: "2026-01-01T00:00:05.000Z",
+    }, { status: "pending" });
+    const { POST } = loadRoute(serviceClient, Clock);
+    const poll = () => POST(new Request("https://phm.dev/api/v1/auth/device/poll", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ device_code: "device-code-1" }),
+    }));
+
+    assert.deepEqual(await (await poll()).json(), { status: "pending" });
+    assert.ok(!serviceClient.calls.some(({ table }) => table === "users"));
+    now += elapsedMs;
+    serviceClient.token.status = "approved";
+    const response = await poll();
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.status, "approved");
+    // effectivePlan documents expired plans as free, including the exact deadline.
+    assert.deepEqual(body.user, {
+      github_login: "octocat",
+      email: "octo@example.com",
+      plan: expectedPlan,
+    });
+  });
+}
+
+for (const status of ["pending", "approved"]) {
+  test(`an elapsed fifteen-minute polling window expires even when ${status}`, async () => {
+    let now = Date.parse("2026-01-01T00:00:00.000Z");
+    class Clock extends Date {
+      constructor(...args) {
+        super(...(args.length ? args : [now]));
+      }
+      static now() { return now; }
+    }
+    const serviceClient = createServiceClient(null, {
+      status: "pending",
+      // The initiation endpoint advertises expires_in: 900 and interval: 5.
+      device_expires_at: "2026-01-01T00:15:00.000Z",
+    });
+    const { POST } = loadRoute(serviceClient, Clock);
+    const poll = () => POST(new Request("https://phm.dev/api/v1/auth/device/poll", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ device_code: "device-code-1" }),
+    }));
+
+    for (let elapsed = 0; elapsed < 900_000; elapsed += 5_000) {
+      const response = await poll();
+      assert.equal(response.status, 200);
+      assert.deepEqual(await response.json(), { status: "pending" });
+      now += 5_000;
+    }
+    now += 1; // Past the deadline, without real timers or network requests.
+    serviceClient.token.status = status;
+    for (let retry = 0; retry < 2; retry++) {
+      const response = await poll();
+      assert.equal(response.status, 200);
+      assert.deepEqual(await response.json(), { status: "expired" });
+      now += 5_000;
+    }
+    assert.ok(serviceClient.calls.some(({ update }) => update?.status === "expired"));
+    assert.ok(!serviceClient.calls.some(({ table }) => table === "users"));
+    assert.ok(!serviceClient.calls.some(({ update }) => update && "token_hash" in update));
+  });
+}
 
 test("device poll on an already expired window reports expired and issues nothing", async () => {
   const calls = [];
