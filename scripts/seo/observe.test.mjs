@@ -1034,6 +1034,17 @@ test("two distinct page observations keep their identities in saved output and s
           description: "Description for /security", canonical: `${origin}/security`, h1_count: 0 },
       ],
     );
+    assert.deepEqual(
+      saved.technical.public_routes
+        .filter(({ route }) => route === "/" || route === "/docs/guide")
+        .map(({ route, status, title, description, canonical }) => ({
+          route, status, title, description, canonical,
+        })),
+      ["/", "/docs/guide"].map((route) => ({
+        route, status: 200, title: `${route} — Phantom`,
+        description: `Description for ${route}`, canonical: `${origin}${route}`,
+      })),
+    );
     assert.deepEqual(saved.findings, [
       { severity: "fail", code: "description_missing", message: "Meta description is missing", route: "/docs" },
       { severity: "fail", code: "h1_count", message: "Expected one h1; observed 0", route: "/security" },
@@ -1042,6 +1053,37 @@ test("two distinct page observations keep their identities in saved output and s
     assert.match(summary, /\*\*FAIL description_missing\*\* \(\/docs\): Meta description is missing/);
     assert.match(summary, /\*\*FAIL h1_count\*\* \(\/security\): Expected one h1; observed 0/);
     assert.doesNotMatch(summary, /description_missing\*\* \(\/security\)|h1_count\*\* \(\/docs\)/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("root and nested paths retain separate aggregate observations in saved output", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "phantom-seo-root-nested-"));
+  try {
+    const period = { start: "2026-07-01", end: "2026-07-28", data_state: "final" };
+    const now = new Date("2026-09-05T12:00:00Z");
+    const cases = [
+      ["gsc", { brand_class: "nonbrand", clicks: 12, impressions: 240, ctr: 0.05, position: 8.4 }, { clicks: 24, ctr: 0.1 }],
+      ["ga4", { referral_class: "other", sessions: 20, engaged_sessions: 5, engagement_rate: 0.25, key_events: 1 }, { sessions: 10, engagement_rate: 0.5 }],
+      ["ahrefs", { estimated_organic_traffic: 42, referring_domains: 7 }, { estimated_organic_traffic: 12, referring_domains: 3 }],
+    ];
+    for (const [kind, metrics, nestedMetrics] of cases) {
+      const root = { page_path: "/", ...metrics };
+      const nested = { page_path: "/docs/guide", ...metrics, ...nestedMetrics };
+      for (const [index, rows] of [[nested, root], [root, nested]].entries()) {
+        const result = validateAggregateInput(kind, {
+          schema_version: `phantom-seo-${kind}-v1`, period, rows,
+        }, publicPaths, now);
+        assert.equal(result.state, "supplied");
+        assert.deepEqual(result.rows, [root, nested], `${kind} retains both paths with their own metrics`);
+        const output = path.join(directory, `${kind}-${index}.json`);
+        await writePrivateReport(output, result);
+        const saved = JSON.parse(await readFile(output, "utf8"));
+        assert.deepEqual(saved.rows, [root, nested], `${kind} saves separate root and nested records`);
+        assert.deepEqual(rows, index === 0 ? [nested, root] : [root, nested], "input order stays unchanged");
+      }
+    }
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
