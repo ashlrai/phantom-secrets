@@ -1755,6 +1755,20 @@ test("aggregate observation arrays reject null entries without network requests"
   }
 });
 
+test("aggregate observation arrays reject string entries without network requests", () => {
+  for (const kind of ["gsc", "ga4", "ahrefs"]) {
+    const value = {
+      schema_version: `phantom-seo-${kind}-v1`,
+      period: { start: "2026-07-01", end: "2026-07-28", data_state: "final" },
+      rows: ["not an observation object"],
+    };
+    assert.throws(
+      () => validateAggregateInput(kind, value, publicPaths, new Date("2026-09-05T00:00:00Z")),
+      { name: "Error", message: `${kind} input.rows[0] must be an object` },
+    );
+  }
+});
+
 test("Search Console input accepts finalized page aggregates and rejects raw queries", () => {
   const value = {
     schema_version: "phantom-seo-gsc-v1",
