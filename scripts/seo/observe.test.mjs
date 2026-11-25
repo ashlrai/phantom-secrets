@@ -708,6 +708,65 @@ test("a complete public fixture produces a deterministic, sanitized passing repo
   });
 });
 
+test("an observation preserves Unicode page text across UTF-8 chunk boundaries", async () => {
+  const title = "Café — 日本語 🔐";
+  const description = "Protégez vos clés · 安全な秘密 · مرحبًا 🌍";
+  const origin = "https://example.test";
+  const responses = new Map([
+    ["/sitemap.xml", ["application/xml", ["/", "/docs", "/security"]
+      .map((route) => `<loc>${origin}${route}</loc>`).join("")]],
+    ["/robots.txt", ["text/plain", `Disallow: /api/\nSitemap: ${origin}/sitemap.xml`]],
+    ...["/llms.txt", "/llms-full.txt"].map((route) => [route, ["text/plain",
+      `Latest release: \`v9.8.7\`\nhttps://phm.dev/llms-full.txt\nhttps://github.com/ashlrai/phantom-secrets\n${"reference ".repeat(20)}`]]),
+    ["/api/v1/health", ["application/json", "{}"]],
+    ["/api/v1/ready", ["application/json", "{}"]],
+    ["/github", ["application/json", '{"stargazers_count":16,"forks_count":3}']],
+    ["/github/releases/latest", ["application/json", '{"tag_name":"v9.8.7","immutable":true}']],
+  ]);
+  const report = await observeProduction({
+    siteOrigin: origin,
+    githubRepositoryApi: `${origin}/github`,
+    networkPolicy: (url) => url.origin === origin,
+    fetchImpl: async (url) => {
+      if (responses.has(url.pathname)) {
+        const [contentType, body] = responses.get(url.pathname);
+        return new Response(body, { headers: { "content-type": contentType } });
+      }
+      assert.ok(["/", "/docs", "/security"].includes(url.pathname));
+      const headers = { "content-type": "text/html; charset=utf-8" };
+      if (url.pathname === "/") {
+        for (const name of ["content-security-policy", "permissions-policy", "referrer-policy",
+          "strict-transport-security", "x-content-type-options", "x-frame-options"]) {
+          headers[name] = "fixture";
+        }
+      }
+      if (url.pathname !== "/docs") return new Response(html(origin, url.pathname), { headers });
+      const pageHtml = html(origin, "/docs")
+        .replace("/docs — Phantom", title)
+        .replace("Description for /docs", description)
+        .replace("Page /docs", title);
+      const bytes = new TextEncoder().encode(pageHtml);
+      // Split every multibyte character to exercise the streaming decoder.
+      let offset = 0;
+      return new Response(new ReadableStream({
+        pull(controller) {
+          if (offset === bytes.length) controller.close();
+          else {
+            controller.enqueue(bytes.subarray(offset, offset + 1));
+            offset += 1;
+          }
+        },
+      }), { headers });
+    },
+  });
+  const page = report.technical.public_routes.find(({ route }) => route === "/docs");
+  assert.equal(report.verdict, "PASS");
+  assert.equal(page.title, title);
+  assert.equal(page.description, description);
+  assert.equal(page.h1_count, 1);
+  assert.ok(!JSON.stringify(report).includes("\uFFFD"), "report has no replacement characters");
+});
+
 test("observing identical input twice renders equivalent summaries", async () => {
   const ledger = {
     schema_version: "phantom-seo-experiments-v1",
