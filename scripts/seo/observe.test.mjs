@@ -709,11 +709,13 @@ test("a complete public fixture produces a deterministic, sanitized passing repo
 });
 
 test("an observation preserves Unicode page text across UTF-8 chunk boundaries", async () => {
+  const pagePath = "/docs/café-日本語-🔐-e\u0301";
+  const encodedPath = encodeURI(pagePath);
   const title = "Café — 日本語 🔐";
   const description = "Protégez vos clés · 安全な秘密 · مرحبًا 🌍";
   const origin = "https://example.test";
   const responses = new Map([
-    ["/sitemap.xml", ["application/xml", ["/", "/docs", "/security"]
+    ["/sitemap.xml", ["application/xml", ["/", "/docs", "/security", pagePath]
       .map((route) => `<loc>${origin}${route}</loc>`).join("")]],
     ["/robots.txt", ["text/plain", `Disallow: /api/\nSitemap: ${origin}/sitemap.xml`]],
     ...["/llms.txt", "/llms-full.txt"].map((route) => [route, ["text/plain",
@@ -732,7 +734,7 @@ test("an observation preserves Unicode page text across UTF-8 chunk boundaries",
         const [contentType, body] = responses.get(url.pathname);
         return new Response(body, { headers: { "content-type": contentType } });
       }
-      assert.ok(["/", "/docs", "/security"].includes(url.pathname));
+      assert.ok(["/", "/docs", "/security", encodedPath].includes(url.pathname));
       const headers = { "content-type": "text/html; charset=utf-8" };
       if (url.pathname === "/") {
         for (const name of ["content-security-policy", "permissions-policy", "referrer-policy",
@@ -740,6 +742,7 @@ test("an observation preserves Unicode page text across UTF-8 chunk boundaries",
           headers[name] = "fixture";
         }
       }
+      if (url.pathname === encodedPath) return new Response(html(origin, pagePath), { headers });
       if (url.pathname !== "/docs") return new Response(html(origin, url.pathname), { headers });
       const pageHtml = html(origin, "/docs")
         .replace("/docs — Phantom", title)
@@ -764,6 +767,14 @@ test("an observation preserves Unicode page text across UTF-8 chunk boundaries",
   assert.equal(page.title, title);
   assert.equal(page.description, description);
   assert.equal(page.h1_count, 1);
+  const unicodePage = report.technical.public_routes.find(({ route }) => route === encodedPath);
+  assert.ok(unicodePage, "the non-ASCII page is retained in the observation");
+  assert.equal(unicodePage.status, 200);
+  assert.equal(decodeURI(unicodePage.route), pagePath);
+  assert.equal(unicodePage.canonical, `${origin}${encodedPath}`);
+  assert.equal(unicodePage.title, `${pagePath} — Phantom`);
+  const serializedPage = JSON.parse(JSON.stringify(unicodePage));
+  assert.equal(decodeURI(serializedPage.route), pagePath);
   assert.ok(!JSON.stringify(report).includes("\uFFFD"), "report has no replacement characters");
 });
 
