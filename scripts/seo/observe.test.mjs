@@ -927,6 +927,73 @@ test("a multi-page sitemap produces exactly one observation per route", async ()
   });
 });
 
+test("two distinct page observations keep their identities in saved output and summary", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "phantom-seo-page-identity-"));
+  try {
+    const origin = "https://example.test";
+    const fixtures = {
+      "/sitemap.xml": [...publicPaths].filter((route) => !route.endsWith(".txt")).map((route) => `<loc>${origin}${route}</loc>`).join(""),
+      "/robots.txt": `User-Agent: *\nAllow: /\nDisallow: /api/\nSitemap: ${origin}/sitemap.xml\n`,
+      "/docs": html(origin, "/docs").replace('<meta name="description" content="Description for /docs">', ""),
+      "/security": html(origin, "/security").replace("<h1>Page /security</h1>", ""),
+      "/llms.txt": `Latest release: \`v9.8.7\`. https://phm.dev/llms-full.txt https://github.com/ashlrai/phantom-secrets ${"boundary ".repeat(20)}`,
+      "/llms-full.txt": "bounded evidence ".repeat(20),
+      "/api/v1/health": '{"status":"ok"}',
+      "/api/v1/ready": '{"status":"ok"}',
+      "/github": '{"stargazers_count":16,"forks_count":3}',
+      "/github/releases/latest": '{"tag_name":"v9.8.7","immutable":true,"draft":false,"prerelease":false}',
+    };
+    const report = await observeProduction({
+      siteOrigin: origin,
+      githubRepositoryApi: `${origin}/github`,
+      networkPolicy: (url) => url.origin === origin,
+      fetchImpl: async (url) => {
+        assert.ok(Object.hasOwn(fixtures, url.pathname) || publicPaths.has(url.pathname));
+        return new Response(fixtures[url.pathname] ?? html(origin, url.pathname), {
+          headers: {
+            "content-type": url.pathname.endsWith(".txt") ? "text/plain" : "text/html",
+            "content-security-policy": "default-src 'self'",
+            "permissions-policy": "camera=()",
+            "referrer-policy": "strict-origin-when-cross-origin",
+            "strict-transport-security": "max-age=63072000",
+            "x-content-type-options": "nosniff",
+            "x-frame-options": "DENY",
+          },
+        });
+      },
+    });
+    const output = path.join(directory, "report.json");
+    await writePrivateReport(output, report);
+    const saved = JSON.parse(await readFile(output, "utf8"));
+    assert.deepEqual(saved, report);
+    assert.equal(saved.verdict, "FAIL");
+    assert.deepEqual(saved.counts, { fail: 2, warn: 0 });
+    assert.deepEqual(
+      saved.technical.public_routes
+        .filter(({ route }) => ["/docs", "/security"].includes(route))
+        .map(({ route, status, title, description, canonical, h1_count }) => ({
+          route, status, title, description, canonical, h1_count,
+        })),
+      [
+        { route: "/docs", status: 200, title: "/docs — Phantom", description: null,
+          canonical: `${origin}/docs`, h1_count: 1 },
+        { route: "/security", status: 200, title: "/security — Phantom",
+          description: "Description for /security", canonical: `${origin}/security`, h1_count: 0 },
+      ],
+    );
+    assert.deepEqual(saved.findings, [
+      { severity: "fail", code: "description_missing", message: "Meta description is missing", route: "/docs" },
+      { severity: "fail", code: "h1_count", message: "Expected one h1; observed 0", route: "/security" },
+    ]);
+    const summary = renderSummary(saved);
+    assert.match(summary, /\*\*FAIL description_missing\*\* \(\/docs\): Meta description is missing/);
+    assert.match(summary, /\*\*FAIL h1_count\*\* \(\/security\): Expected one h1; observed 0/);
+    assert.doesNotMatch(summary, /description_missing\*\* \(\/security\)|h1_count\*\* \(\/docs\)/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("empty aggregate observation inputs remain empty", async () => {
   const period = { start: "2026-07-01", end: "2026-07-28", data_state: "final" };
   const aggregateInputs = Object.fromEntries(
