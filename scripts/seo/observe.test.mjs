@@ -1810,6 +1810,31 @@ test("aggregate observations keep page paths containing spaces associated with t
   }
 });
 
+test("aggregate observations preserve case-distinct paths in locale comparison order without network requests", () => {
+  const allowedPaths = new Set(["/docs", "/Docs"]);
+  const period = { start: "2026-07-01", end: "2026-07-28", data_state: "final" };
+  const now = new Date("2026-09-05T12:00:00Z");
+  const cases = [
+    ["gsc", { brand_class: "nonbrand", clicks: 12, impressions: 240, ctr: 0.05, position: 8.4 }, { clicks: 2 }],
+    ["ga4", { referral_class: "other", sessions: 20, engaged_sessions: 5, engagement_rate: 0.25, key_events: 1 }, { sessions: 10, engagement_rate: 0.5 }],
+    ["ahrefs", { estimated_organic_traffic: 42, referring_domains: 7 }, { estimated_organic_traffic: 12 }],
+  ];
+  for (const [kind, metrics, otherMetrics] of cases) {
+    const lowercase = { page_path: "/docs", ...metrics };
+    const uppercase = { page_path: "/Docs", ...metrics, ...otherMetrics };
+    for (const rows of [[uppercase, lowercase], [lowercase, uppercase]]) {
+      const result = validateAggregateInput(kind, {
+        schema_version: `phantom-seo-${kind}-v1`,
+        period,
+        rows,
+      }, allowedPaths, now);
+      assert.equal(result.state, "supplied");
+      assert.deepEqual(result.rows, [lowercase, uppercase], `${kind} compares path case and preserves each observation's metrics`);
+      assert.deepEqual(JSON.parse(JSON.stringify(result)).rows, [lowercase, uppercase], `${kind} preserves both path spellings in report JSON`);
+    }
+  }
+});
+
 test("duplicate aggregate records are retained, with GA4 suppression applied per row", () => {
   const period = { start: "2026-07-01", end: "2026-07-28", data_state: "final" };
   const now = new Date("2026-09-05T12:00:00Z");
