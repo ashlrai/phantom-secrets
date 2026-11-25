@@ -708,6 +708,48 @@ test("a complete public fixture produces a deterministic, sanitized passing repo
   });
 });
 
+test("unrelated observation fields do not alter the documented report or summary", async () => {
+  const origin = "https://example.test";
+  const options = {
+    siteOrigin: origin,
+    githubRepositoryApi: `${origin}/github`,
+    networkPolicy: (url) => url.origin === origin,
+    now: new Date("2026-09-05T12:00:00Z"),
+    fetchImpl: async (url) => {
+      if (url.pathname === "/sitemap.xml") {
+        return new Response(`<urlset><url><loc>${origin}/docs</loc></url></urlset>`);
+      }
+      if (url.pathname === "/robots.txt") {
+        return new Response(`User-Agent: *\nAllow: /\nSitemap: ${origin}/sitemap.xml\n`);
+      }
+      if (url.pathname === "/docs") {
+        return new Response(html(origin, "/docs"), {
+          headers: { "content-type": "text/html" },
+        });
+      }
+      return new Response("not found", { status: 404 });
+    },
+  };
+  const expected = await observeProduction(options);
+  assert.equal(expected.verdict, "FAIL");
+  assert.ok(expected.counts.fail > 0);
+  assert.equal(expected.technical.public_routes.find((page) => page.route === "/docs").title, "/docs — Phantom");
+
+  const actual = await observeProduction({
+    ...options,
+    annotation: "Unrelated fixture metadata",
+    run_number: 42,
+    labels: ["regression", "extra-fields"],
+    metadata: { reviewed: false, note: null },
+    verdict: "PASS",
+    counts: { fail: 0, warn: 0 },
+    findings: [],
+  });
+
+  assert.deepEqual(actual, expected);
+  assert.equal(renderSummary(actual), renderSummary(expected));
+});
+
 test("an observation preserves Unicode page text across UTF-8 chunk boundaries", async () => {
   const pagePath = "/docs/café-日本語-🔐-e\u0301";
   const encodedPath = encodeURI(pagePath);
