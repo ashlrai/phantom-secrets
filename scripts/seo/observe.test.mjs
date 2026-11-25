@@ -1058,6 +1058,78 @@ test("two distinct page observations keep their identities in saved output and s
   }
 });
 
+test("parent and child page observations retain separate records and findings", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "phantom-seo-parent-child-"));
+  const routes = ["/docs", "/docs/guide"];
+  try {
+    for (const [index, order] of [routes, [...routes].reverse()].entries()) {
+      const origin = "https://example.test";
+      const requests = [];
+      const otherRoutes = [...publicPaths].filter((route) => !route.endsWith(".txt") && !routes.includes(route));
+      const fixtures = {
+        "/sitemap.xml": `<urlset>${[...order, ...otherRoutes].map((route) => `<url><loc>${origin}${route}</loc></url>`).join("")}</urlset>`,
+        "/robots.txt": `User-Agent: *\nAllow: /\nDisallow: /api/\nSitemap: ${origin}/sitemap.xml\n`,
+        "/docs": html(origin, "/docs").replace('<meta name="description" content="Description for /docs">', ""),
+        "/docs/guide": html(origin, "/docs/guide").replace("<h1>Page /docs/guide</h1>", ""),
+        "/llms.txt": `Latest release: \`v9.8.7\`. https://phm.dev/llms-full.txt https://github.com/ashlrai/phantom-secrets ${"boundary ".repeat(20)}`,
+        "/llms-full.txt": "bounded evidence ".repeat(20),
+        "/api/v1/health": '{"status":"ok"}',
+        "/api/v1/ready": '{"status":"ok"}',
+        "/github": '{"stargazers_count":16,"forks_count":3}',
+        "/github/releases/latest": '{"tag_name":"v9.8.7","immutable":true,"draft":false,"prerelease":false}',
+      };
+      const report = await observeProduction({
+        siteOrigin: origin,
+        githubRepositoryApi: `${origin}/github`,
+        networkPolicy: (url) => url.origin === origin,
+        fetchImpl: async (url) => {
+          requests.push(url.pathname);
+          assert.ok(Object.hasOwn(fixtures, url.pathname) || publicPaths.has(url.pathname));
+          return new Response(fixtures[url.pathname] ?? html(origin, url.pathname), {
+            headers: {
+              "content-type": url.pathname.endsWith(".txt") ? "text/plain" : "text/html",
+              "content-security-policy": "default-src 'self'",
+              "permissions-policy": "camera=()",
+              "referrer-policy": "strict-origin-when-cross-origin",
+              "strict-transport-security": "max-age=63072000",
+              "x-content-type-options": "nosniff",
+              "x-frame-options": "DENY",
+            },
+          });
+        },
+      });
+      const expected = routes.map((route) => ({
+        route, status: 200, content_type: "text/html",
+        title: `${route} — Phantom`,
+        description: route === "/docs" ? null : `Description for ${route}`,
+        canonical: `${origin}${route}`,
+        h1_count: route === "/docs" ? 1 : 0,
+        structured_data_types: route === "/docs" ? [] : ["BreadcrumbList", "TechArticle"],
+      }));
+      assert.deepEqual(report.technical.public_routes.filter(({ route }) => routes.includes(route)), expected);
+      assert.equal(report.technical.public_routes.length, publicPaths.size);
+      assert.deepEqual(report.counts, { fail: 2, warn: 0 });
+      assert.deepEqual(report.findings, [
+        { severity: "fail", code: "description_missing", message: "Meta description is missing", route: "/docs" },
+        { severity: "fail", code: "h1_count", message: "Expected one h1; observed 0", route: "/docs/guide" },
+      ]);
+      const output = path.join(directory, `report-${index}.json`);
+      await writePrivateReport(output, report);
+      const saved = JSON.parse(await readFile(output, "utf8"));
+      assert.deepEqual(saved, report);
+      assert.deepEqual(saved.technical.public_routes.filter(({ route }) => routes.includes(route)), expected);
+      const summary = renderSummary(saved);
+      assert.ok(summary.includes("**FAIL description_missing** (/docs): Meta description is missing"));
+      assert.ok(summary.includes("**FAIL h1_count** (/docs/guide): Expected one h1; observed 0"));
+      for (const route of routes) {
+        assert.equal(requests.filter((request) => request === route).length, 1);
+      }
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("sibling nested page observations retain full paths in saved output and summary", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "phantom-seo-sibling-pages-"));
   const siblings = ["/docs/guide", "/docs/setup"];
