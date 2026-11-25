@@ -1966,6 +1966,30 @@ test("aggregate observations preserve numeric path segments as strings", () => {
   }
 });
 
+test("aggregate observations preserve underscore page paths exactly in report JSON", () => {
+  const pagePath = "/docs/agent_setup_guide";
+  const allowedPaths = new Set([...publicPaths, pagePath]);
+  const period = { start: "2026-07-01", end: "2026-07-28", data_state: "final" };
+  const now = new Date("2026-09-05T12:00:00Z");
+  const cases = [
+    ["gsc", { page_path: pagePath, brand_class: "nonbrand", clicks: 12, impressions: 240, ctr: 0.05, position: 8.4 }],
+    ["ga4", { page_path: pagePath, referral_class: "other", sessions: 20, engaged_sessions: 5, engagement_rate: 0.25, key_events: 1 }],
+    ["ahrefs", { page_path: pagePath, estimated_organic_traffic: 42, referring_domains: 7 }],
+  ];
+  for (const [kind, observation] of cases) {
+    const result = validateAggregateInput(kind, {
+      schema_version: `phantom-seo-${kind}-v1`,
+      period,
+      rows: [observation],
+    }, allowedPaths, now);
+    assert.equal(result.state, "supplied");
+    assert.deepEqual(result.rows, [observation], `${kind} preserves the underscore path and its metrics`);
+    const serialized = JSON.parse(JSON.stringify(result));
+    assert.equal(serialized.rows[0].page_path, pagePath, `${kind} preserves the exact path in report JSON`);
+    assert.deepEqual(serialized.rows, [observation]);
+  }
+});
+
 test("aggregate observations keep page paths containing spaces associated with their metrics", () => {
   const pagePath = "/docs/agent setup guide";
   const allowedPaths = new Set([...publicPaths, pagePath]);
