@@ -927,6 +927,56 @@ test("a multi-page sitemap produces exactly one observation per route", async ()
   });
 });
 
+test("an observed page path containing spaces is normalized to percent encoding", async () => {
+  const origin = "https://example.test";
+  const pagePath = "/docs/getting started with phantom";
+  const encodedPath = "/docs/getting%20started%20with%20phantom";
+  const requests = [];
+  const fixtures = {
+    "/sitemap.xml": [...publicPaths, pagePath]
+      .map((route) => `<url><loc>${origin}${route}</loc></url>`).join(""),
+    "/robots.txt": `Disallow: /api/\nSitemap: ${origin}/sitemap.xml`,
+    "/llms.txt": `Latest release: \`v9.8.7\`\nhttps://phm.dev/llms-full.txt\nhttps://github.com/ashlrai/phantom-secrets\n${"reference ".repeat(20)}`,
+    "/llms-full.txt": "Full reference ".repeat(20),
+    "/api/v1/health": "{}",
+    "/api/v1/ready": "{}",
+    "/github": '{"stargazers_count":16,"forks_count":3}',
+    "/github/releases/latest": '{"tag_name":"v9.8.7","immutable":true}',
+  };
+  const report = await observeProduction({
+    siteOrigin: origin,
+    githubRepositoryApi: `${origin}/github`,
+    networkPolicy: (url) => url.origin === origin,
+    now: new Date("2026-09-05T12:00:00Z"),
+    fetchImpl: async (url) => {
+      requests.push(url.pathname);
+      assert.ok(Object.hasOwn(fixtures, url.pathname) || publicPaths.has(url.pathname) || url.pathname === encodedPath);
+      return new Response(fixtures[url.pathname] ?? html(origin, url.pathname === encodedPath ? pagePath : url.pathname), {
+        headers: {
+          "content-type": url.pathname.endsWith(".txt") ? "text/plain" : "text/html",
+          "content-security-policy": "default-src 'self'",
+          "permissions-policy": "camera=()",
+          "referrer-policy": "strict-origin-when-cross-origin",
+          "strict-transport-security": "max-age=63072000",
+          "x-content-type-options": "nosniff",
+          "x-frame-options": "DENY",
+        },
+      });
+    },
+  });
+  const pages = report.technical.public_routes.filter((page) => page.route === encodedPath);
+  assert.equal(pages.length, 1);
+  assert.equal(pages[0].status, 200);
+  assert.equal(pages[0].title, `${pagePath} — Phantom`);
+  assert.equal(pages[0].canonical, `${origin}${encodedPath}`);
+  assert.equal(requests.filter((route) => route === encodedPath).length, 1);
+  assert.equal(requests.includes(pagePath), false);
+  assert.equal(report.technical.public_routes.some((page) => page.route === pagePath), false);
+  assert.equal(report.technical.sitemap.route_count, publicPaths.size + 1);
+  assert.deepEqual(report.findings, []);
+  assert.equal(report.verdict, "PASS");
+});
+
 test("empty aggregate observation inputs remain empty", async () => {
   const period = { start: "2026-07-01", end: "2026-07-28", data_state: "final" };
   const aggregateInputs = Object.fromEntries(
