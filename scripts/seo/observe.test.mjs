@@ -2183,6 +2183,39 @@ test("duplicate aggregate records retain identical per-page counts in either inp
   }
 });
 
+test("three observations for one page stay separate from an interleaved page's observation", () => {
+  const period = { start: "2026-07-01", end: "2026-07-28", data_state: "final" };
+  const cases = [
+    ["gsc", (count) => ({ brand_class: "nonbrand", clicks: count, impressions: 100, ctr: count / 100, position: count })],
+    ["ga4", (count) => ({ referral_class: "other", sessions: count * 10, engaged_sessions: count * 5, engagement_rate: 0.5, key_events: count })],
+    ["ahrefs", (count) => ({ estimated_organic_traffic: count * 10, referring_domains: count })],
+  ];
+  for (const [kind, metrics] of cases) {
+    const docs = [1, 2, 3].map((count) => ({ page_path: "/docs", ...metrics(count) }));
+    const security = { page_path: "/security", ...metrics(9) };
+    const rows = [docs[0], security, docs[1], docs[2]];
+    const original = structuredClone(rows);
+    const result = validateAggregateInput(kind, {
+      schema_version: `phantom-seo-${kind}-v1`, period, rows,
+    }, publicPaths, new Date("2026-09-05T12:00:00Z"));
+
+    for (const aggregate of [result, JSON.parse(JSON.stringify(result))]) {
+      assert.equal(aggregate.state, "supplied");
+      assert.deepEqual(aggregate.rows, [...docs, security], `${kind} retains all four observations`);
+      assert.deepEqual(
+        aggregate.rows.filter(({ page_path }) => page_path === "/docs"), docs,
+        `${kind} keeps all three docs observations and only their metrics`,
+      );
+      assert.deepEqual(
+        aggregate.rows.filter(({ page_path }) => page_path === "/security"), [security],
+        `${kind} keeps the interleaved security observation and only its metrics`,
+      );
+    }
+    if (kind === "ga4") assert.equal(result.suppressed_rows, 0);
+    assert.deepEqual(rows, original, "observation inputs stay unchanged");
+  }
+});
+
 test("aggregate periods reject impossible dates and days that are not yet complete", () => {
   const base = {
     schema_version: "phantom-seo-gsc-v1",
