@@ -980,6 +980,43 @@ test("a multi-page sitemap produces exactly one observation per route", async ()
   });
 });
 
+test("pages sharing a title remain distinguishable by path in the report", async () => {
+  const origin = "https://example.test";
+  const routes = ["/docs", "/security"];
+  const title = "Phantom documentation";
+  const report = await observeProduction({
+    siteOrigin: origin,
+    githubRepositoryApi: `${origin}/github`,
+    networkPolicy: (url) => url.origin === origin,
+    fetchImpl: async (url) => {
+      if (url.pathname === "/robots.txt") {
+        return new Response(`User-Agent: *\nAllow: /\nSitemap: ${origin}/sitemap.xml\n`);
+      }
+      if (url.pathname === "/sitemap.xml") {
+        return new Response(routes.map((route) => `<loc>${origin}${route}</loc>`).join(""));
+      }
+      if (routes.includes(url.pathname)) {
+        return new Response(
+          html(origin, url.pathname).replace(/<title>[^<]*<\/title>/, `<title>${title}</title>`),
+          { headers: { "content-type": "text/html; charset=utf-8" } },
+        );
+      }
+      return new Response("not found", { status: 404 });
+    },
+  });
+  const pages = report.technical.public_routes.filter(({ route }) => routes.includes(route));
+  assert.equal(pages.length, 2, "neither page is merged or dropped because of its shared title");
+  assert.deepEqual(
+    pages.map(({ route, status, title, canonical, description }) => ({
+      route, status, title, canonical, description,
+    })),
+    routes.map((route) => ({
+      route, status: 200, title, canonical: `${origin}${route}`,
+      description: `Description for ${route}`,
+    })),
+  );
+});
+
 test("two distinct page observations keep their identities in saved output and summary", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "phantom-seo-page-identity-"));
   try {
