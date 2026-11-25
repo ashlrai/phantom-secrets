@@ -24,11 +24,11 @@ To inspect differences, run `diff -u scripts/install.sh apps/web/public/install.
 
 ## Review snapshot
 
-Reviewed **2026-11-16**: the files **differ** only in the candidate tag. SHA-256 hashes identify the
+Reviewed **2026-11-25**: the files **match** byte-for-byte. SHA-256 hashes identify the
 exact bytes reviewed:
 
 - `scripts/install.sh`: `094525f7982caaf534c1a19b2581dbee69a4b766687b593d5adda3f0ba9464a4`
-- `apps/web/public/install.sh`: `44ab25b1a5b99d7a1a3bb484ea17b323f89a47e43092ca4de4903a9ede6ba72e`
+- `apps/web/public/install.sh`: `094525f7982caaf534c1a19b2581dbee69a4b766687b593d5adda3f0ba9464a4`
 
 The source installer and the public copy both pin the evidenced `v0.8.11` release. Both copies
 extract the release archive with `tar --no-same-owner` and carry the same
