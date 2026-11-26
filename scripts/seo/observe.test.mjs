@@ -1010,6 +1010,29 @@ test("an ampersand in a page title survives the saved report without changing ad
   }
 });
 
+test("quotation marks in a page title survive the saved JSON report", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "phantom-seo-quotes-"));
+  const title = 'Phantom "Secrets" and \'agents\'';
+  try {
+    await withFixtureServer(async ({ options }) => {
+      const report = await observeProduction(options);
+      const file = path.join(directory, "report.json");
+      await writePrivateReport(file, report);
+      const saved = JSON.parse(await readFile(file, "utf8"));
+      assert.equal(saved.verdict, "PASS");
+      assert.equal(saved.technical.public_routes.find(({ route }) => route === "/docs").title, title);
+      assert.deepEqual(saved, report);
+    }, {
+      "/docs": (response, origin) => {
+        response.setHeader("content-type", "text/html; charset=utf-8");
+        response.end(html(origin, "/docs").replace("/docs — Phantom", 'Phantom &quot;Secrets&quot; and \'agents\''));
+      },
+    });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("pages sharing a title remain distinguishable by path in the report", async () => {
   const origin = "https://example.test";
   const routes = ["/docs", "/security"];
