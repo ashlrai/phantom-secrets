@@ -2273,6 +2273,24 @@ test("Search Console input accepts finalized page aggregates and rejects raw que
   );
 });
 
+test("trailing-slash page paths remain distinct observations", () => {
+  const period = { start: "2026-07-01", end: "2026-07-28", data_state: "final" };
+  const rows = [
+    { page_path: "/docs/", estimated_organic_traffic: 42, referring_domains: 7 },
+    { page_path: "/docs", estimated_organic_traffic: 12, referring_domains: 3 },
+  ];
+  const input = { schema_version: "phantom-seo-ahrefs-v1", period, rows };
+  const now = new Date("2026-09-05T12:00:00Z");
+  const result = validateAggregateInput("ahrefs", input, new Set(["/docs", "/docs/"]), now);
+
+  assert.equal(result.rows.length, 2);
+  assert.deepEqual(result.rows, [rows[1], rows[0]]);
+  assert.throws(
+    () => validateAggregateInput("ahrefs", input, new Set(["/docs"]), now),
+    /page_path is not present in the observed sitemap/,
+  );
+});
+
 test("aggregate observations preserve numeric path segments as strings", () => {
   const pagePath = "/docs/00123/guide";
   const allowedPaths = new Set([...publicPaths, pagePath]);
