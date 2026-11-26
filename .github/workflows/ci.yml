@@ -331,6 +331,7 @@ jobs:
           scripts/installer-path-spaced-install-dir.test.mjs
           scripts/installer-path-spaced-lines.test.mjs
           scripts/installer-path-spaced-parent-full-install.test.mjs
+          scripts/installer-path-spaced-parent-staging.test.mjs
           scripts/installer-path-spaced-parent-target.test.mjs
           scripts/installer-path-spaced-symlink-parent.test.mjs
           scripts/installer-path-success-cleanup.test.mjs
