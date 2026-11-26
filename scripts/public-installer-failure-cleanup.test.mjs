@@ -80,6 +80,9 @@ function run(t, options = {}) {
       const realTar = execFileSync('which', ['tar'], { encoding: 'utf8' }).trim();
       writeFileSync(join(shims, 'tar'), `#!/bin/sh
 if [ "$1" = ${JSON.stringify(options.failTarOp)} ]; then
+  ${options.partialExtraction ? `${JSON.stringify(realTar)} -xzf "$3" -C "$5" phantom || exit 43
+  [ -f "$5/phantom" ] || exit 44
+  printf '%s\\n' "$5" > ${JSON.stringify(join(root, 'partial-candidate'))}` : ':'}
   printf 'tar: injected failure\\n' >&2
   exit 42
 fi
@@ -198,6 +201,14 @@ for (const { name, options, error } of [
     assertCleanFailure(run(t, options), error);
   });
 }
+
+test('public installer removes a partially extracted staging tree when tar fails', (t) => {
+  const attempt = run(t, { failTarOp: '--no-same-owner', partialExtraction: true });
+  assertCleanFailure(attempt, /could not extract release archive/);
+  const candidate = readFileSync(join(attempt.root, 'partial-candidate'), 'utf8').trim();
+  assert.equal(dirname(dirname(candidate)), attempt.parent);
+  assert.match(dirname(candidate), /\.bin\.install\.[^/]+$/);
+});
 
 // The last failure before binary verification is an implicit set -e exit
 // rather than a die() message: the shimmed chmod fails only the 755 call that
