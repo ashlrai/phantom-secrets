@@ -449,7 +449,7 @@ the command exits 1.
 
 ### `phantom reveal`
 
-Print a real secret value to stdout. Blocked in non-interactive contexts by default.
+Print a real secret value to stdout. It runs only from an attached terminal and requires the exact typed confirmation; there is no non-interactive bypass.
 
 ```bash
 phantom reveal OPENAI_API_KEY

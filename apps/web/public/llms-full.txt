@@ -205,7 +205,7 @@ The transaction removes the vault value, lifecycle record, and exact managed-
 dotenv mapping together or rolls back transaction-owned changes.
 
 ### phantom reveal <KEY>
-View a real secret value. Blocked in non-interactive contexts by default.
+View a real secret value. Refused in non-interactive contexts.
 Options: --clipboard (auto-clears after 30s). Attached terminals and exact typed confirmation are always required; there is no non-interactive bypass.
 
 ### phantom rotate
