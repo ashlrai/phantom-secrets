@@ -294,6 +294,7 @@ test("both installable manifests and machine references identify the workbench a
   assert.match(dynamicManifest, /engineering workbench/);
   assert.match(dynamicManifest, /start_url: "\/"/);
   assert.match(dynamicManifest, /scope: "\/"/);
+  const secretsVersion = /PUBLIC_RELEASE_VERSION = "(\d+\.\d+\.\d+)"/.exec(read("src/lib/public-release.ts"))[1];
   for (const file of ["public/llms.txt", "public/llms-full.txt"]) {
     const reference = read(file);
     assert.match(reference, /## Phantom workbench/);
@@ -301,7 +302,10 @@ test("both installable manifests and machine references identify the workbench a
     assert.match(reference, /https:\/\/www\.npmjs\.com\/package\/@ashlr\/phantom/);
     assert.match(reference, /## Phantom Secrets/);
     assert.match(reference, /https:\/\/phm\.dev\/secrets/);
-    assert.match(reference, /`v0\.8\.7` evidence below describes Phantom Secrets only/);
+    assert.ok(
+      reference.includes(`\`v${secretsVersion}\` evidence below describes Phantom Secrets only`),
+      `${file} must name the current Secrets release v${secretsVersion}`,
+    );
   }
 });
 
