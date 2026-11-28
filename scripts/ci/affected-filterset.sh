@@ -8,18 +8,24 @@
 # merge_group, and the nightly run executes the full suite.
 set -euo pipefail
 base="${1:?base sha}"; head="${2:?head sha}"
-files="$(git diff --name-only "$base...$head")"
-[ -n "$files" ] || { echo "none()"; exit 0; }
-meta="$(cargo metadata --no-deps --format-version 1 --locked)"
-python3 - "$meta" <<PY
+input_dir="$(mktemp -d)"
+trap 'rm -rf -- "$input_dir"' EXIT
+# Neither Cargo metadata nor individual file names belong in interpreter
+# arguments or source. Git's NUL form preserves each path as one record.
+git diff --name-only -z --no-renames "$base...$head" -- > "$input_dir/paths"
+[ -s "$input_dir/paths" ] || { echo "none()"; exit 0; }
+cargo metadata --no-deps --format-version 1 --locked > "$input_dir/metadata.json"
+python3 - "$input_dir/metadata.json" "$input_dir/paths" <<'PY'
 import json, os, sys
-meta = json.loads(sys.argv[1])
+with open(sys.argv[1], encoding="utf-8") as metadata:
+    meta = json.load(metadata)
 root = meta["workspace_root"]
 crates = {}
 for p in meta["packages"]:
-    d = os.path.relpath(os.path.dirname(p["manifest_path"]), root)
+    d = os.path.relpath(os.path.dirname(p["manifest_path"]), root).replace(os.sep, "/")
     crates[d] = p["name"]
-files = """$files""".split()
+with open(sys.argv[2], "rb") as paths:
+    files = (os.fsdecode(path) for path in paths.read().split(b"\0") if path)
 global_triggers = ("Cargo.toml", "Cargo.lock", "rust-toolchain", "rust-toolchain.toml",
                    ".cargo/", ".config/nextest", ".github/", "deny.toml", "clippy.toml", "rustfmt.toml")
 hit = set()
