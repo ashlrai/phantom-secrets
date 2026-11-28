@@ -16,6 +16,14 @@ fn run(dir: &TempDir, args: &[&str]) -> Output {
         .unwrap()
 }
 
+fn write_warnings(uncertain_warning: &str) -> Vec<&str> {
+    if cfg!(unix) {
+        vec![]
+    } else {
+        vec![uncertain_warning]
+    }
+}
+
 fn report(output: &Output) -> Value {
     assert!(output.status.success());
     assert!(output.stderr.is_empty());
@@ -32,9 +40,13 @@ fn env_json_reports_counts_without_values_and_keeps_human_output() {
         json!({
             "schema": "env.v1", "written": true, "output": ".env.example",
             "secrets_masked": 1, "config_preserved": 1,
-            "durability_verified": true, "warnings": [],
+            "durability_verified": cfg!(unix),
+            "warnings": write_warnings(
+                "warning: example file was created and verified, but directory crash durability is not provable on this platform"
+            ),
         })
     );
+    assert!(dir.path().join(".env.example").is_file());
     let human = run(&dir, &["env", "--output", "example"]);
     assert!(human.status.success());
     assert!(String::from_utf8_lossy(&human.stdout).contains("Generated example"));
@@ -78,8 +90,11 @@ fn generated_add_json_has_only_a_name_and_fingerprint() {
         .as_str()
         .unwrap()
         .starts_with("sha256:"));
-    assert_eq!(receipt["durability_verified"], true);
-    assert!(receipt["warnings"].as_array().unwrap().is_empty());
+    assert_eq!(receipt["durability_verified"], cfg!(unix));
+    assert_eq!(
+        receipt["warnings"],
+        json!(write_warnings(phantom_vault::NAMESPACE_DURABILITY_WARNING))
+    );
     assert_eq!(receipt.as_object().unwrap().len(), 5);
     assert!(receipt.get("durability_verified").is_some());
 }
