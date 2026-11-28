@@ -164,8 +164,13 @@ mod tests {
         assert!(vault.retrieve("GENERATED_KEY").unwrap().as_str() == value.as_str());
         let second = generate_secret(&project, &vault, &after, "SECOND_KEY").unwrap();
         assert_ne!(first.fingerprint, second.fingerprint);
-        assert!(first.durability_verified);
-        assert!(first.warnings.is_empty());
+        assert_eq!(first.durability_verified, cfg!(unix));
+        let expected_warnings = if cfg!(unix) {
+            vec![]
+        } else {
+            vec![phantom_vault::NAMESPACE_DURABILITY_WARNING.to_string()]
+        };
+        assert_eq!(first.warnings, expected_warnings);
     }
 
     #[test]
