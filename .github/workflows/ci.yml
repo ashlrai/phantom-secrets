@@ -111,12 +111,22 @@ jobs:
       # every non-PR event. PRs run Ubuntu only (runner capacity P0, Oct 26:
       # Free plan 20 jobs, 5 macOS); the Test job's `if` already skips PRs,
       # and CI Gate expects these legs skipped there and successful elsewhere.
+      # pull_request and merge_group use the same platform path gate as
+      # scripts/ci/pr-classify.mjs (manifests, lockfiles, workflows, installers,
+      # shell installers, and OS-tagged sources). Other events keep every OS.
       - id: platform
         env:
           EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          HEAD: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
         run: |
-          p=true
-          if [ "$EVENT" = "pull_request" ]; then p=false; fi
+          set -euo pipefail
+          if [ "$EVENT" = "pull_request" ] || [ "$EVENT" = "merge_group" ]; then
+            p="$(node scripts/ci/pr-classify.mjs --event pull_request --base "$BASE" --head "$HEAD" --labels "$LABELS" | sed -n 's/^platform=//p')"
+          else
+            p=true
+          fi
           echo "platform=$p" >> "$GITHUB_OUTPUT"; echo "platform=$p"
       # The Test job does not run on pull_request or merge_group, and the
       # nightly/manual runs execute the full suite. Resolving an affected
@@ -458,6 +468,63 @@ jobs:
           $env:PHANTOM_NATIVE_TARGET = 'x86_64-pc-windows-msvc'
           $env:PHANTOM_RELEASE_TAG = "v$version"
           node scripts/release/native-installer-acceptance.mjs
+
+  # Affected Rust tests on pull_request and merge_group. The daily Test job
+  # above still runs the full suite on every OS and is not part of this job.
+  # timeout-minutes is the existing Test job ceiling (20). Measured full-suite
+  # wall times, success only, nightly runs 43928442613, 43730843960,
+  # 43607659003, 43460417530, 43262274149, 42247122878, 41671100963,
+  # 41522904997: ubuntu p95 668s, macos p95 586s, windows p95 716s. 20 minutes
+  # covers that p95. This job does not introduce a different timeout.
+  affected-tests:
+    name: Affected tests (${{ matrix.os }})
+    needs: changes
+    if: ${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') && needs.changes.outputs.rust == 'true' }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON(needs.changes.outputs.platform == 'true' && '["ubuntu-latest", "macos-latest", "windows-latest"]' || '["ubuntu-latest"]') }}
+    env:
+      CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER: rust-lld
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (2026-04-24)
+        with:
+          toolchain: 1.95.0
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          save-if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2
+        with:
+          tool: cargo-nextest
+      - name: Affected tests, first failure only
+        shell: bash
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          HEAD: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+        run: |
+          set -euo pipefail
+          fs="$(bash scripts/ci/affected-filterset.sh "$BASE" "$HEAD" || echo 'all()')"
+          echo "nextest filterset: $fs"
+          if [ "$fs" = "none()" ]; then
+            echo "No affected crates." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          # The filterset is only all() or rdeps(=crate) joined by " | ".
+          if ! printf '%s' "$fs" | grep -Eq '^(all\(\)|rdeps\(=[A-Za-z0-9_-]+\)( \| rdeps\(=[A-Za-z0-9_-]+\))*)$'; then
+            echo "::error::refusing unexpected nextest filterset"
+            exit 1
+          fi
+          set +e
+          cargo nextest run --workspace --all-targets --locked --max-fail 1 -E "$fs" > "$RUNNER_TEMP/nextest.txt" 2>&1
+          status=$?
+          set -e
+          node scripts/ci/nextest-summary.mjs --status "$status" --log "$RUNNER_TEMP/nextest.txt"
 
   # Not part of CI Gate, so a Codecov outage does not become a required check.
   # This is the only job in this workflow with id-token: write. It runs on
@@ -951,7 +1018,7 @@ jobs:
   gate:
     name: CI Gate
     if: always()
-    needs: [changes, test, test-ignored, lint, dependency-policy, windows-arm-source-check, npm-wrappers, web, secret-scan, secret-shape, crate-publication-contract, temporal-codec-example, docs-commands]
+    needs: [changes, test, affected-tests, test-ignored, lint, dependency-policy, windows-arm-source-check, npm-wrappers, web, secret-scan, secret-shape, crate-publication-contract, temporal-codec-example, docs-commands]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     permissions: {}
@@ -969,7 +1036,7 @@ jobs:
           if (!['full', 'windows-native-diagnostics'].includes(scope)) throw new Error('unknown gate scope');
           if (scope === 'windows-native-diagnostics') {
             if (process.env.EVENT !== 'workflow_dispatch') throw new Error('diagnostics require manual invocation');
-            const names = ['changes', 'test', 'test-ignored', 'lint', 'dependency-policy', 'windows-arm-source-check',
+            const names = ['changes', 'test', 'affected-tests', 'test-ignored', 'lint', 'dependency-policy', 'windows-arm-source-check',
               'npm-wrappers', 'web', 'secret-scan', 'secret-shape', 'crate-publication-contract', 'temporal-codec-example', 'docs-commands'];
             if (JSON.stringify(Object.keys(needs).sort()) !== JSON.stringify(names.sort())) throw new Error('diagnostic gate inventory drift');
             for (const name of names) {
@@ -991,10 +1058,14 @@ jobs:
           const platform = ch.outputs.platform === 'true';
           const rustJobs = ['npm-wrappers'];
           const dailyRustJobs = ['test', 'crate-publication-contract'];
+          // Affected tests run on pull_request and merge_group when Rust
+          // changed. A docs-only diff skips the job. The daily suite is `test`.
+          const affected = !full && rust;
           const expect = {
             ...Object.fromEntries(always.map((j) => [j, true])),
             ...Object.fromEntries(rustJobs.map((j) => [j, rust])),
             ...Object.fromEntries(dailyRustJobs.map((j) => [j, full && rust])),
+            'affected-tests': affected,
             'windows-arm-source-check': full && rust && platform,
             web: full && web,
             'temporal-codec-example': full && temporalExample,
