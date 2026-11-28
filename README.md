@@ -1,10 +1,10 @@
 <div align="center">
 
-# Phantom
+# Phantom Secrets
 
 **Your agent can call the API. The key stays in a local vault.**
 
-Phantom replaces managed secrets in `.env` with `phm_` placeholders. Agents and apps read those placeholders. A proxy on `127.0.0.1` adds the vault value only to the auth header of a matched route.
+Phantom Secrets replaces managed secrets in `.env` with `phm_` placeholders. Agents and apps read those placeholders. A proxy on `127.0.0.1` adds the vault value only to the auth header of a matched route.
 
 [![GitHub stars](https://img.shields.io/github/stars/ashlrai/phantom-secrets?style=for-the-badge&logo=github&color=blue&labelColor=0b0b14)](https://github.com/ashlrai/phantom-secrets)
 [![CI](https://img.shields.io/github/actions/workflow/status/ashlrai/phantom-secrets/ci.yml?style=for-the-badge&label=CI&logo=github&labelColor=0b0b14)](https://github.com/ashlrai/phantom-secrets/actions/workflows/ci.yml)
@@ -26,9 +26,12 @@ The independently verified GitHub release is `v0.8.11`, matching the current sou
 [**MCP setup**](#mcp-integration-claude-code-cursor-windsurf-codex-gemini-cli) ·
 [**llms.txt**](docs/llms.txt) ·
 [**Docs**](docs/README.md) ·
+[**Project site**](https://phm.dev/secrets) ·
 [**Star on GitHub**](https://github.com/ashlrai/phantom-secrets)
 
 </div>
+
+Phantom Secrets is the credential layer in the [AshlrAI open-source ecosystem](https://github.com/ashlrai#the-open-source-ecosystem). It installs as `phantom`. The separate [Phantom](https://phm.dev) engineering workbench (`phm`) coordinates coding agents and worker machines. You can use Phantom Secrets on its own.
 
 ![The agent reads phm_ placeholders. The local proxy sends the vault value on a matched route.](docs/assets/hero.svg)
 
